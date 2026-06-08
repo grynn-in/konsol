@@ -1,10 +1,12 @@
 """EPM API — Frappe proxy to ClickHouse for Excel batch retrieval."""
 import json
+import re
 from collections import defaultdict
 
 import frappe
 import requests
 
+MAX_BATCH_SIZE = 2000
 
 # Allowed measure columns per scenario (whitelist to prevent SQL injection)
 ALLOWED_MEASURES = {
@@ -26,6 +28,16 @@ SCENARIO_TABLES = {
     "budget": "epm_gold.gold_spread_budget",
     "variance": "epm_gold.gold_variance_analysis",
 }
+
+
+def _validate_scenario(scenario):
+    """Validate scenario against known values. Raises on invalid."""
+    if scenario not in SCENARIO_TABLES:
+        frappe.throw(
+            f"Invalid scenario '{scenario}'. "
+            f"Allowed: {', '.join(sorted(SCENARIO_TABLES))}",
+            frappe.ValidationError,
+        )
 
 
 def _validate_measure(measure, scenario):
@@ -76,6 +88,7 @@ def health():
 def epm_value(entity, year, period, account, measure="period_net_amount",
               scenario="actuals", cost_center="", department=""):
     """Single value lookup — returns {"value": <number>}."""
+    _validate_scenario(scenario)
     _validate_measure(measure, scenario)
     result = _batch_query_clickhouse([{
         "entity": entity, "year": int(year), "period": int(period),
@@ -91,11 +104,18 @@ def epm_batch():
     data = frappe.request.get_data(as_text=True)
     requests_list = json.loads(data)
 
+    if len(requests_list) > MAX_BATCH_SIZE:
+        frappe.throw(
+            f"Batch size {len(requests_list)} exceeds maximum of {MAX_BATCH_SIZE}",
+            frappe.ValidationError,
+        )
+
     # Normalize and validate all requests upfront
     normalized = []
     for req in requests_list:
         scenario = req.get("scenario", "actuals")
         measure = req.get("measure", "period_net_amount")
+        _validate_scenario(scenario)
         _validate_measure(measure, scenario)
         normalized.append({
             "entity": req.get("entity", ""),
@@ -135,7 +155,10 @@ def _batch_query_clickhouse(requests_list):
         groups[key].append((idx, req))
 
     for (scenario, measure, has_cc, has_dept), group_items in groups.items():
-        table = SCENARIO_TABLES.get(scenario, SCENARIO_TABLES["actuals"])
+        # Defense-in-depth: assert identifiers are safe before SQL interpolation
+        assert re.match(r'^[a-z_]+$', measure), f"Bad measure: {measure}"
+        table = SCENARIO_TABLES[scenario]
+        assert table in SCENARIO_TABLES.values(), f"Bad table: {table}"
 
         # Build a single grouped query with IN (...) tuples
         # Dimensions: always (data_area_id, fiscal_year, fiscal_period, main_account)
