@@ -1,0 +1,71 @@
+{
+  "name": "Dimension",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:dimension_name",
+  "fields": [
+    {
+      "fieldname": "dimension_name",
+      "fieldtype": "Data",
+      "label": "Dimension Name",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "e.g. dim_cost_center"
+    },
+    {
+      "fieldname": "source_column",
+      "fieldtype": "Data",
+      "label": "Source Column",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "D365 OData field, e.g. CostCenter"
+    },
+    {
+      "fieldname": "label",
+      "fieldtype": "Data",
+      "label": "Label",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Human-readable, e.g. Cost Center"
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "cube_type",
+      "fieldtype": "Select",
+      "label": "Cube Type",
+      "options": "string\nnumber",
+      "default": "string"
+    },
+    {
+      "fieldname": "in_budget",
+      "fieldtype": "Check",
+      "label": "Include in Budget",
+      "default": "0",
+      "description": "Include in budget models"
+    },
+    {
+      "fieldname": "allocation_role",
+      "fieldtype": "Data",
+      "label": "Allocation Role",
+      "description": "e.g. cost_center — used by allocation engine"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

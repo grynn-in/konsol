@@ -1,0 +1,55 @@
+{
+  "name": "Spread Profile",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "format:SP-{profile_id}-P{fiscal_period}",
+  "fields": [
+    {
+      "fieldname": "profile_id",
+      "fieldtype": "Data",
+      "label": "Profile ID",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "profile_name",
+      "fieldtype": "Data",
+      "label": "Profile Name",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "fiscal_period",
+      "fieldtype": "Int",
+      "label": "Fiscal Period",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "1-12"
+    },
+    {
+      "fieldname": "weight",
+      "fieldtype": "Float",
+      "label": "Weight",
+      "reqd": 1,
+      "in_list_view": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

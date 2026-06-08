@@ -6,6 +6,8 @@ from collections import defaultdict
 import frappe
 import requests
 
+from konsol.clickhouse import get_connection as _get_ch_connection
+
 MAX_BATCH_SIZE = 2000
 
 # Period ranges: Q1-Q4, H1-H2, FY → tuple of fiscal_period integers
@@ -53,6 +55,9 @@ SCENARIO_TABLES = {
     "variance": "epm_gold.gold_variance_analysis",
 }
 
+# Tables that have a scenario_id column and support filtering by it
+TABLES_WITH_SCENARIO_ID = {"epm_gold.gold_spread_budget"}
+
 
 def _validate_scenario(scenario):
     """Validate scenario against known values. Raises on invalid."""
@@ -92,13 +97,7 @@ def _check_measure(measure, scenario):
 
 def _get_clickhouse_settings():
     """Get ClickHouse connection settings (cached per request)."""
-    settings = frappe.get_single("EPM Settings")
-    return {
-        "host": settings.clickhouse_host or "localhost",
-        "port": settings.clickhouse_port or "8123",
-        "user": settings.clickhouse_user or "default",
-        "password": settings.get_password("clickhouse_password") or "",
-    }
+    return _get_ch_connection()
 
 
 def _clickhouse_query(sql, params, ch_settings):
@@ -125,11 +124,14 @@ def health():
 
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
-              scenario="actuals", cost_center="", department=""):
+              scenario="actuals", cost_center="", department="",
+              scenario_id=""):
     """Single value lookup — returns {"value": <number>}.
 
     Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
     Range periods return the sum across constituent months.
+    scenario_id: optional — filter to a specific scenario (e.g. "BUDGET_2025")
+                 within the table. Only applies to tables that have a scenario_id column.
     """
     _validate_scenario(scenario)
     _validate_measure(measure, scenario)
@@ -138,6 +140,7 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
         "periods": _resolve_period(period),
         "account": account, "measure": measure, "scenario": scenario,
         "cost_center": cost_center, "department": department,
+        "scenario_id": scenario_id,
     }])
     return {"value": result["values"][0]}
 
@@ -179,6 +182,7 @@ def epm_batch():
                 "scenario": scenario,
                 "cost_center": req.get("cost_center", ""),
                 "department": req.get("department", ""),
+                "scenario_id": req.get("scenario_id", ""),
             }
 
     # Only send valid requests to ClickHouse
@@ -215,7 +219,7 @@ def _batch_query_clickhouse(requests_list):
     values = [None] * n
     errors = [None] * n
 
-    # Group requests by (scenario, measure, periods_tuple, has_cost_center, has_department)
+    # Group requests by (scenario, measure, periods_tuple, has_cost_center, has_department, scenario_id)
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         key = (
@@ -224,10 +228,11 @@ def _batch_query_clickhouse(requests_list):
             req["periods"],
             bool(req.get("cost_center")),
             bool(req.get("department")),
+            req.get("scenario_id", ""),
         )
         groups[key].append((idx, req))
 
-    for (scenario, measure, periods, has_cc, has_dept), group_items in groups.items():
+    for (scenario, measure, periods, has_cc, has_dept, scenario_id), group_items in groups.items():
         # Defense-in-depth: assert identifiers are safe before SQL interpolation
         assert re.match(r'^[a-z_]+$', measure), f"Bad measure: {measure}"
         table = SCENARIO_TABLES[scenario]
@@ -270,11 +275,19 @@ def _batch_query_clickhouse(requests_list):
             params[f"param_{pkey}"] = str(p)
         period_in = ", ".join(period_placeholders)
 
+        # Optional scenario_id filter (only for tables that have the column)
+        scenario_id_clause = ""
+        if scenario_id and table in TABLES_WITH_SCENARIO_ID:
+            assert re.match(r'^[A-Za-z0-9_]+$', scenario_id), f"Bad scenario_id: {scenario_id}"
+            params["param_sid"] = scenario_id
+            scenario_id_clause = " AND scenario_id = {sid:String}"
+
         sql = (
             f"SELECT {group_by}, coalesce(sum({measure}), 0) as val "
             f"FROM {table} "
             f"WHERE {in_cols} IN ({in_values}) "
-            f"AND fiscal_period IN ({period_in}) "
+            f"AND fiscal_period IN ({period_in})"
+            f"{scenario_id_clause} "
             f"GROUP BY {group_by}"
         )
 
@@ -318,3 +331,96 @@ def _batch_query_clickhouse(requests_list):
     if any(e is not None for e in errors):
         result["errors"] = errors
     return result
+
+
+# --- Budget Write-Back API ---
+
+def _validate_budget_fields(data):
+    """Validate required fields for budget save. Raises on missing."""
+    required = ["scenario_id", "data_area_id", "fiscal_year", "main_account", "periods"]
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        frappe.throw(
+            f"Missing required fields: {', '.join(missing)}",
+            frappe.ValidationError,
+        )
+    if not isinstance(data["periods"], list) or not data["periods"]:
+        frappe.throw("periods must be a non-empty array", frappe.ValidationError)
+
+
+def _upsert_budget_input(data):
+    """Create or update a Budget Input doc from API data. Returns doc name."""
+    # Build unique key for upsert
+    filters = {
+        "scenario_id": data["scenario_id"],
+        "data_area_id": data["data_area_id"],
+        "fiscal_year": int(data["fiscal_year"]),
+        "main_account": data["main_account"],
+    }
+    existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+
+    if existing:
+        doc = frappe.get_doc("Budget Input", existing[0].name)
+        doc.periods = []
+    else:
+        doc = frappe.new_doc("Budget Input")
+        doc.update(filters)
+
+    # Optional dimension fields
+    doc.dim_cost_center = data.get("dim_cost_center", "")
+    doc.dim_department = data.get("dim_department", "")
+
+    # Add period rows
+    for p in data["periods"]:
+        doc.append("periods", {
+            "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
+            "amount": float(p.get("amount", 0)),
+            "layer": p.get("layer", "base"),
+        })
+
+    doc.save()
+    return doc.name
+
+
+@frappe.whitelist(methods=["POST"])
+def budget_save():
+    """Save a single budget line — creates/updates Budget Input doc in Draft.
+
+    Accepts JSON: {scenario_id, data_area_id, fiscal_year, main_account,
+    dim_cost_center, dim_department, periods: [{period, amount, layer}]}
+
+    Returns: {"name": doc_name}
+    """
+    data = json.loads(frappe.request.get_data(as_text=True))
+    _validate_budget_fields(data)
+    name = _upsert_budget_input(data)
+    return {"name": name}
+
+
+@frappe.whitelist(methods=["POST"])
+def budget_save_batch():
+    """Save multiple budget lines at once.
+
+    Accepts JSON array of budget line objects.
+    Returns: {"results": [{"name": doc_name}, ...], "errors": [...]}
+    """
+    items = json.loads(frappe.request.get_data(as_text=True))
+    if not isinstance(items, list):
+        frappe.throw("Expected a JSON array", frappe.ValidationError)
+
+    results = []
+    errors = []
+    for i, data in enumerate(items):
+        try:
+            _validate_budget_fields(data)
+            name = _upsert_budget_input(data)
+            results.append({"name": name, "index": i})
+            errors.append(None)
+        except Exception as e:
+            results.append(None)
+            errors.append({"index": i, "error": str(e)})
+
+    response = {"results": results}
+    if any(e is not None for e in errors):
+        response["errors"] = errors
+    return response

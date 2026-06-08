@@ -1,0 +1,69 @@
+{
+  "name": "Consolidation Group",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "format:CG-{consolidation_group}-{data_area_id}",
+  "fields": [
+    {
+      "fieldname": "consolidation_group",
+      "fieldtype": "Data",
+      "label": "Consolidation Group",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "data_area_id",
+      "fieldtype": "Data",
+      "label": "Entity",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "entity_name",
+      "fieldtype": "Data",
+      "label": "Entity Name",
+      "reqd": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "ownership_pct",
+      "fieldtype": "Float",
+      "label": "Ownership %",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "0-100"
+    },
+    {
+      "fieldname": "reporting_currency",
+      "fieldtype": "Data",
+      "label": "Reporting Currency",
+      "reqd": 1,
+      "default": "USD"
+    },
+    {
+      "fieldname": "consolidation_method",
+      "fieldtype": "Select",
+      "label": "Consolidation Method",
+      "options": "full\nproportional\nequity",
+      "reqd": 1,
+      "in_list_view": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

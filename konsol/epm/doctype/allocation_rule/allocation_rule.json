@@ -1,0 +1,85 @@
+{
+  "name": "Allocation Rule",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:allocation_rule_id",
+  "fields": [
+    {
+      "fieldname": "allocation_rule_id",
+      "fieldtype": "Data",
+      "label": "Rule ID",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "rule_name",
+      "fieldtype": "Data",
+      "label": "Rule Name",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "step_order",
+      "fieldtype": "Int",
+      "label": "Step Order",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Execution order: 1, 2, 3"
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "source_account",
+      "fieldtype": "Data",
+      "label": "Source Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "source_cost_center",
+      "fieldtype": "Data",
+      "label": "Source Cost Center",
+      "reqd": 1
+    },
+    {
+      "fieldname": "driver_type",
+      "fieldtype": "Select",
+      "label": "Driver Type",
+      "options": "headcount\nrevenue\nsqm",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "target_account",
+      "fieldtype": "Data",
+      "label": "Target Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "details_section",
+      "fieldtype": "Section Break",
+      "label": "Details"
+    },
+    {
+      "fieldname": "description",
+      "fieldtype": "Small Text",
+      "label": "Description"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

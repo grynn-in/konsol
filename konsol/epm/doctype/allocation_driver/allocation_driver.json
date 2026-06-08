@@ -1,0 +1,68 @@
+{
+  "name": "Allocation Driver",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "format:AD-{driver_type}-{data_area_id}-{cost_center}-{fiscal_year}-P{fiscal_period}",
+  "fields": [
+    {
+      "fieldname": "driver_type",
+      "fieldtype": "Select",
+      "label": "Driver Type",
+      "options": "headcount\nrevenue\nsqm",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "data_area_id",
+      "fieldtype": "Data",
+      "label": "Entity",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "cost_center",
+      "fieldtype": "Data",
+      "label": "Cost Center",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "driver_value",
+      "fieldtype": "Float",
+      "label": "Driver Value",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "fiscal_year",
+      "fieldtype": "Int",
+      "label": "Fiscal Year",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "fiscal_period",
+      "fieldtype": "Int",
+      "label": "Fiscal Period",
+      "reqd": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}
