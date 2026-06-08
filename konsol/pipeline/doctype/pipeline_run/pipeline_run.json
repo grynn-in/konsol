@@ -1,0 +1,93 @@
+{
+  "name": "Pipeline Run",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "PIPE-.#####",
+  "fields": [
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Queued\nExtracting\nTransforming\nCompleted\nFailed",
+      "default": "Queued",
+      "in_list_view": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "triggered_by",
+      "fieldtype": "Link",
+      "label": "Triggered By",
+      "options": "User",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "started_at",
+      "fieldtype": "Datetime",
+      "label": "Started At",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "completed_at",
+      "fieldtype": "Datetime",
+      "label": "Completed At"
+    },
+    {
+      "fieldname": "extract_section",
+      "fieldtype": "Section Break",
+      "label": "Extract (Airbyte)"
+    },
+    {
+      "fieldname": "airbyte_job_id",
+      "fieldtype": "Data",
+      "label": "Airbyte Job ID",
+      "read_only": 1
+    },
+    {
+      "fieldname": "rows_synced",
+      "fieldtype": "Int",
+      "label": "Rows Synced",
+      "read_only": 1
+    },
+    {
+      "fieldname": "transform_section",
+      "fieldtype": "Section Break",
+      "label": "Transform (dbt)"
+    },
+    {
+      "fieldname": "dbt_result",
+      "fieldtype": "Small Text",
+      "label": "dbt Result",
+      "read_only": 1
+    },
+    {
+      "fieldname": "error_section",
+      "fieldtype": "Section Break",
+      "label": "Error Details",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "error_log",
+      "fieldtype": "Long Text",
+      "label": "Error Log",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

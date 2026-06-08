@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: konsol
+Version: 0.0.1
+Summary: EPM Pipeline Control for Frappe
+Author: Open EPM
+Author-email: dev@openepm.local
+Requires-Dist: requests
+Dynamic: author
+Dynamic: author-email
+Dynamic: requires-dist
+Dynamic: summary
