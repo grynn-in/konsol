@@ -8,6 +8,30 @@ import requests
 
 MAX_BATCH_SIZE = 2000
 
+# Period ranges: Q1-Q4, H1-H2, FY → tuple of fiscal_period integers
+PERIOD_RANGES = {
+    "Q1": (1, 2, 3),
+    "Q2": (4, 5, 6),
+    "Q3": (7, 8, 9),
+    "Q4": (10, 11, 12),
+    "H1": (1, 2, 3, 4, 5, 6),
+    "H2": (7, 8, 9, 10, 11, 12),
+    "FY": (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+}
+
+
+def _resolve_period(period):
+    """Resolve period to a tuple of fiscal_period integers.
+
+    Accepts: 1-12 (single), "Q1"-"Q4", "H1"-"H2", "FY".
+    Returns tuple of ints, e.g. (1,) or (1,2,3).
+    """
+    s = str(period).strip().upper()
+    if s in PERIOD_RANGES:
+        return PERIOD_RANGES[s]
+    return (int(period),)
+
+
 # Allowed measure columns per scenario (whitelist to prevent SQL injection)
 ALLOWED_MEASURES = {
     "actuals": {
@@ -102,11 +126,16 @@ def health():
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
               scenario="actuals", cost_center="", department=""):
-    """Single value lookup — returns {"value": <number>}."""
+    """Single value lookup — returns {"value": <number>}.
+
+    Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
+    Range periods return the sum across constituent months.
+    """
     _validate_scenario(scenario)
     _validate_measure(measure, scenario)
     result = _batch_query_clickhouse([{
-        "entity": entity, "year": int(year), "period": int(period),
+        "entity": entity, "year": int(year),
+        "periods": _resolve_period(period),
         "account": account, "measure": measure, "scenario": scenario,
         "cost_center": cost_center, "department": department,
     }])
@@ -136,10 +165,15 @@ def epm_batch():
         if err:
             errors[i] = err
         else:
+            try:
+                periods = _resolve_period(req.get("period", 0))
+            except (ValueError, TypeError):
+                errors[i] = f"Invalid period '{req.get('period')}'"
+                continue
             normalized[i] = {
                 "entity": req.get("entity", ""),
                 "year": int(req.get("year", 0)),
-                "period": int(req.get("period", 0)),
+                "periods": periods,
                 "account": req.get("account", ""),
                 "measure": measure,
                 "scenario": scenario,
@@ -169,10 +203,11 @@ def epm_batch():
 
 
 def _batch_query_clickhouse(requests_list):
-    """Execute batched ClickHouse queries grouped by (scenario, measure, dimension_keys).
+    """Execute batched ClickHouse queries grouped by (scenario, measure, periods, dims).
 
-    Groups requests that share the same table/measure/dimension-shape into a single
-    query with IN (...) clauses, then maps results back to request order.
+    Groups requests that share the same table/measure/period-range/dimension-shape
+    into a single query with IN (...) clauses, then maps results back to request order.
+    Period ranges (Q1, H1, FY) sum across constituent months via fiscal_period IN (...).
     Returns {"values": [...], "errors": [...]}.
     """
     ch_settings = _get_clickhouse_settings()
@@ -180,42 +215,40 @@ def _batch_query_clickhouse(requests_list):
     values = [None] * n
     errors = [None] * n
 
-    # Group requests by (scenario, measure, has_cost_center, has_department)
+    # Group requests by (scenario, measure, periods_tuple, has_cost_center, has_department)
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         key = (
             req["scenario"],
             req["measure"],
+            req["periods"],
             bool(req.get("cost_center")),
             bool(req.get("department")),
         )
         groups[key].append((idx, req))
 
-    for (scenario, measure, has_cc, has_dept), group_items in groups.items():
+    for (scenario, measure, periods, has_cc, has_dept), group_items in groups.items():
         # Defense-in-depth: assert identifiers are safe before SQL interpolation
         assert re.match(r'^[a-z_]+$', measure), f"Bad measure: {measure}"
         table = SCENARIO_TABLES[scenario]
         assert table in SCENARIO_TABLES.values(), f"Bad table: {table}"
 
-        # Build a single grouped query with IN (...) tuples
-        # Dimensions: always (data_area_id, fiscal_year, fiscal_period, main_account)
-        # Plus optional dim_cost_center, dim_department
-        select_cols = [
-            "data_area_id", "fiscal_year", "fiscal_period", "main_account",
-        ]
+        # Dimensions for GROUP BY / IN: entity, year, account + optional dims
+        # fiscal_period is NOT in GROUP BY — it goes in a WHERE IN clause so
+        # ranges (Q1, H1, FY) get summed across their constituent months.
+        select_cols = ["data_area_id", "fiscal_year", "main_account"]
         if has_cc:
             select_cols.append("dim_cost_center")
         if has_dept:
             select_cols.append("dim_department")
 
-        # Build IN tuples and params
+        # Build IN tuples and params (without fiscal_period)
         in_tuples = []
         params = {}
         for i, (idx, req) in enumerate(group_items):
-            parts = [f"{{e{i}:String}}", f"{{y{i}:Int32}}", f"{{p{i}:Int32}}", f"{{a{i}:String}}"]
+            parts = [f"{{e{i}:String}}", f"{{y{i}:Int32}}", f"{{a{i}:String}}"]
             params[f"param_e{i}"] = req["entity"]
             params[f"param_y{i}"] = str(req["year"])
-            params[f"param_p{i}"] = str(req["period"])
             params[f"param_a{i}"] = req["account"]
             if has_cc:
                 parts.append(f"{{cc{i}:String}}")
@@ -229,10 +262,19 @@ def _batch_query_clickhouse(requests_list):
         in_cols = f"({group_by})"
         in_values = ", ".join(in_tuples)
 
+        # fiscal_period IN (...) — parameterized
+        period_placeholders = []
+        for pi, p in enumerate(periods):
+            pkey = f"fp{pi}"
+            period_placeholders.append(f"{{{pkey}:Int32}}")
+            params[f"param_{pkey}"] = str(p)
+        period_in = ", ".join(period_placeholders)
+
         sql = (
             f"SELECT {group_by}, coalesce(sum({measure}), 0) as val "
             f"FROM {table} "
             f"WHERE {in_cols} IN ({in_values}) "
+            f"AND fiscal_period IN ({period_in}) "
             f"GROUP BY {group_by}"
         )
 
@@ -249,9 +291,9 @@ def _batch_query_clickhouse(requests_list):
                 val = float(parts[-1])
                 result_lookup[key_parts] = val
 
-            # Map results back to request indices
+            # Map results back to request indices (key excludes fiscal_period)
             for _, (idx, req) in enumerate(group_items):
-                lookup_key = [req["entity"], str(req["year"]), str(req["period"]), req["account"]]
+                lookup_key = [req["entity"], str(req["year"]), req["account"]]
                 if has_cc:
                     lookup_key.append(req.get("cost_center", ""))
                 if has_dept:
