@@ -19,7 +19,7 @@ ALLOWED_MEASURES = {
     },
     "variance": {
         "actual_amount", "budget_amount", "variance_abs", "variance_pct",
-        "favorable_flag",
+        "variance_favorable",
     },
 }
 
@@ -49,6 +49,21 @@ def _validate_measure(measure, scenario):
             f"Allowed: {', '.join(sorted(allowed))}",
             frappe.ValidationError,
         )
+
+
+def _check_scenario(scenario):
+    """Return error string if scenario is invalid, else None."""
+    if scenario not in SCENARIO_TABLES:
+        return f"Invalid scenario '{scenario}'. Allowed: {', '.join(sorted(SCENARIO_TABLES))}"
+    return None
+
+
+def _check_measure(measure, scenario):
+    """Return error string if measure is invalid, else None."""
+    allowed = ALLOWED_MEASURES.get(scenario, ALLOWED_MEASURES["actuals"])
+    if measure not in allowed:
+        return f"Invalid measure '{measure}' for scenario '{scenario}'. Allowed: {', '.join(sorted(allowed))}"
+    return None
 
 
 def _get_clickhouse_settings():
@@ -110,25 +125,47 @@ def epm_batch():
             frappe.ValidationError,
         )
 
-    # Normalize and validate all requests upfront
-    normalized = []
-    for req in requests_list:
+    # Normalize and validate per-request (bad items get inline errors, not batch abort)
+    n = len(requests_list)
+    normalized = [None] * n
+    errors = [None] * n
+    for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
         measure = req.get("measure", "period_net_amount")
-        _validate_scenario(scenario)
-        _validate_measure(measure, scenario)
-        normalized.append({
-            "entity": req.get("entity", ""),
-            "year": int(req.get("year", 0)),
-            "period": int(req.get("period", 0)),
-            "account": req.get("account", ""),
-            "measure": measure,
-            "scenario": scenario,
-            "cost_center": req.get("cost_center", ""),
-            "department": req.get("department", ""),
-        })
+        err = _check_scenario(scenario) or _check_measure(measure, scenario)
+        if err:
+            errors[i] = err
+        else:
+            normalized[i] = {
+                "entity": req.get("entity", ""),
+                "year": int(req.get("year", 0)),
+                "period": int(req.get("period", 0)),
+                "account": req.get("account", ""),
+                "measure": measure,
+                "scenario": scenario,
+                "cost_center": req.get("cost_center", ""),
+                "department": req.get("department", ""),
+            }
 
-    return _batch_query_clickhouse(normalized)
+    # Only send valid requests to ClickHouse
+    valid = [(i, r) for i, r in enumerate(normalized) if r is not None]
+    if valid:
+        valid_indices, valid_reqs = zip(*valid)
+        ch_result = _batch_query_clickhouse(list(valid_reqs))
+        # Map results back to original positions
+        values = [None] * n
+        for j, orig_idx in enumerate(valid_indices):
+            values[orig_idx] = ch_result["values"][j]
+            if ch_result.get("errors") and ch_result["errors"][j]:
+                errors[orig_idx] = ch_result["errors"][j]
+        # Fill invalid positions with None (VBA reads as 0)
+    else:
+        values = [None] * n
+
+    result = {"values": values}
+    if any(e is not None for e in errors):
+        result["errors"] = errors
+    return result
 
 
 def _batch_query_clickhouse(requests_list):
