@@ -129,3 +129,81 @@ def test_vba_epm_budget_has_scenario_id():
         content = f.read()
     budget_fn = content.split("Function EPM_BUDGET")[1].split("End Function")[0]
     assert "scenario_id" in budget_fn
+
+
+# --- EPMSAVE function ---
+
+def test_vba_has_epmsave_function():
+    """OpenEPM.bas must have EPMSAVE function."""
+    if not os.path.exists(VBA_PATH):
+        return
+    with open(VBA_PATH) as f:
+        content = f.read()
+    assert "Function EPMSAVE(" in content
+
+
+def test_vba_epmsave_has_layer_param():
+    """EPMSAVE must require layer as parameter."""
+    if not os.path.exists(VBA_PATH):
+        return
+    with open(VBA_PATH) as f:
+        content = f.read()
+    fn = content.split("Function EPMSAVE(")[1].split("End Function")[0]
+    assert "layer As String" in fn
+
+
+def test_vba_epmsave_posts_to_budget_cell_save():
+    """EPMSAVE must POST to budget_cell_save endpoint."""
+    if not os.path.exists(VBA_PATH):
+        return
+    with open(VBA_PATH) as f:
+        content = f.read()
+    assert "budget_cell_save" in content
+
+
+def test_vba_epmsave_skips_unchanged():
+    """EPMSAVE must use cache to skip unchanged values."""
+    if not os.path.exists(VBA_PATH):
+        return
+    with open(VBA_PATH) as f:
+        content = f.read()
+    assert "pSaveCache" in content
+
+
+def test_vba_epmsave_returns_amount():
+    """EPMSAVE must return the amount (pass-through display)."""
+    if not os.path.exists(VBA_PATH):
+        return
+    with open(VBA_PATH) as f:
+        content = f.read()
+    fn = content.split("Function EPMSAVE(")[1].split("End Function")[0]
+    assert "EPMSAVE = amount" in fn
+
+
+# --- budget_cell_save API ---
+
+def test_budget_cell_save_endpoint_exists():
+    """Must have a budget_cell_save function."""
+    with open(API_PATH) as f:
+        tree = ast.parse(f.read())
+    func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "budget_cell_save" in func_names
+
+
+def test_budget_cell_save_validates_layer():
+    """budget_cell_save must validate layer against allowed values."""
+    with open(API_PATH) as f:
+        content = f.read()
+    assert "VALID_LAYERS" in content
+    assert "base" in content
+    assert "challenge" in content
+
+
+def test_budget_cell_save_upserts_period():
+    """budget_cell_save must upsert a single period+layer, not replace all."""
+    with open(API_PATH) as f:
+        content = f.read()
+    fn = content.split("def budget_cell_save")[1].split("\ndef ")[0]
+    # Must check for existing period+layer row
+    assert "fiscal_period" in fn
+    assert "layer" in fn

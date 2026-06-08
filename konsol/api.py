@@ -397,6 +397,80 @@ def budget_save():
     return {"name": name}
 
 
+VALID_LAYERS = {"base", "challenge", "management", "board"}
+
+
+@frappe.whitelist(methods=["POST"])
+def budget_cell_save():
+    """Save a single budget cell — upserts one period+layer in a Budget Input doc.
+
+    Designed for EPMSAVE() immediate writes from Excel.
+    Accepts JSON: {scenario_id, data_area_id, fiscal_year, main_account,
+    fiscal_period, amount, layer, [dim_cost_center], [dim_department]}
+
+    Returns: {"status": "ok", "name": doc_name, "value": amount}
+    """
+    data = json.loads(frappe.request.get_data(as_text=True))
+
+    # Validate required fields
+    required = ["scenario_id", "data_area_id", "fiscal_year",
+                "main_account", "fiscal_period", "amount", "layer"]
+    missing = [f for f in required if f not in data or data[f] == ""]
+    if missing:
+        frappe.throw(
+            f"Missing required fields: {', '.join(missing)}",
+            frappe.ValidationError,
+        )
+
+    layer = str(data["layer"]).strip().lower()
+    if layer not in VALID_LAYERS:
+        frappe.throw(
+            f"Invalid layer '{layer}'. Allowed: {', '.join(sorted(VALID_LAYERS))}",
+            frappe.ValidationError,
+        )
+
+    fp = int(data["fiscal_period"])
+    if fp < 1 or fp > 12:
+        frappe.throw("fiscal_period must be 1-12", frappe.ValidationError)
+
+    amount = float(data["amount"])
+
+    # Find or create the Budget Input doc
+    filters = {
+        "scenario_id": data["scenario_id"],
+        "data_area_id": data["data_area_id"],
+        "fiscal_year": int(data["fiscal_year"]),
+        "main_account": data["main_account"],
+    }
+    existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+
+    if existing:
+        doc = frappe.get_doc("Budget Input", existing[0].name)
+    else:
+        doc = frappe.new_doc("Budget Input")
+        doc.update(filters)
+        doc.dim_cost_center = data.get("dim_cost_center", "")
+        doc.dim_department = data.get("dim_department", "")
+
+    # Upsert the specific period+layer row
+    found = False
+    for row in doc.periods:
+        if row.fiscal_period == fp and row.layer == layer:
+            row.amount = amount
+            found = True
+            break
+
+    if not found:
+        doc.append("periods", {
+            "fiscal_period": fp,
+            "amount": amount,
+            "layer": layer,
+        })
+
+    doc.save()
+    return {"status": "ok", "name": doc.name, "value": amount}
+
+
 @frappe.whitelist(methods=["POST"])
 def budget_save_batch():
     """Save multiple budget lines at once.
