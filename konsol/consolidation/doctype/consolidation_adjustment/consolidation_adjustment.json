@@ -1,9 +1,10 @@
 {
   "name": "Consolidation Adjustment",
   "doctype": "DocType",
-  "module": "EPM",
+  "module": "Consolidation",
   "issingle": 0,
   "istable": 0,
+  "is_submittable": 1,
   "editable_grid": 1,
   "engine": "InnoDB",
   "track_changes": 1,
@@ -95,6 +96,51 @@
       "label": "Posted By",
       "options": "User",
       "default": "__user"
+    },
+    {
+      "fieldname": "workflow_section",
+      "fieldtype": "Section Break",
+      "label": "Workflow (PRD-16)"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nPending Approval\nApproved\nReversed",
+      "default": "Draft",
+      "in_list_view": 1,
+      "read_only_depends_on": "eval:!frappe.user.has_role('System Manager')"
+    },
+    {
+      "fieldname": "approved_by",
+      "fieldtype": "Link",
+      "label": "Approved By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "approved_at",
+      "fieldtype": "Datetime",
+      "label": "Approved At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "col_break_workflow",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "reversal_journal_id",
+      "fieldtype": "Data",
+      "label": "Reversal Journal ID",
+      "read_only": 1,
+      "description": "Links to the original journal this reverses"
+    },
+    {
+      "fieldname": "auto_reverse_period",
+      "fieldtype": "Int",
+      "label": "Auto-Reverse After (periods)",
+      "default": "0",
+      "description": "0 = no auto-reversal. N = reverse in period + N"
     }
   ],
   "permissions": [
@@ -103,7 +149,10 @@
       "read": 1,
       "write": 1,
       "create": 1,
-      "delete": 1
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1,
+      "amend": 1
     }
   ]
 }

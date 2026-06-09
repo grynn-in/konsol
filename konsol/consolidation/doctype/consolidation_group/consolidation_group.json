@@ -1,7 +1,7 @@
 {
   "name": "Consolidation Group",
   "doctype": "DocType",
-  "module": "EPM",
+  "module": "Consolidation",
   "issingle": 0,
   "istable": 0,
   "editable_grid": 1,
@@ -55,6 +55,37 @@
       "options": "full\nproportional\nequity",
       "reqd": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "hierarchy_section",
+      "fieldtype": "Section Break",
+      "label": "Hierarchy (PRD-8)"
+    },
+    {
+      "fieldname": "parent_group",
+      "fieldtype": "Link",
+      "label": "Parent Group",
+      "options": "Consolidation Group",
+      "description": "Parent consolidation group for multi-level hierarchy"
+    },
+    {
+      "fieldname": "hierarchy_level",
+      "fieldtype": "Int",
+      "label": "Hierarchy Level",
+      "default": "1",
+      "description": "Depth in the consolidation tree (1 = top)"
+    },
+    {
+      "fieldname": "col_break_hierarchy",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "goodwill_method",
+      "fieldtype": "Select",
+      "label": "Goodwill Method",
+      "options": "partial\nfull",
+      "default": "partial",
+      "description": "PRD-13: partial = NCI at proportional net assets; full = NCI at fair value"
     }
   ],
   "permissions": [

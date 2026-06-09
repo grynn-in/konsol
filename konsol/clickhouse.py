@@ -1,8 +1,10 @@
 """Shared ClickHouse write helper for EPM data doctypes.
 
 Provides reusable functions to sync Frappe doctype data to ClickHouse
-gold tables via HTTP API. Each data doctype calls sync_doctype() in its
-on_update / on_trash hook.
+tables via HTTP API. Supports both legacy gold.* tables (seed replacement)
+and epm_staging.* tables (PRD-8+ consolidation/allocation features).
+
+Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
 import frappe
 import requests
@@ -95,6 +97,35 @@ def sync_doctype(doctype, table, field_map):
     frappe_fields = list(field_map.values())
 
     docs = frappe.get_all(doctype, fields=frappe_fields, limit_page_length=0)
+    rows = []
+    for doc in docs:
+        row = [doc.get(f) for f in frappe_fields]
+        rows.append(row)
+
+    sync_table(table, ch_columns, rows)
+
+
+def sync_doctype_filtered(doctype, table, field_map, filters=None):
+    """Fetch filtered Frappe docs and sync to ClickHouse.
+
+    Like sync_doctype() but with optional filters (e.g. docstatus=1 for
+    submitted-only sync).
+
+    Args:
+        doctype: Frappe DocType name.
+        table: ClickHouse table name.
+        field_map: Dict mapping CH column names to Frappe field names.
+        filters: Optional Frappe filter dict (e.g. {'docstatus': 1}).
+    """
+    ch_columns = list(field_map.keys())
+    frappe_fields = list(field_map.values())
+
+    docs = frappe.get_all(
+        doctype,
+        filters=filters or {},
+        fields=frappe_fields,
+        limit_page_length=0,
+    )
     rows = []
     for doc in docs:
         row = [doc.get(f) for f in frappe_fields]

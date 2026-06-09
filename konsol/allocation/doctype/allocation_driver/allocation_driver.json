@@ -1,7 +1,7 @@
 {
   "name": "Allocation Driver",
   "doctype": "DocType",
-  "module": "EPM",
+  "module": "Allocation",
   "issingle": 0,
   "istable": 0,
   "editable_grid": 1,
@@ -13,9 +13,10 @@
       "fieldname": "driver_type",
       "fieldtype": "Select",
       "label": "Driver Type",
-      "options": "headcount\nrevenue\nsqm",
+      "options": "headcount\nrevenue\nsqm\ncomposite\nconditional",
       "reqd": 1,
-      "in_list_view": 1
+      "in_list_view": 1,
+      "description": "PRD-17: Standard types + composite/conditional for formulas"
     },
     {
       "fieldname": "data_area_id",

@@ -1,7 +1,7 @@
 {
   "name": "IC Elimination Rule",
   "doctype": "DocType",
-  "module": "EPM",
+  "module": "Consolidation",
   "issingle": 0,
   "istable": 0,
   "editable_grid": 0,
@@ -23,6 +23,16 @@
       "label": "Rule Name",
       "reqd": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "rule_type",
+      "fieldtype": "Select",
+      "label": "Rule Type",
+      "options": "balance\nunrealized_profit",
+      "default": "balance",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "PRD-15: balance = standard IC elimination; unrealized_profit = inventory margin elimination"
     },
     {
       "fieldname": "col_break_1",
@@ -58,6 +68,25 @@
       "fieldtype": "Data",
       "label": "Credit Entity Pattern",
       "default": "*"
+    },
+    {
+      "fieldname": "unrealized_profit_section",
+      "fieldtype": "Section Break",
+      "label": "Unrealized Profit (PRD-15)",
+      "depends_on": "eval:doc.rule_type=='unrealized_profit'"
+    },
+    {
+      "fieldname": "margin_pct",
+      "fieldtype": "Percent",
+      "label": "Margin %",
+      "default": "0",
+      "description": "Gross margin percentage for unrealized profit calculation"
+    },
+    {
+      "fieldname": "asset_account",
+      "fieldtype": "Data",
+      "label": "Asset Account",
+      "description": "Inventory/asset account to credit for unrealized profit elimination"
     },
     {
       "fieldname": "details_section",

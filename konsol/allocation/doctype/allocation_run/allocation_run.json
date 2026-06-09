@@ -1,0 +1,86 @@
+{
+  "name": "Allocation Run",
+  "doctype": "DocType",
+  "module": "Allocation",
+  "issingle": 0,
+  "istable": 0,
+  "is_submittable": 1,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "format:ARUN-{fiscal_year}-P{fiscal_period}-{####}",
+  "fields": [
+    {
+      "fieldname": "allocation_run_id",
+      "fieldtype": "Data",
+      "label": "Run ID",
+      "unique": 1,
+      "in_list_view": 1,
+      "read_only": 1,
+      "description": "Auto-generated on submit"
+    },
+    {
+      "fieldname": "fiscal_year",
+      "fieldtype": "Int",
+      "label": "Fiscal Year",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "fiscal_period",
+      "fieldtype": "Int",
+      "label": "Fiscal Period",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nRunning\nActive\nReversed",
+      "default": "Draft",
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "run_by",
+      "fieldtype": "Link",
+      "label": "Run By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "run_at",
+      "fieldtype": "Datetime",
+      "label": "Run At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "reversal_section",
+      "fieldtype": "Section Break",
+      "label": "Reversal"
+    },
+    {
+      "fieldname": "reversal_of",
+      "fieldtype": "Link",
+      "label": "Reversal Of",
+      "options": "Allocation Run",
+      "description": "If this run is a reversal, links to the original run"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1
+    }
+  ]
+}

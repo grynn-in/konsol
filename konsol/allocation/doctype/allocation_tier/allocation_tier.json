@@ -1,0 +1,65 @@
+{
+  "name": "Allocation Tier",
+  "doctype": "DocType",
+  "module": "Allocation",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "track_changes": 0,
+  "fields": [
+    {
+      "fieldname": "tier_order",
+      "fieldtype": "Int",
+      "label": "Tier Order",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 1
+    },
+    {
+      "fieldname": "lower_bound",
+      "fieldtype": "Currency",
+      "label": "Lower Bound",
+      "reqd": 1,
+      "in_list_view": 1,
+      "default": "0",
+      "columns": 2
+    },
+    {
+      "fieldname": "upper_bound",
+      "fieldtype": "Currency",
+      "label": "Upper Bound",
+      "reqd": 1,
+      "in_list_view": 1,
+      "default": "999999999.99",
+      "columns": 2
+    },
+    {
+      "fieldname": "rate",
+      "fieldtype": "Float",
+      "label": "Rate",
+      "reqd": 1,
+      "in_list_view": 1,
+      "default": "1.0",
+      "precision": "4",
+      "columns": 2
+    },
+    {
+      "fieldname": "cap",
+      "fieldtype": "Currency",
+      "label": "Cap",
+      "default": "999999999.99",
+      "in_list_view": 1,
+      "columns": 2
+    },
+    {
+      "fieldname": "floor_amount",
+      "fieldtype": "Currency",
+      "label": "Floor",
+      "default": "0",
+      "in_list_view": 1,
+      "columns": 1
+    }
+  ],
+  "permissions": []
+}
