@@ -6,6 +6,84 @@ import frappe
 import requests
 
 
+# ---------------------------------------------------------------------------
+# Lightweight dbt-only build (auto-triggered after doc saves)
+# ---------------------------------------------------------------------------
+def run_dbt_build_async(doctype=None, docname=None):
+    """Run dbt build as a background job. Debounced: skips if one is already queued.
+
+    Called automatically after consolidation/allocation doc saves via hooks.py.
+    Unlike run_pipeline(), this skips Airbyte sync and just runs dbt build.
+    """
+    # Debounce: check if a dbt build is already queued or running
+    from frappe.utils.background_jobs import get_jobs
+    site = frappe.local.site
+    queued_jobs = get_jobs(site=site, queue="default")
+    for job_list in queued_jobs.values():
+        if "konsol.tasks._run_dbt_build_background" in job_list:
+            frappe.logger().info("dbt build already queued, skipping duplicate")
+            return
+
+    frappe.enqueue(
+        "konsol.tasks._run_dbt_build_background",
+        queue="default",
+        timeout=600,
+        doctype=doctype,
+        docname=docname,
+    )
+    frappe.logger().info(
+        f"dbt build enqueued (triggered by {doctype} {docname})"
+    )
+
+
+def _run_dbt_build_background(doctype=None, docname=None):
+    """Background worker: execute dbt build and log result."""
+    settings = frappe.get_single("EPM Settings")
+    project_path = settings.dbt_project_path
+
+    try:
+        result = subprocess.run(
+            ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=project_path,
+        )
+        output = result.stdout + "\n" + result.stderr
+
+        if result.returncode == 0:
+            # Parse summary
+            summary = ""
+            for line in output.split("\n"):
+                if "pass" in line.lower() and ("warn" in line.lower() or "error" in line.lower()):
+                    summary = line.strip()
+                    break
+            frappe.logger().info(f"dbt build completed: {summary or 'success'}")
+            frappe.publish_realtime(
+                "dbt_build_complete",
+                {"status": "success", "summary": summary, "trigger": f"{doctype} {docname}"},
+            )
+        else:
+            frappe.logger().error(f"dbt build failed (rc={result.returncode}):\n{output[-2000:]}")
+            frappe.publish_realtime(
+                "dbt_build_complete",
+                {"status": "failed", "error": output[-500:]},
+            )
+    except subprocess.TimeoutExpired:
+        frappe.logger().error("dbt build timed out after 300s")
+    except Exception as e:
+        frappe.logger().error(f"dbt build error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Hook: trigger dbt build after consolidation/allocation doc changes
+# ---------------------------------------------------------------------------
+def on_consolidation_doc_update(doc, method):
+    """Called by doc_events hook for consolidation/allocation doctypes.
+    Enqueues a debounced dbt build after ClickHouse sync completes."""
+    run_dbt_build_async(doctype=doc.doctype, docname=doc.name)
+
+
 def run_pipeline(pipeline_run):
     """Main entry point — called by frappe.enqueue from trigger_pipeline."""
     doc = frappe.get_doc("Pipeline Run", pipeline_run)

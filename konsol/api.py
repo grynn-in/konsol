@@ -268,8 +268,23 @@ def _batch_query_clickhouse(requests_list):
 
 @frappe.whitelist(allow_guest=True)
 def health():
-    """Health check endpoint."""
-    return {"status": "ok", "app": "konsol"}
+    """Health check endpoint with ClickHouse connectivity status.
+
+    Returns:
+        status: 'ok' | 'degraded' | 'down'
+        app: 'konsol'
+        clickhouse: detailed ClickHouse health info
+    """
+    from konsol.clickhouse import check_health as ch_health
+
+    ch_status = ch_health()
+    overall_status = "ok" if ch_status["status"] == "healthy" else ch_status["status"]
+
+    return {
+        "status": overall_status,
+        "app": "konsol",
+        "clickhouse": ch_status,
+    }
 
 
 @frappe.whitelist()
