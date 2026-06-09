@@ -25,19 +25,6 @@ PERIOD_RANGES = {
     "FY": (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
 }
 
-
-def _resolve_period(period):
-    """Resolve period to a tuple of fiscal_period integers.
-
-    Accepts: 1-12 (single), "Q1"-"Q4", "H1"-"H2", "FY".
-    Returns tuple of ints, e.g. (1,) or (1,2,3).
-    """
-    s = str(period).strip().upper()
-    if s in PERIOD_RANGES:
-        return PERIOD_RANGES[s]
-    return (int(period),)
-
-
 # Allowed measure columns per scenario (whitelist to prevent SQL injection)
 ALLOWED_MEASURES = {
     "actuals": {
@@ -62,26 +49,35 @@ SCENARIO_TABLES = {
 # Tables that have a scenario_id column and support filtering by it
 TABLES_WITH_SCENARIO_ID = {"epm_gold.gold_spread_budget"}
 
+VALID_LAYERS = {"base", "challenge", "management", "board"}
 
-def _validate_scenario(scenario):
-    """Validate scenario against known values. Raises on invalid."""
-    if scenario not in SCENARIO_TABLES:
-        frappe.throw(
-            f"Invalid scenario '{scenario}'. "
-            f"Allowed: {', '.join(sorted(SCENARIO_TABLES))}",
-            frappe.ValidationError,
-        )
+_SAFE_IDENTIFIER = re.compile(r'^[a-z_]+$')
+_SAFE_SCENARIO_ID = re.compile(r'^[A-Za-z0-9_]+$')
 
 
-def _validate_measure(measure, scenario):
-    """Validate measure against whitelist. Raises on invalid."""
-    allowed = ALLOWED_MEASURES.get(scenario, ALLOWED_MEASURES["actuals"])
-    if measure not in allowed:
-        frappe.throw(
-            f"Invalid measure '{measure}' for scenario '{scenario}'. "
-            f"Allowed: {', '.join(sorted(allowed))}",
-            frappe.ValidationError,
-        )
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _get_json_body():
+    """Parse JSON request body. Used by all POST endpoints."""
+    return json.loads(frappe.request.get_data(as_text=True))
+
+
+def _resolve_period(period):
+    """Resolve period to a tuple of fiscal_period integers.
+
+    Accepts: 1-12 (single), "Q1"-"Q4", "H1"-"H2", "FY".
+    Returns tuple of ints, e.g. (1,) or (1,2,3).
+    Raises ValueError on invalid input.
+    """
+    s = str(period).strip().upper()
+    if s in PERIOD_RANGES:
+        return PERIOD_RANGES[s]
+    p = int(period)
+    if p < 1 or p > 12:
+        raise ValueError(f"fiscal_period must be 1-12, got {p}")
+    return (p,)
 
 
 def _check_scenario(scenario):
@@ -99,10 +95,29 @@ def _check_measure(measure, scenario):
     return None
 
 
-def _get_clickhouse_settings():
-    """Get ClickHouse connection settings (cached per request)."""
-    return _get_ch_connection()
+def _validate_scenario_and_measure(scenario, measure):
+    """Validate scenario and measure, throwing on failure."""
+    err = _check_scenario(scenario)
+    if err:
+        frappe.throw(err, frappe.ValidationError)
+    err = _check_measure(measure, scenario)
+    if err:
+        frappe.throw(err, frappe.ValidationError)
 
+
+def _budget_filters(data):
+    """Build the unique-key filter dict for Budget Input upsert."""
+    return {
+        "scenario_id": data["scenario_id"],
+        "data_area_id": data["data_area_id"],
+        "fiscal_year": int(data["fiscal_year"]),
+        "main_account": data["main_account"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# ClickHouse query helpers
+# ---------------------------------------------------------------------------
 
 def _clickhouse_query(sql, params, ch_settings):
     """Execute a single ClickHouse HTTP query. Returns response text or raises."""
@@ -120,96 +135,6 @@ def _clickhouse_query(sql, params, ch_settings):
     return resp.text.strip()
 
 
-@frappe.whitelist(allow_guest=True)
-def health():
-    """Health check endpoint."""
-    return {"status": "ok", "app": "konsol"}
-
-
-@frappe.whitelist()
-def epm_value(entity, year, period, account, measure="period_net_amount",
-              scenario="actuals", cost_center="", department="",
-              scenario_id=""):
-    """Single value lookup — returns {"value": <number>}.
-
-    Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
-    Range periods return the sum across constituent months.
-    scenario_id: optional — filter to a specific scenario (e.g. "BUDGET_2025")
-                 within the table. Only applies to tables that have a scenario_id column.
-    """
-    _validate_scenario(scenario)
-    _validate_measure(measure, scenario)
-    result = _batch_query_clickhouse([{
-        "entity": entity, "year": int(year),
-        "periods": _resolve_period(period),
-        "account": account, "measure": measure, "scenario": scenario,
-        "cost_center": cost_center, "department": department,
-        "scenario_id": scenario_id,
-    }])
-    return {"value": result["values"][0]}
-
-
-@frappe.whitelist(methods=["POST"])
-def epm_batch():
-    """Batch value retrieval — accepts JSON array, returns {"values": [...], "errors": [...]}."""
-    data = frappe.request.get_data(as_text=True)
-    requests_list = json.loads(data)
-
-    if len(requests_list) > MAX_BATCH_SIZE:
-        frappe.throw(
-            f"Batch size {len(requests_list)} exceeds maximum of {MAX_BATCH_SIZE}",
-            frappe.ValidationError,
-        )
-
-    # Normalize and validate per-request (bad items get inline errors, not batch abort)
-    n = len(requests_list)
-    normalized = [None] * n
-    errors = [None] * n
-    for i, req in enumerate(requests_list):
-        scenario = req.get("scenario", "actuals")
-        measure = req.get("measure", "period_net_amount")
-        err = _check_scenario(scenario) or _check_measure(measure, scenario)
-        if err:
-            errors[i] = err
-        else:
-            try:
-                periods = _resolve_period(req.get("period", 0))
-            except (ValueError, TypeError):
-                errors[i] = f"Invalid period '{req.get('period')}'"
-                continue
-            normalized[i] = {
-                "entity": req.get("entity", ""),
-                "year": int(req.get("year", 0)),
-                "periods": periods,
-                "account": req.get("account", ""),
-                "measure": measure,
-                "scenario": scenario,
-                "cost_center": req.get("cost_center", ""),
-                "department": req.get("department", ""),
-                "scenario_id": req.get("scenario_id", ""),
-            }
-
-    # Only send valid requests to ClickHouse
-    valid = [(i, r) for i, r in enumerate(normalized) if r is not None]
-    if valid:
-        valid_indices, valid_reqs = zip(*valid)
-        ch_result = _batch_query_clickhouse(list(valid_reqs))
-        # Map results back to original positions
-        values = [None] * n
-        for j, orig_idx in enumerate(valid_indices):
-            values[orig_idx] = ch_result["values"][j]
-            if ch_result.get("errors") and ch_result["errors"][j]:
-                errors[orig_idx] = ch_result["errors"][j]
-        # Fill invalid positions with None (VBA reads as 0)
-    else:
-        values = [None] * n
-
-    result = {"values": values}
-    if any(e is not None for e in errors):
-        result["errors"] = errors
-    return result
-
-
 def _batch_query_clickhouse(requests_list):
     """Execute batched ClickHouse queries grouped by (scenario, measure, periods, dims).
 
@@ -218,12 +143,12 @@ def _batch_query_clickhouse(requests_list):
     Period ranges (Q1, H1, FY) sum across constituent months via fiscal_period IN (...).
     Returns {"values": [...], "errors": [...]}.
     """
-    ch_settings = _get_clickhouse_settings()
+    ch_settings = _get_ch_connection()
     n = len(requests_list)
     values = [None] * n
     errors = [None] * n
 
-    # Group requests by (scenario, measure, periods_tuple, has_cost_center, has_department, scenario_id)
+    # Group by (scenario, measure, periods_tuple, has_cost_center, has_department, scenario_id)
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         key = (
@@ -237,14 +162,14 @@ def _batch_query_clickhouse(requests_list):
         groups[key].append((idx, req))
 
     for (scenario, measure, periods, has_cc, has_dept, scenario_id), group_items in groups.items():
-        # Defense-in-depth: assert identifiers are safe before SQL interpolation
-        assert re.match(r'^[a-z_]+$', measure), f"Bad measure: {measure}"
-        table = SCENARIO_TABLES[scenario]
-        assert table in SCENARIO_TABLES.values(), f"Bad table: {table}"
+        # Validate identifiers before SQL interpolation (not assert — survives -O mode)
+        if not _SAFE_IDENTIFIER.match(measure):
+            for _, (idx, _) in enumerate(group_items):
+                errors[idx] = "Invalid measure identifier"
+            continue
 
-        # Dimensions for GROUP BY / IN: entity, year, account + optional dims
-        # fiscal_period is NOT in GROUP BY — it goes in a WHERE IN clause so
-        # ranges (Q1, H1, FY) get summed across their constituent months.
+        table = SCENARIO_TABLES[scenario]
+
         select_cols = ["data_area_id", "fiscal_year", "main_account"]
         if has_cc:
             select_cols.append("dim_cost_center")
@@ -279,10 +204,13 @@ def _batch_query_clickhouse(requests_list):
             params[f"param_{pkey}"] = str(p)
         period_in = ", ".join(period_placeholders)
 
-        # Optional scenario_id filter (only for tables that have the column)
+        # Optional scenario_id filter
         scenario_id_clause = ""
         if scenario_id and table in TABLES_WITH_SCENARIO_ID:
-            assert re.match(r'^[A-Za-z0-9_]+$', scenario_id), f"Bad scenario_id: {scenario_id}"
+            if not _SAFE_SCENARIO_ID.match(scenario_id):
+                for _, (idx, _) in enumerate(group_items):
+                    errors[idx] = "Invalid scenario_id format"
+                continue
             params["param_sid"] = scenario_id
             scenario_id_clause = " AND scenario_id = {sid:String}"
 
@@ -297,18 +225,15 @@ def _batch_query_clickhouse(requests_list):
 
         try:
             raw = _clickhouse_query(sql, params, ch_settings)
-            # Parse TSV response into a lookup dict
             result_lookup = {}
             for line in raw.split("\n"):
                 if not line:
                     continue
                 parts = line.split("\t")
-                # Last column is the value, preceding columns are the key
                 key_parts = tuple(parts[:-1])
                 val = float(parts[-1])
                 result_lookup[key_parts] = val
 
-            # Map results back to request indices (key excludes fiscal_period)
             for _, (idx, req) in enumerate(group_items):
                 lookup_key = [req["entity"], str(req["year"]), req["account"]]
                 if has_cc:
@@ -325,19 +250,110 @@ def _batch_query_clickhouse(requests_list):
             for _, (idx, _) in enumerate(group_items):
                 values[idx] = None
                 errors[idx] = "ClickHouse connection failed"
-        except Exception as e:
+        except Exception:
+            frappe.log_error("ClickHouse query failed", frappe.get_traceback())
             for _, (idx, _) in enumerate(group_items):
                 values[idx] = None
-                errors[idx] = str(e)
+                errors[idx] = "ClickHouse query failed"
 
-    # Only include errors array if there are actual errors
     result = {"values": values}
     if any(e is not None for e in errors):
         result["errors"] = errors
     return result
 
 
-# --- Budget Write-Back API ---
+# ---------------------------------------------------------------------------
+# Data Retrieval Endpoints
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def health():
+    """Health check endpoint."""
+    return {"status": "ok", "app": "konsol"}
+
+
+@frappe.whitelist()
+def epm_value(entity, year, period, account, measure="period_net_amount",
+              scenario="actuals", cost_center="", department="",
+              scenario_id=""):
+    """Single value lookup — returns {"value": <number>}.
+
+    Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
+    Range periods return the sum across constituent months.
+    """
+    _validate_scenario_and_measure(scenario, measure)
+    result = _batch_query_clickhouse([{
+        "entity": entity, "year": int(year),
+        "periods": _resolve_period(period),
+        "account": account, "measure": measure, "scenario": scenario,
+        "cost_center": cost_center, "department": department,
+        "scenario_id": scenario_id,
+    }])
+    return {"value": result["values"][0]}
+
+
+@frappe.whitelist(methods=["POST"])
+def epm_batch():
+    """Batch value retrieval — accepts JSON array, returns {"values": [...], "errors": [...]}."""
+    requests_list = _get_json_body()
+
+    if not isinstance(requests_list, list):
+        frappe.throw("Expected a JSON array", frappe.ValidationError)
+
+    if len(requests_list) > MAX_BATCH_SIZE:
+        frappe.throw(
+            f"Batch size {len(requests_list)} exceeds maximum of {MAX_BATCH_SIZE}",
+            frappe.ValidationError,
+        )
+
+    n = len(requests_list)
+    normalized = [None] * n
+    errors = [None] * n
+    for i, req in enumerate(requests_list):
+        scenario = req.get("scenario", "actuals")
+        measure = req.get("measure", "period_net_amount")
+        err = _check_scenario(scenario) or _check_measure(measure, scenario)
+        if err:
+            errors[i] = err
+        else:
+            try:
+                periods = _resolve_period(req.get("period", 0))
+            except (ValueError, TypeError):
+                errors[i] = f"Invalid period '{req.get('period')}'"
+                continue
+            normalized[i] = {
+                "entity": req.get("entity", ""),
+                "year": int(req.get("year", 0)),
+                "periods": periods,
+                "account": req.get("account", ""),
+                "measure": measure,
+                "scenario": scenario,
+                "cost_center": req.get("cost_center", ""),
+                "department": req.get("department", ""),
+                "scenario_id": req.get("scenario_id", ""),
+            }
+
+    valid = [(i, r) for i, r in enumerate(normalized) if r is not None]
+    if valid:
+        valid_indices, valid_reqs = zip(*valid)
+        ch_result = _batch_query_clickhouse(list(valid_reqs))
+        values = [None] * n
+        for j, orig_idx in enumerate(valid_indices):
+            values[orig_idx] = ch_result["values"][j]
+            if ch_result.get("errors") and ch_result["errors"][j]:
+                errors[orig_idx] = ch_result["errors"][j]
+    else:
+        values = [None] * n
+
+    result = {"values": values}
+    if any(e is not None for e in errors):
+        result["errors"] = errors
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Budget Write-Back Endpoints
+# ---------------------------------------------------------------------------
 
 def _validate_budget_fields(data):
     """Validate required fields for budget save. Raises on missing."""
@@ -354,13 +370,7 @@ def _validate_budget_fields(data):
 
 def _upsert_budget_input(data):
     """Create or update a Budget Input doc from API data. Returns doc name."""
-    # Build unique key for upsert
-    filters = {
-        "scenario_id": data["scenario_id"],
-        "data_area_id": data["data_area_id"],
-        "fiscal_year": int(data["fiscal_year"]),
-        "main_account": data["main_account"],
-    }
+    filters = _budget_filters(data)
     existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
     if existing:
@@ -370,11 +380,9 @@ def _upsert_budget_input(data):
         doc = frappe.new_doc("Budget Input")
         doc.update(filters)
 
-    # Optional dimension fields
     doc.dim_cost_center = data.get("dim_cost_center", "")
     doc.dim_department = data.get("dim_department", "")
 
-    # Add period rows
     for p in data["periods"]:
         doc.append("periods", {
             "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
@@ -388,20 +396,11 @@ def _upsert_budget_input(data):
 
 @frappe.whitelist(methods=["POST"])
 def budget_save():
-    """Save a single budget line — creates/updates Budget Input doc in Draft.
-
-    Accepts JSON: {scenario_id, data_area_id, fiscal_year, main_account,
-    dim_cost_center, dim_department, periods: [{period, amount, layer}]}
-
-    Returns: {"name": doc_name}
-    """
-    data = json.loads(frappe.request.get_data(as_text=True))
+    """Save a single budget line — creates/updates Budget Input doc in Draft."""
+    data = _get_json_body()
     _validate_budget_fields(data)
     name = _upsert_budget_input(data)
     return {"name": name}
-
-
-VALID_LAYERS = {"base", "challenge", "management", "board"}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -409,14 +408,9 @@ def budget_cell_save():
     """Save a single budget cell — upserts one period+layer in a Budget Input doc.
 
     Designed for EPMSAVE() immediate writes from Excel.
-    Accepts JSON: {scenario_id, data_area_id, fiscal_year, main_account,
-    fiscal_period, amount, layer, [dim_cost_center], [dim_department]}
-
-    Returns: {"status": "ok", "name": doc_name, "value": amount}
     """
-    data = json.loads(frappe.request.get_data(as_text=True))
+    data = _get_json_body()
 
-    # Validate required fields
     required = ["scenario_id", "data_area_id", "fiscal_year",
                 "main_account", "fiscal_period", "amount", "layer"]
     missing = [f for f in required if f not in data or data[f] == ""]
@@ -439,13 +433,7 @@ def budget_cell_save():
 
     amount = float(data["amount"])
 
-    # Find or create the Budget Input doc
-    filters = {
-        "scenario_id": data["scenario_id"],
-        "data_area_id": data["data_area_id"],
-        "fiscal_year": int(data["fiscal_year"]),
-        "main_account": data["main_account"],
-    }
+    filters = _budget_filters(data)
     existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
     if existing:
@@ -456,7 +444,6 @@ def budget_cell_save():
         doc.dim_cost_center = data.get("dim_cost_center", "")
         doc.dim_department = data.get("dim_department", "")
 
-    # Upsert the specific period+layer row
     found = False
     for row in doc.periods:
         if row.fiscal_period == fp and row.layer == layer:
@@ -477,12 +464,8 @@ def budget_cell_save():
 
 @frappe.whitelist(methods=["POST"])
 def budget_save_batch():
-    """Save multiple budget lines at once.
-
-    Accepts JSON array of budget line objects.
-    Returns: {"results": [{"name": doc_name}, ...], "errors": [...]}
-    """
-    items = json.loads(frappe.request.get_data(as_text=True))
+    """Save multiple budget lines at once."""
+    items = _get_json_body()
     if not isinstance(items, list):
         frappe.throw("Expected a JSON array", frappe.ValidationError)
 
@@ -494,9 +477,10 @@ def budget_save_batch():
             name = _upsert_budget_input(data)
             results.append({"name": name, "index": i})
             errors.append(None)
-        except Exception as e:
+        except Exception:
+            frappe.log_error("Budget save failed", frappe.get_traceback())
             results.append(None)
-            errors.append({"index": i, "error": str(e)})
+            errors.append({"index": i, "error": "Save failed — check server logs"})
 
     response = {"results": results}
     if any(e is not None for e in errors):
@@ -513,14 +497,9 @@ def get_hierarchy_tree(consolidation_group=None):
     """Return consolidation hierarchy as nested JSON tree.
 
     Uses Frappe's native tree (is_tree=1) with lft/rgt for efficient subtree queries.
-    If consolidation_group is given, returns subtree rooted at that group.
-    Otherwise returns all root groups (no parent) with their children.
-
-    Returns: {"tree": [{group, entity, children: [...], ...}]}
     """
     filters = {}
     if consolidation_group:
-        # Use lft/rgt for efficient subtree query
         root = frappe.get_all(
             "Consolidation Group",
             filters={"consolidation_group": consolidation_group},
@@ -545,7 +524,6 @@ def get_hierarchy_tree(consolidation_group=None):
         limit_page_length=0,
     )
 
-    # Index by name for parent lookups
     by_name = {d.name: d for d in docs}
 
     def build_node(doc):
@@ -559,13 +537,11 @@ def get_hierarchy_tree(consolidation_group=None):
             "consolidation_method": doc.consolidation_method,
             "children": [],
         }
-        # Find direct children via parent_consolidation_group
         for d in docs:
             if d.parent_consolidation_group == doc.name:
                 node["children"].append(build_node(d))
         return node
 
-    # Roots: no parent, or parent not in our result set
     tree = []
     for d in docs:
         if not d.parent_consolidation_group or d.parent_consolidation_group not in by_name:
@@ -580,13 +556,7 @@ def get_hierarchy_tree(consolidation_group=None):
 
 @frappe.whitelist(methods=["POST"])
 def approve_adjustment(name):
-    """Approve a Consolidation Adjustment (Pending Approval -> Approved).
-
-    Args:
-        name: Document name (e.g. "CADJ-IC001-0001")
-
-    Returns: {"status": "Approved", "approved_by": user, "approved_at": timestamp}
-    """
+    """Approve a Consolidation Adjustment (Pending Approval -> Approved)."""
     doc = frappe.get_doc("Consolidation Adjustment", name)
     if doc.status != "Pending Approval":
         frappe.throw(
@@ -608,13 +578,7 @@ def approve_adjustment(name):
 def reverse_adjustment(name):
     """Reverse an Approved Consolidation Adjustment.
 
-    Creates a new reversal doc with negated amounts and links both via
-    reversal_journal_id. Cancels the original.
-
-    Args:
-        name: Document name of the adjustment to reverse.
-
-    Returns: {"original": name, "reversal": reversal_name, "status": "Reversed"}
+    Creates a reversal doc with negated amounts, links both via reversal_journal_id.
     """
     doc = frappe.get_doc("Consolidation Adjustment", name)
     if doc.status != "Approved":
@@ -623,7 +587,6 @@ def reverse_adjustment(name):
             frappe.ValidationError,
         )
 
-    # Create reversal document with negated amounts
     reversal = frappe.new_doc("Consolidation Adjustment")
     reversal.consolidation_group = doc.consolidation_group
     reversal.adjustment_type = doc.adjustment_type
@@ -643,7 +606,6 @@ def reverse_adjustment(name):
     reversal.insert()
     reversal.submit()
 
-    # Mark original as reversed
     doc.status = "Reversed"
     doc.reversal_journal_id = reversal.name
     doc.save()
@@ -661,19 +623,12 @@ def reverse_adjustment(name):
 
 @frappe.whitelist(methods=["POST"])
 def run_allocation(fiscal_year, fiscal_period):
-    """Create and submit an Allocation Run for a given period.
-
-    Args:
-        fiscal_year: Integer fiscal year (e.g. 2025)
-        fiscal_period: Integer fiscal period (1-12)
-
-    Returns: {"name": doc_name, "allocation_run_id": id, "status": "Active"}
-    """
+    """Create and submit an Allocation Run for a given period."""
     doc = frappe.new_doc("Allocation Run")
     doc.fiscal_year = int(fiscal_year)
     doc.fiscal_period = int(fiscal_period)
     doc.insert()
-    doc.submit()  # triggers before_submit (sets run_id, run_by, run_at, status=Active)
+    doc.submit()
 
     return {
         "name": doc.name,
@@ -686,15 +641,7 @@ def run_allocation(fiscal_year, fiscal_period):
 
 @frappe.whitelist(methods=["POST"])
 def reverse_allocation(name):
-    """Reverse an Active Allocation Run.
-
-    Creates a new reversal run linked via reversal_of, then cancels the original.
-
-    Args:
-        name: Document name of the Allocation Run to reverse.
-
-    Returns: {"original": name, "reversal": reversal_name, "status": "Reversed"}
-    """
+    """Reverse an Active Allocation Run. Creates reversal run and cancels original."""
     doc = frappe.get_doc("Allocation Run", name)
     if doc.status != "Active":
         frappe.throw(
@@ -702,7 +649,6 @@ def reverse_allocation(name):
             frappe.ValidationError,
         )
 
-    # Create reversal run
     reversal = frappe.new_doc("Allocation Run")
     reversal.fiscal_year = doc.fiscal_year
     reversal.fiscal_period = doc.fiscal_period
@@ -710,8 +656,7 @@ def reverse_allocation(name):
     reversal.insert()
     reversal.submit()
 
-    # Cancel original
-    doc.cancel()  # triggers on_cancel (sets status=Reversed)
+    doc.cancel()
 
     return {
         "original": doc.name,
@@ -722,15 +667,7 @@ def reverse_allocation(name):
 
 @frappe.whitelist()
 def allocation_history(fiscal_year=None, fiscal_period=None):
-    """Return allocation run history with optional filters.
-
-    Args:
-        fiscal_year: Optional filter by fiscal year.
-        fiscal_period: Optional filter by fiscal period.
-
-    Returns: {"runs": [{name, allocation_run_id, fiscal_year, fiscal_period,
-              status, run_by, run_at, reversal_of}, ...]}
-    """
+    """Return allocation run history with optional filters."""
     filters = {}
     if fiscal_year:
         filters["fiscal_year"] = int(fiscal_year)
