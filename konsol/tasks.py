@@ -20,15 +20,14 @@ def run_dbt_build_async(doctype=None, docname=None):
     site = frappe.local.site
     queued_jobs = get_jobs(site=site, queue="default")
     for job_list in queued_jobs.values():
-        if "konsol.tasks.run_dbt_build_async" in job_list:
+        if "konsol.tasks._run_dbt_build_background" in job_list:
             frappe.logger().info("dbt build already queued, skipping duplicate")
             return
 
     frappe.enqueue(
-        "_run_dbt_build_background",
+        "konsol.tasks._run_dbt_build_background",
         queue="default",
         timeout=600,
-        is_async=True,
         doctype=doctype,
         docname=docname,
     )

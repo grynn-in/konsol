@@ -6,7 +6,7 @@ and epm_staging.* tables (PRD-8+ consolidation/allocation features).
 
 Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 import frappe
 import requests
@@ -146,7 +146,7 @@ def _record_sync_failure(table, error_type, message):
     _sync_failures[table] = {
         "error_type": error_type,
         "message": message,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
