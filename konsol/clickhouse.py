@@ -6,8 +6,13 @@ and epm_staging.* tables (PRD-8+ consolidation/allocation features).
 
 Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
+from datetime import datetime
+
 import frappe
 import requests
+
+# Track sync failures for monitoring. Key = table name, value = last error info.
+_sync_failures = {}
 
 
 def get_connection():
@@ -62,10 +67,28 @@ def sync_table(table, columns, rows):
     """
     try:
         _sync_table_inner(table, columns, rows)
-    except requests.exceptions.ConnectionError:
-        frappe.logger().warning(f"ClickHouse sync skipped (connection refused): {table}")
-    except requests.exceptions.Timeout:
-        frappe.logger().warning(f"ClickHouse sync skipped (timeout): {table}")
+        # Clear any previous failure for this table
+        _sync_failures.pop(table, None)
+    except requests.exceptions.ConnectionError as e:
+        _record_sync_failure(table, "connection_refused", str(e))
+        frappe.logger().error(
+            f"ClickHouse SYNC FAILED (connection refused): {table} — "
+            f"check ClickHouse is running and EPM Settings are correct"
+        )
+        frappe.publish_realtime(
+            "clickhouse_sync_error",
+            {"table": table, "error": "connection_refused", "message": str(e)},
+        )
+    except requests.exceptions.Timeout as e:
+        _record_sync_failure(table, "timeout", str(e))
+        frappe.logger().error(
+            f"ClickHouse SYNC FAILED (timeout): {table} — "
+            f"ClickHouse may be overloaded"
+        )
+        frappe.publish_realtime(
+            "clickhouse_sync_error",
+            {"table": table, "error": "timeout", "message": str(e)},
+        )
 
 
 def _sync_table_inner(table, columns, rows):
@@ -116,6 +139,59 @@ def sync_doctype(doctype, table, field_map):
         rows.append(row)
 
     sync_table(table, ch_columns, rows)
+
+
+def _record_sync_failure(table, error_type, message):
+    """Track sync failure for monitoring/health check."""
+    _sync_failures[table] = {
+        "error_type": error_type,
+        "message": message,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def check_health():
+    """Check ClickHouse connectivity and return health status.
+
+    Returns dict with:
+        - status: 'healthy' | 'degraded' | 'down'
+        - clickhouse_reachable: bool
+        - recent_sync_failures: list of failed tables
+        - message: human-readable status
+    """
+    result = {
+        "status": "healthy",
+        "clickhouse_reachable": False,
+        "recent_sync_failures": [],
+        "message": "",
+    }
+
+    # Test connectivity
+    try:
+        resp = execute("SELECT 1")
+        result["clickhouse_reachable"] = resp == "1"
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        result["clickhouse_reachable"] = False
+        result["status"] = "down"
+        result["message"] = "ClickHouse is unreachable"
+        return result
+    except Exception as e:
+        result["clickhouse_reachable"] = False
+        result["status"] = "down"
+        result["message"] = f"ClickHouse error: {str(e)}"
+        return result
+
+    # Check for recent sync failures
+    if _sync_failures:
+        result["recent_sync_failures"] = [
+            {"table": k, **v} for k, v in _sync_failures.items()
+        ]
+        result["status"] = "degraded"
+        result["message"] = f"{len(_sync_failures)} table(s) have sync failures"
+    else:
+        result["message"] = "All systems operational"
+
+    return result
 
 
 def sync_doctype_filtered(doctype, table, field_map, filters=None):

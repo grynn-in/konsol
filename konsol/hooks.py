@@ -32,3 +32,30 @@ app_license = "MIT"
 #         ]
 #     }
 # }
+
+# ---------------------------------------------------------------------------
+# Auto-trigger dbt build after consolidation/allocation doc saves
+# ---------------------------------------------------------------------------
+# After a user saves any of these doctypes (which sync to ClickHouse staging),
+# a debounced dbt build is enqueued to refresh the gold models.
+
+_dbt_trigger_doctypes = [
+    "Consolidation Group",
+    "Consolidation Adjustment",
+    "Ownership Period",
+    "Historical Equity Rate",
+    "IC Elimination Rule",
+    "IC Balance",
+    "Allocation Rule",
+    "Allocation Driver",
+    "Allocation Run",
+]
+
+doc_events = {
+    dt: {
+        "on_update": "konsol.tasks.on_consolidation_doc_update",
+        "on_submit": "konsol.tasks.on_consolidation_doc_update",
+        "on_cancel": "konsol.tasks.on_consolidation_doc_update",
+    }
+    for dt in _dbt_trigger_doctypes
+}
