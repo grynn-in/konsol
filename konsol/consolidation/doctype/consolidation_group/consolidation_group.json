@@ -4,6 +4,8 @@
   "module": "Consolidation",
   "issingle": 0,
   "istable": 0,
+  "is_tree": 1,
+  "nsm_parent_field": "parent_consolidation_group",
   "editable_grid": 1,
   "engine": "InnoDB",
   "track_changes": 1,
@@ -57,27 +59,9 @@
       "in_list_view": 1
     },
     {
-      "fieldname": "hierarchy_section",
+      "fieldname": "settings_section",
       "fieldtype": "Section Break",
-      "label": "Hierarchy (PRD-8)"
-    },
-    {
-      "fieldname": "parent_group",
-      "fieldtype": "Link",
-      "label": "Parent Group",
-      "options": "Consolidation Group",
-      "description": "Parent consolidation group for multi-level hierarchy"
-    },
-    {
-      "fieldname": "hierarchy_level",
-      "fieldtype": "Int",
-      "label": "Hierarchy Level",
-      "default": "1",
-      "description": "Depth in the consolidation tree (1 = top)"
-    },
-    {
-      "fieldname": "col_break_hierarchy",
-      "fieldtype": "Column Break"
+      "label": "Settings"
     },
     {
       "fieldname": "goodwill_method",

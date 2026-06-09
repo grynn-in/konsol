@@ -512,6 +512,7 @@ def budget_save_batch():
 def get_hierarchy_tree(consolidation_group=None):
     """Return consolidation hierarchy as nested JSON tree.
 
+    Uses Frappe's native tree (is_tree=1) with lft/rgt for efficient subtree queries.
     If consolidation_group is given, returns subtree rooted at that group.
     Otherwise returns all root groups (no parent) with their children.
 
@@ -519,33 +520,33 @@ def get_hierarchy_tree(consolidation_group=None):
     """
     filters = {}
     if consolidation_group:
-        filters["consolidation_group"] = consolidation_group
+        # Use lft/rgt for efficient subtree query
+        root = frappe.get_all(
+            "Consolidation Group",
+            filters={"consolidation_group": consolidation_group},
+            fields=["lft", "rgt"],
+            limit=1,
+        )
+        if root:
+            filters = [
+                ["lft", ">=", root[0].lft],
+                ["rgt", "<=", root[0].rgt],
+            ]
 
     docs = frappe.get_all(
         "Consolidation Group",
         filters=filters,
         fields=[
             "name", "consolidation_group", "data_area_id", "entity_name",
-            "parent_group", "hierarchy_level", "ownership_pct",
+            "parent_consolidation_group", "lft", "rgt", "ownership_pct",
             "reporting_currency", "consolidation_method", "goodwill_method",
         ],
+        order_by="lft asc",
         limit_page_length=0,
     )
 
-    # Index by consolidation_group
-    by_group = {}
-    for d in docs:
-        key = d.consolidation_group
-        if key not in by_group:
-            by_group[key] = []
-        by_group[key].append(d)
-
-    # Build tree: find roots (no parent_group or parent not in our set)
-    all_groups = set(by_group.keys())
-    roots = []
-    for d in docs:
-        if not d.parent_group or d.parent_group not in all_groups:
-            roots.append(d)
+    # Index by name for parent lookups
+    by_name = {d.name: d for d in docs}
 
     def build_node(doc):
         node = {
@@ -553,25 +554,22 @@ def get_hierarchy_tree(consolidation_group=None):
             "consolidation_group": doc.consolidation_group,
             "data_area_id": doc.data_area_id,
             "entity_name": doc.entity_name,
-            "parent_group": doc.parent_group,
-            "hierarchy_level": doc.hierarchy_level or 1,
+            "parent_group": doc.parent_consolidation_group,
             "ownership_pct": doc.ownership_pct,
             "consolidation_method": doc.consolidation_method,
             "children": [],
         }
-        # Find children: docs whose parent_group == this group
+        # Find direct children via parent_consolidation_group
         for d in docs:
-            if d.parent_group == doc.consolidation_group and d.name != doc.name:
+            if d.parent_consolidation_group == doc.name:
                 node["children"].append(build_node(d))
         return node
 
-    # Deduplicate roots
-    seen = set()
+    # Roots: no parent, or parent not in our result set
     tree = []
-    for r in roots:
-        if r.name not in seen:
-            seen.add(r.name)
-            tree.append(build_node(r))
+    for d in docs:
+        if not d.parent_consolidation_group or d.parent_consolidation_group not in by_name:
+            tree.append(build_node(d))
 
     return {"tree": tree}
 
