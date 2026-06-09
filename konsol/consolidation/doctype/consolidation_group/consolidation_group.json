@@ -12,6 +12,19 @@
   "autoname": "format:CG-{consolidation_group}-{data_area_id}",
   "fields": [
     {
+      "fieldname": "parent_consolidation_group",
+      "fieldtype": "Link",
+      "label": "Parent Consolidation Group",
+      "options": "Consolidation Group",
+      "ignore_user_permissions": 1
+    },
+    {
+      "fieldname": "is_group",
+      "fieldtype": "Check",
+      "label": "Is Group",
+      "default": "0"
+    },
+    {
       "fieldname": "consolidation_group",
       "fieldtype": "Data",
       "label": "Consolidation Group",
@@ -70,6 +83,26 @@
       "options": "partial\nfull",
       "default": "partial",
       "description": "PRD-13: partial = NCI at proportional net assets; full = NCI at fair value"
+    },
+    {
+      "fieldname": "lft",
+      "fieldtype": "Int",
+      "label": "Left",
+      "hidden": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "rgt",
+      "fieldtype": "Int",
+      "label": "Right",
+      "hidden": 1,
+      "search_index": 1
+    },
+    {
+      "fieldname": "old_parent",
+      "fieldtype": "Data",
+      "label": "Old Parent",
+      "hidden": 1
     }
   ],
   "permissions": [

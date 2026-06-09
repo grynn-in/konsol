@@ -52,11 +52,24 @@ def execute(sql, params=None):
 def sync_table(table, columns, rows):
     """TRUNCATE and INSERT all rows into a ClickHouse table.
 
+    Best-effort: logs warning on connection failure instead of raising,
+    so ClickHouse downtime doesn't break Frappe document saves.
+
     Args:
         table: Fully qualified table name (e.g. 'gold.allocation_rules').
         columns: List of column names.
         rows: List of tuples/lists matching column order.
     """
+    try:
+        _sync_table_inner(table, columns, rows)
+    except requests.exceptions.ConnectionError:
+        frappe.logger().warning(f"ClickHouse sync skipped (connection refused): {table}")
+    except requests.exceptions.Timeout:
+        frappe.logger().warning(f"ClickHouse sync skipped (timeout): {table}")
+
+
+def _sync_table_inner(table, columns, rows):
+    """Internal: TRUNCATE and INSERT. Raises on failure."""
     execute(f"TRUNCATE TABLE IF EXISTS {table}")
 
     if not rows:
