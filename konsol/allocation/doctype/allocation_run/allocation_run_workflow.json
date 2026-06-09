@@ -1,0 +1,49 @@
+{
+  "name": "Allocation Run Workflow",
+  "doctype": "Workflow",
+  "document_type": "Allocation Run",
+  "is_active": 1,
+  "workflow_state_field": "status",
+  "states": [
+    {
+      "state": "Draft",
+      "doc_status": 0,
+      "allow_edit": "System Manager"
+    },
+    {
+      "state": "Running",
+      "doc_status": 1,
+      "allow_edit": "System Manager"
+    },
+    {
+      "state": "Active",
+      "doc_status": 1,
+      "allow_edit": "System Manager"
+    },
+    {
+      "state": "Reversed",
+      "doc_status": 2,
+      "allow_edit": "System Manager"
+    }
+  ],
+  "transitions": [
+    {
+      "state": "Draft",
+      "action": "Run Allocation",
+      "next_state": "Running",
+      "allowed": "System Manager"
+    },
+    {
+      "state": "Running",
+      "action": "Complete",
+      "next_state": "Active",
+      "allowed": "System Manager"
+    },
+    {
+      "state": "Active",
+      "action": "Reverse",
+      "next_state": "Reversed",
+      "allowed": "System Manager"
+    }
+  ]
+}

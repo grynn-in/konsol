@@ -1,10 +1,14 @@
-"""EPM API — Frappe proxy to ClickHouse for Excel batch retrieval."""
+"""EPM API — Frappe proxy to ClickHouse for Excel batch retrieval.
+
+Also provides consolidation & allocation workflow APIs (PRD-8, PRD-16, PRD-21).
+"""
 import json
 import re
 from collections import defaultdict
 
 import frappe
 import requests
+from frappe.utils import now_datetime
 
 from konsol.clickhouse import get_connection as _get_ch_connection
 
@@ -498,3 +502,251 @@ def budget_save_batch():
     if any(e is not None for e in errors):
         response["errors"] = errors
     return response
+
+
+# ---------------------------------------------------------------------------
+# PRD-8: Consolidation Hierarchy API
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def get_hierarchy_tree(consolidation_group=None):
+    """Return consolidation hierarchy as nested JSON tree.
+
+    If consolidation_group is given, returns subtree rooted at that group.
+    Otherwise returns all root groups (no parent) with their children.
+
+    Returns: {"tree": [{group, entity, children: [...], ...}]}
+    """
+    filters = {}
+    if consolidation_group:
+        filters["consolidation_group"] = consolidation_group
+
+    docs = frappe.get_all(
+        "Consolidation Group",
+        filters=filters,
+        fields=[
+            "name", "consolidation_group", "data_area_id", "entity_name",
+            "parent_group", "hierarchy_level", "ownership_pct",
+            "reporting_currency", "consolidation_method", "goodwill_method",
+        ],
+        limit_page_length=0,
+    )
+
+    # Index by consolidation_group
+    by_group = {}
+    for d in docs:
+        key = d.consolidation_group
+        if key not in by_group:
+            by_group[key] = []
+        by_group[key].append(d)
+
+    # Build tree: find roots (no parent_group or parent not in our set)
+    all_groups = set(by_group.keys())
+    roots = []
+    for d in docs:
+        if not d.parent_group or d.parent_group not in all_groups:
+            roots.append(d)
+
+    def build_node(doc):
+        node = {
+            "name": doc.name,
+            "consolidation_group": doc.consolidation_group,
+            "data_area_id": doc.data_area_id,
+            "entity_name": doc.entity_name,
+            "parent_group": doc.parent_group,
+            "hierarchy_level": doc.hierarchy_level or 1,
+            "ownership_pct": doc.ownership_pct,
+            "consolidation_method": doc.consolidation_method,
+            "children": [],
+        }
+        # Find children: docs whose parent_group == this group
+        for d in docs:
+            if d.parent_group == doc.consolidation_group and d.name != doc.name:
+                node["children"].append(build_node(d))
+        return node
+
+    # Deduplicate roots
+    seen = set()
+    tree = []
+    for r in roots:
+        if r.name not in seen:
+            seen.add(r.name)
+            tree.append(build_node(r))
+
+    return {"tree": tree}
+
+
+# ---------------------------------------------------------------------------
+# PRD-16: Consolidation Adjustment Workflow API
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(methods=["POST"])
+def approve_adjustment(name):
+    """Approve a Consolidation Adjustment (Pending Approval -> Approved).
+
+    Args:
+        name: Document name (e.g. "CADJ-IC001-0001")
+
+    Returns: {"status": "Approved", "approved_by": user, "approved_at": timestamp}
+    """
+    doc = frappe.get_doc("Consolidation Adjustment", name)
+    if doc.status != "Pending Approval":
+        frappe.throw(
+            f"Cannot approve: current status is '{doc.status}', expected 'Pending Approval'",
+            frappe.ValidationError,
+        )
+    doc.status = "Approved"
+    doc.approved_by = frappe.session.user
+    doc.approved_at = now_datetime()
+    doc.save()
+    return {
+        "status": doc.status,
+        "approved_by": doc.approved_by,
+        "approved_at": str(doc.approved_at),
+    }
+
+
+@frappe.whitelist(methods=["POST"])
+def reverse_adjustment(name):
+    """Reverse an Approved Consolidation Adjustment.
+
+    Creates a new reversal doc with negated amounts and links both via
+    reversal_journal_id. Cancels the original.
+
+    Args:
+        name: Document name of the adjustment to reverse.
+
+    Returns: {"original": name, "reversal": reversal_name, "status": "Reversed"}
+    """
+    doc = frappe.get_doc("Consolidation Adjustment", name)
+    if doc.status != "Approved":
+        frappe.throw(
+            f"Cannot reverse: current status is '{doc.status}', expected 'Approved'",
+            frappe.ValidationError,
+        )
+
+    # Create reversal document with negated amounts
+    reversal = frappe.new_doc("Consolidation Adjustment")
+    reversal.consolidation_group = doc.consolidation_group
+    reversal.adjustment_type = doc.adjustment_type
+    reversal.journal_id = f"REV-{doc.journal_id}"
+    reversal.data_area_id = doc.data_area_id
+    reversal.fiscal_year = doc.fiscal_year
+    reversal.fiscal_period = doc.fiscal_period
+    reversal.main_account = doc.main_account
+    reversal.debit_amount = doc.credit_amount  # swap
+    reversal.credit_amount = doc.debit_amount  # swap
+    reversal.description = f"Reversal of {doc.name}"
+    reversal.posted_by = frappe.session.user
+    reversal.status = "Approved"
+    reversal.approved_by = frappe.session.user
+    reversal.approved_at = now_datetime()
+    reversal.reversal_journal_id = doc.name
+    reversal.insert()
+    reversal.submit()
+
+    # Mark original as reversed
+    doc.status = "Reversed"
+    doc.reversal_journal_id = reversal.name
+    doc.save()
+
+    return {
+        "original": doc.name,
+        "reversal": reversal.name,
+        "status": "Reversed",
+    }
+
+
+# ---------------------------------------------------------------------------
+# PRD-21: Allocation Run & Reversal API
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(methods=["POST"])
+def run_allocation(fiscal_year, fiscal_period):
+    """Create and submit an Allocation Run for a given period.
+
+    Args:
+        fiscal_year: Integer fiscal year (e.g. 2025)
+        fiscal_period: Integer fiscal period (1-12)
+
+    Returns: {"name": doc_name, "allocation_run_id": id, "status": "Active"}
+    """
+    doc = frappe.new_doc("Allocation Run")
+    doc.fiscal_year = int(fiscal_year)
+    doc.fiscal_period = int(fiscal_period)
+    doc.insert()
+    doc.submit()  # triggers before_submit (sets run_id, run_by, run_at, status=Active)
+
+    return {
+        "name": doc.name,
+        "allocation_run_id": doc.allocation_run_id,
+        "status": doc.status,
+        "run_by": doc.run_by,
+        "run_at": str(doc.run_at),
+    }
+
+
+@frappe.whitelist(methods=["POST"])
+def reverse_allocation(name):
+    """Reverse an Active Allocation Run.
+
+    Creates a new reversal run linked via reversal_of, then cancels the original.
+
+    Args:
+        name: Document name of the Allocation Run to reverse.
+
+    Returns: {"original": name, "reversal": reversal_name, "status": "Reversed"}
+    """
+    doc = frappe.get_doc("Allocation Run", name)
+    if doc.status != "Active":
+        frappe.throw(
+            f"Cannot reverse: current status is '{doc.status}', expected 'Active'",
+            frappe.ValidationError,
+        )
+
+    # Create reversal run
+    reversal = frappe.new_doc("Allocation Run")
+    reversal.fiscal_year = doc.fiscal_year
+    reversal.fiscal_period = doc.fiscal_period
+    reversal.reversal_of = doc.name
+    reversal.insert()
+    reversal.submit()
+
+    # Cancel original
+    doc.cancel()  # triggers on_cancel (sets status=Reversed)
+
+    return {
+        "original": doc.name,
+        "reversal": reversal.name,
+        "status": "Reversed",
+    }
+
+
+@frappe.whitelist()
+def allocation_history(fiscal_year=None, fiscal_period=None):
+    """Return allocation run history with optional filters.
+
+    Args:
+        fiscal_year: Optional filter by fiscal year.
+        fiscal_period: Optional filter by fiscal period.
+
+    Returns: {"runs": [{name, allocation_run_id, fiscal_year, fiscal_period,
+              status, run_by, run_at, reversal_of}, ...]}
+    """
+    filters = {}
+    if fiscal_year:
+        filters["fiscal_year"] = int(fiscal_year)
+    if fiscal_period:
+        filters["fiscal_period"] = int(fiscal_period)
+
+    runs = frappe.get_all(
+        "Allocation Run",
+        filters=filters,
+        fields=[
+            "name", "allocation_run_id", "fiscal_year", "fiscal_period",
+            "status", "run_by", "run_at", "reversal_of",
+        ],
+        order_by="run_at desc",
+        limit_page_length=0,
+    )
+    return {"runs": runs}
