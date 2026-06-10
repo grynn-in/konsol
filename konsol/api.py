@@ -29,7 +29,7 @@ PERIOD_RANGES = {
 ALLOWED_MEASURES = {
     "actuals": {
         "period_debit", "period_credit", "period_net_amount",
-        "transaction_count", "ytd_debit", "ytd_credit", "ytd_net_amount",
+        "transaction_count", "ytd_net_amount",
     },
     "budget": {
         "period_amount", "annual_amount",
@@ -44,6 +44,14 @@ SCENARIO_TABLES = {
     "actuals": "epm_gold.gold_trial_balance",
     "budget": "epm_gold.gold_spread_budget",
     "variance": "epm_gold.gold_variance_analysis",
+}
+
+# Measures that need a different table + column mapping
+MEASURE_REROUTE = {
+    "ytd_net_amount": {
+        "table": "epm_gold.gold_balance_sheet",
+        "column": "cumulative_balance",
+    },
 }
 
 # Tables that have a scenario_id column and support filtering by it
@@ -162,13 +170,20 @@ def _batch_query_clickhouse(requests_list):
         groups[key].append((idx, req))
 
     for (scenario, measure, periods, has_cc, has_dept, scenario_id), group_items in groups.items():
+        table = SCENARIO_TABLES[scenario]
+        query_measure = measure
+
+        # Reroute measures that live in a different table/column
+        if measure in MEASURE_REROUTE:
+            reroute = MEASURE_REROUTE[measure]
+            table = reroute["table"]
+            query_measure = reroute["column"]
+
         # Validate identifiers before SQL interpolation (not assert — survives -O mode)
-        if not _SAFE_IDENTIFIER.match(measure):
+        if not _SAFE_IDENTIFIER.match(query_measure):
             for _, (idx, _) in enumerate(group_items):
                 errors[idx] = "Invalid measure identifier"
             continue
-
-        table = SCENARIO_TABLES[scenario]
 
         select_cols = ["data_area_id", "fiscal_year", "main_account"]
         if has_cc:
@@ -215,7 +230,7 @@ def _batch_query_clickhouse(requests_list):
             scenario_id_clause = " AND scenario_id = {sid:String}"
 
         sql = (
-            f"SELECT {group_by}, coalesce(sum({measure}), 0) as val "
+            f"SELECT {group_by}, coalesce(sum({query_measure}), 0) as val "
             f"FROM {table} "
             f"WHERE {in_cols} IN ({in_values}) "
             f"AND fiscal_period IN ({period_in})"
