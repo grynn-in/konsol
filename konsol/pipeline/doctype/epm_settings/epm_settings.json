@@ -63,6 +63,36 @@
       "label": "Airbyte Client Secret"
     },
     {
+      "fieldname": "webhook_secret",
+      "fieldtype": "Password",
+      "label": "Webhook Secret",
+      "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
+    },
+    {
+      "fieldname": "airbyte_sync_status_section",
+      "fieldtype": "Section Break",
+      "label": "Airbyte Sync Status"
+    },
+    {
+      "fieldname": "last_airbyte_sync_at",
+      "fieldtype": "Datetime",
+      "label": "Last Airbyte Sync At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_airbyte_sync_status",
+      "fieldtype": "Select",
+      "label": "Last Airbyte Sync Status",
+      "options": "\nSuccess\nFailed\nPartial\nRunning",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_airbyte_sync_rows",
+      "fieldtype": "Int",
+      "label": "Last Airbyte Sync Rows",
+      "read_only": 1
+    },
+    {
       "fieldname": "dbt_section",
       "fieldtype": "Section Break",
       "label": "dbt Configuration"
