@@ -298,3 +298,72 @@ def test_hooks_has_after_migrate():
     """hooks.py must register after_migrate hook."""
     content = _read(HOOKS_PATH)
     assert "after_migrate" in content
+
+
+# ===================================================================
+# 10. PBR controller — on_update state machine contracts
+# ===================================================================
+
+def test_pbr_auto_approve_uses_administrator():
+    """Auto-approve must set approved_by to 'Administrator', not 'System'."""
+    content = _read(PBR_PY)
+    assert '"System"' not in content, "approved_by must not use 'System' (orphan Link value)"
+    assert '"Administrator"' in content, "approved_by should use 'Administrator'"
+
+
+def test_pbr_on_update_handles_all_draft_paths():
+    """on_update must handle both low-risk (auto-approve) and high-risk (pending review)."""
+    content = _read(PBR_PY)
+    assert "risk_level" in content, "on_update must check risk_level"
+    assert "Pending Review" in content, "high-risk path must transition to Pending Review"
+    assert "Approved" in content, "low-risk path must transition to Approved"
+
+
+def test_pbr_on_update_uses_db_set():
+    """on_update must use db_set/set_value (not self.save) to avoid recursion."""
+    tree = _parse(PBR_PY)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "on_update":
+            body_src = ast.dump(node)
+            assert "db_set" in body_src or "set_value" in body_src, (
+                "on_update must use db_set/set_value to avoid recursive save"
+            )
+            return
+    assert False, "on_update not found"
+
+
+def test_pbr_on_update_enqueues_build_on_approved():
+    """on_update must enqueue build when state reaches Approved."""
+    tree = _parse(PBR_PY)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "on_update":
+            body_src = ast.dump(node)
+            assert "_enqueue_build" in body_src, (
+                "on_update must call _enqueue_build on Approved state"
+            )
+            return
+    assert False, "on_update not found"
+
+
+# ===================================================================
+# 11. Airbyte webhook — auth contract
+# ===================================================================
+
+def test_airbyte_webhook_allows_guest():
+    """airbyte_sync_complete must use allow_guest=True for webhook access."""
+    content = _read(API_PATH)
+    # Find the decorator before airbyte_sync_complete
+    idx = content.find("def airbyte_sync_complete")
+    assert idx > 0
+    decorator_region = content[max(0, idx - 200):idx]
+    assert "allow_guest=True" in decorator_region, (
+        "Webhook must allow_guest=True so Airbyte can call without session"
+    )
+
+
+def test_airbyte_webhook_checks_secret():
+    """airbyte_sync_complete must verify X-Webhook-Secret for guest requests."""
+    content = _read(API_PATH)
+    assert "X-Webhook-Secret" in content or "webhook_secret" in content, (
+        "Webhook must check shared secret for unauthenticated requests"
+    )

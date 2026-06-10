@@ -43,7 +43,7 @@ class PipelineBuildRequest(Document):
                 # Auto-approve: update state without re-triggering on_update
                 frappe.db.set_value(
                     self.doctype, self.name,
-                    {"workflow_state": "Approved", "approved_by": "System"},
+                    {"workflow_state": "Approved", "approved_by": "Administrator"},
                     update_modified=True,
                 )
                 self.reload()

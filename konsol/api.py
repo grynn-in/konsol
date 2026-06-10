@@ -758,13 +758,23 @@ def reverse_allocation(name):
 # Airbyte Sync Webhook
 # ---------------------------------------------------------------------------
 
-@frappe.whitelist(methods=["POST"])
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 def airbyte_sync_complete():
     """Webhook endpoint called by Airbyte after sync completes.
 
     Updates EPM Settings with sync timestamp, status, and row count.
     Publishes realtime event for UI refresh.
+
+    Auth: accepts either a logged-in Frappe session OR a shared secret via
+    X-Webhook-Secret header (configured in EPM Settings.webhook_secret).
     """
+    if frappe.session.user == "Guest":
+        secret = frappe.request.headers.get("X-Webhook-Secret", "")
+        settings = frappe.get_single("EPM Settings")
+        expected = (settings.get_password("webhook_secret", raise_exception=False) or "")
+        if not expected or secret != expected:
+            frappe.throw("Unauthorized", frappe.AuthenticationError)
+
     data = _get_json_body()
 
     settings = frappe.get_single("EPM Settings")

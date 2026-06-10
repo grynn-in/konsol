@@ -63,6 +63,12 @@
       "label": "Airbyte Client Secret"
     },
     {
+      "fieldname": "webhook_secret",
+      "fieldtype": "Password",
+      "label": "Webhook Secret",
+      "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
+    },
+    {
       "fieldname": "airbyte_sync_status_section",
       "fieldtype": "Section Break",
       "label": "Airbyte Sync Status"
