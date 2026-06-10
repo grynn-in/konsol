@@ -11,12 +11,16 @@ fixtures = [
     "Fiscal Period",
     "Dimension",
     "Measure",
+    "Fact Table",
     "Scenario Definition",
     "Consolidation Group",
     "IC Elimination Rule",
     "Allocation Rule",
     "Spread Profile",
 ]
+
+# After migrate — create EPM roles
+after_migrate = ["konsol.install.after_migrate"]
 
 # Includes in <head>
 # ------------------

@@ -25,42 +25,39 @@ PERIOD_RANGES = {
     "FY": (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
 }
 
-# Allowed measure columns per scenario (whitelist to prevent SQL injection)
-ALLOWED_MEASURES = {
-    "actuals": {
-        "period_debit", "period_credit", "period_net_amount",
-        "transaction_count", "ytd_net_amount",
-    },
-    "budget": {
-        "period_amount", "annual_amount",
-    },
-    "variance": {
-        "actual_amount", "budget_amount", "variance_abs", "variance_pct",
-        "variance_favorable",
-    },
-}
-
-SCENARIO_TABLES = {
-    "actuals": "epm_gold.gold_trial_balance",
-    "budget": "epm_gold.gold_spread_budget",
-    "variance": "epm_gold.gold_variance_analysis",
-}
-
-# Measures that need a different table + column mapping
-MEASURE_REROUTE = {
-    "ytd_net_amount": {
-        "table": "epm_gold.gold_balance_sheet",
-        "column": "cumulative_balance",
-    },
-}
-
-# Tables that have a scenario_id column and support filtering by it
-TABLES_WITH_SCENARIO_ID = {"epm_gold.gold_spread_budget"}
-
 VALID_LAYERS = {"base", "challenge", "management", "board"}
 
-_SAFE_IDENTIFIER = re.compile(r'^[a-z_]+$')
+_SAFE_IDENTIFIER = re.compile(r'^[a-z][a-z0-9_]*$')
 _SAFE_SCENARIO_ID = re.compile(r'^[A-Za-z0-9_]+$')
+
+
+# ---------------------------------------------------------------------------
+# Fact Table registry helpers
+# ---------------------------------------------------------------------------
+
+def _get_fact_by_scenario(scenario):
+    """Load Fact Table doc by scenario_key. Returns dict or None."""
+    facts = frappe.get_all(
+        "Fact Table",
+        filters={"scenario_key": scenario},
+        fields=[
+            "fact_name", "clickhouse_table", "has_scenario_id",
+            "measures", "dimensions",
+            "reroute_table", "reroute_column", "reroute_measure",
+        ],
+        limit=1,
+    )
+    return facts[0] if facts else None
+
+
+def _get_allowed_measures(fact):
+    """Parse measures JSON from a Fact Table doc. Returns set."""
+    return set(json.loads(fact.measures or "[]"))
+
+
+def _get_fact_dimensions(fact):
+    """Parse dimensions JSON from a Fact Table doc. Returns set."""
+    return set(json.loads(fact.dimensions or "[]"))
 
 
 # ---------------------------------------------------------------------------
@@ -90,14 +87,22 @@ def _resolve_period(period):
 
 def _check_scenario(scenario):
     """Return error string if scenario is invalid, else None."""
-    if scenario not in SCENARIO_TABLES:
-        return f"Invalid scenario '{scenario}'. Allowed: {', '.join(sorted(SCENARIO_TABLES))}"
+    fact = _get_fact_by_scenario(scenario)
+    if not fact:
+        # List available scenarios for the error message
+        all_scenarios = frappe.get_all(
+            "Fact Table", fields=["scenario_key"], limit_page_length=0)
+        available = sorted(set(f.scenario_key for f in all_scenarios))
+        return f"Invalid scenario '{scenario}'. Allowed: {', '.join(available)}"
     return None
 
 
 def _check_measure(measure, scenario):
     """Return error string if measure is invalid, else None."""
-    allowed = ALLOWED_MEASURES.get(scenario, ALLOWED_MEASURES["actuals"])
+    fact = _get_fact_by_scenario(scenario)
+    if not fact:
+        return f"Unknown scenario '{scenario}'"
+    allowed = _get_allowed_measures(fact)
     if measure not in allowed:
         return f"Invalid measure '{measure}' for scenario '{scenario}'. Allowed: {', '.join(sorted(allowed))}"
     return None
@@ -146,9 +151,10 @@ def _clickhouse_query(sql, params, ch_settings):
 def _batch_query_clickhouse(requests_list):
     """Execute batched ClickHouse queries grouped by (scenario, measure, periods, dims).
 
-    Groups requests that share the same table/measure/period-range/dimension-shape
-    into a single query with IN (...) clauses, then maps results back to request order.
-    Period ranges (Q1, H1, FY) sum across constituent months via fiscal_period IN (...).
+    Supports dynamic dimensions — each request carries a `dimensions` dict
+    mapping dimension names to filter values.  Requests are grouped by shared
+    table/measure/period-range/dimension-shape for efficient batching.
+
     Returns {"values": [...], "errors": [...]}.
     """
     ch_settings = _get_ch_connection()
@@ -156,55 +162,69 @@ def _batch_query_clickhouse(requests_list):
     values = [None] * n
     errors = [None] * n
 
-    # Group by (scenario, measure, periods_tuple, has_cost_center, has_department, scenario_id)
+    # Group by (scenario, measure, periods_tuple, dim_names_frozenset, scenario_id)
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
+        dims = req.get("dimensions", {})
         key = (
             req["scenario"],
             req["measure"],
             req["periods"],
-            bool(req.get("cost_center")),
-            bool(req.get("department")),
+            frozenset(dims.keys()),
             req.get("scenario_id", ""),
         )
         groups[key].append((idx, req))
 
-    for (scenario, measure, periods, has_cc, has_dept, scenario_id), group_items in groups.items():
-        table = SCENARIO_TABLES[scenario]
+    for (scenario, measure, periods, dim_names, scenario_id), group_items in groups.items():
+        fact = _get_fact_by_scenario(scenario)
+        if not fact:
+            for idx, _ in group_items:
+                errors[idx] = f"No Fact Table for scenario '{scenario}'"
+            continue
+
+        table = fact.clickhouse_table
         query_measure = measure
 
         # Reroute measures that live in a different table/column
-        if measure in MEASURE_REROUTE:
-            reroute = MEASURE_REROUTE[measure]
-            table = reroute["table"]
-            query_measure = reroute["column"]
+        if fact.reroute_measure and measure == fact.reroute_measure:
+            if fact.reroute_table:
+                table = fact.reroute_table
+            if fact.reroute_column:
+                query_measure = fact.reroute_column
 
-        # Validate identifiers before SQL interpolation (not assert — survives -O mode)
+        # Validate identifiers before SQL interpolation
         if not _SAFE_IDENTIFIER.match(query_measure):
-            for _, (idx, _) in enumerate(group_items):
+            for idx, _ in group_items:
                 errors[idx] = "Invalid measure identifier"
             continue
 
+        # Validate dimension names
+        dim_names_sorted = sorted(dim_names)
+        dim_valid = True
+        for dn in dim_names_sorted:
+            if not _SAFE_IDENTIFIER.match(dn):
+                for idx, _ in group_items:
+                    errors[idx] = f"Invalid dimension identifier: {dn}"
+                dim_valid = False
+                break
+        if not dim_valid:
+            continue
+
         select_cols = ["data_area_id", "fiscal_year", "main_account"]
-        if has_cc:
-            select_cols.append("dim_cost_center")
-        if has_dept:
-            select_cols.append("dim_department")
+        select_cols.extend(dim_names_sorted)
 
         # Build IN tuples and params (without fiscal_period)
         in_tuples = []
         params = {}
         for i, (idx, req) in enumerate(group_items):
+            dims = req.get("dimensions", {})
             parts = [f"{{e{i}:String}}", f"{{y{i}:Int32}}", f"{{a{i}:String}}"]
             params[f"param_e{i}"] = req["entity"]
             params[f"param_y{i}"] = str(req["year"])
             params[f"param_a{i}"] = req["account"]
-            if has_cc:
-                parts.append(f"{{cc{i}:String}}")
-                params[f"param_cc{i}"] = req.get("cost_center", "")
-            if has_dept:
-                parts.append(f"{{dp{i}:String}}")
-                params[f"param_dp{i}"] = req.get("department", "")
+            for di, dn in enumerate(dim_names_sorted):
+                parts.append(f"{{d{i}_{di}:String}}")
+                params[f"param_d{i}_{di}"] = dims.get(dn, "")
             in_tuples.append(f"({', '.join(parts)})")
 
         group_by = ", ".join(select_cols)
@@ -221,9 +241,9 @@ def _batch_query_clickhouse(requests_list):
 
         # Optional scenario_id filter
         scenario_id_clause = ""
-        if scenario_id and table in TABLES_WITH_SCENARIO_ID:
+        if scenario_id and fact.has_scenario_id:
             if not _SAFE_SCENARIO_ID.match(scenario_id):
-                for _, (idx, _) in enumerate(group_items):
+                for idx, _ in group_items:
                     errors[idx] = "Invalid scenario_id format"
                 continue
             params["param_sid"] = scenario_id
@@ -250,24 +270,23 @@ def _batch_query_clickhouse(requests_list):
                 result_lookup[key_parts] = val
 
             for _, (idx, req) in enumerate(group_items):
+                dims = req.get("dimensions", {})
                 lookup_key = [req["entity"], str(req["year"]), req["account"]]
-                if has_cc:
-                    lookup_key.append(req.get("cost_center", ""))
-                if has_dept:
-                    lookup_key.append(req.get("department", ""))
+                for dn in dim_names_sorted:
+                    lookup_key.append(dims.get(dn, ""))
                 values[idx] = result_lookup.get(tuple(lookup_key), 0.0)
 
         except requests.exceptions.Timeout:
-            for _, (idx, _) in enumerate(group_items):
+            for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse query timeout"
         except requests.exceptions.ConnectionError:
-            for _, (idx, _) in enumerate(group_items):
+            for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse connection failed"
         except Exception:
             frappe.log_error("ClickHouse query failed", frappe.get_traceback())
-            for _, (idx, _) in enumerate(group_items):
+            for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse query failed"
 
@@ -305,18 +324,32 @@ def health():
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
               scenario="actuals", cost_center="", department="",
-              scenario_id=""):
+              scenario_id="", **kwargs):
     """Single value lookup — returns {"value": <number>}.
 
     Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
     Range periods return the sum across constituent months.
+
+    Supports dynamic dimensions via kwargs (dim_* parameters) alongside
+    legacy cost_center/department params.
     """
     _validate_scenario_and_measure(scenario, measure)
+
+    # Map legacy params + kwargs → dimensions dict
+    dimensions = {}
+    if cost_center:
+        dimensions["dim_cost_center"] = cost_center
+    if department:
+        dimensions["dim_department"] = department
+    for k, v in kwargs.items():
+        if k.startswith("dim_") and v:
+            dimensions[k] = v
+
     result = _batch_query_clickhouse([{
         "entity": entity, "year": int(year),
         "periods": _resolve_period(period),
         "account": account, "measure": measure, "scenario": scenario,
-        "cost_center": cost_center, "department": department,
+        "dimensions": dimensions,
         "scenario_id": scenario_id,
     }])
     return {"value": result["values"][0]}
@@ -338,19 +371,32 @@ def epm_batch():
 
     n = len(requests_list)
     normalized = [None] * n
-    errors = [None] * n
+    errors_list = [None] * n
     for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
         measure = req.get("measure", "period_net_amount")
         err = _check_scenario(scenario) or _check_measure(measure, scenario)
         if err:
-            errors[i] = err
+            errors_list[i] = err
         else:
             try:
                 periods = _resolve_period(req.get("period", 0))
             except (ValueError, TypeError):
-                errors[i] = f"Invalid period '{req.get('period')}'"
+                errors_list[i] = f"Invalid period '{req.get('period')}'"
                 continue
+
+            # Build dimensions dict: legacy params + explicit dimensions
+            dimensions = {}
+            if req.get("cost_center"):
+                dimensions["dim_cost_center"] = req["cost_center"]
+            if req.get("department"):
+                dimensions["dim_department"] = req["department"]
+            # Merge explicit dimensions dict (overrides legacy params)
+            if isinstance(req.get("dimensions"), dict):
+                for k, v in req["dimensions"].items():
+                    if k.startswith("dim_") and v:
+                        dimensions[k] = v
+
             normalized[i] = {
                 "entity": req.get("entity", ""),
                 "year": int(req.get("year", 0)),
@@ -358,8 +404,7 @@ def epm_batch():
                 "account": req.get("account", ""),
                 "measure": measure,
                 "scenario": scenario,
-                "cost_center": req.get("cost_center", ""),
-                "department": req.get("department", ""),
+                "dimensions": dimensions,
                 "scenario_id": req.get("scenario_id", ""),
             }
 
@@ -371,13 +416,13 @@ def epm_batch():
         for j, orig_idx in enumerate(valid_indices):
             values[orig_idx] = ch_result["values"][j]
             if ch_result.get("errors") and ch_result["errors"][j]:
-                errors[orig_idx] = ch_result["errors"][j]
+                errors_list[orig_idx] = ch_result["errors"][j]
     else:
         values = [None] * n
 
     result = {"values": values}
-    if any(e is not None for e in errors):
-        result["errors"] = errors
+    if any(e is not None for e in errors_list):
+        result["errors"] = errors_list
     return result
 
 
@@ -410,8 +455,15 @@ def _upsert_budget_input(data):
         doc = frappe.new_doc("Budget Input")
         doc.update(filters)
 
-    doc.dim_cost_center = data.get("dim_cost_center", "")
-    doc.dim_department = data.get("dim_department", "")
+    # Set dynamic dimension fields from data
+    budget_dims = frappe.get_all(
+        "Dimension",
+        filters={"in_budget": 1},
+        fields=["dimension_name"],
+        limit_page_length=0,
+    )
+    for dim in budget_dims:
+        doc.set(dim.dimension_name, data.get(dim.dimension_name, ""))
 
     for p in data["periods"]:
         doc.append("periods", {
@@ -471,8 +523,15 @@ def budget_cell_save():
     else:
         doc = frappe.new_doc("Budget Input")
         doc.update(filters)
-        doc.dim_cost_center = data.get("dim_cost_center", "")
-        doc.dim_department = data.get("dim_department", "")
+        # Set dynamic dimension fields
+        budget_dims = frappe.get_all(
+            "Dimension",
+            filters={"in_budget": 1},
+            fields=["dimension_name"],
+            limit_page_length=0,
+        )
+        for dim in budget_dims:
+            doc.set(dim.dimension_name, data.get(dim.dimension_name, ""))
 
     found = False
     for row in doc.periods:
@@ -692,6 +751,43 @@ def reverse_allocation(name):
         "original": doc.name,
         "reversal": reversal.name,
         "status": "Reversed",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Airbyte Sync Webhook
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(methods=["POST"])
+def airbyte_sync_complete():
+    """Webhook endpoint called by Airbyte after sync completes.
+
+    Updates EPM Settings with sync timestamp, status, and row count.
+    Publishes realtime event for UI refresh.
+    """
+    data = _get_json_body()
+
+    settings = frappe.get_single("EPM Settings")
+    settings.last_airbyte_sync_at = now_datetime()
+    settings.last_airbyte_sync_status = data.get("status", "Success")
+    settings.last_airbyte_sync_rows = int(data.get("rows_synced", 0))
+    settings.flags.ignore_permissions = True
+    settings.save()
+    frappe.db.commit()
+
+    frappe.publish_realtime(
+        "airbyte_sync_complete",
+        {
+            "status": settings.last_airbyte_sync_status,
+            "rows": settings.last_airbyte_sync_rows,
+            "timestamp": str(settings.last_airbyte_sync_at),
+        },
+    )
+
+    return {
+        "status": "ok",
+        "sync_status": settings.last_airbyte_sync_status,
+        "rows": settings.last_airbyte_sync_rows,
     }
 
 
