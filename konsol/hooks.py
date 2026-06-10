@@ -8,14 +8,14 @@ app_license = "MIT"
 # Fixtures — demo data loaded on install/migrate
 # ------------------------------------------------
 fixtures = [
-    {"dt": "Fiscal Period", "filters": []},
-    {"dt": "Dimension", "filters": []},
-    {"dt": "Measure", "filters": []},
-    {"dt": "Scenario Definition", "filters": []},
-    {"dt": "Consolidation Group", "filters": []},
-    {"dt": "IC Elimination Rule", "filters": []},
-    {"dt": "Allocation Rule", "filters": []},
-    {"dt": "Spread Profile", "filters": []},
+    "Fiscal Period",
+    "Dimension",
+    "Measure",
+    "Scenario Definition",
+    "Consolidation Group",
+    "IC Elimination Rule",
+    "Allocation Rule",
+    "Spread Profile",
 ]
 
 # Includes in <head>

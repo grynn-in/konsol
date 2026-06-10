@@ -92,7 +92,7 @@ def sync_table(table, columns, rows):
     except requests.exceptions.HTTPError as e:
         _record_sync_failure(table, "http_error", str(e))
         frappe.logger().error(
-            f"ClickHouse SYNC FAILED (HTTP {e.response.status_code if e.response else '?'}): {table} — "
+            f"ClickHouse SYNC FAILED (HTTP {e.response.status_code}): {table} — "
             f"table may not exist yet; run dbt build to create it"
         )
         frappe.publish_realtime(
