@@ -1,0 +1,16 @@
+[
+  {"doctype": "Fiscal Period", "name": "FP-0", "fiscal_period": 0, "label": "OPN", "quarter": "OPN", "half": "OPN"},
+  {"doctype": "Fiscal Period", "name": "FP-1", "fiscal_period": 1, "label": "P1", "quarter": "Q1", "half": "H1"},
+  {"doctype": "Fiscal Period", "name": "FP-2", "fiscal_period": 2, "label": "P2", "quarter": "Q1", "half": "H1"},
+  {"doctype": "Fiscal Period", "name": "FP-3", "fiscal_period": 3, "label": "P3", "quarter": "Q1", "half": "H1"},
+  {"doctype": "Fiscal Period", "name": "FP-4", "fiscal_period": 4, "label": "P4", "quarter": "Q2", "half": "H1"},
+  {"doctype": "Fiscal Period", "name": "FP-5", "fiscal_period": 5, "label": "P5", "quarter": "Q2", "half": "H1"},
+  {"doctype": "Fiscal Period", "name": "FP-6", "fiscal_period": 6, "label": "P6", "quarter": "Q2", "half": "H1"},
+  {"doctype": "Fiscal Period", "name": "FP-7", "fiscal_period": 7, "label": "P7", "quarter": "Q3", "half": "H2"},
+  {"doctype": "Fiscal Period", "name": "FP-8", "fiscal_period": 8, "label": "P8", "quarter": "Q3", "half": "H2"},
+  {"doctype": "Fiscal Period", "name": "FP-9", "fiscal_period": 9, "label": "P9", "quarter": "Q3", "half": "H2"},
+  {"doctype": "Fiscal Period", "name": "FP-10", "fiscal_period": 10, "label": "P10", "quarter": "Q4", "half": "H2"},
+  {"doctype": "Fiscal Period", "name": "FP-11", "fiscal_period": 11, "label": "P11", "quarter": "Q4", "half": "H2"},
+  {"doctype": "Fiscal Period", "name": "FP-12", "fiscal_period": 12, "label": "P12", "quarter": "Q4", "half": "H2"},
+  {"doctype": "Fiscal Period", "name": "FP-13", "fiscal_period": 13, "label": "CLS", "quarter": "CLS", "half": "CLS"}
+]

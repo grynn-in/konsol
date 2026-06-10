@@ -89,6 +89,16 @@ def sync_table(table, columns, rows):
             "clickhouse_sync_error",
             {"table": table, "error": "timeout", "message": str(e)},
         )
+    except requests.exceptions.HTTPError as e:
+        _record_sync_failure(table, "http_error", str(e))
+        frappe.logger().error(
+            f"ClickHouse SYNC FAILED (HTTP {e.response.status_code}): {table} — "
+            f"table may not exist yet; run dbt build to create it"
+        )
+        frappe.publish_realtime(
+            "clickhouse_sync_error",
+            {"table": table, "error": "http_error", "message": str(e)},
+        )
 
 
 def _sync_table_inner(table, columns, rows):

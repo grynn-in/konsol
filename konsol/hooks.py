@@ -5,6 +5,19 @@ app_description = "EPM Pipeline Control — Airbyte extract + dbt transform"
 app_email = "dev@openepm.local"
 app_license = "MIT"
 
+# Fixtures — demo data loaded on install/migrate
+# ------------------------------------------------
+fixtures = [
+    "Fiscal Period",
+    "Dimension",
+    "Measure",
+    "Scenario Definition",
+    "Consolidation Group",
+    "IC Elimination Rule",
+    "Allocation Rule",
+    "Spread Profile",
+]
+
 # Includes in <head>
 # ------------------
 

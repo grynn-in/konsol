@@ -6,7 +6,7 @@ from konsol.clickhouse import sync_doctype
 
 
 class SpreadProfile(Document):
-    CH_TABLE = "gold.spread_profiles"
+    CH_TABLE = "epm_gold.spread_profiles"
     CH_FIELD_MAP = {
         "profile_id": "profile_id",
         "profile_name": "profile_name",

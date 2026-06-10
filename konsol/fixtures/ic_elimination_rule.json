@@ -1,0 +1,5 @@
+[
+  {"doctype": "IC Elimination Rule", "name": "IC_001", "rule_id": "IC_001", "rule_name": "IC Receivable/Payable", "rule_type": "balance", "debit_account": "1300", "credit_account": "2100", "debit_entity_pattern": "*", "credit_entity_pattern": "*", "description": "Eliminate intercompany receivables against payables"},
+  {"doctype": "IC Elimination Rule", "name": "IC_002", "rule_id": "IC_002", "rule_name": "IC Revenue/COGS", "rule_type": "balance", "debit_account": "4000", "credit_account": "5000", "debit_entity_pattern": "*", "credit_entity_pattern": "*", "description": "Eliminate intercompany revenue against COGS"},
+  {"doctype": "IC Elimination Rule", "name": "IC_003", "rule_id": "IC_003", "rule_name": "IC Dividend", "rule_type": "balance", "debit_account": "8100", "credit_account": "3200", "debit_entity_pattern": "*", "credit_entity_pattern": "*", "description": "Eliminate intercompany dividends"}
+]

@@ -1,0 +1,6 @@
+[
+  {"doctype": "Scenario Definition", "name": "ACTUAL", "scenario_id": "ACTUAL", "scenario_name": "Actuals", "scenario_type": "actual", "is_active": 1},
+  {"doctype": "Scenario Definition", "name": "BUDGET", "scenario_id": "BUDGET", "scenario_name": "Budget 2024", "scenario_type": "budget", "is_active": 1},
+  {"doctype": "Scenario Definition", "name": "FORECAST", "scenario_id": "FORECAST", "scenario_name": "Forecast Q3", "scenario_type": "forecast", "is_active": 1},
+  {"doctype": "Scenario Definition", "name": "WHATIF_01", "scenario_id": "WHATIF_01", "scenario_name": "What-If Scenario 1", "scenario_type": "whatif", "is_active": 0}
+]

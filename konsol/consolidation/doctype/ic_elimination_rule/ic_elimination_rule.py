@@ -10,7 +10,7 @@ from konsol.clickhouse import sync_doctype
 
 class ICEliminationRule(Document):
     # Legacy sync (seed replacement)
-    CH_TABLE = "gold.ic_elimination_rules"
+    CH_TABLE = "epm_gold.ic_elimination_rules"
     CH_LEGACY_FIELD_MAP = {
         "rule_id": "rule_id",
         "rule_name": "rule_name",

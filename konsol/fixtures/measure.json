@@ -1,0 +1,6 @@
+[
+  {"doctype": "Measure", "name": "period_debit", "measure_name": "period_debit", "expression": "sum(debit_amount)", "label": "Debit", "cube_type": "sum"},
+  {"doctype": "Measure", "name": "period_credit", "measure_name": "period_credit", "expression": "sum(credit_amount)", "label": "Credit", "cube_type": "sum"},
+  {"doctype": "Measure", "name": "period_net_amount", "measure_name": "period_net_amount", "expression": "sum(accounting_currency_amount)", "label": "Net Amount", "cube_type": "sum"},
+  {"doctype": "Measure", "name": "transaction_count", "measure_name": "transaction_count", "expression": "count(*)", "label": "Transaction Count", "cube_type": "count"}
+]

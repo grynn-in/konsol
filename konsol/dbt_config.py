@@ -4,6 +4,7 @@ Reads Dimension, Measure, and Fiscal Period docs from Frappe and
 regenerates the vars section of dbt_project.yml, preserving all
 non-vars sections (models, seeds, paths, etc.).
 """
+import frappe
 import yaml
 
 
@@ -24,7 +25,6 @@ def _merge_vars_into_yaml(original, new_vars):
 
 def _get_dbt_project_path():
     """Get dbt_project.yml path from EPM Settings."""
-    import frappe
     settings = frappe.get_single("EPM Settings")
     base = settings.dbt_project_path or "/home/pd/open_epm/dbt_project"
     return f"{base}/dbt_project.yml"
@@ -32,7 +32,6 @@ def _get_dbt_project_path():
 
 def _build_dimensions_vars():
     """Build dimensions list from Dimension doctype."""
-    import frappe
     docs = frappe.get_all(
         "Dimension",
         fields=["dimension_name", "source_column", "label", "cube_type",
@@ -57,7 +56,6 @@ def _build_dimensions_vars():
 
 def _build_measures_vars():
     """Build base_measures list from Measure doctype."""
-    import frappe
     docs = frappe.get_all(
         "Measure",
         fields=["measure_name", "expression", "label", "cube_type"],
@@ -83,7 +81,6 @@ def _build_fiscal_vars():
         - fiscal_quarter_mapping: dict {period: quarter} for 1-12
         - fiscal_half_mapping: dict {period: half} for 1-12
     """
-    import frappe
     docs = frappe.get_all(
         "Fiscal Period",
         fields=["fiscal_period", "label", "quarter", "half"],
@@ -127,8 +124,15 @@ def regenerate_vars():
     """
     path = _get_dbt_project_path()
 
-    with open(path) as f:
-        original = yaml.safe_load(f)
+    try:
+        with open(path) as f:
+            original = yaml.safe_load(f)
+    except FileNotFoundError:
+        frappe.logger().warning(
+            f"dbt_project.yml not found at {path} — skipping vars regeneration. "
+            f"Set dbt_project_path in EPM Settings if dbt is on a different host."
+        )
+        return
 
     # Start with existing vars to preserve any manual entries
     new_vars = {}
