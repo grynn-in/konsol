@@ -20,47 +20,36 @@ SCOPE_RISK = {
 
 class PipelineBuildRequest(Document):
     def before_save(self):
-        """Auto-set risk level and populate sync info from EPM Settings."""
+        """Auto-set risk level, apply workflow transitions, populate sync info.
+
+        State transitions happen here so we can set self.workflow_state directly
+        (written with the save — no recursion, no db_set).
+        """
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
             self.requested_by = frappe.session.user
 
+        # Workflow transitions (only on new docs or when still Draft)
+        if self.workflow_state == "Draft":
+            if self.risk_level == "low":
+                self.workflow_state = "Approved"
+                self.approved_by = "Administrator"
+            else:
+                self.workflow_state = "Pending Review"
+
         # Populate sync info from EPM Settings
         self._populate_sync_info()
 
     def on_update(self):
-        """Handle workflow transitions.
-
-        - Draft with low risk → auto-approve → enqueue build
-        - Draft with high risk → Pending Review
-        - Approved → enqueue build
-
-        Uses db_set() for state transitions to avoid recursive on_update.
-        """
-        if self.workflow_state == "Draft":
-            if self.risk_level == "low":
-                # Auto-approve: update state without re-triggering on_update
-                frappe.db.set_value(
-                    self.doctype, self.name,
-                    {"workflow_state": "Approved", "approved_by": "Administrator"},
-                    update_modified=True,
-                )
-                self.reload()
-                self._enqueue_build()
-            else:
-                frappe.db.set_value(
-                    self.doctype, self.name,
-                    "workflow_state", "Pending Review",
-                    update_modified=True,
-                )
-                frappe.publish_realtime(
-                    "build_request_pending",
-                    {"name": self.name, "scope": self.build_scope},
-                )
-
-        elif self.workflow_state == "Approved":
+        """Post-save side effects: enqueue builds, notify on pending review."""
+        if self.workflow_state == "Approved":
             self._enqueue_build()
+        elif self.workflow_state == "Pending Review":
+            frappe.publish_realtime(
+                "build_request_pending",
+                {"name": self.name, "scope": self.build_scope},
+            )
 
     def _populate_sync_info(self):
         """Read Airbyte sync status from EPM Settings into display fields."""

@@ -319,14 +319,27 @@ def test_pbr_on_update_handles_all_draft_paths():
     assert "Approved" in content, "low-risk path must transition to Approved"
 
 
-def test_pbr_on_update_uses_db_set():
-    """on_update must use db_set/set_value (not self.save) to avoid recursion."""
+def test_pbr_before_save_sets_workflow_state():
+    """before_save must set self.workflow_state directly (no db_set hack)."""
+    tree = _parse(PBR_PY)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "before_save":
+            body_src = ast.dump(node)
+            assert "workflow_state" in body_src, (
+                "before_save must set self.workflow_state directly"
+            )
+            return
+    assert False, "before_save not found"
+
+
+def test_pbr_on_update_has_no_db_set():
+    """on_update must NOT use db_set — state transitions belong in before_save."""
     tree = _parse(PBR_PY)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "on_update":
             body_src = ast.dump(node)
-            assert "db_set" in body_src or "set_value" in body_src, (
-                "on_update must use db_set/set_value to avoid recursive save"
+            assert "db_set" not in body_src and "set_value" not in body_src, (
+                "on_update must not use db_set/set_value — use before_save instead"
             )
             return
     assert False, "on_update not found"
