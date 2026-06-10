@@ -35,15 +35,25 @@ class PipelineBuildRequest(Document):
         - Draft with low risk → auto-approve → enqueue build
         - Draft with high risk → Pending Review
         - Approved → enqueue build
+
+        Uses db_set() for state transitions to avoid recursive on_update.
         """
         if self.workflow_state == "Draft":
             if self.risk_level == "low":
-                self.workflow_state = "Approved"
-                self.approved_by = "System"
-                self.save(ignore_permissions=True)
+                # Auto-approve: update state without re-triggering on_update
+                frappe.db.set_value(
+                    self.doctype, self.name,
+                    {"workflow_state": "Approved", "approved_by": "System"},
+                    update_modified=True,
+                )
+                self.reload()
+                self._enqueue_build()
             else:
-                self.workflow_state = "Pending Review"
-                self.save(ignore_permissions=True)
+                frappe.db.set_value(
+                    self.doctype, self.name,
+                    "workflow_state", "Pending Review",
+                    update_modified=True,
+                )
                 frappe.publish_realtime(
                     "build_request_pending",
                     {"name": self.name, "scope": self.build_scope},
