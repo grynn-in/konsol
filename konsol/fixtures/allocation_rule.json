@@ -1,0 +1,5 @@
+[
+  {"doctype": "Allocation Rule", "name": "ALLOC_001", "allocation_rule_id": "ALLOC_001", "rule_name": "IT Cost Allocation", "step_order": 1, "source_account": "7100", "source_cost_center": "IT", "driver_type": "headcount", "target_account": "7100", "description": "Allocate IT costs to departments by headcount"},
+  {"doctype": "Allocation Rule", "name": "ALLOC_002", "allocation_rule_id": "ALLOC_002", "rule_name": "Facility Cost Allocation", "step_order": 2, "source_account": "7200", "source_cost_center": "FACILITY", "driver_type": "sqm", "target_account": "7200", "description": "Allocate facility costs by square meters"},
+  {"doctype": "Allocation Rule", "name": "ALLOC_003", "allocation_rule_id": "ALLOC_003", "rule_name": "Management Fee Allocation", "step_order": 3, "source_account": "7300", "source_cost_center": "MGMT", "driver_type": "revenue", "target_account": "7300", "description": "Allocate management fees by revenue share"}
+]

@@ -127,8 +127,16 @@ def regenerate_vars():
     """
     path = _get_dbt_project_path()
 
-    with open(path) as f:
-        original = yaml.safe_load(f)
+    try:
+        with open(path) as f:
+            original = yaml.safe_load(f)
+    except FileNotFoundError:
+        import frappe
+        frappe.logger().warning(
+            f"dbt_project.yml not found at {path} — skipping vars regeneration. "
+            f"Set dbt_project_path in EPM Settings if dbt is on a different host."
+        )
+        return
 
     # Start with existing vars to preserve any manual entries
     new_vars = {}

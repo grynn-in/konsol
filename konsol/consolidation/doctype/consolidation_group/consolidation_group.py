@@ -12,7 +12,7 @@ from konsol.clickhouse import sync_doctype, sync_table
 
 class ConsolidationGroup(NestedSet):
     # Legacy sync to gold.* (seed replacement)
-    CH_TABLE = "gold.consolidation_groups"
+    CH_TABLE = "epm_gold.consolidation_groups"
     CH_FIELD_MAP = {
         "consolidation_group": "consolidation_group",
         "data_area_id": "data_area_id",

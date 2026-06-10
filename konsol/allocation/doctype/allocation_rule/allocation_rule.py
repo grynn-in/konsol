@@ -13,7 +13,7 @@ from konsol.clickhouse import sync_doctype, sync_table
 
 class AllocationRule(Document):
     # Legacy sync (seed replacement)
-    CH_TABLE = "gold.allocation_rules"
+    CH_TABLE = "epm_gold.allocation_rules"
     CH_LEGACY_FIELD_MAP = {
         "allocation_rule_id": "allocation_rule_id",
         "rule_name": "rule_name",

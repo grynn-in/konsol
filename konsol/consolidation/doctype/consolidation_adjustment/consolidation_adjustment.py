@@ -12,7 +12,7 @@ from konsol.clickhouse import sync_doctype
 
 class ConsolidationAdjustment(Document):
     # Legacy sync (seed replacement)
-    CH_TABLE = "gold.consolidation_adjustments"
+    CH_TABLE = "epm_gold.consolidation_adjustments"
     CH_LEGACY_FIELD_MAP = {
         "consolidation_group": "consolidation_group",
         "adjustment_type": "adjustment_type",

@@ -6,7 +6,7 @@ from konsol.clickhouse import sync_doctype
 
 
 class ScenarioDefinition(Document):
-    CH_TABLE = "gold.scenario_definitions"
+    CH_TABLE = "epm_gold.scenario_definitions"
     CH_FIELD_MAP = {
         "scenario_id": "scenario_id",
         "scenario_name": "scenario_name",
