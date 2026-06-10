@@ -1,0 +1,125 @@
+{
+  "name": "Fact Table",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:fact_name",
+  "fields": [
+    {
+      "fieldname": "fact_name",
+      "fieldtype": "Data",
+      "label": "Fact Name",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "e.g. gl_journal_entries"
+    },
+    {
+      "fieldname": "label",
+      "fieldtype": "Data",
+      "label": "Label",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Display name"
+    },
+    {
+      "fieldname": "source_type",
+      "fieldtype": "Select",
+      "label": "Source Type",
+      "options": "ERP GL\nBudget\nStatistical\nSub-ledger",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "clickhouse_table",
+      "fieldtype": "Data",
+      "label": "ClickHouse Table",
+      "reqd": 1,
+      "description": "e.g. epm_gold.gold_trial_balance"
+    },
+    {
+      "fieldname": "dbt_model",
+      "fieldtype": "Data",
+      "label": "dbt Model",
+      "description": "e.g. gold_trial_balance"
+    },
+    {
+      "fieldname": "scenario_key",
+      "fieldtype": "Data",
+      "label": "Scenario Key",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "e.g. actuals, budget, variance"
+    },
+    {
+      "fieldname": "has_scenario_id",
+      "fieldtype": "Check",
+      "label": "Has Scenario ID",
+      "default": "0",
+      "description": "Table supports scenario_id filtering"
+    },
+    {
+      "fieldname": "section_measures_dims",
+      "fieldtype": "Section Break",
+      "label": "Measures & Dimensions"
+    },
+    {
+      "fieldname": "measures",
+      "fieldtype": "Small Text",
+      "label": "Measures",
+      "description": "JSON array of allowed measure names, e.g. [\"period_net_amount\", \"period_debit\"]"
+    },
+    {
+      "fieldname": "col_break_2",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "dimensions",
+      "fieldtype": "Small Text",
+      "label": "Dimensions",
+      "description": "JSON array of dimension names in this fact, e.g. [\"dim_cost_center\"]"
+    },
+    {
+      "fieldname": "section_reroute",
+      "fieldtype": "Section Break",
+      "label": "Measure Reroute",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "reroute_measure",
+      "fieldtype": "Data",
+      "label": "Reroute Measure",
+      "description": "Measure name that gets rerouted (optional)"
+    },
+    {
+      "fieldname": "reroute_table",
+      "fieldtype": "Data",
+      "label": "Reroute Table",
+      "description": "Alternate table for the rerouted measure"
+    },
+    {
+      "fieldname": "reroute_column",
+      "fieldtype": "Data",
+      "label": "Reroute Column",
+      "description": "Alternate column name in the reroute table"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}
