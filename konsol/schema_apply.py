@@ -17,6 +17,7 @@ from konsol.clickhouse import execute as ch_execute, get_connection
 from konsol.dbt_config import regenerate_vars
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
+_SAFE_TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 
 # ClickHouse type mapping for Cube types
 _CH_TYPE_MAP = {
@@ -69,7 +70,7 @@ def apply_schema(run_dbt=False):
     if run_dbt or frappe.form_dict.get("run_dbt"):
         try:
             frappe.enqueue(
-                "konsol.tasks.run_dbt_build",
+                "konsol.tasks.run_dbt_build_async",
                 queue="long",
                 timeout=600,
             )
@@ -98,6 +99,11 @@ def _apply_clickhouse_columns():
 
     added = []
     for fact in fact_tables:
+        if not _SAFE_TABLE_NAME.match(fact.clickhouse_table or ""):
+            frappe.log_error(
+                f"schema_apply: skipping invalid table name: {fact.clickhouse_table}",
+            )
+            continue
         fact_dims = set(json.loads(fact.dimensions or "[]"))
         for dim in dimensions:
             if dim.dimension_name not in fact_dims:
