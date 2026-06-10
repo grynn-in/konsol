@@ -52,17 +52,35 @@ class BudgetInput(Document):
                 )
 
     def _sync_to_clickhouse(self):
-        """Sync all approved Budget Input docs to ClickHouse."""
+        """Sync all approved Budget Input docs to ClickHouse.
+
+        Reads in_budget dimensions dynamically instead of hardcoding columns.
+        """
+        budget_dims = frappe.get_all(
+            "Dimension",
+            filters={"in_budget": 1},
+            fields=["dimension_name"],
+            order_by="dimension_name asc",
+            limit_page_length=0,
+        )
+        dim_names = [d.dimension_name for d in budget_dims]
+
         columns = [
             "scenario_id", "data_area_id", "fiscal_year", "main_account",
-            "dim_cost_center", "dim_department", "fiscal_period", "amount",
-            "layer",
+            *dim_names,
+            "fiscal_period", "amount", "layer",
         ]
+
+        base_fields = [
+            "name", "scenario_id", "data_area_id", "fiscal_year", "main_account",
+        ]
+        # Include dimension fields in the query
+        doc_fields = base_fields + dim_names
+
         docs = frappe.get_all(
             "Budget Input",
             filters={"workflow_state": "Approved"},
-            fields=["name", "scenario_id", "data_area_id", "fiscal_year",
-                     "main_account", "dim_cost_center", "dim_department"],
+            fields=doc_fields,
             limit_page_length=0,
         )
         rows = []
@@ -74,13 +92,16 @@ class BudgetInput(Document):
                 limit_page_length=0,
             )
             for p in periods:
-                rows.append([
+                row = [
                     doc.scenario_id, doc.data_area_id, doc.fiscal_year,
-                    doc.main_account, doc.dim_cost_center or "",
-                    doc.dim_department or "", p.fiscal_period, p.amount,
-                    p.layer,
-                ])
-        sync_table("gold.budget_monthly_input", columns, rows)
+                    doc.main_account,
+                ]
+                for dn in dim_names:
+                    row.append(doc.get(dn) or "")
+                row.extend([p.fiscal_period, p.amount, p.layer])
+                rows.append(row)
+
+        sync_table("epm_gold.budget_monthly_input", columns, rows)
 
     @frappe.whitelist()
     def spread_annual(self):

@@ -1,0 +1,50 @@
+[
+  {
+    "doctype": "Fact Table",
+    "name": "gl_journal_entries",
+    "fact_name": "gl_journal_entries",
+    "label": "GL Journal Entries",
+    "source_type": "ERP GL",
+    "clickhouse_table": "epm_gold.gold_trial_balance",
+    "dbt_model": "gold_trial_balance",
+    "scenario_key": "actuals",
+    "has_scenario_id": 0,
+    "measures": "[\"period_debit\", \"period_credit\", \"period_net_amount\", \"transaction_count\", \"ytd_net_amount\"]",
+    "dimensions": "[\"dim_cost_center\", \"dim_department\", \"dim_business_unit\"]",
+    "reroute_measure": "ytd_net_amount",
+    "reroute_table": "epm_gold.gold_balance_sheet",
+    "reroute_column": "cumulative_balance"
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "budget_input",
+    "fact_name": "budget_input",
+    "label": "Budget Input",
+    "source_type": "Budget",
+    "clickhouse_table": "epm_gold.gold_spread_budget",
+    "dbt_model": "gold_spread_budget",
+    "scenario_key": "budget",
+    "has_scenario_id": 1,
+    "measures": "[\"period_amount\", \"annual_amount\"]",
+    "dimensions": "[\"dim_cost_center\", \"dim_department\"]",
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "variance_analysis",
+    "fact_name": "variance_analysis",
+    "label": "Variance Analysis",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_gold.gold_variance_analysis",
+    "dbt_model": "gold_variance_analysis",
+    "scenario_key": "variance",
+    "has_scenario_id": 0,
+    "measures": "[\"actual_amount\", \"budget_amount\", \"variance_abs\", \"variance_pct\", \"variance_favorable\"]",
+    "dimensions": "[\"dim_cost_center\", \"dim_department\"]",
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  }
+]
