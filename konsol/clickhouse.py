@@ -174,7 +174,7 @@ def _sync_rows_inner(table, columns, rows, key_columns, key_values):
             where_parts.append(f"{col} = '{escaped}'")
     where_clause = " AND ".join(where_parts)
 
-    execute(f"ALTER TABLE {table} DELETE WHERE {where_clause}")
+    execute(f"ALTER TABLE {table} DELETE WHERE {where_clause} SETTINGS mutations_sync = 1")
 
     if not rows:
         return
