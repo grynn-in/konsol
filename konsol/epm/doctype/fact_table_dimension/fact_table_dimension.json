@@ -1,0 +1,19 @@
+{
+  "name": "Fact Table Dimension",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "fields": [
+    {
+      "fieldname": "dimension",
+      "fieldtype": "Link",
+      "label": "Dimension",
+      "options": "Dimension",
+      "reqd": 1,
+      "in_list_view": 1
+    }
+  ]
+}

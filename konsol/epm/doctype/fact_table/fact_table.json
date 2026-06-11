@@ -83,10 +83,19 @@
       "fieldtype": "Column Break"
     },
     {
+      "fieldname": "fact_dimensions",
+      "fieldtype": "Table",
+      "label": "Dimensions",
+      "options": "Fact Table Dimension",
+      "description": "Dimensions available in this fact table"
+    },
+    {
       "fieldname": "dimensions",
       "fieldtype": "Small Text",
-      "label": "Dimensions",
-      "description": "JSON array of dimension names in this fact, e.g. [\"dim_cost_center\"]"
+      "label": "Dimensions (JSON)",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Auto-populated from Dimensions child table on save"
     },
     {
       "fieldname": "section_reroute",

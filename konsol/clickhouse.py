@@ -130,6 +130,76 @@ def _sync_table_inner(table, columns, rows):
         execute(f"INSERT INTO {table} ({col_list}) VALUES {values_sql}")
 
 
+def sync_rows(table, columns, rows, key_columns, key_values):
+    """Delete rows matching key, then insert new rows. Incremental sync.
+
+    Unlike sync_table (TRUNCATE all), this only replaces rows matching the
+    given key — safe for concurrent writes from different docs.
+
+    Args:
+        table: Fully qualified table name (e.g. 'epm_gold.budget_monthly_input').
+        columns: List of column names for INSERT.
+        rows: List of tuples/lists matching column order.
+        key_columns: List of column names forming the unique key.
+        key_values: Dict mapping key column names to values for DELETE WHERE.
+    """
+    try:
+        _sync_rows_inner(table, columns, rows, key_columns, key_values)
+        _sync_failures.pop(table, None)
+    except requests.exceptions.ConnectionError as e:
+        _record_sync_failure(table, "connection_refused", str(e))
+        frappe.logger().error(
+            f"ClickHouse SYNC FAILED (connection refused): {table}"
+        )
+    except requests.exceptions.Timeout as e:
+        _record_sync_failure(table, "timeout", str(e))
+        frappe.logger().error(f"ClickHouse SYNC FAILED (timeout): {table}")
+    except requests.exceptions.HTTPError as e:
+        _record_sync_failure(table, "http_error", str(e))
+        frappe.logger().error(
+            f"ClickHouse SYNC FAILED (HTTP {e.response.status_code}): {table}"
+        )
+
+
+def _sync_rows_inner(table, columns, rows, key_columns, key_values):
+    """Internal: DELETE by key + INSERT. Raises on failure."""
+    # Build WHERE clause for DELETE
+    where_parts = []
+    for col in key_columns:
+        val = key_values[col]
+        if isinstance(val, (int, float)):
+            where_parts.append(f"{col} = {val}")
+        else:
+            escaped = str(val).replace("\\", "\\\\").replace("'", "\\'")
+            where_parts.append(f"{col} = '{escaped}'")
+    where_clause = " AND ".join(where_parts)
+
+    execute(f"ALTER TABLE {table} DELETE WHERE {where_clause}")
+
+    if not rows:
+        return
+
+    col_list = ", ".join(columns)
+    value_rows = []
+    for row in rows:
+        vals = []
+        for v in row:
+            if v is None:
+                vals.append("NULL")
+            elif isinstance(v, (int, float)):
+                vals.append(str(v))
+            else:
+                escaped = str(v).replace("\\", "\\\\").replace("'", "\\'")
+                vals.append(f"'{escaped}'")
+        value_rows.append(f"({', '.join(vals)})")
+
+    batch_size = 1000
+    for i in range(0, len(value_rows), batch_size):
+        batch = value_rows[i:i + batch_size]
+        values_sql = ", ".join(batch)
+        execute(f"INSERT INTO {table} ({col_list}) VALUES {values_sql}")
+
+
 def sync_doctype(doctype, table, field_map):
     """Fetch all Frappe docs of a doctype and sync to ClickHouse.
 
