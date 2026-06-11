@@ -311,12 +311,17 @@ def test_pbr_auto_approve_uses_administrator():
     assert '"Administrator"' in content, "approved_by should use 'Administrator'"
 
 
-def test_pbr_on_update_handles_all_draft_paths():
-    """on_update must handle both low-risk (auto-approve) and high-risk (pending review)."""
-    content = _read(PBR_PY)
-    assert "risk_level" in content, "on_update must check risk_level"
-    assert "Pending Review" in content, "high-risk path must transition to Pending Review"
-    assert "Approved" in content, "low-risk path must transition to Approved"
+def test_pbr_before_save_handles_all_draft_paths():
+    """before_save must handle both low-risk (auto-approve) and high-risk (pending review)."""
+    tree = _parse(PBR_PY)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "before_save":
+            body_src = ast.dump(node)
+            assert "risk_level" in body_src, "before_save must check risk_level"
+            assert "Pending Review" in body_src, "high-risk path must transition to Pending Review"
+            assert "Approved" in body_src, "low-risk path must transition to Approved"
+            return
+    assert False, "before_save not found"
 
 
 def test_pbr_before_save_sets_workflow_state():

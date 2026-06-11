@@ -768,16 +768,15 @@ def airbyte_sync_complete():
     Auth: accepts either a logged-in Frappe session OR a shared secret via
     X-Webhook-Secret header (configured in EPM Settings.webhook_secret).
     """
+    settings = frappe.get_single("EPM Settings")
+
     if frappe.session.user == "Guest":
         secret = frappe.request.headers.get("X-Webhook-Secret", "")
-        settings = frappe.get_single("EPM Settings")
         expected = (settings.get_password("webhook_secret", raise_exception=False) or "")
         if not expected or secret != expected:
             frappe.throw("Unauthorized", frappe.AuthenticationError)
 
     data = _get_json_body()
-
-    settings = frappe.get_single("EPM Settings")
     settings.last_airbyte_sync_at = now_datetime()
     settings.last_airbyte_sync_status = data.get("status", "Success")
     settings.last_airbyte_sync_rows = int(data.get("rows_synced", 0))
