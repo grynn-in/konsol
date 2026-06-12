@@ -1,28 +1,37 @@
 """TDD tests for Consolidation Group, IC Elimination Rule, Consolidation Adjustment."""
 import ast
+import glob
 import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _doctype_file(doctype_dir, ext):
+    """Locate a doctype file in whichever konsol module owns it.
+
+    Consolidation doctypes live under konsol/consolidation, not konsol/epm —
+    resolve dynamically so the tests survive module reorganisation.
+    """
+    matches = glob.glob(os.path.join(
+        APP_DIR, "*", "doctype", doctype_dir, f"{doctype_dir}.{ext}"))
+    return matches[0] if matches else None
+
+
 def _load_json(doctype_dir):
-    path = os.path.join(APP_DIR, "epm", "doctype", doctype_dir, f"{doctype_dir}.json")
-    with open(path) as f:
+    with open(_doctype_file(doctype_dir, "json")) as f:
         return json.load(f)
 
 
 def _load_py(doctype_dir):
-    path = os.path.join(APP_DIR, "epm", "doctype", doctype_dir, f"{doctype_dir}.py")
-    with open(path) as f:
+    with open(_doctype_file(doctype_dir, "py")) as f:
         return f.read()
 
 
 # --- Consolidation Group ---
 
 def test_consolidation_group_json_exists():
-    assert os.path.exists(os.path.join(
-        APP_DIR, "epm", "doctype", "consolidation_group", "consolidation_group.json"))
+    assert _doctype_file("consolidation_group", "json") is not None
 
 
 def test_consolidation_group_has_required_fields():
@@ -59,8 +68,7 @@ def test_consolidation_group_ch_sync():
 # --- IC Elimination Rule ---
 
 def test_ic_elimination_rule_json_exists():
-    assert os.path.exists(os.path.join(
-        APP_DIR, "epm", "doctype", "ic_elimination_rule", "ic_elimination_rule.json"))
+    assert _doctype_file("ic_elimination_rule", "json") is not None
 
 
 def test_ic_elimination_rule_has_required_fields():
@@ -93,8 +101,7 @@ def test_ic_elimination_rule_ch_sync():
 # --- Consolidation Adjustment ---
 
 def test_consolidation_adjustment_json_exists():
-    assert os.path.exists(os.path.join(
-        APP_DIR, "epm", "doctype", "consolidation_adjustment", "consolidation_adjustment.json"))
+    assert _doctype_file("consolidation_adjustment", "json") is not None
 
 
 def test_consolidation_adjustment_has_required_fields():
@@ -126,7 +133,7 @@ def test_consolidation_adjustment_ch_sync():
     assert "gold.consolidation_adjustments" in content
 
 
-def test_all_consolidation_doctypes_module_epm():
+def test_all_consolidation_doctypes_module_consolidation():
     for dt in ["consolidation_group", "ic_elimination_rule", "consolidation_adjustment"]:
         meta = _load_json(dt)
-        assert meta["module"] == "EPM", f"{dt} not in EPM module"
+        assert meta["module"] == "Consolidation", f"{dt} not in Consolidation module"

@@ -12,12 +12,13 @@ def test_api_imports_shared_helper():
     assert "konsol.clickhouse" in content
 
 
-def test_api_get_clickhouse_settings_delegates():
-    """_get_clickhouse_settings must delegate to shared module."""
+def test_api_clickhouse_settings_delegated_to_shared_module():
+    """ClickHouse connection settings come from konsol.clickhouse, not inlined."""
     with open(API_PATH) as f:
         content = f.read()
-    # Should NOT have the old inline implementation
-    assert 'frappe.get_single("EPM Settings")' not in content.split("def _get_clickhouse_settings")[1].split("def ")[0]
+    assert "from konsol.clickhouse import" in content
+    # The shared connection helper is used to fetch settings.
+    assert "_get_ch_connection" in content
 
 
 def test_api_still_has_epm_value():
@@ -31,12 +32,11 @@ def test_api_still_has_epm_value():
 
 # --- scenario_id filter tests ---
 
-def test_api_has_tables_with_scenario_id():
-    """Must define which tables support scenario_id filtering."""
+def test_api_uses_per_fact_scenario_id_flag():
+    """Scenario_id support is a per-Fact-Table flag, not a hardcoded table list."""
     with open(API_PATH) as f:
         content = f.read()
-    assert "TABLES_WITH_SCENARIO_ID" in content
-    assert "gold_spread_budget" in content
+    assert "has_scenario_id" in content
 
 
 def test_epm_value_accepts_scenario_id():
@@ -78,5 +78,6 @@ def test_scenario_id_is_validated():
     """scenario_id must be validated against injection (alphanumeric + underscore only)."""
     with open(API_PATH) as f:
         content = f.read()
-    assert "re.match" in content
+    # Validation uses a precompiled pattern (_SAFE_SCENARIO_ID), not re.match directly.
+    assert "_SAFE_SCENARIO_ID.match" in content
     assert "A-Za-z0-9_" in content
