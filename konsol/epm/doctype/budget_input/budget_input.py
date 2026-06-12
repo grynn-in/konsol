@@ -10,7 +10,7 @@ Budget layers (base/challenge/management/board) are additive — final budget
 import frappe
 from frappe.model.document import Document
 
-from konsol.clickhouse import sync_table
+from konsol.clickhouse import sync_rows
 
 LAYER_ROLES = {
     "base": "Budget Submitter",
@@ -52,9 +52,10 @@ class BudgetInput(Document):
                 )
 
     def _sync_to_clickhouse(self):
-        """Sync all approved Budget Input docs to ClickHouse.
+        """Incremental sync: only this doc's rows to ClickHouse.
 
-        Reads in_budget dimensions dynamically instead of hardcoding columns.
+        Deletes existing rows matching this doc's unique key, then inserts
+        current period rows. Does NOT re-sync all approved docs.
         """
         budget_dims = frappe.get_all(
             "Dimension",
@@ -71,37 +72,30 @@ class BudgetInput(Document):
             "fiscal_period", "amount", "layer",
         ]
 
-        base_fields = [
-            "name", "scenario_id", "data_area_id", "fiscal_year", "main_account",
-        ]
-        # Include dimension fields in the query
-        doc_fields = base_fields + dim_names
+        # Unique key for this doc
+        key_columns = ["scenario_id", "data_area_id", "fiscal_year", "main_account"]
+        key_values = {
+            "scenario_id": self.scenario_id,
+            "data_area_id": self.data_area_id,
+            "fiscal_year": int(self.fiscal_year),
+            "main_account": self.main_account,
+        }
 
-        docs = frappe.get_all(
-            "Budget Input",
-            filters={"workflow_state": "Approved"},
-            fields=doc_fields,
-            limit_page_length=0,
-        )
+        # Build rows from this doc's periods only
         rows = []
-        for doc in docs:
-            periods = frappe.get_all(
-                "Budget Input Child",
-                filters={"parent": doc.name},
-                fields=["fiscal_period", "amount", "layer"],
-                limit_page_length=0,
-            )
-            for p in periods:
+        if self.workflow_state == "Approved":
+            for p in self.periods:
                 row = [
-                    doc.scenario_id, doc.data_area_id, doc.fiscal_year,
-                    doc.main_account,
+                    self.scenario_id, self.data_area_id, int(self.fiscal_year),
+                    self.main_account,
                 ]
                 for dn in dim_names:
-                    row.append(doc.get(dn) or "")
+                    row.append(self.get(dn) or "")
                 row.extend([p.fiscal_period, p.amount, p.layer])
                 rows.append(row)
 
-        sync_table("epm_gold.budget_monthly_input", columns, rows)
+        # DELETE old rows for this key, INSERT new ones (empty rows on trash/unapprove)
+        sync_rows("epm_gold.budget_monthly_input", columns, rows, key_columns, key_values)
 
     @frappe.whitelist()
     def spread_annual(self):

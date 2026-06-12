@@ -35,7 +35,13 @@ def apply_schema(run_dbt=False):
 
     Returns:
         Summary dict of what was applied.
+
+    Raises:
+        frappe.PermissionError: If caller lacks EPM Admin role.
     """
+    allowed_roles = {"EPM Admin", "System Manager", "Administrator"}
+    if not allowed_roles.intersection(set(frappe.get_roles())):
+        frappe.throw("Only EPM Admin users can apply schema changes", frappe.PermissionError)
     summary = {
         "vars_updated": False,
         "columns_added": [],

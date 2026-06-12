@@ -30,8 +30,8 @@ class PipelineBuildRequest(Document):
         if not self.requested_by:
             self.requested_by = frappe.session.user
 
-        # Workflow transitions (only on new docs or when still Draft)
-        if self.workflow_state == "Draft":
+        # Workflow transitions — only on first save or explicit state reset
+        if self.workflow_state == "Draft" and (self.is_new() or self.has_value_changed("workflow_state")):
             if self.risk_level == "low":
                 self.workflow_state = "Approved"
                 self.approved_by = "Administrator"
@@ -42,7 +42,14 @@ class PipelineBuildRequest(Document):
         self._populate_sync_info()
 
     def on_update(self):
-        """Post-save side effects: enqueue builds, notify on pending review."""
+        """Post-save side effects: enqueue builds, notify on pending review.
+
+        Only fires on the save where the state actually changed — editing an
+        already-Approved doc won't re-enqueue a duplicate build.
+        """
+        if not self.has_value_changed("workflow_state"):
+            return
+
         if self.workflow_state == "Approved":
             self._enqueue_build()
         elif self.workflow_state == "Pending Review":
