@@ -24,7 +24,7 @@ def apply_and_rebuild(doc, action):
 
 
 def _create_pipeline_run(doc, action):
-    """Create a Pipeline Run and enqueue a debounced dbt build."""
+    """Create a Pipeline Run and enqueue a dbt build linked to it."""
     run = frappe.get_doc({
         "doctype": "Pipeline Run",
         "status": "Queued",
@@ -33,5 +33,11 @@ def _create_pipeline_run(doc, action):
     })
     run.insert(ignore_permissions=True)
 
-    from konsol.tasks import run_dbt_build_async
-    run_dbt_build_async(doctype=doc.doctype, docname=doc.name)
+    frappe.enqueue(
+        "konsol.tasks._run_dbt_build_background",
+        queue="default",
+        timeout=600,
+        doctype=doc.doctype,
+        docname=doc.name,
+        pipeline_run=run.name,
+    )

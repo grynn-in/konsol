@@ -245,8 +245,11 @@ def run_dbt_build_async(doctype=None, docname=None):
     )
 
 
-def _run_dbt_build_background(doctype=None, docname=None):
-    """Background worker: execute dbt build and log result."""
+def _run_dbt_build_background(doctype=None, docname=None, pipeline_run=None):
+    """Background worker: execute dbt build and log result.
+
+    If pipeline_run is provided, updates its status on completion/failure.
+    """
     settings = frappe.get_single("EPM Settings")
     project_path = settings.dbt_project_path
 
@@ -271,16 +274,38 @@ def _run_dbt_build_background(doctype=None, docname=None):
                 "dbt_build_complete",
                 {"status": "success", "summary": summary, "trigger": f"{doctype} {docname}"},
             )
+            _update_pipeline_run(pipeline_run, "Completed", dbt_result=summary)
         else:
             frappe.logger().error(f"dbt build failed (rc={result.returncode}):\n{output[-2000:]}")
             frappe.publish_realtime(
                 "dbt_build_complete",
                 {"status": "failed", "error": output[-500:]},
             )
+            _update_pipeline_run(pipeline_run, "Failed", error_log=output[-2000:])
     except subprocess.TimeoutExpired:
         frappe.logger().error("dbt build timed out after 300s")
+        _update_pipeline_run(pipeline_run, "Failed", error_log="dbt build timed out after 300s")
     except Exception as e:
         frappe.logger().error(f"dbt build error: {e}")
+        _update_pipeline_run(pipeline_run, "Failed", error_log=str(e))
+
+
+def _update_pipeline_run(pipeline_run, status, dbt_result=None, error_log=None):
+    """Update a Pipeline Run's status if name was provided."""
+    if not pipeline_run:
+        return
+    try:
+        doc = frappe.get_doc("Pipeline Run", pipeline_run)
+        doc.status = status
+        doc.completed_at = frappe.utils.now_datetime()
+        if dbt_result:
+            doc.dbt_result = dbt_result
+        if error_log:
+            doc.error_log = error_log
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+    except Exception:
+        frappe.log_error("Failed to update Pipeline Run status", frappe.get_traceback())
 
 
 # ---------------------------------------------------------------------------
