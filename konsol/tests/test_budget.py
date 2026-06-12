@@ -143,10 +143,14 @@ def test_budget_input_py_has_layer_role_mapping():
 
 
 def test_budget_input_py_ch_sync_on_approved():
-    """Must only sync to CH when workflow_state == Approved."""
+    """Must only sync to CH when workflow_state == Approved.
+
+    Budget write-back uses the incremental sync_rows helper (key-scoped
+    DELETE+INSERT), not the TRUNCATE-all sync_table.
+    """
     content = _load_py("budget_input")
     assert "Approved" in content
-    assert "sync_table" in content
+    assert "sync_rows" in content
 
 
 def test_budget_input_py_has_spread_method():

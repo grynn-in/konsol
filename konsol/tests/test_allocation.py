@@ -1,28 +1,38 @@
 """TDD tests for Allocation Rule and Allocation Driver doctypes."""
 import ast
+import glob
 import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _doctype_file(doctype_dir, ext):
+    """Locate a doctype file in whichever konsol module owns it.
+
+    Allocation/consolidation doctypes live under their own modules
+    (konsol/allocation, konsol/consolidation), not konsol/epm — resolve
+    dynamically so the tests survive module reorganisation.
+    """
+    matches = glob.glob(os.path.join(
+        APP_DIR, "*", "doctype", doctype_dir, f"{doctype_dir}.{ext}"))
+    return matches[0] if matches else None
+
+
 def _load_json(doctype_dir):
-    path = os.path.join(APP_DIR, "epm", "doctype", doctype_dir, f"{doctype_dir}.json")
-    with open(path) as f:
+    with open(_doctype_file(doctype_dir, "json")) as f:
         return json.load(f)
 
 
 def _load_py(doctype_dir):
-    path = os.path.join(APP_DIR, "epm", "doctype", doctype_dir, f"{doctype_dir}.py")
-    with open(path) as f:
+    with open(_doctype_file(doctype_dir, "py")) as f:
         return f.read()
 
 
 # --- Allocation Rule ---
 
 def test_allocation_rule_json_exists():
-    assert os.path.exists(os.path.join(
-        APP_DIR, "epm", "doctype", "allocation_rule", "allocation_rule.json"))
+    assert _doctype_file("allocation_rule", "json") is not None
 
 
 def test_allocation_rule_has_required_fields():
@@ -59,8 +69,7 @@ def test_allocation_rule_driver_type_options():
 # --- Allocation Driver ---
 
 def test_allocation_driver_json_exists():
-    assert os.path.exists(os.path.join(
-        APP_DIR, "epm", "doctype", "allocation_driver", "allocation_driver.json"))
+    assert _doctype_file("allocation_driver", "json") is not None
 
 
 def test_allocation_driver_has_required_fields():

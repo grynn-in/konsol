@@ -62,31 +62,32 @@ def test_api_has_single_value_endpoint():
 
 # --- Hardening tests ---
 
-def test_measure_whitelist_exists():
-    """ALLOWED_MEASURES dict must exist to prevent SQL injection."""
+def test_measure_allowlist_exists():
+    """Measures are constrained to a per-scenario allow-list.
+
+    The allow-list is data-driven (Fact Table.measures) rather than a hardcoded
+    dict, surfaced via _get_allowed_measures and enforced by _check_measure.
+    """
     with open(API_PATH) as f:
         content = f.read()
-    assert "ALLOWED_MEASURES" in content
+    assert "_get_allowed_measures" in content
+    assert "_check_measure" in content
 
 
-def test_measure_whitelist_covers_scenarios():
-    """Each scenario must have allowed measures defined."""
+def test_scenario_and_measure_validated_together():
+    """The single-value path validates scenario + measure before querying."""
     with open(API_PATH) as f:
         content = f.read()
-    # All three scenarios must be keys in ALLOWED_MEASURES
-    for scenario in ["actuals", "budget", "variance"]:
-        assert f'"{scenario}"' in content or f"'{scenario}'" in content
-    # Key measures must be whitelisted
-    for measure in ["period_net_amount", "period_amount", "variance_abs"]:
-        assert f'"{measure}"' in content or f"'{measure}'" in content
+    assert "_validate_scenario_and_measure" in content
+    assert "_check_scenario" in content
 
 
 def test_validate_measure_function_exists():
-    """_validate_measure must exist to reject non-whitelisted measures."""
+    """A measure-validation function must exist to reject unknown measures."""
     with open(API_PATH) as f:
         tree = ast.parse(f.read())
     func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-    assert "_validate_measure" in func_names
+    assert "_check_measure" in func_names
 
 
 def test_validate_measure_raises_on_invalid():
@@ -98,15 +99,16 @@ def test_validate_measure_raises_on_invalid():
     assert "Invalid measure" in content
 
 
-def test_no_fstring_measure_interpolation():
-    """Measure must NOT be f-string interpolated into SQL (SQL injection)."""
+def test_measure_is_regex_validated_before_sql():
+    """Measure must be identifier-validated before interpolation into SQL.
+
+    The query measure is interpolated into sum(...), but only after passing the
+    _SAFE_IDENTIFIER regex check, which blocks any SQL-injection payload.
+    """
     with open(API_PATH) as f:
         content = f.read()
-    # The old vulnerable pattern was f"sum({measure})"
-    # After fix, measure is used directly but only after whitelist validation
-    # Check that there's no unvalidated interpolation
-    assert "ALLOWED_MEASURES" in content
-    assert "_validate_measure" in content
+    assert "_SAFE_IDENTIFIER" in content
+    assert "_SAFE_IDENTIFIER.match(query_measure)" in content
 
 
 def test_batch_query_function_exists():
