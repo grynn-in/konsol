@@ -88,12 +88,13 @@ def apply_schema(run_dbt=False):
 
 
 def _apply_clickhouse_columns():
-    """For each dimension, ensure column exists on all relevant fact tables.
+    """For each Published dimension, ensure column exists on all relevant fact tables.
 
     Returns list of columns added (as "table.column" strings).
     """
     dimensions = frappe.get_all(
         "Dimension",
+        filters={"status": "Published"},
         fields=["dimension_name", "cube_type"],
         limit_page_length=0,
     )
@@ -139,14 +140,14 @@ def _apply_clickhouse_columns():
 
 
 def _sync_budget_custom_fields():
-    """Ensure Budget Input has Custom Fields for all in_budget dimensions.
+    """Ensure Budget Input has Custom Fields for all in_budget Published dimensions.
 
     Adds missing fields, removes orphaned ones.
     Returns list of field actions taken.
     """
     budget_dims = frappe.get_all(
         "Dimension",
-        filters={"in_budget": 1},
+        filters={"in_budget": 1, "status": "Published"},
         fields=["dimension_name", "label"],
         limit_page_length=0,
     )

@@ -458,7 +458,7 @@ def _upsert_budget_input(data):
     # Set dynamic dimension fields from data
     budget_dims = frappe.get_all(
         "Dimension",
-        filters={"in_budget": 1},
+        filters={"in_budget": 1, "status": "Published"},
         fields=["dimension_name"],
         limit_page_length=0,
     )
@@ -526,7 +526,7 @@ def budget_cell_save():
         # Set dynamic dimension fields
         budget_dims = frappe.get_all(
             "Dimension",
-            filters={"in_budget": 1},
+            filters={"in_budget": 1, "status": "Published"},
             fields=["dimension_name"],
             limit_page_length=0,
         )

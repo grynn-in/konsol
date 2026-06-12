@@ -57,11 +57,31 @@
       "fieldtype": "Data",
       "label": "Allocation Role",
       "description": "e.g. cost_center — used by allocation engine"
+    },
+    {
+      "fieldname": "lifecycle_section",
+      "fieldtype": "Section Break",
+      "label": "Lifecycle"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nPublished\nInactive",
+      "default": "Draft",
+      "in_list_view": 1
     }
   ],
   "permissions": [
     {
       "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
       "read": 1,
       "write": 1,
       "create": 1,
