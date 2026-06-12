@@ -2,6 +2,7 @@
 
 Also provides consolidation & allocation workflow APIs (PRD-8, PRD-16, PRD-21).
 """
+import hmac
 import json
 import re
 from collections import defaultdict
@@ -10,9 +11,17 @@ import frappe
 import requests
 from frappe.utils import now_datetime
 
+from konsol.clickhouse import connection_url as _ch_url
 from konsol.clickhouse import get_connection as _get_ch_connection
 
 MAX_BATCH_SIZE = 2000
+
+# DocType whose User Permissions gate which entities (data areas) a user may
+# query. Configured in EPM Settings.entity_permission_doctype. When unset, no
+# entity-level filtering is applied (backwards compatible).
+def _entity_permission_doctype():
+    return (frappe.get_cached_value(
+        "EPM Settings", "EPM Settings", "entity_permission_doctype") or "").strip()
 
 # Period ranges: Q1-Q4, H1-H2, FY → tuple of fiscal_period integers
 PERIOD_RANGES = {
@@ -29,6 +38,49 @@ VALID_LAYERS = {"base", "challenge", "management", "board"}
 
 _SAFE_IDENTIFIER = re.compile(r'^[a-z][a-z0-9_]*$')
 _SAFE_SCENARIO_ID = re.compile(r'^[A-Za-z0-9_]+$')
+# Fully-qualified ClickHouse table: schema.table, lowercase identifiers only.
+_SAFE_TABLE_NAME = re.compile(r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$')
+
+
+# ---------------------------------------------------------------------------
+# Entity-level authorization
+# ---------------------------------------------------------------------------
+
+def _resolve_allowed_entities(user, roles, perm_doctype, user_permissions):
+    """Pure policy: which entities may a user query? (no Frappe access)
+
+    Returns ``None`` when access is unrestricted — the caller is a System
+    Manager / Administrator, or no entity permission doctype is configured
+    (backwards-compatible default). Otherwise returns the set of entity codes
+    granted via Frappe User Permissions for ``perm_doctype`` (an empty set
+    means the user may see no entities).
+
+    Kept side-effect-free so it can be unit-tested without a site.
+    """
+    if user == "Administrator" or "System Manager" in (roles or []):
+        return None
+    if not perm_doctype:
+        return None
+    entries = (user_permissions or {}).get(perm_doctype) or []
+    return {e.get("doc") for e in entries if e.get("doc")}
+
+
+def _allowed_entities():
+    """Resolve the current user's entity allow-list (see _resolve_allowed_entities)."""
+    return _resolve_allowed_entities(
+        frappe.session.user,
+        frappe.get_roles(),
+        _entity_permission_doctype(),
+        frappe.permissions.get_user_permissions(),
+    )
+
+
+def _assert_entity_access(entity):
+    """Raise PermissionError if the current user may not query ``entity``."""
+    allowed = _allowed_entities()
+    if allowed is not None and entity not in allowed:
+        raise frappe.PermissionError(
+            f"Not permitted to access entity '{entity}'")
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +186,7 @@ def _budget_filters(data):
 
 def _clickhouse_query(sql, params, ch_settings):
     """Execute a single ClickHouse HTTP query. Returns response text or raises."""
-    url = f"http://{ch_settings['host']}:{ch_settings['port']}/"
+    url = _ch_url(ch_settings)
     query_params = dict(params)
     query_params["query"] = sql
 
@@ -143,6 +195,7 @@ def _clickhouse_query(sql, params, ch_settings):
         params=query_params,
         auth=(ch_settings["user"], ch_settings["password"]),
         timeout=30,
+        verify=ch_settings.get("verify", True),
     )
     resp.raise_for_status()
     return resp.text.strip()
@@ -192,7 +245,14 @@ def _batch_query_clickhouse(requests_list):
             if fact.reroute_column:
                 query_measure = fact.reroute_column
 
-        # Validate identifiers before SQL interpolation
+        # Validate identifiers before SQL interpolation. The table name comes
+        # from the Fact Table doctype but is interpolated directly into FROM,
+        # so it must be validated too (defence against a tampered/typo'd
+        # clickhouse_table or reroute_table value).
+        if not _SAFE_TABLE_NAME.match(table or ""):
+            for idx, _ in group_items:
+                errors[idx] = "Invalid table identifier"
+            continue
         if not _SAFE_IDENTIFIER.match(query_measure):
             for idx, _ in group_items:
                 errors[idx] = "Invalid measure identifier"
@@ -334,6 +394,7 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     legacy cost_center/department params.
     """
     _validate_scenario_and_measure(scenario, measure)
+    _assert_entity_access(entity)
 
     # Map legacy params + kwargs → dimensions dict
     dimensions = {}
@@ -372,12 +433,16 @@ def epm_batch():
     n = len(requests_list)
     normalized = [None] * n
     errors_list = [None] * n
+    # Resolve the caller's entity allow-list once for the whole batch.
+    allowed_entities = _allowed_entities()
     for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
         measure = req.get("measure", "period_net_amount")
         err = _check_scenario(scenario) or _check_measure(measure, scenario)
         if err:
             errors_list[i] = err
+        elif allowed_entities is not None and req.get("entity", "") not in allowed_entities:
+            errors_list[i] = f"Not permitted to access entity '{req.get('entity', '')}'"
         else:
             try:
                 periods = _resolve_period(req.get("period", 0))
@@ -773,7 +838,8 @@ def airbyte_sync_complete():
     if frappe.session.user == "Guest":
         secret = frappe.request.headers.get("X-Webhook-Secret", "")
         expected = (settings.get_password("webhook_secret", raise_exception=False) or "")
-        if not expected or secret != expected:
+        # Constant-time comparison to avoid leaking the secret via timing.
+        if not expected or not hmac.compare_digest(str(secret), str(expected)):
             frappe.throw("Unauthorized", frappe.AuthenticationError)
 
     data = _get_json_body()

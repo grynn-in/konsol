@@ -18,15 +18,36 @@ _sync_failures = {}
 def get_connection():
     """Read ClickHouse connection settings from EPM Settings.
 
-    Returns dict with host, port, user, password.
+    Returns dict with host, port, user, password, secure, verify.
+
+    When ``clickhouse_secure`` is enabled the connection uses HTTPS so that
+    credentials and query results are not sent in clear text. ``verify`` maps
+    to ``clickhouse_verify_tls`` and controls certificate validation (leave on
+    unless using a self-signed cert in a trusted network).
     """
     settings = frappe.get_single("EPM Settings")
+    host = settings.clickhouse_host or "localhost"
+    secure = bool(getattr(settings, "clickhouse_secure", 0))
+    # Default to verifying TLS; only relax when explicitly disabled in settings.
+    verify = bool(getattr(settings, "clickhouse_verify_tls", 1))
     return {
-        "host": settings.clickhouse_host or "localhost",
+        "host": host,
         "port": settings.clickhouse_port or "8123",
         "user": settings.clickhouse_user or "default",
         "password": settings.get_password("clickhouse_password") or "",
+        "secure": secure,
+        "verify": verify,
     }
+
+
+def connection_url(conn):
+    """Build the ClickHouse HTTP(S) base URL for a connection dict.
+
+    Uses HTTPS when ``conn['secure']`` is truthy so credentials are encrypted
+    in transit. Loopback hosts stay on HTTP by default for local dev.
+    """
+    scheme = "https" if conn.get("secure") else "http"
+    return f"{scheme}://{conn['host']}:{conn['port']}/"
 
 
 def execute(sql, params=None):
@@ -40,7 +61,7 @@ def execute(sql, params=None):
         Response text (stripped).
     """
     conn = get_connection()
-    url = f"http://{conn['host']}:{conn['port']}/"
+    url = connection_url(conn)
     query_params = dict(params or {})
     query_params["query"] = sql
 
@@ -49,6 +70,7 @@ def execute(sql, params=None):
         params=query_params,
         auth=(conn["user"], conn["password"]),
         timeout=30,
+        verify=conn.get("verify", True),
     )
     resp.raise_for_status()
     return resp.text.strip()
