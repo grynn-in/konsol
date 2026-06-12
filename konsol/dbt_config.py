@@ -34,6 +34,7 @@ def _build_dimensions_vars():
     """Build dimensions list from Dimension doctype."""
     docs = frappe.get_all(
         "Dimension",
+        filters={"status": "Published"},
         fields=["dimension_name", "source_column", "label", "cube_type",
                 "in_budget", "allocation_role"],
         order_by="dimension_name asc",
@@ -58,6 +59,7 @@ def _build_measures_vars():
     """Build base_measures list from Measure doctype."""
     docs = frappe.get_all(
         "Measure",
+        filters={"status": "Published"},
         fields=["measure_name", "expression", "label", "cube_type"],
         order_by="measure_name asc",
         limit_page_length=0,

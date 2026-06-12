@@ -59,7 +59,7 @@ class BudgetInput(Document):
         """
         budget_dims = frappe.get_all(
             "Dimension",
-            filters={"in_budget": 1},
+            filters={"in_budget": 1, "status": "Published"},
             fields=["dimension_name"],
             order_by="dimension_name asc",
             limit_page_length=0,

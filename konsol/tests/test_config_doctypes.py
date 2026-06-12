@@ -47,16 +47,17 @@ def test_dimension_autoname():
     assert meta["autoname"] == "field:dimension_name"
 
 
-def test_dimension_triggers_regenerate():
+def test_dimension_imports_lifecycle():
     content = _load_py("dimension")
-    assert "regenerate_vars" in content
+    assert "schema_lifecycle" in content
 
 
-def test_dimension_has_on_update():
+def test_dimension_no_on_update():
+    """Saves are side-effect-free — no on_update hook."""
     content = _load_py("dimension")
     tree = ast.parse(content)
     methods = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-    assert "on_update" in methods
+    assert "on_update" not in methods
 
 
 # --- Measure ---
@@ -84,9 +85,9 @@ def test_measure_autoname():
     assert meta["autoname"] == "field:measure_name"
 
 
-def test_measure_triggers_regenerate():
+def test_measure_imports_lifecycle():
     content = _load_py("measure")
-    assert "regenerate_vars" in content
+    assert "schema_lifecycle" in content
 
 
 def test_measure_cube_type_options():
