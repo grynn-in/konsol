@@ -47,9 +47,9 @@ def test_dimension_autoname():
     assert meta["autoname"] == "field:dimension_name"
 
 
-def test_dimension_triggers_apply_schema():
+def test_dimension_imports_lifecycle():
     content = _load_py("dimension")
-    assert "apply_schema" in content
+    assert "schema_lifecycle" in content
 
 
 def test_dimension_no_on_update():
@@ -85,9 +85,9 @@ def test_measure_autoname():
     assert meta["autoname"] == "field:measure_name"
 
 
-def test_measure_triggers_apply_schema():
+def test_measure_imports_lifecycle():
     content = _load_py("measure")
-    assert "apply_schema" in content
+    assert "schema_lifecycle" in content
 
 
 def test_measure_cube_type_options():

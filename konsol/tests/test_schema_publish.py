@@ -114,6 +114,41 @@ def test_measure_status_in_list_view():
 
 
 # ---------------------------------------------------------------------------
+# Shared schema_lifecycle.py
+# ---------------------------------------------------------------------------
+
+def _load_lifecycle():
+    path = os.path.join(APP_DIR, "schema_lifecycle.py")
+    with open(path) as f:
+        return f.read()
+
+
+def test_lifecycle_module_exists():
+    path = os.path.join(APP_DIR, "schema_lifecycle.py")
+    assert os.path.exists(path), "schema_lifecycle.py not found"
+
+
+def test_lifecycle_calls_apply_schema():
+    content = _load_lifecycle()
+    assert "apply_schema" in content
+
+
+def test_lifecycle_creates_pipeline_run():
+    content = _load_lifecycle()
+    assert "Pipeline Run" in content
+
+
+def test_lifecycle_checks_epm_admin():
+    content = _load_lifecycle()
+    assert "EPM Admin" in content
+
+
+def test_lifecycle_role_set_includes_administrator():
+    content = _load_lifecycle()
+    assert "Administrator" in content
+
+
+# ---------------------------------------------------------------------------
 # Dimension Python — publish/unpublish methods
 # ---------------------------------------------------------------------------
 
@@ -137,19 +172,9 @@ def test_dimension_unpublish_whitelisted():
     assert "unpublish" in wl
 
 
-def test_dimension_publish_calls_apply_schema():
+def test_dimension_imports_lifecycle():
     content = _load_py("dimension")
-    assert "apply_schema" in content
-
-
-def test_dimension_publish_creates_pipeline_run():
-    content = _load_py("dimension")
-    assert "Pipeline Run" in content
-
-
-def test_dimension_publish_checks_epm_admin():
-    content = _load_py("dimension")
-    assert "EPM Admin" in content
+    assert "from konsol.schema_lifecycle import" in content
 
 
 def test_dimension_no_on_update():
@@ -182,19 +207,9 @@ def test_measure_unpublish_whitelisted():
     assert "unpublish" in wl
 
 
-def test_measure_publish_calls_apply_schema():
+def test_measure_imports_lifecycle():
     content = _load_py("measure")
-    assert "apply_schema" in content
-
-
-def test_measure_publish_creates_pipeline_run():
-    content = _load_py("measure")
-    assert "Pipeline Run" in content
-
-
-def test_measure_publish_checks_epm_admin():
-    content = _load_py("measure")
-    assert "EPM Admin" in content
+    assert "from konsol.schema_lifecycle import" in content
 
 
 def test_measure_no_on_update():
@@ -206,19 +221,30 @@ def test_measure_no_on_update():
 # dbt_config.py — Published filter
 # ---------------------------------------------------------------------------
 
+def _extract_function(content, func_name):
+    """Extract the source lines of a top-level function by name."""
+    tree = ast.parse(content)
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            lines = content.splitlines()
+            return "\n".join(lines[node.lineno - 1 : node.end_lineno])
+    return ""
+
+
 def test_dbt_config_dimensions_filter_published():
     path = os.path.join(APP_DIR, "dbt_config.py")
     with open(path) as f:
         content = f.read()
-    # The _build_dimensions_vars function should filter by Published
-    assert '"Published"' in content or "'Published'" in content
+    func = _extract_function(content, "_build_dimensions_vars")
+    assert '"Published"' in func, "_build_dimensions_vars missing Published filter"
 
 
 def test_dbt_config_measures_filter_published():
     path = os.path.join(APP_DIR, "dbt_config.py")
     with open(path) as f:
         content = f.read()
-    assert '"Published"' in content or "'Published'" in content
+    func = _extract_function(content, "_build_measures_vars")
+    assert '"Published"' in func, "_build_measures_vars missing Published filter"
 
 
 # ---------------------------------------------------------------------------
@@ -229,14 +255,16 @@ def test_schema_apply_columns_filter_published():
     path = os.path.join(APP_DIR, "schema_apply.py")
     with open(path) as f:
         content = f.read()
-    assert '"Published"' in content or "'Published'" in content
+    func = _extract_function(content, "_apply_clickhouse_columns")
+    assert '"Published"' in func, "_apply_clickhouse_columns missing Published filter"
 
 
 def test_schema_apply_budget_fields_filter_published():
     path = os.path.join(APP_DIR, "schema_apply.py")
     with open(path) as f:
         content = f.read()
-    assert '"Published"' in content or "'Published'" in content
+    func = _extract_function(content, "_sync_budget_custom_fields")
+    assert '"Published"' in func, "_sync_budget_custom_fields missing Published filter"
 
 
 # ---------------------------------------------------------------------------

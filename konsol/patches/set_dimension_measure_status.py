@@ -7,7 +7,9 @@ import frappe
 
 def execute():
     for doctype in ("Dimension", "Measure"):
+        table = f"tab{doctype}"
         frappe.db.sql(
-            f"UPDATE `tab{doctype}` SET status = 'Published' WHERE status IS NULL OR status = '' OR status = 'Draft'"
+            "UPDATE `{table}` SET status = %s WHERE status IS NULL OR status = '' OR status = 'Draft'".format(table=table),
+            ("Published",),
         )
     frappe.db.commit()
