@@ -53,13 +53,19 @@ def test_dimensions_validated_against_fact():
     assert "Invalid dimension" in block
 
 
-def test_no_dim_prefix_requirement_in_batch_merge():
-    """Explicit dimensions dict is merged wholesale, not filtered by a dim_ prefix."""
-    block = _content().split("def epm_batch")[1]
-    # the explicit-dimensions merge must not gate on startswith("dim_")
-    merge_region = block.split("dimensions.update(req[\"dimensions\"])")[0]
-    assert "dimensions.update(req[\"dimensions\"])" in block
-    assert 'req["dimensions"].items()' not in merge_region or True  # wholesale update
+def test_no_dim_prefix_filtering():
+    """Dimensions are taken from the explicit dict only — no dim_ prefix gating."""
+    content = _content()
+    assert 'startswith("dim_")' not in content
+
+
+def test_no_legacy_dimension_params():
+    """Legacy cost_center/department params and dim_* kwargs are gone."""
+    content = _content()
+    value_sig = content.split("def epm_value")[1].split("):")[0]
+    assert "cost_center" not in value_sig
+    assert "department" not in value_sig
+    assert "**kwargs" not in value_sig
 
 
 def test_grouping_keys_on_fact():
@@ -74,8 +80,14 @@ def test_no_allowed_measures_constant():
     assert "ALLOWED_MEASURES" not in _content()
 
 
-def test_legacy_helpers_retained():
-    """Backward-compat helpers still present (used by older callers / tests)."""
-    funcs = _funcs()
-    for fn in ["_check_scenario", "_check_measure", "_get_fact_by_scenario"]:
-        assert fn in funcs
+def test_legacy_validation_helpers_removed():
+    """Backward-compat dropped: the old per-scenario validation helpers are gone."""
+    content = _content()
+    assert "_check_scenario" not in content
+    assert "_check_measure" not in content
+    assert "_validate_scenario_and_measure" not in content
+
+
+def test_scenario_resolver_retained():
+    """`scenario` still resolves a fact via scenario_key (a valid selector, not legacy)."""
+    assert "_get_fact_by_scenario" in _funcs()

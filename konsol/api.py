@@ -225,39 +225,6 @@ def _resolve_period(period):
     return (p,)
 
 
-def _check_scenario(scenario):
-    """Return error string if scenario is invalid, else None."""
-    fact = _get_fact_by_scenario(scenario)
-    if not fact:
-        # List available scenarios for the error message
-        all_scenarios = frappe.get_all(
-            "Fact Table", fields=["scenario_key"], limit_page_length=0)
-        available = sorted(set(f.scenario_key for f in all_scenarios))
-        return f"Invalid scenario '{scenario}'. Allowed: {', '.join(available)}"
-    return None
-
-
-def _check_measure(measure, scenario):
-    """Return error string if measure is invalid, else None."""
-    fact = _get_fact_by_scenario(scenario)
-    if not fact:
-        return f"Unknown scenario '{scenario}'"
-    allowed = _get_allowed_measures(fact)
-    if measure not in allowed:
-        return f"Invalid measure '{measure}' for scenario '{scenario}'. Allowed: {', '.join(sorted(allowed))}"
-    return None
-
-
-def _validate_scenario_and_measure(scenario, measure):
-    """Validate scenario and measure, throwing on failure."""
-    err = _check_scenario(scenario)
-    if err:
-        frappe.throw(err, frappe.ValidationError)
-    err = _check_measure(measure, scenario)
-    if err:
-        frappe.throw(err, frappe.ValidationError)
-
-
 def _budget_filters(data):
     """Build the unique-key filter dict for Budget Input upsert."""
     return {
@@ -473,32 +440,21 @@ def health():
 
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
-              scenario="actuals", fact=None, dimensions=None,
-              cost_center="", department="", scenario_id="", **kwargs):
+              scenario="actuals", fact=None, dimensions=None, scenario_id=""):
     """Single value lookup — returns {"value": <number>}.
 
     Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
     Range periods return the sum across constituent months.
 
     Dimensions are passed as a generic dict (JSON string on this GET endpoint),
-    e.g. dimensions={"dim_cost_center":"CC001","dim_project":"P01"}. The legacy
-    cost_center/department params and dim_* kwargs are still accepted and merged
-    in; the explicit `dimensions` dict wins on conflict. `fact` (a Fact registry
-    name) selects the table and wins over `scenario`.
+    e.g. dimensions={"dim_cost_center":"CC001","dim_project":"P01"}. Keys are
+    canonical dimension names, validated against the fact's allowed dimensions.
+    `fact` (a Fact registry name) selects the source table and wins over
+    `scenario`; if neither pins a fact, `scenario` resolves it via scenario_key.
     """
     _assert_entity_access(entity)
 
-    # Merge dimensions: legacy named params + dim_* kwargs, then explicit dict wins
-    merged = {}
-    if cost_center:
-        merged["dim_cost_center"] = cost_center
-    if department:
-        merged["dim_department"] = department
-    for k, v in kwargs.items():
-        if k.startswith("dim_") and v:
-            merged[k] = v
-    merged.update(_parse_dimensions_arg(dimensions))
-    dims = {k: v for k, v in merged.items() if v}
+    dims = {k: v for k, v in _parse_dimensions_arg(dimensions).items() if v}
 
     fact_doc, err = _resolve_and_validate(fact, scenario, measure, dims.keys())
     if err:
@@ -539,15 +495,8 @@ def epm_batch():
         fact_name = req.get("fact")
         measure = req.get("measure", "period_net_amount")
 
-        # Build dimensions dict: legacy params + explicit dimensions (explicit wins)
-        dimensions = {}
-        if req.get("cost_center"):
-            dimensions["dim_cost_center"] = req["cost_center"]
-        if req.get("department"):
-            dimensions["dim_department"] = req["department"]
-        if isinstance(req.get("dimensions"), dict):
-            dimensions.update(req["dimensions"])
-        dimensions = {k: v for k, v in dimensions.items() if v}
+        raw_dims = req.get("dimensions") if isinstance(req.get("dimensions"), dict) else {}
+        dimensions = {k: v for k, v in raw_dims.items() if v}
 
         fact_doc, err = _resolve_and_validate(
             fact_name, scenario, measure, dimensions.keys())
