@@ -45,6 +45,8 @@ def apply_schema(run_dbt=False):
     summary = {
         "vars_updated": False,
         "columns_added": [],
+        "facts_created": [],
+        "sources_written": [],
         "budget_fields_synced": [],
         "dbt_triggered": False,
         "errors": [],
@@ -65,14 +67,23 @@ def apply_schema(run_dbt=False):
         summary["errors"].append(f"ClickHouse DDL: {str(e)}")
         frappe.log_error("schema_apply: CH DDL failed", frappe.get_traceback())
 
-    # 3. Sync Budget Input custom fields
+    # 3. Create ClickHouse tables + dbt sources for write-back facts
+    try:
+        created, sources = _apply_fact_tables()
+        summary["facts_created"] = created
+        summary["sources_written"] = sources
+    except Exception as e:
+        summary["errors"].append(f"Fact tables: {str(e)}")
+        frappe.log_error("schema_apply: fact tables failed", frappe.get_traceback())
+
+    # 4. Sync Budget Input custom fields
     try:
         summary["budget_fields_synced"] = _sync_budget_custom_fields()
     except Exception as e:
         summary["errors"].append(f"Budget fields: {str(e)}")
         frappe.log_error("schema_apply: budget fields failed", frappe.get_traceback())
 
-    # 4. Optional dbt build
+    # 5. Optional dbt build
     if run_dbt or frappe.form_dict.get("run_dbt"):
         try:
             frappe.enqueue(
@@ -137,6 +148,135 @@ def _apply_clickhouse_columns():
                 )
 
     return added
+
+
+def _apply_fact_tables():
+    """Create ClickHouse table + dbt source for each Published, generates_source fact.
+
+    Derived gold facts (generates_source=0) point at dbt-built tables and are
+    skipped — only write-back facts (statistical / sub-ledger) are materialised
+    here. Idempotent: CREATE TABLE IF NOT EXISTS + source upsert by name.
+
+    Returns (facts_created, sources_written) — lists of table / source names.
+    """
+    facts = frappe.get_all(
+        "Fact Table",
+        filters={"status": "Published", "generates_source": 1},
+        fields=["fact_name", "label", "clickhouse_table", "dbt_model", "measures",
+                "dimensions", "extra_columns"],
+        limit_page_length=0,
+    )
+    if not facts:
+        return [], []
+
+    dim_types = {
+        d.dimension_name: (d.cube_type or "string")
+        for d in frappe.get_all(
+            "Dimension", fields=["dimension_name", "cube_type"], limit_page_length=0
+        )
+    }
+
+    created = []
+    sources = []
+    for fact in facts:
+        if not _SAFE_TABLE_NAME.match(fact.clickhouse_table or ""):
+            frappe.log_error(
+                f"schema_apply: skipping invalid fact table name: {fact.clickhouse_table}",
+            )
+            continue
+
+        cols = []
+        for dim in json.loads(fact.dimensions or "[]"):
+            if _SAFE_IDENTIFIER.match(dim):
+                ch_type = _CH_TYPE_MAP.get(dim_types.get(dim, "string"), "String")
+                cols.append(f"{dim} {ch_type}")
+        for measure in json.loads(fact.measures or "[]"):
+            if _SAFE_IDENTIFIER.match(measure):
+                cols.append(f"{measure} Float64")
+        for col in json.loads(fact.extra_columns or "[]"):
+            name = col.get("name", "")
+            if _SAFE_IDENTIFIER.match(name):
+                ch_type = _CH_TYPE_MAP.get(col.get("ch_type", ""), col.get("ch_type", "String"))
+                cols.append(f"{name} {ch_type}")
+        # Standard grain + audit columns present on every write-back fact
+        cols += [
+            "data_area_id String",
+            "fiscal_year UInt16",
+            "fiscal_period UInt8",
+            "updated_at DateTime DEFAULT now()",
+        ]
+
+        ddl = (
+            f"CREATE TABLE IF NOT EXISTS {fact.clickhouse_table} "
+            f"({', '.join(cols)}) "
+            f"ENGINE = MergeTree ORDER BY (data_area_id, fiscal_year, fiscal_period)"
+        )
+        try:
+            ch_execute(ddl)
+            created.append(fact.clickhouse_table)
+        except Exception as e:
+            frappe.log_error(
+                f"schema_apply: CREATE TABLE failed for {fact.clickhouse_table}",
+                str(e),
+            )
+            continue
+
+        try:
+            if _upsert_dbt_source(fact):
+                sources.append(fact.dbt_model or fact.fact_name)
+        except Exception as e:
+            frappe.log_error(
+                f"schema_apply: dbt source upsert failed for {fact.fact_name}",
+                str(e),
+            )
+
+    return created, sources
+
+
+def _upsert_dbt_source(fact):
+    """Add the fact's table to the epm_staging source in _staging__sources.yml.
+
+    Returns True if the file was modified, False if the entry already existed or
+    the dbt project / sources file is on another host (skipped, mirrors
+    dbt_config.regenerate_vars).
+    """
+    import yaml
+
+    settings = frappe.get_single("EPM Settings")
+    base = settings.dbt_project_path or "/home/pd/open_epm/dbt_project"
+    path = f"{base}/models/staging/_staging__sources.yml"
+
+    # Table name without the schema prefix (epm_staging.fact_x -> fact_x)
+    table_name = (fact.clickhouse_table or "").split(".")[-1]
+    if not _SAFE_IDENTIFIER.match(table_name):
+        return False
+
+    try:
+        with open(path) as f:
+            doc = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        frappe.logger().warning(
+            f"_staging__sources.yml not found at {path} — skipping dbt source upsert."
+        )
+        return False
+
+    for source in doc.get("sources", []):
+        if source.get("name") != "epm_staging":
+            continue
+        tables = source.setdefault("tables", [])
+        if any(t.get("name") == table_name for t in tables):
+            return False  # already present — idempotent
+        tables.append({
+            "name": table_name,
+            "description": f"{fact.label or fact.fact_name} — write-back fact registered via Fact Table",
+            "loaded_at_field": "updated_at",
+        })
+        with open(path, "w") as f:
+            yaml.dump(doc, f, default_flow_style=False, sort_keys=False,
+                      allow_unicode=True)
+        return True
+
+    return False
 
 
 def _sync_budget_custom_fields():

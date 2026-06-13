@@ -9,7 +9,16 @@
     "dbt_model": "gold_trial_balance",
     "scenario_key": "actuals",
     "has_scenario_id": 0,
-    "measures": "[\"period_debit\", \"period_credit\", \"period_net_amount\", \"transaction_count\", \"ytd_net_amount\"]",
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity x dimensions",
+    "fact_measures": [
+      {"measure": "period_debit"},
+      {"measure": "period_credit"},
+      {"measure": "period_net_amount", "required": 1},
+      {"measure": "transaction_count"},
+      {"measure": "ytd_net_amount"}
+    ],
     "fact_dimensions": [
       {"dimension": "dim_cost_center"},
       {"dimension": "dim_department"},
@@ -29,7 +38,13 @@
     "dbt_model": "gold_spread_budget",
     "scenario_key": "budget",
     "has_scenario_id": 1,
-    "measures": "[\"period_amount\", \"annual_amount\"]",
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity x scenario cell",
+    "fact_measures": [
+      {"measure": "period_amount", "required": 1},
+      {"measure": "annual_amount"}
+    ],
     "fact_dimensions": [
       {"dimension": "dim_cost_center"},
       {"dimension": "dim_department"}
@@ -48,10 +63,89 @@
     "dbt_model": "gold_variance_analysis",
     "scenario_key": "variance",
     "has_scenario_id": 0,
-    "measures": "[\"actual_amount\", \"budget_amount\", \"variance_abs\", \"variance_pct\", \"variance_favorable\"]",
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity (actual vs budget)",
+    "fact_measures": [
+      {"measure": "actual_amount"},
+      {"measure": "budget_amount"},
+      {"measure": "variance_abs"},
+      {"measure": "variance_pct"},
+      {"measure": "variance_favorable"}
+    ],
     "fact_dimensions": [
       {"dimension": "dim_cost_center"},
       {"dimension": "dim_department"}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "headcount",
+    "fact_name": "headcount",
+    "label": "Headcount",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_staging.fact_headcount",
+    "dbt_model": "fact_headcount",
+    "scenario_key": "headcount",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 1,
+    "grain": "One row per cost_center x fiscal_period (allocation driver)",
+    "fact_measures": [
+      {"measure": "driver_value", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center", "required": 1}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "area_sqm",
+    "fact_name": "area_sqm",
+    "label": "Area (sqm)",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_staging.fact_area_sqm",
+    "dbt_model": "fact_area_sqm",
+    "scenario_key": "area_sqm",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 1,
+    "grain": "One row per cost_center x fiscal_period (facilities allocation driver)",
+    "fact_measures": [
+      {"measure": "driver_value", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center", "required": 1}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "revenue_by_product",
+    "fact_name": "revenue_by_product",
+    "label": "Revenue by Product",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_staging.fact_revenue_by_product",
+    "dbt_model": "fact_revenue_by_product",
+    "scenario_key": "revenue_by_product",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 1,
+    "grain": "One row per product x cost_center x fiscal_period (revenue allocation driver)",
+    "extra_columns": "[{\"name\": \"product\", \"ch_type\": \"String\"}]",
+    "fact_measures": [
+      {"measure": "driver_value", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center", "required": 1}
     ],
     "reroute_measure": "",
     "reroute_table": "",

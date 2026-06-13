@@ -73,10 +73,19 @@
       "label": "Measures & Dimensions"
     },
     {
+      "fieldname": "fact_measures",
+      "fieldtype": "Table",
+      "label": "Measures",
+      "options": "Fact Table Measure",
+      "description": "Measures available in this fact table (validated against the Measure registry)"
+    },
+    {
       "fieldname": "measures",
       "fieldtype": "Small Text",
-      "label": "Measures",
-      "description": "JSON array of allowed measure names, e.g. [\"period_net_amount\", \"period_debit\"]"
+      "label": "Measures (JSON)",
+      "read_only": 1,
+      "hidden": 1,
+      "description": "Auto-populated from Measures child table on save"
     },
     {
       "fieldname": "col_break_2",
@@ -96,6 +105,42 @@
       "read_only": 1,
       "hidden": 1,
       "description": "Auto-populated from Dimensions child table on save"
+    },
+    {
+      "fieldname": "section_generation",
+      "fieldtype": "Section Break",
+      "label": "Generation & Grain"
+    },
+    {
+      "fieldname": "grain",
+      "fieldtype": "Small Text",
+      "label": "Grain",
+      "description": "Human description of one row, e.g. one row per account × period × entity × cost_center"
+    },
+    {
+      "fieldname": "refresh_frequency",
+      "fieldtype": "Select",
+      "label": "Refresh Frequency",
+      "options": "On Extract\nDaily\nMonthly\nOn Demand",
+      "default": "On Extract"
+    },
+    {
+      "fieldname": "col_break_gen",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "generates_source",
+      "fieldtype": "Check",
+      "label": "Generates Source",
+      "default": "0",
+      "description": "If set, Apply Schema creates the ClickHouse table + dbt source for this write-back fact (statistical / sub-ledger). Off for derived gold facts."
+    },
+    {
+      "fieldname": "extra_columns",
+      "fieldtype": "Code",
+      "label": "Extra Columns (JSON)",
+      "options": "JSON",
+      "description": "Fact-local detail columns for sub-ledger facts, NOT shared dimensions. JSON array: [{\"name\": \"invoice_id\", \"ch_type\": \"String\"}]"
     },
     {
       "fieldname": "section_reroute",
@@ -120,11 +165,31 @@
       "fieldtype": "Data",
       "label": "Reroute Column",
       "description": "Alternate column name in the reroute table"
+    },
+    {
+      "fieldname": "lifecycle_section",
+      "fieldtype": "Section Break",
+      "label": "Lifecycle"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nPublished\nInactive",
+      "default": "Draft",
+      "in_list_view": 1
     }
   ],
   "permissions": [
     {
       "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
       "read": 1,
       "write": 1,
       "create": 1,
