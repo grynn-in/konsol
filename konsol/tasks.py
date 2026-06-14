@@ -27,7 +27,8 @@ DOCTYPE_BUILD_MAP = {
     "Allocation Run": {"scope": "staging", "risk": "low"},
 }
 
-# Scope → dbt selector
+# Scope → dbt selector. Kept as the fallback/default; the Build Domain doctype
+# is the runtime source of truth (see _scope_selector / _raw_dependent_scopes).
 SCOPE_SELECTOR = {
     "staging": "tag:domain:staging",
     "actuals": "tag:domain:actuals",
@@ -36,8 +37,43 @@ SCOPE_SELECTOR = {
     "full": None,  # no selector = full build
 }
 
-# Scopes that require epm_raw data
+# Scopes that require epm_raw data (fallback; see _raw_dependent_scopes).
 RAW_DEPENDENT_SCOPES = {"actuals", "scenarios", "consolidation", "full"}
+
+
+def _known_domains():
+    """Per-model build domains. Prefers the Build Domain doctype; falls back to
+    the hardcoded SCOPE_SELECTOR domains (excluding the special 'full' scope)."""
+    try:
+        if frappe.db.table_exists("Build Domain"):
+            names = frappe.get_all("Build Domain", pluck="name")
+            if names:
+                return set(names)
+    except Exception:
+        pass
+    return {s for s, sel in SCOPE_SELECTOR.items() if sel is not None}
+
+
+def _scope_selector(scope):
+    """dbt --select for a build scope; None for 'full' or an unknown scope
+    (no selector → full build), preserving the original SCOPE_SELECTOR semantics."""
+    if scope in _known_domains():
+        return f"tag:domain:{scope}"
+    return None
+
+
+def _raw_dependent_scopes():
+    """Scopes that require epm_raw. Prefers Build Domain docs flagged
+    requires_raw_data=1 (plus the 'full' build); falls back to RAW_DEPENDENT_SCOPES."""
+    try:
+        if frappe.db.table_exists("Build Domain"):
+            rows = frappe.get_all(
+                "Build Domain", filters={"requires_raw_data": 1}, pluck="name")
+            if rows:
+                return set(rows) | {"full"}
+    except Exception:
+        pass
+    return set(RAW_DEPENDENT_SCOPES)
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +98,7 @@ def _preflight_check(build_scope):
         return True, "Staging scope — no raw data dependency"
 
     # Raw-dependent scopes check Airbyte sync status
-    if build_scope in RAW_DEPENDENT_SCOPES:
+    if build_scope in _raw_dependent_scopes():
         return check_raw_data_available()
 
     return True, "OK"
@@ -140,7 +176,7 @@ def run_governed_build(build_request):
         project_path = settings.dbt_project_path
         cmd = ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path]
 
-        selector = SCOPE_SELECTOR.get(doc.build_scope)
+        selector = _scope_selector(doc.build_scope)
         if selector:
             cmd.extend(["--select", selector])
 

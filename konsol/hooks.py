@@ -19,6 +19,7 @@ fixtures = [
     "Allocation Rule",
     "Spread Profile",
     "Connector",
+    "Build Domain",
     "Gold Model",
 ]
 
