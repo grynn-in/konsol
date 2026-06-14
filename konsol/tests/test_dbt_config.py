@@ -72,3 +72,65 @@ def test_dbt_config_round_trip():
     assert result["name"] == original["name"]
     assert result.get("models") == original.get("models")
     assert result.get("seeds") == original.get("seeds")
+
+
+# --- Gold model -> domain tags ---
+
+def test_dbt_config_has_regenerate_model_domains():
+    """Must expose regenerate_model_domains() and the pure _apply_model_domains()."""
+    with open(DBT_CONFIG_PATH) as f:
+        tree = ast.parse(f.read())
+    func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "regenerate_model_domains" in func_names
+    assert "_apply_model_domains" in func_names
+
+
+def test_regenerate_model_domains_reads_gold_model_doctype():
+    """regenerate_model_domains must source the mapping from the Gold Model doctype."""
+    with open(DBT_CONFIG_PATH) as f:
+        content = f.read()
+    assert '"Gold Model"' in content
+
+
+def test_apply_model_domains_rewrites_gold_tags():
+    """_apply_model_domains must set gold model +tags and preserve everything else.
+
+    Pure function — runs in a bench env; only fails here because importing
+    dbt_config pulls in `frappe` (same as test_dbt_config_preserves_non_vars).
+    """
+    import sys
+    sys.path.insert(0, APP_DIR)
+    from dbt_config import _apply_model_domains
+
+    project = {
+        "models": {
+            "open_epm": {
+                "gold": {
+                    "+schema": "gold",
+                    "+materialized": "table",
+                    "+tags": ["gold"],
+                    "gold_trial_balance": {"+tags": ["gold", "domain:actuals"]},
+                    "gold_untouched": {"+tags": ["gold", "domain:staging"]},
+                }
+            }
+        }
+    }
+    result = _apply_model_domains(project, {"gold_trial_balance": "scenarios"})
+    gold = result["models"]["open_epm"]["gold"]
+
+    # Managed model retagged...
+    assert gold["gold_trial_balance"]["+tags"] == ["gold", "domain:scenarios"]
+    # ...layer config and unmanaged models preserved.
+    assert gold["+schema"] == "gold"
+    assert gold["+materialized"] == "table"
+    assert gold["+tags"] == ["gold"]
+    assert gold["gold_untouched"]["+tags"] == ["gold", "domain:staging"]
+
+
+def test_apply_model_domains_handles_missing_gold_block():
+    """No models.open_epm.gold block → return unchanged, don't crash."""
+    import sys
+    sys.path.insert(0, APP_DIR)
+    from dbt_config import _apply_model_domains
+
+    assert _apply_model_domains({}, {"x": "actuals"}) == {}

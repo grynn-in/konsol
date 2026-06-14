@@ -1,0 +1,188 @@
+[
+  {
+    "doctype": "Gold Model",
+    "name": "gold_period_hierarchy",
+    "model_name": "gold_period_hierarchy",
+    "build_domain": "staging"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_scenario_versions",
+    "model_name": "gold_scenario_versions",
+    "build_domain": "staging"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_consolidation_hierarchy",
+    "model_name": "gold_consolidation_hierarchy",
+    "build_domain": "staging"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_consolidation_adjustments",
+    "model_name": "gold_consolidation_adjustments",
+    "build_domain": "staging"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_spread_budget",
+    "model_name": "gold_spread_budget",
+    "build_domain": "staging"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_trial_balance",
+    "model_name": "gold_trial_balance",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_ytd_trial_balance",
+    "model_name": "gold_ytd_trial_balance",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_pnl_by_period",
+    "model_name": "gold_pnl_by_period",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_pnl_quarterly",
+    "model_name": "gold_pnl_quarterly",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_pnl_half_yearly",
+    "model_name": "gold_pnl_half_yearly",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_balance_sheet",
+    "model_name": "gold_balance_sheet",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_bs_movement",
+    "model_name": "gold_bs_movement",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_prior_year_comparison",
+    "model_name": "gold_prior_year_comparison",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_consolidated_trial_balance",
+    "model_name": "gold_consolidated_trial_balance",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_fx_revaluation",
+    "model_name": "gold_fx_revaluation",
+    "build_domain": "actuals"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_scenario_trial_balance",
+    "model_name": "gold_scenario_trial_balance",
+    "build_domain": "scenarios"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_variance_analysis",
+    "model_name": "gold_variance_analysis",
+    "build_domain": "scenarios"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_variance_ytd",
+    "model_name": "gold_variance_ytd",
+    "build_domain": "scenarios"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_variance_quarterly",
+    "model_name": "gold_variance_quarterly",
+    "build_domain": "scenarios"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_acquisition_adjustments",
+    "model_name": "gold_acquisition_adjustments",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_disposal_adjustments",
+    "model_name": "gold_disposal_adjustments",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_ic_eliminations",
+    "model_name": "gold_ic_eliminations",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_ic_reconciliation",
+    "model_name": "gold_ic_reconciliation",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_nci_movement_schedule",
+    "model_name": "gold_nci_movement_schedule",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_equity_method_associates",
+    "model_name": "gold_equity_method_associates",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_fully_consolidated_tb",
+    "model_name": "gold_fully_consolidated_tb",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_consolidation_waterfall",
+    "model_name": "gold_consolidation_waterfall",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_consolidation_journal",
+    "model_name": "gold_consolidation_journal",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_consolidated_ytd",
+    "model_name": "gold_consolidated_ytd",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_allocation_results",
+    "model_name": "gold_allocation_results",
+    "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_allocation_audit_trail",
+    "model_name": "gold_allocation_audit_trail",
+    "build_domain": "consolidation"
+  }
+]
