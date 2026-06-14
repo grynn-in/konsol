@@ -16,28 +16,57 @@ def check_epm_admin():
         )
 
 
+# Config-doctype publishes (Dimension/Measure/Fact Table) are schema-level
+# changes that can ripple through every dbt model, so they request a full-scope
+# rebuild. Routing through Pipeline Build Request (instead of a direct dbt build)
+# applies Build Governance: preflight (won't wipe gold when epm_raw is empty),
+# approval for high-risk scopes, an audit trail, and debounce.
+_PUBLISH_BUILD_SCOPE = "full"
+_PENDING_STATES = ["Draft", "Pending Review", "Approved", "Running"]
+
+
 def apply_and_rebuild(doc, action):
-    """Run apply_schema then create a Pipeline Run for dbt rebuild."""
+    """Apply schema (DDL/vars), then request a governed dbt rebuild.
+
+    Creates a full-scope Pipeline Build Request rather than firing a direct
+    `dbt build` — see module note. Returns the PBR name (or the existing one if
+    a build for this scope is already pending).
+    """
     from konsol.schema_apply import apply_schema
     apply_schema()
-    _create_pipeline_run(doc, action)
+    return _request_governed_build(doc, action)
 
 
-def _create_pipeline_run(doc, action):
-    """Create a Pipeline Run and enqueue a dbt build linked to it."""
-    run = frappe.get_doc({
-        "doctype": "Pipeline Run",
-        "status": "Queued",
-        "triggered_by": frappe.session.user,
-        "started_at": frappe.utils.now_datetime(),
-    })
-    run.insert(ignore_permissions=True)
+def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
+    """Create a (debounced) Pipeline Build Request for `scope`.
 
-    frappe.enqueue(
-        "konsol.tasks._run_dbt_build_background",
-        queue="default",
-        timeout=600,
-        doctype=doc.doctype,
-        docname=doc.name,
-        pipeline_run=run.name,
+    Debounce: if a non-terminal build for the same scope already exists, reuse
+    it so publishing several config docs in a row coalesces into one rebuild.
+    The PBR's own workflow handles risk → approval → preflight → governed build.
+    """
+    existing = frappe.get_all(
+        "Pipeline Build Request",
+        filters={"build_scope": scope, "workflow_state": ["in", _PENDING_STATES]},
+        limit=1,
     )
+    if existing:
+        frappe.msgprint(
+            f"A '{scope}' build is already pending ({existing[0].name}); "
+            f"schema applied — no duplicate build requested."
+        )
+        return existing[0].name
+
+    pbr = frappe.new_doc("Pipeline Build Request")
+    pbr.build_scope = scope
+    pbr.trigger_source = "auto"
+    pbr.trigger_doctype = doc.doctype
+    pbr.trigger_docname = doc.name
+    pbr.requested_by = frappe.session.user
+    pbr.insert(ignore_permissions=True)
+    frappe.db.commit()
+
+    frappe.msgprint(
+        f"Schema applied. Build request {pbr.name} created (scope={scope}). "
+        f"High-risk builds require EPM Admin approval before running."
+    )
+    return pbr.name
