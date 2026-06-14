@@ -108,3 +108,28 @@ def test_request_governed_rebuild_skips_apply_schema():
 
 def test_dimension_mapping_is_a_fixture():
     assert '"Dimension Mapping"' in _read("hooks.py")
+
+
+def test_after_delete_refreshes_seed_not_on_trash():
+    """Deleting a Published mapping must refresh the seed — via after_delete, NOT
+    on_trash (on_trash runs before the row is removed, so it would still include
+    the deleted doc)."""
+    src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+    assert "def after_delete" in src
+    # after_delete body regenerates the seed and requests a rebuild.
+    body = src.split("def after_delete")[1]
+    assert "regenerate_dimension_mappings_seed()" in body
+    assert "request_governed_rebuild(" in body
+    # Must NOT use on_trash (wrong timing for this).
+    assert "def on_trash" not in src
+
+
+def test_after_migrate_repopulates_seed():
+    """Fixture import doesn't run publish(), so after_migrate must repopulate the
+    crosswalk seed from the loaded docs."""
+    src = _read("install.py")
+    assert "_regenerate_dimension_mappings_seed" in src
+    assert "from konsol.dbt_config import regenerate_dimension_mappings_seed" in src
+    # called from after_migrate
+    after = src.split("def after_migrate")[1].split("\ndef ")[0]
+    assert "_regenerate_dimension_mappings_seed()" in after

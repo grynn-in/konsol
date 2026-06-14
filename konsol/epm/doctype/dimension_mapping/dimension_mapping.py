@@ -56,3 +56,18 @@ class DimensionMapping(Document):
         self.save()
         regenerate_dimension_mappings_seed()
         request_governed_rebuild(self, "Unpublish")
+
+    def after_delete(self):
+        """Refresh the crosswalk seed after a *Published* mapping is removed, so
+        the deleted value stops being applied.
+
+        Uses after_delete (not on_trash): on_trash runs *before* the row is
+        removed, so regenerating there would still include the doc being deleted.
+        Skipped during install/migrate/import — the seed is regenerated wholesale
+        by after_migrate then, and no build should be enqueued mid-migrate.
+        """
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
+        if self.status == "Published":
+            regenerate_dimension_mappings_seed()
+            request_governed_rebuild(self, "Delete")
