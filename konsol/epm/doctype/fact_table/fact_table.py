@@ -33,7 +33,15 @@ class FactTable(Document):
             )
 
     def _validate_measures(self):
-        """Every fact_measures row must reference a Published Measure."""
+        """Every fact_measures row must reference a Published Measure.
+
+        Skipped during fixture import / migrate / install: fixtures load in
+        alphabetical filename order (fact_table.json before measure.json), so
+        the referenced measures may not be Published yet. Integrity is still
+        enforced on normal saves and on publish().
+        """
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+            return
         for row in self.fact_measures or []:
             status = frappe.db.get_value("Measure", row.measure, "status")
             if status != "Published":
@@ -43,7 +51,12 @@ class FactTable(Document):
                 )
 
     def _validate_dimensions(self):
-        """Every fact_dimensions row must reference a Published Dimension."""
+        """Every fact_dimensions row must reference a Published Dimension.
+
+        Skipped during fixture import / migrate / install (see _validate_measures).
+        """
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+            return
         for row in self.fact_dimensions or []:
             status = frappe.db.get_value("Dimension", row.dimension, "status")
             if status != "Published":
