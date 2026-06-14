@@ -10,6 +10,7 @@ app_license = "MIT"
 fixtures = [
     "Fiscal Period",
     "Dimension",
+    "Dimension Mapping",
     "Measure",
     "Fact Table",
     "Scenario Definition",

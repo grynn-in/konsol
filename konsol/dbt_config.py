@@ -23,11 +23,71 @@ def _merge_vars_into_yaml(original, new_vars):
     return result
 
 
+def _get_dbt_project_base():
+    """Get the dbt project base dir from EPM Settings."""
+    settings = frappe.get_single("EPM Settings")
+    return settings.dbt_project_path or "/home/pd/open_epm/dbt_project"
+
+
 def _get_dbt_project_path():
     """Get dbt_project.yml path from EPM Settings."""
-    settings = frappe.get_single("EPM Settings")
-    base = settings.dbt_project_path or "/home/pd/open_epm/dbt_project"
-    return f"{base}/dbt_project.yml"
+    return f"{_get_dbt_project_base()}/dbt_project.yml"
+
+
+# Header for the dimension_mappings crosswalk seed (must match the columns the
+# dbt dim_harmonize() macro + dimension_mappings.csv expect — see konsolidat).
+_DIM_MAPPING_COLUMNS = [
+    "dimension", "erp_source", "source_value", "canonical_value",
+    "canonical_label", "status",
+]
+
+
+def regenerate_dimension_mappings_seed():
+    """Regenerate seeds/dimension_mappings.csv from published Dimension Mapping docs.
+
+    Frappe is the source of truth for the crosswalk (mirrors how regenerate_vars
+    owns dbt_project.yml vars). Only Published rows are written; the dbt side
+    already filters on status='Published', and an empty file (header only) is
+    valid — it just means "no mappings, everything passes through".
+
+    Returns the seed path written, or None if the dbt project dir is absent
+    (e.g. dbt on another host) — caller treats that as a skip.
+    """
+    import csv
+    import os
+
+    base = _get_dbt_project_base()
+    seeds_dir = os.path.join(base, "seeds")
+    if not os.path.isdir(seeds_dir):
+        frappe.logger().warning(
+            f"dbt seeds dir not found at {seeds_dir} — skipping dimension_mappings "
+            f"regeneration. Set dbt_project_path in EPM Settings if dbt is remote."
+        )
+        return None
+
+    rows = frappe.get_all(
+        "Dimension Mapping",
+        filters={"status": "Published"},
+        fields=["dimension", "erp_source", "source_value", "canonical_value",
+                "canonical_label"],
+        order_by="dimension asc, erp_source asc, source_value asc",
+        limit_page_length=0,
+    )
+
+    path = os.path.join(seeds_dir, "dimension_mappings.csv")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_DIM_MAPPING_COLUMNS)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({
+                "dimension": r.dimension or "",
+                "erp_source": r.erp_source or "",
+                "source_value": r.source_value or "",
+                "canonical_value": r.canonical_value or "",
+                "canonical_label": r.canonical_label or "",
+                "status": "Published",
+            })
+    return path
 
 
 def _build_dimensions_vars():

@@ -37,6 +37,17 @@ def apply_and_rebuild(doc, action):
     return _request_governed_build(doc, action)
 
 
+def request_governed_rebuild(doc, action, scope=_PUBLISH_BUILD_SCOPE):
+    """Request a governed dbt rebuild for an input-only change (no DDL step).
+
+    For changes that only affect dbt inputs (e.g. the dimension_mappings seed),
+    not the ClickHouse schema/vars — so there is no DDL/schema step to run, just
+    a governed build (which runs `dbt seed` + models). Same PBR machinery as the
+    full publish path (preflight + approval + audit + debounce).
+    """
+    return _request_governed_build(doc, action, scope)
+
+
 def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     """Create a (debounced) Pipeline Build Request for `scope`.
 
