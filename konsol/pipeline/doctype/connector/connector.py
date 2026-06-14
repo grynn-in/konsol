@@ -33,5 +33,9 @@ class Connector(Document):
         # Enabled set / erp_type may have changed → refresh erp_sources.
         regenerate_vars()
 
-    def on_trash(self):
+    def after_delete(self):
+        # Refresh erp_sources AFTER the row is gone. on_trash runs *before* the
+        # DB delete (delete_doc.py: on_trash → delete → after_delete), so
+        # regenerating there would still see this connector and leave its
+        # erp_type in erp_sources.
         regenerate_vars()
