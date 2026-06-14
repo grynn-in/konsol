@@ -24,10 +24,25 @@ def setup_epm_settings(ch_host="localhost", ch_port=8123, ch_user="default", ch_
 
 
 def after_migrate():
-    """Called after bench migrate — ensures EPM roles exist and the dimension
-    crosswalk seed reflects fixture-loaded Dimension Mapping docs."""
+    """Called after bench migrate — ensures EPM roles exist, the dimension
+    crosswalk seed reflects fixture-loaded Dimension Mapping docs, and the
+    Konsolidat desk workspace is present."""
     _create_roles()
     _regenerate_dimension_mappings_seed()
+    _setup_dashboard()
+
+
+def _setup_dashboard():
+    """Ensure the Konsolidat desk workspace exists. Best-effort — never fail a
+    migrate over a desk convenience (e.g. a doctype not yet present)."""
+    try:
+        from konsol.dashboard import setup_workspace
+        setup_workspace()
+    except Exception:
+        frappe.logger().warning(
+            "Konsolidat workspace setup skipped after migrate",
+            exc_info=True,
+        )
 
 
 def _regenerate_dimension_mappings_seed():
