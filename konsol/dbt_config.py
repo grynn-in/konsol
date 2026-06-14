@@ -249,3 +249,69 @@ def regenerate_vars():
     with open(path, "w") as f:
         yaml.dump(updated, f, default_flow_style=False, sort_keys=False,
                   allow_unicode=True)
+
+
+# ---------------------------------------------------------------------------
+# Gold model -> Build Governance domain tags
+# ---------------------------------------------------------------------------
+
+def _apply_model_domains(project, mapping):
+    """Set each gold model's domain tag from mapping {model_name: domain}.
+
+    Pure (no Frappe): mutates and returns the parsed dbt_project.yml dict.
+    Rewrites only `models.open_epm.gold.<model>.+tags` to
+    ['gold', 'domain:<domain>']; the gold layer's own config (+schema,
+    +materialized, +tags) and any models not in the mapping are left untouched.
+    """
+    gold = (((project or {}).get("models") or {}).get("open_epm") or {}).get("gold")
+    if not isinstance(gold, dict):
+        return project
+    for model_name, domain in mapping.items():
+        cfg = gold.get(model_name)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg["+tags"] = ["gold", f"domain:{domain}"]
+        gold[model_name] = cfg
+    return project
+
+
+def _build_model_domain_mapping():
+    """Build {model_name: build_domain} from the Gold Model doctype."""
+    docs = frappe.get_all(
+        "Gold Model",
+        fields=["model_name", "build_domain"],
+        order_by="model_name asc",
+        limit_page_length=0,
+    )
+    return {d.model_name: d.build_domain for d in docs if d.build_domain}
+
+
+def regenerate_model_domains():
+    """Write the gold models' domain tags into dbt_project.yml from Gold Model docs.
+
+    Frappe is the source of truth for the model -> domain assignment that drives
+    Build Governance scope selection. When no Gold Model docs exist the YAML is
+    left untouched (nothing to manage yet).
+    """
+    path = _get_dbt_project_path()
+
+    try:
+        with open(path) as f:
+            project = yaml.safe_load(f)
+    except FileNotFoundError:
+        frappe.logger().warning(
+            f"dbt_project.yml not found at {path} — skipping model-domain "
+            f"regeneration. Set dbt_project_path in EPM Settings if dbt is on a "
+            f"different host."
+        )
+        return
+
+    mapping = _build_model_domain_mapping()
+    if not mapping:
+        return
+
+    project = _apply_model_domains(project, mapping)
+
+    with open(path, "w") as f:
+        yaml.dump(project, f, default_flow_style=False, sort_keys=False,
+                  allow_unicode=True)

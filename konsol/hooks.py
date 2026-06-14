@@ -19,6 +19,7 @@ fixtures = [
     "Allocation Rule",
     "Spread Profile",
     "Connector",
+    "Gold Model",
 ]
 
 # After migrate — create EPM roles
