@@ -1,7 +1,8 @@
 """Measure — config doctype for EPM measures.
 
 Saves are pure metadata — no side effects. Use Publish/Unpublish to apply
-schema changes (dbt vars) and trigger a Pipeline Run.
+schema changes (dbt vars) and request a governed full-scope rebuild via
+Pipeline Build Request (preflight + approval + audit), not a direct dbt build.
 """
 import frappe
 from frappe.model.document import Document

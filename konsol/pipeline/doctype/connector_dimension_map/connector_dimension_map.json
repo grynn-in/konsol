@@ -1,0 +1,28 @@
+{
+  "name": "Connector Dimension Map",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "fields": [
+    {
+      "fieldname": "dimension",
+      "fieldtype": "Link",
+      "label": "Dimension",
+      "options": "Dimension",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Canonical dimension (dim_cost_center, dim_department, ...)"
+    },
+    {
+      "fieldname": "source_column",
+      "fieldtype": "Data",
+      "label": "Source Column",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "This ERP's raw column name feeding that dimension"
+    }
+  ]
+}

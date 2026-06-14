@@ -1,7 +1,9 @@
 """Dimension — config doctype for EPM dimensions.
 
 Saves are pure metadata — no side effects. Use Publish/Unpublish to apply
-schema changes (DDL, dbt vars, budget fields) and trigger a Pipeline Run.
+schema changes (DDL, dbt vars, budget fields) and request a governed full-scope
+rebuild via Pipeline Build Request (preflight + approval + audit), not a direct
+dbt build.
 """
 import frappe
 from frappe.model.document import Document

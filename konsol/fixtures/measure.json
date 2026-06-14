@@ -2,5 +2,14 @@
   {"doctype": "Measure", "name": "period_debit", "measure_name": "period_debit", "expression": "sum(debit_amount)", "label": "Debit", "cube_type": "sum", "status": "Published"},
   {"doctype": "Measure", "name": "period_credit", "measure_name": "period_credit", "expression": "sum(credit_amount)", "label": "Credit", "cube_type": "sum", "status": "Published"},
   {"doctype": "Measure", "name": "period_net_amount", "measure_name": "period_net_amount", "expression": "sum(accounting_currency_amount)", "label": "Net Amount", "cube_type": "sum", "status": "Published"},
-  {"doctype": "Measure", "name": "transaction_count", "measure_name": "transaction_count", "expression": "count(*)", "label": "Transaction Count", "cube_type": "count", "status": "Published"}
+  {"doctype": "Measure", "name": "transaction_count", "measure_name": "transaction_count", "expression": "count(*)", "label": "Transaction Count", "cube_type": "count", "status": "Published"},
+  {"doctype": "Measure", "name": "ytd_net_amount", "measure_name": "ytd_net_amount", "expression": "sum(cumulative_balance)", "label": "YTD Net Amount", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "period_amount", "measure_name": "period_amount", "expression": "sum(period_amount)", "label": "Period Amount", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "annual_amount", "measure_name": "annual_amount", "expression": "sum(annual_amount)", "label": "Annual Amount", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "actual_amount", "measure_name": "actual_amount", "expression": "sum(actual_amount)", "label": "Actual Amount", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "budget_amount", "measure_name": "budget_amount", "expression": "sum(budget_amount)", "label": "Budget Amount", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "variance_abs", "measure_name": "variance_abs", "expression": "sum(variance_abs)", "label": "Variance (Absolute)", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "variance_pct", "measure_name": "variance_pct", "expression": "avg(variance_pct)", "label": "Variance (%)", "cube_type": "avg", "status": "Published"},
+  {"doctype": "Measure", "name": "variance_favorable", "measure_name": "variance_favorable", "expression": "sum(variance_favorable)", "label": "Variance Favorable", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "driver_value", "measure_name": "driver_value", "expression": "sum(driver_value)", "label": "Driver Value", "cube_type": "sum", "status": "Published"}
 ]

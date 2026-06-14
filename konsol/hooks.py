@@ -10,6 +10,7 @@ app_license = "MIT"
 fixtures = [
     "Fiscal Period",
     "Dimension",
+    "Dimension Mapping",
     "Measure",
     "Fact Table",
     "Scenario Definition",
@@ -17,6 +18,7 @@ fixtures = [
     "IC Elimination Rule",
     "Allocation Rule",
     "Spread Profile",
+    "Connector",
 ]
 
 # After migrate — create EPM roles

@@ -24,8 +24,28 @@ def setup_epm_settings(ch_host="localhost", ch_port=8123, ch_user="default", ch_
 
 
 def after_migrate():
-    """Called after bench migrate — ensures EPM roles exist."""
+    """Called after bench migrate — ensures EPM roles exist and the dimension
+    crosswalk seed reflects fixture-loaded Dimension Mapping docs."""
     _create_roles()
+    _regenerate_dimension_mappings_seed()
+
+
+def _regenerate_dimension_mappings_seed():
+    """Repopulate seeds/dimension_mappings.csv after migrate.
+
+    Fixture import inserts Dimension Mapping docs without running publish(), so
+    the crosswalk seed would otherwise stay empty until a manual publish. This
+    syncs it from the published docs. Best-effort — never fail a migrate over a
+    dbt seed (e.g. dbt on another host / dir absent).
+    """
+    try:
+        from konsol.dbt_config import regenerate_dimension_mappings_seed
+        regenerate_dimension_mappings_seed()
+    except Exception:
+        frappe.logger().warning(
+            "dimension_mappings seed regeneration skipped after migrate",
+            exc_info=True,
+        )
 
 
 def _create_roles():

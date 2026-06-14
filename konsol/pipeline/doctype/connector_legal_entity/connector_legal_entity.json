@@ -1,0 +1,26 @@
+{
+  "name": "Connector Legal Entity",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "fields": [
+    {
+      "fieldname": "entity_id",
+      "fieldtype": "Data",
+      "label": "Entity ID",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Maps to canonical stg_legal_entities.entity_id / stg_gl_entries.entity_id"
+    },
+    {
+      "fieldname": "entity_name",
+      "fieldtype": "Data",
+      "label": "Entity Name",
+      "in_list_view": 1,
+      "description": "Display only"
+    }
+  ]
+}

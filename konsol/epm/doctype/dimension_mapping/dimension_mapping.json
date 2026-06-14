@@ -1,0 +1,98 @@
+{
+  "name": "Dimension Mapping",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "hash",
+  "fields": [
+    {
+      "fieldname": "dimension",
+      "fieldtype": "Link",
+      "label": "Dimension",
+      "options": "Dimension",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "Canonical dimension this crosswalk targets, e.g. dim_cost_center"
+    },
+    {
+      "fieldname": "erp_source",
+      "fieldtype": "Select",
+      "label": "ERP Source",
+      "options": "d365_fo\nd365_bc\nsap_s4\nsap_ecc\nsap_b1\nerpnext",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "ERP the raw value comes from (matches stg_*.erp_source)"
+    },
+    {
+      "fieldname": "source_value",
+      "fieldtype": "Data",
+      "label": "Source Value",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Raw value as it appears in that ERP, e.g. CC001"
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "canonical_value",
+      "fieldtype": "Data",
+      "label": "Canonical Value",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Harmonized target value, e.g. CC-EMEA-SALES"
+    },
+    {
+      "fieldname": "canonical_label",
+      "fieldtype": "Data",
+      "label": "Canonical Label",
+      "description": "Display label for the canonical value, e.g. EMEA Sales"
+    },
+    {
+      "fieldname": "lifecycle_section",
+      "fieldtype": "Section Break",
+      "label": "Lifecycle"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nPublished\nInactive",
+      "default": "Draft",
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Analyst",
+      "read": 1,
+      "create": 1
+    },
+    {
+      "role": "EPM User",
+      "read": 1
+    }
+  ]
+}

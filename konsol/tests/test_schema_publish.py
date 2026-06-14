@@ -133,9 +133,12 @@ def test_lifecycle_calls_apply_schema():
     assert "apply_schema" in content
 
 
-def test_lifecycle_creates_pipeline_run():
+def test_lifecycle_requests_governed_build():
+    # Publish now routes through the governed Pipeline Build Request (full scope)
+    # rather than firing a direct dbt build / bare Pipeline Run.
     content = _load_lifecycle()
-    assert "Pipeline Run" in content
+    assert "Pipeline Build Request" in content
+    assert "pbr.build_scope" in content
 
 
 def test_lifecycle_checks_epm_admin():
