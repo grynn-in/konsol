@@ -1,7 +1,8 @@
 // Close Run — live log streaming + trigger button (Press-style build view)
 frappe.ui.form.on("Close Run", {
 	refresh(frm) {
-		if (!frm.is_new()) {
+		const in_progress = ["Queued", "Running"].includes(frm.doc.status);
+		if (!frm.is_new() && !in_progress) {
 			frm.add_custom_button(__("Run Suite"), () => {
 				frappe.call({
 					method: "konsol.consolidation.doctype.close_run.close_run.trigger_close_run",

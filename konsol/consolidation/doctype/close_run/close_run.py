@@ -38,7 +38,19 @@ _DBT_TO_STATUS = {"pass": "Pass", "fail": "Fail", "error": "Error"}
 
 @frappe.whitelist()
 def trigger_close_run(fiscal_year=None, fiscal_period=None):
-    """Create a Close Run and enqueue the assertion suite."""
+    """Create a Close Run and enqueue the assertion suite.
+
+    Refuses to start if another run is already Queued/Running — only one
+    assertion suite may run at a time (concurrent `dbt test` would contend on
+    the warehouse and produce confusing interleaved state).
+    """
+    active = frappe.db.get_value("Close Run", {"status": ["in", ("Queued", "Running")]}, "name")
+    if active:
+        frappe.throw(
+            frappe._("A close run is already in progress: {0}. Wait for it to finish before starting another.").format(active),
+            title=frappe._("Run already in progress"),
+        )
+
     doc = frappe.get_doc(
         {
             "doctype": "Close Run",
