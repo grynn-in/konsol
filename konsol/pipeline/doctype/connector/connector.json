@@ -106,6 +106,13 @@
       "fieldtype": "Int",
       "label": "Last Sync Rows",
       "read_only": 1
+    },
+    {
+      "fieldname": "sync_frequency_minutes",
+      "fieldtype": "Int",
+      "label": "Expected Sync Frequency (Minutes)",
+      "default": "1440",
+      "description": "Connector Health turns Stale and alerts when minutes since last sync exceed this. Default 1440 (daily)."
     }
   ],
   "permissions": [

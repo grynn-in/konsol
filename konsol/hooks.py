@@ -46,13 +46,15 @@ after_migrate = ["konsol.install.after_migrate"]
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-#     "cron": {
-#         "0 6 * * *": [
-#             "konsol.tasks.run_pipeline"
-#         ]
-#     }
-# }
+scheduler_events = {
+    "cron": {
+        # Refresh per-connector sync health (status / lag / entities loaded) and
+        # alert operators on the transition into Failed/Stale.
+        "*/5 * * * *": [
+            "konsol.pipeline.doctype.connector_health.connector_health.refresh_connector_health"
+        ]
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Auto-trigger dbt build after consolidation/allocation doc saves
