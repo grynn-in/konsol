@@ -17,6 +17,7 @@ fixtures = [
     "IC Elimination Rule",
     "Allocation Rule",
     "Spread Profile",
+    "Connector",
 ]
 
 # After migrate — create EPM roles

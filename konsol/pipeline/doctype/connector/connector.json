@@ -1,0 +1,136 @@
+{
+  "name": "Connector",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "CONN-.#####",
+  "fields": [
+    {
+      "fieldname": "connector_name",
+      "fieldtype": "Data",
+      "label": "Connector Name",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Display name, e.g. SAP S/4HANA - DACH"
+    },
+    {
+      "fieldname": "erp_type",
+      "fieldtype": "Select",
+      "label": "ERP Type",
+      "options": "d365_fo\nd365_bc\nsap_s4\nsap_ecc\nsap_b1\nerpnext",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Matches the erp_source enum in the canonical staging schema"
+    },
+    {
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "default": "1",
+      "in_list_view": 1,
+      "description": "If unchecked, excluded from erp_sources; the adapter does not run"
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "airbyte_connection_id",
+      "fieldtype": "Data",
+      "label": "Airbyte Connection ID",
+      "description": "Per-connector Airbyte connection (overrides EPM Settings)"
+    },
+    {
+      "fieldname": "airbyte_source",
+      "fieldtype": "Data",
+      "label": "Airbyte Source",
+      "read_only": 1,
+      "description": "Informational source label"
+    },
+    {
+      "fieldname": "dbt_adapter_prefix",
+      "fieldtype": "Data",
+      "label": "dbt Adapter Prefix",
+      "read_only": 1,
+      "description": "Derived from erp_type, e.g. stg_d365_fo"
+    },
+    {
+      "fieldname": "entities_section",
+      "fieldtype": "Section Break",
+      "label": "Legal Entities"
+    },
+    {
+      "fieldname": "legal_entities",
+      "fieldtype": "Table",
+      "label": "Legal Entities",
+      "options": "Connector Legal Entity",
+      "description": "Which entity_ids this connector serves"
+    },
+    {
+      "fieldname": "dimension_section",
+      "fieldtype": "Section Break",
+      "label": "Dimension Mappings"
+    },
+    {
+      "fieldname": "dimension_mappings",
+      "fieldtype": "Table",
+      "label": "Dimension Mappings",
+      "options": "Connector Dimension Map",
+      "description": "Per-ERP source column feeding each canonical dimension"
+    },
+    {
+      "fieldname": "sync_section",
+      "fieldtype": "Section Break",
+      "label": "Sync Status"
+    },
+    {
+      "fieldname": "last_sync_at",
+      "fieldtype": "Datetime",
+      "label": "Last Sync At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "last_sync_status",
+      "fieldtype": "Select",
+      "label": "Last Sync Status",
+      "options": "\nSuccess\nFailed\nPartial\nRunning",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "last_sync_rows",
+      "fieldtype": "Int",
+      "label": "Last Sync Rows",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Analyst",
+      "read": 1,
+      "create": 1
+    },
+    {
+      "role": "EPM User",
+      "read": 1
+    }
+  ]
+}

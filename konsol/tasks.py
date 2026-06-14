@@ -69,10 +69,30 @@ def _preflight_check(build_scope):
 
 
 def check_raw_data_available():
-    """Check if epm_raw has valid data via EPM Settings sync status.
+    """Check if epm_raw has valid data.
+
+    When connectors are registered, gate on per-connector sync status (an
+    enabled connector that has never synced or whose last sync Failed/Running
+    blocks the build, and the message names it). Otherwise fall back to the
+    global EPM Settings Airbyte sync status.
 
     Returns (ok: bool, message: str).
     """
+    if frappe.db.table_exists("Connector"):
+        connectors = frappe.get_all(
+            "Connector",
+            filters={"enabled": 1},
+            fields=["name", "connector_name", "last_sync_status", "last_sync_at"],
+            limit_page_length=0,
+        )
+        if connectors:
+            for c in connectors:
+                if not c.last_sync_at:
+                    return False, f"Connector '{c.connector_name}' has never synced — epm_raw may be empty"
+                if c.last_sync_status in ("Failed", "Running"):
+                    return False, f"Connector '{c.connector_name}' sync status is '{c.last_sync_status}' — cannot build from raw"
+            return True, f"All {len(connectors)} enabled connectors synced OK"
+
     settings = frappe.get_single("EPM Settings")
 
     sync_status = settings.last_airbyte_sync_status

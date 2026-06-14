@@ -117,6 +117,30 @@ def _build_fiscal_vars():
     return result
 
 
+def _build_erp_sources_vars():
+    """Build erp_sources list from enabled Connector docs.
+
+    Returns the distinct erp_type values of enabled connectors, stable-ordered.
+    Two connectors of the same erp_type (e.g. two SAP tenants) collapse to one
+    erp_source — erp_source is per-ERP-product, not per-tenant. Returns [] when
+    there are no enabled connectors (caller preserves the existing value).
+    """
+    if not frappe.db.table_exists("Connector"):
+        return []
+    docs = frappe.get_all(
+        "Connector",
+        filters={"enabled": 1},
+        fields=["erp_type"],
+        order_by="erp_type asc",
+        limit_page_length=0,
+    )
+    seen = []
+    for d in docs:
+        if d.erp_type and d.erp_type not in seen:
+            seen.append(d.erp_type)
+    return seen
+
+
 def regenerate_vars():
     """Regenerate the vars section of dbt_project.yml from Frappe doctypes.
 
@@ -150,6 +174,13 @@ def regenerate_vars():
 
     fiscal = _build_fiscal_vars()
     new_vars.update(fiscal)
+
+    # erp_sources from enabled connectors; preserve the existing value (default
+    # ['d365_fo']) when no connectors are registered yet so we never wipe it.
+    erp_sources = _build_erp_sources_vars()
+    if not erp_sources:
+        erp_sources = (original.get("vars") or {}).get("erp_sources") or ["d365_fo"]
+    new_vars["erp_sources"] = erp_sources
 
     # Merge and write
     updated = _merge_vars_into_yaml(original, new_vars)
