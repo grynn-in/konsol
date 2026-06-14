@@ -63,31 +63,30 @@ def test_api_has_single_value_endpoint():
 # --- Hardening tests ---
 
 def test_measure_allowlist_exists():
-    """Measures are constrained to a per-scenario allow-list.
+    """Measures are constrained to the fact's allow-list AND the Published registry.
 
-    The allow-list is data-driven (Fact Table.measures) rather than a hardcoded
-    dict, surfaced via _get_allowed_measures and enforced by _check_measure.
+    Data-driven (Fact Table.measures ∩ Measure registry), surfaced via
+    _get_allowed_measures / _published_measures and enforced by _resolve_and_validate.
     """
     with open(API_PATH) as f:
         content = f.read()
     assert "_get_allowed_measures" in content
-    assert "_check_measure" in content
+    assert "_published_measures" in content
 
 
-def test_scenario_and_measure_validated_together():
-    """The single-value path validates scenario + measure before querying."""
+def test_fact_measure_dimension_validated_together():
+    """The read path validates fact + measure + dimensions before querying."""
     with open(API_PATH) as f:
         content = f.read()
-    assert "_validate_scenario_and_measure" in content
-    assert "_check_scenario" in content
+    assert "_resolve_and_validate" in content
 
 
-def test_validate_measure_function_exists():
-    """A measure-validation function must exist to reject unknown measures."""
+def test_validate_function_exists():
+    """A validation function must exist to reject unknown facts/measures/dimensions."""
     with open(API_PATH) as f:
         tree = ast.parse(f.read())
     func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-    assert "_check_measure" in func_names
+    assert "_resolve_and_validate" in func_names
 
 
 def test_validate_measure_raises_on_invalid():

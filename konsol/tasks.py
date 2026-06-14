@@ -180,6 +180,18 @@ def on_consolidation_doc_update(doc, method):
     Creates a Pipeline Build Request instead of firing raw dbt build.
     Uses DOCTYPE_BUILD_MAP to determine scope and risk level.
     """
+    # Inert during app install / migrate / fixture import: loading fixtures
+    # (e.g. allocation_rule.json) must not enqueue pipeline builds — and
+    # ClickHouse credentials (EPM Settings) may not be configured yet, so a
+    # build request here would crash the install on get_connection().
+    if (
+        frappe.flags.in_install
+        or frappe.flags.in_migrate
+        or frappe.flags.in_patch
+        or frappe.flags.in_import
+    ):
+        return
+
     mapping = DOCTYPE_BUILD_MAP.get(doc.doctype)
     if not mapping:
         frappe.logger().warning(f"No build mapping for doctype: {doc.doctype}")

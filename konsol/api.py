@@ -87,19 +87,43 @@ def _assert_entity_access(entity):
 # Fact Table registry helpers
 # ---------------------------------------------------------------------------
 
+_FACT_FIELDS = [
+    "fact_name", "scenario_key", "clickhouse_table", "has_scenario_id",
+    "measures", "dimensions",
+    "reroute_table", "reroute_column", "reroute_measure",
+]
+
+
 def _get_fact_by_scenario(scenario):
     """Load Fact Table doc by scenario_key. Returns dict or None."""
     facts = frappe.get_all(
         "Fact Table",
         filters={"scenario_key": scenario},
-        fields=[
-            "fact_name", "clickhouse_table", "has_scenario_id",
-            "measures", "dimensions",
-            "reroute_table", "reroute_column", "reroute_measure",
-        ],
+        fields=_FACT_FIELDS,
         limit=1,
     )
     return facts[0] if facts else None
+
+
+def _get_fact(fact=None, scenario=None):
+    """Resolve a Fact Table. `fact` (fact_name) wins over `scenario`.
+
+    fact_name match is case-insensitive (names are stored normalized lowercase).
+    If both are supplied, fact wins and a warning is logged. Returns dict or None.
+    """
+    if fact:
+        if scenario and scenario != "actuals":
+            frappe.logger().warning(
+                f"epm: both fact='{fact}' and scenario='{scenario}' given; fact wins"
+            )
+        facts = frappe.get_all(
+            "Fact Table",
+            filters={"fact_name": (fact or "").lower()},
+            fields=_FACT_FIELDS,
+            limit=1,
+        )
+        return facts[0] if facts else None
+    return _get_fact_by_scenario(scenario)
 
 
 def _get_allowed_measures(fact):
@@ -110,6 +134,70 @@ def _get_allowed_measures(fact):
 def _get_fact_dimensions(fact):
     """Parse dimensions JSON from a Fact Table doc. Returns set."""
     return set(json.loads(fact.dimensions or "[]"))
+
+
+def _published_measures():
+    """Set of measure names with status=Published in the Measure registry."""
+    return {
+        m.measure_name
+        for m in frappe.get_all(
+            "Measure", filters={"status": "Published"},
+            fields=["measure_name"], limit_page_length=0,
+        )
+    }
+
+
+def _parse_dimensions_arg(dimensions):
+    """Accept a dict or a JSON-encoded string; return a plain dict.
+
+    GET epm_value sends `dimensions` as a JSON string; epm_batch items send a
+    native object. Empty values are dropped by the caller.
+    """
+    if not dimensions:
+        return {}
+    if isinstance(dimensions, dict):
+        return dict(dimensions)
+    try:
+        parsed = json.loads(dimensions)
+    except (json.JSONDecodeError, TypeError):
+        frappe.throw("dimensions must be a JSON object", frappe.ValidationError)
+    if not isinstance(parsed, dict):
+        frappe.throw("dimensions must be a JSON object", frappe.ValidationError)
+    return parsed
+
+
+def _resolve_and_validate(fact_name, scenario, measure, dim_names):
+    """Resolve the fact, validate measure (Published registry ∩ fact) and
+    dimensions (must be allowed by the fact). Returns (fact_doc, error_or_None)."""
+    fact = _get_fact(fact=fact_name, scenario=scenario)
+    if not fact:
+        if fact_name:
+            allowed = sorted(
+                f.fact_name for f in frappe.get_all(
+                    "Fact Table", fields=["fact_name"], limit_page_length=0)
+            )
+            return None, f"Invalid fact '{fact_name}'. Allowed: {', '.join(allowed)}"
+        allowed = sorted(set(
+            f.scenario_key for f in frappe.get_all(
+                "Fact Table", fields=["scenario_key"], limit_page_length=0)
+        ))
+        return None, f"Invalid scenario '{scenario}'. Allowed: {', '.join(allowed)}"
+
+    valid_measures = _get_allowed_measures(fact) & _published_measures()
+    if measure not in valid_measures:
+        return None, (
+            f"Invalid measure '{measure}' for fact '{fact.fact_name}'. "
+            f"Allowed: {', '.join(sorted(valid_measures))}"
+        )
+
+    fact_dims = _get_fact_dimensions(fact)
+    for dn in dim_names:
+        if dn not in fact_dims:
+            return None, (
+                f"Invalid dimension '{dn}' for fact '{fact.fact_name}'. "
+                f"Allowed: {', '.join(sorted(fact_dims))}"
+            )
+    return fact, None
 
 
 # ---------------------------------------------------------------------------
@@ -135,39 +223,6 @@ def _resolve_period(period):
     if p < 1 or p > 12:
         raise ValueError(f"fiscal_period must be 1-12, got {p}")
     return (p,)
-
-
-def _check_scenario(scenario):
-    """Return error string if scenario is invalid, else None."""
-    fact = _get_fact_by_scenario(scenario)
-    if not fact:
-        # List available scenarios for the error message
-        all_scenarios = frappe.get_all(
-            "Fact Table", fields=["scenario_key"], limit_page_length=0)
-        available = sorted(set(f.scenario_key for f in all_scenarios))
-        return f"Invalid scenario '{scenario}'. Allowed: {', '.join(available)}"
-    return None
-
-
-def _check_measure(measure, scenario):
-    """Return error string if measure is invalid, else None."""
-    fact = _get_fact_by_scenario(scenario)
-    if not fact:
-        return f"Unknown scenario '{scenario}'"
-    allowed = _get_allowed_measures(fact)
-    if measure not in allowed:
-        return f"Invalid measure '{measure}' for scenario '{scenario}'. Allowed: {', '.join(sorted(allowed))}"
-    return None
-
-
-def _validate_scenario_and_measure(scenario, measure):
-    """Validate scenario and measure, throwing on failure."""
-    err = _check_scenario(scenario)
-    if err:
-        frappe.throw(err, frappe.ValidationError)
-    err = _check_measure(measure, scenario)
-    if err:
-        frappe.throw(err, frappe.ValidationError)
 
 
 def _budget_filters(data):
@@ -215,12 +270,14 @@ def _batch_query_clickhouse(requests_list):
     values = [None] * n
     errors = [None] * n
 
-    # Group by (scenario, measure, periods_tuple, dim_names_frozenset, scenario_id)
+    # Group by (fact, measure, periods_tuple, dim_names_frozenset, scenario_id).
+    # `fact` (the resolved fact_name) is the table-determining element; scenario
+    # is retained per-request for backward compatibility / resolution fallback.
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         dims = req.get("dimensions", {})
         key = (
-            req["scenario"],
+            req.get("fact") or req.get("scenario"),
             req["measure"],
             req["periods"],
             frozenset(dims.keys()),
@@ -228,11 +285,11 @@ def _batch_query_clickhouse(requests_list):
         )
         groups[key].append((idx, req))
 
-    for (scenario, measure, periods, dim_names, scenario_id), group_items in groups.items():
-        fact = _get_fact_by_scenario(scenario)
+    for (fact_key, measure, periods, dim_names, scenario_id), group_items in groups.items():
+        fact = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
         if not fact:
             for idx, _ in group_items:
-                errors[idx] = f"No Fact Table for scenario '{scenario}'"
+                errors[idx] = f"No Fact Table for '{fact_key}'"
             continue
 
         table = fact.clickhouse_table
@@ -383,34 +440,32 @@ def health():
 
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
-              scenario="actuals", cost_center="", department="",
-              scenario_id="", **kwargs):
+              scenario="actuals", fact=None, dimensions=None, scenario_id=""):
     """Single value lookup — returns {"value": <number>}.
 
     Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
     Range periods return the sum across constituent months.
 
-    Supports dynamic dimensions via kwargs (dim_* parameters) alongside
-    legacy cost_center/department params.
+    Dimensions are passed as a generic dict (JSON string on this GET endpoint),
+    e.g. dimensions={"dim_cost_center":"CC001","dim_project":"P01"}. Keys are
+    canonical dimension names, validated against the fact's allowed dimensions.
+    `fact` (a Fact registry name) selects the source table and wins over
+    `scenario`; if neither pins a fact, `scenario` resolves it via scenario_key.
     """
-    _validate_scenario_and_measure(scenario, measure)
     _assert_entity_access(entity)
 
-    # Map legacy params + kwargs → dimensions dict
-    dimensions = {}
-    if cost_center:
-        dimensions["dim_cost_center"] = cost_center
-    if department:
-        dimensions["dim_department"] = department
-    for k, v in kwargs.items():
-        if k.startswith("dim_") and v:
-            dimensions[k] = v
+    dims = {k: v for k, v in _parse_dimensions_arg(dimensions).items() if v}
+
+    fact_doc, err = _resolve_and_validate(fact, scenario, measure, dims.keys())
+    if err:
+        frappe.throw(err, frappe.ValidationError)
 
     result = _batch_query_clickhouse([{
         "entity": entity, "year": int(year),
         "periods": _resolve_period(period),
-        "account": account, "measure": measure, "scenario": scenario,
-        "dimensions": dimensions,
+        "account": account, "measure": measure,
+        "fact": fact_doc.fact_name, "scenario": scenario,
+        "dimensions": dims,
         "scenario_id": scenario_id,
     }])
     return {"value": result["values"][0]}
@@ -437,41 +492,38 @@ def epm_batch():
     allowed_entities = _allowed_entities()
     for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
+        fact_name = req.get("fact")
         measure = req.get("measure", "period_net_amount")
-        err = _check_scenario(scenario) or _check_measure(measure, scenario)
+
+        raw_dims = req.get("dimensions") if isinstance(req.get("dimensions"), dict) else {}
+        dimensions = {k: v for k, v in raw_dims.items() if v}
+
+        fact_doc, err = _resolve_and_validate(
+            fact_name, scenario, measure, dimensions.keys())
         if err:
             errors_list[i] = err
-        elif allowed_entities is not None and req.get("entity", "") not in allowed_entities:
+            continue
+        if allowed_entities is not None and req.get("entity", "") not in allowed_entities:
             errors_list[i] = f"Not permitted to access entity '{req.get('entity', '')}'"
-        else:
-            try:
-                periods = _resolve_period(req.get("period", 0))
-            except (ValueError, TypeError):
-                errors_list[i] = f"Invalid period '{req.get('period')}'"
-                continue
+            continue
 
-            # Build dimensions dict: legacy params + explicit dimensions
-            dimensions = {}
-            if req.get("cost_center"):
-                dimensions["dim_cost_center"] = req["cost_center"]
-            if req.get("department"):
-                dimensions["dim_department"] = req["department"]
-            # Merge explicit dimensions dict (overrides legacy params)
-            if isinstance(req.get("dimensions"), dict):
-                for k, v in req["dimensions"].items():
-                    if k.startswith("dim_") and v:
-                        dimensions[k] = v
+        try:
+            periods = _resolve_period(req.get("period", 0))
+        except (ValueError, TypeError):
+            errors_list[i] = f"Invalid period '{req.get('period')}'"
+            continue
 
-            normalized[i] = {
-                "entity": req.get("entity", ""),
-                "year": int(req.get("year", 0)),
-                "periods": periods,
-                "account": req.get("account", ""),
-                "measure": measure,
-                "scenario": scenario,
-                "dimensions": dimensions,
-                "scenario_id": req.get("scenario_id", ""),
-            }
+        normalized[i] = {
+            "entity": req.get("entity", ""),
+            "year": int(req.get("year", 0)),
+            "periods": periods,
+            "account": req.get("account", ""),
+            "measure": measure,
+            "fact": fact_doc.fact_name,
+            "scenario": scenario,
+            "dimensions": dimensions,
+            "scenario_id": req.get("scenario_id", ""),
+        }
 
     valid = [(i, r) for i, r in enumerate(normalized) if r is not None]
     if valid:
