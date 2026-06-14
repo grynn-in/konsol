@@ -63,7 +63,15 @@
       "fieldtype": "Data",
       "label": "Failures Table",
       "read_only": 1,
-      "description": "epm_gold table written by --store-failures holding the offending rows"
+      "description": "ClickHouse table written by --store-failures holding the offending rows"
+    },
+    {
+      "fieldname": "sample_rows",
+      "fieldtype": "Code",
+      "label": "Offending Rows (sample)",
+      "options": "Text",
+      "read_only": 1,
+      "description": "Up to 20 of the rows that failed this assertion, fetched from the failures table"
     }
   ],
   "permissions": []

@@ -36,6 +36,17 @@ def _classify(name):
 _DBT_TO_STATUS = {"pass": "Pass", "fail": "Fail", "error": "Error"}
 
 
+def _dbt_bin():
+    """Absolute path to the dbt binary in the bench venv.
+
+    The web/worker processes don't have the venv's bin on PATH, so a bare
+    `dbt` raises FileNotFoundError. Fall back to `dbt` only if the venv copy
+    isn't present.
+    """
+    candidate = os.path.join(frappe.utils.get_bench_path(), "env", "bin", "dbt")
+    return candidate if os.path.exists(candidate) else "dbt"
+
+
 @frappe.whitelist()
 def trigger_close_run(fiscal_year=None, fiscal_period=None):
     """Create a Close Run and enqueue the assertion suite.
@@ -121,7 +132,7 @@ def run_close_assertions(close_run):
 
     project_path = frappe.get_single("EPM Settings").dbt_project_path or "/home/frappe/dbt_project"
     cmd = [
-        "dbt", "test",
+        _dbt_bin(), "test",
         "--select", "test_type:singular",
         "--store-failures",
         "--project-dir", project_path,
@@ -162,6 +173,23 @@ def run_close_assertions(close_run):
           passed=doc.passed, failed=doc.failed, errored=doc.errored)
 
 
+def _fetch_failure_sample(relation, limit=20):
+    """Fetch up to `limit` offending rows from a --store-failures table.
+
+    `relation` is dbt's relation_name, e.g. `epm_dbt_test__audit`.`assert_x`.
+    Returns an aligned text table (ClickHouse PrettyCompact) for display in the
+    Assertion Result, or a short note on failure — never raises.
+    """
+    rel = relation.replace("`", "").strip()
+    if not rel:
+        return ""
+    try:
+        from konsol.clickhouse import execute
+        return execute(f"SELECT * FROM {rel} LIMIT {int(limit)} FORMAT PrettyCompactNoEscapes")[:8000]
+    except Exception as e:  # noqa: BLE001
+        return f"(could not fetch sample from {rel}: {e})"
+
+
 def _parse_results(doc, project_path):
     """Read target/run_results.json into the results child table."""
     rr_path = os.path.join(project_path, "target", "run_results.json")
@@ -191,6 +219,8 @@ def _parse_results(doc, project_path):
             failed += 1
         else:
             errored += 1
+
+        relation = (node.get("relation_name") or "") if status == "Fail" else ""
         doc.append("results", {
             "assertion": name,
             "dimension": _classify(name),
@@ -198,7 +228,8 @@ def _parse_results(doc, project_path):
             "rows_failed": failures,
             "severity": "error",
             "message": (node.get("message") or "")[:280],
-            "failures_table": (node.get("relation_name") or "").strip('`"') if status == "Fail" else "",
+            "failures_table": relation.replace("`", ""),
+            "sample_rows": _fetch_failure_sample(relation) if relation else "",
         })
 
     doc.total = passed + failed + errored

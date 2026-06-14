@@ -3,11 +3,22 @@
 Build governance: doc saves create Pipeline Build Requests instead of
 firing raw `dbt build`. Scopes map to dbt domain tags for selective builds.
 """
+import os
 import subprocess
 import time
 
 import frappe
 import requests
+
+
+def _dbt_bin():
+    """Absolute path to the bench-venv dbt binary.
+
+    Web/worker processes don't have env/bin on PATH, so a bare `dbt` raises
+    FileNotFoundError. Fall back to `dbt` only if the venv copy is absent.
+    """
+    candidate = os.path.join(frappe.utils.get_bench_path(), "env", "bin", "dbt")
+    return candidate if os.path.exists(candidate) else "dbt"
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +185,7 @@ def run_governed_build(build_request):
         # Build dbt command
         settings = frappe.get_single("EPM Settings")
         project_path = settings.dbt_project_path
-        cmd = ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path]
+        cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
 
         selector = _scope_selector(doc.build_scope)
         if selector:
@@ -323,7 +334,7 @@ def _run_dbt_build_background(doctype=None, docname=None, pipeline_run=None):
 
     try:
         result = subprocess.run(
-            ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path],
+            [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path],
             capture_output=True,
             text=True,
             timeout=300,
@@ -563,7 +574,7 @@ def _run_dbt_build(doc):
     project_path = settings.dbt_project_path
 
     result = subprocess.run(
-        ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path],
+        [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path],
         capture_output=True,
         text=True,
         timeout=300,
