@@ -92,12 +92,19 @@ def test_dbt_config_builds_erp_sources():
     assert "def _build_erp_sources_vars" in src
     assert 'new_vars["erp_sources"]' in src
     assert 'filters={"enabled": 1}' in src
+    # With no enabled connectors, fall back to the d365_fo DEFAULT — not the
+    # existing file value (which would make deleting the last connector a no-op).
+    assert '_build_erp_sources_vars() or ["d365_fo"]' in src
 
 
 def test_connector_controller_regenerates_vars():
     src = _read(os.path.join(APP_DIR, "pipeline", "doctype", "connector", "connector.py"))
     assert "from konsol.dbt_config import regenerate_vars" in src
-    assert "def on_update" in src and "def on_trash" in src
+    # Regenerate on save AND on delete — but delete must use after_delete (runs
+    # after the row is gone), NOT on_trash (runs before, would keep the deleted
+    # connector's erp_type in erp_sources).
+    assert "def on_update" in src and "def after_delete" in src
+    assert "def on_trash" not in src
     assert "regenerate_vars()" in src
     assert "dbt_adapter_prefix" in src
 

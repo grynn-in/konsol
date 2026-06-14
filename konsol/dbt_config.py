@@ -175,11 +175,12 @@ def regenerate_vars():
     fiscal = _build_fiscal_vars()
     new_vars.update(fiscal)
 
-    # erp_sources from enabled connectors; preserve the existing value (default
-    # ['d365_fo']) when no connectors are registered yet so we never wipe it.
-    erp_sources = _build_erp_sources_vars()
-    if not erp_sources:
-        erp_sources = (original.get("vars") or {}).get("erp_sources") or ["d365_fo"]
+    # erp_sources = the enabled connectors' types, else the d365_fo default.
+    # NOT the existing file value: re-reading it would make deleting the last
+    # connector a no-op (its erp_type would persist from the stale file), so the
+    # registry could never be fully drained. The registry is authoritative; with
+    # no enabled connectors we fall back to the seeded default, not the old file.
+    erp_sources = _build_erp_sources_vars() or ["d365_fo"]
     new_vars["erp_sources"] = erp_sources
 
     # Merge and write
