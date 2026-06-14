@@ -81,3 +81,22 @@ def test_scenario_id_is_validated():
     # Validation uses a precompiled pattern (_SAFE_SCENARIO_ID), not re.match directly.
     assert "_SAFE_SCENARIO_ID.match" in content
     assert "A-Za-z0-9_" in content
+
+
+def test_epm_batch_guards_year_per_cell():
+    """A non-numeric year must fail only its own row, not 500 the whole batch.
+
+    int(year) must be coerced inside the per-cell try/except (like the period
+    guard) so a bad value (e.g. JSON null from a blank Excel cell) records a
+    per-cell error and `continue`s, rather than raising in the normalized dict
+    where it would propagate and fail every other request in the batch.
+    """
+    with open(API_PATH) as f:
+        content = f.read()
+    batch = content.split("def epm_batch")[1].split("\ndef ")[0]
+    # Per-cell error path exists.
+    assert "Invalid year" in batch
+    # year is coerced (once) but NOT re-coerced inside the normalized dict,
+    # which would sit outside the try and raise unhandled.
+    assert 'int(req.get("year"' in batch
+    assert '"year": int(req.get("year"' not in batch

@@ -513,9 +513,17 @@ def epm_batch():
             errors_list[i] = f"Invalid period '{req.get('period')}'"
             continue
 
+        try:
+            year = int(req.get("year", 0))
+        except (ValueError, TypeError):
+            # A non-numeric year (e.g. JSON null from a blank Excel cell)
+            # must fail only this row — not raise and 500 the whole batch.
+            errors_list[i] = f"Invalid year '{req.get('year')}'"
+            continue
+
         normalized[i] = {
             "entity": req.get("entity", ""),
-            "year": int(req.get("year", 0)),
+            "year": year,
             "periods": periods,
             "account": req.get("account", ""),
             "measure": measure,
