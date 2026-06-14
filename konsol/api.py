@@ -900,6 +900,26 @@ def airbyte_sync_complete():
     settings.last_airbyte_sync_rows = int(data.get("rows_synced", 0))
     settings.flags.ignore_permissions = True
     settings.save()
+
+    # Per-connector sync status: if the payload names a connection that maps to
+    # a registered Connector, update that connector instead of only the global
+    # EPM Settings — Build Governance preflight reads per-connector status.
+    connection_id = data.get("connection_id") or data.get("connectionId")
+    if connection_id and frappe.db.table_exists("Connector"):
+        names = frappe.get_all(
+            "Connector",
+            filters={"airbyte_connection_id": connection_id},
+            pluck="name",
+            limit_page_length=0,
+        )
+        for name in names:
+            conn = frappe.get_doc("Connector", name)
+            conn.last_sync_at = settings.last_airbyte_sync_at
+            conn.last_sync_status = settings.last_airbyte_sync_status
+            conn.last_sync_rows = settings.last_airbyte_sync_rows
+            conn.flags.ignore_permissions = True
+            conn.save()
+
     frappe.db.commit()
 
     frappe.publish_realtime(
