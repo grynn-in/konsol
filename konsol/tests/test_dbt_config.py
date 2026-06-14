@@ -72,3 +72,36 @@ def test_dbt_config_round_trip():
     assert result["name"] == original["name"]
     assert result.get("models") == original.get("models")
     assert result.get("seeds") == original.get("seeds")
+
+
+# --- ERP Source management ---
+
+def test_dbt_config_has_build_erp_sources():
+    """Must expose a builder that reads erp_sources from the ERP Source doctype."""
+    with open(DBT_CONFIG_PATH) as f:
+        tree = ast.parse(f.read())
+    func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "_build_erp_sources_vars" in func_names
+
+
+def test_regenerate_reads_erp_source_doctype():
+    """regenerate_vars must source erp_sources from the ERP Source doctype."""
+    with open(DBT_CONFIG_PATH) as f:
+        content = f.read()
+    assert '"ERP Source"' in content
+    # The generated key written into vars is `erp_sources`.
+    assert '"erp_sources"' in content
+
+
+def test_regenerate_preserves_existing_vars():
+    """regenerate_vars must seed from existing vars, not start from {}.
+
+    Otherwise any manual/unmanaged var (e.g. erp_sources before it was managed)
+    is clobbered on every run — the original bug.
+    """
+    with open(DBT_CONFIG_PATH) as f:
+        body = f.read().split("def regenerate_vars")[1]
+    # Seeds new_vars from the existing vars block...
+    assert 'get("vars")' in body
+    # ...and does NOT reset it to an empty dict.
+    assert "new_vars = {}" not in body

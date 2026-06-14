@@ -1,0 +1,65 @@
+{
+  "name": "ERP Source",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:source_name",
+  "fields": [
+    {
+      "fieldname": "source_name",
+      "fieldtype": "Data",
+      "label": "Source Name",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "dbt source key — lowercase identifier, e.g. d365_fo or erpnext. Must match the staging folder/source name."
+    },
+    {
+      "fieldname": "label",
+      "fieldtype": "Data",
+      "label": "Label",
+      "in_list_view": 1,
+      "description": "Human-readable, e.g. Dynamics 365 F&O"
+    },
+    {
+      "fieldname": "connector_type",
+      "fieldtype": "Select",
+      "label": "Connector Type",
+      "options": "D365 F&O\nERPNext\nOther",
+      "in_list_view": 1,
+      "description": "Informational — which Airbyte connector feeds this source."
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "default": "1",
+      "in_list_view": 1,
+      "description": "When checked, this source is emitted into dbt_project.yml erp_sources on the next config regeneration."
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

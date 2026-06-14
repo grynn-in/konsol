@@ -117,12 +117,24 @@ def _build_fiscal_vars():
     return result
 
 
+def _build_erp_sources_vars():
+    """Build the erp_sources list from the enabled ERP Source docs."""
+    docs = frappe.get_all(
+        "ERP Source",
+        filters={"enabled": 1},
+        fields=["source_name"],
+        order_by="source_name asc",
+        limit_page_length=0,
+    )
+    return [d.source_name for d in docs]
+
+
 def regenerate_vars():
     """Regenerate the vars section of dbt_project.yml from Frappe doctypes.
 
-    Reads Dimension, Measure, and Fiscal Period docs, builds the vars
-    dict, and writes it back to dbt_project.yml while preserving all
-    other sections.
+    Reads Dimension, Measure, Fiscal Period, and ERP Source docs, builds the
+    vars dict, and writes it back to dbt_project.yml while preserving all
+    other sections — and any manual vars not managed by a doctype.
     """
     path = _get_dbt_project_path()
 
@@ -136,10 +148,13 @@ def regenerate_vars():
         )
         return
 
-    # Start with existing vars to preserve any manual entries
-    new_vars = {}
+    # Start from the EXISTING vars so manual entries that no doctype manages
+    # (and managed keys whose doctype is currently empty) are preserved rather
+    # than clobbered.
+    new_vars = dict((original or {}).get("vars") or {})
 
-    # Build from doctypes
+    # Build from doctypes — overlay each managed key only when the doctype has
+    # records, so an empty doctype keeps whatever was already in the YAML.
     dimensions = _build_dimensions_vars()
     if dimensions:
         new_vars["dimensions"] = dimensions
@@ -147,6 +162,10 @@ def regenerate_vars():
     measures = _build_measures_vars()
     if measures:
         new_vars["base_measures"] = measures
+
+    erp_sources = _build_erp_sources_vars()
+    if erp_sources:
+        new_vars["erp_sources"] = erp_sources
 
     fiscal = _build_fiscal_vars()
     new_vars.update(fiscal)

@@ -9,6 +9,7 @@ app_license = "MIT"
 # ------------------------------------------------
 fixtures = [
     "Fiscal Period",
+    "ERP Source",
     "Dimension",
     "Measure",
     "Fact Table",

@@ -1,0 +1,4 @@
+[
+  {"doctype": "ERP Source", "name": "d365_fo", "source_name": "d365_fo", "label": "Dynamics 365 F&O", "connector_type": "D365 F&O", "enabled": 1},
+  {"doctype": "ERP Source", "name": "erpnext", "source_name": "erpnext", "label": "ERPNext", "connector_type": "ERPNext", "enabled": 1}
+]
