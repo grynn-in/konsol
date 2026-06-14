@@ -1,0 +1,70 @@
+{
+  "name": "Assertion Result",
+  "doctype": "DocType",
+  "module": "Consolidation",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "fields": [
+    {
+      "fieldname": "assertion",
+      "fieldtype": "Data",
+      "label": "Assertion",
+      "in_list_view": 1,
+      "columns": 4,
+      "read_only": 1
+    },
+    {
+      "fieldname": "dimension",
+      "fieldtype": "Select",
+      "label": "Dimension",
+      "options": "Consolidation\nAllocation\nFX\nOwnership\nData Quality\nOther",
+      "in_list_view": 1,
+      "columns": 2,
+      "read_only": 1
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Pass\nFail\nError",
+      "default": "Pass",
+      "in_list_view": 1,
+      "columns": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "rows_failed",
+      "fieldtype": "Int",
+      "label": "Rows Failed",
+      "in_list_view": 1,
+      "columns": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "severity",
+      "fieldtype": "Select",
+      "label": "Severity",
+      "options": "error\nwarn",
+      "default": "error",
+      "read_only": 1
+    },
+    {
+      "fieldname": "message",
+      "fieldtype": "Small Text",
+      "label": "Message",
+      "in_list_view": 1,
+      "columns": 3,
+      "read_only": 1
+    },
+    {
+      "fieldname": "failures_table",
+      "fieldtype": "Data",
+      "label": "Failures Table",
+      "read_only": 1,
+      "description": "epm_gold table written by --store-failures holding the offending rows"
+    }
+  ],
+  "permissions": []
+}

@@ -19,6 +19,13 @@
       "reqd": 1
     },
     {
+      "fieldname": "progress_pct",
+      "fieldtype": "Int",
+      "label": "Progress %",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
       "fieldname": "triggered_by",
       "fieldtype": "Link",
       "label": "Triggered By",
@@ -66,6 +73,30 @@
       "fieldname": "dbt_result",
       "fieldtype": "Small Text",
       "label": "dbt Result",
+      "read_only": 1
+    },
+    {
+      "fieldname": "steps_section",
+      "fieldtype": "Section Break",
+      "label": "Steps"
+    },
+    {
+      "fieldname": "steps",
+      "fieldtype": "Table",
+      "label": "Steps",
+      "options": "Pipeline Step"
+    },
+    {
+      "fieldname": "log_section",
+      "fieldtype": "Section Break",
+      "label": "Log",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "log",
+      "fieldtype": "Code",
+      "label": "Log",
+      "options": "Text",
       "read_only": 1
     },
     {
