@@ -34,7 +34,7 @@ def get_connection():
         "host": host,
         "port": settings.clickhouse_port or "8123",
         "user": settings.clickhouse_user or "default",
-        "password": settings.get_password("clickhouse_password") or "",
+        "password": settings.get_password("clickhouse_password", raise_exception=False) or "",
         "secure": secure,
         "verify": verify,
     }
@@ -87,6 +87,18 @@ def sync_table(table, columns, rows):
         columns: List of column names.
         rows: List of tuples/lists matching column order.
     """
+    # Skip during app install / migrate / fixture import: fixtures must not
+    # push to ClickHouse (EPM Settings — and the CH password — may not be
+    # configured yet, and a write here would crash install-app). Explicit
+    # syncs (apply_schema, manual bench execute) run outside these phases.
+    if (
+        frappe.flags.in_install
+        or frappe.flags.in_migrate
+        or frappe.flags.in_patch
+        or frappe.flags.in_import
+    ):
+        return
+
     try:
         _sync_table_inner(table, columns, rows)
         # Clear any previous failure for this table
