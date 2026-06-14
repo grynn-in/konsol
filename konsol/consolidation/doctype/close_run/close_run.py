@@ -72,6 +72,38 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     return doc.name
 
 
+# Runs older than this with no terminal status are treated as dead. Kept above
+# the 900s job timeout so a legitimately-long run is never reaped mid-flight.
+STALE_MINUTES = 20
+
+
+def reap_stale_close_runs():
+    """Scheduled: mark long-stuck Close Runs as Error.
+
+    The concurrency guard in trigger_close_run() blocks new runs while one is
+    Queued/Running. If a worker dies mid-run, that record would stay Running
+    forever and wedge the guard permanently. This sweep releases it.
+    """
+    cutoff = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-STALE_MINUTES)
+    stale = frappe.get_all(
+        "Close Run",
+        filters={"status": ["in", ("Queued", "Running")], "modified": ["<", cutoff]},
+        pluck="name",
+    )
+    for name in stale:
+        prev = frappe.db.get_value("Close Run", name, "log") or ""
+        frappe.db.set_value(
+            "Close Run", name,
+            {"status": "Error",
+             "log": f"{prev}\n[reaper] marked Error: no progress for >{STALE_MINUTES}m"},
+            update_modified=False,
+        )
+    if stale:
+        frappe.db.commit()
+        frappe.logger().info(f"Close Run reaper: marked {len(stale)} stale run(s) Error: {stale}")
+    return stale
+
+
 def _emit(name, **payload):
     payload["run"] = name
     frappe.publish_realtime("close_run_update", payload, doctype="Close Run", docname=name)
