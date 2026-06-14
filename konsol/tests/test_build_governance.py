@@ -385,3 +385,45 @@ def test_airbyte_webhook_checks_secret():
     assert "X-Webhook-Secret" in content or "webhook_secret" in content, (
         "Webhook must check shared secret for unauthenticated requests"
     )
+
+
+# ===================================================================
+# Build Domain doctype as the runtime source of truth
+# ===================================================================
+
+def test_tasks_has_build_domain_lookups():
+    """tasks.py must expose doctype-preferring domain lookups."""
+    tree = ast.parse(_read(TASKS_PATH))
+    func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "_scope_selector" in func_names
+    assert "_raw_dependent_scopes" in func_names
+
+
+def test_tasks_reads_build_domain_doctype():
+    """The lookups must consult the Build Domain doctype."""
+    content = _read(TASKS_PATH)
+    assert '"Build Domain"' in content
+
+
+def test_governed_build_uses_scope_selector_helper():
+    """run_governed_build must select via _scope_selector, not the raw dict."""
+    content = _read(TASKS_PATH)
+    build = content.split("def run_governed_build")[1].split("\ndef ")[0]
+    assert "_scope_selector(" in build
+
+
+def test_preflight_uses_raw_dependent_helper():
+    """_preflight_check must gate via _raw_dependent_scopes()."""
+    content = _read(TASKS_PATH)
+    pre = content.split("def _preflight_check")[1].split("\ndef ")[0]
+    assert "_raw_dependent_scopes()" in pre
+
+
+def test_gold_model_links_to_build_domain():
+    """Gold Model.build_domain must be a Link to Build Domain (single source)."""
+    path = os.path.join(
+        APP_DIR, "pipeline", "doctype", "gold_model", "gold_model.json")
+    doc = json.loads(_read(path))
+    bd = next(f for f in doc["fields"] if f["fieldname"] == "build_domain")
+    assert bd["fieldtype"] == "Link"
+    assert bd["options"] == "Build Domain"
