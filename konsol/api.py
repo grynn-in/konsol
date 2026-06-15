@@ -983,8 +983,8 @@ def connector_health():
         "Connector Health",
         fields=[
             "connector", "erp_source", "last_sync_status", "lag_minutes",
-            "entities_loaded", "rows_emitted", "last_sync_start",
-            "last_sync_end", "sync_duration_s", "last_error", "checked_at",
+            "entities_loaded", "rows_emitted",
+            "last_sync_end", "last_error", "checked_at",
         ],
         order_by="lag_minutes desc",
         limit_page_length=0,

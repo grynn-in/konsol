@@ -67,22 +67,12 @@
       "fieldtype": "Column Break"
     },
     {
-      "fieldname": "last_sync_start",
-      "fieldtype": "Datetime",
-      "label": "Last Sync Start",
-      "read_only": 1
-    },
-    {
       "fieldname": "last_sync_end",
       "fieldtype": "Datetime",
-      "label": "Last Sync End",
-      "read_only": 1
-    },
-    {
-      "fieldname": "sync_duration_s",
-      "fieldtype": "Int",
-      "label": "Sync Duration (s)",
-      "read_only": 1
+      "label": "Last Sync",
+      "read_only": 1,
+      "in_list_view": 1,
+      "description": "Completion time of the last sync (from Connector.last_sync_at)"
     },
     {
       "fieldname": "checked_at",

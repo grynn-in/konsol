@@ -40,8 +40,8 @@ def test_connector_health_doctype_basics():
 def test_connector_health_required_fields():
     fields = _field_names(_pipeline_doctype_json("connector_health"))
     for f in ["connector", "erp_source", "last_sync_status", "lag_minutes",
-              "entities_loaded", "rows_emitted", "last_sync_start",
-              "last_sync_end", "sync_duration_s", "last_error", "checked_at"]:
+              "entities_loaded", "rows_emitted",
+              "last_sync_end", "last_error", "checked_at"]:
         assert f in fields, f"Missing field: {f}"
 
 

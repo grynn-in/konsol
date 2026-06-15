@@ -86,9 +86,7 @@ def _derive(connector, now):
         "lag_minutes": lag_minutes,
         "entities_loaded": _entities_loaded(connector.erp_type),
         "rows_emitted": connector.last_sync_rows or 0,
-        "last_sync_start": last_at,
         "last_sync_end": last_at,
-        "sync_duration_s": 0,
         "checked_at": now,
         "last_error": last_error,
     }
