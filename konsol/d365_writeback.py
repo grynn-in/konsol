@@ -8,10 +8,24 @@ NOT yet wired to the Budget Input approval workflow — call ``push_budget_input
 explicitly (e.g. ``bench execute``). Wiring the workflow transition is a
 follow-up.
 
-Idempotency / round-trip prevention: every pushed line is tagged
-``BudgetModelId = 'EPM-<budget-input-name>'`` so a re-push targets the same model
-(D365 replaces rather than duplicates). Do NOT Airbyte-sync BudgetRegisterEntries
-back into ``epm_raw`` — filter EPM-originated entries by this tag if you must.
+Every pushed line is tagged ``BudgetModelId = 'EPM-<budget-input-name>'`` so
+EPM-originated entries are identifiable. Do NOT Airbyte-sync BudgetRegisterEntries
+back into ``epm_raw`` — filter on this tag if you must (round-trip prevention).
+
+GO-LIVE FOLLOW-UPS (required before wiring to the approval workflow; none are
+verifiable without a D365 tenant):
+- **Idempotency is NOT guaranteed yet.** A plain OData POST *appends* —
+  ``BudgetModelId`` is a grouping tag, not an upsert key — so a second push
+  duplicates the budget. ``push_budget_input`` therefore guards against an
+  accidental re-push (skips if already ``Pushed`` unless ``force=True``). True
+  replace semantics need a delete-by-``BudgetModelId`` step or a ``$batch``
+  changeset.
+- **Per-line POST is not atomic.** If line K fails, lines 0..K-1 are already
+  committed in D365. A ``$batch`` changeset would make the push all-or-nothing.
+- **AccountingDate assumes fiscal period == calendar month** (period N ->
+  ``YYYY-NN-01``) and fiscal year == calendar year. Wrong for non-January or
+  4-4-5 fiscal calendars — resolve the real period start from the D365 fiscal
+  calendar before go-live.
 
 ``frappe`` is imported lazily inside the functions that need a site so the pure
 mapping/auth helpers stay unit-testable without a running Frappe site.
@@ -81,7 +95,12 @@ def budget_model_id(budget_input_name):
 
 
 def _period_first_day(year, period):
-    """ISO date for the first day of a fiscal period (1-12)."""
+    """ISO date for the first day of a fiscal period (1-12).
+
+    Assumes fiscal period == calendar month and fiscal year == calendar year.
+    See the module docstring's go-live follow-ups: resolve the real period start
+    from the D365 fiscal calendar for non-calendar fiscal years before go-live.
+    """
     month = max(1, min(12, int(period or 1)))
     return "{0:04d}-{1:02d}-01".format(int(year), month)
 
@@ -161,17 +180,31 @@ def _set_status(doc, status, error):
         doc.db_set("d365_writeback_error", (error or "")[:140], update_modified=False)
 
 
-def push_budget_input(name):
+def push_budget_input(name, force=False):
     """Push one Budget Input's budget to D365 (manual entry point).
 
     Not auto-triggered by the approval workflow. Records status/error on the
-    Budget Input when those fields exist. Idempotent via ``budget_model_id``.
+    Budget Input when those fields exist.
+
+    Re-push guard: a plain OData POST appends (no upsert-by-BudgetModelId), so a
+    second push would double the budget. If this Budget Input is already
+    ``Pushed`` we skip unless ``force=True`` is passed explicitly. See the module
+    docstring for the replace-semantics follow-up needed before go-live.
     """
     import frappe
 
     cfg = get_config()
     require_enabled(cfg)
     doc = frappe.get_doc("Budget Input", name)
+
+    if not force and doc.meta.has_field("d365_writeback_status") \
+            and doc.get("d365_writeback_status") == "Pushed":
+        return {
+            "status": "Skipped",
+            "reason": "already pushed; pass force=True to re-push (will append in D365)",
+            "budget_model_id": budget_model_id(name),
+        }
+
     try:
         token = get_token(cfg)
         entries = build_entries(doc)
@@ -184,8 +217,15 @@ def push_budget_input(name):
         }
     except Exception as exc:
         _set_status(doc, "Failed", error_message(exc))
+        # Log the D365 response body server-side (never to the doc field) so an
+        # operator can see the real rejection reason; the stored error stays
+        # generic/non-sensitive.
+        body = ""
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            body = "\nD365 response: " + (resp.text or "")[:2000]
         frappe.log_error(
             title="D365 budget write-back failed: " + str(name),
-            message=frappe.get_traceback(),
+            message=frappe.get_traceback() + body,
         )
         raise
