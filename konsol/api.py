@@ -226,13 +226,27 @@ def _resolve_period(period):
 
 
 def _budget_filters(data):
-    """Build the unique-key filter dict for Budget Input upsert."""
-    return {
+    """Build the dimensional unique-key filter dict for Budget Input upsert.
+
+    Grain = fixed keys + every ``in_budget`` Published dimension (spec #51), so
+    two writers differing only by a budget dimension (e.g. cost center on a
+    shared Travel account) resolve to *different* docs instead of clobbering.
+    """
+    from konsol.epm.budget_grain import budget_dimension_names
+
+    filters = {
         "scenario_id": data["scenario_id"],
         "data_area_id": data["data_area_id"],
         "fiscal_year": int(data["fiscal_year"]),
         "main_account": data["main_account"],
     }
+    meta = frappe.get_meta("Budget Input")
+    for dim in budget_dimension_names():
+        # Guard: a dimension flagged in_budget whose Custom Field has not yet
+        # been provisioned by schema_apply would break the get_all filter.
+        if meta.get_field(dim):
+            filters[dim] = data.get(dim, "") or ""
+    return filters
 
 
 # ---------------------------------------------------------------------------

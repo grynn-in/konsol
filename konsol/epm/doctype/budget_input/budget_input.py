@@ -21,6 +21,26 @@ LAYER_ROLES = {
 
 
 class BudgetInput(Document):
+    def autoname(self):
+        """Name from the dimensional grain: fixed keys + in_budget dimensions.
+
+        Spec #51 — the doc name *is* the unique key, so it must include the
+        budget dimensions; otherwise two cost centers of the same account
+        collide on one name. Takes precedence over any JSON ``autoname``
+        (Frappe runs the controller method first; see model/naming.py).
+        """
+        from konsol.epm.budget_grain import budget_dimension_names, budget_name
+
+        values = {
+            "scenario_id": self.scenario_id,
+            "data_area_id": self.data_area_id,
+            "fiscal_year": self.fiscal_year,
+            "main_account": self.main_account,
+        }
+        for dim in budget_dimension_names():
+            values[dim] = self.get(dim)
+        self.name = budget_name(values)
+
     def validate(self):
         self._compute_annual_amount()
         self._validate_layer_permissions()
@@ -72,14 +92,18 @@ class BudgetInput(Document):
             "fiscal_period", "amount", "layer",
         ]
 
-        # Unique key for this doc
-        key_columns = ["scenario_id", "data_area_id", "fiscal_year", "main_account"]
+        # Unique key for this doc — must include the grain dimensions, else the
+        # delete-by-key on incremental sync would wipe sibling rows that share
+        # the account but differ by dimension (spec #51).
+        key_columns = ["scenario_id", "data_area_id", "fiscal_year", "main_account", *dim_names]
         key_values = {
             "scenario_id": self.scenario_id,
             "data_area_id": self.data_area_id,
             "fiscal_year": int(self.fiscal_year),
             "main_account": self.main_account,
         }
+        for dn in dim_names:
+            key_values[dn] = self.get(dn) or ""
 
         # Build rows from this doc's periods only
         rows = []
