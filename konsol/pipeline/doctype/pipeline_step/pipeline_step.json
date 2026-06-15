@@ -1,0 +1,63 @@
+{
+  "name": "Pipeline Step",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "fields": [
+    {
+      "fieldname": "stage",
+      "fieldtype": "Data",
+      "label": "Stage",
+      "in_list_view": 1,
+      "columns": 2,
+      "read_only": 1,
+      "description": "Seed / Bronze / Silver / Gold / Test"
+    },
+    {
+      "fieldname": "step",
+      "fieldtype": "Data",
+      "label": "Step",
+      "in_list_view": 1,
+      "columns": 3,
+      "read_only": 1,
+      "description": "dbt node (model or test) name"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Pending\nRunning\nSuccess\nFailure\nSkipped",
+      "default": "Pending",
+      "in_list_view": 1,
+      "columns": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "rows",
+      "fieldtype": "Int",
+      "label": "Rows",
+      "in_list_view": 1,
+      "columns": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "duration",
+      "fieldtype": "Float",
+      "label": "Duration (s)",
+      "in_list_view": 1,
+      "columns": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "output",
+      "fieldtype": "Code",
+      "label": "Output",
+      "options": "Text",
+      "read_only": 1
+    }
+  ],
+  "permissions": []
+}

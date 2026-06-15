@@ -36,6 +36,18 @@ frappe.ui.form.on("Pipeline Run", {
                 frm.reload_doc();
             }
         });
+
+        // Live build log + per-step streaming (Press-style)
+        frm._pipe_log = frm.doc.log || "";
+        frappe.realtime.on("pipeline_run_update", function (data) {
+            if (!data || data.run !== frm.doc.name) return;
+            if (data.line !== undefined) {
+                frm._pipe_log = (frm._pipe_log || "") + data.line + "\n";
+                frm.set_value("log", frm._pipe_log.slice(-20000));
+            }
+            if (data.progress !== undefined) frm.set_value("progress_pct", data.progress);
+            if (data.done) frm.reload_doc();
+        });
     },
 });
 

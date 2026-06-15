@@ -52,7 +52,12 @@ scheduler_events = {
         # alert operators on the transition into Failed/Stale.
         "*/5 * * * *": [
             "konsol.pipeline.doctype.connector_health.connector_health.refresh_connector_health"
-        ]
+        ],
+        # Release Close Runs stuck Queued/Running (e.g. a dead worker) so the
+        # concurrency guard can't wedge permanently. Runs every 10 minutes.
+        "*/10 * * * *": [
+            "konsol.consolidation.doctype.close_run.close_run.reap_stale_close_runs"
+        ],
     }
 }
 

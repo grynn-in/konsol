@@ -1,0 +1,161 @@
+{
+  "name": "Close Run",
+  "doctype": "DocType",
+  "module": "Consolidation",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "CLOSE-.#####",
+  "title_field": "title",
+  "fields": [
+    {
+      "fieldname": "title",
+      "fieldtype": "Data",
+      "label": "Title",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Queued\nRunning\nGreen\nRed\nError",
+      "default": "Queued",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "col_break_head",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "fiscal_year",
+      "fieldtype": "Int",
+      "label": "Fiscal Year"
+    },
+    {
+      "fieldname": "fiscal_period",
+      "fieldtype": "Int",
+      "label": "Fiscal Period"
+    },
+    {
+      "fieldname": "pipeline_run",
+      "fieldtype": "Link",
+      "label": "Pipeline Run",
+      "options": "Pipeline Run"
+    },
+    {
+      "fieldname": "summary_section",
+      "fieldtype": "Section Break",
+      "label": "Summary"
+    },
+    {
+      "fieldname": "total",
+      "fieldtype": "Int",
+      "label": "Total",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "passed",
+      "fieldtype": "Int",
+      "label": "Passed",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_sum",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "failed",
+      "fieldtype": "Int",
+      "label": "Failed",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "errored",
+      "fieldtype": "Int",
+      "label": "Errored",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "timing_section",
+      "fieldtype": "Section Break",
+      "label": "Timing"
+    },
+    {
+      "fieldname": "started_at",
+      "fieldtype": "Datetime",
+      "label": "Started At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "completed_at",
+      "fieldtype": "Datetime",
+      "label": "Completed At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "col_break_timing",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "duration_seconds",
+      "fieldtype": "Float",
+      "label": "Duration (seconds)",
+      "read_only": 1
+    },
+    {
+      "fieldname": "triggered_by",
+      "fieldtype": "Link",
+      "label": "Triggered By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "results_section",
+      "fieldtype": "Section Break",
+      "label": "Assertions"
+    },
+    {
+      "fieldname": "results",
+      "fieldtype": "Table",
+      "label": "Results",
+      "options": "Assertion Result"
+    },
+    {
+      "fieldname": "log_section",
+      "fieldtype": "Section Break",
+      "label": "Log",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "log",
+      "fieldtype": "Code",
+      "label": "Log",
+      "options": "Text",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1
+    }
+  ]
+}

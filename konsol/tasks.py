@@ -3,11 +3,22 @@
 Build governance: doc saves create Pipeline Build Requests instead of
 firing raw `dbt build`. Scopes map to dbt domain tags for selective builds.
 """
+import os
 import subprocess
 import time
 
 import frappe
 import requests
+
+
+def _dbt_bin():
+    """Absolute path to the bench-venv dbt binary.
+
+    Web/worker processes don't have env/bin on PATH, so a bare `dbt` raises
+    FileNotFoundError. Fall back to `dbt` only if the venv copy is absent.
+    """
+    candidate = os.path.join(frappe.utils.get_bench_path(), "env", "bin", "dbt")
+    return candidate if os.path.exists(candidate) else "dbt"
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +185,7 @@ def run_governed_build(build_request):
         # Build dbt command
         settings = frappe.get_single("EPM Settings")
         project_path = settings.dbt_project_path
-        cmd = ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path]
+        cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
 
         selector = _scope_selector(doc.build_scope)
         if selector:
@@ -323,7 +334,7 @@ def _run_dbt_build_background(doctype=None, docname=None, pipeline_run=None):
 
     try:
         result = subprocess.run(
-            ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path],
+            [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path],
             capture_output=True,
             text=True,
             timeout=300,
@@ -342,14 +353,16 @@ def _run_dbt_build_background(doctype=None, docname=None, pipeline_run=None):
                 "dbt_build_complete",
                 {"status": "success", "summary": summary, "trigger": f"{doctype} {docname}"},
             )
-            _update_pipeline_run(pipeline_run, "Completed", dbt_result=summary)
+            _update_pipeline_run(pipeline_run, "Completed", dbt_result=summary,
+                                 log=output, project_path=project_path)
         else:
             frappe.logger().error(f"dbt build failed (rc={result.returncode}):\n{output[-2000:]}")
             frappe.publish_realtime(
                 "dbt_build_complete",
                 {"status": "failed", "error": output[-500:]},
             )
-            _update_pipeline_run(pipeline_run, "Failed", error_log=output[-2000:])
+            _update_pipeline_run(pipeline_run, "Failed", error_log=output[-2000:],
+                                 log=output, project_path=project_path)
     except subprocess.TimeoutExpired:
         frappe.logger().error("dbt build timed out after 300s")
         _update_pipeline_run(pipeline_run, "Failed", error_log="dbt build timed out after 300s")
@@ -358,8 +371,13 @@ def _run_dbt_build_background(doctype=None, docname=None, pipeline_run=None):
         _update_pipeline_run(pipeline_run, "Failed", error_log=str(e))
 
 
-def _update_pipeline_run(pipeline_run, status, dbt_result=None, error_log=None):
-    """Update a Pipeline Run's status if name was provided."""
+def _update_pipeline_run(pipeline_run, status, dbt_result=None, error_log=None,
+                         log=None, project_path=None):
+    """Update a Pipeline Run's status if name was provided.
+
+    When project_path is given, also parses target/run_results.json into the
+    `steps` child table (Press-style per-node state) and stores the full `log`.
+    """
     if not pipeline_run:
         return
     try:
@@ -370,10 +388,71 @@ def _update_pipeline_run(pipeline_run, status, dbt_result=None, error_log=None):
             doc.dbt_result = dbt_result
         if error_log:
             doc.error_log = error_log
+        if log is not None:
+            doc.log = log[-20000:]
+        if project_path:
+            _populate_run_steps(doc, project_path)
         doc.save(ignore_permissions=True)
         frappe.db.commit()
+        frappe.publish_realtime(
+            "pipeline_run_update",
+            {"run": doc.name, "done": True, "progress": doc.progress_pct},
+            doctype="Pipeline Run", docname=doc.name,
+        )
     except Exception:
         frappe.log_error("Failed to update Pipeline Run status", frappe.get_traceback())
+
+
+def _populate_run_steps(doc, project_path):
+    """Read dbt target/run_results.json into the Pipeline Run `steps` table."""
+    import json
+    import os
+
+    rr_path = os.path.join(project_path, "target", "run_results.json")
+    try:
+        with open(rr_path) as fh:
+            rr = json.load(fh)
+    except Exception:
+        return
+
+    status_map = {"success": "Success", "error": "Failure", "fail": "Failure",
+                  "pass": "Success", "skipped": "Skipped"}
+    doc.set("steps", [])
+    done = 0
+    nodes = rr.get("results", [])
+    for node in nodes:
+        uid = node.get("unique_id", "")
+        parts = uid.split(".")
+        rtype = parts[0] if parts else ""
+        name = parts[2] if len(parts) > 2 else uid
+        rel = (node.get("relation_name") or "").lower()
+        if rtype == "seed":
+            stage = "Seed"
+        elif rtype == "test":
+            stage = "Test"
+        elif "bronze" in rel:
+            stage = "Bronze"
+        elif "silver" in rel:
+            stage = "Silver"
+        elif "gold" in rel:
+            stage = "Gold"
+        elif "staging" in rel or "stg_" in name:
+            stage = "Staging"
+        else:
+            stage = "Model"
+        st = status_map.get((node.get("status") or "").lower(), "Pending")
+        if st in ("Success", "Skipped", "Failure"):
+            done += 1
+        rows = (node.get("adapter_response") or {}).get("rows_affected") or 0
+        doc.append("steps", {
+            "stage": stage,
+            "step": name,
+            "status": st,
+            "rows": rows,
+            "duration": round(node.get("execution_time") or 0, 2),
+            "output": (node.get("message") or "")[:2000],
+        })
+    doc.progress_pct = int(100 * done / len(nodes)) if nodes else 0
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +574,7 @@ def _run_dbt_build(doc):
     project_path = settings.dbt_project_path
 
     result = subprocess.run(
-        ["dbt", "build", "--project-dir", project_path, "--profiles-dir", project_path],
+        [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path],
         capture_output=True,
         text=True,
         timeout=300,
