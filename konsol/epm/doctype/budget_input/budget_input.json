@@ -96,6 +96,25 @@
       "label": "Workflow State",
       "hidden": 1,
       "read_only": 1
+    },
+    {
+      "fieldname": "d365_writeback_section",
+      "fieldtype": "Section Break",
+      "label": "D365 Write-Back",
+      "collapsible": 1
+    },
+    {
+      "fieldname": "d365_writeback_status",
+      "fieldtype": "Select",
+      "label": "D365 Write-Back Status",
+      "options": "\nPushed\nFailed",
+      "read_only": 1
+    },
+    {
+      "fieldname": "d365_writeback_error",
+      "fieldtype": "Small Text",
+      "label": "D365 Write-Back Error",
+      "read_only": 1
     }
   ],
   "permissions": [
