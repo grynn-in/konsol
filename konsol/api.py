@@ -966,3 +966,26 @@ def allocation_history(fiscal_year=None, fiscal_period=None):
         limit_page_length=0,
     )
     return {"runs": runs}
+
+
+@frappe.whitelist()
+def connector_health():
+    """Per-connector sync health for the operator dashboard.
+
+    Returns one object per connector with derived status, lag, entity counts,
+    and last error. Read-gated by the Connector Health doctype (System Manager /
+    EPM Admin / EPM Analyst / EPM User). The rows are maintained by the
+    ``refresh_connector_health`` scheduler job.
+    """
+    if not frappe.has_permission("Connector Health", "read"):
+        raise frappe.PermissionError("Not permitted to read Connector Health")
+    return frappe.get_all(
+        "Connector Health",
+        fields=[
+            "connector", "erp_source", "last_sync_status", "lag_minutes",
+            "entities_loaded", "rows_emitted",
+            "last_sync_end", "last_error", "checked_at",
+        ],
+        order_by="lag_minutes desc",
+        limit_page_length=0,
+    )

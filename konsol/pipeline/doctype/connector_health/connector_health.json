@@ -1,0 +1,118 @@
+{
+  "name": "Connector Health",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 0,
+  "allow_rename": 0,
+  "autoname": "field:connector",
+  "naming_rule": "By fieldname",
+  "description": "Derived per-connector sync health snapshot. Rows are upserted by the connector_health scheduler job; do not edit manually.",
+  "sort_field": "lag_minutes",
+  "sort_order": "DESC",
+  "fields": [
+    {
+      "fieldname": "connector",
+      "fieldtype": "Link",
+      "label": "Connector",
+      "options": "Connector",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "read_only": 1
+    },
+    {
+      "fieldname": "erp_source",
+      "fieldtype": "Data",
+      "label": "ERP Source",
+      "read_only": 1,
+      "in_list_view": 1,
+      "description": "Canonical erp_source value, e.g. d365_fo"
+    },
+    {
+      "fieldname": "last_sync_status",
+      "fieldtype": "Select",
+      "label": "Last Sync Status",
+      "options": "Never\nRunning\nSucceeded\nFailed\nStale",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "lag_minutes",
+      "fieldtype": "Int",
+      "label": "Lag (Minutes)",
+      "read_only": 1,
+      "in_list_view": 1,
+      "description": "Minutes since the last completed sync"
+    },
+    {
+      "fieldname": "entities_loaded",
+      "fieldtype": "Int",
+      "label": "Entities Loaded",
+      "read_only": 1,
+      "in_list_view": 1,
+      "description": "count(distinct entity_id) for this erp_source in epm_staging.stg_gl_entries"
+    },
+    {
+      "fieldname": "rows_emitted",
+      "fieldtype": "Int",
+      "label": "Rows Emitted",
+      "read_only": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "last_sync_end",
+      "fieldtype": "Datetime",
+      "label": "Last Sync",
+      "read_only": 1,
+      "in_list_view": 1,
+      "description": "Completion time of the last sync (from Connector.last_sync_at)"
+    },
+    {
+      "fieldname": "checked_at",
+      "fieldtype": "Datetime",
+      "label": "Health Checked At",
+      "read_only": 1,
+      "description": "When the scheduler last refreshed this row"
+    },
+    {
+      "fieldname": "error_section",
+      "fieldtype": "Section Break",
+      "label": "Last Error"
+    },
+    {
+      "fieldname": "last_error",
+      "fieldtype": "Small Text",
+      "label": "Last Error",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Analyst",
+      "read": 1
+    },
+    {
+      "role": "EPM User",
+      "read": 1
+    }
+  ]
+}
