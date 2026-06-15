@@ -32,20 +32,58 @@ class ConnectorHealth(Document):
     pass
 
 
-def _entities_loaded(erp_source):
-    """count(distinct entity_id) for this erp_source in canonical staging.
+def _derive_status(raw_status, last_at, now, freq):
+    """Pure status/lag/error derivation (no Frappe/ClickHouse) — unit-testable.
 
-    Best-effort: returns 0 if ClickHouse is unreachable or the table is absent,
-    so a health refresh never fails on a transient DB issue.
+    Returns (status, lag_minutes, last_error). A sync stuck in ``Running`` past
+    the staleness threshold is treated as Stale — a never-completing sync is
+    exactly the silent failure this dashboard exists to surface.
+    """
+    lag_minutes = int((now - last_at).total_seconds() // 60) if last_at else 0
+    stale = bool(freq) and last_at is not None and lag_minutes > freq
+
+    if raw_status == "Running":
+        if stale:
+            return "Stale", lag_minutes, (
+                f"Sync stuck in Running for {lag_minutes} min (threshold {freq})."
+            )
+        return "Running", lag_minutes, ""
+    if last_at is None:
+        return "Never", lag_minutes, ""
+    if raw_status == "Failed":
+        return "Failed", lag_minutes, "Last Airbyte sync reported Failed."
+    if stale:
+        return "Stale", lag_minutes, (
+            f"No successful sync for {lag_minutes} min (threshold {freq})."
+        )
+    return _STATUS_MAP.get(raw_status, "Succeeded"), lag_minutes, ""
+
+
+def _entities_loaded(erp_source, entity_ids=None):
+    """count(distinct entity_id) loaded for this connector in canonical staging.
+
+    Scoped to the connector's own legal entities when defined, so multiple
+    connectors sharing an erp_source don't each report the full erp_source
+    total. Best-effort: returns 0 if ClickHouse is unreachable/table absent, so
+    a refresh never fails on a transient DB issue. Note 0 != unhealthy (a
+    connector may sync only master data / no GL yet).
     """
     if not erp_source:
         return 0
     try:
-        res = clickhouse.execute(
-            "SELECT count(distinct entity_id) FROM epm_staging.stg_gl_entries "
-            "WHERE erp_source = {erp:String}",
-            {"param_erp": erp_source},
-        )
+        if entity_ids:
+            arr = "[" + ",".join("'" + e.replace("'", "''") + "'" for e in entity_ids) + "]"
+            res = clickhouse.execute(
+                "SELECT count(distinct entity_id) FROM epm_staging.stg_gl_entries "
+                "WHERE erp_source = {erp:String} AND entity_id IN {ents:Array(String)}",
+                {"param_erp": erp_source, "param_ents": arr},
+            )
+        else:
+            res = clickhouse.execute(
+                "SELECT count(distinct entity_id) FROM epm_staging.stg_gl_entries "
+                "WHERE erp_source = {erp:String}",
+                {"param_erp": erp_source},
+            )
         return int(res or 0)
     except Exception:
         frappe.log_error(
@@ -58,33 +96,19 @@ def _entities_loaded(erp_source):
 def _derive(connector, now):
     """Return the derived health fields for one Connector doc."""
     last_at = get_datetime(connector.last_sync_at) if connector.last_sync_at else None
-    raw_status = connector.last_sync_status or ""
     freq = connector.sync_frequency_minutes or 0
-
-    lag_minutes = int((now - last_at).total_seconds() // 60) if last_at else 0
-
-    if raw_status == "Running":
-        status = "Running"
-    elif last_at is None:
-        status = "Never"
-    elif raw_status == "Failed":
-        status = "Failed"
-    elif freq and lag_minutes > freq:
-        status = "Stale"
-    else:
-        status = _STATUS_MAP.get(raw_status, "Succeeded")
-
-    last_error = ""
-    if status == "Stale":
-        last_error = f"No successful sync for {lag_minutes} min (threshold {freq})."
-    elif status == "Failed":
-        last_error = "Last Airbyte sync reported Failed."
-
+    status, lag_minutes, last_error = _derive_status(
+        connector.last_sync_status or "", last_at, now, freq
+    )
+    entity_ids = [
+        r.entity_id for r in (connector.get("legal_entities") or [])
+        if getattr(r, "entity_id", None)
+    ]
     return {
         "erp_source": connector.erp_type,
         "last_sync_status": status,
         "lag_minutes": lag_minutes,
-        "entities_loaded": _entities_loaded(connector.erp_type),
+        "entities_loaded": _entities_loaded(connector.erp_type, entity_ids),
         "rows_emitted": connector.last_sync_rows or 0,
         "last_sync_end": last_at,
         "checked_at": now,
@@ -93,6 +117,8 @@ def _derive(connector, now):
 
 
 def _alert_recipients():
+    # Operators only: System Manager + EPM Admin. EPM Analyst/User can read the
+    # dashboard but are not paged. Intentional asymmetry with the read matrix.
     users = set()
     for role in ("System Manager", "EPM Admin"):
         users.update(
@@ -120,11 +146,23 @@ def _notify(doc):
         }).insert(ignore_permissions=True)
 
 
+def _prune_orphans(enabled_names):
+    """Drop Health rows for connectors no longer enabled / no longer existing,
+    so the dashboard never shows a frozen status for a disabled connector."""
+    for name in frappe.get_all("Connector Health", pluck="name"):
+        if name not in enabled_names:
+            frappe.delete_doc(
+                "Connector Health", name, ignore_permissions=True, force=True
+            )
+
+
 def refresh_connector_health():
     """Scheduler entry: upsert one Connector Health row per enabled Connector.
 
-    Alerts fire only on the transition INTO an unhealthy state, so a connector
-    that stays Failed/Stale does not re-notify every cycle.
+    Each connector is processed independently (try/except + per-connector
+    commit) so one failure cannot roll back the others. Alerts fire on the
+    transition INTO an unhealthy state OR a change between unhealthy states
+    (Failed<->Stale), never on an unchanged repeat.
     """
     if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
         return
@@ -132,24 +170,46 @@ def refresh_connector_health():
         return
 
     now = now_datetime()
-    names = frappe.get_all("Connector", filters={"enabled": 1}, pluck="name")
-    for name in names:
-        connector = frappe.get_doc("Connector", name)
-        vals = _derive(connector, now)
+    enabled = frappe.get_all("Connector", filters={"enabled": 1}, pluck="name")
+    for name in enabled:
+        try:
+            connector = frappe.get_doc("Connector", name)
+            vals = _derive(connector, now)
 
-        if frappe.db.exists("Connector Health", name):
-            doc = frappe.get_doc("Connector Health", name)
-            prev_status = doc.last_sync_status
-        else:
-            doc = frappe.new_doc("Connector Health")
-            doc.connector = name
-            prev_status = None
+            if frappe.db.exists("Connector Health", name):
+                doc = frappe.get_doc("Connector Health", name)
+                prev_status = doc.last_sync_status
+            else:
+                doc = frappe.new_doc("Connector Health")
+                doc.connector = name
+                prev_status = None
 
-        doc.update(vals)
-        doc.flags.ignore_permissions = True
-        doc.save()
+            doc.update(vals)
+            doc.flags.ignore_permissions = True
+            doc.save()
 
-        if doc.last_sync_status in _UNHEALTHY and prev_status not in _UNHEALTHY:
-            _notify(doc)
+            if doc.last_sync_status in _UNHEALTHY and doc.last_sync_status != prev_status:
+                try:
+                    _notify(doc)
+                except Exception:
+                    frappe.log_error(
+                        title="Connector Health: notify failed",
+                        message=frappe.get_traceback(),
+                    )
+            frappe.db.commit()
+        except Exception:
+            frappe.db.rollback()
+            frappe.log_error(
+                title=f"Connector Health refresh failed: {name}",
+                message=frappe.get_traceback(),
+            )
 
-    frappe.db.commit()
+    try:
+        _prune_orphans(set(enabled))
+        frappe.db.commit()
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="Connector Health: prune failed",
+            message=frappe.get_traceback(),
+        )
