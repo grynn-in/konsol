@@ -86,15 +86,29 @@ def test_connector_has_sync_frequency_minutes():
 def test_controller_derives_status_and_alerts_on_transition():
     src = _read("pipeline", "doctype", "connector_health", "connector_health.py")
     assert "def refresh_connector_health" in src
+    # pure, unit-testable derivation helper
+    assert "def _derive_status" in src
     # status mapping + the unhealthy set used for both Stale detection and alerts
     assert '"Success": "Succeeded"' in src
     assert "_UNHEALTHY" in src
-    # alert only on the transition INTO an unhealthy state (no repeat spam)
-    assert "prev_status not in _UNHEALTHY" in src
+    # alert on transition INTO unhealthy OR a change between unhealthy states
+    assert "doc.last_sync_status != prev_status" in src
+    # a sync stuck in Running past the threshold is surfaced as Stale
+    assert "stuck in Running" in src
     # entities_loaded comes from the canonical staging table, best-effort
     assert "epm_staging.stg_gl_entries" in src
     # never run during install/migrate/patch
     assert "in_install" in src and "in_migrate" in src
+
+
+def test_controller_prunes_orphans_and_isolates_failures():
+    src = _read("pipeline", "doctype", "connector_health", "connector_health.py")
+    # disabled/deleted connectors must not leave frozen Health rows
+    assert "def _prune_orphans" in src
+    # one connector's failure must not roll back the others
+    assert "frappe.db.rollback()" in src
+    # entities_loaded scoped to the connector's own legal entities
+    assert "legal_entities" in src and "Array(String)" in src
 
 
 def test_scheduler_event_registered():
