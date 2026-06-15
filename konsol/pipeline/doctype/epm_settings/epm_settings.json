@@ -84,6 +84,39 @@
       "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
     },
     {
+      "fieldname": "d365_writeback_section",
+      "fieldtype": "Section Break",
+      "label": "D365 F&O Budget Write-Back"
+    },
+    {
+      "fieldname": "enable_d365_budget_writeback",
+      "fieldtype": "Check",
+      "label": "Enable D365 Budget Write-Back",
+      "default": "0",
+      "description": "Push approved budgets to D365 BudgetRegisterEntries (one-way; ClickHouse stays source of truth)"
+    },
+    {
+      "fieldname": "d365_resource_url",
+      "fieldtype": "Data",
+      "label": "D365 Resource URL",
+      "description": "e.g. https://yourorg.operations.dynamics.com"
+    },
+    {
+      "fieldname": "d365_tenant_id",
+      "fieldtype": "Data",
+      "label": "Azure AD Tenant ID"
+    },
+    {
+      "fieldname": "d365_client_id",
+      "fieldtype": "Data",
+      "label": "D365 Client ID"
+    },
+    {
+      "fieldname": "d365_client_secret",
+      "fieldtype": "Password",
+      "label": "D365 Client Secret"
+    },
+    {
       "fieldname": "airbyte_sync_status_section",
       "fieldtype": "Section Break",
       "label": "Airbyte Sync Status"
