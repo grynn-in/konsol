@@ -1,0 +1,42 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:value",
+ "creation": "2026-06-16 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "value"
+ ],
+ "fields": [
+  {
+   "fieldname": "value",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Cost Center",
+   "reqd": 1,
+   "unique": 1
+  }
+ ],
+ "in_create": 0,
+ "is_virtual": 1,
+ "links": [],
+ "modified": "2026-06-16 00:00:00",
+ "module": "EPM",
+ "name": "Budget Cost Center",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "EPM Admin"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

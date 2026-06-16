@@ -84,6 +84,138 @@ def _assert_entity_access(entity):
 
 
 # ---------------------------------------------------------------------------
+# Budget write authorization (spec #51 §B) — entity AND account AND dimensions.
+# All checks no-op when unconfigured (backwards compatible); they reuse the
+# entity-permission policy (_resolve_allowed_entities) against different
+# permission-target doctypes, so ownership is expressed with native Frappe User
+# Permissions. Enforced in explicit code (not has_permission hooks) — required
+# for the Virtual DocType targets, which get no automatic SQL filtering.
+# ---------------------------------------------------------------------------
+
+# main account -> responsibility category, sourced live from the dbt silver
+# layer and cached (the write path must never round-trip ClickHouse per cell).
+_ACCOUNT_CATEGORY_TABLE = "epm_silver.silver_main_accounts"
+_ACCOUNT_CATEGORY_CACHE_KEY = "budget_account_category_map"
+_ACCOUNT_CATEGORY_TTL = 300  # seconds
+
+
+def _account_permission_doctype():
+    return (frappe.get_cached_value(
+        "EPM Settings", "EPM Settings", "account_permission_doctype") or "").strip()
+
+
+def _load_account_category_map():
+    """{main_account_id: main_account_category} from ClickHouse (silver layer)."""
+    from konsol.clickhouse import execute
+
+    raw = execute(
+        f"SELECT main_account_id, main_account_category "
+        f"FROM {_ACCOUNT_CATEGORY_TABLE} FORMAT TabSeparated"
+    )
+    mapping = {}
+    for line in (raw or "").splitlines():
+        if not line:
+            continue
+        acct, _, cat = line.partition("\t")
+        mapping[acct] = cat
+    return mapping
+
+
+def _account_category(account):
+    """Resolve a main account to its responsibility category (cached, TTL).
+
+    Note: the map is cached for ``_ACCOUNT_CATEGORY_TTL`` with no active
+    invalidation, so a newly-created account or a re-categorisation in the
+    silver layer is invisible to gated writers for up to that window.
+    """
+    cache = frappe.cache()
+    mapping = cache.get_value(_ACCOUNT_CATEGORY_CACHE_KEY)
+    if mapping is None:
+        try:
+            mapping = _load_account_category_map()
+        except Exception:  # noqa: BLE001 - warehouse blip must not 500 the write
+            frappe.log_error("budget account-category load failed", frappe.get_traceback())
+            # Enforcement is configured but the category source is unreachable.
+            # Fail with a clear, retryable message rather than a raw 500 — and
+            # do NOT cache the failure, so the next request retries.
+            frappe.throw(
+                frappe._("Account permission check is temporarily unavailable "
+                         "(category source unreachable). Please retry shortly."),
+                frappe.ValidationError,
+            )
+        cache.set_value(_ACCOUNT_CATEGORY_CACHE_KEY, mapping,
+                        expires_in_sec=_ACCOUNT_CATEGORY_TTL)
+    return mapping.get(account)
+
+
+def _assert_account_access(account):
+    """Raise PermissionError if the user may not write ``account``.
+
+    No-op unless ``EPM Settings.account_permission_doctype`` is configured.
+    Gates by the account's *category* (responsibility group). Fail-closed: if a
+    category can't be resolved while enforcement is on, the write is denied.
+    """
+    perm_doctype = _account_permission_doctype()
+    if not perm_doctype:
+        return
+    allowed = _resolve_allowed_entities(
+        frappe.session.user, frappe.get_roles(), perm_doctype,
+        frappe.permissions.get_user_permissions())
+    if allowed is None:  # System Manager / Administrator / no grants configured
+        return
+    category = _account_category(account)
+    if category is None or category not in allowed:
+        detail = f"category '{category}'" if category else "no category mapping"
+        raise frappe.PermissionError(
+            f"Not permitted to write account '{account}' ({detail})")
+
+
+def _permission_controlled_dimensions():
+    """{dimension_name: permission_doctype} for in_budget dims that gate writes."""
+    rows = frappe.get_all(
+        "Dimension",
+        filters={"in_budget": 1, "status": "Published"},
+        fields=["dimension_name", "permission_doctype"],
+        limit_page_length=0,
+    )
+    return {r.dimension_name: r.permission_doctype.strip()
+            for r in rows if (r.permission_doctype or "").strip()}
+
+
+def _assert_dimension_access(data):
+    """Raise PermissionError for any permission-controlled dimension whose
+    submitted value the user does not own.
+
+    Unlike accounts, the dimension *value* is itself the permission unit (e.g.
+    a cost center), so no resolution/ClickHouse lookup is needed.
+    """
+    controlled = _permission_controlled_dimensions()
+    if not controlled:
+        return
+    user, roles = frappe.session.user, frappe.get_roles()
+    perms = frappe.permissions.get_user_permissions()
+    for dim, perm_doctype in controlled.items():
+        allowed = _resolve_allowed_entities(user, roles, perm_doctype, perms)
+        if allowed is None:
+            continue
+        value = data.get(dim) or ""
+        if value not in allowed:
+            raise frappe.PermissionError(
+                f"Not permitted to write {dim} '{value}'")
+
+
+def _assert_budget_write_access(data):
+    """Compose the budget write checks: entity (LE) AND account AND dimensions.
+
+    Called by every budget write path before mutating. Each sub-check is a
+    no-op until its permission target is configured.
+    """
+    _assert_entity_access(data.get("data_area_id"))
+    _assert_account_access(data.get("main_account"))
+    _assert_dimension_access(data)
+
+
+# ---------------------------------------------------------------------------
 # Fact Table registry helpers
 # ---------------------------------------------------------------------------
 
@@ -226,13 +358,27 @@ def _resolve_period(period):
 
 
 def _budget_filters(data):
-    """Build the unique-key filter dict for Budget Input upsert."""
-    return {
+    """Build the dimensional unique-key filter dict for Budget Input upsert.
+
+    Grain = fixed keys + every ``in_budget`` Published dimension (spec #51), so
+    two writers differing only by a budget dimension (e.g. cost center on a
+    shared Travel account) resolve to *different* docs instead of clobbering.
+    """
+    from konsol.epm.budget_grain import budget_dimension_names
+
+    filters = {
         "scenario_id": data["scenario_id"],
         "data_area_id": data["data_area_id"],
         "fiscal_year": int(data["fiscal_year"]),
         "main_account": data["main_account"],
     }
+    meta = frappe.get_meta("Budget Input")
+    for dim in budget_dimension_names():
+        # Guard: a dimension flagged in_budget whose Custom Field has not yet
+        # been provisioned by schema_apply would break the get_all filter.
+        if meta.get_field(dim):
+            filters[dim] = data.get(dim, "") or ""
+    return filters
 
 
 # ---------------------------------------------------------------------------
@@ -568,37 +714,58 @@ def _validate_budget_fields(data):
         frappe.throw("periods must be a non-empty array", frappe.ValidationError)
 
 
+def _set_cell(doc, fiscal_period, layer, amount):
+    """Upsert one (fiscal_period, layer) row in a Budget Input's periods table."""
+    for row in doc.periods:
+        if row.fiscal_period == fiscal_period and row.layer == layer:
+            row.amount = amount
+            return
+    doc.append("periods", {"fiscal_period": fiscal_period, "amount": amount, "layer": layer})
+
+
 def _upsert_budget_input(data):
     """Create or update a Budget Input doc from API data. Returns doc name."""
-    filters = _budget_filters(data)
-    existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+    from konsol.epm.budget_grain import budget_dimension_names
 
-    if existing:
-        doc = frappe.get_doc("Budget Input", existing[0].name)
-        doc.periods = []
-    else:
-        doc = frappe.new_doc("Budget Input")
-        doc.update(filters)
+    _assert_budget_write_access(data)
 
-    # Set dynamic dimension fields from data
-    budget_dims = frappe.get_all(
-        "Dimension",
-        filters={"in_budget": 1, "status": "Published"},
-        fields=["dimension_name"],
-        limit_page_length=0,
+    # One retry to absorb the concurrent-create race on a brand-new combination
+    # (see budget_cell_save for the rationale).
+    for _attempt in range(2):
+        filters = _budget_filters(data)
+        existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+        creating = not existing
+
+        if existing:
+            doc = frappe.get_doc("Budget Input", existing[0].name)
+            doc.periods = []
+        else:
+            doc = frappe.new_doc("Budget Input")
+            doc.update(filters)
+
+        for dim in budget_dimension_names():
+            doc.set(dim, data.get(dim, ""))
+
+        for p in data["periods"]:
+            doc.append("periods", {
+                "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
+                "amount": float(p.get("amount", 0)),
+                "layer": p.get("layer", "base"),
+            })
+
+        try:
+            doc.save()
+        except frappe.exceptions.DuplicateEntryError:
+            if creating:
+                frappe.db.rollback()  # concurrent create won — retry as update
+                continue
+            raise
+        return doc.name
+
+    frappe.throw(
+        frappe._("Could not save budget line due to concurrent writes; please retry."),
+        frappe.ValidationError,
     )
-    for dim in budget_dims:
-        doc.set(dim.dimension_name, data.get(dim.dimension_name, ""))
-
-    for p in data["periods"]:
-        doc.append("periods", {
-            "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
-            "amount": float(p.get("amount", 0)),
-            "layer": p.get("layer", "base"),
-        })
-
-    doc.save()
-    return doc.name
 
 
 @frappe.whitelist(methods=["POST"])
@@ -615,6 +782,12 @@ def budget_cell_save():
     """Save a single budget cell — upserts one period+layer in a Budget Input doc.
 
     Designed for EPMSAVE() immediate writes from Excel.
+
+    Optional optimistic-locking params (backward-compatible — omit for
+    last-write-wins): ``base_modified`` is the doc ``modified`` the client last
+    read; if it is stale the write is refused with an HTTP 409 ``conflict``
+    payload (current value + ``current_modified``) so the client can refresh and
+    re-prompt. A successful save echoes the new ``modified`` baseline.
     """
     data = _get_json_body()
 
@@ -640,40 +813,69 @@ def budget_cell_save():
 
     amount = float(data["amount"])
 
-    filters = _budget_filters(data)
-    existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+    _assert_budget_write_access(data)
 
-    if existing:
-        doc = frappe.get_doc("Budget Input", existing[0].name)
-    else:
+    from konsol.epm.budget_grain import budget_dimension_names
+
+    base_modified = data.get("base_modified")
+
+    # Resolve -> mutate -> save, with one retry. If a concurrent request creates
+    # the SAME brand-new dimensional combination between our existence check and
+    # insert, the second insert hits a duplicate-name error; retry, which now
+    # finds the existing doc and takes the locked update path (no clobber, no
+    # 500). Existing-doc contention is handled by the FOR UPDATE lock below.
+    for _attempt in range(2):
+        filters = _budget_filters(data)
+        existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+
+        if existing:
+            name = existing[0].name
+            # Row lock: two cell saves to the SAME doc serialise instead of
+            # clobbering (different combinations are different docs => no
+            # contention). The FOR UPDATE read returns the authoritative
+            # committed `modified` — compare against that, not a cached field.
+            current_modified = frappe.db.get_value(
+                "Budget Input", name, "modified", for_update=True)
+            doc = frappe.get_doc("Budget Input", name)
+            if base_modified and str(current_modified) != str(base_modified):
+                # None (not 0) when the cell was cleared — distinguishable from a
+                # genuine zero so the client's conflict UI can tell them apart.
+                current_amount = next(
+                    (r.amount for r in doc.periods
+                     if r.fiscal_period == fp and r.layer == layer), None)
+                frappe.local.response.http_status_code = 409
+                return {
+                    "status": "conflict",
+                    "name": name,
+                    "fiscal_period": fp,
+                    "layer": layer,
+                    "your_amount": amount,
+                    "current_amount": current_amount,
+                    "current_modified": str(current_modified),
+                }
+            _set_cell(doc, fp, layer, amount)
+            doc.save()
+            return {"status": "ok", "name": doc.name, "value": amount,
+                    "modified": str(doc.modified)}
+
+        # Create path.
         doc = frappe.new_doc("Budget Input")
         doc.update(filters)
-        # Set dynamic dimension fields
-        budget_dims = frappe.get_all(
-            "Dimension",
-            filters={"in_budget": 1, "status": "Published"},
-            fields=["dimension_name"],
-            limit_page_length=0,
-        )
-        for dim in budget_dims:
-            doc.set(dim.dimension_name, data.get(dim.dimension_name, ""))
+        for dim in budget_dimension_names():
+            doc.set(dim, data.get(dim, ""))
+        _set_cell(doc, fp, layer, amount)
+        try:
+            doc.insert()
+        except frappe.exceptions.DuplicateEntryError:
+            frappe.db.rollback()  # concurrent create won — retry as update
+            continue
+        return {"status": "ok", "name": doc.name, "value": amount,
+                "modified": str(doc.modified)}
 
-    found = False
-    for row in doc.periods:
-        if row.fiscal_period == fp and row.layer == layer:
-            row.amount = amount
-            found = True
-            break
-
-    if not found:
-        doc.append("periods", {
-            "fiscal_period": fp,
-            "amount": amount,
-            "layer": layer,
-        })
-
-    doc.save()
-    return {"status": "ok", "name": doc.name, "value": amount}
+    frappe.throw(
+        frappe._("Could not save budget cell due to concurrent writes; please retry."),
+        frappe.ValidationError,
+    )
 
 
 @frappe.whitelist(methods=["POST"])
@@ -691,6 +893,11 @@ def budget_save_batch():
             name = _upsert_budget_input(data)
             results.append({"name": name, "index": i})
             errors.append(None)
+        except frappe.PermissionError as e:
+            # Surface authorization denials per item (don't bury as a generic
+            # failure) so the client can flag exactly which lines were blocked.
+            results.append(None)
+            errors.append({"index": i, "error": str(e)})
         except Exception:
             frappe.log_error("Budget save failed", frappe.get_traceback())
             results.append(None)
