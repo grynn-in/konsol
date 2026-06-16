@@ -109,13 +109,16 @@ def test_push_happy_path_records_pushed(monkeypatch):
     monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
-    posted = {}
-    monkeypatch.setattr(wb, "post_entries", lambda cfg, tok, entries: posted.setdefault("n", len(entries)))
+    pushed = {}
+    monkeypatch.setattr(
+        wb, "push_replace_batch",
+        lambda cfg, tok, mid, entries: pushed.setdefault("n", len(entries)),
+    )
     out = wb.push_budget_input("BUD-0001")
     assert out["status"] == "Pushed" and out["entries"] == 1
     assert out["budget_model_id"] == "EPM-BUD-0001"
     assert doc._vals["d365_writeback_status"] == "Pushed"
-    assert posted["n"] == 1
+    assert pushed["n"] == 1
 
 
 def test_push_skips_when_already_pushed(monkeypatch):
@@ -123,10 +126,10 @@ def test_push_skips_when_already_pushed(monkeypatch):
     _install_fake_frappe(monkeypatch, doc)
     monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
-    called = {"post": False}
-    monkeypatch.setattr(wb, "post_entries", lambda *a: called.update(post=True))
+    called = {"replace": False}
+    monkeypatch.setattr(wb, "push_replace_batch", lambda *a: called.update(replace=True))
     out = wb.push_budget_input("BUD-0001")            # no force
-    assert out["status"] == "Skipped" and called["post"] is False
+    assert out["status"] == "Skipped" and called["replace"] is False
 
 
 def test_push_force_repushes_when_already_pushed(monkeypatch):
@@ -135,7 +138,7 @@ def test_push_force_repushes_when_already_pushed(monkeypatch):
     monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
-    monkeypatch.setattr(wb, "post_entries", lambda *a: [])
+    monkeypatch.setattr(wb, "push_replace_batch", lambda *a: None)
     out = wb.push_budget_input("BUD-0001", force=True)
     assert out["status"] == "Pushed"
 

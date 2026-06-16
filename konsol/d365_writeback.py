@@ -4,32 +4,57 @@ ClickHouse (via Frappe) is the source of truth for budgets; D365 is a downstream
 *sync target* so its native budget control (PO / expense validation) has the
 approved numbers. This is a one-way push.
 
-NOT yet wired to the Budget Input approval workflow — call ``push_budget_input``
-explicitly (e.g. ``bench execute``). Wiring the workflow transition is a
-follow-up.
+Wired to the Budget Input ``Submitted → Approved`` workflow transition via
+``BudgetInput._maybe_enqueue_d365_writeback`` (async ``frappe.enqueue``).
+Gated on ``enable_d365_budget_writeback`` in EPM Settings (off by default).
 
 Every pushed line is tagged ``BudgetModelId = 'EPM-<budget-input-name>'`` so
 EPM-originated entries are identifiable. Do NOT Airbyte-sync BudgetRegisterEntries
 back into ``epm_raw`` — filter on this tag if you must (round-trip prevention).
 
-GO-LIVE FOLLOW-UPS (required before wiring to the approval workflow; none are
-verifiable without a D365 tenant):
-- **Idempotency is NOT guaranteed yet.** A plain OData POST *appends* —
-  ``BudgetModelId`` is a grouping tag, not an upsert key — so a second push
-  duplicates the budget. ``push_budget_input`` therefore guards against an
-  accidental re-push (skips if already ``Pushed`` unless ``force=True``). True
-  replace semantics need a delete-by-``BudgetModelId`` step or a ``$batch``
-  changeset.
-- **Per-line POST is not atomic.** If line K fails, lines 0..K-1 are already
-  committed in D365. A ``$batch`` changeset would make the push all-or-nothing.
-- **AccountingDate assumes fiscal period == calendar month** (period N ->
-  ``YYYY-NN-01``) and fiscal year == calendar year. Wrong for non-January or
-  4-4-5 fiscal calendars — resolve the real period start from the D365 fiscal
-  calendar before go-live.
+REPLACE SEMANTICS (implemented; atomicity ASSUMED pending live tenant):
+  ``push_replace_batch`` performs an OData ``$batch`` changeset: a pre-flight GET
+  (with ``@odata.nextLink`` paging) finds existing entries by BudgetModelId, then
+  a single batch request DELETEs them and POSTs the new lines. D365 is *expected*
+  to execute a changeset atomically (all-or-nothing); this is not verifiable here
+  and is listed under NEEDS-LIVE-TENANT. As a safety net, the batch response is
+  scanned for embedded per-operation failures so a partial batch is not recorded
+  as Pushed.
+
+  Choice rationale: ``$batch`` changeset over sequential delete+insert because
+  it is all-or-nothing at the D365 layer, resolving both the duplicate-on-repush
+  risk and the per-line partial-failure risk from the original per-line POST loop.
+
+FISCAL CALENDAR (implemented):
+  ``StandardFiscalCalendar(start_month=N)`` maps fiscal period numbers to ISO
+  accounting dates for any month-aligned fiscal year (Jan default; Apr, Jul, Oct
+  also common). Set ``d365_fiscal_year_start_month`` in EPM Settings.
+  ``CustomFiscalCalendar(period_map)`` accepts an explicit period → (year_offset,
+  month, day) mapping for 4-4-5 or other non-monthly calendars; pass it directly
+  to ``build_entries``.
+
+NEEDS-LIVE-TENANT (cannot verify without a D365 instance):
+  - OData field names in ``BudgetRegisterEntries`` (BudgetModelId, LegalEntityId,
+    AccountingDate, MainAccountId, AccountingCurrencyAmount, BudgetType).
+  - ``LedgerDimensionValues`` attribute names (CostCenter / Department) must match
+    the target legal entity's financial-dimension configuration.
+  - Entity key fields for DELETE URLs (RecId, dataAreaId) — confirm via
+    GET /data/BudgetRegisterEntries/$metadata on the live tenant.
+  - ``$batch`` changeset support — verify the endpoint is enabled and that
+    ``If-Match: *`` is accepted for DELETE operations.
+  - OData ``$filter=BudgetModelId eq '...'`` support on BudgetRegisterEntries.
+  - ``fiscal_year_start_month`` in EPM Settings must match the D365 fiscal
+    calendar configured for the target legal entity (Ledger → Fiscal calendars).
+  - The actual ``POST /data/$batch`` response — D365 returns a multipart body
+    with per-operation status codes; parse and surface errors if needed.
 
 ``frappe`` is imported lazily inside the functions that need a site so the pure
-mapping/auth helpers stay unit-testable without a running Frappe site.
+mapping/auth/client helpers stay unit-testable without a running Frappe site.
 """
+import json
+import re
+import uuid
+
 import requests
 
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -37,6 +62,110 @@ TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/
 # Fields required for a write-back to be attempted.
 _REQUIRED = ("resource_url", "tenant_id", "client_id", "client_secret")
 
+
+# ---------------------------------------------------------------------------
+# Fiscal Calendar abstraction
+# ---------------------------------------------------------------------------
+
+class FiscalCalendar:
+    """Maps (fiscal_year, period) to an ISO accounting date string.
+
+    Subclass for the two supported patterns:
+      - ``StandardFiscalCalendar`` — month-aligned, configurable start month.
+      - ``CustomFiscalCalendar``   — explicit period→date map (4-4-5, etc.).
+    """
+
+    def period_first_day(self, fiscal_year, period):
+        raise NotImplementedError
+
+
+class StandardFiscalCalendar(FiscalCalendar):
+    """Month-aligned fiscal calendar with a configurable start month.
+
+    Period N maps to the N-th calendar month of the fiscal year, offset by
+    ``start_month``. A January start (``start_month=1``) reproduces the
+    original ``_period_first_day`` behaviour exactly.
+
+    Examples::
+
+        StandardFiscalCalendar(1)   FY2024 P1 → 2024-01-01, P12 → 2024-12-01
+        StandardFiscalCalendar(4)   FY2024 P1 → 2024-04-01, P9  → 2024-12-01
+                                    FY2024 P10 → 2025-01-01, P12 → 2025-03-01
+    """
+
+    def __init__(self, start_month=1):
+        start_month = int(start_month)
+        if not 1 <= start_month <= 12:
+            raise ValueError(
+                "start_month must be between 1 and 12, got {}".format(start_month)
+            )
+        self.start_month = start_month
+
+    def period_first_day(self, fiscal_year, period):
+        period = max(1, min(12, int(period or 1)))
+        offset = self.start_month - 1 + period - 1
+        cal_month = offset % 12 + 1
+        cal_year = int(fiscal_year) + offset // 12
+        return "{:04d}-{:02d}-01".format(cal_year, cal_month)
+
+
+class CustomFiscalCalendar(FiscalCalendar):
+    """Explicit period map for 4-4-5 or other non-monthly fiscal calendars.
+
+    ``period_map``: dict mapping int period number to ``(year_offset, month, day)``.
+    ``year_offset`` is added to ``fiscal_year`` (0 = same calendar year, 1 = next).
+
+    Example (4-4-5, UK tax-year style, April start)::
+
+        CustomFiscalCalendar({
+            1: (0, 4, 6),   # FY2024 P1 = 6 Apr 2024
+            2: (0, 5, 4),   # FY2024 P2 = 4 May 2024
+            ...
+        })
+
+    NEEDS-LIVE-TENANT: actual D365 fiscal period start dates must be read from
+    the tenant (Ledger → Fiscal calendars in D365 F&O); the values above are
+    illustrative only.
+    """
+
+    def __init__(self, period_map):
+        self.period_map = {int(k): v for k, v in period_map.items()}
+
+    def period_first_day(self, fiscal_year, period):
+        period = int(period)
+        if period not in self.period_map:
+            raise ValueError(
+                "Period {} not in CustomFiscalCalendar map (keys: {})".format(
+                    period, sorted(self.period_map.keys())
+                )
+            )
+        year_offset, month, day = self.period_map[period]
+        return "{:04d}-{:02d}-{:02d}".format(int(fiscal_year) + year_offset, month, day)
+
+
+_DEFAULT_CALENDAR = StandardFiscalCalendar(start_month=1)
+
+
+def get_fiscal_calendar(cfg=None):
+    """Instantiate a FiscalCalendar from a config dict.
+
+    Returns a ``StandardFiscalCalendar`` keyed on ``fiscal_year_start_month``
+    (default: 1 = January, i.e. calendar-month periods).
+
+    For 4-4-5 or other non-monthly calendars, construct a ``CustomFiscalCalendar``
+    with the explicit period→date map and pass it directly to ``build_entries``.
+
+    NEEDS-LIVE-TENANT: ``fiscal_year_start_month`` (EPM Settings field
+    ``d365_fiscal_year_start_month``) must match the D365 fiscal calendar
+    configured for the target legal entity.
+    """
+    start_month = int((cfg or {}).get("fiscal_year_start_month", 1) or 1)
+    return StandardFiscalCalendar(start_month=start_month)
+
+
+# ---------------------------------------------------------------------------
+# Config + auth
+# ---------------------------------------------------------------------------
 
 def get_config():
     """Read D365 write-back connection settings from EPM Settings."""
@@ -49,6 +178,7 @@ def get_config():
         "tenant_id": getattr(s, "d365_tenant_id", "") or "",
         "client_id": getattr(s, "d365_client_id", "") or "",
         "client_secret": s.get_password("d365_client_secret", raise_exception=False) or "",
+        "fiscal_year_start_month": int(getattr(s, "d365_fiscal_year_start_month", 1) or 1),
     }
 
 
@@ -81,6 +211,10 @@ def get_token(cfg):
     return resp.json()["access_token"]
 
 
+# ---------------------------------------------------------------------------
+# Payload mapping
+# ---------------------------------------------------------------------------
+
 def _flt(value):
     """Coerce to float, treating None / blank / non-numeric as 0.0."""
     try:
@@ -97,12 +231,11 @@ def budget_model_id(budget_input_name):
 def _period_first_day(year, period):
     """ISO date for the first day of a fiscal period (1-12).
 
-    Assumes fiscal period == calendar month and fiscal year == calendar year.
-    See the module docstring's go-live follow-ups: resolve the real period start
-    from the D365 fiscal calendar for non-calendar fiscal years before go-live.
+    Backward-compatible wrapper around ``StandardFiscalCalendar(start_month=1)``.
+    For non-January fiscal years or 4-4-5 calendars, use ``get_fiscal_calendar``
+    or construct a ``CustomFiscalCalendar`` and pass it to ``build_entries``.
     """
-    month = max(1, min(12, int(period or 1)))
-    return "{0:04d}-{1:02d}-01".format(int(year), month)
+    return _DEFAULT_CALENDAR.period_first_day(year, period)
 
 
 def _dimension_values(doc):
@@ -120,14 +253,17 @@ def _dimension_values(doc):
     return vals
 
 
-def build_entries(doc):
+def build_entries(doc, fiscal_calendar=None):
     """Map a Budget Input doc to a list of BudgetRegisterEntries line payloads.
 
     One line per period row. Lines with a zero amount are skipped (no-op in
-    D365). The exact OData field names below follow the documented
-    BudgetRegisterEntries entity; confirm against the target tenant's data
-    entity before go-live.
+    D365). fiscal_calendar: a ``FiscalCalendar`` instance for period→date
+    mapping; defaults to ``StandardFiscalCalendar(start_month=1)``.
+
+    NEEDS-LIVE-TENANT: OData field names and LedgerDimensionValues attribute
+    names must be confirmed against the target legal entity's configuration.
     """
+    calendar = fiscal_calendar or _DEFAULT_CALENDAR
     model_id = budget_model_id(doc.name)
     dims = _dimension_values(doc)
     entries = []
@@ -138,7 +274,7 @@ def build_entries(doc):
         entries.append({
             "BudgetModelId": model_id,
             "LegalEntityId": doc.data_area_id,
-            "AccountingDate": _period_first_day(doc.fiscal_year, row.fiscal_period),
+            "AccountingDate": calendar.period_first_day(doc.fiscal_year, row.fiscal_period),
             "MainAccountId": doc.main_account,
             "AccountingCurrencyAmount": amount,
             "BudgetType": "Original",
@@ -148,7 +284,11 @@ def build_entries(doc):
 
 
 def post_entries(cfg, token, entries):
-    """POST each BudgetRegisterEntries line to D365 OData. Returns responses."""
+    """POST each BudgetRegisterEntries line to D365 OData. Returns responses.
+
+    Retained for low-level use and backward compatibility. Production pushes
+    should use ``push_replace_batch`` for atomic replace semantics.
+    """
     url = cfg["resource_url"] + "/data/BudgetRegisterEntries"
     headers = {
         "Authorization": "Bearer " + token,
@@ -162,6 +302,178 @@ def post_entries(cfg, token, entries):
         results.append(resp.json() if resp.content else {})
     return results
 
+
+# ---------------------------------------------------------------------------
+# OData $batch replace semantics (atomic delete + insert)
+# ---------------------------------------------------------------------------
+
+def fetch_existing_entries(cfg, token, model_id):
+    """GET BudgetRegisterEntries filtered by BudgetModelId.
+
+    Returns the OData ``value`` list of entity dicts. Used as a pre-flight
+    before the ``$batch`` changeset to identify which records to DELETE.
+
+    Follows ``@odata.nextLink`` to page through ALL matching entries — an
+    incomplete delete set would leave orphaned old lines and silently duplicate
+    the budget after the new lines are POSTed, the exact failure replace exists
+    to prevent.
+
+    NEEDS-LIVE-TENANT:
+    - Confirm entity key field names (RecId, dataAreaId) via
+      GET /data/BudgetRegisterEntries/$metadata.
+    - Verify ``$filter=BudgetModelId eq '...'`` is supported on the entity.
+    """
+    url = (
+        cfg["resource_url"]
+        + "/data/BudgetRegisterEntries"
+        + "?$filter=BudgetModelId eq '{0}'".format(model_id.replace("'", "''"))
+        + "&$select=RecId,dataAreaId"
+    )
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/json",
+        "OData-MaxVersion": "4.0",
+        "OData-Version": "4.0",
+    }
+    results = []
+    while url:
+        resp = requests.get(url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        payload = resp.json()
+        results.extend(payload.get("value", []))
+        url = payload.get("@odata.nextLink")  # absolute URL per OData v4, or None
+    return results
+
+
+def _batch_entity_key(entry):
+    """Format the OData composite entity key for a BudgetRegisterEntries record.
+
+    NEEDS-LIVE-TENANT: D365 F&O BudgetRegisterEntries entity key field names
+    (RecId, dataAreaId) and the composite key syntax must be confirmed against
+    the live tenant via the OData $metadata document. RecId is typically an
+    Int64; verify it is returned by ``$select=RecId,dataAreaId`` and accepted
+    in DELETE URL parentheses.
+    """
+    try:
+        return "dataAreaId='{0}',RecId={1}".format(entry["dataAreaId"], entry["RecId"])
+    except KeyError as exc:
+        raise KeyError(
+            "BudgetRegisterEntries entry missing key field {0}; confirm the "
+            "$select key field names against the tenant $metadata".format(exc)
+        )
+
+
+def build_batch_body(batch_boundary, changeset_boundary, delete_keys, entries):
+    """Build an OData $batch multipart/mixed request body.
+
+    Design choice — ``$batch`` changeset over sequential delete+insert:
+    D365 executes all operations within a changeset atomically. If any DELETE
+    or POST fails, D365 rolls back the entire changeset so no partial budget
+    state can be committed. This resolves both the duplicate-on-repush risk
+    (the DELETE clears the old budget first) and the per-line partial-failure
+    risk from the original per-line POST loop.
+
+    NEEDS-LIVE-TENANT:
+    - Confirm the ``/data/$batch`` endpoint is enabled.
+    - Verify ``If-Match: *`` is accepted for DELETE operations.
+    - Some D365 OData versions require ``Content-ID`` headers for referencing
+      earlier responses within a changeset; add them if needed.
+    """
+    lines = []
+
+    lines.append("--" + batch_boundary)
+    lines.append("Content-Type: multipart/mixed; boundary=" + changeset_boundary)
+    lines.append("")
+
+    for key in delete_keys:
+        lines.append("--" + changeset_boundary)
+        lines.append("Content-Type: application/http")
+        lines.append("Content-Transfer-Encoding: binary")
+        lines.append("")
+        lines.append("DELETE /data/BudgetRegisterEntries(" + key + ") HTTP/1.1")
+        lines.append("If-Match: *")
+        lines.append("")
+
+    for entry in entries:
+        body = json.dumps(entry)
+        lines.append("--" + changeset_boundary)
+        lines.append("Content-Type: application/http")
+        lines.append("Content-Transfer-Encoding: binary")
+        lines.append("")
+        lines.append("POST /data/BudgetRegisterEntries HTTP/1.1")
+        lines.append("Content-Type: application/json")
+        lines.append("")
+        lines.append(body)
+
+    lines.append("--" + changeset_boundary + "--")
+    lines.append("--" + batch_boundary + "--")
+
+    # Trailing CRLF after the closing boundary is required by RFC 2046; OData
+    # $batch parsers (incl. D365) reject a body without it.
+    return "\r\n".join(lines) + "\r\n"
+
+
+# Embedded per-operation status line inside a multipart/$batch response.
+_BATCH_STATUS_RE = re.compile(r"HTTP/\d\.\d\s+(\d{3})")
+
+
+def _raise_on_changeset_errors(resp):
+    """Scan a ``$batch`` multipart response for embedded per-operation failures.
+
+    D365 returns HTTP 200/202 for the batch *envelope* even when an operation
+    inside the changeset failed, so a partial/failed batch would otherwise be
+    recorded as Pushed. Surfaces any embedded non-2xx status. (Changeset
+    rollback is assumed; this is the safety net — see module NEEDS-LIVE-TENANT.)
+    """
+    body = resp.text if isinstance(resp.text, str) else ""
+    bad = [s for s in _BATCH_STATUS_RE.findall(body) if not s.startswith("2")]
+    if bad:
+        raise requests.exceptions.HTTPError(
+            "D365 $batch reported operation failures: HTTP " + ", ".join(bad),
+            response=resp,
+        )
+
+
+def push_replace_batch(cfg, token, model_id, entries):
+    """Atomic replace: delete existing D365 entries then insert new ones in one ``$batch`` changeset.
+
+    Steps:
+    1. GET existing ``BudgetRegisterEntries`` by ``BudgetModelId`` (pre-flight;
+       outside the changeset so we know which keys to DELETE).
+    2. Build a ``$batch`` body: DELETE each existing entry + POST each new entry.
+    3. POST the batch to ``/data/$batch`` — D365 executes atomically.
+
+    An empty ``entries`` list with existing records produces a delete-only batch
+    (explicit "un-push" / budget retraction).
+
+    NEEDS-LIVE-TENANT: ``$batch`` endpoint availability, entity key format, and
+    changeset atomicity behaviour must be validated on the live tenant.
+    """
+    batch_boundary = "batch_" + uuid.uuid4().hex
+    changeset_boundary = "changeset_" + uuid.uuid4().hex
+
+    existing = fetch_existing_entries(cfg, token, model_id)
+    delete_keys = [_batch_entity_key(e) for e in existing]
+
+    body = build_batch_body(batch_boundary, changeset_boundary, delete_keys, entries)
+
+    url = cfg["resource_url"] + "/data/$batch"
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "multipart/mixed; boundary=" + batch_boundary,
+        "Accept": "multipart/mixed",
+        "OData-MaxVersion": "4.0",
+        "OData-Version": "4.0",
+    }
+    resp = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=120)
+    resp.raise_for_status()
+    _raise_on_changeset_errors(resp)  # envelope can be 200 while an op failed
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Error handling + status tracking
+# ---------------------------------------------------------------------------
 
 def error_message(exc):
     """Generic, non-sensitive failure message safe to store on Budget Input."""
@@ -180,16 +492,45 @@ def _set_status(doc, status, error):
         doc.db_set("d365_writeback_error", (error or "")[:140], update_modified=False)
 
 
+# ---------------------------------------------------------------------------
+# Workflow integration helpers
+# ---------------------------------------------------------------------------
+
+def enqueue_push_budget_input(name):
+    """Enqueue an async D365 write-back job for a Budget Input.
+
+    Called by ``BudgetInput._maybe_enqueue_d365_writeback`` on the
+    ``Submitted → Approved`` workflow transition when write-back is enabled.
+    Separated into its own function so it is unit-testable without a live
+    Frappe Document instance.
+    """
+    import frappe
+
+    frappe.enqueue(
+        "konsol.d365_writeback.push_budget_input",
+        queue="long",
+        name=name,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
 def push_budget_input(name, force=False):
-    """Push one Budget Input's budget to D365 (manual entry point).
+    """Push one Budget Input's budget to D365 using an atomic ``$batch`` changeset.
 
-    Not auto-triggered by the approval workflow. Records status/error on the
-    Budget Input when those fields exist.
+    Auto-triggered by the Budget Input ``Submitted → Approved`` workflow
+    transition when ``enable_d365_budget_writeback`` is on (via ``frappe.enqueue``
+    from ``BudgetInput._maybe_enqueue_d365_writeback``). Can also be called
+    explicitly (e.g. ``bench execute konsol.d365_writeback.push_budget_input``).
 
-    Re-push guard: a plain OData POST appends (no upsert-by-BudgetModelId), so a
-    second push would double the budget. If this Budget Input is already
-    ``Pushed`` we skip unless ``force=True`` is passed explicitly. See the module
-    docstring for the replace-semantics follow-up needed before go-live.
+    Replace semantics: ``push_replace_batch`` deletes existing D365 entries
+    tagged with this Budget Input's ``BudgetModelId`` before inserting the new
+    lines, making the push idempotent and atomic.
+
+    Re-push guard: if already ``Pushed`` and ``force=False``, the push is skipped.
+    Pass ``force=True`` to re-push (deletes then re-inserts in D365).
     """
     import frappe
 
@@ -201,14 +542,15 @@ def push_budget_input(name, force=False):
             and doc.get("d365_writeback_status") == "Pushed":
         return {
             "status": "Skipped",
-            "reason": "already pushed; pass force=True to re-push (will append in D365)",
+            "reason": "already pushed; pass force=True to re-push (replaces existing D365 entries)",
             "budget_model_id": budget_model_id(name),
         }
 
     try:
         token = get_token(cfg)
-        entries = build_entries(doc)
-        post_entries(cfg, token, entries)
+        calendar = get_fiscal_calendar(cfg)
+        entries = build_entries(doc, fiscal_calendar=calendar)
+        push_replace_batch(cfg, token, budget_model_id(name), entries)
         _set_status(doc, "Pushed", "")
         return {
             "status": "Pushed",
@@ -217,9 +559,6 @@ def push_budget_input(name, force=False):
         }
     except Exception as exc:
         _set_status(doc, "Failed", error_message(exc))
-        # Log the D365 response body server-side (never to the doc field) so an
-        # operator can see the real rejection reason; the stored error stays
-        # generic/non-sensitive.
         body = ""
         resp = getattr(exc, "response", None)
         if resp is not None:
