@@ -59,3 +59,35 @@ def test_backward_compatible_when_base_modified_omitted():
     last-write-wins behaviour."""
     src = _cell_save_src()
     assert "if base_modified and" in src
+
+
+def _api_src():
+    with open(API_PATH) as fh:
+        return fh.read()
+
+
+def test_cell_save_handles_create_race():
+    """Concurrent create of the same new combo must retry-as-update, not 500."""
+    src = _cell_save_src()
+    assert "DuplicateEntryError" in src and "continue" in src
+
+
+def test_upsert_handles_create_race():
+    src = _api_src()
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_upsert_budget_input")
+    body = ast.get_source_segment(src, fn)
+    assert "DuplicateEntryError" in body
+
+
+def test_account_category_load_is_guarded():
+    """A ClickHouse blip must not 500 every gated write — load is wrapped and
+    the failure is not cached."""
+    src = _api_src()
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_account_category")
+    body = ast.get_source_segment(src, fn)
+    assert "try:" in body and "_load_account_category_map" in body
+    assert "frappe.throw" in body  # clean, retryable error instead of raw 500

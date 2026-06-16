@@ -122,11 +122,27 @@ def _load_account_category_map():
 
 
 def _account_category(account):
-    """Resolve a main account to its responsibility category (cached, TTL)."""
+    """Resolve a main account to its responsibility category (cached, TTL).
+
+    Note: the map is cached for ``_ACCOUNT_CATEGORY_TTL`` with no active
+    invalidation, so a newly-created account or a re-categorisation in the
+    silver layer is invisible to gated writers for up to that window.
+    """
     cache = frappe.cache()
     mapping = cache.get_value(_ACCOUNT_CATEGORY_CACHE_KEY)
     if mapping is None:
-        mapping = _load_account_category_map()
+        try:
+            mapping = _load_account_category_map()
+        except Exception:  # noqa: BLE001 - warehouse blip must not 500 the write
+            frappe.log_error("budget account-category load failed", frappe.get_traceback())
+            # Enforcement is configured but the category source is unreachable.
+            # Fail with a clear, retryable message rather than a raw 500 — and
+            # do NOT cache the failure, so the next request retries.
+            frappe.throw(
+                frappe._("Account permission check is temporarily unavailable "
+                         "(category source unreachable). Please retry shortly."),
+                frappe.ValidationError,
+            )
         cache.set_value(_ACCOUNT_CATEGORY_CACHE_KEY, mapping,
                         expires_in_sec=_ACCOUNT_CATEGORY_TTL)
     return mapping.get(account)
@@ -698,38 +714,58 @@ def _validate_budget_fields(data):
         frappe.throw("periods must be a non-empty array", frappe.ValidationError)
 
 
+def _set_cell(doc, fiscal_period, layer, amount):
+    """Upsert one (fiscal_period, layer) row in a Budget Input's periods table."""
+    for row in doc.periods:
+        if row.fiscal_period == fiscal_period and row.layer == layer:
+            row.amount = amount
+            return
+    doc.append("periods", {"fiscal_period": fiscal_period, "amount": amount, "layer": layer})
+
+
 def _upsert_budget_input(data):
     """Create or update a Budget Input doc from API data. Returns doc name."""
+    from konsol.epm.budget_grain import budget_dimension_names
+
     _assert_budget_write_access(data)
-    filters = _budget_filters(data)
-    existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
-    if existing:
-        doc = frappe.get_doc("Budget Input", existing[0].name)
-        doc.periods = []
-    else:
-        doc = frappe.new_doc("Budget Input")
-        doc.update(filters)
+    # One retry to absorb the concurrent-create race on a brand-new combination
+    # (see budget_cell_save for the rationale).
+    for _attempt in range(2):
+        filters = _budget_filters(data)
+        existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+        creating = not existing
 
-    # Set dynamic dimension fields from data
-    budget_dims = frappe.get_all(
-        "Dimension",
-        filters={"in_budget": 1, "status": "Published"},
-        fields=["dimension_name"],
-        limit_page_length=0,
+        if existing:
+            doc = frappe.get_doc("Budget Input", existing[0].name)
+            doc.periods = []
+        else:
+            doc = frappe.new_doc("Budget Input")
+            doc.update(filters)
+
+        for dim in budget_dimension_names():
+            doc.set(dim, data.get(dim, ""))
+
+        for p in data["periods"]:
+            doc.append("periods", {
+                "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
+                "amount": float(p.get("amount", 0)),
+                "layer": p.get("layer", "base"),
+            })
+
+        try:
+            doc.save()
+        except frappe.exceptions.DuplicateEntryError:
+            if creating:
+                frappe.db.rollback()  # concurrent create won — retry as update
+                continue
+            raise
+        return doc.name
+
+    frappe.throw(
+        frappe._("Could not save budget line due to concurrent writes; please retry."),
+        frappe.ValidationError,
     )
-    for dim in budget_dims:
-        doc.set(dim.dimension_name, data.get(dim.dimension_name, ""))
-
-    for p in data["periods"]:
-        doc.append("periods", {
-            "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
-            "amount": float(p.get("amount", 0)),
-            "layer": p.get("layer", "base"),
-        })
-
-    doc.save()
-    return doc.name
 
 
 @frappe.whitelist(methods=["POST"])
@@ -779,68 +815,67 @@ def budget_cell_save():
 
     _assert_budget_write_access(data)
 
+    from konsol.epm.budget_grain import budget_dimension_names
+
     base_modified = data.get("base_modified")
 
-    filters = _budget_filters(data)
-    existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+    # Resolve -> mutate -> save, with one retry. If a concurrent request creates
+    # the SAME brand-new dimensional combination between our existence check and
+    # insert, the second insert hits a duplicate-name error; retry, which now
+    # finds the existing doc and takes the locked update path (no clobber, no
+    # 500). Existing-doc contention is handled by the FOR UPDATE lock below.
+    for _attempt in range(2):
+        filters = _budget_filters(data)
+        existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
-    if existing:
-        name = existing[0].name
-        # Optimistic concurrency. Take a row lock so two cell saves to the SAME
-        # Budget Input doc serialise instead of clobbering (different dimensional
-        # combinations are different docs => no contention). Then, if the client
-        # sent the `modified` it last read and the doc has since moved on, refuse
-        # the write and report the conflict so Excel can refresh + re-prompt.
-        # The FOR UPDATE read returns the authoritative committed `modified`
-        # under lock — compare against that, not a possibly-cached doc field.
-        current_modified = frappe.db.get_value(
-            "Budget Input", name, "modified", for_update=True)
-        doc = frappe.get_doc("Budget Input", name)
-        if base_modified and str(current_modified) != str(base_modified):
-            current_amount = next(
-                (r.amount for r in doc.periods
-                 if r.fiscal_period == fp and r.layer == layer), 0)
-            frappe.local.response.http_status_code = 409
-            return {
-                "status": "conflict",
-                "name": name,
-                "fiscal_period": fp,
-                "layer": layer,
-                "your_amount": amount,
-                "current_amount": current_amount,
-                "current_modified": str(current_modified),
-            }
-    else:
+        if existing:
+            name = existing[0].name
+            # Row lock: two cell saves to the SAME doc serialise instead of
+            # clobbering (different combinations are different docs => no
+            # contention). The FOR UPDATE read returns the authoritative
+            # committed `modified` — compare against that, not a cached field.
+            current_modified = frappe.db.get_value(
+                "Budget Input", name, "modified", for_update=True)
+            doc = frappe.get_doc("Budget Input", name)
+            if base_modified and str(current_modified) != str(base_modified):
+                # None (not 0) when the cell was cleared — distinguishable from a
+                # genuine zero so the client's conflict UI can tell them apart.
+                current_amount = next(
+                    (r.amount for r in doc.periods
+                     if r.fiscal_period == fp and r.layer == layer), None)
+                frappe.local.response.http_status_code = 409
+                return {
+                    "status": "conflict",
+                    "name": name,
+                    "fiscal_period": fp,
+                    "layer": layer,
+                    "your_amount": amount,
+                    "current_amount": current_amount,
+                    "current_modified": str(current_modified),
+                }
+            _set_cell(doc, fp, layer, amount)
+            doc.save()
+            return {"status": "ok", "name": doc.name, "value": amount,
+                    "modified": str(doc.modified)}
+
+        # Create path.
         doc = frappe.new_doc("Budget Input")
         doc.update(filters)
-        # Set dynamic dimension fields
-        budget_dims = frappe.get_all(
-            "Dimension",
-            filters={"in_budget": 1, "status": "Published"},
-            fields=["dimension_name"],
-            limit_page_length=0,
-        )
-        for dim in budget_dims:
-            doc.set(dim.dimension_name, data.get(dim.dimension_name, ""))
+        for dim in budget_dimension_names():
+            doc.set(dim, data.get(dim, ""))
+        _set_cell(doc, fp, layer, amount)
+        try:
+            doc.insert()
+        except frappe.exceptions.DuplicateEntryError:
+            frappe.db.rollback()  # concurrent create won — retry as update
+            continue
+        return {"status": "ok", "name": doc.name, "value": amount,
+                "modified": str(doc.modified)}
 
-    found = False
-    for row in doc.periods:
-        if row.fiscal_period == fp and row.layer == layer:
-            row.amount = amount
-            found = True
-            break
-
-    if not found:
-        doc.append("periods", {
-            "fiscal_period": fp,
-            "amount": amount,
-            "layer": layer,
-        })
-
-    doc.save()
-    # Echo the new baseline so the client can store it without a re-read.
-    return {"status": "ok", "name": doc.name, "value": amount,
-            "modified": str(doc.modified)}
+    frappe.throw(
+        frappe._("Could not save budget cell due to concurrent writes; please retry."),
+        frappe.ValidationError,
+    )
 
 
 @frappe.whitelist(methods=["POST"])
