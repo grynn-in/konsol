@@ -71,7 +71,7 @@ def _allowed_entities():
         frappe.session.user,
         frappe.get_roles(),
         _entity_permission_doctype(),
-        frappe.permissions.get_user_permissions(),
+        frappe.permissions.get_user_permissions(frappe.session.user),
     )
 
 
@@ -160,7 +160,7 @@ def _assert_account_access(account):
         return
     allowed = _resolve_allowed_entities(
         frappe.session.user, frappe.get_roles(), perm_doctype,
-        frappe.permissions.get_user_permissions())
+        frappe.permissions.get_user_permissions(frappe.session.user))
     if allowed is None:  # System Manager / Administrator / no grants configured
         return
     category = _account_category(account)
@@ -193,7 +193,7 @@ def _assert_dimension_access(data):
     if not controlled:
         return
     user, roles = frappe.session.user, frappe.get_roles()
-    perms = frappe.permissions.get_user_permissions()
+    perms = frappe.permissions.get_user_permissions(user)
     for dim, perm_doctype in controlled.items():
         allowed = _resolve_allowed_entities(user, roles, perm_doctype, perms)
         if allowed is None:

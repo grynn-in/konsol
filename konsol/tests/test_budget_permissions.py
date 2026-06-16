@@ -102,3 +102,12 @@ def test_dimension_has_permission_doctype():
     fields = {f["fieldname"]: f for f in meta["fields"]}
     assert "permission_doctype" in fields
     assert fields["permission_doctype"]["fieldtype"] == "Link"
+
+
+def test_get_user_permissions_always_passed_a_user():
+    """Regression: frappe.permissions.get_user_permissions(user) requires the
+    `user` arg (v15) — a no-arg call 500s every gated read/write at runtime,
+    which the site-free tests otherwise can't catch."""
+    src = open(API_PATH).read()
+    assert "get_user_permissions()" not in src, \
+        "get_user_permissions must be called with a user argument"
