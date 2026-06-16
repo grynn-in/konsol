@@ -48,6 +48,13 @@ def test_slug_sanitises_unsafe_chars():
     assert bg._slug("6100") == "6100"
 
 
+def test_slug_drops_separator_chars():
+    """`-` and `.` must not survive inside a component (they'd alias the
+    field separator)."""
+    assert bg._slug("Y-Z") == "Y_Z"
+    assert bg._slug("6010.00") == "6010_00"
+
+
 def test_budget_name_distinguishes_cost_centers(monkeypatch):
     """The whole point of the grain fix: same account, different cost center
     => different names (no clobber)."""
@@ -57,7 +64,16 @@ def test_budget_name_distinguishes_cost_centers(monkeypatch):
     sales = bg.budget_name({**base, "dim_cost_center": "Sales"})
     eng = bg.budget_name({**base, "dim_cost_center": "Engineering"})
     assert sales != eng
-    assert sales == "BUD-BUDGET_2025-USMF-2025-Travel-Sales"
+    assert sales.startswith("BUD-BUDGET_2025-USMF-2025-Travel-Sales-")
+
+
+def test_budget_name_injective_under_separator_ambiguity(monkeypatch):
+    """Distinct keys whose naive concat would alias must get distinct names."""
+    monkeypatch.setattr(bg, "budget_dimension_names", lambda: ["dim_a", "dim_b"])
+    base = {"scenario_id": "S", "data_area_id": "A", "fiscal_year": 2025, "main_account": "X"}
+    k1 = bg.budget_name({**base, "dim_a": "Y", "dim_b": "Z-W"})
+    k2 = bg.budget_name({**base, "dim_a": "Y-Z", "dim_b": "W"})
+    assert k1 != k2
 
 
 def test_budget_name_blank_dim_is_well_formed(monkeypatch):
@@ -66,14 +82,18 @@ def test_budget_name_blank_dim_is_well_formed(monkeypatch):
     name = bg.budget_name({"scenario_id": "S", "data_area_id": "A",
                            "fiscal_year": 2025, "main_account": "Revenue",
                            "dim_cost_center": ""})
-    assert name == "BUD-S-A-2025-Revenue-_"
+    assert name.startswith("BUD-S-A-2025-Revenue-_-")
+    assert len(name) <= 140
 
 
 def test_budget_name_is_deterministic_regardless_of_dim_order(monkeypatch):
     monkeypatch.setattr(bg, "budget_dimension_names", lambda: ["dim_cost_center", "dim_department"])
     vals = {"scenario_id": "S", "data_area_id": "A", "fiscal_year": 2025,
             "main_account": "X", "dim_department": "D", "dim_cost_center": "C"}
-    assert bg.budget_name(vals) == "BUD-S-A-2025-X-C-D"
+    name1 = bg.budget_name(vals)
+    name2 = bg.budget_name(dict(vals))
+    assert name1 == name2
+    assert name1.startswith("BUD-S-A-2025-X-C-D-")
 
 
 # --- source-level wiring (no site) -----------------------------------------
