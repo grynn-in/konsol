@@ -746,6 +746,12 @@ def budget_cell_save():
     """Save a single budget cell — upserts one period+layer in a Budget Input doc.
 
     Designed for EPMSAVE() immediate writes from Excel.
+
+    Optional optimistic-locking params (backward-compatible — omit for
+    last-write-wins): ``base_modified`` is the doc ``modified`` the client last
+    read; if it is stale the write is refused with an HTTP 409 ``conflict``
+    payload (current value + ``current_modified``) so the client can refresh and
+    re-prompt. A successful save echoes the new ``modified`` baseline.
     """
     data = _get_json_body()
 
@@ -773,11 +779,37 @@ def budget_cell_save():
 
     _assert_budget_write_access(data)
 
+    base_modified = data.get("base_modified")
+
     filters = _budget_filters(data)
     existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
     if existing:
-        doc = frappe.get_doc("Budget Input", existing[0].name)
+        name = existing[0].name
+        # Optimistic concurrency. Take a row lock so two cell saves to the SAME
+        # Budget Input doc serialise instead of clobbering (different dimensional
+        # combinations are different docs => no contention). Then, if the client
+        # sent the `modified` it last read and the doc has since moved on, refuse
+        # the write and report the conflict so Excel can refresh + re-prompt.
+        # The FOR UPDATE read returns the authoritative committed `modified`
+        # under lock — compare against that, not a possibly-cached doc field.
+        current_modified = frappe.db.get_value(
+            "Budget Input", name, "modified", for_update=True)
+        doc = frappe.get_doc("Budget Input", name)
+        if base_modified and str(current_modified) != str(base_modified):
+            current_amount = next(
+                (r.amount for r in doc.periods
+                 if r.fiscal_period == fp and r.layer == layer), 0)
+            frappe.local.response.http_status_code = 409
+            return {
+                "status": "conflict",
+                "name": name,
+                "fiscal_period": fp,
+                "layer": layer,
+                "your_amount": amount,
+                "current_amount": current_amount,
+                "current_modified": str(current_modified),
+            }
     else:
         doc = frappe.new_doc("Budget Input")
         doc.update(filters)
@@ -806,7 +838,9 @@ def budget_cell_save():
         })
 
     doc.save()
-    return {"status": "ok", "name": doc.name, "value": amount}
+    # Echo the new baseline so the client can store it without a re-read.
+    return {"status": "ok", "name": doc.name, "value": amount,
+            "modified": str(doc.modified)}
 
 
 @frappe.whitelist(methods=["POST"])
