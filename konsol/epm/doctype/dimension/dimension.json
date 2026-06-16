@@ -59,6 +59,13 @@
       "description": "e.g. cost_center — used by allocation engine"
     },
     {
+      "fieldname": "permission_doctype",
+      "fieldtype": "Link",
+      "options": "DocType",
+      "label": "Permission DocType",
+      "description": "If set, budget writes are gated by this dimension: a user may only write a value they hold a User Permission for on this DocType (typically a Virtual DocType proxying the dimension's values, e.g. Cost Center). Leave blank for descriptive (non-ownership) dimensions."
+    },
+    {
       "fieldname": "lifecycle_section",
       "fieldtype": "Section Break",
       "label": "Lifecycle"

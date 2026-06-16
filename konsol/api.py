@@ -84,6 +84,122 @@ def _assert_entity_access(entity):
 
 
 # ---------------------------------------------------------------------------
+# Budget write authorization (spec #51 §B) — entity AND account AND dimensions.
+# All checks no-op when unconfigured (backwards compatible); they reuse the
+# entity-permission policy (_resolve_allowed_entities) against different
+# permission-target doctypes, so ownership is expressed with native Frappe User
+# Permissions. Enforced in explicit code (not has_permission hooks) — required
+# for the Virtual DocType targets, which get no automatic SQL filtering.
+# ---------------------------------------------------------------------------
+
+# main account -> responsibility category, sourced live from the dbt silver
+# layer and cached (the write path must never round-trip ClickHouse per cell).
+_ACCOUNT_CATEGORY_TABLE = "epm_silver.silver_main_accounts"
+_ACCOUNT_CATEGORY_CACHE_KEY = "budget_account_category_map"
+_ACCOUNT_CATEGORY_TTL = 300  # seconds
+
+
+def _account_permission_doctype():
+    return (frappe.get_cached_value(
+        "EPM Settings", "EPM Settings", "account_permission_doctype") or "").strip()
+
+
+def _load_account_category_map():
+    """{main_account_id: main_account_category} from ClickHouse (silver layer)."""
+    from konsol.clickhouse import execute
+
+    raw = execute(
+        f"SELECT main_account_id, main_account_category "
+        f"FROM {_ACCOUNT_CATEGORY_TABLE} FORMAT TabSeparated"
+    )
+    mapping = {}
+    for line in (raw or "").splitlines():
+        if not line:
+            continue
+        acct, _, cat = line.partition("\t")
+        mapping[acct] = cat
+    return mapping
+
+
+def _account_category(account):
+    """Resolve a main account to its responsibility category (cached, TTL)."""
+    cache = frappe.cache()
+    mapping = cache.get_value(_ACCOUNT_CATEGORY_CACHE_KEY)
+    if mapping is None:
+        mapping = _load_account_category_map()
+        cache.set_value(_ACCOUNT_CATEGORY_CACHE_KEY, mapping,
+                        expires_in_sec=_ACCOUNT_CATEGORY_TTL)
+    return mapping.get(account)
+
+
+def _assert_account_access(account):
+    """Raise PermissionError if the user may not write ``account``.
+
+    No-op unless ``EPM Settings.account_permission_doctype`` is configured.
+    Gates by the account's *category* (responsibility group). Fail-closed: if a
+    category can't be resolved while enforcement is on, the write is denied.
+    """
+    perm_doctype = _account_permission_doctype()
+    if not perm_doctype:
+        return
+    allowed = _resolve_allowed_entities(
+        frappe.session.user, frappe.get_roles(), perm_doctype,
+        frappe.permissions.get_user_permissions())
+    if allowed is None:  # System Manager / Administrator / no grants configured
+        return
+    category = _account_category(account)
+    if category is None or category not in allowed:
+        detail = f"category '{category}'" if category else "no category mapping"
+        raise frappe.PermissionError(
+            f"Not permitted to write account '{account}' ({detail})")
+
+
+def _permission_controlled_dimensions():
+    """{dimension_name: permission_doctype} for in_budget dims that gate writes."""
+    rows = frappe.get_all(
+        "Dimension",
+        filters={"in_budget": 1, "status": "Published"},
+        fields=["dimension_name", "permission_doctype"],
+        limit_page_length=0,
+    )
+    return {r.dimension_name: r.permission_doctype.strip()
+            for r in rows if (r.permission_doctype or "").strip()}
+
+
+def _assert_dimension_access(data):
+    """Raise PermissionError for any permission-controlled dimension whose
+    submitted value the user does not own.
+
+    Unlike accounts, the dimension *value* is itself the permission unit (e.g.
+    a cost center), so no resolution/ClickHouse lookup is needed.
+    """
+    controlled = _permission_controlled_dimensions()
+    if not controlled:
+        return
+    user, roles = frappe.session.user, frappe.get_roles()
+    perms = frappe.permissions.get_user_permissions()
+    for dim, perm_doctype in controlled.items():
+        allowed = _resolve_allowed_entities(user, roles, perm_doctype, perms)
+        if allowed is None:
+            continue
+        value = data.get(dim) or ""
+        if value not in allowed:
+            raise frappe.PermissionError(
+                f"Not permitted to write {dim} '{value}'")
+
+
+def _assert_budget_write_access(data):
+    """Compose the budget write checks: entity (LE) AND account AND dimensions.
+
+    Called by every budget write path before mutating. Each sub-check is a
+    no-op until its permission target is configured.
+    """
+    _assert_entity_access(data.get("data_area_id"))
+    _assert_account_access(data.get("main_account"))
+    _assert_dimension_access(data)
+
+
+# ---------------------------------------------------------------------------
 # Fact Table registry helpers
 # ---------------------------------------------------------------------------
 
@@ -584,6 +700,7 @@ def _validate_budget_fields(data):
 
 def _upsert_budget_input(data):
     """Create or update a Budget Input doc from API data. Returns doc name."""
+    _assert_budget_write_access(data)
     filters = _budget_filters(data)
     existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
@@ -654,6 +771,8 @@ def budget_cell_save():
 
     amount = float(data["amount"])
 
+    _assert_budget_write_access(data)
+
     filters = _budget_filters(data)
     existing = frappe.get_all("Budget Input", filters=filters, limit=1)
 
@@ -705,6 +824,11 @@ def budget_save_batch():
             name = _upsert_budget_input(data)
             results.append({"name": name, "index": i})
             errors.append(None)
+        except frappe.PermissionError as e:
+            # Surface authorization denials per item (don't bury as a generic
+            # failure) so the client can flag exactly which lines were blocked.
+            results.append(None)
+            errors.append({"index": i, "error": str(e)})
         except Exception:
             frappe.log_error("Budget save failed", frappe.get_traceback())
             results.append(None)

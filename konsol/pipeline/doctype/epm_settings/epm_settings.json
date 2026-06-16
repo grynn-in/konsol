@@ -162,6 +162,13 @@
       "options": "DocType",
       "label": "Entity Permission DocType",
       "description": "DocType whose User Permissions restrict which entities (data areas) a user may query via the EPM API. Leave blank to allow all authenticated users to query all entities."
+    },
+    {
+      "fieldname": "account_permission_doctype",
+      "fieldtype": "Link",
+      "options": "DocType",
+      "label": "Account Permission DocType",
+      "description": "DocType (typically a Virtual DocType proxying main account categories) whose User Permissions restrict which account categories a user may write budgets for. Leave blank to allow all authenticated users to write any account."
     }
   ],
   "permissions": [
