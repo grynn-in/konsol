@@ -117,6 +117,14 @@
       "label": "D365 Client Secret"
     },
     {
+      "fieldname": "d365_fiscal_year_start_month",
+      "fieldtype": "Int",
+      "label": "Fiscal Year Start Month",
+      "default": "1",
+      "depends_on": "enable_d365_budget_writeback",
+      "description": "Month when the D365 fiscal year begins (1=Jan, 4=Apr, 7=Jul, 10=Oct). Maps budget period numbers to OData AccountingDate. For 4-4-5 calendars, supply a CustomFiscalCalendar programmatically. NEEDS-LIVE-TENANT: must match the Fiscal calendar configured in D365 F&O for the target legal entity."
+    },
+    {
       "fieldname": "airbyte_sync_status_section",
       "fieldtype": "Section Break",
       "label": "Airbyte Sync Status"

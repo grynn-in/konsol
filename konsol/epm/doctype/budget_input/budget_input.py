@@ -28,6 +28,7 @@ class BudgetInput(Document):
     def on_update(self):
         if self.workflow_state == "Approved":
             self._sync_to_clickhouse()
+            self._maybe_enqueue_d365_writeback()
 
     def on_trash(self):
         self._sync_to_clickhouse()
@@ -96,6 +97,25 @@ class BudgetInput(Document):
 
         # DELETE old rows for this key, INSERT new ones (empty rows on trash/unapprove)
         sync_rows("epm_gold.budget_monthly_input", columns, rows, key_columns, key_values)
+
+    def _maybe_enqueue_d365_writeback(self):
+        """Enqueue async D365 write-back when write-back is enabled in EPM Settings.
+
+        Gated on ``enable_d365_budget_writeback`` (off by default). The
+        ``push_budget_input`` re-push guard prevents duplicate sends when a doc
+        is saved multiple times in Approved state.
+
+        Import is lazy so the method is safe to call even when the D365
+        credentials are not configured — it simply returns without raising.
+        """
+        try:
+            from konsol.d365_writeback import enqueue_push_budget_input, get_config
+            cfg = get_config()
+        except Exception:
+            return
+        if not cfg.get("enabled"):
+            return
+        enqueue_push_budget_input(self.name)
 
     @frappe.whitelist()
     def spread_annual(self):
