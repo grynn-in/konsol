@@ -12,12 +12,14 @@ Every pushed line is tagged ``BudgetModelId = 'EPM-<budget-input-name>'`` so
 EPM-originated entries are identifiable. Do NOT Airbyte-sync BudgetRegisterEntries
 back into ``epm_raw`` — filter on this tag if you must (round-trip prevention).
 
-REPLACE SEMANTICS (implemented):
+REPLACE SEMANTICS (implemented; atomicity ASSUMED pending live tenant):
   ``push_replace_batch`` performs an OData ``$batch`` changeset: a pre-flight GET
-  finds existing entries by BudgetModelId, then a single batch request DELETEs
-  them and POSTs the new lines atomically. Atomicity means no partial budget
-  state can be committed — if any DELETE or POST fails the entire changeset is
-  rolled back by D365.
+  (with ``@odata.nextLink`` paging) finds existing entries by BudgetModelId, then
+  a single batch request DELETEs them and POSTs the new lines. D365 is *expected*
+  to execute a changeset atomically (all-or-nothing); this is not verifiable here
+  and is listed under NEEDS-LIVE-TENANT. As a safety net, the batch response is
+  scanned for embedded per-operation failures so a partial batch is not recorded
+  as Pushed.
 
   Choice rationale: ``$batch`` changeset over sequential delete+insert because
   it is all-or-nothing at the D365 layer, resolving both the duplicate-on-repush
@@ -50,6 +52,7 @@ NEEDS-LIVE-TENANT (cannot verify without a D365 instance):
 mapping/auth/client helpers stay unit-testable without a running Frappe site.
 """
 import json
+import re
 import uuid
 
 import requests
@@ -310,12 +313,15 @@ def fetch_existing_entries(cfg, token, model_id):
     Returns the OData ``value`` list of entity dicts. Used as a pre-flight
     before the ``$batch`` changeset to identify which records to DELETE.
 
+    Follows ``@odata.nextLink`` to page through ALL matching entries — an
+    incomplete delete set would leave orphaned old lines and silently duplicate
+    the budget after the new lines are POSTed, the exact failure replace exists
+    to prevent.
+
     NEEDS-LIVE-TENANT:
     - Confirm entity key field names (RecId, dataAreaId) via
       GET /data/BudgetRegisterEntries/$metadata.
     - Verify ``$filter=BudgetModelId eq '...'`` is supported on the entity.
-    - OData result paging: if >1000 entries exist, ``@odata.nextLink`` paging
-      is not implemented here — validate the default page size with the tenant.
     """
     url = (
         cfg["resource_url"]
@@ -329,9 +335,14 @@ def fetch_existing_entries(cfg, token, model_id):
         "OData-MaxVersion": "4.0",
         "OData-Version": "4.0",
     }
-    resp = requests.get(url, headers=headers, timeout=60)
-    resp.raise_for_status()
-    return resp.json().get("value", [])
+    results = []
+    while url:
+        resp = requests.get(url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        payload = resp.json()
+        results.extend(payload.get("value", []))
+        url = payload.get("@odata.nextLink")  # absolute URL per OData v4, or None
+    return results
 
 
 def _batch_entity_key(entry):
@@ -343,7 +354,13 @@ def _batch_entity_key(entry):
     Int64; verify it is returned by ``$select=RecId,dataAreaId`` and accepted
     in DELETE URL parentheses.
     """
-    return "dataAreaId='{0}',RecId={1}".format(entry["dataAreaId"], entry["RecId"])
+    try:
+        return "dataAreaId='{0}',RecId={1}".format(entry["dataAreaId"], entry["RecId"])
+    except KeyError as exc:
+        raise KeyError(
+            "BudgetRegisterEntries entry missing key field {0}; confirm the "
+            "$select key field names against the tenant $metadata".format(exc)
+        )
 
 
 def build_batch_body(batch_boundary, changeset_boundary, delete_keys, entries):
@@ -391,7 +408,30 @@ def build_batch_body(batch_boundary, changeset_boundary, delete_keys, entries):
     lines.append("--" + changeset_boundary + "--")
     lines.append("--" + batch_boundary + "--")
 
-    return "\r\n".join(lines)
+    # Trailing CRLF after the closing boundary is required by RFC 2046; OData
+    # $batch parsers (incl. D365) reject a body without it.
+    return "\r\n".join(lines) + "\r\n"
+
+
+# Embedded per-operation status line inside a multipart/$batch response.
+_BATCH_STATUS_RE = re.compile(r"HTTP/\d\.\d\s+(\d{3})")
+
+
+def _raise_on_changeset_errors(resp):
+    """Scan a ``$batch`` multipart response for embedded per-operation failures.
+
+    D365 returns HTTP 200/202 for the batch *envelope* even when an operation
+    inside the changeset failed, so a partial/failed batch would otherwise be
+    recorded as Pushed. Surfaces any embedded non-2xx status. (Changeset
+    rollback is assumed; this is the safety net — see module NEEDS-LIVE-TENANT.)
+    """
+    body = resp.text if isinstance(resp.text, str) else ""
+    bad = [s for s in _BATCH_STATUS_RE.findall(body) if not s.startswith("2")]
+    if bad:
+        raise requests.exceptions.HTTPError(
+            "D365 $batch reported operation failures: HTTP " + ", ".join(bad),
+            response=resp,
+        )
 
 
 def push_replace_batch(cfg, token, model_id, entries):
@@ -427,6 +467,7 @@ def push_replace_batch(cfg, token, model_id, entries):
     }
     resp = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=120)
     resp.raise_for_status()
+    _raise_on_changeset_errors(resp)  # envelope can be 200 while an op failed
     return resp
 
 

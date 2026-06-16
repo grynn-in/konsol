@@ -28,7 +28,11 @@ class BudgetInput(Document):
     def on_update(self):
         if self.workflow_state == "Approved":
             self._sync_to_clickhouse()
-            self._maybe_enqueue_d365_writeback()
+            # D365 write-back fires only on the TRANSITION into Approved, not on
+            # every subsequent save while already Approved (avoids redundant
+            # pushes; the re-push guard is a backstop, not the primary gate).
+            if self.has_value_changed("workflow_state"):
+                self._maybe_enqueue_d365_writeback()
 
     def on_trash(self):
         self._sync_to_clickhouse()

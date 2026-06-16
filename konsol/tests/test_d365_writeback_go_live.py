@@ -469,3 +469,71 @@ def test_enqueue_push_budget_input_propagates_name(monkeypatch):
     _fr, enqueued = _install_fake_frappe(monkeypatch)
     wb.enqueue_push_budget_input("BUD-CUSTOM-99")
     assert enqueued["kw"]["name"] == "BUD-CUSTOM-99"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: nextLink paging, trailing CRLF, changeset error detection
+# ---------------------------------------------------------------------------
+
+def test_fetch_existing_entries_follows_nextlink_paging():
+    # >1 page must be fully paged, else the DELETE set is incomplete and the
+    # budget silently duplicates after the POST.
+    cfg = {"resource_url": "https://org.dynamics.com"}
+    page1 = {"value": [{"dataAreaId": "USMF", "RecId": 1}],
+             "@odata.nextLink": "https://org.dynamics.com/data/BudgetRegisterEntries?$skiptoken=x"}
+    page2 = {"value": [{"dataAreaId": "USMF", "RecId": 2}]}
+    with patch.object(wb.requests, "get") as get_mock:
+        r1 = MagicMock(**{"json.return_value": page1}); r1.raise_for_status = lambda: None
+        r2 = MagicMock(**{"json.return_value": page2}); r2.raise_for_status = lambda: None
+        get_mock.side_effect = [r1, r2]
+        result = wb.fetch_existing_entries(cfg, "TOK", "EPM-BUD-0001")
+    assert get_mock.call_count == 2                      # followed the nextLink
+    assert [e["RecId"] for e in result] == [1, 2]        # both pages collected
+    assert get_mock.call_args_list[1][0][0] == page1["@odata.nextLink"]
+
+
+def test_build_batch_body_ends_with_trailing_crlf():
+    body = wb.build_batch_body("b1", "c1", [], [{"BudgetModelId": "EPM-X"}])
+    assert body.endswith("--b1--\r\n")                   # RFC 2046 close-delimiter CRLF
+
+
+def test_raise_on_changeset_errors_passes_on_all_2xx():
+    resp = MagicMock()
+    resp.text = (
+        "--b\r\nContent-Type: application/http\r\n\r\nHTTP/1.1 204 No Content\r\n"
+        "--b\r\nContent-Type: application/http\r\n\r\nHTTP/1.1 201 Created\r\n--b--\r\n"
+    )
+    wb._raise_on_changeset_errors(resp)                  # no raise
+
+
+def test_raise_on_changeset_errors_raises_on_embedded_failure():
+    resp = MagicMock()
+    resp.text = (
+        "--b\r\n\r\nHTTP/1.1 204 No Content\r\n"
+        "--b\r\n\r\nHTTP/1.1 400 Bad Request\r\n--b--\r\n"   # embedded op failed
+    )
+    with pytest.raises(requests.exceptions.HTTPError) as ei:
+        wb._raise_on_changeset_errors(resp)
+    assert "400" in str(ei.value)
+
+
+def test_push_replace_batch_surfaces_embedded_changeset_failure():
+    cfg = {"resource_url": "https://org.dynamics.com"}
+    with patch.object(wb.requests, "get") as get_mock, \
+         patch.object(wb.requests, "post") as post_mock:
+        get_mock.return_value = MagicMock(**{"json.return_value": {"value": []}})
+        get_mock.return_value.raise_for_status = lambda: None
+        # envelope is 200 but a POST inside the changeset failed
+        post_mock.return_value = MagicMock(
+            status_code=200,
+            text="--b\r\n\r\nHTTP/1.1 500 Internal Server Error\r\n--b--\r\n",
+        )
+        post_mock.return_value.raise_for_status = lambda: None
+        with pytest.raises(requests.exceptions.HTTPError):
+            wb.push_replace_batch(cfg, "TOK", "EPM-BUD-0001", [{"BudgetModelId": "EPM-BUD-0001"}])
+
+
+def test_batch_entity_key_missing_field_raises_clean_error():
+    with pytest.raises(KeyError) as ei:
+        wb._batch_entity_key({"dataAreaId": "USMF"})     # RecId missing
+    assert "metadata" in str(ei.value).lower()
