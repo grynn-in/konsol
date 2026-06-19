@@ -15,6 +15,7 @@ frappe.ui.form.on("Close Run", {
 		}
 		frm._close_log = frm.doc.log || "";
 		render_status_banner(frm);
+		add_signoff_buttons(frm);
 	},
 
 	onload(frm) {
@@ -30,6 +31,37 @@ frappe.ui.form.on("Close Run", {
 		});
 	},
 });
+
+function add_signoff_buttons(frm) {
+	const terminal = ["Green", "Red", "Error"].includes(frm.doc.status);
+	const signed = ["Signed Off", "Overridden"].includes(frm.doc.signoff_status);
+	if (frm.is_new() || !terminal || signed) return;
+
+	if (frm.doc.status === "Green") {
+		frm.add_custom_button(__("Sign Off"), () => {
+			frappe.confirm(__("Sign off this reconciled close?"), () => call_signoff(frm));
+		}).addClass("btn-primary");
+	} else if (frappe.user.has_role("EPM Admin") || frappe.user.has_role("System Manager")) {
+		// Red / Error — gated override (EPM Admin only, reason required). Only
+		// show the button to users the server would actually let override.
+		frm.add_custom_button(__("Override Sign-off"), () => {
+			frappe.prompt(
+				[{ fieldname: "reason", fieldtype: "Small Text", label: __("Override reason"), reqd: 1 }],
+				(v) => call_signoff(frm, v.reason),
+				__("Override a non-reconciled close (audited)"), __("Override"));
+		});
+	}
+}
+
+function call_signoff(frm, override_reason) {
+	frappe.call({
+		method: "konsol.consolidation.doctype.close_run.close_run.sign_off_close",
+		args: { close_run: frm.doc.name, override_reason },
+		freeze: true,
+		freeze_message: __("Signing off..."),
+		callback: () => frm.reload_doc(),
+	});
+}
 
 function render_status_banner(frm) {
 	const map = { Green: "green", Red: "red", Running: "orange", Error: "red", Queued: "gray" };

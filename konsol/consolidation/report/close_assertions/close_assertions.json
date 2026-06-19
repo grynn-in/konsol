@@ -1,0 +1,18 @@
+{
+ "add_total_row": 0,
+ "creation": "2026-06-19 00:00:00",
+ "disabled": 0,
+ "doctype": "Report",
+ "is_standard": "Yes",
+ "module": "Consolidation",
+ "name": "Close Assertions",
+ "owner": "Administrator",
+ "prepared_report": 0,
+ "ref_doctype": "Close Run",
+ "report_name": "Close Assertions",
+ "report_type": "Script Report",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "EPM Admin"}
+ ]
+}
