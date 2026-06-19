@@ -85,6 +85,45 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "signoff_section",
+      "fieldtype": "Section Break",
+      "label": "Sign-off"
+    },
+    {
+      "fieldname": "signoff_status",
+      "fieldtype": "Select",
+      "label": "Sign-off Status",
+      "options": "Not Signed Off\nSigned Off\nOverridden",
+      "default": "Not Signed Off",
+      "read_only": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "signed_off_by",
+      "fieldtype": "Link",
+      "label": "Signed Off By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "signed_off_at",
+      "fieldtype": "Datetime",
+      "label": "Signed Off At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "col_break_signoff",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "override_reason",
+      "fieldtype": "Small Text",
+      "label": "Override Reason",
+      "read_only": 1,
+      "description": "Required when signing off a Red/Error close; audited."
+    },
+    {
       "fieldname": "timing_section",
       "fieldtype": "Section Break",
       "label": "Timing"
