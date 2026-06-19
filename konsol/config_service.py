@@ -3,6 +3,8 @@
 All EPM model reads and writes go through this module so clients never touch
 dbt, ClickHouse, or SQL directly.
 """
+import json
+
 import frappe
 
 _DIMENSION_FIELDS = [
@@ -43,6 +45,47 @@ _MEASURE_WRITABLE_FIELDS = [
     "label",
     "cube_type",
 ]
+
+_FACT_LIST_FIELDS = [
+    "name",
+    "fact_name",
+    "label",
+    "source_type",
+    "clickhouse_table",
+    "dbt_model",
+    "scenario_key",
+    "has_scenario_id",
+    "grain",
+    "refresh_frequency",
+    "generates_source",
+    "status",
+]
+
+_FACT_DETAIL_FIELDS = _FACT_LIST_FIELDS + [
+    "extra_columns",
+    "reroute_measure",
+    "reroute_table",
+    "reroute_column",
+]
+
+_FACT_WRITABLE_FIELDS = [
+    "label",
+    "source_type",
+    "clickhouse_table",
+    "dbt_model",
+    "scenario_key",
+    "has_scenario_id",
+    "grain",
+    "refresh_frequency",
+    "generates_source",
+    "extra_columns",
+    "reroute_measure",
+    "reroute_table",
+    "reroute_column",
+]
+
+_SOURCE_TYPES = {"ERP GL", "Budget", "Statistical", "Sub-ledger"}
+_CONFIG_API_VERSION = "konsol/v1"
 
 
 def _normalize_filters(filters):
@@ -316,3 +359,279 @@ def publish_measure(name):
         "published": True,
         "measure": _measure_row(doc),
     }
+
+
+def _fact_measures_list(doc):
+    if doc.fact_measures:
+        return [
+            {"measure": row.measure, "required": bool(row.required)}
+            for row in doc.fact_measures
+        ]
+    parsed = json.loads(doc.measures or "[]")
+    return [
+        item if isinstance(item, dict) else {"measure": item, "required": False}
+        for item in parsed
+    ]
+
+
+def _fact_dimensions_list(doc):
+    if doc.fact_dimensions:
+        return [
+            {"dimension": row.dimension, "required": bool(row.required)}
+            for row in doc.fact_dimensions
+        ]
+    parsed = json.loads(doc.dimensions or "[]")
+    return [
+        item if isinstance(item, dict) else {"dimension": item, "required": False}
+        for item in parsed
+    ]
+
+
+def _serialize_fact_row(doc, *, include_detail=False):
+    fields = _FACT_DETAIL_FIELDS if include_detail else _FACT_LIST_FIELDS
+    data = {field: getattr(doc, field, None) for field in fields}
+    data["has_scenario_id"] = bool(data.get("has_scenario_id"))
+    data["generates_source"] = bool(data.get("generates_source"))
+    data["measures"] = _fact_measures_list(doc)
+    data["dimensions"] = _fact_dimensions_list(doc)
+    return data
+
+
+def _validate_fact_spec(spec, *, require_core_fields):
+    missing = [
+        field
+        for field in ("fact_name", "label", "source_type", "clickhouse_table", "scenario_key")
+        if require_core_fields and not spec.get(field)
+    ]
+    if missing:
+        frappe.throw(
+            f"Missing required fact table fields: {', '.join(missing)}",
+            frappe.MandatoryError,
+        )
+
+    source_type = spec.get("source_type")
+    if source_type and source_type not in _SOURCE_TYPES:
+        frappe.throw(
+            f"Invalid source_type '{source_type}'. Must be one of: {', '.join(sorted(_SOURCE_TYPES))}",
+            frappe.ValidationError,
+        )
+
+
+def _set_fact_child_rows(doc, spec):
+    if "measures" in spec:
+        doc.fact_measures = []
+        for item in spec.get("measures") or []:
+            if isinstance(item, str):
+                doc.append("fact_measures", {"measure": item})
+            else:
+                doc.append(
+                    "fact_measures",
+                    {
+                        "measure": item["measure"],
+                        "required": int(bool(item.get("required"))),
+                    },
+                )
+
+    if "dimensions" in spec:
+        doc.fact_dimensions = []
+        for item in spec.get("dimensions") or []:
+            if isinstance(item, str):
+                doc.append("fact_dimensions", {"dimension": item})
+            else:
+                doc.append(
+                    "fact_dimensions",
+                    {
+                        "dimension": item["dimension"],
+                        "required": int(bool(item.get("required"))),
+                    },
+                )
+
+
+def list_fact_tables(filters=None):
+    """Return all Fact Table docs matching optional filters."""
+    rows = frappe.get_all(
+        "Fact Table",
+        filters=_normalize_filters(filters),
+        fields=_FACT_LIST_FIELDS,
+        order_by="fact_name asc",
+        limit_page_length=0,
+    )
+    result = []
+    for row in rows:
+        doc = frappe.get_doc("Fact Table", row["name"])
+        result.append(_serialize_fact_row(doc))
+    return result
+
+
+def get_fact_table(name):
+    """Return a single Fact Table doc by fact_name."""
+    if not frappe.db.exists("Fact Table", name):
+        frappe.throw(f"Fact Table '{name}' not found", frappe.DoesNotExistError)
+    return _serialize_fact_row(frappe.get_doc("Fact Table", name), include_detail=True)
+
+
+def upsert_fact_table(spec, publish=False):
+    """Create or update a Fact Table doc. Saves as Draft unless publish=True."""
+    spec = dict(spec or {})
+    name = spec.get("fact_name")
+    if not name:
+        frappe.throw("fact_name is required", frappe.MandatoryError)
+
+    created = not frappe.db.exists("Fact Table", name)
+    _validate_fact_spec(spec, require_core_fields=created)
+
+    if created:
+        doc = frappe.new_doc("Fact Table")
+        doc.fact_name = name
+        doc.status = spec.get("status", "Draft")
+        for field in _FACT_WRITABLE_FIELDS:
+            if field in spec:
+                setattr(doc, field, spec[field])
+        _set_fact_child_rows(doc, spec)
+    else:
+        doc = frappe.get_doc("Fact Table", name)
+        for field in _FACT_WRITABLE_FIELDS:
+            if field in spec:
+                setattr(doc, field, spec[field])
+        if "status" in spec and not publish:
+            doc.status = spec["status"]
+        _set_fact_child_rows(doc, spec)
+
+    doc.save()
+    frappe.db.commit()
+
+    if publish:
+        doc.publish()
+
+    doc.reload()
+
+    return {
+        "created": created,
+        "published": bool(publish),
+        "fact_table": _serialize_fact_row(doc, include_detail=True),
+    }
+
+
+def publish_fact_table(name):
+    """Publish a Fact Table: apply schema and request a governed rebuild."""
+    if not frappe.db.exists("Fact Table", name):
+        frappe.throw(f"Fact Table '{name}' not found", frappe.DoesNotExistError)
+
+    doc = frappe.get_doc("Fact Table", name)
+    doc.publish()
+    doc.reload()
+
+    return {
+        "published": True,
+        "fact_table": _serialize_fact_row(doc, include_detail=True),
+    }
+
+
+def _config_entity_key(doctype, row):
+    if doctype == "Dimension":
+        return row.get("dimension_name")
+    if doctype == "Measure":
+        return row.get("measure_name")
+    if doctype == "Fact Table":
+        return row.get("fact_name")
+    return row.get("name")
+
+
+def _normalize_config_bundle(spec):
+    bundle = dict(spec or {})
+    if bundle.get("api_version") and bundle["api_version"] != _CONFIG_API_VERSION:
+        frappe.throw(
+            f"Unsupported api_version '{bundle['api_version']}'. Expected {_CONFIG_API_VERSION}.",
+            frappe.ValidationError,
+        )
+    return bundle
+
+
+def _export_rows(doctype, list_fn, status=None):
+    filters = {"status": status} if status else None
+    rows = list_fn(filters)
+    for row in rows:
+        row.pop("name", None)
+    return rows
+
+
+def export_config(status=None):
+    """Export dimensions, measures, and fact tables as a portable bundle."""
+    return {
+        "api_version": _CONFIG_API_VERSION,
+        "dimensions": _export_rows("Dimension", list_dimensions, status),
+        "measures": _export_rows("Measure", list_measures, status),
+        "fact_tables": _export_rows("Fact Table", list_fact_tables, status),
+    }
+
+
+def _diff_section(doctype, desired_rows, live_rows):
+    desired = {
+        _config_entity_key(doctype, row): row
+        for row in desired_rows
+        if _config_entity_key(doctype, row)
+    }
+    live = {
+        _config_entity_key(doctype, row): row
+        for row in live_rows
+        if _config_entity_key(doctype, row)
+    }
+
+    added = []
+    modified = []
+    unchanged = []
+    only_on_site = []
+
+    for key, row in desired.items():
+        if key not in live:
+            added.append({"key": key, "desired": row})
+            continue
+        if row != live[key]:
+            modified.append({"key": key, "desired": row, "live": live[key]})
+        else:
+            unchanged.append(key)
+
+    for key, row in live.items():
+        if key not in desired:
+            only_on_site.append({"key": key, "live": row})
+
+    return {
+        "added": added,
+        "modified": modified,
+        "unchanged": unchanged,
+        "only_on_site": only_on_site,
+    }
+
+
+def diff_config(spec, status=None):
+    """Compare a config bundle against the live site."""
+    bundle = _normalize_config_bundle(spec)
+    live = export_config(status=status)
+    return {
+        "dimensions": _diff_section(
+            "Dimension", bundle.get("dimensions", []), live["dimensions"]
+        ),
+        "measures": _diff_section("Measure", bundle.get("measures", []), live["measures"]),
+        "fact_tables": _diff_section(
+            "Fact Table", bundle.get("fact_tables", []), live["fact_tables"]
+        ),
+    }
+
+
+def apply_config(spec, publish=False):
+    """Apply a config bundle via upsert for each entity."""
+    bundle = _normalize_config_bundle(spec)
+    summary = {
+        "dimensions": [],
+        "measures": [],
+        "fact_tables": [],
+    }
+
+    for row in bundle.get("dimensions", []):
+        summary["dimensions"].append(upsert_dimension(row, publish=publish))
+    for row in bundle.get("measures", []):
+        summary["measures"].append(upsert_measure(row, publish=publish))
+    for row in bundle.get("fact_tables", []):
+        summary["fact_tables"].append(upsert_fact_table(row, publish=publish))
+
+    return summary

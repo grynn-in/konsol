@@ -4,15 +4,22 @@ import json
 import frappe
 
 from konsol.config_service import (
+    apply_config,
     apply_schema,
+    diff_config,
+    export_config,
     get_dimension,
+    get_fact_table,
     get_measure,
     get_schema_status,
     list_dimensions,
+    list_fact_tables,
     list_measures,
     publish_dimension,
+    publish_fact_table,
     publish_measure,
     upsert_dimension,
+    upsert_fact_table,
     upsert_measure,
 )
 
@@ -87,3 +94,45 @@ def apply_schema_api(run_dbt=False):
 def get_schema_status_api():
     """Return registry counts and pipeline build request status."""
     return get_schema_status()
+
+
+@frappe.whitelist()
+def list_fact_tables_api(status=None):
+    """List Fact Table docs. Optional status: Draft, Published, or Inactive."""
+    return list_fact_tables(_status_filter(status))
+
+
+@frappe.whitelist()
+def get_fact_table_api(name):
+    """Get a single Fact Table doc by fact_name."""
+    return get_fact_table(name)
+
+
+@frappe.whitelist()
+def upsert_fact_table_api(spec, publish=False):
+    """Create or update a Fact Table doc. Pass spec as a JSON object."""
+    return upsert_fact_table(_parse_spec(spec), publish=frappe.utils.cint(publish))
+
+
+@frappe.whitelist()
+def publish_fact_table_api(name):
+    """Publish a Fact Table doc and request a governed rebuild."""
+    return publish_fact_table(name)
+
+
+@frappe.whitelist()
+def export_config_api(status=None):
+    """Export dimensions, measures, and fact tables as a portable bundle."""
+    return export_config(status=status)
+
+
+@frappe.whitelist()
+def apply_config_api(spec, publish=False):
+    """Apply a config bundle (dimensions, measures, fact tables)."""
+    return apply_config(_parse_spec(spec), publish=frappe.utils.cint(publish))
+
+
+@frappe.whitelist()
+def diff_config_api(spec, status=None):
+    """Diff a config bundle against the live site."""
+    return diff_config(_parse_spec(spec), status=status)

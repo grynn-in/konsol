@@ -39,6 +39,13 @@ def test_config_service_exposes_list_functions():
     assert "apply_schema" in names
     assert "get_schema_status" in names
     assert "list_measures" in names
+    assert "list_fact_tables" in names
+    assert "get_fact_table" in names
+    assert "upsert_fact_table" in names
+    assert "publish_fact_table" in names
+    assert "export_config" in names
+    assert "apply_config" in names
+    assert "diff_config" in names
 
 
 def test_cli_api_module_exists():
@@ -58,6 +65,13 @@ def test_cli_api_whitelists_list_endpoints():
     assert "apply_schema_api" in content
     assert "get_schema_status_api" in content
     assert "list_measures_api" in content
+    assert "list_fact_tables_api" in content
+    assert "get_fact_table_api" in content
+    assert "upsert_fact_table_api" in content
+    assert "publish_fact_table_api" in content
+    assert "export_config_api" in content
+    assert "apply_config_api" in content
+    assert "diff_config_api" in content
     assert "from konsol.config_service import" in content
 
 
@@ -374,3 +388,183 @@ def test_get_schema_status_aggregates_registry_and_builds(config_service):
     assert status["registry"]["fact_tables"]["Published"] == 1
     assert status["pending_builds"][0]["name"] == "PBR-00001"
     assert status["recent_builds"][0]["name"] == "PBR-00000"
+
+
+def test_list_fact_tables_returns_serialized_rows(config_service):
+    module, fake_frappe = config_service
+    doc = MagicMock()
+    doc.name = "headcount"
+    doc.fact_name = "headcount"
+    doc.label = "Headcount"
+    doc.source_type = "Statistical"
+    doc.clickhouse_table = "epm_staging.fact_headcount"
+    doc.dbt_model = "fact_headcount"
+    doc.scenario_key = "statistical"
+    doc.has_scenario_id = 0
+    doc.grain = "One row per period"
+    doc.refresh_frequency = "Monthly"
+    doc.generates_source = 1
+    doc.status = "Published"
+    doc.fact_measures = [MagicMock(measure="period_headcount", required=1)]
+    doc.fact_dimensions = [MagicMock(dimension="dim_cost_center", required=0)]
+    doc.measures = "[]"
+    doc.dimensions = "[]"
+    fake_frappe.get_all.return_value = [{"name": "headcount"}]
+    fake_frappe.get_doc.return_value = doc
+
+    rows = module.list_fact_tables()
+
+    assert rows[0]["fact_name"] == "headcount"
+    assert rows[0]["generates_source"] is True
+    assert rows[0]["measures"] == [{"measure": "period_headcount", "required": True}]
+
+
+def test_upsert_fact_table_creates_draft(config_service):
+    module, fake_frappe = config_service
+    doc = MagicMock()
+    doc.fact_name = "headcount"
+    doc.name = "headcount"
+    doc.label = "Headcount"
+    doc.source_type = "Statistical"
+    doc.clickhouse_table = "epm_staging.fact_headcount"
+    doc.dbt_model = "fact_headcount"
+    doc.scenario_key = "statistical"
+    doc.has_scenario_id = 0
+    doc.grain = None
+    doc.refresh_frequency = "Monthly"
+    doc.generates_source = 1
+    doc.extra_columns = None
+    doc.reroute_measure = None
+    doc.reroute_table = None
+    doc.reroute_column = None
+    doc.status = "Draft"
+    doc.fact_measures = []
+    doc.fact_dimensions = []
+    doc.measures = "[]"
+    doc.dimensions = "[]"
+    fake_frappe.db.exists.return_value = False
+    fake_frappe.new_doc.return_value = doc
+
+    result = module.upsert_fact_table(
+        {
+            "fact_name": "headcount",
+            "label": "Headcount",
+            "source_type": "Statistical",
+            "clickhouse_table": "epm_staging.fact_headcount",
+            "scenario_key": "statistical",
+            "measures": ["period_headcount"],
+            "dimensions": ["dim_cost_center"],
+        }
+    )
+
+    fake_frappe.new_doc.assert_called_once_with("Fact Table")
+    doc.save.assert_called_once()
+    doc.publish.assert_not_called()
+    assert result["created"] is True
+    assert result["published"] is False
+
+
+def test_publish_fact_table_delegates_to_doc(config_service):
+    module, fake_frappe = config_service
+    doc = MagicMock()
+    doc.name = "headcount"
+    doc.fact_name = "headcount"
+    doc.label = "Headcount"
+    doc.source_type = "Statistical"
+    doc.clickhouse_table = "epm_staging.fact_headcount"
+    doc.dbt_model = "fact_headcount"
+    doc.scenario_key = "statistical"
+    doc.has_scenario_id = 0
+    doc.grain = None
+    doc.refresh_frequency = "Monthly"
+    doc.generates_source = 1
+    doc.extra_columns = None
+    doc.reroute_measure = None
+    doc.reroute_table = None
+    doc.reroute_column = None
+    doc.status = "Published"
+    doc.fact_measures = []
+    doc.fact_dimensions = []
+    doc.measures = "[]"
+    doc.dimensions = "[]"
+    fake_frappe.db.exists.return_value = True
+    fake_frappe.get_doc.return_value = doc
+
+    result = module.publish_fact_table("headcount")
+
+    doc.publish.assert_called_once()
+    assert result["published"] is True
+
+
+def test_export_config_returns_bundle(config_service, monkeypatch):
+    module, _fake_frappe = config_service
+    monkeypatch.setattr(module, "list_dimensions", lambda filters=None: [{"dimension_name": "dim_project"}])
+    monkeypatch.setattr(module, "list_measures", lambda filters=None: [{"measure_name": "period_headcount"}])
+    monkeypatch.setattr(module, "list_fact_tables", lambda filters=None: [{"fact_name": "headcount"}])
+
+    bundle = module.export_config()
+
+    assert bundle["api_version"] == "konsol/v1"
+    assert bundle["dimensions"][0]["dimension_name"] == "dim_project"
+    assert bundle["measures"][0]["measure_name"] == "period_headcount"
+    assert bundle["fact_tables"][0]["fact_name"] == "headcount"
+
+
+def test_diff_config_reports_changes(config_service, monkeypatch):
+    module, _fake_frappe = config_service
+    monkeypatch.setattr(
+        module,
+        "export_config",
+        lambda status=None: {
+            "api_version": "konsol/v1",
+            "dimensions": [{"dimension_name": "dim_project", "label": "Project"}],
+            "measures": [],
+            "fact_tables": [],
+        },
+    )
+
+    diff = module.diff_config(
+        {
+            "api_version": "konsol/v1",
+            "dimensions": [{"dimension_name": "dim_project", "label": "Projects"}],
+            "measures": [{"measure_name": "period_headcount", "label": "Headcount"}],
+            "fact_tables": [],
+        }
+    )
+
+    assert diff["dimensions"]["modified"][0]["key"] == "dim_project"
+    assert diff["measures"]["added"][0]["key"] == "period_headcount"
+
+
+def test_apply_config_upserts_entities(config_service, monkeypatch):
+    module, _fake_frappe = config_service
+    calls = {"dimensions": 0, "measures": 0, "fact_tables": 0}
+
+    def fake_upsert_dimension(spec, publish=False):
+        calls["dimensions"] += 1
+        return {"created": True, "published": publish, "dimension": spec}
+
+    def fake_upsert_measure(spec, publish=False):
+        calls["measures"] += 1
+        return {"created": True, "published": publish, "measure": spec}
+
+    def fake_upsert_fact_table(spec, publish=False):
+        calls["fact_tables"] += 1
+        return {"created": True, "published": publish, "fact_table": spec}
+
+    monkeypatch.setattr(module, "upsert_dimension", fake_upsert_dimension)
+    monkeypatch.setattr(module, "upsert_measure", fake_upsert_measure)
+    monkeypatch.setattr(module, "upsert_fact_table", fake_upsert_fact_table)
+
+    summary = module.apply_config(
+        {
+            "api_version": "konsol/v1",
+            "dimensions": [{"dimension_name": "dim_project"}],
+            "measures": [{"measure_name": "period_headcount"}],
+            "fact_tables": [{"fact_name": "headcount"}],
+        },
+        publish=True,
+    )
+
+    assert calls == {"dimensions": 1, "measures": 1, "fact_tables": 1}
+    assert summary["dimensions"][0]["published"] is True
