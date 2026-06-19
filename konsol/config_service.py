@@ -7,6 +7,13 @@ import json
 
 import frappe
 
+from konsol.connector_credentials import (
+    CONNECTOR_EXPORTABLE_FIELDS,
+    CONNECTOR_SECRET_FIELDS,
+    connector_export_row,
+    credentials_configured,
+)
+
 _DIMENSION_FIELDS = [
     "name",
     "dimension_name",
@@ -577,9 +584,17 @@ _CONNECTOR_LIST_FIELDS = [
     "connector_name",
     "erp_type",
     "enabled",
+    "airbyte_source_id",
     "airbyte_connection_id",
     "airbyte_source",
     "dbt_adapter_prefix",
+    "tenant_id",
+    "environment_url",
+    "host_url",
+    "writeback_enabled",
+    "writeback_credentials_separate",
+    "extract_page_size",
+    "extract_cross_company",
     "last_sync_at",
     "last_sync_status",
     "last_sync_rows",
@@ -590,11 +605,12 @@ _CONNECTOR_WRITABLE_FIELDS = [
     "connector_name",
     "erp_type",
     "enabled",
-    "airbyte_connection_id",
     "sync_frequency_minutes",
+    *sorted(CONNECTOR_EXPORTABLE_FIELDS),
+    *sorted(CONNECTOR_SECRET_FIELDS),
 ]
 
-_CONNECTOR_EXPORT_FIELDS = list(_CONNECTOR_WRITABLE_FIELDS)
+_CONNECTOR_EXPORT_FIELDS = sorted(CONNECTOR_EXPORTABLE_FIELDS)
 
 _ERP_TYPES = {"d365_fo", "d365_bc", "sap_s4", "sap_ecc", "sap_b1", "erpnext"}
 
@@ -602,6 +618,11 @@ _ERP_TYPES = {"d365_fo", "d365_bc", "sap_s4", "sap_ecc", "sap_b1", "erpnext"}
 def _connector_row(doc, *, include_children=False):
     data = {field: getattr(doc, field, None) for field in _CONNECTOR_LIST_FIELDS}
     data["enabled"] = bool(data.get("enabled"))
+    data["writeback_enabled"] = bool(data.get("writeback_enabled"))
+    data["writeback_credentials_separate"] = bool(data.get("writeback_credentials_separate"))
+    data["extract_cross_company"] = bool(int(data.get("extract_cross_company") or 0))
+    data["extract_credentials_configured"] = credentials_configured(doc, "extract")
+    data["writeback_credentials_configured"] = credentials_configured(doc, "writeback")
     if include_children:
         data["legal_entities"] = [
             {"entity_id": row.entity_id, "entity_name": row.entity_name}
@@ -805,19 +826,29 @@ def _export_connector_rows():
 
     exported = []
     for summary in list_connectors():
-        full = get_connector(summary["name"])
-        row = {field: full[field] for field in _CONNECTOR_EXPORT_FIELDS}
-        row["enabled"] = bool(row.get("enabled"))
-        if full.get("legal_entities"):
+        doc = frappe.get_doc("Connector", summary["name"])
+        row = connector_export_row(doc)
+        row["connector_name"] = doc.connector_name
+        row["erp_type"] = doc.erp_type
+        row["enabled"] = bool(doc.enabled)
+        if doc.sync_frequency_minutes is not None:
+            row["sync_frequency_minutes"] = doc.sync_frequency_minutes
+        if doc.legal_entities:
             row["legal_entities"] = [
                 {
-                    "entity_id": entity["entity_id"],
-                    "entity_name": entity.get("entity_name"),
+                    "entity_id": entity.entity_id,
+                    "entity_name": entity.entity_name,
                 }
-                for entity in full["legal_entities"]
+                for entity in doc.legal_entities
             ]
-        if full.get("dimension_mappings"):
-            row["dimension_mappings"] = list(full["dimension_mappings"])
+        if doc.dimension_mappings:
+            row["dimension_mappings"] = [
+                {
+                    "dimension": mapping.dimension,
+                    "source_column": mapping.source_column,
+                }
+                for mapping in doc.dimension_mappings
+            ]
         exported.append(row)
     return exported
 

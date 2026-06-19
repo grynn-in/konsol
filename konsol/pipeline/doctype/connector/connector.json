@@ -39,12 +39,6 @@
       "fieldtype": "Column Break"
     },
     {
-      "fieldname": "airbyte_connection_id",
-      "fieldtype": "Data",
-      "label": "Airbyte Connection ID",
-      "description": "Per-connector Airbyte connection (overrides EPM Settings)"
-    },
-    {
       "fieldname": "airbyte_source",
       "fieldtype": "Data",
       "label": "Airbyte Source",
@@ -57,6 +51,155 @@
       "label": "dbt Adapter Prefix",
       "read_only": 1,
       "description": "Derived from erp_type, e.g. stg_d365_fo"
+    },
+    {
+      "fieldname": "extract_section",
+      "fieldtype": "Section Break",
+      "label": "Extract Credentials"
+    },
+    {
+      "fieldname": "tenant_id",
+      "fieldtype": "Data",
+      "label": "Azure AD Tenant ID",
+      "depends_on": "eval:['d365_fo','d365_bc'].includes(doc.erp_type)",
+      "description": "Required for D365 extract and write-back"
+    },
+    {
+      "fieldname": "environment_url",
+      "fieldtype": "Data",
+      "label": "D365 Environment URL",
+      "depends_on": "eval:['d365_fo','d365_bc'].includes(doc.erp_type)",
+      "description": "e.g. https://yourorg.operations.dynamics.com"
+    },
+    {
+      "fieldname": "host_url",
+      "fieldtype": "Data",
+      "label": "ERPNext Host URL",
+      "depends_on": "eval:doc.erp_type=='erpnext'",
+      "description": "e.g. https://erp.example.com"
+    },
+    {
+      "fieldname": "extract_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "extract_client_id",
+      "fieldtype": "Data",
+      "label": "Extract Client ID",
+      "depends_on": "eval:['d365_fo','d365_bc'].includes(doc.erp_type)"
+    },
+    {
+      "fieldname": "extract_client_secret",
+      "fieldtype": "Password",
+      "label": "Extract Client Secret",
+      "depends_on": "eval:['d365_fo','d365_bc'].includes(doc.erp_type)"
+    },
+    {
+      "fieldname": "extract_api_key",
+      "fieldtype": "Data",
+      "label": "Extract API Key",
+      "depends_on": "eval:doc.erp_type=='erpnext'"
+    },
+    {
+      "fieldname": "extract_api_secret",
+      "fieldtype": "Password",
+      "label": "Extract API Secret",
+      "depends_on": "eval:doc.erp_type=='erpnext'"
+    },
+    {
+      "fieldname": "extract_options_section",
+      "fieldtype": "Section Break",
+      "label": "Extract Options"
+    },
+    {
+      "fieldname": "extract_page_size",
+      "fieldtype": "Int",
+      "label": "Extract Page Size",
+      "default": "100",
+      "description": "OData / REST page size for Airbyte source sync"
+    },
+    {
+      "fieldname": "extract_cross_company",
+      "fieldtype": "Check",
+      "label": "Extract Cross-Company",
+      "default": "1",
+      "depends_on": "eval:['d365_fo','d365_bc'].includes(doc.erp_type)",
+      "description": "When enabled, D365 extract reads across legal entities"
+    },
+    {
+      "fieldname": "writeback_section",
+      "fieldtype": "Section Break",
+      "label": "Write-Back Credentials"
+    },
+    {
+      "fieldname": "writeback_enabled",
+      "fieldtype": "Check",
+      "label": "Enable Write-Back",
+      "default": "0",
+      "description": "Allow pushing approved budgets back to this ERP connector"
+    },
+    {
+      "fieldname": "writeback_credentials_separate",
+      "fieldtype": "Check",
+      "label": "Separate Write-Back Credentials",
+      "default": "0",
+      "depends_on": "writeback_enabled",
+      "description": "When unchecked, write-back reuses extract credentials (dev-friendly default)"
+    },
+    {
+      "fieldname": "writeback_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "writeback_client_id",
+      "fieldtype": "Data",
+      "label": "Write-Back Client ID",
+      "depends_on": "eval:doc.writeback_enabled && ['d365_fo','d365_bc'].includes(doc.erp_type) && doc.writeback_credentials_separate"
+    },
+    {
+      "fieldname": "writeback_client_secret",
+      "fieldtype": "Password",
+      "label": "Write-Back Client Secret",
+      "depends_on": "eval:doc.writeback_enabled && ['d365_fo','d365_bc'].includes(doc.erp_type) && doc.writeback_credentials_separate"
+    },
+    {
+      "fieldname": "writeback_api_key",
+      "fieldtype": "Data",
+      "label": "Write-Back API Key",
+      "depends_on": "eval:doc.writeback_enabled && doc.erp_type=='erpnext' && doc.writeback_credentials_separate"
+    },
+    {
+      "fieldname": "writeback_api_secret",
+      "fieldtype": "Password",
+      "label": "Write-Back API Secret",
+      "depends_on": "eval:doc.writeback_enabled && doc.erp_type=='erpnext' && doc.writeback_credentials_separate"
+    },
+    {
+      "fieldname": "writeback_fiscal_year_start_month",
+      "fieldtype": "Int",
+      "label": "Fiscal Year Start Month",
+      "default": "1",
+      "depends_on": "eval:doc.writeback_enabled && doc.erp_type=='d365_fo'",
+      "description": "Month when the D365 fiscal year begins (1=Jan, 4=Apr, 7=Jul, 10=Oct)"
+    },
+    {
+      "fieldname": "airbyte_section",
+      "fieldtype": "Section Break",
+      "label": "Airbyte Provisioning"
+    },
+    {
+      "fieldname": "airbyte_source_id",
+      "fieldtype": "Data",
+      "label": "Airbyte Source ID",
+      "read_only": 1,
+      "description": "Set by Test & Provision Airbyte after a successful provision"
+    },
+    {
+      "fieldname": "airbyte_connection_id",
+      "fieldtype": "Data",
+      "label": "Airbyte Connection ID",
+      "read_only": 1,
+      "description": "Set by Test & Provision Airbyte; links this connector to the ClickHouse destination"
     },
     {
       "fieldname": "entities_section",

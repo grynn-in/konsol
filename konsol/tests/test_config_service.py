@@ -712,6 +712,55 @@ def test_apply_config_prune_removes_only_on_site(config_service, monkeypatch):
     assert summary["pruned"]["dimensions"] == []
 
 
+def test_config_service_imports_connector_credential_helpers():
+    content = _read("config_service.py")
+    assert "CONNECTOR_SECRET_FIELDS" in content
+    assert "CONNECTOR_EXPORTABLE_FIELDS" in content
+    assert "connector_export_row" in content
+
+
+def test_export_connector_rows_excludes_secrets(config_service, monkeypatch):
+    module, fake_frappe = config_service
+    fake_frappe.db.table_exists.return_value = True
+
+    doc = MagicMock()
+    doc.name = "CONN-00001"
+    doc.connector_name = "D365 F&O Production"
+    doc.erp_type = "d365_fo"
+    doc.enabled = 1
+    doc.sync_frequency_minutes = 1440
+    doc.tenant_id = "tenant-1"
+    doc.environment_url = "https://example.operations.dynamics.com"
+    doc.host_url = ""
+    doc.extract_client_id = "extract-id"
+    doc.extract_api_key = ""
+    doc.extract_page_size = 100
+    doc.extract_cross_company = 1
+    doc.writeback_enabled = 1
+    doc.writeback_credentials_separate = 0
+    doc.writeback_client_id = ""
+    doc.writeback_api_key = ""
+    doc.writeback_fiscal_year_start_month = 4
+    doc.legal_entities = []
+    doc.dimension_mappings = []
+    doc.get_password = MagicMock(
+        side_effect=lambda field, raise_exception=False: {
+            "extract_client_secret": "extract-secret",
+            "writeback_client_secret": "write-secret",
+        }.get(field, "")
+    )
+
+    fake_frappe.get_all.return_value = [{"name": "CONN-00001"}]
+    fake_frappe.get_doc.return_value = doc
+
+    rows = module._export_connector_rows()
+
+    assert rows[0]["connector_name"] == "D365 F&O Production"
+    assert rows[0]["extract_credentials_configured"] is True
+    assert "extract_client_secret" not in rows[0]
+    assert "writeback_client_secret" not in rows[0]
+
+
 def test_list_connectors_returns_rows(config_service):
     module, fake_frappe = config_service
     fake_frappe.db.table_exists.return_value = True
