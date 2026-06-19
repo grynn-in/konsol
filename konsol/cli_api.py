@@ -9,15 +9,20 @@ from konsol.config_service import (
     diff_config,
     export_config,
     get_dimension,
+    get_connector,
     get_fact_table,
     get_measure,
     get_schema_status,
+    list_connectors,
     list_dimensions,
+    list_erp_sources,
     list_fact_tables,
     list_measures,
     publish_dimension,
     publish_fact_table,
     publish_measure,
+    unpublish_fact_table,
+    upsert_connector,
     upsert_dimension,
     upsert_fact_table,
     upsert_measure,
@@ -118,6 +123,39 @@ def upsert_fact_table_api(spec, publish=False):
 def publish_fact_table_api(name):
     """Publish a Fact Table doc and request a governed rebuild."""
     return publish_fact_table(name)
+
+
+@frappe.whitelist()
+def unpublish_fact_table_api(name):
+    """Unpublish a Fact Table doc and request a governed rebuild."""
+    return unpublish_fact_table(name)
+
+
+@frappe.whitelist()
+def list_connectors_api(enabled=None):
+    """List Connector docs. Optional enabled: 0 or 1."""
+    filters = None
+    if enabled is not None and str(enabled) != "":
+        filters = {"enabled": frappe.utils.cint(enabled)}
+    return list_connectors(filters)
+
+
+@frappe.whitelist()
+def get_connector_api(name):
+    """Get a single Connector doc by name (CONN-.#####)."""
+    return get_connector(name)
+
+
+@frappe.whitelist()
+def upsert_connector_api(spec):
+    """Create or update a Connector doc. Pass spec as a JSON object."""
+    return upsert_connector(_parse_spec(spec))
+
+
+@frappe.whitelist()
+def list_erp_sources_api():
+    """Return enabled ERP source keys (dbt erp_sources)."""
+    return list_erp_sources()
 
 
 @frappe.whitelist()

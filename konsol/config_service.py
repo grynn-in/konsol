@@ -527,6 +527,185 @@ def publish_fact_table(name):
     }
 
 
+def unpublish_fact_table(name):
+    """Unpublish a Fact Table: mark Inactive and request a governed rebuild."""
+    if not frappe.db.exists("Fact Table", name):
+        frappe.throw(f"Fact Table '{name}' not found", frappe.DoesNotExistError)
+
+    doc = frappe.get_doc("Fact Table", name)
+    doc.unpublish()
+    doc.reload()
+
+    return {
+        "unpublished": True,
+        "fact_table": _serialize_fact_row(doc, include_detail=True),
+    }
+
+
+_CONNECTOR_LIST_FIELDS = [
+    "name",
+    "connector_name",
+    "erp_type",
+    "enabled",
+    "airbyte_connection_id",
+    "airbyte_source",
+    "dbt_adapter_prefix",
+    "last_sync_at",
+    "last_sync_status",
+    "last_sync_rows",
+    "sync_frequency_minutes",
+]
+
+_CONNECTOR_WRITABLE_FIELDS = [
+    "connector_name",
+    "erp_type",
+    "enabled",
+    "airbyte_connection_id",
+    "sync_frequency_minutes",
+]
+
+_ERP_TYPES = {"d365_fo", "d365_bc", "sap_s4", "sap_ecc", "sap_b1", "erpnext"}
+
+
+def _connector_row(doc, *, include_children=False):
+    data = {field: getattr(doc, field, None) for field in _CONNECTOR_LIST_FIELDS}
+    data["enabled"] = bool(data.get("enabled"))
+    if include_children:
+        data["legal_entities"] = [
+            {"entity_id": row.entity_id, "entity_name": row.entity_name}
+            for row in (doc.legal_entities or [])
+        ]
+        data["dimension_mappings"] = [
+            {"dimension": row.dimension, "source_column": row.source_column}
+            for row in (doc.dimension_mappings or [])
+        ]
+    return data
+
+
+def _validate_connector_spec(spec, *, require_core_fields):
+    missing = [
+        field
+        for field in ("connector_name", "erp_type")
+        if require_core_fields and not spec.get(field)
+    ]
+    if missing:
+        frappe.throw(
+            f"Missing required connector fields: {', '.join(missing)}",
+            frappe.MandatoryError,
+        )
+
+    erp_type = spec.get("erp_type")
+    if erp_type and erp_type not in _ERP_TYPES:
+        frappe.throw(
+            f"Invalid erp_type '{erp_type}'. Must be one of: {', '.join(sorted(_ERP_TYPES))}",
+            frappe.ValidationError,
+        )
+
+
+def _resolve_connector_name(spec):
+    if spec.get("name") and frappe.db.exists("Connector", spec["name"]):
+        return spec["name"]
+    connector_name = spec.get("connector_name")
+    if connector_name:
+        matches = frappe.get_all(
+            "Connector",
+            filters={"connector_name": connector_name},
+            pluck="name",
+            limit=1,
+        )
+        if matches:
+            return matches[0]
+    return None
+
+
+def _set_connector_child_rows(doc, spec):
+    if "legal_entities" in spec:
+        doc.legal_entities = []
+        for item in spec.get("legal_entities") or []:
+            if isinstance(item, str):
+                doc.append("legal_entities", {"entity_id": item})
+            else:
+                doc.append(
+                    "legal_entities",
+                    {
+                        "entity_id": item["entity_id"],
+                        "entity_name": item.get("entity_name"),
+                    },
+                )
+
+    if "dimension_mappings" in spec:
+        doc.dimension_mappings = []
+        for item in spec.get("dimension_mappings") or []:
+            doc.append(
+                "dimension_mappings",
+                {
+                    "dimension": item["dimension"],
+                    "source_column": item["source_column"],
+                },
+            )
+
+
+def list_connectors(filters=None):
+    """Return all Connector docs matching optional filters."""
+    if not frappe.db.table_exists("Connector"):
+        return []
+    rows = frappe.get_all(
+        "Connector",
+        filters=_normalize_filters(filters),
+        fields=_CONNECTOR_LIST_FIELDS,
+        order_by="connector_name asc",
+        limit_page_length=0,
+    )
+    return [_connector_row(frappe.get_doc("Connector", row["name"])) for row in rows]
+
+
+def get_connector(name):
+    """Return a single Connector doc by name (CONN-.#####)."""
+    if not frappe.db.exists("Connector", name):
+        frappe.throw(f"Connector '{name}' not found", frappe.DoesNotExistError)
+    return _connector_row(frappe.get_doc("Connector", name), include_children=True)
+
+
+def upsert_connector(spec):
+    """Create or update a Connector doc. Regenerates erp_sources on save."""
+    if not frappe.db.table_exists("Connector"):
+        frappe.throw("Connector doctype is not installed", frappe.DoesNotExistError)
+
+    spec = dict(spec or {})
+    existing = _resolve_connector_name(spec)
+    created = existing is None
+    _validate_connector_spec(spec, require_core_fields=created)
+
+    if created:
+        doc = frappe.new_doc("Connector")
+        for field in _CONNECTOR_WRITABLE_FIELDS:
+            if field in spec:
+                setattr(doc, field, spec[field])
+        _set_connector_child_rows(doc, spec)
+    else:
+        doc = frappe.get_doc("Connector", existing)
+        for field in _CONNECTOR_WRITABLE_FIELDS:
+            if field in spec:
+                setattr(doc, field, spec[field])
+        _set_connector_child_rows(doc, spec)
+
+    doc.save()
+    frappe.db.commit()
+    doc.reload()
+
+    return {
+        "created": created,
+        "connector": _connector_row(doc, include_children=True),
+    }
+
+
+def list_erp_sources():
+    """Return enabled ERP source keys that drive dbt erp_sources."""
+    from konsol.dbt_config import _build_erp_sources_vars
+
+    return {"erp_sources": _build_erp_sources_vars()}
+
+
 def _config_entity_key(doctype, row):
     if doctype == "Dimension":
         return row.get("dimension_name")

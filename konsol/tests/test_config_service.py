@@ -46,6 +46,10 @@ def test_config_service_exposes_list_functions():
     assert "export_config" in names
     assert "apply_config" in names
     assert "diff_config" in names
+    assert "unpublish_fact_table" in names
+    assert "list_connectors" in names
+    assert "upsert_connector" in names
+    assert "list_erp_sources" in names
 
 
 def test_cli_api_module_exists():
@@ -72,6 +76,9 @@ def test_cli_api_whitelists_list_endpoints():
     assert "export_config_api" in content
     assert "apply_config_api" in content
     assert "diff_config_api" in content
+    assert "unpublish_fact_table_api" in content
+    assert "list_connectors_api" in content
+    assert "list_erp_sources_api" in content
     assert "from konsol.config_service import" in content
 
 
@@ -568,3 +575,59 @@ def test_apply_config_upserts_entities(config_service, monkeypatch):
 
     assert calls == {"dimensions": 1, "measures": 1, "fact_tables": 1}
     assert summary["dimensions"][0]["published"] is True
+
+
+def test_unpublish_fact_table_delegates_to_doc(config_service):
+    module, fake_frappe = config_service
+    doc = MagicMock()
+    doc.name = "headcount"
+    doc.fact_name = "headcount"
+    doc.label = "Headcount"
+    doc.source_type = "Statistical"
+    doc.clickhouse_table = "epm_staging.fact_headcount"
+    doc.dbt_model = "fact_headcount"
+    doc.scenario_key = "statistical"
+    doc.has_scenario_id = 0
+    doc.grain = None
+    doc.refresh_frequency = "Monthly"
+    doc.generates_source = 1
+    doc.extra_columns = None
+    doc.reroute_measure = None
+    doc.reroute_table = None
+    doc.reroute_column = None
+    doc.status = "Inactive"
+    doc.fact_measures = []
+    doc.fact_dimensions = []
+    doc.measures = "[]"
+    doc.dimensions = "[]"
+    fake_frappe.db.exists.return_value = True
+    fake_frappe.get_doc.return_value = doc
+
+    result = module.unpublish_fact_table("headcount")
+
+    doc.unpublish.assert_called_once()
+    assert result["unpublished"] is True
+
+
+def test_list_connectors_returns_rows(config_service):
+    module, fake_frappe = config_service
+    fake_frappe.db.table_exists.return_value = True
+    fake_frappe.get_all.return_value = [{"name": "CONN-00001"}]
+    doc = MagicMock()
+    doc.name = "CONN-00001"
+    doc.connector_name = "ERPNext Demo"
+    doc.erp_type = "erpnext"
+    doc.enabled = 1
+    doc.airbyte_connection_id = "abc"
+    doc.airbyte_source = "Airbyte ERPNext (Frappe REST)"
+    doc.dbt_adapter_prefix = "stg_erpnext"
+    doc.last_sync_at = None
+    doc.last_sync_status = None
+    doc.last_sync_rows = 0
+    doc.sync_frequency_minutes = 1440
+    fake_frappe.get_doc.return_value = doc
+
+    rows = module.list_connectors()
+
+    assert rows[0]["connector_name"] == "ERPNext Demo"
+    assert rows[0]["enabled"] is True
