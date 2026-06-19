@@ -106,7 +106,7 @@ def test_set_status_noop_when_field_absent():
 def test_push_happy_path_records_pushed(monkeypatch):
     doc = _FakeDoc(periods=[types.SimpleNamespace(fiscal_period=1, amount=100.0)])
     _install_fake_frappe(monkeypatch, doc)
-    monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
+    monkeypatch.setattr(wb, "get_config", lambda entity_id=None: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
     pushed = {}
@@ -124,7 +124,7 @@ def test_push_happy_path_records_pushed(monkeypatch):
 def test_push_skips_when_already_pushed(monkeypatch):
     doc = _FakeDoc(status="Pushed")
     _install_fake_frappe(monkeypatch, doc)
-    monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
+    monkeypatch.setattr(wb, "get_config", lambda entity_id=None: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     called = {"replace": False}
     monkeypatch.setattr(wb, "push_replace_batch", lambda *a: called.update(replace=True))
@@ -135,7 +135,7 @@ def test_push_skips_when_already_pushed(monkeypatch):
 def test_push_force_repushes_when_already_pushed(monkeypatch):
     doc = _FakeDoc(status="Pushed")
     _install_fake_frappe(monkeypatch, doc)
-    monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
+    monkeypatch.setattr(wb, "get_config", lambda entity_id=None: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
     monkeypatch.setattr(wb, "push_replace_batch", lambda *a: None)
@@ -148,7 +148,7 @@ def test_push_error_path_records_failed_and_reraises(monkeypatch):
     logged = {}
     fr = _install_fake_frappe(monkeypatch, doc)
     fr.log_error = lambda **kw: logged.update(kw)
-    monkeypatch.setattr(wb, "get_config", lambda: {"enabled": True})
+    monkeypatch.setattr(wb, "get_config", lambda entity_id=None: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
 
     resp = requests.models.Response()
@@ -165,3 +165,22 @@ def test_push_error_path_records_failed_and_reraises(monkeypatch):
     assert "HTTP 400" in doc._vals["d365_writeback_error"]
     # server-side log captured the D365 response body for operability
     assert "period closed" in logged["message"]
+
+
+def test_push_resolves_config_by_entity(monkeypatch):
+    doc = _FakeDoc(data_area_id="USMF")
+    _install_fake_frappe(monkeypatch, doc)
+    seen = {}
+
+    def fake_get_config(entity_id=None):
+        seen["entity_id"] = entity_id
+        return {"enabled": True}
+
+    monkeypatch.setattr(wb, "get_config", fake_get_config)
+    monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
+    monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
+    monkeypatch.setattr(wb, "push_replace_batch", lambda *a: None)
+
+    wb.push_budget_input("BUD-0001")
+
+    assert seen["entity_id"] == "USMF"

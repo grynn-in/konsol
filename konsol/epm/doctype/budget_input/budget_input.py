@@ -138,7 +138,7 @@ class BudgetInput(Document):
         """
         try:
             from konsol.d365_writeback import enqueue_push_budget_input, get_config
-            cfg = get_config()
+            cfg = get_config(entity_id=self.data_area_id)
         except Exception:
             return
         if not cfg.get("enabled"):

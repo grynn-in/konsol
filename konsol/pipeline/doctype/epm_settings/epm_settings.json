@@ -129,7 +129,7 @@
     {
       "fieldname": "d365_writeback_section",
       "fieldtype": "Section Break",
-      "label": "D365 F&O Budget Write-Back"
+      "label": "D365 F&O Budget Write-Back (Legacy)"
     },
     {
       "fieldname": "enable_d365_budget_writeback",

@@ -65,6 +65,19 @@ def test_epm_settings_password_fields():
             )
 
 
+def test_epm_settings_d365_section_marked_legacy():
+    path = os.path.join(
+        APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json"
+    )
+    with open(path) as f:
+        doc = json.load(f)
+
+    section = next(
+        f for f in doc["fields"] if f["fieldname"] == "d365_writeback_section"
+    )
+    assert "Legacy" in section["label"]
+
+
 def test_epm_settings_python_exists():
     """EPM Settings Python file must exist."""
     path = os.path.join(

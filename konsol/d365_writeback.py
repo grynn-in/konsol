@@ -167,19 +167,11 @@ def get_fiscal_calendar(cfg=None):
 # Config + auth
 # ---------------------------------------------------------------------------
 
-def get_config():
-    """Read D365 write-back connection settings from EPM Settings."""
-    import frappe
+def get_config(entity_id=None):
+    """Resolve D365 write-back settings from Connector or legacy EPM Settings."""
+    from konsol.writeback_config import resolve_d365_writeback_config
 
-    s = frappe.get_single("EPM Settings")
-    return {
-        "enabled": bool(getattr(s, "enable_d365_budget_writeback", 0)),
-        "resource_url": (getattr(s, "d365_resource_url", "") or "").rstrip("/"),
-        "tenant_id": getattr(s, "d365_tenant_id", "") or "",
-        "client_id": getattr(s, "d365_client_id", "") or "",
-        "client_secret": s.get_password("d365_client_secret", raise_exception=False) or "",
-        "fiscal_year_start_month": int(getattr(s, "d365_fiscal_year_start_month", 1) or 1),
-    }
+    return resolve_d365_writeback_config(entity_id=entity_id)
 
 
 def require_enabled(cfg):
@@ -534,9 +526,9 @@ def push_budget_input(name, force=False):
     """
     import frappe
 
-    cfg = get_config()
-    require_enabled(cfg)
     doc = frappe.get_doc("Budget Input", name)
+    cfg = get_config(entity_id=doc.data_area_id)
+    require_enabled(cfg)
 
     if not force and doc.meta.has_field("d365_writeback_status") \
             and doc.get("d365_writeback_status") == "Pushed":
