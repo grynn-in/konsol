@@ -48,6 +48,63 @@ def test_connector_has_required_fields():
         assert f in fields, f"Missing field: {f}"
 
 
+def test_connector_has_extract_writeback_credential_fields():
+    fields = _field_names(_pipeline_doctype_json("connector"))
+    for f in [
+        "tenant_id",
+        "environment_url",
+        "host_url",
+        "extract_client_id",
+        "extract_client_secret",
+        "extract_api_key",
+        "extract_api_secret",
+        "extract_page_size",
+        "extract_cross_company",
+        "writeback_enabled",
+        "writeback_credentials_separate",
+        "writeback_client_id",
+        "writeback_client_secret",
+        "writeback_api_key",
+        "writeback_api_secret",
+        "writeback_fiscal_year_start_month",
+        "airbyte_source_id",
+    ]:
+        assert f in fields, f"Missing credential field: {f}"
+
+
+def test_connector_airbyte_ids_are_read_only():
+    meta = _pipeline_doctype_json("connector")
+    assert _field(meta, "airbyte_source_id")["read_only"] == 1
+    assert _field(meta, "airbyte_connection_id")["read_only"] == 1
+    assert "provision" in _field(meta, "airbyte_connection_id")["description"].lower()
+
+
+def test_connector_secret_fields_are_password_type():
+    meta = _pipeline_doctype_json("connector")
+    for fieldname in [
+        "extract_client_secret",
+        "extract_api_secret",
+        "writeback_client_secret",
+        "writeback_api_secret",
+    ]:
+        assert _field(meta, fieldname)["fieldtype"] == "Password"
+
+
+def test_connector_controller_delegates_credential_profiles():
+    src = _read(os.path.join(APP_DIR, "pipeline", "doctype", "connector", "connector.py"))
+    assert "from konsol.connector_credentials import build_extract_config, build_writeback_config" in src
+    assert "def get_extract_config" in src
+    assert "def get_writeback_config" in src
+    assert "def test_extract_connection" in src
+    assert "def test_writeback_connection" in src
+    assert "def provision_airbyte" in src
+
+
+def test_migration_patch_registered():
+    src = _read(os.path.join(APP_DIR, "patches.txt"))
+    assert "konsol.patches.migrate_d365_writeback_settings_to_connector" in src
+
+
 def test_erp_type_options_are_the_six_erp_sources():
     meta = _pipeline_doctype_json("connector")
     options = _field(meta, "erp_type")["options"].split("\n")
