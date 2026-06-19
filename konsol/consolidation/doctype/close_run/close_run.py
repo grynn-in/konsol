@@ -125,43 +125,54 @@ def _emit(name, **payload):
 # cleanly; a Red/Error run is blocked unless an EPM Admin supplies a reason
 # (audited as an Overridden sign-off). Queued/Running can't be signed off.
 OVERRIDE_ROLES = {"System Manager", "EPM Admin"}
+TERMINAL_STATUSES = ("Green", "Red", "Error")
+SIGNED_STATES = ("Signed Off", "Overridden")
 
 
 def latest_close_run(fiscal_year, fiscal_period):
-    """Most recent terminal (Green/Red/Error) Close Run for a period, or None."""
+    """Most recent terminal Close Run for a period, or None.
+
+    Ordered by completion time (not creation): a run is created Queued and only
+    later becomes terminal, so a re-run that finishes later is authoritative.
+    """
     rows = frappe.get_all(
         "Close Run",
         filters={"fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
-                 "status": ["in", ("Green", "Red", "Error")]},
+                 "status": ["in", TERMINAL_STATUSES]},
         fields=["name", "status", "signoff_status", "failed", "errored"],
-        order_by="creation desc",
+        order_by="completed_at desc, creation desc",
         limit=1,
     )
     return rows[0] if rows else None
 
 
 def _failed_assertion_names(close_run, limit=10):
-    rows = frappe.get_all(
+    return frappe.get_all(
         "Assertion Result",
         filters={"parent": close_run, "status": ["in", ("Fail", "Error")]},
         pluck="assertion",
         limit=limit,
     )
-    return rows
 
 
 @frappe.whitelist()
 def sign_off_close(close_run, override_reason=None):
     """Sign off a Close Run — the reconciliation gate.
 
-    Green  -> signed off (any user with write on Close Run).
+    Green  -> signed off (caller must have write on Close Run).
     Red/Error -> BLOCKED, unless the caller is an EPM Admin / System Manager AND
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
     """
+    # Enforce write access BEFORE we switch to ignore_permissions for the save
+    # (the sign-off fields are read_only, so the save itself must bypass perms).
+    frappe.has_permission("Close Run", "write", doc=close_run, throw=True)
+
+    # Row lock so two concurrent sign-offs can't both pass the idempotency check.
+    frappe.db.get_value("Close Run", close_run, "name", for_update=True)
     doc = frappe.get_doc("Close Run", close_run)
 
-    if doc.signoff_status in ("Signed Off", "Overridden"):
+    if doc.signoff_status in SIGNED_STATES:
         frappe.throw(
             frappe._("Close Run {0} is already {1}.").format(close_run, doc.signoff_status),
             title=frappe._("Already signed off"))
@@ -175,18 +186,18 @@ def sign_off_close(close_run, override_reason=None):
         new_state = "Signed Off"
         reason = None
     else:
-        # Red or Error — gated. Require override role + reason.
+        # Red or Error — gated override: require an override role FIRST, then a reason.
+        if not (OVERRIDE_ROLES & set(frappe.get_roles())):
+            frappe.throw(
+                frappe._("Only an EPM Admin may override a {0} close sign-off.").format(doc.status),
+                exc=frappe.PermissionError, title=frappe._("Sign-off blocked"))
         reason = (override_reason or "").strip()
         if not reason:
             failing = ", ".join(_failed_assertion_names(close_run)) or "(see results)"
             frappe.throw(
                 frappe._("Close is not reconciled (status {0}). Failing assertions: {1}. "
-                         "An EPM Admin may override with a reason.").format(doc.status, failing),
-                title=frappe._("Sign-off blocked"))
-        if not (OVERRIDE_ROLES & set(frappe.get_roles())):
-            frappe.throw(
-                frappe._("Only an EPM Admin may override a {0} close sign-off.").format(doc.status),
-                frappe.PermissionError)
+                         "Provide a reason to override.").format(doc.status, failing),
+                title=frappe._("Override reason required"))
         new_state = "Overridden"
 
     doc.signoff_status = new_state
@@ -199,10 +210,14 @@ def sign_off_close(close_run, override_reason=None):
 
 
 def assert_close_signed_off(fiscal_year, fiscal_period):
-    """Gate hook for the approval chain (§6.5): raise unless the period's latest
-    Close Run exists and is signed off (Green) or audited-overridden.
+    """Gate hook: raise unless the period's latest Close Run is signed off
+    (Green) or audited-overridden.
 
-    Call this before approving a close/budget for the period.
+    NOTE: this is the integration point for the budget/consolidation approval
+    chain (PRD §6.5). §6.5 is not built yet, so there is no caller in this PR —
+    wire `assert_close_signed_off(year, period)` into the approval transition
+    when §6.5 lands. The sign-off *action* itself is already gated by
+    sign_off_close() above.
     """
     run = latest_close_run(fiscal_year, fiscal_period)
     if not run:
@@ -210,7 +225,7 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
             frappe._("No completed Close Run for {0}-{1}. Run the close assertion suite before sign-off.")
             .format(fiscal_year, fiscal_period),
             title=frappe._("Close not asserted"))
-    if run.signoff_status not in ("Signed Off", "Overridden"):
+    if run.signoff_status not in SIGNED_STATES:
         failing = ", ".join(_failed_assertion_names(run.name)) or "(see results)"
         frappe.throw(
             frappe._("Close {0}-{1} is not signed off (run {2}, status {3}). Failing: {4}.")

@@ -53,9 +53,46 @@ def test_signoff_blocks_red_without_override():
     assert '("Queued", "Running")' in src or "Queued" in src
 
 
+def test_signoff_enforces_write_permission():
+    """Green path must not be open to any user — write perm is checked before save."""
+    src = _src(CR_PY)
+    seg = src[src.index("def sign_off_close"):src.index("def assert_close_signed_off")]
+    assert 'frappe.has_permission("Close Run", "write"' in seg
+    assert "throw=True" in seg
+
+
+def test_signoff_takes_row_lock():
+    """Concurrent sign-offs must serialise (no double sign-off race)."""
+    seg = _src(CR_PY)
+    seg = seg[seg.index("def sign_off_close"):seg.index("def assert_close_signed_off")]
+    assert "for_update=True" in seg
+
+
+def test_signoff_checks_role_before_reason():
+    """Override path checks the role first, then requires a reason."""
+    seg = _src(CR_PY)
+    seg = seg[seg.index("def sign_off_close"):seg.index("def assert_close_signed_off")]
+    assert seg.index("OVERRIDE_ROLES & set(frappe.get_roles())") < seg.index("if not reason")
+
+
+def test_latest_run_ordered_by_completion_not_creation():
+    """A re-run that finishes later must win, so order by completed_at."""
+    seg = _src(CR_PY)
+    seg = seg[seg.index("def latest_close_run"):seg.index("def _failed_assertion_names")]
+    assert "completed_at desc" in seg
+
+
+def test_status_state_constants_centralised():
+    src = _src(CR_PY)
+    assert "TERMINAL_STATUSES" in src and "SIGNED_STATES" in src
+    # report reuses them rather than re-hardcoding
+    rsrc = _src(os.path.join(RPT_DIR, "close_assertions.py"))
+    assert "TERMINAL_STATUSES" in rsrc and "SIGNED_STATES" in rsrc
+
+
 def test_signoff_is_idempotent_guard():
     src = _src(CR_PY)
-    assert 'doc.signoff_status in ("Signed Off", "Overridden")' in src
+    assert "doc.signoff_status in SIGNED_STATES" in src
 
 
 def test_assert_gate_hook_for_approval_chain():

@@ -18,7 +18,7 @@ frappe.query_reports["Close Assertions"] = {
 		value = default_formatter(value, row, column, data);
 		if (column.fieldname === "status" && data) {
 			const color = data.status === "Pass" ? "green" : "red";
-			value = `<span class="indicator ${color}">${data.status}</span>`;
+			value = `<span class="indicator ${color}">${__(data.status)}</span>`;
 		}
 		return value;
 	},

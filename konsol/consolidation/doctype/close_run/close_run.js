@@ -41,8 +41,9 @@ function add_signoff_buttons(frm) {
 		frm.add_custom_button(__("Sign Off"), () => {
 			frappe.confirm(__("Sign off this reconciled close?"), () => call_signoff(frm));
 		}).addClass("btn-primary");
-	} else {
-		// Red / Error — gated override (EPM Admin only, reason required)
+	} else if (frappe.user.has_role("EPM Admin") || frappe.user.has_role("System Manager")) {
+		// Red / Error — gated override (EPM Admin only, reason required). Only
+		// show the button to users the server would actually let override.
 		frm.add_custom_button(__("Override Sign-off"), () => {
 			frappe.prompt(
 				[{ fieldname: "reason", fieldtype: "Small Text", label: __("Override reason"), reqd: 1 }],
