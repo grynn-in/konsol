@@ -6,6 +6,7 @@ import frappe
 from konsol.config_service import (
     apply_config,
     apply_schema,
+    delete_connector,
     diff_config,
     export_config,
     get_dimension,
@@ -167,6 +168,12 @@ def upsert_connector_api(spec):
 
 
 @frappe.whitelist()
+def delete_connector_api(name):
+    """Delete a Connector doc by ID (CONN-...) or connector_name."""
+    return delete_connector(name)
+
+
+@frappe.whitelist()
 def list_erp_sources_api():
     """Return enabled ERP source keys (dbt erp_sources)."""
     return list_erp_sources()
@@ -179,9 +186,13 @@ def export_config_api(status=None):
 
 
 @frappe.whitelist()
-def apply_config_api(spec, publish=False):
+def apply_config_api(spec, publish=False, prune=False):
     """Apply a config bundle (dimensions, measures, fact tables, connectors)."""
-    return apply_config(_parse_spec(spec), publish=frappe.utils.cint(publish))
+    return apply_config(
+        _parse_spec(spec),
+        publish=frappe.utils.cint(publish),
+        prune=frappe.utils.cint(prune),
+    )
 
 
 @frappe.whitelist()

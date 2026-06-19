@@ -51,6 +51,7 @@ def test_config_service_exposes_list_functions():
     assert "unpublish_fact_table" in names
     assert "list_connectors" in names
     assert "upsert_connector" in names
+    assert "delete_connector" in names
     assert "list_erp_sources" in names
 
 
@@ -82,7 +83,9 @@ def test_cli_api_whitelists_list_endpoints():
     assert "diff_config_api" in content
     assert "unpublish_fact_table_api" in content
     assert "list_connectors_api" in content
+    assert "delete_connector_api" in content
     assert "list_erp_sources_api" in content
+    assert "prune=frappe.utils.cint(prune)" in content
     assert "from konsol.config_service import" in content
 
 
@@ -663,6 +666,50 @@ def test_unpublish_fact_table_delegates_to_doc(config_service):
 
     doc.unpublish.assert_called_once()
     assert result["unpublished"] is True
+
+
+def test_delete_connector_delegates_to_frappe(config_service):
+    module, fake_frappe = config_service
+    fake_frappe.db.table_exists.return_value = True
+    fake_frappe.db.exists.return_value = True
+    fake_frappe.db.get_value.return_value = "CLI Smoke Test"
+
+    result = module.delete_connector("CONN-00001")
+
+    fake_frappe.delete_doc.assert_called_once_with("Connector", "CONN-00001")
+    assert result["deleted"] is True
+    assert result["connector_name"] == "CLI Smoke Test"
+
+
+def test_apply_config_prune_removes_only_on_site(config_service, monkeypatch):
+    module, _fake_frappe = config_service
+    monkeypatch.setattr(module, "upsert_connector", lambda spec: {"created": False})
+    monkeypatch.setattr(
+        module,
+        "diff_config",
+        lambda spec, status=None: {
+            "connectors": {
+                "only_on_site": [{"key": "CLI Smoke Test", "live": {}}],
+                "added": [],
+                "modified": [],
+                "unchanged": [],
+            },
+            "dimensions": {"only_on_site": [], "added": [], "modified": [], "unchanged": []},
+            "measures": {"only_on_site": [], "added": [], "modified": [], "unchanged": []},
+            "fact_tables": {"only_on_site": [], "added": [], "modified": [], "unchanged": []},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "delete_connector",
+        lambda name: {"deleted": True, "name": "CONN-00001", "connector_name": name},
+    )
+
+    bundle = {"api_version": "konsol/v1", "connectors": []}
+    summary = module.apply_config(bundle, prune=True)
+
+    assert summary["pruned"]["connectors"][0]["connector_name"] == "CLI Smoke Test"
+    assert summary["pruned"]["dimensions"] == []
 
 
 def test_list_connectors_returns_rows(config_service):

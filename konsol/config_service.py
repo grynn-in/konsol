@@ -698,6 +698,37 @@ def get_connector(name):
     return _connector_row(frappe.get_doc("Connector", name), include_children=True)
 
 
+def _resolve_connector_docname(name):
+    if frappe.db.exists("Connector", name):
+        return name
+    matches = frappe.get_all(
+        "Connector",
+        filters={"connector_name": name},
+        pluck="name",
+        limit=1,
+    )
+    if matches:
+        return matches[0]
+    frappe.throw(f"Connector '{name}' not found", frappe.DoesNotExistError)
+
+
+def delete_connector(name):
+    """Delete a Connector by ID (CONN-...) or connector_name."""
+    if not frappe.db.table_exists("Connector"):
+        frappe.throw("Connector doctype is not installed", frappe.DoesNotExistError)
+
+    docname = _resolve_connector_docname(name)
+    connector_name = frappe.db.get_value("Connector", docname, "connector_name")
+    frappe.delete_doc("Connector", docname)
+    frappe.db.commit()
+
+    return {
+        "deleted": True,
+        "name": docname,
+        "connector_name": connector_name,
+    }
+
+
 def upsert_connector(spec):
     """Create or update a Connector doc. Regenerates erp_sources on save."""
     if not frappe.db.table_exists("Connector"):
@@ -858,7 +889,80 @@ def diff_config(spec, status=None):
     }
 
 
-def apply_config(spec, publish=False):
+def _remove_config_entity(doctype, key):
+    if doctype == "Connector":
+        return delete_connector(key)
+
+    if doctype == "Dimension":
+        if not frappe.db.exists("Dimension", key):
+            return None
+        doc = frappe.get_doc("Dimension", key)
+        if doc.status == "Published":
+            doc.unpublish()
+            action = "unpublished"
+        else:
+            frappe.delete_doc("Dimension", key)
+            action = "deleted"
+        frappe.db.commit()
+        return {"key": key, "action": action}
+
+    if doctype == "Measure":
+        if not frappe.db.exists("Measure", key):
+            return None
+        doc = frappe.get_doc("Measure", key)
+        if doc.status == "Published":
+            doc.unpublish()
+            action = "unpublished"
+        elif doc.status == "Inactive":
+            frappe.delete_doc("Measure", key)
+            action = "deleted"
+        else:
+            frappe.delete_doc("Measure", key)
+            action = "deleted"
+        frappe.db.commit()
+        return {"key": key, "action": action}
+
+    if doctype == "Fact Table":
+        if not frappe.db.exists("Fact Table", key):
+            return None
+        doc = frappe.get_doc("Fact Table", key)
+        if doc.status == "Published":
+            doc.unpublish()
+            action = "unpublished"
+        else:
+            frappe.delete_doc("Fact Table", key)
+            action = "deleted"
+        frappe.db.commit()
+        return {"key": key, "action": action}
+
+    return None
+
+
+def _prune_config_diff(diff, bundle):
+    """Remove only_on_site entities for sections declared in the bundle."""
+    pruned = {
+        "dimensions": [],
+        "measures": [],
+        "fact_tables": [],
+        "connectors": [],
+    }
+    sections = (
+        ("dimensions", "Dimension"),
+        ("measures", "Measure"),
+        ("fact_tables", "Fact Table"),
+        ("connectors", "Connector"),
+    )
+    for section_key, doctype in sections:
+        if section_key not in bundle:
+            continue
+        for item in diff.get(section_key, {}).get("only_on_site", []):
+            result = _remove_config_entity(doctype, item["key"])
+            if result:
+                pruned[section_key].append(result)
+    return pruned
+
+
+def apply_config(spec, publish=False, prune=False):
     """Apply a config bundle via upsert for each entity."""
     bundle = _normalize_config_bundle(spec)
     summary = {
@@ -876,5 +980,8 @@ def apply_config(spec, publish=False):
         summary["fact_tables"].append(upsert_fact_table(row, publish=publish))
     for row in bundle.get("connectors", []):
         summary["connectors"].append(upsert_connector(row))
+
+    if prune:
+        summary["pruned"] = _prune_config_diff(diff_config(bundle), bundle)
 
     return summary
