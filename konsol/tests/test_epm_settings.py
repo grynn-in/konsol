@@ -36,6 +36,13 @@ def test_epm_settings_json_valid():
         "airbyte_connection_id",
         "airbyte_client_id",
         "airbyte_client_secret",
+        "airbyte_workspace_id",
+        "airbyte_destination_id",
+        "airbyte_clickhouse_host",
+        "airbyte_clickhouse_port",
+        "airbyte_clickhouse_database",
+        "airbyte_d365_source_definition_id",
+        "airbyte_erpnext_source_definition_id",
         "dbt_project_path",
     ]
     for fname in required_fields:

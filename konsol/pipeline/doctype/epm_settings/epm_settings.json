@@ -78,6 +78,49 @@
       "label": "Airbyte Client Secret"
     },
     {
+      "fieldname": "airbyte_workspace_id",
+      "fieldtype": "Data",
+      "label": "Airbyte Workspace ID",
+      "description": "Optional. When blank, the first workspace returned by the Airbyte API is used."
+    },
+    {
+      "fieldname": "airbyte_destination_id",
+      "fieldtype": "Data",
+      "label": "Airbyte Destination ID",
+      "description": "Optional. When blank, konsol provisions or reuses the Open EPM ClickHouse destination."
+    },
+    {
+      "fieldname": "airbyte_clickhouse_host",
+      "fieldtype": "Data",
+      "label": "Airbyte ClickHouse Host",
+      "default": "172.30.0.10",
+      "description": "Host used when auto-provisioning the ClickHouse destination for connector extract"
+    },
+    {
+      "fieldname": "airbyte_clickhouse_port",
+      "fieldtype": "Int",
+      "label": "Airbyte ClickHouse Port",
+      "default": "8123"
+    },
+    {
+      "fieldname": "airbyte_clickhouse_database",
+      "fieldtype": "Data",
+      "label": "Airbyte ClickHouse Database",
+      "default": "epm_raw"
+    },
+    {
+      "fieldname": "airbyte_d365_source_definition_id",
+      "fieldtype": "Data",
+      "label": "D365 Airbyte Source Definition ID",
+      "description": "Optional override for the D365 F&O / BC custom connector definition in Airbyte"
+    },
+    {
+      "fieldname": "airbyte_erpnext_source_definition_id",
+      "fieldtype": "Data",
+      "label": "ERPNext Airbyte Source Definition ID",
+      "description": "Optional override for the ERPNext custom connector definition in Airbyte"
+    },
+    {
       "fieldname": "webhook_secret",
       "fieldtype": "Password",
       "label": "Webhook Secret",
