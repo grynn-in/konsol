@@ -174,6 +174,30 @@ def delete_connector_api(name):
 
 
 @frappe.whitelist()
+def test_connector_extract_api(name):
+    """Validate extract credentials for a Connector."""
+    from konsol.airbyte_service import test_connector_extract
+
+    return test_connector_extract(name)
+
+
+@frappe.whitelist()
+def test_connector_writeback_api(name):
+    """Validate write-back credentials for a Connector."""
+    from konsol.airbyte_service import test_connector_writeback
+
+    return test_connector_writeback(name)
+
+
+@frappe.whitelist()
+def provision_connector_airbyte_api(name):
+    """Test extract creds and provision Airbyte source + connection for a Connector."""
+    from konsol.airbyte_service import provision_connector_airbyte
+
+    return provision_connector_airbyte(name)
+
+
+@frappe.whitelist()
 def list_erp_sources_api():
     """Return enabled ERP source keys (dbt erp_sources)."""
     return list_erp_sources()

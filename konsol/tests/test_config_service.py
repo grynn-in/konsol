@@ -761,6 +761,13 @@ def test_export_connector_rows_excludes_secrets(config_service, monkeypatch):
     assert "writeback_client_secret" not in rows[0]
 
 
+def test_cli_api_exposes_airbyte_connector_methods():
+    content = _read("cli_api.py")
+    assert "test_connector_extract_api" in content
+    assert "test_connector_writeback_api" in content
+    assert "provision_connector_airbyte_api" in content
+
+
 def test_list_connectors_returns_rows(config_service):
     module, fake_frappe = config_service
     fake_frappe.db.table_exists.return_value = True
