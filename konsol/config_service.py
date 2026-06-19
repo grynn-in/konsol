@@ -224,6 +224,21 @@ def publish_dimension(name):
     }
 
 
+def unpublish_dimension(name):
+    """Unpublish a Dimension: mark Inactive and request a governed rebuild."""
+    if not frappe.db.exists("Dimension", name):
+        frappe.throw(f"Dimension '{name}' not found", frappe.DoesNotExistError)
+
+    doc = frappe.get_doc("Dimension", name)
+    doc.unpublish()
+    doc.reload()
+
+    return {
+        "unpublished": True,
+        "dimension": _dimension_row(doc),
+    }
+
+
 def list_measures(filters=None):
     """Return all Measure docs matching optional filters."""
     return frappe.get_all(
@@ -357,6 +372,21 @@ def publish_measure(name):
 
     return {
         "published": True,
+        "measure": _measure_row(doc),
+    }
+
+
+def unpublish_measure(name):
+    """Unpublish a Measure: mark Inactive and request a governed rebuild."""
+    if not frappe.db.exists("Measure", name):
+        frappe.throw(f"Measure '{name}' not found", frappe.DoesNotExistError)
+
+    doc = frappe.get_doc("Measure", name)
+    doc.unpublish()
+    doc.reload()
+
+    return {
+        "unpublished": True,
         "measure": _measure_row(doc),
     }
 
@@ -564,6 +594,8 @@ _CONNECTOR_WRITABLE_FIELDS = [
     "sync_frequency_minutes",
 ]
 
+_CONNECTOR_EXPORT_FIELDS = list(_CONNECTOR_WRITABLE_FIELDS)
+
 _ERP_TYPES = {"d365_fo", "d365_bc", "sap_s4", "sap_ecc", "sap_b1", "erpnext"}
 
 
@@ -713,6 +745,8 @@ def _config_entity_key(doctype, row):
         return row.get("measure_name")
     if doctype == "Fact Table":
         return row.get("fact_name")
+    if doctype == "Connector":
+        return row.get("connector_name")
     return row.get("name")
 
 
@@ -734,13 +768,37 @@ def _export_rows(doctype, list_fn, status=None):
     return rows
 
 
+def _export_connector_rows():
+    if not frappe.db.table_exists("Connector"):
+        return []
+
+    exported = []
+    for summary in list_connectors():
+        full = get_connector(summary["name"])
+        row = {field: full[field] for field in _CONNECTOR_EXPORT_FIELDS}
+        row["enabled"] = bool(row.get("enabled"))
+        if full.get("legal_entities"):
+            row["legal_entities"] = [
+                {
+                    "entity_id": entity["entity_id"],
+                    "entity_name": entity.get("entity_name"),
+                }
+                for entity in full["legal_entities"]
+            ]
+        if full.get("dimension_mappings"):
+            row["dimension_mappings"] = list(full["dimension_mappings"])
+        exported.append(row)
+    return exported
+
+
 def export_config(status=None):
-    """Export dimensions, measures, and fact tables as a portable bundle."""
+    """Export dimensions, measures, fact tables, and connectors as a portable bundle."""
     return {
         "api_version": _CONFIG_API_VERSION,
         "dimensions": _export_rows("Dimension", list_dimensions, status),
         "measures": _export_rows("Measure", list_measures, status),
         "fact_tables": _export_rows("Fact Table", list_fact_tables, status),
+        "connectors": _export_connector_rows(),
     }
 
 
@@ -794,6 +852,9 @@ def diff_config(spec, status=None):
         "fact_tables": _diff_section(
             "Fact Table", bundle.get("fact_tables", []), live["fact_tables"]
         ),
+        "connectors": _diff_section(
+            "Connector", bundle.get("connectors", []), live["connectors"]
+        ),
     }
 
 
@@ -804,6 +865,7 @@ def apply_config(spec, publish=False):
         "dimensions": [],
         "measures": [],
         "fact_tables": [],
+        "connectors": [],
     }
 
     for row in bundle.get("dimensions", []):
@@ -812,5 +874,7 @@ def apply_config(spec, publish=False):
         summary["measures"].append(upsert_measure(row, publish=publish))
     for row in bundle.get("fact_tables", []):
         summary["fact_tables"].append(upsert_fact_table(row, publish=publish))
+    for row in bundle.get("connectors", []):
+        summary["connectors"].append(upsert_connector(row))
 
     return summary

@@ -21,7 +21,9 @@ from konsol.config_service import (
     publish_dimension,
     publish_fact_table,
     publish_measure,
+    unpublish_dimension,
     unpublish_fact_table,
+    unpublish_measure,
     upsert_connector,
     upsert_dimension,
     upsert_fact_table,
@@ -66,6 +68,12 @@ def publish_dimension_api(name):
 
 
 @frappe.whitelist()
+def unpublish_dimension_api(name):
+    """Unpublish a Dimension doc and request a governed rebuild."""
+    return unpublish_dimension(name)
+
+
+@frappe.whitelist()
 def list_measures_api(status=None):
     """List Measure docs. Optional status: Draft, Published, Inactive."""
     return list_measures(_status_filter(status))
@@ -87,6 +95,12 @@ def upsert_measure_api(spec, publish=False):
 def publish_measure_api(name):
     """Publish a Measure doc and request a governed rebuild."""
     return publish_measure(name)
+
+
+@frappe.whitelist()
+def unpublish_measure_api(name):
+    """Unpublish a Measure doc and request a governed rebuild."""
+    return unpublish_measure(name)
 
 
 @frappe.whitelist()
@@ -160,13 +174,13 @@ def list_erp_sources_api():
 
 @frappe.whitelist()
 def export_config_api(status=None):
-    """Export dimensions, measures, and fact tables as a portable bundle."""
+    """Export dimensions, measures, fact tables, and connectors as a portable bundle."""
     return export_config(status=status)
 
 
 @frappe.whitelist()
 def apply_config_api(spec, publish=False):
-    """Apply a config bundle (dimensions, measures, fact tables)."""
+    """Apply a config bundle (dimensions, measures, fact tables, connectors)."""
     return apply_config(_parse_spec(spec), publish=frappe.utils.cint(publish))
 
 

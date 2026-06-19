@@ -33,9 +33,11 @@ def test_config_service_exposes_list_functions():
     assert "get_dimension" in names
     assert "upsert_dimension" in names
     assert "publish_dimension" in names
+    assert "unpublish_dimension" in names
     assert "get_measure" in names
     assert "upsert_measure" in names
     assert "publish_measure" in names
+    assert "unpublish_measure" in names
     assert "apply_schema" in names
     assert "get_schema_status" in names
     assert "list_measures" in names
@@ -63,9 +65,11 @@ def test_cli_api_whitelists_list_endpoints():
     assert "get_dimension_api" in content
     assert "upsert_dimension_api" in content
     assert "publish_dimension_api" in content
+    assert "unpublish_dimension_api" in content
     assert "get_measure_api" in content
     assert "upsert_measure_api" in content
     assert "publish_measure_api" in content
+    assert "unpublish_measure_api" in content
     assert "apply_schema_api" in content
     assert "get_schema_status_api" in content
     assert "list_measures_api" in content
@@ -508,6 +512,11 @@ def test_export_config_returns_bundle(config_service, monkeypatch):
     monkeypatch.setattr(module, "list_dimensions", lambda filters=None: [{"dimension_name": "dim_project"}])
     monkeypatch.setattr(module, "list_measures", lambda filters=None: [{"measure_name": "period_headcount"}])
     monkeypatch.setattr(module, "list_fact_tables", lambda filters=None: [{"fact_name": "headcount"}])
+    monkeypatch.setattr(
+        module,
+        "_export_connector_rows",
+        lambda: [{"connector_name": "ERPNext Demo", "erp_type": "erpnext", "enabled": True}],
+    )
 
     bundle = module.export_config()
 
@@ -515,6 +524,7 @@ def test_export_config_returns_bundle(config_service, monkeypatch):
     assert bundle["dimensions"][0]["dimension_name"] == "dim_project"
     assert bundle["measures"][0]["measure_name"] == "period_headcount"
     assert bundle["fact_tables"][0]["fact_name"] == "headcount"
+    assert bundle["connectors"][0]["connector_name"] == "ERPNext Demo"
 
 
 def test_diff_config_reports_changes(config_service, monkeypatch):
@@ -527,6 +537,7 @@ def test_diff_config_reports_changes(config_service, monkeypatch):
             "dimensions": [{"dimension_name": "dim_project", "label": "Project"}],
             "measures": [],
             "fact_tables": [],
+            "connectors": [{"connector_name": "ERPNext Demo", "erp_type": "erpnext", "enabled": True}],
         },
     )
 
@@ -536,16 +547,18 @@ def test_diff_config_reports_changes(config_service, monkeypatch):
             "dimensions": [{"dimension_name": "dim_project", "label": "Projects"}],
             "measures": [{"measure_name": "period_headcount", "label": "Headcount"}],
             "fact_tables": [],
+            "connectors": [{"connector_name": "ERPNext Demo", "erp_type": "erpnext", "enabled": False}],
         }
     )
 
     assert diff["dimensions"]["modified"][0]["key"] == "dim_project"
     assert diff["measures"]["added"][0]["key"] == "period_headcount"
+    assert diff["connectors"]["modified"][0]["key"] == "ERPNext Demo"
 
 
 def test_apply_config_upserts_entities(config_service, monkeypatch):
     module, _fake_frappe = config_service
-    calls = {"dimensions": 0, "measures": 0, "fact_tables": 0}
+    calls = {"dimensions": 0, "measures": 0, "fact_tables": 0, "connectors": 0}
 
     def fake_upsert_dimension(spec, publish=False):
         calls["dimensions"] += 1
@@ -559,9 +572,14 @@ def test_apply_config_upserts_entities(config_service, monkeypatch):
         calls["fact_tables"] += 1
         return {"created": True, "published": publish, "fact_table": spec}
 
+    def fake_upsert_connector(spec):
+        calls["connectors"] += 1
+        return {"created": True, "connector": spec}
+
     monkeypatch.setattr(module, "upsert_dimension", fake_upsert_dimension)
     monkeypatch.setattr(module, "upsert_measure", fake_upsert_measure)
     monkeypatch.setattr(module, "upsert_fact_table", fake_upsert_fact_table)
+    monkeypatch.setattr(module, "upsert_connector", fake_upsert_connector)
 
     summary = module.apply_config(
         {
@@ -569,12 +587,50 @@ def test_apply_config_upserts_entities(config_service, monkeypatch):
             "dimensions": [{"dimension_name": "dim_project"}],
             "measures": [{"measure_name": "period_headcount"}],
             "fact_tables": [{"fact_name": "headcount"}],
+            "connectors": [{"connector_name": "ERPNext Demo", "erp_type": "erpnext"}],
         },
         publish=True,
     )
 
-    assert calls == {"dimensions": 1, "measures": 1, "fact_tables": 1}
+    assert calls == {"dimensions": 1, "measures": 1, "fact_tables": 1, "connectors": 1}
     assert summary["dimensions"][0]["published"] is True
+
+
+def test_unpublish_dimension_delegates_to_doc(config_service):
+    module, fake_frappe = config_service
+    doc = MagicMock()
+    doc.dimension_name = "dim_project"
+    doc.source_column = "Project"
+    doc.label = "Project"
+    doc.cube_type = "string"
+    doc.in_budget = 0
+    doc.allocation_role = None
+    doc.permission_doctype = None
+    doc.status = "Inactive"
+    fake_frappe.db.exists.return_value = True
+    fake_frappe.get_doc.return_value = doc
+
+    result = module.unpublish_dimension("dim_project")
+
+    doc.unpublish.assert_called_once()
+    assert result["unpublished"] is True
+
+
+def test_unpublish_measure_delegates_to_doc(config_service):
+    module, fake_frappe = config_service
+    doc = MagicMock()
+    doc.measure_name = "period_headcount"
+    doc.expression = "sum(headcount)"
+    doc.label = "Headcount"
+    doc.cube_type = "sum"
+    doc.status = "Inactive"
+    fake_frappe.db.exists.return_value = True
+    fake_frappe.get_doc.return_value = doc
+
+    result = module.unpublish_measure("period_headcount")
+
+    doc.unpublish.assert_called_once()
+    assert result["unpublished"] is True
 
 
 def test_unpublish_fact_table_delegates_to_doc(config_service):
