@@ -18,7 +18,8 @@
       padding: 16px;
       line-height: 1.4;
     }
-    h1 { font-size: 18px; color: #0078d4; margin-bottom: 12px; }
+    h1 { font-size: 18px; color: #0078d4; margin-bottom: 4px; }
+    .version { color: #605e5c; font-size: 11px; margin-bottom: 12px; }
     #boot-status {
       color: #605e5c;
       font-size: 12px;
@@ -59,6 +60,7 @@
 </head>
 <body>
   <h1>Konsolidat</h1>
+  <p class="version">v2.0.0.0 · login only (no formulas)</p>
   <p id="boot-status">Connecting to Excel…</p>
 
   <div id="app">
@@ -73,8 +75,9 @@
 
     <div id="logged-in">
       <p class="ok">Signed in as <strong id="user-label"></strong></p>
-      <p style="margin-top:12px;color:#605e5c">
-        You are connected. Custom functions require the full Konsolidat manifest.
+      <p style="margin-top:12px;color:#a4262c;font-size:12px">
+        <strong>Login only — no formulas.</strong> =K.EPM() will show #NAME? with this add-in.
+        Upload <strong>Konsolidat-Excel-Full.xml</strong> (add-in name “Konsolidat”, not “Login”).
       </p>
       <button id="logout-btn" type="button" style="background:#fff;color:#0078d4;border:1px solid #0078d4;margin-top:16px">
         Log Out
