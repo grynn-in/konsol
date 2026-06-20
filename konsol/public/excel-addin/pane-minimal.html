@@ -6,6 +6,10 @@
   <title>Konsolidat</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      min-height: 100%;
+    }
     body {
       font-family: "Segoe UI", sans-serif;
       font-size: 13px;
@@ -15,7 +19,11 @@
       line-height: 1.4;
     }
     h1 { font-size: 18px; color: #0078d4; margin-bottom: 12px; }
-    #boot-status { color: #605e5c; font-size: 12px; margin-bottom: 12px; }
+    #boot-status {
+      color: #605e5c;
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
     label {
       display: block;
       font-size: 12px;
@@ -45,14 +53,13 @@
     button:disabled { opacity: 0.6; cursor: wait; }
     .error { color: #a4262c; margin-top: 10px; font-size: 12px; }
     .ok { color: #107c10; margin-top: 10px; font-size: 12px; }
-    .hint { color: #605e5c; font-size: 12px; margin-top: 12px; }
     #logged-in { display: none; }
     body:not(.ready) #app { opacity: 0.55; }
   </style>
 </head>
 <body>
   <h1>Konsolidat</h1>
-  <p id="boot-status">Starting add-in…</p>
+  <p id="boot-status">Connecting to Excel…</p>
 
   <div id="app">
     <div id="login-view">
@@ -66,9 +73,8 @@
 
     <div id="logged-in">
       <p class="ok">Signed in as <strong id="user-label"></strong></p>
-      <p class="hint">
-        Use <code>=K.EPM("AMUS", 2024, 6, "4010")</code> in a cell.
-        Formulas recalculate after sign-in.
+      <p style="margin-top:12px;color:#605e5c">
+        You are connected. Custom functions require the full Konsolidat manifest.
       </p>
       <button id="logout-btn" type="button" style="background:#fff;color:#0078d4;border:1px solid #0078d4;margin-top:16px">
         Log Out
@@ -76,9 +82,8 @@
     </div>
   </div>
 
-  <!-- Shared runtime: this page hosts BOTH the task pane and =K.EPM() functions. -->
+  <!-- Must load before app script. Same pattern as Microsoft's hello-world sample. -->
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
-  <script src="functions.js"></script>
   <script>
     (function () {
       var API = window.location.origin;
@@ -160,15 +165,13 @@
         started = true;
         document.body.classList.add("ready");
         bootStatus.hidden = true;
-        if (typeof registerKonsolFunctions === "function") {
-          registerKonsolFunctions();
-        }
         loginBtn.addEventListener("click", login);
         logoutBtn.addEventListener("click", logout);
         passwordInput.addEventListener("keydown", function (e) {
           if (e.key === "Enter") login();
         });
         checkSession();
+        emailInput.focus();
       }
 
       if (typeof Office !== "undefined" && Office.onReady) {

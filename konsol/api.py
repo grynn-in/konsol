@@ -617,6 +617,48 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     return {"value": result["values"][0]}
 
 
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def excel_addin_auth():
+    """Login for Excel Online iframe — returns bearer token (cookies often blocked).
+
+    Store the token in localStorage; send X-Konsolidat-Token on API calls.
+    Shared runtime makes the same localStorage visible to custom functions.
+    """
+    from frappe.auth import LoginManager
+    from konsol.excel_addin_auth import issue_token
+
+    body = _get_json_body()
+    usr = (body.get("usr") or "").strip()
+    pwd = body.get("pwd") or ""
+    if not usr or not pwd:
+        frappe.throw("usr and pwd required", frappe.ValidationError)
+
+    login_manager = LoginManager()
+    login_manager.authenticate(user=usr, pwd=pwd)
+    login_manager.post_login()
+
+    token = issue_token(frappe.session.user)
+    return {"token": token, "user": frappe.session.user}
+
+
+@frappe.whitelist(allow_guest=True)
+def excel_addin_whoami():
+    """Return current user (cookie session or X-Konsolidat-Token)."""
+    user = frappe.session.user
+    return {"user": user if user and user != "Guest" else None}
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def excel_addin_logout():
+    """Revoke bearer token issued by excel_addin_auth."""
+    from konsol.excel_addin_auth import revoke_token
+
+    body = _get_json_body() if frappe.request.get_data() else {}
+    token = (body.get("token") or frappe.get_request_header("X-Konsolidat-Token") or "").strip()
+    revoke_token(token)
+    return {"ok": True}
+
+
 @frappe.whitelist(methods=["POST"])
 def epm_batch():
     """Batch value retrieval — accepts JSON array, returns {"values": [...], "errors": [...]}."""

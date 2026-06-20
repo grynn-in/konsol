@@ -1,4 +1,8 @@
 app_name = "konsol"
+import konsol.excel_addin_cookies  # noqa: F401 — Excel Online iframe cookies
+
+before_request = ["konsol.excel_addin_auth.apply_excel_token_auth"]
+after_request = ["konsol.excel_addin_cookies.add_partitioned_cookie_headers"]
 app_title = "Konsol"
 app_publisher = "Open EPM"
 app_description = "EPM Pipeline Control — Airbyte extract + dbt transform"
