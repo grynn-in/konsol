@@ -1,5 +1,6 @@
 """TDD tests for konsol EPM API (Frappe proxy to ClickHouse)."""
 import ast
+import json
 import os
 import sys
 
@@ -58,6 +59,16 @@ def test_api_has_single_value_endpoint():
         tree = ast.parse(f.read())
     func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     assert "epm_value" in func_names
+
+
+def test_api_has_report_apply_endpoints():
+    """Excel add-in Apply report uses list_report_templates and build_cell_map."""
+    with open(API_PATH) as f:
+        tree = ast.parse(f.read())
+    func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "list_report_templates" in func_names
+    assert "build_cell_map" in func_names
+    assert "build_snapshot" in func_names
 
 
 # --- Hardening tests ---
@@ -136,3 +147,26 @@ def test_no_silent_exception_swallowing():
         if "except Exception" in line and i + 1 < len(lines):
             next_line = lines[i + 1].strip()
             assert next_line != "return 0.0", "Must not silently swallow errors"
+
+
+def test_trial_balance_net_uses_debit_minus_credit():
+    """Trial balance snapshot net must be debit minus credit, not summed net amounts."""
+    with open(API_PATH) as f:
+        content = f.read()
+    assert "_fetch_trial_balance_rows" in content
+    assert "sum(period_debit) - sum(period_credit) AS net" in content
+    assert "sum(period_net_amount) AS net" not in content
+
+
+def test_period_net_amount_measure_expression_is_debit_minus_credit():
+    """Published period_net_amount measure must derive net from debit and credit."""
+    measure_path = os.path.join(APP_DIR, "fixtures", "measure.json")
+    with open(measure_path) as f:
+        records = json.load(f)
+    period_net = next(
+        r for r in records if r.get("measure_name") == "period_net_amount"
+    )
+    assert period_net["expression"] == "sum(debit_amount) - sum(credit_amount)"
+
+
+

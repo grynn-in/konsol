@@ -719,6 +719,120 @@ def excel_addin_logout():
     return {"ok": True}
 
 
+@frappe.whitelist(methods=["GET"])
+def list_report_templates():
+    """Catalog of product-owned report templates for add-in Apply."""
+    from konsol.report_compiler import list_templates
+
+    return {"templates": list_templates()}
+
+
+@frappe.whitelist(methods=["POST"])
+def build_cell_map():
+    """Compile a report template + params into an Excel cell map (formulas)."""
+    from konsol.report_compiler import build_cell_map as compile_cell_map
+
+    body = _get_json_body()
+    template_id = (body.get("template_id") or "").strip()
+    entity = (body.get("entity") or "").strip()
+    year = body.get("year")
+    scenario_id = (body.get("scenario_id") or "actuals").strip()
+
+    if not template_id or not entity or year is None:
+        frappe.throw("template_id, entity, and year are required", frappe.ValidationError)
+
+    _assert_entity_access(entity)
+
+    try:
+        return compile_cell_map(template_id, entity, int(year), scenario_id)
+    except ValueError as exc:
+        frappe.throw(str(exc), frappe.ValidationError)
+
+
+def _fetch_trial_balance_rows(entity, year, period_from, period_to):
+    """Load trial balance rows from gold_trial_balance for snapshot export."""
+    from konsol.report_compiler import TB_LONG_MAX_ROWS
+
+    ch_settings = _get_ch_connection()
+    sql = (
+        "SELECT data_area_id, fiscal_year, fiscal_period, main_account, "
+        "any(account_name) AS account_name, any(account_type_name) AS account_type_name, "
+        "any(multiIf(is_pnl = 1, 'P&L', is_balance_sheet = 1, 'BS', '')) AS bs_pnl, "
+        "sum(period_debit) AS debit, sum(period_credit) AS credit, "
+        "sum(period_debit) - sum(period_credit) AS net "
+        "FROM epm_gold.gold_trial_balance "
+        "WHERE data_area_id = {entity:String} "
+        "AND fiscal_year = {year:Int32} "
+        "AND fiscal_period >= {pfrom:Int32} AND fiscal_period <= {pto:Int32} "
+        "GROUP BY data_area_id, fiscal_year, fiscal_period, main_account "
+        "ORDER BY main_account, fiscal_period "
+        f"LIMIT {int(TB_LONG_MAX_ROWS)}"
+    )
+    params = {
+        "param_entity": entity,
+        "param_year": str(int(year)),
+        "param_pfrom": str(int(period_from)),
+        "param_pto": str(int(period_to)),
+    }
+    raw = _clickhouse_query(sql, params, ch_settings)
+    rows = []
+    for line in raw.split("\n"):
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 10:
+            continue
+        rows.append({
+            "entity": parts[0],
+            "year": int(parts[1]),
+            "period": int(parts[2]),
+            "account": parts[3],
+            "account_name": parts[4],
+            "account_type": parts[5],
+            "bs_pnl": parts[6],
+            "debit": float(parts[7]),
+            "credit": float(parts[8]),
+            "net": float(parts[9]),
+        })
+    return rows
+
+
+@frappe.whitelist(methods=["POST"])
+def build_snapshot():
+    """Fetch data and compile a values-only Excel cell map (snapshot)."""
+    from konsol.report_compiler import build_trial_balance_long_map
+
+    body = _get_json_body()
+    template_id = (body.get("template_id") or "").strip()
+    entity = (body.get("entity") or "").strip()
+    year = body.get("year")
+    period_from = body.get("period_from", 1)
+    period_to = body.get("period_to", 12)
+
+    if not template_id or not entity or year is None:
+        frappe.throw("template_id, entity, and year are required", frappe.ValidationError)
+
+    if template_id != "trial_balance_long":
+        frappe.throw(
+            f"Snapshot not supported for template {template_id!r}",
+            frappe.ValidationError,
+        )
+
+    try:
+        period_from = int(period_from)
+        period_to = int(period_to)
+    except (TypeError, ValueError):
+        frappe.throw("period_from and period_to must be integers", frappe.ValidationError)
+
+    if period_from < 1 or period_to > 12 or period_from > period_to:
+        frappe.throw("period_from and period_to must be between 1 and 12", frappe.ValidationError)
+
+    _assert_entity_access(entity)
+
+    rows = _fetch_trial_balance_rows(entity, int(year), period_from, period_to)
+    return build_trial_balance_long_map(entity, int(year), rows, period_from, period_to)
+
+
 @frappe.whitelist(methods=["POST"])
 def epm_batch():
     """Batch value retrieval — accepts JSON array, returns {"values": [...], "errors": [...]}."""
