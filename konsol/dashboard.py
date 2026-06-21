@@ -23,6 +23,7 @@ _SHORTCUTS = [
     ("EPM Settings", "Green"),
     ("Fact Table", "Blue"),
     ("Measure", "Cyan"),
+    ("Budget Cycle", "Teal"),
     ("Connector", "Orange"),
     ("Pipeline Build Request", "Purple"),
     ("Allocation Rule", "Yellow"),
@@ -55,6 +56,7 @@ _NUMBER_CARDS = [
     ("Fact Tables", "Fact Table", "#449CF0"),
     ("Measures", "Measure", "#29CD42"),
     ("Dimensions", "Dimension", "#FFC107"),
+    ("Budget Cycles", "Budget Cycle", "#009688"),
     ("Connectors", "Connector", "#FF8C00"),
     ("Pipeline Runs", "Pipeline Run", "#7C4DFF"),
 ]
@@ -74,12 +76,22 @@ def _field(doctype, fieldname):
     return frappe.get_meta(doctype).has_field(fieldname)
 
 
+def _workspace_needs_refresh():
+    """True when a pre-budget workspace is missing shortcuts added later."""
+    if not frappe.db.exists("Workspace", WORKSPACE) or not _dt("Budget Cycle"):
+        return False
+    ws = frappe.get_doc("Workspace", WORKSPACE)
+    links = {s.link_to for s in (ws.shortcuts or []) if s.type == "DocType"}
+    return "Budget Cycle" not in links
+
+
 def setup_workspace(force=False):
     """Create the Konsolidat workspace + overview cards/charts if missing.
 
     Idempotent and self-filtering. ``force=True`` rebuilds the workspace even if
-    it already exists (used for manual refreshes; the after_migrate path leaves
-    an existing workspace untouched so user customisations are preserved).
+    it already exists (used for manual refreshes). When new shortcut tiles ship
+    (e.g. Budget Cycle), an existing workspace is rebuilt once so desk users see
+    them without a manual refresh.
     """
     if not _dt("Fact Table"):
         # konsol doctypes not migrated yet — nothing to build.
@@ -88,7 +100,7 @@ def setup_workspace(force=False):
     created_cards = _ensure_number_cards()
     created_charts = _ensure_charts()
 
-    if force and frappe.db.exists("Workspace", WORKSPACE):
+    if (force or _workspace_needs_refresh()) and frappe.db.exists("Workspace", WORKSPACE):
         frappe.delete_doc("Workspace", WORKSPACE, force=True, ignore_permissions=True)
 
     if not frappe.db.exists("Workspace", WORKSPACE):

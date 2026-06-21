@@ -20,6 +20,8 @@ fixtures = [
     "Measure",
     "Fact Table",
     "Scenario Definition",
+    "Budget Cycle",
+    "Budget Sheet",
     "Consolidation Group",
     "IC Elimination Rule",
     "Allocation Rule",

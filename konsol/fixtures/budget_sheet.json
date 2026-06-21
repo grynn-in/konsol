@@ -1,0 +1,34 @@
+[
+  {
+    "doctype": "Budget Sheet",
+    "name": "BSHT-BCYC_BUDGET_2024_2024_68055b4b-AMUS-base-f9b1f15a",
+    "cycle": "BCYC-BUDGET_2024-2024-68055b4b",
+    "data_area_id": "AMUS",
+    "layer": "base",
+    "annual_total": 861245,
+    "lines": [
+      {
+        "doctype": "Budget Line",
+        "main_account": "4010",
+        "period_06": 861245,
+        "annual": 861245
+      }
+    ]
+  },
+  {
+    "doctype": "Budget Sheet",
+    "name": "BSHT-BCYC_BUDGET_2024_2024_68055b4b-AMHQ-base-5a0d4259",
+    "cycle": "BCYC-BUDGET_2024-2024-68055b4b",
+    "data_area_id": "AMHQ",
+    "layer": "base",
+    "annual_total": 566111,
+    "lines": [
+      {
+        "doctype": "Budget Line",
+        "main_account": "5010",
+        "period_06": 566111,
+        "annual": 566111
+      }
+    ]
+  }
+]

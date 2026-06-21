@@ -40,6 +40,21 @@ def after_migrate():
     _sync_allocation_config_to_clickhouse()
     _setup_dashboard()
     _sync_budget_line_custom_fields()
+    _bootstrap_budget_fixtures()
+
+
+def _bootstrap_budget_fixtures():
+    """Enrich fixture budget lines (dims) and sync demo sheets to ClickHouse."""
+    try:
+        from konsol.budget.bootstrap import (
+            enrich_budget_fixture_lines,
+            sync_budget_sheets_to_clickhouse,
+        )
+        enrich_budget_fixture_lines()
+        sync_budget_sheets_to_clickhouse()
+    except Exception:
+        frappe.logger().warning(
+            "budget fixture bootstrap skipped after migrate", exc_info=True)
 
 
 def _sync_budget_line_custom_fields():

@@ -216,6 +216,26 @@ def test_after_migrate_provisions_budget_line_fields():
     assert "_sync_budget_custom_fields" in _func(src, "_sync_budget_line_custom_fields")
 
 
+def test_budget_fixtures_registered():
+    hooks = _src(os.path.join(APP_DIR, "hooks.py"))
+    assert '"Budget Cycle"' in hooks
+    assert '"Budget Sheet"' in hooks
+    cycle_fixture = os.path.join(APP_DIR, "fixtures", "budget_cycle.json")
+    sheet_fixture = os.path.join(APP_DIR, "fixtures", "budget_sheet.json")
+    assert os.path.isfile(cycle_fixture)
+    assert os.path.isfile(sheet_fixture)
+    cycles = json.load(open(cycle_fixture))
+    assert cycles[0]["scenario_id"] == "BUDGET_2024"
+    assert cycles[0]["fiscal_year"] == 2024
+
+
+def test_dashboard_includes_budget_cycle_shortcut():
+    dash = _src(os.path.join(APP_DIR, "dashboard.py"))
+    assert '("Budget Cycle"' in dash
+    assert "Budget Cycles" in dash
+    assert "_workspace_needs_refresh" in dash
+
+
 def test_shared_line_matcher_replaces_duplicates():
     # Fix #10: the line-match loop lives in one place (budget_grain.find_budget_line).
     assert "def find_budget_line" in _src(GRAIN_PY)
