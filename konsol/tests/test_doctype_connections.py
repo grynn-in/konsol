@@ -110,13 +110,26 @@ def test_allocation_rule_links_drivers():
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 
-def test_pipeline_build_request_links_triggers():
+def test_pipeline_build_request_dashboard_is_dynamic():
     data = _load_dashboard(
         "pipeline/doctype/pipeline_build_request/pipeline_build_request_dashboard.py")
-    items = _items(data)
-    assert "Consolidation Group" in items
-    assert "Allocation Run" in items
+    assert _items(data) == []
     assert data["method"] == "konsol.desk.connections.get_open_count"
+    js_path = os.path.join(
+        APP_DIR, "pipeline/doctype/pipeline_build_request/pipeline_build_request.js")
+    js = open(js_path).read()
+    assert "refresh_pipeline_build_request_connections" in js
+    assert "frm.dashboard.hide()" in js
+
+
+def test_pipeline_build_request_trigger_helper():
+    from konsol.desk.connection_filters import pipeline_build_request_trigger
+
+    assert pipeline_build_request_trigger("Allocation Run", "ARUN-1") == (
+        "Allocation Run",
+        ["ARUN-1"],
+    )
+    assert pipeline_build_request_trigger(None, None) == (None, [])
 
 
 def test_connection_filter_helpers():

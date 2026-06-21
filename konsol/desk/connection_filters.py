@@ -33,3 +33,10 @@ def allocation_driver_filters(driver_type, source_cost_center=None):
     if source_cost_center:
         filters["cost_center"] = source_cost_center
     return filters
+
+
+def pipeline_build_request_trigger(trigger_doctype, trigger_docname):
+    """Return (doctype, [docname]) when a PBR has a trigger, else (None, [])."""
+    if trigger_doctype and trigger_docname:
+        return trigger_doctype, [trigger_docname]
+    return None, []

@@ -101,12 +101,10 @@ def _patch_allocation_rule(doc, count):
 
 
 def _patch_pipeline_build_request(doc, count):
-    for dt in PIPELINE_BUILD_TRIGGER_DOCTYPES:
-        if doc.trigger_doctype == dt and doc.trigger_docname:
-            _set_internal_link(count, dt, [doc.trigger_docname])
-        else:
-            _set_internal_link(count, dt, [])
-        _strip_external(count, dt)
+    if not doc.trigger_doctype or not doc.trigger_docname:
+        return
+    _set_internal_link(count, doc.trigger_doctype, [doc.trigger_docname])
+    _strip_external(count, doc.trigger_doctype)
 
 
 def _set_internal_link(count, doctype, names):
