@@ -99,7 +99,7 @@ function sendChunk(chunk) {
   });
 }
 
-function makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId) {
+function makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node) {
   var req = {
     entity: String(entity),
     year: Number(year),
@@ -111,6 +111,8 @@ function makeReq(entity, year, period, account, measure, scenario, costCenter, d
   if (costCenter) req.cost_center = String(costCenter);
   if (department) req.department = String(department);
   if (scenarioId) req.scenario_id = String(scenarioId);
+  if (hierarchy) req.hierarchy = String(hierarchy);
+  if (node) req.hierarchy_node = String(node);
   return req;
 }
 
@@ -118,29 +120,29 @@ function ping() {
   return 1;
 }
 
-function epm(entity, year, period, account, measure, scenario, costCenter, department, scenarioId) {
-  return enqueue(makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId));
+function epm(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node) {
+  return enqueue(makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node));
 }
 
-function epmBudget(entity, year, period, account, costCenter, department, scenarioId) {
-  return enqueue(makeReq(entity, year, period, account, "period_amount", "budget", costCenter, department, scenarioId));
+function epmBudget(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node) {
+  return enqueue(makeReq(entity, year, period, account, "period_amount", "budget", costCenter, department, scenarioId, hierarchy, node));
 }
 
-function epmVariance(entity, year, period, account, costCenter, department, scenarioId) {
-  return enqueue(makeReq(entity, year, period, account, "variance_abs", "variance", costCenter, department, scenarioId));
+function epmVariance(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node) {
+  return enqueue(makeReq(entity, year, period, account, "variance_abs", "variance", costCenter, department, scenarioId, hierarchy, node));
 }
 
-function epmDebit(entity, year, period, account, costCenter, department) {
-  return enqueue(makeReq(entity, year, period, account, "period_debit", "actuals", costCenter, department, ""));
+function epmDebit(entity, year, period, account, costCenter, department, hierarchy, node) {
+  return enqueue(makeReq(entity, year, period, account, "period_debit", "actuals", costCenter, department, "", hierarchy, node));
 }
 
-function epmCredit(entity, year, period, account, costCenter, department) {
-  return enqueue(makeReq(entity, year, period, account, "period_credit", "actuals", costCenter, department, ""));
+function epmCredit(entity, year, period, account, costCenter, department, hierarchy, node) {
+  return enqueue(makeReq(entity, year, period, account, "period_credit", "actuals", costCenter, department, "", hierarchy, node));
 }
 
 var saveCache = {};
 
-function epmSave(amount, entity, year, period, account, scenarioId, layer, costCenter, department) {
+function epmSave(amount, entity, year, period, account, scenarioId, layer, costCenter, department, hierarchy, node) {
   var amt = Number(amount);
 
   if (!isFinite(amt) || !isFinite(Number(year)) || !isFinite(Number(period))) {
@@ -150,7 +152,7 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, costC
   }
 
   var key = [scenarioId, entity, year, period, account, layer,
-             costCenter || "", department || ""].join("|");
+             costCenter || "", department || "", hierarchy || "", node || ""].join("|");
   if (saveCache[key] === amt) {
     return amt;
   }
@@ -166,6 +168,8 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, costC
   };
   if (costCenter) data.dim_cost_center = String(costCenter);
   if (department) data.dim_department = String(department);
+  if (hierarchy) data.hierarchy = String(hierarchy);
+  if (node) data.hierarchy_node = String(node);
 
   return postJson("/api/method/konsol.api.budget_cell_save", data).then(function () {
     saveCache[key] = amt;

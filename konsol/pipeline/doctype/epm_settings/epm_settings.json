@@ -200,7 +200,7 @@
       "fieldname": "dbt_project_path",
       "fieldtype": "Data",
       "label": "dbt Project Path",
-      "default": "/home/pd/open_epm/dbt_project"
+      "default": "/home/frappe/dbt_project"
     },
     {
       "fieldname": "access_control_section",

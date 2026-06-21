@@ -90,6 +90,40 @@ def regenerate_dimension_mappings_seed():
     return path
 
 
+# Must match reporting_hierarchies.csv / gold_reporting_hierarchy (konsolidat).
+_REPORTING_HIERARCHY_COLUMNS = [
+    "hierarchy_name", "dimension", "member_code", "member_label",
+    "parent_member_code", "is_group", "hierarchy_level", "path",
+    "effective_from", "effective_to", "is_default", "status",
+]
+
+
+def regenerate_reporting_hierarchies_seed():
+    """Regenerate seeds/reporting_hierarchies.csv from Published hierarchies."""
+    import csv
+    import os
+
+    from konsol.reporting_hierarchy_seed import flatten_reporting_hierarchies
+
+    base = _get_dbt_project_base()
+    seeds_dir = os.path.join(base, "seeds")
+    if not os.path.isdir(seeds_dir):
+        frappe.logger().warning(
+            f"dbt seeds dir not found at {seeds_dir} — skipping "
+            f"reporting_hierarchies regeneration."
+        )
+        return None
+
+    rows = flatten_reporting_hierarchies(frappe)
+    path = os.path.join(seeds_dir, "reporting_hierarchies.csv")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_REPORTING_HIERARCHY_COLUMNS)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+    return path
+
+
 def _build_dimensions_vars():
     """Build dimensions list from Dimension doctype."""
     docs = frappe.get_all(
