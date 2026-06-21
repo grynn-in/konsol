@@ -38,6 +38,7 @@ def test_pipeline_run_has_required_fields():
         "dbt_result",
         "error_log",
         "triggered_by",
+        "pipeline_build_request",
     ]
     for fname in required:
         assert fname in field_names, f"Missing field: {fname}"
@@ -63,6 +64,16 @@ def test_pipeline_run_triggered_by_is_link():
     field = next(f for f in doc["fields"] if f["fieldname"] == "triggered_by")
     assert field["fieldtype"] == "Link"
     assert field["options"] == "User"
+
+
+def test_pipeline_run_links_build_request():
+    """Governed runs must link back to Pipeline Build Request."""
+    with open(os.path.join(DOCTYPE_DIR, "pipeline_run.json")) as f:
+        doc = json.load(f)
+
+    field = next(f for f in doc["fields"] if f["fieldname"] == "pipeline_build_request")
+    assert field["fieldtype"] == "Link"
+    assert field["options"] == "Pipeline Build Request"
 
 
 def test_pipeline_run_python_exists():

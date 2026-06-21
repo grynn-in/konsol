@@ -1,21 +1,12 @@
-_TRIGGER_DOCTYPES = [
-    "Consolidation Group",
-    "Consolidation Adjustment",
-    "Ownership Period",
-    "Historical Equity Rate",
-    "IC Elimination Rule",
-    "IC Balance",
-    "Allocation Rule",
-    "Allocation Driver",
-    "Allocation Run",
-]
-
 
 def get_data():
     return {
-        "fieldname": "name",
+        "fieldname": "pipeline_build_request",
         "method": "konsol.desk.connections.get_open_count",
+        "non_standard_fieldnames": {
+            "Pipeline Run": "pipeline_build_request",
+        },
         "transactions": [
-            {"label": "Trigger", "items": _TRIGGER_DOCTYPES},
+            {"label": "Runs", "items": ["Pipeline Run"]},
         ],
     }
