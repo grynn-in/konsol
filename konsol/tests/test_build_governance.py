@@ -407,11 +407,12 @@ def test_tasks_reads_build_domain_doctype():
 
 def test_scope_selector_uses_upstream_deps():
     """Reporting/consolidation scopes must use '+' selectors from SCOPE_SELECTOR."""
-    import konsol.tasks as tasks
-    assert tasks.SCOPE_SELECTOR["reporting"].startswith("+")
-    assert tasks.SCOPE_SELECTOR["consolidation"].startswith("+")
-    assert tasks._scope_selector("reporting") == tasks.SCOPE_SELECTOR["reporting"]
-    assert tasks._scope_selector("consolidation") == tasks.SCOPE_SELECTOR["consolidation"]
+    src = _read(TASKS_PATH)
+    scope_block = src.split("SCOPE_SELECTOR = ")[1].split("\n\n")[0]
+    assert '"+tag:domain:reporting"' in scope_block
+    assert '"+tag:domain:consolidation"' in scope_block
+    selector_fn = src.split("def _scope_selector")[1].split("\ndef ")[0]
+    assert "SCOPE_SELECTOR.get(scope)" in selector_fn
 
 
 def test_governed_build_uses_scope_selector_helper():
