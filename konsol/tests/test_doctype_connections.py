@@ -1,7 +1,11 @@
-"""Site-free checks that key doctypes expose ERPNext-style Connections dashboards."""
+"""Site-free checks that key doctypes expose Frappe Connections dashboards."""
 import os
+import sys
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PKG_ROOT = os.path.dirname(APP_DIR)
+if PKG_ROOT not in sys.path:
+    sys.path.insert(0, PKG_ROOT)
 
 
 def _load_dashboard(relative_path):
@@ -51,12 +55,83 @@ def test_fact_table_internal_registry_links():
     assert data["internal_links"]["Dimension"] == ["fact_dimensions", "dimension"]
 
 
+def test_measure_links_fact_tables_with_custom_count():
+    data = _load_dashboard("epm/doctype/measure/measure_dashboard.py")
+    assert "Fact Table" in _items(data)
+    assert data["method"] == "konsol.desk.connections.get_open_count"
+
+
 def test_connector_links_health_and_dims():
     data = _load_dashboard("pipeline/doctype/connector/connector_dashboard.py")
     assert "Connector Health" in _items(data)
     assert data["internal_links"]["Dimension"] == ["dimension_mappings", "dimension"]
 
 
+def test_connector_health_links_connector():
+    data = _load_dashboard("pipeline/doctype/connector_health/connector_health_dashboard.py")
+    assert data["internal_links"]["Connector"] == "connector"
+
+
+def test_gold_model_links_build_domain():
+    data = _load_dashboard("pipeline/doctype/gold_model/gold_model_dashboard.py")
+    assert data["internal_links"]["Build Domain"] == "build_domain"
+
+
+def test_build_domain_links_gold_models():
+    data = _load_dashboard("pipeline/doctype/build_domain/build_domain_dashboard.py")
+    assert "Gold Model" in _items(data)
+    assert data["non_standard_fieldnames"]["Gold Model"] == "build_domain"
+
+
+def test_pipeline_run_links_close_runs():
+    data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
+    assert "Close Run" in _items(data)
+    assert data["non_standard_fieldnames"]["Close Run"] == "pipeline_run"
+
+
 def test_close_run_links_pipeline_run():
     data = _load_dashboard("consolidation/doctype/close_run/close_run_dashboard.py")
     assert data["internal_links"]["Pipeline Run"] == "pipeline_run"
+
+
+def test_consolidation_group_links_children():
+    data = _load_dashboard(
+        "consolidation/doctype/consolidation_group/consolidation_group_dashboard.py")
+    items = _items(data)
+    assert "Ownership Period" in items
+    assert "Historical Equity Rate" in items
+    assert "Consolidation Adjustment" in items
+    assert data["method"] == "konsol.desk.connections.get_open_count"
+
+
+def test_allocation_rule_links_drivers():
+    data = _load_dashboard("allocation/doctype/allocation_rule/allocation_rule_dashboard.py")
+    assert "Allocation Driver" in _items(data)
+    assert data["method"] == "konsol.desk.connections.get_open_count"
+
+
+def test_pipeline_build_request_links_triggers():
+    data = _load_dashboard(
+        "pipeline/doctype/pipeline_build_request/pipeline_build_request_dashboard.py")
+    items = _items(data)
+    assert "Consolidation Group" in items
+    assert "Allocation Run" in items
+    assert data["method"] == "konsol.desk.connections.get_open_count"
+
+
+def test_connection_filter_helpers():
+    from konsol.desk.connection_filters import (
+        allocation_driver_filters,
+        consolidation_group_child_filters,
+    )
+
+    assert consolidation_group_child_filters("AMGRP") == {"consolidation_group": "AMGRP"}
+    assert consolidation_group_child_filters("AMGRP", "AMHQ") == {
+        "consolidation_group": "AMGRP",
+        "data_area_id": "AMHQ",
+    }
+    assert allocation_driver_filters("headcount") == {"driver_type": "headcount"}
+    assert allocation_driver_filters("headcount", "CC100") == {
+        "driver_type": "headcount",
+        "cost_center": "CC100",
+    }
