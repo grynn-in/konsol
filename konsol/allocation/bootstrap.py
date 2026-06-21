@@ -59,6 +59,7 @@ def sync_allocation_config_to_clickhouse():
         _sync_allocation_rules()
         _sync_allocation_drivers()
         _sync_allocation_tiers()
+        _sync_allocation_runs()
     except Exception:
         frappe.logger().warning(
             "allocation config ClickHouse sync skipped after migrate",
@@ -93,6 +94,17 @@ def _sync_allocation_drivers():
     )
     rows = [[doc.get(column) for column in STAGING_DRIVER_COLUMNS] for doc in docs]
     sync_table("epm_staging.allocation_drivers", STAGING_DRIVER_COLUMNS, rows)
+
+
+def _sync_allocation_runs():
+    if not frappe.db.table_exists("Allocation Run"):
+        return
+
+    from konsol.allocation.doctype.allocation_run.allocation_run import (
+        sync_allocation_runs_to_clickhouse,
+    )
+
+    sync_allocation_runs_to_clickhouse()
 
 
 def _sync_allocation_tiers():
