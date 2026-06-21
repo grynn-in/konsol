@@ -405,6 +405,15 @@ def test_tasks_reads_build_domain_doctype():
     assert '"Build Domain"' in content
 
 
+def test_scope_selector_uses_upstream_deps():
+    """Reporting/consolidation scopes must use '+' selectors from SCOPE_SELECTOR."""
+    import konsol.tasks as tasks
+    assert tasks.SCOPE_SELECTOR["reporting"].startswith("+")
+    assert tasks.SCOPE_SELECTOR["consolidation"].startswith("+")
+    assert tasks._scope_selector("reporting") == tasks.SCOPE_SELECTOR["reporting"]
+    assert tasks._scope_selector("consolidation") == tasks.SCOPE_SELECTOR["consolidation"]
+
+
 def test_governed_build_uses_scope_selector_helper():
     """run_governed_build must select via _scope_selector, not the raw dict."""
     content = _read(TASKS_PATH)

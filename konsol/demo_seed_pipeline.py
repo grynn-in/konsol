@@ -79,6 +79,19 @@ def _scope_needs_pbr(scope):
     return last_state != "Completed"
 
 
+def _approve_pending_for_scope(scope):
+    """Approve pending PBRs for one scope so builds run in dependency order."""
+    for name in frappe.get_all(
+        "Pipeline Build Request",
+        filters={"build_scope": scope, "workflow_state": "Pending Review"},
+        pluck="name",
+    ):
+        doc = frappe.get_doc("Pipeline Build Request", name)
+        doc.workflow_state = "Approved"
+        doc.approved_by = frappe.session.user
+        doc.save(ignore_permissions=True)
+
+
 def _create_scope_pbr(scope):
     if not _scope_needs_pbr(scope):
         last = frappe.db.get_value(
@@ -104,24 +117,17 @@ def seed():
 
     created = []
 
+    # Order matters: reporting models depend on actuals/scenarios upstream.
+    for scope in ("actuals", "scenarios", "consolidation"):
+        name, _is_new = _create_scope_pbr(scope)
+        created.append(name)
+        _approve_pending_for_scope(scope)
+
     if frappe.db.exists("Reporting Hierarchy", "MGMT_DEMO"):
         rh = frappe.get_doc("Reporting Hierarchy", "MGMT_DEMO")
         name = request_governed_rebuild(rh, "Demo seed", scope="reporting")
         created.append(name)
-
-    for scope in ("actuals", "consolidation", "scenarios"):
-        name, is_new = _create_scope_pbr(scope)
-        created.append(name)
-
-    for name in frappe.get_all(
-        "Pipeline Build Request",
-        filters={"workflow_state": "Pending Review"},
-        pluck="name",
-    ):
-        doc = frappe.get_doc("Pipeline Build Request", name)
-        doc.workflow_state = "Approved"
-        doc.approved_by = frappe.session.user
-        doc.save(ignore_permissions=True)
+        _approve_pending_for_scope("reporting")
 
     frappe.db.commit()
     return {

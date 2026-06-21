@@ -82,17 +82,22 @@ def resolve_hierarchy_name(hierarchy_name, node_code):
             return None, f"Reporting Hierarchy '{hierarchy_name}' not found or not published"
         return hierarchy_name, None
 
-    member = frappe.db.get_value(
+    members = frappe.get_all(
         "Reporting Hierarchy Member",
-        {"member_code": node_code},
-        ["reporting_hierarchy"],
+        filters={"member_code": node_code},
+        fields=["reporting_hierarchy"],
+        order_by="modified desc",
+        limit_page_length=1,
     )
-    if member:
-        hname = frappe.db.get_value(
-            "Reporting Hierarchy", member, "hierarchy_name",
+    if members:
+        header = frappe.db.get_value(
+            "Reporting Hierarchy",
+            members[0].reporting_hierarchy,
+            ["hierarchy_name", "status", "is_default"],
+            as_dict=True,
         )
-        if hname:
-            return hname, None
+        if header and header.status == "Published":
+            return header.hierarchy_name, None
 
     default = frappe.db.get_value(
         "Reporting Hierarchy",
@@ -154,13 +159,14 @@ def validate_hierarchy_read(hierarchy_name, node_code, scenario):
         allowed = ", ".join(sorted(HIERARCHY_SCENARIO_CONFIG))
         return None, f"Invalid scenario '{scenario}' for hierarchy mode. Allowed: {allowed}"
 
-    if sc in ("budget", "forecast"):
+    if sc in ("budget", "forecast", "variance"):
         from konsol.epm.budget_grain import budget_dimension_names
         if info["dimension"] not in budget_dimension_names():
             return None, (
-                f"Hierarchy axis '{info['dimension']}' is not in budget grain "
-                f"(in_budget: {', '.join(budget_dimension_names()) or 'none'}). "
-                "Publish the dimension with in_budget=1 or use a hierarchy on a budget dimension."
+                f"Hierarchy axis '{info['dimension']}' is not supported for scenario "
+                f"'{sc}' (requires in_budget dimensions: "
+                f"{', '.join(budget_dimension_names()) or 'none'}). "
+                "Use actuals for this hierarchy, or rebuild the hierarchy on a budget dimension."
             )
     return {**info, "hierarchy_name": hname}, None
 
@@ -211,6 +217,7 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
             dims,
             req.get("scenario_id", ""),
             wildcard,
+            "" if wildcard else req.get("entity", ""),
         )
         groups[key].append((idx, req))
 
@@ -267,11 +274,7 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
             params[f"param_{pkey}"] = str(p)
 
         entity_clause = ""
-        if not wildcard:
-            ent = group_items[0][1].get("entity", "")
-            entity_clause = " AND data_area_id = {entity:String}"
-            params["param_entity"] = ent
-        elif allowed_entities is not None:
+        if wildcard and allowed_entities is not None:
             if not allowed_entities:
                 for idx, _ in group_items:
                     errors[idx] = "Not permitted to access any entity"

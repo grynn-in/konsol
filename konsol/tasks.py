@@ -44,7 +44,7 @@ SCOPE_SELECTOR = {
     "staging": "tag:domain:staging",
     "actuals": "tag:domain:actuals",
     "scenarios": "tag:domain:scenarios",
-    "consolidation": "tag:domain:consolidation",
+    "consolidation": "+tag:domain:consolidation",
     "reporting": "+tag:domain:reporting",
     "full": None,  # no selector = full build
 }
@@ -69,9 +69,10 @@ def _known_domains():
 def _scope_selector(scope):
     """dbt --select for a build scope; None for 'full' or an unknown scope
     (no selector → full build), preserving the original SCOPE_SELECTOR semantics."""
-    if scope in _known_domains():
-        return f"tag:domain:{scope}"
-    return None
+    if scope not in _known_domains():
+        return None
+    # SCOPE_SELECTOR carries upstream deps (e.g. '+tag:domain:reporting').
+    return SCOPE_SELECTOR.get(scope) or f"tag:domain:{scope}"
 
 
 def _raw_dependent_scopes():

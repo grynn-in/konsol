@@ -91,6 +91,15 @@ def test_excel_functions_js_passes_hierarchy_node():
     assert "data.hierarchy_node" in src
 
 
+def test_batch_query_groups_by_entity():
+    """Non-wildcard batches must include entity in the group key, not a shared filter."""
+    src = _read("hierarchy_query.py")
+    batch = src.split("def batch_query_hierarchy")[1].split("\ndef ")[0]
+    assert 'wildcard else req.get("entity", "")' in batch
+    assert "group_items[0][1].get(" not in batch
+    assert "param_entity" not in batch
+
+
 def test_legacy_cost_center_mapped_in_api():
     src = _read("api.py")
     assert "_LEGACY_DIM_MAP" in src
