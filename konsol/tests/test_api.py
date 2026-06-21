@@ -60,6 +60,15 @@ def test_api_has_single_value_endpoint():
     assert "epm_value" in func_names
 
 
+def test_api_has_report_apply_endpoints():
+    """Excel add-in Apply report uses list_report_templates and build_cell_map."""
+    with open(API_PATH) as f:
+        tree = ast.parse(f.read())
+    func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "list_report_templates" in func_names
+    assert "build_cell_map" in func_names
+
+
 # --- Hardening tests ---
 
 def test_measure_allowlist_exists():

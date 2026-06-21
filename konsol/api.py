@@ -659,6 +659,36 @@ def excel_addin_logout():
     return {"ok": True}
 
 
+@frappe.whitelist(methods=["GET"])
+def list_report_templates():
+    """Catalog of product-owned report templates for add-in Apply."""
+    from konsol.report_compiler import list_templates
+
+    return {"templates": list_templates()}
+
+
+@frappe.whitelist(methods=["POST"])
+def build_cell_map():
+    """Compile a report template + params into an Excel cell map (formulas)."""
+    from konsol.report_compiler import build_cell_map as compile_cell_map
+
+    body = _get_json_body()
+    template_id = (body.get("template_id") or "").strip()
+    entity = (body.get("entity") or "").strip()
+    year = body.get("year")
+    scenario_id = (body.get("scenario_id") or "actuals").strip()
+
+    if not template_id or not entity or year is None:
+        frappe.throw("template_id, entity, and year are required", frappe.ValidationError)
+
+    _assert_entity_access(entity)
+
+    try:
+        return compile_cell_map(template_id, entity, int(year), scenario_id)
+    except ValueError as exc:
+        frappe.throw(str(exc), frappe.ValidationError)
+
+
 @frappe.whitelist(methods=["POST"])
 def epm_batch():
     """Batch value retrieval — accepts JSON array, returns {"values": [...], "errors": [...]}."""
