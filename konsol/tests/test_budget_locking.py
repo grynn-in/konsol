@@ -76,7 +76,7 @@ def test_upsert_handles_create_race():
     src = _api_src()
     tree = ast.parse(src)
     fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "_upsert_budget_input")
+              if isinstance(n, ast.FunctionDef) and n.name == "_upsert_budget_line")
     body = ast.get_source_segment(src, fn)
     assert "DuplicateEntryError" in body
 

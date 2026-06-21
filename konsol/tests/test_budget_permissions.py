@@ -59,7 +59,7 @@ def test_composite_check_covers_entity_account_and_dimensions():
 
 def test_upsert_enforces_write_access():
     """Covers budget_save and budget_save_batch (both go through _upsert)."""
-    assert "_assert_budget_write_access" in _calls_in(_func(_api_tree(), "_upsert_budget_input"))
+    assert "_assert_budget_write_access" in _calls_in(_func(_api_tree(), "_upsert_budget_line"))
 
 
 def test_cell_save_enforces_write_access():

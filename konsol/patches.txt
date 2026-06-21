@@ -2,3 +2,4 @@ konsol.patches.set_dimension_measure_status
 konsol.patches.rekey_budget_input_dimensional_grain
 konsol.patches.migrate_d365_writeback_settings_to_connector
 konsol.patches.update_period_net_measure_expression
+konsol.patches.reshape_budget_input_to_cycle

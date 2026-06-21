@@ -35,19 +35,20 @@ from konsol import d365_writeback as wb
 # ---------------------------------------------------------------------------
 
 def _doc(**over):
-    """Minimal Budget Input stand-in compatible with build_entries."""
-    data = {
-        "name": "BUD-0001",
-        "data_area_id": "USMF",
-        "fiscal_year": 2024,
-        "main_account": "401100",
-        "dim_cost_center": "CC001",
-        "dim_department": "",
-        "periods": [
-            types.SimpleNamespace(fiscal_period=1, amount=100.0),
-            types.SimpleNamespace(fiscal_period=3, amount=250.0),
-        ],
-    }
+    """Minimal Budget Sheet stand-in compatible with build_entries.
+
+    One wide line with non-zero period_01 (=100) and period_03 (=250); fiscal
+    year is passed to build_entries separately (it lives on the parent cycle).
+    """
+    line = types.SimpleNamespace(
+        main_account="401100", dim_cost_center="CC001", dim_department="")
+    for n in range(1, 13):
+        setattr(line, "period_%02d" % n, 0.0)
+    line.period_01 = 100.0
+    line.period_03 = 250.0
+    line.get = lambda k, d=None: getattr(line, k, d)
+
+    data = {"name": "BSHT-0001", "data_area_id": "USMF", "lines": [line]}
     data.update(over)
     ns = types.SimpleNamespace(**data)
     ns.get = lambda k, d=None: getattr(ns, k, d)
@@ -193,27 +194,27 @@ def test_get_fiscal_calendar_missing_key_defaults_to_jan():
 # ---------------------------------------------------------------------------
 
 def test_build_entries_default_calendar_is_jan():
-    entries = wb.build_entries(_doc())
+    entries = wb.build_entries(_doc(), 2024)
     assert entries[0]["AccountingDate"] == "2024-01-01"
     assert entries[1]["AccountingDate"] == "2024-03-01"
 
 
 def test_build_entries_with_apr_standard_calendar():
     cal = wb.StandardFiscalCalendar(start_month=4)
-    entries = wb.build_entries(_doc(), fiscal_calendar=cal)
+    entries = wb.build_entries(_doc(), 2024, fiscal_calendar=cal)
     assert entries[0]["AccountingDate"] == "2024-04-01"
     assert entries[1]["AccountingDate"] == "2024-06-01"
 
 
 def test_build_entries_with_custom_calendar():
     cal = wb.CustomFiscalCalendar({1: (0, 4, 6), 3: (0, 6, 1)})
-    entries = wb.build_entries(_doc(), fiscal_calendar=cal)
+    entries = wb.build_entries(_doc(), 2024, fiscal_calendar=cal)
     assert entries[0]["AccountingDate"] == "2024-04-06"
     assert entries[1]["AccountingDate"] == "2024-06-01"
 
 
 def test_build_entries_explicit_none_calendar_uses_default():
-    entries = wb.build_entries(_doc(), fiscal_calendar=None)
+    entries = wb.build_entries(_doc(), 2024, fiscal_calendar=None)
     assert entries[0]["AccountingDate"] == "2024-01-01"
 
 
@@ -449,26 +450,26 @@ def test_push_replace_batch_no_existing_sends_only_posts():
 
 
 # ---------------------------------------------------------------------------
-# enqueue_push_budget_input (workflow wiring)
+# enqueue_push_budget_sheet (cycle-lock wiring)
 # ---------------------------------------------------------------------------
 
-def test_enqueue_push_budget_input_calls_frappe_enqueue(monkeypatch):
+def test_enqueue_push_budget_sheet_calls_frappe_enqueue(monkeypatch):
     _fr, enqueued = _install_fake_frappe(monkeypatch)
-    wb.enqueue_push_budget_input("BUD-0001")
-    assert enqueued["method"] == "konsol.d365_writeback.push_budget_input"
-    assert enqueued["kw"]["name"] == "BUD-0001"
+    wb.enqueue_push_budget_sheet("BSHT-0001")
+    assert enqueued["method"] == "konsol.d365_writeback.push_budget_sheet"
+    assert enqueued["kw"]["name"] == "BSHT-0001"
 
 
-def test_enqueue_push_budget_input_uses_long_queue(monkeypatch):
+def test_enqueue_push_budget_sheet_uses_long_queue(monkeypatch):
     _fr, enqueued = _install_fake_frappe(monkeypatch)
-    wb.enqueue_push_budget_input("BUD-0001")
+    wb.enqueue_push_budget_sheet("BSHT-0001")
     assert enqueued.get("queue") == "long"
 
 
-def test_enqueue_push_budget_input_propagates_name(monkeypatch):
+def test_enqueue_push_budget_sheet_propagates_name(monkeypatch):
     _fr, enqueued = _install_fake_frappe(monkeypatch)
-    wb.enqueue_push_budget_input("BUD-CUSTOM-99")
-    assert enqueued["kw"]["name"] == "BUD-CUSTOM-99"
+    wb.enqueue_push_budget_sheet("BSHT-CUSTOM-99")
+    assert enqueued["kw"]["name"] == "BSHT-CUSTOM-99"
 
 
 # ---------------------------------------------------------------------------

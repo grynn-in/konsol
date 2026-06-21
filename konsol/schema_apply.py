@@ -76,7 +76,7 @@ def apply_schema(run_dbt=False):
         summary["errors"].append(f"Fact tables: {str(e)}")
         frappe.log_error("schema_apply: fact tables failed", frappe.get_traceback())
 
-    # 4. Sync Budget Input custom fields
+    # 4. Sync Budget Line custom fields (in_budget dimension columns)
     try:
         summary["budget_fields_synced"] = _sync_budget_custom_fields()
     except Exception as e:
@@ -280,10 +280,11 @@ def _upsert_dbt_source(fact):
 
 
 def _sync_budget_custom_fields():
-    """Ensure Budget Input has Custom Fields for all in_budget Published dimensions.
+    """Ensure Budget Line has Custom Fields for all in_budget Published dimensions.
 
-    Adds missing fields, removes orphaned ones.
-    Returns list of field actions taken.
+    The wide budget lines carry the dimension columns (account + dims + 12
+    months); the dims are provisioned here as Custom Fields. Adds missing fields,
+    removes orphaned ones. Returns list of field actions taken.
     """
     budget_dims = frappe.get_all(
         "Dimension",
@@ -294,11 +295,11 @@ def _sync_budget_custom_fields():
     wanted = {d.dimension_name for d in budget_dims}
     label_map = {d.dimension_name: d.label for d in budget_dims}
 
-    # Get existing custom fields for Budget Input that are dimension fields
+    # Get existing custom fields for Budget Line that are dimension fields
     existing = frappe.get_all(
         "Custom Field",
         filters={
-            "dt": "Budget Input",
+            "dt": "Budget Line",
             "fieldname": ("like", "dim_%"),
         },
         fields=["name", "fieldname"],
@@ -311,7 +312,7 @@ def _sync_budget_custom_fields():
     # Add missing
     for dim_name in sorted(wanted - existing_names):
         cf = frappe.new_doc("Custom Field")
-        cf.dt = "Budget Input"
+        cf.dt = "Budget Line"
         cf.fieldname = dim_name
         cf.fieldtype = "Data"
         cf.label = label_map.get(dim_name, dim_name)

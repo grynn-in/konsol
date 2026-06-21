@@ -1,0 +1,90 @@
+{
+  "name": "Budget Cycle",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "is_submittable": 1,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "",
+  "fields": [
+    {
+      "fieldname": "scenario_id",
+      "fieldtype": "Link",
+      "label": "Scenario",
+      "options": "Scenario Definition",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "fiscal_year",
+      "fieldtype": "Int",
+      "label": "Fiscal Year",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "deadline",
+      "fieldtype": "Date",
+      "label": "Deadline",
+      "description": "Target close date — shown, not auto-enforced"
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Open\nLocked",
+      "default": "Open",
+      "read_only": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "Open while docstatus 0; Locked on submit"
+    },
+    {
+      "fieldname": "locked_by",
+      "fieldtype": "Link",
+      "label": "Locked By",
+      "options": "User",
+      "read_only": 1
+    },
+    {
+      "fieldname": "locked_on",
+      "fieldtype": "Datetime",
+      "label": "Locked On",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1
+    },
+    {
+      "role": "Budget Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "submit": 1,
+      "cancel": 1
+    },
+    {
+      "role": "Budget Submitter",
+      "read": 1
+    },
+    {
+      "role": "Budget Controller",
+      "read": 1
+    }
+  ]
+}

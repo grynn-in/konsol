@@ -39,6 +39,22 @@ def after_migrate():
     _regenerate_reporting_hierarchies_seed()
     _sync_allocation_config_to_clickhouse()
     _setup_dashboard()
+    _sync_budget_line_custom_fields()
+
+
+def _sync_budget_line_custom_fields():
+    """Provision Budget Line's in_budget dim Custom Fields after migrate.
+
+    These columns are otherwise only synced on Dimension publish / manual schema
+    apply, but the Excel budget write path (and the reshape migration) need them
+    to exist. Best-effort — never fail a migrate over it.
+    """
+    try:
+        from konsol.schema_apply import _sync_budget_custom_fields
+        _sync_budget_custom_fields()
+    except Exception:
+        frappe.logger().warning(
+            "budget line custom field sync skipped after migrate", exc_info=True)
 
 
 def _setup_dashboard():

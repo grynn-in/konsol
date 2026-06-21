@@ -1,9 +1,10 @@
-"""Unit tests for D365 budget write-back (Phase 3).
+"""Unit tests for D365 budget write-back (post-reshape: Budget Sheet grain).
 
 Pure mapping/auth/client logic — no live Frappe site. ``frappe`` is imported
 lazily inside the module's site-bound functions, so importing the module and
 exercising build_entries / get_token / post_entries / error_message needs only
-``requests`` (mocked here).
+``requests`` (mocked here). ``PERIOD_FIELDS`` lives in the frappe-free
+``konsol.epm.budget_periods`` so ``build_entries`` stays importable without a site.
 """
 import json
 import os
@@ -17,31 +18,37 @@ from konsol import d365_writeback as wb
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _doc(**over):
-    """Minimal Budget Input stand-in (attribute + .get access)."""
-    data = {
-        "name": "BUD-0001",
-        "data_area_id": "USMF",
-        "fiscal_year": 2024,
-        "main_account": "401100",
-        "dim_cost_center": "CC001",
-        "dim_department": "",
-        "periods": [
-            types.SimpleNamespace(fiscal_period=1, amount=100.0),
-            types.SimpleNamespace(fiscal_period=2, amount=0.0),    # skipped
-            types.SimpleNamespace(fiscal_period=3, amount=250.5),
-        ],
-    }
-    data.update(over)
+def _ns(**data):
     ns = types.SimpleNamespace(**data)
     ns.get = lambda k, d=None: getattr(ns, k, d)
     return ns
 
 
+def _line(**over):
+    """Minimal Budget Line stand-in: account + dims + 12 wide month columns."""
+    data = {"main_account": "401100", "dim_cost_center": "CC001", "dim_department": ""}
+    for n in range(1, 13):
+        data["period_%02d" % n] = 0.0
+    data["period_01"] = 100.0
+    data["period_03"] = 250.5
+    data.update(over)
+    return _ns(**data)
+
+
+def _sheet(**over):
+    """Minimal Budget Sheet stand-in (attribute + .get access, .lines list)."""
+    lines = over.pop("lines", None)
+    if lines is None:
+        lines = [_line()]
+    data = {"name": "BSHT-0001", "data_area_id": "USMF", "lines": lines}
+    data.update(over)
+    return _ns(**data)
+
+
 # --- idempotency + period mapping ---
 
 def test_budget_model_id_is_deterministic():
-    assert wb.budget_model_id("BUD-0001") == "EPM-BUD-0001"
+    assert wb.budget_model_id("BSHT-0001") == "EPM-BSHT-0001"
 
 
 def test_period_first_day():
@@ -51,21 +58,32 @@ def test_period_first_day():
 
 
 def test_dimension_values_skips_empty():
-    vals = wb._dimension_values(_doc())
+    vals = wb._dimension_values(_line())
     assert vals == {"CostCenter": "CC001"}            # department empty -> omitted
 
 
-def test_build_entries_maps_and_skips_zero():
-    entries = wb.build_entries(_doc())
-    assert len(entries) == 2                            # zero-amount period dropped
+def test_build_entries_explodes_wide_to_tall_and_skips_zero():
+    entries = wb.build_entries(_sheet(), 2024)
+    assert len(entries) == 2                            # only 2 non-zero months
     e = entries[0]
-    assert e["BudgetModelId"] == "EPM-BUD-0001"        # idempotency tag
+    assert e["BudgetModelId"] == "EPM-BSHT-0001"        # idempotency tag = sheet grain
     assert e["LegalEntityId"] == "USMF"
-    assert e["AccountingDate"] == "2024-01-01"
+    assert e["AccountingDate"] == "2024-01-01"          # period_01
     assert e["MainAccountId"] == "401100"
     assert e["AccountingCurrencyAmount"] == 100.0
     assert e["LedgerDimensionValues"] == {"CostCenter": "CC001"}
     assert entries[1]["AccountingCurrencyAmount"] == 250.5
+    assert entries[1]["AccountingDate"] == "2024-03-01"  # period_03
+
+
+def test_build_entries_spans_multiple_lines():
+    sheet = _sheet(lines=[
+        _line(main_account="401100"),
+        _line(main_account="500200", dim_cost_center="CC002"),
+    ])
+    entries = wb.build_entries(sheet, 2024)
+    assert len(entries) == 4                            # 2 non-zero months x 2 lines
+    assert {e["MainAccountId"] for e in entries} == {"401100", "500200"}
 
 
 # --- OAuth + POST client (requests mocked) ---
@@ -91,7 +109,7 @@ def test_post_entries_targets_budget_register_entries_with_bearer():
         resp.json.return_value = {}
         resp.raise_for_status = lambda: None
         post.return_value = resp
-        wb.post_entries(cfg, "TOK", [{"BudgetModelId": "EPM-BUD-0001"}])
+        wb.post_entries(cfg, "TOK", [{"BudgetModelId": "EPM-BSHT-0001"}])
     url = post.call_args[0][0]
     assert url == "https://org.operations.dynamics.com/data/BudgetRegisterEntries"
     assert post.call_args[1]["headers"]["Authorization"] == "Bearer TOK"
@@ -126,7 +144,7 @@ def test_epm_settings_has_d365_fields():
     assert secret["fieldtype"] == "Password"
 
 
-def test_budget_input_has_writeback_status_fields():
-    meta = json.load(open(os.path.join(APP_DIR, "epm", "doctype", "budget_input", "budget_input.json")))
+def test_budget_sheet_has_writeback_status_fields():
+    meta = json.load(open(os.path.join(APP_DIR, "epm", "doctype", "budget_sheet", "budget_sheet.json")))
     names = {f["fieldname"] for f in meta["fields"]}
     assert "d365_writeback_status" in names and "d365_writeback_error" in names

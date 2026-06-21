@@ -392,28 +392,92 @@ def _resolve_period(period):
     return (p,)
 
 
-def _budget_filters(data):
-    """Build the dimensional unique-key filter dict for Budget Input upsert.
+def _period_field(fiscal_period):
+    """Wide period column name for a fiscal period (1-12) → ``period_NN``."""
+    return "period_%02d" % int(fiscal_period)
 
-    Grain = fixed keys + every ``in_budget`` Published dimension (spec #51), so
-    two writers differing only by a budget dimension (e.g. cost center on a
-    shared Travel account) resolve to *different* docs instead of clobbering.
-    """
+
+def _budget_dims():
+    """``in_budget`` dim fieldnames provisioned on Budget Line — resolved ONCE
+    per request and threaded through, not re-queried per cell (avoids an N+1 of
+    one Dimension lookup per period × line on the Excel write path)."""
     from konsol.epm.budget_grain import budget_dimension_names
 
+    meta = frappe.get_meta("Budget Line")
+    return [d for d in budget_dimension_names() if meta.get_field(d)]
+
+
+def _line_identity(data, dims):
+    """main_account + in_budget dim values identifying a Budget Line in a sheet.
+
+    ``dims`` comes from ``_budget_dims()`` (resolved once). A dimension flagged
+    ``in_budget`` whose Custom Field is not yet provisioned is already excluded
+    from ``dims``, so it is skipped here too.
+    """
+    ident = {"main_account": data["main_account"]}
+    for dim in dims:
+        ident[dim] = data.get(dim, "") or ""
+    return ident
+
+
+def _resolve_budget_cycle(data, create=True):
+    """Find (or create) the Budget Cycle for (scenario, fiscal_year).
+
+    Returns ``{"name", "status"}`` or None. A new cycle starts Open
+    (docstatus 0); the manager submits it to lock. The create path tolerates the
+    concurrent-create race (two first-writes to the same scenario/year): on a
+    ``DuplicateEntryError`` it re-reads the row the other writer just inserted
+    instead of 500-ing.
+    """
     filters = {
         "scenario_id": data["scenario_id"],
-        "data_area_id": data["data_area_id"],
         "fiscal_year": int(data["fiscal_year"]),
-        "main_account": data["main_account"],
     }
-    meta = frappe.get_meta("Budget Input")
-    for dim in budget_dimension_names():
-        # Guard: a dimension flagged in_budget whose Custom Field has not yet
-        # been provisioned by schema_apply would break the get_all filter.
-        if meta.get_field(dim):
-            filters[dim] = data.get(dim, "") or ""
-    return filters
+    existing = frappe.get_all(
+        "Budget Cycle", filters=filters, fields=["name", "status"], limit=1)
+    if existing:
+        return existing[0]
+    if not create:
+        return None
+    doc = frappe.new_doc("Budget Cycle")
+    doc.update(filters)
+    doc.status = "Open"
+    try:
+        doc.insert()
+    except frappe.exceptions.DuplicateEntryError:
+        frappe.db.rollback()  # concurrent create won — re-read it
+        row = frappe.get_all(
+            "Budget Cycle", filters=filters, fields=["name", "status"], limit=1)
+        if row:
+            return row[0]
+        raise
+    return {"name": doc.name, "status": doc.status}
+
+
+def _assert_cycle_open(cycle):
+    """Reject budget writes once the cycle is locked (HTTP 423)."""
+    if cycle and cycle.get("status") == "Locked":
+        frappe.local.response.http_status_code = 423  # Locked
+        frappe.throw(
+            "Budget Cycle '{0}' is locked; the budget is final. "
+            "Cancel the cycle to amend.".format(cycle["name"]),
+            frappe.ValidationError,
+        )
+
+
+def _get_or_create_sheet(cycle_name, data, layer):
+    """Find or load (else build, uninserted) the Budget Sheet for (cycle, entity, layer)."""
+    filters = {
+        "cycle": cycle_name,
+        "data_area_id": data["data_area_id"],
+        "layer": layer,
+    }
+    existing = frappe.get_all("Budget Sheet", filters=filters, limit=1)
+    if existing:
+        return frappe.get_doc("Budget Sheet", existing[0].name)
+    doc = frappe.new_doc("Budget Sheet")
+    doc.update(filters)
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -994,80 +1058,86 @@ def _validate_budget_fields(data):
         frappe.throw("periods must be a non-empty array", frappe.ValidationError)
 
 
-def _set_cell(doc, fiscal_period, layer, amount):
-    """Upsert one (fiscal_period, layer) row in a Budget Input's periods table."""
-    for row in doc.periods:
-        if row.fiscal_period == fiscal_period and row.layer == layer:
-            row.amount = amount
-            return
-    doc.append("periods", {"fiscal_period": fiscal_period, "amount": amount, "layer": layer})
+def _set_cell(sheet, ident, fiscal_period, amount, dims):
+    """Set one period cell on the sheet's Budget Line (account+dims), appending if new."""
+    from konsol.epm.budget_grain import find_budget_line
+
+    line = find_budget_line(sheet, ident, dims, append=True)
+    line.set(_period_field(fiscal_period), amount)
+    return line
 
 
-def _upsert_budget_input(data):
-    """Create or update a Budget Input doc from API data. Returns doc name."""
-    from konsol.epm.budget_grain import budget_dimension_names
+def _upsert_budget_line(data):
+    """Create/update Budget Line(s) for a budget save payload. Returns sheet name(s).
+
+    Resolves the (auto-created, Open) Budget Cycle, then writes each period into
+    its (cycle × entity × layer) sheet — layer is sheet-level now, so a payload
+    mixing layers fans out across sheets. Only the supplied periods are touched;
+    unspecified months on an existing line are preserved. Layer is canonicalised
+    + validated so a sheet's grain can't split on case (e.g. 'Base' vs 'base').
+    """
+    from konsol.epm.budget_grain import is_valid_layer, normalize_layer
 
     _assert_budget_write_access(data)
+    cycle = _resolve_budget_cycle(data)
+    _assert_cycle_open(cycle)
+    dims = _budget_dims()
+    ident = _line_identity(data, dims)
 
-    # One retry to absorb the concurrent-create race on a brand-new combination
-    # (see budget_cell_save for the rationale).
-    for _attempt in range(2):
-        filters = _budget_filters(data)
-        existing = frappe.get_all("Budget Input", filters=filters, limit=1)
-        creating = not existing
+    by_layer = {}
+    for p in data["periods"]:
+        layer = normalize_layer(p.get("layer", "base"))
+        if not is_valid_layer(layer):
+            frappe.throw(
+                f"Invalid layer '{layer}'. Allowed: {', '.join(sorted(VALID_LAYERS))}",
+                frappe.ValidationError,
+            )
+        by_layer.setdefault(layer, []).append(p)
 
-        if existing:
-            doc = frappe.get_doc("Budget Input", existing[0].name)
-            doc.periods = []
-        else:
-            doc = frappe.new_doc("Budget Input")
-            doc.update(filters)
-
-        for dim in budget_dimension_names():
-            doc.set(dim, data.get(dim, ""))
-
-        for p in data["periods"]:
-            doc.append("periods", {
-                "fiscal_period": int(p.get("period", p.get("fiscal_period", 0))),
-                "amount": float(p.get("amount", 0)),
-                "layer": p.get("layer", "base"),
-            })
-
-        try:
-            doc.save()
-        except frappe.exceptions.DuplicateEntryError:
-            if creating:
+    sheet_names = []
+    for layer, periods in by_layer.items():
+        # One retry to absorb the concurrent-create race on a brand-new sheet.
+        for _attempt in range(2):
+            sheet = _get_or_create_sheet(cycle["name"], data, layer)
+            for p in periods:
+                fp = int(p.get("period", p.get("fiscal_period", 0)))
+                _set_cell(sheet, ident, fp, float(p.get("amount", 0)), dims)
+            try:
+                sheet.save()
+            except frappe.exceptions.DuplicateEntryError:
                 frappe.db.rollback()  # concurrent create won — retry as update
                 continue
-            raise
-        return doc.name
-
-    frappe.throw(
-        frappe._("Could not save budget line due to concurrent writes; please retry."),
-        frappe.ValidationError,
-    )
+            sheet_names.append(sheet.name)
+            break
+    return sheet_names
 
 
 @frappe.whitelist(methods=["POST"])
 def budget_save():
-    """Save a single budget line — creates/updates Budget Input doc in Draft."""
+    """Save a budget line into its (cycle, entity, layer) sheet(s).
+
+    The Budget Cycle for (scenario, fiscal_year) is auto-created Open if absent;
+    writes are rejected once it is locked.
+    """
     data = _get_json_body()
     _validate_budget_fields(data)
-    name = _upsert_budget_input(data)
-    return {"name": name}
+    sheets = _upsert_budget_line(data)
+    return {"sheets": sheets, "name": sheets[0] if sheets else None}
 
 
 @frappe.whitelist(methods=["POST"])
 def budget_cell_save():
-    """Save a single budget cell — upserts one period+layer in a Budget Input doc.
+    """Save a single budget cell — sets one period on a sheet's Budget Line.
 
-    Designed for EPMSAVE() immediate writes from Excel.
+    Designed for EPMSAVE() immediate writes from Excel. The (scenario,
+    fiscal_year) Budget Cycle is auto-created Open if absent; once the cycle is
+    locked the write is refused with HTTP 423.
 
     Optional optimistic-locking params (backward-compatible — omit for
-    last-write-wins): ``base_modified`` is the doc ``modified`` the client last
-    read; if it is stale the write is refused with an HTTP 409 ``conflict``
-    payload (current value + ``current_modified``) so the client can refresh and
-    re-prompt. A successful save echoes the new ``modified`` baseline.
+    last-write-wins): ``base_modified`` is the Budget Sheet ``modified`` the
+    client last read; if it is stale the write is refused with an HTTP 409
+    ``conflict`` payload (current value + ``current_modified``) so the client can
+    refresh and re-prompt. A successful save echoes the new ``modified`` baseline.
     """
     data = _get_json_body()
 
@@ -1080,8 +1150,10 @@ def budget_cell_save():
             frappe.ValidationError,
         )
 
-    layer = str(data["layer"]).strip().lower()
-    if layer not in VALID_LAYERS:
+    from konsol.epm.budget_grain import is_valid_layer, normalize_layer
+
+    layer = normalize_layer(data["layer"])
+    if not is_valid_layer(layer):
         frappe.throw(
             f"Invalid layer '{layer}'. Allowed: {', '.join(sorted(VALID_LAYERS))}",
             frappe.ValidationError,
@@ -1106,34 +1178,36 @@ def budget_cell_save():
 
     _assert_budget_write_access(data)
 
-    from konsol.epm.budget_grain import budget_dimension_names
+    cycle = _resolve_budget_cycle(data)
+    _assert_cycle_open(cycle)
 
+    dims = _budget_dims()
+    ident = _line_identity(data, dims)
     base_modified = data.get("base_modified")
+    sheet_filters = {
+        "cycle": cycle["name"],
+        "data_area_id": data["data_area_id"],
+        "layer": layer,
+    }
 
-    # Resolve -> mutate -> save, with one retry. If a concurrent request creates
-    # the SAME brand-new dimensional combination between our existence check and
-    # insert, the second insert hits a duplicate-name error; retry, which now
-    # finds the existing doc and takes the locked update path (no clobber, no
-    # 500). Existing-doc contention is handled by the FOR UPDATE lock below.
+    # Resolve -> mutate -> save, with one retry. Different (entity, layer) are
+    # different sheets => no contention; cells of the SAME sheet serialise on the
+    # FOR UPDATE lock below. A concurrent create of the SAME new sheet hits a
+    # duplicate-name error; retry then finds it and takes the locked update path.
     for _attempt in range(2):
-        filters = _budget_filters(data)
-        existing = frappe.get_all("Budget Input", filters=filters, limit=1)
+        existing = frappe.get_all("Budget Sheet", filters=sheet_filters, limit=1)
 
         if existing:
             name = existing[0].name
-            # Row lock: two cell saves to the SAME doc serialise instead of
-            # clobbering (different combinations are different docs => no
-            # contention). The FOR UPDATE read returns the authoritative
-            # committed `modified` — compare against that, not a cached field.
             current_modified = frappe.db.get_value(
-                "Budget Input", name, "modified", for_update=True)
-            doc = frappe.get_doc("Budget Input", name)
+                "Budget Sheet", name, "modified", for_update=True)
+            doc = frappe.get_doc("Budget Sheet", name)
             if base_modified and str(current_modified) != str(base_modified):
                 # None (not 0) when the cell was cleared — distinguishable from a
                 # genuine zero so the client's conflict UI can tell them apart.
-                current_amount = next(
-                    (r.amount for r in doc.periods
-                     if r.fiscal_period == fp and r.layer == layer), None)
+                from konsol.epm.budget_grain import find_budget_line
+                line = find_budget_line(doc, ident, dims)
+                current_amount = line.get(_period_field(fp)) if line else None
                 frappe.local.response.http_status_code = 409
                 return {
                     "status": "conflict",
@@ -1144,17 +1218,14 @@ def budget_cell_save():
                     "current_amount": current_amount,
                     "current_modified": str(current_modified),
                 }
-            _set_cell(doc, fp, layer, amount)
+            _set_cell(doc, ident, fp, amount, dims)
             doc.save()
             return {"status": "ok", "name": doc.name, "value": amount,
                     "modified": str(doc.modified)}
 
         # Create path.
-        doc = frappe.new_doc("Budget Input")
-        doc.update(filters)
-        for dim in budget_dimension_names():
-            doc.set(dim, data.get(dim, ""))
-        _set_cell(doc, fp, layer, amount)
+        doc = _get_or_create_sheet(cycle["name"], data, layer)
+        _set_cell(doc, ident, fp, amount, dims)
         try:
             doc.insert()
         except frappe.exceptions.DuplicateEntryError:
@@ -1181,8 +1252,9 @@ def budget_save_batch():
     for i, data in enumerate(items):
         try:
             _validate_budget_fields(data)
-            name = _upsert_budget_input(data)
-            results.append({"name": name, "index": i})
+            sheets = _upsert_budget_line(data)
+            results.append({"name": sheets[0] if sheets else None,
+                            "sheets": sheets, "index": i})
             errors.append(None)
         except frappe.PermissionError as e:
             # Surface authorization denials per item (don't bury as a generic

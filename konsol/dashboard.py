@@ -33,7 +33,7 @@ _SHORTCUTS = [
 _CARDS = [
     ("EPM Models", [
         "Fact Table", "Measure", "Dimension", "Scenario Definition",
-        "Budget Input", "Fiscal Period", "Spread Profile",
+        "Budget Cycle", "Budget Sheet", "Fiscal Period", "Spread Profile",
         "Dimension Mapping", "Reporting Hierarchy", "Reporting Hierarchy Member",
         "EPM Settings",
     ]),

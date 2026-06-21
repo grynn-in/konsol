@@ -46,16 +46,17 @@ class BudgetInput(Document):
         self._validate_layer_permissions()
 
     def on_update(self):
-        if self.workflow_state == "Approved":
-            self._sync_to_clickhouse()
-            # D365 write-back fires only on the TRANSITION into Approved, not on
-            # every subsequent save while already Approved (avoids redundant
-            # pushes; the re-push guard is a backstop, not the primary gate).
-            if self.has_value_changed("workflow_state"):
-                self._maybe_enqueue_d365_writeback()
+        # DEPRECATED: Budget Input is superseded by Budget Cycle / Sheet / Line
+        # (see konsol.patches.reshape_budget_input_to_cycle). Downstream effects
+        # are intentionally disabled so this legacy doctype, retained only for
+        # migration verification/rollback, does not dual-write ClickHouse or
+        # re-push D365 with the old per-grain BudgetModelId (which would orphan
+        # into a double budget). All write-back now flows through BudgetCycle.
+        pass
 
     def on_trash(self):
-        self._sync_to_clickhouse()
+        # DEPRECATED — see on_update. No downstream sync.
+        pass
 
     def _compute_annual_amount(self):
         """annual_amount = sum of all child period amounts."""
@@ -125,25 +126,6 @@ class BudgetInput(Document):
 
         # DELETE old rows for this key, INSERT new ones (empty rows on trash/unapprove)
         sync_rows("epm_gold.budget_monthly_input", columns, rows, key_columns, key_values)
-
-    def _maybe_enqueue_d365_writeback(self):
-        """Enqueue async D365 write-back when write-back is enabled in EPM Settings.
-
-        Gated on ``enable_d365_budget_writeback`` (off by default). The
-        ``push_budget_input`` re-push guard prevents duplicate sends when a doc
-        is saved multiple times in Approved state.
-
-        Import is lazy so the method is safe to call even when the D365
-        credentials are not configured — it simply returns without raising.
-        """
-        try:
-            from konsol.d365_writeback import enqueue_push_budget_input, get_config
-            cfg = get_config(entity_id=self.data_area_id)
-        except Exception:
-            return
-        if not cfg.get("enabled"):
-            return
-        enqueue_push_budget_input(self.name)
 
     @frappe.whitelist()
     def spread_annual(self):
