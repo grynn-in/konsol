@@ -2,9 +2,8 @@
 Konsolidat desk dashboard.
 
 Builds a public Frappe Workspace named "Konsolidat" so the desk lands on
-konsol-related links (models, pipeline, allocation, consolidation) instead of
-the default Frappe workspaces, together with a few overview number cards and
-charts.
+konsol-related shortcuts and workflow link cards (budget, registry, pipeline,
+allocation, consolidation) instead of the default Frappe workspaces.
 
 Called best-effort from ``konsol.install.after_migrate`` so the dashboard is
 recreated on every ``bench migrate`` (and therefore survives a clean redeploy).
@@ -54,33 +53,13 @@ _CARDS = [
     ]),
 ]
 
-# Overview number cards: (label, doctype, colour)
-_NUMBER_CARDS = [
-    ("Fact Tables", "Fact Table", "#449CF0"),
-    ("Measures", "Measure", "#29CD42"),
-    ("Dimensions", "Dimension", "#FFC107"),
-    ("Budget Cycles", "Budget Cycle", "#009688"),
-    ("Connectors", "Connector", "#FF8C00"),
-    ("Pipeline Runs", "Pipeline Run", "#7C4DFF"),
-]
-
-# Group-by charts: (name, doctype, group_by_field, display_type)
-_CHARTS = [
-    ("Fact Tables by Source Type", "Fact Table", "source_type", "Donut"),
-    ("Measures by Type", "Measure", "cube_type", "Donut"),
-]
-
 
 def _dt(name):
     return bool(frappe.db.exists("DocType", name))
 
 
-def _field(doctype, fieldname):
-    return frappe.get_meta(doctype).has_field(fieldname)
-
-
 def _workspace_needs_refresh():
-    """True when an older workspace layout is missing shortcuts or workflow cards."""
+    """True when an older workspace layout should be rebuilt."""
     if not frappe.db.exists("Workspace", WORKSPACE):
         return False
     ws = frappe.get_doc("Workspace", WORKSPACE)
@@ -88,83 +67,40 @@ def _workspace_needs_refresh():
     card_labels = {l.label for l in (ws.links or []) if l.type == "Card Break"}
     if _dt("Budget Cycle") and "Budget Cycle" not in shortcuts:
         return True
-    # Rebuild once when migrating from the legacy single "EPM Models" card layout.
-    return "EPM Models" in card_labels
+    if "EPM Models" in card_labels:
+        return True
+    if ws.number_cards or ws.charts:
+        return True
+    content = json.loads(ws.content or "[]")
+    for block in content:
+        if block.get("type") in ("number_card", "chart"):
+            return True
+        if block.get("type") == "header" and "Overview" in (block.get("data") or {}).get("text", ""):
+            return True
+    return False
 
 
 def setup_workspace(force=False):
-    """Create the Konsolidat workspace + overview cards/charts if missing.
+    """Create the Konsolidat workspace if missing.
 
     Idempotent and self-filtering. ``force=True`` rebuilds the workspace even if
-    it already exists (used for manual refreshes). When new shortcut tiles ship
-    (e.g. Budget Cycle), an existing workspace is rebuilt once so desk users see
-    them without a manual refresh.
+    it already exists (used for manual refreshes). When the layout changes, an
+    existing workspace is rebuilt once so desk users see updates without a manual
+    refresh.
     """
     if not _dt("Fact Table"):
         # konsol doctypes not migrated yet — nothing to build.
         return
 
-    created_cards = _ensure_number_cards()
-    created_charts = _ensure_charts()
-
     if (force or _workspace_needs_refresh()) and frappe.db.exists("Workspace", WORKSPACE):
         frappe.delete_doc("Workspace", WORKSPACE, force=True, ignore_permissions=True)
 
     if not frappe.db.exists("Workspace", WORKSPACE):
-        _create_workspace(created_cards, created_charts)
+        _create_workspace()
         frappe.logger().info(f"Created desk workspace: {WORKSPACE}")
 
 
-def _ensure_number_cards():
-    names = []
-    for label, doctype, color in _NUMBER_CARDS:
-        if not _dt(doctype):
-            continue
-        names.append(label)
-        if frappe.db.exists("Number Card", label):
-            continue
-        frappe.get_doc({
-            "doctype": "Number Card",
-            "name": label,
-            "label": label,
-            "type": "Document Type",
-            "document_type": doctype,
-            "function": "Count",
-            "filters_json": "[]",
-            "is_public": 1,
-            "show_percentage_stats": 1,
-            "stats_time_interval": "Daily",
-            "color": color,
-        }).insert(ignore_permissions=True)
-    return names
-
-
-def _ensure_charts():
-    names = []
-    for name, doctype, group_by, display in _CHARTS:
-        if not _dt(doctype) or not _field(doctype, group_by):
-            continue
-        names.append(name)
-        if frappe.db.exists("Dashboard Chart", name):
-            continue
-        frappe.get_doc({
-            "doctype": "Dashboard Chart",
-            "name": name,
-            "chart_name": name,
-            "chart_type": "Group By",
-            "document_type": doctype,
-            "group_by_type": "Count",
-            "group_by_based_on": group_by,
-            "type": display,
-            "timeseries": 0,
-            "filters_json": "[]",
-            "is_public": 1,
-            "number_of_groups": 0,
-        }).insert(ignore_permissions=True)
-    return names
-
-
-def _create_workspace(card_names, chart_names):
+def _create_workspace():
     shortcuts = [s for s in _SHORTCUTS if _dt(s[0])]
 
     cards = []
@@ -185,7 +121,7 @@ def _create_workspace(card_names, chart_names):
                 "link_count": 0, "hidden": 0, "is_query_report": 0, "onboard": 0,
             })
 
-    content = _build_content(shortcuts, cards, card_names, chart_names)
+    content = _build_content(shortcuts, cards)
 
     frappe.get_doc({
         "doctype": "Workspace",
@@ -203,12 +139,10 @@ def _create_workspace(card_names, chart_names):
             for l, c in shortcuts
         ],
         "links": links,
-        "charts": [{"chart_name": n, "label": n} for n in chart_names],
-        "number_cards": [{"number_card_name": n, "label": n} for n in card_names],
     }).insert(ignore_permissions=True)
 
 
-def _build_content(shortcuts, cards, card_names, chart_names):
+def _build_content(shortcuts, cards):
     counter = {"i": 0}
 
     def cid():
@@ -223,17 +157,6 @@ def _build_content(shortcuts, cards, card_names, chart_names):
     for label, _ in shortcuts:
         content.append({"id": cid(), "type": "shortcut",
                         "data": {"shortcut_name": label, "col": 3}})
-    content.append({"id": cid(), "type": "spacer", "data": {"col": 12}})
-
-    if card_names:
-        content.append(header("Overview"))
-        for name in card_names:
-            content.append({"id": cid(), "type": "number_card",
-                            "data": {"number_card_name": name, "col": 3}})
-    for name in chart_names:
-        content.append({"id": cid(), "type": "chart",
-                        "data": {"chart_name": name, "col": 6}})
-
     content.append({"id": cid(), "type": "spacer", "data": {"col": 12}})
     content.append(header("Workflows"))
     for label, _ in cards:

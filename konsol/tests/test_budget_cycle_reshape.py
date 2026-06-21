@@ -232,7 +232,8 @@ def test_budget_fixtures_registered():
 def test_dashboard_includes_budget_cycle_shortcut():
     dash = _src(os.path.join(APP_DIR, "dashboard.py"))
     assert '("Budget Cycle"' in dash
-    assert "Budget Cycles" in dash
+    assert "_NUMBER_CARDS" not in dash
+    assert "_CHARTS" not in dash
     assert "_workspace_needs_refresh" in dash
 
 
