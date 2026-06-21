@@ -67,6 +67,7 @@ def test_api_has_report_apply_endpoints():
     func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     assert "list_report_templates" in func_names
     assert "build_cell_map" in func_names
+    assert "build_snapshot" in func_names
 
 
 # --- Hardening tests ---

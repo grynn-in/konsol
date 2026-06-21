@@ -100,6 +100,23 @@
       box-shadow: none;
     }
     button:disabled { opacity: 0.55; cursor: wait; transform: none; box-shadow: none; }
+    button.secondary {
+      background: var(--k-surface);
+      color: var(--k-ink);
+      border: 1.5px solid var(--k-green);
+    }
+    button.secondary:hover:not(:disabled) {
+      background: var(--k-bg);
+      border-color: var(--k-green-dark);
+      color: var(--k-ink);
+    }
+    .field-row {
+      display: flex;
+      gap: 8px;
+    }
+    .field-row > div { flex: 1; }
+    .field-row label { margin-top: 0; }
+    button[hidden] { display: none; }
     .error-inline { color: var(--k-red); margin-top: 8px; font-size: 12px; }
     body:not(.ready) .sections { opacity: 0.55; }
     #boot-status { color: var(--k-soft); font-size: 12px; }
@@ -226,7 +243,7 @@
 <body>
   <header>
     <h1>Konsolidat</h1>
-    <p class="version">v2.3.1.0</p>
+    <p class="version">v2.4.0.0</p>
     <p id="boot-status">Connecting to Excel…</p>
   </header>
 
@@ -251,18 +268,30 @@
     </details>
 
     <details class="panel" id="report-panel" open hidden>
-      <summary>Apply report</summary>
+      <summary>Reports</summary>
       <div class="panel-body">
-        <p class="hint">Build a live =K.EPM() layout on a new sheet.</p>
+        <p class="hint" id="report-hint">Apply live =K.EPM() formulas, or snapshot trial balance values to build on.</p>
         <label for="template-id">Template</label>
         <select id="template-id">
-          <option value="pnl_monthly">Monthly P&L</option>
+          <option value="pnl_monthly">Monthly P&L (live formulas)</option>
+          <option value="trial_balance_long">Trial balance — long (snapshot)</option>
         </select>
         <label for="report-entity">Entity</label>
         <input id="report-entity" type="text" value="AMUS" />
         <label for="report-year">Year</label>
         <input id="report-year" type="number" value="2024" min="2000" max="2100" />
+        <div id="period-range-fields" class="field-row" hidden>
+          <div>
+            <label for="period-from">Period from</label>
+            <input id="period-from" type="number" value="1" min="1" max="12" />
+          </div>
+          <div>
+            <label for="period-to">Period to</label>
+            <input id="period-to" type="number" value="12" min="1" max="12" />
+          </div>
+        </div>
         <button id="apply-report-btn" type="button">Apply report</button>
+        <button id="snapshot-btn" type="button" class="secondary" hidden>Snapshot values</button>
       </div>
     </details>
 
@@ -274,12 +303,13 @@
         <li>Smoke test: <code>=K.PING()</code> → <code>1</code></li>
         <li>Sample: <code>=K.EPM("AMUS", 2024, 6, "4010")</code></li>
       </ul>
-      <p><strong>Apply report</strong></p>
+      <p><strong>Reports</strong></p>
       <ol>
         <li>Open a blank workbook (or clear a sheet).</li>
         <li>Sign in above.</li>
-        <li>Choose template, entity, year → <strong>Apply report</strong>.</li>
-        <li>Formulas recalc automatically when data is available.</li>
+        <li><strong>Monthly P&L</strong> → Apply report (live <code>=K.EPM()</code>).</li>
+        <li><strong>Trial balance</strong> → Snapshot values (frozen numbers on sheet <code>TB</code>).</li>
+        <li>Build mgmt reports on other sheets with normal Excel formulas referencing <code>TB</code>.</li>
       </ol>
       <p id="diag">diag: …</p>
     </div>
@@ -559,6 +589,35 @@
         });
       }
 
+      function buildSnapshot(templateId, entity, year, periodFrom, periodTo) {
+        return api("/api/method/konsol.api.build_snapshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            template_id: templateId,
+            entity: entity,
+            year: year,
+            period_from: periodFrom,
+            period_to: periodTo
+          })
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            if (!res.ok) throw new Error(parseApiError(res, data));
+            return data.message;
+          });
+        });
+      }
+
+      function syncReportTemplateUi() {
+        var isTb = document.getElementById("template-id").value === "trial_balance_long";
+        document.getElementById("period-range-fields").hidden = !isTb;
+        document.getElementById("apply-report-btn").hidden = isTb;
+        document.getElementById("snapshot-btn").hidden = !isTb;
+        document.getElementById("report-hint").textContent = isTb
+          ? "Snapshot loads trial balance values once — build other sheets with normal Excel formulas."
+          : "Apply paints live =K.EPM() formulas that recalc when data changes.";
+      }
+
       function applyCellMap(spec) {
         if (typeof Excel === "undefined") {
           return Promise.reject(new Error("Excel API unavailable"));
@@ -596,6 +655,10 @@
           appendLog("err", "Apply report: entity and year are required.");
           return;
         }
+        if (templateId !== "pnl_monthly") {
+          appendLog("err", "Apply report supports Monthly P&L only — use Snapshot for trial balance.");
+          return;
+        }
 
         btn.disabled = true;
         appendLog("info", "Apply report: building " + templateId + " for " + entity + " " + year + "…");
@@ -619,9 +682,64 @@
           });
       }
 
+      function snapshotReport() {
+        var templateId = document.getElementById("template-id").value;
+        var entity = document.getElementById("report-entity").value.trim();
+        var year = parseInt(document.getElementById("report-year").value, 10);
+        var periodFrom = parseInt(document.getElementById("period-from").value, 10);
+        var periodTo = parseInt(document.getElementById("period-to").value, 10);
+        var btn = document.getElementById("snapshot-btn");
+
+        if (!entity || !year) {
+          appendLog("err", "Snapshot: entity and year are required.");
+          return;
+        }
+        if (templateId !== "trial_balance_long") {
+          appendLog("err", "Snapshot supports Trial balance — long only.");
+          return;
+        }
+        if (!periodFrom || !periodTo || periodFrom > periodTo) {
+          appendLog("err", "Snapshot: period from/to must be 1–12 and from ≤ to.");
+          return;
+        }
+
+        btn.disabled = true;
+        appendLog("info", "Snapshot: loading TB for " + entity + " " + year +
+          " P" + periodFrom + "–" + periodTo + "…");
+
+        var sheetName = "TB";
+        buildSnapshot(templateId, entity, year, periodFrom, periodTo)
+          .then(function (spec) {
+            sheetName = spec.sheet_name || "TB";
+            var rows = spec.row_count || 0;
+            appendLog("info", "Painting " + rows + " rows on sheet \"" + sheetName + "\"…");
+            return applyCellMap(spec);
+          })
+          .then(function () {
+            appendLog("ok", "Snapshot done — values on sheet \"" + sheetName +
+              "\". Build other sheets with Excel formulas referencing TB.");
+          })
+          .catch(function (err) {
+            appendLog("err", err.message || "Snapshot failed");
+          })
+          .finally(function () {
+            btn.disabled = false;
+          });
+      }
+
       window.konsolidatApplyReport = function (params) {
         return buildCellMap(params.template_id, params.entity, params.year)
           .then(applyCellMap);
+      };
+
+      window.konsolidatSnapshotReport = function (params) {
+        return buildSnapshot(
+          params.template_id,
+          params.entity,
+          params.year,
+          params.period_from || 1,
+          params.period_to || 12
+        ).then(applyCellMap);
       };
 
       function logout() {
@@ -659,6 +777,9 @@
         loginBtn.addEventListener("click", login);
         logoutBtn.addEventListener("click", logout);
         document.getElementById("apply-report-btn").addEventListener("click", applyReport);
+        document.getElementById("snapshot-btn").addEventListener("click", snapshotReport);
+        document.getElementById("template-id").addEventListener("change", syncReportTemplateUi);
+        syncReportTemplateUi();
         document.getElementById("clear-log-btn").addEventListener("click", clearLog);
         passwordInput.addEventListener("keydown", function (e) {
           if (e.key === "Enter") login();
