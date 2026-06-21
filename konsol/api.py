@@ -298,6 +298,41 @@ def _parse_dimensions_arg(dimensions):
     return parsed
 
 
+_LEGACY_DIM_MAP = {
+    "cost_center": "dim_cost_center",
+    "department": "dim_department",
+}
+
+
+def _hierarchy_node_from_req(req):
+    """Extract hierarchy node code from batch/GET params."""
+    if isinstance(req, dict):
+        return (req.get("hierarchy_node") or req.get("node") or "").strip()
+    return (req or "").strip()
+
+
+def _hierarchy_name_from_req(req):
+    """Extract explicit hierarchy name from batch/GET params."""
+    if isinstance(req, dict):
+        return (req.get("hierarchy") or req.get("hierarchy_name") or "").strip()
+    return (req or "").strip()
+
+
+def _is_hierarchy_mode(req):
+    return bool(_hierarchy_node_from_req(req))
+
+
+def _extract_batch_dimensions(req):
+    """Merge explicit dimensions dict with legacy Excel cost_center/department."""
+    raw_dims = req.get("dimensions") if isinstance(req.get("dimensions"), dict) else {}
+    dimensions = {k: v for k, v in raw_dims.items() if v}
+    for legacy_key, dim_name in _LEGACY_DIM_MAP.items():
+        val = req.get(legacy_key, "")
+        if val and dim_name not in dimensions:
+            dimensions[dim_name] = str(val)
+    return dimensions
+
+
 def _resolve_and_validate(fact_name, scenario, measure, dim_names):
     """Resolve the fact, validate measure (Published registry ∩ fact) and
     dimensions (must be allowed by the fact). Returns (fact_doc, error_or_None)."""
@@ -586,7 +621,8 @@ def health():
 
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
-              scenario="actuals", fact=None, dimensions=None, scenario_id=""):
+              scenario="actuals", fact=None, dimensions=None, scenario_id="",
+              hierarchy=None, node=None, hierarchy_node=None):
     """Single value lookup — returns {"value": <number>}.
 
     Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
@@ -597,10 +633,54 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     canonical dimension names, validated against the fact's allowed dimensions.
     `fact` (a Fact registry name) selects the source table and wins over
     `scenario`; if neither pins a fact, `scenario` resolves it via scenario_key.
+
+    When ``node`` (or ``hierarchy_node``) is set, queries hierarchy gold tables
+    instead of flat entity facts. ``hierarchy`` is optional when a default tree
+    exists or the node is unique across published hierarchies.
     """
+    from konsol.hierarchy_query import batch_query_hierarchy, entity_is_wildcard
+    from konsol.hierarchy_query import validate_hierarchy_read
+
+    node_code = _hierarchy_node_from_req({
+        "hierarchy_node": hierarchy_node,
+        "node": node,
+    })
+    req_dims = _extract_batch_dimensions({
+        "dimensions": _parse_dimensions_arg(dimensions),
+    })
+
+    if node_code:
+        info, err = validate_hierarchy_read(
+            _hierarchy_name_from_req({"hierarchy": hierarchy}),
+            node_code,
+            scenario,
+        )
+        if err:
+            frappe.throw(err, frappe.ValidationError)
+        allowed_entities = _allowed_entities()
+        if not entity_is_wildcard(entity):
+            if allowed_entities is not None and entity not in allowed_entities:
+                raise frappe.PermissionError(
+                    f"Not permitted to access entity '{entity}'")
+        result = batch_query_hierarchy([{
+            "entity": entity,
+            "year": int(year),
+            "periods": _resolve_period(period),
+            "account": account,
+            "measure": measure,
+            "scenario": scenario,
+            "dimensions": req_dims,
+            "scenario_id": scenario_id,
+            "hierarchy_name": info["hierarchy_name"],
+            "hierarchy_node": info["member_code"],
+        }], allowed_entities=allowed_entities)
+        if result.get("errors") and result["errors"][0]:
+            frappe.throw(result["errors"][0], frappe.ValidationError)
+        return {"value": result["values"][0]}
+
     _assert_entity_access(entity)
 
-    dims = {k: v for k, v in _parse_dimensions_arg(dimensions).items() if v}
+    dims = {k: v for k, v in req_dims.items() if v}
 
     fact_doc, err = _resolve_and_validate(fact, scenario, measure, dims.keys())
     if err:
@@ -787,6 +867,9 @@ def epm_batch():
             frappe.ValidationError,
         )
 
+    from konsol.hierarchy_query import batch_query_hierarchy, entity_is_wildcard
+    from konsol.hierarchy_query import validate_hierarchy_read
+
     n = len(requests_list)
     normalized = [None] * n
     errors_list = [None] * n
@@ -794,20 +877,8 @@ def epm_batch():
     allowed_entities = _allowed_entities()
     for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
-        fact_name = req.get("fact")
         measure = req.get("measure", "period_net_amount")
-
-        raw_dims = req.get("dimensions") if isinstance(req.get("dimensions"), dict) else {}
-        dimensions = {k: v for k, v in raw_dims.items() if v}
-
-        fact_doc, err = _resolve_and_validate(
-            fact_name, scenario, measure, dimensions.keys())
-        if err:
-            errors_list[i] = err
-            continue
-        if allowed_entities is not None and req.get("entity", "") not in allowed_entities:
-            errors_list[i] = f"Not permitted to access entity '{req.get('entity', '')}'"
-            continue
+        dimensions = _extract_batch_dimensions(req)
 
         try:
             periods = _resolve_period(req.get("period", 0))
@@ -823,8 +894,48 @@ def epm_batch():
             errors_list[i] = f"Invalid year '{req.get('year')}'"
             continue
 
+        entity = req.get("entity", "")
+
+        if _is_hierarchy_mode(req):
+            info, err = validate_hierarchy_read(
+                _hierarchy_name_from_req(req),
+                _hierarchy_node_from_req(req),
+                scenario,
+            )
+            if err:
+                errors_list[i] = err
+                continue
+            if not entity_is_wildcard(entity):
+                if allowed_entities is not None and entity not in allowed_entities:
+                    errors_list[i] = f"Not permitted to access entity '{entity}'"
+                    continue
+            normalized[i] = {
+                "entity": entity,
+                "year": year,
+                "periods": periods,
+                "account": req.get("account", ""),
+                "measure": measure,
+                "scenario": scenario,
+                "dimensions": dimensions,
+                "scenario_id": req.get("scenario_id", ""),
+                "hierarchy_name": info["hierarchy_name"],
+                "hierarchy_node": info["member_code"],
+                "_hierarchy_mode": True,
+            }
+            continue
+
+        fact_name = req.get("fact")
+        fact_doc, err = _resolve_and_validate(
+            fact_name, scenario, measure, dimensions.keys())
+        if err:
+            errors_list[i] = err
+            continue
+        if allowed_entities is not None and entity not in allowed_entities:
+            errors_list[i] = f"Not permitted to access entity '{entity}'"
+            continue
+
         normalized[i] = {
-            "entity": req.get("entity", ""),
+            "entity": entity,
             "year": year,
             "periods": periods,
             "account": req.get("account", ""),
@@ -835,17 +946,30 @@ def epm_batch():
             "scenario_id": req.get("scenario_id", ""),
         }
 
+    values = [None] * n
     valid = [(i, r) for i, r in enumerate(normalized) if r is not None]
     if valid:
-        valid_indices, valid_reqs = zip(*valid)
-        ch_result = _batch_query_clickhouse(list(valid_reqs))
-        values = [None] * n
-        for j, orig_idx in enumerate(valid_indices):
-            values[orig_idx] = ch_result["values"][j]
-            if ch_result.get("errors") and ch_result["errors"][j]:
-                errors_list[orig_idx] = ch_result["errors"][j]
-    else:
-        values = [None] * n
+        hierarchy_valid = [(i, r) for i, r in valid if r.get("_hierarchy_mode")]
+        legacy_valid = [(i, r) for i, r in valid if not r.get("_hierarchy_mode")]
+
+        if hierarchy_valid:
+            h_indices, h_reqs = zip(*hierarchy_valid)
+            h_result = batch_query_hierarchy(
+                [{k: v for k, v in r.items() if not k.startswith("_")} for r in h_reqs],
+                allowed_entities=allowed_entities,
+            )
+            for j, orig_idx in enumerate(h_indices):
+                values[orig_idx] = h_result["values"][j]
+                if h_result.get("errors") and h_result["errors"][j]:
+                    errors_list[orig_idx] = h_result["errors"][j]
+
+        if legacy_valid:
+            l_indices, l_reqs = zip(*legacy_valid)
+            ch_result = _batch_query_clickhouse(list(l_reqs))
+            for j, orig_idx in enumerate(l_indices):
+                values[orig_idx] = ch_result["values"][j]
+                if ch_result.get("errors") and ch_result["errors"][j]:
+                    errors_list[orig_idx] = ch_result["errors"][j]
 
     result = {"values": values}
     if any(e is not None for e in errors_list):
@@ -968,6 +1092,17 @@ def budget_cell_save():
         frappe.throw("fiscal_period must be 1-12", frappe.ValidationError)
 
     amount = float(data["amount"])
+
+    node_code = _hierarchy_node_from_req(data)
+    if node_code:
+        from konsol.hierarchy_query import validate_hierarchy_write
+        info, err = validate_hierarchy_write(
+            _hierarchy_name_from_req(data),
+            node_code,
+        )
+        if err:
+            frappe.throw(err, frappe.ValidationError)
+        data[info["dimension"]] = info["member_code"]
 
     _assert_budget_write_access(data)
 
@@ -1125,6 +1260,68 @@ def get_hierarchy_tree(consolidation_group=None):
             tree.append(build_node(d))
 
     return {"tree": tree}
+
+
+# ---------------------------------------------------------------------------
+# Reporting Hierarchy API (management rollups — not legal entities)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def get_reporting_hierarchy_tree(hierarchy_name=None):
+    """Return a management reporting hierarchy as nested JSON.
+
+    Uses parent_member links within Reporting Hierarchy Member rows.
+    Legal-entity trees use get_hierarchy_tree (Consolidation Group).
+    """
+    if not hierarchy_name:
+        frappe.throw("hierarchy_name is required")
+
+    header = frappe.db.get_value(
+        "Reporting Hierarchy",
+        {"hierarchy_name": hierarchy_name},
+        ["name", "dimension", "label", "status"],
+        as_dict=True,
+    )
+    if not header:
+        frappe.throw(f"Reporting Hierarchy '{hierarchy_name}' not found")
+
+    members = frappe.get_all(
+        "Reporting Hierarchy Member",
+        filters={"reporting_hierarchy": header.name},
+        fields=[
+            "name", "parent_member", "member_code", "member_label", "is_group",
+        ],
+        order_by="member_code asc",
+        limit_page_length=0,
+    )
+    by_name = {m.name: m for m in members}
+
+    def build_node(doc):
+        return {
+            "name": doc.name,
+            "member_code": doc.member_code,
+            "member_label": doc.member_label,
+            "is_group": bool(doc.is_group),
+            "children": [
+                build_node(child)
+                for child in members
+                if child.parent_member == doc.name
+            ],
+        }
+
+    roots = [
+        build_node(m)
+        for m in members
+        if not m.parent_member or m.parent_member not in by_name
+    ]
+
+    return {
+        "hierarchy_name": hierarchy_name,
+        "dimension": header.dimension,
+        "label": header.label,
+        "status": header.status,
+        "tree": roots,
+    }
 
 
 # ---------------------------------------------------------------------------

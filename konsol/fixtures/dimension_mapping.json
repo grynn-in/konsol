@@ -1,0 +1,52 @@
+[
+  {
+    "doctype": "Dimension Mapping",
+    "name": "DM-CC-D365-001",
+    "dimension": "dim_cost_center",
+    "erp_source": "d365_fo",
+    "source_value": "001",
+    "canonical_value": "CC-CORP",
+    "canonical_label": "Corporate",
+    "status": "Published"
+  },
+  {
+    "doctype": "Dimension Mapping",
+    "name": "DM-CC-ERP-MAIN",
+    "dimension": "dim_cost_center",
+    "erp_source": "erpnext",
+    "source_value": "Main - AC",
+    "canonical_value": "CC-CORP",
+    "canonical_label": "Corporate",
+    "status": "Published"
+  },
+  {
+    "doctype": "Dimension Mapping",
+    "name": "DM-BU-CORP",
+    "dimension": "dim_business_unit",
+    "erp_source": "d365_fo",
+    "source_value": "CORP",
+    "canonical_value": "CORP",
+    "canonical_label": "Corporate",
+    "status": "Published"
+  },
+  {
+    "doctype": "Dimension Mapping",
+    "name": "DM-BU-SERVICES",
+    "dimension": "dim_business_unit",
+    "erp_source": "d365_fo",
+    "source_value": "SERVICES",
+    "canonical_value": "SERVICES",
+    "canonical_label": "Services",
+    "status": "Published"
+  },
+  {
+    "doctype": "Dimension Mapping",
+    "name": "DM-BU-MFG",
+    "dimension": "dim_business_unit",
+    "erp_source": "d365_fo",
+    "source_value": "MANUFACTURING",
+    "canonical_value": "MANUFACTURING",
+    "canonical_label": "Manufacturing",
+    "status": "Published"
+  }
+]

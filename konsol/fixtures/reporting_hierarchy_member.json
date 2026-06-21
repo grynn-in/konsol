@@ -1,0 +1,47 @@
+[
+  {
+    "doctype": "Reporting Hierarchy Member",
+    "name": "RH-MGMT-BU-ROOT",
+    "reporting_hierarchy": "MGMT_DEMO",
+    "parent_member": "",
+    "member_code": "BU_ROOT",
+    "member_label": "All Business Units",
+    "is_group": 1
+  },
+  {
+    "doctype": "Reporting Hierarchy Member",
+    "name": "RH-MGMT-OPS",
+    "reporting_hierarchy": "MGMT_DEMO",
+    "parent_member": "RH-MGMT-BU-ROOT",
+    "member_code": "OPS",
+    "member_label": "Operations",
+    "is_group": 1
+  },
+  {
+    "doctype": "Reporting Hierarchy Member",
+    "name": "RH-MGMT-CORP",
+    "reporting_hierarchy": "MGMT_DEMO",
+    "parent_member": "RH-MGMT-BU-ROOT",
+    "member_code": "CORP",
+    "member_label": "Corporate",
+    "is_group": 0
+  },
+  {
+    "doctype": "Reporting Hierarchy Member",
+    "name": "RH-MGMT-SERVICES",
+    "reporting_hierarchy": "MGMT_DEMO",
+    "parent_member": "RH-MGMT-OPS",
+    "member_code": "SERVICES",
+    "member_label": "Services",
+    "is_group": 0
+  },
+  {
+    "doctype": "Reporting Hierarchy Member",
+    "name": "RH-MGMT-MFG",
+    "reporting_hierarchy": "MGMT_DEMO",
+    "parent_member": "RH-MGMT-OPS",
+    "member_code": "MANUFACTURING",
+    "member_label": "Manufacturing",
+    "is_group": 0
+  }
+]

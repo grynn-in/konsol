@@ -33,7 +33,7 @@ TRIGGER_DOCTYPES = [
     "Allocation Run",
 ]
 
-VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "full"}
+VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 VALID_WORKFLOW_STATES = {
     "Draft", "Pending Review", "Approved", "Running",

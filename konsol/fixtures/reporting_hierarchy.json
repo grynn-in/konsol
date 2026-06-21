@@ -1,0 +1,13 @@
+[
+  {
+    "doctype": "Reporting Hierarchy",
+    "name": "MGMT_DEMO",
+    "hierarchy_name": "MGMT_DEMO",
+    "dimension": "dim_business_unit",
+    "label": "Demo Business Unit Hierarchy",
+    "effective_from": "2024-01-01",
+    "effective_to": "9999-12-31",
+    "is_default": 1,
+    "status": "Published"
+  }
+]

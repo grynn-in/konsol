@@ -1,0 +1,99 @@
+{
+  "name": "Reporting Hierarchy",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:hierarchy_name",
+  "fields": [
+    {
+      "fieldname": "hierarchy_name",
+      "fieldtype": "Data",
+      "label": "Hierarchy Name",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "e.g. MGMT_2026 — management reporting tree, not legal entities"
+    },
+    {
+      "fieldname": "dimension",
+      "fieldtype": "Link",
+      "label": "Dimension",
+      "options": "Dimension",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Axis this hierarchy rolls up, e.g. dim_business_unit"
+    },
+    {
+      "fieldname": "label",
+      "fieldtype": "Data",
+      "label": "Label",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "col_break_1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "effective_from",
+      "fieldtype": "Date",
+      "label": "Effective From",
+      "default": "Today"
+    },
+    {
+      "fieldname": "effective_to",
+      "fieldtype": "Date",
+      "label": "Effective To",
+      "default": "9999-12-31"
+    },
+    {
+      "fieldname": "is_default",
+      "fieldtype": "Check",
+      "label": "Default Hierarchy",
+      "default": "0",
+      "description": "Used for unassigned-member validation on this dimension"
+    },
+    {
+      "fieldname": "lifecycle_section",
+      "fieldtype": "Section Break",
+      "label": "Lifecycle"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nPublished\nInactive",
+      "default": "Draft",
+      "in_list_view": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Analyst",
+      "read": 1,
+      "create": 1
+    },
+    {
+      "role": "EPM User",
+      "read": 1
+    }
+  ]
+}

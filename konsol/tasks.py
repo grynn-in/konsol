@@ -45,11 +45,12 @@ SCOPE_SELECTOR = {
     "actuals": "tag:domain:actuals",
     "scenarios": "tag:domain:scenarios",
     "consolidation": "tag:domain:consolidation",
+    "reporting": "+tag:domain:reporting",
     "full": None,  # no selector = full build
 }
 
 # Scopes that require epm_raw data (fallback; see _raw_dependent_scopes).
-RAW_DEPENDENT_SCOPES = {"actuals", "scenarios", "consolidation", "full"}
+RAW_DEPENDENT_SCOPES = {"actuals", "scenarios", "consolidation", "reporting", "full"}
 
 
 def _known_domains():

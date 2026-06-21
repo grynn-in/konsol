@@ -184,5 +184,41 @@
     "name": "gold_allocation_audit_trail",
     "model_name": "gold_allocation_audit_trail",
     "build_domain": "consolidation"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_reporting_hierarchy",
+    "model_name": "gold_reporting_hierarchy",
+    "build_domain": "reporting"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_reporting_hierarchy_closure",
+    "model_name": "gold_reporting_hierarchy_closure",
+    "build_domain": "reporting"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_tb_at_hierarchy_node",
+    "model_name": "gold_tb_at_hierarchy_node",
+    "build_domain": "reporting"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_budget_at_hierarchy_node",
+    "model_name": "gold_budget_at_hierarchy_node",
+    "build_domain": "reporting"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_variance_at_hierarchy_node",
+    "model_name": "gold_variance_at_hierarchy_node",
+    "build_domain": "reporting"
+  },
+  {
+    "doctype": "Gold Model",
+    "name": "gold_unassigned_hierarchy_members",
+    "model_name": "gold_unassigned_hierarchy_members",
+    "build_domain": "reporting"
   }
 ]
