@@ -5,6 +5,7 @@ import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIXTURES_DIR = os.path.join(APP_DIR, "fixtures")
 
 
 def _doctype_file(doctype_dir, ext):
@@ -64,6 +65,46 @@ def test_allocation_rule_driver_type_options():
             assert "headcount" in options
             assert "revenue" in options
             assert "sqm" in options
+
+
+def test_allocation_rule_fixture_matches_d365_demo():
+    """Demo D365 entities use SALES/HQ/PROD cost centers — not USMF 7100/IT."""
+    with open(os.path.join(FIXTURES_DIR, "allocation_rule.json")) as handle:
+        rules = json.load(handle)
+    assert len(rules) == 3
+    source_ccs = {rule["source_cost_center"] for rule in rules}
+    assert source_ccs == {"SALES", "HQ", "PROD"}
+    accounts = {rule["source_account"] for rule in rules}
+    assert accounts == {"6010"}
+
+
+def test_allocation_driver_fixture_exists_and_covers_demo_entities():
+    path = os.path.join(FIXTURES_DIR, "allocation_driver.json")
+    assert os.path.isfile(path)
+    with open(path) as handle:
+        drivers = json.load(handle)
+    assert len(drivers) == 108
+    entities = {row["data_area_id"] for row in drivers}
+    assert entities == {"AMUS", "AMHQ", "AMDE"}
+
+
+def test_after_migrate_syncs_allocation_config():
+    with open(os.path.join(APP_DIR, "install.py")) as handle:
+        src = handle.read()
+    assert "_sync_allocation_config_to_clickhouse" in src
+    after = src.split("def after_migrate")[1].split("\ndef ")[0]
+    assert "_sync_allocation_config_to_clickhouse()" in after
+    assert "from konsol.allocation.bootstrap import sync_allocation_config_to_clickhouse" in src
+
+
+def test_allocation_bootstrap_exports_sync_helper():
+    path = os.path.join(APP_DIR, "allocation", "bootstrap.py")
+    assert os.path.isfile(path)
+    with open(path) as handle:
+        content = handle.read()
+    assert "def sync_allocation_config_to_clickhouse" in content
+    assert "epm_staging.allocation_rules" in content
+    assert "epm_staging.allocation_drivers" in content
 
 
 # --- Allocation Driver ---
