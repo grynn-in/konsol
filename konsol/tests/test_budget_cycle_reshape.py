@@ -236,6 +236,17 @@ def test_dashboard_includes_budget_cycle_shortcut():
     assert "_workspace_needs_refresh" in dash
 
 
+def test_dashboard_workflow_card_order():
+    dash = _src(os.path.join(APP_DIR, "dashboard.py"))
+    assert '("Budget"' in dash
+    assert '("EPM Registry"' in dash
+    assert '("EPM Models"' not in dash
+    budget_pos = dash.index('"Budget"')
+    registry_pos = dash.index('"EPM Registry"')
+    pipeline_pos = dash.index('"Data Pipeline"')
+    assert budget_pos < registry_pos < pipeline_pos
+
+
 def test_shared_line_matcher_replaces_duplicates():
     # Fix #10: the line-match loop lives in one place (budget_grain.find_budget_line).
     assert "def find_budget_line" in _src(GRAIN_PY)

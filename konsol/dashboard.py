@@ -18,36 +18,39 @@ import json
 WORKSPACE = "Konsolidat"
 MODULE = "EPM"
 
-# Colourful top-row shortcut tiles: (doctype, colour)
+# Colourful top-row shortcut tiles: (doctype, colour) — ordered by user workflow
 _SHORTCUTS = [
-    ("EPM Settings", "Green"),
+    ("Budget Cycle", "Teal"),
     ("Fact Table", "Blue"),
     ("Measure", "Cyan"),
-    ("Budget Cycle", "Teal"),
     ("Connector", "Orange"),
     ("Pipeline Build Request", "Purple"),
     ("Allocation Rule", "Yellow"),
     ("Consolidation Group", "Pink"),
+    ("EPM Settings", "Green"),
 ]
 
-# Link cards grouped by module: (card label, [doctypes])
+# Link cards grouped by konsol workflow: Budget → Registry → Pipeline → Allocation → Consolidation
 _CARDS = [
-    ("EPM Models", [
-        "Fact Table", "Measure", "Dimension", "Scenario Definition",
-        "Budget Cycle", "Budget Sheet", "Fiscal Period", "Spread Profile",
+    ("Budget", [
+        "Scenario Definition", "Budget Cycle", "Budget Sheet",
+        "Fiscal Period", "Spread Profile",
+    ]),
+    ("EPM Registry", [
+        "Fact Table", "Measure", "Dimension",
         "Dimension Mapping", "Reporting Hierarchy", "Reporting Hierarchy Member",
         "EPM Settings",
     ]),
     ("Data Pipeline", [
-        "Connector", "Pipeline Build Request", "Pipeline Run",
+        "Connector", "Connector Health", "Pipeline Build Request", "Pipeline Run",
         "Build Domain", "Gold Model",
     ]),
     ("Allocation", [
         "Allocation Rule", "Allocation Driver", "Allocation Run",
     ]),
     ("Consolidation", [
-        "Consolidation Group", "Consolidation Adjustment", "IC Balance",
-        "IC Elimination Rule", "Ownership Period", "Historical Equity Rate",
+        "Consolidation Group", "Ownership Period", "Historical Equity Rate",
+        "Consolidation Adjustment", "IC Balance", "IC Elimination Rule", "Close Run",
     ]),
 ]
 
@@ -77,12 +80,16 @@ def _field(doctype, fieldname):
 
 
 def _workspace_needs_refresh():
-    """True when a pre-budget workspace is missing shortcuts added later."""
-    if not frappe.db.exists("Workspace", WORKSPACE) or not _dt("Budget Cycle"):
+    """True when an older workspace layout is missing shortcuts or workflow cards."""
+    if not frappe.db.exists("Workspace", WORKSPACE):
         return False
     ws = frappe.get_doc("Workspace", WORKSPACE)
-    links = {s.link_to for s in (ws.shortcuts or []) if s.type == "DocType"}
-    return "Budget Cycle" not in links
+    shortcuts = {s.link_to for s in (ws.shortcuts or []) if s.type == "DocType"}
+    card_labels = {l.label for l in (ws.links or []) if l.type == "Card Break"}
+    if _dt("Budget Cycle") and "Budget Cycle" not in shortcuts:
+        return True
+    # Rebuild once when migrating from the legacy single "EPM Models" card layout.
+    return "EPM Models" in card_labels
 
 
 def setup_workspace(force=False):
@@ -228,7 +235,7 @@ def _build_content(shortcuts, cards, card_names, chart_names):
                         "data": {"chart_name": name, "col": 6}})
 
     content.append({"id": cid(), "type": "spacer", "data": {"col": 12}})
-    content.append(header("Models &amp; Masters"))
+    content.append(header("Workflows"))
     for label, _ in cards:
         content.append({"id": cid(), "type": "card",
                         "data": {"card_name": label, "col": 4}})
