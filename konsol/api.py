@@ -699,7 +699,7 @@ def _fetch_trial_balance_rows(entity, year, period_from, period_to):
         "any(account_name) AS account_name, any(account_type_name) AS account_type_name, "
         "any(multiIf(is_pnl = 1, 'P&L', is_balance_sheet = 1, 'BS', '')) AS bs_pnl, "
         "sum(period_debit) AS debit, sum(period_credit) AS credit, "
-        "sum(period_net_amount) AS net "
+        "sum(period_debit) - sum(period_credit) AS net "
         "FROM epm_gold.gold_trial_balance "
         "WHERE data_area_id = {entity:String} "
         "AND fiscal_year = {year:Int32} "
