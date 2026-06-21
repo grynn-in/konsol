@@ -11,9 +11,9 @@
     {
       "id": "EPM",
       "name": "EPM",
-      "description": "Retrieve a financial value (actuals by default) for an entity / period / account.",
+      "description": "Retrieve a financial value (actuals by default) for an entity / period / account. Pass hierarchy + node for management rollup reads.",
       "parameters": [
-        { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
+        { "name": "entity", "description": "Legal entity / data area id (or ALL for cross-entity hierarchy rollups)", "type": "string" },
         { "name": "year", "description": "Fiscal year, e.g. 2024", "type": "number" },
         { "name": "period", "description": "1-12, or Q1-Q4, H1-H2, FY", "type": "string" },
         { "name": "account", "description": "Main account code", "type": "string" },
@@ -21,14 +21,16 @@
         { "name": "scenario", "description": "Scenario (default actuals)", "type": "string", "optional": true },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
         { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
-        { "name": "scenarioId", "description": "Explicit scenario id", "type": "string", "optional": true }
+        { "name": "scenarioId", "description": "Explicit scenario id (budget/forecast)", "type": "string", "optional": true },
+        { "name": "hierarchy", "description": "Reporting hierarchy name (optional if default or node is unique)", "type": "string", "optional": true },
+        { "name": "node", "description": "Hierarchy member code — enables hierarchy mode when set", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },
     {
       "id": "EPM_BUDGET",
       "name": "EPM_BUDGET",
-      "description": "Budget amount (measure=period_amount, scenario=budget).",
+      "description": "Budget amount (measure=period_amount, scenario=budget). Pass hierarchy + node for management rollup reads.",
       "parameters": [
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
         { "name": "year", "description": "Fiscal year", "type": "number" },
@@ -36,14 +38,16 @@
         { "name": "account", "description": "Main account code", "type": "string" },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
         { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
-        { "name": "scenarioId", "description": "Explicit scenario id", "type": "string", "optional": true }
+        { "name": "scenarioId", "description": "Explicit scenario id", "type": "string", "optional": true },
+        { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
+        { "name": "node", "description": "Hierarchy member code", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },
     {
       "id": "EPM_VARIANCE",
       "name": "EPM_VARIANCE",
-      "description": "Variance (absolute) — measure=variance_abs, scenario=variance.",
+      "description": "Variance (absolute) — measure=variance_abs, scenario=variance. Pass hierarchy + node for management rollup reads.",
       "parameters": [
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
         { "name": "year", "description": "Fiscal year", "type": "number" },
@@ -51,42 +55,48 @@
         { "name": "account", "description": "Main account code", "type": "string" },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
         { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
-        { "name": "scenarioId", "description": "Explicit scenario id", "type": "string", "optional": true }
+        { "name": "scenarioId", "description": "Explicit scenario id", "type": "string", "optional": true },
+        { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
+        { "name": "node", "description": "Hierarchy member code", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },
     {
       "id": "EPM_DEBIT",
       "name": "EPM_DEBIT",
-      "description": "Period debit (measure=period_debit, scenario=actuals).",
+      "description": "Period debit (measure=period_debit, scenario=actuals). Pass hierarchy + node for management rollup reads.",
       "parameters": [
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
         { "name": "year", "description": "Fiscal year", "type": "number" },
         { "name": "period", "description": "1-12, or Q1-Q4, H1-H2, FY", "type": "string" },
         { "name": "account", "description": "Main account code", "type": "string" },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
-        { "name": "department", "description": "Department dimension", "type": "string", "optional": true }
+        { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
+        { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
+        { "name": "node", "description": "Hierarchy member code", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },
     {
       "id": "EPM_CREDIT",
       "name": "EPM_CREDIT",
-      "description": "Period credit (measure=period_credit, scenario=actuals).",
+      "description": "Period credit (measure=period_credit, scenario=actuals). Pass hierarchy + node for management rollup reads.",
       "parameters": [
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
         { "name": "year", "description": "Fiscal year", "type": "number" },
         { "name": "period", "description": "1-12, or Q1-Q4, H1-H2, FY", "type": "string" },
         { "name": "account", "description": "Main account code", "type": "string" },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
-        { "name": "department", "description": "Department dimension", "type": "string", "optional": true }
+        { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
+        { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
+        { "name": "node", "description": "Hierarchy member code", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },
     {
       "id": "EPMSAVE",
       "name": "EPMSAVE",
-      "description": "Write a single budget cell back to konsol on recalc. Returns the amount.",
+      "description": "Write a single budget cell back to konsol on recalc. Returns the amount. Pass hierarchy + node to write at a hierarchy leaf.",
       "parameters": [
         { "name": "amount", "description": "Value to write", "type": "number" },
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
@@ -96,7 +106,9 @@
         { "name": "scenarioId", "description": "Scenario id", "type": "string" },
         { "name": "layer", "description": "base | challenge | management | board", "type": "string" },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
-        { "name": "department", "description": "Department dimension", "type": "string", "optional": true }
+        { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
+        { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
+        { "name": "node", "description": "Hierarchy leaf member code", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     }

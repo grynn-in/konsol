@@ -6,7 +6,13 @@ Also creates EPM roles on migrate.
 import frappe
 
 
-def setup_epm_settings(ch_host="localhost", ch_port=8123, ch_user="default", ch_password="open_epm_dev"):
+def setup_epm_settings(
+    ch_host="localhost",
+    ch_port=8123,
+    ch_user="default",
+    ch_password="open_epm_dev",
+    dbt_project_path="/home/frappe/dbt_project",
+):
     """Configure EPM Settings with ClickHouse connection details."""
     if not frappe.db.exists("DocType", "EPM Settings"):
         frappe.logger().warning("EPM Settings doctype not found. Skipping setup.")
@@ -17,6 +23,7 @@ def setup_epm_settings(ch_host="localhost", ch_port=8123, ch_user="default", ch_
     settings.clickhouse_port = int(ch_port)
     settings.clickhouse_user = ch_user
     settings.clickhouse_password = ch_password
+    settings.dbt_project_path = dbt_project_path
     settings.flags.ignore_permissions = True
     settings.save()
     frappe.db.commit()
@@ -29,6 +36,7 @@ def after_migrate():
     config is synced to ClickHouse, and the Konsolidat desk workspace is present."""
     _create_roles()
     _regenerate_dimension_mappings_seed()
+    _regenerate_reporting_hierarchies_seed()
     _sync_allocation_config_to_clickhouse()
     _setup_dashboard()
     _sync_budget_line_custom_fields()
@@ -93,6 +101,18 @@ def _regenerate_dimension_mappings_seed():
     except Exception:
         frappe.logger().warning(
             "dimension_mappings seed regeneration skipped after migrate",
+            exc_info=True,
+        )
+
+
+def _regenerate_reporting_hierarchies_seed():
+    """Sync reporting_hierarchies.csv after migrate (fixture-loaded hierarchies)."""
+    try:
+        from konsol.dbt_config import regenerate_reporting_hierarchies_seed
+        regenerate_reporting_hierarchies_seed()
+    except Exception:
+        frappe.logger().warning(
+            "reporting_hierarchies seed regeneration skipped after migrate",
             exc_info=True,
         )
 

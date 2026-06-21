@@ -2,5 +2,6 @@
   {"doctype": "Build Domain", "name": "staging", "domain_name": "staging", "requires_raw_data": 0, "description": "Config/reference models — no epm_raw dependency."},
   {"doctype": "Build Domain", "name": "actuals", "domain_name": "actuals", "requires_raw_data": 1, "description": "GL actuals models — require epm_raw."},
   {"doctype": "Build Domain", "name": "scenarios", "domain_name": "scenarios", "requires_raw_data": 1, "description": "Scenario/variance models (actuals ∪ budget)."},
-  {"doctype": "Build Domain", "name": "consolidation", "domain_name": "consolidation", "requires_raw_data": 1, "description": "Consolidation & allocation models."}
+  {"doctype": "Build Domain", "name": "consolidation", "domain_name": "consolidation", "requires_raw_data": 1, "description": "Consolidation & allocation models."},
+  {"doctype": "Build Domain", "name": "reporting", "domain_name": "reporting", "requires_raw_data": 1, "description": "Management hierarchy rollup models."}
 ]
