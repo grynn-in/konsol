@@ -34,6 +34,7 @@ def after_migrate():
     """Called after bench migrate — ensures EPM roles exist, the dimension
     crosswalk seed reflects fixture-loaded Dimension Mapping docs, allocation
     config is synced to ClickHouse, and the Konsolidat desk workspace is present."""
+    _restore_asset_manifest()
     _create_roles()
     _regenerate_dimension_mappings_seed()
     _regenerate_reporting_hierarchies_seed()
@@ -41,6 +42,52 @@ def after_migrate():
     _setup_dashboard()
     _sync_budget_line_custom_fields()
     _bootstrap_budget_fixtures()
+
+
+def _restore_asset_manifest():
+    """Restore image-baked assets.json and evict Redis assets_json after rebuild.
+
+    The hashed JS/CSS bundles live in the image layer; the manifest on the
+    persistent sites/ volume goes stale after ``docker compose build``. Frappe
+    serves HTML from the Redis ``assets_json`` key, so copying the file alone
+    is not enough — the key must be deleted too (init.sh does both on deploy).
+    """
+    import os
+    import shutil
+
+    baked = "/home/frappe/baked-assets/assets.json"
+    if not os.path.isfile(baked):
+        return
+
+    bench_root = os.path.abspath(
+        os.path.join(frappe.get_app_path("konsol"), "..", ".."))
+    assets_dir = os.path.join(bench_root, "sites", "assets")
+    try:
+        os.makedirs(assets_dir, exist_ok=True)
+        shutil.copy2(baked, os.path.join(assets_dir, "assets.json"))
+        baked_rtl = "/home/frappe/baked-assets/assets-rtl.json"
+        if os.path.isfile(baked_rtl):
+            shutil.copy2(baked_rtl, os.path.join(assets_dir, "assets-rtl.json"))
+    except Exception:
+        frappe.logger().warning(
+            "asset manifest restore skipped after migrate", exc_info=True)
+        return
+
+    try:
+        import redis
+
+        host = (
+            frappe.conf.get("redis_cache")
+            or os.environ.get("REDIS_CACHE_HOST", "redis_cache")
+        )
+        if isinstance(host, str) and host.startswith("redis://"):
+            client = redis.from_url(host, socket_timeout=2)
+        else:
+            client = redis.Redis(host=host, port=6379, socket_timeout=2)
+        client.delete("assets_json")
+    except Exception:
+        frappe.logger().warning(
+            "assets_json redis eviction skipped after migrate", exc_info=True)
 
 
 def _bootstrap_budget_fixtures():
