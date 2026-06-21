@@ -36,10 +36,10 @@ def test_budget_save_validates_fields():
 
 
 def test_budget_save_upserts():
-    """Must upsert (create or update) based on composite key."""
+    """Must upsert (create or update) the sheet/line based on composite key."""
     with open(API_PATH) as f:
         content = f.read()
-    assert "_upsert_budget_input" in content
+    assert "_upsert_budget_line" in content
     # Must check for existing doc before creating
     assert "get_all" in content or "get_list" in content
 

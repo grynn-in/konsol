@@ -1,4 +1,4 @@
-"""Orchestration tests for D365 write-back — push_budget_input / require_enabled
+"""Orchestration tests for D365 write-back — push_budget_sheet / require_enabled
 / _set_status. ``frappe`` is faked via sys.modules so these run in the standalone
 suite (the module imports frappe lazily inside each site-bound function).
 """
@@ -19,15 +19,28 @@ class _FakeMeta:
         return f in self._fields
 
 
-class _FakeDoc:
+class _FakeLine:
     def __init__(self, **kw):
-        self.name = kw.get("name", "BUD-0001")
-        self.data_area_id = kw.get("data_area_id", "USMF")
-        self.fiscal_year = kw.get("fiscal_year", 2024)
         self.main_account = kw.get("main_account", "401100")
         self.dim_cost_center = kw.get("dim_cost_center", "CC001")
         self.dim_department = kw.get("dim_department", "")
-        self.periods = kw.get("periods", [types.SimpleNamespace(fiscal_period=1, amount=100.0)])
+        for n in range(1, 13):
+            setattr(self, "period_%02d" % n, kw.get("period_%02d" % n, 0.0))
+        if "period_01" not in kw:
+            self.period_01 = 100.0     # one non-zero month -> one entry
+
+    def get(self, k, default=None):
+        return getattr(self, k, default)
+
+
+class _FakeDoc:
+    """Budget Sheet stand-in (attribute + .get + db_set)."""
+
+    def __init__(self, **kw):
+        self.name = kw.get("name", "BSHT-0001")
+        self.data_area_id = kw.get("data_area_id", "USMF")
+        self.cycle = kw.get("cycle", "BCYC-S-2024")
+        self.lines = kw.get("lines", [_FakeLine()])
         self._vals = {"d365_writeback_status": kw.get("status")}
         self.meta = _FakeMeta(kw.get("fields", ["d365_writeback_status", "d365_writeback_error"]))
         self.set_calls = []
@@ -46,7 +59,7 @@ class _FakeThrow(Exception):
     pass
 
 
-def _install_fake_frappe(monkeypatch, budget_doc):
+def _install_fake_frappe(monkeypatch, budget_doc, fiscal_year=2024):
     fr = types.ModuleType("frappe")
 
     def throw(msg, exc=None):
@@ -54,6 +67,7 @@ def _install_fake_frappe(monkeypatch, budget_doc):
 
     fr.throw = throw
     fr.get_doc = lambda dt, name: budget_doc
+    fr.db = types.SimpleNamespace(get_value=lambda dt, name, field: fiscal_year)
     fr.log_error = lambda **kw: None
     fr.get_traceback = lambda: "traceback"
     monkeypatch.setitem(sys.modules, "frappe", fr)
@@ -101,10 +115,10 @@ def test_set_status_noop_when_field_absent():
     assert doc.set_calls == []
 
 
-# --- push_budget_input ---
+# --- push_budget_sheet ---
 
 def test_push_happy_path_records_pushed(monkeypatch):
-    doc = _FakeDoc(periods=[types.SimpleNamespace(fiscal_period=1, amount=100.0)])
+    doc = _FakeDoc(lines=[_FakeLine()])
     _install_fake_frappe(monkeypatch, doc)
     monkeypatch.setattr(wb, "get_config", lambda entity_id=None: {"enabled": True})
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
@@ -114,9 +128,9 @@ def test_push_happy_path_records_pushed(monkeypatch):
         wb, "push_replace_batch",
         lambda cfg, tok, mid, entries: pushed.setdefault("n", len(entries)),
     )
-    out = wb.push_budget_input("BUD-0001")
+    out = wb.push_budget_sheet("BSHT-0001")
     assert out["status"] == "Pushed" and out["entries"] == 1
-    assert out["budget_model_id"] == "EPM-BUD-0001"
+    assert out["budget_model_id"] == "EPM-BSHT-0001"
     assert doc._vals["d365_writeback_status"] == "Pushed"
     assert pushed["n"] == 1
 
@@ -128,7 +142,7 @@ def test_push_skips_when_already_pushed(monkeypatch):
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     called = {"replace": False}
     monkeypatch.setattr(wb, "push_replace_batch", lambda *a: called.update(replace=True))
-    out = wb.push_budget_input("BUD-0001")            # no force
+    out = wb.push_budget_sheet("BSHT-0001")            # no force
     assert out["status"] == "Skipped" and called["replace"] is False
 
 
@@ -139,7 +153,7 @@ def test_push_force_repushes_when_already_pushed(monkeypatch):
     monkeypatch.setattr(wb, "require_enabled", lambda cfg: None)
     monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
     monkeypatch.setattr(wb, "push_replace_batch", lambda *a: None)
-    out = wb.push_budget_input("BUD-0001", force=True)
+    out = wb.push_budget_sheet("BSHT-0001", force=True)
     assert out["status"] == "Pushed"
 
 
@@ -160,7 +174,7 @@ def test_push_error_path_records_failed_and_reraises(monkeypatch):
 
     monkeypatch.setattr(wb, "get_token", boom)
     with pytest.raises(requests.exceptions.HTTPError):
-        wb.push_budget_input("BUD-0001")
+        wb.push_budget_sheet("BSHT-0001")
     assert doc._vals["d365_writeback_status"] == "Failed"
     assert "HTTP 400" in doc._vals["d365_writeback_error"]
     # server-side log captured the D365 response body for operability
@@ -181,6 +195,6 @@ def test_push_resolves_config_by_entity(monkeypatch):
     monkeypatch.setattr(wb, "get_token", lambda cfg: "TOK")
     monkeypatch.setattr(wb, "push_replace_batch", lambda *a: None)
 
-    wb.push_budget_input("BUD-0001")
+    wb.push_budget_sheet("BSHT-0001")
 
     assert seen["entity_id"] == "USMF"

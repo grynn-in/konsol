@@ -1,0 +1,102 @@
+{
+  "name": "Budget Line",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "track_changes": 0,
+  "fields": [
+    {
+      "fieldname": "main_account",
+      "fieldtype": "Data",
+      "label": "Main Account",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 2
+    },
+    {
+      "fieldname": "period_01",
+      "fieldtype": "Currency",
+      "label": "P01",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_02",
+      "fieldtype": "Currency",
+      "label": "P02",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_03",
+      "fieldtype": "Currency",
+      "label": "P03",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_04",
+      "fieldtype": "Currency",
+      "label": "P04",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_05",
+      "fieldtype": "Currency",
+      "label": "P05",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_06",
+      "fieldtype": "Currency",
+      "label": "P06",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_07",
+      "fieldtype": "Currency",
+      "label": "P07",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_08",
+      "fieldtype": "Currency",
+      "label": "P08",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_09",
+      "fieldtype": "Currency",
+      "label": "P09",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_10",
+      "fieldtype": "Currency",
+      "label": "P10",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_11",
+      "fieldtype": "Currency",
+      "label": "P11",
+      "default": "0"
+    },
+    {
+      "fieldname": "period_12",
+      "fieldtype": "Currency",
+      "label": "P12",
+      "default": "0"
+    },
+    {
+      "fieldname": "annual",
+      "fieldtype": "Currency",
+      "label": "Annual",
+      "read_only": 1,
+      "in_list_view": 1,
+      "columns": 2,
+      "description": "Computed: sum of period_01..period_12"
+    }
+  ],
+  "permissions": []
+}

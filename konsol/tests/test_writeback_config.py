@@ -110,8 +110,13 @@ def test_d365_writeback_get_config_delegates_to_resolver():
     assert "entity_id=doc.data_area_id" in src
 
 
-def test_budget_input_resolves_config_by_entity():
-    src = open(
-        os.path.join(APP_DIR, "epm", "doctype", "budget_input", "budget_input.py")
+def test_writeback_resolves_config_by_entity():
+    # Post-reshape, the per-entity config resolution lives on the cycle lock
+    # (gating each sheet's push) and in the sheet push itself — not on the
+    # deprecated Budget Input controller.
+    cycle = open(
+        os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.py")
     ).read()
-    assert "get_config(entity_id=self.data_area_id)" in src
+    assert "get_config(entity_id=entity_id)" in cycle
+    d365 = open(os.path.join(APP_DIR, "d365_writeback.py")).read()
+    assert "get_config(entity_id=doc.data_area_id)" in d365

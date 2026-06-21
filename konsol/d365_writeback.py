@@ -4,11 +4,11 @@ ClickHouse (via Frappe) is the source of truth for budgets; D365 is a downstream
 *sync target* so its native budget control (PO / expense validation) has the
 approved numbers. This is a one-way push.
 
-Wired to the Budget Input ``Submitted → Approved`` workflow transition via
-``BudgetInput._maybe_enqueue_d365_writeback`` (async ``frappe.enqueue``).
-Gated on ``enable_d365_budget_writeback`` in EPM Settings (off by default).
+Wired to the Budget Cycle lock: ``BudgetCycle.on_submit`` enqueues one
+``push_budget_sheet`` per sheet (async ``frappe.enqueue``). Gated on
+``enable_d365_budget_writeback`` in EPM Settings (off by default).
 
-Every pushed line is tagged ``BudgetModelId = 'EPM-<budget-input-name>'`` so
+Every pushed line is tagged ``BudgetModelId = 'EPM-<budget-sheet-name>'`` so
 EPM-originated entries are identifiable. Do NOT Airbyte-sync BudgetRegisterEntries
 back into ``epm_raw`` — filter on this tag if you must (round-trip prevention).
 
@@ -215,9 +215,15 @@ def _flt(value):
         return 0.0
 
 
-def budget_model_id(budget_input_name):
-    """Deterministic D365 BudgetModelId for a Budget Input (idempotency key)."""
-    return "EPM-" + str(budget_input_name)
+def budget_model_id(sheet_name):
+    """Deterministic D365 BudgetModelId for a Budget Sheet (idempotency key).
+
+    The model id is the per-sheet grain (entity × layer × cycle), so one push
+    replaces exactly that sheet's entries. NOTE: pre-reshape budgets were tagged
+    per Budget Input grain (``EPM-BUD-...``); the migration purges those old ids
+    before the first sheet push so they don't orphan into a double budget.
+    """
+    return "EPM-" + str(sheet_name)
 
 
 def _period_first_day(year, period):
@@ -245,33 +251,39 @@ def _dimension_values(doc):
     return vals
 
 
-def build_entries(doc, fiscal_calendar=None):
-    """Map a Budget Input doc to a list of BudgetRegisterEntries line payloads.
+def build_entries(sheet, fiscal_year, fiscal_calendar=None):
+    """Map a Budget Sheet to a list of BudgetRegisterEntries line payloads.
 
-    One line per period row. Lines with a zero amount are skipped (no-op in
-    D365). fiscal_calendar: a ``FiscalCalendar`` instance for period→date
-    mapping; defaults to ``StandardFiscalCalendar(start_month=1)``.
+    The sheet is *wide* — one ``Budget Line`` per (main_account, dimensions)
+    carrying 12 monthly columns ``period_01``..``period_12``. This explodes it
+    to *tall* D365 entries: one entry per (line, non-zero month). Zero months are
+    skipped (no-op in D365). ``fiscal_year`` comes from the sheet's Budget Cycle.
+    ``fiscal_calendar``: a ``FiscalCalendar`` for period→date mapping; defaults
+    to ``StandardFiscalCalendar(start_month=1)``.
 
     NEEDS-LIVE-TENANT: OData field names and LedgerDimensionValues attribute
     names must be confirmed against the target legal entity's configuration.
     """
+    from konsol.epm.budget_periods import PERIOD_FIELDS
+
     calendar = fiscal_calendar or _DEFAULT_CALENDAR
-    model_id = budget_model_id(doc.name)
-    dims = _dimension_values(doc)
+    model_id = budget_model_id(sheet.name)
     entries = []
-    for row in doc.periods:
-        amount = _flt(row.amount)
-        if not amount:
-            continue
-        entries.append({
-            "BudgetModelId": model_id,
-            "LegalEntityId": doc.data_area_id,
-            "AccountingDate": calendar.period_first_day(doc.fiscal_year, row.fiscal_period),
-            "MainAccountId": doc.main_account,
-            "AccountingCurrencyAmount": amount,
-            "BudgetType": "Original",
-            "LedgerDimensionValues": dict(dims),
-        })
+    for line in sheet.lines:
+        dims = _dimension_values(line)
+        for period, field in enumerate(PERIOD_FIELDS, start=1):
+            amount = _flt(line.get(field))
+            if not amount:
+                continue
+            entries.append({
+                "BudgetModelId": model_id,
+                "LegalEntityId": sheet.data_area_id,
+                "AccountingDate": calendar.period_first_day(fiscal_year, period),
+                "MainAccountId": line.main_account,
+                "AccountingCurrencyAmount": amount,
+                "BudgetType": "Original",
+                "LedgerDimensionValues": dict(dims),
+            })
     return entries
 
 
@@ -463,12 +475,23 @@ def push_replace_batch(cfg, token, model_id, entries):
     return resp
 
 
+def purge_budget_model(cfg, token, model_id):
+    """Delete every D365 entry tagged with ``model_id`` (delete-only ``$batch``).
+
+    Used by the Budget Input → Cycle reshape migration to clear pre-reshape
+    ``EPM-BUD-*`` ids before the first per-sheet push, so the regrained ids do
+    not orphan the old entries into a double budget. Idempotent — a no-op if no
+    entries match.
+    """
+    return push_replace_batch(cfg, token, model_id, [])
+
+
 # ---------------------------------------------------------------------------
 # Error handling + status tracking
 # ---------------------------------------------------------------------------
 
 def error_message(exc):
-    """Generic, non-sensitive failure message safe to store on Budget Input."""
+    """Generic, non-sensitive failure message safe to store on Budget Sheet."""
     if isinstance(exc, requests.exceptions.HTTPError):
         status = exc.response.status_code if exc.response is not None else "unknown"
         return (
@@ -485,21 +508,39 @@ def _set_status(doc, status, error):
 
 
 # ---------------------------------------------------------------------------
-# Workflow integration helpers
+# Lock / unlock integration helpers
 # ---------------------------------------------------------------------------
 
-def enqueue_push_budget_input(name):
-    """Enqueue an async D365 write-back job for a Budget Input.
+def withdraw_budget_sheet(name):
+    """Delete a sheet's D365 entries — used when a Budget Cycle is cancelled.
 
-    Called by ``BudgetInput._maybe_enqueue_d365_writeback`` on the
-    ``Submitted → Approved`` workflow transition when write-back is enabled.
-    Separated into its own function so it is unit-testable without a live
-    Frappe Document instance.
+    Purges every entry tagged with the sheet's ``BudgetModelId`` (delete-only
+    ``$batch``) and clears the sheet's write-back status. Defensive: a no-op
+    when write-back is disabled for the entity.
+    """
+    import frappe
+
+    doc = frappe.get_doc("Budget Sheet", name)
+    cfg = get_config(entity_id=doc.data_area_id)
+    if not cfg.get("enabled"):
+        return {"status": "Skipped", "reason": "write-back disabled"}
+    token = get_token(cfg)
+    purge_budget_model(cfg, token, budget_model_id(name))
+    _set_status(doc, "", "")
+    return {"status": "Withdrawn", "budget_model_id": budget_model_id(name)}
+
+
+def enqueue_push_budget_sheet(name):
+    """Enqueue an async D365 write-back job for a Budget Sheet.
+
+    Called by ``BudgetCycle.on_submit`` (the lock) once per sheet when
+    write-back is enabled. Separated into its own function so it is
+    unit-testable without a live Frappe Document instance.
     """
     import frappe
 
     frappe.enqueue(
-        "konsol.d365_writeback.push_budget_input",
+        "konsol.d365_writeback.push_budget_sheet",
         queue="long",
         name=name,
     )
@@ -509,24 +550,24 @@ def enqueue_push_budget_input(name):
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def push_budget_input(name, force=False):
-    """Push one Budget Input's budget to D365 using an atomic ``$batch`` changeset.
+def push_budget_sheet(name, force=False):
+    """Push one Budget Sheet's budget to D365 using an atomic ``$batch`` changeset.
 
-    Auto-triggered by the Budget Input ``Submitted → Approved`` workflow
-    transition when ``enable_d365_budget_writeback`` is on (via ``frappe.enqueue``
-    from ``BudgetInput._maybe_enqueue_d365_writeback``). Can also be called
-    explicitly (e.g. ``bench execute konsol.d365_writeback.push_budget_input``).
+    Auto-triggered when the parent Budget Cycle is locked (submitted) and
+    ``enable_d365_budget_writeback`` is on (via ``frappe.enqueue`` from
+    ``BudgetCycle.on_submit``). Can also be called explicitly (e.g.
+    ``bench execute konsol.d365_writeback.push_budget_sheet``).
 
     Replace semantics: ``push_replace_batch`` deletes existing D365 entries
-    tagged with this Budget Input's ``BudgetModelId`` before inserting the new
-    lines, making the push idempotent and atomic.
+    tagged with this sheet's ``BudgetModelId`` before inserting the new lines,
+    making the push idempotent and atomic.
 
     Re-push guard: if already ``Pushed`` and ``force=False``, the push is skipped.
     Pass ``force=True`` to re-push (deletes then re-inserts in D365).
     """
     import frappe
 
-    doc = frappe.get_doc("Budget Input", name)
+    doc = frappe.get_doc("Budget Sheet", name)
     cfg = get_config(entity_id=doc.data_area_id)
     require_enabled(cfg)
 
@@ -538,10 +579,12 @@ def push_budget_input(name, force=False):
             "budget_model_id": budget_model_id(name),
         }
 
+    fiscal_year = frappe.db.get_value("Budget Cycle", doc.cycle, "fiscal_year")
+
     try:
         token = get_token(cfg)
         calendar = get_fiscal_calendar(cfg)
-        entries = build_entries(doc, fiscal_calendar=calendar)
+        entries = build_entries(doc, fiscal_year, fiscal_calendar=calendar)
         push_replace_batch(cfg, token, budget_model_id(name), entries)
         _set_status(doc, "Pushed", "")
         return {
