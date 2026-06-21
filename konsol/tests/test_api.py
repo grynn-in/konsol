@@ -169,12 +169,4 @@ def test_period_net_amount_measure_expression_is_debit_minus_credit():
     assert period_net["expression"] == "sum(debit_amount) - sum(credit_amount)"
 
 
-def test_trial_balance_net_arithmetic_helper():
-    """Net = debit - credit for trial balance row aggregation."""
-    rows = [
-        {"debit": 100.0, "credit": 25.0},
-        {"debit": 50.0, "credit": 10.0},
-    ]
-    total_debit = sum(r["debit"] for r in rows)
-    total_credit = sum(r["credit"] for r in rows)
-    assert total_debit - total_credit == 115.0
+
