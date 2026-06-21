@@ -8,7 +8,7 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "format:BCYC-{scenario_id}-{fiscal_year}",
+  "autoname": "",
   "fields": [
     {
       "fieldname": "scenario_id",

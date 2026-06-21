@@ -10,19 +10,39 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
+from konsol.epm.budget_grain import digest_name
+
 
 class BudgetCycle(Document):
+    def autoname(self):
+        """Collision-safe name for the (scenario, fiscal_year) grain.
+
+        Digest-suffixed so long scenario codes can't truncate two cycles onto
+        one 140-char name (see budget_grain.digest_name)."""
+        self.name = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+
     def on_submit(self):
-        """Lock the cycle: freeze sheets, sync ClickHouse, push D365."""
+        """Lock the cycle: freeze sheets, sync ClickHouse, push D365.
+
+        Each sheet is isolated: one sheet's ClickHouse/enqueue failure is logged
+        and skipped (its d365 status surfaces the gap) rather than aborting the
+        whole lock and rolling back every other sheet's already-applied sync.
+        """
         self.db_set("status", "Locked", update_modified=False)
         self.db_set("locked_by", frappe.session.user, update_modified=False)
         self.db_set("locked_on", now_datetime(), update_modified=False)
 
         for sheet in self._sheets():
-            sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=True)
-            if self._d365_enabled_for(sheet.data_area_id):
-                from konsol.d365_writeback import enqueue_push_budget_sheet
-                enqueue_push_budget_sheet(sheet.name)
+            try:
+                sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=True)
+                if self._d365_enabled_for(sheet.data_area_id):
+                    from konsol.d365_writeback import enqueue_push_budget_sheet
+                    enqueue_push_budget_sheet(sheet.name)
+            except Exception:
+                frappe.log_error(
+                    title=f"Budget Cycle lock: sheet {sheet.name} sync/push failed",
+                    message=frappe.get_traceback(),
+                )
 
     def on_cancel(self):
         """Unlock the cycle: withdraw downstream and reopen sheets for editing."""
@@ -31,12 +51,22 @@ class BudgetCycle(Document):
         self.db_set("locked_on", None, update_modified=False)
 
         for sheet in self._sheets():
-            sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=False)
-            if self._d365_enabled_for(sheet.data_area_id):
-                frappe.enqueue(
-                    "konsol.d365_writeback.withdraw_budget_sheet",
-                    queue="long",
-                    name=sheet.name,
+            try:
+                sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=False)
+                if self._d365_enabled_for(sheet.data_area_id):
+                    frappe.enqueue(
+                        "konsol.d365_writeback.withdraw_budget_sheet",
+                        queue="long",
+                        name=sheet.name,
+                    )
+                elif sheet.meta.has_field("d365_writeback_status"):
+                    # Write-back off: no withdraw job to clear status, so clear it
+                    # here — else a stale 'Pushed' makes a later re-lock skip the push.
+                    sheet.db_set("d365_writeback_status", "", update_modified=False)
+            except Exception:
+                frappe.log_error(
+                    title=f"Budget Cycle unlock: sheet {sheet.name} withdraw failed",
+                    message=frappe.get_traceback(),
                 )
 
     # ------------------------------------------------------------------

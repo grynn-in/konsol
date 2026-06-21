@@ -76,7 +76,7 @@ def apply_schema(run_dbt=False):
         summary["errors"].append(f"Fact tables: {str(e)}")
         frappe.log_error("schema_apply: fact tables failed", frappe.get_traceback())
 
-    # 4. Sync Budget Input custom fields
+    # 4. Sync Budget Line custom fields (in_budget dimension columns)
     try:
         summary["budget_fields_synced"] = _sync_budget_custom_fields()
     except Exception as e:

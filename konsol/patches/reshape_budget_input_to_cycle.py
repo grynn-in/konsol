@@ -65,40 +65,50 @@ def _load_or_new_sheet(cycle_name, entity, layer, cache):
     return sheet
 
 
-def _find_or_append_line(sheet, old, dims):
-    for line in sheet.lines:
-        if line.main_account != old.main_account:
-            continue
-        if all((line.get(d) or "") == (old.get(d) or "") for d in dims):
-            return line
-    values = {"main_account": old.main_account}
-    for d in dims:
-        values[d] = old.get(d) or ""
-    return sheet.append("lines", values)
-
-
 def execute():
     if not frappe.db.table_exists("Budget Input"):
         return
 
-    from konsol.epm.budget_grain import budget_dimension_names
+    from konsol.epm.budget_grain import (
+        budget_dimension_names, find_budget_line, normalize_layer,
+    )
+
+    # Provision the in_budget dim Custom Fields on Budget Line FIRST. They are
+    # not synced during bench migrate (only on Dimension publish / manual apply),
+    # so without this the per-dim values written below would be silently dropped
+    # and two grains differing only by a dimension would collapse onto one line.
+    try:
+        from konsol.schema_apply import _sync_budget_custom_fields
+        _sync_budget_custom_fields()
+    except Exception:
+        frappe.log_error(
+            "reshape patch: budget line custom field sync failed",
+            frappe.get_traceback())
 
     dims = budget_dimension_names()
     cycle_cache = {}
     sheet_cache = {}
 
     names = frappe.get_all("Budget Input", pluck="name")
+    skipped = []
     for old_name in names:
         old = frappe.get_doc("Budget Input", old_name)
         if not old.get("periods"):
             continue
-        for layer in {p.layer for p in old.periods}:
+        if old.fiscal_year in (None, ""):
+            skipped.append(old_name)  # dirty source row — don't abort the whole migrate
+            continue
+        ident = {"main_account": old.main_account}
+        for d in dims:
+            ident[d] = old.get(d) or ""
+        for raw_layer in {p.layer for p in old.periods}:
+            layer = normalize_layer(raw_layer)
             cycle_name = _get_or_create_cycle(
                 old.scenario_id, int(old.fiscal_year), cycle_cache)
             sheet = _load_or_new_sheet(cycle_name, old.data_area_id, layer, sheet_cache)
-            line = _find_or_append_line(sheet, old, dims)
+            line = find_budget_line(sheet, ident, dims, append=True)
             for p in old.periods:
-                if p.layer != layer:
+                if normalize_layer(p.layer) != layer:
                     continue
                 line.set(_period_field(p.fiscal_period), p.amount or 0)
 
@@ -107,9 +117,10 @@ def execute():
 
     print(
         "reshape_budget_input_to_cycle: pivoted {0} Budget Input doc(s) into "
-        "{1} cycle(s), {2} sheet(s). Old docs retained; lock cycles after "
-        "review and run purge_legacy_d365() at cutover.".format(
-            len(names), len(cycle_cache), len(sheet_cache))
+        "{1} cycle(s), {2} sheet(s); skipped {3} with blank fiscal_year. Old docs "
+        "retained; lock cycles after review and run purge_legacy_d365() + "
+        "purge_legacy_clickhouse() at cutover.".format(
+            len(names), len(cycle_cache), len(sheet_cache), len(skipped))
     )
 
 
@@ -145,3 +156,27 @@ def purge_legacy_d365(force=False):
         purged.append(old.name)
 
     return {"status": "ok", "purged": len(purged), "skipped": len(skipped)}
+
+
+def purge_legacy_clickhouse():
+    """Clear pre-reshape rows from ``epm_gold.budget_monthly_input`` (cutover step).
+
+    Old Budget Input writes used a per-(account,dims) incremental key; the new
+    sheet sync replaces by (scenario, entity, fiscal_year, layer). Old rows for
+    any (entity, fy, layer) that is never re-locked would otherwise linger and
+    double-count.
+
+    Run ONCE in this order at cutover:
+      1. bench migrate            (creates Draft sheets; old CH rows still present)
+      2. purge_legacy_clickhouse  (TRUNCATE — CH budgets now empty)
+      3. lock each Budget Cycle   (re-populates CH from the sheets, authoritative)
+
+    i.e. run this AFTER the migrate but BEFORE locking — locking repopulates, so
+    running it after locking would wipe the freshly-synced rows.
+
+    ``bench execute konsol.patches.reshape_budget_input_to_cycle.purge_legacy_clickhouse``
+    """
+    from konsol.clickhouse import execute as ch_execute
+
+    ch_execute("TRUNCATE TABLE IF EXISTS epm_gold.budget_monthly_input")
+    return {"status": "ok", "table": "epm_gold.budget_monthly_input", "action": "truncated"}

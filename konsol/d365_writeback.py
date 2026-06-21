@@ -236,22 +236,43 @@ def _period_first_day(year, period):
     return _DEFAULT_CALENDAR.period_first_day(year, period)
 
 
-def _dimension_values(doc):
-    """Canonical EPM dimensions -> D365 financial-dimension display values.
+# Explicit D365 financial-dimension attribute names for the baseline dims;
+# any other in_budget dim derives its attribute name from the fieldname.
+_D365_DIM_ATTR = {"dim_cost_center": "CostCenter", "dim_department": "Department"}
 
-    Only non-empty dimensions are sent. The D365 dimension attribute names
-    (CostCenter / Department) must match the target legal entity's dimension
-    configuration; validate against the tenant before go-live.
+
+def _d365_attribute(dim):
+    """D365 LedgerDimensionValues attribute name for an in_budget dim fieldname.
+
+    Known dims use the explicit mapping; others derive ``dim_foo_bar`` →
+    ``FooBar``. NEEDS-LIVE-TENANT: a derived name must match the tenant's
+    financial-dimension attribute; add it to ``_D365_DIM_ATTR`` once confirmed.
     """
+    if dim in _D365_DIM_ATTR:
+        return _D365_DIM_ATTR[dim]
+    base = dim[4:] if dim.startswith("dim_") else dim
+    return "".join(p.capitalize() for p in base.split("_") if p)
+
+
+def _dimension_values(line, dim_names=None):
+    """EPM dimensions -> D365 financial-dimension display values (non-empty only).
+
+    ``dim_names`` is the in_budget dim fieldname list (resolved from
+    ``budget_dimension_names()`` by the caller); when None — unit tests / no
+    site — it falls back to the two baseline dims so the mapping stays importable
+    without frappe. Every in_budget dim is emitted, not just cost center /
+    department, so D365 stays as dimensionally granular as ClickHouse.
+    """
+    dims = dim_names if dim_names is not None else ("dim_cost_center", "dim_department")
     vals = {}
-    if doc.get("dim_cost_center"):
-        vals["CostCenter"] = doc.get("dim_cost_center")
-    if doc.get("dim_department"):
-        vals["Department"] = doc.get("dim_department")
+    for dim in dims:
+        value = line.get(dim)
+        if value:
+            vals[_d365_attribute(dim)] = value
     return vals
 
 
-def build_entries(sheet, fiscal_year, fiscal_calendar=None):
+def build_entries(sheet, fiscal_year, fiscal_calendar=None, dim_names=None):
     """Map a Budget Sheet to a list of BudgetRegisterEntries line payloads.
 
     The sheet is *wide* — one ``Budget Line`` per (main_account, dimensions)
@@ -259,7 +280,8 @@ def build_entries(sheet, fiscal_year, fiscal_calendar=None):
     to *tall* D365 entries: one entry per (line, non-zero month). Zero months are
     skipped (no-op in D365). ``fiscal_year`` comes from the sheet's Budget Cycle.
     ``fiscal_calendar``: a ``FiscalCalendar`` for period→date mapping; defaults
-    to ``StandardFiscalCalendar(start_month=1)``.
+    to ``StandardFiscalCalendar(start_month=1)``. ``dim_names``: in_budget dims to
+    map onto LedgerDimensionValues (caller passes ``budget_dimension_names()``).
 
     NEEDS-LIVE-TENANT: OData field names and LedgerDimensionValues attribute
     names must be confirmed against the target legal entity's configuration.
@@ -270,7 +292,7 @@ def build_entries(sheet, fiscal_year, fiscal_calendar=None):
     model_id = budget_model_id(sheet.name)
     entries = []
     for line in sheet.lines:
-        dims = _dimension_values(line)
+        dims = _dimension_values(line, dim_names)
         for period, field in enumerate(PERIOD_FIELDS, start=1):
             amount = _flt(line.get(field))
             if not amount:
@@ -521,6 +543,11 @@ def withdraw_budget_sheet(name):
     import frappe
 
     doc = frappe.get_doc("Budget Sheet", name)
+    # Cycle-state guard: only withdraw while the parent cycle is NOT locked.
+    # Prevents a stale withdraw job (queued by a cancel) from deleting entries a
+    # subsequent re-lock just pushed — the actual cycle state wins, not job order.
+    if frappe.db.get_value("Budget Cycle", doc.cycle, "docstatus") == 1:
+        return {"status": "Skipped", "reason": "cycle re-locked"}
     cfg = get_config(entity_id=doc.data_area_id)
     if not cfg.get("enabled"):
         return {"status": "Skipped", "reason": "write-back disabled"}
@@ -579,12 +606,21 @@ def push_budget_sheet(name, force=False):
             "budget_model_id": budget_model_id(name),
         }
 
-    fiscal_year = frappe.db.get_value("Budget Cycle", doc.cycle, "fiscal_year")
+    cycle = frappe.db.get_value(
+        "Budget Cycle", doc.cycle, ["fiscal_year", "docstatus"], as_dict=True)
+    # Cycle-state guard: only push while the parent cycle is locked (docstatus 1).
+    # A push job left over from a lock that was since cancelled must not write.
+    if not cycle or cycle.docstatus != 1:
+        return {"status": "Skipped", "reason": "parent cycle not locked",
+                "budget_model_id": budget_model_id(name)}
+
+    from konsol.epm.budget_grain import budget_dimension_names
 
     try:
         token = get_token(cfg)
         calendar = get_fiscal_calendar(cfg)
-        entries = build_entries(doc, fiscal_year, fiscal_calendar=calendar)
+        entries = build_entries(doc, cycle.fiscal_year, fiscal_calendar=calendar,
+                                dim_names=budget_dimension_names())
         push_replace_batch(cfg, token, budget_model_id(name), entries)
         _set_status(doc, "Pushed", "")
         return {

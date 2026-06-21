@@ -10,7 +10,9 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_rows
-from konsol.epm.budget_grain import budget_dimension_names
+from konsol.epm.budget_grain import (
+    budget_dimension_names, digest_name, normalize_layer,
+)
 from konsol.epm.doctype.budget_line.budget_line import PERIOD_FIELDS
 
 # Which role may own each budget layer. Editing a sheet of a given layer
@@ -26,6 +28,16 @@ CLICKHOUSE_TABLE = "epm_gold.budget_monthly_input"
 
 
 class BudgetSheet(Document):
+    def autoname(self):
+        """Collision-safe name for the (cycle, entity, layer) grain.
+
+        A raw ``format:`` autoname of long cycle/entity/layer codes can exceed
+        Frappe's 140-char name column and silently truncate two distinct grains
+        onto one name; ``digest_name`` appends a sha1 of the exact tuple so that
+        can't happen (the get-or-create upsert relies on name uniqueness).
+        """
+        self.name = digest_name("BSHT", [self.cycle, self.data_area_id, self.layer])
+
     def validate(self):
         self._guard_cycle_locked()
         self._compute_totals()
@@ -59,7 +71,8 @@ class BudgetSheet(Document):
         user_roles = frappe.get_roles()
         if "System Manager" in user_roles:
             return
-        required_role = LAYER_ROLES.get(self.layer)
+        # normalize so a mis-cased layer ('Base') can't slip past the role gate.
+        required_role = LAYER_ROLES.get(normalize_layer(self.layer))
         if required_role and required_role not in user_roles:
             frappe.throw(
                 f"You need the '{required_role}' role to edit the "
@@ -99,13 +112,19 @@ class BudgetSheet(Document):
         if active:
             for line in self.lines:
                 for period, field in enumerate(PERIOD_FIELDS, start=1):
+                    amount = line.get(field) or 0
+                    # Skip zero months: the wide line always has 12 columns, but
+                    # a 0 means "not budgeted" — emitting it would create phantom
+                    # rows and diverge from D365 build_entries (which skips zeros).
+                    if not amount:
+                        continue
                     row = [
                         scenario_id, self.data_area_id, int(fiscal_year),
                         line.main_account,
                     ]
                     for dn in dim_names:
                         row.append(line.get(dn) or "")
-                    row.extend([period, line.get(field) or 0, self.layer])
+                    row.extend([period, amount, self.layer])
                     rows.append(row)
 
         sync_rows(CLICKHOUSE_TABLE, columns, rows, key_columns, key_values)

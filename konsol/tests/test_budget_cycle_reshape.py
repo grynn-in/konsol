@@ -7,6 +7,7 @@ correctly. (Live ClickHouse / D365 / DB behaviour is exercised by
 ``bench run-tests`` against a site, not here.)
 """
 import ast
+import json
 import os
 
 from konsol.epm.budget_periods import PERIOD_FIELDS
@@ -18,6 +19,8 @@ SHEET_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_sheet", "budget_sheet
 D365_PY = os.path.join(APP_DIR, "d365_writeback.py")
 PATCH_PY = os.path.join(APP_DIR, "patches", "reshape_budget_input_to_cycle.py")
 PATCHES_TXT = os.path.join(APP_DIR, "patches.txt")
+GRAIN_PY = os.path.join(APP_DIR, "epm", "budget_grain.py")
+INSTALL_PY = os.path.join(APP_DIR, "install.py")
 
 
 def _src(path):
@@ -136,3 +139,87 @@ def test_migration_exposes_legacy_d365_purge():
     assert purge is not None
     assert "purge_budget_model" in purge       # reuses the delete-only $batch
     assert "budget_model_id" in purge
+
+
+# --- review fixes -----------------------------------------------------------
+
+def test_cycle_create_race_is_handled():
+    # Fix #2: the cycle insert (outside the per-sheet retry) must absorb the
+    # concurrent-create DuplicateEntryError instead of 500-ing the writer.
+    resolve = _func(_src(API_PATH), "_resolve_budget_cycle")
+    assert "DuplicateEntryError" in resolve and "rollback" in resolve
+
+
+def test_layer_is_canonicalized_on_every_write():
+    # Fix #3: both write paths normalize layer; the grain helper owns it.
+    api = _src(API_PATH)
+    assert "normalize_layer" in _func(api, "_upsert_budget_line")
+    assert "normalize_layer" in _func(api, "budget_cell_save")
+    grain = _src(GRAIN_PY)
+    assert "def normalize_layer" in grain and "VALID_LAYERS" in grain
+    # role gate normalizes too, so a mis-cased layer can't bypass it
+    assert "normalize_layer" in _func(_src(SHEET_PY), "_validate_layer_permission")
+
+
+def test_explode_skips_zero_months():
+    # Fix #5: zero months are not emitted (D365 parity, no phantom rows).
+    sync = _func(_src(SHEET_PY), "_sync_to_clickhouse")
+    assert "if not amount" in sync and "continue" in sync
+
+
+def test_cycle_and_sheet_use_digest_autoname():
+    # Fix #4: collision-safe names; JSON format autoname removed.
+    assert "digest_name" in _func(_src(CYCLE_PY), "autoname")
+    assert "digest_name" in _func(_src(SHEET_PY), "autoname")
+    assert "def digest_name" in _src(GRAIN_PY)
+    for f in ("budget_cycle/budget_cycle", "budget_sheet/budget_sheet"):
+        meta = json.load(open(os.path.join(APP_DIR, "epm", "doctype", f + ".json")))
+        assert meta.get("autoname", "") == "", f"{f} must not use a raw format autoname"
+
+
+def test_d365_dimension_values_are_dynamic():
+    # Fix #9: every in_budget dim is emitted, not just cost center / department.
+    src = _src(D365_PY)
+    assert "def build_entries(sheet, fiscal_year, fiscal_calendar=None, dim_names=None)" in src
+    dv = _func(src, "_dimension_values")
+    assert "for dim in dims" in dv and "_d365_attribute" in dv
+    assert _func(src, "_d365_attribute") is not None
+
+
+def test_d365_jobs_guard_on_cycle_state():
+    # Fix #7: push only while cycle locked; withdraw skips if re-locked.
+    src = _src(D365_PY)
+    assert "docstatus" in _func(src, "push_budget_sheet")
+    assert "docstatus" in _func(src, "withdraw_budget_sheet")
+
+
+def test_lock_is_isolated_per_sheet():
+    # Fix #8: one sheet's failure doesn't abort the whole lock.
+    on_submit = _func(_src(CYCLE_PY), "on_submit")
+    assert "try:" in on_submit and "log_error" in on_submit
+
+
+def test_migration_provisions_dims_and_normalizes_and_purges_ch():
+    # Fix #1/#3/#6: dim fields provisioned before pivot; layer normalized; CH purge.
+    src = _src(PATCH_PY)
+    execute = _func(src, "execute")
+    assert "_sync_budget_custom_fields" in execute      # provision before writing dims
+    assert "normalize_layer" in execute                 # canonical layer
+    assert "find_budget_line" in execute                # shared grain matcher
+    assert _func(src, "purge_legacy_clickhouse") is not None
+
+
+def test_after_migrate_provisions_budget_line_fields():
+    # Fix #1: live path / fresh installs get the dim columns too.
+    src = _src(INSTALL_PY)
+    assert "_sync_budget_line_custom_fields" in _func(src, "after_migrate")
+    assert "_sync_budget_custom_fields" in _func(src, "_sync_budget_line_custom_fields")
+
+
+def test_shared_line_matcher_replaces_duplicates():
+    # Fix #10: the line-match loop lives in one place (budget_grain.find_budget_line).
+    assert "def find_budget_line" in _src(GRAIN_PY)
+    api = _src(API_PATH)
+    assert "find_budget_line" in api
+    # the old standalone _find_line / _find_or_append_line copies are gone
+    assert "def _find_line(" not in api and "def _find_or_append_line(" not in api

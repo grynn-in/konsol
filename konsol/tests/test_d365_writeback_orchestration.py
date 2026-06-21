@@ -59,15 +59,25 @@ class _FakeThrow(Exception):
     pass
 
 
-def _install_fake_frappe(monkeypatch, budget_doc, fiscal_year=2024):
+def _install_fake_frappe(monkeypatch, budget_doc, fiscal_year=2024, cycle_docstatus=1):
     fr = types.ModuleType("frappe")
 
     def throw(msg, exc=None):
         raise _FakeThrow(msg)
 
+    def get_value(dt, name, field, as_dict=False, **kw):
+        # push_budget_sheet reads (fiscal_year, docstatus) as_dict; withdraw reads
+        # docstatus scalar. Cycle is locked (docstatus 1) by default.
+        if as_dict:
+            return types.SimpleNamespace(fiscal_year=fiscal_year, docstatus=cycle_docstatus)
+        if field == "docstatus":
+            return cycle_docstatus
+        return fiscal_year
+
     fr.throw = throw
     fr.get_doc = lambda dt, name: budget_doc
-    fr.db = types.SimpleNamespace(get_value=lambda dt, name, field: fiscal_year)
+    fr.get_all = lambda *a, **k: []          # budget_dimension_names() → no extra dims
+    fr.db = types.SimpleNamespace(get_value=get_value)
     fr.log_error = lambda **kw: None
     fr.get_traceback = lambda: "traceback"
     monkeypatch.setitem(sys.modules, "frappe", fr)
