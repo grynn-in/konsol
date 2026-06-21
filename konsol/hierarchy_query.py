@@ -222,7 +222,7 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
         groups[key].append((idx, req))
 
     for key, group_items in groups.items():
-        sc, measure, hname, node, periods, dim_names, scenario_id, wildcard = key
+        sc, measure, hname, node, periods, dim_names, scenario_id, wildcard, _entity_key = key
         cfg = HIERARCHY_SCENARIO_CONFIG[sc]
         table = cfg["table"]
 
