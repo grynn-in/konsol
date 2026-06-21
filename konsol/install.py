@@ -25,10 +25,11 @@ def setup_epm_settings(ch_host="localhost", ch_port=8123, ch_user="default", ch_
 
 def after_migrate():
     """Called after bench migrate — ensures EPM roles exist, the dimension
-    crosswalk seed reflects fixture-loaded Dimension Mapping docs, and the
-    Konsolidat desk workspace is present."""
+    crosswalk seed reflects fixture-loaded Dimension Mapping docs, allocation
+    config is synced to ClickHouse, and the Konsolidat desk workspace is present."""
     _create_roles()
     _regenerate_dimension_mappings_seed()
+    _sync_allocation_config_to_clickhouse()
     _setup_dashboard()
 
 
@@ -41,6 +42,23 @@ def _setup_dashboard():
     except Exception:
         frappe.logger().warning(
             "Konsolidat workspace setup skipped after migrate",
+            exc_info=True,
+        )
+
+
+def _sync_allocation_config_to_clickhouse():
+    """Push fixture-loaded Allocation Rule/Driver docs to ClickHouse.
+
+    Fixture import does not run ``on_update``, so staging would stay empty until
+    a manual save. Best-effort — never fail migrate (e.g. CH not configured).
+    """
+    try:
+        from konsol.allocation.bootstrap import sync_allocation_config_to_clickhouse
+
+        sync_allocation_config_to_clickhouse()
+    except Exception:
+        frappe.logger().warning(
+            "allocation config ClickHouse sync skipped after migrate",
             exc_info=True,
         )
 

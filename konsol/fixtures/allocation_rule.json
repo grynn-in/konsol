@@ -1,5 +1,41 @@
 [
-  {"doctype": "Allocation Rule", "name": "ALLOC_001", "allocation_rule_id": "ALLOC_001", "rule_name": "IT Cost Allocation", "step_order": 1, "source_account": "7100", "source_cost_center": "IT", "driver_type": "headcount", "target_account": "7100", "description": "Allocate IT costs to departments by headcount"},
-  {"doctype": "Allocation Rule", "name": "ALLOC_002", "allocation_rule_id": "ALLOC_002", "rule_name": "Facility Cost Allocation", "step_order": 2, "source_account": "7200", "source_cost_center": "FACILITY", "driver_type": "sqm", "target_account": "7200", "description": "Allocate facility costs by square meters"},
-  {"doctype": "Allocation Rule", "name": "ALLOC_003", "allocation_rule_id": "ALLOC_003", "rule_name": "Management Fee Allocation", "step_order": 3, "source_account": "7300", "source_cost_center": "MGMT", "driver_type": "revenue", "target_account": "7300", "description": "Allocate management fees by revenue share"}
+  {
+    "doctype": "Allocation Rule",
+    "name": "ALLOC_001",
+    "allocation_rule_id": "ALLOC_001",
+    "rule_name": "AMUS Opex by Headcount",
+    "step_order": 1,
+    "source_account": "6010",
+    "source_cost_center": "SALES",
+    "driver_type": "headcount",
+    "target_account": "6010",
+    "allocation_method": "step_down",
+    "description": "Allocate AMUS opex (6010/SALES) by headcount to peer cost centers"
+  },
+  {
+    "doctype": "Allocation Rule",
+    "name": "ALLOC_002",
+    "allocation_rule_id": "ALLOC_002",
+    "rule_name": "AMHQ Opex by SQM",
+    "step_order": 2,
+    "source_account": "6010",
+    "source_cost_center": "HQ",
+    "driver_type": "sqm",
+    "target_account": "6010",
+    "allocation_method": "step_down",
+    "description": "Allocate AMHQ opex (6010/HQ) by sqm to peer cost centers"
+  },
+  {
+    "doctype": "Allocation Rule",
+    "name": "ALLOC_003",
+    "allocation_rule_id": "ALLOC_003",
+    "rule_name": "AMDE Opex by Revenue",
+    "step_order": 3,
+    "source_account": "6010",
+    "source_cost_center": "PROD",
+    "driver_type": "revenue",
+    "target_account": "6010",
+    "allocation_method": "step_down",
+    "description": "Allocate AMDE opex (6010/PROD) by revenue share to peer cost centers"
+  }
 ]

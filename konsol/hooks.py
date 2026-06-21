@@ -21,6 +21,7 @@ fixtures = [
     "Consolidation Group",
     "IC Elimination Rule",
     "Allocation Rule",
+    "Allocation Driver",
     "Spread Profile",
     "Connector",
     "Build Domain",

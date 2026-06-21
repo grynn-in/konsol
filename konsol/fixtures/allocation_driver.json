@@ -1,0 +1,974 @@
+[
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "HQ",
+    "driver_value": 25.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "PROD",
+    "driver_value": 60.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "headcount",
+    "data_area_id": "AMUS",
+    "cost_center": "FINANCE",
+    "driver_value": 15.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "SALES",
+    "driver_value": 500.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "PROD",
+    "driver_value": 1200.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "sqm",
+    "data_area_id": "AMHQ",
+    "cost_center": "FINANCE",
+    "driver_value": 150.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "SALES",
+    "driver_value": 4000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "HQ",
+    "driver_value": 6000000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 1
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 2
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 3
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 4
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 5
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 6
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 7
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 8
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 9
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 10
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 11
+  },
+  {
+    "doctype": "Allocation Driver",
+    "driver_type": "revenue",
+    "data_area_id": "AMDE",
+    "cost_center": "FINANCE",
+    "driver_value": 500000.0,
+    "fiscal_year": 2024,
+    "fiscal_period": 12
+  }
+]
