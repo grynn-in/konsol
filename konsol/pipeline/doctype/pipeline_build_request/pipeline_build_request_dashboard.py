@@ -1,8 +1,12 @@
 
 def get_data():
-    """Static shell only — per-doc trigger links are added in pipeline_build_request.js."""
     return {
-        "fieldname": "name",
+        "fieldname": "pipeline_build_request",
         "method": "konsol.desk.connections.get_open_count",
-        "transactions": [],
+        "non_standard_fieldnames": {
+            "Pipeline Run": "pipeline_build_request",
+        },
+        "transactions": [
+            {"label": "Runs", "items": ["Pipeline Run"]},
+        ],
     }

@@ -129,6 +129,15 @@ def test_run_governed_build_references_domain_tags():
     assert "domain:" in content
 
 
+def test_run_governed_build_creates_linked_pipeline_run():
+    """Governed builds must create a Pipeline Run linked to the PBR."""
+    content = _read(TASKS_PATH)
+    build = content.split("def run_governed_build")[1].split("\ndef ")[0]
+    assert "_create_governed_pipeline_run" in build
+    assert "_finalize_governed_pipeline_run" in build
+    assert "pipeline_build_request" in content.split("def _create_governed_pipeline_run")[1].split("\ndef ")[0]
+
+
 # ===================================================================
 # 4. on_consolidation_doc_update refactored
 # ===================================================================

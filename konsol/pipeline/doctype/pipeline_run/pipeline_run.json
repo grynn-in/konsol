@@ -33,6 +33,14 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "pipeline_build_request",
+      "fieldtype": "Link",
+      "label": "Pipeline Build Request",
+      "options": "Pipeline Build Request",
+      "read_only": 1,
+      "in_standard_filter": 1
+    },
+    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },

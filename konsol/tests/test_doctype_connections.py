@@ -87,6 +87,12 @@ def test_pipeline_run_links_close_runs():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
     assert "Close Run" in _items(data)
     assert data["non_standard_fieldnames"]["Close Run"] == "pipeline_run"
+    assert data["internal_links"]["Pipeline Build Request"] == "pipeline_build_request"
+
+
+def test_pipeline_run_links_build_request():
+    data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
+    assert "Pipeline Build Request" in _items(data)
 
 
 def test_close_run_links_pipeline_run():
@@ -110,16 +116,17 @@ def test_allocation_rule_links_drivers():
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 
-def test_pipeline_build_request_dashboard_is_dynamic():
+def test_pipeline_build_request_dashboard_links_runs_and_trigger_js():
     data = _load_dashboard(
         "pipeline/doctype/pipeline_build_request/pipeline_build_request_dashboard.py")
-    assert _items(data) == []
+    assert "Pipeline Run" in _items(data)
+    assert data["non_standard_fieldnames"]["Pipeline Run"] == "pipeline_build_request"
     assert data["method"] == "konsol.desk.connections.get_open_count"
     js_path = os.path.join(
         APP_DIR, "pipeline/doctype/pipeline_build_request/pipeline_build_request.js")
     js = open(js_path).read()
     assert "refresh_pipeline_build_request_connections" in js
-    assert "frm.dashboard.hide()" in js
+    assert "frm.dashboard.hide()" not in js
 
 
 def test_pipeline_build_request_trigger_helper():

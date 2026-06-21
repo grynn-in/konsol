@@ -159,6 +159,36 @@ def check_raw_data_available():
 # ---------------------------------------------------------------------------
 # Governed dbt build (called from Pipeline Build Request)
 # ---------------------------------------------------------------------------
+def _create_governed_pipeline_run(build_request_doc):
+    """Create a Pipeline Run audit row for a governed PBR execution."""
+    run = frappe.get_doc({
+        "doctype": "Pipeline Run",
+        "status": "Queued",
+        "pipeline_build_request": build_request_doc.name,
+        "triggered_by": build_request_doc.requested_by or frappe.session.user,
+        "started_at": frappe.utils.now_datetime(),
+    })
+    run.insert(ignore_permissions=True)
+    frappe.db.commit()
+    return run.name
+
+
+def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None):
+    """Persist terminal status on the governed Pipeline Run."""
+    if not pipeline_run:
+        return
+    doc = frappe.get_doc("Pipeline Run", pipeline_run)
+    doc.status = status
+    if dbt_result is not None:
+        doc.dbt_result = dbt_result
+    if error_log is not None:
+        doc.error_log = error_log
+    if status in ("Completed", "Failed"):
+        doc.completed_at = frappe.utils.now_datetime()
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
 def run_governed_build(build_request):
     """Execute a governed dbt build for a Pipeline Build Request.
 
@@ -166,6 +196,7 @@ def run_governed_build(build_request):
     Runs preflight checks, then selective dbt build with --select tag.
     """
     doc = frappe.get_doc("Pipeline Build Request", build_request)
+    pipeline_run = _create_governed_pipeline_run(doc)
     doc.workflow_state = "Running"
     doc.started_at = frappe.utils.now_datetime()
     doc.save(ignore_permissions=True)
@@ -181,8 +212,15 @@ def run_governed_build(build_request):
             doc.completed_at = frappe.utils.now_datetime()
             _set_duration(doc)
             doc.save(ignore_permissions=True)
+            _finalize_governed_pipeline_run(
+                pipeline_run,
+                status="Failed",
+                error_log=doc.error_message,
+            )
             frappe.db.commit()
             return
+
+        _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
 
         # Build dbt command
         settings = frappe.get_single("EPM Settings")
@@ -206,16 +244,36 @@ def run_governed_build(build_request):
 
         if result.returncode == 0:
             doc.workflow_state = "Completed"
+            _finalize_governed_pipeline_run(
+                pipeline_run,
+                status="Completed",
+                dbt_result=doc.build_output[:500],
+            )
         else:
             doc.workflow_state = "Failed"
             doc.error_message = f"dbt build failed (rc={result.returncode})"
+            _finalize_governed_pipeline_run(
+                pipeline_run,
+                status="Failed",
+                error_log=doc.error_message,
+            )
 
     except subprocess.TimeoutExpired:
         doc.workflow_state = "Failed"
         doc.error_message = "dbt build timed out after 300s"
+        _finalize_governed_pipeline_run(
+            pipeline_run,
+            status="Failed",
+            error_log=doc.error_message,
+        )
     except Exception as e:
         doc.workflow_state = "Failed"
         doc.error_message = str(e)
+        _finalize_governed_pipeline_run(
+            pipeline_run,
+            status="Failed",
+            error_log=doc.error_message,
+        )
 
     doc.completed_at = frappe.utils.now_datetime()
     _set_duration(doc)
