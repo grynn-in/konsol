@@ -33,10 +33,11 @@ def test_konsol_control_doppio_assets_exist():
     doppio_dir = os.path.join(APP_DIR, "public", "js", "konsol_control")
     assert os.path.isfile(os.path.join(doppio_dir, "konsol_control.bundle.jsx"))
     assert os.path.isfile(os.path.join(doppio_dir, "App.jsx"))
-    assert os.path.isfile(os.path.join(doppio_dir, "control.css"))
+    assert os.path.isfile(os.path.join(doppio_dir, "konsol_control.bundle.css"))
     page_js = _src(os.path.join(APP_DIR, "epm", "page", "konsol_control", "konsol_control.js"))
     assert "konsol_control.bundle.jsx" in page_js
     assert "on_page_show" in page_js
+    assert "konsol_control.bundle.css" in page_js
 
 
 def test_dashboard_includes_konsol_control_shortcut():
