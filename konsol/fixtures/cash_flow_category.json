@@ -1,0 +1,122 @@
+[
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-1010",
+  "main_account": "1010",
+  "cf_category": "Operating",
+  "cf_line_item": "Cash and cash equivalents",
+  "is_cash": 1,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-1100",
+  "main_account": "1100",
+  "cf_category": "Operating",
+  "cf_line_item": "Change in Trade Receivables",
+  "is_cash": 0,
+  "sign": "-1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-1200",
+  "main_account": "1200",
+  "cf_category": "Operating",
+  "cf_line_item": "Change in Inventory",
+  "is_cash": 0,
+  "sign": "-1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-1300",
+  "main_account": "1300",
+  "cf_category": "Operating",
+  "cf_line_item": "Change in Intercompany Receivables",
+  "is_cash": 0,
+  "sign": "-1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-1500",
+  "main_account": "1500",
+  "cf_category": "Investing",
+  "cf_line_item": "Purchase of Fixed Assets",
+  "is_cash": 0,
+  "sign": "-1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-1510",
+  "main_account": "1510",
+  "cf_category": "Operating",
+  "cf_line_item": "Depreciation and Amortization",
+  "is_cash": 0,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-2010",
+  "main_account": "2010",
+  "cf_category": "Operating",
+  "cf_line_item": "Change in Trade Payables",
+  "is_cash": 0,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-2100",
+  "main_account": "2100",
+  "cf_category": "Operating",
+  "cf_line_item": "Change in Accrued Liabilities",
+  "is_cash": 0,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-2500",
+  "main_account": "2500",
+  "cf_category": "Financing",
+  "cf_line_item": "Proceeds from / Repayment of Debt",
+  "is_cash": 0,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-3010",
+  "main_account": "3010",
+  "cf_category": "Financing",
+  "cf_line_item": "Issuance of Share Capital",
+  "is_cash": 0,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-3100",
+  "main_account": "3100",
+  "cf_category": "Financing",
+  "cf_line_item": "Retained Earnings Movement",
+  "is_cash": 0,
+  "sign": "1",
+  "status": "Published"
+ },
+ {
+  "doctype": "Cash Flow Category",
+  "name": "CFC-3200",
+  "main_account": "3200",
+  "cf_category": "Financing",
+  "cf_line_item": "Dividends Paid",
+  "is_cash": 0,
+  "sign": "-1",
+  "status": "Published"
+ }
+]
