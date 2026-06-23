@@ -92,7 +92,7 @@ def get_snapshot():
         "stats": stats,
         "budget_rounds": _budget_rounds(fy),
         "reminders": _reminders(processes, fy),
-        "history": _history(),
+        "runs": _domain_runs_all(),
         "scenarios": _scenario_options(),
         "periods": _period_options(fy),
     }
@@ -134,6 +134,33 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         pbr.save(ignore_permissions=True)
     frappe.db.commit()
     return {"ok": True, "run_kind": "pbr", "name": pbr.name}
+
+
+@frappe.whitelist(methods=["GET", "POST"])
+def get_run_detail(process_id, kind, run_id):
+    """Drill-down for a single domain run — steps, logs, and related doctypes."""
+    pid = (process_id or "").strip()
+    if pid not in PROCESSES:
+        frappe.throw(f"Unknown process: {process_id}")
+
+    run_kind = (kind or "").strip().lower()
+    name = (run_id or "").strip()
+    if not name:
+        frappe.throw("run_id is required")
+
+    if pid == "budgeting":
+        if run_kind != "pbr":
+            frappe.throw("Budget runs use kind=pbr")
+        return _pbr_run_detail(name, pid)
+
+    if pid == "forecasting":
+        if run_kind != "pipeline":
+            frappe.throw("Forecast runs use kind=pipeline")
+        return _pipeline_run_detail(name, pid)
+
+    if run_kind != "close":
+        frappe.throw("Consolidation runs use kind=close")
+    return _close_run_detail(name, pid)
 
 
 @frappe.whitelist()
@@ -581,68 +608,357 @@ def _reminders(processes, fy):
     return items
 
 
-def _history(limit=20):
+_RUN_LIST_LIMIT = 100
+
+
+def _domain_runs_all(limit=_RUN_LIST_LIMIT):
+    return {
+        "budgeting": _budget_run_list(limit),
+        "forecasting": _forecast_run_list(limit),
+        "consolidation": _consolidation_run_list(limit),
+    }
+
+
+def _budget_run_list(limit):
+    rows = []
+    for pbr in frappe.get_all(
+        "Pipeline Build Request",
+        filters={"build_scope": PROCESSES["budgeting"]["build_scope"]},
+        fields=[
+            "name", "workflow_state", "build_scope", "requested_by", "approved_by",
+            "started_at", "completed_at", "duration_seconds", "trigger_doctype", "trigger_docname",
+            "creation",
+        ],
+        order_by="creation desc",
+        limit=limit,
+    ):
+        rows.append(_pbr_list_row(pbr, "budgeting"))
+    return rows
+
+
+def _forecast_run_list(limit):
     rows = []
     for pr in frappe.get_all(
         "Pipeline Run",
-        fields=["name", "status", "started_at", "completed_at", "rows_synced", "triggered_by", "pipeline_build_request", "creation"],
+        fields=[
+            "name", "status", "started_at", "completed_at", "rows_synced",
+            "triggered_by", "pipeline_build_request", "creation",
+        ],
         order_by="creation desc",
-        limit=limit,
+        limit=limit * 3,
     ):
-        proc, accent = _process_for_pipeline(pr.pipeline_build_request)
-        rows.append(_history_row(proc, accent, pr, "pipeline"))
+        if not _pipeline_belongs_to_forecast(pr.pipeline_build_request):
+            continue
+        rows.append(_pipeline_list_row(pr, "forecasting"))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _consolidation_run_list(limit):
+    rows = []
     for cr in frappe.get_all(
         "Close Run",
-        fields=["name", "status", "fiscal_year", "fiscal_period", "started_at", "completed_at",
-                "duration_seconds", "total", "triggered_by", "creation"],
+        fields=[
+            "name", "status", "title", "fiscal_year", "fiscal_period", "pipeline_run",
+            "started_at", "completed_at", "duration_seconds", "total", "triggered_by", "creation",
+        ],
         order_by="creation desc",
         limit=limit,
     ):
-        rows.append(_history_row(
-            "Consolidation", "#2f7d4f", cr, "close",
-            period=f"FY{cr.fiscal_year} · P{cr.fiscal_period}" if cr.fiscal_period else f"FY{cr.fiscal_year}",
-            rows=str(cr.total or "—"),
-        ))
-    rows.sort(key=lambda r: r.get("_sort") or "", reverse=True)
-    for r in rows:
-        r.pop("_sort", None)
-    return rows[:limit]
+        rows.append(_close_list_row(cr))
+    return rows
 
 
-def _process_for_pipeline(pbr_name):
+def _pipeline_belongs_to_forecast(pbr_name):
     if not pbr_name:
-        return "Forecasting", "#0e8f84"
+        return True
     scope = frappe.db.get_value("Pipeline Build Request", pbr_name, "build_scope")
-    for pid, meta in PROCESSES.items():
-        if meta.get("build_scope") == scope:
-            return meta["name"], meta["accent"]
-    return "Pipeline", "#0e8f84"
+    return scope not in (PROCESSES["budgeting"]["build_scope"], PROCESSES["consolidation"]["build_scope"])
 
 
-def _history_row(process, accent, doc, kind, period=None, rows=None):
-    started = doc.started_at or getattr(doc, "creation", None)
-    dur = ""
-    if doc.completed_at and doc.started_at:
-        secs = (get_datetime(doc.completed_at) - get_datetime(doc.started_at)).total_seconds()
-        dur = f"{secs:.1f}s" if secs < 120 else f"{int(secs // 60)}m {int(secs % 60)}s"
-    status = doc.status
-    if kind == "close":
-        status = {"Green": "done", "Red": "error", "Error": "error"}.get(status, status.lower())
-    elif status == "Completed":
-        status = "done"
-    elif status == "Failed":
-        status = "error"
+def _pbr_list_row(pbr, process_id):
+    meta = PROCESSES[process_id]
+    started = pbr.started_at or pbr.creation
+    machine = _pbr_machine(pbr.workflow_state)
+    pipes = frappe.get_all(
+        "Pipeline Run",
+        filters={"pipeline_build_request": pbr.name},
+        fields=["name"],
+        order_by="creation desc",
+        limit=5,
+    )
+    related = _related_docs_pbr(pbr, pipes)
     return {
-        "process": process,
-        "accent": accent,
-        "period": period or "—",
-        "started": frappe.format(started, {"fieldtype": "Datetime"}) if started else "—",
-        "duration": dur or "—",
-        "status": status,
-        "rows": rows if rows is not None else str(getattr(doc, "rows_synced", None) or "—"),
-        "by": doc.triggered_by or "—",
+        "id": pbr.name,
+        "kind": "pbr",
+        "process_id": process_id,
+        "process": meta["name"],
+        "accent": meta["accent"],
+        "status": machine,
+        "status_raw": pbr.workflow_state,
+        "period": f"Scope · {pbr.build_scope}",
+        "started": _fmt_dt(started),
+        "completed": _fmt_dt(pbr.completed_at),
+        "duration": _fmt_duration(pbr.started_at, pbr.completed_at, pbr.duration_seconds),
+        "rows": str(len(pipes)) + " pipeline run(s)" if pipes else "—",
+        "by": pbr.requested_by or "—",
+        "related_docs": related,
         "_sort": str(started or ""),
     }
+
+
+def _pipeline_list_row(pr, process_id):
+    meta = PROCESSES[process_id]
+    started = pr.started_at or pr.creation
+    machine = _pipeline_machine(pr.status)
+    related = _related_docs_pipeline(pr.name, pr.pipeline_build_request)
+    return {
+        "id": pr.name,
+        "kind": "pipeline",
+        "process_id": process_id,
+        "process": meta["name"],
+        "accent": meta["accent"],
+        "status": machine,
+        "status_raw": pr.status,
+        "period": "—",
+        "started": _fmt_dt(started),
+        "completed": _fmt_dt(pr.completed_at),
+        "duration": _fmt_duration(pr.started_at, pr.completed_at),
+        "rows": str(pr.rows_synced or "—"),
+        "by": pr.triggered_by or "—",
+        "related_docs": related,
+        "_sort": str(started or ""),
+    }
+
+
+def _close_list_row(cr):
+    meta = PROCESSES["consolidation"]
+    started = cr.started_at or cr.creation
+    machine = _close_machine(cr.status)
+    period = f"FY{cr.fiscal_year} · P{cr.fiscal_period}" if cr.fiscal_period else f"FY{cr.fiscal_year}"
+    return {
+        "id": cr.name,
+        "kind": "close",
+        "process_id": "consolidation",
+        "process": meta["name"],
+        "accent": meta["accent"],
+        "status": machine,
+        "status_raw": cr.status,
+        "period": period,
+        "title": cr.title or cr.name,
+        "started": _fmt_dt(started),
+        "completed": _fmt_dt(cr.completed_at),
+        "duration": _fmt_duration(cr.started_at, cr.completed_at, cr.duration_seconds),
+        "rows": str(cr.total or "—"),
+        "by": cr.triggered_by or "—",
+        "related_docs": _related_docs_close(cr.name, cr.pipeline_run),
+        "_sort": str(started or ""),
+    }
+
+
+def _pbr_run_detail(name, process_id):
+    if not frappe.db.exists("Pipeline Build Request", name):
+        frappe.throw(f"Run not found: {name}")
+    pbr = frappe.get_doc("Pipeline Build Request", name)
+    if pbr.build_scope != PROCESSES["budgeting"]["build_scope"]:
+        frappe.throw("Not a budget run")
+
+    pipes = frappe.get_all(
+        "Pipeline Run",
+        filters={"pipeline_build_request": pbr.name},
+        fields=["name"],
+        order_by="creation desc",
+    )
+    run = None
+    if pipes:
+        run = _serialize_pipeline_run(pipes[0].name)
+    else:
+        run = {
+            "kind": "pbr",
+            "name": pbr.name,
+            "status": pbr.workflow_state,
+            "machine_status": _pbr_machine(pbr.workflow_state),
+            "started_at": pbr.started_at,
+            "completed_at": pbr.completed_at,
+            "elapsed_ms": int((pbr.duration_seconds or 0) * 1000),
+            "steps": _pbr_workflow_steps(pbr.workflow_state),
+            "logs": _logs_from_text(pbr.error_message),
+            "rows": "—",
+            "step_done": 0,
+            "step_total": len(_pbr_workflow_steps(pbr.workflow_state)),
+        }
+
+    row = _pbr_list_row(pbr, process_id)
+    return _run_detail_envelope(row, run)
+
+
+def _pipeline_run_detail(name, process_id):
+    if not frappe.db.exists("Pipeline Run", name):
+        frappe.throw(f"Run not found: {name}")
+    pr = frappe.db.get_value(
+        "Pipeline Run",
+        name,
+        ["name", "status", "started_at", "completed_at", "rows_synced", "triggered_by", "pipeline_build_request", "creation"],
+        as_dict=True,
+    )
+    if not _pipeline_belongs_to_forecast(pr.pipeline_build_request):
+        frappe.throw("Not a forecast run")
+    row = _pipeline_list_row(pr, process_id)
+    run = _serialize_pipeline_run(name)
+    return _run_detail_envelope(row, run)
+
+
+def _close_run_detail(name, process_id):
+    if not frappe.db.exists("Close Run", name):
+        frappe.throw(f"Run not found: {name}")
+    cr = frappe.db.get_value(
+        "Close Run",
+        name,
+        [
+            "name", "status", "title", "fiscal_year", "fiscal_period", "pipeline_run",
+            "started_at", "completed_at", "duration_seconds", "total", "triggered_by", "creation",
+        ],
+        as_dict=True,
+    )
+    row = _close_list_row(cr)
+    run = _latest_close_run_for(name)
+    return _run_detail_envelope(row, run)
+
+
+def _latest_close_run_for(name):
+    doc = frappe.get_doc("Close Run", name)
+    steps = []
+    for i, res in enumerate(doc.results or [], start=1):
+        st = "done" if res.status == "Pass" else ("error" if res.status in ("Fail", "Error") else "pending")
+        steps.append({
+            "num": f"{i:02d}",
+            "name": res.assertion or res.name,
+            "detail": res.dimension or "",
+            "rows": str(res.rows_failed or ""),
+            "state": st,
+            "pct": 100 if st == "done" else (0 if st == "pending" else 100),
+            "duration_ms": 0,
+        })
+    done = sum(1 for s in steps if s["state"] == "done")
+    return {
+        "kind": "close",
+        "name": doc.name,
+        "status": doc.status,
+        "machine_status": _close_machine(doc.status),
+        "started_at": doc.started_at,
+        "completed_at": doc.completed_at,
+        "elapsed_ms": int((doc.duration_seconds or 0) * 1000),
+        "steps": steps,
+        "logs": _logs_from_text(doc.log),
+        "rows": str(doc.total or 0),
+        "step_done": done,
+        "step_total": len(steps) or doc.total or 0,
+        "period": f"FY{doc.fiscal_year} · P{doc.fiscal_period}" if doc.fiscal_period else f"FY{doc.fiscal_year}",
+    }
+
+
+def _run_detail_envelope(list_row, run):
+    detail = {**list_row}
+    detail.pop("_sort", None)
+    detail["run"] = run
+    detail["machine_status"] = run.get("machine_status") or list_row.get("status")
+    return detail
+
+
+def _pbr_workflow_steps(state):
+    phases = ["Draft", "Pending Review", "Approved", "Running", "Completed"]
+    if state in ("Failed", "Cancelled"):
+        return [{"num": "01", "name": state, "detail": "Workflow", "rows": "", "state": "error", "pct": 100}]
+    idx = phases.index(state) if state in phases else 0
+    steps = []
+    for i, phase in enumerate(phases, start=1):
+        if i - 1 < idx:
+            st = "done"
+        elif phase == state:
+            st = "running" if state == "Running" else "done"
+        else:
+            st = "pending"
+        steps.append({
+            "num": f"{i:02d}",
+            "name": phase,
+            "detail": "Governance",
+            "rows": "",
+            "state": st,
+            "pct": 100 if st == "done" else (50 if st == "running" else 0),
+        })
+    return steps
+
+
+def _related_docs_pbr(pbr, pipeline_rows):
+    docs = [_doc_link("Pipeline Build Request", pbr.name, "primary")]
+    for row in pipeline_rows:
+        docs.append(_doc_link("Pipeline Run", row.name, "execution"))
+    if pbr.trigger_doctype and pbr.trigger_docname:
+        docs.append(_doc_link(pbr.trigger_doctype, pbr.trigger_docname, "trigger"))
+    fy = _current_fiscal_year()
+    cycle = frappe.db.get_value("Budget Cycle", {"fiscal_year": fy}, "name")
+    if cycle:
+        docs.append(_doc_link("Budget Cycle", cycle, "context"))
+    return docs
+
+
+def _related_docs_pipeline(pipe_name, pbr_name):
+    docs = [_doc_link("Pipeline Run", pipe_name, "primary")]
+    if pbr_name:
+        docs.append(_doc_link("Pipeline Build Request", pbr_name, "upstream"))
+        pbr = frappe.db.get_value(
+            "Pipeline Build Request",
+            pbr_name,
+            ["trigger_doctype", "trigger_docname"],
+            as_dict=True,
+        )
+        if pbr and pbr.trigger_doctype and pbr.trigger_docname:
+            docs.append(_doc_link(pbr.trigger_doctype, pbr.trigger_docname, "trigger"))
+    return docs
+
+
+def _related_docs_close(close_name, pipeline_run):
+    docs = [_doc_link("Close Run", close_name, "primary")]
+    if pipeline_run:
+        docs.append(_doc_link("Pipeline Run", pipeline_run, "upstream"))
+        pbr = frappe.db.get_value("Pipeline Run", pipeline_run, "pipeline_build_request")
+        if pbr:
+            docs.append(_doc_link("Pipeline Build Request", pbr, "upstream"))
+    return docs
+
+
+def _desk_path(doctype, name=None):
+    slug = (doctype or "").lower().replace(" ", "-")
+    if name:
+        return f"/app/{slug}/{name}"
+    return f"/app/{slug}"
+
+
+def _doc_link(doctype, name, role):
+    return {
+        "doctype": doctype,
+        "name": name,
+        "role": role,
+        "label": doctype,
+        "path": _desk_path(doctype, name),
+    }
+
+
+def _fmt_dt(value):
+    return frappe.format(value, {"fieldtype": "Datetime"}) if value else "—"
+
+
+def _fmt_duration(started_at, completed_at, duration_seconds=None):
+    if duration_seconds:
+        secs = float(duration_seconds)
+    elif completed_at and started_at:
+        secs = (get_datetime(completed_at) - get_datetime(started_at)).total_seconds()
+    else:
+        return "—"
+    if secs < 120:
+        return f"{secs:.1f}s"
+    return f"{int(secs // 60)}m {int(secs % 60)}s"
 
 
 def _logs_from_text(text):

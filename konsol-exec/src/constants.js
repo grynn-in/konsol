@@ -14,7 +14,48 @@ export const SETUP = {
 	blocked: { label: "Blocked", color: "var(--red)", bg: "var(--redS)", glyph: "⊛" },
 };
 
-export const PROCESS_IDS = ["budgeting", "forecasting", "consolidation"];
+export const SECTION_OVERVIEW = "overview";
+
+/** Close processes — each has its own sub-nav space. */
+export const DOMAINS = [
+	{
+		id: "budgeting",
+		label: "Budget",
+		processName: "Budgeting",
+		num: "01",
+		accent: "#b5611f",
+		desc: "Layered budget submission, board lock, and publish.",
+	},
+	{
+		id: "forecasting",
+		label: "Forecast",
+		processName: "Forecasting",
+		num: "02",
+		accent: "#0e8f84",
+		desc: "Refresh actuals, run allocations, publish forecast scenarios.",
+	},
+	{
+		id: "consolidation",
+		label: "Consolidation",
+		processName: "Consolidation",
+		num: "03",
+		accent: "#2f7d4f",
+		desc: "Group close, IC elimination, assertions, and sign-off.",
+	},
+];
+
+/** Primary nav: Overview + each domain. */
+export const PRIMARY_NAV = [
+	{ id: SECTION_OVERVIEW, label: "Overview" },
+	...DOMAINS.map((d) => ({ id: d.id, label: d.label })),
+];
+
+/** Sub-nav shown only under Budget / Forecast / Consolidation. */
+export const DOMAIN_SUBVIEWS = [
+	["setup", "Setup & readiness"],
+	["monitor", "Live monitor"],
+	["history", "History"],
+];
 
 export const LAYER_STATE_LABEL = {
 	pending: "Not started",

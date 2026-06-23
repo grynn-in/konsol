@@ -1,30 +1,11 @@
 import * as React from "react";
-import { STATUS, PROCESS_IDS } from "../constants";
+import { STATUS } from "../constants";
+import { getDomainMeta, getProcess } from "../domain";
 
-export function Monitor({ data, selected, onSelect, onAction }) {
-	const proc = data?.processes?.[selected];
+export function Monitor({ domain, data, onAction }) {
+	const meta = getDomainMeta(domain);
+	const proc = getProcess(data, domain);
 	if (!proc) return null;
-
-	const pills = PROCESS_IDS.map((id) => {
-		const p = data.processes[id];
-		const active = id === selected;
-		const st = STATUS[p.machine_status] || STATUS.idle;
-		return (
-			<button
-				key={id}
-				type="button"
-				className="kc-pill-btn"
-				style={{
-					background: active ? "var(--card)" : "transparent",
-					borderColor: active ? "var(--bd2)" : "transparent",
-				}}
-				onClick={() => onSelect(id)}
-			>
-				<span className="kc-dot kc-dot-lg" style={{ background: st.color }} />
-				{p.name}
-			</button>
-		);
-	});
 
 	const run = proc.run || {};
 	const st = STATUS[proc.machine_status] || STATUS.idle;
@@ -73,7 +54,7 @@ export function Monitor({ data, selected, onSelect, onAction }) {
 									? "var(--red)"
 									: step.state === "done"
 										? "var(--green)"
-										: proc.accent,
+										: meta.accent,
 						}}
 					/>
 				</div>
@@ -105,12 +86,11 @@ export function Monitor({ data, selected, onSelect, onAction }) {
 	else if (!proc.runnable) primary = "⚠ Resolve setup";
 
 	return (
-		<>
-			<div className="kc-pills">{pills}</div>
+		<div className="kc-domain-space" style={{ "--domain-accent": meta.accent }}>
 			<div className="kc-card kc-monitor-head">
 				<div>
 					<div className="kc-monitor-title">
-						<span>{proc.name}</span>
+						<span>{meta.label} monitor</span>
 						<span className="kc-pill" style={{ color: st.color, background: st.bg }}>
 							{st.label}
 						</span>
@@ -125,9 +105,9 @@ export function Monitor({ data, selected, onSelect, onAction }) {
 					style={
 						!proc.runnable && proc.machine_status === "idle"
 							? { background: "var(--amber)" }
-							: undefined
+							: { background: meta.accent }
 					}
-					onClick={() => onAction(proc.id, primary, proc)}
+					onClick={() => onAction(domain, primary, proc)}
 				>
 					{primary}
 				</button>
@@ -136,10 +116,10 @@ export function Monitor({ data, selected, onSelect, onAction }) {
 				{steps.length ? (
 					steps
 				) : (
-					<div className="kc-row kc-empty">No active run — start from Overview</div>
+					<div className="kc-row kc-empty">No active {meta.label.toLowerCase()} run</div>
 				)}
 			</div>
-			<div className="kc-section-label">Console</div>
+			<div className="kc-section-label">{meta.label} console</div>
 			<div className="kc-console">
 				{logs.length ? (
 					logs
@@ -147,6 +127,6 @@ export function Monitor({ data, selected, onSelect, onAction }) {
 					<div className="kc-muted">Waiting for run output…</div>
 				)}
 			</div>
-		</>
+		</div>
 	);
 }

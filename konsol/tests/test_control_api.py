@@ -17,6 +17,8 @@ def test_control_api_exposes_snapshot_and_start():
     src = _src(os.path.join(APP_DIR, "control_api.py"))
     assert "def get_snapshot" in src
     assert "def start_process" in src
+    assert "def get_run_detail" in src
+    assert '"runs": _domain_runs_all()' in src
     assert '"budgeting"' in src
     assert '"forecasting"' in src
     assert '"consolidation"' in src
@@ -35,6 +37,11 @@ def test_konsol_exec_spa_source_exists():
     assert os.path.isfile(os.path.join(app_root, "vite.config.js"))
     assert os.path.isfile(os.path.join(app_root, "src", "App.jsx"))
     assert os.path.isfile(os.path.join(app_root, "src", "api.js"))
+    assert os.path.isfile(os.path.join(app_root, "src", "machines", "konsolAppMachine.js"))
+    assert os.path.isfile(os.path.join(app_root, "src", "machines", "runDetailMachine.js"))
+    pkg = _src(os.path.join(app_root, "package.json"))
+    assert '"xstate"' in pkg
+    assert '"@xstate/react"' in pkg
 
 
 def test_hooks_register_konsol_exec_route():

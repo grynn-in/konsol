@@ -1,34 +1,12 @@
 import * as React from "react";
-import { SETUP, PROCESS_IDS, LAYER_STATE_LABEL } from "../constants";
+import { SETUP, LAYER_STATE_LABEL } from "../constants";
+import { getDomainMeta, getProcess } from "../domain";
 import { openDoctype } from "../api";
 
-export function Setup({ data, setupSel, onSetupSel, onRemind }) {
-	const proc = data?.processes?.[setupSel];
+export function Setup({ domain, data, onRemind }) {
+	const meta = getDomainMeta(domain);
+	const proc = getProcess(data, domain);
 	if (!proc) return null;
-
-	const pills = PROCESS_IDS.map((id) => {
-		const p = data.processes[id];
-		const active = id === setupSel;
-		return (
-			<button
-				key={id}
-				type="button"
-				className="kc-pill-btn"
-				style={{
-					background: active ? "var(--card)" : "transparent",
-					color: active ? "var(--ink9)" : "var(--ink5)",
-					borderColor: active ? "var(--bd2)" : "transparent",
-				}}
-				onClick={() => onSetupSel(id)}
-			>
-				<span
-					className="kc-dot kc-dot-lg"
-					style={{ background: p.blockers ? "var(--red)" : "var(--green)" }}
-				/>
-				{p.name}
-			</button>
-		);
-	});
 
 	const rows = (proc.prerequisites || []).map((it, i) => {
 		const sm = SETUP[it.status] || SETUP.missing;
@@ -71,10 +49,10 @@ export function Setup({ data, setupSel, onSetupSel, onRemind }) {
 	});
 
 	let rounds = null;
-	if (setupSel === "budgeting" && data.budget_rounds) {
+	if (domain === "budgeting" && data.budget_rounds) {
 		rounds = (
 			<div className="kc-budget-rounds">
-				<div className="kc-section-label">Budget rounds · layered</div>
+				<div className="kc-section-label">Budget rounds</div>
 				<div className="kc-table">
 					{(data.budget_rounds.rounds || []).map((r) => {
 						const st = LAYER_STATE_LABEL[r.state] || r.state;
@@ -110,7 +88,7 @@ export function Setup({ data, setupSel, onSetupSel, onRemind }) {
 				</div>
 				{data.budget_rounds.locked ? (
 					<div className="kc-locked-note">
-						■ Budget cycle locked — forecasting unblocked
+						Budget cycle locked — forecasting unblocked
 					</div>
 				) : null}
 			</div>
@@ -118,13 +96,12 @@ export function Setup({ data, setupSel, onSetupSel, onRemind }) {
 	}
 
 	return (
-		<>
-			<div className="kc-pills">{pills}</div>
+		<div className="kc-domain-space" style={{ "--domain-accent": meta.accent }}>
 			<div className="kc-card kc-readiness-card">
 				<div>
-					<div className="kc-readiness-title">{proc.name} — prerequisites</div>
+					<div className="kc-readiness-title">{meta.label} — prerequisites</div>
 					<div className="kc-readiness-sub">
-						Configuration doctypes required before a pipeline run will publish.
+						Configuration required before a {meta.label.toLowerCase()} run will publish.
 					</div>
 				</div>
 				<div className="kc-readiness-score">
@@ -141,6 +118,6 @@ export function Setup({ data, setupSel, onSetupSel, onRemind }) {
 			</div>
 			<div className="kc-table">{rows}</div>
 			{rounds}
-		</>
+		</div>
 	);
 }

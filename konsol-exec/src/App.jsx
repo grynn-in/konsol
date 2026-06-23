@@ -1,126 +1,117 @@
 import * as React from "react";
+import { useMachine } from "@xstate/react";
 import { Header } from "./components/Header";
-import { TabBar } from "./components/TabBar";
-import { Overview } from "./components/Overview";
+import { PrimaryNav } from "./components/PrimaryNav";
+import { DomainSubNav } from "./components/DomainSubNav";
+import { GlobalOverview } from "./components/GlobalOverview";
 import { Setup } from "./components/Setup";
 import { Monitor } from "./components/Monitor";
 import { History } from "./components/History";
 import { Toast } from "./components/Toast";
-import { useControlPlane } from "./hooks/useControlPlane";
+import { SECTION_OVERVIEW } from "./constants";
+import { isDomainSection } from "./domain";
+import { konsolAppMachine } from "./machines";
 
 export function App() {
-	const { data, isLoading, isError, error, start, remind } = useControlPlane();
-	const [tab, setTab] = React.useState("overview");
-	const [dark, setDark] = React.useState(false);
-	const [selected, setSelected] = React.useState("forecasting");
-	const [setupSel, setSetupSel] = React.useState("budgeting");
-	const [toast, setToast] = React.useState(null);
+	const [state, send] = useMachine(konsolAppMachine);
+	const { section, subview, dark, toast, data, loadError } = state.context;
 
 	React.useEffect(() => {
 		document.documentElement.classList.toggle("kc-dark", dark);
 	}, [dark]);
 
-	const showToast = React.useCallback((msg) => {
-		setToast(msg);
-		const t = setTimeout(() => setToast(null), 3200);
+	React.useEffect(() => {
+		if (!toast) return undefined;
+		const t = setTimeout(() => send({ type: "DISMISS_TOAST" }), 3200);
 		return () => clearTimeout(t);
-	}, []);
-
-	const handleStart = React.useCallback(
-		async (processId) => {
-			try {
-				const r = await start(processId);
-				showToast(`Started ${processId} · ${r.name}`);
-				setTab("monitor");
-				setSelected(processId);
-			} catch (e) {
-				showToast(`Start failed: ${e?.message || String(e)}`);
-			}
-		},
-		[start, showToast]
-	);
-
-	const handleRemind = React.useCallback(
-		async (owner, item) => {
-			await remind(owner, item);
-			showToast(`Reminder sent to ${owner} · ${new Date().toLocaleTimeString("en-GB")}`);
-		},
-		[remind, showToast]
-	);
+	}, [toast, send]);
 
 	const handlePrimary = React.useCallback(
 		(pid, cta) => {
-			if (cta === "Resolve setup") {
-				setTab("setup");
-				setSetupSel(pid);
-			} else if (cta === "Open monitor") {
-				setTab("monitor");
-				setSelected(pid);
+			if (cta === "Setup") {
+				send({ type: "NAVIGATE_DOMAIN", domain: pid, subview: "setup" });
+			} else if (cta === "Monitor") {
+				send({ type: "NAVIGATE_DOMAIN", domain: pid, subview: "monitor" });
+			} else if (cta === "Retry") {
+				send({ type: "NAVIGATE_DOMAIN", domain: pid, subview: "monitor" });
+				send({ type: "START_PROCESS", processId: pid });
 			} else if (["Start run", "Run again", "Retry failed step"].includes(cta)) {
-				handleStart(pid);
+				send({ type: "START_PROCESS", processId: pid });
 			}
 		},
-		[handleStart]
+		[send]
 	);
 
 	const handleMonitorAction = React.useCallback(
-		(pid, label, proc) => {
+		(pid, _label, proc) => {
 			if (!proc.runnable && proc.machine_status === "idle") {
-				setTab("setup");
-				setSetupSel(pid);
+				send({ type: "RESOLVE_SETUP" });
 			} else if (proc.machine_status !== "running") {
-				handleStart(pid);
+				send({ type: "START_PROCESS", processId: pid });
 			}
 		},
-		[handleStart]
+		[send]
 	);
 
-	if (isLoading && !data) {
+	if (state.matches("loading")) {
 		return <div className="kc-loading">Loading control plane…</div>;
 	}
 
-	if (isError) {
+	if (state.matches("failed") && !data) {
 		return (
 			<div className="kc-loading">
-				Failed to load control plane: {error?.message || "Unknown error"}
+				Failed to load control plane: {loadError?.message || "Unknown error"}
+				<div style={{ marginTop: 12 }}>
+					<button type="button" className="kc-btn kc-btn-primary" onClick={() => send({ type: "RETRY" })}>
+						Retry
+					</button>
+				</div>
 			</div>
 		);
 	}
 
+	const inDomain = isDomainSection(section);
+
 	return (
 		<div className={`kc-app ${dark ? "dark" : ""}`}>
 			<Toast message={toast} />
-			<Header data={data} dark={dark} onToggleTheme={() => setDark((d) => !d)} />
-			<TabBar tab={tab} data={data} onTab={setTab} />
+			<Header data={data} dark={dark} onToggleTheme={() => send({ type: "TOGGLE_THEME" })} />
+			<PrimaryNav
+				section={section}
+				data={data}
+				onSection={(s) => send({ type: "SELECT_SECTION", section: s })}
+			/>
+			{inDomain ? (
+				<DomainSubNav
+					section={section}
+					subview={subview}
+					data={data}
+					onSubview={(v) => send({ type: "SELECT_SUBVIEW", subview: v })}
+				/>
+			) : null}
 			<div className="kc-body">
-				{tab === "overview" ? (
-					<Overview
+				{section === SECTION_OVERVIEW ? (
+					<GlobalOverview
 						data={data}
+						onOpenDomain={(domain) =>
+							send({ type: "NAVIGATE_DOMAIN", domain, subview: "setup" })
+						}
 						onPrimary={handlePrimary}
-						onOpenSetup={(pid) => {
-							setTab("setup");
-							setSetupSel(pid);
-						}}
-						onRemind={handleRemind}
 					/>
 				) : null}
-				{tab === "setup" ? (
+				{inDomain && subview === "setup" ? (
 					<Setup
+						domain={section}
 						data={data}
-						setupSel={setupSel}
-						onSetupSel={setSetupSel}
-						onRemind={handleRemind}
+						onRemind={(owner, item) => send({ type: "REMIND", owner, item })}
 					/>
 				) : null}
-				{tab === "monitor" ? (
-					<Monitor
-						data={data}
-						selected={selected}
-						onSelect={setSelected}
-						onAction={handleMonitorAction}
-					/>
+				{inDomain && subview === "monitor" ? (
+					<Monitor domain={section} data={data} onAction={handleMonitorAction} />
 				) : null}
-				{tab === "history" ? <History data={data} /> : null}
+				{inDomain && subview === "history" ? (
+					<History domain={section} data={data} />
+				) : null}
 			</div>
 		</div>
 	);

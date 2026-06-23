@@ -1,5 +1,10 @@
 const SINGLES = new Set(["EPM Settings"]);
 
+/** Match frappe.desk.utils.slug — desk URLs use lowercase hyphenated doctype. */
+export function doctypeSlug(doctype) {
+	return (doctype || "").toLowerCase().replace(/ /g, "-");
+}
+
 async function frappeCall(method, args = {}) {
 	const payload = { ...args };
 	if (window.csrf_token) {
@@ -43,6 +48,25 @@ export function getSnapshot() {
 		});
 }
 
+export function getRunDetail(processId, kind, runId) {
+	const params = new URLSearchParams({
+		process_id: processId,
+		kind,
+		run_id: runId,
+	});
+	return fetch(`/api/method/konsol.control_api.get_run_detail?${params}`, {
+		method: "GET",
+		credentials: "include",
+		headers: { Accept: "application/json" },
+	}).then(async (res) => {
+		const data = await res.json();
+		if (!res.ok || data.exc) {
+			throw new Error(data.message || data.exception || `API error (${res.status})`);
+		}
+		return data.message;
+	});
+}
+
 export function startProcess(processId) {
 	return frappeCall("konsol.control_api.start_process", { process_id: processId });
 }
@@ -53,6 +77,15 @@ export function sendReminder(owner, item) {
 
 export function openDoctype(doctype) {
 	if (!doctype) return;
-	const route = SINGLES.has(doctype) ? "Form" : "List";
-	window.open(`/app/${route}/${encodeURIComponent(doctype)}`, "_blank");
+	window.open(`/app/${doctypeSlug(doctype)}`, "_blank");
+}
+
+export function openDoc(doctype, name) {
+	if (!doctype) return;
+	const slug = doctypeSlug(doctype);
+	if (name) {
+		window.open(`/app/${slug}/${encodeURIComponent(name)}`, "_blank");
+		return;
+	}
+	openDoctype(doctype);
 }
