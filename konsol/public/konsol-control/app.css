@@ -1,24 +1,71 @@
-/* Konsol Control — desk bleed (parent containers live outside #konsol-control-root) */
+/* Konsol Control — override Frappe desk shell (classes set in konsol_control.js) */
+body.konsol-control-active .main-section {
+  background: #f3efe6;
+}
+
+body.konsol-control-active.konsol-control-dark .main-section {
+  background: #0e0d09;
+}
+
+.konsol-control-page .page-head {
+  display: none !important;
+}
+
+.konsol-control-page .container.page-body,
+.konsol-control-body.container {
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.konsol-control-shell.row.layout-main,
+.konsol-control-page .layout-main.row {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  width: 100% !important;
+}
+
+.konsol-control-bleed-wrap.layout-main-section-wrapper,
+.konsol-control-page .layout-main-section-wrapper {
+  padding: 0 !important;
+  margin: 0 !important;
+  max-width: 100% !important;
+  flex: 0 0 100% !important;
+}
+
+.konsol-control-page .page-wrapper,
+.konsol-control-page .page-content,
+.konsol-control-shell {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
 .layout-main-section.konsol-control-bleed {
   padding: 0 !important;
   margin: 0 !important;
   background: #f3efe6 !important;
   border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+.layout-main-section.konsol-control-bleed.frappe-card {
+  border: none !important;
   box-shadow: none !important;
 }
 
 .layout-main-section.konsol-control-bleed .frappe-card,
-.konsol-control-page .page-form,
-.konsol-control-page .page-body {
+.konsol-control-page .page-form {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
   padding: 0 !important;
   margin: 0 !important;
-}
-
-.konsol-control-page .page-head {
-  display: none;
 }
 
 /* Konsol Control — design tokens from handoff */
@@ -67,6 +114,31 @@
 #konsol-control-root .kc-app *::before,
 #konsol-control-root .kc-app *::after {
   box-sizing: border-box;
+}
+
+/* Reset Frappe / Bootstrap button styles inside our SPA */
+#konsol-control-root button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  background-image: none !important;
+  border-radius: 0;
+  line-height: inherit;
+  letter-spacing: inherit;
+  text-transform: none;
+}
+
+#konsol-control-root button:focus,
+#konsol-control-root button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+  box-shadow: none !important;
+}
+
+#konsol-control-root button:not(.kc-btn):not(.kc-tab):not(.kc-pill-btn) {
+  font-family: inherit;
 }
 
 #konsol-control-root .kc-app.dark {

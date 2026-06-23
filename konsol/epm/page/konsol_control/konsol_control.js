@@ -5,6 +5,7 @@ frappe.pages["konsol-control"].on_page_load = function (wrapper) {
 	});
 
 	const ASSET_BASE = "/assets/konsol/konsol-control";
+	const BODY_CLASS = "konsol-control-active";
 
 	function ensureStylesheet(id, href) {
 		if (document.getElementById(id)) {
@@ -21,11 +22,34 @@ frappe.pages["konsol-control"].on_page_load = function (wrapper) {
 		});
 	}
 
-	$(page.main)
-		.closest(".layout-main-section")
-		.addClass("konsol-control-bleed");
-	$(wrapper).addClass("konsol-control-page");
+	function tagFrappeShell() {
+		const $wrapper = $(wrapper);
+		$wrapper.addClass("konsol-control-page");
+		page.container.addClass("konsol-control-body");
+		page.wrapper.find(".page-wrapper, .page-content, .layout-main").addClass(
+			"konsol-control-shell"
+		);
+		page.wrapper
+			.find(".layout-main-section-wrapper")
+			.addClass("konsol-control-bleed-wrap");
+		page.main.addClass("konsol-control-bleed").removeClass("frappe-card");
+		document.body.classList.add(BODY_CLASS);
+	}
 
+	function untagFrappeShell() {
+		document.body.classList.remove(BODY_CLASS);
+	}
+
+	if (!frappe.pages["konsol-control"]._route_hook) {
+		frappe.pages["konsol-control"]._route_hook = true;
+		frappe.router.on("change", () => {
+			if (frappe.get_route_str() !== "konsol-control") {
+				untagFrappeShell();
+			}
+		});
+	}
+
+	tagFrappeShell();
 	page.main.html('<div id="konsol-control-root"></div>');
 
 	const version =

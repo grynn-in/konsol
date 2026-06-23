@@ -108,6 +108,7 @@
 
       const bleed = this.root.closest(".layout-main-section");
       if (bleed) bleed.classList.toggle("konsol-control-dark", s.dark);
+      document.body.classList.toggle("konsol-control-dark", s.dark);
 
       this.root.innerHTML = `
         <div class="kc-app ${s.dark ? "dark" : ""}">
