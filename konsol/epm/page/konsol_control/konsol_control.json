@@ -1,0 +1,23 @@
+{
+  "content": null,
+  "creation": "2026-06-23 12:00:00.000000",
+  "docstatus": 0,
+  "doctype": "Page",
+  "idx": 0,
+  "modified": "2026-06-23 12:00:00.000000",
+  "module": "EPM",
+  "name": "konsol-control",
+  "owner": "Administrator",
+  "page_name": "konsol-control",
+  "roles": [
+    {"role": "System Manager"},
+    {"role": "EPM Admin"},
+    {"role": "EPM Analyst"},
+    {"role": "EPM User"}
+  ],
+  "script": null,
+  "standard": "Yes",
+  "style": null,
+  "system_page": 0,
+  "title": "Konsol Control"
+}

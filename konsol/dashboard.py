@@ -17,6 +17,11 @@ import json
 WORKSPACE = "Konsolidat"
 MODULE = "EPM"
 
+# Desk page shortcuts: (label, page_name, colour)
+_PAGE_SHORTCUTS = [
+    ("Konsol Control", "konsol-control", "Teal"),
+]
+
 # Colourful top-row shortcut tiles: (doctype, colour) — ordered by user workflow
 _SHORTCUTS = [
     ("Budget Cycle", "Teal"),
@@ -63,9 +68,12 @@ def _workspace_needs_refresh():
     if not frappe.db.exists("Workspace", WORKSPACE):
         return False
     ws = frappe.get_doc("Workspace", WORKSPACE)
-    shortcuts = {s.link_to for s in (ws.shortcuts or []) if s.type == "DocType"}
+    shortcut_labels = {s.label for s in (ws.shortcuts or [])}
+    doctype_shortcuts = {s.link_to for s in (ws.shortcuts or []) if s.type == "DocType"}
     card_labels = {l.label for l in (ws.links or []) if l.type == "Card Break"}
-    if _dt("Budget Cycle") and "Budget Cycle" not in shortcuts:
+    if "Konsol Control" not in shortcut_labels:
+        return True
+    if _dt("Budget Cycle") and "Budget Cycle" not in doctype_shortcuts:
         return True
     if "EPM Models" in card_labels:
         return True
@@ -101,6 +109,7 @@ def setup_workspace(force=False):
 
 
 def _create_workspace():
+    page_shortcuts = list(_PAGE_SHORTCUTS)
     shortcuts = [s for s in _SHORTCUTS if _dt(s[0])]
 
     cards = []
@@ -121,7 +130,16 @@ def _create_workspace():
                 "link_count": 0, "hidden": 0, "is_query_report": 0, "onboard": 0,
             })
 
-    content = _build_content(shortcuts, cards)
+    content = _build_content(page_shortcuts, shortcuts, cards)
+
+    ws_shortcuts = [
+        {"label": l, "link_to": p, "type": "Page", "color": c}
+        for l, p, c in page_shortcuts
+    ]
+    ws_shortcuts += [
+        {"label": l, "link_to": l, "type": "DocType", "color": c, "doc_view": "List"}
+        for l, c in shortcuts
+    ]
 
     frappe.get_doc({
         "doctype": "Workspace",
@@ -134,15 +152,12 @@ def _create_workspace():
         "is_hidden": 0,
         "sequence_id": 0.0,  # appears first in the sidebar -> default landing page
         "content": json.dumps(content),
-        "shortcuts": shortcuts and [
-            {"label": l, "link_to": l, "type": "DocType", "color": c, "doc_view": "List"}
-            for l, c in shortcuts
-        ],
+        "shortcuts": ws_shortcuts,
         "links": links,
     }).insert(ignore_permissions=True)
 
 
-def _build_content(shortcuts, cards):
+def _build_content(page_shortcuts, shortcuts, cards):
     counter = {"i": 0}
 
     def cid():
@@ -154,6 +169,9 @@ def _build_content(shortcuts, cards):
                 "data": {"text": f'<span class="h4"><b>{text}</b></span>', "col": 12}}
 
     content = [header("Konsolidat — EPM Platform")]
+    for label, _, _c in page_shortcuts:
+        content.append({"id": cid(), "type": "shortcut",
+                        "data": {"shortcut_name": label, "col": 3}})
     for label, _ in shortcuts:
         content.append({"id": cid(), "type": "shortcut",
                         "data": {"shortcut_name": label, "col": 3}})
