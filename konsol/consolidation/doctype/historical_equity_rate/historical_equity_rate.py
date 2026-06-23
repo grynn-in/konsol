@@ -36,38 +36,18 @@ class HistoricalEquityRate(Document):
         )
 
     def validate(self):
-        """Guard against bad rates and duplicate tranches (#92, finding #4).
+        """Reject a non-positive historical rate (#92, finding #4).
 
-        - rate must be positive (a 0/negative FX rate is never valid and would
-          silently zero-out or sign-flip translated equity);
-        - no second *submitted* rate for the same (group, entity, account,
-          rate_date) tranche.
+        A 0/negative FX rate is never valid and would silently zero-out or
+        sign-flip translated equity. Duplicate tranches need no separate guard:
+        autoname() derives the document name deterministically from the
+        (group, entity, account, rate_date) tuple, so a second rate for the same
+        tranche collides on the primary key and is rejected at insert.
         """
         if self.historical_rate is None or float(self.historical_rate) <= 0:
             frappe.throw(
                 "Historical Rate must be a positive number.",
                 frappe.ValidationError,
-            )
-
-        dupe = frappe.get_all(
-            self.doctype,
-            filters={
-                "consolidation_group": self.consolidation_group,
-                "data_area_id": self.data_area_id,
-                "main_account": self.main_account,
-                "rate_date": self.rate_date,
-                "docstatus": 1,
-                "name": ["!=", self.name],
-            },
-            limit=1,
-        )
-        if dupe:
-            frappe.throw(
-                "A submitted Historical Equity Rate already exists for "
-                "{0} / {1} / account {2} on {3}.".format(
-                    self.consolidation_group, self.data_area_id,
-                    self.main_account, self.rate_date),
-                frappe.DuplicateEntryError,
             )
 
     def on_submit(self):
