@@ -51,6 +51,8 @@ def _count(doctype, filters=None):
 
 
 def _exists(doctype, filters=None):
+    if filters is None and frappe.get_meta(doctype).issingle:
+        return bool(frappe.db.exists(doctype))
     return bool(frappe.db.exists(doctype, filters or {}))
 
 
