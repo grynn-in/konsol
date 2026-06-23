@@ -10,6 +10,11 @@
   "autoname": "field:rule_id",
   "fields": [
     {
+      "fieldname": "tab_rule",
+      "fieldtype": "Tab Break",
+      "label": "Rule"
+    },
+    {
       "fieldname": "rule_id",
       "fieldtype": "Data",
       "label": "Rule ID",
@@ -53,6 +58,11 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "tab_entity_patterns",
+      "fieldtype": "Tab Break",
+      "label": "Entity Patterns"
+    },
+    {
       "fieldname": "entity_patterns_section",
       "fieldtype": "Section Break",
       "label": "Entity Patterns"
@@ -68,6 +78,11 @@
       "fieldtype": "Data",
       "label": "Credit Entity Pattern",
       "default": "*"
+    },
+    {
+      "fieldname": "tab_unrealized_profit",
+      "fieldtype": "Tab Break",
+      "label": "Unrealized Profit"
     },
     {
       "fieldname": "unrealized_profit_section",
@@ -87,6 +102,11 @@
       "fieldtype": "Data",
       "label": "Asset Account",
       "description": "Inventory/asset account to credit for unrealized profit elimination"
+    },
+    {
+      "fieldname": "tab_details",
+      "fieldtype": "Tab Break",
+      "label": "Details"
     },
     {
       "fieldname": "details_section",

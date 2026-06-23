@@ -10,6 +10,11 @@
   "autoname": "field:allocation_rule_id",
   "fields": [
     {
+      "fieldname": "tab_allocation_rule",
+      "fieldtype": "Tab Break",
+      "label": "Allocation Rule"
+    },
+    {
       "fieldname": "allocation_rule_id",
       "fieldtype": "Data",
       "label": "Rule ID",
@@ -82,6 +87,11 @@
       "description": "PRD-19: Composite formula (e.g. 'headcount*0.6+sqm*0.4') or CASE expression"
     },
     {
+      "fieldname": "tab_tiers",
+      "fieldtype": "Tab Break",
+      "label": "Allocation Tiers"
+    },
+    {
       "fieldname": "tiers_section",
       "fieldtype": "Section Break",
       "label": "Allocation Tiers (PRD-20)",
@@ -92,6 +102,11 @@
       "fieldtype": "Table",
       "label": "Tiers",
       "options": "Allocation Tier"
+    },
+    {
+      "fieldname": "tab_details",
+      "fieldtype": "Tab Break",
+      "label": "Details"
     },
     {
       "fieldname": "details_section",
