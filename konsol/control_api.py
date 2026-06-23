@@ -141,15 +141,10 @@ def send_reminder(owner, item=""):
     return {"ok": True, "message": f"Reminder logged for {owner}"}
 
 
-def _doctype_route(doctype):
-    """Return the Frappe desk route for a doctype."""
-    return f"/app/{frappe.scrub(doctype)}"
-
-
 @frappe.whitelist()
 def doctype_route(doctype):
-    """Return the Frappe desk route for a doctype."""
-    return _doctype_route(doctype)
+    """Return the Frappe desk List route target for a doctype."""
+    return {"doctype": doctype, "view": "List"}
 
 
 def _worker_healthy():
@@ -221,7 +216,7 @@ def _prerequisites(process_id, fy, budget_locked):
                 "status": "blocked",
                 "status_label": "Blocked",
                 "actionable": True,
-                "route": _doctype_route("Budget Cycle"),
+
             })
         return deps
 
@@ -272,7 +267,7 @@ def _check(doctype, location, predicate, owner="EPM Admin", stale_hours=None, no
         "status": status,
         "status_label": {"configured": "Configured", "missing": "Missing", "stale": "Stale"}.get(status, status),
         "actionable": status in ("missing", "stale", "blocked"),
-        "route": _doctype_route(doctype),
+
     }
 
 
@@ -553,7 +548,7 @@ def _budget_rounds(fy):
             "amount": f"{total:+,}" if total else "—",
             "state": state,
             "sheet_count": len(sheets),
-            "route": _doctype_route("Budget Sheet"),
+
         })
     return {"cycle": cycle, "locked": cycle_locked, "rounds": rounds}
 

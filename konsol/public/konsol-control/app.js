@@ -90,8 +90,8 @@
       });
     }
 
-    openRoute(route) {
-      if (route) frappe.set_route(route.replace(/^\//, ""));
+    openDoctype(doctype) {
+      if (doctype) frappe.set_route("List", doctype);
     }
 
     render() {
@@ -256,7 +256,7 @@
             <div style="width:120px;flex:none;font-size:12px">${it.owner}</div>
             <span class="kc-pill" style="width:96px;text-align:center;color:${sm.color};background:${sm.bg}">${it.status_label}</span>
             <div style="display:flex;gap:6px">
-              <button class="kc-btn kc-btn-ghost" data-route="${it.route}">Open in Konsol</button>
+              <button class="kc-btn kc-btn-ghost" data-doctype="${frappe.utils.escape_html(it.doctype)}">Open in Konsol</button>
               ${it.actionable ? `<button class="kc-btn kc-btn-primary" style="padding:6px 10px" data-act="remind" data-owner="${it.owner}" data-item="${it.doctype}">Remind</button>` : ""}
             </div>
           </div>`;
@@ -277,7 +277,7 @@
                     <div style="flex:1"><strong>${r.layer}</strong> <span style="color:var(--ink5);font-size:11.5px">${r.role}</span><div style="font-size:11.5px;color:var(--ink5)">${r.owner} · ${r.week}</div></div>
                     <span style="width:120px;text-align:right;font-variant-numeric:tabular-nums">${r.amount}</span>
                     <span class="kc-pill" style="color:${col}">${st}</span>
-                    <button class="kc-btn kc-btn-ghost" data-route="${r.route}">Open sheets</button>
+                    <button class="kc-btn kc-btn-ghost" data-doctype="Budget Sheet">Open sheets</button>
                   </div>`;
                 })
                 .join("")}
@@ -443,8 +443,8 @@
       this.root.querySelectorAll('[data-act="remind"]').forEach((el) => {
         el.onclick = () => this.remind(el.dataset.owner, el.dataset.item);
       });
-      this.root.querySelectorAll("[data-route]").forEach((el) => {
-        el.onclick = () => this.openRoute(el.dataset.route);
+      this.root.querySelectorAll("[data-doctype]").forEach((el) => {
+        el.onclick = () => this.openDoctype(el.dataset.doctype);
       });
     }
   }
