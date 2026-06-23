@@ -126,7 +126,10 @@ def regenerate_cash_flow_categories_seed():
 
     path = os.path.join(seeds_dir, "cash_flow_categories.csv")
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_CASH_FLOW_CATEGORY_COLUMNS)
+        # LF line terminator (csv default is CRLF) so a regenerate stays
+        # byte-identical to the committed LF seed — avoids spurious diffs.
+        writer = csv.DictWriter(
+            f, fieldnames=_CASH_FLOW_CATEGORY_COLUMNS, lineterminator="\n")
         writer.writeheader()
         for r in rows:
             writer.writerow({
