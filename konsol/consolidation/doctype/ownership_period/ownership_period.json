@@ -11,6 +11,11 @@
   "autoname": "format:OP-{consolidation_group}-{data_area_id}-{effective_date}",
   "fields": [
     {
+      "fieldname": "tab_ownership",
+      "fieldtype": "Tab Break",
+      "label": "Ownership"
+    },
+    {
       "fieldname": "consolidation_group",
       "fieldtype": "Data",
       "label": "Consolidation Group",
@@ -58,6 +63,11 @@
       "reqd": 1
     },
     {
+      "fieldname": "tab_acquisition",
+      "fieldtype": "Tab Break",
+      "label": "Acquisition"
+    },
+    {
       "fieldname": "acquisition_section",
       "fieldtype": "Section Break",
       "label": "Acquisition (PRD-11)"
@@ -90,6 +100,11 @@
       "fieldtype": "Currency",
       "label": "Fair Value Adjustment",
       "default": "0"
+    },
+    {
+      "fieldname": "tab_disposal",
+      "fieldtype": "Tab Break",
+      "label": "Disposal"
     },
     {
       "fieldname": "disposal_section",

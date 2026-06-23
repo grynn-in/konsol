@@ -10,6 +10,11 @@
   "autoname": "",
   "fields": [
     {
+      "fieldname": "tab_budget_sheet",
+      "fieldtype": "Tab Break",
+      "label": "Budget Sheet"
+    },
+    {
       "fieldname": "cycle",
       "fieldtype": "Link",
       "label": "Budget Cycle",
@@ -55,6 +60,11 @@
       "fieldtype": "Table",
       "label": "Lines",
       "options": "Budget Line"
+    },
+    {
+      "fieldname": "tab_d365_writeback",
+      "fieldtype": "Tab Break",
+      "label": "D365 Write-Back"
     },
     {
       "fieldname": "d365_writeback_section",

@@ -11,6 +11,11 @@
   "title_field": "title",
   "fields": [
     {
+      "fieldname": "tab_close_run",
+      "fieldtype": "Tab Break",
+      "label": "Close Run"
+    },
+    {
       "fieldname": "title",
       "fieldtype": "Data",
       "label": "Title",
@@ -48,6 +53,11 @@
       "options": "Pipeline Run"
     },
     {
+      "fieldname": "tab_summary",
+      "fieldtype": "Tab Break",
+      "label": "Summary"
+    },
+    {
       "fieldname": "summary_section",
       "fieldtype": "Section Break",
       "label": "Summary"
@@ -83,6 +93,11 @@
       "label": "Errored",
       "read_only": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "tab_signoff",
+      "fieldtype": "Tab Break",
+      "label": "Sign-off"
     },
     {
       "fieldname": "signoff_section",
@@ -124,6 +139,11 @@
       "description": "Required when signing off a Red/Error close; audited."
     },
     {
+      "fieldname": "tab_timing",
+      "fieldtype": "Tab Break",
+      "label": "Timing"
+    },
+    {
       "fieldname": "timing_section",
       "fieldtype": "Section Break",
       "label": "Timing"
@@ -158,6 +178,11 @@
       "read_only": 1
     },
     {
+      "fieldname": "tab_assertions",
+      "fieldtype": "Tab Break",
+      "label": "Assertions"
+    },
+    {
       "fieldname": "results_section",
       "fieldtype": "Section Break",
       "label": "Assertions"
@@ -167,6 +192,11 @@
       "fieldtype": "Table",
       "label": "Results",
       "options": "Assertion Result"
+    },
+    {
+      "fieldname": "tab_log",
+      "fieldtype": "Tab Break",
+      "label": "Log"
     },
     {
       "fieldname": "log_section",

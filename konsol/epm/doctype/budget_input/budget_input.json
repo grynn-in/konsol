@@ -10,6 +10,11 @@
   "autoname": "",
   "fields": [
     {
+      "fieldname": "tab_budget_input",
+      "fieldtype": "Tab Break",
+      "label": "Budget Input"
+    },
+    {
       "fieldname": "scenario_id",
       "fieldtype": "Link",
       "label": "Scenario",
@@ -79,6 +84,11 @@
       "default": "__user"
     },
     {
+      "fieldname": "tab_periods",
+      "fieldtype": "Tab Break",
+      "label": "Monthly Periods"
+    },
+    {
       "fieldname": "periods_section",
       "fieldtype": "Section Break",
       "label": "Monthly Periods"
@@ -96,6 +106,11 @@
       "label": "Workflow State",
       "hidden": 1,
       "read_only": 1
+    },
+    {
+      "fieldname": "tab_d365_writeback",
+      "fieldtype": "Tab Break",
+      "label": "D365 Write-Back"
     },
     {
       "fieldname": "d365_writeback_section",

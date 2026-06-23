@@ -9,6 +9,11 @@
   "track_changes": 0,
   "fields": [
     {
+      "fieldname": "tab_clickhouse",
+      "fieldtype": "Tab Break",
+      "label": "ClickHouse"
+    },
+    {
       "fieldname": "clickhouse_section",
       "fieldtype": "Section Break",
       "label": "ClickHouse Connection"
@@ -50,6 +55,11 @@
       "default": "1",
       "depends_on": "clickhouse_secure",
       "description": "Validate the ClickHouse server certificate. Disable only for self-signed certs on a trusted network."
+    },
+    {
+      "fieldname": "tab_airbyte",
+      "fieldtype": "Tab Break",
+      "label": "Airbyte"
     },
     {
       "fieldname": "airbyte_section",
@@ -127,6 +137,11 @@
       "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
     },
     {
+      "fieldname": "tab_d365_writeback",
+      "fieldtype": "Tab Break",
+      "label": "D365 Write-Back"
+    },
+    {
       "fieldname": "d365_writeback_section",
       "fieldtype": "Section Break",
       "label": "D365 F&O Budget Write-Back (Legacy)"
@@ -168,6 +183,11 @@
       "description": "Month when the D365 fiscal year begins (1=Jan, 4=Apr, 7=Jul, 10=Oct). Maps budget period numbers to OData AccountingDate. For 4-4-5 calendars, supply a CustomFiscalCalendar programmatically. NEEDS-LIVE-TENANT: must match the Fiscal calendar configured in D365 F&O for the target legal entity."
     },
     {
+      "fieldname": "tab_sync_status",
+      "fieldtype": "Tab Break",
+      "label": "Airbyte Sync Status"
+    },
+    {
       "fieldname": "airbyte_sync_status_section",
       "fieldtype": "Section Break",
       "label": "Airbyte Sync Status"
@@ -190,6 +210,11 @@
       "fieldtype": "Int",
       "label": "Last Airbyte Sync Rows",
       "read_only": 1
+    },
+    {
+      "fieldname": "tab_dbt_access",
+      "fieldtype": "Tab Break",
+      "label": "dbt & Access Control"
     },
     {
       "fieldname": "dbt_section",

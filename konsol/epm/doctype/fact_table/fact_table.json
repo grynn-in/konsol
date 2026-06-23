@@ -10,6 +10,11 @@
   "autoname": "field:fact_name",
   "fields": [
     {
+      "fieldname": "tab_fact",
+      "fieldtype": "Tab Break",
+      "label": "Fact Table"
+    },
+    {
       "fieldname": "fact_name",
       "fieldtype": "Data",
       "label": "Fact Name",
@@ -107,6 +112,11 @@
       "description": "Auto-populated from Dimensions child table on save"
     },
     {
+      "fieldname": "tab_generation",
+      "fieldtype": "Tab Break",
+      "label": "Generation & Grain"
+    },
+    {
       "fieldname": "section_generation",
       "fieldtype": "Section Break",
       "label": "Generation & Grain"
@@ -143,6 +153,11 @@
       "description": "Fact-local detail columns for sub-ledger facts, NOT shared dimensions. JSON array: [{\"name\": \"invoice_id\", \"ch_type\": \"String\"}]"
     },
     {
+      "fieldname": "tab_reroute",
+      "fieldtype": "Tab Break",
+      "label": "Measure Reroute"
+    },
+    {
       "fieldname": "section_reroute",
       "fieldtype": "Section Break",
       "label": "Measure Reroute",
@@ -165,6 +180,11 @@
       "fieldtype": "Data",
       "label": "Reroute Column",
       "description": "Alternate column name in the reroute table"
+    },
+    {
+      "fieldname": "tab_lifecycle",
+      "fieldtype": "Tab Break",
+      "label": "Lifecycle"
     },
     {
       "fieldname": "lifecycle_section",
