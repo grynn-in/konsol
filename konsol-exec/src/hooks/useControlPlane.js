@@ -36,13 +36,6 @@ export function useControlPlane() {
 		return () => clearInterval(id);
 	}, [active, load]);
 
-	useEffect(() => {
-		const refresh = () => load(true);
-		frappe.realtime.on("pipeline_progress", refresh);
-		frappe.realtime.on("close_run_update", refresh);
-		frappe.realtime.on("build_request_complete", refresh);
-	}, [load]);
-
 	const start = useCallback(
 		async (processId) => {
 			const result = await startProcess(processId);

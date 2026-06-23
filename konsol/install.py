@@ -40,6 +40,7 @@ def after_migrate():
     _regenerate_reporting_hierarchies_seed()
     _sync_allocation_config_to_clickhouse()
     _setup_dashboard()
+    _retire_konsol_control_page()
     _sync_budget_line_custom_fields()
     _bootstrap_budget_fixtures()
 
@@ -117,6 +118,15 @@ def _sync_budget_line_custom_fields():
     except Exception:
         frappe.logger().warning(
             "budget line custom field sync skipped after migrate", exc_info=True)
+
+
+def _retire_konsol_control_page():
+    """Remove legacy desk page now replaced by /konsol-exec SPA."""
+    try:
+        if frappe.db.exists("Page", "konsol-control"):
+            frappe.delete_doc("Page", "konsol-control", force=True, ignore_permissions=True)
+    except Exception:
+        frappe.logger().warning("konsol-control page retirement skipped", exc_info=True)
 
 
 def _setup_dashboard():

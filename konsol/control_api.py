@@ -60,9 +60,9 @@ def _current_fiscal_year():
     return frappe.utils.getdate(today()).year
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET", "POST"])
 def get_snapshot():
-    """Full control-plane state for the Konsol Control desk page."""
+    """Full control-plane state for the Konsol Exec SPA."""
     fy = _current_fiscal_year()
     budget_locked = _budget_is_locked(fy)
     processes = {}

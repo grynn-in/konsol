@@ -7,6 +7,7 @@ import { Monitor } from "./components/Monitor";
 import { History } from "./components/History";
 import { Toast } from "./components/Toast";
 import { useControlPlane } from "./hooks/useControlPlane";
+
 export function App() {
 	const { data, isLoading, isError, error, start, remind } = useControlPlane();
 	const [tab, setTab] = React.useState("overview");
@@ -16,11 +17,7 @@ export function App() {
 	const [toast, setToast] = React.useState(null);
 
 	React.useEffect(() => {
-		document.body.classList.toggle("konsol-control-active", true);
-		document.body.classList.toggle("konsol-control-dark", dark);
-		return () => {
-			document.body.classList.remove("konsol-control-active", "konsol-control-dark");
-		};
+		document.documentElement.classList.toggle("kc-dark", dark);
 	}, [dark]);
 
 	const showToast = React.useCallback((msg) => {
@@ -37,11 +34,7 @@ export function App() {
 				setTab("monitor");
 				setSelected(processId);
 			} catch (e) {
-				frappe.msgprint({
-					title: __("Start failed"),
-					indicator: "red",
-					message: e?.message || String(e),
-				});
+				showToast(`Start failed: ${e?.message || String(e)}`);
 			}
 		},
 		[start, showToast]

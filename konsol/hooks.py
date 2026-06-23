@@ -52,6 +52,11 @@ after_migrate = ["konsol.install.after_migrate"]
 # application home page (will override Website Settings)
 # home_page = "login"
 
+# Standalone Konsol Exec SPA (Vite build → public/konsol_exec/)
+website_route_rules = [
+	{"from_route": "/konsol-exec/<path:app_path>", "to_route": "konsol-exec"},
+]
+
 # Scheduled Tasks
 # ---------------
 

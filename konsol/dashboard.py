@@ -17,9 +17,9 @@ import json
 WORKSPACE = "Konsolidat"
 MODULE = "EPM"
 
-# Desk page shortcuts: (label, page_name, colour)
-_PAGE_SHORTCUTS = [
-    ("Konsol Control", "konsol-control", "Teal"),
+# External app shortcuts: (label, url, colour)
+_URL_SHORTCUTS = [
+    ("Konsol Exec", "/konsol-exec", "Teal"),
 ]
 
 # Colourful top-row shortcut tiles: (doctype, colour) — ordered by user workflow
@@ -71,7 +71,9 @@ def _workspace_needs_refresh():
     shortcut_labels = {s.label for s in (ws.shortcuts or [])}
     doctype_shortcuts = {s.link_to for s in (ws.shortcuts or []) if s.type == "DocType"}
     card_labels = {l.label for l in (ws.links or []) if l.type == "Card Break"}
-    if "Konsol Control" not in shortcut_labels:
+    if "Konsol Exec" not in shortcut_labels:
+        return True
+    if "Konsol Control" in shortcut_labels:
         return True
     if _dt("Budget Cycle") and "Budget Cycle" not in doctype_shortcuts:
         return True
@@ -109,7 +111,7 @@ def setup_workspace(force=False):
 
 
 def _create_workspace():
-    page_shortcuts = list(_PAGE_SHORTCUTS)
+    url_shortcuts = list(_URL_SHORTCUTS)
     shortcuts = [s for s in _SHORTCUTS if _dt(s[0])]
 
     cards = []
@@ -130,11 +132,11 @@ def _create_workspace():
                 "link_count": 0, "hidden": 0, "is_query_report": 0, "onboard": 0,
             })
 
-    content = _build_content(page_shortcuts, shortcuts, cards)
+    content = _build_content(url_shortcuts, shortcuts, cards)
 
     ws_shortcuts = [
-        {"label": l, "link_to": p, "type": "Page", "color": c}
-        for l, p, c in page_shortcuts
+        {"label": l, "type": "URL", "url": u, "color": c}
+        for l, u, c in url_shortcuts
     ]
     ws_shortcuts += [
         {"label": l, "link_to": l, "type": "DocType", "color": c, "doc_view": "List"}
@@ -157,7 +159,7 @@ def _create_workspace():
     }).insert(ignore_permissions=True)
 
 
-def _build_content(page_shortcuts, shortcuts, cards):
+def _build_content(url_shortcuts, shortcuts, cards):
     counter = {"i": 0}
 
     def cid():
@@ -169,7 +171,7 @@ def _build_content(page_shortcuts, shortcuts, cards):
                 "data": {"text": f'<span class="h4"><b>{text}</b></span>', "col": 12}}
 
     content = [header("Konsolidat — EPM Platform")]
-    for label, _, _c in page_shortcuts:
+    for label, _, _c in url_shortcuts:
         content.append({"id": cid(), "type": "shortcut",
                         "data": {"shortcut_name": label, "col": 3}})
     for label, _ in shortcuts:
