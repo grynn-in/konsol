@@ -106,6 +106,9 @@
       const sel = procMap[s.selected] || procs[0];
       const setupProc = procMap[s.setupSel] || procs[0];
 
+      const bleed = this.root.closest(".layout-main-section");
+      if (bleed) bleed.classList.toggle("konsol-control-dark", s.dark);
+
       this.root.innerHTML = `
         <div class="kc-app ${s.dark ? "dark" : ""}">
           ${s.toast ? `<div class="kc-toast">${frappe.utils.escape_html(s.toast)}</div>` : ""}
