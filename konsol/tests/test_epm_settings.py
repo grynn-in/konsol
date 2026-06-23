@@ -84,3 +84,32 @@ def test_epm_settings_python_exists():
         APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.py"
     )
     assert os.path.exists(path), f"Missing: {path}"
+
+
+def test_consolidation_currency_field():
+    """#93 Phase 1: consolidation_currency must be a Link to Currency."""
+    path = os.path.join(
+        APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json"
+    )
+    with open(path) as f:
+        doc = json.load(f)
+
+    field = next(
+        (f for f in doc["fields"] if f["fieldname"] == "consolidation_currency"),
+        None,
+    )
+    assert field is not None, "consolidation_currency field missing"
+    assert field["fieldtype"] == "Link"
+    assert field["options"] == "Currency"
+
+
+def test_consolidation_currency_accessor_defined():
+    """#93 Phase 1: get_consolidation_currency() accessor + USD default exist."""
+    path = os.path.join(
+        APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.py"
+    )
+    with open(path) as f:
+        src = f.read()
+
+    assert "def get_consolidation_currency(" in src
+    assert 'DEFAULT_CONSOLIDATION_CURRENCY = "USD"' in src

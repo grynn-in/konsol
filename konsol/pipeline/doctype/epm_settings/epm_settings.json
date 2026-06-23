@@ -261,7 +261,7 @@
       "fieldtype": "Link",
       "options": "Currency",
       "label": "Consolidation Currency",
-      "description": "The single currency the group consolidates and reports in (IAS 21 direct method). Each entity keeps its own functional currency (from D365); the consolidation translates every entity directly into this currency in one step. Phase 2 (per-region step-by-step sub-consolidation) is tracked separately in grynn-in/konsolidat#93."
+      "description": "Default currency the group consolidates and reports in (IAS 21 direct method): each entity keeps its own functional currency from D365 and is translated directly into this currency in one step. Reporting currency is per top-level group — a deployment may hold several groups in different currencies — so this is the default/fallback for a group that doesn't pin its own reporting currency, not a blanket override. Phase 2 (per-region step-by-step sub-consolidation) is tracked in grynn-in/konsolidat#93."
     }
   ],
   "permissions": [
