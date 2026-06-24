@@ -67,6 +67,13 @@
       "label": "Airbyte Connection"
     },
     {
+      "fieldname": "skip_airbyte_sync",
+      "fieldtype": "Check",
+      "label": "Skip Airbyte Sync",
+      "default": "0",
+      "description": "When checked, pipeline/build runs skip the Airbyte extract step and build dbt directly from existing epm_raw data (demo data or a manual load). Raw-data readiness checks pass without a connector sync."
+    },
+    {
       "fieldname": "airbyte_api_url",
       "fieldtype": "Data",
       "label": "Airbyte API URL",

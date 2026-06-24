@@ -127,6 +127,13 @@ def check_raw_data_available():
 
     Returns (ok: bool, message: str).
     """
+    # When Airbyte sync is skipped (demo data / manual epm_raw load), there is
+    # no connector or Airbyte status to gate on — readiness is implied by the
+    # operator having loaded epm_raw out of band. Short-circuit before any
+    # connector/Airbyte gating so a missing/never-synced connector can't block.
+    if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
+        return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
+
     if frappe.db.table_exists("Connector"):
         connectors = frappe.get_all(
             "Connector",
@@ -523,11 +530,18 @@ def run_pipeline(pipeline_run):
     doc = frappe.get_doc("Pipeline Run", pipeline_run)
 
     try:
-        # Step 1: Airbyte extract
-        _update_status(doc, "Extracting")
-        job_id, rows = _run_airbyte_sync(doc)
-        doc.airbyte_job_id = job_id
-        doc.rows_synced = rows
+        # Step 1: Airbyte extract (skipped when building from a pre-loaded
+        # epm_raw — demo data or a manual load — so a missing/failing Airbyte
+        # connector doesn't gate the dbt build).
+        if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
+            _update_status(doc, "Extracting")
+            doc.airbyte_job_id = "skipped"
+            doc.rows_synced = 0
+        else:
+            _update_status(doc, "Extracting")
+            job_id, rows = _run_airbyte_sync(doc)
+            doc.airbyte_job_id = job_id
+            doc.rows_synced = rows
 
         # Step 2: dbt build
         _update_status(doc, "Transforming")
