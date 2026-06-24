@@ -237,22 +237,24 @@ def _sync_rows_inner(table, columns, rows, key_columns, key_values):
 def sync_doctype(doctype, table, field_map):
     """Fetch all Frappe docs of a doctype and sync to ClickHouse.
 
+    For *submittable* doctypes only docstatus=1 (submitted) rows are synced:
+    drafts (0) and cancelled (2) must never reach ClickHouse. Without this the
+    full TRUNCATE+INSERT re-synced drafts and cancelled docs — so on_cancel
+    re-inserted the just-cancelled row and drafts leaked in on the next submit
+    of any doc (grynn-in/konsolidat#92, finding #1). The guard is keyed on the
+    doctype's own ``is_submittable`` so it fixes every submittable consolidation
+    doctype at once (Ownership Period, IC Balance, Consolidation Adjustment,
+    Historical Equity Rate, …) and leaves non-submittable doctypes (always
+    docstatus 0, e.g. Consolidation Group) untouched.
+
     Args:
         doctype: Frappe DocType name (e.g. 'Allocation Rule').
         table: ClickHouse table name (e.g. 'gold.allocation_rules').
         field_map: Dict mapping CH column names to Frappe field names.
             e.g. {'allocation_rule_id': 'allocation_rule_id', 'rule_name': 'rule_name'}
     """
-    ch_columns = list(field_map.keys())
-    frappe_fields = list(field_map.values())
-
-    docs = frappe.get_all(doctype, fields=frappe_fields, limit_page_length=0)
-    rows = []
-    for doc in docs:
-        row = [doc.get(f) for f in frappe_fields]
-        rows.append(row)
-
-    sync_table(table, ch_columns, rows)
+    filters = {"docstatus": 1} if frappe.get_meta(doctype).is_submittable else None
+    sync_doctype_filtered(doctype, table, field_map, filters=filters)
 
 
 def _record_sync_failure(table, error_type, message):

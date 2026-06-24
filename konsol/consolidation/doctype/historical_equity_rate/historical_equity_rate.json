@@ -8,7 +8,7 @@
   "editable_grid": 1,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "format:HER-{consolidation_group}-{data_area_id}-{main_account}-{rate_date}",
+  "autoname": "",
   "fields": [
     {
       "fieldname": "consolidation_group",
@@ -57,6 +57,24 @@
   "permissions": [
     {
       "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "submit": 1,
+      "cancel": 1
+    },
+    {
+      "role": "Administrator",
       "read": 1,
       "write": 1,
       "create": 1,
