@@ -15,6 +15,7 @@ fixtures = [
     "Fiscal Period",
     "Dimension",
     "Dimension Mapping",
+    "Cash Flow Category",
     "Reporting Hierarchy",
     "Reporting Hierarchy Member",
     "Measure",

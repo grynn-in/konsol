@@ -41,6 +41,12 @@ _DIM_MAPPING_COLUMNS = [
     "canonical_label", "status",
 ]
 
+# Header for the cash_flow_categories seed (must match seeds/cash_flow_categories.csv
+# + gold_cash_flow_indirect / gold_consolidated_cash_flow — see konsolidat#63).
+_CASH_FLOW_CATEGORY_COLUMNS = [
+    "main_account", "cf_category", "cf_line_item", "is_cash", "sign",
+]
+
 
 def regenerate_dimension_mappings_seed():
     """Regenerate seeds/dimension_mappings.csv from published Dimension Mapping docs.
@@ -86,6 +92,52 @@ def regenerate_dimension_mappings_seed():
                 "canonical_value": r.canonical_value or "",
                 "canonical_label": r.canonical_label or "",
                 "status": "Published",
+            })
+    return path
+
+
+def regenerate_cash_flow_categories_seed():
+    """Regenerate seeds/cash_flow_categories.csv from Published Cash Flow Category docs.
+
+    Frappe is the source of truth for the BS-account → cash-flow-line crosswalk
+    (mirrors regenerate_dimension_mappings_seed). Only Published rows are written;
+    a header-only file is valid (no mappings). Returns the seed path, or None if
+    the dbt project dir is absent (dbt on another host) — caller treats as skip.
+    """
+    import csv
+    import os
+
+    base = _get_dbt_project_base()
+    seeds_dir = os.path.join(base, "seeds")
+    if not os.path.isdir(seeds_dir):
+        frappe.logger().warning(
+            f"dbt seeds dir not found at {seeds_dir} — skipping cash_flow_categories "
+            f"regeneration. Set dbt_project_path in EPM Settings if dbt is remote."
+        )
+        return None
+
+    rows = frappe.get_all(
+        "Cash Flow Category",
+        filters={"status": "Published"},
+        fields=["main_account", "cf_category", "cf_line_item", "is_cash", "sign"],
+        order_by="main_account asc",
+        limit_page_length=0,
+    )
+
+    path = os.path.join(seeds_dir, "cash_flow_categories.csv")
+    with open(path, "w", newline="") as f:
+        # LF line terminator (csv default is CRLF) so a regenerate stays
+        # byte-identical to the committed LF seed — avoids spurious diffs.
+        writer = csv.DictWriter(
+            f, fieldnames=_CASH_FLOW_CATEGORY_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({
+                "main_account": r.main_account or "",
+                "cf_category": r.cf_category or "",
+                "cf_line_item": r.cf_line_item or "",
+                "is_cash": int(r.is_cash or 0),
+                "sign": int(r.sign or 1),
             })
     return path
 
