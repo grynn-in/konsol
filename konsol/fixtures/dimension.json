@@ -1,5 +1,5 @@
 [
-  {"doctype": "Dimension", "name": "dim_cost_center", "dimension_name": "dim_cost_center", "source_column": "CostCenter", "label": "Cost Center", "cube_type": "string", "in_budget": 1, "allocation_role": "cost_center", "status": "Published"},
-  {"doctype": "Dimension", "name": "dim_department", "dimension_name": "dim_department", "source_column": "Department", "label": "Department", "cube_type": "string", "in_budget": 1, "allocation_role": "", "status": "Published"},
-  {"doctype": "Dimension", "name": "dim_business_unit", "dimension_name": "dim_business_unit", "source_column": "BusinessUnit", "label": "Business Unit", "cube_type": "string", "in_budget": 0, "allocation_role": "", "status": "Published"}
+  {"doctype": "Dimension", "name": "dim_cost_center", "dimension_name": "dim_cost_center", "source_column": "dim_cost_center", "label": "Cost Center", "cube_type": "string", "in_budget": 1, "allocation_role": "cost_center", "status": "Published"},
+  {"doctype": "Dimension", "name": "dim_department", "dimension_name": "dim_department", "source_column": "dim_department", "label": "Department", "cube_type": "string", "in_budget": 1, "allocation_role": "", "status": "Published"},
+  {"doctype": "Dimension", "name": "dim_business_unit", "dimension_name": "dim_business_unit", "source_column": "dim_business_unit", "label": "Business Unit", "cube_type": "string", "in_budget": 0, "allocation_role": "", "status": "Published"}
 ]
