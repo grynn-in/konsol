@@ -201,11 +201,40 @@ def _build_dimensions_vars():
     return dimensions
 
 
+# Fact whose measures define `base_measures` (the GL trial-balance grain).
+_TRIAL_BALANCE_DBT_MODEL = "gold_trial_balance"
+
+# Last-resort GL-grain measures if the trial-balance fact is unconfigured. These
+# are the only ones computable from silver_gl_entries; keeps the dbt build valid.
+_DEFAULT_BASE_MEASURE_NAMES = (
+    "period_debit",
+    "period_credit",
+    "period_net_amount",
+    "transaction_count",
+)
+
+
 def _build_measures_vars():
-    """Build base_measures list from Measure doctype."""
+    """Build base_measures for the GL trial-balance grain.
+
+    `base_measures` feeds `measure_select()` in `gold_trial_balance`, which emits
+    each measure's `expression` directly over `silver_gl_entries`. So it must be
+    exactly the measures of the trial-balance fact (the Fact Table that produces
+    `gold_trial_balance`) — NOT every published Measure. Measures belonging to
+    other facts (budget/variance/driver grains) reference columns absent from
+    `silver_gl_entries` and would break the dbt build (UNKNOWN_IDENTIFIER) if
+    emitted here. The fact registry is the single source of truth for which
+    measures live at this grain.
+    """
+    measure_names = _trial_balance_measure_names()
+
+    filters = {"status": "Published"}
+    if measure_names:
+        filters["measure_name"] = ["in", measure_names]
+
     docs = frappe.get_all(
         "Measure",
-        filters={"status": "Published"},
+        filters=filters,
         fields=["measure_name", "expression", "label", "cube_type"],
         order_by="measure_name asc",
         limit_page_length=0,
@@ -219,6 +248,42 @@ def _build_measures_vars():
         }
         for d in docs
     ]
+
+
+def _trial_balance_measure_names():
+    """Names of the measures actually computed in the trial-balance dbt model.
+
+    These are the GL-grain measures of the published trial-balance fact, MINUS
+    any measure that fact reroutes to a different table. A rerouted measure is
+    served from elsewhere at query time (e.g. ytd_net_amount is read from
+    gold_balance_sheet.cumulative_balance, a column absent from
+    silver_gl_entries) and is NOT computable in gold_trial_balance, so it must
+    not enter base_measures. Falls back to the safe default set when no
+    trial-balance fact is configured (so gold_trial_balance always keeps its
+    required aggregates and the build stays valid).
+    """
+    if not frappe.db.table_exists("Fact Table"):
+        return list(_DEFAULT_BASE_MEASURE_NAMES)
+
+    fact = frappe.get_all(
+        "Fact Table",
+        filters={"dbt_model": _TRIAL_BALANCE_DBT_MODEL, "status": "Published"},
+        fields=["name", "reroute_measure"],
+        limit_page_length=1,
+    )
+    if not fact:
+        return list(_DEFAULT_BASE_MEASURE_NAMES)
+
+    names = frappe.get_all(
+        "Fact Table Measure",
+        filters={"parent": fact[0].name, "parenttype": "Fact Table"},
+        pluck="measure",
+        order_by="idx asc",
+    )
+    rerouted = fact[0].reroute_measure
+    if rerouted:
+        names = [n for n in names if n != rerouted]
+    return names or list(_DEFAULT_BASE_MEASURE_NAMES)
 
 
 def _build_fiscal_vars():
