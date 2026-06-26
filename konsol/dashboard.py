@@ -56,6 +56,14 @@ _CARDS = [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
         "Consolidation Adjustment", "IC Balance", "IC Elimination Rule", "Close Run",
     ]),
+    # CTA drivers: the configurable inputs that move the Currency Translation
+    # Adjustment plug (gold_fx_revaluation). Grouped for quick access when
+    # investigating why CTA changed for a group/period. Doctypes may also appear
+    # in other cards — workspace links are just shortcuts.
+    ("CTA Drivers", [
+        "Consolidation Group", "Ownership Period", "Historical Equity Rate",
+        "Reporting Hierarchy",
+    ]),
 ]
 
 
@@ -78,6 +86,8 @@ def _workspace_needs_refresh():
     if _dt("Budget Cycle") and "Budget Cycle" not in doctype_shortcuts:
         return True
     if "EPM Models" in card_labels:
+        return True
+    if _dt("Historical Equity Rate") and "CTA Drivers" not in card_labels:
         return True
     if ws.number_cards or ws.charts:
         return True
