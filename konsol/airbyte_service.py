@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 DESTINATION_NAME = "Open EPM ClickHouse (konsol)"
 CLICKHOUSE_DESTINATION_TYPE = "clickhouse"
 
+# Airbyte API base path. The application client-credentials token (issued by
+# /applications/token) only authorizes the PUBLIC API; the internal config API
+# (/api/v1) returns 403 Forbidden for that token. All calls must go to the
+# public API.
+AIRBYTE_API_BASE = "/api/public/v1"
+
 ERP_AIRBYTE_SOURCE = {
     "d365_fo": {
         "definition_name": "D365 Finance & Operations",
@@ -38,7 +44,7 @@ class AirbyteClient:
     """Minimal Airbyte public API client (self-hosted or Cloud)."""
 
     def __init__(self, api_url, client_id, client_secret):
-        self.base_url = api_url.rstrip("/") + "/api/v1"
+        self.base_url = api_url.rstrip("/") + AIRBYTE_API_BASE
         self.client_id = client_id
         self.client_secret = client_secret
         self._token = None
