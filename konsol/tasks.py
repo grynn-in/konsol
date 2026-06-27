@@ -615,19 +615,22 @@ def _run_airbyte_sync(doc):
     job_id = str(job["jobId"])
 
     # Poll until complete
-    rows_synced = 0
+    job_status = ""
     for _ in range(120):  # max 60 minutes (30s intervals)
         time.sleep(30)
         job_data = client.request("GET", f"/jobs/{job_id}")
         job_status = job_data.get("status", "")
 
         if job_status == "succeeded":
-            rows_synced = job_data.get("rowsSynced", 0)
-            break
+            return job_id, job_data.get("rowsSynced", 0)
         elif job_status in ("failed", "cancelled"):
             raise Exception(f"Airbyte sync {job_status}: {job_data}")
 
-    return job_id, rows_synced
+    # Loop exhausted without a terminal status — don't report success with 0 rows.
+    raise Exception(
+        f"Airbyte sync did not finish within 60 minutes "
+        f"(job {job_id}, last status '{job_status or 'unknown'}')."
+    )
 
 
 def _run_dbt_build(doc):
