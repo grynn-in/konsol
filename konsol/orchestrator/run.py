@@ -88,6 +88,24 @@ def plan_run(params: Optional[Dict]) -> Tuple[Dag, RunState]:
     return dag, RunState(dag)
 
 
+def state_from_rows(dag: Dag, rows) -> RunState:
+    """Rebuild a :class:`RunState` from a run's persisted PRD-6 child rows.
+
+    Used by retry / resume (PRD-10): map each saved step row's ``status`` back
+    onto the freshly-planned :class:`Dag`. Rows may be Frappe child docs or bare
+    dicts; rows whose ``step_id`` is not in the plan (e.g. a definition change)
+    are ignored, and steps with no row stay :data:`Status.PENDING`. Pure.
+    """
+    known = {s.id for s in dag.steps}
+    statuses: Dict[str, str] = {}
+    for r in rows or []:
+        sid = _row_get(r, "step_id")
+        status = _row_get(r, "status")
+        if sid in known and status:
+            statuses[sid] = status
+    return RunState(dag, statuses=statuses)
+
+
 # ---- progress sink (pure, with a fake/real doc) -------------------------
 
 def _now() -> str:
@@ -231,17 +249,30 @@ def _run_signoff(run_doc) -> StepResult:
 
 # ---- enqueue-able entrypoint --------------------------------------------
 
-def run_pipeline(run_name: str) -> RunState:
+def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     """Load a Pipeline Run, plan it, and drive it to completion.
 
     Intended to be enqueued (``frappe.enqueue``). Updates the run's child rows +
     overall status as it goes and publishes live events for the UI.
+
+    For a fresh run all steps start :data:`Status.PENDING`. When ``retry_step``
+    or ``resume_from`` is given (PRD-10 retry / resume), the run state is
+    rebuilt from the persisted child rows via :func:`state_from_rows` and then
+    re-armed (``RunState.retry`` / ``RunState.resume_from``) so only the failed
+    step / the chosen step and everything downstream re-execute.
     """
     import frappe
 
     run_doc = frappe.get_doc("Pipeline Run", run_name)
     params = params_from_doc(run_doc)
     dag, state = plan_run(params)
+
+    if retry_step or resume_from:
+        state = state_from_rows(dag, _doc_get(run_doc, "steps", []))
+        if retry_step:
+            state.retry(retry_step)
+        if resume_from:
+            state.resume_from(resume_from)
 
     def publish(event, payload):
         frappe.publish_realtime(
