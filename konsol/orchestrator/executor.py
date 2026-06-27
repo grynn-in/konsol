@@ -21,12 +21,17 @@ from konsol.orchestrator.state import RunState, Status
 class StepContext:
     """Opaque execution context handed to a handler.
 
-    Exposes the ``step`` being run and its ``params`` for convenience.
+    Exposes the ``step`` being run and its ``params`` for convenience, plus an
+    optional ``runner`` — a callable ``runner(argv) -> StepResult`` that the
+    PRD-8 handlers delegate real execution to. On the pure host the runner is
+    ``None`` (handlers only *build* their command); the PRD-9 Frappe binding
+    injects a real runner via :class:`Executor`.
     """
 
-    def __init__(self, step):
+    def __init__(self, step, runner=None):
         self.step = step
         self.params = step.params
+        self.runner = runner
 
 
 class Executor:
@@ -38,9 +43,10 @@ class Executor:
     ``sink.on_step_result(step, result)`` (both optional / duck-typed).
     """
 
-    def __init__(self, registry, sink=None):
+    def __init__(self, registry, sink=None, runner=None):
         self.registry = registry
         self.sink = sink
+        self.runner = runner
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -62,7 +68,7 @@ class Executor:
     def _run_step(self, step, state: RunState) -> None:
         state.mark(step.id, Status.RUNNING)
         self._notify_start(step)
-        ctx = StepContext(step)
+        ctx = StepContext(step, runner=self.runner)
         try:
             handler = self.registry.get(step.type)
             result = handler(ctx)
