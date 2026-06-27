@@ -1,0 +1,25 @@
+{
+ "content": null,
+ "creation": "2026-06-27 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-06-27 00:00:00.000000",
+ "module": "Pipeline",
+ "name": "konsol-exec",
+ "owner": "Administrator",
+ "page_name": "konsol-exec",
+ "roles": [
+  {
+   "role": "EPM Admin"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Konsol Exec"
+}
