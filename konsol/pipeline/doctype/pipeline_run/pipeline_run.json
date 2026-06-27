@@ -61,6 +61,49 @@
       "label": "Completed At"
     },
     {
+      "fieldname": "params_section",
+      "fieldtype": "Section Break",
+      "label": "Run Parameters"
+    },
+    {
+      "fieldname": "pipeline_definition",
+      "fieldtype": "Data",
+      "label": "Pipeline Definition",
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "fiscal_year",
+      "fieldtype": "Int",
+      "label": "Fiscal Year",
+      "in_standard_filter": 1
+    },
+    {
+      "fieldname": "fiscal_period",
+      "fieldtype": "Int",
+      "label": "Fiscal Period"
+    },
+    {
+      "fieldname": "scope",
+      "fieldtype": "Data",
+      "label": "Scope"
+    },
+    {
+      "fieldname": "params_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "full_refresh",
+      "fieldtype": "Check",
+      "label": "Full Refresh",
+      "default": "0"
+    },
+    {
+      "fieldname": "skip_sync",
+      "fieldtype": "Check",
+      "label": "Skip Sync",
+      "default": "0"
+    },
+    {
       "fieldname": "extract_section",
       "fieldtype": "Section Break",
       "label": "Extract (Airbyte)"
