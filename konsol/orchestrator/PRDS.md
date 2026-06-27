@@ -16,7 +16,7 @@ Design: `open_epm/docs/developer-guide/design/konsol-exec-orchestrator.md` · Ep
 - [x] **PRD-8 — Real handlers (command building).** `airbyte_sync` (writes back `last_sync_at`), `dbt_seed/run/build/test` (select/full_refresh/vars), `close_assertions`, `signoff`. Test the pure dbt-command builder.
 - [x] **PRD-9 — Frappe executor binding.** `orchestrator/run.py`: `run_pipeline(run_name)` enqueued — load run, `build_plan`, drive `Executor` with a Frappe sink (update child rows + `publish_realtime`). Container smoke test.
 - [x] **PRD-10 — Whitelisted API.** `start_run(definition, params)`, `retry_step`, `resume_run`, `cancel_run`. Whitelist/signature presence test.
-- [ ] **PRD-11 — SPA param form + timeline.** konsol-exec: launch form (year/period/scope/flags) + step timeline w/ live logs + retry/resume/cancel. JS presence test.
+- [x] **PRD-11 — SPA param form + timeline.** konsol-exec: launch form (year/period/scope/flags) + step timeline w/ live logs + retry/resume/cancel. JS presence test.
 
 ## P2 — Definitions, schedules, resume (#58)
 
