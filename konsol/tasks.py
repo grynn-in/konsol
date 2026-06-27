@@ -8,7 +8,8 @@ import subprocess
 import time
 
 import frappe
-import requests
+
+from konsol.airbyte_service import AirbyteClient
 
 
 def _dbt_bin():
@@ -591,55 +592,45 @@ def _update_status(doc, status):
 
 
 def _run_airbyte_sync(doc):
-    """Authenticate to Airbyte API, trigger sync, poll until done."""
+    """Authenticate to Airbyte API, trigger sync, poll until done.
+
+    Uses AirbyteClient so auth and the API base path stay in one place — the
+    application token only works against the public API (/api/public/v1).
+    """
     settings = frappe.get_single("EPM Settings")
 
-    api_url = settings.airbyte_api_url.rstrip("/")
-    client_id = settings.airbyte_client_id
-    client_secret = settings.get_password("airbyte_client_secret")
+    client = AirbyteClient(
+        settings.airbyte_api_url,
+        settings.airbyte_client_id,
+        settings.get_password("airbyte_client_secret"),
+    )
     connection_id = settings.airbyte_connection_id
 
-    # Get OAuth token
-    token_resp = requests.post(
-        f"{api_url}/api/v1/applications/token",
-        json={"client_id": client_id, "client_secret": client_secret},
-        timeout=30,
-    )
-    token_resp.raise_for_status()
-    token = token_resp.json()["access_token"]
-
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
     # Trigger sync job
-    job_resp = requests.post(
-        f"{api_url}/api/v1/jobs",
-        json={"connectionId": connection_id, "jobType": "sync"},
-        headers=headers,
-        timeout=30,
+    job = client.request(
+        "POST",
+        "/jobs",
+        json_body={"connectionId": connection_id, "jobType": "sync"},
     )
-    job_resp.raise_for_status()
-    job_id = str(job_resp.json()["jobId"])
+    job_id = str(job["jobId"])
 
     # Poll until complete
-    rows_synced = 0
+    job_status = ""
     for _ in range(120):  # max 60 minutes (30s intervals)
         time.sleep(30)
-        status_resp = requests.get(
-            f"{api_url}/api/v1/jobs/{job_id}",
-            headers=headers,
-            timeout=30,
-        )
-        status_resp.raise_for_status()
-        job_data = status_resp.json()
+        job_data = client.request("GET", f"/jobs/{job_id}")
         job_status = job_data.get("status", "")
 
         if job_status == "succeeded":
-            rows_synced = job_data.get("rowsSynced", 0)
-            break
+            return job_id, job_data.get("rowsSynced", 0)
         elif job_status in ("failed", "cancelled"):
             raise Exception(f"Airbyte sync {job_status}: {job_data}")
 
-    return job_id, rows_synced
+    # Loop exhausted without a terminal status — don't report success with 0 rows.
+    raise Exception(
+        f"Airbyte sync did not finish within 60 minutes "
+        f"(job {job_id}, last status '{job_status or 'unknown'}')."
+    )
 
 
 def _run_dbt_build(doc):
