@@ -6,6 +6,9 @@ concrete, ordered list of steps to execute. Pure-python (no frappe).
 
 Parameters become step params rather than special code paths:
 - ``skip_sync``     drops ``airbyte_sync`` steps and rewires dependents
+- ``sources``       keeps only the ``airbyte_sync`` steps whose ``params.source``
+                    is in the given list (drops + rewires the rest, like
+                    ``skip_sync``); ``skip_sync`` wins when both are given
 - ``full_refresh``  sets ``full_refresh`` on incremental dbt steps (run/build)
 - ``scope``         becomes ``select`` on dbt transform steps (run/build/test)
 - ``fiscal_year`` / ``fiscal_period`` become dbt ``vars`` on dbt + close steps
@@ -43,6 +46,30 @@ def _drop_steps(steps: List[Step], drop_ids: set) -> List[Step]:
     return kept
 
 
+def _source_drop_ids(steps: List[Step], sources) -> set:
+    """Extract (``airbyte_sync``) step ids whose ``params.source`` is NOT kept."""
+    keep = set(sources)
+    return {
+        s.id
+        for s in steps
+        if s.type == "airbyte_sync" and s.params.get("source") not in keep
+    }
+
+
+def merge_sources(definition: List[Step], sources) -> List[Step]:
+    """Keep only the extract steps whose ``params.source`` is in ``sources``.
+
+    Drops the non-selected ``airbyte_sync`` steps and rewires dependents (the
+    same mechanism as ``skip_sync``), so downstream steps (e.g. ``seed``) still
+    fan in correctly from the retained extracts. ``sources=None`` keeps **all**
+    extracts. Returns fresh :class:`Step` objects; ``definition`` is not mutated.
+    """
+    steps = [copy.deepcopy(s) for s in definition]
+    if sources is None:
+        return steps
+    return _drop_steps(steps, _source_drop_ids(steps, sources))
+
+
 def build_plan(definition: List[Step], params: Dict) -> List[Step]:
     """Resolve a definition + run params into a concrete list of steps.
 
@@ -52,8 +79,11 @@ def build_plan(definition: List[Step], params: Dict) -> List[Step]:
     steps = [copy.deepcopy(s) for s in definition]
 
     if params.get("skip_sync"):
+        # skip_sync wins over sources: drop ALL extracts and rewire dependents.
         drop = {s.id for s in steps if s.type == "airbyte_sync"}
         steps = _drop_steps(steps, drop)
+    elif params.get("sources") is not None:
+        steps = _drop_steps(steps, _source_drop_ids(steps, params["sources"]))
 
     full_refresh = bool(params.get("full_refresh"))
     scope = params.get("scope")
