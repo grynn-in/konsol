@@ -47,6 +47,33 @@ def _coerce_params(params) -> Dict:
     return dict(params)
 
 
+def _steps_and_statuses(run_doc):
+    """Rebuild ``(steps, statuses)`` from a run's persisted PRD-6 child rows.
+
+    Each child row carries ``step_id``/``step_type``/``depends_on`` (a JSON array
+    of upstream ids) and ``status``. This is the seam the pure PRD-15 planners
+    (:func:`resume.plan_resume` / :func:`resume.plan_retry`) validate + reset.
+    """
+    import frappe
+
+    from konsol.orchestrator.dag import Step
+
+    steps = []
+    statuses: Dict[str, str] = {}
+    for row in run_doc.steps or []:
+        deps = frappe.parse_json(row.depends_on) if row.depends_on else []
+        steps.append(Step(id=row.step_id, type=row.step_type, depends_on=list(deps or [])))
+        statuses[row.step_id] = row.status
+    return steps, statuses
+
+
+def _persist_statuses(run_doc, snapshot: Dict[str, str]) -> None:
+    """Write the reset snapshot back onto the run's child rows in place."""
+    for row in run_doc.steps or []:
+        if row.step_id in snapshot:
+            row.status = snapshot[row.step_id]
+
+
 @whitelist()
 def start_run(definition: Optional[str] = None, params=None) -> str:
     """Create a Pipeline Run, stamp the PRD-7 params, and enqueue it.
@@ -83,13 +110,19 @@ def start_run(definition: Optional[str] = None, params=None) -> str:
 def retry_step(run_name: str, step_id: str) -> str:
     """Re-arm a failed ``step_id`` (and its descendants) and re-enqueue the run.
 
-    The worker rebuilds the run state from the persisted child rows
-    (:func:`run.state_from_rows`), calls ``RunState.retry(step_id)``, and only
-    re-runs the failed step plus everything downstream of it.
+    The run is validated as *settled* and the reset is computed by the pure
+    PRD-15 planner (:func:`resume.plan_retry`): the failed step plus everything
+    downstream of it is reset to Pending, upstream successes preserved. The
+    worker then re-runs only that subtree (:func:`run.state_from_rows`).
     """
     import frappe
 
+    from konsol.orchestrator import resume
+
     run_doc = frappe.get_doc("Pipeline Run", run_name)
+    steps, statuses = _steps_and_statuses(run_doc)
+    snapshot = resume.plan_retry(steps, statuses, step_id)
+    _persist_statuses(run_doc, snapshot)
     run_doc.status = "Queued"
     run_doc.save(ignore_permissions=True)
     frappe.db.commit()
@@ -104,13 +137,19 @@ def retry_step(run_name: str, step_id: str) -> str:
 def resume_run(run_name: str, step_id: str) -> str:
     """Restart a finished run from ``step_id`` downward and re-enqueue it.
 
-    The worker rebuilds state from the persisted rows and calls
-    ``RunState.resume_from(step_id)`` so the chosen step and all its descendants
-    re-execute while upstream successes are preserved.
+    The run is validated as *settled* and the reset is computed by the pure
+    PRD-15 planner (:func:`resume.plan_resume`): the chosen step and all its
+    descendants are reset to Pending while upstream successes are preserved. The
+    worker then re-executes that subtree (:func:`run.state_from_rows`).
     """
     import frappe
 
+    from konsol.orchestrator import resume
+
     run_doc = frappe.get_doc("Pipeline Run", run_name)
+    steps, statuses = _steps_and_statuses(run_doc)
+    snapshot = resume.plan_resume(steps, statuses, step_id)
+    _persist_statuses(run_doc, snapshot)
     run_doc.status = "Queued"
     run_doc.save(ignore_permissions=True)
     frappe.db.commit()
