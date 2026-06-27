@@ -1,0 +1,74 @@
+{
+  "name": "Pipeline Definition",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:definition_name",
+  "fields": [
+    {
+      "fieldname": "definition_name",
+      "fieldtype": "Data",
+      "label": "Definition Name",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "Unique identifier for this pipeline definition"
+    },
+    {
+      "fieldname": "title",
+      "fieldtype": "Data",
+      "label": "Title",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "default": "1",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "description",
+      "fieldtype": "Small Text",
+      "label": "Description"
+    },
+    {
+      "fieldname": "default_params",
+      "fieldtype": "Code",
+      "label": "Default Params",
+      "options": "JSON",
+      "description": "JSON-encoded default run params (fiscal_year/fiscal_period/scope/full_refresh/skip_sync)"
+    },
+    {
+      "fieldname": "steps_section",
+      "fieldtype": "Section Break",
+      "label": "Steps"
+    },
+    {
+      "fieldname": "steps",
+      "fieldtype": "Table",
+      "label": "Steps",
+      "options": "Step Definition"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}
