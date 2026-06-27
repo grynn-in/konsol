@@ -8,7 +8,7 @@ Design: `open_epm/docs/developer-guide/design/konsol-exec-orchestrator.md` · Ep
 
 - [x] **PRD-1 — DAG core.** `orchestrator/dag.py`: `Step(id,type,depends_on,params)`, build graph, `toposort()`, cycle detection, validation (unknown dep, dup id). Pure-python.
 - [x] **PRD-2 — Run-plan resolution.** `orchestrator/plan.py`: `build_plan(definition, params)` → ordered steps; `skip_sync` drops `airbyte_sync`; `full_refresh` sets flag on dbt steps; `scope`→`select`; fiscal_year/period→`vars`. Pure-python.
-- [ ] **PRD-3 — Execution state machine.** `orchestrator/state.py`: from step statuses compute `runnable()`, `is_done()`, `failed()`; `retry(step)` resets a failed step + its descendants; `resume_from(step)`. Pure-python.
+- [x] **PRD-3 — Execution state machine.** `orchestrator/state.py`: from step statuses compute `runnable()`, `is_done()`, `failed()`; `retry(step)` resets a failed step + its descendants; `resume_from(step)`. Pure-python.
 - [ ] **PRD-4 — Handler registry.** `orchestrator/handlers.py`: `register(type)` decorator + `get(type)`; `Handler` protocol `run(ctx)->StepResult`; built-in types registered as stubs. Pure-python.
 - [ ] **PRD-5 — Executor (pure core).** `orchestrator/executor.py`: `Executor(registry, sink)` drives state machine: run next runnable, record result, stop downstream on failure, honor cancel. Injected registry+sink → fully unit-testable. Pure-python.
 - [ ] **PRD-6 — Run Step doctype fields.** Extend `pipeline_step`: `step_id`, `step_type`, `depends_on`, `params(JSON)`, `retry_count`, `started_at`, `ended_at`, `error`. JSON field-presence test.
