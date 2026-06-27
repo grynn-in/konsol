@@ -74,6 +74,11 @@ scheduler_events = {
         "*/10 * * * *": [
             "konsol.consolidation.doctype.close_run.close_run.reap_stale_close_runs"
         ],
+        # Orchestrator scheduling: evaluate enabled Pipeline Schedules every
+        # minute and start due pipeline runs (PRD-14).
+        "* * * * *": [
+            "konsol.orchestrator.cron.run_due_schedules"
+        ],
     }
 }
 
