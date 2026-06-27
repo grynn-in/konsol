@@ -57,6 +57,61 @@
       "label": "Output",
       "options": "Text",
       "read_only": 1
+    },
+    {
+      "fieldname": "step_id",
+      "fieldtype": "Data",
+      "label": "Step ID",
+      "read_only": 1,
+      "description": "Stable orchestrator step identifier (unique within a run)"
+    },
+    {
+      "fieldname": "step_type",
+      "fieldtype": "Data",
+      "label": "Step Type",
+      "read_only": 1,
+      "description": "Handler type: airbyte_sync / dbt_seed / dbt_run / dbt_build / dbt_test / close_assertions / signoff"
+    },
+    {
+      "fieldname": "depends_on",
+      "fieldtype": "Small Text",
+      "label": "Depends On",
+      "read_only": 1,
+      "description": "JSON array of upstream step_ids this step depends on"
+    },
+    {
+      "fieldname": "params",
+      "fieldtype": "Code",
+      "label": "Params",
+      "options": "JSON",
+      "read_only": 1,
+      "description": "JSON-encoded per-step parameters (select, vars, full_refresh, ...)"
+    },
+    {
+      "fieldname": "retry_count",
+      "fieldtype": "Int",
+      "label": "Retry Count",
+      "default": "0",
+      "read_only": 1
+    },
+    {
+      "fieldname": "started_at",
+      "fieldtype": "Datetime",
+      "label": "Started At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "ended_at",
+      "fieldtype": "Datetime",
+      "label": "Ended At",
+      "read_only": 1
+    },
+    {
+      "fieldname": "error",
+      "fieldtype": "Small Text",
+      "label": "Error",
+      "read_only": 1,
+      "description": "Error message from the last failed attempt"
     }
   ],
   "permissions": []
