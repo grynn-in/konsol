@@ -59,10 +59,12 @@ export function RunTimeline({ run, send, accent }) {
 			</div>
 
 			<div className="kc-progress" role="progressbar" aria-valuenow={Math.round(pct)}>
-				<div
-					className="kc-progress-bar"
-					style={{ width: `${pct}%`, background: accent }}
-				/>
+				<div className="kc-progress-track">
+					<div
+						className="kc-progress-bar"
+						style={{ width: `${pct}%`, background: accent }}
+					/>
+				</div>
 				<span className="kc-progress-label">{Math.round(pct)}%</span>
 			</div>
 
