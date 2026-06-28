@@ -10,8 +10,14 @@ Parameters become step params rather than special code paths:
                     is in the given list (drops + rewires the rest, like
                     ``skip_sync``); ``skip_sync`` wins when both are given
 - ``full_refresh``  sets ``full_refresh`` on incremental dbt steps (run/build)
-- ``scope``         becomes ``select`` on dbt transform steps (run/build/test)
-- ``fiscal_year`` / ``fiscal_period`` become dbt ``vars`` on dbt + close steps
+- ``scope``         becomes the ``entity_scope`` dbt var — a **data filter** on
+                    the consolidation (entity or group code), resolved by the
+                    ``scope_filter`` macro against the consolidation hierarchy.
+                    (It is *not* a dbt ``--select`` node selector: an entity code
+                    matches no graph node and would build nothing.)
+- ``fiscal_year`` / ``fiscal_period`` become dbt ``vars`` on dbt + close steps —
+                    a **period filter** (``period_filter`` macro) for single-
+                    period closes
 """
 from __future__ import annotations
 
@@ -95,12 +101,13 @@ def build_plan(definition: List[Step], params: Dict) -> List[Step]:
         dbt_vars["fiscal_year"] = fiscal_year
     if fiscal_period is not None:
         dbt_vars["fiscal_period"] = fiscal_period
+    if scope:
+        # data filter (entity/group), applied by the scope_filter dbt macro
+        dbt_vars["entity_scope"] = scope
 
     for s in steps:
         if full_refresh and s.type in DBT_INCREMENTAL_TYPES:
             s.params["full_refresh"] = True
-        if scope and s.type in DBT_TRANSFORM_TYPES:
-            s.params["select"] = scope
         if dbt_vars and s.type in VARS_TYPES:
             s.params["vars"] = {**s.params.get("vars", {}), **dbt_vars}
 

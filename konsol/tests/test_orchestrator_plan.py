@@ -37,11 +37,16 @@ def test_full_refresh_sets_flag_on_dbt_run_build_only():
     assert plan["signoff"].params.get("full_refresh") is not True
 
 
-def test_scope_maps_to_select_on_transform_steps():
-    plan = _by_id(build_plan(DEFAULT_DEFINITION, {"scope": "consolidation"}))
-    assert plan["silver"].params.get("select") == "consolidation"
-    assert plan["gold"].params.get("select") == "consolidation"
-    assert plan["seed"].params.get("select") is None
+def test_scope_maps_to_entity_scope_var():
+    # scope is a DATA filter (entity/group), not a dbt --select node selector:
+    # it rides as the entity_scope dbt var on the dbt + close steps, and the
+    # scope_filter macro resolves it against the consolidation hierarchy.
+    plan = _by_id(build_plan(DEFAULT_DEFINITION, {"scope": "GROUP_EMEA"}))
+    assert plan["gold"].params["vars"]["entity_scope"] == "GROUP_EMEA"
+    assert plan["assertions"].params["vars"]["entity_scope"] == "GROUP_EMEA"
+    # no dbt --select is set from scope (an entity code matches no graph node)
+    assert plan["gold"].params.get("select") is None
+    assert plan["silver"].params.get("select") is None
 
 
 def test_fiscal_params_become_dbt_vars():
