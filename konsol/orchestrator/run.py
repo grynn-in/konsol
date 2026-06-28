@@ -124,10 +124,11 @@ class FrappeSink:
     frappe ``publish_realtime`` wiring is injected by :func:`run_pipeline`.
     """
 
-    def __init__(self, run_doc, child_field: str = "steps", publish=None, now=None):
+    def __init__(self, run_doc, child_field: str = "steps", publish=None, now=None, persist=None):
         self.run_doc = run_doc
         self.child_field = child_field
         self.publish = publish
+        self.persist = persist
         self._now = now or _now
         self._rows: Dict[str, object] = {}
 
@@ -169,6 +170,7 @@ class FrappeSink:
         _row_set(row, "status", Status.RUNNING)
         _row_set(row, "started_at", self._now())
         _row_set(row, "error", "")
+        self._persist()
         self._emit("orchestrator_step", step, Status.RUNNING)
 
     def on_step_result(self, step, result: StepResult) -> None:
@@ -180,7 +182,14 @@ class FrappeSink:
         _row_set(row, "rows", getattr(result, "rows", 0) or 0)
         _row_set(row, "output", getattr(result, "log", "") or "")
         _row_set(row, "error", getattr(result, "error", "") or "")
+        self._persist()
         self._emit("orchestrator_step", step, status)
+
+    def _persist(self) -> None:
+        """Flush the run doc so the UI can read step rows mid-run (frappe binding
+        injects this; pure host tests leave it None -> no-op)."""
+        if self.persist is not None:
+            self.persist()
 
 
 # ---- per-run runner (frappe / subprocess bound) -------------------------
@@ -297,7 +306,12 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
             event, payload, doctype="Pipeline Run", docname=run_name
         )
 
-    sink = FrappeSink(run_doc, publish=publish)
+    def persist():
+        # flush child rows mid-run so the live timeline reflects progress
+        run_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    sink = FrappeSink(run_doc, publish=publish, persist=persist)
     runner = make_runner(run_doc, params)
 
     if hasattr(run_doc, "status"):
