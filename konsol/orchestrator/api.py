@@ -107,6 +107,35 @@ def start_run(definition: Optional[str] = None, params=None) -> str:
 
 
 @whitelist()
+def get_run(run_name: str) -> Dict:
+    """Return a Pipeline Run snapshot for the konsol-exec timeline.
+
+    Shape: ``{name, status, steps:[{step_id, step_type, status, started_at,
+    ended_at, rows, output, error}]}`` — the PRD-6 child rows the SPA
+    normalises via ``runModel.normalizeRun``. Read-only; safe to poll or call
+    off the ``orchestrator_step`` realtime event.
+    """
+    import frappe
+
+    run_doc = frappe.get_doc("Pipeline Run", run_name)
+    steps = []
+    for row in run_doc.steps or []:
+        steps.append(
+            {
+                "step_id": row.step_id,
+                "step_type": row.step_type,
+                "status": row.status,
+                "started_at": row.started_at,
+                "ended_at": row.ended_at,
+                "rows": row.rows,
+                "output": row.output,
+                "error": row.error,
+            }
+        )
+    return {"name": run_doc.name, "status": run_doc.status, "steps": steps}
+
+
+@whitelist()
 def retry_step(run_name: str, step_id: str) -> str:
     """Re-arm a failed ``step_id`` (and its descendants) and re-enqueue the run.
 
