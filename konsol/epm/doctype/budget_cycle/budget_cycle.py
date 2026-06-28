@@ -7,6 +7,7 @@ cycle (docstatus 1) at the deadline, which locks every sheet and fires the
 ClickHouse sync + D365 write-back once per sheet. Cancel reopens for amendment.
 """
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
@@ -14,6 +15,31 @@ from konsol.epm.budget_grain import digest_name
 
 
 class BudgetCycle(Document):
+    def validate(self):
+        """Reject 'actual' scenarios.
+
+        A cycle is the lock gate for *authored* plan data; actuals are
+        GL-derived (gold_trial_balance, no scenario_id) and are never entered or
+        locked here. Targeting an actual scenario would write budget cells into
+        gold_spread_budget under scenario_id=ACTUAL, which nothing reads — a
+        silent misconfiguration. The picker hides actual scenarios too
+        (budget_cycle.js); this is the authoritative guard.
+        """
+        if not self.scenario_id:
+            return  # mandatory check surfaces the empty value elsewhere
+        scenario_type = frappe.db.get_value(
+            "Scenario Definition", self.scenario_id, "scenario_type"
+        )
+        if scenario_type == "actual":
+            frappe.throw(
+                _(
+                    "A Budget Cycle cannot target an 'actual' scenario — actuals "
+                    "come from the GL, not from budget entry. Choose a budget or "
+                    "forecast scenario."
+                ),
+                title=_("Invalid Scenario"),
+            )
+
     def autoname(self):
         """Collision-safe name for the (scenario, fiscal_year) grain.
 

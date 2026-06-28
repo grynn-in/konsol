@@ -91,12 +91,21 @@ def execute():
 
     names = frappe.get_all("Budget Input", pluck="name")
     skipped = []
+    skipped_actual = []
     for old_name in names:
         old = frappe.get_doc("Budget Input", old_name)
         if not old.get("periods"):
             continue
         if old.fiscal_year in (None, ""):
             skipped.append(old_name)  # dirty source row — don't abort the whole migrate
+            continue
+        # A cycle cannot target an actual scenario (BudgetCycle.validate rejects
+        # the insert). Skip such dirty legacy rows instead of letting the insert
+        # raise and abort the whole migrate — same posture as the skip above.
+        if frappe.db.get_value(
+            "Scenario Definition", old.scenario_id, "scenario_type"
+        ) == "actual":
+            skipped_actual.append(old_name)
             continue
         ident = {"main_account": old.main_account}
         for d in dims:
@@ -117,11 +126,18 @@ def execute():
 
     print(
         "reshape_budget_input_to_cycle: pivoted {0} Budget Input doc(s) into "
-        "{1} cycle(s), {2} sheet(s); skipped {3} with blank fiscal_year. Old docs "
-        "retained; lock cycles after review and run purge_legacy_d365() + "
-        "purge_legacy_clickhouse() at cutover.".format(
-            len(names), len(cycle_cache), len(sheet_cache), len(skipped))
+        "{1} cycle(s), {2} sheet(s); skipped {3} with blank fiscal_year, {4} with "
+        "an actual-type scenario. Old docs retained; lock cycles after review and "
+        "run purge_legacy_d365() + purge_legacy_clickhouse() at cutover.".format(
+            len(names), len(cycle_cache), len(sheet_cache),
+            len(skipped), len(skipped_actual))
     )
+    if skipped_actual:
+        frappe.log_error(
+            title="reshape patch: skipped actual-scenario Budget Inputs",
+            message="Not reshaped (a Budget Cycle cannot target an actual "
+            "scenario): " + ", ".join(skipped_actual),
+        )
 
 
 def purge_legacy_d365(force=False):
