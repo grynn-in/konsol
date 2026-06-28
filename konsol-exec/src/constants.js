@@ -54,6 +54,7 @@ export const PRIMARY_NAV = [
 export const DOMAIN_SUBVIEWS = [
 	["setup", "Setup & readiness"],
 	["monitor", "Live monitor"],
+	["execute", "Execute"],
 	["history", "History"],
 ];
 
