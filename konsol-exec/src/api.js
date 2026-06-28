@@ -109,6 +109,15 @@ export function cancelRun(name) {
 }
 
 /**
+ * Option lists for the launch form's dropdowns:
+ * `{definitions:[name], fiscal_years:[yr], fiscal_periods:[{value,label}],
+ * scopes:[{value,label}]}`. Lets the 4 launch fields be selects, not free text.
+ */
+export function getLaunchOptions() {
+	return frappeCall("konsol.orchestrator.api.launch_options");
+}
+
+/**
  * Subscribe to live per-step updates. Returns an unsubscribe fn (no-op when
  * the realtime layer is absent, e.g. outside a Frappe session).
  */

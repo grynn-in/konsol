@@ -49,6 +49,13 @@ def test_get_run_signature():
     assert "run_name" in sig.parameters
 
 
+# ---- backend launch_options surface (imports without frappe) ------------
+
+def test_launch_options_is_callable():
+    assert callable(api.launch_options)
+    assert api.launch_options.__name__ == "launch_options"
+
+
 # ---- backend get_run behaviour (frappe-guarded) -------------------------
 
 def test_get_run_returns_run_with_steps():
@@ -147,3 +154,9 @@ def test_api_js_passes_step_id_arg():
     # retry/resume must forward the chosen step id to the backend
     js = _api_js()
     assert "step_id" in js
+
+
+def test_api_js_exports_getLaunchOptions():
+    js = _api_js()
+    assert "export function getLaunchOptions" in js
+    assert "konsol.orchestrator.api.launch_options" in js

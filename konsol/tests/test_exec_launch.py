@@ -111,3 +111,25 @@ def test_dispatches_launch_event():
 def test_accepts_send_prop():
     js = _launch_js()
     assert "send" in js
+
+
+# ---- the 4 scalar fields are dropdowns populated from the backend ------
+
+def test_scalar_fields_are_selects():
+    """Fiscal Year / Period, Scope, Pipeline Definition must be <select>, not
+    free-text <input> (one <select> per scalar field)."""
+    js = _launch_js()
+    assert js.count("<select") >= 4
+
+
+def test_fetches_launch_options():
+    js = _launch_js()
+    assert "getLaunchOptions" in js
+    assert "useEffect" in js
+
+
+def test_options_have_default_blank_entry():
+    """Each dropdown offers an empty 'all/default' choice so a blank run is
+    possible (the params builder omits blanks)."""
+    js = _launch_js()
+    assert 'value=""' in js

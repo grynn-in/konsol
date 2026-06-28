@@ -704,6 +704,7 @@
   border-radius: 0; outline: none;
 }
 #root .kc-app .kc-input:focus { border-color: var(--blue); }
+#root .kc-app select.kc-input { cursor: pointer; appearance: auto; }
 #root .kc-app .kc-launch-checks {
   display: flex; flex-wrap: wrap; gap: 18px; margin-top: 16px;
 }
