@@ -6,7 +6,7 @@ Two test kinds: **pure ESM core** → `node --test` (real unit tests); **React/m
 
 ## Pure core (node --test)
 - [x] **E1 — Run-params builder.** `konsol-exec/src/orchestrator/params.js` → `buildRunArgs(form) -> {definition, params}` (definition or null; fiscal_year/fiscal_period/scope only when truthy; full_refresh/skip_sync always 0/1). Test `params.test.mjs`.
-- [ ] **E2 — Status model.** `konsol-exec/src/orchestrator/status.js` → `statusTone(status)` (Success→green, Failed/Cancelled→red, Running→blue, Queued→amber, Pending/Skipped→gray, default gray), `isTerminal(status)` (Completed/Failed/Cancelled/Success), `isRunning(status)`. Test `status.test.mjs` (every status → tone; terminal/running booleans).
+- [x] **E2 — Status model.** `konsol-exec/src/orchestrator/status.js` → `statusTone(status)` (Success→green, Failed/Cancelled→red, Running→blue, Queued→amber, Pending/Skipped→gray, default gray), `isTerminal(status)` (Completed/Failed/Cancelled/Success), `isRunning(status)`. Test `status.test.mjs` (every status → tone; terminal/running booleans).
 - [ ] **E3 — Run view-model.** `konsol-exec/src/orchestrator/runModel.js` → `normalizeRun(doc) -> {name, status, steps:[{id,type,status,startedAt,endedAt,rows,output,error}]}` (map child rows; tolerate missing fields), `progressPct(steps)` (terminal-success / total, 0 when empty), `orderSteps(steps)` (stable input order). Test `runModel.test.mjs` (normalize a sample doc; progress math; empty doc).
 
 ## API + realtime
