@@ -221,6 +221,7 @@ def _assert_budget_write_access(data):
 
 _FACT_FIELDS = [
     "fact_name", "scenario_key", "clickhouse_table", "has_scenario_id",
+    "has_layer",
     "measures", "dimensions",
     "reroute_table", "reroute_column", "reroute_measure",
 ]
@@ -527,10 +528,11 @@ def _batch_query_clickhouse(requests_list):
             req["periods"],
             frozenset(dims.keys()),
             req.get("scenario_id", ""),
+            req.get("layer", ""),
         )
         groups[key].append((idx, req))
 
-    for (fact_key, measure, periods, dim_names, scenario_id), group_items in groups.items():
+    for (fact_key, measure, periods, dim_names, scenario_id, layer), group_items in groups.items():
         fact = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
         if not fact:
             for idx, _ in group_items:
@@ -611,12 +613,25 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             scenario_id_clause = " AND scenario_id = {sid:String}"
 
+        # Optional layer filter (budget facts). Omitted → sum across all layers
+        # (the final budget); supplied → restrict to one layer. Mirrors the
+        # scenario_id filter above: not grouped/selected, just narrowed.
+        layer_clause = ""
+        if layer and fact.has_layer:
+            if not _SAFE_IDENTIFIER.match(layer):
+                for idx, _ in group_items:
+                    errors[idx] = "Invalid layer format"
+                continue
+            params["param_layer"] = layer
+            layer_clause = " AND layer = {layer:String}"
+
         sql = (
             f"SELECT {group_by}, coalesce(sum({query_measure}), 0) as val "
             f"FROM {table} "
             f"WHERE {in_cols} IN ({in_values}) "
             f"AND fiscal_period IN ({period_in})"
-            f"{scenario_id_clause} "
+            f"{scenario_id_clause}"
+            f"{layer_clause} "
             f"GROUP BY {group_by}"
         )
 
@@ -1008,6 +1023,7 @@ def epm_batch():
             "scenario": scenario,
             "dimensions": dimensions,
             "scenario_id": req.get("scenario_id", ""),
+            "layer": req.get("layer", ""),
         }
 
     values = [None] * n

@@ -38,9 +38,10 @@
     "dbt_model": "gold_spread_budget",
     "scenario_key": "budget",
     "has_scenario_id": 1,
+    "has_layer": 1,
     "status": "Published",
     "generates_source": 0,
-    "grain": "One row per main_account x fiscal_period x entity x scenario cell",
+    "grain": "One row per main_account x fiscal_period x entity x scenario cell x layer",
     "fact_measures": [
       {"measure": "period_amount", "required": 1},
       {"measure": "annual_amount"}
@@ -146,6 +147,30 @@
     ],
     "fact_dimensions": [
       {"dimension": "dim_cost_center", "required": 1}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "allocated",
+    "fact_name": "allocated",
+    "label": "Allocated",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_gold.gold_allocation_tb",
+    "dbt_model": "gold_allocation_tb",
+    "scenario_key": "allocated",
+    "has_scenario_id": 1,
+    "has_layer": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity x cost_center, signed (target +, source -); allocations only, separate from actuals",
+    "fact_measures": [
+      {"measure": "period_net_amount", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center"}
     ],
     "reroute_measure": "",
     "reroute_table": "",

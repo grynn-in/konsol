@@ -73,6 +73,13 @@
       "description": "Table supports scenario_id filtering"
     },
     {
+      "fieldname": "has_layer",
+      "fieldtype": "Check",
+      "label": "Has Layer",
+      "default": "0",
+      "description": "Table has a budget `layer` column (base/challenge/management/board). When set, K.EPM sums all layers by default and filters to one when a layer is passed."
+    },
+    {
       "fieldname": "section_measures_dims",
       "fieldtype": "Section Break",
       "label": "Measures & Dimensions"
