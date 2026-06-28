@@ -19,7 +19,7 @@ Two test kinds: **pure ESM core** → `node --test` (real unit tests); **React/m
 - [x] **E8 — Wire into the app as the "Execute" view.** Add an `execute` subview to `App.jsx` (+ `DomainSubNav` tab + `constants.js`) rendering `ExecuteLaunch` + `RunTimeline` under the `runExecMachine`. Static-assert App imports/renders both + the subview is registered.
 
 ## Retire the wrong surface
-- [ ] **E9 — Delete the Desk page.** Remove `konsol/pipeline/page/konsol_exec/` (the PRD-11 Desk page) and its `konsol/tests/test_orchestrator_spa_js.py`; assert the dir/files are gone and nothing references `pages/konsol_exec` or `frappe.pages["konsol-exec"]`. (The real plane is the Vite SPA at `/konsol-exec/`.)
+- [x] **E9 — Delete the Desk page.** Remove `konsol/pipeline/page/konsol_exec/` (the PRD-11 Desk page) and its `konsol/tests/test_orchestrator_spa_js.py`; assert the dir/files are gone and nothing references `pages/konsol_exec` or `frappe.pages["konsol-exec"]`. (The real plane is the Vite SPA at `/konsol-exec/`.)
 
 ## Maintainer gate (not an agent PRD)
 - vite build verification (`npm run build` in konsol-exec) + redeploy after merge.
