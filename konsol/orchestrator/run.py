@@ -214,12 +214,30 @@ def make_runner(run_doc, params: Optional[Dict] = None):
 
 
 def _run_dbt(argv) -> StepResult:
+    import os
     import subprocess
 
     import frappe
 
-    cwd = frappe.conf.get("dbt_project_dir") or frappe.get_site_path("..", "dbt_project")
-    proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    # Resolve the dbt project dir the same way the legacy build does — from
+    # EPM Settings.dbt_project_path (the container path) — not a guessed
+    # site-relative path. Falls back to conf / site path for safety.
+    project = (
+        frappe.conf.get("dbt_project_dir")
+        or frappe.db.get_single_value("EPM Settings", "dbt_project_path")
+        or frappe.get_site_path("..", "dbt_project")
+    )
+    # build_dbt_command yields ["dbt", <verb>, <flags...>]; the runtime injects
+    # the env-specifics the pure builder can't know: the venv dbt binary and the
+    # explicit project/profiles dirs (profiles.yml lives in the project dir).
+    bench = frappe.utils.get_bench_path()
+    dbt_bin = os.path.join(bench, "env", "bin", "dbt")
+    if not os.path.exists(dbt_bin):
+        dbt_bin = "dbt"
+    verb = list(argv[1:2])
+    flags = list(argv[2:])
+    cmd = [dbt_bin] + verb + ["--project-dir", project, "--profiles-dir", project] + flags
+    proc = subprocess.run(cmd, cwd=project, capture_output=True, text=True)
     ok = proc.returncode == 0
     log = (proc.stdout or "") + (proc.stderr or "")
     return StepResult(ok=ok, log=log.strip(), error="" if ok else log.strip()[-2000:])
@@ -290,7 +308,9 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     Executor(handlers, sink=sink, runner=runner).run(state)
 
     if hasattr(run_doc, "status"):
-        run_doc.status = Status.SUCCESS if state.is_success() else Status.FAILED
+        # Pipeline Run.status uses the legacy vocabulary where "Completed" is the
+        # success terminal (there is no "Success" option on the parent doc).
+        run_doc.status = "Completed" if state.is_success() else Status.FAILED
     run_doc.save(ignore_permissions=True)
     frappe.db.commit()
     return state
