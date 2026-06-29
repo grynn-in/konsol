@@ -404,9 +404,31 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
         frappe.publish_realtime(event, {**payload, "run": run_name})
 
     def persist():
-        # flush child rows mid-run so the live timeline reflects progress
+        # Flush child rows mid-run so the live timeline reflects progress.
+        #
+        # #67 fix 3b: a concurrent ``cancel_run`` persists status="Cancelled" and
+        # bumps Pipeline Run.modified. A naive ``run_doc.save()`` would then (a)
+        # raise TimestampMismatchError and crash the RQ job, and (b) clobber the
+        # persisted "Cancelled" back to "Running". Guard both: honor a persisted
+        # Cancelled in our in-memory doc, and adopt the DB ``modified`` so the
+        # optimistic-lock check passes. The parent's terminal status is owned by
+        # the finalize path (``_stamp_terminal_status`` via set_value), not here.
+        latest = frappe.db.get_value(
+            "Pipeline Run", run_name, ["status", "modified"], as_dict=True
+        )
+        if latest:
+            if latest.get("status") == "Cancelled":
+                run_doc.status = "Cancelled"
+            if latest.get("modified"):
+                run_doc._original_modified = latest.get("modified")
+                run_doc.modified = latest.get("modified")
         run_doc.save(ignore_permissions=True)
         frappe.db.commit()
+
+    def cancel_check():
+        # #67 fix 3a: stop the executor cleanly between steps if another worker
+        # has persisted a cancel for this run.
+        return frappe.db.get_value("Pipeline Run", run_name, "status") == "Cancelled"
 
     sink = FrappeSink(run_doc, publish=publish, persist=persist)
     runner = make_runner(run_doc, params)
@@ -417,7 +439,7 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
         frappe.db.commit()
 
     try:
-        Executor(handlers, sink=sink, runner=runner).run(state)
+        Executor(handlers, sink=sink, runner=runner, cancel_check=cancel_check).run(state)
     except Exception:
         # #64 wedge guard: an uncaught executor error must NOT leave the run stuck
         # in "Running". With the single-flight guard in place, a wedged Running run

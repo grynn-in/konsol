@@ -177,6 +177,55 @@ def test_cancel_stops_further_steps():
     assert state.status("c") != Status.SUCCESS
 
 
+def test_cancel_check_stops_between_steps():
+    # #67 fix 3a: a persisted (cross-worker) cancel is observed BETWEEN steps via
+    # the injected cancel_check, halting the run cleanly before the next step.
+    dag = Dag([
+        Step("a", "t"),
+        Step("b", "t", depends_on=["a"]),
+        Step("c", "t", depends_on=["b"]),
+    ])
+    state = RunState(dag)
+    sink = RecordingSink()
+
+    flags = {"cancelled": False}
+
+    def cancel_check():
+        return flags["cancelled"]
+
+    def _run_then_cancel(ctx):
+        # after step "a" runs, simulate another worker persisting a cancel
+        flags["cancelled"] = True
+        return StepResult(ok=True)
+
+    reg = FakeRegistry({"t": _ok_handler, "x": _run_then_cancel})
+    # rebuild dag so step a uses the cancel-triggering handler
+    dag = Dag([
+        Step("a", "x"),
+        Step("b", "t", depends_on=["a"]),
+        Step("c", "t", depends_on=["b"]),
+    ])
+    state = RunState(dag)
+    ex = Executor(reg, sink, cancel_check=cancel_check)
+    ex.run(state)
+
+    assert ex.cancelled is True
+    assert state.status("a") == Status.SUCCESS
+    # nothing downstream launched once the cancel was observed
+    started = [e[1] for e in sink.events if e[0] == "start"]
+    assert started == ["a"]
+    assert state.status("b") == Status.PENDING
+    assert state.status("c") == Status.PENDING
+
+
+def test_cancel_check_none_is_noop():
+    # default (no cancel_check) preserves the existing success path exactly
+    dag = _diamond_dag()
+    state = RunState(dag)
+    Executor(FakeRegistry({"t": _ok_handler}), None).run(state)
+    assert state.is_success()
+
+
 def test_run_returns_state():
     dag = Dag([Step("a", "t")])
     state = RunState(dag)
