@@ -701,7 +701,7 @@ def health():
 @frappe.whitelist()
 def epm_value(entity, year, period, account, measure="period_net_amount",
               scenario="actuals", fact=None, dimensions=None, scenario_id="",
-              hierarchy=None, node=None, hierarchy_node=None):
+              hierarchy=None, node=None, hierarchy_node=None, layer=""):
     """Single value lookup — returns {"value": <number>}.
 
     Period accepts: 1-12 (single month), "Q1"-"Q4", "H1"-"H2", "FY".
@@ -772,6 +772,7 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
         "fact": fact_doc.fact_name, "scenario": scenario,
         "dimensions": dims,
         "scenario_id": scenario_id,
+        "layer": layer,
     }])
     return {"value": result["values"][0]}
 

@@ -57,6 +57,13 @@ def test_api_batch_applies_layer_filter():
     assert "fact.has_layer" in src
 
 
+def test_epm_value_get_accepts_layer():
+    # single-value GET endpoint must accept layer too (parity with the batch path)
+    src = _read(os.path.join(APP_DIR, "api.py"))
+    sig = src.split("def epm_value(")[1].split(")")[0]
+    assert "layer" in sig
+
+
 # --- allocated fact: separate from actuals --------------------------------
 
 def test_allocated_fact_registered():
