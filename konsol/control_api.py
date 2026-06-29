@@ -29,7 +29,14 @@ PROCESSES = {
         "name": "Consolidation",
         "num": "03",
         "accent": "#2f7d4f",
-        "desc": "Group close, IC elimination, assertions, and sign-off.",
+        "desc": "Run the group consolidation build — extract → seed → silver → gold.",
+        "build_scope": "consolidation",
+    },
+    "assertions": {
+        "name": "Assertions",
+        "num": "04",
+        "accent": "#0e8f84",
+        "desc": "Run the close assertion suite (dbt tests) and sign-off.",
         "build_scope": "consolidation",
     },
 }
@@ -114,6 +121,15 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         return {"ok": True, "run_kind": "pipeline", "name": name}
 
     if pid == "consolidation":
+        # the consolidation BUILD = an orchestrator run (Group Close pipeline)
+        from konsol.orchestrator.api import start_run
+        params = {"fiscal_year": fy} if fy else {}
+        if fp:
+            params["fiscal_period"] = fp
+        name = start_run(definition="Group Close", params=params)
+        return {"ok": True, "run_kind": "pipeline", "name": name}
+
+    if pid == "assertions":
         from konsol.consolidation.doctype.close_run.close_run import trigger_close_run
         name = trigger_close_run(fiscal_year=fy, fiscal_period=fp)
         return {"ok": True, "run_kind": "close", "name": name}
@@ -327,10 +343,22 @@ def _recent_pipeline_ok(stale_hours=24):
 
 def _active_run(process_id):
     if process_id == "consolidation":
+        return _latest_orchestrator_run()
+    if process_id == "assertions":
         return _latest_close_run()
     if process_id == "forecasting":
         return _latest_pipeline_run(scope=None)
     return _latest_pbr_run(PROCESSES[process_id]["build_scope"])
+
+
+def _latest_orchestrator_run():
+    """Latest orchestrator (Execute-plane) build run — the most recent Pipeline
+    Run that has typed steps (step_id set), distinguishing it from legacy
+    forecast/budget pipeline runs."""
+    for r in frappe.get_all("Pipeline Run", fields=["name"], order_by="creation desc", limit=25):
+        if frappe.db.exists("Pipeline Step", {"parent": r.name, "step_id": ["is", "set"]}):
+            return _serialize_pipeline_run(r.name)
+    return None
 
 
 def _latest_pipeline_run(scope=None):
@@ -619,10 +647,10 @@ def _domain_runs_all(limit=_RUN_LIST_LIMIT):
     return {
         "budgeting": _budget_run_list(limit),
         "forecasting": _forecast_run_list(limit),
-        # Consolidation surfaces TWO run types: the orchestrator *build* runs
-        # (Pipeline Run — extract→seed→silver→gold) and the *assertion* runs
-        # (Close Run). The SPA History splits them into two cards by `run_type`.
-        "consolidation": _consolidation_build_list(limit) + _consolidation_run_list(limit),
+        # Consolidation = orchestrator BUILD runs (Pipeline Run); Assertions =
+        # the close assertion runs (Close Run). Two top-level cards.
+        "consolidation": _consolidation_build_list(limit),
+        "assertions": _consolidation_run_list(limit),
     }
 
 
