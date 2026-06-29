@@ -79,6 +79,13 @@ scheduler_events = {
         "* * * * *": [
             "konsol.orchestrator.cron.run_due_schedules"
         ],
+        # Release orchestrator Pipeline Runs stuck in an active state (e.g. a
+        # dead worker) so the single-flight guard can't wedge permanently (#67).
+        # Runs every 15 minutes; the staleness timeout itself is generous
+        # (STALE_RUN_TIMEOUT_MINUTES) so a long dbt step is never falsely reaped.
+        "*/15 * * * *": [
+            "konsol.orchestrator.reaper.reap_stale_runs"
+        ],
     }
 }
 

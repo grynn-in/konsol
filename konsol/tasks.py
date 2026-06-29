@@ -204,11 +204,35 @@ def run_governed_build(build_request):
     Runs preflight checks, then selective dbt build with --select tag.
     """
     doc = frappe.get_doc("Pipeline Build Request", build_request)
-    pipeline_run = _create_governed_pipeline_run(doc)
-    doc.workflow_state = "Running"
-    doc.started_at = frappe.utils.now_datetime()
-    doc.save(ignore_permissions=True)
-    frappe.db.commit()
+
+    # #67 fix 5: a governed dbt build shells `dbt` against the SAME shared project
+    # dir as an orchestrator run, so the two must not run concurrently (racing
+    # target/ + incremental models). Honor the orchestrator single-flight guard
+    # here. The check AND the create must be inside the named lock (atomic), else
+    # it's a plain TOCTOU against start_run/trigger_pipeline. CRITICAL ordering:
+    # check BEFORE _create_governed_pipeline_run(), which itself inserts a "Queued"
+    # (active) Pipeline Run — checking after would always see that row and
+    # self-block. If blocked (or startup fails), mark this request Failed and
+    # re-raise so the job records the failure.
+    from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
+
+    try:
+        with single_flight_lock():
+            _assert_no_active_run()
+            pipeline_run = _create_governed_pipeline_run(doc)
+            doc.workflow_state = "Running"
+            doc.started_at = frappe.utils.now_datetime()
+            doc.save(ignore_permissions=True)
+            frappe.db.commit()
+    except Exception as exc:
+        doc.reload()
+        doc.workflow_state = "Failed"
+        doc.error_message = f"Governed build could not start: {exc}"
+        doc.completed_at = frappe.utils.now_datetime()
+        _set_duration(doc)
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
 
     try:
         # Preflight

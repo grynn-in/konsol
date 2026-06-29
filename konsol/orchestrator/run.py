@@ -364,6 +364,13 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     """
     import frappe
 
+    # Statuses that another actor (cancel_run, or the stale-run reaper which sets
+    # "Failed") can persist for THIS run while the worker drives it. The worker
+    # must honor any of them — never clobber them back to Running/Completed — and
+    # stop executing. (The success terminal "Completed" is owned by finalize, so
+    # it isn't listed here.)
+    _EXTERNAL_TERMINAL = ("Cancelled", "Failed")
+
     run_doc = frappe.get_doc("Pipeline Run", run_name)
     params = params_from_doc(run_doc)
     # Universal Airbyte guard: the single global EPM Settings.skip_airbyte_sync
@@ -404,38 +411,70 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
         frappe.publish_realtime(event, {**payload, "run": run_name})
 
     def persist():
-        # flush child rows mid-run so the live timeline reflects progress
+        # Flush child rows mid-run so the live timeline reflects progress.
+        #
+        # #67 fix 3b: a concurrent ``cancel_run`` persists status="Cancelled" and
+        # bumps Pipeline Run.modified. A naive ``run_doc.save()`` would then (a)
+        # raise TimestampMismatchError and crash the RQ job, and (b) clobber the
+        # persisted "Cancelled" back to "Running". Guard both: honor a persisted
+        # Cancelled in our in-memory doc, and adopt the DB ``modified`` so the
+        # optimistic-lock check passes. The parent's terminal status is owned by
+        # the finalize path (``_stamp_terminal_status`` via set_value), not here.
+        latest = frappe.db.get_value(
+            "Pipeline Run", run_name, ["status", "modified"], as_dict=True
+        )
+        if latest:
+            if latest.get("status") in _EXTERNAL_TERMINAL:
+                # Honor a cancel OR a reaper-set Failed — don't clobber it back to
+                # Running on the next flush (that would re-wedge the single-flight
+                # guard for a reaped run).
+                run_doc.status = latest.get("status")
+            if latest.get("modified"):
+                run_doc._original_modified = latest.get("modified")
+                run_doc.modified = latest.get("modified")
         run_doc.save(ignore_permissions=True)
         frappe.db.commit()
+
+    def cancel_check():
+        # #67 fix 3a: stop the executor cleanly between steps if another actor has
+        # persisted a terminal status (user cancel, or the reaper failing a stale
+        # run) for this run.
+        return frappe.db.get_value("Pipeline Run", run_name, "status") in _EXTERNAL_TERMINAL
 
     sink = FrappeSink(run_doc, publish=publish, persist=persist)
     runner = make_runner(run_doc, params)
 
     if hasattr(run_doc, "status"):
+        # #67 fix 3c: a run can be cancelled (or reaper-failed) while still Queued,
+        # before the worker picks it up. Don't flip it back to Running — honor the
+        # persisted terminal status and bail without executing.
+        if frappe.db.get_value("Pipeline Run", run_name, "status") in _EXTERNAL_TERMINAL:
+            return state
         run_doc.status = Status.RUNNING
         run_doc.save(ignore_permissions=True)
         frappe.db.commit()
 
     try:
-        Executor(handlers, sink=sink, runner=runner).run(state)
+        Executor(handlers, sink=sink, runner=runner, cancel_check=cancel_check).run(state)
     except Exception:
         # #64 wedge guard: an uncaught executor error must NOT leave the run stuck
         # in "Running". With the single-flight guard in place, a wedged Running run
         # would block every future start_run until someone manually cancels it.
-        # Stamp a terminal "Failed" (unless a concurrent cancel already won) and
-        # re-raise so RQ still records the job failure.
-        if frappe.db.get_value("Pipeline Run", run_name, "status") != "Cancelled":
+        # Stamp a terminal "Failed" (unless another actor already set a terminal
+        # status — a concurrent cancel, or the reaper) and re-raise so RQ still
+        # records the job failure.
+        if frappe.db.get_value("Pipeline Run", run_name, "status") not in _EXTERNAL_TERMINAL:
             _stamp_terminal_status(run_name, run_doc, Status.FAILED, state)
         raise
 
     # Finalize. The per-step rows were already flushed by ``persist()`` during the
     # run, so the only writes left are the parent's terminal status + run metadata.
     #
-    # #64b cancel/save race: a concurrent ``cancel_run`` may have persisted
-    # "Cancelled" while we were executing. Re-read the DB status first and HONOR a
-    # persisted Cancelled — don't clobber it back to Completed/Failed.
+    # #64b cancel/save race: a concurrent ``cancel_run`` (or the reaper) may have
+    # persisted a terminal status while we were executing. Re-read the DB status
+    # first and HONOR it — don't clobber Cancelled/Failed back to Completed.
     persisted_status = frappe.db.get_value("Pipeline Run", run_name, "status")
-    if persisted_status == "Cancelled":
+    if persisted_status in _EXTERNAL_TERMINAL:
         return state
 
     # Pipeline Run.status uses the legacy vocabulary where "Completed" is the

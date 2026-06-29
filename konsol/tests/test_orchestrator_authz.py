@@ -28,3 +28,14 @@ def test_control_start_process_guarded():
     body = _func_src(os.path.join(APP, "control_api.py"), "start_process")
     assert body is not None
     assert "check_epm_admin()" in body
+
+
+def test_trigger_pipeline_guarded():
+    # #67 fix 4: the legacy state-mutating trigger_pipeline must enforce the same
+    # EPM Admin role guard as the orchestrator API.
+    body = _func_src(
+        os.path.join(APP, "pipeline", "doctype", "pipeline_run", "pipeline_run.py"),
+        "trigger_pipeline",
+    )
+    assert body is not None
+    assert "check_epm_admin()" in body, "trigger_pipeline missing check_epm_admin() guard"

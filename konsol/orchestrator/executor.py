@@ -43,10 +43,16 @@ class Executor:
     ``sink.on_step_result(step, result)`` (both optional / duck-typed).
     """
 
-    def __init__(self, registry, sink=None, runner=None):
+    def __init__(self, registry, sink=None, runner=None, cancel_check=None):
         self.registry = registry
         self.sink = sink
         self.runner = runner
+        # #67 fix 3a: optional ``cancel_check() -> bool`` polled BETWEEN steps so
+        # a cross-worker cancel (which persists status="Cancelled" on the run doc)
+        # stops the executor cleanly instead of crashing on the next persist. The
+        # pure host leaves it None (no-op); the Frappe binding injects a closure
+        # that reads the persisted Pipeline Run status.
+        self.cancel_check = cancel_check
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -83,6 +89,10 @@ class Executor:
         """Run steps until the state settles (or cancellation). Returns ``state``."""
         while not state.is_done():
             if self._cancelled:
+                break
+            # #67 fix 3a: honor a persisted (cross-worker) cancel between steps.
+            if self.cancel_check is not None and self.cancel_check():
+                self._cancelled = True
                 break
             runnable = state.runnable()
             if not runnable:
