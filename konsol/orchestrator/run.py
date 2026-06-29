@@ -307,6 +307,12 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
 
     run_doc = frappe.get_doc("Pipeline Run", run_name)
     params = params_from_doc(run_doc)
+    # Universal Airbyte guard: the single global EPM Settings.skip_airbyte_sync
+    # flag governs every path (this orchestrator + the legacy build in tasks.py).
+    # When on, force-skip the extract step for every run — there is no per-run
+    # skip toggle. Default off => extract runs normally.
+    if frappe.db.get_single_value("EPM Settings", "skip_airbyte_sync"):
+        params["skip_sync"] = True
     dag, state = plan_run(params)
 
     if retry_step or resume_from:

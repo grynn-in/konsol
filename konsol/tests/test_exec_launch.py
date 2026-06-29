@@ -80,10 +80,14 @@ def test_renders_full_refresh_check():
     assert "full_refresh" in js
 
 
-def test_renders_skip_sync_check():
+def test_no_per_run_skip_sync_checkbox():
+    """Airbyte sync is governed by ONE global flag (EPM Settings.skip_airbyte_sync,
+    read in run.run_pipeline), not a per-run checkbox — the launch form must not
+    offer a per-run skip toggle."""
     js = _launch_js()
-    assert "Skip Airbyte Sync" in js
-    assert "skip_sync" in js
+    assert 'name="skip_sync"' not in js
+    # the form still tells the user where the global guard lives
+    assert "EPM Settings" in js
 
 
 def test_has_checkbox_inputs():

@@ -46,7 +46,6 @@ export function ExecuteLaunch({ send, accent, busy }) {
 		scope: "",
 		definition: "",
 		full_refresh: false,
-		skip_sync: false,
 	});
 	const [options, setOptions] = React.useState(EMPTY_OPTIONS);
 
@@ -176,15 +175,9 @@ export function ExecuteLaunch({ send, accent, busy }) {
 						/>
 						<span>Full Refresh</span>
 					</label>
-					<label className="kc-check">
-						<input
-							type="checkbox"
-							name="skip_sync"
-							checked={form.skip_sync}
-							onChange={set("skip_sync")}
-						/>
-						<span>Skip Airbyte Sync</span>
-					</label>
+					<span className="kc-muted">
+						Airbyte sync is governed globally (EPM Settings → Skip Airbyte Sync).
+					</span>
 				</div>
 				<div className="kc-launch-actions">
 					<button
