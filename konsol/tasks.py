@@ -204,6 +204,27 @@ def run_governed_build(build_request):
     Runs preflight checks, then selective dbt build with --select tag.
     """
     doc = frappe.get_doc("Pipeline Build Request", build_request)
+
+    # #67 fix 5: a governed dbt build shells `dbt` against the SAME shared project
+    # dir as an orchestrator run, so the two must not run concurrently (racing
+    # target/ + incremental models). Honor the orchestrator single-flight guard
+    # here. CRITICAL ordering: check BEFORE _create_governed_pipeline_run(), which
+    # itself inserts a "Queued" (active) Pipeline Run — checking after would always
+    # see that row and self-block. If blocked, mark this request Failed with a
+    # clear message and re-raise so the job records the failure.
+    from konsol.orchestrator.api import _assert_no_active_run
+
+    try:
+        _assert_no_active_run()
+    except Exception as exc:
+        doc.workflow_state = "Failed"
+        doc.error_message = f"Build blocked — a pipeline run is already active: {exc}"
+        doc.completed_at = frappe.utils.now_datetime()
+        _set_duration(doc)
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        raise
+
     pipeline_run = _create_governed_pipeline_run(doc)
     doc.workflow_state = "Running"
     doc.started_at = frappe.utils.now_datetime()
