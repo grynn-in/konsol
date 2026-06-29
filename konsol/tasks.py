@@ -208,28 +208,31 @@ def run_governed_build(build_request):
     # #67 fix 5: a governed dbt build shells `dbt` against the SAME shared project
     # dir as an orchestrator run, so the two must not run concurrently (racing
     # target/ + incremental models). Honor the orchestrator single-flight guard
-    # here. CRITICAL ordering: check BEFORE _create_governed_pipeline_run(), which
-    # itself inserts a "Queued" (active) Pipeline Run — checking after would always
-    # see that row and self-block. If blocked, mark this request Failed with a
-    # clear message and re-raise so the job records the failure.
-    from konsol.orchestrator.api import _assert_no_active_run
+    # here. The check AND the create must be inside the named lock (atomic), else
+    # it's a plain TOCTOU against start_run/trigger_pipeline. CRITICAL ordering:
+    # check BEFORE _create_governed_pipeline_run(), which itself inserts a "Queued"
+    # (active) Pipeline Run — checking after would always see that row and
+    # self-block. If blocked (or startup fails), mark this request Failed and
+    # re-raise so the job records the failure.
+    from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
 
     try:
-        _assert_no_active_run()
+        with single_flight_lock():
+            _assert_no_active_run()
+            pipeline_run = _create_governed_pipeline_run(doc)
+            doc.workflow_state = "Running"
+            doc.started_at = frappe.utils.now_datetime()
+            doc.save(ignore_permissions=True)
+            frappe.db.commit()
     except Exception as exc:
+        doc.reload()
         doc.workflow_state = "Failed"
-        doc.error_message = f"Build blocked — a pipeline run is already active: {exc}"
+        doc.error_message = f"Governed build could not start: {exc}"
         doc.completed_at = frappe.utils.now_datetime()
         _set_duration(doc)
         doc.save(ignore_permissions=True)
         frappe.db.commit()
         raise
-
-    pipeline_run = _create_governed_pipeline_run(doc)
-    doc.workflow_state = "Running"
-    doc.started_at = frappe.utils.now_datetime()
-    doc.save(ignore_permissions=True)
-    frappe.db.commit()
 
     try:
         # Preflight

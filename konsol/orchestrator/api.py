@@ -77,6 +77,16 @@ def single_flight_lock(timeout: int = _SINGLE_FLIGHT_TIMEOUT):
             "being started right now. Try again in a moment.",
             frappe.ValidationError,
         )
+    # CRITICAL: refresh the transaction's read view now that we hold the lock.
+    # MariaDB runs REPEATABLE READ with autocommit off, so InnoDB pins this
+    # request's consistent snapshot at its FIRST read — which happens before we
+    # acquire the lock (session/CSRF setup, check_epm_admin -> get_roles). Without
+    # this commit, a caller that blocked on GET_LOCK would acquire it *after* a
+    # competitor committed its run, yet still read the stale pre-competitor
+    # snapshot in _assert_no_active_run() and miss the row -> two active runs.
+    # commit() starts a fresh read view; a named lock is independent of the
+    # transaction, so it survives the commit.
+    frappe.db.commit()
     try:
         yield
     finally:
