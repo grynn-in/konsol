@@ -40,7 +40,15 @@ export const DOMAINS = [
 		processName: "Consolidation",
 		num: "03",
 		accent: "#2f7d4f",
-		desc: "Group close, IC elimination, assertions, and sign-off.",
+		desc: "Run the group consolidation build — extract → seed → silver → gold.",
+	},
+	{
+		id: "assertions",
+		label: "Assertions",
+		processName: "Assertions",
+		num: "04",
+		accent: "#0e8f84",
+		desc: "Run the close assertion suite (dbt tests) and sign-off.",
 	},
 ];
 
@@ -54,6 +62,7 @@ export const PRIMARY_NAV = [
 export const DOMAIN_SUBVIEWS = [
 	["setup", "Setup & readiness"],
 	["monitor", "Live monitor"],
+	["execute", "Execute"],
 	["history", "History"],
 ];
 

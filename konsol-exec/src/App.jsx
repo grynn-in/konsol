@@ -7,13 +7,16 @@ import { GlobalOverview } from "./components/GlobalOverview";
 import { Setup } from "./components/Setup";
 import { Monitor } from "./components/Monitor";
 import { History } from "./components/History";
+import { ExecuteLaunch } from "./components/ExecuteLaunch";
+import { RunTimeline } from "./components/RunTimeline";
 import { Toast } from "./components/Toast";
 import { SECTION_OVERVIEW } from "./constants";
-import { isDomainSection } from "./domain";
-import { konsolAppMachine } from "./machines";
+import { isDomainSection, getDomainMeta } from "./domain";
+import { konsolAppMachine, runExecMachine } from "./machines";
 
 export function App() {
 	const [state, send] = useMachine(konsolAppMachine);
+	const [execState, execSend] = useMachine(runExecMachine);
 	const { section, subview, dark, toast, data, loadError } = state.context;
 
 	React.useEffect(() => {
@@ -108,6 +111,20 @@ export function App() {
 				) : null}
 				{inDomain && subview === "monitor" ? (
 					<Monitor domain={section} data={data} onAction={handleMonitorAction} />
+				) : null}
+				{inDomain && subview === "execute" ? (
+					<>
+						<ExecuteLaunch
+							send={execSend}
+							accent={getDomainMeta(section).accent}
+							busy={!execState.matches("idle")}
+						/>
+						<RunTimeline
+							run={execState.context.run}
+							send={execSend}
+							accent={getDomainMeta(section).accent}
+						/>
+					</>
 				) : null}
 				{inDomain && subview === "history" ? (
 					<History domain={section} data={data} />

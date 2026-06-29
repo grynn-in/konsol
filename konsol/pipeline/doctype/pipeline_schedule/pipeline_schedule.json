@@ -1,0 +1,86 @@
+{
+  "name": "Pipeline Schedule",
+  "doctype": "DocType",
+  "module": "Pipeline",
+  "issingle": 0,
+  "istable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "field:schedule_name",
+  "fields": [
+    {
+      "fieldname": "schedule_name",
+      "fieldtype": "Data",
+      "label": "Schedule Name",
+      "reqd": 1,
+      "unique": 1,
+      "in_list_view": 1,
+      "description": "Unique identifier for this schedule"
+    },
+    {
+      "fieldname": "pipeline_definition",
+      "fieldtype": "Link",
+      "label": "Pipeline Definition",
+      "options": "Pipeline Definition",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "The pipeline definition to run on this schedule"
+    },
+    {
+      "fieldname": "cron",
+      "fieldtype": "Data",
+      "label": "Cron",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "5-field cron expression: minute hour dom month dow"
+    },
+    {
+      "fieldname": "params",
+      "fieldtype": "Code",
+      "label": "Params",
+      "options": "JSON",
+      "description": "JSON-encoded run params passed to start_run"
+    },
+    {
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled",
+      "default": "1",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "schedule_state_section",
+      "fieldtype": "Section Break",
+      "label": "Schedule State"
+    },
+    {
+      "fieldname": "last_run",
+      "fieldtype": "Datetime",
+      "label": "Last Run",
+      "read_only": 1
+    },
+    {
+      "fieldname": "next_run",
+      "fieldtype": "Datetime",
+      "label": "Next Run",
+      "read_only": 1
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}

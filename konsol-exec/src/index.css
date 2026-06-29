@@ -679,3 +679,74 @@
   border: none !important;
   box-shadow: none !important;
 }
+
+/* ── Execute / orchestration plane (E1–E9) ─────────────────────────── */
+#root .kc-app .kc-tone-green { color: var(--green); background: var(--greenS); }
+#root .kc-app .kc-tone-red { color: var(--red); background: var(--redS); }
+#root .kc-app .kc-tone-amber { color: var(--amber); background: var(--amberS); }
+#root .kc-app .kc-tone-blue { color: var(--blue); background: rgba(14, 143, 132, 0.12); }
+#root .kc-app .kc-tone-gray { color: var(--ink5); background: var(--card2); }
+
+#root .kc-app .kc-launch-card { margin-bottom: 18px; }
+#root .kc-app .kc-launch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px 18px;
+}
+#root .kc-app .kc-field { display: flex; flex-direction: column; gap: 6px; }
+#root .kc-app .kc-field-label {
+  font-size: 11px; font-weight: 600; color: var(--ink5);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+#root .kc-app .kc-input {
+  width: 100%; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  color: var(--ink9); background: var(--card); border: 1px solid var(--bd2);
+  border-radius: 0; outline: none;
+}
+#root .kc-app .kc-input:focus { border-color: var(--blue); }
+#root .kc-app select.kc-input { cursor: pointer; appearance: auto; }
+#root .kc-app .kc-launch-checks {
+  display: flex; flex-wrap: wrap; gap: 18px; margin-top: 16px;
+}
+#root .kc-app .kc-check {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--ink7); cursor: pointer;
+}
+#root .kc-app .kc-check input { accent-color: var(--blue); width: 15px; height: 15px; }
+#root .kc-app .kc-launch-actions { display: flex; gap: 10px; margin-top: 18px; }
+#root .kc-app .kc-launch-actions .kc-btn-primary { flex: 0 0 auto; padding: 9px 22px; }
+
+#root .kc-app .kc-run-timeline { margin-top: 4px; }
+#root .kc-app .kc-run-timeline-head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+}
+#root .kc-app .kc-run-timeline-head .kc-col-flex { flex: 1; }
+#root .kc-app .kc-progress {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 18px;
+}
+#root .kc-app .kc-progress-track {
+  flex: 1; height: 6px; background: var(--bd); overflow: hidden;
+}
+#root .kc-app .kc-progress-bar { height: 100%; min-width: 2px; background: var(--green); }
+#root .kc-app .kc-progress-label {
+  font-size: 11.5px; color: var(--ink5); min-width: 38px; text-align: right;
+}
+
+#root .kc-app .kc-timeline-steps { display: flex; flex-direction: column; }
+#root .kc-app .kc-step-card {
+  background: var(--card); border: 1px solid var(--bd); border-top: none;
+  padding: 12px 16px;
+}
+#root .kc-app .kc-step-card:first-child { border-top: 1px solid var(--bd); }
+#root .kc-app .kc-step-head .kc-col-flex { flex: 1; }
+#root .kc-app .kc-step-meta {
+  display: flex; gap: 16px; margin: 6px 0 0 30px; font-size: 11.5px;
+}
+#root .kc-app .kc-step-output {
+  margin: 8px 0 0 30px; padding: 10px; font-size: 11.5px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  background: var(--console); color: var(--consoleInk);
+  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto;
+}
+#root .kc-app .kc-step-actions { display: flex; gap: 8px; margin: 10px 0 0 30px; }
+#root .kc-app .kc-history-group + .kc-history-group { margin-top: 24px; }

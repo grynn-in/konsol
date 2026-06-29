@@ -9,6 +9,7 @@ import frappe
 from frappe.utils import add_to_date, get_datetime, now_datetime, today
 
 from konsol.epm.doctype.budget_sheet.budget_sheet import LAYER_ROLES
+from konsol.schema_lifecycle import check_epm_admin
 
 PROCESSES = {
     "budgeting": {
@@ -29,7 +30,14 @@ PROCESSES = {
         "name": "Consolidation",
         "num": "03",
         "accent": "#2f7d4f",
-        "desc": "Group close, IC elimination, assertions, and sign-off.",
+        "desc": "Run the group consolidation build — extract → seed → silver → gold.",
+        "build_scope": "consolidation",
+    },
+    "assertions": {
+        "name": "Assertions",
+        "num": "04",
+        "accent": "#0e8f84",
+        "desc": "Run the close assertion suite (dbt tests) and sign-off.",
         "build_scope": "consolidation",
     },
 }
@@ -101,6 +109,7 @@ def get_snapshot():
 @frappe.whitelist()
 def start_process(process_id, fiscal_year=None, fiscal_period=None):
     """Kick off the run for a close process."""
+    check_epm_admin()
     pid = (process_id or "").strip()
     if pid not in PROCESSES:
         frappe.throw(f"Unknown process: {process_id}")
@@ -114,6 +123,15 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         return {"ok": True, "run_kind": "pipeline", "name": name}
 
     if pid == "consolidation":
+        # the consolidation BUILD = an orchestrator run (Group Close pipeline)
+        from konsol.orchestrator.api import start_run
+        params = {"fiscal_year": fy} if fy else {}
+        if fp:
+            params["fiscal_period"] = fp
+        name = start_run(definition="Group Close", params=params)
+        return {"ok": True, "run_kind": "pipeline", "name": name}
+
+    if pid == "assertions":
         from konsol.consolidation.doctype.close_run.close_run import trigger_close_run
         name = trigger_close_run(fiscal_year=fy, fiscal_period=fp)
         return {"ok": True, "run_kind": "close", "name": name}
@@ -158,9 +176,13 @@ def get_run_detail(process_id, kind, run_id):
             frappe.throw("Forecast runs use kind=pipeline")
         return _pipeline_run_detail(name, pid)
 
-    if run_kind != "close":
-        frappe.throw("Consolidation runs use kind=close")
-    return _close_run_detail(name, pid)
+    # Consolidation has two run types: orchestrator builds (Pipeline Run) and
+    # assertion runs (Close Run).
+    if run_kind == "pipeline":
+        return _orchestrator_run_detail(name, pid)
+    if run_kind == "close":
+        return _close_run_detail(name, pid)
+    frappe.throw("Consolidation runs use kind=pipeline or close")
 
 
 @frappe.whitelist()
@@ -323,10 +345,22 @@ def _recent_pipeline_ok(stale_hours=24):
 
 def _active_run(process_id):
     if process_id == "consolidation":
+        return _latest_orchestrator_run()
+    if process_id == "assertions":
         return _latest_close_run()
     if process_id == "forecasting":
         return _latest_pipeline_run(scope=None)
     return _latest_pbr_run(PROCESSES[process_id]["build_scope"])
+
+
+def _latest_orchestrator_run():
+    """Latest orchestrator (Execute-plane) build run — the most recent Pipeline
+    Run that has typed steps (step_id set), distinguishing it from legacy
+    forecast/budget pipeline runs."""
+    for r in frappe.get_all("Pipeline Run", fields=["name"], order_by="creation desc", limit=25):
+        if frappe.db.exists("Pipeline Step", {"parent": r.name, "step_id": ["is", "set"]}):
+            return _serialize_pipeline_run(r.name)
+    return None
 
 
 def _latest_pipeline_run(scope=None):
@@ -615,7 +649,10 @@ def _domain_runs_all(limit=_RUN_LIST_LIMIT):
     return {
         "budgeting": _budget_run_list(limit),
         "forecasting": _forecast_run_list(limit),
-        "consolidation": _consolidation_run_list(limit),
+        # Consolidation = orchestrator BUILD runs (Pipeline Run); Assertions =
+        # the close assertion runs (Close Run). Two top-level cards.
+        "consolidation": _consolidation_build_list(limit),
+        "assertions": _consolidation_run_list(limit),
     }
 
 
@@ -668,6 +705,64 @@ def _consolidation_run_list(limit):
     ):
         rows.append(_close_list_row(cr))
     return rows
+
+
+def _consolidation_build_list(limit):
+    """Orchestrator (Execute-plane) build runs for the consolidation domain.
+
+    These are Pipeline Runs created by the orchestrator — identified by having
+    typed steps (a child row with ``step_id`` set), which the legacy forecast/
+    budget Pipeline Runs do not. Tagged ``run_type="build"`` so the SPA History
+    renders them in their own card, separate from the Close Run assertions.
+    """
+    rows = []
+    for pr in frappe.get_all(
+        "Pipeline Run",
+        fields=[
+            "name", "status", "started_at", "completed_at", "rows_synced",
+            "triggered_by", "pipeline_build_request", "fiscal_year", "fiscal_period",
+            "creation",
+        ],
+        order_by="creation desc",
+        limit=limit * 3,
+    ):
+        if not frappe.db.exists("Pipeline Step", {"parent": pr.name, "step_id": ["is", "set"]}):
+            continue
+        rows.append(_consolidation_build_row(pr))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _consolidation_build_row(pr):
+    meta = PROCESSES["consolidation"]
+    started = pr.started_at or pr.creation
+    machine = _pipeline_machine(pr.status)
+    if pr.fiscal_period:
+        period = f"FY{pr.fiscal_year} · P{pr.fiscal_period}"
+    elif pr.fiscal_year:
+        period = f"FY{pr.fiscal_year}"
+    else:
+        period = "All periods"
+    return {
+        "id": pr.name,
+        "kind": "pipeline",
+        "run_type": "build",
+        "process_id": "consolidation",
+        "process": meta["name"],
+        "accent": meta["accent"],
+        "status": machine,
+        "status_raw": pr.status,
+        "period": period,
+        "title": pr.name,
+        "started": _fmt_dt(started),
+        "completed": _fmt_dt(pr.completed_at),
+        "duration": _fmt_duration(pr.started_at, pr.completed_at),
+        "rows": str(pr.rows_synced or "—"),
+        "by": pr.triggered_by or "—",
+        "related_docs": _related_docs_pipeline(pr.name, pr.pipeline_build_request),
+        "_sort": str(started or ""),
+    }
 
 
 def _pipeline_belongs_to_forecast(pbr_name):
@@ -740,6 +835,7 @@ def _close_list_row(cr):
     return {
         "id": cr.name,
         "kind": "close",
+        "run_type": "assertion",
         "process_id": "consolidation",
         "process": meta["name"],
         "accent": meta["accent"],
@@ -806,6 +902,62 @@ def _pipeline_run_detail(name, process_id):
         frappe.throw("Not a forecast run")
     row = _pipeline_list_row(pr, process_id)
     run = _serialize_pipeline_run(name)
+    return _run_detail_envelope(row, run)
+
+
+_ORCH_STATE = {
+    "Success": "done", "Failed": "error", "Cancelled": "error",
+    "Running": "running", "Pending": "pending", "Skipped": "pending",
+}
+
+
+def _orchestrator_run_detail(name, process_id):
+    """Drill-down for an orchestrator build run — maps the Pipeline Run's typed
+    child steps (step_id/step_type/status/output/error) into the detail shape, so
+    a consolidation build shows the same steps the Execute timeline does."""
+    if not frappe.db.exists("Pipeline Run", name):
+        frappe.throw(f"Run not found: {name}")
+    doc = frappe.get_doc("Pipeline Run", name)
+    pr = frappe._dict({
+        f: doc.get(f) for f in (
+            "name", "status", "started_at", "completed_at", "rows_synced",
+            "triggered_by", "pipeline_build_request", "fiscal_year", "fiscal_period",
+            "creation",
+        )
+    })
+    row = _consolidation_build_row(pr)
+    steps, logs = [], []
+    for i, s in enumerate(doc.steps or [], start=1):
+        state = _ORCH_STATE.get(s.status, "pending")
+        steps.append({
+            "num": f"{i:02d}",
+            "name": s.step_id or s.step_type or "",
+            "detail": s.step_type or "",
+            "rows": str(s.rows or ""),
+            "state": state,
+            "pct": 100 if state in ("done", "error") else 0,
+            "duration_ms": 0,
+        })
+        if s.output:
+            logs.append(s.output)
+        if s.error:
+            logs.append(s.error)
+    done = sum(1 for x in steps if x["state"] == "done")
+    run = {
+        "kind": "pipeline",
+        "name": doc.name,
+        "status": doc.status,
+        "machine_status": _pipeline_machine(doc.status),
+        "started_at": doc.started_at,
+        "completed_at": doc.completed_at,
+        "elapsed_ms": int((doc.get("duration_seconds") or 0) * 1000),
+        "steps": steps,
+        "logs": _logs_from_text("\n".join(logs)),
+        "rows": str(doc.get("rows_synced") or 0),
+        "step_done": done,
+        "step_total": len(steps),
+        "period": row["period"],
+    }
     return _run_detail_envelope(row, run)
 
 

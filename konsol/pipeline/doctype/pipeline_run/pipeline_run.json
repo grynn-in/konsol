@@ -1,152 +1,195 @@
 {
-  "name": "Pipeline Run",
-  "doctype": "DocType",
-  "module": "Pipeline",
-  "issingle": 0,
-  "istable": 0,
-  "editable_grid": 0,
-  "engine": "InnoDB",
-  "track_changes": 1,
-  "autoname": "PIPE-.#####",
-  "fields": [
-    {
-      "fieldname": "tab_run",
-      "fieldtype": "Tab Break",
-      "label": "Run"
-    },
-    {
-      "fieldname": "status",
-      "fieldtype": "Select",
-      "label": "Status",
-      "options": "Queued\nExtracting\nTransforming\nCompleted\nFailed",
-      "default": "Queued",
-      "in_list_view": 1,
-      "reqd": 1
-    },
-    {
-      "fieldname": "progress_pct",
-      "fieldtype": "Int",
-      "label": "Progress %",
-      "read_only": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "triggered_by",
-      "fieldtype": "Link",
-      "label": "Triggered By",
-      "options": "User",
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "pipeline_build_request",
-      "fieldtype": "Link",
-      "label": "Pipeline Build Request",
-      "options": "Pipeline Build Request",
-      "read_only": 1,
-      "in_standard_filter": 1
-    },
-    {
-      "fieldname": "col_break_1",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "started_at",
-      "fieldtype": "Datetime",
-      "label": "Started At",
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "completed_at",
-      "fieldtype": "Datetime",
-      "label": "Completed At"
-    },
-    {
-      "fieldname": "extract_section",
-      "fieldtype": "Section Break",
-      "label": "Extract (Airbyte)"
-    },
-    {
-      "fieldname": "airbyte_job_id",
-      "fieldtype": "Data",
-      "label": "Airbyte Job ID",
-      "read_only": 1
-    },
-    {
-      "fieldname": "rows_synced",
-      "fieldtype": "Int",
-      "label": "Rows Synced",
-      "read_only": 1
-    },
-    {
-      "fieldname": "transform_section",
-      "fieldtype": "Section Break",
-      "label": "Transform (dbt)"
-    },
-    {
-      "fieldname": "dbt_result",
-      "fieldtype": "Small Text",
-      "label": "dbt Result",
-      "read_only": 1
-    },
-    {
-      "fieldname": "tab_steps",
-      "fieldtype": "Tab Break",
-      "label": "Steps"
-    },
-    {
-      "fieldname": "steps_section",
-      "fieldtype": "Section Break",
-      "label": "Steps"
-    },
-    {
-      "fieldname": "steps",
-      "fieldtype": "Table",
-      "label": "Steps",
-      "options": "Pipeline Step"
-    },
-    {
-      "fieldname": "tab_log",
-      "fieldtype": "Tab Break",
-      "label": "Log"
-    },
-    {
-      "fieldname": "log_section",
-      "fieldtype": "Section Break",
-      "label": "Log",
-      "collapsible": 1
-    },
-    {
-      "fieldname": "log",
-      "fieldtype": "Code",
-      "label": "Log",
-      "options": "Text",
-      "read_only": 1
-    },
-    {
-      "fieldname": "tab_error",
-      "fieldtype": "Tab Break",
-      "label": "Error Details"
-    },
-    {
-      "fieldname": "error_section",
-      "fieldtype": "Section Break",
-      "label": "Error Details",
-      "collapsible": 1
-    },
-    {
-      "fieldname": "error_log",
-      "fieldtype": "Long Text",
-      "label": "Error Log",
-      "read_only": 1
-    }
-  ],
-  "permissions": [
-    {
-      "role": "System Manager",
-      "read": 1,
-      "write": 1,
-      "create": 1,
-      "delete": 1
-    }
-  ]
+ "name": "Pipeline Run",
+ "doctype": "DocType",
+ "module": "Pipeline",
+ "issingle": 0,
+ "istable": 0,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "PIPE-.#####",
+ "fields": [
+  {
+   "fieldname": "tab_run",
+   "fieldtype": "Tab Break",
+   "label": "Run"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Queued\nExtracting\nTransforming\nRunning\nCompleted\nFailed\nCancelled",
+   "default": "Queued",
+   "in_list_view": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "progress_pct",
+   "fieldtype": "Int",
+   "label": "Progress %",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "triggered_by",
+   "fieldtype": "Link",
+   "label": "Triggered By",
+   "options": "User",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "pipeline_build_request",
+   "fieldtype": "Link",
+   "label": "Pipeline Build Request",
+   "options": "Pipeline Build Request",
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At"
+  },
+  {
+   "fieldname": "params_section",
+   "fieldtype": "Section Break",
+   "label": "Run Parameters"
+  },
+  {
+   "fieldname": "pipeline_definition",
+   "fieldtype": "Data",
+   "label": "Pipeline Definition",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "label": "Fiscal Period"
+  },
+  {
+   "fieldname": "scope",
+   "fieldtype": "Data",
+   "label": "Scope"
+  },
+  {
+   "fieldname": "params_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "full_refresh",
+   "fieldtype": "Check",
+   "label": "Full Refresh",
+   "default": "0"
+  },
+  {
+   "fieldname": "skip_sync",
+   "fieldtype": "Check",
+   "label": "Skip Sync",
+   "default": "0"
+  },
+  {
+   "fieldname": "extract_section",
+   "fieldtype": "Section Break",
+   "label": "Extract (Airbyte)"
+  },
+  {
+   "fieldname": "airbyte_job_id",
+   "fieldtype": "Data",
+   "label": "Airbyte Job ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rows_synced",
+   "fieldtype": "Int",
+   "label": "Rows Synced",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transform_section",
+   "fieldtype": "Section Break",
+   "label": "Transform (dbt)"
+  },
+  {
+   "fieldname": "dbt_result",
+   "fieldtype": "Small Text",
+   "label": "dbt Result",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tab_steps",
+   "fieldtype": "Tab Break",
+   "label": "Steps"
+  },
+  {
+   "fieldname": "steps_section",
+   "fieldtype": "Section Break",
+   "label": "Steps"
+  },
+  {
+   "fieldname": "steps",
+   "fieldtype": "Table",
+   "label": "Steps",
+   "options": "Pipeline Step"
+  },
+  {
+   "fieldname": "tab_log",
+   "fieldtype": "Tab Break",
+   "label": "Log"
+  },
+  {
+   "fieldname": "log_section",
+   "fieldtype": "Section Break",
+   "label": "Log",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "log",
+   "fieldtype": "Code",
+   "label": "Log",
+   "options": "Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tab_error",
+   "fieldtype": "Tab Break",
+   "label": "Error Details"
+  },
+  {
+   "fieldname": "error_section",
+   "fieldtype": "Section Break",
+   "label": "Error Details",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Long Text",
+   "label": "Error Log",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  }
+ ]
 }

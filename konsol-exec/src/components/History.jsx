@@ -5,6 +5,29 @@ import { getDomainMeta, getDomainRuns } from "../domain";
 import { runDetailMachine } from "../machines";
 import { RunDetail } from "./RunDetail";
 
+// Friendly card titles per run_type (consolidation surfaces two). Runs without
+// a run_type render as a single "All … runs" card (budgeting / forecasting).
+const RUN_TYPE_META = {
+	build: { label: "Consolidation runs" },
+	assertion: { label: "Assertions" },
+};
+const RUN_TYPE_ORDER = ["build", "assertion"];
+
+/** Group runs by run_type (preserving order), or one group when untyped. */
+function groupRuns(runs) {
+	if (!runs.some((r) => r.run_type)) return [{ key: "all", runs }];
+	const groups = {};
+	runs.forEach((r) => {
+		const k = r.run_type || "other";
+		(groups[k] = groups[k] || []).push(r);
+	});
+	const keys = [
+		...RUN_TYPE_ORDER.filter((k) => groups[k]),
+		...Object.keys(groups).filter((k) => !RUN_TYPE_ORDER.includes(k)),
+	];
+	return keys.map((k) => ({ key: k, runs: groups[k] }));
+}
+
 export function History({ domain, data }) {
 	const meta = getDomainMeta(domain);
 	const runs = getDomainRuns(data, domain);
@@ -17,7 +40,7 @@ export function History({ domain, data }) {
 
 	const loading = state.matches("loading");
 
-	const rows = runs.map((run) => {
+	const renderRow = (run) => {
 		const st = STATUS[run.status] || STATUS.idle;
 		const active = selected?.id === run.id;
 		const docCount = (run.related_docs || []).length;
@@ -27,11 +50,7 @@ export function History({ domain, data }) {
 				key={run.id}
 				className={`kc-history-row kc-history-row-btn ${active ? "active" : ""}`}
 				onClick={() =>
-					send(
-						active
-							? { type: "DESELECT" }
-							: { type: "SELECT", domain, run }
-					)
+					send(active ? { type: "DESELECT" } : { type: "SELECT", domain, run })
 				}
 			>
 				<span className="kc-run-id">{run.id}</span>
@@ -40,36 +59,50 @@ export function History({ domain, data }) {
 				<span>{run.duration}</span>
 				<span>{run.rows}</span>
 				<span className="kc-history-by">{run.by}</span>
-				<span className="kc-related-count">{docCount} doc{docCount === 1 ? "" : "s"}</span>
+				<span className="kc-related-count">
+					{docCount} doc{docCount === 1 ? "" : "s"}
+				</span>
 				<span className="kc-pill" style={{ color: st.color, background: st.bg }}>
 					{st.label}
 				</span>
 			</button>
 		);
-	});
+	};
+
+	const groups = groupRuns(runs);
 
 	return (
 		<div className="kc-domain-space" style={{ "--domain-accent": meta.accent }}>
-			<div className="kc-section-label">
-				All {meta.label.toLowerCase()} runs · {runs.length}
-			</div>
-			<div className="kc-table kc-history-table">
-				<div className="kc-history-row kc-history-head">
-					<span>Run ID</span>
-					<span>Period</span>
-					<span>Started</span>
-					<span>Duration</span>
-					<span>Rows</span>
-					<span>By</span>
-					<span>Docs</span>
-					<span>Status</span>
-				</div>
-				{rows.length ? (
-					rows
-				) : (
-					<div className="kc-row kc-empty">No {meta.label.toLowerCase()} runs yet</div>
-				)}
-			</div>
+			{groups.map((g) => {
+				const title =
+					g.key === "all"
+						? `All ${meta.label.toLowerCase()} runs`
+						: RUN_TYPE_META[g.key]?.label || g.key;
+				return (
+					<div className="kc-history-group" key={g.key}>
+						<div className="kc-section-label">
+							{title} · {g.runs.length}
+						</div>
+						<div className="kc-table kc-history-table">
+							<div className="kc-history-row kc-history-head">
+								<span>Run ID</span>
+								<span>Period</span>
+								<span>Started</span>
+								<span>Duration</span>
+								<span>Rows</span>
+								<span>By</span>
+								<span>Docs</span>
+								<span>Status</span>
+							</div>
+							{g.runs.length ? (
+								g.runs.map(renderRow)
+							) : (
+								<div className="kc-row kc-empty">No runs yet</div>
+							)}
+						</div>
+					</div>
+				);
+			})}
 
 			{selected ? (
 				<>
@@ -83,7 +116,9 @@ export function History({ domain, data }) {
 					/>
 				</>
 			) : (
-				<div className="kc-run-hint">Select a run to drill down into steps, logs, and documents</div>
+				<div className="kc-run-hint">
+					Select a run to drill down into steps, logs, and documents
+				</div>
 			)}
 		</div>
 	);
