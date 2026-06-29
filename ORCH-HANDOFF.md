@@ -35,6 +35,6 @@ Host tests can't exercise real DB locking. Where a PRD's correctness depends on 
 **Fix:** apply blocking findings, keep green, commit `fix(orchestrator): B-N address review`, STOP.
 
 ## Current state
-None done yet.
+B1 (#65) DONE — commit `1cfe7bd`. `run.plan_run(params, definition=...)` is now the single definition-resolution point: a definition **name** (str) is resolved to Steps via `definition.load_definition`; `None`->`DEFAULT_DEFINITION`; an explicit `List[Step]` is used verbatim (backward compatible, signature unchanged). `run.run_pipeline` no longer pre-loads — it passes `params.get("pipeline_definition")` straight to `plan_run`. Only the str branch touches frappe (function-local import), pure branches stay host-importable. Tests: 5 new `plan_run` cases in `test_orchestrator_run_binding.py` (mock `load_definition` via monkeypatch — function-local import re-resolves the patched attr) + updated source-check in `test_orchestrator_definition_loader.py::test_run_pipeline_loads_definition_when_set` (resolution moved to plan_run). Orchestrator suite: 88 passed / 2 skipped. Pre-existing, unrelated failures remain on host (not touched by B1): `test_cash_flow_category` (autoname stale), `test_pipeline_run` status options, and 2 collection errors from modules importing `konsol.api` (top-level `frappe.utils`).
 ## Next
-B1 (#65) — wire named Pipeline Definitions through load_definition.
+B2 (#64+#67+#70) — concurrency hardening: single-flight TOCTOU (atomic guard in `api._assert_no_active_run`/`single_flight_lock`), cancel race, reaper intra-step heartbeat, host concurrency tests (mock `frappe.db`). See `ORCH-PRDS.md` B2.
