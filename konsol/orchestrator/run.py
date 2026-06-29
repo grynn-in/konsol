@@ -81,13 +81,30 @@ def params_from_doc(doc) -> Dict:
 def plan_run(params: Optional[Dict], definition=None) -> Tuple[Dag, RunState]:
     """Resolve params into a concrete (:class:`Dag`, :class:`RunState`) pair.
 
-    ``definition`` is the list of :class:`Step` templates to plan from. When
-    ``None`` (the default, and every run with no ``pipeline_definition``) we fall
-    back to :data:`plan.DEFAULT_DEFINITION` — so the behaviour is unchanged for
-    existing runs. The frappe-bound :func:`run_pipeline` loads a user-authored
-    Pipeline Definition (via :func:`definition.load_definition`) and passes the
-    resulting steps here when the run carries a ``pipeline_definition``.
+    ``definition`` selects the step templates to plan from, and accepts three
+    shapes (#65 B1 — the single resolution point so callers don't duplicate it):
+
+    - ``None`` (the default, and every run with no ``pipeline_definition``) →
+      fall back to :data:`plan.DEFAULT_DEFINITION`. Behaviour unchanged for
+      existing runs.
+    - ``str`` → a Pipeline Definition **name**, resolved to its ``Step`` list via
+      :func:`definition.load_definition`. This is the frappe-bound path: the run
+      carries the definition name (persisted by :func:`api.start_run`), and
+      :func:`run_pipeline` passes that name straight through to here.
+    - ``List[Step]`` → used verbatim (the explicit/pre-loaded path used by host
+      tests and the #65a/#66 wiring).
+
+    Only the ``str`` branch touches frappe (via the function-local import inside
+    :func:`definition.load_definition`); the ``None`` / ``List[Step]`` branches
+    stay pure and host-importable. Tests mock ``load_definition`` to exercise the
+    name path without a bench.
     """
+    if isinstance(definition, str):
+        # Resolve the Pipeline Definition name → Steps. Imported here (not at
+        # module scope) so the pure branches keep importing without frappe.
+        from konsol.orchestrator.definition import load_definition
+
+        definition = load_definition(definition)
     steps = build_plan(DEFAULT_DEFINITION if definition is None else definition, params or {})
     dag = Dag(steps)
     return dag, RunState(dag)
@@ -380,16 +397,12 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     if frappe.db.get_single_value("EPM Settings", "skip_airbyte_sync"):
         params["skip_sync"] = True
 
-    # PRD-13 wiring (#65a): plan from the run's user-authored Pipeline Definition
-    # when one is set, else fall back to DEFAULT_DEFINITION. Backward-compatible:
+    # PRD-13 wiring (#65a/B1): plan from the run's user-authored Pipeline
+    # Definition when its name is set, else fall back to DEFAULT_DEFINITION.
+    # ``plan_run`` is the single resolution point: a name (str) is resolved via
+    # ``definition.load_definition``; ``None`` falls back. Backward-compatible —
     # runs with no ``pipeline_definition`` behave exactly as before.
-    definition_steps = None
-    defn_name = params.get("pipeline_definition")
-    if defn_name:
-        from konsol.orchestrator.definition import load_definition
-
-        definition_steps = load_definition(defn_name)
-    dag, state = plan_run(params, definition=definition_steps)
+    dag, state = plan_run(params, definition=params.get("pipeline_definition") or None)
 
     if retry_step or resume_from:
         state = state_from_rows(dag, _doc_get(run_doc, "steps", []))
