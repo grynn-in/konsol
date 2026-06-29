@@ -67,6 +67,31 @@ def test_run_pipeline_accepts_retry_and_resume_kwargs():
     assert "resume_from" in sig.parameters
 
 
+# ---- single-flight guard (#64a) -----------------------------------------
+
+def test_active_run_states_are_exactly_the_nonterminal_statuses():
+    assert set(api.ACTIVE_RUN_STATES) == {"Queued", "Extracting", "Transforming", "Running"}
+    for terminal in ("Completed", "Failed", "Cancelled"):
+        assert terminal not in api.ACTIVE_RUN_STATES
+
+
+def test_start_run_calls_single_flight_guard():
+    # start_run must gate on _assert_no_active_run before creating a new run; the
+    # scheduler tick reaches the guard transitively via api.start_run.
+    src = inspect.getsource(api.start_run)
+    assert "_assert_no_active_run()" in src
+
+
+def test_assert_no_active_run_exists():
+    assert callable(api._assert_no_active_run)
+
+
+def test_retry_and_resume_do_not_call_single_flight_guard():
+    # retry/resume re-enqueue an EXISTING run and must not be blocked by the guard.
+    for fn in (api.retry_step, api.resume_run):
+        assert "_assert_no_active_run" not in inspect.getsource(fn)
+
+
 # ---- state_from_rows (pure) ---------------------------------------------
 
 def _dag():

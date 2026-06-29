@@ -35,6 +35,36 @@ except Exception:  # pragma: no cover - host import path (no bench)
 # the qname of the enqueue-able worker entrypoint in run.py
 _RUN_PIPELINE = "konsol.orchestrator.run.run_pipeline"
 
+# Pipeline Run statuses that mean a run still "owns" the dbt project dir — a new
+# run must not be launched while any of these exists (#64a single-flight). These
+# are exactly the non-terminal Pipeline Run.status options; the terminal ones are
+# Completed / Failed / Cancelled.
+ACTIVE_RUN_STATES = ("Queued", "Extracting", "Transforming", "Running")
+
+
+def _assert_no_active_run() -> None:
+    """Single-flight guard (#64a): refuse a new run while one is already active.
+
+    Two concurrent runs would shell out ``dbt`` against the one shared project dir
+    at once (corrupting ``target/`` and racing incremental models). ``start_run``
+    (and, transitively, the scheduler tick that calls it) is gated here. Retry /
+    resume do NOT pass through this guard — they re-enqueue an *existing* run.
+    """
+    import frappe
+
+    existing = frappe.get_all(
+        "Pipeline Run",
+        filters={"status": ["in", list(ACTIVE_RUN_STATES)]},
+        fields=["name"],
+        limit=1,
+    )
+    if existing:
+        frappe.throw(
+            f"A pipeline run is already active ({existing[0]['name']}). Wait for it "
+            "to finish or cancel it before starting another.",
+            frappe.ValidationError,
+        )
+
 
 def _coerce_params(params) -> Dict:
     """Normalise the ``params`` arg (JSON string from HTTP, dict, or None)."""
@@ -87,6 +117,7 @@ def start_run(definition: Optional[str] = None, params=None) -> str:
     from konsol.schema_lifecycle import check_epm_admin
 
     check_epm_admin()
+    _assert_no_active_run()
     p = _coerce_params(params)
     doc = frappe.get_doc(
         {
