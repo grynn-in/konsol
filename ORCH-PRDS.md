@@ -1,0 +1,17 @@
+# Orchestrator hardening (konsol) — PRD backlog (ralph loop)
+
+Residual non-blocking follow-ups from the ×2 reviews of merged PRs #60/#66/#69. Context + harness + file map: `ORCH-HANDOFF.md`. Branch `feat/orchestrator-hardening`. One PRD per agent; strict TDD (host pytest); each reviewed ≤2× then fixed. Order: B1 → B2.
+
+## B1 — #65: wire Pipeline Definitions at runtime + metadata/cleanup
+- [ ] **B1.** Today a named definition from `start_run(definition="Group Close")` is passed straight to `build_plan` instead of being resolved to Steps — so the Pipeline Definition doctype / `load_definition` is inert and every run uses `DEFAULT_DEFINITION` (the 4-card Consolidation "definition" selector is currently cosmetic). Make `plan_run`/`start_run` resolve a definition **name** (str) via `definition.load_definition(name)` into the step list, while still accepting an explicit `List[Step]` and falling back to `DEFAULT_DEFINITION` when none given (backward compatible). Persist the resolved definition name on the Pipeline Run for run metadata, and clear the small cleanup nits called out in #65. **TDD:** `plan_run(definition="Group Close")` calls `load_definition("Group Close")` and builds from its steps (mock `load_definition`); `definition=None` still uses `DEFAULT_DEFINITION`; an explicit `List[Step]` is used verbatim.
+
+## B2 — #64 + #67 + #70: concurrency hardening (single-flight TOCTOU, cancel race, reaper heartbeat, tests)
+- [ ] **B2.** Combine the three overlapping concurrency follow-ups into one coherent change (doing them separately would conflict):
+  - **Single-flight (TOCTOU).** `_assert_no_active_run()` is SELECT-then-INSERT: two near-simultaneous `start_run`/scheduler-tick calls can both pass the snapshot and create two active runs → concurrent `dbt` against one project dir. Close the window with an atomic guard (row lock `for_update` / DB unique constraint on "one active run" / `FOR UPDATE` select). **TDD:** simulate two interleaved calls (mock `frappe.db` so the 2nd sees the 1st's row) → second is refused.
+  - **Cancel race.** A run cancelled mid-flight must not leave a step Running or resurrect; transitions must be well-defined. **TDD:** cancel during Running → terminal Cancelled, no step left Running.
+  - **Reaper heartbeat.** `reap_stale_runs()` infers staleness from the run's modified time; add an intra-step **heartbeat** timestamp updated as a step makes progress, and base staleness on the heartbeat (a long-running healthy step isn't reaped; a wedged one is). **TDD:** fresh heartbeat → not reaped; stale heartbeat → reaped → run marked Failed/terminal.
+  - **Concurrency tests.** Add the host-level tests above; note any assertion that genuinely needs a bench smoke test (DB locking) in the PR.
+  Keep it backward compatible; explain the atomicity argument for the single-flight guard in a comment.
+
+## Done
+(none yet)
