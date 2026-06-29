@@ -169,7 +169,9 @@ class FrappeSink:
     in the run's ``steps`` table (PRD-6 fields: ``step_id``, ``step_type``,
     ``status``, ``started_at``, ``ended_at``, ``rows``, ``output``, ``error``,
     ``retry_count``) and, if a ``publish`` callback is supplied, emits a live
-    event. Pure — the doc/row may be a real Frappe doc or a plain fake; the
+    event. It also stamps the run's ``heartbeat_at`` on every step boundary
+    (#70) so the stale-run reaper can judge liveness off genuine pipeline
+    progress. Pure — the doc/row may be a real Frappe doc or a plain fake; the
     frappe ``publish_realtime`` wiring is injected by :func:`run_pipeline`.
     """
 
@@ -213,24 +215,37 @@ class FrappeSink:
             return
         self.publish(event, {"step_id": step.id, "step_type": step.type, "status": status})
 
+    def _beat(self, now) -> None:
+        # #70 heartbeat: stamp the run's orchestrator-owned ``heartbeat_at`` at
+        # every step boundary so the stale-run reaper can judge liveness off
+        # genuine pipeline progress rather than the incidental ``modified`` time
+        # (which a concurrent cancel / reaper write also bumps). The next
+        # ``_persist()`` flushes it to the row; on the pure host (persist=None)
+        # the value still lands on the in-memory doc and is assertable.
+        _row_set(self.run_doc, "heartbeat_at", now)
+
     def on_step_start(self, step) -> None:
+        now = self._now()
         row = self._get_or_create(step)
         _row_set(row, "step_type", step.type)
         _row_set(row, "status", Status.RUNNING)
-        _row_set(row, "started_at", self._now())
+        _row_set(row, "started_at", now)
         _row_set(row, "error", "")
+        self._beat(now)
         self._persist()
         self._emit("orchestrator_step", step, Status.RUNNING)
 
     def on_step_result(self, step, result: StepResult) -> None:
+        now = self._now()
         row = self._get_or_create(step)
         status = Status.SUCCESS if result.ok else Status.FAILED
         _row_set(row, "step_type", step.type)
         _row_set(row, "status", status)
-        _row_set(row, "ended_at", self._now())
+        _row_set(row, "ended_at", now)
         _row_set(row, "rows", getattr(result, "rows", 0) or 0)
         _row_set(row, "output", getattr(result, "log", "") or "")
         _row_set(row, "error", getattr(result, "error", "") or "")
+        self._beat(now)
         self._persist()
         self._emit("orchestrator_step", step, status)
 

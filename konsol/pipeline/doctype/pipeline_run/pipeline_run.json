@@ -61,6 +61,13 @@
    "label": "Completed At"
   },
   {
+   "fieldname": "heartbeat_at",
+   "fieldtype": "Datetime",
+   "label": "Heartbeat At",
+   "read_only": 1,
+   "description": "Last step-progress beat; the stale-run reaper judges liveness off this (not modified)."
+  },
+  {
    "fieldname": "duration_seconds",
    "fieldtype": "Int",
    "label": "Duration (s)",
