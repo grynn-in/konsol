@@ -84,6 +84,9 @@ def start_run(definition: Optional[str] = None, params=None) -> str:
     """
     import frappe
 
+    from konsol.schema_lifecycle import check_epm_admin
+
+    check_epm_admin()
     p = _coerce_params(params)
     doc = frappe.get_doc(
         {
@@ -147,7 +150,9 @@ def retry_step(run_name: str, step_id: str) -> str:
     import frappe
 
     from konsol.orchestrator import resume
+    from konsol.schema_lifecycle import check_epm_admin
 
+    check_epm_admin()
     run_doc = frappe.get_doc("Pipeline Run", run_name)
     steps, statuses = _steps_and_statuses(run_doc)
     snapshot = resume.plan_retry(steps, statuses, step_id)
@@ -174,6 +179,9 @@ def resume_run(run_name: str, step_id: str) -> str:
     import frappe
 
     from konsol.orchestrator import resume
+    from konsol.schema_lifecycle import check_epm_admin
+
+    check_epm_admin()
 
     run_doc = frappe.get_doc("Pipeline Run", run_name)
     steps, statuses = _steps_and_statuses(run_doc)
@@ -261,6 +269,9 @@ def cancel_run(run_name: str) -> str:
     """
     import frappe
 
+    from konsol.schema_lifecycle import check_epm_admin
+
+    check_epm_admin()
     run_doc = frappe.get_doc("Pipeline Run", run_name)
     run_doc.status = "Cancelled"
     run_doc.save(ignore_permissions=True)

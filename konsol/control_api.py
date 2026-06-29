@@ -9,6 +9,7 @@ import frappe
 from frappe.utils import add_to_date, get_datetime, now_datetime, today
 
 from konsol.epm.doctype.budget_sheet.budget_sheet import LAYER_ROLES
+from konsol.schema_lifecycle import check_epm_admin
 
 PROCESSES = {
     "budgeting": {
@@ -108,6 +109,7 @@ def get_snapshot():
 @frappe.whitelist()
 def start_process(process_id, fiscal_year=None, fiscal_period=None):
     """Kick off the run for a close process."""
+    check_epm_admin()
     pid = (process_id or "").strip()
     if pid not in PROCESSES:
         frappe.throw(f"Unknown process: {process_id}")
