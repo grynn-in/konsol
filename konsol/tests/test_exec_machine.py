@@ -42,6 +42,14 @@ def test_machine_exported_named():
     assert "export const runExecMachine" in js
 
 
+def test_watching_polls_as_realtime_safety_net():
+    """The watching state must poll (after-delay → refreshing) so the timeline
+    converges even when realtime `orchestrator_step` events don't reach the
+    browser (the 'PIPE-xxxxx shows 0 steps' bug)."""
+    js = _machine_js()
+    assert "after:" in js
+
+
 def test_machine_exported_from_index():
     idx = _index_js()
     assert "runExecMachine" in idx

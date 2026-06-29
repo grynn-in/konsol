@@ -263,11 +263,26 @@ def _run_airbyte_sync(run_doc) -> StepResult:
 
 
 def _run_close_assertions(run_doc, params) -> StepResult:
-    from konsol.close.close_assertions import run_close_assertions
+    """Run the close assertion suite as ``dbt test`` — the same singular tests
+    the Close Run uses (``--select test_type:singular --store-failures``),
+    scoped to this run's fiscal period / entity via dbt vars so the assertions
+    check the slice that was just built. The step fails iff dbt reports a failing
+    assertion (non-zero exit). Uses the orchestrator's own dbt runner (resolves
+    the project dir + venv dbt), not a Close Run document."""
+    import json
 
-    result = run_close_assertions(params)
-    ok = bool(getattr(result, "ok", True))
-    return StepResult(ok=ok, log=str(result))
+    argv = ["dbt", "test", "--select", "test_type:singular", "--store-failures"]
+    dbt_vars = {}
+    for key in ("fiscal_year", "fiscal_period"):
+        val = (params or {}).get(key)
+        if val is not None and str(val) != "":
+            dbt_vars[key] = val
+    scope = (params or {}).get("scope")
+    if scope:
+        dbt_vars["entity_scope"] = scope
+    if dbt_vars:
+        argv += ["--vars", json.dumps(dbt_vars, sort_keys=True)]
+    return _run_dbt(argv)
 
 
 def _run_signoff(run_doc) -> StepResult:

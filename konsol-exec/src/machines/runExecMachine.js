@@ -109,6 +109,13 @@ export const runExecMachine = setup({
 			},
 		},
 		watching: {
+			// Poll as a safety net: realtime `orchestrator_step` events are
+			// best-effort (socket may not reach the browser), so re-fetch every
+			// 2s while a run is live. Polling stops on `done` (terminal status),
+			// which has no `after`. RUN_STEP/REFRESH still refresh immediately.
+			after: {
+				2000: "refreshing",
+			},
 			on: {
 				REFRESH: "refreshing",
 				RUN_STEP: "refreshing",
