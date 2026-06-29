@@ -749,3 +749,4 @@
   white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto;
 }
 #root .kc-app .kc-step-actions { display: flex; gap: 8px; margin: 10px 0 0 30px; }
+#root .kc-app .kc-history-group + .kc-history-group { margin-top: 24px; }

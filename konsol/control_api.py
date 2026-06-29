@@ -158,9 +158,13 @@ def get_run_detail(process_id, kind, run_id):
             frappe.throw("Forecast runs use kind=pipeline")
         return _pipeline_run_detail(name, pid)
 
-    if run_kind != "close":
-        frappe.throw("Consolidation runs use kind=close")
-    return _close_run_detail(name, pid)
+    # Consolidation has two run types: orchestrator builds (Pipeline Run) and
+    # assertion runs (Close Run).
+    if run_kind == "pipeline":
+        return _pipeline_run_detail(name, pid)
+    if run_kind == "close":
+        return _close_run_detail(name, pid)
+    frappe.throw("Consolidation runs use kind=pipeline or close")
 
 
 @frappe.whitelist()
@@ -615,7 +619,10 @@ def _domain_runs_all(limit=_RUN_LIST_LIMIT):
     return {
         "budgeting": _budget_run_list(limit),
         "forecasting": _forecast_run_list(limit),
-        "consolidation": _consolidation_run_list(limit),
+        # Consolidation surfaces TWO run types: the orchestrator *build* runs
+        # (Pipeline Run — extract→seed→silver→gold) and the *assertion* runs
+        # (Close Run). The SPA History splits them into two cards by `run_type`.
+        "consolidation": _consolidation_build_list(limit) + _consolidation_run_list(limit),
     }
 
 
@@ -668,6 +675,64 @@ def _consolidation_run_list(limit):
     ):
         rows.append(_close_list_row(cr))
     return rows
+
+
+def _consolidation_build_list(limit):
+    """Orchestrator (Execute-plane) build runs for the consolidation domain.
+
+    These are Pipeline Runs created by the orchestrator — identified by having
+    typed steps (a child row with ``step_id`` set), which the legacy forecast/
+    budget Pipeline Runs do not. Tagged ``run_type="build"`` so the SPA History
+    renders them in their own card, separate from the Close Run assertions.
+    """
+    rows = []
+    for pr in frappe.get_all(
+        "Pipeline Run",
+        fields=[
+            "name", "status", "started_at", "completed_at", "rows_synced",
+            "triggered_by", "pipeline_build_request", "fiscal_year", "fiscal_period",
+            "creation",
+        ],
+        order_by="creation desc",
+        limit=limit * 3,
+    ):
+        if not frappe.db.exists("Pipeline Step", {"parent": pr.name, "step_id": ["is", "set"]}):
+            continue
+        rows.append(_consolidation_build_row(pr))
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _consolidation_build_row(pr):
+    meta = PROCESSES["consolidation"]
+    started = pr.started_at or pr.creation
+    machine = _pipeline_machine(pr.status)
+    if pr.fiscal_period:
+        period = f"FY{pr.fiscal_year} · P{pr.fiscal_period}"
+    elif pr.fiscal_year:
+        period = f"FY{pr.fiscal_year}"
+    else:
+        period = "All periods"
+    return {
+        "id": pr.name,
+        "kind": "pipeline",
+        "run_type": "build",
+        "process_id": "consolidation",
+        "process": meta["name"],
+        "accent": meta["accent"],
+        "status": machine,
+        "status_raw": pr.status,
+        "period": period,
+        "title": pr.name,
+        "started": _fmt_dt(started),
+        "completed": _fmt_dt(pr.completed_at),
+        "duration": _fmt_duration(pr.started_at, pr.completed_at),
+        "rows": str(pr.rows_synced or "—"),
+        "by": pr.triggered_by or "—",
+        "related_docs": _related_docs_pipeline(pr.name, pr.pipeline_build_request),
+        "_sort": str(started or ""),
+    }
 
 
 def _pipeline_belongs_to_forecast(pbr_name):
@@ -740,6 +805,7 @@ def _close_list_row(cr):
     return {
         "id": cr.name,
         "kind": "close",
+        "run_type": "assertion",
         "process_id": "consolidation",
         "process": meta["name"],
         "accent": meta["accent"],
