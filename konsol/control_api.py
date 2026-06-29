@@ -161,7 +161,7 @@ def get_run_detail(process_id, kind, run_id):
     # Consolidation has two run types: orchestrator builds (Pipeline Run) and
     # assertion runs (Close Run).
     if run_kind == "pipeline":
-        return _pipeline_run_detail(name, pid)
+        return _orchestrator_run_detail(name, pid)
     if run_kind == "close":
         return _close_run_detail(name, pid)
     frappe.throw("Consolidation runs use kind=pipeline or close")
@@ -872,6 +872,62 @@ def _pipeline_run_detail(name, process_id):
         frappe.throw("Not a forecast run")
     row = _pipeline_list_row(pr, process_id)
     run = _serialize_pipeline_run(name)
+    return _run_detail_envelope(row, run)
+
+
+_ORCH_STATE = {
+    "Success": "done", "Failed": "error", "Cancelled": "error",
+    "Running": "running", "Pending": "pending", "Skipped": "pending",
+}
+
+
+def _orchestrator_run_detail(name, process_id):
+    """Drill-down for an orchestrator build run — maps the Pipeline Run's typed
+    child steps (step_id/step_type/status/output/error) into the detail shape, so
+    a consolidation build shows the same steps the Execute timeline does."""
+    if not frappe.db.exists("Pipeline Run", name):
+        frappe.throw(f"Run not found: {name}")
+    doc = frappe.get_doc("Pipeline Run", name)
+    pr = frappe._dict({
+        f: doc.get(f) for f in (
+            "name", "status", "started_at", "completed_at", "rows_synced",
+            "triggered_by", "pipeline_build_request", "fiscal_year", "fiscal_period",
+            "creation",
+        )
+    })
+    row = _consolidation_build_row(pr)
+    steps, logs = [], []
+    for i, s in enumerate(doc.steps or [], start=1):
+        state = _ORCH_STATE.get(s.status, "pending")
+        steps.append({
+            "num": f"{i:02d}",
+            "name": s.step_id or s.step_type or "",
+            "detail": s.step_type or "",
+            "rows": str(s.rows or ""),
+            "state": state,
+            "pct": 100 if state in ("done", "error") else 0,
+            "duration_ms": 0,
+        })
+        if s.output:
+            logs.append(s.output)
+        if s.error:
+            logs.append(s.error)
+    done = sum(1 for x in steps if x["state"] == "done")
+    run = {
+        "kind": "pipeline",
+        "name": doc.name,
+        "status": doc.status,
+        "machine_status": _pipeline_machine(doc.status),
+        "started_at": doc.started_at,
+        "completed_at": doc.completed_at,
+        "elapsed_ms": int((doc.get("duration_seconds") or 0) * 1000),
+        "steps": steps,
+        "logs": _logs_from_text("\n".join(logs)),
+        "rows": str(doc.get("rows_synced") or 0),
+        "step_done": done,
+        "step_total": len(steps),
+        "period": row["period"],
+    }
     return _run_detail_envelope(row, run)
 
 
