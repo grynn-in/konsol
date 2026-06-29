@@ -117,6 +117,54 @@ def test_plan_run_full_refresh_flag_on_dbt():
     assert silver.params.get("full_refresh") is True
 
 
+def test_plan_run_honors_passed_definition():
+    # #65a: plan_run plans from a supplied definition over DEFAULT_DEFINITION.
+    dag, state = run.plan_run({}, definition=[Step("only", "signoff")])
+    assert [s.id for s in dag.steps] == ["only"]
+    assert all(state.status(s.id) == Status.PENDING for s in dag.steps)
+
+
+def test_plan_run_defaults_to_default_definition_when_none():
+    from konsol.orchestrator.plan import DEFAULT_DEFINITION
+
+    dag, _ = run.plan_run({}, definition=None)
+    assert [s.id for s in dag.steps] == [s.id for s in DEFAULT_DEFINITION]
+
+
+# ---- run metadata helpers (#65b, pure) ----------------------------------
+
+def test_progress_pct_is_100_on_full_success():
+    dag, state = run.plan_run({"skip_sync": True})
+    for s in dag.steps:
+        state.mark(s.id, Status.SUCCESS)
+    assert run.progress_pct(state) == 100
+
+
+def test_progress_pct_partial_counts_success_and_skipped():
+    dag = Dag([Step("a", "t"), Step("b", "t"), Step("c", "t"), Step("d", "t")])
+    state = RunState(dag)
+    state.mark("a", Status.SUCCESS)
+    state.mark("b", Status.SKIPPED)  # both count as satisfied
+    state.mark("c", Status.FAILED)
+    assert run.progress_pct(state) == 50
+
+
+def test_rows_synced_sums_only_airbyte_steps():
+    doc = FakeDoc()
+    doc.steps = [
+        FakeRow(step_type="airbyte_sync", rows=100),
+        FakeRow(step_type="dbt_run", rows=5),
+        FakeRow(step_type="airbyte_sync", rows=23),
+    ]
+    assert run.rows_synced_from_doc(doc) == 123
+
+
+def test_rows_synced_zero_when_no_extract():
+    doc = FakeDoc()
+    doc.steps = [FakeRow(step_type="dbt_run", rows=5)]
+    assert run.rows_synced_from_doc(doc) == 0
+
+
 # ---- FrappeSink (pure, with fake doc) -----------------------------------
 
 def test_sink_on_step_start_creates_child_row():

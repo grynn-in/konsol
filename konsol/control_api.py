@@ -509,10 +509,11 @@ def _serialize_pipeline_run(name):
 def _step_state(status):
     return {
         "Success": "done",
-        "Failure": "error",
+        "Failed": "error",
         "Running": "running",
         "Pending": "pending",
         "Skipped": "done",
+        "Cancelled": "error",
     }.get(status, "pending")
 
 

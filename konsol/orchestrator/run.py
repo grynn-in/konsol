@@ -78,14 +78,46 @@ def params_from_doc(doc) -> Dict:
 
 # ---- plan/state construction (pure) -------------------------------------
 
-def plan_run(params: Optional[Dict]) -> Tuple[Dag, RunState]:
+def plan_run(params: Optional[Dict], definition=None) -> Tuple[Dag, RunState]:
     """Resolve params into a concrete (:class:`Dag`, :class:`RunState`) pair.
 
-    Uses :data:`plan.DEFAULT_DEFINITION` (P2 will make this definition-driven).
+    ``definition`` is the list of :class:`Step` templates to plan from. When
+    ``None`` (the default, and every run with no ``pipeline_definition``) we fall
+    back to :data:`plan.DEFAULT_DEFINITION` — so the behaviour is unchanged for
+    existing runs. The frappe-bound :func:`run_pipeline` loads a user-authored
+    Pipeline Definition (via :func:`definition.load_definition`) and passes the
+    resulting steps here when the run carries a ``pipeline_definition``.
     """
-    steps = build_plan(DEFAULT_DEFINITION, params or {})
+    steps = build_plan(DEFAULT_DEFINITION if definition is None else definition, params or {})
     dag = Dag(steps)
     return dag, RunState(dag)
+
+
+def progress_pct(state: RunState) -> int:
+    """Percentage of steps that reached a satisfied terminal (Success/Skipped).
+
+    Pure helper used to stamp ``Pipeline Run.progress_pct`` at finalize: 100 on a
+    fully-successful run, a partial value when some steps failed. Empty plan -> 0.
+    """
+    snap = state.snapshot()
+    if not snap:
+        return 0
+    done = sum(1 for st in snap.values() if st in (Status.SUCCESS, Status.SKIPPED))
+    return int(round(100 * done / len(snap)))
+
+
+def rows_synced_from_doc(run_doc) -> int:
+    """Sum the rows reported by extract (``airbyte_sync``) steps of a run doc.
+
+    Pure: reads the persisted child rows. Used to stamp ``rows_synced`` on the
+    Pipeline Run so the History card shows the real extract volume. Returns 0
+    when the run skipped sync (no extract steps).
+    """
+    total = 0
+    for r in _doc_get(run_doc, "steps", []) or []:
+        if _row_get(r, "step_type") == "airbyte_sync":
+            total += int(_row_get(r, "rows", 0) or 0)
+    return total
 
 
 def state_from_rows(dag: Dag, rows) -> RunState:
@@ -245,6 +277,10 @@ def _run_dbt(argv) -> StepResult:
         dbt_bin = "dbt"
     verb = list(argv[1:2])
     flags = list(argv[2:])
+    # NOTE: ``--profiles-dir`` is pointed at the dbt *project* dir, which means a
+    # ``profiles.yml`` MUST live alongside ``dbt_project.yml`` in that dir (the
+    # deploy/configurator writes one there). dbt will not find a profile under
+    # ``~/.dbt`` with this invocation — keep profiles.yml in the project dir.
     cmd = [dbt_bin] + verb + ["--project-dir", project, "--profiles-dir", project] + flags
     proc = subprocess.run(cmd, cwd=project, capture_output=True, text=True)
     ok = proc.returncode == 0
@@ -291,6 +327,29 @@ def _run_signoff(run_doc) -> StepResult:
 
 # ---- enqueue-able entrypoint --------------------------------------------
 
+def _stamp_terminal_status(run_name, run_doc, final_status, state) -> None:
+    """Write the parent run's terminal status + #65b metadata.
+
+    Uses ``frappe.db.set_value`` (not ``run_doc.save``) so a concurrent cancel's
+    bump of ``modified`` can't raise a TimestampMismatch on this final write.
+    """
+    import frappe
+
+    completed_at = frappe.utils.now_datetime()
+    updates = {
+        "status": final_status,
+        "completed_at": completed_at,
+        "progress_pct": progress_pct(state),
+        "rows_synced": rows_synced_from_doc(run_doc),
+    }
+    started_at = _doc_get(run_doc, "started_at")
+    if started_at:
+        delta = completed_at - frappe.utils.get_datetime(started_at)
+        updates["duration_seconds"] = max(int(delta.total_seconds()), 0)
+    frappe.db.set_value("Pipeline Run", run_name, updates)
+    frappe.db.commit()
+
+
 def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     """Load a Pipeline Run, plan it, and drive it to completion.
 
@@ -313,7 +372,17 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     # skip toggle. Default off => extract runs normally.
     if frappe.db.get_single_value("EPM Settings", "skip_airbyte_sync"):
         params["skip_sync"] = True
-    dag, state = plan_run(params)
+
+    # PRD-13 wiring (#65a): plan from the run's user-authored Pipeline Definition
+    # when one is set, else fall back to DEFAULT_DEFINITION. Backward-compatible:
+    # runs with no ``pipeline_definition`` behave exactly as before.
+    definition_steps = None
+    defn_name = params.get("pipeline_definition")
+    if defn_name:
+        from konsol.orchestrator.definition import load_definition
+
+        definition_steps = load_definition(defn_name)
+    dag, state = plan_run(params, definition=definition_steps)
 
     if retry_step or resume_from:
         state = state_from_rows(dag, _doc_get(run_doc, "steps", []))
@@ -323,9 +392,16 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
             state.resume_from(resume_from)
 
     def publish(event, payload):
-        frappe.publish_realtime(
-            event, payload, doctype="Pipeline Run", docname=run_name
-        )
+        # #64c realtime-room fix: publish UNSCOPED. With no room/user/doctype args,
+        # frappe.publish_realtime falls through to the site room (broadcast to all
+        # Desk users), which the konsol-exec SPA's global
+        # ``frappe.realtime.on("orchestrator_step")`` receives. A doc-scoped room
+        # (doctype/docname) only reaches a client that has joined that doc room
+        # (i.e. has the Frappe Form open) — the SPA never does, so scoped events
+        # were silently dropped. ``run`` is added so a client can tell which run an
+        # event belongs to. (Single-admin app, so a site-room broadcast is fine; a
+        # future multi-user UI could scope this with ``user=``.)
+        frappe.publish_realtime(event, {**payload, "run": run_name})
 
     def persist():
         # flush child rows mid-run so the live timeline reflects progress
@@ -340,12 +416,33 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
         run_doc.save(ignore_permissions=True)
         frappe.db.commit()
 
-    Executor(handlers, sink=sink, runner=runner).run(state)
+    try:
+        Executor(handlers, sink=sink, runner=runner).run(state)
+    except Exception:
+        # #64 wedge guard: an uncaught executor error must NOT leave the run stuck
+        # in "Running". With the single-flight guard in place, a wedged Running run
+        # would block every future start_run until someone manually cancels it.
+        # Stamp a terminal "Failed" (unless a concurrent cancel already won) and
+        # re-raise so RQ still records the job failure.
+        if frappe.db.get_value("Pipeline Run", run_name, "status") != "Cancelled":
+            _stamp_terminal_status(run_name, run_doc, Status.FAILED, state)
+        raise
 
-    if hasattr(run_doc, "status"):
-        # Pipeline Run.status uses the legacy vocabulary where "Completed" is the
-        # success terminal (there is no "Success" option on the parent doc).
-        run_doc.status = "Completed" if state.is_success() else Status.FAILED
-    run_doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    # Finalize. The per-step rows were already flushed by ``persist()`` during the
+    # run, so the only writes left are the parent's terminal status + run metadata.
+    #
+    # #64b cancel/save race: a concurrent ``cancel_run`` may have persisted
+    # "Cancelled" while we were executing. Re-read the DB status first and HONOR a
+    # persisted Cancelled — don't clobber it back to Completed/Failed.
+    persisted_status = frappe.db.get_value("Pipeline Run", run_name, "status")
+    if persisted_status == "Cancelled":
+        return state
+
+    # Pipeline Run.status uses the legacy vocabulary where "Completed" is the
+    # success terminal (there is no "Success" option on the parent doc).
+    # #65b run metadata (completed_at / duration_seconds / progress_pct /
+    # rows_synced) is stamped by the shared helper so the History card shows real
+    # values instead of "—"/0.
+    final_status = "Completed" if state.is_success() else Status.FAILED
+    _stamp_terminal_status(run_name, run_doc, final_status, state)
     return state

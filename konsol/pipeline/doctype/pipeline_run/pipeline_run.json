@@ -61,6 +61,12 @@
    "label": "Completed At"
   },
   {
+   "fieldname": "duration_seconds",
+   "fieldtype": "Int",
+   "label": "Duration (s)",
+   "read_only": 1
+  },
+  {
    "fieldname": "params_section",
    "fieldtype": "Section Break",
    "label": "Run Parameters"

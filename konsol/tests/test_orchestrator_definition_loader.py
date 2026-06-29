@@ -182,6 +182,37 @@ def test_roundtrip_build_plan_skip_sync():
     assert {s.id: s.depends_on for s in loaded}["seed"] == []
 
 
+# ---- runtime wiring (#65a) -----------------------------------------------
+
+def test_run_pipeline_loads_definition_when_set():
+    # The frappe-bound entrypoint must call load_definition for runs that carry a
+    # pipeline_definition (site-free source check; the actual frappe.get_doc is
+    # exercised in a bench smoke test).
+    import inspect
+
+    from konsol.orchestrator import run
+
+    src = inspect.getsource(run.run_pipeline)
+    assert "load_definition" in src
+    assert "pipeline_definition" in src
+
+
+def test_loaded_definition_drives_plan_run():
+    # End-to-end (pure): a loaded definition flows through plan_run to the Dag.
+    from konsol.orchestrator import run
+
+    steps = definition.definition_to_steps(_group_close_record())
+    dag, _ = run.plan_run({}, definition=steps)
+    assert [s.id for s in dag.steps] == [
+        "extract",
+        "seed",
+        "silver",
+        "gold",
+        "assertions",
+        "signoff",
+    ]
+
+
 # ---- frappe-bound loader (guarded) ---------------------------------------
 
 def test_load_definition_requires_frappe():

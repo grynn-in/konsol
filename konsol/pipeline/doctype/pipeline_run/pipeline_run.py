@@ -9,6 +9,12 @@ class PipelineRun(Document):
 @frappe.whitelist()
 def trigger_pipeline():
     """Create a new Pipeline Run and enqueue the background job."""
+    # #64a single-flight: this legacy path also shells dbt against the one shared
+    # project dir, so it must honor the same guard as orchestrator.start_run —
+    # otherwise two concurrent dbt builds can corrupt target/ and race incrementals.
+    from konsol.orchestrator.api import _assert_no_active_run
+
+    _assert_no_active_run()
     doc = frappe.get_doc(
         {
             "doctype": "Pipeline Run",

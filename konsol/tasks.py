@@ -483,7 +483,10 @@ def _populate_run_steps(doc, project_path):
     except Exception:
         return
 
-    status_map = {"success": "Success", "error": "Failure", "fail": "Failure",
+    # Pipeline Step.status vocabulary is unified on "Failed" (see #65c-i) — the
+    # orchestrator (run.py) already writes "Failed", and "Failure" was dropped
+    # from the doctype options, so the legacy build path maps dbt errors to it too.
+    status_map = {"success": "Success", "error": "Failed", "fail": "Failed",
                   "pass": "Success", "skipped": "Skipped"}
     doc.set("steps", [])
     done = 0
@@ -509,7 +512,7 @@ def _populate_run_steps(doc, project_path):
         else:
             stage = "Model"
         st = status_map.get((node.get("status") or "").lower(), "Pending")
-        if st in ("Success", "Skipped", "Failure"):
+        if st in ("Success", "Skipped", "Failed"):
             done += 1
         rows = (node.get("adapter_response") or {}).get("rows_affected") or 0
         doc.append("steps", {
