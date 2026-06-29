@@ -7,7 +7,8 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "hash",
+  "autoname": "format:CFC-{main_account}",
+  "naming_rule": "Expression",
   "fields": [
     {
       "fieldname": "main_account",
