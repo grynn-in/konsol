@@ -1,7 +1,7 @@
 {% extends "templates/web.html" %}
 {% block title %}Konsol Exec{% endblock %}
 {% block style %}
-<link rel="stylesheet" href="/assets/konsol/konsol_exec/konsol_exec.css">
+<link rel="stylesheet" href="/assets/konsol/konsol_exec/konsol_exec.css?v={{ css_version }}">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   .navbar, .web-footer, footer, .page-header { display: none !important; }
@@ -13,5 +13,5 @@
 {% block page_content %}
 <script>window.csrf_token = "{{ frappe.session.csrf_token }}";</script>
 <div id="root"></div>
-<script type="module" src="/assets/konsol/konsol_exec/konsol_exec.js"></script>
+<script type="module" src="/assets/konsol/konsol_exec/konsol_exec.js?v={{ js_version }}"></script>
 {% endblock %}
