@@ -51,12 +51,15 @@ def execute():
             # Shouldn't happen (main_account is unique), but never clobber an
             # existing row: skip and let the unique-account guard surface it.
             continue
+        # NB: frappe.rename_doc (the public wrapper) does NOT accept
+        # ignore_permissions — that kwarg only exists on the inner
+        # frappe.model.rename_doc.rename_doc. Patches run as Administrator, so
+        # permissions aren't a concern here anyway.
         frappe.rename_doc(
             "Cash Flow Category",
             row.name,
             target,
             force=True,
-            ignore_permissions=True,
             show_alert=False,
             rebuild_search=False,  # one-time migrate — skip the per-row search reindex
         )
