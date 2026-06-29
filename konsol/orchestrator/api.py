@@ -47,8 +47,9 @@ def _assert_no_active_run() -> None:
 
     Two concurrent runs would shell out ``dbt`` against the one shared project dir
     at once (corrupting ``target/`` and racing incremental models). ``start_run``
-    (and, transitively, the scheduler tick that calls it) is gated here. Retry /
-    resume do NOT pass through this guard — they re-enqueue an *existing* run.
+    (and, transitively, the scheduler tick that calls it) and the legacy
+    ``pipeline_run.trigger_pipeline`` are gated here. Retry / resume do NOT pass
+    through this guard — they re-enqueue an *existing* run.
     """
     import frappe
 

@@ -327,6 +327,29 @@ def _run_signoff(run_doc) -> StepResult:
 
 # ---- enqueue-able entrypoint --------------------------------------------
 
+def _stamp_terminal_status(run_name, run_doc, final_status, state) -> None:
+    """Write the parent run's terminal status + #65b metadata.
+
+    Uses ``frappe.db.set_value`` (not ``run_doc.save``) so a concurrent cancel's
+    bump of ``modified`` can't raise a TimestampMismatch on this final write.
+    """
+    import frappe
+
+    completed_at = frappe.utils.now_datetime()
+    updates = {
+        "status": final_status,
+        "completed_at": completed_at,
+        "progress_pct": progress_pct(state),
+        "rows_synced": rows_synced_from_doc(run_doc),
+    }
+    started_at = _doc_get(run_doc, "started_at")
+    if started_at:
+        delta = completed_at - frappe.utils.get_datetime(started_at)
+        updates["duration_seconds"] = max(int(delta.total_seconds()), 0)
+    frappe.db.set_value("Pipeline Run", run_name, updates)
+    frappe.db.commit()
+
+
 def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     """Load a Pipeline Run, plan it, and drive it to completion.
 
@@ -369,13 +392,15 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
             state.resume_from(resume_from)
 
     def publish(event, payload):
-        # #64c realtime-room fix: publish UNSCOPED (to the enqueuing user's room,
-        # which the worker job runs as) so the konsol-exec SPA's global
-        # ``frappe.realtime.on("orchestrator_step")`` actually receives it. A
-        # doc-scoped room (doctype/docname) only reaches a client that has joined
-        # that doc room (i.e. has the Frappe Form open) — the SPA never does, so
-        # scoped events were silently dropped. ``run`` is added so a client can
-        # tell which run an event belongs to.
+        # #64c realtime-room fix: publish UNSCOPED. With no room/user/doctype args,
+        # frappe.publish_realtime falls through to the site room (broadcast to all
+        # Desk users), which the konsol-exec SPA's global
+        # ``frappe.realtime.on("orchestrator_step")`` receives. A doc-scoped room
+        # (doctype/docname) only reaches a client that has joined that doc room
+        # (i.e. has the Frappe Form open) — the SPA never does, so scoped events
+        # were silently dropped. ``run`` is added so a client can tell which run an
+        # event belongs to. (Single-admin app, so a site-room broadcast is fine; a
+        # future multi-user UI could scope this with ``user=``.)
         frappe.publish_realtime(event, {**payload, "run": run_name})
 
     def persist():
@@ -391,37 +416,33 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
         run_doc.save(ignore_permissions=True)
         frappe.db.commit()
 
-    Executor(handlers, sink=sink, runner=runner).run(state)
+    try:
+        Executor(handlers, sink=sink, runner=runner).run(state)
+    except Exception:
+        # #64 wedge guard: an uncaught executor error must NOT leave the run stuck
+        # in "Running". With the single-flight guard in place, a wedged Running run
+        # would block every future start_run until someone manually cancels it.
+        # Stamp a terminal "Failed" (unless a concurrent cancel already won) and
+        # re-raise so RQ still records the job failure.
+        if frappe.db.get_value("Pipeline Run", run_name, "status") != "Cancelled":
+            _stamp_terminal_status(run_name, run_doc, Status.FAILED, state)
+        raise
 
     # Finalize. The per-step rows were already flushed by ``persist()`` during the
     # run, so the only writes left are the parent's terminal status + run metadata.
     #
     # #64b cancel/save race: a concurrent ``cancel_run`` may have persisted
     # "Cancelled" while we were executing. Re-read the DB status first and HONOR a
-    # persisted Cancelled — don't clobber it back to Completed/Failed. We also
-    # write via ``frappe.db.set_value`` (not ``run_doc.save``) so the cancel's
-    # bump of ``modified`` can't raise a TimestampMismatch on our final write.
+    # persisted Cancelled — don't clobber it back to Completed/Failed.
     persisted_status = frappe.db.get_value("Pipeline Run", run_name, "status")
     if persisted_status == "Cancelled":
         return state
 
     # Pipeline Run.status uses the legacy vocabulary where "Completed" is the
     # success terminal (there is no "Success" option on the parent doc).
+    # #65b run metadata (completed_at / duration_seconds / progress_pct /
+    # rows_synced) is stamped by the shared helper so the History card shows real
+    # values instead of "—"/0.
     final_status = "Completed" if state.is_success() else Status.FAILED
-
-    # #65b run metadata: stamp completed_at / duration_seconds / progress_pct /
-    # rows_synced so the History card shows real values instead of "—"/0.
-    completed_at = frappe.utils.now_datetime()
-    updates = {
-        "status": final_status,
-        "completed_at": completed_at,
-        "progress_pct": progress_pct(state),
-        "rows_synced": rows_synced_from_doc(run_doc),
-    }
-    started_at = _doc_get(run_doc, "started_at")
-    if started_at:
-        delta = completed_at - frappe.utils.get_datetime(started_at)
-        updates["duration_seconds"] = max(int(delta.total_seconds()), 0)
-    frappe.db.set_value("Pipeline Run", run_name, updates)
-    frappe.db.commit()
+    _stamp_terminal_status(run_name, run_doc, final_status, state)
     return state
