@@ -27,7 +27,7 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "Pending\nRunning\nSuccess\nFailed\nFailure\nSkipped\nCancelled",
+   "options": "Pending\nRunning\nSuccess\nFailed\nSkipped\nCancelled",
    "default": "Pending",
    "in_list_view": 1,
    "columns": 1,
