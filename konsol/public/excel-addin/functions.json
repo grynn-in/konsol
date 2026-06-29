@@ -23,14 +23,15 @@
         { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
         { "name": "scenarioId", "description": "Explicit scenario id (budget/forecast)", "type": "string", "optional": true },
         { "name": "hierarchy", "description": "Reporting hierarchy name (optional if default or node is unique)", "type": "string", "optional": true },
-        { "name": "node", "description": "Hierarchy member code — enables hierarchy mode when set", "type": "string", "optional": true }
+        { "name": "node", "description": "Hierarchy member code — enables hierarchy mode when set", "type": "string", "optional": true },
+        { "name": "layer", "description": "Budget layer (base/challenge/management/board); only used by budget facts. Omit to sum all layers (the final budget).", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },
     {
       "id": "EPM_BUDGET",
       "name": "EPM_BUDGET",
-      "description": "Budget amount (measure=period_amount, scenario=budget). Pass hierarchy + node for management rollup reads.",
+      "description": "Budget amount (measure=period_amount, scenario=budget). Omit layer to get the final budget (sum of all layers); pass a layer to read one. Pass hierarchy + node for management rollup reads.",
       "parameters": [
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
         { "name": "year", "description": "Fiscal year", "type": "number" },
@@ -40,7 +41,8 @@
         { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
         { "name": "scenarioId", "description": "Explicit scenario id", "type": "string", "optional": true },
         { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
-        { "name": "node", "description": "Hierarchy member code", "type": "string", "optional": true }
+        { "name": "node", "description": "Hierarchy member code", "type": "string", "optional": true },
+        { "name": "layer", "description": "Budget layer (base/challenge/management/board). Omit to sum all layers (the final budget).", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     },

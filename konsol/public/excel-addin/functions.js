@@ -99,7 +99,7 @@ function sendChunk(chunk) {
   });
 }
 
-function makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node) {
+function makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node, layer) {
   var req = {
     entity: String(entity),
     year: Number(year),
@@ -113,6 +113,7 @@ function makeReq(entity, year, period, account, measure, scenario, costCenter, d
   if (scenarioId) req.scenario_id = String(scenarioId);
   if (hierarchy) req.hierarchy = String(hierarchy);
   if (node) req.hierarchy_node = String(node);
+  if (layer) req.layer = String(layer);
   return req;
 }
 
@@ -120,12 +121,12 @@ function ping() {
   return 1;
 }
 
-function epm(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node) {
-  return enqueue(makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node));
+function epm(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node, layer) {
+  return enqueue(makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node, layer));
 }
 
-function epmBudget(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node) {
-  return enqueue(makeReq(entity, year, period, account, "period_amount", "budget", costCenter, department, scenarioId, hierarchy, node));
+function epmBudget(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node, layer) {
+  return enqueue(makeReq(entity, year, period, account, "period_amount", "budget", costCenter, department, scenarioId, hierarchy, node, layer));
 }
 
 function epmVariance(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node) {
