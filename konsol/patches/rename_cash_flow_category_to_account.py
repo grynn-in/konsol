@@ -15,6 +15,12 @@ per row (enforced by validate), so the target names don't collide.
 Runs before fixtures (all patches do), so the fixture import that follows finds
 matching names. Idempotent: rows already correctly named are skipped; re-running
 matches nothing.
+
+Note: pairing the rename with autoname ``format:CFC-{main_account}`` tightens the
+model to ONE row per account ever (not just one *live* row, which ``validate``
+already enforced). That matches how this config is used — a single editable
+cash-flow mapping per balance-sheet account — but means an Inactive historical
+row and a new mapping for the same account can no longer coexist.
 """
 import frappe
 
@@ -52,5 +58,6 @@ def execute():
             force=True,
             ignore_permissions=True,
             show_alert=False,
+            rebuild_search=False,  # one-time migrate — skip the per-row search reindex
         )
     frappe.db.commit()
