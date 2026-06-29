@@ -17,6 +17,7 @@ function. The pure rebuild-state-from-rows logic is :func:`run.state_from_rows`.
 """
 from __future__ import annotations
 
+import contextlib
 from typing import Dict, Optional
 
 try:  # frappe only exists inside a bench; host pytest must still import this module
@@ -40,6 +41,46 @@ _RUN_PIPELINE = "konsol.orchestrator.run.run_pipeline"
 # are exactly the non-terminal Pipeline Run.status options; the terminal ones are
 # Completed / Failed / Cancelled.
 ACTIVE_RUN_STATES = ("Queued", "Extracting", "Transforming", "Running")
+
+# MariaDB named (advisory) lock that serialises the single-flight critical
+# section (#67 fix 1). The SELECT-then-INSERT in ``_assert_no_active_run`` +
+# create-run was a TOCTOU: two concurrent ``start_run`` / ``trigger_pipeline``
+# calls could both pass the check and both insert an active run. GET_LOCK makes
+# the check+insert atomic across DB connections (workers / web). The lock is
+# session-scoped (held across ``COMMIT``, auto-released if the connection dies),
+# so a crashed caller can never wedge it permanently.
+_SINGLE_FLIGHT_LOCK = "konsol_pipeline_single_flight"
+# Seconds GET_LOCK waits for the lock before giving up. Short — the critical
+# section is just a SELECT + INSERT, so any real contention clears in well under
+# a second; a longer wait would only mask a stuck holder.
+_SINGLE_FLIGHT_TIMEOUT = 10
+
+
+@contextlib.contextmanager
+def single_flight_lock(timeout: int = _SINGLE_FLIGHT_TIMEOUT):
+    """Serialise the single-flight check+insert under a MariaDB named lock.
+
+    Both :func:`start_run` and the legacy
+    :func:`pipeline_run.trigger_pipeline` wrap their ``_assert_no_active_run()``
+    + create-run in ``with single_flight_lock():`` so the two paths can't race
+    each other into two simultaneously-active runs. GET_LOCK returns ``1`` on
+    acquire, ``0`` on timeout, ``NULL`` on error — anything but ``1`` raises a
+    clear frappe error. RELEASE_LOCK always runs in ``finally``.
+    """
+    import frappe
+
+    got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (_SINGLE_FLIGHT_LOCK, timeout))
+    acquired = bool(got and got[0] and got[0][0] == 1)
+    if not acquired:
+        frappe.throw(
+            "Could not acquire the pipeline single-flight lock — another run is "
+            "being started right now. Try again in a moment.",
+            frappe.ValidationError,
+        )
+    try:
+        yield
+    finally:
+        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (_SINGLE_FLIGHT_LOCK,))
 
 
 def _assert_no_active_run() -> None:
@@ -118,24 +159,27 @@ def start_run(definition: Optional[str] = None, params=None) -> str:
     from konsol.schema_lifecycle import check_epm_admin
 
     check_epm_admin()
-    _assert_no_active_run()
     p = _coerce_params(params)
-    doc = frappe.get_doc(
-        {
-            "doctype": "Pipeline Run",
-            "status": "Queued",
-            "triggered_by": frappe.session.user,
-            "started_at": frappe.utils.now_datetime(),
-            "pipeline_definition": definition,
-            "fiscal_year": p.get("fiscal_year"),
-            "fiscal_period": p.get("fiscal_period"),
-            "scope": p.get("scope"),
-            "full_refresh": 1 if p.get("full_refresh") else 0,
-            "skip_sync": 1 if p.get("skip_sync") else 0,
-        }
-    )
-    doc.insert(ignore_permissions=True)
-    frappe.db.commit()
+    # #67 fix 1: hold the single-flight lock across the check AND the insert so a
+    # concurrent start can't slip a second active run between them.
+    with single_flight_lock():
+        _assert_no_active_run()
+        doc = frappe.get_doc(
+            {
+                "doctype": "Pipeline Run",
+                "status": "Queued",
+                "triggered_by": frappe.session.user,
+                "started_at": frappe.utils.now_datetime(),
+                "pipeline_definition": definition,
+                "fiscal_year": p.get("fiscal_year"),
+                "fiscal_period": p.get("fiscal_period"),
+                "scope": p.get("scope"),
+                "full_refresh": 1 if p.get("full_refresh") else 0,
+                "skip_sync": 1 if p.get("skip_sync") else 0,
+            }
+        )
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
 
     frappe.enqueue(_RUN_PIPELINE, queue="default", timeout=1800, run_name=doc.name)
     return doc.name

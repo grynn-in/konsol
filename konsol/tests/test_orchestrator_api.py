@@ -92,6 +92,35 @@ def test_retry_and_resume_do_not_call_single_flight_guard():
         assert "_assert_no_active_run" not in inspect.getsource(fn)
 
 
+# ---- single-flight DB lock (#67 fix 1) ----------------------------------
+
+def test_single_flight_lock_is_a_context_manager():
+    # the shared critical-section helper exists and is usable as `with ...:`
+    assert hasattr(api, "single_flight_lock")
+    cm = api.single_flight_lock
+    assert hasattr(cm, "__call__")
+    # exercised as a context manager (decorated with contextlib.contextmanager)
+    assert hasattr(cm(), "__enter__")
+
+
+def test_single_flight_lock_uses_get_and_release_lock():
+    src = inspect.getsource(api.single_flight_lock)
+    assert "GET_LOCK" in src, "must acquire a MariaDB named lock"
+    assert "RELEASE_LOCK" in src, "must release the lock"
+    assert "finally" in src, "release must run in a finally"
+    # the named lock constant is referenced
+    assert api._SINGLE_FLIGHT_LOCK == "konsol_pipeline_single_flight"
+
+
+def test_start_run_wraps_check_and_insert_in_lock():
+    src = inspect.getsource(api.start_run)
+    assert "single_flight_lock()" in src, "start_run must take the single-flight lock"
+    # the lock must wrap BOTH the check and the insert (TOCTOU close)
+    lock_at = src.index("single_flight_lock()")
+    assert "_assert_no_active_run()" in src[lock_at:], "check must be inside the lock"
+    assert "doc.insert(" in src[lock_at:], "insert must be inside the lock"
+
+
 # ---- state_from_rows (pure) ---------------------------------------------
 
 def _dag():

@@ -33,3 +33,25 @@ def test_trigger_pipeline_honors_single_flight_guard():
     )
     assert body is not None
     assert "_assert_no_active_run()" in body, "legacy trigger_pipeline must gate on the guard"
+
+
+def test_trigger_pipeline_uses_single_flight_lock():
+    # #67 fix 1: legacy path serialises with start_run via the shared DB lock.
+    body = _func_src(
+        os.path.join(ROOT, "pipeline", "doctype", "pipeline_run", "pipeline_run.py"),
+        "trigger_pipeline",
+    )
+    assert "single_flight_lock()" in body, "trigger_pipeline must take the single-flight lock"
+
+
+def test_run_governed_build_checks_guard_before_creating_run():
+    # #67 fix 5: the governed build shares the single-flight guard, and the check
+    # MUST come BEFORE it creates its own (active) Pipeline Run, or it self-blocks.
+    body = _func_src(os.path.join(ROOT, "tasks.py"), "run_governed_build")
+    assert body is not None
+    assert "_assert_no_active_run()" in body, "run_governed_build must honor the guard"
+    # match the actual call site (with its arg) so a comment mention can't fool us
+    assert "_create_governed_pipeline_run(doc)" in body
+    assert body.index("_assert_no_active_run()") < body.index("_create_governed_pipeline_run(doc)"), (
+        "the single-flight check must run before the governed Pipeline Run is created"
+    )
