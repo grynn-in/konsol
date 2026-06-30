@@ -141,6 +141,21 @@ function epmCredit(entity, year, period, account, costCenter, department, hierar
   return enqueue(makeReq(entity, year, period, account, "period_credit", "actuals", costCenter, department, "", hierarchy, node));
 }
 
+// Consolidated cash-flow line read. Same epm_batch backend as K.EPM, pointed at
+// the `cashflow` Fact Table (gold_cashflow_fact): the group goes in the entity
+// slot and the cash-flow line name in the account slot. Self-documenting args.
+//   =K.CF("GROUP_CORP", 2024, 6, "Change in Inventory")
+function cf(group, year, period, line) {
+  return enqueue({
+    entity: String(group),
+    year: Number(year),
+    period: period,
+    account: String(line),
+    measure: "cash_flow_amount",
+    fact: "cashflow",
+  });
+}
+
 var saveCache = {};
 
 function epmSave(amount, entity, year, period, account, scenarioId, layer, costCenter, department, hierarchy, node) {
@@ -197,6 +212,7 @@ if (typeof CustomFunctions !== "undefined") {
   CustomFunctions.associate("EPM_VARIANCE", epmVariance);
   CustomFunctions.associate("EPM_DEBIT", epmDebit);
   CustomFunctions.associate("EPM_CREDIT", epmCredit);
+  CustomFunctions.associate("CF", cf);
   CustomFunctions.associate("EPMSAVE", epmSave);
   markAssociated();
 } else if (typeof window !== "undefined") {

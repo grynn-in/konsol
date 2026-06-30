@@ -175,5 +175,22 @@
     "reroute_measure": "",
     "reroute_table": "",
     "reroute_column": ""
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "cashflow",
+    "fact_name": "cashflow",
+    "label": "Consolidated Cash Flow",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_gold.gold_cashflow_fact",
+    "dbt_model": "gold_cashflow_fact",
+    "scenario_key": "cashflow",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per cf_line_item x fiscal_period x consolidation_group",
+    "fact_measures": [
+      {"measure": "cash_flow_amount"}
+    ]
   }
 ]
