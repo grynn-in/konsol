@@ -92,9 +92,10 @@ def run_heartbeat(run):
 def reap_stale_runs():
     """Scheduled: mark long-stuck active Pipeline Runs as Failed.
 
-    Frappe-bound. Finds runs in ACTIVE_RUN_STATES whose ``modified`` is older
-    than :data:`STALE_RUN_TIMEOUT_MINUTES` and stamps them ``Failed`` (with a
-    note in ``error_log``) via ``set_value`` (no optimistic-lock save) so they
+    Frappe-bound. Finds runs in ACTIVE_RUN_STATES whose liveness timestamp
+    (``run_heartbeat``: ``heartbeat_at`` → ``modified`` → ``started_at``) is
+    older than :data:`STALE_RUN_TIMEOUT_MINUTES` and stamps them ``Failed`` (with
+    a note in ``error_log``) via ``set_value`` (no optimistic-lock save) so they
     stop wedging the single-flight guard. Returns the list of reaped run names.
     """
     import frappe
