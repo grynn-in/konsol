@@ -6,9 +6,16 @@ worker dies mid-run (OOM kill, container restart) the run stays "Running"
 forever and wedges the guard permanently — no future run can start. This sweep
 releases such runs by marking them ``Failed``.
 
-The pure timestamp-math helper :func:`is_run_stale` is unit-tested on the host
-(no frappe); the frappe-bound :func:`reap_stale_runs` is wired to
-``scheduler_events`` and exercised in a bench smoke test.
+Staleness is judged off the run's **heartbeat** (#70): an orchestrator-owned
+``heartbeat_at`` that :class:`konsol.orchestrator.run.FrappeSink` bumps on every
+step start/result, so it advances only on genuine pipeline progress — not on
+incidental row touches (a concurrent cancel, a reaper write) that bump
+``modified``. :func:`run_heartbeat` resolves which timestamp to use (heartbeat,
+else ``modified``/``started_at`` for legacy runs).
+
+The pure helpers :func:`is_run_stale` / :func:`run_heartbeat` are unit-tested on
+the host (no frappe); the frappe-bound :func:`reap_stale_runs` is unit-tested
+with frappe mocked and exercised in a bench smoke test.
 """
 from __future__ import annotations
 
@@ -51,12 +58,44 @@ def is_run_stale(modified, now, timeout_minutes: int = STALE_RUN_TIMEOUT_MINUTES
     return (n - m) > timedelta(minutes=timeout_minutes)
 
 
+def run_heartbeat(run):
+    """Pick the timestamp that best reflects a run's last *real* progress (#70).
+
+    Pure. ``run`` may be a dict or a frappe doc. Prefers, in order:
+
+    1. ``heartbeat_at`` — the orchestrator-owned beat bumped by
+       :class:`konsol.orchestrator.run.FrappeSink` on every step start/result, so
+       it advances only on genuine pipeline progress;
+    2. ``modified`` — the incidental row-touch time (a cancel, a reaper write, or
+       any unrelated ``save`` also bumps it). Used as a backward-compatible
+       fallback for runs that predate the heartbeat field;
+    3. ``started_at`` — last resort for a run that hasn't beat yet.
+
+    Returns ``None`` when none is set (``is_run_stale`` then declines to reap).
+
+    Why a dedicated heartbeat instead of ``modified``: ``modified`` is bumped by
+    bookkeeping writes that aren't pipeline progress (e.g. a concurrent cancel),
+    which would spuriously *reset* the staleness clock and let a wedged worker
+    evade the reaper. ``heartbeat_at`` is written *only* at step boundaries, so
+    staleness tracks the pipeline, not the row.
+    """
+    def _get(key):
+        return run.get(key) if isinstance(run, dict) else getattr(run, key, None)
+
+    for key in ("heartbeat_at", "modified", "started_at"):
+        val = _get(key)
+        if val:
+            return val
+    return None
+
+
 def reap_stale_runs():
     """Scheduled: mark long-stuck active Pipeline Runs as Failed.
 
-    Frappe-bound. Finds runs in ACTIVE_RUN_STATES whose ``modified`` is older
-    than :data:`STALE_RUN_TIMEOUT_MINUTES` and stamps them ``Failed`` (with a
-    note in ``error_log``) via ``set_value`` (no optimistic-lock save) so they
+    Frappe-bound. Finds runs in ACTIVE_RUN_STATES whose liveness timestamp
+    (``run_heartbeat``: ``heartbeat_at`` → ``modified`` → ``started_at``) is
+    older than :data:`STALE_RUN_TIMEOUT_MINUTES` and stamps them ``Failed`` (with
+    a note in ``error_log``) via ``set_value`` (no optimistic-lock save) so they
     stop wedging the single-flight guard. Returns the list of reaped run names.
     """
     import frappe
@@ -67,15 +106,17 @@ def reap_stale_runs():
     candidates = frappe.get_all(
         "Pipeline Run",
         filters={"status": ["in", list(ACTIVE_RUN_STATES)]},
-        fields=["name", "modified"],
+        fields=["name", "heartbeat_at", "modified", "started_at"],
     )
     reaped = []
     note = (
-        f"[reaper] marked Failed: no progress for >{STALE_RUN_TIMEOUT_MINUTES}m "
+        f"[reaper] marked Failed: no heartbeat for >{STALE_RUN_TIMEOUT_MINUTES}m "
         "(presumed dead worker)"
     )
     for c in candidates:
-        if not is_run_stale(c.get("modified"), now, STALE_RUN_TIMEOUT_MINUTES):
+        # #70: judge staleness on the orchestrator heartbeat (genuine step
+        # progress), falling back to modified/started_at for legacy runs.
+        if not is_run_stale(run_heartbeat(c), now, STALE_RUN_TIMEOUT_MINUTES):
             continue
         prev = frappe.db.get_value("Pipeline Run", c["name"], "error_log") or ""
         frappe.db.set_value(

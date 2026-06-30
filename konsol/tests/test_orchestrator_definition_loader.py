@@ -185,16 +185,21 @@ def test_roundtrip_build_plan_skip_sync():
 # ---- runtime wiring (#65a) -----------------------------------------------
 
 def test_run_pipeline_loads_definition_when_set():
-    # The frappe-bound entrypoint must call load_definition for runs that carry a
-    # pipeline_definition (site-free source check; the actual frappe.get_doc is
-    # exercised in a bench smoke test).
+    # The frappe-bound entrypoint must drive the run's pipeline_definition through
+    # the planner for runs that carry one. Since #65 B1 the str->Steps resolution
+    # lives in ``plan_run`` (the single resolution point) via load_definition;
+    # run_pipeline just passes the definition name through. (site-free source
+    # check; the actual frappe.get_doc is exercised in a bench smoke test.)
     import inspect
 
     from konsol.orchestrator import run
 
-    src = inspect.getsource(run.run_pipeline)
-    assert "load_definition" in src
-    assert "pipeline_definition" in src
+    rp_src = inspect.getsource(run.run_pipeline)
+    assert "pipeline_definition" in rp_src
+    assert "plan_run" in rp_src
+    # resolution moved into plan_run
+    pr_src = inspect.getsource(run.plan_run)
+    assert "load_definition" in pr_src
 
 
 def test_loaded_definition_drives_plan_run():

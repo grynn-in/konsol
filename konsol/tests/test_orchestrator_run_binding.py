@@ -131,6 +131,67 @@ def test_plan_run_defaults_to_default_definition_when_none():
     assert [s.id for s in dag.steps] == [s.id for s in DEFAULT_DEFINITION]
 
 
+# ---- B1 (#65): plan_run resolves a definition NAME (str) ----------------
+
+def test_plan_run_resolves_str_definition_via_load_definition(monkeypatch):
+    # #65 B1: a definition NAME (str) is resolved through
+    # definition.load_definition into Steps, then planned. plan_run imports
+    # load_definition function-locally, so patching the module attribute is what
+    # the call resolves at runtime (no bench needed — load_definition is mocked).
+    from konsol.orchestrator import definition as definition_mod
+
+    calls = []
+
+    def fake_load(name):
+        calls.append(name)
+        return [Step("only", "signoff")]
+
+    monkeypatch.setattr(definition_mod, "load_definition", fake_load)
+    dag, state = run.plan_run({}, definition="Group Close")
+    assert calls == ["Group Close"]
+    assert [s.id for s in dag.steps] == ["only"]
+    assert all(state.status(s.id) == Status.PENDING for s in dag.steps)
+
+
+def test_plan_run_str_definition_still_applies_params(monkeypatch):
+    # The resolved steps go through build_plan, so run params (full_refresh) still
+    # apply to a name-resolved definition exactly as to an explicit one.
+    from konsol.orchestrator import definition as definition_mod
+
+    monkeypatch.setattr(
+        definition_mod,
+        "load_definition",
+        lambda name: [Step("silver", "dbt_run")],
+    )
+    dag, _ = run.plan_run({"full_refresh": True}, definition="Group Close")
+    assert dag.get("silver").params.get("full_refresh") is True
+
+
+def test_plan_run_explicit_step_list_does_not_call_load_definition(monkeypatch):
+    # An explicit List[Step] is used verbatim — load_definition is NOT invoked
+    # (backward compatible with the #65a/#66 wiring that passes pre-loaded steps).
+    from konsol.orchestrator import definition as definition_mod
+
+    def _boom(name):  # pragma: no cover - must never be called
+        raise AssertionError("load_definition called for an explicit step list")
+
+    monkeypatch.setattr(definition_mod, "load_definition", _boom)
+    dag, _ = run.plan_run({}, definition=[Step("only", "signoff")])
+    assert [s.id for s in dag.steps] == ["only"]
+
+
+def test_plan_run_none_definition_does_not_call_load_definition(monkeypatch):
+    from konsol.orchestrator import definition as definition_mod
+    from konsol.orchestrator.plan import DEFAULT_DEFINITION
+
+    def _boom(name):  # pragma: no cover - must never be called
+        raise AssertionError("load_definition called for definition=None")
+
+    monkeypatch.setattr(definition_mod, "load_definition", _boom)
+    dag, _ = run.plan_run({}, definition=None)
+    assert [s.id for s in dag.steps] == [s.id for s in DEFAULT_DEFINITION]
+
+
 # ---- run metadata helpers (#65b, pure) ----------------------------------
 
 def test_progress_pct_is_100_on_full_success():
