@@ -96,6 +96,18 @@
       "result": { "type": "number" }
     },
     {
+      "id": "CF",
+      "name": "CF",
+      "description": "Consolidated cash-flow line value (indirect method) for a group / period.",
+      "parameters": [
+        { "name": "group", "description": "Consolidation group, e.g. GROUP_CORP", "type": "string" },
+        { "name": "year", "description": "Fiscal year, e.g. 2024", "type": "number" },
+        { "name": "period", "description": "1-12, or Q1-Q4, H1-H2, FY", "type": "string" },
+        { "name": "line", "description": "Cash-flow line name, e.g. Change in Inventory or Net Income (Consolidated)", "type": "string" }
+      ],
+      "result": { "type": "number" }
+    },
+    {
       "id": "EPMSAVE",
       "name": "EPMSAVE",
       "description": "Write a single budget cell back to konsol on recalc. Returns the amount. Pass hierarchy + node to write at a hierarchy leaf.",
