@@ -192,5 +192,22 @@
     "fact_measures": [
       {"measure": "cash_flow_amount"}
     ]
+  },
+  {
+    "doctype": "Fact Table",
+    "name": "consolidated",
+    "fact_name": "consolidated",
+    "label": "Consolidated (Group)",
+    "source_type": "Consolidation",
+    "clickhouse_table": "epm_gold.gold_consolidated_fact",
+    "dbt_model": "gold_consolidated_fact",
+    "scenario_key": "consolidated",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x consolidation_group (post-FX, post-elimination)",
+    "fact_measures": [
+      {"measure": "consolidated_amount"}
+    ]
   }
 ]
