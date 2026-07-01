@@ -6,3 +6,4 @@ konsol.patches.reshape_budget_input_to_cycle
 konsol.patches.fix_dimension_source_column_drift
 konsol.patches.normalize_pipeline_step_status
 konsol.patches.rename_cash_flow_category_to_account
+konsol.patches.rekey_historical_equity_rate_to_group_corp
