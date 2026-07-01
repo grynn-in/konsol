@@ -1,8 +1,15 @@
 import * as React from "react";
 import { DOMAINS, STATUS } from "../constants";
-import { getDomainStats, getProcess } from "../domain";
+import { getDomainStats, getProcess, railStages } from "../domain";
+import { LayerRail } from "./LayerRail";
 
-export function GlobalOverview({ data, onOpenDomain, onPrimary }) {
+/**
+ * Control-plane overview. One tile row (active / attention / done today) and one
+ * card per process. Each card is deliberately spare: a monogram, one live-state
+ * chip, an inline mini-rail showing how far the last build got, and ONE primary
+ * verb that names what it launches. Colour means state and layer — nothing else.
+ */
+export function GlobalOverview({ data, onOpen }) {
 	const active = data?.stats?.active ?? 0;
 	const errors = data?.stats?.errors ?? 0;
 	const doneToday = data?.stats?.done_today ?? 0;
@@ -10,99 +17,90 @@ export function GlobalOverview({ data, onOpenDomain, onPrimary }) {
 	const cards = DOMAINS.map((meta) => {
 		const proc = getProcess(data, meta.id);
 		if (!proc) return null;
-		const st = STATUS[proc.machine_status] || STATUS.idle;
+		const ms = proc.machine_status;
+		const st = STATUS[ms] || STATUS.idle;
 		const stats = getDomainStats(proc);
-		const ready = proc.runnable;
+		const stages = railStages(meta, proc);
 
-		let cta = "Open";
-		if (proc.machine_status === "error") cta = "Retry";
-		else if (["running", "paused"].includes(proc.machine_status)) cta = "Monitor";
-		else if (!ready) cta = "Setup";
+		// one primary action, chosen by state
+		let primary = { label: `${meta.verb} →`, sub: "execute" };
+		if (["running", "paused"].includes(ms)) primary = { label: "Open live monitor →", sub: "monitor" };
+		else if (ms === "error") primary = { label: "Review failures →", sub: "monitor" };
+		else if (!proc.runnable) primary = { label: "Finish setup →", sub: "setup" };
+
+		const chipCls =
+			ms === "running" || ms === "paused" ? "kc-s-run" :
+			ms === "error" ? "kc-s-fail" :
+			ms === "done" ? "kc-s-ok" : "kc-s-idle";
 
 		return (
-			<div
-				key={meta.id}
-				className="kc-proc-card kc-overview-domain-card"
-				style={{ "--domain-accent": meta.accent }}
-			>
-				<div className="kc-proc-head">
-					<div className="kc-proc-title">
-						<span className="kc-proc-num" style={{ background: meta.accent }}>
-							{meta.num}
-						</span>
-						<span className="kc-proc-name">{meta.label}</span>
+			<article className="kc-pcard" key={meta.id}>
+				<div className="kc-pcard-top">
+					<span className="kc-mono-badge kc-mono">{meta.mono}</span>
+					<div className="kc-pcard-id">
+						<h3>{meta.label}</h3>
+						<div className="kc-pcard-verb kc-mono">
+							runs · {meta.stages.map((s) => s.label).join(" → ")}
+						</div>
 					</div>
-					<span className="kc-pill" style={{ color: st.color, background: st.bg }}>
-						{st.label}
+					<span className={`kc-state-chip ${chipCls}`}>
+						<span className="kc-dot" />
+						{st.label}{ms === "running" && stats.runLabel ? ` · ${stats.runLabel}` : ""}
 					</span>
 				</div>
-				<div className="kc-proc-desc">{meta.desc}</div>
-				<div className="kc-overview-domain-stats">
-					<span>Readiness {stats.readiness}</span>
-					<span>{stats.blockers} blocker{stats.blockers === 1 ? "" : "s"}</span>
-					<span>{stats.runLabel}</span>
+
+				<LayerRail stages={stages} variant="mini" />
+
+				<div className="kc-pcard-line">
+					<span>Readiness <span className="kc-mono">{stats.readiness}</span></span>
+					<span className="kc-mono">
+						{proc.blockers ? `${proc.blockers} blocker${proc.blockers === 1 ? "" : "s"}` : stats.runLabel}
+					</span>
 				</div>
-				<div
-					className="kc-readiness"
-					style={{ color: ready ? "var(--green)" : "var(--amber)" }}
-				>
-					<span
-						className="kc-dot"
-						style={{ background: ready ? "var(--green)" : "var(--amber)" }}
-					/>
-					{ready ? "Ready to run" : "Setup incomplete"}
-				</div>
-				<div className="kc-proc-actions">
+
+				<div className="kc-pcard-act">
 					<button
 						type="button"
-						className="kc-btn kc-btn-primary"
-						style={{ background: meta.accent }}
-						onClick={() => onPrimary(meta.id, cta)}
+						className="kc-btn kc-btn-primary kc-wide"
+						onClick={() => onOpen(meta.id, primary.sub)}
 					>
-						{cta}
+						{primary.label}
 					</button>
-					<button
-						type="button"
-						className="kc-btn kc-btn-ghost"
-						onClick={() => onOpenDomain(meta.id)}
-					>
-						Open {meta.label}
-					</button>
+					{primary.sub !== "setup" ? (
+						<button type="button" className="kc-btn kc-btn-ghost" onClick={() => onOpen(meta.id, "setup")}>
+							Open
+						</button>
+					) : null}
 				</div>
-			</div>
+			</article>
 		);
 	});
 
 	return (
 		<div className="kc-global-overview">
-			<div className="kc-grid3">
-				<div className="kc-card">
-					<div className="kc-stat-label">Active runs</div>
-					<div className="kc-stat-val">
-						{active}
-						<span className="kc-stat-suffix">in progress</span>
-					</div>
+			<p className="kc-eyebrow">Control plane</p>
+			<h1 className="kc-h1">What's moving right now</h1>
+			<p className="kc-lede">
+				Every close process, its readiness, and where its last build got to — one glance before you launch anything.
+			</p>
+
+			<div className="kc-tiles">
+				<div className="kc-tile">
+					<div className="kc-tile-k">Active runs</div>
+					<div className="kc-tile-v">{active}<small>in progress</small></div>
 				</div>
-				<div className="kc-card">
-					<div className="kc-stat-label">Needs attention</div>
-					<div
-						className="kc-stat-val"
-						style={{ color: errors ? "var(--red)" : "inherit" }}
-					>
-						{errors}
-						<span className="kc-stat-suffix">failed</span>
-					</div>
+				<div className={`kc-tile ${errors ? "kc-alert" : ""}`}>
+					<div className="kc-tile-k">Needs attention</div>
+					<div className="kc-tile-v">{errors}<small>failed</small></div>
 				</div>
-				<div className="kc-card">
-					<div className="kc-stat-label">Completed today</div>
-					<div className="kc-stat-val">
-						{doneToday}
-						<span className="kc-stat-suffix">runs</span>
-					</div>
+				<div className="kc-tile">
+					<div className="kc-tile-k">Completed today</div>
+					<div className="kc-tile-v">{doneToday}<small>runs</small></div>
 				</div>
 			</div>
-			<div className="kc-section-label">Close processes</div>
-			<div className="kc-overview-domains">{cards}</div>
+
+			<p className="kc-eyebrow">Processes</p>
+			<div className="kc-cards">{cards}</div>
 		</div>
 	);
 }

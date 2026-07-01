@@ -2,6 +2,11 @@ import * as React from "react";
 import { DOMAIN_SUBVIEWS } from "../constants";
 import { getDomainMeta, getDomainReminders, getProcess } from "../domain";
 
+/**
+ * Segmented sub-view control for a domain. The "execute" segment is relabelled
+ * to the process verb (Build / Publish cycle / …) so it's never a generic
+ * "Execute" — you always know what the plane runs.
+ */
 export function DomainSubNav({ section, subview, data, onSubview }) {
 	const meta = getDomainMeta(section);
 	const proc = getProcess(data, section);
@@ -9,30 +14,25 @@ export function DomainSubNav({ section, subview, data, onSubview }) {
 	const active = proc && ["running", "paused"].includes(proc.machine_status);
 
 	return (
-		<nav
-			className="kc-nav kc-sub-nav"
-			style={{ "--domain-accent": meta.accent }}
-			aria-label={`${meta.label} views`}
-		>
+		<div className="kc-seg" role="tablist" aria-label={`${meta.label} views`}>
 			{DOMAIN_SUBVIEWS.map(([id, label]) => {
+				const text = id === "execute" ? meta.verb : label;
 				let badge = null;
-				if (id === "setup" && overdue) {
-					badge = <span className="kc-tab-badge">{overdue}</span>;
-				}
-				if (id === "monitor" && active) {
-					badge = <span className="kc-dot kc-tab-dot-active" />;
-				}
+				if (id === "setup" && overdue) badge = <span className="kc-seg-badge">{overdue}</span>;
+				if (id === "monitor" && active) badge = <span className="kc-st kc-run" />;
 				return (
 					<button
 						key={id}
 						type="button"
-						className={`kc-tab ${subview === id ? "active" : ""}`}
+						role="tab"
+						aria-selected={subview === id}
+						className={`kc-seg-btn ${subview === id ? "kc-on" : ""}`}
 						onClick={() => onSubview(id)}
 					>
-						{label} {badge}
+						{text} {badge}
 					</button>
 				);
 			})}
-		</nav>
+		</div>
 	);
 }

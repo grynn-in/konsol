@@ -44,6 +44,34 @@ export function getDomainStats(proc) {
 	};
 }
 
+/**
+ * Compute per-stage rail state for a process, from its snapshot `proc`.
+ * Returns the domain's stages tagged with state: "done" | "now" | "fail" | "idle".
+ *
+ * The snapshot carries a coarse `run.step_done`/`step_total`; we map that onto
+ * the domain's declared stage list so the rail (overview mini-rail + the big
+ * LayerRail) always reflects how far the last/active build got. When a run
+ * failed we mark the stage it stalled on.
+ */
+export function railStages(meta, proc) {
+	const stages = (meta && meta.stages) || [];
+	const run = (proc && proc.run) || {};
+	const st = (proc && proc.machine_status) || "idle";
+	const total = run.step_total || stages.length || 1;
+	const done = Math.max(0, Math.min(run.step_done || 0, stages.length));
+	// index of the stage currently in motion (or the one that failed)
+	const cursor = Math.min(done, stages.length - 1);
+
+	return stages.map((stage, i) => {
+		let state = "idle";
+		if (i < done) state = "done";
+		else if (i === cursor && st === "running") state = "now";
+		else if (i === cursor && st === "error") state = "fail";
+		else if (st === "done") state = "done";
+		return { ...stage, state };
+	});
+}
+
 const ROLE_LABELS = {
 	primary: "Primary",
 	execution: "Execution",
