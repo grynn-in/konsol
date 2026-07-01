@@ -12,5 +12,6 @@
   {"doctype": "Measure", "name": "variance_pct", "measure_name": "variance_pct", "expression": "avg(variance_pct)", "label": "Variance (%)", "cube_type": "avg", "status": "Published"},
   {"doctype": "Measure", "name": "variance_favorable", "measure_name": "variance_favorable", "expression": "sum(variance_favorable)", "label": "Variance Favorable", "cube_type": "sum", "status": "Published"},
   {"doctype": "Measure", "name": "driver_value", "measure_name": "driver_value", "expression": "sum(driver_value)", "label": "Driver Value", "cube_type": "sum", "status": "Published"},
-  {"doctype": "Measure", "name": "cash_flow_amount", "measure_name": "cash_flow_amount", "expression": "sum(cash_flow_amount)", "label": "Cash Flow Amount", "cube_type": "sum", "status": "Published"}
+  {"doctype": "Measure", "name": "cash_flow_amount", "measure_name": "cash_flow_amount", "expression": "sum(cash_flow_amount)", "label": "Cash Flow Amount", "cube_type": "sum", "status": "Published"},
+  {"doctype": "Measure", "name": "consolidated_amount", "measure_name": "consolidated_amount", "expression": "sum(consolidated_amount)", "label": "Consolidated Amount", "cube_type": "sum", "status": "Published"}
 ]
