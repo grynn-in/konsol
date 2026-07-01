@@ -104,3 +104,34 @@ def test_legacy_cost_center_mapped_in_api():
     src = _read("api.py")
     assert "_LEGACY_DIM_MAP" in src
     assert "dim_cost_center" in src.split("_LEGACY_DIM_MAP")[1].split("def _resolve_and_validate")[0]
+
+# ── budget layer filter in hierarchy mode (grynn-in/konsol#63) ──────────
+
+def test_budget_forecast_configs_are_layered():
+    from konsol.hierarchy_query import HIERARCHY_SCENARIO_CONFIG as C
+    # budget/forecast carry layered facts; actuals/variance do not
+    assert C["budget"].get("has_layer") is True
+    assert C["forecast"].get("has_layer") is True
+    assert not C["actuals"].get("has_layer")
+    assert not C["variance"].get("has_layer")
+
+
+def test_hierarchy_query_gates_layer_filter():
+    src = _read("hierarchy_query.py")
+    # layer threaded through the group key
+    assert 'req.get("layer", "")' in src
+    # gated on the scenario config's has_layer, mirroring the flat path
+    assert 'cfg.get("has_layer")' in src
+    # applied as a parameterized clause (this exact clause is unique to the
+    # hierarchy builder; the flat one lives in api.py)
+    assert "AND layer = {layer:String}" in src
+
+
+def test_api_hierarchy_requests_carry_layer():
+    src = _read("api.py")
+    # the epm_batch hierarchy-normalized dict (just before the _hierarchy_mode
+    # marker) must carry layer into batch_query_hierarchy
+    pre = src.split('"_hierarchy_mode": True')[0]
+    assert '"layer"' in pre[-400:]
+    # the epm_value hierarchy call passes the layer arg through
+    assert '"layer": layer' in src
