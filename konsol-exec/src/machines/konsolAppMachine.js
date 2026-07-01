@@ -83,7 +83,7 @@ export const konsolAppMachine = setup({
 	context: {
 		section: "overview",
 		subview: "setup",
-		dark: false,
+		dark: true,
 		toast: null,
 		data: null,
 		loadError: null,

@@ -2,12 +2,15 @@
 {% block title %}Konsol Exec{% endblock %}
 {% block style %}
 <link rel="stylesheet" href="/assets/konsol/konsol_exec/konsol_exec.css?v={{ css_version }}">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   .navbar, .web-footer, footer, .page-header { display: none !important; }
   .page-content, .container { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
-  body { background: #f3efe6; }
-  html.kc-dark body { background: #0e0d09; }
+  /* dark-first console; the SPA adds html.kc-light for the light variant */
+  body { background: #14171C; }
+  html.kc-light body { background: #F4F2EC; }
 </style>
 {% endblock %}
 {% block page_content %}
