@@ -24,12 +24,14 @@ HIERARCHY_SCENARIO_CONFIG = {
         "default_measure": "period_amount",
         "measures": {"period_amount", "annual_amount"},
         "has_scenario_id": True,
+        "has_layer": True,
     },
     "forecast": {
         "table": "epm_gold.gold_budget_at_hierarchy_node",
         "default_measure": "period_amount",
         "measures": {"period_amount", "annual_amount"},
         "has_scenario_id": True,
+        "has_layer": True,
     },
     "variance": {
         "table": "epm_gold.gold_variance_at_hierarchy_node",
@@ -216,13 +218,14 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
             req["periods"],
             dims,
             req.get("scenario_id", ""),
+            req.get("layer", ""),
             wildcard,
             "" if wildcard else req.get("entity", ""),
         )
         groups[key].append((idx, req))
 
     for key, group_items in groups.items():
-        sc, measure, hname, node, periods, dim_names, scenario_id, wildcard, _entity_key = key
+        sc, measure, hname, node, periods, dim_names, scenario_id, layer, wildcard, _entity_key = key
         cfg = HIERARCHY_SCENARIO_CONFIG[sc]
         table = cfg["table"]
 
@@ -296,6 +299,19 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
             params["param_sid"] = scenario_id
             scenario_id_clause = " AND scenario_id = {sid:String}"
 
+        # Optional budget layer filter — mirrors the flat path in api.py. Omitted
+        # → sum across all layers (the final budget); supplied → restrict to one
+        # layer. Only budget/forecast configs are layered (has_layer). Not
+        # selected/grouped, just narrowed (grynn-in/konsol#63).
+        layer_clause = ""
+        if cfg.get("has_layer") and layer:
+            if not _SAFE_IDENTIFIER.match(layer):
+                for idx, _ in group_items:
+                    errors[idx] = "Invalid layer format"
+                continue
+            params["param_layer"] = layer
+            layer_clause = " AND layer = {layer:String}"
+
         group_by = ", ".join(select_cols)
         in_cols = f"({group_by})"
         in_values = ", ".join(in_tuples)
@@ -309,7 +325,8 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
             f"AND {in_cols} IN ({in_values}) "
             f"AND fiscal_period IN ({period_in})"
             f"{entity_clause}"
-            f"{scenario_id_clause} "
+            f"{scenario_id_clause}"
+            f"{layer_clause} "
             f"GROUP BY {group_by}"
         )
 
