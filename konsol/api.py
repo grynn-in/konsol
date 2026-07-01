@@ -1640,3 +1640,59 @@ def connector_health():
         order_by="lag_minutes desc",
         limit_page_length=0,
     )
+
+
+@frappe.whitelist()
+def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, limit=500):
+    """Read-only FX rates that drive consolidation translation (konsolidat#91 Part B).
+
+    Surfaces `epm_silver.silver_exchange_rates` so users can audit exactly which
+    rate translated an entity, without granting raw ClickHouse access. Login
+    required; no write path. Optional filters:
+
+      from_currency / to_currency  ISO codes (e.g. "EUR", "USD")
+      rate_type                    "Closing" | "Average" | "Default" | ...
+      as_of                        only rates effective on/before this date (YYYY-MM-DD)
+      limit                        row cap (1..5000, default 500)
+
+    Filter values are bound as ClickHouse HTTP params ({name:String/Date}) — not
+    interpolated — so they're injection-safe; the table is a fixed literal and the
+    limit is integer-cast.
+    """
+    import json
+
+    from konsol.clickhouse import execute
+
+    conds = []
+    params = {}
+    if from_currency:
+        params["fc"] = str(from_currency).upper()
+        conds.append("upper(from_currency) = {fc:String}")
+    if to_currency:
+        params["tc"] = str(to_currency).upper()
+        conds.append("upper(to_currency) = {tc:String}")
+    if rate_type:
+        params["rt"] = str(rate_type)
+        conds.append("exchange_rate_type = {rt:String}")
+    if as_of:
+        params["asof"] = str(as_of)
+        conds.append("valid_from <= {asof:Date}")
+
+    try:
+        lim = int(limit)
+    except (TypeError, ValueError):
+        lim = 500
+    lim = max(1, min(lim, 5000))
+
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    sql = (
+        "SELECT from_currency, to_currency, exchange_rate_type, "
+        "toString(valid_from) AS valid_from, exchange_rate "
+        "FROM epm_silver.silver_exchange_rates"
+        f"{where} "
+        "ORDER BY from_currency, to_currency, exchange_rate_type, valid_from DESC "
+        f"LIMIT {lim} FORMAT JSON"
+    )
+    raw = execute(sql, params)
+    rows = json.loads(raw).get("data", []) if raw else []
+    return {"rows": rows, "count": len(rows)}
