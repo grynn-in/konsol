@@ -38,13 +38,9 @@ export function App() {
 		document.documentElement.classList.toggle("kc-light", !dark);
 	}, [dark]);
 
-	// URL ← state: every view has its own address (deep-linkable, shareable)
-	React.useEffect(() => {
-		const desired = section === SECTION_OVERVIEW ? "#/overview" : `#/${section}/${subview}`;
-		if (window.location.hash !== desired) window.location.hash = desired;
-	}, [section, subview]);
-
-	// URL → state: react to back/forward + initial load
+	// URL → state: hydrate from the incoming URL on mount (so a shared deep link
+	// or a hard refresh lands on the right view), then track back/forward.
+	// Declared BEFORE the writer below so it runs first on mount.
 	React.useEffect(() => {
 		const apply = () => {
 			const parsed = parseHash(window.location.hash);
@@ -58,6 +54,21 @@ export function App() {
 		window.addEventListener("hashchange", apply);
 		return () => window.removeEventListener("hashchange", apply);
 	}, [send]);
+
+	// URL ← state: every view has its own address (deep-linkable, shareable).
+	// Skip the FIRST commit — on mount the machine starts at "overview", and
+	// writing that would clobber an incoming deep link before the hydrate effect
+	// above has dispatched it. After hydration the state matches the URL, so no
+	// spurious write (and no extra history entry) occurs.
+	const didHydrate = React.useRef(false);
+	React.useEffect(() => {
+		if (!didHydrate.current) {
+			didHydrate.current = true;
+			return;
+		}
+		const desired = section === SECTION_OVERVIEW ? "#/overview" : `#/${section}/${subview}`;
+		if (window.location.hash !== desired) window.location.hash = desired;
+	}, [section, subview]);
 
 	React.useEffect(() => {
 		if (!toast) return undefined;
