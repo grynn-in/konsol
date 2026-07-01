@@ -36,6 +36,10 @@ class HistoricalEquityRate(Document):
         )
 
     def validate(self):
+        self._validate_positive_rate()
+        self._validate_references()
+
+    def _validate_positive_rate(self):
         """Reject a non-positive historical rate (#92, finding #4).
 
         A 0/negative FX rate is never valid and would silently zero-out or
@@ -47,6 +51,42 @@ class HistoricalEquityRate(Document):
         if self.historical_rate is None or float(self.historical_rate) <= 0:
             frappe.throw(
                 "Historical Rate must be a positive number.",
+                frappe.ValidationError,
+            )
+
+    def _validate_references(self):
+        """Referential integrity on the free-text keys (#92, finding #3).
+
+        `consolidation_group` / `data_area_id` are Data fields, not Links — a
+        clean Link target does not exist (Consolidation Group is named
+        `CG-{group}-{entity}`, and the dbt join keys on the bare code, so the
+        stored value must stay the bare code). A typo therefore silently misses
+        the exact-string dbt join and drops the equity account back to the
+        closing rate with no error. Enforce existence here instead, against the
+        Consolidation Group registry (the app's source of truth for membership).
+
+        Existence is checked *independently* (the group is a known group; the
+        entity is a known entity). The (group, entity) *pair* is intentionally
+        NOT enforced yet: the Consolidation Group doctype currently diverges from
+        the dbt `consolidation_groups` seed that gold actually joins on
+        (grynn-in/konsolidat#130), so a pair check would reject seed-correct
+        keys. Pair enforcement lands once that divergence is resolved.
+        """
+        if self.consolidation_group and not frappe.db.exists(
+            "Consolidation Group", {"consolidation_group": self.consolidation_group}
+        ):
+            frappe.throw(
+                f"Unknown consolidation group '{self.consolidation_group}'. "
+                "It must exist in Consolidation Group — an unmatched key silently "
+                "drops the equity rate to the closing rate in gold.",
+                frappe.ValidationError,
+            )
+        if self.data_area_id and not frappe.db.exists(
+            "Consolidation Group", {"data_area_id": self.data_area_id, "is_group": 0}
+        ):
+            frappe.throw(
+                f"Unknown entity '{self.data_area_id}'. It must be a member entity "
+                "in Consolidation Group.",
                 frappe.ValidationError,
             )
 
