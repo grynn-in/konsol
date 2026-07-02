@@ -7,10 +7,10 @@ import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CR_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "period_close")
-CR_PY = os.path.join(CR_DIR, "period_close.py")
-CR_JSON = os.path.join(CR_DIR, "period_close.json")
-CR_JS = os.path.join(CR_DIR, "period_close.js")
+CR_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run")
+CR_PY = os.path.join(CR_DIR, "assertion_run.py")
+CR_JSON = os.path.join(CR_DIR, "assertion_run.json")
+CR_JS = os.path.join(CR_DIR, "assertion_run.js")
 RPT_DIR = os.path.join(APP_DIR, "consolidation", "report", "close_assertions")
 
 
@@ -57,7 +57,7 @@ def test_signoff_enforces_write_permission():
     """Green path must not be open to any user — write perm is checked before save."""
     src = _src(CR_PY)
     seg = src[src.index("def sign_off_close"):src.index("def assert_close_signed_off")]
-    assert 'frappe.has_permission("Period Close", "write"' in seg
+    assert 'frappe.has_permission("Assertion Run", "write"' in seg
     assert "throw=True" in seg
 
 
@@ -115,7 +115,7 @@ def test_signoff_buttons_wired():
 def test_close_assertions_report_registered():
     meta = json.load(open(os.path.join(RPT_DIR, "close_assertions.json")))
     assert meta["report_type"] == "Script Report"
-    assert meta["ref_doctype"] == "Period Close"
+    assert meta["ref_doctype"] == "Assertion Run"
     assert meta["report_name"] == "Close Assertions"
 
 
@@ -124,4 +124,4 @@ def test_close_assertions_report_executes_shape():
     assert "execute" in fns
     src = _src(os.path.join(RPT_DIR, "close_assertions.py"))
     # per-category board + summary + chart
-    assert "_chart" in src and "_summary" in src and "Assertion Result" in src
+    assert "_chart" in src and "_summary" in src and "Assertion Step" in src

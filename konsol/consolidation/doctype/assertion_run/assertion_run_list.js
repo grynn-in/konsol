@@ -1,4 +1,4 @@
-frappe.listview_settings["Period Close"] = {
+frappe.listview_settings["Assertion Run"] = {
 	get_indicator(doc) {
 		const map = {
 			Green: ["Green", "green", "status,=,Green"],

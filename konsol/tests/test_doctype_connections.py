@@ -85,8 +85,8 @@ def test_build_scope_links_build_models():
 
 def test_pipeline_run_links_period_closes():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
-    assert "Period Close" in _items(data)
-    assert data["non_standard_fieldnames"]["Period Close"] == "pipeline_run"
+    assert "Assertion Run" in _items(data)
+    assert data["non_standard_fieldnames"]["Assertion Run"] == "pipeline_run"
     assert data["internal_links"]["Build Approval"] == "pipeline_build_request"
 
 
@@ -96,7 +96,7 @@ def test_pipeline_run_links_build_approval():
 
 
 def test_period_close_links_pipeline_run():
-    data = _load_dashboard("consolidation/doctype/period_close/period_close_dashboard.py")
+    data = _load_dashboard("consolidation/doctype/assertion_run/assertion_run_dashboard.py")
     assert data["internal_links"]["Pipeline Run"] == "pipeline_run"
 
 
