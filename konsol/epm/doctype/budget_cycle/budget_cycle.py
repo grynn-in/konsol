@@ -28,7 +28,7 @@ class BudgetCycle(Document):
         if not self.scenario_id:
             return  # mandatory check surfaces the empty value elsewhere
         scenario_type = frappe.db.get_value(
-            "Scenario Definition", self.scenario_id, "scenario_type"
+            "Scenario", self.scenario_id, "scenario_type"
         )
         if scenario_type == "actual":
             frappe.throw(

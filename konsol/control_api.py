@@ -218,9 +218,9 @@ def _prerequisites(process_id, fy, budget_locked):
         _check("Dimension", "Lists → EPM → Dimension", lambda: _count("Dimension", {"in_budget": 1}) >= 1, owner="EPM Admin"),
         _check("Measure", "Lists → EPM → Measure", lambda: _count("Measure") >= 1, owner="EPM Admin"),
         _check(
-            "Scenario Definition",
-            "Lists → EPM → Scenario Definition",
-            lambda: _exists("Scenario Definition", {"is_active": 1, "scenario_type": ["in", ("budget", "forecast", "actual")]}),
+            "Scenario",
+            "Lists → EPM → Scenario",
+            lambda: _exists("Scenario", {"is_active": 1, "scenario_type": ["in", ("budget", "forecast", "actual")]}),
             owner="EPM Admin",
         ),
     ]
@@ -1130,7 +1130,7 @@ def _scenario_options():
     return [
         row.scenario_id
         for row in frappe.get_all(
-            "Scenario Definition",
+            "Scenario",
             filters={"is_active": 1},
             fields=["scenario_id"],
             order_by="scenario_id",

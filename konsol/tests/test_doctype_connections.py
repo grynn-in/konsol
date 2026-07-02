@@ -32,7 +32,7 @@ def test_budget_sheet_links_cycle():
 
 
 def test_scenario_links_budget_cycles():
-    data = _load_dashboard("epm/doctype/scenario_definition/scenario_definition_dashboard.py")
+    data = _load_dashboard("epm/doctype/scenario/scenario_dashboard.py")
     assert "Budget Cycle" in _items(data)
 
 

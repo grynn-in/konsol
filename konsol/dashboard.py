@@ -37,7 +37,7 @@ _SHORTCUTS = [
 # Link cards grouped by konsol workflow: Budget → Registry → Pipeline → Allocation → Consolidation
 _CARDS = [
     ("Budget", [
-        "Scenario Definition", "Budget Cycle", "Budget Sheet",
+        "Scenario", "Budget Cycle", "Budget Sheet",
         "Fiscal Period", "Spread Profile",
     ]),
     ("EPM Registry", [

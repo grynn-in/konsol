@@ -1,21 +1,21 @@
-"""TDD tests for Scenario Definition doctype."""
+"""TDD tests for Scenario doctype."""
 import ast
 import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DT_DIR = os.path.join(APP_DIR, "epm", "doctype", "scenario_definition")
-JSON_PATH = os.path.join(DT_DIR, "scenario_definition.json")
-PY_PATH = os.path.join(DT_DIR, "scenario_definition.py")
+DT_DIR = os.path.join(APP_DIR, "epm", "doctype", "scenario")
+JSON_PATH = os.path.join(DT_DIR, "scenario.json")
+PY_PATH = os.path.join(DT_DIR, "scenario.py")
 
 
 def test_doctype_json_exists():
-    """scenario_definition.json must exist."""
+    """scenario.json must exist."""
     assert os.path.exists(JSON_PATH)
 
 
 def test_doctype_py_exists():
-    """scenario_definition.py must exist."""
+    """scenario.py must exist."""
     assert os.path.exists(PY_PATH)
 
 
