@@ -54,7 +54,7 @@ _CARDS = [
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
-        "Consolidation Adjustment", "IC Balance", "IC Elimination Rule", "Close Run",
+        "Consolidation Adjustment", "IC Balance", "IC Elimination Rule", "Period Close",
     ]),
     # CTA drivers: the configurable inputs that move the Currency Translation
     # Adjustment plug (gold_fx_revaluation). Grouped for quick access when

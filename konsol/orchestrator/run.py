@@ -332,11 +332,11 @@ def _run_airbyte_sync(run_doc) -> StepResult:
 
 def _run_close_assertions(run_doc, params) -> StepResult:
     """Run the close assertion suite as ``dbt test`` — the same singular tests
-    the Close Run uses (``--select test_type:singular --store-failures``),
+    the Period Close uses (``--select test_type:singular --store-failures``),
     scoped to this run's fiscal period / entity via dbt vars so the assertions
     check the slice that was just built. The step fails iff dbt reports a failing
     assertion (non-zero exit). Uses the orchestrator's own dbt runner (resolves
-    the project dir + venv dbt), not a Close Run document."""
+    the project dir + venv dbt), not a Period Close document."""
     import json
 
     argv = ["dbt", "test", "--select", "test_type:singular", "--store-failures"]

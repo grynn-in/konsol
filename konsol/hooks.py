@@ -69,10 +69,10 @@ scheduler_events = {
         "*/5 * * * *": [
             "konsol.pipeline.doctype.connector_health.connector_health.refresh_connector_health"
         ],
-        # Release Close Runs stuck Queued/Running (e.g. a dead worker) so the
+        # Release Period Closes stuck Queued/Running (e.g. a dead worker) so the
         # concurrency guard can't wedge permanently. Runs every 10 minutes.
         "*/10 * * * *": [
-            "konsol.consolidation.doctype.close_run.close_run.reap_stale_close_runs"
+            "konsol.consolidation.doctype.period_close.period_close.reap_stale_close_runs"
         ],
         # Orchestrator scheduling: evaluate enabled Pipeline Schedules every
         # minute and start due pipeline runs (PRD-14).

@@ -3,9 +3,9 @@ frappe.query_reports["Close Assertions"] = {
 	filters: [
 		{
 			fieldname: "close_run",
-			label: __("Close Run"),
+			label: __("Period Close"),
 			fieldtype: "Link",
-			options: "Close Run",
+			options: "Period Close",
 			reqd: 0,
 			description: __("Leave blank for the latest completed run"),
 		},

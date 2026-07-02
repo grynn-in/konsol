@@ -1,5 +1,5 @@
 {
-  "name": "Close Run",
+  "name": "Period Close",
   "doctype": "DocType",
   "module": "Consolidation",
   "issingle": 0,
@@ -13,7 +13,7 @@
     {
       "fieldname": "tab_close_run",
       "fieldtype": "Tab Break",
-      "label": "Close Run"
+      "label": "Period Close"
     },
     {
       "fieldname": "title",
