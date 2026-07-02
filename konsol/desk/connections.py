@@ -26,6 +26,28 @@ _CUSTOM_PATCHERS = {
 }
 
 
+def _drop_fieldless_items(doctype, items):
+    """Keep only items the standard link-count query can actually run against.
+
+    ``_get_linked_document_counts`` counts each item by the dashboard's link
+    fieldname (``non_standard_fieldnames`` or the default ``fieldname``). If an
+    item doctype lacks that column the query raises 1054. This happens for
+    Build Approval whose ``trigger_doctype`` (e.g. Cash Flow Category) is passed
+    in by the client but has no ``pipeline_build_request`` field — it is already
+    surfaced as an internal link by the custom patcher, so it must not reach the
+    standard path.
+    """
+    dd = frappe.get_meta(doctype).get_dashboard_data()
+    default_fieldname = dd.get("fieldname")
+    non_standard = dd.get("non_standard_fieldnames") or {}
+    kept = []
+    for item in items:
+        fieldname = non_standard.get(item, default_fieldname)
+        if fieldname and frappe.get_meta(item).has_field(fieldname):
+            kept.append(item)
+    return kept
+
+
 def _resolve_items(doctype, items):
     if items is None:
         links = frappe.get_meta(doctype).get_dashboard_data()
@@ -50,6 +72,7 @@ def get_open_count(doctype, name, items=None):
     frappe.db.set_execution_timeout(1)
 
     standard_items, _all_items = _resolve_items(doctype, items)
+    standard_items = _drop_fieldless_items(doctype, standard_items)
 
     try:
         result = _get_linked_document_counts(doctype, name, standard_items)
