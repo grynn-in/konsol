@@ -47,7 +47,7 @@ _CARDS = [
     ]),
     ("Data Pipeline", [
         "Connector", "Connector Health", "Pipeline Build Request", "Pipeline Run",
-        "Build Scope", "Gold Model",
+        "Build Scope", "Build Model",
     ]),
     ("Allocation", [
         "Allocation Rule", "Allocation Driver", "Allocation Run",

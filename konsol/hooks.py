@@ -30,7 +30,7 @@ fixtures = [
     "Spread Profile",
     "Connector",
     "Build Scope",
-    "Gold Model",
+    "Build Model",
     "Pipeline",
 ]
 

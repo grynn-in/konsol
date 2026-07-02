@@ -11,3 +11,4 @@ execute:frappe.rename_doc("DocType", "Pipeline Step", "Run Step", force=True, ig
 execute:frappe.rename_doc("DocType", "Step Definition", "Pipeline Step", force=True, ignore_if_exists=True) #2026-07-02
 execute:frappe.rename_doc("DocType", "Pipeline Definition", "Pipeline", force=True, ignore_if_exists=True) #2026-07-02
 execute:frappe.rename_doc("DocType", "Build Domain", "Build Scope", force=True, ignore_if_exists=True) #2026-07-02
+execute:frappe.rename_doc("DocType", "Gold Model", "Build Model", force=True, ignore_if_exists=True) #2026-07-02

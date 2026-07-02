@@ -438,10 +438,10 @@ def test_preflight_uses_raw_dependent_helper():
     assert "_raw_dependent_scopes()" in pre
 
 
-def test_gold_model_links_to_build_scope():
-    """Gold Model.build_domain must be a Link to Build Scope (single source)."""
+def test_build_model_links_to_build_scope():
+    """Build Model.build_domain must be a Link to Build Scope (single source)."""
     path = os.path.join(
-        APP_DIR, "pipeline", "doctype", "gold_model", "gold_model.json")
+        APP_DIR, "pipeline", "doctype", "build_model", "build_model.json")
     doc = json.loads(_read(path))
     bd = next(f for f in doc["fields"] if f["fieldname"] == "build_domain")
     assert bd["fieldtype"] == "Link"

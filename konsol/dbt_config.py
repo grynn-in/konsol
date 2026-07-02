@@ -427,9 +427,9 @@ def _apply_model_domains(project, mapping):
 
 
 def _build_model_domain_mapping():
-    """Build {model_name: build_domain} from the Gold Model doctype."""
+    """Build {model_name: build_domain} from the Build Model doctype."""
     docs = frappe.get_all(
-        "Gold Model",
+        "Build Model",
         fields=["model_name", "build_domain"],
         order_by="model_name asc",
         limit_page_length=0,
@@ -438,10 +438,10 @@ def _build_model_domain_mapping():
 
 
 def regenerate_model_domains():
-    """Write the gold models' domain tags into dbt_project.yml from Gold Model docs.
+    """Write the gold models' domain tags into dbt_project.yml from Build Model docs.
 
     Frappe is the source of truth for the model -> domain assignment that drives
-    Build Governance scope selection. When no Gold Model docs exist the YAML is
+    Build Governance scope selection. When no Build Model docs exist the YAML is
     left untouched (nothing to manage yet).
     """
     path = _get_dbt_project_path()

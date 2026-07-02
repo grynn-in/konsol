@@ -1,4 +1,4 @@
-"""Gold Model — assigns each gold dbt model to a Build Governance domain.
+"""Build Model — assigns each gold dbt model to a Build Governance domain.
 
 Frappe is the source of truth for the model -> domain mapping. On save, the
 mapping is written into dbt_project.yml's models block as
@@ -12,7 +12,7 @@ from frappe.model.document import Document
 from konsol.dbt_config import regenerate_model_domains
 
 
-class GoldModel(Document):
+class BuildModel(Document):
     # build_domain is a Link to Build Scope, so Frappe enforces that the domain
     # exists — no manual allow-list needed here.
 
