@@ -7,10 +7,10 @@ import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CR_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "close_run")
-CR_PY = os.path.join(CR_DIR, "close_run.py")
-CR_JSON = os.path.join(CR_DIR, "close_run.json")
-CR_JS = os.path.join(CR_DIR, "close_run.js")
+CR_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "period_close")
+CR_PY = os.path.join(CR_DIR, "period_close.py")
+CR_JSON = os.path.join(CR_DIR, "period_close.json")
+CR_JS = os.path.join(CR_DIR, "period_close.js")
 RPT_DIR = os.path.join(APP_DIR, "consolidation", "report", "close_assertions")
 
 
@@ -26,7 +26,7 @@ def _src(path):
 
 # --- gate: doctype fields --------------------------------------------------
 
-def test_close_run_has_signoff_fields():
+def test_period_close_has_signoff_fields():
     meta = json.load(open(CR_JSON))
     fields = {f["fieldname"]: f for f in meta["fields"]}
     for fn in ("signoff_status", "signed_off_by", "signed_off_at", "override_reason"):
@@ -57,7 +57,7 @@ def test_signoff_enforces_write_permission():
     """Green path must not be open to any user — write perm is checked before save."""
     src = _src(CR_PY)
     seg = src[src.index("def sign_off_close"):src.index("def assert_close_signed_off")]
-    assert 'frappe.has_permission("Close Run", "write"' in seg
+    assert 'frappe.has_permission("Period Close", "write"' in seg
     assert "throw=True" in seg
 
 
@@ -115,7 +115,7 @@ def test_signoff_buttons_wired():
 def test_close_assertions_report_registered():
     meta = json.load(open(os.path.join(RPT_DIR, "close_assertions.json")))
     assert meta["report_type"] == "Script Report"
-    assert meta["ref_doctype"] == "Close Run"
+    assert meta["ref_doctype"] == "Period Close"
     assert meta["report_name"] == "Close Assertions"
 
 

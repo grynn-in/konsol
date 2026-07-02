@@ -49,15 +49,15 @@ def test_dimension_links_mappings_and_hierarchies():
     assert "Reporting Hierarchy" in items
 
 
-def test_fact_table_internal_registry_links():
-    data = _load_dashboard("epm/doctype/fact_table/fact_table_dashboard.py")
+def test_dataset_internal_registry_links():
+    data = _load_dashboard("epm/doctype/dataset/dataset_dashboard.py")
     assert data["internal_links"]["Measure"] == ["fact_measures", "measure"]
     assert data["internal_links"]["Dimension"] == ["fact_dimensions", "dimension"]
 
 
-def test_measure_links_fact_tables_with_custom_count():
+def test_measure_links_datasets_with_custom_count():
     data = _load_dashboard("epm/doctype/measure/measure_dashboard.py")
-    assert "Fact Table" in _items(data)
+    assert "Dataset" in _items(data)
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 
@@ -72,31 +72,31 @@ def test_connector_health_links_connector():
     assert data["internal_links"]["Connector"] == "connector"
 
 
-def test_gold_model_links_build_domain():
-    data = _load_dashboard("pipeline/doctype/gold_model/gold_model_dashboard.py")
-    assert data["internal_links"]["Build Domain"] == "build_domain"
+def test_build_model_links_build_scope():
+    data = _load_dashboard("pipeline/doctype/build_model/build_model_dashboard.py")
+    assert data["internal_links"]["Build Scope"] == "build_domain"
 
 
-def test_build_domain_links_gold_models():
-    data = _load_dashboard("pipeline/doctype/build_domain/build_domain_dashboard.py")
-    assert "Gold Model" in _items(data)
-    assert data["non_standard_fieldnames"]["Gold Model"] == "build_domain"
+def test_build_scope_links_build_models():
+    data = _load_dashboard("pipeline/doctype/build_scope/build_scope_dashboard.py")
+    assert "Build Model" in _items(data)
+    assert data["non_standard_fieldnames"]["Build Model"] == "build_domain"
 
 
-def test_pipeline_run_links_close_runs():
+def test_pipeline_run_links_period_closes():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
-    assert "Close Run" in _items(data)
-    assert data["non_standard_fieldnames"]["Close Run"] == "pipeline_run"
-    assert data["internal_links"]["Pipeline Build Request"] == "pipeline_build_request"
+    assert "Period Close" in _items(data)
+    assert data["non_standard_fieldnames"]["Period Close"] == "pipeline_run"
+    assert data["internal_links"]["Build Approval"] == "pipeline_build_request"
 
 
-def test_pipeline_run_links_build_request():
+def test_pipeline_run_links_build_approval():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
-    assert "Pipeline Build Request" in _items(data)
+    assert "Build Approval" in _items(data)
 
 
-def test_close_run_links_pipeline_run():
-    data = _load_dashboard("consolidation/doctype/close_run/close_run_dashboard.py")
+def test_period_close_links_pipeline_run():
+    data = _load_dashboard("consolidation/doctype/period_close/period_close_dashboard.py")
     assert data["internal_links"]["Pipeline Run"] == "pipeline_run"
 
 
@@ -116,16 +116,16 @@ def test_allocation_rule_links_drivers():
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 
-def test_pipeline_build_request_dashboard_links_runs_and_trigger_js():
+def test_build_approval_dashboard_links_runs_and_trigger_js():
     data = _load_dashboard(
-        "pipeline/doctype/pipeline_build_request/pipeline_build_request_dashboard.py")
+        "pipeline/doctype/build_approval/build_approval_dashboard.py")
     assert "Pipeline Run" in _items(data)
     assert data["non_standard_fieldnames"]["Pipeline Run"] == "pipeline_build_request"
     assert data["method"] == "konsol.desk.connections.get_open_count"
     js_path = os.path.join(
-        APP_DIR, "pipeline/doctype/pipeline_build_request/pipeline_build_request.js")
+        APP_DIR, "pipeline/doctype/build_approval/build_approval.js")
     js = open(js_path).read()
-    assert "refresh_pipeline_build_request_connections" in js
+    assert "refresh_build_approval_connections" in js
     assert "frm.dashboard.hide()" not in js
 
 

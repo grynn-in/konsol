@@ -7,7 +7,7 @@ Covers:
   - fetch_existing_entries (GET pre-flight)
   - build_batch_body structure
   - push_replace_batch ($batch POST)
-  - enqueue_push_budget_input (workflow wiring helper)
+  - enqueue_push_budget_sheet (cycle-lock wiring helper)
 
 No live Frappe site or D365 tenant required. ``frappe`` and ``requests`` are
 mocked the same way as ``test_d365_writeback_orchestration.py``.

@@ -79,11 +79,12 @@ _DIGEST_LEN = 8
 
 
 def budget_name(values):
-    """Build the deterministic, injective Budget Input name from a values dict.
+    """Build the deterministic, injective legacy ``Budget Input`` document name.
 
-    ``values`` must provide the fixed keys and every grain dimension. Shared by
-    ``BudgetInput.autoname()`` and the grain migration patch so both produce
-    byte-identical names. The readable head is for humans; an 8-char digest of
+    ``values`` must provide the fixed keys and every grain dimension. Kept for
+    the historical ``rekey_budget_input_dimensional_grain`` patch (the Budget
+    Input doctype itself is retired, and its ``autoname()`` produced the same
+    names). The readable head is for humans; an 8-char digest of
     the *exact* (un-slugged) key tuple guarantees two distinct keys never share
     a name even if their slugs collapse to the same string.
     """

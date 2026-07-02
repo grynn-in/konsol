@@ -85,11 +85,11 @@ def test_dbt_config_has_regenerate_model_domains():
     assert "_apply_model_domains" in func_names
 
 
-def test_regenerate_model_domains_reads_gold_model_doctype():
-    """regenerate_model_domains must source the mapping from the Gold Model doctype."""
+def test_regenerate_model_domains_reads_build_model_doctype():
+    """regenerate_model_domains must source the mapping from the Build Model doctype."""
     with open(DBT_CONFIG_PATH) as f:
         content = f.read()
-    assert '"Gold Model"' in content
+    assert '"Build Model"' in content
 
 
 def test_apply_model_domains_rewrites_gold_tags():

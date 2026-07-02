@@ -152,7 +152,7 @@ export function ExecuteLaunch({ send, meta, busy }) {
 						</select>
 					</label>
 					<label className="kc-field">
-						<span className="kc-field-label">Pipeline Definition</span>
+						<span className="kc-field-label">Pipeline</span>
 						<select name="definition" className="kc-input" value={form.definition} onChange={set("definition")}>
 							<option value="">Default pipeline</option>
 							{options.definitions.map((o) => {

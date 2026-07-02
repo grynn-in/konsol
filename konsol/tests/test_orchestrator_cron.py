@@ -201,7 +201,7 @@ def test_schedule_field_types():
     fields = _fields_by_name(_schedule_doc())
     assert fields["schedule_name"]["fieldtype"] == "Data"
     assert fields["pipeline_definition"]["fieldtype"] == "Link"
-    assert fields["pipeline_definition"]["options"] == "Pipeline Definition"
+    assert fields["pipeline_definition"]["options"] == "Pipeline"
     assert fields["cron"]["fieldtype"] == "Data"
     assert fields["params"]["fieldtype"] in {"Code", "JSON", "Small Text"}
     assert fields["enabled"]["fieldtype"] == "Check"

@@ -1,9 +1,9 @@
-"""TDD — Pipeline Definition + Step Definition doctypes + seed fixture (PRD-12).
+"""TDD — Pipeline + Pipeline Step doctypes + seed fixture (PRD-12).
 
 Pure host test (no frappe / no bench). We load the two doctype JSONs and the
 seed fixture and assert:
 - both doctypes expose the PRD-12 field set with the right fieldtypes;
-- ``Step Definition.step_type`` Select options are a superset of
+- ``Pipeline Step.step_type`` Select options are a superset of
   :data:`konsol.orchestrator.handlers.BUILTIN_TYPES`;
 - the **Group Close** seed fixture decodes to the step ids + dependency edges
   that mirror :data:`konsol.orchestrator.plan.DEFAULT_DEFINITION`.
@@ -24,10 +24,10 @@ def _doctype_path(name):
     )
 
 
-_DEFN_PATH = _doctype_path("pipeline_definition")
-_STEP_PATH = _doctype_path("step_definition")
+_DEFN_PATH = _doctype_path("pipeline")
+_STEP_PATH = _doctype_path("pipeline_step")
 _FIXTURE_PATH = os.path.abspath(
-    os.path.join(_HERE, "..", "fixtures", "pipeline_definition.json")
+    os.path.join(_HERE, "..", "fixtures", "pipeline.json")
 )
 
 
@@ -40,12 +40,12 @@ def _fields_by_name(doc):
     return {f["fieldname"]: f for f in doc["fields"]}
 
 
-# --- Pipeline Definition doctype --------------------------------------------
+# --- Pipeline doctype --------------------------------------------------------
 
 
 def test_definition_doctype_loads_and_is_not_table():
     doc = _load(_DEFN_PATH)
-    assert doc["name"] == "Pipeline Definition"
+    assert doc["name"] == "Pipeline"
     assert doc["module"] == "Pipeline"
     assert doc.get("istable", 0) == 0
 
@@ -65,7 +65,7 @@ def test_definition_fields_present():
         "default_params",
         "steps",
     ):
-        assert name in fields, f"missing Pipeline Definition field {name!r}"
+        assert name in fields, f"missing Pipeline field {name!r}"
 
 
 def test_definition_name_unique():
@@ -80,10 +80,10 @@ def test_definition_enabled_default_on():
     assert str(fields["enabled"].get("default")) == "1"
 
 
-def test_definition_steps_is_table_to_step_definition():
+def test_definition_steps_is_table_to_pipeline_step():
     fields = _fields_by_name(_load(_DEFN_PATH))
     assert fields["steps"]["fieldtype"] == "Table"
-    assert fields["steps"]["options"] == "Step Definition"
+    assert fields["steps"]["options"] == "Pipeline Step"
 
 
 def test_definition_default_params_is_json_code():
@@ -91,20 +91,20 @@ def test_definition_default_params_is_json_code():
     assert fields["default_params"]["fieldtype"] in {"Code", "JSON", "Small Text"}
 
 
-# --- Step Definition doctype ------------------------------------------------
+# --- Pipeline Step doctype ---------------------------------------------------
 
 
-def test_step_definition_doctype_is_child_table():
+def test_pipeline_step_doctype_is_child_table():
     doc = _load(_STEP_PATH)
-    assert doc["name"] == "Step Definition"
+    assert doc["name"] == "Pipeline Step"
     assert doc["module"] == "Pipeline"
     assert doc["istable"] == 1
 
 
-def test_step_definition_fields_present():
+def test_pipeline_step_fields_present():
     fields = _fields_by_name(_load(_STEP_PATH))
     for name in ("step_id", "step_type", "depends_on", "params"):
-        assert name in fields, f"missing Step Definition field {name!r}"
+        assert name in fields, f"missing Pipeline Step field {name!r}"
 
 
 def test_step_id_required():
@@ -129,7 +129,7 @@ def test_step_type_options_include_extra_types():
         assert extra in options, f"expected extra step_type {extra!r}"
 
 
-def test_step_definition_depends_on_and_params_types():
+def test_pipeline_step_depends_on_and_params_types():
     fields = _fields_by_name(_load(_STEP_PATH))
     assert fields["depends_on"]["fieldtype"] in {"Small Text", "Data", "Long Text"}
     assert fields["params"]["fieldtype"] in {"Code", "JSON", "Small Text"}
@@ -147,9 +147,9 @@ def _group_close():
     raise AssertionError("Group Close definition not found in fixture")
 
 
-def test_fixture_is_pipeline_definition():
+def test_fixture_is_pipeline():
     rec = _group_close()
-    assert rec["doctype"] == "Pipeline Definition"
+    assert rec["doctype"] == "Pipeline"
     assert rec.get("enabled", 1)
 
 
@@ -186,4 +186,4 @@ def test_fixture_registered_in_hooks():
     hooks_path = os.path.abspath(os.path.join(_HERE, "..", "hooks.py"))
     with open(hooks_path) as fh:
         text = fh.read()
-    assert "Pipeline Definition" in text, "register the fixture in hooks.py fixtures"
+    assert '"Pipeline",' in text, "register the fixture in hooks.py fixtures"

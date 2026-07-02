@@ -216,7 +216,7 @@ def _assert_budget_write_access(data):
 
 
 # ---------------------------------------------------------------------------
-# Fact Table registry helpers
+# Dataset registry helpers
 # ---------------------------------------------------------------------------
 
 _FACT_FIELDS = [
@@ -228,9 +228,9 @@ _FACT_FIELDS = [
 
 
 def _get_fact_by_scenario(scenario):
-    """Load Fact Table doc by scenario_key. Returns dict or None."""
+    """Load Dataset doc by scenario_key. Returns dict or None."""
     facts = frappe.get_all(
-        "Fact Table",
+        "Dataset",
         filters={"scenario_key": scenario},
         fields=_FACT_FIELDS,
         limit=1,
@@ -239,7 +239,7 @@ def _get_fact_by_scenario(scenario):
 
 
 def _get_fact(fact=None, scenario=None):
-    """Resolve a Fact Table. `fact` (fact_name) wins over `scenario`.
+    """Resolve a Dataset. `fact` (fact_name) wins over `scenario`.
 
     fact_name match is case-insensitive (names are stored normalized lowercase).
     If both are supplied, fact wins and a warning is logged. Returns dict or None.
@@ -250,7 +250,7 @@ def _get_fact(fact=None, scenario=None):
                 f"epm: both fact='{fact}' and scenario='{scenario}' given; fact wins"
             )
         facts = frappe.get_all(
-            "Fact Table",
+            "Dataset",
             filters={"fact_name": (fact or "").lower()},
             fields=_FACT_FIELDS,
             limit=1,
@@ -260,12 +260,12 @@ def _get_fact(fact=None, scenario=None):
 
 
 def _get_allowed_measures(fact):
-    """Parse measures JSON from a Fact Table doc. Returns set."""
+    """Parse measures JSON from a Dataset doc. Returns set."""
     return set(json.loads(fact.measures or "[]"))
 
 
 def _get_fact_dimensions(fact):
-    """Parse dimensions JSON from a Fact Table doc. Returns set."""
+    """Parse dimensions JSON from a Dataset doc. Returns set."""
     return set(json.loads(fact.dimensions or "[]"))
 
 
@@ -342,12 +342,12 @@ def _resolve_and_validate(fact_name, scenario, measure, dim_names):
         if fact_name:
             allowed = sorted(
                 f.fact_name for f in frappe.get_all(
-                    "Fact Table", fields=["fact_name"], limit_page_length=0)
+                    "Dataset", fields=["fact_name"], limit_page_length=0)
             )
             return None, f"Invalid fact '{fact_name}'. Allowed: {', '.join(allowed)}"
         allowed = sorted(set(
             f.scenario_key for f in frappe.get_all(
-                "Fact Table", fields=["scenario_key"], limit_page_length=0)
+                "Dataset", fields=["scenario_key"], limit_page_length=0)
         ))
         return None, f"Invalid scenario '{scenario}'. Allowed: {', '.join(allowed)}"
 
@@ -536,7 +536,7 @@ def _batch_query_clickhouse(requests_list):
         fact = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
         if not fact:
             for idx, _ in group_items:
-                errors[idx] = f"No Fact Table for '{fact_key}'"
+                errors[idx] = f"No Dataset for '{fact_key}'"
             continue
 
         table = fact.clickhouse_table
@@ -550,7 +550,7 @@ def _batch_query_clickhouse(requests_list):
                 query_measure = fact.reroute_column
 
         # Validate identifiers before SQL interpolation. The table name comes
-        # from the Fact Table doctype but is interpolated directly into FROM,
+        # from the Dataset doctype but is interpolated directly into FROM,
         # so it must be validated too (defence against a tampered/typo'd
         # clickhouse_table or reroute_table value).
         if not _SAFE_TABLE_NAME.match(table or ""):

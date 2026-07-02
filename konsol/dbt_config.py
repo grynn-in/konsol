@@ -219,7 +219,7 @@ def _build_measures_vars():
 
     `base_measures` feeds `measure_select()` in `gold_trial_balance`, which emits
     each measure's `expression` directly over `silver_gl_entries`. So it must be
-    exactly the measures of the trial-balance fact (the Fact Table that produces
+    exactly the measures of the trial-balance fact (the Dataset that produces
     `gold_trial_balance`) — NOT every published Measure. Measures belonging to
     other facts (budget/variance/driver grains) reference columns absent from
     `silver_gl_entries` and would break the dbt build (UNKNOWN_IDENTIFIER) if
@@ -262,11 +262,11 @@ def _trial_balance_measure_names():
     trial-balance fact is configured (so gold_trial_balance always keeps its
     required aggregates and the build stays valid).
     """
-    if not frappe.db.table_exists("Fact Table"):
+    if not frappe.db.table_exists("Dataset"):
         return list(_DEFAULT_BASE_MEASURE_NAMES)
 
     fact = frappe.get_all(
-        "Fact Table",
+        "Dataset",
         filters={"dbt_model": _TRIAL_BALANCE_DBT_MODEL, "status": "Published"},
         fields=["name", "reroute_measure"],
         limit_page_length=1,
@@ -275,8 +275,8 @@ def _trial_balance_measure_names():
         return list(_DEFAULT_BASE_MEASURE_NAMES)
 
     names = frappe.get_all(
-        "Fact Table Measure",
-        filters={"parent": fact[0].name, "parenttype": "Fact Table"},
+        "Dataset Measure",
+        filters={"parent": fact[0].name, "parenttype": "Dataset"},
         pluck="measure",
         order_by="idx asc",
     )
@@ -427,9 +427,9 @@ def _apply_model_domains(project, mapping):
 
 
 def _build_model_domain_mapping():
-    """Build {model_name: build_domain} from the Gold Model doctype."""
+    """Build {model_name: build_domain} from the Build Model doctype."""
     docs = frappe.get_all(
-        "Gold Model",
+        "Build Model",
         fields=["model_name", "build_domain"],
         order_by="model_name asc",
         limit_page_length=0,
@@ -438,10 +438,10 @@ def _build_model_domain_mapping():
 
 
 def regenerate_model_domains():
-    """Write the gold models' domain tags into dbt_project.yml from Gold Model docs.
+    """Write the gold models' domain tags into dbt_project.yml from Build Model docs.
 
     Frappe is the source of truth for the model -> domain assignment that drives
-    Build Governance scope selection. When no Gold Model docs exist the YAML is
+    Build Governance scope selection. When no Build Model docs exist the YAML is
     left untouched (nothing to manage yet).
     """
     path = _get_dbt_project_path()

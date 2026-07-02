@@ -1,0 +1,127 @@
+{
+ "name": "Run Step",
+ "doctype": "DocType",
+ "module": "Pipeline",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "step_id",
+   "fieldtype": "Data",
+   "label": "Step ID",
+   "read_only": 1,
+   "description": "Stable orchestrator step identifier (unique within a run)",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "step_type",
+   "fieldtype": "Data",
+   "label": "Step Type",
+   "read_only": 1,
+   "description": "Handler type: airbyte_sync / dbt_seed / dbt_run / dbt_build / dbt_test / close_assertions / signoff",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nRunning\nSuccess\nFailed\nSkipped\nCancelled",
+   "default": "Pending",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "rows",
+   "fieldtype": "Int",
+   "label": "Rows",
+   "in_list_view": 1,
+   "columns": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1,
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "ended_at",
+   "fieldtype": "Datetime",
+   "label": "Ended At",
+   "read_only": 1,
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "retry_count",
+   "fieldtype": "Int",
+   "label": "Retry Count",
+   "default": "0",
+   "read_only": 1,
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "depends_on",
+   "fieldtype": "Small Text",
+   "label": "Depends On",
+   "read_only": 1,
+   "description": "JSON array of upstream step_ids this step depends on",
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "params",
+   "fieldtype": "Code",
+   "label": "Params",
+   "options": "JSON",
+   "read_only": 1,
+   "description": "JSON-encoded per-step parameters (select, vars, full_refresh, ...)",
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "output",
+   "fieldtype": "Code",
+   "label": "Output",
+   "options": "Text",
+   "read_only": 1,
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1,
+   "description": "Error message from the last failed attempt",
+   "in_list_view": 0
+  },
+  {
+   "fieldname": "stage",
+   "fieldtype": "Data",
+   "label": "Stage",
+   "in_list_view": 0,
+   "columns": 2,
+   "read_only": 1,
+   "description": "Seed / Bronze / Silver / Gold / Test"
+  },
+  {
+   "fieldname": "step",
+   "fieldtype": "Data",
+   "label": "Step",
+   "in_list_view": 0,
+   "columns": 3,
+   "read_only": 1,
+   "description": "dbt node (model or test) name"
+  },
+  {
+   "fieldname": "duration",
+   "fieldtype": "Float",
+   "label": "Duration (s)",
+   "in_list_view": 0,
+   "columns": 1,
+   "read_only": 1
+  }
+ ],
+ "permissions": []
+}

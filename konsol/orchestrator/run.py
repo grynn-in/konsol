@@ -87,7 +87,7 @@ def plan_run(params: Optional[Dict], definition=None) -> Tuple[Dag, RunState]:
     - ``None`` (the default, and every run with no ``pipeline_definition``) →
       fall back to :data:`plan.DEFAULT_DEFINITION`. Behaviour unchanged for
       existing runs.
-    - ``str`` → a Pipeline Definition **name**, resolved to its ``Step`` list via
+    - ``str`` → a Pipeline **name**, resolved to its ``Step`` list via
       :func:`definition.load_definition`. This is the frappe-bound path: the run
       carries the definition name (persisted by :func:`api.start_run`), and
       :func:`run_pipeline` passes that name straight through to here.
@@ -100,7 +100,7 @@ def plan_run(params: Optional[Dict], definition=None) -> Tuple[Dag, RunState]:
     name path without a bench.
     """
     if isinstance(definition, str):
-        # Resolve the Pipeline Definition name → Steps. Imported here (not at
+        # Resolve the Pipeline name → Steps. Imported here (not at
         # module scope) so the pure branches keep importing without frappe.
         from konsol.orchestrator.definition import load_definition
 
@@ -332,11 +332,11 @@ def _run_airbyte_sync(run_doc) -> StepResult:
 
 def _run_close_assertions(run_doc, params) -> StepResult:
     """Run the close assertion suite as ``dbt test`` — the same singular tests
-    the Close Run uses (``--select test_type:singular --store-failures``),
+    the Period Close uses (``--select test_type:singular --store-failures``),
     scoped to this run's fiscal period / entity via dbt vars so the assertions
     check the slice that was just built. The step fails iff dbt reports a failing
     assertion (non-zero exit). Uses the orchestrator's own dbt runner (resolves
-    the project dir + venv dbt), not a Close Run document."""
+    the project dir + venv dbt), not a Period Close document."""
     import json
 
     argv = ["dbt", "test", "--select", "test_type:singular", "--store-failures"]

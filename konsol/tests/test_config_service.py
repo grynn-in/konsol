@@ -370,9 +370,9 @@ def test_get_schema_status_aggregates_registry_and_builds(config_service):
             return [{"status": "Published"}, {"status": "Draft"}]
         if doctype == "Measure":
             return [{"status": "Published"}]
-        if doctype == "Fact Table":
+        if doctype == "Dataset":
             return [{"status": "Published"}]
-        if doctype == "Pipeline Build Request":
+        if doctype == "Build Approval":
             pbr_calls.append(kwargs)
             if len(pbr_calls) == 1:
                 return [
@@ -471,7 +471,7 @@ def test_upsert_fact_table_creates_draft(config_service):
         }
     )
 
-    fake_frappe.new_doc.assert_called_once_with("Fact Table")
+    fake_frappe.new_doc.assert_called_once_with("Dataset")
     doc.save.assert_called_once()
     doc.publish.assert_not_called()
     assert result["created"] is True

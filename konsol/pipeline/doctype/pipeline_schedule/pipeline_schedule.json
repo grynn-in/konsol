@@ -21,11 +21,11 @@
     {
       "fieldname": "pipeline_definition",
       "fieldtype": "Link",
-      "label": "Pipeline Definition",
-      "options": "Pipeline Definition",
+      "label": "Pipeline",
+      "options": "Pipeline",
       "reqd": 1,
       "in_list_view": 1,
-      "description": "The pipeline definition to run on this schedule"
+      "description": "The pipeline to run on this schedule"
     },
     {
       "fieldname": "cron",

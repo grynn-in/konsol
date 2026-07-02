@@ -68,8 +68,8 @@ def test_api_get_reporting_hierarchy_tree():
     assert "def get_reporting_hierarchy_tree" in src
 
 
-def test_gold_models_include_hierarchy_v2():
-    models = json.load(open(os.path.join(APP_DIR, "fixtures", "gold_model.json")))
+def test_build_models_include_hierarchy_v2():
+    models = json.load(open(os.path.join(APP_DIR, "fixtures", "build_model.json")))
     names = {m["model_name"] for m in models}
     for model in (
         "gold_tb_at_hierarchy_node",

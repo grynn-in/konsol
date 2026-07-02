@@ -2,7 +2,7 @@
 
 E6 builds the React form component that launches an orchestrator run from the
 konsol-exec Vite SPA. The component collects the launch fields (Fiscal Year /
-Period, Scope, Pipeline Definition, Full Refresh + Skip Airbyte Sync), runs the
+Period, Scope, Pipeline, Full Refresh + Skip Airbyte Sync), runs the
 flat form through the pure ESM core ``buildRunArgs`` (``orchestrator/params``)
 to produce ``{definition, params}``, and dispatches a ``LAUNCH`` event with that
 payload to the E5 ``runExecMachine`` (via a ``send`` prop, matching how existing
@@ -70,7 +70,7 @@ def test_renders_scope_field():
 
 def test_renders_definition_field():
     js = _launch_js()
-    assert "Pipeline Definition" in js
+    assert ">Pipeline<" in js
     assert "definition" in js
 
 
@@ -120,7 +120,7 @@ def test_accepts_send_prop():
 # ---- the 4 scalar fields are dropdowns populated from the backend ------
 
 def test_scalar_fields_are_selects():
-    """Fiscal Year / Period, Scope, Pipeline Definition must be <select>, not
+    """Fiscal Year / Period, Scope, Pipeline must be <select>, not
     free-text <input> (one <select> per scalar field)."""
     js = _launch_js()
     assert js.count("<select") >= 4

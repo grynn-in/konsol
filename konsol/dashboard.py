@@ -25,10 +25,10 @@ _URL_SHORTCUTS = [
 # Colourful top-row shortcut tiles: (doctype, colour) — ordered by user workflow
 _SHORTCUTS = [
     ("Budget Cycle", "Teal"),
-    ("Fact Table", "Blue"),
+    ("Dataset", "Blue"),
     ("Measure", "Cyan"),
     ("Connector", "Orange"),
-    ("Pipeline Build Request", "Purple"),
+    ("Build Approval", "Purple"),
     ("Allocation Rule", "Yellow"),
     ("Consolidation Group", "Pink"),
     ("EPM Settings", "Green"),
@@ -41,20 +41,20 @@ _CARDS = [
         "Fiscal Period", "Spread Profile",
     ]),
     ("EPM Registry", [
-        "Fact Table", "Measure", "Dimension",
+        "Dataset", "Measure", "Dimension",
         "Dimension Mapping", "Reporting Hierarchy", "Reporting Hierarchy Member",
         "EPM Settings",
     ]),
     ("Data Pipeline", [
-        "Connector", "Connector Health", "Pipeline Build Request", "Pipeline Run",
-        "Build Domain", "Gold Model",
+        "Connector", "Connector Health", "Build Approval", "Pipeline Run",
+        "Build Scope", "Build Model",
     ]),
     ("Allocation", [
         "Allocation Rule", "Allocation Driver", "Allocation Run",
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
-        "Consolidation Adjustment", "IC Balance", "IC Elimination Rule", "Close Run",
+        "Consolidation Adjustment", "IC Balance", "IC Elimination Rule", "Period Close",
     ]),
     # CTA drivers: the configurable inputs that move the Currency Translation
     # Adjustment plug (gold_fx_revaluation). Grouped for quick access when
@@ -108,7 +108,7 @@ def setup_workspace(force=False):
     existing workspace is rebuilt once so desk users see updates without a manual
     refresh.
     """
-    if not _dt("Fact Table"):
+    if not _dt("Dataset"):
         # konsol doctypes not migrated yet — nothing to build.
         return
 

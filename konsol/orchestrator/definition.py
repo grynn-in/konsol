@@ -1,8 +1,8 @@
 """Definition->plan loader (PRD-13).
 
-Turns a PRD-12 **Pipeline Definition** doctype payload (a plain dict — e.g. the
-result of ``frappe.get_doc("Pipeline Definition", name).as_dict()`` or a record
-from the ``pipeline_definition.json`` seed fixture) into ``dag.Step`` objects so
+Turns a PRD-12 **Pipeline** doctype payload (a plain dict — e.g. the
+result of ``frappe.get_doc("Pipeline", name).as_dict()`` or a record
+from the ``pipeline.json`` seed fixture) into ``dag.Step`` objects so
 ``plan.build_plan`` can consume user-authored definitions instead of the
 hardcoded ``DEFAULT_DEFINITION`` constant.
 
@@ -55,7 +55,7 @@ def _parse_params(raw, step_id: str) -> Dict:
 
 
 def definition_to_steps(defn: Dict) -> List[Step]:
-    """Convert a Pipeline Definition payload into ordered :class:`Step` objects.
+    """Convert a Pipeline payload into ordered :class:`Step` objects.
 
     Iterates ``defn["steps"]`` preserving order; parses each row's ``depends_on``
     (comma-split) and ``params`` (JSON string or dict) into a ``Step``. Pure.
@@ -75,11 +75,11 @@ def definition_to_steps(defn: Dict) -> List[Step]:
 
 
 def load_definition(name: str) -> List[Step]:
-    """Load a Pipeline Definition by name and convert it to ``Step`` objects.
+    """Load a Pipeline by name and convert it to ``Step`` objects.
 
     Frappe-bound: imports frappe locally so the module stays host-importable.
     """
     import frappe  # noqa: PLC0415 — function-local to keep module frappe-free
 
-    doc = frappe.get_doc("Pipeline Definition", name)
+    doc = frappe.get_doc("Pipeline", name)
     return definition_to_steps(doc.as_dict())

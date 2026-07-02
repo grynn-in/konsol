@@ -338,23 +338,23 @@ def apply_schema(run_dbt=False):
 
 
 def get_schema_status():
-    """Summarize config registry counts and pipeline build request state."""
+    """Summarize config registry counts and build approval state."""
     registry = {
         "dimensions": _status_counts("Dimension"),
         "measures": _status_counts("Measure"),
     }
-    if frappe.db.table_exists("Fact Table"):
-        registry["fact_tables"] = _status_counts("Fact Table")
+    if frappe.db.table_exists("Dataset"):
+        registry["fact_tables"] = _status_counts("Dataset")
 
     pending_builds = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"workflow_state": ["in", _PENDING_BUILD_STATES]},
         fields=_BUILD_REQUEST_FIELDS,
         order_by="modified desc",
         limit_page_length=0,
     )
     recent_builds = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"workflow_state": ["in", _TERMINAL_BUILD_STATES]},
         fields=_BUILD_REQUEST_FIELDS,
         order_by="modified desc",
@@ -485,9 +485,9 @@ def _set_fact_child_rows(doc, spec):
 
 
 def list_fact_tables(filters=None):
-    """Return all Fact Table docs matching optional filters."""
+    """Return all Dataset docs matching optional filters."""
     rows = frappe.get_all(
-        "Fact Table",
+        "Dataset",
         filters=_normalize_filters(filters),
         fields=_FACT_LIST_FIELDS,
         order_by="fact_name asc",
@@ -495,30 +495,30 @@ def list_fact_tables(filters=None):
     )
     result = []
     for row in rows:
-        doc = frappe.get_doc("Fact Table", row["name"])
+        doc = frappe.get_doc("Dataset", row["name"])
         result.append(_serialize_fact_row(doc))
     return result
 
 
 def get_fact_table(name):
-    """Return a single Fact Table doc by fact_name."""
-    if not frappe.db.exists("Fact Table", name):
-        frappe.throw(f"Fact Table '{name}' not found", frappe.DoesNotExistError)
-    return _serialize_fact_row(frappe.get_doc("Fact Table", name), include_detail=True)
+    """Return a single Dataset doc by fact_name."""
+    if not frappe.db.exists("Dataset", name):
+        frappe.throw(f"Dataset '{name}' not found", frappe.DoesNotExistError)
+    return _serialize_fact_row(frappe.get_doc("Dataset", name), include_detail=True)
 
 
 def upsert_fact_table(spec, publish=False):
-    """Create or update a Fact Table doc. Saves as Draft unless publish=True."""
+    """Create or update a Dataset doc. Saves as Draft unless publish=True."""
     spec = dict(spec or {})
     name = spec.get("fact_name")
     if not name:
         frappe.throw("fact_name is required", frappe.MandatoryError)
 
-    created = not frappe.db.exists("Fact Table", name)
+    created = not frappe.db.exists("Dataset", name)
     _validate_fact_spec(spec, require_core_fields=created)
 
     if created:
-        doc = frappe.new_doc("Fact Table")
+        doc = frappe.new_doc("Dataset")
         doc.fact_name = name
         doc.status = spec.get("status", "Draft")
         for field in _FACT_WRITABLE_FIELDS:
@@ -526,7 +526,7 @@ def upsert_fact_table(spec, publish=False):
                 setattr(doc, field, spec[field])
         _set_fact_child_rows(doc, spec)
     else:
-        doc = frappe.get_doc("Fact Table", name)
+        doc = frappe.get_doc("Dataset", name)
         for field in _FACT_WRITABLE_FIELDS:
             if field in spec:
                 setattr(doc, field, spec[field])
@@ -550,11 +550,11 @@ def upsert_fact_table(spec, publish=False):
 
 
 def publish_fact_table(name):
-    """Publish a Fact Table: apply schema and request a governed rebuild."""
-    if not frappe.db.exists("Fact Table", name):
-        frappe.throw(f"Fact Table '{name}' not found", frappe.DoesNotExistError)
+    """Publish a Dataset: apply schema and request a governed rebuild."""
+    if not frappe.db.exists("Dataset", name):
+        frappe.throw(f"Dataset '{name}' not found", frappe.DoesNotExistError)
 
-    doc = frappe.get_doc("Fact Table", name)
+    doc = frappe.get_doc("Dataset", name)
     doc.publish()
     doc.reload()
 
@@ -565,11 +565,11 @@ def publish_fact_table(name):
 
 
 def unpublish_fact_table(name):
-    """Unpublish a Fact Table: mark Inactive and request a governed rebuild."""
-    if not frappe.db.exists("Fact Table", name):
-        frappe.throw(f"Fact Table '{name}' not found", frappe.DoesNotExistError)
+    """Unpublish a Dataset: mark Inactive and request a governed rebuild."""
+    if not frappe.db.exists("Dataset", name):
+        frappe.throw(f"Dataset '{name}' not found", frappe.DoesNotExistError)
 
-    doc = frappe.get_doc("Fact Table", name)
+    doc = frappe.get_doc("Dataset", name)
     doc.unpublish()
     doc.reload()
 
@@ -795,7 +795,7 @@ def _config_entity_key(doctype, row):
         return row.get("dimension_name")
     if doctype == "Measure":
         return row.get("measure_name")
-    if doctype == "Fact Table":
+    if doctype == "Dataset":
         return row.get("fact_name")
     if doctype == "Connector":
         return row.get("connector_name")
@@ -859,7 +859,7 @@ def export_config(status=None):
         "api_version": _CONFIG_API_VERSION,
         "dimensions": _export_rows("Dimension", list_dimensions, status),
         "measures": _export_rows("Measure", list_measures, status),
-        "fact_tables": _export_rows("Fact Table", list_fact_tables, status),
+        "fact_tables": _export_rows("Dataset", list_fact_tables, status),
         "connectors": _export_connector_rows(),
     }
 
@@ -912,7 +912,7 @@ def diff_config(spec, status=None):
         ),
         "measures": _diff_section("Measure", bundle.get("measures", []), live["measures"]),
         "fact_tables": _diff_section(
-            "Fact Table", bundle.get("fact_tables", []), live["fact_tables"]
+            "Dataset", bundle.get("fact_tables", []), live["fact_tables"]
         ),
         "connectors": _diff_section(
             "Connector", bundle.get("connectors", []), live["connectors"]
@@ -953,15 +953,15 @@ def _remove_config_entity(doctype, key):
         frappe.db.commit()
         return {"key": key, "action": action}
 
-    if doctype == "Fact Table":
-        if not frappe.db.exists("Fact Table", key):
+    if doctype == "Dataset":
+        if not frappe.db.exists("Dataset", key):
             return None
-        doc = frappe.get_doc("Fact Table", key)
+        doc = frappe.get_doc("Dataset", key)
         if doc.status == "Published":
             doc.unpublish()
             action = "unpublished"
         else:
-            frappe.delete_doc("Fact Table", key)
+            frappe.delete_doc("Dataset", key)
             action = "deleted"
         frappe.db.commit()
         return {"key": key, "action": action}
@@ -980,7 +980,7 @@ def _prune_config_diff(diff, bundle):
     sections = (
         ("dimensions", "Dimension"),
         ("measures", "Measure"),
-        ("fact_tables", "Fact Table"),
+        ("fact_tables", "Dataset"),
         ("connectors", "Connector"),
     )
     for section_key, doctype in sections:

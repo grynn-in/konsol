@@ -1,0 +1,213 @@
+[
+  {
+    "doctype": "Dataset",
+    "name": "gl_journal_entries",
+    "fact_name": "gl_journal_entries",
+    "label": "GL Journal Entries",
+    "source_type": "ERP GL",
+    "clickhouse_table": "epm_gold.gold_trial_balance",
+    "dbt_model": "gold_trial_balance",
+    "scenario_key": "actuals",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity x dimensions",
+    "fact_measures": [
+      {"measure": "period_debit"},
+      {"measure": "period_credit"},
+      {"measure": "period_net_amount", "required": 1},
+      {"measure": "transaction_count"},
+      {"measure": "ytd_net_amount"}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center"},
+      {"dimension": "dim_department"},
+      {"dimension": "dim_business_unit"}
+    ],
+    "reroute_measure": "ytd_net_amount",
+    "reroute_table": "epm_gold.gold_balance_sheet",
+    "reroute_column": "cumulative_balance"
+  },
+  {
+    "doctype": "Dataset",
+    "name": "budget_input",
+    "fact_name": "budget_input",
+    "label": "Budget",
+    "source_type": "Budget",
+    "clickhouse_table": "epm_gold.gold_spread_budget",
+    "dbt_model": "gold_spread_budget",
+    "scenario_key": "budget",
+    "has_scenario_id": 1,
+    "has_layer": 1,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity x scenario cell x layer",
+    "fact_measures": [
+      {"measure": "period_amount", "required": 1},
+      {"measure": "annual_amount"}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center"},
+      {"dimension": "dim_department"}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Dataset",
+    "name": "variance_analysis",
+    "fact_name": "variance_analysis",
+    "label": "Variance Analysis",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_gold.gold_variance_analysis",
+    "dbt_model": "gold_variance_analysis",
+    "scenario_key": "variance",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity (actual vs budget)",
+    "fact_measures": [
+      {"measure": "actual_amount"},
+      {"measure": "budget_amount"},
+      {"measure": "variance_abs"},
+      {"measure": "variance_pct"},
+      {"measure": "variance_favorable"}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center"},
+      {"dimension": "dim_department"}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Dataset",
+    "name": "headcount",
+    "fact_name": "headcount",
+    "label": "Headcount",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_staging.fact_headcount",
+    "dbt_model": "fact_headcount",
+    "scenario_key": "headcount",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 1,
+    "grain": "One row per cost_center x fiscal_period (allocation driver)",
+    "fact_measures": [
+      {"measure": "driver_value", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center", "required": 1}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Dataset",
+    "name": "area_sqm",
+    "fact_name": "area_sqm",
+    "label": "Area (sqm)",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_staging.fact_area_sqm",
+    "dbt_model": "fact_area_sqm",
+    "scenario_key": "area_sqm",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 1,
+    "grain": "One row per cost_center x fiscal_period (facilities allocation driver)",
+    "fact_measures": [
+      {"measure": "driver_value", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center", "required": 1}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Dataset",
+    "name": "revenue_by_product",
+    "fact_name": "revenue_by_product",
+    "label": "Revenue by Product",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_staging.fact_revenue_by_product",
+    "dbt_model": "fact_revenue_by_product",
+    "scenario_key": "revenue_by_product",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 1,
+    "grain": "One row per product x cost_center x fiscal_period (revenue allocation driver)",
+    "extra_columns": "[{\"name\": \"product\", \"ch_type\": \"String\"}]",
+    "fact_measures": [
+      {"measure": "driver_value", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center", "required": 1}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Dataset",
+    "name": "allocated",
+    "fact_name": "allocated",
+    "label": "Allocated",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_gold.gold_allocation_tb",
+    "dbt_model": "gold_allocation_tb",
+    "scenario_key": "allocated",
+    "has_scenario_id": 1,
+    "has_layer": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x entity x cost_center, signed (target +, source -); allocations only, separate from actuals",
+    "fact_measures": [
+      {"measure": "period_net_amount", "required": 1}
+    ],
+    "fact_dimensions": [
+      {"dimension": "dim_cost_center"}
+    ],
+    "reroute_measure": "",
+    "reroute_table": "",
+    "reroute_column": ""
+  },
+  {
+    "doctype": "Dataset",
+    "name": "cashflow",
+    "fact_name": "cashflow",
+    "label": "Consolidated Cash Flow",
+    "source_type": "Statistical",
+    "clickhouse_table": "epm_gold.gold_cashflow_fact",
+    "dbt_model": "gold_cashflow_fact",
+    "scenario_key": "cashflow",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per cf_line_item x fiscal_period x consolidation_group",
+    "fact_measures": [
+      {"measure": "cash_flow_amount"}
+    ]
+  },
+  {
+    "doctype": "Dataset",
+    "name": "consolidated",
+    "fact_name": "consolidated",
+    "label": "Consolidated (Group)",
+    "source_type": "Consolidation",
+    "clickhouse_table": "epm_gold.gold_consolidated_fact",
+    "dbt_model": "gold_consolidated_fact",
+    "scenario_key": "consolidated",
+    "has_scenario_id": 0,
+    "status": "Published",
+    "generates_source": 0,
+    "grain": "One row per main_account x fiscal_period x consolidation_group (post-FX, post-elimination)",
+    "fact_measures": [
+      {"measure": "consolidated_amount"}
+    ]
+  }
+]

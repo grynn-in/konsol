@@ -12,17 +12,17 @@ from konsol.desk.connection_filters import (
 )
 
 _CUSTOM_ONLY_ITEMS = {
-    "Measure": frozenset({"Fact Table"}),
+    "Measure": frozenset({"Dataset"}),
     "Consolidation Group": frozenset(CONSOLIDATION_GROUP_CHILD_DOCTYPES),
     "Allocation Rule": frozenset({"Allocation Driver"}),
-    "Pipeline Build Request": frozenset(PIPELINE_BUILD_TRIGGER_DOCTYPES),
+    "Build Approval": frozenset(PIPELINE_BUILD_TRIGGER_DOCTYPES),
 }
 
 _CUSTOM_PATCHERS = {
     "Measure": "_patch_measure",
     "Consolidation Group": "_patch_consolidation_group",
     "Allocation Rule": "_patch_allocation_rule",
-    "Pipeline Build Request": "_patch_pipeline_build_request",
+    "Build Approval": "_patch_pipeline_build_request",
 }
 
 
@@ -70,8 +70,8 @@ def _fact_table_names_for_measure(measure_name):
     return frappe.db.sql_list(
         """
         SELECT DISTINCT parent
-        FROM `tabFact Table Measure`
-        WHERE parenttype = 'Fact Table' AND measure = %s
+        FROM `tabDataset Measure`
+        WHERE parenttype = 'Dataset' AND measure = %s
         ORDER BY parent
         LIMIT 100
         """,
@@ -81,8 +81,8 @@ def _fact_table_names_for_measure(measure_name):
 
 def _patch_measure(doc, count):
     names = _fact_table_names_for_measure(doc.name)
-    _set_internal_link(count, "Fact Table", names)
-    _strip_external(count, "Fact Table")
+    _set_internal_link(count, "Dataset", names)
+    _strip_external(count, "Dataset")
 
 
 def _patch_consolidation_group(doc, count):

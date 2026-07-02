@@ -132,14 +132,14 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         return {"ok": True, "run_kind": "pipeline", "name": name}
 
     if pid == "assertions":
-        from konsol.consolidation.doctype.close_run.close_run import trigger_close_run
+        from konsol.consolidation.doctype.period_close.period_close import trigger_close_run
         name = trigger_close_run(fiscal_year=fy, fiscal_period=fp)
         return {"ok": True, "run_kind": "close", "name": name}
 
     # budgeting — governed scenarios build
     scope = PROCESSES[pid]["build_scope"]
     pbr = frappe.get_doc({
-        "doctype": "Pipeline Build Request",
+        "doctype": "Build Approval",
         "build_scope": scope,
         "trigger_source": "manual",
         "requested_by": frappe.session.user,
@@ -177,7 +177,7 @@ def get_run_detail(process_id, kind, run_id):
         return _pipeline_run_detail(name, pid)
 
     # Consolidation has two run types: orchestrator builds (Pipeline Run) and
-    # assertion runs (Close Run).
+    # assertion runs (Period Close).
     if run_kind == "pipeline":
         return _orchestrator_run_detail(name, pid)
     if run_kind == "close":
@@ -358,7 +358,7 @@ def _latest_orchestrator_run():
     Run that has typed steps (step_id set), distinguishing it from legacy
     forecast/budget pipeline runs."""
     for r in frappe.get_all("Pipeline Run", fields=["name"], order_by="creation desc", limit=25):
-        if frappe.db.exists("Pipeline Step", {"parent": r.name, "step_id": ["is", "set"]}):
+        if frappe.db.exists("Run Step", {"parent": r.name, "step_id": ["is", "set"]}):
             return _serialize_pipeline_run(r.name)
     return None
 
@@ -379,11 +379,11 @@ def _latest_pipeline_run(scope=None):
         return None
     row = rows[0]
     if scope and row.pipeline_build_request:
-        pbr_scope = frappe.db.get_value("Pipeline Build Request", row.pipeline_build_request, "build_scope")
+        pbr_scope = frappe.db.get_value("Build Approval", row.pipeline_build_request, "build_scope")
         if pbr_scope != scope:
             return None
     if not scope and row.pipeline_build_request:
-        pbr_scope = frappe.db.get_value("Pipeline Build Request", row.pipeline_build_request, "build_scope")
+        pbr_scope = frappe.db.get_value("Build Approval", row.pipeline_build_request, "build_scope")
         if pbr_scope in ("scenarios", "consolidation"):
             return None
     return _serialize_pipeline_run(row.name)
@@ -391,7 +391,7 @@ def _latest_pipeline_run(scope=None):
 
 def _latest_pbr_run(scope):
     pbr = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"build_scope": scope},
         fields=["name", "workflow_state", "started_at", "completed_at", "duration_seconds", "error_message"],
         order_by="creation desc",
@@ -425,7 +425,7 @@ def _latest_pbr_run(scope):
 
 def _latest_close_run():
     rows = frappe.get_all(
-        "Close Run",
+        "Period Close",
         fields=["name", "status", "fiscal_year", "fiscal_period", "started_at", "completed_at",
                 "duration_seconds", "total", "passed", "failed", "triggered_by", "log"],
         order_by="creation desc",
@@ -434,7 +434,7 @@ def _latest_close_run():
     if not rows:
         return None
     row = rows[0]
-    doc = frappe.get_doc("Close Run", row.name)
+    doc = frappe.get_doc("Period Close", row.name)
     steps = []
     for i, res in enumerate(doc.results or [], start=1):
         st = "done" if res.status == "Pass" else ("error" if res.status in ("Fail", "Error") else "pending")
@@ -578,7 +578,7 @@ def _stats(processes):
 def _completed_today():
     start = frappe.utils.getdate(today())
     n = frappe.db.count("Pipeline Run", {"status": "Completed", "completed_at": [">=", start]})
-    n += frappe.db.count("Close Run", {"status": "Green", "completed_at": [">=", start]})
+    n += frappe.db.count("Period Close", {"status": "Green", "completed_at": [">=", start]})
     return n
 
 
@@ -651,7 +651,7 @@ def _domain_runs_all(limit=_RUN_LIST_LIMIT):
         "budgeting": _budget_run_list(limit),
         "forecasting": _forecast_run_list(limit),
         # Consolidation = orchestrator BUILD runs (Pipeline Run); Assertions =
-        # the close assertion runs (Close Run). Two top-level cards.
+        # the close assertion runs (Period Close). Two top-level cards.
         "consolidation": _consolidation_build_list(limit),
         "assertions": _consolidation_run_list(limit),
     }
@@ -660,7 +660,7 @@ def _domain_runs_all(limit=_RUN_LIST_LIMIT):
 def _budget_run_list(limit):
     rows = []
     for pbr in frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"build_scope": PROCESSES["budgeting"]["build_scope"]},
         fields=[
             "name", "workflow_state", "build_scope", "requested_by", "approved_by",
@@ -696,7 +696,7 @@ def _forecast_run_list(limit):
 def _consolidation_run_list(limit):
     rows = []
     for cr in frappe.get_all(
-        "Close Run",
+        "Period Close",
         fields=[
             "name", "status", "title", "fiscal_year", "fiscal_period", "pipeline_run",
             "started_at", "completed_at", "duration_seconds", "total", "triggered_by", "creation",
@@ -714,7 +714,7 @@ def _consolidation_build_list(limit):
     These are Pipeline Runs created by the orchestrator — identified by having
     typed steps (a child row with ``step_id`` set), which the legacy forecast/
     budget Pipeline Runs do not. Tagged ``run_type="build"`` so the SPA History
-    renders them in their own card, separate from the Close Run assertions.
+    renders them in their own card, separate from the Period Close assertions.
     """
     rows = []
     for pr in frappe.get_all(
@@ -727,7 +727,7 @@ def _consolidation_build_list(limit):
         order_by="creation desc",
         limit=limit * 3,
     ):
-        if not frappe.db.exists("Pipeline Step", {"parent": pr.name, "step_id": ["is", "set"]}):
+        if not frappe.db.exists("Run Step", {"parent": pr.name, "step_id": ["is", "set"]}):
             continue
         rows.append(_consolidation_build_row(pr))
         if len(rows) >= limit:
@@ -769,7 +769,7 @@ def _consolidation_build_row(pr):
 def _pipeline_belongs_to_forecast(pbr_name):
     if not pbr_name:
         return True
-    scope = frappe.db.get_value("Pipeline Build Request", pbr_name, "build_scope")
+    scope = frappe.db.get_value("Build Approval", pbr_name, "build_scope")
     return scope not in (PROCESSES["budgeting"]["build_scope"], PROCESSES["consolidation"]["build_scope"])
 
 
@@ -855,9 +855,9 @@ def _close_list_row(cr):
 
 
 def _pbr_run_detail(name, process_id):
-    if not frappe.db.exists("Pipeline Build Request", name):
+    if not frappe.db.exists("Build Approval", name):
         frappe.throw(f"Run not found: {name}")
-    pbr = frappe.get_doc("Pipeline Build Request", name)
+    pbr = frappe.get_doc("Build Approval", name)
     if pbr.build_scope != PROCESSES["budgeting"]["build_scope"]:
         frappe.throw("Not a budget run")
 
@@ -963,10 +963,10 @@ def _orchestrator_run_detail(name, process_id):
 
 
 def _close_run_detail(name, process_id):
-    if not frappe.db.exists("Close Run", name):
+    if not frappe.db.exists("Period Close", name):
         frappe.throw(f"Run not found: {name}")
     cr = frappe.db.get_value(
-        "Close Run",
+        "Period Close",
         name,
         [
             "name", "status", "title", "fiscal_year", "fiscal_period", "pipeline_run",
@@ -980,7 +980,7 @@ def _close_run_detail(name, process_id):
 
 
 def _latest_close_run_for(name):
-    doc = frappe.get_doc("Close Run", name)
+    doc = frappe.get_doc("Period Close", name)
     steps = []
     for i, res in enumerate(doc.results or [], start=1):
         st = "done" if res.status == "Pass" else ("error" if res.status in ("Fail", "Error") else "pending")
@@ -1044,7 +1044,7 @@ def _pbr_workflow_steps(state):
 
 
 def _related_docs_pbr(pbr, pipeline_rows):
-    docs = [_doc_link("Pipeline Build Request", pbr.name, "primary")]
+    docs = [_doc_link("Build Approval", pbr.name, "primary")]
     for row in pipeline_rows:
         docs.append(_doc_link("Pipeline Run", row.name, "execution"))
     if pbr.trigger_doctype and pbr.trigger_docname:
@@ -1059,9 +1059,9 @@ def _related_docs_pbr(pbr, pipeline_rows):
 def _related_docs_pipeline(pipe_name, pbr_name):
     docs = [_doc_link("Pipeline Run", pipe_name, "primary")]
     if pbr_name:
-        docs.append(_doc_link("Pipeline Build Request", pbr_name, "upstream"))
+        docs.append(_doc_link("Build Approval", pbr_name, "upstream"))
         pbr = frappe.db.get_value(
-            "Pipeline Build Request",
+            "Build Approval",
             pbr_name,
             ["trigger_doctype", "trigger_docname"],
             as_dict=True,
@@ -1072,12 +1072,12 @@ def _related_docs_pipeline(pipe_name, pbr_name):
 
 
 def _related_docs_close(close_name, pipeline_run):
-    docs = [_doc_link("Close Run", close_name, "primary")]
+    docs = [_doc_link("Period Close", close_name, "primary")]
     if pipeline_run:
         docs.append(_doc_link("Pipeline Run", pipeline_run, "upstream"))
         pbr = frappe.db.get_value("Pipeline Run", pipeline_run, "pipeline_build_request")
         if pbr:
-            docs.append(_doc_link("Pipeline Build Request", pbr, "upstream"))
+            docs.append(_doc_link("Build Approval", pbr, "upstream"))
     return docs
 
 
