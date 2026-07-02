@@ -87,12 +87,12 @@ def test_pipeline_run_links_period_closes():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
     assert "Period Close" in _items(data)
     assert data["non_standard_fieldnames"]["Period Close"] == "pipeline_run"
-    assert data["internal_links"]["Pipeline Build Request"] == "pipeline_build_request"
+    assert data["internal_links"]["Build Approval"] == "pipeline_build_request"
 
 
-def test_pipeline_run_links_build_request():
+def test_pipeline_run_links_build_approval():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
-    assert "Pipeline Build Request" in _items(data)
+    assert "Build Approval" in _items(data)
 
 
 def test_period_close_links_pipeline_run():
@@ -116,16 +116,16 @@ def test_allocation_rule_links_drivers():
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 
-def test_pipeline_build_request_dashboard_links_runs_and_trigger_js():
+def test_build_approval_dashboard_links_runs_and_trigger_js():
     data = _load_dashboard(
-        "pipeline/doctype/pipeline_build_request/pipeline_build_request_dashboard.py")
+        "pipeline/doctype/build_approval/build_approval_dashboard.py")
     assert "Pipeline Run" in _items(data)
     assert data["non_standard_fieldnames"]["Pipeline Run"] == "pipeline_build_request"
     assert data["method"] == "konsol.desk.connections.get_open_count"
     js_path = os.path.join(
-        APP_DIR, "pipeline/doctype/pipeline_build_request/pipeline_build_request.js")
+        APP_DIR, "pipeline/doctype/build_approval/build_approval.js")
     js = open(js_path).read()
-    assert "refresh_pipeline_build_request_connections" in js
+    assert "refresh_build_approval_connections" in js
     assert "frm.dashboard.hide()" not in js
 
 

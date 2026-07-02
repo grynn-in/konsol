@@ -18,7 +18,7 @@ def check_epm_admin():
 
 # Config-doctype publishes (Dimension/Measure/Fact Table) are schema-level
 # changes that can ripple through every dbt model, so they request a full-scope
-# rebuild. Routing through Pipeline Build Request (instead of a direct dbt build)
+# rebuild. Routing through Build Approval (instead of a direct dbt build)
 # applies Build Governance: preflight (won't wipe gold when epm_raw is empty),
 # approval for high-risk scopes, an audit trail, and debounce.
 _PUBLISH_BUILD_SCOPE = "full"
@@ -28,7 +28,7 @@ _PENDING_STATES = ["Draft", "Pending Review", "Approved", "Running"]
 def apply_and_rebuild(doc, action):
     """Apply schema (DDL/vars), then request a governed dbt rebuild.
 
-    Creates a full-scope Pipeline Build Request rather than firing a direct
+    Creates a full-scope Build Approval rather than firing a direct
     `dbt build` — see module note. Returns the PBR name (or the existing one if
     a build for this scope is already pending).
     """
@@ -49,14 +49,14 @@ def request_governed_rebuild(doc, action, scope=_PUBLISH_BUILD_SCOPE):
 
 
 def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
-    """Create a (debounced) Pipeline Build Request for `scope`.
+    """Create a (debounced) Build Approval for `scope`.
 
     Debounce: if a non-terminal build for the same scope already exists, reuse
     it so publishing several config docs in a row coalesces into one rebuild.
     The PBR's own workflow handles risk → approval → preflight → governed build.
     """
     existing = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"build_scope": scope, "workflow_state": ["in", _PENDING_STATES]},
         limit=1,
     )
@@ -67,7 +67,7 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
         )
         return existing[0].name
 
-    pbr = frappe.new_doc("Pipeline Build Request")
+    pbr = frappe.new_doc("Build Approval")
     pbr.build_scope = scope
     pbr.trigger_source = "auto"
     pbr.trigger_doctype = doc.doctype

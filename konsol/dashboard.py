@@ -28,7 +28,7 @@ _SHORTCUTS = [
     ("Fact Table", "Blue"),
     ("Measure", "Cyan"),
     ("Connector", "Orange"),
-    ("Pipeline Build Request", "Purple"),
+    ("Build Approval", "Purple"),
     ("Allocation Rule", "Yellow"),
     ("Consolidation Group", "Pink"),
     ("EPM Settings", "Green"),
@@ -46,7 +46,7 @@ _CARDS = [
         "EPM Settings",
     ]),
     ("Data Pipeline", [
-        "Connector", "Connector Health", "Pipeline Build Request", "Pipeline Run",
+        "Connector", "Connector Health", "Build Approval", "Pipeline Run",
         "Build Scope", "Build Model",
     ]),
     ("Allocation", [

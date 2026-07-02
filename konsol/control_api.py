@@ -139,7 +139,7 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
     # budgeting — governed scenarios build
     scope = PROCESSES[pid]["build_scope"]
     pbr = frappe.get_doc({
-        "doctype": "Pipeline Build Request",
+        "doctype": "Build Approval",
         "build_scope": scope,
         "trigger_source": "manual",
         "requested_by": frappe.session.user,
@@ -379,11 +379,11 @@ def _latest_pipeline_run(scope=None):
         return None
     row = rows[0]
     if scope and row.pipeline_build_request:
-        pbr_scope = frappe.db.get_value("Pipeline Build Request", row.pipeline_build_request, "build_scope")
+        pbr_scope = frappe.db.get_value("Build Approval", row.pipeline_build_request, "build_scope")
         if pbr_scope != scope:
             return None
     if not scope and row.pipeline_build_request:
-        pbr_scope = frappe.db.get_value("Pipeline Build Request", row.pipeline_build_request, "build_scope")
+        pbr_scope = frappe.db.get_value("Build Approval", row.pipeline_build_request, "build_scope")
         if pbr_scope in ("scenarios", "consolidation"):
             return None
     return _serialize_pipeline_run(row.name)
@@ -391,7 +391,7 @@ def _latest_pipeline_run(scope=None):
 
 def _latest_pbr_run(scope):
     pbr = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"build_scope": scope},
         fields=["name", "workflow_state", "started_at", "completed_at", "duration_seconds", "error_message"],
         order_by="creation desc",
@@ -660,7 +660,7 @@ def _domain_runs_all(limit=_RUN_LIST_LIMIT):
 def _budget_run_list(limit):
     rows = []
     for pbr in frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"build_scope": PROCESSES["budgeting"]["build_scope"]},
         fields=[
             "name", "workflow_state", "build_scope", "requested_by", "approved_by",
@@ -769,7 +769,7 @@ def _consolidation_build_row(pr):
 def _pipeline_belongs_to_forecast(pbr_name):
     if not pbr_name:
         return True
-    scope = frappe.db.get_value("Pipeline Build Request", pbr_name, "build_scope")
+    scope = frappe.db.get_value("Build Approval", pbr_name, "build_scope")
     return scope not in (PROCESSES["budgeting"]["build_scope"], PROCESSES["consolidation"]["build_scope"])
 
 
@@ -855,9 +855,9 @@ def _close_list_row(cr):
 
 
 def _pbr_run_detail(name, process_id):
-    if not frappe.db.exists("Pipeline Build Request", name):
+    if not frappe.db.exists("Build Approval", name):
         frappe.throw(f"Run not found: {name}")
-    pbr = frappe.get_doc("Pipeline Build Request", name)
+    pbr = frappe.get_doc("Build Approval", name)
     if pbr.build_scope != PROCESSES["budgeting"]["build_scope"]:
         frappe.throw("Not a budget run")
 
@@ -1044,7 +1044,7 @@ def _pbr_workflow_steps(state):
 
 
 def _related_docs_pbr(pbr, pipeline_rows):
-    docs = [_doc_link("Pipeline Build Request", pbr.name, "primary")]
+    docs = [_doc_link("Build Approval", pbr.name, "primary")]
     for row in pipeline_rows:
         docs.append(_doc_link("Pipeline Run", row.name, "execution"))
     if pbr.trigger_doctype and pbr.trigger_docname:
@@ -1059,9 +1059,9 @@ def _related_docs_pbr(pbr, pipeline_rows):
 def _related_docs_pipeline(pipe_name, pbr_name):
     docs = [_doc_link("Pipeline Run", pipe_name, "primary")]
     if pbr_name:
-        docs.append(_doc_link("Pipeline Build Request", pbr_name, "upstream"))
+        docs.append(_doc_link("Build Approval", pbr_name, "upstream"))
         pbr = frappe.db.get_value(
-            "Pipeline Build Request",
+            "Build Approval",
             pbr_name,
             ["trigger_doctype", "trigger_docname"],
             as_dict=True,
@@ -1077,7 +1077,7 @@ def _related_docs_close(close_name, pipeline_run):
         docs.append(_doc_link("Pipeline Run", pipeline_run, "upstream"))
         pbr = frappe.db.get_value("Pipeline Run", pipeline_run, "pipeline_build_request")
         if pbr:
-            docs.append(_doc_link("Pipeline Build Request", pbr, "upstream"))
+            docs.append(_doc_link("Build Approval", pbr, "upstream"))
     return docs
 
 

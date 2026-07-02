@@ -40,8 +40,8 @@
   {
    "fieldname": "pipeline_build_request",
    "fieldtype": "Link",
-   "label": "Pipeline Build Request",
-   "options": "Pipeline Build Request",
+   "label": "Build Approval",
+   "options": "Build Approval",
    "read_only": 1,
    "in_standard_filter": 1
   },

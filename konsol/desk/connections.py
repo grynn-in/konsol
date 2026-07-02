@@ -15,14 +15,14 @@ _CUSTOM_ONLY_ITEMS = {
     "Measure": frozenset({"Fact Table"}),
     "Consolidation Group": frozenset(CONSOLIDATION_GROUP_CHILD_DOCTYPES),
     "Allocation Rule": frozenset({"Allocation Driver"}),
-    "Pipeline Build Request": frozenset(PIPELINE_BUILD_TRIGGER_DOCTYPES),
+    "Build Approval": frozenset(PIPELINE_BUILD_TRIGGER_DOCTYPES),
 }
 
 _CUSTOM_PATCHERS = {
     "Measure": "_patch_measure",
     "Consolidation Group": "_patch_consolidation_group",
     "Allocation Rule": "_patch_allocation_rule",
-    "Pipeline Build Request": "_patch_pipeline_build_request",
+    "Build Approval": "_patch_pipeline_build_request",
 }
 
 

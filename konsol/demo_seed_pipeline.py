@@ -61,7 +61,7 @@ def sync_config():
 def _scope_needs_pbr(scope):
     """Return True unless a build for this scope is already in flight."""
     in_flight = frappe.db.get_value(
-        "Pipeline Build Request",
+        "Build Approval",
         {"build_scope": scope, "workflow_state": ["in", list(_ACTIVE_PBR_STATES)]},
         "name",
     )
@@ -71,7 +71,7 @@ def _scope_needs_pbr(scope):
         return True
     # Re-run consolidation when the latest attempt failed (common after alloc gaps).
     last_state = frappe.db.get_value(
-        "Pipeline Build Request",
+        "Build Approval",
         {"build_scope": "consolidation"},
         "workflow_state",
         order_by="creation desc",
@@ -82,11 +82,11 @@ def _scope_needs_pbr(scope):
 def _approve_pending_for_scope(scope):
     """Approve pending PBRs for one scope so builds run in dependency order."""
     for name in frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"build_scope": scope, "workflow_state": "Pending Review"},
         pluck="name",
     ):
-        doc = frappe.get_doc("Pipeline Build Request", name)
+        doc = frappe.get_doc("Build Approval", name)
         doc.workflow_state = "Approved"
         doc.approved_by = frappe.session.user
         doc.save(ignore_permissions=True)
@@ -95,13 +95,13 @@ def _approve_pending_for_scope(scope):
 def _create_scope_pbr(scope):
     if not _scope_needs_pbr(scope):
         last = frappe.db.get_value(
-            "Pipeline Build Request",
+            "Build Approval",
             {"build_scope": scope},
             "name",
             order_by="creation desc",
         )
         return last, False
-    pbr = frappe.new_doc("Pipeline Build Request")
+    pbr = frappe.new_doc("Build Approval")
     pbr.build_scope = scope
     pbr.trigger_source = "manual"
     pbr.requested_by = frappe.session.user

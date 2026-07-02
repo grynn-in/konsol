@@ -1,5 +1,5 @@
 {
-  "name": "Pipeline Build Request",
+  "name": "Build Approval",
   "doctype": "DocType",
   "module": "Pipeline",
   "issingle": 0,

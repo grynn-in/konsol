@@ -338,7 +338,7 @@ def apply_schema(run_dbt=False):
 
 
 def get_schema_status():
-    """Summarize config registry counts and pipeline build request state."""
+    """Summarize config registry counts and build approval state."""
     registry = {
         "dimensions": _status_counts("Dimension"),
         "measures": _status_counts("Measure"),
@@ -347,14 +347,14 @@ def get_schema_status():
         registry["fact_tables"] = _status_counts("Fact Table")
 
     pending_builds = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"workflow_state": ["in", _PENDING_BUILD_STATES]},
         fields=_BUILD_REQUEST_FIELDS,
         order_by="modified desc",
         limit_page_length=0,
     )
     recent_builds = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={"workflow_state": ["in", _TERMINAL_BUILD_STATES]},
         fields=_BUILD_REQUEST_FIELDS,
         order_by="modified desc",

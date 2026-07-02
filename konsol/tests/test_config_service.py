@@ -372,7 +372,7 @@ def test_get_schema_status_aggregates_registry_and_builds(config_service):
             return [{"status": "Published"}]
         if doctype == "Fact Table":
             return [{"status": "Published"}]
-        if doctype == "Pipeline Build Request":
+        if doctype == "Build Approval":
             pbr_calls.append(kwargs)
             if len(pbr_calls) == 1:
                 return [

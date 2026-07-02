@@ -6,10 +6,10 @@ def get_data():
             "Period Close": "pipeline_run",
         },
         "internal_links": {
-            "Pipeline Build Request": "pipeline_build_request",
+            "Build Approval": "pipeline_build_request",
         },
         "transactions": [
-            {"label": "Governance", "items": ["Pipeline Build Request"]},
+            {"label": "Governance", "items": ["Build Approval"]},
             {"label": "Consolidation", "items": ["Period Close"]},
         ],
     }

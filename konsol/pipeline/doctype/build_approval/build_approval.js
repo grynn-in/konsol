@@ -1,11 +1,11 @@
-frappe.ui.form.on("Pipeline Build Request", {
+frappe.ui.form.on("Build Approval", {
 	refresh(frm) {
 		// Run after the default dashboard refresh so we can add the trigger link.
-		setTimeout(() => refresh_pipeline_build_request_connections(frm), 0);
+		setTimeout(() => refresh_build_approval_connections(frm), 0);
 	},
 });
 
-function refresh_pipeline_build_request_connections(frm) {
+function refresh_build_approval_connections(frm) {
 	if (frm.is_new() || !frm.dashboard) {
 		return;
 	}

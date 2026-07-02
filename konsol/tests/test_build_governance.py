@@ -2,7 +2,7 @@
 
 Tests structural contracts via AST parsing — no Frappe runtime needed.
 These tests define the API that tasks.py, api.py, install.py, and the
-Pipeline Build Request doctype must satisfy.
+Build Approval doctype must satisfy.
 """
 import ast
 import json
@@ -13,9 +13,9 @@ TASKS_PATH = os.path.join(APP_DIR, "tasks.py")
 API_PATH = os.path.join(APP_DIR, "api.py")
 INSTALL_PATH = os.path.join(APP_DIR, "install.py")
 HOOKS_PATH = os.path.join(APP_DIR, "hooks.py")
-PBR_DIR = os.path.join(APP_DIR, "pipeline", "doctype", "pipeline_build_request")
-PBR_JSON = os.path.join(PBR_DIR, "pipeline_build_request.json")
-PBR_PY = os.path.join(PBR_DIR, "pipeline_build_request.py")
+PBR_DIR = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval")
+PBR_JSON = os.path.join(PBR_DIR, "build_approval.json")
+PBR_PY = os.path.join(PBR_DIR, "build_approval.py")
 EPM_SETTINGS_JSON = os.path.join(
     APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json"
 )
@@ -160,35 +160,35 @@ def test_on_consolidation_doc_update_uses_build_map():
 
 
 # ===================================================================
-# 5. Pipeline Build Request doctype
+# 5. Build Approval doctype
 # ===================================================================
 
 def test_pbr_doctype_dir_exists():
-    """pipeline_build_request directory must exist."""
+    """build_approval directory must exist."""
     assert os.path.isdir(PBR_DIR)
 
 
 def test_pbr_json_exists():
-    """pipeline_build_request.json must exist."""
+    """build_approval.json must exist."""
     assert os.path.isfile(PBR_JSON)
 
 
 def test_pbr_json_valid():
-    """pipeline_build_request.json must be valid JSON."""
+    """build_approval.json must be valid JSON."""
     with open(PBR_JSON) as f:
         data = json.load(f)
-    assert data["name"] == "Pipeline Build Request"
+    assert data["name"] == "Build Approval"
 
 
 def test_pbr_has_autoname():
-    """Pipeline Build Request must have autoname PBR-.#####."""
+    """Build Approval must have autoname PBR-.#####."""
     with open(PBR_JSON) as f:
         data = json.load(f)
     assert data.get("autoname") == "PBR-.#####"
 
 
 def test_pbr_has_required_fields():
-    """Pipeline Build Request must have all governance fields."""
+    """Build Approval must have all governance fields."""
     with open(PBR_JSON) as f:
         data = json.load(f)
     field_names = {f["fieldname"] for f in data["fields"] if "fieldname" in f}
@@ -231,7 +231,7 @@ def test_pbr_workflow_state_options():
 
 
 def test_pbr_has_sync_info_fields():
-    """Pipeline Build Request must show Airbyte sync info."""
+    """Build Approval must show Airbyte sync info."""
     with open(PBR_JSON) as f:
         data = json.load(f)
     field_names = {f["fieldname"] for f in data["fields"] if "fieldname" in f}
@@ -241,7 +241,7 @@ def test_pbr_has_sync_info_fields():
 
 
 def test_pbr_controller_exists():
-    """pipeline_build_request.py controller must exist."""
+    """build_approval.py controller must exist."""
     assert os.path.isfile(PBR_PY)
 
 

@@ -1,6 +1,6 @@
 """Background jobs: governed dbt builds + Airbyte pipeline.
 
-Build governance: doc saves create Pipeline Build Requests instead of
+Build governance: doc saves create Build Approvals instead of
 firing raw `dbt build`. Scopes map to dbt domain tags for selective builds.
 """
 import os
@@ -26,7 +26,7 @@ def _dbt_bin():
 # Build scope mapping: doctype → (scope, risk)
 # ---------------------------------------------------------------------------
 # All 9 trigger doctypes map to "staging" (low risk) by default.
-# Full/actuals/consolidation rebuilds require manual Pipeline Build Request.
+# Full/actuals/consolidation rebuilds require manual Build Approval.
 DOCTYPE_BUILD_MAP = {
     "Consolidation Group": {"scope": "staging", "risk": "low"},
     "Consolidation Adjustment": {"scope": "staging", "risk": "low"},
@@ -165,7 +165,7 @@ def check_raw_data_available():
 
 
 # ---------------------------------------------------------------------------
-# Governed dbt build (called from Pipeline Build Request)
+# Governed dbt build (called from Build Approval)
 # ---------------------------------------------------------------------------
 def _create_governed_pipeline_run(build_request_doc):
     """Create a Pipeline Run audit row for a governed PBR execution."""
@@ -198,12 +198,12 @@ def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, er
 
 
 def run_governed_build(build_request):
-    """Execute a governed dbt build for a Pipeline Build Request.
+    """Execute a governed dbt build for a Build Approval.
 
-    Called via frappe.enqueue from PipelineBuildRequest.on_update.
+    Called via frappe.enqueue from BuildApproval.on_update.
     Runs preflight checks, then selective dbt build with --select tag.
     """
-    doc = frappe.get_doc("Pipeline Build Request", build_request)
+    doc = frappe.get_doc("Build Approval", build_request)
 
     # #67 fix 5: a governed dbt build shells `dbt` against the SAME shared project
     # dir as an orchestrator run, so the two must not run concurrently (racing
@@ -336,7 +336,7 @@ def _set_duration(doc):
 def on_consolidation_doc_update(doc, method):
     """Called by doc_events hook for consolidation/allocation doctypes.
 
-    Creates a Pipeline Build Request instead of firing raw dbt build.
+    Creates a Build Approval instead of firing raw dbt build.
     Uses DOCTYPE_BUILD_MAP to determine scope and risk level.
     """
     # Inert during app install / migrate / fixture import: loading fixtures
@@ -360,7 +360,7 @@ def on_consolidation_doc_update(doc, method):
 
     # Debounce: skip if a non-terminal PBR already exists for this scope
     existing = frappe.get_all(
-        "Pipeline Build Request",
+        "Build Approval",
         filters={
             "build_scope": scope,
             "workflow_state": ["in", ["Draft", "Pending Review", "Approved", "Running"]],
@@ -373,8 +373,8 @@ def on_consolidation_doc_update(doc, method):
         )
         return
 
-    # Create Pipeline Build Request
-    pbr = frappe.new_doc("Pipeline Build Request")
+    # Create Build Approval
+    pbr = frappe.new_doc("Build Approval")
     pbr.build_scope = scope
     pbr.trigger_source = "auto"
     pbr.trigger_doctype = doc.doctype
@@ -384,7 +384,7 @@ def on_consolidation_doc_update(doc, method):
     frappe.db.commit()
 
     frappe.logger().info(
-        f"Pipeline Build Request {pbr.name} created (scope={scope}, trigger={doc.doctype} {doc.name})"
+        f"Build Approval {pbr.name} created (scope={scope}, trigger={doc.doctype} {doc.name})"
     )
 
 
@@ -394,7 +394,7 @@ def on_consolidation_doc_update(doc, method):
 def run_dbt_build_async(doctype=None, docname=None):
     """Run dbt build as a background job. Debounced: skips if one is already queued.
 
-    DEPRECATED: Use on_consolidation_doc_update → Pipeline Build Request instead.
+    DEPRECATED: Use on_consolidation_doc_update → Build Approval instead.
     """
     from frappe.utils.background_jobs import get_jobs
     site = frappe.local.site

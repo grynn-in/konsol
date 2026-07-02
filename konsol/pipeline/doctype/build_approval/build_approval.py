@@ -1,4 +1,4 @@
-"""Pipeline Build Request controller.
+"""Build Approval controller.
 
 Manages workflow transitions for governed dbt builds.
 Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin approval.
@@ -18,7 +18,7 @@ SCOPE_RISK = {
 }
 
 
-class PipelineBuildRequest(Document):
+class BuildApproval(Document):
     def before_save(self):
         """Auto-set risk level, apply workflow transitions, populate sync info.
 
