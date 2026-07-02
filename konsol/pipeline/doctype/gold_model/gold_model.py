@@ -13,7 +13,7 @@ from konsol.dbt_config import regenerate_model_domains
 
 
 class GoldModel(Document):
-    # build_domain is a Link to Build Domain, so Frappe enforces that the domain
+    # build_domain is a Link to Build Scope, so Frappe enforces that the domain
     # exists — no manual allow-list needed here.
 
     def on_update(self):

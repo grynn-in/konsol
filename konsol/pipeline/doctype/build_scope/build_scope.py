@@ -1,4 +1,4 @@
-"""Build Domain — the set of Build Governance domains (single source of truth).
+"""Build Scope — the set of Build Governance domains (single source of truth).
 
 Each domain maps to a dbt selector tag:domain:<domain_name> and a flag for
 whether a build of it requires epm_raw data. konsol.tasks reads these at runtime
@@ -15,7 +15,7 @@ from frappe.model.document import Document
 _SAFE_DOMAIN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-class BuildDomain(Document):
+class BuildScope(Document):
 
     def validate(self):
         if not _SAFE_DOMAIN.match(self.domain_name or ""):
@@ -27,6 +27,6 @@ class BuildDomain(Document):
         if self.domain_name == "full":
             frappe.throw(
                 "'full' is a reserved build scope (full rebuild), not a per-model "
-                "domain — it cannot be a Build Domain.",
+                "domain — it cannot be a Build Scope.",
                 frappe.ValidationError,
             )

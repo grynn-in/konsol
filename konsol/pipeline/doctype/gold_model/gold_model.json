@@ -21,11 +21,11 @@
     {
       "fieldname": "build_domain",
       "fieldtype": "Link",
-      "options": "Build Domain",
-      "label": "Build Domain",
+      "options": "Build Scope",
+      "label": "Build Scope",
       "reqd": 1,
       "in_list_view": 1,
-      "description": "Build Governance domain (Build Domain doctype). Emitted as the dbt tag domain:<value>, which the governed build selects with tag:domain:<value>."
+      "description": "Build Governance domain (Build Scope doctype). Emitted as the dbt tag domain:<value>, which the governed build selects with tag:domain:<value>."
     },
     {
       "fieldname": "col_break_1",

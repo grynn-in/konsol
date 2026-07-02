@@ -39,7 +39,7 @@ DOCTYPE_BUILD_MAP = {
     "Allocation Run": {"scope": "staging", "risk": "low"},
 }
 
-# Scope → dbt selector. Kept as the fallback/default; the Build Domain doctype
+# Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
 # is the runtime source of truth (see _scope_selector / _raw_dependent_scopes).
 SCOPE_SELECTOR = {
     "staging": "tag:domain:staging",
@@ -55,11 +55,11 @@ RAW_DEPENDENT_SCOPES = {"actuals", "scenarios", "consolidation", "reporting", "f
 
 
 def _known_domains():
-    """Per-model build domains. Prefers the Build Domain doctype; falls back to
+    """Per-model build domains. Prefers the Build Scope doctype; falls back to
     the hardcoded SCOPE_SELECTOR domains (excluding the special 'full' scope)."""
     try:
-        if frappe.db.table_exists("Build Domain"):
-            names = frappe.get_all("Build Domain", pluck="name")
+        if frappe.db.table_exists("Build Scope"):
+            names = frappe.get_all("Build Scope", pluck="name")
             if names:
                 return set(names)
     except Exception:
@@ -77,12 +77,12 @@ def _scope_selector(scope):
 
 
 def _raw_dependent_scopes():
-    """Scopes that require epm_raw. Prefers Build Domain docs flagged
+    """Scopes that require epm_raw. Prefers Build Scope docs flagged
     requires_raw_data=1 (plus the 'full' build); falls back to RAW_DEPENDENT_SCOPES."""
     try:
-        if frappe.db.table_exists("Build Domain"):
+        if frappe.db.table_exists("Build Scope"):
             rows = frappe.get_all(
-                "Build Domain", filters={"requires_raw_data": 1}, pluck="name")
+                "Build Scope", filters={"requires_raw_data": 1}, pluck="name")
             if rows:
                 return set(rows) | {"full"}
     except Exception:

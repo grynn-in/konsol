@@ -29,7 +29,7 @@ fixtures = [
     "Allocation Driver",
     "Spread Profile",
     "Connector",
-    "Build Domain",
+    "Build Scope",
     "Gold Model",
     "Pipeline",
 ]

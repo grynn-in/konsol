@@ -72,13 +72,13 @@ def test_connector_health_links_connector():
     assert data["internal_links"]["Connector"] == "connector"
 
 
-def test_gold_model_links_build_domain():
+def test_gold_model_links_build_scope():
     data = _load_dashboard("pipeline/doctype/gold_model/gold_model_dashboard.py")
-    assert data["internal_links"]["Build Domain"] == "build_domain"
+    assert data["internal_links"]["Build Scope"] == "build_domain"
 
 
-def test_build_domain_links_gold_models():
-    data = _load_dashboard("pipeline/doctype/build_domain/build_domain_dashboard.py")
+def test_build_scope_links_gold_models():
+    data = _load_dashboard("pipeline/doctype/build_scope/build_scope_dashboard.py")
     assert "Gold Model" in _items(data)
     assert data["non_standard_fieldnames"]["Gold Model"] == "build_domain"
 
