@@ -135,7 +135,7 @@ def test_run_governed_build_creates_linked_pipeline_run():
     build = content.split("def run_governed_build")[1].split("\ndef ")[0]
     assert "_create_governed_pipeline_run" in build
     assert "_finalize_governed_pipeline_run" in build
-    assert "pipeline_build_request" in content.split("def _create_governed_pipeline_run")[1].split("\ndef ")[0]
+    assert "build_approval" in content.split("def _create_governed_pipeline_run")[1].split("\ndef ")[0]
 
 
 # ===================================================================

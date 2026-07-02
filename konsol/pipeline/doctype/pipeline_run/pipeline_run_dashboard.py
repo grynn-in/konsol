@@ -6,7 +6,7 @@ def get_data():
             "Assertion Run": "pipeline_run",
         },
         "internal_links": {
-            "Build Approval": "pipeline_build_request",
+            "Build Approval": "build_approval",
         },
         "transactions": [
             {"label": "Governance", "items": ["Build Approval"]},

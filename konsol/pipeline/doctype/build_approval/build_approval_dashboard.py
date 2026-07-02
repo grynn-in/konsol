@@ -1,10 +1,10 @@
 
 def get_data():
     return {
-        "fieldname": "pipeline_build_request",
+        "fieldname": "build_approval",
         "method": "konsol.desk.connections.get_open_count",
         "non_standard_fieldnames": {
-            "Pipeline Run": "pipeline_build_request",
+            "Pipeline Run": "build_approval",
         },
         "transactions": [
             {"label": "Runs", "items": ["Pipeline Run"]},

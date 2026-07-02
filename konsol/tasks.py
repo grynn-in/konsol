@@ -172,7 +172,7 @@ def _create_governed_pipeline_run(build_request_doc):
     run = frappe.get_doc({
         "doctype": "Pipeline Run",
         "status": "Queued",
-        "pipeline_build_request": build_request_doc.name,
+        "build_approval": build_request_doc.name,
         "triggered_by": build_request_doc.requested_by or frappe.session.user,
         "started_at": frappe.utils.now_datetime(),
     })

@@ -87,7 +87,7 @@ def test_pipeline_run_links_period_closes():
     data = _load_dashboard("pipeline/doctype/pipeline_run/pipeline_run_dashboard.py")
     assert "Assertion Run" in _items(data)
     assert data["non_standard_fieldnames"]["Assertion Run"] == "pipeline_run"
-    assert data["internal_links"]["Build Approval"] == "pipeline_build_request"
+    assert data["internal_links"]["Build Approval"] == "build_approval"
 
 
 def test_pipeline_run_links_build_approval():
@@ -120,7 +120,7 @@ def test_build_approval_dashboard_links_runs_and_trigger_js():
     data = _load_dashboard(
         "pipeline/doctype/build_approval/build_approval_dashboard.py")
     assert "Pipeline Run" in _items(data)
-    assert data["non_standard_fieldnames"]["Pipeline Run"] == "pipeline_build_request"
+    assert data["non_standard_fieldnames"]["Pipeline Run"] == "build_approval"
     assert data["method"] == "konsol.desk.connections.get_open_count"
     js_path = os.path.join(
         APP_DIR, "pipeline/doctype/build_approval/build_approval.js")
