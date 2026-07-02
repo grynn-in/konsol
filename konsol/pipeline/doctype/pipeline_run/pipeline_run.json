@@ -158,7 +158,7 @@
    "fieldname": "steps",
    "fieldtype": "Table",
    "label": "Steps",
-   "options": "Pipeline Step"
+   "options": "Run Step"
   },
   {
    "fieldname": "tab_log",

@@ -1,6 +1,6 @@
 """TDD — Run Step doctype fields (PRD-6).
 
-Doctype JSON PRD: no frappe needed. We load the `pipeline_step` child
+Doctype JSON PRD: no frappe needed. We load the `run_step` child
 doctype JSON and assert the orchestrator persistence fields exist with
 the expected fieldtypes, while leaving the pre-existing fields intact.
 """
@@ -16,8 +16,8 @@ _JSON_PATH = os.path.abspath(
         "..",
         "pipeline",
         "doctype",
-        "pipeline_step",
-        "pipeline_step.json",
+        "run_step",
+        "run_step.json",
     )
 )
 
@@ -33,7 +33,7 @@ def _fields_by_name(doc):
 
 def test_json_loads_and_is_child_table():
     doc = _load()
-    assert doc["name"] == "Pipeline Step"
+    assert doc["name"] == "Run Step"
     assert doc["istable"] == 1
 
 

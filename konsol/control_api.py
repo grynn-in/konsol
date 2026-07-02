@@ -358,7 +358,7 @@ def _latest_orchestrator_run():
     Run that has typed steps (step_id set), distinguishing it from legacy
     forecast/budget pipeline runs."""
     for r in frappe.get_all("Pipeline Run", fields=["name"], order_by="creation desc", limit=25):
-        if frappe.db.exists("Pipeline Step", {"parent": r.name, "step_id": ["is", "set"]}):
+        if frappe.db.exists("Run Step", {"parent": r.name, "step_id": ["is", "set"]}):
             return _serialize_pipeline_run(r.name)
     return None
 
@@ -727,7 +727,7 @@ def _consolidation_build_list(limit):
         order_by="creation desc",
         limit=limit * 3,
     ):
-        if not frappe.db.exists("Pipeline Step", {"parent": pr.name, "step_id": ["is", "set"]}):
+        if not frappe.db.exists("Run Step", {"parent": pr.name, "step_id": ["is", "set"]}):
             continue
         rows.append(_consolidation_build_row(pr))
         if len(rows) >= limit:

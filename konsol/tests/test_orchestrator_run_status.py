@@ -8,7 +8,7 @@ import os
 
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../konsol
 PRUN = os.path.join(APP, "pipeline", "doctype", "pipeline_run", "pipeline_run.json")
-PSTEP = os.path.join(APP, "pipeline", "doctype", "pipeline_step", "pipeline_step.json")
+PSTEP = os.path.join(APP, "pipeline", "doctype", "run_step", "run_step.json")
 
 
 def _status_options(path):
@@ -25,10 +25,10 @@ def test_pipeline_run_status_supports_orchestrator_lifecycle():
         assert s in opts, f"{s!r} missing from Pipeline Run status options: {sorted(opts)}"
 
 
-def test_pipeline_step_status_supports_orchestrator_vocab():
+def test_run_step_status_supports_orchestrator_vocab():
     # FrappeSink writes orchestrator Status values to the child rows. The legacy
     # field used "Failure" (not "Failed") and lacked Cancelled -> a failed step
     # raised ValidationError mid-run. All written values must be valid options.
     opts = _status_options(PSTEP)
     for s in ["Pending", "Running", "Success", "Failed", "Skipped", "Cancelled"]:
-        assert s in opts, f"{s!r} missing from Pipeline Step status options: {sorted(opts)}"
+        assert s in opts, f"{s!r} missing from Run Step status options: {sorted(opts)}"

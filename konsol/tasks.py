@@ -507,7 +507,7 @@ def _populate_run_steps(doc, project_path):
     except Exception:
         return
 
-    # Pipeline Step.status vocabulary is unified on "Failed" (see #65c-i) — the
+    # Run Step.status vocabulary is unified on "Failed" (see #65c-i) — the
     # orchestrator (run.py) already writes "Failed", and "Failure" was dropped
     # from the doctype options, so the legacy build path maps dbt errors to it too.
     status_map = {"success": "Success", "error": "Failed", "fail": "Failed",
