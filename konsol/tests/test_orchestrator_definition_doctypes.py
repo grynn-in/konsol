@@ -52,13 +52,13 @@ def test_definition_doctype_loads_and_is_not_table():
 
 def test_definition_autoname_field():
     doc = _load(_DEFN_PATH)
-    assert doc.get("autoname") == "field:definition_name"
+    assert doc.get("autoname") == "field:pipeline_name"
 
 
 def test_definition_fields_present():
     fields = _fields_by_name(_load(_DEFN_PATH))
     for name in (
-        "definition_name",
+        "pipeline_name",
         "title",
         "description",
         "enabled",
@@ -70,8 +70,8 @@ def test_definition_fields_present():
 
 def test_definition_name_unique():
     fields = _fields_by_name(_load(_DEFN_PATH))
-    assert fields["definition_name"]["fieldtype"] == "Data"
-    assert fields["definition_name"].get("unique") == 1
+    assert fields["pipeline_name"]["fieldtype"] == "Data"
+    assert fields["pipeline_name"].get("unique") == 1
 
 
 def test_definition_enabled_default_on():
@@ -142,7 +142,7 @@ def _group_close():
     records = _load(_FIXTURE_PATH)
     assert isinstance(records, list) and records, "fixture must be a non-empty list"
     for rec in records:
-        if rec.get("definition_name") == "Group Close":
+        if rec.get("pipeline_name") == "Group Close":
             return rec
     raise AssertionError("Group Close definition not found in fixture")
 

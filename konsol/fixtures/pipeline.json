@@ -2,7 +2,7 @@
   {
     "doctype": "Pipeline",
     "name": "Group Close",
-    "definition_name": "Group Close",
+    "pipeline_name": "Group Close",
     "title": "Group Close",
     "enabled": 1,
     "description": "Canonical consolidation close pipeline: extract -> seed -> silver -> gold -> assertions -> signoff.",
