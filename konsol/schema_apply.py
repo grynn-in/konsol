@@ -3,7 +3,7 @@
 Reads all config doctypes (Dimension, Measure, Dataset) and applies:
   1. dbt_project.yml vars regeneration
   2. ClickHouse ALTER TABLE for missing columns
-  3. Budget Input custom field sync
+  3. Budget Line custom field sync
   4. Optional dbt build trigger
 
 Called deliberately — NOT triggered automatically on individual saves.
