@@ -1,6 +1,6 @@
 [
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "gl_journal_entries",
     "fact_name": "gl_journal_entries",
     "label": "GL Journal Entries",
@@ -29,7 +29,7 @@
     "reroute_column": "cumulative_balance"
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "budget_input",
     "fact_name": "budget_input",
     "label": "Budget",
@@ -55,7 +55,7 @@
     "reroute_column": ""
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "variance_analysis",
     "fact_name": "variance_analysis",
     "label": "Variance Analysis",
@@ -83,7 +83,7 @@
     "reroute_column": ""
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "headcount",
     "fact_name": "headcount",
     "label": "Headcount",
@@ -106,7 +106,7 @@
     "reroute_column": ""
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "area_sqm",
     "fact_name": "area_sqm",
     "label": "Area (sqm)",
@@ -129,7 +129,7 @@
     "reroute_column": ""
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "revenue_by_product",
     "fact_name": "revenue_by_product",
     "label": "Revenue by Product",
@@ -153,7 +153,7 @@
     "reroute_column": ""
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "allocated",
     "fact_name": "allocated",
     "label": "Allocated",
@@ -177,7 +177,7 @@
     "reroute_column": ""
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "cashflow",
     "fact_name": "cashflow",
     "label": "Consolidated Cash Flow",
@@ -194,7 +194,7 @@
     ]
   },
   {
-    "doctype": "Fact Table",
+    "doctype": "Dataset",
     "name": "consolidated",
     "fact_name": "consolidated",
     "label": "Consolidated (Group)",

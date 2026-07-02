@@ -76,7 +76,7 @@ def test_api_has_report_apply_endpoints():
 def test_measure_allowlist_exists():
     """Measures are constrained to the fact's allow-list AND the Published registry.
 
-    Data-driven (Fact Table.measures ∩ Measure registry), surfaced via
+    Data-driven (Dataset.measures ∩ Measure registry), surfaced via
     _get_allowed_measures / _published_measures and enforced by _resolve_and_validate.
     """
     with open(API_PATH) as f:

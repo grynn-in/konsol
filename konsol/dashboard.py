@@ -25,7 +25,7 @@ _URL_SHORTCUTS = [
 # Colourful top-row shortcut tiles: (doctype, colour) — ordered by user workflow
 _SHORTCUTS = [
     ("Budget Cycle", "Teal"),
-    ("Fact Table", "Blue"),
+    ("Dataset", "Blue"),
     ("Measure", "Cyan"),
     ("Connector", "Orange"),
     ("Build Approval", "Purple"),
@@ -41,7 +41,7 @@ _CARDS = [
         "Fiscal Period", "Spread Profile",
     ]),
     ("EPM Registry", [
-        "Fact Table", "Measure", "Dimension",
+        "Dataset", "Measure", "Dimension",
         "Dimension Mapping", "Reporting Hierarchy", "Reporting Hierarchy Member",
         "EPM Settings",
     ]),
@@ -108,7 +108,7 @@ def setup_workspace(force=False):
     existing workspace is rebuilt once so desk users see updates without a manual
     refresh.
     """
-    if not _dt("Fact Table"):
+    if not _dt("Dataset"):
         # konsol doctypes not migrated yet — nothing to build.
         return
 

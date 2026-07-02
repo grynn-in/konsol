@@ -1,4 +1,4 @@
-"""Fact Table — registry of ClickHouse fact tables for dynamic schema.
+"""Dataset — registry of queryable ClickHouse datasets for dynamic schema.
 
 Saves validate measures/dimensions against the Published registries and keep
 the hidden `measures`/`dimensions` JSON fields in sync from the child tables so
@@ -17,7 +17,7 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 
 
-class FactTable(Document):
+class Dataset(Document):
     def validate(self):
         self._validate_table_name()
         self._validate_measures()
@@ -36,7 +36,7 @@ class FactTable(Document):
         """Every fact_measures row must reference a Published Measure.
 
         Skipped during fixture import / migrate / install: fixtures load in
-        alphabetical filename order (fact_table.json before measure.json), so
+        alphabetical filename order (dataset.json before measure.json), so
         the referenced measures may not be Published yet. Integrity is still
         enforced on normal saves and on publish().
         """

@@ -26,13 +26,13 @@ def _fixture(name):
 
 
 def _fact(scenario_key):
-    return next(r for r in _fixture("fact_table.json") if r["scenario_key"] == scenario_key)
+    return next(r for r in _fixture("dataset.json") if r["scenario_key"] == scenario_key)
 
 
-# --- budget layer: Fact Table doctype + fixture ---------------------------
+# --- budget layer: Dataset doctype + fixture -------------------------------
 
-def test_fact_table_doctype_has_has_layer_field():
-    fields = [f["fieldname"] for f in _doctype_json("fact_table")["fields"]]
+def test_dataset_doctype_has_has_layer_field():
+    fields = [f["fieldname"] for f in _doctype_json("dataset")["fields"]]
     assert "has_layer" in fields
 
 

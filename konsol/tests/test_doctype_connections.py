@@ -49,15 +49,15 @@ def test_dimension_links_mappings_and_hierarchies():
     assert "Reporting Hierarchy" in items
 
 
-def test_fact_table_internal_registry_links():
-    data = _load_dashboard("epm/doctype/fact_table/fact_table_dashboard.py")
+def test_dataset_internal_registry_links():
+    data = _load_dashboard("epm/doctype/dataset/dataset_dashboard.py")
     assert data["internal_links"]["Measure"] == ["fact_measures", "measure"]
     assert data["internal_links"]["Dimension"] == ["fact_dimensions", "dimension"]
 
 
-def test_measure_links_fact_tables_with_custom_count():
+def test_measure_links_datasets_with_custom_count():
     data = _load_dashboard("epm/doctype/measure/measure_dashboard.py")
-    assert "Fact Table" in _items(data)
+    assert "Dataset" in _items(data)
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 

@@ -19,7 +19,7 @@ fixtures = [
     "Reporting Hierarchy",
     "Reporting Hierarchy Member",
     "Measure",
-    "Fact Table",
+    "Dataset",
     "Scenario Definition",
     "Budget Cycle",
     "Budget Sheet",

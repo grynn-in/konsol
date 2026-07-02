@@ -1,6 +1,6 @@
 """Apply Schema — single deliberate action to regenerate all dynamic schema.
 
-Reads all config doctypes (Dimension, Measure, Fact Table) and applies:
+Reads all config doctypes (Dimension, Measure, Dataset) and applies:
   1. dbt_project.yml vars regeneration
   2. ClickHouse ALTER TABLE for missing columns
   3. Budget Input custom field sync
@@ -110,7 +110,7 @@ def _apply_clickhouse_columns():
         limit_page_length=0,
     )
     fact_tables = frappe.get_all(
-        "Fact Table",
+        "Dataset",
         fields=["fact_name", "clickhouse_table", "dimensions"],
         limit_page_length=0,
     )
@@ -160,7 +160,7 @@ def _apply_fact_tables():
     Returns (facts_created, sources_written) — lists of table / source names.
     """
     facts = frappe.get_all(
-        "Fact Table",
+        "Dataset",
         filters={"status": "Published", "generates_source": 1},
         fields=["fact_name", "label", "clickhouse_table", "dbt_model", "measures",
                 "dimensions", "extra_columns"],
@@ -268,7 +268,7 @@ def _upsert_dbt_source(fact):
             return False  # already present — idempotent
         tables.append({
             "name": table_name,
-            "description": f"{fact.label or fact.fact_name} — write-back fact registered via Fact Table",
+            "description": f"{fact.label or fact.fact_name} — write-back fact registered via Dataset",
             "loaded_at_field": "updated_at",
         })
         with open(path, "w") as f:

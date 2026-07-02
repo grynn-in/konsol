@@ -16,7 +16,7 @@ def check_epm_admin():
         )
 
 
-# Config-doctype publishes (Dimension/Measure/Fact Table) are schema-level
+# Config-doctype publishes (Dimension/Measure/Dataset) are schema-level
 # changes that can ripple through every dbt model, so they request a full-scope
 # rebuild. Routing through Build Approval (instead of a direct dbt build)
 # applies Build Governance: preflight (won't wipe gold when epm_raw is empty),

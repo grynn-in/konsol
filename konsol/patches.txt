@@ -15,3 +15,6 @@ execute:frappe.rename_doc("DocType", "Gold Model", "Build Model", force=True, ig
 execute:frappe.rename_doc("DocType", "Close Run", "Period Close", force=True, ignore_if_exists=True) #2026-07-02
 execute:frappe.rename_doc("DocType", "Pipeline Build Request", "Build Approval", force=True, ignore_if_exists=True) #2026-07-02
 konsol.patches.retire_budget_input
+execute:frappe.rename_doc("DocType", "Fact Table Measure", "Dataset Measure", force=True, ignore_if_exists=True) #2026-07-02
+execute:frappe.rename_doc("DocType", "Fact Table Dimension", "Dataset Dimension", force=True, ignore_if_exists=True) #2026-07-02
+execute:frappe.rename_doc("DocType", "Fact Table", "Dataset", force=True, ignore_if_exists=True) #2026-07-02

@@ -30,51 +30,51 @@ def _field_names(meta):
     return [f["fieldname"] for f in meta["fields"]]
 
 
-# --- Fact Table doctype ---
+# --- Dataset doctype ---
 
-def test_fact_table_has_new_fields():
-    fields = _field_names(_doctype_json("fact_table"))
+def test_dataset_has_new_fields():
+    fields = _field_names(_doctype_json("dataset"))
     for f in ["grain", "refresh_frequency", "generates_source", "extra_columns",
               "status", "fact_measures", "fact_dimensions"]:
         assert f in fields, f"Missing field: {f}"
 
 
-def test_fact_table_measures_json_is_hidden_synced():
+def test_dataset_measures_json_is_hidden_synced():
     """The legacy `measures` JSON stays for backward compat but is hidden/read-only."""
-    meta = _doctype_json("fact_table")
+    meta = _doctype_json("dataset")
     measures = next(f for f in meta["fields"] if f["fieldname"] == "measures")
     assert measures.get("read_only") == 1
     assert measures.get("hidden") == 1
 
 
-def test_fact_table_status_options():
-    meta = _doctype_json("fact_table")
+def test_dataset_status_options():
+    meta = _doctype_json("dataset")
     status = next(f for f in meta["fields"] if f["fieldname"] == "status")
     assert status["options"] == "Draft\nPublished\nInactive"
 
 
-def test_fact_table_has_epm_admin_permission():
-    meta = _doctype_json("fact_table")
+def test_dataset_has_epm_admin_permission():
+    meta = _doctype_json("dataset")
     roles = {p["role"] for p in meta["permissions"]}
     assert "EPM Admin" in roles
 
 
 def test_fact_measures_child_doctype():
-    meta = _doctype_json("fact_table_measure")
+    meta = _doctype_json("dataset_measure")
     assert meta["istable"] == 1
     fields = _field_names(meta)
     assert "measure" in fields and "required" in fields
 
 
 def test_fact_dimension_child_has_required():
-    fields = _field_names(_doctype_json("fact_table_dimension"))
+    fields = _field_names(_doctype_json("dataset_dimension"))
     assert "required" in fields
 
 
 # --- Controller ---
 
 def test_controller_publish_unpublish_and_lifecycle():
-    content = _read(os.path.join(APP_DIR, "epm", "doctype", "fact_table", "fact_table.py"))
+    content = _read(os.path.join(APP_DIR, "epm", "doctype", "dataset", "dataset.py"))
     assert "schema_lifecycle" in content
     tree = ast.parse(content)
     methods = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
@@ -84,7 +84,7 @@ def test_controller_publish_unpublish_and_lifecycle():
 
 
 def test_controller_no_on_update():
-    content = _read(os.path.join(APP_DIR, "epm", "doctype", "fact_table", "fact_table.py"))
+    content = _read(os.path.join(APP_DIR, "epm", "doctype", "dataset", "dataset.py"))
     tree = ast.parse(content)
     methods = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     assert "on_update" not in methods
@@ -108,7 +108,7 @@ def test_every_fact_measure_is_registered_published():
         m["measure_name"] for m in _fixture("measure.json")
         if m.get("status") == "Published"
     }
-    for fact in _fixture("fact_table.json"):
+    for fact in _fixture("dataset.json"):
         for row in fact.get("fact_measures", []):
             assert row["measure"] in published, (
                 f"{fact['fact_name']} references unregistered measure {row['measure']}"
@@ -120,7 +120,7 @@ def test_every_fact_dimension_is_registered_published():
         d["dimension_name"] for d in _fixture("dimension.json")
         if d.get("status") == "Published"
     }
-    for fact in _fixture("fact_table.json"):
+    for fact in _fixture("dataset.json"):
         for row in fact.get("fact_dimensions", []):
             assert row["dimension"] in published, (
                 f"{fact['fact_name']} references unregistered dimension {row['dimension']}"
@@ -128,13 +128,13 @@ def test_every_fact_dimension_is_registered_published():
 
 
 def test_fact_fixtures_use_child_table_and_published():
-    for fact in _fixture("fact_table.json"):
+    for fact in _fixture("dataset.json"):
         assert fact.get("status") == "Published", f"{fact['fact_name']} not Published"
         assert "fact_measures" in fact, f"{fact['fact_name']} missing fact_measures child"
 
 
 def test_generates_source_facts_target_staging_schema():
-    for fact in _fixture("fact_table.json"):
+    for fact in _fixture("dataset.json"):
         if fact.get("generates_source"):
             assert fact["clickhouse_table"].startswith("epm_staging."), (
                 f"{fact['fact_name']} write-back fact must live in epm_staging"
@@ -142,7 +142,7 @@ def test_generates_source_facts_target_staging_schema():
 
 
 def test_extra_columns_is_valid_json_when_present():
-    for fact in _fixture("fact_table.json"):
+    for fact in _fixture("dataset.json"):
         ec = fact.get("extra_columns")
         if ec:
             parsed = json.loads(ec)

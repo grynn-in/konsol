@@ -142,7 +142,7 @@ function epmCredit(entity, year, period, account, costCenter, department, hierar
 }
 
 // Consolidated cash-flow line read. Same epm_batch backend as K.EPM, pointed at
-// the `cashflow` Fact Table (gold_cashflow_fact): the group goes in the entity
+// the `cashflow` Dataset (gold_cashflow_fact): the group goes in the entity
 // slot and the cash-flow line name in the account slot. Self-documenting args.
 //   =K.CF("GROUP_CORP", 2024, 6, "Change in Inventory")
 function cf(group, year, period, line) {

@@ -1,5 +1,5 @@
 {
-  "name": "Fact Table",
+  "name": "Dataset",
   "doctype": "DocType",
   "module": "EPM",
   "issingle": 0,
@@ -12,7 +12,7 @@
     {
       "fieldname": "tab_fact",
       "fieldtype": "Tab Break",
-      "label": "Fact Table"
+      "label": "Dataset"
     },
     {
       "fieldname": "fact_name",
@@ -88,7 +88,7 @@
       "fieldname": "fact_measures",
       "fieldtype": "Table",
       "label": "Measures",
-      "options": "Fact Table Measure",
+      "options": "Dataset Measure",
       "description": "Measures available in this fact table (validated against the Measure registry)"
     },
     {
@@ -107,7 +107,7 @@
       "fieldname": "fact_dimensions",
       "fieldtype": "Table",
       "label": "Dimensions",
-      "options": "Fact Table Dimension",
+      "options": "Dataset Dimension",
       "description": "Dimensions available in this fact table"
     },
     {

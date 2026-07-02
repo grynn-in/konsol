@@ -118,31 +118,31 @@ def get_schema_status_api():
 
 @frappe.whitelist()
 def list_fact_tables_api(status=None):
-    """List Fact Table docs. Optional status: Draft, Published, or Inactive."""
+    """List Dataset docs. Optional status: Draft, Published, or Inactive."""
     return list_fact_tables(_status_filter(status))
 
 
 @frappe.whitelist()
 def get_fact_table_api(name):
-    """Get a single Fact Table doc by fact_name."""
+    """Get a single Dataset doc by fact_name."""
     return get_fact_table(name)
 
 
 @frappe.whitelist()
 def upsert_fact_table_api(spec, publish=False):
-    """Create or update a Fact Table doc. Pass spec as a JSON object."""
+    """Create or update a Dataset doc. Pass spec as a JSON object."""
     return upsert_fact_table(_parse_spec(spec), publish=frappe.utils.cint(publish))
 
 
 @frappe.whitelist()
 def publish_fact_table_api(name):
-    """Publish a Fact Table doc and request a governed rebuild."""
+    """Publish a Dataset doc and request a governed rebuild."""
     return publish_fact_table(name)
 
 
 @frappe.whitelist()
 def unpublish_fact_table_api(name):
-    """Unpublish a Fact Table doc and request a governed rebuild."""
+    """Unpublish a Dataset doc and request a governed rebuild."""
     return unpublish_fact_table(name)
 
 
