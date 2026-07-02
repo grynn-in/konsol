@@ -7,7 +7,7 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "CLOSE-.#####",
+  "autoname": "format:ASRT-{fiscal_year}-P{fiscal_period}-{####}",
   "title_field": "title",
   "fields": [
     {
