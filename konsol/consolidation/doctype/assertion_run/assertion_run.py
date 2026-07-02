@@ -1,7 +1,7 @@
-"""Period Close — runs the dbt close assertion suite and records each result.
+"""Assertion Run — runs the dbt close assertion suite and records each step.
 
 Mirrors the frappe/press build-state pattern: a parent doc with a child table
-(`Assertion Result`) of per-check rows, a status Select rendered as a colored
+(`Assertion Step`) of per-check rows, a status Select rendered as a colored
 indicator, and a streamed log via frappe.publish_realtime.
 """
 import json
@@ -12,7 +12,7 @@ import frappe
 from frappe.model.document import Document
 
 
-class PeriodClose(Document):
+class AssertionRun(Document):
     pass
 
 
@@ -49,13 +49,13 @@ def _dbt_bin():
 
 @frappe.whitelist()
 def trigger_close_run(fiscal_year=None, fiscal_period=None):
-    """Create a Period Close and enqueue the assertion suite.
+    """Create an Assertion Run and enqueue the assertion suite.
 
     Refuses to start if another run is already Queued/Running — only one
     assertion suite may run at a time (concurrent `dbt test` would contend on
     the warehouse and produce confusing interleaved state).
     """
-    active = frappe.db.get_value("Period Close", {"status": ["in", ("Queued", "Running")]}, "name")
+    active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
     if active:
         frappe.throw(
             frappe._("A close run is already in progress: {0}. Wait for it to finish before starting another.").format(active),
@@ -64,7 +64,7 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
 
     doc = frappe.get_doc(
         {
-            "doctype": "Period Close",
+            "doctype": "Assertion Run",
             "status": "Queued",
             "fiscal_year": fiscal_year,
             "fiscal_period": fiscal_period,
@@ -75,7 +75,7 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
     frappe.enqueue(
-        "konsol.consolidation.doctype.period_close.period_close.run_close_assertions",
+        "konsol.consolidation.doctype.assertion_run.assertion_run.run_close_assertions",
         queue="long",
         timeout=900,
         close_run=doc.name,
@@ -89,7 +89,7 @@ STALE_MINUTES = 20
 
 
 def reap_stale_close_runs():
-    """Scheduled: mark long-stuck Period Closes as Error.
+    """Scheduled: mark long-stuck Assertion Runs as Error.
 
     The concurrency guard in trigger_close_run() blocks new runs while one is
     Queued/Running. If a worker dies mid-run, that record would stay Running
@@ -97,27 +97,27 @@ def reap_stale_close_runs():
     """
     cutoff = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-STALE_MINUTES)
     stale = frappe.get_all(
-        "Period Close",
+        "Assertion Run",
         filters={"status": ["in", ("Queued", "Running")], "modified": ["<", cutoff]},
         pluck="name",
     )
     for name in stale:
-        prev = frappe.db.get_value("Period Close", name, "log") or ""
+        prev = frappe.db.get_value("Assertion Run", name, "log") or ""
         frappe.db.set_value(
-            "Period Close", name,
+            "Assertion Run", name,
             {"status": "Error",
              "log": f"{prev}\n[reaper] marked Error: no progress for >{STALE_MINUTES}m"},
             update_modified=False,
         )
     if stale:
         frappe.db.commit()
-        frappe.logger().info(f"Period Close reaper: marked {len(stale)} stale run(s) Error: {stale}")
+        frappe.logger().info(f"Assertion Run reaper: marked {len(stale)} stale run(s) Error: {stale}")
     return stale
 
 
 def _emit(name, **payload):
     payload["run"] = name
-    frappe.publish_realtime("close_run_update", payload, doctype="Period Close", docname=name)
+    frappe.publish_realtime("close_run_update", payload, doctype="Assertion Run", docname=name)
 
 
 # --- Sign-off gate (PRD §6.10 §4) ----------------------------------------
@@ -130,13 +130,13 @@ SIGNED_STATES = ("Signed Off", "Overridden")
 
 
 def latest_close_run(fiscal_year, fiscal_period):
-    """Most recent terminal Period Close for a period, or None.
+    """Most recent terminal Assertion Run for a period, or None.
 
     Ordered by completion time (not creation): a run is created Queued and only
     later becomes terminal, so a re-run that finishes later is authoritative.
     """
     rows = frappe.get_all(
-        "Period Close",
+        "Assertion Run",
         filters={"fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
                  "status": ["in", TERMINAL_STATUSES]},
         fields=["name", "status", "signoff_status", "failed", "errored"],
@@ -148,7 +148,7 @@ def latest_close_run(fiscal_year, fiscal_period):
 
 def _failed_assertion_names(close_run, limit=10):
     return frappe.get_all(
-        "Assertion Result",
+        "Assertion Step",
         filters={"parent": close_run, "status": ["in", ("Fail", "Error")]},
         pluck="assertion",
         limit=limit,
@@ -157,29 +157,29 @@ def _failed_assertion_names(close_run, limit=10):
 
 @frappe.whitelist()
 def sign_off_close(close_run, override_reason=None):
-    """Sign off a Period Close — the reconciliation gate.
+    """Sign off a Assertion Run — the reconciliation gate.
 
-    Green  -> signed off (caller must have write on Period Close).
+    Green  -> signed off (caller must have write on Assertion Run).
     Red/Error -> BLOCKED, unless the caller is an EPM Admin / System Manager AND
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
     """
     # Enforce write access BEFORE we switch to ignore_permissions for the save
     # (the sign-off fields are read_only, so the save itself must bypass perms).
-    frappe.has_permission("Period Close", "write", doc=close_run, throw=True)
+    frappe.has_permission("Assertion Run", "write", doc=close_run, throw=True)
 
     # Row lock so two concurrent sign-offs can't both pass the idempotency check.
-    frappe.db.get_value("Period Close", close_run, "name", for_update=True)
-    doc = frappe.get_doc("Period Close", close_run)
+    frappe.db.get_value("Assertion Run", close_run, "name", for_update=True)
+    doc = frappe.get_doc("Assertion Run", close_run)
 
     if doc.signoff_status in SIGNED_STATES:
         frappe.throw(
-            frappe._("Period Close {0} is already {1}.").format(close_run, doc.signoff_status),
+            frappe._("Assertion Run {0} is already {1}.").format(close_run, doc.signoff_status),
             title=frappe._("Already signed off"))
 
     if doc.status in ("Queued", "Running"):
         frappe.throw(
-            frappe._("Period Close {0} is still {1} — wait for it to finish before signing off.")
+            frappe._("Assertion Run {0} is still {1} — wait for it to finish before signing off.")
             .format(close_run, doc.status))
 
     if doc.status == "Green":
@@ -210,7 +210,7 @@ def sign_off_close(close_run, override_reason=None):
 
 
 def assert_close_signed_off(fiscal_year, fiscal_period):
-    """Gate hook: raise unless the period's latest Period Close is signed off
+    """Gate hook: raise unless the period's latest Assertion Run is signed off
     (Green) or audited-overridden.
 
     NOTE: this is the integration point for the budget/consolidation approval
@@ -222,7 +222,7 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
     run = latest_close_run(fiscal_year, fiscal_period)
     if not run:
         frappe.throw(
-            frappe._("No completed Period Close for {0}-{1}. Run the close assertion suite before sign-off.")
+            frappe._("No completed Assertion Run for {0}-{1}. Run the close assertion suite before sign-off.")
             .format(fiscal_year, fiscal_period),
             title=frappe._("Close not asserted"))
     if run.signoff_status not in SIGNED_STATES:
@@ -236,8 +236,8 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
 
 def run_close_assertions(close_run):
     """Background job: run `dbt test` for the singular assertions, stream the
-    log, then parse run_results.json into Assertion Result rows."""
-    doc = frappe.get_doc("Period Close", close_run)
+    log, then parse run_results.json into Assertion Step rows."""
+    doc = frappe.get_doc("Assertion Run", close_run)
     doc.status = "Running"
     doc.started_at = frappe.utils.now_datetime()
     doc.log = ""
@@ -264,7 +264,7 @@ def run_close_assertions(close_run):
             lines.append(line)
             _emit(close_run, line=line)
             if len(lines) % 20 == 0:  # checkpoint the log periodically
-                frappe.db.set_value("Period Close", close_run, "log", "\n".join(lines)[-20000:],
+                frappe.db.set_value("Assertion Run", close_run, "log", "\n".join(lines)[-20000:],
                                     update_modified=False)
                 frappe.db.commit()
         proc.wait(timeout=900)
@@ -292,7 +292,7 @@ def _fetch_failure_sample(relation, limit=20):
 
     `relation` is dbt's relation_name, e.g. `epm_dbt_test__audit`.`assert_x`.
     Returns an aligned text table (ClickHouse PrettyCompact) for display in the
-    Assertion Result, or a short note on failure — never raises.
+    Assertion Step, or a short note on failure — never raises.
     """
     rel = relation.replace("`", "").strip()
     if not rel:

@@ -7,12 +7,12 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "field:domain_name",
+  "autoname": "field:scope_name",
   "fields": [
     {
-      "fieldname": "domain_name",
+      "fieldname": "scope_name",
       "fieldtype": "Data",
-      "label": "Domain Name",
+      "label": "Scope Name",
       "reqd": 1,
       "unique": 1,
       "in_list_view": 1,

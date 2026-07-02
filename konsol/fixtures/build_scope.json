@@ -1,7 +1,7 @@
 [
-  {"doctype": "Build Scope", "name": "staging", "domain_name": "staging", "requires_raw_data": 0, "description": "Config/reference models — no epm_raw dependency."},
-  {"doctype": "Build Scope", "name": "actuals", "domain_name": "actuals", "requires_raw_data": 1, "description": "GL actuals models — require epm_raw."},
-  {"doctype": "Build Scope", "name": "scenarios", "domain_name": "scenarios", "requires_raw_data": 1, "description": "Scenario/variance models (actuals ∪ budget)."},
-  {"doctype": "Build Scope", "name": "consolidation", "domain_name": "consolidation", "requires_raw_data": 1, "description": "Consolidation & allocation models."},
-  {"doctype": "Build Scope", "name": "reporting", "domain_name": "reporting", "requires_raw_data": 1, "description": "Management hierarchy rollup models."}
+  {"doctype": "Build Scope", "name": "staging", "scope_name": "staging", "requires_raw_data": 0, "description": "Config/reference models — no epm_raw dependency."},
+  {"doctype": "Build Scope", "name": "actuals", "scope_name": "actuals", "requires_raw_data": 1, "description": "GL actuals models — require epm_raw."},
+  {"doctype": "Build Scope", "name": "scenarios", "scope_name": "scenarios", "requires_raw_data": 1, "description": "Scenario/variance models (actuals ∪ budget)."},
+  {"doctype": "Build Scope", "name": "consolidation", "scope_name": "consolidation", "requires_raw_data": 1, "description": "Consolidation & allocation models."},
+  {"doctype": "Build Scope", "name": "reporting", "scope_name": "reporting", "requires_raw_data": 1, "description": "Management hierarchy rollup models."}
 ]

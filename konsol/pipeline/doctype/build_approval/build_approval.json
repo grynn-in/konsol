@@ -7,7 +7,7 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "PBR-.#####",
+  "autoname": "BAPR-.#####",
   "fields": [
     {
       "fieldname": "tab_request",

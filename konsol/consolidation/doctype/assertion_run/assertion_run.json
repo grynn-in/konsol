@@ -1,5 +1,5 @@
 {
-  "name": "Period Close",
+  "name": "Assertion Run",
   "doctype": "DocType",
   "module": "Consolidation",
   "issingle": 0,
@@ -7,13 +7,13 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "CLOSE-.#####",
+  "autoname": "format:ASRT-{fiscal_year}-P{fiscal_period}-{####}",
   "title_field": "title",
   "fields": [
     {
       "fieldname": "tab_close_run",
       "fieldtype": "Tab Break",
-      "label": "Period Close"
+      "label": "Assertion Run"
     },
     {
       "fieldname": "title",
@@ -191,7 +191,7 @@
       "fieldname": "results",
       "fieldtype": "Table",
       "label": "Results",
-      "options": "Assertion Result"
+      "options": "Assertion Step"
     },
     {
       "fieldname": "tab_log",

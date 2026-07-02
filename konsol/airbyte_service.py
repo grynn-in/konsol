@@ -22,15 +22,15 @@ AIRBYTE_API_BASE = "/api/public/v1"
 
 ERP_AIRBYTE_SOURCE = {
     "d365_fo": {
-        "definition_name": "D365 Finance & Operations",
+        "pipeline_name": "D365 Finance & Operations",
         "legacy_source_type": "d365-fno",
     },
     "d365_bc": {
-        "definition_name": "D365 Business Central",
+        "pipeline_name": "D365 Business Central",
         "legacy_source_type": "d365-bc",
     },
     "erpnext": {
-        "definition_name": "ERPNext",
+        "pipeline_name": "ERPNext",
         "legacy_source_type": "erpnext",
     },
 }
@@ -252,14 +252,14 @@ def _resolve_source_definition_id(client, workspace_id, erp_type, settings):
     if not meta:
         raise AirbyteError(f"No Airbyte source mapping for erp_type '{erp_type}'.")
 
-    target_name = meta["definition_name"].lower()
+    target_name = meta["pipeline_name"].lower()
     for row in client.list_source_definitions(workspace_id):
         name = (row.get("name") or "").lower()
         if name == target_name or target_name in name:
             return row.get("definitionId") or row.get("sourceDefinitionId") or row.get("id")
 
     raise AirbyteError(
-        f"Airbyte source definition '{meta['definition_name']}' was not found. "
+        f"Airbyte source definition '{meta['pipeline_name']}' was not found. "
         "Load the custom connector in Airbyte Connector Builder, then set "
         "airbyte_d365_source_definition_id or airbyte_erpnext_source_definition_id "
         "in EPM Settings."

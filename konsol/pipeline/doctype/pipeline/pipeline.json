@@ -7,12 +7,12 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
-  "autoname": "field:definition_name",
+  "autoname": "field:pipeline_name",
   "fields": [
     {
-      "fieldname": "definition_name",
+      "fieldname": "pipeline_name",
       "fieldtype": "Data",
-      "label": "Definition Name",
+      "label": "Pipeline Name",
       "reqd": 1,
       "unique": 1,
       "in_list_view": 1,

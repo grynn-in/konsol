@@ -38,7 +38,7 @@
    "in_list_view": 1
   },
   {
-   "fieldname": "pipeline_build_request",
+   "fieldname": "build_approval",
    "fieldtype": "Link",
    "label": "Build Approval",
    "options": "Build Approval",

@@ -8,7 +8,7 @@
  "name": "Close Assertions",
  "owner": "Administrator",
  "prepared_report": 0,
- "ref_doctype": "Period Close",
+ "ref_doctype": "Assertion Run",
  "report_name": "Close Assertions",
  "report_type": "Script Report",
  "roles": [

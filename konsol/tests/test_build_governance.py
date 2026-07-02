@@ -135,7 +135,7 @@ def test_run_governed_build_creates_linked_pipeline_run():
     build = content.split("def run_governed_build")[1].split("\ndef ")[0]
     assert "_create_governed_pipeline_run" in build
     assert "_finalize_governed_pipeline_run" in build
-    assert "pipeline_build_request" in content.split("def _create_governed_pipeline_run")[1].split("\ndef ")[0]
+    assert "build_approval" in content.split("def _create_governed_pipeline_run")[1].split("\ndef ")[0]
 
 
 # ===================================================================
@@ -181,10 +181,10 @@ def test_pbr_json_valid():
 
 
 def test_pbr_has_autoname():
-    """Build Approval must have autoname PBR-.#####."""
+    """Build Approval must have autoname BAPR-.##### (renamed from PBR-)."""
     with open(PBR_JSON) as f:
         data = json.load(f)
-    assert data.get("autoname") == "PBR-.#####"
+    assert data.get("autoname") == "BAPR-.#####"
 
 
 def test_pbr_has_required_fields():

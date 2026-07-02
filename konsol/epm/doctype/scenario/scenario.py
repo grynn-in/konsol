@@ -1,11 +1,11 @@
-"""Scenario Definition — defines budget, forecast, and other scenarios."""
+"""Scenario — defines budget, forecast, and other scenarios."""
 import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype
 
 
-class ScenarioDefinition(Document):
+class Scenario(Document):
     CH_TABLE = "epm_gold.scenario_definitions"
     CH_FIELD_MAP = {
         "scenario_id": "scenario_id",

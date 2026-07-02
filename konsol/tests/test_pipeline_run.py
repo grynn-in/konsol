@@ -38,7 +38,7 @@ def test_pipeline_run_has_required_fields():
         "dbt_result",
         "error_log",
         "triggered_by",
-        "pipeline_build_request",
+        "build_approval",
     ]
     for fname in required:
         assert fname in field_names, f"Missing field: {fname}"
@@ -71,7 +71,7 @@ def test_pipeline_run_links_build_approval():
     with open(os.path.join(DOCTYPE_DIR, "pipeline_run.json")) as f:
         doc = json.load(f)
 
-    field = next(f for f in doc["fields"] if f["fieldname"] == "pipeline_build_request")
+    field = next(f for f in doc["fields"] if f["fieldname"] == "build_approval")
     assert field["fieldtype"] == "Link"
     assert field["options"] == "Build Approval"
 

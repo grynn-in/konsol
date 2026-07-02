@@ -1,12 +1,12 @@
 """Close Assertions — per-close green/red reconciliation board (PRD §6.10 §5).
 
-For a given (or the latest) Period Close, lists each assertion grouped by category
+For a given (or the latest) Assertion Run, lists each assertion grouped by category
 with pass/fail, the failing-row count, and where the offending rows live — plus
 a category chart and a sign-off-aware summary.
 """
 import frappe
 
-from konsol.consolidation.doctype.period_close.period_close import (
+from konsol.consolidation.doctype.assertion_run.assertion_run import (
     SIGNED_STATES, TERMINAL_STATUSES)
 
 STATUS_ORDER = {"Error": 0, "Fail": 1, "Pass": 2}  # surface problems first
@@ -21,7 +21,7 @@ def execute(filters=None):
         return _columns(), [], _no_run_message(), None, []
 
     rows = frappe.get_all(
-        "Assertion Result",
+        "Assertion Step",
         filters={"parent": run.name},
         fields=["dimension as category", "assertion", "status",
                 "rows_failed", "message", "failures_table"],
@@ -35,13 +35,13 @@ def execute(filters=None):
 def _resolve_run(filters):
     """The chosen run as a dict, or None. One query in each branch."""
     if filters.get("close_run"):
-        return frappe.db.get_value("Period Close", filters.close_run, _RUN_FIELDS, as_dict=True)
+        return frappe.db.get_value("Assertion Run", filters.close_run, _RUN_FIELDS, as_dict=True)
     period = {"status": ["in", TERMINAL_STATUSES]}
     if filters.get("fiscal_year"):
         period["fiscal_year"] = filters.fiscal_year
     if filters.get("fiscal_period"):
         period["fiscal_period"] = filters.fiscal_period
-    rows = frappe.get_all("Period Close", filters=period, fields=_RUN_FIELDS,
+    rows = frappe.get_all("Assertion Run", filters=period, fields=_RUN_FIELDS,
                           order_by="completed_at desc, creation desc", limit=1)
     return rows[0] if rows else None
 
@@ -106,10 +106,10 @@ def _summary(run):
 def _message(run):
     period = (f"{run.fiscal_year}-P{run.fiscal_period}" if run.fiscal_year
               else frappe._("(unscoped)"))
-    return frappe._("Period Close {0} · period {1} · status {2} · sign-off {3}").format(
+    return frappe._("Assertion Run {0} · period {1} · status {2} · sign-off {3}").format(
         run.name, period, run.status, run.signoff_status or frappe._("Not Signed Off"))
 
 
 def _no_run_message():
-    return frappe._("No completed Period Close found. Trigger the assertion suite from a "
-                    "Period Close, then reopen this report.")
+    return frappe._("No completed Assertion Run found. Trigger the assertion suite from a "
+                    "Assertion Run, then reopen this report.")

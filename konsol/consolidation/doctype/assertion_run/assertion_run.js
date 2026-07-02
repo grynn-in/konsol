@@ -1,15 +1,15 @@
-// Period Close — live log streaming + trigger button (Press-style build view)
-frappe.ui.form.on("Period Close", {
+// Assertion Run — live log streaming + trigger button (Press-style build view)
+frappe.ui.form.on("Assertion Run", {
 	refresh(frm) {
 		const in_progress = ["Queued", "Running"].includes(frm.doc.status);
 		if (!frm.is_new() && !in_progress) {
 			frm.add_custom_button(__("Run Suite"), () => {
 				frappe.call({
-					method: "konsol.consolidation.doctype.period_close.period_close.trigger_close_run",
+					method: "konsol.consolidation.doctype.assertion_run.assertion_run.trigger_close_run",
 					args: { fiscal_year: frm.doc.fiscal_year, fiscal_period: frm.doc.fiscal_period },
 					freeze: true,
 					freeze_message: __("Queuing assertion suite..."),
-					callback: (r) => r.message && frappe.set_route("Form", "Period Close", r.message),
+					callback: (r) => r.message && frappe.set_route("Form", "Assertion Run", r.message),
 				});
 			});
 		}
@@ -55,7 +55,7 @@ function add_signoff_buttons(frm) {
 
 function call_signoff(frm, override_reason) {
 	frappe.call({
-		method: "konsol.consolidation.doctype.period_close.period_close.sign_off_close",
+		method: "konsol.consolidation.doctype.assertion_run.assertion_run.sign_off_close",
 		args: { close_run: frm.doc.name, override_reason },
 		freeze: true,
 		freeze_message: __("Signing off..."),
