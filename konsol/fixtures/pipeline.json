@@ -1,6 +1,6 @@
 [
   {
-    "doctype": "Pipeline Definition",
+    "doctype": "Pipeline",
     "name": "Group Close",
     "definition_name": "Group Close",
     "title": "Group Close",
@@ -11,7 +11,7 @@
       {
         "doctype": "Pipeline Step",
         "parentfield": "steps",
-        "parenttype": "Pipeline Definition",
+        "parenttype": "Pipeline",
         "step_id": "extract",
         "step_type": "airbyte_sync",
         "depends_on": "",
@@ -20,7 +20,7 @@
       {
         "doctype": "Pipeline Step",
         "parentfield": "steps",
-        "parenttype": "Pipeline Definition",
+        "parenttype": "Pipeline",
         "step_id": "seed",
         "step_type": "dbt_seed",
         "depends_on": "extract",
@@ -29,7 +29,7 @@
       {
         "doctype": "Pipeline Step",
         "parentfield": "steps",
-        "parenttype": "Pipeline Definition",
+        "parenttype": "Pipeline",
         "step_id": "silver",
         "step_type": "dbt_run",
         "depends_on": "seed",
@@ -38,7 +38,7 @@
       {
         "doctype": "Pipeline Step",
         "parentfield": "steps",
-        "parenttype": "Pipeline Definition",
+        "parenttype": "Pipeline",
         "step_id": "gold",
         "step_type": "dbt_run",
         "depends_on": "silver",
@@ -47,7 +47,7 @@
       {
         "doctype": "Pipeline Step",
         "parentfield": "steps",
-        "parenttype": "Pipeline Definition",
+        "parenttype": "Pipeline",
         "step_id": "assertions",
         "step_type": "close_assertions",
         "depends_on": "gold",
@@ -56,7 +56,7 @@
       {
         "doctype": "Pipeline Step",
         "parentfield": "steps",
-        "parenttype": "Pipeline Definition",
+        "parenttype": "Pipeline",
         "step_id": "signoff",
         "step_type": "signoff",
         "depends_on": "assertions",

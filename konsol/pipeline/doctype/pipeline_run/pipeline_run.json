@@ -81,7 +81,7 @@
   {
    "fieldname": "pipeline_definition",
    "fieldtype": "Data",
-   "label": "Pipeline Definition",
+   "label": "Pipeline",
    "in_standard_filter": 1
   },
   {

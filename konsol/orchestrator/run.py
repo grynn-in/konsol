@@ -87,7 +87,7 @@ def plan_run(params: Optional[Dict], definition=None) -> Tuple[Dag, RunState]:
     - ``None`` (the default, and every run with no ``pipeline_definition``) →
       fall back to :data:`plan.DEFAULT_DEFINITION`. Behaviour unchanged for
       existing runs.
-    - ``str`` → a Pipeline Definition **name**, resolved to its ``Step`` list via
+    - ``str`` → a Pipeline **name**, resolved to its ``Step`` list via
       :func:`definition.load_definition`. This is the frappe-bound path: the run
       carries the definition name (persisted by :func:`api.start_run`), and
       :func:`run_pipeline` passes that name straight through to here.
@@ -100,7 +100,7 @@ def plan_run(params: Optional[Dict], definition=None) -> Tuple[Dag, RunState]:
     name path without a bench.
     """
     if isinstance(definition, str):
-        # Resolve the Pipeline Definition name → Steps. Imported here (not at
+        # Resolve the Pipeline name → Steps. Imported here (not at
         # module scope) so the pure branches keep importing without frappe.
         from konsol.orchestrator.definition import load_definition
 

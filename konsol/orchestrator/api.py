@@ -297,7 +297,7 @@ def launch_options() -> Dict:
     """
     import frappe
 
-    definitions = [d.name for d in frappe.get_all("Pipeline Definition", order_by="name")]
+    definitions = [d.name for d in frappe.get_all("Pipeline", order_by="name")]
 
     fiscal_periods = []
     for f in frappe.get_all(

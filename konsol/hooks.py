@@ -31,7 +31,7 @@ fixtures = [
     "Connector",
     "Build Domain",
     "Gold Model",
-    "Pipeline Definition",
+    "Pipeline",
 ]
 
 # After migrate — create EPM roles

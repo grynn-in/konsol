@@ -1,7 +1,7 @@
 """TDD — orchestrator Definition->plan loader (PRD-13).
 
-``konsol.orchestrator.definition`` turns PRD-12 Pipeline Definition doctype data
-(a dict, e.g. ``Pipeline Definition.as_dict()`` or the seed fixture record) into
+``konsol.orchestrator.definition`` turns PRD-12 Pipeline doctype data
+(a dict, e.g. ``Pipeline.as_dict()`` or the seed fixture record) into
 ``dag.Step`` objects so ``plan.build_plan`` can consume user-authored definitions
 instead of the hardcoded ``DEFAULT_DEFINITION`` constant.
 
@@ -22,7 +22,7 @@ FIXTURE = os.path.join(
     os.path.dirname(__file__),
     "..",
     "fixtures",
-    "pipeline_definition.json",
+    "pipeline.json",
 )
 
 

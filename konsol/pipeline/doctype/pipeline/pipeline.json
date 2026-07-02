@@ -1,5 +1,5 @@
 {
-  "name": "Pipeline Definition",
+  "name": "Pipeline",
   "doctype": "DocType",
   "module": "Pipeline",
   "issingle": 0,
@@ -16,7 +16,7 @@
       "reqd": 1,
       "unique": 1,
       "in_list_view": 1,
-      "description": "Unique identifier for this pipeline definition"
+      "description": "Unique identifier for this pipeline"
     },
     {
       "fieldname": "title",
