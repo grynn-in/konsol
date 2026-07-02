@@ -32,7 +32,7 @@
     "doctype": "Fact Table",
     "name": "budget_input",
     "fact_name": "budget_input",
-    "label": "Budget Input",
+    "label": "Budget",
     "source_type": "Budget",
     "clickhouse_table": "epm_gold.gold_spread_budget",
     "dbt_model": "gold_spread_budget",

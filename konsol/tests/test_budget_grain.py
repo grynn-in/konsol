@@ -2,20 +2,17 @@
 
 Follows the repo convention of site-free tests: pure-function checks on
 ``budget_grain`` (registry lookup monkeypatched) plus source-level assertions
-that the grain is wired consistently across the upsert key, the document
-autoname and the ClickHouse sync key.
+that the grain is wired consistently into the upsert key. (The retired
+``Budget Input`` doctype's autoname/CH-sync wiring checks were removed with
+the doctype — PRD-08; ``budget_name`` stays for the historical rekey patch.)
 """
-import ast
 import importlib.util
-import json
 import os
 import sys
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PATH = os.path.join(APP_DIR, "api.py")
-BUDGET_INPUT_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_input", "budget_input.py")
-BUDGET_INPUT_JSON = os.path.join(APP_DIR, "epm", "doctype", "budget_input", "budget_input.json")
 PATCHES_TXT = os.path.join(APP_DIR, "patches.txt")
 
 # Load THIS worktree's budget_grain by path (not the installed app, which may be
@@ -106,25 +103,6 @@ def _src(path):
 def test_budget_filters_includes_grain_dimensions():
     src = _src(API_PATH)
     assert "budget_dimension_names" in src, "_budget_filters must extend the key with in_budget dims"
-
-
-def test_budget_input_has_dynamic_autoname():
-    tree = ast.parse(_src(BUDGET_INPUT_PY))
-    methods = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-    assert "autoname" in methods, "BudgetInput must define a controller autoname()"
-    assert "budget_name" in _src(BUDGET_INPUT_PY)
-
-
-def test_static_format_autoname_removed():
-    """Static format: name would exclude dims and reintroduce the clobber."""
-    meta = json.load(open(BUDGET_INPUT_JSON))
-    assert not (meta.get("autoname") or "").startswith("format:")
-
-
-def test_clickhouse_sync_key_includes_dimensions():
-    """Incremental sync delete-by-key must include dims or it wipes siblings."""
-    src = _src(BUDGET_INPUT_PY)
-    assert "*dim_names" in src, "key_columns must include the grain dimensions"
 
 
 def test_grain_migration_patch_registered():
