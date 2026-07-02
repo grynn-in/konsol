@@ -181,10 +181,10 @@ def test_pbr_json_valid():
 
 
 def test_pbr_has_autoname():
-    """Build Approval must have autoname PBR-.#####."""
+    """Build Approval must have autoname BAPR-.##### (renamed from PBR-)."""
     with open(PBR_JSON) as f:
         data = json.load(f)
-    assert data.get("autoname") == "PBR-.#####"
+    assert data.get("autoname") == "BAPR-.#####"
 
 
 def test_pbr_has_required_fields():
