@@ -9,7 +9,7 @@
     "default_params": "{}",
     "steps": [
       {
-        "doctype": "Step Definition",
+        "doctype": "Pipeline Step",
         "parentfield": "steps",
         "parenttype": "Pipeline Definition",
         "step_id": "extract",
@@ -18,7 +18,7 @@
         "params": ""
       },
       {
-        "doctype": "Step Definition",
+        "doctype": "Pipeline Step",
         "parentfield": "steps",
         "parenttype": "Pipeline Definition",
         "step_id": "seed",
@@ -27,7 +27,7 @@
         "params": ""
       },
       {
-        "doctype": "Step Definition",
+        "doctype": "Pipeline Step",
         "parentfield": "steps",
         "parenttype": "Pipeline Definition",
         "step_id": "silver",
@@ -36,7 +36,7 @@
         "params": ""
       },
       {
-        "doctype": "Step Definition",
+        "doctype": "Pipeline Step",
         "parentfield": "steps",
         "parenttype": "Pipeline Definition",
         "step_id": "gold",
@@ -45,7 +45,7 @@
         "params": ""
       },
       {
-        "doctype": "Step Definition",
+        "doctype": "Pipeline Step",
         "parentfield": "steps",
         "parenttype": "Pipeline Definition",
         "step_id": "assertions",
@@ -54,7 +54,7 @@
         "params": ""
       },
       {
-        "doctype": "Step Definition",
+        "doctype": "Pipeline Step",
         "parentfield": "steps",
         "parenttype": "Pipeline Definition",
         "step_id": "signoff",

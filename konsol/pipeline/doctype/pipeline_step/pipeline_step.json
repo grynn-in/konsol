@@ -1,5 +1,5 @@
 {
-  "name": "Step Definition",
+  "name": "Pipeline Step",
   "doctype": "DocType",
   "module": "Pipeline",
   "issingle": 0,

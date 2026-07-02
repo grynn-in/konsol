@@ -52,7 +52,7 @@
       "fieldname": "steps",
       "fieldtype": "Table",
       "label": "Steps",
-      "options": "Step Definition"
+      "options": "Pipeline Step"
     }
   ],
   "permissions": [

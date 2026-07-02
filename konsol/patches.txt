@@ -8,3 +8,4 @@ konsol.patches.normalize_pipeline_step_status
 konsol.patches.rename_cash_flow_category_to_account
 konsol.patches.rekey_historical_equity_rate_to_group_corp
 execute:frappe.rename_doc("DocType", "Pipeline Step", "Run Step", force=True, ignore_if_exists=True) #2026-07-02
+execute:frappe.rename_doc("DocType", "Step Definition", "Pipeline Step", force=True, ignore_if_exists=True) #2026-07-02
