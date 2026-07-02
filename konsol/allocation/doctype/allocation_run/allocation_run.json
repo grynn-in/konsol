@@ -41,7 +41,7 @@
       "fieldname": "status",
       "fieldtype": "Select",
       "label": "Status",
-      "options": "Draft\nRunning\nActive\nReversed",
+      "options": "Draft\nActive\nReversed",
       "default": "Draft",
       "in_list_view": 1,
       "read_only": 1
@@ -58,6 +58,14 @@
       "fieldtype": "Datetime",
       "label": "Run At",
       "read_only": 1
+    },
+    {
+      "fieldname": "build_approval",
+      "fieldtype": "Link",
+      "label": "Build Approval",
+      "options": "Build Approval",
+      "read_only": 1,
+      "description": "Governed build requested when this run was submitted"
     },
     {
       "fieldname": "reversal_section",

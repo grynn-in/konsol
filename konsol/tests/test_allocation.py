@@ -122,6 +122,97 @@ def test_allocation_bootstrap_exports_sync_helper():
     assert "epm_staging.allocation_drivers" in content
 
 
+# --- Allocation Run (PRD-10: submit requests a scoped governed build) ---
+
+def _load_workflow_json():
+    path = os.path.join(
+        APP_DIR, "allocation", "doctype", "allocation_run",
+        "allocation_run_workflow.json")
+    with open(path) as handle:
+        return json.load(handle)
+
+
+def _module_constant(content, name):
+    """Extract a module-level string constant via AST."""
+    tree = ast.parse(content)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if getattr(target, "id", None) == name:
+                    return node.value.value
+    return None
+
+
+def test_allocation_run_submit_requests_governed_build():
+    """Submitting a run must request a governed build and link the PBR."""
+    content = _load_py("allocation_run")
+    assert "request_governed_rebuild" in content
+    tree = ast.parse(content)
+    methods = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    assert "before_submit" in methods
+    assert "self.build_approval = request_governed_rebuild" in content
+
+
+def test_allocation_run_build_scope_matches_build_model_fixture():
+    """The scope must be the build_domain of the gold_allocation_* models."""
+    content = _load_py("allocation_run")
+    scope = _module_constant(content, "_ALLOCATION_BUILD_SCOPE")
+    assert scope == "consolidation"
+    with open(os.path.join(FIXTURES_DIR, "build_model.json")) as handle:
+        models = json.load(handle)
+    alloc_domains = {
+        model["build_domain"] for model in models
+        if model["model_name"].startswith("gold_allocation_")
+    }
+    assert alloc_domains == {scope}
+
+
+def test_allocation_run_has_build_approval_link_field():
+    meta = _load_json("allocation_run")
+    field = next(
+        (f for f in meta["fields"] if f["fieldname"] == "build_approval"), None)
+    assert field is not None
+    assert field["fieldtype"] == "Link"
+    assert field["options"] == "Build Approval"
+    assert field.get("read_only") == 1
+
+
+def test_allocation_run_ch_surface_unchanged():
+    """build_approval must NOT enter the ClickHouse field map (PRD-10 §4)."""
+    content = _load_py("allocation_run")
+    assert 'RUN_CH_TABLE = "epm_staging.allocation_runs"' in content
+    tree = ast.parse(content)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "RUN_CH_FIELD_MAP" for t in node.targets
+        ):
+            keys = [k.value for k in node.value.keys]
+            assert keys == [
+                "allocation_run_id", "fiscal_year", "fiscal_period",
+                "status", "run_by", "run_at", "reversal_of",
+            ]
+            return
+    raise AssertionError("RUN_CH_FIELD_MAP not found")
+
+
+def test_allocation_run_workflow_has_no_unreachable_state():
+    """No dead 'Running' state; every non-initial state is reachable."""
+    workflow = _load_workflow_json()
+    states = {s["state"] for s in workflow["states"]}
+    assert "Running" not in states
+    reachable = {"Draft"} | {t["next_state"] for t in workflow["transitions"]}
+    assert states == reachable
+    for transition in workflow["transitions"]:
+        assert transition["state"] in states
+        assert transition["next_state"] in states
+
+
+def test_allocation_run_status_options_have_no_dead_state():
+    meta = _load_json("allocation_run")
+    status = next(f for f in meta["fields"] if f["fieldname"] == "status")
+    assert status["options"].split("\n") == ["Draft", "Active", "Reversed"]
+
+
 # --- Allocation Driver ---
 
 def test_allocation_driver_json_exists():

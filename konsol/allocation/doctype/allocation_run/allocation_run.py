@@ -1,10 +1,19 @@
-"""Allocation Run — run metadata for traceability and reversibility.
+"""Allocation Run — a real, parameterized allocation execution.
 
 PRD-21: Tracks allocation executions (Active/Reversed) with audit trail.
+PRD-10: Submitting a run requests the governed dbt build that actually
+computes allocations, and records the created Build Approval on the run.
 """
 import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
+
+from konsol.schema_lifecycle import request_governed_rebuild
+
+# The gold_allocation_* models carry build_domain "consolidation" in
+# fixtures/build_model.json, so that scope is the one whose governed build
+# recomputes allocation results.
+_ALLOCATION_BUILD_SCOPE = "consolidation"
 
 RUN_CH_TABLE = "epm_staging.allocation_runs"
 RUN_CH_FIELD_MAP = {
@@ -61,6 +70,12 @@ class AllocationRun(Document):
         self.run_by = frappe.session.user
         self.run_at = now_datetime()
         self.status = "Active"
+        # Make the name true: request a scoped governed build (same PBR
+        # machinery as the publish flows — preflight + approval + audit +
+        # debounce) and link whichever Build Approval covers it.
+        self.build_approval = request_governed_rebuild(
+            self, "Submit", scope=_ALLOCATION_BUILD_SCOPE
+        )
 
     def on_submit(self):
         frappe.db.after_commit.add(sync_allocation_runs_to_clickhouse)
