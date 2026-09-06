@@ -52,7 +52,19 @@ def test_pipeline_run_status_options():
     status_field = next(f for f in doc["fields"] if f["fieldname"] == "status")
     assert status_field["fieldtype"] == "Select"
     options = status_field["options"].split("\n")
-    expected = ["Queued", "Extracting", "Transforming", "Completed", "Failed"]
+    # Running and Cancelled arrived with the orchestrator's single-flight and
+    # cancel hardening (konsol#67/#69): a run is Running between step phases,
+    # and Cancelled is terminal-but-not-Failed, which the reaper and the
+    # status tone mapping both depend on.
+    expected = [
+        "Queued",
+        "Extracting",
+        "Transforming",
+        "Running",
+        "Completed",
+        "Failed",
+        "Cancelled",
+    ]
     assert options == expected
 
 
