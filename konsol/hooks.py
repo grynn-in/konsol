@@ -115,3 +115,28 @@ doc_events = {
     }
     for dt in _dbt_trigger_doctypes
 }
+
+# ---------------------------------------------------------------------------
+# Entity-scoped access (#91)
+# ---------------------------------------------------------------------------
+# Every doctype carrying `data_area_id` is filtered to the entities a user's
+# User Permissions grant, expanded down the Entity tree so an assignment to a
+# region carries its subsidiaries. Without these hooks desk list views were
+# never entity-filtered at all — only the explicit checks in api.py were, and
+# only where someone remembered to call them.
+
+from konsol.entity_permissions import ENTITY_SCOPED_DOCTYPES as _ENTITY_SCOPED
+
+permission_query_conditions = {
+    dt: f"konsol.entity_permissions.{dt.lower().replace(' ', '_')}_conditions"
+    for dt in _ENTITY_SCOPED
+}
+permission_query_conditions["Entity"] = "konsol.entity_permissions.entity_conditions"
+
+# Query conditions cover lists and reports; has_permission covers opening a
+# single document, which they do not.
+has_permission = {
+    dt: "konsol.entity_permissions.has_entity_permission" for dt in _ENTITY_SCOPED
+}
+has_permission["Entity"] = "konsol.entity_permissions.has_entity_doc_permission"
+

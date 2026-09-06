@@ -1,282 +1,292 @@
 {
-  "name": "EPM Settings",
-  "doctype": "DocType",
-  "module": "Pipeline",
-  "issingle": 1,
-  "istable": 0,
-  "editable_grid": 0,
-  "engine": "InnoDB",
-  "track_changes": 0,
-  "fields": [
-    {
-      "fieldname": "tab_clickhouse",
-      "fieldtype": "Tab Break",
-      "label": "ClickHouse"
-    },
-    {
-      "fieldname": "clickhouse_section",
-      "fieldtype": "Section Break",
-      "label": "ClickHouse Connection"
-    },
-    {
-      "fieldname": "clickhouse_host",
-      "fieldtype": "Data",
-      "label": "ClickHouse Host",
-      "default": "localhost"
-    },
-    {
-      "fieldname": "clickhouse_port",
-      "fieldtype": "Data",
-      "label": "ClickHouse Port",
-      "default": "8123"
-    },
-    {
-      "fieldname": "clickhouse_user",
-      "fieldtype": "Data",
-      "label": "ClickHouse User",
-      "default": "default"
-    },
-    {
-      "fieldname": "clickhouse_password",
-      "fieldtype": "Password",
-      "label": "ClickHouse Password"
-    },
-    {
-      "fieldname": "clickhouse_secure",
-      "fieldtype": "Check",
-      "label": "Use HTTPS (TLS)",
-      "default": "0",
-      "description": "Connect to ClickHouse over HTTPS so credentials and query results are encrypted in transit. Required when ClickHouse is reached over any non-loopback network."
-    },
-    {
-      "fieldname": "clickhouse_verify_tls",
-      "fieldtype": "Check",
-      "label": "Verify TLS Certificate",
-      "default": "1",
-      "depends_on": "clickhouse_secure",
-      "description": "Validate the ClickHouse server certificate. Disable only for self-signed certs on a trusted network."
-    },
-    {
-      "fieldname": "tab_airbyte",
-      "fieldtype": "Tab Break",
-      "label": "Airbyte"
-    },
-    {
-      "fieldname": "airbyte_section",
-      "fieldtype": "Section Break",
-      "label": "Airbyte Connection"
-    },
-    {
-      "fieldname": "skip_airbyte_sync",
-      "fieldtype": "Check",
-      "label": "Skip Airbyte Sync",
-      "default": "0",
-      "description": "When checked, pipeline/build runs skip the Airbyte extract step and build dbt directly from existing epm_raw data (demo data or a manual load). Raw-data readiness checks pass without a connector sync."
-    },
-    {
-      "fieldname": "airbyte_api_url",
-      "fieldtype": "Data",
-      "label": "Airbyte API URL",
-      "default": "http://localhost:8000"
-    },
-    {
-      "fieldname": "airbyte_connection_id",
-      "fieldtype": "Data",
-      "label": "Airbyte Connection ID"
-    },
-    {
-      "fieldname": "airbyte_client_id",
-      "fieldtype": "Data",
-      "label": "Airbyte Client ID"
-    },
-    {
-      "fieldname": "airbyte_client_secret",
-      "fieldtype": "Password",
-      "label": "Airbyte Client Secret"
-    },
-    {
-      "fieldname": "airbyte_workspace_id",
-      "fieldtype": "Data",
-      "label": "Airbyte Workspace ID",
-      "description": "Optional. When blank, the first workspace returned by the Airbyte API is used."
-    },
-    {
-      "fieldname": "airbyte_destination_id",
-      "fieldtype": "Data",
-      "label": "Airbyte Destination ID",
-      "description": "Optional. When blank, konsol provisions or reuses the Open EPM ClickHouse destination."
-    },
-    {
-      "fieldname": "airbyte_clickhouse_host",
-      "fieldtype": "Data",
-      "label": "Airbyte ClickHouse Host",
-      "default": "172.30.0.10",
-      "description": "Host used when auto-provisioning the ClickHouse destination for connector extract"
-    },
-    {
-      "fieldname": "airbyte_clickhouse_port",
-      "fieldtype": "Int",
-      "label": "Airbyte ClickHouse Port",
-      "default": "8123"
-    },
-    {
-      "fieldname": "airbyte_clickhouse_database",
-      "fieldtype": "Data",
-      "label": "Airbyte ClickHouse Database",
-      "default": "epm_raw"
-    },
-    {
-      "fieldname": "airbyte_d365_source_definition_id",
-      "fieldtype": "Data",
-      "label": "D365 Airbyte Source Definition ID",
-      "description": "Optional override for the D365 F&O / BC custom connector definition in Airbyte"
-    },
-    {
-      "fieldname": "airbyte_erpnext_source_definition_id",
-      "fieldtype": "Data",
-      "label": "ERPNext Airbyte Source Definition ID",
-      "description": "Optional override for the ERPNext custom connector definition in Airbyte"
-    },
-    {
-      "fieldname": "webhook_secret",
-      "fieldtype": "Password",
-      "label": "Webhook Secret",
-      "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
-    },
-    {
-      "fieldname": "tab_d365_writeback",
-      "fieldtype": "Tab Break",
-      "label": "D365 Write-Back"
-    },
-    {
-      "fieldname": "d365_writeback_section",
-      "fieldtype": "Section Break",
-      "label": "D365 F&O Budget Write-Back (Legacy)"
-    },
-    {
-      "fieldname": "enable_d365_budget_writeback",
-      "fieldtype": "Check",
-      "label": "Enable D365 Budget Write-Back",
-      "default": "0",
-      "description": "Push approved budgets to D365 BudgetRegisterEntries (one-way; ClickHouse stays source of truth)"
-    },
-    {
-      "fieldname": "d365_resource_url",
-      "fieldtype": "Data",
-      "label": "D365 Resource URL",
-      "description": "e.g. https://yourorg.operations.dynamics.com"
-    },
-    {
-      "fieldname": "d365_tenant_id",
-      "fieldtype": "Data",
-      "label": "Azure AD Tenant ID"
-    },
-    {
-      "fieldname": "d365_client_id",
-      "fieldtype": "Data",
-      "label": "D365 Client ID"
-    },
-    {
-      "fieldname": "d365_client_secret",
-      "fieldtype": "Password",
-      "label": "D365 Client Secret"
-    },
-    {
-      "fieldname": "d365_fiscal_year_start_month",
-      "fieldtype": "Int",
-      "label": "Fiscal Year Start Month",
-      "default": "1",
-      "depends_on": "enable_d365_budget_writeback",
-      "description": "Month when the D365 fiscal year begins (1=Jan, 4=Apr, 7=Jul, 10=Oct). Maps budget period numbers to OData AccountingDate. For 4-4-5 calendars, supply a CustomFiscalCalendar programmatically. NEEDS-LIVE-TENANT: must match the Fiscal calendar configured in D365 F&O for the target legal entity."
-    },
-    {
-      "fieldname": "tab_sync_status",
-      "fieldtype": "Tab Break",
-      "label": "Airbyte Sync Status"
-    },
-    {
-      "fieldname": "airbyte_sync_status_section",
-      "fieldtype": "Section Break",
-      "label": "Airbyte Sync Status"
-    },
-    {
-      "fieldname": "last_airbyte_sync_at",
-      "fieldtype": "Datetime",
-      "label": "Last Airbyte Sync At",
-      "read_only": 1
-    },
-    {
-      "fieldname": "last_airbyte_sync_status",
-      "fieldtype": "Select",
-      "label": "Last Airbyte Sync Status",
-      "options": "\nSuccess\nFailed\nPartial\nRunning",
-      "read_only": 1
-    },
-    {
-      "fieldname": "last_airbyte_sync_rows",
-      "fieldtype": "Int",
-      "label": "Last Airbyte Sync Rows",
-      "read_only": 1
-    },
-    {
-      "fieldname": "tab_dbt_access",
-      "fieldtype": "Tab Break",
-      "label": "dbt & Access Control"
-    },
-    {
-      "fieldname": "dbt_section",
-      "fieldtype": "Section Break",
-      "label": "dbt Configuration"
-    },
-    {
-      "fieldname": "dbt_project_path",
-      "fieldtype": "Data",
-      "label": "dbt Project Path",
-      "default": "/home/frappe/dbt_project"
-    },
-    {
-      "fieldname": "access_control_section",
-      "fieldtype": "Section Break",
-      "label": "Access Control"
-    },
-    {
-      "fieldname": "entity_permission_doctype",
-      "fieldtype": "Link",
-      "options": "DocType",
-      "label": "Entity Permission DocType",
-      "description": "DocType whose User Permissions restrict which entities (data areas) a user may query via the EPM API. Leave blank to allow all authenticated users to query all entities."
-    },
-    {
-      "fieldname": "account_permission_doctype",
-      "fieldtype": "Link",
-      "options": "DocType",
-      "label": "Account Permission DocType",
-      "description": "DocType (typically a Virtual DocType proxying main account categories) whose User Permissions restrict which account categories a user may write budgets for. Leave blank to allow all authenticated users to write any account."
-    },
-    {
-      "fieldname": "tab_consolidation",
-      "fieldtype": "Tab Break",
-      "label": "Consolidation"
-    },
-    {
-      "fieldname": "group_reporting_section",
-      "fieldtype": "Section Break",
-      "label": "Group Reporting"
-    },
-    {
-      "fieldname": "consolidation_currency",
-      "fieldtype": "Link",
-      "options": "Currency",
-      "label": "Consolidation Currency",
-      "description": "Default currency the group consolidates and reports in (IAS 21 direct method): each entity keeps its own functional currency from D365 and is translated directly into this currency in one step. Reporting currency is per top-level group — a deployment may hold several groups in different currencies — so this is the default/fallback for a group that doesn't pin its own reporting currency, not a blanket override. Phase 2 (per-region step-by-step sub-consolidation) is tracked in grynn-in/konsolidat#93."
-    }
-  ],
-  "permissions": [
-    {
-      "role": "System Manager",
-      "read": 1,
-      "write": 1,
-      "create": 1
-    }
-  ]
+ "name": "EPM Settings",
+ "doctype": "DocType",
+ "module": "Pipeline",
+ "issingle": 1,
+ "istable": 0,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 0,
+ "fields": [
+  {
+   "fieldname": "tab_clickhouse",
+   "fieldtype": "Tab Break",
+   "label": "ClickHouse"
+  },
+  {
+   "fieldname": "clickhouse_section",
+   "fieldtype": "Section Break",
+   "label": "ClickHouse Connection"
+  },
+  {
+   "fieldname": "clickhouse_host",
+   "fieldtype": "Data",
+   "label": "ClickHouse Host",
+   "default": "localhost"
+  },
+  {
+   "fieldname": "clickhouse_port",
+   "fieldtype": "Data",
+   "label": "ClickHouse Port",
+   "default": "8123"
+  },
+  {
+   "fieldname": "clickhouse_user",
+   "fieldtype": "Data",
+   "label": "ClickHouse User",
+   "default": "default"
+  },
+  {
+   "fieldname": "clickhouse_password",
+   "fieldtype": "Password",
+   "label": "ClickHouse Password"
+  },
+  {
+   "fieldname": "clickhouse_secure",
+   "fieldtype": "Check",
+   "label": "Use HTTPS (TLS)",
+   "default": "0",
+   "description": "Connect to ClickHouse over HTTPS so credentials and query results are encrypted in transit. Required when ClickHouse is reached over any non-loopback network."
+  },
+  {
+   "fieldname": "clickhouse_verify_tls",
+   "fieldtype": "Check",
+   "label": "Verify TLS Certificate",
+   "default": "1",
+   "depends_on": "clickhouse_secure",
+   "description": "Validate the ClickHouse server certificate. Disable only for self-signed certs on a trusted network."
+  },
+  {
+   "fieldname": "tab_airbyte",
+   "fieldtype": "Tab Break",
+   "label": "Airbyte"
+  },
+  {
+   "fieldname": "airbyte_section",
+   "fieldtype": "Section Break",
+   "label": "Airbyte Connection"
+  },
+  {
+   "fieldname": "skip_airbyte_sync",
+   "fieldtype": "Check",
+   "label": "Skip Airbyte Sync",
+   "default": "0",
+   "description": "When checked, pipeline/build runs skip the Airbyte extract step and build dbt directly from existing epm_raw data (demo data or a manual load). Raw-data readiness checks pass without a connector sync."
+  },
+  {
+   "fieldname": "airbyte_api_url",
+   "fieldtype": "Data",
+   "label": "Airbyte API URL",
+   "default": "http://localhost:8000"
+  },
+  {
+   "fieldname": "airbyte_connection_id",
+   "fieldtype": "Data",
+   "label": "Airbyte Connection ID"
+  },
+  {
+   "fieldname": "airbyte_client_id",
+   "fieldtype": "Data",
+   "label": "Airbyte Client ID"
+  },
+  {
+   "fieldname": "airbyte_client_secret",
+   "fieldtype": "Password",
+   "label": "Airbyte Client Secret"
+  },
+  {
+   "fieldname": "airbyte_workspace_id",
+   "fieldtype": "Data",
+   "label": "Airbyte Workspace ID",
+   "description": "Optional. When blank, the first workspace returned by the Airbyte API is used."
+  },
+  {
+   "fieldname": "airbyte_destination_id",
+   "fieldtype": "Data",
+   "label": "Airbyte Destination ID",
+   "description": "Optional. When blank, konsol provisions or reuses the Open EPM ClickHouse destination."
+  },
+  {
+   "fieldname": "airbyte_clickhouse_host",
+   "fieldtype": "Data",
+   "label": "Airbyte ClickHouse Host",
+   "default": "172.30.0.10",
+   "description": "Host used when auto-provisioning the ClickHouse destination for connector extract"
+  },
+  {
+   "fieldname": "airbyte_clickhouse_port",
+   "fieldtype": "Int",
+   "label": "Airbyte ClickHouse Port",
+   "default": "8123"
+  },
+  {
+   "fieldname": "airbyte_clickhouse_database",
+   "fieldtype": "Data",
+   "label": "Airbyte ClickHouse Database",
+   "default": "epm_raw"
+  },
+  {
+   "fieldname": "airbyte_d365_source_definition_id",
+   "fieldtype": "Data",
+   "label": "D365 Airbyte Source Definition ID",
+   "description": "Optional override for the D365 F&O / BC custom connector definition in Airbyte"
+  },
+  {
+   "fieldname": "airbyte_erpnext_source_definition_id",
+   "fieldtype": "Data",
+   "label": "ERPNext Airbyte Source Definition ID",
+   "description": "Optional override for the ERPNext custom connector definition in Airbyte"
+  },
+  {
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret",
+   "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
+  },
+  {
+   "fieldname": "tab_d365_writeback",
+   "fieldtype": "Tab Break",
+   "label": "D365 Write-Back"
+  },
+  {
+   "fieldname": "d365_writeback_section",
+   "fieldtype": "Section Break",
+   "label": "D365 F&O Budget Write-Back (Legacy)"
+  },
+  {
+   "fieldname": "enable_d365_budget_writeback",
+   "fieldtype": "Check",
+   "label": "Enable D365 Budget Write-Back",
+   "default": "0",
+   "description": "Push approved budgets to D365 BudgetRegisterEntries (one-way; ClickHouse stays source of truth)"
+  },
+  {
+   "fieldname": "d365_resource_url",
+   "fieldtype": "Data",
+   "label": "D365 Resource URL",
+   "description": "e.g. https://yourorg.operations.dynamics.com"
+  },
+  {
+   "fieldname": "d365_tenant_id",
+   "fieldtype": "Data",
+   "label": "Azure AD Tenant ID"
+  },
+  {
+   "fieldname": "d365_client_id",
+   "fieldtype": "Data",
+   "label": "D365 Client ID"
+  },
+  {
+   "fieldname": "d365_client_secret",
+   "fieldtype": "Password",
+   "label": "D365 Client Secret"
+  },
+  {
+   "fieldname": "d365_fiscal_year_start_month",
+   "fieldtype": "Int",
+   "label": "Fiscal Year Start Month",
+   "default": "1",
+   "depends_on": "enable_d365_budget_writeback",
+   "description": "Month when the D365 fiscal year begins (1=Jan, 4=Apr, 7=Jul, 10=Oct). Maps budget period numbers to OData AccountingDate. For 4-4-5 calendars, supply a CustomFiscalCalendar programmatically. NEEDS-LIVE-TENANT: must match the Fiscal calendar configured in D365 F&O for the target legal entity."
+  },
+  {
+   "fieldname": "tab_sync_status",
+   "fieldtype": "Tab Break",
+   "label": "Airbyte Sync Status"
+  },
+  {
+   "fieldname": "airbyte_sync_status_section",
+   "fieldtype": "Section Break",
+   "label": "Airbyte Sync Status"
+  },
+  {
+   "fieldname": "last_airbyte_sync_at",
+   "fieldtype": "Datetime",
+   "label": "Last Airbyte Sync At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_airbyte_sync_status",
+   "fieldtype": "Select",
+   "label": "Last Airbyte Sync Status",
+   "options": "\nSuccess\nFailed\nPartial\nRunning",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_airbyte_sync_rows",
+   "fieldtype": "Int",
+   "label": "Last Airbyte Sync Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tab_dbt_access",
+   "fieldtype": "Tab Break",
+   "label": "dbt & Access Control"
+  },
+  {
+   "fieldname": "dbt_section",
+   "fieldtype": "Section Break",
+   "label": "dbt Configuration"
+  },
+  {
+   "fieldname": "dbt_project_path",
+   "fieldtype": "Data",
+   "label": "dbt Project Path",
+   "default": "/home/frappe/dbt_project"
+  },
+  {
+   "fieldname": "access_control_section",
+   "fieldtype": "Section Break",
+   "label": "Access Control"
+  },
+  {
+   "fieldname": "entity_permission_doctype",
+   "fieldtype": "Link",
+   "options": "DocType",
+   "label": "Entity Permission DocType",
+   "description": "DocType whose User Permissions restrict which entities (data areas) a user may query via the EPM API. Leave blank to allow all authenticated users to query all entities."
+  },
+  {
+   "default": "0",
+   "fieldname": "restrict_entities_by_default",
+   "fieldtype": "Check",
+   "label": "Restrict Entities By Default",
+   "description": "Deny-by-default entity access: a user with no Entity User Permission sees no entity data. Off by default, matching Frappe's convention that a User Permission is an opt-in restriction. Turning this on locks out every user who has not been assigned an entity."
+  },
+  {
+   "fieldname": "account_permission_doctype",
+   "fieldtype": "Link",
+   "options": "DocType",
+   "label": "Account Permission DocType",
+   "description": "DocType (typically a Virtual DocType proxying main account categories) whose User Permissions restrict which account categories a user may write budgets for. Leave blank to allow all authenticated users to write any account."
+  },
+  {
+   "fieldname": "tab_consolidation",
+   "fieldtype": "Tab Break",
+   "label": "Consolidation"
+  },
+  {
+   "fieldname": "group_reporting_section",
+   "fieldtype": "Section Break",
+   "label": "Group Reporting"
+  },
+  {
+   "fieldname": "consolidation_currency",
+   "fieldtype": "Link",
+   "options": "Currency",
+   "label": "Consolidation Currency",
+   "description": "Default currency the group consolidates and reports in (IAS 21 direct method): each entity keeps its own functional currency from D365 and is translated directly into this currency in one step. Reporting currency is per top-level group \u2014 a deployment may hold several groups in different currencies \u2014 so this is the default/fallback for a group that doesn't pin its own reporting currency, not a blanket override. Phase 2 (per-region step-by-step sub-consolidation) is tracked in grynn-in/konsolidat#93."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  }
+ ],
+ "field_order": [
+  "restrict_entities_by_default"
+ ]
 }
