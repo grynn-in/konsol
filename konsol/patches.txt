@@ -7,20 +7,20 @@ konsol.patches.fix_dimension_source_column_drift
 konsol.patches.normalize_pipeline_step_status
 konsol.patches.rename_cash_flow_category_to_account
 konsol.patches.rekey_historical_equity_rate_to_group_corp
-execute:frappe.rename_doc("DocType", "Pipeline Step", "Run Step", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Step Definition", "Pipeline Step", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Pipeline Definition", "Pipeline", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Build Domain", "Build Scope", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Gold Model", "Build Model", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Close Run", "Period Close", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Pipeline Build Request", "Build Approval", force=True, ignore_if_exists=True) #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Pipeline Step", "Run Step") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Step Definition", "Pipeline Step") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Pipeline Definition", "Pipeline") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Build Domain", "Build Scope") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Gold Model", "Build Model") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Close Run", "Period Close") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Pipeline Build Request", "Build Approval") #2026-07-02
 konsol.patches.retire_budget_input
-execute:frappe.rename_doc("DocType", "Fact Table Measure", "Dataset Measure", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Fact Table Dimension", "Dataset Dimension", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Fact Table", "Dataset", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Assertion Result", "Assertion Step", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Period Close", "Assertion Run", force=True, ignore_if_exists=True) #2026-07-02
-execute:frappe.rename_doc("DocType", "Scenario Definition", "Scenario", force=True, ignore_if_exists=True) #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Fact Table Measure", "Dataset Measure") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Fact Table Dimension", "Dataset Dimension") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Fact Table", "Dataset") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Assertion Result", "Assertion Step") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Period Close", "Assertion Run") #2026-07-02
+execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Scenario Definition", "Scenario") #2026-07-02
 konsol.patches.rename_pipeline_run_pipeline_build_request_to_build_approval
 konsol.patches.rename_build_scope_domain_name_to_scope_name
 konsol.patches.rename_pipeline_definition_name_to_pipeline_name
