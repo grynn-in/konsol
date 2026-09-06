@@ -1,115 +1,105 @@
-"""TDD — konsol-exec "Execute" view wiring (E8).
+"""konsol-exec shell + step wiring (E5).
 
-E8 composes the now-built launch + timeline pieces into a real navigable SPA
-subview driven by the E5 ``runExecMachine``. ``App.jsx`` registers an
-``execute`` subview alongside the existing ``setup``/``monitor``/``history``
-subviews, instantiates ``runExecMachine`` via the app's XState pattern
-(``useMachine`` from ``@xstate/react``), and renders ``<ExecuteLaunch>`` (the
-launch form) on top of ``<RunTimeline>`` (the live run), passing the machine
-``send`` straight through and ``state.context.run`` to the timeline.
+The execution plane lives inside a close step: ``StepDetail`` registers the
+Setup / Execute / Monitor / History tabs and renders ``StepExecute``, which
+instantiates the ``runExecMachine`` and renders ``RunTimeline`` beneath the
+launch form.
 
-Following the repo's static-assertion convention (JSX isn't host-runnable),
-these tests read ``App.jsx`` + ``constants.js`` and assert the imports, the
-rendered components, the props passed through, and that the ``execute`` subview
-is registered. All logic stays in the pure ESM core / the components.
+Ported from ``App.jsx``. The wiring moved down a level — App used to own both
+the subview registration and the machine; navigation now belongs to vue-router
+and the machine belongs to the step that uses it. These tests follow it there.
 """
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_DIR = os.path.join(os.path.dirname(APP_DIR), "konsol-exec", "src")
-APP_PATH = os.path.join(SRC_DIR, "App.jsx")
+APP_PATH = os.path.join(SRC_DIR, "App.vue")
+DETAIL_PATH = os.path.join(SRC_DIR, "components", "StepDetail.vue")
+EXECUTE_PATH = os.path.join(SRC_DIR, "components", "StepExecute.vue")
 CONSTANTS_PATH = os.path.join(SRC_DIR, "constants.js")
+ROUTER_PATH = os.path.join(SRC_DIR, "router.js")
 
 
-def _app_js():
-    with open(APP_PATH) as f:
+def _read(path):
+    with open(path) as f:
         return f.read()
 
 
-def _constants_js():
-    with open(CONSTANTS_PATH) as f:
-        return f.read()
-
-
-# ---- file surface ------------------------------------------------------
+# ---- shell -------------------------------------------------------------
 
 def test_app_file_exists():
     assert os.path.exists(APP_PATH)
 
 
-# ---- imports -----------------------------------------------------------
-
-def test_app_imports_execute_launch():
-    js = _app_js()
-    assert "ExecuteLaunch" in js
-    assert "./components/ExecuteLaunch" in js
+def test_app_is_a_vue_sfc():
+    js = _read(APP_PATH)
+    assert "<script setup>" in js
+    assert "<template>" in js
 
 
-def test_app_imports_run_timeline():
-    js = _app_js()
-    assert "RunTimeline" in js
-    assert "./components/RunTimeline" in js
-
-
-def test_app_imports_run_exec_machine():
-    js = _app_js()
-    assert "runExecMachine" in js
-    assert "./machines" in js
-
-
-def test_app_imports_use_machine():
-    js = _app_js()
+def test_app_owns_the_close_machine():
+    js = _read(APP_PATH)
+    assert "closeMachine" in js
     assert "useMachine" in js
-    assert "@xstate/react" in js
 
 
-# ---- machine instantiation ---------------------------------------------
-
-def test_app_instantiates_run_exec_machine():
-    js = _app_js()
-    assert "useMachine(runExecMachine)" in js
-
-
-# ---- renders both components -------------------------------------------
-
-def test_app_renders_execute_launch():
-    js = _app_js()
-    assert "<ExecuteLaunch" in js
+def test_app_provides_the_plane_to_the_tree():
+    """Every screen reads snapshot data, period and send from one provide."""
+    js = _read(APP_PATH)
+    assert 'provide("plane"' in js
 
 
-def test_app_renders_run_timeline():
-    js = _app_js()
-    assert "<RunTimeline" in js
+def test_app_renders_router_view():
+    js = _read(APP_PATH)
+    assert "RouterView" in js
 
 
-# ---- passes machine send + context.run --------------------------------
-
-def test_app_passes_send_to_launch_and_timeline():
-    js = _app_js()
-    # both components receive a `send` prop dispatching machine events
-    assert "send=" in js
+def test_app_has_loading_and_error_states():
+    js = _read(APP_PATH)
+    assert "AppSkeleton" in js
+    assert "ErrorState" in js
 
 
-def test_app_passes_context_run_to_timeline():
-    js = _app_js()
-    assert ("context.run" in js) or ("run={" in js)
+# ---- step detail registers the tabs ------------------------------------
+
+def test_step_detail_registers_execute_subview():
+    js = _read(DETAIL_PATH)
+    assert "StepExecute" in js
 
 
-# ---- execute subview registered ----------------------------------------
-
-def test_execute_subview_registered():
-    js = _app_js()
-    consts = _constants_js()
-    assert ('"execute"' in js) or ('"execute"' in consts)
+def test_step_detail_renders_all_four_tabs():
+    js = _read(DETAIL_PATH)
+    for comp in ("StepSetup", "StepExecute", "StepMonitor", "StepHistory"):
+        assert comp in js, f"{comp} not wired into StepDetail"
 
 
-def test_execute_subview_in_subnav_list():
-    consts = _constants_js()
-    # the execute tab is part of the domain sub-nav tab list
-    assert '"execute"' in consts
+def test_execute_subview_registered_in_constants():
+    js = _read(CONSTANTS_PATH)
+    assert "STEP_TABS" in js
+    assert '"execute"' in js
 
 
-def test_app_renders_execute_subview_branch():
-    js = _app_js()
-    # an active `execute` subview gates rendering of the execute plane
-    assert 'subview === "execute"' in js
+def test_tab_is_addressable():
+    """A tab has its own URL so it can be pasted during a close."""
+    js = _read(ROUTER_PATH)
+    assert ":step" in js
+    assert ":tab" in js
+
+
+# ---- the execute step wires the machine to the timeline ----------------
+
+def test_execute_instantiates_run_exec_machine():
+    js = _read(EXECUTE_PATH)
+    assert "runExecMachine" in js
+    assert "useMachine" in js
+
+
+def test_execute_renders_run_timeline():
+    js = _read(EXECUTE_PATH)
+    assert "RunTimeline" in js
+
+
+def test_execute_passes_run_and_send_to_timeline():
+    js = _read(EXECUTE_PATH)
+    assert "snapshot.context.run" in js
+    assert '@send="send"' in js

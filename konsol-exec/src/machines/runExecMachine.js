@@ -1,5 +1,5 @@
 import { setup, assign, fromPromise } from "xstate";
-import { startRun, getRun, retryStep, resumeRun, cancelRun } from "../api";
+import { startRun, getRun, retryStep, resumeRun, cancelRun } from "../api.js";
 import { normalizeRun } from "../orchestrator/runModel";
 import { isTerminal } from "../orchestrator/status";
 

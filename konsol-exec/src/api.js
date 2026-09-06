@@ -33,8 +33,16 @@ async function frappeCall(method, args = {}) {
 	return data.message;
 }
 
-export function getSnapshot() {
-	return fetch("/api/method/konsol.control_api.get_snapshot", {
+export function getSnapshot(period) {
+	// The period scopes only the snapshot's `period` block (its close state).
+	// Omitted on the very first call, before the period is known.
+	const qs = period?.year
+		? "?" + new URLSearchParams({
+			fiscal_year: String(period.year),
+			...(period.period ? { fiscal_period: String(period.period) } : {}),
+		})
+		: "";
+	return fetch(`/api/method/konsol.control_api.get_snapshot${qs}`, {
 		method: "GET",
 		credentials: "include",
 		headers: { Accept: "application/json" },
@@ -113,6 +121,14 @@ export function cancelRun(name) {
  * `{definitions:[name], fiscal_years:[yr], fiscal_periods:[{value,label}],
  * scopes:[{value,label}]}`. Lets the 4 launch fields be selects, not free text.
  */
+export function setPeriodStatus(fiscalYear, fiscalPeriod, status) {
+	return frappeCall("konsol.control_api.set_period_status", {
+		fiscal_year: String(fiscalYear),
+		fiscal_period: String(fiscalPeriod),
+		status,
+	});
+}
+
 export function getLaunchOptions() {
 	return frappeCall("konsol.orchestrator.api.launch_options");
 }

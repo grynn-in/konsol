@@ -1,0 +1,120 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:PS-{fiscal_year}-{fiscal_period}",
+ "creation": "2026-09-06 09:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "fiscal_year",
+  "fiscal_period",
+  "col_break_1",
+  "status",
+  "dates_section",
+  "start_date",
+  "end_date",
+  "col_break_2",
+  "closed_by",
+  "closed_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Fiscal Year",
+   "reqd": 1
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Fiscal Period",
+   "reqd": 1,
+   "description": "Fiscal period number, matching Fiscal Period.fiscal_period (0=OPN, 1-12, 13=CLS)"
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Open",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Open\nClosed\nLocked",
+   "reqd": 1
+  },
+  {
+   "fieldname": "dates_section",
+   "fieldtype": "Section Break",
+   "label": "Dates"
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Date",
+   "label": "Start Date"
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date"
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "closed_by",
+   "fieldtype": "Link",
+   "label": "Closed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "closed_on",
+   "fieldtype": "Datetime",
+   "label": "Closed On",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-06 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "EPM",
+ "name": "Period Status",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

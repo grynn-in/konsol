@@ -2,7 +2,7 @@
  * Status model for orchestrator runs/steps.
  * Backend vocab: Pending/Running/Success/Failed/Skipped/Cancelled.
  * The realtime layer also uses Queued/Completed, so we tolerate those.
- * Pure ESM — no React, no fetch.
+ * Pure ESM — framework-free.
  */
 
 const TONES = {

@@ -3,7 +3,7 @@
 // Maps a Pipeline Run doc (+ its `steps` child rows) into a stable,
 // camelCase shape the SPA/timeline can render, and derives progress.
 //
-// Pure ESM — no React, no fetch, no frappe. Data in / data out.
+// Pure ESM — framework-free. Data in / data out.
 
 import { isTerminal } from "./status.js";
 
