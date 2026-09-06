@@ -1,6 +1,6 @@
 import { setup, assign, fromPromise } from "xstate";
-import { getRunDetail } from "../api";
-import { clearRunDetail } from "./helpers";
+import { getRunDetail } from "../api.js";
+import { clearRunDetail } from "./helpers.js";
 
 export const runDetailMachine = setup({
 	types: {
