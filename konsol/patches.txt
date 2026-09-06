@@ -24,3 +24,5 @@ execute:from konsol.patches.doctype_renames import safe_rename; safe_rename("Sce
 konsol.patches.rename_pipeline_run_pipeline_build_request_to_build_approval
 konsol.patches.rename_build_scope_domain_name_to_scope_name
 konsol.patches.rename_pipeline_definition_name_to_pipeline_name
+konsol.patches.backfill_entities_from_consolidation_group
+konsol.patches.ensure_entities_for_data_areas

@@ -1,0 +1,156 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:entity_code",
+ "creation": "2026-09-06 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "is_tree": 1,
+ "nsm_parent_field": "parent_entity",
+ "title_field": "entity_name",
+ "show_title_field_in_link": 1,
+ "search_fields": "entity_name,country,erp_source",
+ "field_order": [
+  "entity_code",
+  "entity_name",
+  "parent_entity",
+  "is_group",
+  "col_break_1",
+  "status",
+  "functional_currency",
+  "country",
+  "erp_source",
+  "tree_section",
+  "lft",
+  "rgt",
+  "old_parent"
+ ],
+ "fields": [
+  {
+   "fieldname": "entity_code",
+   "fieldtype": "Data",
+   "label": "Entity Code",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Matches data_area_id in the warehouse. This is the join key \u2014 the same string the ERP and ClickHouse use."
+  },
+  {
+   "fieldname": "entity_name",
+   "fieldtype": "Data",
+   "label": "Entity Name",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "parent_entity",
+   "fieldtype": "Link",
+   "label": "Parent Entity",
+   "options": "Entity",
+   "ignore_user_permissions": 1,
+   "description": "Management hierarchy only. Legal ownership is a DAG and lives in Entity Ownership."
+  },
+  {
+   "fieldname": "is_group",
+   "fieldtype": "Check",
+   "label": "Is Group",
+   "in_list_view": 1,
+   "description": "A roll-up node (region, division) rather than a legal entity."
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Active\nDormant\nDisposed",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "functional_currency",
+   "fieldtype": "Data",
+   "label": "Functional Currency",
+   "description": "The currency this entity keeps its books in. Not the group's reporting currency \u2014 translation depends on the difference."
+  },
+  {
+   "fieldname": "country",
+   "fieldtype": "Data",
+   "label": "Country"
+  },
+  {
+   "fieldname": "erp_source",
+   "fieldtype": "Data",
+   "label": "ERP Source",
+   "description": "Which source system this entity's ledger arrives from."
+  },
+  {
+   "fieldname": "tree_section",
+   "fieldtype": "Section Break",
+   "label": "Tree",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "lft",
+   "fieldtype": "Int",
+   "label": "lft",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "rgt",
+   "fieldtype": "Int",
+   "label": "rgt",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "old_parent",
+   "fieldtype": "Data",
+   "label": "old_parent",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-06 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "EPM",
+ "name": "Entity",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1
+  }
+ ],
+ "sort_field": "lft",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

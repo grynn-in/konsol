@@ -41,6 +41,7 @@ _LABELS = {
     "Scenario": "Scenarios",
     "Main Account Category": "Main Account Categories",
     "Cash Flow Category": "Cash Flow Categories",
+    "Entity": "Entities",
     "Fiscal Period": "Fiscal Periods",
     "Budget Cycle": "Budget Cycles",
     "Budget Sheet": "Budget Sheets",
@@ -93,6 +94,7 @@ _CARDS = [
         "Reporting Hierarchy", "Reporting Hierarchy Member", "Scenario",
     ]),
     ("Reference Data", [
+        "Entity",
         "Main Account Category", "Cash Flow Category", "Fiscal Period",
     ]),
     ("Budgeting & Planning", [

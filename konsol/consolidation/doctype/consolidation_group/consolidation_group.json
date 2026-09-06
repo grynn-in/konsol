@@ -1,118 +1,120 @@
 {
-  "name": "Consolidation Group",
-  "doctype": "DocType",
-  "module": "Consolidation",
-  "issingle": 0,
-  "istable": 0,
-  "is_tree": 1,
-  "nsm_parent_field": "parent_consolidation_group",
-  "editable_grid": 1,
-  "engine": "InnoDB",
-  "track_changes": 1,
-  "autoname": "format:CG-{consolidation_group}-{data_area_id}",
-  "fields": [
-    {
-      "fieldname": "parent_consolidation_group",
-      "fieldtype": "Link",
-      "label": "Parent Consolidation Group",
-      "options": "Consolidation Group",
-      "ignore_user_permissions": 1
-    },
-    {
-      "fieldname": "is_group",
-      "fieldtype": "Check",
-      "label": "Is Group",
-      "default": "0"
-    },
-    {
-      "fieldname": "consolidation_group",
-      "fieldtype": "Data",
-      "label": "Consolidation Group",
-      "reqd": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "data_area_id",
-      "fieldtype": "Data",
-      "label": "Entity",
-      "reqd": 0,
-      "in_list_view": 1,
-      "mandatory_depends_on": "eval:!doc.is_group"
-    },
-    {
-      "fieldname": "entity_name",
-      "fieldtype": "Data",
-      "label": "Entity Name",
-      "reqd": 1
-    },
-    {
-      "fieldname": "col_break_1",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "ownership_pct",
-      "fieldtype": "Float",
-      "label": "Ownership %",
-      "reqd": 1,
-      "in_list_view": 1,
-      "description": "0-100"
-    },
-    {
-      "fieldname": "reporting_currency",
-      "fieldtype": "Data",
-      "label": "Reporting Currency",
-      "reqd": 1,
-      "default": "USD"
-    },
-    {
-      "fieldname": "consolidation_method",
-      "fieldtype": "Select",
-      "label": "Consolidation Method",
-      "options": "full\nproportional\nequity",
-      "reqd": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "settings_section",
-      "fieldtype": "Section Break",
-      "label": "Settings"
-    },
-    {
-      "fieldname": "goodwill_method",
-      "fieldtype": "Select",
-      "label": "Goodwill Method",
-      "options": "partial\nfull",
-      "default": "partial",
-      "description": "PRD-13: partial = NCI at proportional net assets; full = NCI at fair value"
-    },
-    {
-      "fieldname": "lft",
-      "fieldtype": "Int",
-      "label": "Left",
-      "hidden": 1,
-      "search_index": 1
-    },
-    {
-      "fieldname": "rgt",
-      "fieldtype": "Int",
-      "label": "Right",
-      "hidden": 1,
-      "search_index": 1
-    },
-    {
-      "fieldname": "old_parent",
-      "fieldtype": "Data",
-      "label": "Old Parent",
-      "hidden": 1
-    }
-  ],
-  "permissions": [
-    {
-      "role": "System Manager",
-      "read": 1,
-      "write": 1,
-      "create": 1,
-      "delete": 1
-    }
-  ]
+ "name": "Consolidation Group",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "is_tree": 1,
+ "nsm_parent_field": "parent_consolidation_group",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "format:CG-{consolidation_group}-{data_area_id}",
+ "fields": [
+  {
+   "fieldname": "parent_consolidation_group",
+   "fieldtype": "Link",
+   "label": "Parent Consolidation Group",
+   "options": "Consolidation Group",
+   "ignore_user_permissions": 1
+  },
+  {
+   "fieldname": "is_group",
+   "fieldtype": "Check",
+   "label": "Is Group",
+   "default": "0"
+  },
+  {
+   "fieldname": "consolidation_group",
+   "fieldtype": "Data",
+   "label": "Consolidation Group",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "data_area_id",
+   "fieldtype": "Link",
+   "label": "Entity",
+   "reqd": 0,
+   "in_list_view": 1,
+   "mandatory_depends_on": "eval:!doc.is_group",
+   "options": "Entity",
+   "description": "The legal entity. Same string the warehouse uses for data_area_id, so the ClickHouse join is unaffected."
+  },
+  {
+   "fieldname": "entity_name",
+   "fieldtype": "Data",
+   "label": "Entity Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "ownership_pct",
+   "fieldtype": "Float",
+   "label": "Ownership %",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "0-100"
+  },
+  {
+   "fieldname": "reporting_currency",
+   "fieldtype": "Data",
+   "label": "Reporting Currency",
+   "reqd": 1,
+   "default": "USD"
+  },
+  {
+   "fieldname": "consolidation_method",
+   "fieldtype": "Select",
+   "label": "Consolidation Method",
+   "options": "full\nproportional\nequity",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "settings_section",
+   "fieldtype": "Section Break",
+   "label": "Settings"
+  },
+  {
+   "fieldname": "goodwill_method",
+   "fieldtype": "Select",
+   "label": "Goodwill Method",
+   "options": "partial\nfull",
+   "default": "partial",
+   "description": "PRD-13: partial = NCI at proportional net assets; full = NCI at fair value"
+  },
+  {
+   "fieldname": "lft",
+   "fieldtype": "Int",
+   "label": "Left",
+   "hidden": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "rgt",
+   "fieldtype": "Int",
+   "label": "Right",
+   "hidden": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "old_parent",
+   "fieldtype": "Data",
+   "label": "Old Parent",
+   "hidden": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  }
+ ]
 }
