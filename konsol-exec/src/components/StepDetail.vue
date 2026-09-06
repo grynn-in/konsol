@@ -16,6 +16,7 @@ import ReadinessPanel from "./ReadinessPanel.vue";
 import SignoffPanel from "./SignoffPanel.vue";
 import { STEP_TABS } from "../constants.js";
 import { closeSteps, getDomainMeta } from "../domain.js";
+import { formatPeriod } from "../period.js";
 
 const props = defineProps({
 	step: { type: String, required: true },
@@ -29,8 +30,14 @@ const isProcess = computed(() => stepModel.value?.kind === "process");
 const meta = computed(() => (isProcess.value ? getDomainMeta(props.step) : null));
 const activeTab = computed(() => (STEP_TABS.some((t) => t.id === props.tab) ? props.tab : "setup"));
 
+// The period travels in the breadcrumb on step pages. It is not editable here
+// — you choose the period you are closing, then work inside it — but it must
+// stay visible, because every number on these screens is scoped by it.
 const crumbs = computed(() => [
-	{ label: "Close", route: { path: "/close" } },
+	{
+		label: `Close ${formatPeriod(plane.period.value, plane.options.value)}`.trim(),
+		route: { path: "/close" },
+	},
 	{ label: stepModel.value?.label || props.step },
 ]);
 

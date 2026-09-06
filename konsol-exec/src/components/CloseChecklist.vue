@@ -12,9 +12,10 @@
  * carries information rather than decoration.
  */
 import { computed, inject } from "vue";
-import { Button, FeatherIcon } from "frappe-ui";
+import { Button, FeatherIcon, Tooltip } from "frappe-ui";
 import StatusBadge from "./StatusBadge.vue";
 import StageRail from "./StageRail.vue";
+import PeriodPicker from "./PeriodPicker.vue";
 import { closeSteps, primaryAction, getDomainMeta, getProcess, railStages } from "../domain.js";
 
 const plane = inject("plane");
@@ -38,13 +39,29 @@ const remaining = computed(() => steps.value.filter((s) => !SETTLED.has(s.state)
 <template>
 	<div class="mx-auto max-w-4xl px-6 py-8">
 		<div class="mb-7">
-			<!-- U3: the heading is what the page IS. The description is secondary,
-			     not set at 25px above the identity. -->
-			<h1 class="text-2xl font-semibold tracking-tight text-ink-gray-9">
-				Close {{ plane.periodLabel.value }}
+			<!-- U3: the heading is what the page IS. And because the period IS the
+			     page, the heading carries the control rather than repeating a
+			     selection made somewhere else. -->
+			<h1 class="flex flex-wrap items-center gap-x-1 text-2xl font-semibold tracking-tight text-ink-gray-9">
+				<span>Close</span>
+				<PeriodPicker
+					:period="plane.period.value"
+					:options="plane.options.value"
+					@update:period="(p) => plane.send({ type: 'SET_PERIOD', year: p.year, period: p.period })"
+				/>
 			</h1>
-			<p class="mt-1 text-base text-ink-gray-6">
-				{{ remaining === 0 ? "Every step is complete." : `${remaining} of ${steps.length} steps outstanding.` }}
+			<p class="mt-1.5 flex flex-wrap items-center gap-x-2 text-base text-ink-gray-6">
+				<span>{{ remaining === 0 ? "Every step is complete" : `${remaining} of ${steps.length} steps outstanding` }}</span>
+				<!-- Period status needs Fiscal Period.status (finding F6). Said
+				     quietly here rather than dressed up as a state in the title. -->
+				<span aria-hidden="true" class="text-ink-gray-3">·</span>
+				<Tooltip
+					v-if="!plane.data.value?.period?.status"
+					text="Period status isn't tracked yet — Fiscal Period has no status field"
+				>
+					<span class="cursor-help text-ink-gray-4">status not tracked</span>
+				</Tooltip>
+				<span v-else>{{ plane.data.value.period.status }}</span>
 			</p>
 		</div>
 
