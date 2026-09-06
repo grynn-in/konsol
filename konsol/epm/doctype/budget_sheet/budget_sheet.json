@@ -1,114 +1,116 @@
 {
-  "name": "Budget Sheet",
-  "doctype": "DocType",
-  "module": "EPM",
-  "issingle": 0,
-  "istable": 0,
-  "editable_grid": 0,
-  "engine": "InnoDB",
-  "track_changes": 1,
-  "autoname": "",
-  "fields": [
-    {
-      "fieldname": "tab_budget_sheet",
-      "fieldtype": "Tab Break",
-      "label": "Budget Sheet"
-    },
-    {
-      "fieldname": "cycle",
-      "fieldtype": "Link",
-      "label": "Budget Cycle",
-      "options": "Budget Cycle",
-      "reqd": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "data_area_id",
-      "fieldtype": "Data",
-      "label": "Entity",
-      "reqd": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "layer",
-      "fieldtype": "Select",
-      "label": "Layer",
-      "options": "base\nchallenge\nmanagement\nboard",
-      "default": "base",
-      "reqd": 1,
-      "in_list_view": 1
-    },
-    {
-      "fieldname": "col_break_1",
-      "fieldtype": "Column Break"
-    },
-    {
-      "fieldname": "annual_total",
-      "fieldtype": "Currency",
-      "label": "Annual Total",
-      "read_only": 1,
-      "in_list_view": 1,
-      "description": "Computed: sum of all line annuals"
-    },
-    {
-      "fieldname": "lines_section",
-      "fieldtype": "Section Break",
-      "label": "Lines"
-    },
-    {
-      "fieldname": "lines",
-      "fieldtype": "Table",
-      "label": "Lines",
-      "options": "Budget Line"
-    },
-    {
-      "fieldname": "tab_d365_writeback",
-      "fieldtype": "Tab Break",
-      "label": "D365 Write-Back"
-    },
-    {
-      "fieldname": "d365_writeback_section",
-      "fieldtype": "Section Break",
-      "label": "D365 Write-Back",
-      "collapsible": 1
-    },
-    {
-      "fieldname": "d365_writeback_status",
-      "fieldtype": "Select",
-      "label": "D365 Write-Back Status",
-      "options": "\nPushed\nFailed",
-      "read_only": 1
-    },
-    {
-      "fieldname": "d365_writeback_error",
-      "fieldtype": "Small Text",
-      "label": "D365 Write-Back Error",
-      "read_only": 1
-    }
-  ],
-  "permissions": [
-    {
-      "role": "System Manager",
-      "read": 1,
-      "write": 1,
-      "create": 1,
-      "delete": 1
-    },
-    {
-      "role": "Budget Submitter",
-      "read": 1,
-      "write": 1,
-      "create": 1
-    },
-    {
-      "role": "Budget Controller",
-      "read": 1,
-      "write": 1
-    },
-    {
-      "role": "Budget Manager",
-      "read": 1,
-      "write": 1
-    }
-  ]
+ "name": "Budget Sheet",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 0,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "",
+ "fields": [
+  {
+   "fieldname": "tab_budget_sheet",
+   "fieldtype": "Tab Break",
+   "label": "Budget Sheet"
+  },
+  {
+   "fieldname": "cycle",
+   "fieldtype": "Link",
+   "label": "Budget Cycle",
+   "options": "Budget Cycle",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "data_area_id",
+   "fieldtype": "Link",
+   "label": "Entity",
+   "reqd": 1,
+   "in_list_view": 1,
+   "options": "Entity",
+   "description": "The legal entity. Same string the warehouse uses for data_area_id, so the ClickHouse join is unaffected."
+  },
+  {
+   "fieldname": "layer",
+   "fieldtype": "Select",
+   "label": "Layer",
+   "options": "base\nchallenge\nmanagement\nboard",
+   "default": "base",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "annual_total",
+   "fieldtype": "Currency",
+   "label": "Annual Total",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Computed: sum of all line annuals"
+  },
+  {
+   "fieldname": "lines_section",
+   "fieldtype": "Section Break",
+   "label": "Lines"
+  },
+  {
+   "fieldname": "lines",
+   "fieldtype": "Table",
+   "label": "Lines",
+   "options": "Budget Line"
+  },
+  {
+   "fieldname": "tab_d365_writeback",
+   "fieldtype": "Tab Break",
+   "label": "D365 Write-Back"
+  },
+  {
+   "fieldname": "d365_writeback_section",
+   "fieldtype": "Section Break",
+   "label": "D365 Write-Back",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "d365_writeback_status",
+   "fieldtype": "Select",
+   "label": "D365 Write-Back Status",
+   "options": "\nPushed\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "d365_writeback_error",
+   "fieldtype": "Small Text",
+   "label": "D365 Write-Back Error",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  },
+  {
+   "role": "Budget Submitter",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  },
+  {
+   "role": "Budget Controller",
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "Budget Manager",
+   "read": 1,
+   "write": 1
+  }
+ ]
 }
