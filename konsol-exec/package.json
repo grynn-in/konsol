@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/orchestrator/*.test.mjs"
+    "test": "node --test src/*.test.mjs src/orchestrator/*.test.mjs",
+    "mock": "node mock/server.mjs"
   },
   "dependencies": {
     "@xstate/vue": "^4.0.0",
