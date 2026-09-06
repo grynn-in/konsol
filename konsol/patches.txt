@@ -24,3 +24,4 @@ execute:frappe.rename_doc("DocType", "Scenario Definition", "Scenario", force=Tr
 konsol.patches.rename_pipeline_run_pipeline_build_request_to_build_approval
 konsol.patches.rename_build_scope_domain_name_to_scope_name
 konsol.patches.rename_pipeline_definition_name_to_pipeline_name
+konsol.patches.ensure_budget_monthly_input_table

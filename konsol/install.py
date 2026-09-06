@@ -101,9 +101,14 @@ def _bootstrap_budget_fixtures():
         )
         enrich_budget_fixture_lines()
         sync_budget_sheets_to_clickhouse()
-    except Exception:
-        frappe.logger().warning(
-            "budget fixture bootstrap skipped after migrate", exc_info=True)
+    except Exception as e:
+        # Do not fail migrate, but make this visible: a silent skip here leaves
+        # epm_gold.budget_monthly_input unpopulated, which breaks the whole
+        # dbt gold layer downstream of gold_spread_budget.
+        frappe.logger().error(
+            "budget fixture bootstrap FAILED after migrate", exc_info=True)
+        frappe.log_error(
+            "install: budget fixture bootstrap failed after migrate", str(e))
 
 
 def _sync_budget_line_custom_fields():
