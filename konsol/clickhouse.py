@@ -76,7 +76,44 @@ def execute(sql, params=None):
     return resp.text.strip()
 
 
-def sync_table(table, columns, rows):
+_WATERMARK_TABLE = "epm_staging.sync_watermark"
+
+
+def _stamp_watermark(table, row_count, source_max_modified=None):
+    """Record that ``table`` was successfully synced, for dbt to check.
+
+    D11 wanted ClickHouse to read Frappe's MariaDB directly so metadata could
+    never go stale. That was reversed (F4) — write-through avoids making every
+    dbt run a live dependency on the Frappe database — but it gives up the
+    "never stale" guarantee. This restores it: every successful sync stamps a
+    row here, and a dbt test fails the run when what it claims no longer holds.
+
+    ``_sync_failures`` already tracks breakage, but only in memory in the
+    Frappe process: it dies on restart and dbt cannot see it. This is the
+    durable, ClickHouse-side half.
+
+    Best-effort — a watermark failure must never break a document save.
+    """
+    try:
+        execute(
+            f"CREATE TABLE IF NOT EXISTS {_WATERMARK_TABLE} ("
+            "table_name String, "
+            "synced_at DateTime, "
+            "row_count UInt64, "
+            "source_max_modified DateTime"
+            ") ENGINE = ReplacingMergeTree(synced_at) ORDER BY table_name"
+        )
+        src = source_max_modified or "1970-01-01 00:00:00"
+        execute(
+            f"INSERT INTO {_WATERMARK_TABLE} "
+            "(table_name, synced_at, row_count, source_max_modified) VALUES "
+            f"('{table}', now(), {int(row_count)}, '{src}')"
+        )
+    except Exception as e:  # noqa: BLE001 — never break a save over telemetry
+        frappe.logger().warning(f"watermark stamp failed for {table}: {e}")
+
+
+def sync_table(table, columns, rows, source_max_modified=None):
     """TRUNCATE and INSERT all rows into a ClickHouse table.
 
     Best-effort: logs warning on connection failure instead of raising,
@@ -103,6 +140,7 @@ def sync_table(table, columns, rows):
         _sync_table_inner(table, columns, rows)
         # Clear any previous failure for this table
         _sync_failures.pop(table, None)
+        _stamp_watermark(table, len(rows), source_max_modified)
     except requests.exceptions.ConnectionError as e:
         _record_sync_failure(table, "connection_refused", str(e))
         frappe.logger().error(
@@ -325,10 +363,16 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None):
     ch_columns = list(field_map.keys())
     frappe_fields = list(field_map.values())
 
+    # Fetch `modified` alongside so the sync can stamp how fresh the source was
+    # at the time. Only added when the field_map does not already carry it.
+    fetch_fields = list(frappe_fields)
+    if "modified" not in fetch_fields:
+        fetch_fields.append("modified")
+
     docs = frappe.get_all(
         doctype,
         filters=filters or {},
-        fields=frappe_fields,
+        fields=fetch_fields,
         limit_page_length=0,
     )
     rows = []
@@ -336,4 +380,9 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None):
         row = [doc.get(f) for f in frappe_fields]
         rows.append(row)
 
-    sync_table(table, ch_columns, rows)
+    modified = [d.get("modified") for d in docs if d.get("modified")]
+    source_max_modified = (
+        max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None
+    )
+
+    sync_table(table, ch_columns, rows, source_max_modified=source_max_modified)
