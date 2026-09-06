@@ -24,7 +24,10 @@ function postJson(path, body) {
   return fetch(path, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    credentials: "include",
+    // "omit" — see the api() helper in index.html: a session cookie turns this
+    // into a cookie-authenticated POST that Frappe rejects with CSRFTokenError
+    // (400). The X-Konsolidat-Token header above is the intended auth path.
+    credentials: "omit",
     body: JSON.stringify(body)
   }).then(function (res) {
     if (res.status === 401 || res.status === 403) {

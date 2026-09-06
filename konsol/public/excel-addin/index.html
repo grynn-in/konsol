@@ -490,7 +490,13 @@
 
       function api(path, options) {
         var opts = options || {};
-        opts.credentials = opts.credentials || "include";
+        // "omit", not "include": sending the session cookie makes Frappe treat
+        // this as a cookie-authenticated request, which requires an
+        // X-Frappe-CSRF-Token we do not have — the POST then fails with
+        // CSRFTokenError (HTTP 400). Staying cookie-free keeps the session
+        // Guest so apply_excel_token_auth() authenticates us from
+        // X-Konsolidat-Token instead, as the auth endpoints already do.
+        opts.credentials = opts.credentials || "omit";
         opts.cache = "no-store";
         opts.headers = authHeaders(opts.headers || {});
         return fetch(API + path, opts);
