@@ -17,7 +17,11 @@ def test_cash_flow_category_json_valid():
     doc = _doctype_json()
     assert doc["name"] == "Cash Flow Category"
     assert doc["module"] == "EPM"
-    assert doc["autoname"] == "hash"
+    # Deliberately not "hash". konsol#68 moved this to a deterministic name so
+    # fixture re-import is idempotent: the fixture names rows CFC-{main_account}
+    # and validate() enforces one mapping per account, so a hash-named row made
+    # re-import try to INSERT a duplicate and abort bench migrate.
+    assert doc["autoname"] == "format:CFC-{main_account}"
     fields = {f["fieldname"]: f for f in doc["fields"]}
     for fn in ("main_account", "cf_category", "cf_line_item", "is_cash", "sign", "status"):
         assert fn in fields, f"missing field {fn}"
@@ -46,11 +50,32 @@ def test_regenerator_defined_in_dbt_config():
 
 
 def test_fixture_seeds_demo_default():
+    """The shipped mapping is a real chart of accounts, not a 12-row demo.
+
+    Asserts the invariants rather than a row count: a count breaks every time
+    an account is added, which tells you nothing, while these are the
+    properties the fixture has to hold for import to work at all.
+    """
     path = os.path.join(APP_DIR, "fixtures", "cash_flow_category.json")
     with open(path) as f:
         rows = json.load(f)
-    assert len(rows) == 12
+
+    assert rows, "fixture must not be empty"
     assert all(r["doctype"] == "Cash Flow Category" and r.get("name") for r in rows)
     assert all(r["status"] == "Published" for r in rows)
-    # exactly one cash account flagged
-    assert sum(int(r["is_cash"]) for r in rows) == 1
+
+    # The konsol#68 invariant: fixture names must match the autoname format, or
+    # re-import inserts duplicates instead of updating in place.
+    assert all(r["name"] == f"CFC-{r['main_account']}" for r in rows)
+
+    # validate() enforces one mapping per account; the fixture must not ship a
+    # violation of its own guard.
+    accounts = [r["main_account"] for r in rows]
+    assert len(set(accounts)) == len(accounts), "duplicate main_account in fixture"
+
+    # Values must be inside the Select options the doctype declares.
+    assert {r["cf_category"] for r in rows} <= {"Operating", "Investing", "Financing"}
+    assert {str(r["sign"]) for r in rows} <= {"1", "-1"}
+
+    # Cash flow needs at least one account flagged as cash to reconcile against.
+    assert sum(int(r["is_cash"]) for r in rows) >= 1
