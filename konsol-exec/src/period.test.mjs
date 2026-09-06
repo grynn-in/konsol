@@ -59,3 +59,39 @@ test("stepPeriod is safe with empty or unknown input", () => {
 test("yearChoices lists newest first — finance looks backwards", () => {
 	assert.deepEqual(yearChoices(OPTIONS), ["2026", "2025", "2024"]);
 });
+
+/* Real fiscal calendars carry an opening and a closing period around the twelve
+ * you actually close. Found by deploying against seeded data, where the console
+ * opened on "CLS FY2024". */
+const REAL_OPTIONS = {
+	fiscal_years: ["2024"],
+	fiscal_periods: [
+		{ value: "0", label: "OPN" },
+		...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: `P${i + 1}` })),
+		{ value: "13", label: "CLS" },
+	],
+};
+
+test("isAccountingPeriod excludes the opening and closing periods", async () => {
+	const { isAccountingPeriod } = await import("./period.js");
+	assert.equal(isAccountingPeriod({ value: "0" }), false, "OPN is not a close period");
+	assert.equal(isAccountingPeriod({ value: "13" }), false, "CLS is not a close period");
+	assert.equal(isAccountingPeriod({ value: "1" }), true);
+	assert.equal(isAccountingPeriod({ value: "12" }), true);
+});
+
+test("accountingPeriods keeps twelve, adjustmentPeriods keeps the rest", async () => {
+	const { accountingPeriods, adjustmentPeriods } = await import("./period.js");
+	assert.equal(accountingPeriods(REAL_OPTIONS).length, 12);
+	assert.deepEqual(adjustmentPeriods(REAL_OPTIONS).map((p) => p.label), ["OPN", "CLS"]);
+});
+
+test("the app opens on P12, never on CLS", async () => {
+	const { defaultPeriod } = await import("./machines/closeMachine.js");
+	assert.deepEqual(defaultPeriod(REAL_OPTIONS), { year: "2024", period: "12" });
+});
+
+test("defaultPeriod still works when a calendar has no adjustment periods", async () => {
+	const { defaultPeriod } = await import("./machines/closeMachine.js");
+	assert.deepEqual(defaultPeriod(OPTIONS), { year: "2026", period: "9" });
+});

@@ -21,6 +21,23 @@ function periods(options) {
 	return (options?.fiscal_periods || []).map((p) => ({ ...p, value: String(p.value) }));
 }
 
+/**
+ * A real accounting period, as opposed to an adjustment period.
+ *
+ * A fiscal calendar carries more than the twelve months you close: there is an
+ * opening period (OPN, 0) and a closing/adjustment period (CLS, 13) that exist
+ * to hold brought-forward balances and year-end journals. They are selectable —
+ * a controller does sometimes need to run against CLS — but they are never what
+ * "close September" means, so they must not be the default.
+ *
+ * 1..12 is the convention the backend already uses: control_api._period_options
+ * filters the same range when it builds the period list for the snapshot.
+ */
+export function isAccountingPeriod(p) {
+	const n = Number(p?.value);
+	return Number.isFinite(n) && n >= 1 && n <= 12;
+}
+
 /** Display label, e.g. "Sep FY2026". Falls back to the year alone when a whole
  *  year is selected, which is a legitimate scope for some processes. */
 export function formatPeriod(period, options) {
@@ -71,4 +88,14 @@ export function yearChoices(options) {
 
 export function periodChoices(options) {
 	return periods(options);
+}
+
+/** The twelve you actually close. */
+export function accountingPeriods(options) {
+	return periods(options).filter(isAccountingPeriod);
+}
+
+/** OPN / CLS and anything else outside 1..12 — shown apart, not hidden. */
+export function adjustmentPeriods(options) {
+	return periods(options).filter((p) => !isAccountingPeriod(p));
 }

@@ -17,7 +17,10 @@
  */
 import { computed } from "vue";
 import { Popover, FeatherIcon } from "frappe-ui";
-import { formatPeriod, stepPeriod, canStep, yearChoices, periodChoices } from "../period.js";
+import {
+	formatPeriod, stepPeriod, canStep, yearChoices,
+	accountingPeriods, adjustmentPeriods,
+} from "../period.js";
 
 const props = defineProps({
 	period: { type: Object, default: null },
@@ -30,7 +33,11 @@ const canBack = computed(() => canStep(props.period, props.options, -1));
 const canFwd = computed(() => canStep(props.period, props.options, 1));
 
 const years = computed(() => yearChoices(props.options));
-const periods = computed(() => periodChoices(props.options));
+// The twelve you close, and the opening/closing periods kept apart from them —
+// selectable, because a controller does sometimes need to post to CLS, but not
+// sitting in the grid where they would be picked by accident.
+const periods = computed(() => accountingPeriods(props.options));
+const adjustments = computed(() => adjustmentPeriods(props.options));
 
 function step(delta) {
 	const next = stepPeriod(props.period, props.options, delta);
@@ -87,6 +94,21 @@ const stepperClass =
 									String(period?.year) === String(y) && String(period?.period) === p.value
 										? 'bg-surface-gray-7 text-ink-white'
 										: 'text-ink-gray-7 hover:bg-surface-gray-2'
+								"
+								@click="pick(y, p.value, close)"
+							>{{ p.label }}</button>
+						</div>
+						<div v-if="adjustments.length" class="mt-1.5 flex items-center gap-1">
+							<span class="mr-1 text-xs text-ink-gray-4">Adjustment</span>
+							<button
+								v-for="p in adjustments"
+								:key="p.value"
+								type="button"
+								class="rounded px-2 py-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-outline-gray-3"
+								:class="
+									String(period?.year) === String(y) && String(period?.period) === p.value
+										? 'bg-surface-gray-7 text-ink-white'
+										: 'text-ink-gray-5 hover:bg-surface-gray-2'
 								"
 								@click="pick(y, p.value, close)"
 							>{{ p.label }}</button>

@@ -21,6 +21,7 @@
 import { setup, assign, fromPromise, fromCallback, raise } from "xstate";
 import { getSnapshot, getLaunchOptions, sendReminder, startProcess } from "../api.js";
 import { hasActiveRuns } from "./helpers.js";
+import { accountingPeriods } from "../period.js";
 
 const POLL_MS = 2000;
 
@@ -205,13 +206,22 @@ export const closeMachine = setup({
 	},
 });
 
-/** Newest year, and the period the backend lists last — the close in progress
- *  is almost always the most recent one, so that is the right default. */
+/**
+ * Where the app opens.
+ *
+ * Newest fiscal year, and the latest *accounting* period in it — the close in
+ * progress is almost always the most recent one. Deliberately not simply "the
+ * last period in the list": a real fiscal calendar ends with an adjustment
+ * period (CLS), and opening the console on CLS would be wrong every month of
+ * the year except one.
+ */
 export function defaultPeriod(options) {
-	const years = options?.fiscal_years || [];
-	const periods = options?.fiscal_periods || [];
+	const years = (options?.fiscal_years || []).map(String);
+	const real = accountingPeriods(options);
+	const all = (options?.fiscal_periods || []).map((p) => String(p.value));
+	const last = real.length ? real[real.length - 1].value : all[all.length - 1];
 	return {
-		year: years.length ? String(years[years.length - 1]) : String(new Date().getFullYear()),
-		period: periods.length ? String(periods[periods.length - 1].value) : "",
+		year: years.length ? years[years.length - 1] : String(new Date().getFullYear()),
+		period: last ?? "",
 	};
 }
