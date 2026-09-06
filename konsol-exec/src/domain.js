@@ -173,6 +173,20 @@ export function primaryAction(step) {
 	return { label: meta.verb, tab: "execute", theme: "gray" };
 }
 
+/** Role a related document plays in a run, for the drill-down. */
+const ROLE_LABELS = {
+	trigger: "Triggered by",
+	approval: "Approved via",
+	scope: "Scope",
+	definition: "Definition",
+	output: "Produced",
+	source: "Source",
+};
+
+export function roleLabel(role) {
+	return ROLE_LABELS[role] || role;
+}
+
 export function statusMeta(state) {
 	return STATUS[state] || STATUS.idle;
 }

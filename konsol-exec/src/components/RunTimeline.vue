@@ -1,14 +1,26 @@
 <script setup>
 /**
  * Step-by-step view of a launched run, with the recovery actions the
- * orchestrator supports. Renders from the framework-free run model, so the
- * shape shown here is exactly the shape its unit tests cover.
+ * orchestrator supports.
+ *
+ * Renders from the framework-free run model, so the shape shown here is
+ * exactly the shape its unit tests cover.
+ *
+ * Two behaviours are easy to lose in a port and both matter:
+ *
+ *   - `onRunStep` subscribes to the orchestrator's realtime step events and
+ *     dispatches RUN_STEP, which is what makes this a *live* monitor rather
+ *     than a snapshot you have to reload.
+ *   - A failed step offers both "Retry step" (re-run just that step) and
+ *     "Resume from here" (re-run it and everything after). They are different
+ *     recoveries and the orchestrator supports both.
  */
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
 import { Badge, Button, Progress, FeatherIcon } from "frappe-ui";
 import { orderSteps, progressPct } from "../orchestrator/runModel.js";
 import { statusTone, isTerminal } from "../orchestrator/status.js";
 import { TONE_THEME } from "../constants.js";
+import { onRunStep } from "../api.js";
 
 const props = defineProps({ run: { type: Object, default: null } });
 const emit = defineEmits(["send"]);
@@ -16,6 +28,14 @@ const emit = defineEmits(["send"]);
 const steps = computed(() => orderSteps(props.run?.steps));
 const pct = computed(() => Math.round(progressPct(steps.value)));
 const settled = computed(() => isTerminal(props.run?.status));
+
+let unsubscribe = null;
+onMounted(() => {
+	unsubscribe = onRunStep(() => emit("send", { type: "RUN_STEP" }));
+});
+onBeforeUnmount(() => {
+	if (typeof unsubscribe === "function") unsubscribe();
+});
 </script>
 
 <template>
@@ -40,13 +60,21 @@ const settled = computed(() => isTerminal(props.run?.status));
 					{{ s.status }}
 				</Badge>
 				<span class="flex-1 text-base text-ink-gray-9">{{ s.id }}</span>
+				<span v-if="s.type" class="text-sm text-ink-gray-5">{{ s.type }}</span>
+				<span v-if="s.startedAt" class="tnum text-sm text-ink-gray-5">{{ s.startedAt }}</span>
+				<span v-if="s.endedAt" class="tnum text-sm text-ink-gray-5">{{ s.endedAt }}</span>
 				<span v-if="s.rows" class="tnum text-sm text-ink-gray-5">{{ s.rows }} rows</span>
-				<Button
-					v-if="s.status === 'Failed'"
-					variant="subtle"
-					size="sm"
-					@click="emit('send', { type: 'RETRY_STEP', stepId: s.id })"
-				>Retry step</Button>
+
+				<template v-if="s.status === 'Failed'">
+					<Button variant="subtle" size="sm" @click="emit('send', { type: 'RETRY_STEP', stepId: s.id })">
+						Retry step
+					</Button>
+					<Button variant="subtle" size="sm" @click="emit('send', { type: 'RESUME_FROM', stepId: s.id })">
+						Resume from here
+					</Button>
+				</template>
+
+				<p v-if="s.output" class="w-full font-mono text-xs text-ink-gray-6">{{ s.output }}</p>
 				<p v-if="s.error" class="w-full text-sm text-ink-red-3">{{ s.error }}</p>
 			</li>
 		</ol>

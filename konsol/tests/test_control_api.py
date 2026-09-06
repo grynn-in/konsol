@@ -37,13 +37,16 @@ def test_konsol_exec_www_route_exists():
 def test_konsol_exec_spa_source_exists():
     app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "konsol-exec"))
     assert os.path.isfile(os.path.join(app_root, "vite.config.js"))
-    assert os.path.isfile(os.path.join(app_root, "src", "App.jsx"))
+    assert os.path.isfile(os.path.join(app_root, "src", "App.vue"))
     assert os.path.isfile(os.path.join(app_root, "src", "api.js"))
-    assert os.path.isfile(os.path.join(app_root, "src", "machines", "konsolAppMachine.js"))
+    # konsolAppMachine became closeMachine: navigation moved to vue-router and
+    # the fiscal period moved in, so the name no longer described it.
+    assert os.path.isfile(os.path.join(app_root, "src", "machines", "closeMachine.js"))
     assert os.path.isfile(os.path.join(app_root, "src", "machines", "runDetailMachine.js"))
     pkg = _src(os.path.join(app_root, "package.json"))
     assert '"xstate"' in pkg
-    assert '"@xstate/react"' in pkg
+    assert '"@xstate/vue"' in pkg
+    assert '"frappe-ui"' in pkg
 
 
 def test_hooks_register_konsol_exec_route():
