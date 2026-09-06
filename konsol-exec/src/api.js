@@ -5,10 +5,16 @@ export function doctypeSlug(doctype) {
 	return (doctype || "").toLowerCase().replace(/ /g, "-");
 }
 
+function csrfToken() {
+	const token = window.csrf_token || window.frappe?.csrf_token;
+	return token && token !== "None" ? token : "";
+}
+
 async function frappeCall(method, args = {}) {
 	const payload = { ...args };
-	if (window.csrf_token) {
-		payload.csrf_token = window.csrf_token;
+	const token = csrfToken();
+	if (token) {
+		payload.csrf_token = token;
 	}
 
 	const res = await fetch(`/api/method/${method}`, {

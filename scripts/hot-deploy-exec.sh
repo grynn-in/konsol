@@ -2,32 +2,27 @@
 # Hot-deploy local konsol-exec SPA + control_api into running konsolidat_backend.
 #
 # Build order:
-#   1. yarn build   — Vite compiles React → konsol/public/konsol_exec/
-#   2. docker cp    — sync app source + built SPA into container
-#   3. bench build  — relink assets + refresh konsol asset manifest
-#   4. clear-cache  — evict Redis assets_json so Frappe serves fresh files
+#   1. docker cp    — sync app source into container
+#   2. bench build  — yarn build (Vite SPA) + relink assets + refresh manifest
+#   3. clear-cache  — evict Redis assets_json so Frappe serves fresh files
 set -euo pipefail
 
 KONSOL_SRC="$(cd "$(dirname "$0")/.." && pwd)"
 CONTAINER="${KONSOL_CONTAINER:-konsolidat_backend}"
 SITE="${KONSOL_SITE:-konsolidat.local}"
 
-echo "==> [1/4] yarn build (konsol-exec Vite SPA)"
-(cd "$KONSOL_SRC/konsol-exec" && yarn build)
-
-echo "==> [2/4] docker cp → $CONTAINER"
+echo "==> [1/3] docker cp → $CONTAINER"
 docker cp "$KONSOL_SRC/konsol/." "$CONTAINER:/home/frappe/frappe-bench/apps/konsol/konsol/"
 docker cp "$KONSOL_SRC/konsol-exec/." "$CONTAINER:/home/frappe/frappe-bench/apps/konsol/konsol-exec/"
-docker cp "$KONSOL_SRC/konsol/public/konsol_exec/." \
-	"$CONTAINER:/home/frappe/frappe-bench/apps/konsol/konsol/public/konsol_exec/"
+docker cp "$KONSOL_SRC/package.json" "$CONTAINER:/home/frappe/frappe-bench/apps/konsol/package.json"
 
-echo "==> [3/4] bench build --app konsol (inside container; non-fatal)"
+echo "==> [2/3] bench build --app konsol (runs yarn build → Vite SPA)"
 docker exec -u frappe "$CONTAINER" bash -lc "
 	cd /home/frappe/frappe-bench
-	bench build --app konsol || echo 'WARN: bench build failed (SPA static assets still deployed)'
+	bench build --app konsol
 "
 
-echo "==> [4/4] clear-cache + evict assets_json + restart"
+echo "==> [3/3] clear-cache + evict assets_json + restart"
 docker exec -u frappe "$CONTAINER" bash -lc "
 	cd /home/frappe/frappe-bench
 	bench --site $SITE clear-cache

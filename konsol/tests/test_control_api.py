@@ -26,10 +26,12 @@ def test_control_api_exposes_snapshot_and_start():
 
 def test_konsol_exec_www_route_exists():
     assert os.path.isfile(os.path.join(APP_DIR, "www", "konsol-exec.html"))
-    assert os.path.isfile(os.path.join(APP_DIR, "www", "konsol-exec.py"))
+    assert os.path.isfile(os.path.join(APP_DIR, "www", "konsol_exec.py"))
     html = _src(os.path.join(APP_DIR, "www", "konsol-exec.html"))
+    assert "konsol_exec_shell.html" in html
     assert "/assets/konsol/konsol_exec/konsol_exec.js" in html
     assert "/assets/konsol/konsol_exec/konsol_exec.css" in html
+    assert "templates/web.html" not in html
 
 
 def test_konsol_exec_spa_source_exists():

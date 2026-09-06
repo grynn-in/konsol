@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="{{ boot.lang or 'en' }}">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+	<title>{% block title %}{{ title | striptags }}{% endblock %}</title>
+	{% block head_include %}{% endblock %}
+</head>
+<body>
+	{% block content %}{% endblock %}
+	{% block script %}{% endblock %}
+	<!-- csrf_token -->
+</body>
+</html>

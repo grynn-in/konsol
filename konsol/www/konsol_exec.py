@@ -13,3 +13,4 @@ def get_context(context):
 	context.no_footer = 1
 	context.no_sidebar = 1
 	context.full_width = 1
+	context.csrf_token = frappe.sessions.get_csrf_token()

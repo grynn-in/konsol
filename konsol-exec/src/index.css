@@ -673,9 +673,18 @@
 #root .kc-history-started,
 #root .kc-history-by { font-size: 12px; }
 
-.layout-main-section.konsol-control-bleed#root {
-  background: #f3efe6 !important;
+/* Bleed SPA edge-to-edge inside Frappe website shell */
+.page_content,
+.page-content-wrapper,
+main.container.my-4 {
+  max-width: 100% !important;
   padding: 0 !important;
-  border: none !important;
-  box-shadow: none !important;
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.page_content > .container {
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
