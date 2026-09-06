@@ -69,9 +69,15 @@ def _current_fiscal_year():
 
 
 @frappe.whitelist(methods=["GET", "POST"])
-def get_snapshot():
-    """Full control-plane state for the Konsol Exec SPA."""
-    fy = _current_fiscal_year()
+def get_snapshot(fiscal_year=None, fiscal_period=None):
+    """Full control-plane state for the Konsol Exec SPA.
+
+    ``fiscal_year``/``fiscal_period`` are optional and scope only the ``period``
+    block — the console passes whichever period it is showing so it can render
+    that period's close state. Everything else is year-level and unchanged, so
+    callers that pass nothing keep the old response shape plus ``period``.
+    """
+    fy = str(fiscal_year) if fiscal_year else _current_fiscal_year()
     budget_locked = _budget_is_locked(fy)
     processes = {}
     for pid, meta in PROCESSES.items():
@@ -103,6 +109,65 @@ def get_snapshot():
         "runs": _domain_runs_all(),
         "scenarios": _scenario_options(),
         "periods": _period_options(fy),
+        "period": _period_block(fy, fiscal_period),
+    }
+
+
+def _period_block(fy, fiscal_period):
+    """Close state of the period the console is showing.
+
+    A period nobody has closed has no Period Status record and is Open, so this
+    never depends on the fourteen-by-N grid being pre-populated.
+    """
+    from konsol import period_status
+
+    if fiscal_period in (None, ""):
+        return {"fiscal_year": fy, "fiscal_period": None, "status": None}
+
+    block = {
+        "fiscal_year": fy,
+        "fiscal_period": str(fiscal_period),
+        "status": period_status.get_status(fy, fiscal_period),
+        "closed_by": None,
+        "closed_on": None,
+    }
+
+    # Who signed it off, so the console can say so rather than "someone".
+    row = frappe.db.get_value(
+        "Period Status",
+        {"fiscal_year": str(fy), "fiscal_period": int(fiscal_period)},
+        ["closed_by", "closed_on"],
+        as_dict=True,
+    )
+    if row:
+        block["closed_by"] = row.closed_by
+        block["closed_on"] = str(row.closed_on) if row.closed_on else None
+    return block
+
+
+@frappe.whitelist()
+def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None):
+    """Close, lock or reopen a period.
+
+    Reopening a *locked* period is refused for anyone below System Manager —
+    the controller enforces that, so it holds for desk edits too, not just this
+    endpoint.
+    """
+    check_epm_admin()
+
+    from konsol import period_status as ps
+
+    if status not in (ps.OPEN, ps.CLOSED, ps.LOCKED):
+        frappe.throw(frappe._("Unknown period status: {0}").format(status))
+
+    doc = ps.set_status(fiscal_year, fiscal_period, status, start_date, end_date)
+    return {
+        "name": doc.name,
+        "fiscal_year": doc.fiscal_year,
+        "fiscal_period": doc.fiscal_period,
+        "status": doc.status,
+        "closed_by": doc.closed_by,
+        "closed_on": str(doc.closed_on) if doc.closed_on else None,
     }
 
 
@@ -110,6 +175,13 @@ def get_snapshot():
 def start_process(process_id, fiscal_year=None, fiscal_period=None):
     """Kick off the run for a close process."""
     check_epm_admin()
+
+    # A closed period refuses new work. Checked here rather than only in the UI
+    # so the API cannot be used to post into a period someone has signed off.
+    if fiscal_year and fiscal_period not in (None, ""):
+        from konsol import period_status
+
+        period_status.assert_open(fiscal_year, fiscal_period, action="start this run")
     pid = (process_id or "").strip()
     if pid not in PROCESSES:
         frappe.throw(f"Unknown process: {process_id}")

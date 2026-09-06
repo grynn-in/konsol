@@ -42,6 +42,7 @@ _LABELS = {
     "Main Account Category": "Main Account Categories",
     "Cash Flow Category": "Cash Flow Categories",
     "Fiscal Period": "Fiscal Periods",
+    "Period Status": "Period Statuses",
     "Budget Cycle": "Budget Cycles",
     "Budget Sheet": "Budget Sheets",
     "Budget Cost Center": "Budget Cost Centers",
@@ -94,6 +95,7 @@ _CARDS = [
     ]),
     ("Reference Data", [
         "Main Account Category", "Cash Flow Category", "Fiscal Period",
+        "Period Status",
     ]),
     ("Budgeting & Planning", [
         "Budget Cycle", "Budget Sheet", "Budget Cost Center", "Spread Profile",

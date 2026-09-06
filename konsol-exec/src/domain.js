@@ -118,18 +118,19 @@ export function closeSteps(data) {
 		}
 
 		if (step.id === "signoff") {
-			// Needs Fiscal Period.status, which does not exist yet (F6).
-			const assertions = getProcess(data, "assertions");
-			const ready = assertions?.machine_status === "done";
+			const status = data?.period?.status;
+			const assertionsPassed = getProcess(data, "assertions")?.machine_status === "done";
 			return {
 				...step,
 				n,
-				available: Boolean(data?.period?.status),
-				state: data?.period?.status === "Closed" ? "done" : "waiting",
-				detail: data?.period?.status
-					? `Period is ${data.period.status}`
-					: ready
-						? "Assertions passed — period status not yet tracked"
+				// A period with no Period Status record has never been closed,
+				// so it is Open — the step is available either way.
+				available: Boolean(data?.period?.fiscal_period),
+				state: status && status !== "Open" ? "done" : "waiting",
+				detail: status && status !== "Open"
+					? `Period is ${status.toLowerCase()}`
+					: assertionsPassed
+						? "Assertions passed — ready to close"
 						: "Waiting on assertions",
 				blockers: 0,
 			};

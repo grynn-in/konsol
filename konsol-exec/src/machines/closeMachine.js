@@ -25,21 +25,27 @@ import { accountingPeriods } from "../period.js";
 
 const POLL_MS = 2000;
 
-/** Snapshot + launch options in one shot: the period selector cannot render
- *  until it knows which periods exist, so the shell waits for both. */
-async function loadPlane() {
-	const [data, options] = await Promise.all([
-		getSnapshot(),
-		getLaunchOptions().catch(() => null),
-	]);
-	return { data, options };
+/**
+ * Options first, then the snapshot for the period they imply.
+ *
+ * Sequential rather than parallel, and deliberately: the snapshot reports the
+ * close state of *one* period, and which period that is comes out of the
+ * options. Fetching both at once would mean a first paint whose period block
+ * is always empty, then a second request to fill it — one extra round trip on
+ * a cold start buys a shell that is correct the first time it renders.
+ */
+async function loadPlane(period) {
+	const options = await getLaunchOptions().catch(() => null);
+	const resolved = period || defaultPeriod(options);
+	const data = await getSnapshot(resolved);
+	return { data, options, period: resolved };
 }
 
 export const closeMachine = setup({
 	types: { context: {}, events: {} },
 	actors: {
-		fetchPlane: fromPromise(() => loadPlane()),
-		fetchSnapshot: fromPromise(() => getSnapshot()),
+		fetchPlane: fromPromise(({ input }) => loadPlane(input?.period)),
+		fetchSnapshot: fromPromise(({ input }) => getSnapshot(input?.period)),
 		startProcessActor: fromPromise(({ input }) => startProcess(input.processId)),
 		sendReminderActor: fromPromise(({ input }) => sendReminder(input.owner, input.item)),
 		pollTicker: fromCallback(({ sendBack }) => {
@@ -55,7 +61,7 @@ export const closeMachine = setup({
 			data: ({ event }) => event.output.data,
 			options: ({ event }) => event.output.options,
 			loadError: null,
-			period: ({ event, context }) => context.period || defaultPeriod(event.output.options),
+			period: ({ event }) => event.output.period,
 		}),
 		assignSnapshot: assign({
 			data: ({ event }) => event.output,
@@ -117,6 +123,7 @@ export const closeMachine = setup({
 		loading: {
 			invoke: {
 				src: "fetchPlane",
+				input: ({ context }) => ({ period: context.period }),
 				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "failed", actions: "assignLoadError" },
 			},
@@ -125,6 +132,7 @@ export const closeMachine = setup({
 		refreshing: {
 			invoke: {
 				src: "fetchSnapshot",
+				input: ({ context }) => ({ period: context.period }),
 				onDone: { target: "ready", actions: "assignSnapshot" },
 				onError: { target: "ready", actions: "assignLoadError" },
 			},
@@ -181,7 +189,7 @@ export const closeMachine = setup({
 			type: "parallel",
 			on: {
 				REFRESH: "refreshing",
-				SET_PERIOD: { actions: "setPeriod" },
+				SET_PERIOD: { target: "refreshing", actions: "setPeriod" },
 				START_PROCESS: {
 					target: "starting",
 					actions: assign({ pendingProcessId: ({ event }) => event.processId }),
