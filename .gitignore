@@ -13,3 +13,9 @@ build/
 *~
 .DS_Store
 node_modules/
+
+# Engram memory — local to this machine. .claude/scripts/ are symlinks into
+# ~/.engram, so committing them would break for anyone else. Remove these two
+# lines if the team decides to share memory (engram itself expects that).
+.claude/
+CLAUDE.md
