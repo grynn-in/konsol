@@ -68,6 +68,33 @@ class EntityBenchTest(unittest.TestCase):
         with self.assertRaises(frappe.ValidationError):
             _mk("__T_UNDER_LEAF", parent=leaf.name)
 
+    def test_a_group_with_children_cannot_become_a_leaf(self):
+        """The same invariant as _guard_leaf_parenting, from the other side.
+
+        Frappe's NestedSet enforces this rather than konsol, which is exactly
+        why it is worth a test: it is behaviour we depend on and do not own.
+        """
+        group = _mk("__T_FLIP", is_group=1)
+        _mk("__T_FLIP_KID", parent=group.name)
+        group.reload()
+        group.is_group = 0
+        group.flags.ignore_permissions = True
+        with self.assertRaises(frappe.ValidationError):
+            group.save()
+
+    def test_a_cycle_is_refused(self):
+        """Also NestedSet's, also depended on: a cycle would make every
+        ancestor walk in the app non-terminating."""
+        from frappe.utils.nestedset import NestedSetRecursionError
+
+        a = _mk("__T_CYC_A", is_group=1)
+        b = _mk("__T_CYC_B", is_group=1, parent=a.name)
+        a.reload()
+        a.parent_entity = b.name
+        a.flags.ignore_permissions = True
+        with self.assertRaises(NestedSetRecursionError):
+            a.save()
+
     def test_a_group_can_be_a_parent(self):
         group = _mk("__T_GROUP", is_group=1)
         child = _mk("__T_OK", parent=group.name)

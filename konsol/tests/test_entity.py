@@ -135,9 +135,18 @@ def test_backfill_does_not_copy_reporting_currency():
     """On a leaf, reporting_currency holds the GROUP's currency, not the
     entity's functional currency. Copying it would put plausible, wrong data
     into the field FX translation is computed from."""
-    src = _patch()
-    assert "functional_currency" not in src.split('"""')[2], (
+    tree = ast.parse(_patch())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "execute")
+    assigned = {
+        t.attr for node in ast.walk(fn) if isinstance(node, ast.Assign)
+        for t in node.targets if isinstance(t, ast.Attribute)
+    }
+    assert "functional_currency" not in assigned, (
         "the backfill must not populate functional_currency"
+    )
+    assert "reporting_currency" not in ast.dump(fn), (
+        "the backfill must not read reporting_currency at all"
     )
 
 

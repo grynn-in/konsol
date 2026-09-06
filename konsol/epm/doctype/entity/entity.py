@@ -64,9 +64,3 @@ class Entity(NestedSet):
                   "Mark it as a group, or record the relationship as ownership instead.")
                 .format(self.parent_entity)
             )
-
-    def on_update(self):
-        super().on_update()
-
-    def on_trash(self):
-        super().on_trash()
