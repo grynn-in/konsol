@@ -3,6 +3,12 @@ from frappe.model.utils.rename_field import rename_field
 
 
 def execute():
+    # has_column raises TableMissingError when the table is absent, so the
+    # table check has to come first — otherwise the guard itself is what
+    # crashes migrate, and every patch after this one is skipped.
+    if not frappe.db.table_exists("Pipeline Run"):
+        return
+
     if not frappe.db.has_column("Pipeline Run", "pipeline_build_request"):
         # Already renamed (or fresh install) — nothing to do.
         return
