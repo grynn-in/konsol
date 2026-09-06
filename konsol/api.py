@@ -16,12 +16,10 @@ from konsol.clickhouse import get_connection as _get_ch_connection
 
 MAX_BATCH_SIZE = 2000
 
-# DocType whose User Permissions gate which entities (data areas) a user may
-# query. Configured in EPM Settings.entity_permission_doctype. When unset, no
-# entity-level filtering is applied (backwards compatible).
-def _entity_permission_doctype():
-    return (frappe.get_cached_value(
-        "EPM Settings", "EPM Settings", "entity_permission_doctype") or "").strip()
+# Entity access now runs through konsol.entity_permissions, which uses the
+# Entity DocType directly. The old EPM Settings.entity_permission_doctype
+# indirection existed only because there was nothing real to point at, and it
+# meant the whole feature was off unless someone set it (#91).
 
 # Period ranges: Q1-Q4, H1-H2, FY → tuple of fiscal_period integers
 PERIOD_RANGES = {
@@ -47,15 +45,11 @@ _SAFE_TABLE_NAME = re.compile(r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$')
 # ---------------------------------------------------------------------------
 
 def _resolve_allowed_entities(user, roles, perm_doctype, user_permissions):
-    """Pure policy: which entities may a user query? (no Frappe access)
+    """Pure policy, kept for the tests that cover it without a site.
 
-    Returns ``None`` when access is unrestricted — the caller is a System
-    Manager / Administrator, or no entity permission doctype is configured
-    (backwards-compatible default). Otherwise returns the set of entity codes
-    granted via Frappe User Permissions for ``perm_doctype`` (an empty set
-    means the user may see no entities).
-
-    Kept side-effect-free so it can be unit-tested without a site.
+    Superseded by konsol.entity_permissions.allowed_entity_codes, which adds
+    the two things this could not do: it targets Entity directly rather than a
+    configurable doctype, and it expands an assignment down the tree.
     """
     if user == "Administrator" or "System Manager" in (roles or []):
         return None
@@ -66,21 +60,22 @@ def _resolve_allowed_entities(user, roles, perm_doctype, user_permissions):
 
 
 def _allowed_entities():
-    """Resolve the current user's entity allow-list (see _resolve_allowed_entities)."""
-    return _resolve_allowed_entities(
-        frappe.session.user,
-        frappe.get_roles(),
-        _entity_permission_doctype(),
-        frappe.permissions.get_user_permissions(frappe.session.user),
-    )
+    """The current user's entity allow-list, or None when unrestricted."""
+    from konsol.entity_permissions import allowed_entity_codes
+
+    return allowed_entity_codes()
 
 
 def _assert_entity_access(entity):
-    """Raise PermissionError if the current user may not query ``entity``."""
-    allowed = _allowed_entities()
-    if allowed is not None and entity not in allowed:
-        raise frappe.PermissionError(
-            f"Not permitted to access entity '{entity}'")
+    """Raise PermissionError if the current user may not query ``entity``.
+
+    Still required alongside the permission_query_conditions hooks: those
+    constrain Frappe queries, and these read paths go straight to ClickHouse
+    where Frappe's permission layer never runs.
+    """
+    from konsol.entity_permissions import assert_entity_access
+
+    assert_entity_access(entity)
 
 
 # ---------------------------------------------------------------------------
