@@ -40,6 +40,7 @@ def after_migrate():
     _regenerate_cash_flow_categories_seed()
     _regenerate_reporting_hierarchies_seed()
     _sync_allocation_config_to_clickhouse()
+    _reconcile_clickhouse()
     _setup_dashboard()
     _retire_konsol_control_page()
     _sync_budget_line_custom_fields()
@@ -158,6 +159,27 @@ def _sync_allocation_config_to_clickhouse():
             "allocation config ClickHouse sync skipped after migrate",
             exc_info=True,
         )
+
+
+def _reconcile_clickhouse():
+    """Re-sync every write-through table after migrate.
+
+    Document hooks cannot repair a table whose records disappeared without
+    firing them — a fixture reload, a patch, or a site rebuilt against a
+    ClickHouse volume that outlived it. Those rows then stay forever, because
+    there is nothing left to edit that would trigger a sync.
+
+    Best-effort — never fail a migrate over it.
+    """
+    try:
+        from konsol.clickhouse import reconcile_all
+
+        synced = reconcile_all()
+        frappe.logger().info(
+            f"reconcile: re-synced {len(synced)} write-through tables"
+        )
+    except Exception:
+        frappe.logger().warning("ClickHouse reconcile skipped after migrate", exc_info=True)
 
 
 def _regenerate_dimension_mappings_seed():
