@@ -417,10 +417,12 @@ def reconcile_all():
 
     Returns a dict of table -> row count synced, for logging and tests.
     """
+    from frappe.model.base_document import get_controller
+
     synced = {}
     for doctype in _write_through_doctypes():
         try:
-            cls = frappe.get_controller(doctype)
+            cls = get_controller(doctype)
             rows = frappe.db.count(doctype)
             sync_doctype(doctype, cls.CH_TABLE, cls.CH_FIELD_MAP, force=True)
             synced[cls.CH_TABLE] = rows
@@ -433,19 +435,31 @@ def reconcile_all():
 
 def _write_through_doctypes():
     """Every konsol doctype whose controller declares a ClickHouse target."""
+    # frappe.get_controller does not exist at the top level in v15 — it lives in
+    # frappe.model.base_document. Importing it explicitly rather than reaching
+    # through frappe keeps the failure loud if that ever moves again.
+    from frappe.model.base_document import get_controller
+
     modules = frappe.get_all(
         "Module Def", filters={"app_name": "konsol"}, pluck="name"
     )
     if not modules:
+        frappe.logger().warning("reconcile: no Module Def rows for app 'konsol'")
         return []
     found = []
     for doctype in frappe.get_all(
         "DocType", filters={"module": ["in", modules]}, pluck="name"
     ):
         try:
-            cls = frappe.get_controller(doctype)
+            cls = get_controller(doctype)
         except Exception:
+            # A doctype without an importable controller simply has no CH target.
             continue
         if getattr(cls, "CH_TABLE", None) and getattr(cls, "CH_FIELD_MAP", None):
             found.append(doctype)
+    if not found:
+        frappe.logger().warning(
+            "reconcile: no write-through doctypes discovered — expected several; "
+            "check that controllers still declare CH_TABLE/CH_FIELD_MAP"
+        )
     return found
