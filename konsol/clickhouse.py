@@ -76,7 +76,44 @@ def execute(sql, params=None):
     return resp.text.strip()
 
 
-def sync_table(table, columns, rows):
+_WATERMARK_TABLE = "epm_staging.sync_watermark"
+
+
+def _stamp_watermark(table, row_count, source_max_modified=None):
+    """Record that ``table`` was successfully synced, for dbt to check.
+
+    D11 wanted ClickHouse to read Frappe's MariaDB directly so metadata could
+    never go stale. That was reversed (F4) — write-through avoids making every
+    dbt run a live dependency on the Frappe database — but it gives up the
+    "never stale" guarantee. This restores it: every successful sync stamps a
+    row here, and a dbt test fails the run when what it claims no longer holds.
+
+    ``_sync_failures`` already tracks breakage, but only in memory in the
+    Frappe process: it dies on restart and dbt cannot see it. This is the
+    durable, ClickHouse-side half.
+
+    Best-effort — a watermark failure must never break a document save.
+    """
+    try:
+        execute(
+            f"CREATE TABLE IF NOT EXISTS {_WATERMARK_TABLE} ("
+            "table_name String, "
+            "synced_at DateTime, "
+            "row_count UInt64, "
+            "source_max_modified DateTime"
+            ") ENGINE = ReplacingMergeTree(synced_at) ORDER BY table_name"
+        )
+        src = source_max_modified or "1970-01-01 00:00:00"
+        execute(
+            f"INSERT INTO {_WATERMARK_TABLE} "
+            "(table_name, synced_at, row_count, source_max_modified) VALUES "
+            f"('{table}', now(), {int(row_count)}, '{src}')"
+        )
+    except Exception as e:  # noqa: BLE001 — never break a save over telemetry
+        frappe.logger().warning(f"watermark stamp failed for {table}: {e}")
+
+
+def sync_table(table, columns, rows, source_max_modified=None, force=False):
     """TRUNCATE and INSERT all rows into a ClickHouse table.
 
     Best-effort: logs warning on connection failure instead of raising,
@@ -91,18 +128,21 @@ def sync_table(table, columns, rows):
     # push to ClickHouse (EPM Settings — and the CH password — may not be
     # configured yet, and a write here would crash install-app). Explicit
     # syncs (apply_schema, manual bench execute) run outside these phases.
-    if (
-        frappe.flags.in_install
-        or frappe.flags.in_migrate
-        or frappe.flags.in_patch
-        or frappe.flags.in_import
-    ):
+    # in_install / in_import always block: EPM Settings (and the CH password)
+    # may not exist yet, and a write here would crash install-app.
+    if frappe.flags.in_install or frappe.flags.in_import:
+        return
+    # in_migrate / in_patch normally block for the same reason, but reconcile
+    # runs *after* migrate specifically to repair tables that document events
+    # could not reach, so it passes force=True.
+    if not force and (frappe.flags.in_migrate or frappe.flags.in_patch):
         return
 
     try:
         _sync_table_inner(table, columns, rows)
         # Clear any previous failure for this table
         _sync_failures.pop(table, None)
+        _stamp_watermark(table, len(rows), source_max_modified)
     except requests.exceptions.ConnectionError as e:
         _record_sync_failure(table, "connection_refused", str(e))
         frappe.logger().error(
@@ -234,7 +274,7 @@ def _sync_rows_inner(table, columns, rows, key_columns, key_values):
         execute(f"INSERT INTO {table} ({col_list}) VALUES {values_sql}")
 
 
-def sync_doctype(doctype, table, field_map):
+def sync_doctype(doctype, table, field_map, force=False):
     """Fetch all Frappe docs of a doctype and sync to ClickHouse.
 
     For *submittable* doctypes only docstatus=1 (submitted) rows are synced:
@@ -254,7 +294,7 @@ def sync_doctype(doctype, table, field_map):
             e.g. {'allocation_rule_id': 'allocation_rule_id', 'rule_name': 'rule_name'}
     """
     filters = {"docstatus": 1} if frappe.get_meta(doctype).is_submittable else None
-    sync_doctype_filtered(doctype, table, field_map, filters=filters)
+    sync_doctype_filtered(doctype, table, field_map, filters=filters, force=force)
 
 
 def _record_sync_failure(table, error_type, message):
@@ -310,7 +350,7 @@ def check_health():
     return result
 
 
-def sync_doctype_filtered(doctype, table, field_map, filters=None):
+def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
     """Fetch filtered Frappe docs and sync to ClickHouse.
 
     Like sync_doctype() but with optional filters (e.g. docstatus=1 for
@@ -325,10 +365,16 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None):
     ch_columns = list(field_map.keys())
     frappe_fields = list(field_map.values())
 
+    # Fetch `modified` alongside so the sync can stamp how fresh the source was
+    # at the time. Only added when the field_map does not already carry it.
+    fetch_fields = list(frappe_fields)
+    if "modified" not in fetch_fields:
+        fetch_fields.append("modified")
+
     docs = frappe.get_all(
         doctype,
         filters=filters or {},
-        fields=frappe_fields,
+        fields=fetch_fields,
         limit_page_length=0,
     )
     rows = []
@@ -336,4 +382,84 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None):
         row = [doc.get(f) for f in frappe_fields]
         rows.append(row)
 
-    sync_table(table, ch_columns, rows)
+    modified = [d.get("modified") for d in docs if d.get("modified")]
+    source_max_modified = (
+        max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None
+    )
+
+    sync_table(
+        table,
+        ch_columns,
+        rows,
+        source_max_modified=source_max_modified,
+        force=force,
+    )
+
+
+def reconcile_all():
+    """Re-sync every write-through table, regardless of document events.
+
+    Syncing is driven entirely by on_update / on_submit / on_trash. A doctype
+    that nobody touches therefore never re-syncs — and if its records vanish in
+    a way that skips those hooks (a migration, a fixture reload, a site rebuilt
+    against a ClickHouse volume that outlived it), the old rows stay in
+    ClickHouse forever with nothing left to edit that would clear them.
+
+    That is not hypothetical: epm_staging.ownership_periods held three rows
+    dated 2026-06-19 for records Frappe no longer had, and one of them — AMDE at
+    75% — was the ownership percentage every consolidated statement used, because
+    gold_consolidated_trial_balance resolves ownership_periods before the
+    hierarchy. Frappe's own Consolidation Group said 100%.
+
+    TRUNCATE+INSERT means re-syncing an empty doctype empties its table, so this
+    repairs exactly that class of drift. Best-effort per table: one
+    misconfigured doctype must not stop the rest.
+
+    Returns a dict of table -> row count synced, for logging and tests.
+    """
+    from frappe.model.base_document import get_controller
+
+    synced = {}
+    for doctype in _write_through_doctypes():
+        try:
+            cls = get_controller(doctype)
+            rows = frappe.db.count(doctype)
+            sync_doctype(doctype, cls.CH_TABLE, cls.CH_FIELD_MAP, force=True)
+            synced[cls.CH_TABLE] = rows
+        except Exception:
+            frappe.logger().warning(
+                f"reconcile: {doctype} skipped", exc_info=True
+            )
+    return synced
+
+
+def _write_through_doctypes():
+    """Every konsol doctype whose controller declares a ClickHouse target."""
+    # frappe.get_controller does not exist at the top level in v15 — it lives in
+    # frappe.model.base_document. Importing it explicitly rather than reaching
+    # through frappe keeps the failure loud if that ever moves again.
+    from frappe.model.base_document import get_controller
+
+    modules = frappe.get_all(
+        "Module Def", filters={"app_name": "konsol"}, pluck="name"
+    )
+    if not modules:
+        frappe.logger().warning("reconcile: no Module Def rows for app 'konsol'")
+        return []
+    found = []
+    for doctype in frappe.get_all(
+        "DocType", filters={"module": ["in", modules]}, pluck="name"
+    ):
+        try:
+            cls = get_controller(doctype)
+        except Exception:
+            # A doctype without an importable controller simply has no CH target.
+            continue
+        if getattr(cls, "CH_TABLE", None) and getattr(cls, "CH_FIELD_MAP", None):
+            found.append(doctype)
+    if not found:
+        frappe.logger().warning(
+            "reconcile: no write-through doctypes discovered — expected several; "
+            "check that controllers still declare CH_TABLE/CH_FIELD_MAP"
+        )
+    return found
