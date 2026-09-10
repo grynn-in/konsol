@@ -24,6 +24,7 @@ REFERRING_DOCTYPES = {
     "Consolidation Adjustment",
     "Historical Equity Rate",
     "Allocation Driver",
+    "Trial Balance Submission",
 }
 
 

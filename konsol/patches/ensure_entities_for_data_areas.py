@@ -27,6 +27,10 @@ REFERRING_DOCTYPES = (
     "Consolidation Adjustment",
     "Historical Equity Rate",
     "Allocation Driver",
+    # F8: new doctypes carrying an entity join the sweep even when they cannot
+    # have pre-Link rows — the table_exists() guard makes it free, and the
+    # invariant "every referring doctype is swept" stays checkable.
+    "Trial Balance Submission",
 )
 
 

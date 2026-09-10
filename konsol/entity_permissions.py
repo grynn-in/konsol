@@ -34,6 +34,7 @@ ENTITY_SCOPED_DOCTYPES = (
     "Consolidation Adjustment",
     "Historical Equity Rate",
     "Allocation Driver",
+    "Trial Balance Submission",
 )
 
 #: Roles that see every entity. Without this an admin can lock themselves out

@@ -63,6 +63,12 @@ website_route_rules = [
 # ---------------
 
 scheduler_events = {
+    "daily": [
+        # F8: rows landed by a submission that crashed before claiming its
+        # batch are invisible to bronze forever; age them out.
+        "konsol.consolidation.doctype.trial_balance_submission"
+        ".trial_balance_submission.reap_unclaimed_submissions",
+    ],
     "cron": {
         # Refresh per-connector sync health (status / lag / entities loaded) and
         # alert operators on the transition into Failed/Stale.
