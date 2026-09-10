@@ -144,14 +144,20 @@ def test_dimension_map_child_table():
 
 # --- erp_sources generation + controller wiring ---
 
-def test_dbt_config_builds_erp_sources():
+def test_connector_state_does_not_write_erp_sources():
+    """F3: which ERPs the build unions is a committed engineering decision in
+    dbt_project.yml — a connector being enabled says nothing about its raw
+    data having landed, and deriving erp_sources from the registry is what
+    enabled models whose sources did not exist and broke the whole build
+    (#139). The registry's view stays available read-only via
+    config_service.list_erp_sources."""
     src = _read(os.path.join(APP_DIR, "dbt_config.py"))
-    assert "def _build_erp_sources_vars" in src
-    assert 'new_vars["erp_sources"]' in src
-    assert 'filters={"enabled": 1}' in src
-    # With no enabled connectors, fall back to the d365_fo DEFAULT — not the
-    # existing file value (which would make deleting the last connector a no-op).
-    assert '_build_erp_sources_vars() or ["d365_fo"]' in src
+    assert "_build_erp_sources_vars" not in src
+    assert 'managed["erp_sources"]' not in src
+    assert '"erp_sources"' not in src.split("MANAGED_KEYS = (")[1].split(")")[0]
+    cs = _read(os.path.join(APP_DIR, "config_service.py"))
+    assert "def list_erp_sources" in cs
+    assert "informational" in cs.lower() or "no longer drives" in cs.lower()
 
 
 def test_connector_controller_regenerates_vars():

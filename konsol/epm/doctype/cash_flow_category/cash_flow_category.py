@@ -8,11 +8,22 @@ mapping per main_account. Spec: grynn-in/konsolidat#63.
 import frappe
 from frappe.model.document import Document
 
-from konsol.dbt_config import regenerate_cash_flow_categories_seed
+from konsol.clickhouse import sync_doctype_filtered
 from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild
 
 
 class CashFlowCategory(Document):
+    # F3: write-through replaces the CSV seed (see DimensionMapping).
+    CH_TABLE = "epm_staging.cash_flow_categories"
+    CH_FIELD_MAP = {
+        "main_account": "main_account",
+        "cf_category": "cf_category",
+        "cf_line_item": "cf_line_item",
+        "is_cash": "is_cash",
+        "sign": "sign",
+        "status": "status",
+    }
+
 
     def validate(self):
         self._validate_unique_account()
@@ -44,7 +55,10 @@ class CashFlowCategory(Document):
         check_epm_admin()
         self.status = "Published"
         self.save()
-        regenerate_cash_flow_categories_seed()
+        sync_doctype_filtered(
+            "Cash Flow Category", self.CH_TABLE, self.CH_FIELD_MAP,
+            filters={"status": "Published"},
+        )
         request_governed_rebuild(self, "Publish")
 
     @frappe.whitelist()
@@ -53,7 +67,10 @@ class CashFlowCategory(Document):
         check_epm_admin()
         self.status = "Inactive"
         self.save()
-        regenerate_cash_flow_categories_seed()
+        sync_doctype_filtered(
+            "Cash Flow Category", self.CH_TABLE, self.CH_FIELD_MAP,
+            filters={"status": "Published"},
+        )
         request_governed_rebuild(self, "Unpublish")
 
     def after_delete(self):
@@ -67,5 +84,8 @@ class CashFlowCategory(Document):
         if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
             return
         if self.status == "Published":
-            regenerate_cash_flow_categories_seed()
+            sync_doctype_filtered(
+            "Cash Flow Category", self.CH_TABLE, self.CH_FIELD_MAP,
+            filters={"status": "Published"},
+        )
             request_governed_rebuild(self, "Delete")

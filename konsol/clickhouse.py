@@ -425,14 +425,18 @@ def reconcile_all():
         try:
             cls = get_controller(doctype)
             rows = frappe.db.count(doctype)
-            # Some controllers name the flat map CH_LEGACY_FIELD_MAP ("legacy
-            # sync to gold.*"); missing that alias is how three of the ten
-            # write-through doctypes silently escaped reconciliation.
-            field_map = getattr(cls, "CH_FIELD_MAP", None) or cls.CH_LEGACY_FIELD_MAP
-            written = sync_doctype(doctype, cls.CH_TABLE, field_map, force=True)
-            # the count actually written, not frappe.db.count: submittable
-            # doctypes sync docstatus=1 rows only, so the doc count over-reports
-            synced[cls.CH_TABLE] = written if written is not None else rows
+            if getattr(cls, "CH_TABLE", None):
+                # Some controllers name the flat map CH_LEGACY_FIELD_MAP
+                # ("legacy sync to gold.*"); missing that alias is how three of
+                # the ten write-through doctypes silently escaped
+                # reconciliation.
+                field_map = (getattr(cls, "CH_FIELD_MAP", None)
+                             or cls.CH_LEGACY_FIELD_MAP)
+                written = sync_doctype(doctype, cls.CH_TABLE, field_map, force=True)
+                # the count actually written, not frappe.db.count: submittable
+                # doctypes sync docstatus=1 rows only, so the doc count
+                # over-reports
+                synced[cls.CH_TABLE] = written if written is not None else rows
 
             # The second table. Three controllers use the generic map pattern;
             # Consolidation Group computes its rows (tree walk) and exposes
@@ -473,10 +477,13 @@ def _write_through_doctypes():
         except Exception:
             # A doctype without an importable controller simply has no CH target.
             continue
-        if getattr(cls, "CH_TABLE", None) and (
-            getattr(cls, "CH_FIELD_MAP", None)
-            or getattr(cls, "CH_LEGACY_FIELD_MAP", None)
-        ):
+        if (getattr(cls, "CH_TABLE", None) and (
+                getattr(cls, "CH_FIELD_MAP", None)
+                or getattr(cls, "CH_LEGACY_FIELD_MAP", None)))\
+                or (getattr(cls, "CH_STAGING_TABLE", None)
+                    and getattr(cls, "resync_staging", None)):
+            # the second arm: staging-only controllers (Reporting Hierarchy)
+            # whose rows are computed and synced via resync_staging()
             found.append(doctype)
     if not found:
         frappe.logger().warning(

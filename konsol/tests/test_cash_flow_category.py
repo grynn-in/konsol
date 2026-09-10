@@ -37,16 +37,21 @@ def test_cash_flow_category_controller_lifecycle():
     with open(path) as f:
         src = f.read()
     for hook in ("def publish(", "def unpublish(", "def after_delete(",
-                 "_validate_unique_account", "regenerate_cash_flow_categories_seed"):
+                 "_validate_unique_account", "sync_doctype_filtered"):
         assert hook in src, f"missing {hook}"
+    # F3: Published rows write through to the warehouse; no CSV seed is written
+    assert 'CH_TABLE = "epm_staging.cash_flow_categories"' in src
+    assert '"status": "Published"' in src
+    assert "regenerate_cash_flow_categories_seed" not in src
 
 
-def test_regenerator_defined_in_dbt_config():
+def test_seed_regenerator_is_gone_from_dbt_config():
+    """F3: Frappe no longer writes CSV seeds into the dbt repo."""
     path = os.path.join(APP_DIR, "dbt_config.py")
     with open(path) as f:
         src = f.read()
-    assert "def regenerate_cash_flow_categories_seed(" in src
-    assert "_CASH_FLOW_CATEGORY_COLUMNS" in src
+    assert "regenerate_cash_flow_categories_seed" not in src
+    assert "cash_flow_categories.csv" not in src
 
 
 def test_fixture_seeds_demo_default():

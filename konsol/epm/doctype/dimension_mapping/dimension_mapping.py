@@ -8,11 +8,25 @@ source_value), which must be unique among non-Inactive rows.
 import frappe
 from frappe.model.document import Document
 
-from konsol.dbt_config import regenerate_dimension_mappings_seed
+from konsol.clickhouse import sync_doctype_filtered
 from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild
 
 
 class DimensionMapping(Document):
+    # F3: write-through to the warehouse — the crosswalk USED to be written as
+    # a CSV seed into the dbt repo on every save and migrate. Only Published
+    # rows sync (dbt filtered on status='Published' already); TRUNCATE+INSERT,
+    # reconciled after migrate like every other write-through table.
+    CH_TABLE = "epm_staging.dimension_mappings"
+    CH_FIELD_MAP = {
+        "dimension": "dimension",
+        "erp_source": "erp_source",
+        "source_value": "source_value",
+        "canonical_value": "canonical_value",
+        "canonical_label": "canonical_label",
+        "status": "status",
+    }
+
 
     def validate(self):
         self._validate_unique_key()
@@ -45,7 +59,10 @@ class DimensionMapping(Document):
         check_epm_admin()
         self.status = "Published"
         self.save()
-        regenerate_dimension_mappings_seed()
+        sync_doctype_filtered(
+            "Dimension Mapping", self.CH_TABLE, self.CH_FIELD_MAP,
+            filters={"status": "Published"},
+        )
         request_governed_rebuild(self, "Publish")
 
     @frappe.whitelist()
@@ -54,7 +71,10 @@ class DimensionMapping(Document):
         check_epm_admin()
         self.status = "Inactive"
         self.save()
-        regenerate_dimension_mappings_seed()
+        sync_doctype_filtered(
+            "Dimension Mapping", self.CH_TABLE, self.CH_FIELD_MAP,
+            filters={"status": "Published"},
+        )
         request_governed_rebuild(self, "Unpublish")
 
     def after_delete(self):
@@ -69,5 +89,8 @@ class DimensionMapping(Document):
         if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
             return
         if self.status == "Published":
-            regenerate_dimension_mappings_seed()
+            sync_doctype_filtered(
+            "Dimension Mapping", self.CH_TABLE, self.CH_FIELD_MAP,
+            filters={"status": "Published"},
+        )
             request_governed_rebuild(self, "Delete")

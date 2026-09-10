@@ -33,25 +33,29 @@ def test_dbt_config_reads_yaml():
 
 
 def test_dbt_config_preserves_non_vars():
-    """regenerate_vars must preserve non-vars sections (models, seeds, etc.)."""
+    """F3: preservation is structural now — the writer splices ONLY the
+    marker-delimited region, so everything else survives byte for byte (the
+    old _merge_vars_into_yaml round-tripped the whole file and stripped every
+    comment)."""
     import sys
     sys.path.insert(0, APP_DIR)
-    from dbt_config import _merge_vars_into_yaml
+    from dbt_config import render_managed_vars, splice_managed_block
 
-    original = {
-        "name": "open_epm",
-        "version": "1.0.0",
-        "models": {"open_epm": {"gold": {"+schema": "gold"}}},
-        "vars": {"dimensions": [{"name": "old_dim"}]},
-    }
-    new_vars = {"dimensions": [{"name": "new_dim"}]}
-    result = _merge_vars_into_yaml(original, new_vars)
-
-    assert result["name"] == "open_epm"
-    assert result["version"] == "1.0.0"
-    assert result["models"] == {"open_epm": {"gold": {"+schema": "gold"}}}
-    assert result["vars"]["dimensions"] == [{"name": "new_dim"}]
-
+    doc = (
+        "name: open_epm\n"
+        "# hand comment\n"
+        "vars:\n"
+        "  erp_sources:\n"
+        "  - d365_fo\n"
+        + render_managed_vars({"dimensions": [{"name": "old_dim"}]})
+        + "\nmodels:\n  open_epm:\n    gold:\n      +schema: gold\n"
+    )
+    out = splice_managed_block(
+        doc, render_managed_vars({"dimensions": [{"name": "new_dim"}]}))
+    assert "new_dim" in out and "old_dim" not in out
+    assert "# hand comment" in out
+    assert "+schema: gold" in out
+    assert "erp_sources" in out
 
 def test_dbt_config_round_trip():
     """Read real dbt_project.yml, merge vars, verify structure preserved."""
@@ -82,7 +86,10 @@ def test_dbt_config_has_regenerate_model_domains():
         tree = ast.parse(f.read())
     func_names = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     assert "regenerate_model_domains" in func_names
-    assert "_apply_model_domains" in func_names
+    # F3: the whole-file rewriter (_apply_model_domains + yaml.dump) is gone;
+    # domains render into their own marker region.
+    assert "_apply_model_domains" not in func_names
+    assert "render_model_domains" in func_names
 
 
 def test_regenerate_model_domains_reads_build_model_doctype():
@@ -92,45 +99,19 @@ def test_regenerate_model_domains_reads_build_model_doctype():
     assert '"Build Model"' in content
 
 
-def test_apply_model_domains_rewrites_gold_tags():
-    """_apply_model_domains must set gold model +tags and preserve everything else.
-
-    Pure function — runs in a bench env; only fails here because importing
-    dbt_config pulls in `frappe` (same as test_dbt_config_preserves_non_vars).
-    """
+def test_render_model_domains_tags_and_refusal():
+    """F3 replacement for the _apply_model_domains tests: rendering produces
+    the same +tags contract, and a file without markers is REFUSED rather than
+    rewritten."""
     import sys
     sys.path.insert(0, APP_DIR)
-    from dbt_config import _apply_model_domains
+    from dbt_config import (render_model_domains, splice_managed_block,
+                            MANAGED_DOMAINS_BEGIN, MANAGED_DOMAINS_END)
 
-    project = {
-        "models": {
-            "open_epm": {
-                "gold": {
-                    "+schema": "gold",
-                    "+materialized": "table",
-                    "+tags": ["gold"],
-                    "gold_trial_balance": {"+tags": ["gold", "domain:actuals"]},
-                    "gold_untouched": {"+tags": ["gold", "domain:staging"]},
-                }
-            }
-        }
-    }
-    result = _apply_model_domains(project, {"gold_trial_balance": "scenarios"})
-    gold = result["models"]["open_epm"]["gold"]
-
-    # Managed model retagged...
-    assert gold["gold_trial_balance"]["+tags"] == ["gold", "domain:scenarios"]
-    # ...layer config and unmanaged models preserved.
-    assert gold["+schema"] == "gold"
-    assert gold["+materialized"] == "table"
-    assert gold["+tags"] == ["gold"]
-    assert gold["gold_untouched"]["+tags"] == ["gold", "domain:staging"]
+    out = render_model_domains({"gold_x": "consolidation"})
+    assert "+tags: ['gold', 'domain:consolidation']" in out
+    assert splice_managed_block(
+        "models: {}", out,
+        begin=MANAGED_DOMAINS_BEGIN, end=MANAGED_DOMAINS_END) is None
 
 
-def test_apply_model_domains_handles_missing_gold_block():
-    """No models.open_epm.gold block → return unchanged, don't crash."""
-    import sys
-    sys.path.insert(0, APP_DIR)
-    from dbt_config import _apply_model_domains
-
-    assert _apply_model_domains({}, {"x": "actuals"}) == {}

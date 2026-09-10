@@ -38,18 +38,22 @@ def test_reporting_hierarchy_member_doctype():
         assert f in fields
 
 
-def test_header_publish_regenerates_seed_and_reporting_rebuild():
+def test_header_publish_resyncs_staging_and_reporting_rebuild():
     src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
-    assert "regenerate_reporting_hierarchies_seed" in src
+    # F3: publish re-syncs epm_staging via the computed resync_staging()
+    # pattern (rows are flattened, not field-mapped); no CSV seed is written.
+    assert "def resync_staging" in src
+    assert 'CH_STAGING_TABLE = "epm_staging.reporting_hierarchies"' in src
+    assert "flatten_reporting_hierarchies" in src
+    assert "regenerate_reporting_hierarchies_seed" not in src
     assert 'scope=_REPORTING_BUILD_SCOPE' in src or 'scope="reporting"' in src
 
 
-def test_dbt_config_seed_columns():
-    src = _read("dbt_config.py")
-    assert "def regenerate_reporting_hierarchies_seed" in src
-    assert "reporting_hierarchies.csv" in src
+def test_staging_columns_match_the_flattened_contract():
+    """F3: the columns dbt reads now travel via CH_STAGING_COLUMNS."""
+    src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
     for col in SEED_COLUMNS:
-        assert col in src
+        assert f'"{col}"' in src, f"column {col} missing from CH_STAGING_COLUMNS"
 
 
 def test_flatten_module_exists():
