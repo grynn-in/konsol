@@ -1,11 +1,16 @@
 """Host tests for the Trial Balance Submission CSV parser and validator.
 
 parse_tb_csv / validate_tb_rows are deliberately pure so the whole validation
-surface runs here without a site. The functions are imported by file path
-because importing the module would pull in frappe.
+surface runs here without a site. The module is loaded by file path with
+stubbed frappe/konsol imports (the pattern test_budget_grain.py established) —
+the pure functions under test never call into them. A naive AST-extraction
+loader was tried first and silently dropped this whole file from the suite the
+day a new import was added; module stubbing fails loudly instead.
 """
 import importlib.util
 import os
+import sys
+import types
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(
@@ -14,31 +19,28 @@ _SRC = os.path.join(
 )
 
 
-def _load_pure_functions():
-    """Extract the pure helpers without importing frappe."""
-    import ast
-    import types
-    with open(_SRC) as f:
-        tree = ast.parse(f.read())
-    wanted = {"parse_tb_csv", "validate_tb_rows", "_sql_str",
-              "_REQUIRED_COLUMNS", "BALANCE_TOLERANCE"}
-    module = ast.Module(
-        body=[n for n in tree.body
-              if (isinstance(n, (ast.FunctionDef, ast.Assign))
-                  and (getattr(n, "name", None) in wanted
-                       or any(getattr(t, "id", None) in wanted
-                              for t in getattr(n, "targets", []))))
-              or (isinstance(n, (ast.Import, ast.ImportFrom))
-                  and "frappe" not in ast.dump(n)
-                  and "clickhouse" not in ast.dump(n))],
-        type_ignores=[],
-    )
-    ns = types.ModuleType("tbs_pure")
-    exec(compile(module, _SRC, "exec"), ns.__dict__)
-    return ns
+def _stub(name, **attrs):
+    if name not in sys.modules:
+        mod = types.ModuleType(name)
+        for k, v in attrs.items():
+            setattr(mod, k, v)
+        sys.modules[name] = mod
 
 
-_m = _load_pure_functions()
+class _Doc:  # stand-in for frappe.model.document.Document
+    pass
+
+
+_stub("frappe")
+_stub("frappe.model")
+_stub("frappe.model.document", Document=_Doc)
+_stub("konsol")
+_stub("konsol.clickhouse", execute=lambda *a, **k: "")
+_stub("konsol.period_status", assert_open=lambda *a, **k: None)
+
+_spec = importlib.util.spec_from_file_location("tbs_under_test", _SRC)
+_m = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_m)
 
 GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
 
@@ -134,3 +136,32 @@ def test_validate_collects_multiple_errors():
 
 def test_sql_str_escapes_quotes_and_backslashes():
     assert _m._sql_str("O'Brien\\x") == "O\\'Brien\\\\x"
+
+
+def test_parse_rejects_nan_and_inf():
+    for bad in ("nan", "inf", "-inf"):
+        try:
+            _m.parse_tb_csv(f"main_account,debit,credit\n1010,{bad},0\n")
+            assert False, f"expected ValueError for {bad}"
+        except ValueError as e:
+            assert "finite" in str(e)
+
+
+def test_parse_rejects_surplus_cells():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit\n1010,1,0,stray,extra\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "more cells" in str(e)
+
+
+def test_parse_rounds_to_cents_so_stored_equals_validated():
+    rows = _m.parse_tb_csv("main_account,debit,credit\n1010,10.005,0\n2010,0,10.004\n")
+    assert rows[0]["debit"] == 10.0 or rows[0]["debit"] == 10.01  # banker's rounding either way
+    assert rows[1]["credit"] == 10.0
+    # the point: balance is judged on the ROUNDED values — the same numbers
+    # the warehouse will store — so post-rounding drift past the tolerance
+    # fails here, not later in a dbt test
+    errs = _m.validate_tb_rows(_m.parse_tb_csv(
+        "main_account,debit,credit\n1010,10.019,0\n2010,0,10.001\n"))
+    assert any("do not equal" in e for e in errs)  # 10.02 vs 10.00 -> 0.02 > 0.01

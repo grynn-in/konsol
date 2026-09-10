@@ -24,13 +24,14 @@ Amounts are in the entity's accounting currency. One row per account.
 
 import csv
 import io
+import math
 import uuid
-from datetime import date
 
 import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import execute
+from konsol.period_status import assert_open
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
@@ -64,7 +65,16 @@ def parse_tb_csv(text):
 
     rows = []
     for lineno, raw in enumerate(reader, start=2):
-        item = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+        # csv.DictReader parks surplus cells under the None restkey as a LIST;
+        # without this check a stray trailing comma becomes an AttributeError
+        # deep in the strip() below instead of a readable message.
+        if raw.get(None):
+            raise ValueError(
+                f"Line {lineno}: more cells than the header has columns "
+                "(a stray comma?)"
+            )
+        item = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()
+                if k is not None}
         account = item.get("main_account", "")
         if not account:
             raise ValueError(f"Line {lineno}: main_account is blank")
@@ -76,10 +86,23 @@ def parse_tb_csv(text):
                 f"Line {lineno}: debit/credit must be numbers "
                 f"(got {item.get('debit')!r} / {item.get('credit')!r})"
             )
+        # float() happily accepts 'nan' and 'inf', and NaN then sails through
+        # every comparison in validate_tb_rows (all NaN comparisons are False),
+        # so an arbitrarily unbalanced file would validate and land NaN in the
+        # warehouse. Refuse non-finite values outright.
+        if not (math.isfinite(debit) and math.isfinite(credit)):
+            raise ValueError(
+                f"Line {lineno}: debit/credit must be finite numbers "
+                f"(got {item.get('debit')!r} / {item.get('credit')!r})"
+            )
+        # Round to cents HERE so the amounts validated, landed, and cast by
+        # bronze (Decimal(38,2)) are all the same numbers — a file balanced
+        # only at 3+ decimals must fail validation, not drift past it and
+        # unbalance later in the warehouse.
         rows.append({
             "main_account": account,
-            "debit": debit,
-            "credit": credit,
+            "debit": round(debit, 2),
+            "credit": round(credit, 2),
             "description": item.get("description", ""),
         })
     if not rows:
@@ -153,7 +176,14 @@ class TrialBalanceSubmission(Document):
             frappe.throw("Fiscal period must be 1–12 for a trial balance submission")
 
         self._check_entity_access()
-        self._check_period_open()
+        # App-wide convention (konsol/period_status.py): a period nobody has
+        # closed has no record, and IS Open — records are created on demand.
+        # Requiring a record here would block every submission into a normal
+        # untouched period. assert_open throws on Closed/Locked and on nothing
+        # else.
+        assert_open(self.fiscal_year, self.fiscal_period,
+                    action="submit a trial balance")
+        self._check_no_other_submission()
 
         rows = self._parse_file()
         errors = validate_tb_rows(rows, known_accounts=self._chart_accounts())
@@ -162,22 +192,25 @@ class TrialBalanceSubmission(Document):
         self.total_debit = round(sum(r["debit"] for r in rows), 2)
         self.total_credit = round(sum(r["credit"] for r in rows), 2)
         if errors:
-            self.validation_status = "Invalid"
-            self.validation_message = "\n".join(errors)
-            frappe.throw(
-                "Trial balance failed validation:\n" + self.validation_message
-            )
+            # No "Invalid" status is persisted: frappe.throw rolls the save
+            # back, so a stored Invalid state could never exist anyway — the
+            # message IS the feedback.
+            frappe.throw("Trial balance failed validation:\n" + "\n".join(errors))
         self.validation_status = "Valid"
         self.validation_message = ""
-
-    def before_submit(self):
-        # Re-run the full validation at submit time: the file, the chart, or
-        # the period may all have changed since the draft was saved.
-        self.validate()
 
     def on_submit(self):
         rows = self._parse_file()
         self._ensure_tables()
+        # Idempotent landing: a failed claim rolls the document back to draft
+        # with the SAME batch_id, and ClickHouse has no transactions — so a
+        # resubmit must replace, never append, or every amount doubles.
+        # mutations_sync=1 because the INSERT follows immediately.
+        execute(
+            f"ALTER TABLE {RAW_TABLE} DELETE "
+            f"WHERE batch_id = '{_sql_str(self.batch_id)}' "
+            "SETTINGS mutations_sync = 1"
+        )
         self._land_rows(rows)
         # The claim is the commit point. Nothing before this line is visible
         # to bronze; a crash before it leaves unclaimed rows for the reaper.
@@ -193,9 +226,13 @@ class TrialBalanceSubmission(Document):
     def on_cancel(self):
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.
+        # mutations_sync=1: the delete must be VISIBLE before this returns —
+        # an async mutation leaves a window where cancel + amend + resubmit has
+        # both batches claimed and the entity double-counted.
         execute(
             f"ALTER TABLE {CONTROL_TABLE} DELETE "
-            f"WHERE batch_id = '{_sql_str(self.batch_id)}'"
+            f"WHERE batch_id = '{_sql_str(self.batch_id)}' "
+            "SETTINGS mutations_sync = 1"
         )
 
     # ── helpers ──────────────────────────────────────────────────────────
@@ -215,25 +252,30 @@ class TrialBalanceSubmission(Document):
                 f"You do not have access to entity {self.data_area_id}"
             )
 
-    def _check_period_open(self):
-        """Submissions only land in an Open period (Period Status, #92)."""
-        status = frappe.db.get_value(
-            "Period Status",
-            {"fiscal_year": str(self.fiscal_year),
-             "fiscal_period": self.fiscal_period},
-            "status",
+    def _check_no_other_submission(self):
+        """One live submission per entity-period.
+
+        Every claimed batch flows additively into consolidation, so a second
+        submitted TB for the same entity and period would double the numbers —
+        each batch balancing individually, no test firing. A correction is
+        cancel (or amend, which cancels) first, then submit anew.
+        """
+        other = frappe.db.get_value(
+            "Trial Balance Submission",
+            {
+                "data_area_id": self.data_area_id,
+                "fiscal_year": self.fiscal_year,
+                "fiscal_period": self.fiscal_period,
+                "docstatus": 1,
+                "name": ["!=", self.name],
+            },
+            "name",
         )
-        if status is None:
+        if other:
             frappe.throw(
-                f"No Period Status exists for {self.fiscal_year} "
-                f"P{self.fiscal_period} — create it (and open the period) "
-                "before submitting a trial balance"
-            )
-        if status != "Open":
-            frappe.throw(
-                f"Period {self.fiscal_year} P{self.fiscal_period} is "
-                f"{status} — a trial balance can only be submitted into an "
-                "Open period"
+                f"{other} is already submitted for {self.data_area_id} "
+                f"{self.fiscal_year} P{self.fiscal_period}. Cancel or amend it "
+                "first — consolidation would otherwise count both."
             )
 
     def _parse_file(self):
@@ -277,12 +319,16 @@ class TrialBalanceSubmission(Document):
             "submitted_at DateTime"
             ") ENGINE = MergeTree ORDER BY (batch_id, main_account)"
         )
+        # KEEP IN SYNC with clickhouse/init-db.sql in konsolidat (the fresh-
+        # install owner of the same two schemas). ReplacingMergeTree keyed on
+        # batch_id: a duplicated claim collapses instead of fanning out the
+        # bronze join.
         execute(
             f"CREATE TABLE IF NOT EXISTS {CONTROL_TABLE} ("
             "batch_id String, submission_name String, data_area_id String, "
             "fiscal_year UInt16, fiscal_period UInt8, row_count UInt32, "
             "claimed_at DateTime"
-            ") ENGINE = MergeTree ORDER BY batch_id"
+            ") ENGINE = ReplacingMergeTree(claimed_at) ORDER BY batch_id"
         )
 
     def _land_rows(self, rows):

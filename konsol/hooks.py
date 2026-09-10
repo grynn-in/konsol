@@ -111,6 +111,10 @@ _dbt_trigger_doctypes = [
     "Allocation Rule",
     "Allocation Driver",
     "Allocation Run",
+    # F8: a submitted TB must reach gold, and a CANCELLED one must leave it —
+    # without the trigger a cancelled trial balance lingers in consolidated
+    # results until an unrelated doc save rebuilds.
+    "Trial Balance Submission",
 ]
 
 doc_events = {
