@@ -257,7 +257,7 @@ class TrialBalanceSubmission(Document):
         """
         try:
             text = execute(
-                "SELECT DISTINCT account_id FROM epm_silver.silver_main_accounts"
+                "SELECT DISTINCT main_account_id FROM epm_silver.silver_main_accounts"
             )
         except Exception as e:
             frappe.throw(

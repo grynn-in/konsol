@@ -424,8 +424,24 @@ def reconcile_all():
         try:
             cls = get_controller(doctype)
             rows = frappe.db.count(doctype)
-            sync_doctype(doctype, cls.CH_TABLE, cls.CH_FIELD_MAP, force=True)
+            # Some controllers name the flat map CH_LEGACY_FIELD_MAP ("legacy
+            # sync to gold.*"); missing that alias is how three of the ten
+            # write-through doctypes silently escaped reconciliation.
+            field_map = getattr(cls, "CH_FIELD_MAP", None) or cls.CH_LEGACY_FIELD_MAP
+            sync_doctype(doctype, cls.CH_TABLE, field_map, force=True)
             synced[cls.CH_TABLE] = rows
+
+            # The second table. Three controllers use the generic map pattern;
+            # Consolidation Group computes its rows (tree walk) and exposes
+            # resync_staging() for exactly this call. A doctype at 0 records
+            # still syncs — TRUNCATE+INSERT of nothing empties the table,
+            # which is the point.
+            if getattr(cls, "resync_staging", None):
+                cls.resync_staging(force=True)
+                synced[cls.CH_STAGING_TABLE] = rows
+            elif getattr(cls, "CH_STAGING_TABLE", None) and getattr(cls, "CH_STAGING_FIELD_MAP", None):
+                sync_doctype(doctype, cls.CH_STAGING_TABLE, cls.CH_STAGING_FIELD_MAP, force=True)
+                synced[cls.CH_STAGING_TABLE] = rows
         except Exception:
             frappe.logger().warning(
                 f"reconcile: {doctype} skipped", exc_info=True
@@ -455,7 +471,10 @@ def _write_through_doctypes():
         except Exception:
             # A doctype without an importable controller simply has no CH target.
             continue
-        if getattr(cls, "CH_TABLE", None) and getattr(cls, "CH_FIELD_MAP", None):
+        if getattr(cls, "CH_TABLE", None) and (
+            getattr(cls, "CH_FIELD_MAP", None)
+            or getattr(cls, "CH_LEGACY_FIELD_MAP", None)
+        ):
             found.append(doctype)
     if not found:
         frappe.logger().warning(
