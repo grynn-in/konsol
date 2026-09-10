@@ -39,33 +39,32 @@ class ConsolidationGroup(NestedSet):
         sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         self._sync_hierarchy()
 
-    def _sync_hierarchy(self):
-        """PRD-8: Build flattened hierarchy from Frappe tree and sync to epm_staging."""
+    @classmethod
+    def resync_staging(cls, force=False):
+        """Rebuild epm_staging.consolidation_hierarchy from every group doc.
+
+        The hierarchy rows are COMPUTED (tree walk), not field-mapped, so the
+        generic reconcile cannot produce them; this is the hook it calls. The
+        instance method below now delegates here — the sync always operated on
+        all documents regardless of which one triggered it.
+        """
         docs = frappe.get_all(
-            self.doctype,
+            cls.CH_STAGING_DOCTYPE if hasattr(cls, "CH_STAGING_DOCTYPE") else "Consolidation Group",
             fields=[
                 "name", "consolidation_group", "data_area_id",
                 "parent_consolidation_group", "lft", "rgt", "ownership_pct",
             ],
             limit_page_length=0,
         )
-
-        # Index by name for ancestor lookups
         by_name = {d.name: d for d in docs}
-
         rows = []
         for d in docs:
-            # Compute hierarchy level from ancestors
-            ancestors = self._get_ancestors(d, by_name)
+            ancestors = cls._get_ancestors(d, by_name)
             level = len(ancestors) + 1
-
-            # Build path from root to this node
             path_parts = [by_name[a].consolidation_group for a in reversed(ancestors)]
             path_parts.append(d.consolidation_group)
             if d.data_area_id:
                 path_parts.append(d.data_area_id)
-            path = "/".join(path_parts)
-
             rows.append([
                 d.consolidation_group,
                 d.data_area_id or "",
@@ -74,10 +73,14 @@ class ConsolidationGroup(NestedSet):
                 else "",
                 level,
                 d.ownership_pct or 100,
-                path,
+                "/".join(path_parts),
             ])
+        sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, rows, force=force)
 
-        sync_table(self.CH_STAGING_TABLE, self.CH_STAGING_COLUMNS, rows)
+    def _sync_hierarchy(self):
+        """PRD-8: kept as the hook on_update/on_trash call; the work moved to
+        resync_staging() so the reconcile can run it without an instance."""
+        type(self).resync_staging()
 
     @staticmethod
     def _get_ancestors(doc, by_name):

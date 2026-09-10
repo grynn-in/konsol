@@ -63,6 +63,12 @@ website_route_rules = [
 # ---------------
 
 scheduler_events = {
+    "daily": [
+        # F8: rows landed by a submission that crashed before claiming its
+        # batch are invisible to bronze forever; age them out.
+        "konsol.consolidation.doctype.trial_balance_submission"
+        ".trial_balance_submission.reap_unclaimed_submissions",
+    ],
     "cron": {
         # Refresh per-connector sync health (status / lag / entities loaded) and
         # alert operators on the transition into Failed/Stale.
@@ -105,6 +111,10 @@ _dbt_trigger_doctypes = [
     "Allocation Rule",
     "Allocation Driver",
     "Allocation Run",
+    # F8: a submitted TB must reach gold, and a CANCELLED one must leave it —
+    # without the trigger a cancelled trial balance lingers in consolidated
+    # results until an unrelated doc save rebuilds.
+    "Trial Balance Submission",
 ]
 
 doc_events = {

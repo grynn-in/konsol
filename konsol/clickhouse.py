@@ -143,6 +143,7 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
         # Clear any previous failure for this table
         _sync_failures.pop(table, None)
         _stamp_watermark(table, len(rows), source_max_modified)
+        return len(rows)
     except requests.exceptions.ConnectionError as e:
         _record_sync_failure(table, "connection_refused", str(e))
         frappe.logger().error(
@@ -294,7 +295,7 @@ def sync_doctype(doctype, table, field_map, force=False):
             e.g. {'allocation_rule_id': 'allocation_rule_id', 'rule_name': 'rule_name'}
     """
     filters = {"docstatus": 1} if frappe.get_meta(doctype).is_submittable else None
-    sync_doctype_filtered(doctype, table, field_map, filters=filters, force=force)
+    return sync_doctype_filtered(doctype, table, field_map, filters=filters, force=force)
 
 
 def _record_sync_failure(table, error_type, message):
@@ -387,7 +388,7 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
         max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None
     )
 
-    sync_table(
+    return sync_table(
         table,
         ch_columns,
         rows,
@@ -424,8 +425,25 @@ def reconcile_all():
         try:
             cls = get_controller(doctype)
             rows = frappe.db.count(doctype)
-            sync_doctype(doctype, cls.CH_TABLE, cls.CH_FIELD_MAP, force=True)
-            synced[cls.CH_TABLE] = rows
+            # Some controllers name the flat map CH_LEGACY_FIELD_MAP ("legacy
+            # sync to gold.*"); missing that alias is how three of the ten
+            # write-through doctypes silently escaped reconciliation.
+            field_map = getattr(cls, "CH_FIELD_MAP", None) or cls.CH_LEGACY_FIELD_MAP
+            written = sync_doctype(doctype, cls.CH_TABLE, field_map, force=True)
+            # the count actually written, not frappe.db.count: submittable
+            # doctypes sync docstatus=1 rows only, so the doc count over-reports
+            synced[cls.CH_TABLE] = written if written is not None else rows
+
+            # The second table. Three controllers use the generic map pattern;
+            # Consolidation Group computes its rows (tree walk) and exposes
+            # resync_staging() for exactly this call. A doctype at 0 records
+            # still syncs — TRUNCATE+INSERT of nothing empties the table,
+            # which is the point.
+            if getattr(cls, "resync_staging", None):
+                synced[cls.CH_STAGING_TABLE] = cls.resync_staging(force=True)
+            elif getattr(cls, "CH_STAGING_TABLE", None) and getattr(cls, "CH_STAGING_FIELD_MAP", None):
+                written = sync_doctype(doctype, cls.CH_STAGING_TABLE, cls.CH_STAGING_FIELD_MAP, force=True)
+                synced[cls.CH_STAGING_TABLE] = written if written is not None else rows
         except Exception:
             frappe.logger().warning(
                 f"reconcile: {doctype} skipped", exc_info=True
@@ -455,7 +473,10 @@ def _write_through_doctypes():
         except Exception:
             # A doctype without an importable controller simply has no CH target.
             continue
-        if getattr(cls, "CH_TABLE", None) and getattr(cls, "CH_FIELD_MAP", None):
+        if getattr(cls, "CH_TABLE", None) and (
+            getattr(cls, "CH_FIELD_MAP", None)
+            or getattr(cls, "CH_LEGACY_FIELD_MAP", None)
+        ):
             found.append(doctype)
     if not found:
         frappe.logger().warning(
