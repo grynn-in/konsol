@@ -1,0 +1,48 @@
+# konsol's first CI. Context: three host tests sat red for months unnoticed
+# (#89), and the compilation error that stopped the whole dbt build reporting
+# anything was found by hand — this repo had no .github at all. Both suites
+# below run in seconds on a laptop; there was never a reason they should not
+# run on every push.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Python host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # The runner itself is stdlib-only by design (the bench virtualenv has no
+      # pytest). requests + pyyaml unlock the handful of tests that need them
+      # (696 -> 704 at time of writing).
+      - run: pip install requests pyyaml
+      - name: Run host tests
+        run: python3 scripts/run-host-tests.py
+
+  js-tests:
+    name: konsol-exec JS tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: konsol-exec
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: yarn
+          cache-dependency-path: konsol-exec/yarn.lock
+      - run: yarn install --frozen-lockfile
+      - name: Run node --test
+        run: node --test src/*.test.mjs src/orchestrator/*.test.mjs
