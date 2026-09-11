@@ -6,7 +6,7 @@ and epm_staging.* tables (PRD-8+ consolidation/allocation features).
 
 Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import frappe
 import requests
@@ -176,6 +176,31 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
         )
 
 
+def _sql_value(v):
+    """Render one Python value as a ClickHouse VALUES literal.
+
+    Datetimes are truncated to whole seconds: ClickHouse's DateTime has
+    one-second resolution and rejects a microsecond timestamp outright with a
+    400. That is how epm_staging.allocation_runs silently never reconciled —
+    every run carries a ``run_at`` straight from Frappe's now_datetime(), and
+    the failure was invisible because reconcile_all reported frappe.db.count()
+    whenever a sync returned nothing. With that fixed the table announced
+    itself on the running stack. (allocation_run._format_run_cell already
+    truncated by hand for its own direct-sync path, which is why *that* path
+    worked and only the reconcile was broken.)
+    """
+    if v is None:
+        return "NULL"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, datetime):
+        return "'" + v.strftime("%Y-%m-%d %H:%M:%S") + "'"
+    if isinstance(v, date):
+        return "'" + v.strftime("%Y-%m-%d") + "'"
+    escaped = str(v).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
 def _sync_table_inner(table, columns, rows):
     """Internal: TRUNCATE and INSERT. Raises on failure."""
     execute(f"TRUNCATE TABLE IF EXISTS {table}")
@@ -184,19 +209,7 @@ def _sync_table_inner(table, columns, rows):
         return
 
     col_list = ", ".join(columns)
-    # Build VALUES block — quote strings, pass numbers raw
-    value_rows = []
-    for row in rows:
-        vals = []
-        for v in row:
-            if v is None:
-                vals.append("NULL")
-            elif isinstance(v, (int, float)):
-                vals.append(str(v))
-            else:
-                escaped = str(v).replace("\\", "\\\\").replace("'", "\\'")
-                vals.append(f"'{escaped}'")
-        value_rows.append(f"({', '.join(vals)})")
+    value_rows = [f"({', '.join(_sql_value(v) for v in row)})" for row in rows]
 
     batch_size = 1000
     for i in range(0, len(value_rows), batch_size):
@@ -255,18 +268,7 @@ def _sync_rows_inner(table, columns, rows, key_columns, key_values):
         return
 
     col_list = ", ".join(columns)
-    value_rows = []
-    for row in rows:
-        vals = []
-        for v in row:
-            if v is None:
-                vals.append("NULL")
-            elif isinstance(v, (int, float)):
-                vals.append(str(v))
-            else:
-                escaped = str(v).replace("\\", "\\\\").replace("'", "\\'")
-                vals.append(f"'{escaped}'")
-        value_rows.append(f"({', '.join(vals)})")
+    value_rows = [f"({', '.join(_sql_value(v) for v in row)})" for row in rows]
 
     batch_size = 1000
     for i in range(0, len(value_rows), batch_size):

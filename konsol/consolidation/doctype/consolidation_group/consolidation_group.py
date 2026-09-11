@@ -75,7 +75,12 @@ class ConsolidationGroup(NestedSet):
                 d.ownership_pct or 100,
                 "/".join(path_parts),
             ])
-        sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, rows, force=force)
+        # Return what sync_table wrote — None when it failed or was skipped.
+        # Returning nothing made reconcile_all record None for a *successful*
+        # sync, which now reads as a failure; the same omission in
+        # ReportingHierarchy.resync_staging hid real failures the other way.
+        return sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, rows,
+                          force=force)
 
     def _sync_hierarchy(self):
         """PRD-8: kept as the hook on_update/on_trash call; the work moved to

@@ -241,3 +241,34 @@ def test_scripted_insert_of_a_published_row_syncs():
     assert "self.status == _PUBLISHED" in body
     assert "before.status == _PUBLISHED" in body
     assert "self._resync()" in body
+
+
+# --- what a value looks like in the INSERT ----------------------------------
+
+def test_datetimes_render_at_one_second_precision():
+    """ClickHouse DateTime has one-second resolution and rejects a microsecond
+    timestamp with a 400. Frappe's now_datetime() carries microseconds, so
+    epm_staging.allocation_runs never reconciled — invisibly, because
+    reconcile_all reported frappe.db.count() when a sync returned nothing.
+    Reproduced on the running stack: the same row inserts once truncated."""
+    m, _ = _load_clickhouse()
+    assert m._sql_value(datetime.datetime(2026, 6, 21, 16, 23, 8, 118700)) == \
+        "'2026-06-21 16:23:08'"
+    assert m._sql_value(datetime.date(2026, 6, 21)) == "'2026-06-21'"
+
+
+def test_sql_value_still_escapes_and_passes_numbers_raw():
+    m, _ = _load_clickhouse()
+    assert m._sql_value(None) == "NULL"
+    assert m._sql_value(12) == "12"
+    assert m._sql_value(1.5) == "1.5"
+    assert m._sql_value("O'Brien") == "'O\\'Brien'"
+    assert m._sql_value("back\\slash") == "'back\\\\slash'"
+
+
+def test_both_insert_paths_share_one_value_formatter():
+    """sync_table and sync_rows had the same eight-line quoting block copied;
+    only one of them can be fixed at a time that way."""
+    src = open(CH_PATH).read()
+    assert src.count("_sql_value(v) for v in row") == 2
+    assert src.count('vals.append("NULL")') == 0

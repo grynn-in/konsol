@@ -97,11 +97,18 @@ def test_controller_publish_syncs_warehouse_and_rebuilds():
 def test_blank_entity_duplicate_guard_matches_null():
     """A blank Link is stored as NULL, not '' — so `{"entity": ""}` matched
     nothing and the uniqueness guard was inert for ERP-wide defaults, the rows
-    that fan the dim_harmonize _dflt join out when duplicated."""
+    that fan the dim_harmonize _dflt join out when duplicated.
+
+    It must be `["is", "not set"]`. `["in", ["", None]]` compiles to
+    `entity IN ('', NULL)`, and SQL never matches NULL through IN — verified on
+    the running site, where it accepted a duplicate ERP-wide default.
+    """
     src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
-    body = src.split("def _validate_unique_key")[1]
-    assert '["in", ["", None]]' in body
-    assert '"entity": self.entity or ""' not in body
+    # code only — the docstring names the wrong spelling as a counter-example
+    code = src.split("def _validate_unique_key")[1].split('"""')[2]
+    assert '["is", "not set"]' in code
+    assert '["in", ["", None]]' not in code
+    assert '"entity": self.entity or ""' not in code
 
 
 # --- seed writer ---

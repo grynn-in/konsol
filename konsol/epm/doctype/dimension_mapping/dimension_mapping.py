@@ -46,7 +46,13 @@ class DimensionMapping(GovernedReferenceDocument):
         nothing. The guard was inert for exactly the rows that matter most, the
         ERP-wide defaults: two of them both synced (both rendered as '' in
         ClickHouse) and the _dflt join in dim_harmonize fanned every fact row
-        out. Match both spellings of "blank".
+        out. Verified on the running site: every fixture mapping stores
+        ``entity`` as NULL.
+
+        ``["is", "not set"]`` — not ``["in", ["", None]]``, which looks right
+        and is not: it compiles to ``entity IN ('', NULL)``, and SQL never
+        matches NULL through IN, so the guard stays just as inert. Frappe
+        renders this operator as ``entity IS NULL OR entity = ''``.
         """
         entity = self.entity or ""
         dupe = frappe.db.exists(
@@ -54,7 +60,7 @@ class DimensionMapping(GovernedReferenceDocument):
             {
                 "dimension": self.dimension,
                 "erp_source": self.erp_source,
-                "entity": entity if entity else ["in", ["", None]],
+                "entity": entity if entity else ["is", "not set"],
                 "source_value": self.source_value,
                 "status": ["!=", "Inactive"],
                 "name": ["!=", self.name],
