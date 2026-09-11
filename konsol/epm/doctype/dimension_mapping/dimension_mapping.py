@@ -1,73 +1,74 @@
 """Dimension Mapping — crosswalk from a raw ERP dimension value to a canonical one.
 
 Saves are pure metadata. Use Publish/Unpublish to (re)generate the
-seeds/dimension_mappings.csv crosswalk consumed by the dbt dim_harmonize()
-macro and request a governed rebuild. Keyed on (dimension, erp_source,
+epm_staging.dimension_mappings crosswalk consumed by the dbt dim_harmonize()
+macro and request a governed rebuild. Keyed on (dimension, erp_source, entity,
 source_value), which must be unique among non-Inactive rows.
 """
 import frappe
-from frappe.model.document import Document
 
-from konsol.dbt_config import regenerate_dimension_mappings_seed
-from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild
+from konsol.governed_reference import GovernedReferenceDocument
 
 
-class DimensionMapping(Document):
+class DimensionMapping(GovernedReferenceDocument):
+    # F3: write-through to the warehouse — the crosswalk USED to be written as
+    # a CSV seed into the dbt repo on every save and migrate. Only Published
+    # rows sync (dbt filtered on status='Published' already); TRUNCATE+INSERT,
+    # reconciled after migrate like every other write-through table. The
+    # publish/unpublish/after_delete sync itself lives in the base class, which
+    # reconcile_all reads through CH_SYNC_FILTERS — the two paths used to
+    # disagree about Draft and Inactive rows.
+    CH_TABLE = "epm_staging.dimension_mappings"
+    CH_SYNC_FILTERS = {"status": "Published"}
+    CH_FIELD_MAP = {
+        "dimension": "dimension",
+        "erp_source": "erp_source",
+        "entity": "entity",
+        "source_value": "source_value",
+        "canonical_value": "canonical_value",
+        "canonical_label": "canonical_label",
+        "status": "status",
+    }
 
     def validate(self):
         self._validate_unique_key()
 
     def _validate_unique_key(self):
-        """(dimension, erp_source, source_value) must map to one canonical value.
+        """(dimension, erp_source, entity, source_value) maps to ONE canonical value.
 
         Enforced against other non-Inactive rows so a source value never has two
-        live crosswalk targets for the same ERP.
+        live crosswalk targets for the same ERP and entity. Blank entity is the
+        ERP-wide default; an entity-specific row may coexist with it and takes
+        precedence in the warehouse (konsol #111).
+
+        ``entity`` is a Link, and a blank Link is stored as NULL, not '' — so
+        matching it with ``self.entity or ""`` compared NULL to '' and found
+        nothing. The guard was inert for exactly the rows that matter most, the
+        ERP-wide defaults: two of them both synced (both rendered as '' in
+        ClickHouse) and the _dflt join in dim_harmonize fanned every fact row
+        out. Verified on the running site: every fixture mapping stores
+        ``entity`` as NULL.
+
+        ``["is", "not set"]`` — not ``["in", ["", None]]``, which looks right
+        and is not: it compiles to ``entity IN ('', NULL)``, and SQL never
+        matches NULL through IN, so the guard stays just as inert. Frappe
+        renders this operator as ``entity IS NULL OR entity = ''``.
         """
+        entity = self.entity or ""
         dupe = frappe.db.exists(
             "Dimension Mapping",
             {
                 "dimension": self.dimension,
                 "erp_source": self.erp_source,
+                "entity": entity if entity else ["is", "not set"],
                 "source_value": self.source_value,
                 "status": ["!=", "Inactive"],
                 "name": ["!=", self.name],
             },
         )
         if dupe:
+            scope = f"entity '{entity}'" if entity else "all entities"
             frappe.throw(
                 f"A mapping for {self.dimension} / {self.erp_source} / "
-                f"'{self.source_value}' already exists ({dupe})."
+                f"'{self.source_value}' ({scope}) already exists ({dupe})."
             )
-
-    @frappe.whitelist()
-    def publish(self):
-        """Publish: regenerate the crosswalk seed + request a governed rebuild."""
-        check_epm_admin()
-        self.status = "Published"
-        self.save()
-        regenerate_dimension_mappings_seed()
-        request_governed_rebuild(self, "Publish")
-
-    @frappe.whitelist()
-    def unpublish(self):
-        """Unpublish (Inactive): regenerate seed + request a governed rebuild."""
-        check_epm_admin()
-        self.status = "Inactive"
-        self.save()
-        regenerate_dimension_mappings_seed()
-        request_governed_rebuild(self, "Unpublish")
-
-    def after_delete(self):
-        """Refresh the crosswalk seed after a *Published* mapping is removed, so
-        the deleted value stops being applied.
-
-        Uses after_delete (not on_trash): on_trash runs *before* the row is
-        removed, so regenerating there would still include the doc being deleted.
-        Skipped during install/migrate/import — the seed is regenerated wholesale
-        by after_migrate then, and no build should be enqueued mid-migrate.
-        """
-        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
-            return
-        if self.status == "Published":
-            regenerate_dimension_mappings_seed()
-            request_governed_rebuild(self, "Delete")

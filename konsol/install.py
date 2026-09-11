@@ -36,9 +36,10 @@ def after_migrate():
     config is synced to ClickHouse, and the Konsolidat desk workspace is present."""
     _restore_asset_manifest()
     _create_roles()
-    _regenerate_dimension_mappings_seed()
-    _regenerate_cash_flow_categories_seed()
-    _regenerate_reporting_hierarchies_seed()
+    # F3: the three seed regenerators are gone — Dimension Mapping, Cash Flow
+    # Category and Reporting Hierarchy write through to epm_staging like every
+    # other governed table, and _reconcile_clickhouse() below re-syncs them
+    # after fixture import (which does not fire on_update).
     _sync_allocation_config_to_clickhouse()
     _reconcile_clickhouse()
     _setup_dashboard()
@@ -182,51 +183,7 @@ def _reconcile_clickhouse():
         frappe.logger().warning("ClickHouse reconcile skipped after migrate", exc_info=True)
 
 
-def _regenerate_dimension_mappings_seed():
-    """Repopulate seeds/dimension_mappings.csv after migrate.
 
-    Fixture import inserts Dimension Mapping docs without running publish(), so
-    the crosswalk seed would otherwise stay empty until a manual publish. This
-    syncs it from the published docs. Best-effort — never fail a migrate over a
-    dbt seed (e.g. dbt on another host / dir absent).
-    """
-    try:
-        from konsol.dbt_config import regenerate_dimension_mappings_seed
-        regenerate_dimension_mappings_seed()
-    except Exception:
-        frappe.logger().warning(
-            "dimension_mappings seed regeneration skipped after migrate",
-            exc_info=True,
-        )
-
-
-def _regenerate_cash_flow_categories_seed():
-    """Repopulate seeds/cash_flow_categories.csv after migrate.
-
-    Fixture import inserts Cash Flow Category docs without running publish(), so
-    the seed would otherwise stay stale until a manual publish. Syncs it from the
-    published docs. Best-effort — never fail a migrate over a dbt seed.
-    """
-    try:
-        from konsol.dbt_config import regenerate_cash_flow_categories_seed
-        regenerate_cash_flow_categories_seed()
-    except Exception:
-        frappe.logger().warning(
-            "cash_flow_categories seed regeneration skipped after migrate",
-            exc_info=True,
-        )
-
-
-def _regenerate_reporting_hierarchies_seed():
-    """Sync reporting_hierarchies.csv after migrate (fixture-loaded hierarchies)."""
-    try:
-        from konsol.dbt_config import regenerate_reporting_hierarchies_seed
-        regenerate_reporting_hierarchies_seed()
-    except Exception:
-        frappe.logger().warning(
-            "reporting_hierarchies seed regeneration skipped after migrate",
-            exc_info=True,
-        )
 
 
 def _create_roles():

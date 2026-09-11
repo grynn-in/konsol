@@ -784,10 +784,27 @@ def upsert_connector(spec):
 
 
 def list_erp_sources():
-    """Return enabled ERP source keys that drive dbt erp_sources."""
-    from konsol.dbt_config import _build_erp_sources_vars
+    """Return the enabled connectors' ERP types — informational only.
 
-    return {"erp_sources": _build_erp_sources_vars()}
+    F3: this list no longer DRIVES dbt's erp_sources. A connector being
+    enabled says nothing about its raw data having ever landed, and wiring
+    registry state into which models the build trusts is what broke the whole
+    dbt build (#139). Which ERPs the build unions is a deliberate, committed
+    engineering decision in dbt_project.yml; this endpoint just reports what
+    the registry would suggest.
+    """
+    if not frappe.db.table_exists("Connector"):
+        return {"erp_sources": []}
+    docs = frappe.get_all(
+        "Connector", filters={"enabled": 1}, fields=["erp_type"],
+        order_by="erp_type asc", limit_page_length=0,
+    )
+    seen, out = set(), []
+    for d in docs:
+        if d.erp_type and d.erp_type not in seen:
+            seen.add(d.erp_type)
+            out.append(d.erp_type)
+    return {"erp_sources": out}
 
 
 def _config_entity_key(doctype, row):

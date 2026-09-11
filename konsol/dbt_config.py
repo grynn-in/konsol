@@ -4,23 +4,11 @@ Reads Dimension, Measure, and Fiscal Period docs from Frappe and
 regenerates the vars section of dbt_project.yml, preserving all
 non-vars sections (models, seeds, paths, etc.).
 """
+import re
+
 import frappe
 import yaml
 
-
-def _merge_vars_into_yaml(original, new_vars):
-    """Merge new vars into original YAML dict, preserving non-vars keys.
-
-    Args:
-        original: Full parsed dbt_project.yml dict.
-        new_vars: Dict of vars to set.
-
-    Returns:
-        Updated dict with vars replaced but everything else preserved.
-    """
-    result = dict(original)
-    result["vars"] = new_vars
-    return result
 
 
 def _get_dbt_project_base():
@@ -34,146 +22,129 @@ def _get_dbt_project_path():
     return f"{_get_dbt_project_base()}/dbt_project.yml"
 
 
-# Header for the dimension_mappings crosswalk seed (must match the columns the
-# dbt dim_harmonize() macro + dimension_mappings.csv expect — see konsolidat).
-_DIM_MAPPING_COLUMNS = [
-    "dimension", "erp_source", "source_value", "canonical_value",
-    "canonical_label", "status",
-]
+# ---------------------------------------------------------------------------
+# Surgical vars ownership (F3)
+# ---------------------------------------------------------------------------
+# konsol owns EXACTLY these vars keys, and writes them ONLY between the marker
+# comments below. Everything outside the markers — comments, formatting,
+# erp_sources, cluster_enabled, every hand-written line — is preserved byte
+# for byte.
+#
+# The previous implementation round-tripped the whole file through
+# yaml.safe_load/yaml.dump: every comment stripped (28 -> 0, three times in
+# one day via bench migrate), keys it never owned deleted (cluster_enabled)
+# or overwritten (erp_sources, from connector state — which enabled models
+# whose raw data had never landed and broke the entire build, #139).
+#
+# erp_sources is deliberately NOT managed: a connector being enabled says
+# nothing about its data having ever landed, so which ERPs the build trusts
+# stays a deliberate, committed engineering decision.
 
-# Header for the cash_flow_categories seed (must match seeds/cash_flow_categories.csv
-# + gold_cash_flow_indirect / gold_consolidated_cash_flow — see konsolidat#63).
-_CASH_FLOW_CATEGORY_COLUMNS = [
-    "main_account", "cf_category", "cf_line_item", "is_cash", "sign",
-]
+MANAGED_KEYS = ("dimensions", "base_measures", "fiscal_extra_periods",
+                "fiscal_quarter_mapping", "fiscal_half_mapping")
+MANAGED_BEGIN = "  # --- BEGIN konsol-managed vars (regenerated; do not edit by hand) ---"
+MANAGED_END = "  # --- END konsol-managed vars ---"
 
 
-def regenerate_dimension_mappings_seed():
-    """Regenerate seeds/dimension_mappings.csv from published Dimension Mapping docs.
+def render_managed_vars(managed):
+    """Render the managed keys as a vars-indented YAML block. Pure.
 
-    Frappe is the source of truth for the crosswalk (mirrors how regenerate_vars
-    owns dbt_project.yml vars). Only Published rows are written; the dbt side
-    already filters on status='Published', and an empty file (header only) is
-    valid — it just means "no mappings, everything passes through".
+    An empty mapping renders as markers and nothing else. yaml.dump({}) is the
+    flow scalar "{}", which indented under ``vars:`` produces
 
-    Returns the seed path written, or None if the dbt project dir is absent
-    (e.g. dbt on another host) — caller treats that as a skip.
+        vars:
+          erp_sources: [d365_fo]
+          {}
+
+    — a mapping value where a key is expected, so the whole dbt_project.yml
+    stops parsing (yaml.scanner.ScannerError). A site with no Published
+    Dimension, Measure or Fiscal Period hits that on its first regenerate, and
+    nothing downstream can read the file again until a human edits it.
     """
-    import csv
-    import os
-
-    base = _get_dbt_project_base()
-    seeds_dir = os.path.join(base, "seeds")
-    if not os.path.isdir(seeds_dir):
-        frappe.logger().warning(
-            f"dbt seeds dir not found at {seeds_dir} — skipping dimension_mappings "
-            f"regeneration. Set dbt_project_path in EPM Settings if dbt is remote."
-        )
-        return None
-
-    rows = frappe.get_all(
-        "Dimension Mapping",
-        filters={"status": "Published"},
-        fields=["dimension", "erp_source", "source_value", "canonical_value",
-                "canonical_label"],
-        order_by="dimension asc, erp_source asc, source_value asc",
-        limit_page_length=0,
+    if not managed:
+        return MANAGED_BEGIN + "\n" + MANAGED_END
+    text = yaml.dump(managed, default_flow_style=False, sort_keys=False,
+                     allow_unicode=True)
+    indented = "".join(
+        ("  " + line if line.strip() else line) + "\n"
+        for line in text.rstrip("\n").split("\n")
     )
-
-    path = os.path.join(seeds_dir, "dimension_mappings.csv")
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_DIM_MAPPING_COLUMNS)
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({
-                "dimension": r.dimension or "",
-                "erp_source": r.erp_source or "",
-                "source_value": r.source_value or "",
-                "canonical_value": r.canonical_value or "",
-                "canonical_label": r.canonical_label or "",
-                "status": "Published",
-            })
-    return path
+    return MANAGED_BEGIN + "\n" + indented + MANAGED_END
 
 
-def regenerate_cash_flow_categories_seed():
-    """Regenerate seeds/cash_flow_categories.csv from Published Cash Flow Category docs.
+MANAGED_DOMAINS_BEGIN = "      # --- BEGIN konsol-managed model domains (regenerated; do not edit by hand) ---"
+MANAGED_DOMAINS_END = "      # --- END konsol-managed model domains ---"
 
-    Frappe is the source of truth for the BS-account → cash-flow-line crosswalk
-    (mirrors regenerate_dimension_mappings_seed). Only Published rows are written;
-    a header-only file is valid (no mappings). Returns the seed path, or None if
-    the dbt project dir is absent (dbt on another host) — caller treats as skip.
+
+def splice_managed_block(text, rendered_block, begin=MANAGED_BEGIN, end=MANAGED_END):
+    """Replace the marker-delimited region with rendered_block. Pure.
+
+    Returns the new text, or None when the markers are absent — the caller
+    must then refuse to write. Never fabricates a region: a file without
+    markers is a file konsol does not own any part of.
     """
-    import csv
-    import os
-
-    base = _get_dbt_project_base()
-    seeds_dir = os.path.join(base, "seeds")
-    if not os.path.isdir(seeds_dir):
-        frappe.logger().warning(
-            f"dbt seeds dir not found at {seeds_dir} — skipping cash_flow_categories "
-            f"regeneration. Set dbt_project_path in EPM Settings if dbt is remote."
-        )
+    b = text.find(begin)
+    e = text.find(end)
+    if b == -1 or e == -1 or e < b:
         return None
-
-    rows = frappe.get_all(
-        "Cash Flow Category",
-        filters={"status": "Published"},
-        fields=["main_account", "cf_category", "cf_line_item", "is_cash", "sign"],
-        order_by="main_account asc",
-        limit_page_length=0,
-    )
-
-    path = os.path.join(seeds_dir, "cash_flow_categories.csv")
-    with open(path, "w", newline="") as f:
-        # LF line terminator (csv default is CRLF) so a regenerate stays
-        # byte-identical to the committed LF seed — avoids spurious diffs.
-        writer = csv.DictWriter(
-            f, fieldnames=_CASH_FLOW_CATEGORY_COLUMNS, lineterminator="\n")
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({
-                "main_account": r.main_account or "",
-                "cf_category": r.cf_category or "",
-                "cf_line_item": r.cf_line_item or "",
-                "is_cash": int(r.is_cash or 0),
-                "sign": int(r.sign or 1),
-            })
-    return path
+    e += len(end)
+    return text[:b] + rendered_block + text[e:]
 
 
-# Must match reporting_hierarchies.csv / gold_reporting_hierarchy (konsolidat).
-_REPORTING_HIERARCHY_COLUMNS = [
-    "hierarchy_name", "dimension", "member_code", "member_label",
-    "parent_member_code", "is_group", "hierarchy_level", "path",
-    "effective_from", "effective_to", "is_default", "status",
-]
+# A dbt model name is a file stem and a build_domain is a tag fragment; both are
+# interpolated straight into YAML here, so both are restricted to characters
+# that cannot end a scalar, open a comment or start a new key. Without this a
+# Build Model named `x: y` or `x #c` — an ordinary Frappe Data field, editable
+# by anyone who can edit Build Model — rewrites dbt_project.yml into something
+# that either fails to parse or silently re-tags other models on the next save.
+_SAFE_MODEL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_DOMAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
-def regenerate_reporting_hierarchies_seed():
-    """Regenerate seeds/reporting_hierarchies.csv from Published hierarchies."""
-    import csv
-    import os
+class UnsafeDomainMapping(ValueError):
+    """A Build Model row cannot be rendered into YAML safely."""
 
-    from konsol.reporting_hierarchy_seed import flatten_reporting_hierarchies
 
-    base = _get_dbt_project_base()
-    seeds_dir = os.path.join(base, "seeds")
-    if not os.path.isdir(seeds_dir):
-        frappe.logger().warning(
-            f"dbt seeds dir not found at {seeds_dir} — skipping "
-            f"reporting_hierarchies regeneration."
-        )
-        return None
+def render_model_domains(mapping):
+    """Render the gold per-model domain entries, grouped by domain. Pure.
 
-    rows = flatten_reporting_hierarchies(frappe)
-    path = os.path.join(seeds_dir, "reporting_hierarchies.csv")
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_REPORTING_HIERARCHY_COLUMNS)
-        writer.writeheader()
-        for r in rows:
-            writer.writerow(r)
-    return path
+    mapping is {model_name: domain}; each entry becomes
+        <model>:\n  +tags: ['gold', 'domain:<domain>']
+    at the gold subtree's 6-space indent, with a generated header per domain
+    group. The whole region is machine-owned.
+
+    Raises UnsafeDomainMapping when a name would not survive interpolation —
+    the caller refuses to write the file rather than corrupting it.
+    """
+    for model, domain in mapping.items():
+        if not _SAFE_MODEL_NAME.match(str(model)):
+            raise UnsafeDomainMapping(
+                f"Build Model name {model!r} is not a valid dbt model name "
+                f"(letters, digits and underscore only) — dbt_project.yml NOT written."
+            )
+        if not _SAFE_DOMAIN.match(str(domain)):
+            raise UnsafeDomainMapping(
+                f"build_domain {domain!r} on model {model!r} is not a valid tag "
+                f"(letters, digits, '_', '-', '.') — dbt_project.yml NOT written."
+            )
+
+    lines = [MANAGED_DOMAINS_BEGIN]
+    by_domain = {}
+    for model, domain in mapping.items():
+        by_domain.setdefault(domain, []).append(model)
+    for domain in sorted(by_domain):
+        lines.append(f"      # --- Domain: {domain} ---")
+        for model in sorted(by_domain[domain]):
+            lines.append(f"      {model}:")
+            lines.append(f"        +tags: ['gold', 'domain:{domain}']")
+    lines.append(MANAGED_DOMAINS_END)
+    return "\n".join(lines)
+
+
+
+
+
+
 
 
 def _build_dimensions_vars():
@@ -328,42 +299,20 @@ def _build_fiscal_vars():
     return result
 
 
-def _build_erp_sources_vars():
-    """Build erp_sources list from enabled Connector docs.
-
-    Returns the distinct erp_type values of enabled connectors, stable-ordered.
-    Two connectors of the same erp_type (e.g. two SAP tenants) collapse to one
-    erp_source — erp_source is per-ERP-product, not per-tenant. Returns [] when
-    there are no enabled connectors (caller preserves the existing value).
-    """
-    if not frappe.db.table_exists("Connector"):
-        return []
-    docs = frappe.get_all(
-        "Connector",
-        filters={"enabled": 1},
-        fields=["erp_type"],
-        order_by="erp_type asc",
-        limit_page_length=0,
-    )
-    seen = []
-    for d in docs:
-        if d.erp_type and d.erp_type not in seen:
-            seen.append(d.erp_type)
-    return seen
-
 
 def regenerate_vars():
-    """Regenerate the vars section of dbt_project.yml from Frappe doctypes.
+    """Write the konsol-managed vars into dbt_project.yml, surgically.
 
-    Reads Dimension, Measure, and Fiscal Period docs, builds the vars
-    dict, and writes it back to dbt_project.yml while preserving all
-    other sections.
+    Only the marker-delimited region changes; the file is otherwise preserved
+    byte for byte. Missing markers mean this konsolidat checkout predates the
+    managed region (or someone removed it) — log and do nothing, never
+    rewrite: silently reformatting an engineering config file is how three
+    migrates in one day destroyed its documentation.
     """
     path = _get_dbt_project_path()
-
     try:
         with open(path) as f:
-            original = yaml.safe_load(f)
+            text = f.read()
     except FileNotFoundError:
         frappe.logger().warning(
             f"dbt_project.yml not found at {path} — skipping vars regeneration. "
@@ -371,59 +320,31 @@ def regenerate_vars():
         )
         return
 
-    # Start with existing vars to preserve any manual entries
-    new_vars = {}
-
-    # Build from doctypes
+    managed = {}
     dimensions = _build_dimensions_vars()
     if dimensions:
-        new_vars["dimensions"] = dimensions
-
+        managed["dimensions"] = dimensions
     measures = _build_measures_vars()
     if measures:
-        new_vars["base_measures"] = measures
+        managed["base_measures"] = measures
+    managed.update(_build_fiscal_vars())
 
-    fiscal = _build_fiscal_vars()
-    new_vars.update(fiscal)
-
-    # erp_sources = the enabled connectors' types, else the d365_fo default.
-    # NOT the existing file value: re-reading it would make deleting the last
-    # connector a no-op (its erp_type would persist from the stale file), so the
-    # registry could never be fully drained. The registry is authoritative; with
-    # no enabled connectors we fall back to the seeded default, not the old file.
-    erp_sources = _build_erp_sources_vars() or ["d365_fo"]
-    new_vars["erp_sources"] = erp_sources
-
-    # Merge and write
-    updated = _merge_vars_into_yaml(original, new_vars)
-
-    with open(path, "w") as f:
-        yaml.dump(updated, f, default_flow_style=False, sort_keys=False,
-                  allow_unicode=True)
+    updated = splice_managed_block(text, render_managed_vars(managed))
+    if updated is None:
+        frappe.logger().warning(
+            "dbt_project.yml has no konsol-managed markers — vars NOT written. "
+            "Add the BEGIN/END konsol-managed comments around the "
+            "dimensions/base_measures/fiscal vars to opt in."
+        )
+        return
+    if updated != text:
+        with open(path, "w") as f:
+            f.write(updated)
 
 
 # ---------------------------------------------------------------------------
 # Gold model -> Build Governance domain tags
 # ---------------------------------------------------------------------------
-
-def _apply_model_domains(project, mapping):
-    """Set each gold model's domain tag from mapping {model_name: domain}.
-
-    Pure (no Frappe): mutates and returns the parsed dbt_project.yml dict.
-    Rewrites only `models.open_epm.gold.<model>.+tags` to
-    ['gold', 'domain:<domain>']; the gold layer's own config (+schema,
-    +materialized, +tags) and any models not in the mapping are left untouched.
-    """
-    gold = (((project or {}).get("models") or {}).get("open_epm") or {}).get("gold")
-    if not isinstance(gold, dict):
-        return project
-    for model_name, domain in mapping.items():
-        cfg = gold.get(model_name)
-        if not isinstance(cfg, dict):
-            cfg = {}
-        cfg["+tags"] = ["gold", f"domain:{domain}"]
-        gold[model_name] = cfg
-    return project
 
 
 def _build_model_domain_mapping():
@@ -438,17 +359,18 @@ def _build_model_domain_mapping():
 
 
 def regenerate_model_domains():
-    """Write the gold models' domain tags into dbt_project.yml from Build Model docs.
+    """Write the gold models' domain tags into dbt_project.yml, surgically.
 
-    Frappe is the source of truth for the model -> domain assignment that drives
-    Build Governance scope selection. When no Build Model docs exist the YAML is
-    left untouched (nothing to manage yet).
+    Frappe (Build Model) is the source of truth for model -> domain, but only
+    the marker-delimited domains region changes — the previous implementation
+    yaml.dump'd the ENTIRE file, and deleting orphaned Build Model docs during
+    a bench migrate fired on_trash and reformatted dbt_project.yml wholesale.
+    Missing markers -> log and refuse, same contract as regenerate_vars().
     """
     path = _get_dbt_project_path()
-
     try:
         with open(path) as f:
-            project = yaml.safe_load(f)
+            text = f.read()
     except FileNotFoundError:
         frappe.logger().warning(
             f"dbt_project.yml not found at {path} — skipping model-domain "
@@ -461,8 +383,25 @@ def regenerate_model_domains():
     if not mapping:
         return
 
-    project = _apply_model_domains(project, mapping)
+    try:
+        rendered = render_model_domains(mapping)
+    except UnsafeDomainMapping as e:
+        # Refuse the whole write rather than tag some models and not others —
+        # same contract as a missing marker region.
+        frappe.logger().warning(f"model domains NOT written: {e}")
+        return
 
-    with open(path, "w") as f:
-        yaml.dump(project, f, default_flow_style=False, sort_keys=False,
-                  allow_unicode=True)
+    updated = splice_managed_block(
+        text, rendered,
+        begin=MANAGED_DOMAINS_BEGIN, end=MANAGED_DOMAINS_END,
+    )
+    if updated is None:
+        frappe.logger().warning(
+            "dbt_project.yml has no konsol-managed model-domain markers — "
+            "domains NOT written. Add the BEGIN/END markers around the gold "
+            "per-model entries to opt in."
+        )
+        return
+    if updated != text:
+        with open(path, "w") as f:
+            f.write(updated)

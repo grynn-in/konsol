@@ -10,7 +10,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ERP_TYPES = ["d365_fo", "d365_bc", "sap_s4", "sap_ecc", "sap_b1", "erpnext"]
 # Must match the dbt seed columns (dimension_mappings.csv / dim_harmonize macro).
-SEED_COLUMNS = ["dimension", "erp_source", "source_value", "canonical_value",
+SEED_COLUMNS = ["dimension", "erp_source", "entity", "source_value", "canonical_value",
                 "canonical_label", "status"]
 
 
@@ -75,27 +75,49 @@ def test_permission_matrix():
 
 # --- controller wiring ---
 
-def test_controller_publish_regenerates_seed_and_rebuilds():
+def test_controller_publish_syncs_warehouse_and_rebuilds():
+    """F3: publish writes through to epm_staging (Published rows only); the CSV
+    seed writer is gone. The lifecycle itself lives in the shared base class —
+    six hand-copied sync calls across two controllers is what let publish() and
+    reconcile_all() disagree about Draft rows."""
     src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
-    assert "from konsol.dbt_config import regenerate_dimension_mappings_seed" in src
-    assert "from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild" in src
-    assert "def publish" in src and "def unpublish" in src
-    assert "regenerate_dimension_mappings_seed()" in src
-    assert "request_governed_rebuild(" in src
+    assert "from konsol.governed_reference import GovernedReferenceDocument" in src
+    assert "class DimensionMapping(GovernedReferenceDocument)" in src
+    assert 'CH_TABLE = "epm_staging.dimension_mappings"' in src
+    assert 'CH_SYNC_FILTERS = {"status": "Published"}' in src
+    assert "regenerate_dimension_mappings_seed" not in src
     # Uniqueness guard on the crosswalk key.
     assert "_validate_unique_key" in src
+    # The controller must NOT carry its own copy of the sync/lifecycle.
+    for copied in ("sync_doctype_filtered(", "def publish(", "def unpublish(",
+                   "request_governed_rebuild("):
+        assert copied not in src, f"{copied} should come from the base class"
+
+
+def test_blank_entity_duplicate_guard_matches_null():
+    """A blank Link is stored as NULL, not '' — so `{"entity": ""}` matched
+    nothing and the uniqueness guard was inert for ERP-wide defaults, the rows
+    that fan the dim_harmonize _dflt join out when duplicated.
+
+    It must be `["is", "not set"]`. `["in", ["", None]]` compiles to
+    `entity IN ('', NULL)`, and SQL never matches NULL through IN — verified on
+    the running site, where it accepted a duplicate ERP-wide default.
+    """
+    src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+    # code only — the docstring names the wrong spelling as a counter-example
+    code = src.split("def _validate_unique_key")[1].split('"""')[2]
+    assert '["is", "not set"]' in code
+    assert '["in", ["", None]]' not in code
+    assert '"entity": self.entity or ""' not in code
 
 
 # --- seed writer ---
 
-def test_dbt_config_writes_seed_with_correct_columns():
-    src = _read("dbt_config.py")
-    assert "def regenerate_dimension_mappings_seed" in src
-    assert "dimension_mappings.csv" in src
+def test_field_map_carries_the_crosswalk_columns():
+    """F3: the columns the dbt side reads now travel via the CH_FIELD_MAP."""
+    src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
     for col in SEED_COLUMNS:
-        assert f'"{col}"' in src, f"seed column {col} missing from writer"
-    # Only Published rows are written.
-    assert 'filters={"status": "Published"}' in src
+        assert f'"{col}"' in src, f"crosswalk column {col} missing from field map"
 
 
 def test_request_governed_rebuild_skips_apply_schema():
@@ -110,26 +132,28 @@ def test_dimension_mapping_is_a_fixture():
     assert '"Dimension Mapping"' in _read("hooks.py")
 
 
-def test_after_delete_refreshes_seed_not_on_trash():
-    """Deleting a Published mapping must refresh the seed — via after_delete, NOT
-    on_trash (on_trash runs before the row is removed, so it would still include
-    the deleted doc)."""
-    src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+def test_after_delete_resyncs_not_on_trash():
+    """Deleting a Published mapping must re-sync the warehouse — via
+    after_delete, NOT on_trash (on_trash runs before the row is removed, so the
+    TRUNCATE+INSERT would still include the deleted doc). Now inherited, so the
+    contract is asserted where it lives."""
+    src = _read("governed_reference.py")
     assert "def after_delete" in src
-    # after_delete body regenerates the seed and requests a rebuild.
     body = src.split("def after_delete")[1]
-    assert "regenerate_dimension_mappings_seed()" in body
-    assert "request_governed_rebuild(" in body
+    assert "self._resync()" in body
+    assert "_request_rebuild(" in body
     # Must NOT use on_trash (wrong timing for this).
     assert "def on_trash" not in src
+    controller = _read(
+        os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+    assert "def on_trash" not in controller
 
 
-def test_after_migrate_repopulates_seed():
-    """Fixture import doesn't run publish(), so after_migrate must repopulate the
-    crosswalk seed from the loaded docs."""
+def test_after_migrate_reconciles_the_warehouse():
+    """Fixture import doesn't run publish(), so after_migrate must re-sync the
+    crosswalk — which now happens through the generic ClickHouse reconcile, not
+    a per-seed regenerator (F3: no CSV writers remain in install.py)."""
     src = _read("install.py")
-    assert "_regenerate_dimension_mappings_seed" in src
-    assert "from konsol.dbt_config import regenerate_dimension_mappings_seed" in src
-    # called from after_migrate
+    assert "regenerate_dimension_mappings_seed" not in src
     after = src.split("def after_migrate")[1].split("\ndef ")[0]
-    assert "_regenerate_dimension_mappings_seed()" in after
+    assert "_reconcile_clickhouse()" in after

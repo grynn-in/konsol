@@ -1,227 +1,153 @@
 # konsol / konsolidat — status and next steps
 
-_Written 10 September 2026, superseding the 6 September handoff. Everything
-below was verified against the running stack, not inferred from the code._
+_Written 11 September 2026, superseding the 10 September handoff. Everything
+verified against the running stack. The first task for the next session is in
+"Pick up here"._
+
+## Pick up here
+
+**F3 is built, PR'd, CI-green, and NOT merged.** The delivery loop (below) was
+mid-review when this session ended — a background review fork does not survive
+a session restart, so:
+
+**The review IS done** — it finished just before the session closed, with
+**10 verified findings**. Do NOT re-run it; fix these, push, wait for CI,
+then squash-merge #112 + #144 together, pull mains, verify main CI. Merging
+is pre-authorized (standing rule below).
+
+The findings, ranked (full JSON in Engram lossless chunk 2026-09-11 and the
+session transcript):
+
+1. **Reconcile vs publish disagree on status** — `reconcile_all` syncs ALL
+   rows (Draft/Inactive) for non-submittable doctypes; `publish()` syncs
+   Published-only; cash-flow consumers have NO status filter. Any migrate
+   re-fills `cash_flow_categories` with Drafts; an Inactive+Published pair
+   fans the join out. Fix shared: a `CH_SYNC_FILTERS` class attribute honored
+   by both paths + status predicates in the dbt consumers.
+2. **Blank Link = NULL, so `{"entity": ""}` in `_validate_unique_key`
+   matches nothing** — the duplicate check is inert for ERP-wide mappings.
+   Needs `["in", ["", None]]`. Both dupes then sync (NULL→'') and the _dflt
+   join fans out.
+3. **YAML injection in `render_model_domains`** — model/domain names are
+   raw-interpolated; a name with `: `/`#`/quote corrupts dbt_project.yml on
+   the next Build Model save. Quote/validate (render_managed_vars is safe,
+   this writer is not).
+4. **`None` renders as literal NULL into non-Nullable columns** — works only
+   via `input_format_null_as_default`; on a hardened server the INSERT is
+   rejected AFTER the TRUNCATE and one publish silently empties the
+   crosswalk. Map None→'' in Python (resync_staging already does).
+5. **`render_managed_vars({})` emits `{}` — invalid YAML in context**
+   (verified ScannerError). A site with no Published docs writes an
+   unparseable dbt_project.yml. Guard the empty case.
+6. **No upgrade path for existing volumes** — init-db.sql runs only on fresh
+   volumes and konsol has no idempotent bootstrap for the three tables
+   (trial_balance_submission._ensure_tables is the pattern). Existing stacks
+   fail every sync until hand-run DDL.
+7. **`gold_unmapped_dimension_values` is entity-blind** — an entity-specific
+   -only mapping hides the value from the review queue for all other
+   entities. Only blank-entity rows count as ERP-wide "mapped".
+8. **`test_dbt_config_round_trip` imports the deleted `_merge_vars_into_yaml`**
+   — ImportError where a dbt_project exists, silent no-op elsewhere (why
+   728/728 passed). Rewrite against splice_managed_block.
+9. **`resync_staging` returns `len(data)` even when `sync_table` failed/
+   no-oped** — reconcile logs success with no watermark backing it. Return
+   sync_table's result.
+10. **Six-fold copy-paste of the filtered sync** across two controllers (both
+    after_delete copies mis-indented) — a per-class `_resync()` collapses all
+    six AND closes finding 1 in the same stroke.
+
+Also from this session's E2E, related to 1/10: a scripted `insert()` with
+`status="Published"` bypasses `publish()` and its sync entirely — worth
+folding into whatever shared mechanism fixes findings 1 and 10.
+
+## The standing delivery loop (user rule, pre-authorized)
+
+For each architecture-review F item: build → open PR(s) → code review → fix
+all findings → squash-merge → verify main CI → record in Engram. No per-PR
+permission needed. Reviews have caught feature-blocking bugs on every run so
+far; do not skip them.
 
 ## Where things are
 
 | what | where |
 |---|---|
-| konsol (Frappe app) | `~/Documents/frappe-bench/bench-15/apps/konsol` — **moved here 6 Sep**, see below |
-| konsolidat (dbt, ClickHouse, Cube, deploy) | `~/Documents/grynn/konsolidat/repo` |
-| Deploy-owned checkout | `repo/docker/frappe/konsol` — a `--depth 1` clone deploy.sh hard-resets. **Never edit it.** |
-| Backup of the pre-move checkout | `~/Documents/grynn/konsolidat/konsol-old-checkout-backup-20260906` (131M, all branches + stash) |
-| Architecture review (F1–F10) | https://claude.ai/code/artifact/0ee1a977-bca6-4344-b1d8-5f22d7b32827 |
-| Local memory (Engram) | `.claude/memory/` in this repo — gitignored |
+| konsol (Frappe app) — EDIT HERE | `~/Documents/frappe-bench/bench-15/apps/konsol` |
+| konsolidat (dbt/ClickHouse/deploy) | `~/Documents/grynn/konsolidat/repo` |
+| Deploy-owned checkout — NEVER EDIT | `repo/docker/frappe/konsol` (deploy.sh hard-resets it) |
+| Engram memory | `.claude/memory/` in the konsol bench checkout |
+| Local stack | `http://localhost:8069`, site `konsolidat.local`, creds `repo/.credentials` |
 
-Running stack: `http://localhost:8069`, site `konsolidat.local`, credentials in
-`repo/.credentials`.
+Frappe never runs natively on the Mac (bench Python 3.14 vs Frappe's 3.10-12;
+konsol deliberately NOT in `sites/apps.txt`). Local loops:
+`.venv/bin/python scripts/run-host-tests.py` (728/728) and
+`cd konsol-exec && node --test src/*.test.mjs src/orchestrator/*.test.mjs`
+(34/34). Deploy: `KONSOL_REPO=<bench checkout> KONSOL_BRANCH=<branch>
+./deploy.sh` — env vars, NOT .env. gh CLI: `gh auth switch --user grynn-in`
+(default pyy3 cannot create PRs).
 
-## The bench move — read this first
+**The running containers hold hot-copied code ≈ the F3/F8 branches.** After
+merging #112/#144, deploy once from `KONSOL_BRANCH=main` to align.
 
-konsol development moved out of `repo/docker/frappe/konsol` because
-**deploy.sh clones and hard-resets that directory** (deploy.sh:224,234) — it is
-a build artifact, not a working tree. Developing there is what caused work to
-be rescued last session and left local `main` 34 commits behind.
+## What F3 changed — contracts every future session must know
 
-**Frappe is never run natively on the Mac.** bench-15 is an *editing* location
-only: konsol is deliberately not in `sites/apps.txt` and not installed on
-`dev.local`. The bench's Python is 3.14.2; Frappe v15 targets 3.10–3.12. Do not
-run `bench get-app` or `bench install-app` there.
+1. **`dbt_project.yml` has two konsol-managed marker regions**
+   (`# --- BEGIN/END konsol-managed vars ---` and
+   `# --- BEGIN/END konsol-managed model domains ---`). konsol's writers
+   splice ONLY inside them and REFUSE to write when markers are absent.
+   Everything outside — comments, `erp_sources`, `cluster_enabled` — is
+   hand-owned and preserved byte for byte. Proven: `bench migrate` leaves the
+   file byte-identical (it used to strip 28 comments to 0, three times/day).
+2. **`erp_sources` is a committed engineering decision.** The
+   connector-derived builder is deleted; `config_service.list_erp_sources`
+   reports the registry read-only. Never re-derive it from Connector state —
+   that broke the whole build (#139).
+3. **The three seeds are gone.** `dimension_mappings`, `cash_flow_categories`,
+   `reporting_hierarchies` are `epm_staging` tables written through from
+   their doctypes (Published rows only), auto-discovered by `reconcile_all`,
+   declared as dbt sources. `init-db.sql` owns fresh-install DDL.
+4. **Dimension mappings are entity-aware** (konsol #111, first slice):
+   `entity String` sits in the sort key; blank = ERP-wide default;
+   entity-specific beats default via a two-tier join (NOT an OR — that would
+   fan out). Uniqueness key includes entity on both sides.
 
-Test on the Mac, deploy in Docker:
+## Scoreboard
 
-| loop | command | last result |
-|---|---|---|
-| Python host tests | `.venv/bin/python scripts/run-host-tests.py` | 704/704 |
-| JS tests | `cd konsol-exec && node --test src/*.test.mjs src/orchestrator/*.test.mjs` | 34/34 |
-| Bench tests | need a live site — Docker only | n/a |
-
-**deploy.sh reads `KONSOL_REPO` from the environment, not `.env`.** Putting it
-in `.env` silently deploys GitHub main instead of your work:
-
-```bash
-cd ~/Documents/grynn/konsolidat/repo
-KONSOL_REPO=~/Documents/frappe-bench/bench-15/apps/konsol \
-KONSOL_BRANCH=<your branch> ./deploy.sh
-```
-
-Verified end to end: a commit existing only on this laptop reached the running
-container. Worth a shell alias — forgetting it fails by *succeeding* with the
-wrong code.
-
-## Open PRs — all MERGEABLE, none merged
-
-| PR | repo | what |
-|---|---|---|
-| **#139** | konsolidat | The dbt build was producing nothing and deploy.sh called it success |
-| **#140** | konsolidat | Sync watermark + drop the seed fallback. **Stacks on #139** |
-| **#96** | konsol | Stamp the watermark; reconcile every write-through table after migrate |
-| #137 | konsolidat | docs-only, open since 2 July. Merge or close |
-
-Merge order: **#139 → #140**, and #96 alongside #140 (the watermark is useless
-without the writer).
-
-### What #139 fixed
-
-`var()` inside a `dbt_project.yml` config does not see that file's own `vars:`
-block — it falls back to the default. So `+enabled` for the erpnext models
-evaluated against `['d365_fo']` and disabled them, while the canonical models'
-UNION loop (ordinary model SQL, which *does* see the var) ref'd them anyway →
-`Compilation Error … depends on a node which is disabled` → dbt parsed nothing
-and built no models at all. deploy.sh swallowed it as
-`[WARN] … this is normal for demo data` and printed a green success banner.
-`epm_gold` had been stale for 11 hours with every deploy reporting success.
-
-Fix: `enabled` moved into each erpnext model, where `var()` resolves. deploy.sh
-now separates compilation errors (fatal) from test failures (warn), reading
-`PIPESTATUS[0]` — `set -e` is on but `pipefail` is not.
-
-### What #140 / #96 fixed
-
-`epm_staging.ownership_periods` held three rows dated 19 June for Ownership
-Period records Frappe no longer has (**0 records**, still). AMDE at 75% from
-that ghost drove every consolidated statement while Frappe's Consolidation
-Group said 100%. Cause: sync only fires on document events, so a doctype that
-empties never re-syncs and its ClickHouse rows live forever.
-
-- `reconcile_all()` re-syncs every write-through table after migrate
-- `sync_watermark` records each successful sync
-- `assert_staging_not_stale` fails on EMPTIED and LAGGING tables
-- the `consolidation_groups` seed fallback is gone from
-  `gold_consolidation_hierarchy`
-
-**AMDE now consolidates at 100%.** All 49 populated `epm_gold` tables rebuilt.
-
-## Open work, highest value first
-
-### 1. F3 — Frappe writes into the dbt repo. Do this next.
-
-Every `bench migrate` rewrites `dbt_project.yml`: **28 comment lines → 0**,
-`erp_sources` back to `[d365_fo, erpnext]`. It happened twice during the last
-session, undoing #139's file each time. It also deleted `cluster_enabled` and
-flipped `transaction_count.cube_type` from `sum` to `count` — the wrong value
-for Cube. Three seed CSVs are rewritten too.
-
-#139's fix holds (the build no longer *breaks*), but the churn is untouched.
-
-Two routes carry the same metadata — write-through into `epm_staging`, and CSV
-seeds in the repo — and models pick whichever is populated. Recommendation:
-delete the seed fallbacks, stop generating seeds from Frappe, keep only
-engineering-owned seeds. The test: *if finance would need a pull request to
-change it, it does not belong in `seeds/`.*
-
-`regenerate_vars()` rewriting `dbt_project.yml` is a separate and worse problem
-— that file is engineering config, not finance data, and F3's recommendation
-would not stop it. Scope it on its own.
-
-Note: `dimension_mappings`, `cash_flow_categories` and `reporting_hierarchies`
-have **no** `epm_staging` equivalent yet, so their write-through leg must be
-built before the CSVs can go. Six model/macro files read them.
-
-### 2. reconcile_all misses `CH_STAGING_TABLE` — four doctypes
-
-Some controllers push to **two** ClickHouse tables. `CH_TABLE` is a flat copy
-driven by `CH_FIELD_MAP`; `CH_STAGING_TABLE` is *computed* by hand-written code
-(`_sync_hierarchy()` walks the Frappe tree for `hierarchy_level`, `path`).
-`reconcile_all()` only knows the generic pattern, so these stay unreconciled:
-
-| doctype | CH_STAGING_TABLE |
+| item | status |
 |---|---|
-| Consolidation Group | `epm_staging.consolidation_hierarchy` |
-| Consolidation Adjustment | `epm_staging.consolidation_adjustments` |
-| IC Elimination Rule | `epm_staging.ic_elimination_rules` |
-| Allocation Rule | `epm_staging.allocation_rules` |
+| F1 Entity identity, F4 D11 reversal+watermark, F5, F6 Period Status | merged (earlier) |
+| F8 Trial Balance Submission | merged 10 Sep (#109/#143) with 16 review findings fixed |
+| FX #138 + guards, CI (both repos), watermark+reconcile | merged 10 Sep |
+| **F3 one metadata path** | **built + PR'd (#112/#144), review pending — PICK UP HERE** |
+| F2 ownership (tree vs periods, JV/multi-parent, effective % not computed) | open — next after F3 |
+| F7 roles/workspaces (half), F9 layer vocabulary, F10 IC elimination audit | open |
+| konsol #103 group rate governance (design), #110 connector-less entity registry, #111 dimension scope (rest) | parked designs |
+| konsolidat #137 (July docs PR), orphaned `budget_monthly_input` branch (blocks gold_spread_budget) | housekeeping |
 
-Also: reconcile discovers **7 of 10** controllers declaring `CH_TABLE`.
-Allocation Rule, Consolidation Adjustment and IC Elimination Rule are missing —
-not yet investigated. **PR #96 does not cover either gap.**
+dbt full-build baseline: **3 pre-existing errors** (gold_spread_budget needs
+the orphaned branch; assert_silver_gl_debit_credit_balance and
+assert_equity_rate_coverage are demo-data tensions). Anything beyond those
+three is new breakage.
 
-### 3. `effective_ownership_pct` does not compute effective ownership
+## Traps (additions this session — full list in memory/semantic/konsol-gotchas.md)
 
-`consolidation_group.py` `_sync_hierarchy()` writes `d.ownership_pct or 100`
-into a column named `effective_ownership_pct`. Nothing multiplies down the
-tree, so a grandchild held 80% through a subsidiary held 50% reads 80%, not
-40%. The demo hides it — AMDE is a direct child. This is **F2**.
+- **Harmonized dims bake in at INCREMENTAL bronze.** After changing a
+  dimension mapping, rebuild `--select bronze_general_journal_account_entries+
+  --full-refresh` — refreshing stg (a view) + silver alone shows stale dims.
+- **`insert()` with `status="Published"` bypasses `publish()`** and therefore
+  the ClickHouse sync — reconcile repairs. Scripted setups must call
+  `doc.publish()` or run `reconcile_all()`.
+- **Background review forks die with the session** and with rate limits —
+  findings arrive as task notifications; if a fork dies, just re-run it.
+- Host tests load controllers via **stubbed-module imports**
+  (test_budget_grain pattern) — never the AST-extraction trick, which once
+  silently dropped a whole test file from the suite.
+- `deploy.sh`'s in-image `bench build` is flaky; `docker compose build
+  frappe_backend` standalone works, then recreate + `bench migrate`.
 
-### 4. FX rates are 100× wrong — konsolidat #138
+## Merged-this-session context worth having
 
-`stg_d365_fo__exchange_rates.sql` scales conditionally, then
-`silver_exchange_rates.sql:14` divides by 100 unconditionally. Fix in the
-source adapter (`ConversionFactor` is a D365 concept) and delete the
-unconditional division. Add a range assertion —
-`assert_exchange_rate_positive` passes, because 0.00935 is positive.
-
-### 5. Cube schema generator is destructive and wrong
-
-`cube_type` reaches Cube through `dbt_project.yml` vars →
-`scripts/generate_cube_schemas.py` → `cube/schema/*.yml`, run only by
-`make cube-schema`. Nobody runs it, because it would:
-
-- delete the hand-written `segments:` block in `trial_balance.yml`
-- emit `type: count` for `transaction_count`, which is already `count(*)` in
-  gold — Cube's `count` counts rows and ignores `sql:`, so `sum` is correct
-- write views to `cube/views/` while the repo keeps them in `cube/schema/`
-
-Also 9 of 13 Frappe Measures never reach dbt or Cube (13 fixtures, 4 vars).
-
-### 6. Orphaned branch — `fix/ensure-budget-monthly-input-table`
-
-Creates `epm_gold.budget_monthly_input` on migrate, plus tests. No PR, dated
-6 Sep, not written by any recent session. **`gold_spread_budget` currently
-fails without it** and 6 models skip behind it. Needs a PR or it is lost.
-
-### 7. Loose ends
-
-- `assert_silver_gl_debit_credit_balance` fails on the demo data. Being a test,
-  it gates the whole gold layer in `dbt build` — that is why `dbt run` is
-  needed to materialise. Demo GL that does not balance is worth a look.
-- konsol issue **#93** — entity scoping latent on four doctypes: `System
-  Manager` is the only role with read, and that is a bypass role, so the filter
-  can never fire.
-- `wip/local-exec-embedding` — CSRF + bleed-CSS work, unmerged, unreviewed.
-- `stash@{0}` in konsolidat holds a 23 Jun `entrypoint.sh` change, superseded
-  by upstream `refresh-assets.sh`. Safe to drop.
-
-## Traps that cost real time
-
-Full list in `.claude/memory/semantic/konsol-gotchas.md`. The worst:
-
-1. **`dbt run` on an incremental model appends.** `gold_consolidated_trial_balance`
-   and `bronze_general_journal_account_entries` are incremental — stale rows
-   survived three rebuilds and made a fix look like it had failed. Use
-   `--full-refresh` when correcting data.
-2. **`demo-data.sql` writes `epm_staging`, not just `epm_raw`.** 10 statements
-   hit `consolidation_hierarchy`, `ownership_periods`, `historical_equity_rates`,
-   `ic_balances`, `ic_elimination_rules`. Loading it duplicates write-through
-   tables and re-creates ghost rows. Run `reconcile_all()` + `_sync_hierarchy()`
-   afterwards.
-3. **`epm_raw` may be older than the code.** The volume held 19-June PascalCase
-   tables while konsolidat 6523605 (26 Jun, #103) moved d365 sources to
-   snake_case. `demo-data.sql` is mounted at `/docker-entrypoint-initdb.d/`, so
-   ClickHouse runs it **only on first boot with an empty data dir**.
-4. **`patches.txt` has no section headers** — every patch runs
-   `pre_model_sync`, and a patch touching a new DocType silently no-ops **and
-   records itself as run** unless it calls `frappe.reload_doc` first.
-5. **`frappe.get_all` ignores permissions; `frappe.get_list` applies them.** A
-   permission test written with `get_all` passes either way.
-6. **`bench restart` does not restart the web workers** in the container stack —
-   use `docker compose restart frappe_backend`.
-7. **`frappe.get_controller` does not exist at top level in v15** — it is
-   `frappe.model.base_document.get_controller`. A broad `except` around it hid
-   this and made `reconcile_all` silently do nothing.
-8. **Stray `* 2.*` files break dbt** with "Resource names cannot contain
-   spaces". Four appeared (mode 600, all byte-identical duplicates); origin
-   unknown. Watch for them.
-
-## There is still no CI
-
-konsol has no `.github/` at all, and konsolidat's workflows do not run konsol's
-Python tests. A workflow running `scripts/run-host-tests.py` and `yarn test`
-would be cheap and would have caught every red test found so far.
-
-## gh CLI
-
-Default account is `pyy3`, which is **not** a collaborator on grynn-in — `git
-push` works but `gh pr create` fails with "must be a collaborator". Switch with
-`gh auth switch --user grynn-in`. That switch persists.
+F8's review fixed, among 16 findings: non-idempotent landing (retry doubled a
+batch), the Period Status convention inversion (absent record = OPEN), claim
+fan-out, NaN validation bypass, and the silent drop of connector-less entities
+at consolidation (loud guard now; real fix = #110). The FX pipeline scales
+exactly once, in the D365 adapter, guarded by magnitude + factor-domain tests.

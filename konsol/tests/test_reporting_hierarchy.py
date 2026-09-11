@@ -38,18 +38,37 @@ def test_reporting_hierarchy_member_doctype():
         assert f in fields
 
 
-def test_header_publish_regenerates_seed_and_reporting_rebuild():
+def test_header_publish_resyncs_staging_and_reporting_rebuild():
     src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
-    assert "regenerate_reporting_hierarchies_seed" in src
-    assert 'scope=_REPORTING_BUILD_SCOPE' in src or 'scope="reporting"' in src
+    # F3: publish re-syncs epm_staging via the computed resync_staging()
+    # pattern (rows are flattened, not field-mapped); no CSV seed is written.
+    # The publish/unpublish lifecycle itself is the shared one; this doctype
+    # supplies the computed _resync() and its own build scope.
+    assert "class ReportingHierarchy(GovernedReferenceDocument)" in src
+    assert "def resync_staging" in src
+    assert "def _resync" in src
+    assert 'CH_STAGING_TABLE = "epm_staging.reporting_hierarchies"' in src
+    assert "flatten_reporting_hierarchies" in src
+    assert "regenerate_reporting_hierarchies_seed" not in src
+    assert "BUILD_SCOPE = _REPORTING_BUILD_SCOPE" in src
+    assert '_REPORTING_BUILD_SCOPE = "reporting"' in src
 
 
-def test_dbt_config_seed_columns():
-    src = _read("dbt_config.py")
-    assert "def regenerate_reporting_hierarchies_seed" in src
-    assert "reporting_hierarchies.csv" in src
+def test_resync_staging_returns_what_was_written():
+    """It used to return len(data) unconditionally, so a failed ClickHouse
+    write still reported a row count and reconcile logged a clean repair with
+    no watermark behind it. Return sync_table's own result."""
+    src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
+    body = src.split("def resync_staging")[1].split("\n    def ")[0]
+    assert "return sync_table(" in body
+    assert "return len(data)" not in body
+
+
+def test_staging_columns_match_the_flattened_contract():
+    """F3: the columns dbt reads now travel via CH_STAGING_COLUMNS."""
+    src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
     for col in SEED_COLUMNS:
-        assert col in src
+        assert f'"{col}"' in src, f"column {col} missing from CH_STAGING_COLUMNS"
 
 
 def test_flatten_module_exists():
