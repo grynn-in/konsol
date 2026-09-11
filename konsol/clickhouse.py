@@ -179,18 +179,31 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
 def _sql_value(v):
     """Render one Python value as a ClickHouse VALUES literal.
 
+    An unset field is written as the ``DEFAULT`` keyword, which means "whatever
+    this column declares" and is therefore right for every column type: '' for a
+    String, 0 for a number, 1970-01-01 for a Date, NULL for a Nullable. The two
+    obvious alternatives are both wrong somewhere:
+
+    * a literal ``NULL`` into a non-Nullable column is accepted only while
+      ClickHouse keeps ``input_format_null_as_default`` on, and is rejected
+      *after* _sync_table_inner has already TRUNCATEd — one publish of a
+      Dimension Mapping with a blank entity emptied the whole crosswalk
+      (konsol #112, finding 4);
+    * a literal ``''`` fixes that for String columns and breaks every Date one.
+      It is why epm_staging.ownership_periods stopped syncing entirely: an
+      Ownership Period with no acquisition_date sent '' into a Date column.
+
     Datetimes are truncated to whole seconds: ClickHouse's DateTime has
     one-second resolution and rejects a microsecond timestamp outright with a
     400. That is how epm_staging.allocation_runs silently never reconciled —
     every run carries a ``run_at`` straight from Frappe's now_datetime(), and
     the failure was invisible because reconcile_all reported frappe.db.count()
-    whenever a sync returned nothing. With that fixed the table announced
-    itself on the running stack. (allocation_run._format_run_cell already
+    whenever a sync returned nothing. (allocation_run._format_run_cell already
     truncated by hand for its own direct-sync path, which is why *that* path
     worked and only the reconcile was broken.)
     """
     if v is None:
-        return "NULL"
+        return "DEFAULT"
     if isinstance(v, (int, float)):
         return str(v)
     if isinstance(v, datetime):
@@ -387,11 +400,6 @@ def check_health():
     return result
 
 
-def _cell(value):
-    """Warehouse cell value: an unset Frappe field is an empty string, not NULL."""
-    return "" if value is None else value
-
-
 def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
     """Fetch filtered Frappe docs and sync to ClickHouse.
 
@@ -419,18 +427,10 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
         fields=fetch_fields,
         limit_page_length=0,
     )
-    rows = []
-    for doc in docs:
-        # None -> '' , never a literal NULL. An unset Data/Link field arrives as
-        # None, and every one of these columns is declared non-Nullable in
-        # init-db.sql: the INSERT only survives because ClickHouse's default
-        # input_format_null_as_default rewrites NULL to the column default. On a
-        # server with that setting off, the INSERT is rejected *after*
-        # _sync_table_inner has already TRUNCATEd — so one publish of a mapping
-        # with a blank entity silently empties the whole crosswalk. Same
-        # convention ReportingHierarchy.resync_staging already uses.
-        row = [_cell(doc.get(f)) for f in frappe_fields]
-        rows.append(row)
+    # An unset field reaches _sql_value as None and is written as DEFAULT — the
+    # column's own declared default, whatever its type. See _sql_value: neither
+    # a literal NULL nor a literal '' is right for every column here.
+    rows = [[doc.get(f) for f in frappe_fields] for doc in docs]
 
     modified = [d.get("modified") for d in docs if d.get("modified")]
     source_max_modified = (
@@ -478,11 +478,39 @@ _REFERENCE_TABLE_DDL = {
         "effective_to String, is_default UInt8, status String) "
         "ENGINE = MergeTree ORDER BY (hierarchy_name, member_code)"
     ),
+    # F2: the consolidation structure. epm_gold.consolidation_groups used to be
+    # created by `dbt seed` from seeds/consolidation_groups.csv — the SAME
+    # relation konsol TRUNCATE+INSERTs, so every governed build overwrote the
+    # live tree with a June CSV and every migrate overwrote it back. The seed is
+    # deleted, so this is now the only thing that creates the table.
+    "epm_gold.consolidation_groups": (
+        "(consolidation_group String, data_area_id String, entity_name String, "
+        "reporting_currency String) "
+        "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)"
+    ),
+    # F2: the link closure that makes consolidation multi-level. One row per
+    # (ancestor group, entity, link between them), so dbt can multiply a chain of
+    # dated ownership percentages without a recursive CTE.
+    "epm_staging.consolidation_ancestry": (
+        "(consolidation_group String, data_area_id String, link_group String, "
+        "link_data_area_id String, link_depth UInt8, depth UInt8, path String) "
+        "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id, link_depth)"
+    ),
+}
+
+# Columns that a previous release created and F2 retired. ClickHouse keeps a
+# column the writer stopped sending, silently filled with its default — an
+# ownership percentage that no longer updates is exactly the kind of second
+# source of truth this work exists to delete, so drop them outright.
+_RETIRED_COLUMNS = {
+    # ownership is temporal and lives only in Ownership Period now
+    "epm_staging.consolidation_hierarchy": ["effective_ownership_pct"],
+    "epm_gold.consolidation_groups": ["ownership_pct", "consolidation_method"],
 }
 
 
 def ensure_reference_tables():
-    """Create the F3 write-through reference tables if they are missing.
+    """Create the write-through reference tables, and drop the retired columns.
 
     Best-effort and idempotent: CREATE TABLE IF NOT EXISTS never touches an
     existing table, and an unreachable ClickHouse must not fail a migrate — the
@@ -492,8 +520,11 @@ def ensure_reference_tables():
     """
     for sql in [
         "CREATE DATABASE IF NOT EXISTS epm_staging",
+        "CREATE DATABASE IF NOT EXISTS epm_gold",
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
+        *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
+          for t, cols in _RETIRED_COLUMNS.items() for c in cols],
     ]:
         try:
             execute(sql)

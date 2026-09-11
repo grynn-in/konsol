@@ -38,15 +38,20 @@ def test_consolidation_group_has_required_fields():
     meta = _load_json("consolidation_group")
     fields = [f["fieldname"] for f in meta["fields"]]
     for f in ["consolidation_group", "data_area_id", "entity_name",
-              "ownership_pct", "reporting_currency", "consolidation_method"]:
+              "reporting_currency"]:
         assert f in fields, f"Missing field: {f}"
 
 
-def test_consolidation_group_ownership_is_float():
+def test_consolidation_group_carries_no_ownership():
+    """F2: the tree is STRUCTURE. Ownership is temporal — a group's share of a
+    subsidiary changes on a date and a doctype field cannot say when — so it
+    lives only in Ownership Period. Keeping a copy here is what gave two grains
+    with no rule about which won, and a dbt fallback that read a real 0% as
+    'unset'."""
     meta = _load_json("consolidation_group")
-    for field in meta["fields"]:
-        if field["fieldname"] == "ownership_pct":
-            assert field["fieldtype"] == "Float"
+    fields = [f["fieldname"] for f in meta["fields"]]
+    for gone in ("ownership_pct", "consolidation_method"):
+        assert gone not in fields, f"{gone} belongs to Ownership Period now"
 
 
 def test_consolidation_group_method_options():
@@ -137,3 +142,94 @@ def test_all_consolidation_doctypes_module_consolidation():
     for dt in ["consolidation_group", "ic_elimination_rule", "consolidation_adjustment"]:
         meta = _load_json(dt)
         assert meta["module"] == "Consolidation", f"{dt} not in Consolidation module"
+
+
+# --- F2: Ownership Period is the only ownership grain ----------------------
+
+def _ownership_period_src():
+    with open(os.path.join(
+            APP_DIR, "consolidation", "doctype", "ownership_period",
+            "ownership_period.py")) as f:
+        return f.read()
+
+
+def _code_only(src):
+    """Source with every string literal blanked.
+
+    These files explain in prose the very names they removed ("ownership_pct is
+    gone", "`or 100` is the bug"), so a plain substring check on the file reads
+    the docstring and reports the opposite of the truth.
+    """
+    import ast
+
+    out = src
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value:
+            out = out.replace(node.value, "")
+    return out
+
+
+def test_ownership_period_allows_a_group_node():
+    """A sub-group is ownable too — GROUP_CORP's share of GROUP_EMEA is a link
+    in every chain below it, and without a period for that node the whole chain
+    is unresolvable."""
+    meta = _load_json("ownership_period")
+    field = next(f for f in meta["fields"] if f["fieldname"] == "data_area_id")
+    assert not field.get("reqd"), "a group node has no entity code"
+
+
+def test_ownership_period_validates_its_node_exists():
+    """Ownership is the only grain now, so a period naming a node that does not
+    exist is read by nothing — the silent failure this doctype exists to
+    remove."""
+    src = _ownership_period_src()
+    assert "_validate_node_exists" in src
+    lookup = src.split("def _node")[1].split("\n    def ")[0]
+    assert "Consolidation Group" in lookup
+    # a blank Link is NULL: {"data_area_id": ""} would match no group node
+    assert "_BLANK" in lookup
+    # nobody owns the top of a hierarchy
+    guard = src.split("def _validate_node_exists")[1].split("\n    def ")[0]
+    assert "parent_consolidation_group" in guard
+
+
+def test_ownership_period_rejects_dates_clickhouse_would_clamp():
+    """ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently, so the
+    document and the warehouse would disagree about when a period starts."""
+    src = _ownership_period_src()
+    assert "_validate_dates_representable" in src
+    assert '_CH_DATE_MIN = "1970-01-01"' in src
+    assert '_CH_DATE_MAX = "2149-06-06"' in src
+
+
+def test_ownership_period_zero_is_a_real_percentage():
+    """0% means 0%. Treating it as 'unset' is the falsy-zero bug F2 removes."""
+    src = _ownership_period_src()
+    body = src.split("def _validate_pct_range")[1].split("\n    def ")[0]
+    assert "0 <= float(self.ownership_pct) <= 100" in body
+
+
+def test_end_date_blank_means_open_not_9999():
+    """The old 9999-12-31 default is unrepresentable in ClickHouse; blank says
+    the same thing and survives the round trip."""
+    meta = _load_json("ownership_period")
+    field = next(f for f in meta["fields"] if f["fieldname"] == "end_date")
+    assert not field.get("default"), "blank means open"
+    assert "_LEGACY_OPEN" in _ownership_period_src(), "old rows must still be editable"
+
+
+def test_lift_patch_is_registered_and_idempotent():
+    """The tree's ownership has to reach Ownership Period before the fields are
+    dropped, or every entity consolidates at nothing."""
+    with open(os.path.join(APP_DIR, "patches.txt")) as f:
+        assert "konsol.patches.lift_ownership_to_ownership_period" in f.read()
+    with open(os.path.join(
+            APP_DIR, "patches", "lift_ownership_to_ownership_period.py")) as f:
+        src = f.read()
+    # runs pre_model_sync, so the old column is still there to read
+    assert 'has_column("Consolidation Group", "ownership_pct")' in src
+    assert "frappe.db.sql" in src, "the ORM no longer declares these fields"
+    assert "_has_period" in src, "must not double-create on a second migrate"
+    # a root has no owner, and a missing percentage is reported, never defaulted
+    assert "parent_consolidation_group" in src
+    assert "or 100" not in _code_only(src)

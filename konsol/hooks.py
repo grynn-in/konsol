@@ -24,6 +24,10 @@ fixtures = [
     "Budget Cycle",
     "Budget Sheet",
     "Consolidation Group",
+    # F2: ownership left Consolidation Group; the tree is structure, the
+    # periods are the ownership. Ordered after the tree so the nodes the
+    # periods validate against already exist.
+    "Ownership Period",
     "IC Elimination Rule",
     "Allocation Rule",
     "Allocation Driver",
