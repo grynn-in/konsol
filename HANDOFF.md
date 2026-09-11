@@ -10,14 +10,55 @@ verified against the running stack. The first task for the next session is in
 mid-review when this session ended — a background review fork does not survive
 a session restart, so:
 
-1. Run `/code-review` on branch `feat/f3-one-metadata-path` in BOTH repos —
-   konsol commits b0b18b3+9216df6 (PR **grynn-in/konsol#112**) and konsolidat
-   commits 8db68b9+da7184a (PR **grynn-in/konsolidat#144**). Two halves of one
-   change.
-2. Fix anything confirmed, push, wait for CI.
-3. Squash-merge **both together** (#112 + #144), pull local mains, verify CI
-   on main. Merging inside this loop is pre-authorized — see the standing
-   rule below.
+**The review IS done** — it finished just before the session closed, with
+**10 verified findings**. Do NOT re-run it; fix these, push, wait for CI,
+then squash-merge #112 + #144 together, pull mains, verify main CI. Merging
+is pre-authorized (standing rule below).
+
+The findings, ranked (full JSON in Engram lossless chunk 2026-09-11 and the
+session transcript):
+
+1. **Reconcile vs publish disagree on status** — `reconcile_all` syncs ALL
+   rows (Draft/Inactive) for non-submittable doctypes; `publish()` syncs
+   Published-only; cash-flow consumers have NO status filter. Any migrate
+   re-fills `cash_flow_categories` with Drafts; an Inactive+Published pair
+   fans the join out. Fix shared: a `CH_SYNC_FILTERS` class attribute honored
+   by both paths + status predicates in the dbt consumers.
+2. **Blank Link = NULL, so `{"entity": ""}` in `_validate_unique_key`
+   matches nothing** — the duplicate check is inert for ERP-wide mappings.
+   Needs `["in", ["", None]]`. Both dupes then sync (NULL→'') and the _dflt
+   join fans out.
+3. **YAML injection in `render_model_domains`** — model/domain names are
+   raw-interpolated; a name with `: `/`#`/quote corrupts dbt_project.yml on
+   the next Build Model save. Quote/validate (render_managed_vars is safe,
+   this writer is not).
+4. **`None` renders as literal NULL into non-Nullable columns** — works only
+   via `input_format_null_as_default`; on a hardened server the INSERT is
+   rejected AFTER the TRUNCATE and one publish silently empties the
+   crosswalk. Map None→'' in Python (resync_staging already does).
+5. **`render_managed_vars({})` emits `{}` — invalid YAML in context**
+   (verified ScannerError). A site with no Published docs writes an
+   unparseable dbt_project.yml. Guard the empty case.
+6. **No upgrade path for existing volumes** — init-db.sql runs only on fresh
+   volumes and konsol has no idempotent bootstrap for the three tables
+   (trial_balance_submission._ensure_tables is the pattern). Existing stacks
+   fail every sync until hand-run DDL.
+7. **`gold_unmapped_dimension_values` is entity-blind** — an entity-specific
+   -only mapping hides the value from the review queue for all other
+   entities. Only blank-entity rows count as ERP-wide "mapped".
+8. **`test_dbt_config_round_trip` imports the deleted `_merge_vars_into_yaml`**
+   — ImportError where a dbt_project exists, silent no-op elsewhere (why
+   728/728 passed). Rewrite against splice_managed_block.
+9. **`resync_staging` returns `len(data)` even when `sync_table` failed/
+   no-oped** — reconcile logs success with no watermark backing it. Return
+   sync_table's result.
+10. **Six-fold copy-paste of the filtered sync** across two controllers (both
+    after_delete copies mis-indented) — a per-class `_resync()` collapses all
+    six AND closes finding 1 in the same stroke.
+
+Also from this session's E2E, related to 1/10: a scripted `insert()` with
+`status="Published"` bypasses `publish()` and its sync entirely — worth
+folding into whatever shared mechanism fixes findings 1 and 10.
 
 ## The standing delivery loop (user rule, pre-authorized)
 
