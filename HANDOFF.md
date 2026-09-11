@@ -6,33 +6,36 @@ next session is in "Pick up here"._
 
 ## Pick up here
 
-**F3 is merged.** konsol #112 (`9073ba0`) and konsolidat #144 (`9cd5126`) are on
-main, both mains CI-green, all ten review findings fixed and proven live.
-Nothing is left open on F3.
+**F2 is merged.** konsol #116 (`875557f`) and konsolidat #145 (`934d264`) are on
+main, both CI-green, all seventeen review findings across the two PRs fixed and
+proven live. Nothing is left open on F2 or F3.
 
-**Next: F2 — ownership.** Three known gaps: the ownership tree disagrees with
-the ownership *periods*; joint ventures / multi-parent structures are not
-modelled; effective ownership percentage is never computed (only the direct
-percentage is stored). Same delivery loop as F3 and F8.
-
-Before starting, **deploy once from `main`** so the containers stop running
-hot-copied files:
+**Deploy once from `main` before starting anything.** The containers hold
+hot-copied files from the F2 work; they match main for everything F2 touched
+(verified by sha1) but only for those files:
 
     cd ~/Documents/grynn/konsolidat/repo
     KONSOL_REPO=~/Documents/frappe-bench/bench-15/apps/konsol \
     KONSOL_BRANCH=main ./deploy.sh
 
-(The running containers currently hold files byte-identical to main for
-everything F3 touched — verified by sha1 — but only for those files.)
+**Next: pick from the open list.** F7 (roles/workspaces, half done), F9 (collapse
+five dbt layer folders to three — `epm_staging` is a third meaning of
+"staging"), F10 (verify IC elimination fires at the lowest common ancestor —
+never audited; `gold_ic_eliminations` now emits `debit_entity`/`credit_entity`,
+which is the audit trail F10 needs). Or konsolidat #146, which is a live
+data-loss bug and small once the data decisions are made.
 
 ## The standing delivery loop (user rule, pre-authorized)
 
 For each architecture-review F item: build → open PR(s) → code review → fix all
-findings → squash-merge → verify main CI → record in Engram. No per-PR
-permission needed. Reviews have caught feature-blocking bugs on every run so
-far; do not skip them. **And verify on the running stack before merging** — the
-F3 review's own suggested fix for finding 2 was wrong, and only a live run
-showed it.
+findings → squash-merge → verify main CI → record in Engram. No per-PR permission
+needed.
+
+**Run the review, and verify on the running stack before merging.** Both
+reviews this session caught feature-blocking bugs, and both times a finding was
+worse than the review could see from the source: F3's suggested fix for the
+blank-entity guard did not work, and F2's fixture fix did not work either.
+Neither was visible without running it.
 
 ## Where things are
 
@@ -44,15 +47,13 @@ showed it.
 | Engram memory | `.claude/memory/` in the konsol bench checkout |
 | Local stack | `http://localhost:8069`, site `konsolidat.local`, creds `repo/.credentials` |
 
-Frappe never runs natively on the Mac (bench Python 3.14 vs Frappe's 3.10-12;
-konsol deliberately NOT in `sites/apps.txt`). Local loops:
-`.venv/bin/python scripts/run-host-tests.py` (748/748) and
+Frappe never runs natively on the Mac. Local loops:
+`.venv/bin/python scripts/run-host-tests.py` (775/775) and
 `cd konsol-exec && node --test src/*.test.mjs src/orchestrator/*.test.mjs`
-(34/34). gh CLI: `gh auth switch --user grynn-in` (default pyy3 cannot create
-PRs).
+(34/34). gh CLI: `gh auth switch --user grynn-in`.
 
-**Driving the live stack without a deploy** — this is how F3 was verified, and
-it is much faster than a deploy cycle:
+**Driving the live stack without a deploy** — this is how F2 and F3 were
+verified and it is much faster than a deploy cycle:
 
     docker cp konsol/<file>.py konsolidat_backend:/home/frappe/frappe-bench/apps/konsol/konsol/<file>.py
     docker cp dbt_project/models/... konsolidat_backend:/home/frappe/dbt_project/models/...
@@ -62,95 +63,98 @@ it is much faster than a deploy cycle:
       'cd /home/frappe/dbt_project && /home/frappe/frappe-bench/env/bin/dbt build --profiles-dir . --project-dir .'
 
 `bench console` is IPython and mangles tracebacks — write a plain script with
-`frappe.init(site="konsolidat.local"); frappe.connect()` instead. Do **not**
-leave a script at `/tmp/inspect.py` (or any stdlib name): `/tmp` is on
-`sys.path` and it shadows the stdlib module for every later run.
+`frappe.init(site="konsolidat.local"); frappe.connect()`. Never leave a script at
+`/tmp/inspect.py` or any stdlib name: `/tmp` is on `sys.path`.
 
-## What F3 changed — contracts every future session must know
+**A full `dbt build` SKIPS the whole consolidation chain** behind the three
+baseline errors, so new tests there never execute. To exercise them:
+`dbt run --select +<model>+ --exclude gold_spread_budget+` then
+`dbt test --select <names>`.
 
-1. **`dbt_project.yml` has two konsol-managed marker regions**
-   (`# --- BEGIN/END konsol-managed vars ---` and
-   `# --- BEGIN/END konsol-managed model domains ---`). konsol's writers splice
-   ONLY inside them and REFUSE to write when markers are absent. Everything
-   outside — comments, `erp_sources`, `cluster_enabled` — is hand-owned and
-   preserved byte for byte. Proven again post-merge: a full `bench migrate`
-   leaves the file byte-identical (same sha256, all 41 comments intact).
-   Model/domain names are validated before interpolation, and an empty managed
-   set renders as bare markers (`yaml.dump({})` is `{}`, which is invalid there).
-2. **`erp_sources` is a committed engineering decision.** The connector-derived
-   builder is deleted; `config_service.list_erp_sources` reports the registry
-   read-only. Never re-derive it from Connector state — that broke the whole
-   build (#139).
-3. **The three seeds are gone.** `dimension_mappings`, `cash_flow_categories`,
-   `reporting_hierarchies` are `epm_staging` tables written through from their
-   doctypes, auto-discovered by `reconcile_all`, declared as dbt sources.
-   `init-db.sql` owns fresh-install DDL; `clickhouse.ensure_reference_tables()`
-   is the idempotent upgrade path for volumes that predate F3 (KEEP THE TWO IN
-   SYNC).
-4. **Dimension mappings are entity-aware** (konsol #111): `entity String` sits
-   in the sort key; blank = ERP-wide default; entity-specific beats default via
-   a two-tier join (NOT an OR — that would fan out). The uniqueness key
-   includes entity on both sides, and `gold_unmapped_dimension_values` resolves
-   coverage the same way.
-5. **One write-through mechanism.** `clickhouse.resolve_sync_filters(doctype)`
-   is the single answer to "which rows belong in ClickHouse": a controller's
-   `CH_SYNC_FILTERS` first, then `docstatus=1` for submittables. Both the
-   document hooks and `reconcile_all` read it. Governed reference doctypes
-   subclass `GovernedReferenceDocument` (konsol/governed_reference.py), which
-   owns `publish` / `unpublish` / `on_update` / `after_delete` and contains the
-   **only** sync call. Do not re-add a per-controller copy.
+## The contracts F2 and F3 established
+
+1. **`dbt_project.yml` has two konsol-managed marker regions.** konsol splices
+   ONLY inside them and REFUSES to write when they are absent; everything else
+   is preserved byte for byte. Model/domain names are validated before
+   interpolation; an empty managed set renders as bare markers.
+2. **`erp_sources` is a committed engineering decision.** Never re-derive it
+   from Connector state — that broke the whole build (#139).
+3. **Governed reference data writes through to `epm_staging`.**
+   `resolve_sync_filters(doctype)` is the single answer to which rows belong in
+   ClickHouse, read by BOTH the document hooks and `reconcile_all`. Governed
+   doctypes subclass `GovernedReferenceDocument`, which holds the only sync
+   call. `clickhouse.ensure_reference_tables()` is the idempotent upgrade path —
+   **keep `_REFERENCE_TABLE_DDL` byte-identical to konsolidat's
+   `clickhouse/init-db.sql`**; a table in `_RETIRED_COLUMNS` must also be in
+   `_REFERENCE_TABLE_DDL` or its ALTER fails on a fresh volume.
+4. **Ownership lives in exactly one place: Ownership Period.** It describes a
+   NODE — how much of it its parent owns — keyed on
+   `(consolidation_group, data_area_id)`, blank entity for a group node. Roots
+   take no period. Consolidation Group is structure; do not put a percentage
+   back on it.
+5. **Consolidation is multi-level** through `epm_staging.consolidation_ancestry`,
+   the link closure konsol's tree walk writes. `gold_entity_ownership`
+   multiplies each link's dated percentage: one row per (ancestor group, entity,
+   period), with `effective_ownership_pct`, `direct_ownership_pct`,
+   `owner_group`, `has_complete_chain` and `outside_ownership_window`. Every
+   consolidated model reads it, period-keyed.
+6. **Dimension mappings are entity-aware.** Blank entity = ERP-wide default;
+   entity-specific beats default via a two-tier join (NOT an OR — that fans out).
 
 ## Scoreboard
 
 | item | status |
 |---|---|
-| F1 Entity identity, F4 D11 reversal+watermark, F5, F6 Period Status | merged (earlier) |
-| F8 Trial Balance Submission | merged 10 Sep (#109/#143) with 16 review findings fixed |
-| FX #138 + guards, CI (both repos), watermark+reconcile | merged 10 Sep |
-| **F3 one metadata path** | **merged 11 Sep (#112/#144) with 10 review findings + 3 more found live** |
-| F2 ownership (tree vs periods, JV/multi-parent, effective % not computed) | open — NEXT |
+| F1, F4, F5, F6, F8, FX, CI | merged (earlier) |
+| **F3 one metadata path** | merged 11 Sep (#112/#144), 10 review findings fixed |
+| **F2 ownership + multi-level consolidation** | merged 11 Sep (#116/#145), 17 review findings fixed |
 | F7 roles/workspaces (half), F9 layer vocabulary, F10 IC elimination audit | open |
-| konsol #103 group rate governance (design), #110 connector-less entity registry, #111 dimension scope (rest) | parked designs |
-| konsolidat #137 (July docs PR), orphaned `budget_monthly_input` branch (blocks gold_spread_budget) | housekeeping |
+| konsol #117 JV / multi-parent ownership | filed, designed, not built |
+| konsolidat #146 five more seed/write-through collisions | filed with evidence — live data loss |
+| konsol #103 group rate governance, #110 connector-less entity registry, #111 dimension scope (rest) | parked designs |
+| konsolidat #137 (July docs PR), orphaned `budget_monthly_input` branch | housekeeping |
 
-dbt full-build baseline: **3 pre-existing errors** (gold_spread_budget needs the
-orphaned branch; assert_silver_gl_debit_credit_balance and
-assert_equity_rate_coverage are demo-data tensions). Anything beyond those three
-is new breakage. Note `assert_cf_categories_equal_net_change` returns 84 rows
-when run standalone; in a governed full build it is SKIPped behind
-gold_spread_budget, which is why it is not a fourth baseline error. It fails
-identically with and without the F3 changes.
+dbt full-build baseline: **3 pre-existing errors** — `gold_spread_budget` (needs
+the orphaned branch), `assert_silver_gl_debit_credit_balance` and
+`assert_equity_rate_coverage` (demo-data tensions). Anything beyond those three
+is new breakage. `assert_cta_zero_for_same_currency` fails (24) when the chain is
+run directly: CTA is `-sum(group_amount)` and AMHQ's local GL is out of balance
+by 17.4m, so it is a symptom of the second baseline error, not a fourth.
 
 ## Traps (full list in memory/semantic/konsol-gotchas.md)
 
-- **`["in", ["", None]]` does not match NULL.** It compiles to
-  `x IN ('', NULL)`, and SQL never matches NULL through IN. To mean "blank or
-  unset" in a Frappe filter use `["is", "not set"]`, which renders as
-  `x IS NULL OR x = ''`. A blank **Link** field is stored as NULL, not `''`.
-- **ClickHouse `DateTime` has one-second resolution** and rejects a microsecond
-  timestamp with a 400 — and `_sync_table_inner` TRUNCATEs *before* it INSERTs,
-  so the rejection empties the table. Frappe's `now_datetime()` carries
-  microseconds. `clickhouse._sql_value()` truncates; use it for any new INSERT
-  builder.
-- **A sync helper that does not `return` its `sync_table(...)` result reports a
-  failure as success.** Both `resync_staging` implementations had this bug, in
-  opposite directions.
-- **Harmonized dims bake in at INCREMENTAL bronze.** After changing a dimension
-  mapping, rebuild
-  `--select bronze_general_journal_account_entries+ --full-refresh` — refreshing
-  stg (a view) + silver alone shows stale dims.
-- **`insert()` with `status="Published"` used to bypass `publish()`** and its
-  sync. `GovernedReferenceDocument.on_update` now covers it; keep it that way
-  for any new governed reference doctype.
-- Host tests load controllers via **stubbed-module imports**
-  (test_budget_grain / test_write_through_contract pattern). A test that does
-  `from <module> import x` where the module imports frappe is silently counted
-  as a *skipped missing dependency*, not a failure — that is how a test
-  importing a deleted function "passed" for months.
-- **Background review forks die with the session** and with rate limits —
-  findings arrive as task notifications; if a fork dies, just re-run it.
+- **`["in", ["", None]]` does not match NULL** — it compiles to `x IN ('', NULL)`
+  and SQL never matches NULL through IN. Use `["is", "not set"]`. A blank
+  **Link** field is stored as NULL, not `''`.
+- **An unset field must be written as the `DEFAULT` keyword** — not NULL (works
+  only while `input_format_null_as_default` is on, and is rejected *after* the
+  TRUNCATE) and not `''` (right for String, breaks every Date).
+- **ClickHouse `Date` holds 1970-01-01..2149-06-06 and CLAMPS SILENTLY**;
+  `DateTime` has one-second resolution and rejects a microsecond timestamp with
+  a 400 — also after the TRUNCATE.
+- **Everything in `konsol/fixtures/` is force-reimported on every migrate**,
+  whatever the `fixtures` hook lists (the hook is read only when exporting), and
+  the import force-deletes first — bypassing the submitted-document guard. Data
+  users edit belongs in `konsol/demo_data/`, seeded once. See its README.
+- **A document saved during migrate never reaches ClickHouse** (`sync_table`
+  no-ops while `in_migrate` is set). `reconcile_all` passes `force=True`, so
+  anything seeded in `after_migrate` must run BEFORE `_reconcile_clickhouse()`.
+- **Frappe never drops a column whose field left the DocType JSON.** A patch has
+  to do it, and `patches.txt` has no section headers so every patch runs
+  `pre_model_sync` — which is what lets a patch read the column it is retiring.
+- **A Float column is `not null default 0`**, so "unset" and 0 are
+  indistinguishable. Never write `x or 100`.
+- **`join_use_nulls=0`**: an unmatched LEFT JOIN fills a non-nullable column with
+  its DEFAULT, not NULL, so `left join ... where x is null` never returns a row.
+  Use `NOT IN`, or cast to `Nullable`.
+- **A test file that stubs `sys.modules["konsol"]` without restoring it poisons
+  every LATER test file** — the runner counts them as missing deps and skips
+  them, so the suite shrinks silently (750 → 630 across 15 files).
+- **Assertions that a name is ABSENT keep matching the docstring explaining its
+  removal.** Strip string literals with `ast` first.
+- **Harmonized dims bake in at INCREMENTAL bronze** — after changing a dimension
+  mapping rebuild `bronze_general_journal_account_entries+ --full-refresh`.
+- **`git stash` on a clean tree stashes nothing**, and the following
+  `git stash pop` pops someone else's older stash. konsolidat's list holds two.
 - `deploy.sh`'s in-image `bench build` is flaky; `docker compose build
   frappe_backend` standalone works, then recreate + `bench migrate`.
-- **`git stash` when the tree is clean stashes nothing, and a following
-  `git stash pop` pops someone else's older stash.** `git stash list` in
-  konsolidat holds two entries that must not be popped by accident.
