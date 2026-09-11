@@ -525,6 +525,21 @@ _REFERENCE_TABLE_DDL = {
     ),
 }
 
+# Relations a previous release wrote and this one abandoned. Nothing truncates a
+# table once its last writer is gone, so the rows sit there forever looking live
+# — konsolidat#146 left three of them holding whichever of `dbt seed` and
+# `bench migrate` had written last, which is exactly the stale-second-source
+# confusion this work exists to remove. Dropped outright; every dbt reader moved
+# to the staging tables.
+_RETIRED_TABLES = (
+    "epm_gold.allocation_rules",
+    "epm_gold.ic_elimination_rules",
+    "epm_gold.consolidation_adjustments",
+    "epm_gold.allocation_drivers_headcount",
+    "epm_gold.allocation_drivers_revenue",
+    "epm_gold.allocation_drivers_sqm",
+)
+
 # Columns that a previous release created and F2 retired. ClickHouse keeps a
 # column the writer stopped sending, silently filled with its default — an
 # ownership percentage that no longer updates is exactly the kind of second
@@ -552,6 +567,15 @@ def ensure_reference_tables():
           for t, body in _REFERENCE_TABLE_DDL.items()],
         *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
+        *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
+        # ...and its watermark row with it. sync_table stamps one per successful
+        # sync and assert_staging_not_stale compares them: a row for a table
+        # that no longer has a writer stays frozen while every live table
+        # re-stamps, so the test reports it LAGGING and fails the build. Leaving
+        # the stamp behind would also assert a row count for a relation that no
+        # longer exists.
+        *[f"ALTER TABLE {_WATERMARK_TABLE} DELETE WHERE table_name = '{t}'"
+          for t in _RETIRED_TABLES],
     ]:
         try:
             execute(sql)

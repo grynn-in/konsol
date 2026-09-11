@@ -339,8 +339,8 @@ def test_no_controller_still_writes_a_deleted_seeds_relation():
             "epm_gold.consolidation_adjustments")
     offenders = []
     for path in pathlib.Path(APP_DIR).rglob("*.py"):
-        if "/tests/" in str(path):
-            continue
+        if "/tests/" in str(path) or path.name == "clickhouse.py":
+            continue  # clickhouse.py names them in _RETIRED_TABLES, to DROP them
         text = path.read_text()
         for relation in gone:
             # a mention inside a comment explaining the removal is fine
@@ -348,6 +348,11 @@ def test_no_controller_still_writes_a_deleted_seeds_relation():
                 if relation in line and not line.lstrip().startswith("#"):
                     offenders.append(f"{path.name}: {line.strip()[:70]}")
     assert not offenders, offenders
+
+    # and the only place that may name them is the drop list
+    m, _ = _load_clickhouse()
+    for relation in gone:
+        assert relation in m._RETIRED_TABLES, relation
 
     m, _ = _load_clickhouse()
     for kept in ("epm_gold.spread_profiles", "epm_gold.scenario_definitions"):
@@ -400,3 +405,30 @@ def test_a_staging_only_controller_is_still_reconciled():
         "a field-mapped staging table with no gold counterpart must reconcile")
     assert "Reporting Hierarchy" in found
     assert "Dimension Mapping" in found
+
+
+def test_abandoned_relations_are_dropped_not_left_looking_live():
+    """konsolidat#146 removed the last writer from six epm_gold relations.
+    Nothing truncates a table once its writer is gone, so each would sit there
+    holding whichever of `dbt seed` and `bench migrate` wrote last — stale
+    configuration that reads as current, which is the confusion this work
+    exists to remove."""
+    m, _ = _load_clickhouse()
+    assert set(m._RETIRED_TABLES) == {
+        "epm_gold.allocation_rules",
+        "epm_gold.ic_elimination_rules",
+        "epm_gold.consolidation_adjustments",
+        "epm_gold.allocation_drivers_headcount",
+        "epm_gold.allocation_drivers_revenue",
+        "epm_gold.allocation_drivers_sqm",
+    }
+    # nothing may be both dropped and created
+    assert not set(m._RETIRED_TABLES) & set(m._REFERENCE_TABLE_DDL)
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_reference_tables()
+    for table in m._RETIRED_TABLES:
+        assert f"DROP TABLE IF EXISTS {table}" in sql, table
+        # the watermark row has to go too, or assert_staging_not_stale reports
+        # the frozen stamp as LAGGING and fails every build
+        assert any(f"DELETE WHERE table_name = '{table}'" in s for s in sql), table

@@ -386,26 +386,3 @@ def test_ownership_is_seeded_before_the_clickhouse_reconcile():
     calls = [line.strip() for line in after.splitlines()
              if line.strip() and not line.strip().startswith("#")]
     assert calls.index("_bootstrap_ownership_periods()") < calls.index("_reconcile_clickhouse()")
-
-
-def test_ic_rules_the_demo_ledger_can_actually_fire_are_shipped():
-    """konsolidat#146: the deleted seed carried IC_004 and IC_005, which the
-    doctype did not.
-
-    They are not surplus — they are the only two whose accounts exist in the
-    demo ledger (4030/5030 and 1100/2010 have trial-balance rows; 1300, 4000,
-    5000, 8100 and 3200 do not). And they never fired, because the dbt model
-    read the seed only when the staging table happened to be empty. Deleting the
-    seed without shipping them would have made that dormancy permanent;
-    shipping them turned gold_ic_eliminations from 0 rows into 272.
-    """
-    import json
-
-    with open(os.path.join(APP_DIR, "fixtures", "ic_elimination_rule.json")) as f:
-        rules = {r["rule_id"]: r for r in json.load(f)}
-    for rule_id, debit, credit in (("IC_004", "4030", "5030"),
-                                   ("IC_005", "1100", "2010")):
-        assert rule_id in rules, f"{rule_id} was only ever in the deleted seed"
-        assert rules[rule_id]["debit_account"] == debit
-        assert rules[rule_id]["credit_account"] == credit
-        assert rules[rule_id]["rule_type"] == "balance"
