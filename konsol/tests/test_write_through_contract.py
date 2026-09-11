@@ -206,6 +206,7 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_gold.spread_profiles",
         "epm_gold.scenario_definitions",
         "epm_gold.currencies",
+        "epm_gold.entity_fiscal_calendars",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

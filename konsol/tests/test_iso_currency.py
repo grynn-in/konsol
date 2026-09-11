@@ -70,3 +70,49 @@ def test_shipped_as_a_fixture_and_registered():
     entries = [line.strip() for line in fixtures.splitlines()
                if line.strip() and not line.strip().startswith("#")]
     assert '"ISO Currency",' in entries
+
+
+# --- Entity Fiscal Calendar (konsolidat#146) --------------------------------
+
+CAL_DIR = os.path.join(APP_DIR, "epm", "doctype", "entity_fiscal_calendar")
+
+
+def _cal_fixture():
+    with open(os.path.join(APP_DIR, "fixtures", "entity_fiscal_calendar.json")) as f:
+        return json.load(f)
+
+
+def test_fiscal_calendar_mapping_is_keyed_on_the_erp_entity_code():
+    with open(os.path.join(CAL_DIR, "entity_fiscal_calendar.json")) as f:
+        meta = json.load(f)
+    assert meta["autoname"] == "field:erp_data_area"
+    field = next(f for f in meta["fields"] if f["fieldname"] == "erp_data_area")
+    assert field.get("reqd") == 1 and field.get("unique") == 1
+    # deliberately NOT a Link to Entity — see the controller's module note
+    assert field["fieldtype"] == "Data"
+    assert not any(f["fieldname"] == "data_area_id" for f in meta["fields"]), (
+        "a field named data_area_id must be a Link to Entity (test_entity_links); "
+        "this one maps raw ERP codes konsol has no Entity for")
+
+
+def test_fiscal_calendar_mapping_keeps_every_entity_the_seed_had():
+    """Its own doctype, not a field on Entity: the list covers 68 D365 data
+    areas of which the warehouse currently sees seven. Putting the other 61 on
+    Entity would fill the consolidation entity master with entities nobody
+    consolidates; dropping them would silently date a Chinese entity into
+    'Fiscal' instead of 'Fiscal_CN' the day someone loads its ledger."""
+    rows = _cal_fixture()
+    assert len(rows) == 68
+    assert all(r["erp_data_area"] for r in rows), "the seed's blank row is dropped"
+    by_entity = {r["erp_data_area"]: r["fiscal_calendar_id"] for r in rows}
+    # the three the demo ledger actually needs a non-default calendar for
+    for entity in ("AMHQ", "AMUS", "AMDE"):
+        assert by_entity[entity] == "Standard", entity
+    # and one the warehouse has never seen, kept so it is right when it arrives
+    assert by_entity["CNMF"] == "Fiscal_CN"
+
+
+def test_fiscal_calendar_writes_through():
+    with open(os.path.join(CAL_DIR, "entity_fiscal_calendar.py")) as f:
+        src = f.read()
+    assert 'CH_TABLE = "epm_gold.entity_fiscal_calendars"' in src

@@ -1,0 +1,68 @@
+{
+ "name": "Entity Fiscal Calendar",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 0,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "field:erp_data_area",
+ "fields": [
+  {
+   "fieldname": "erp_data_area",
+   "fieldtype": "Data",
+   "label": "ERP Data Area",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "description": "The legal-entity code as the ERP emits it. Deliberately NOT a Link to Entity: this maps every data area the ledger can contain, most of which konsol does not consolidate."
+  },
+  {
+   "fieldname": "fiscal_calendar_id",
+   "fieldtype": "Data",
+   "label": "Fiscal Calendar",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The calendar this entity posts against, e.g. Fiscal, Standard, Fiscal_CN. Entities with no row fall back to 'Fiscal'."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 1
+  }
+ ]
+}

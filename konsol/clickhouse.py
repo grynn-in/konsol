@@ -510,6 +510,13 @@ _REFERENCE_TABLE_DDL = {
         "weight Float32) "
         "ENGINE = MergeTree ORDER BY (profile_id, fiscal_period)"
     ),
+    # konsolidat#146: which fiscal calendar each ERP legal entity posts against.
+    # It was seeds/entity_fiscal_calendars.csv, and it decides which calendar
+    # every GL line is dated into.
+    "epm_gold.entity_fiscal_calendars": (
+        "(data_area_id String, fiscal_calendar_id String) "
+        "ENGINE = MergeTree ORDER BY data_area_id"
+    ),
     # konsolidat#146: the ISO 4217 reference list. It was seeds/currencies.csv —
     # the one seed with no second writer, but still a table the warehouse
     # validates against living in the dbt repo rather than the app.
