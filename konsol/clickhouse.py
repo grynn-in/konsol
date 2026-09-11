@@ -488,6 +488,16 @@ _REFERENCE_TABLE_DDL = {
         "reporting_currency String) "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)"
     ),
+    # F2: the flat tree. Listed here because _RETIRED_COLUMNS ALTERs it — on a
+    # stack that has never run dbt the table would not exist, the ALTER would
+    # fail, and the sync after it would fail too, invisibly.
+    "epm_staging.consolidation_hierarchy": (
+        "(consolidation_group String, data_area_id String, "
+        "parent_group String DEFAULT '', hierarchy_level UInt8 DEFAULT 1, "
+        "path String DEFAULT '', updated_at DateTime DEFAULT now()) "
+        "ENGINE = ReplacingMergeTree(updated_at) "
+        "ORDER BY (consolidation_group, data_area_id)"
+    ),
     # F2: the link closure that makes consolidation multi-level. One row per
     # (ancestor group, entity, link between them), so dbt can multiply a chain of
     # dated ownership percentages without a recursive CTE.

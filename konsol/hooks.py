@@ -24,10 +24,14 @@ fixtures = [
     "Budget Cycle",
     "Budget Sheet",
     "Consolidation Group",
-    # F2: ownership left Consolidation Group; the tree is structure, the
-    # periods are the ownership. Ordered after the tree so the nodes the
-    # periods validate against already exist.
-    "Ownership Period",
+    # NOT "Ownership Period" — and note that removing it from THIS list is not
+    # what keeps it out. import_fixtures() imports every .json in konsol/fixtures/
+    # regardless of this hook (it is read only when exporting), force-deleting
+    # each existing document first, so the demo periods live in konsol/demo_data/
+    # instead. See that directory's README: shipping ownership as a fixture
+    # reverted a user's edit on the next migrate (80% -> 65% -> 80%, proven on
+    # the live stack), which is the failure F2 removes from the dbt side
+    # arriving through Frappe.
     "IC Elimination Rule",
     "Allocation Rule",
     "Allocation Driver",

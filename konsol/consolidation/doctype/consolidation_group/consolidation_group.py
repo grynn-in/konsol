@@ -51,7 +51,11 @@ class ConsolidationGroup(NestedSet):
         "hierarchy_level", "path",
     ]
 
+    def validate(self):
+        self._validate_entity_in_one_node()
+
     def on_update(self):
+        self._warn_if_no_ownership_period()
         super().on_update()
         sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         self._sync_hierarchy()
@@ -60,6 +64,60 @@ class ConsolidationGroup(NestedSet):
         super().on_trash()
         sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         self._sync_hierarchy()
+
+    # -- validation ---------------------------------------------------------
+
+    def _validate_entity_in_one_node(self):
+        """An entity belongs to exactly one node of the tree.
+
+        Nothing enforced this before: the autoname is
+        ``CG-{consolidation_group}-{data_area_id}``, so CG-GROUP_CORP-DEMF and
+        CG-GROUP_EMEA-DEMF could coexist, and each simply contributed to its own
+        group. Since F2 that is far worse — every ancestor of BOTH nodes gets a
+        chain for the same entity, so a shared ancestor counts it twice, and
+        gold_entity_ownership groups on (group, entity, period) so the two
+        chains' links merge into one nonsensical product. The live stack had
+        exactly this shape after a stray `dbt seed`.
+        """
+        if not self.data_area_id:
+            return  # roll-up node: no entity to duplicate
+        other = frappe.db.exists(
+            "Consolidation Group",
+            {"data_area_id": self.data_area_id, "name": ["!=", self.name]},
+        )
+        if other:
+            frappe.throw(
+                f"Entity '{self.data_area_id}' is already a node of the "
+                f"consolidation tree ({other}). An entity belongs to one node: "
+                f"two would make every shared ancestor consolidate it twice."
+            )
+
+    def _warn_if_no_ownership_period(self):
+        """Say so when a non-root node has no ownership yet.
+
+        ``ownership_pct`` was ``reqd: 1`` on this doctype, so a link could never
+        lack a percentage. Ownership now lives in Ownership Period, which cannot
+        be required here — the node has to exist before a period can name it —
+        so a subsidiary created without one silently contributes nothing to
+        every consolidated statement. assert_ownership_chain_complete fails the
+        dbt build over it, but that is hours later and somewhere else.
+        """
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+            return
+        if not self.parent_consolidation_group:
+            return  # root: 100% by construction
+        blank = ["is", "not set"]
+        if frappe.db.exists("Ownership Period", {
+            "consolidation_group": self.consolidation_group,
+            "data_area_id": self.data_area_id or blank,
+            "docstatus": 1,
+        }):
+            return
+        frappe.msgprint(
+            f"No Ownership Period for this node yet, so nothing below it will "
+            f"consolidate. Add one covering the periods you close.",
+            title="Ownership missing", indicator="orange",
+        )
 
     # -- the tree walk ------------------------------------------------------
 
@@ -131,15 +189,21 @@ class ConsolidationGroup(NestedSet):
     def resync_staging(cls, force=False):
         """Rebuild the ancestry closure and the flat hierarchy from every node.
 
-        Returns what ``sync_table`` wrote for the ancestry — None when the write
-        failed or was skipped.
+        Returns the ancestry row count, or None when EITHER write failed or was
+        skipped. Both, because reconcile_all records one entry per controller:
+        returning only the ancestry's result would report a clean reconcile on a
+        migrate where the hierarchy write was refused — the reporting bug
+        `_record` exists to prevent.
         """
         docs, by_name = cls._nodes()
         hierarchy, ancestry = cls.build_rows(docs, by_name)
-        sync_table(cls.CH_HIERARCHY_TABLE, cls.CH_HIERARCHY_COLUMNS, hierarchy,
-                   force=force)
-        return sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, ancestry,
-                          force=force)
+        wrote_hierarchy = sync_table(
+            cls.CH_HIERARCHY_TABLE, cls.CH_HIERARCHY_COLUMNS, hierarchy, force=force)
+        wrote_ancestry = sync_table(
+            cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, ancestry, force=force)
+        if wrote_hierarchy is None:
+            return None
+        return wrote_ancestry
 
     def _sync_hierarchy(self):
         """PRD-8: kept as the hook on_update/on_trash call; the work lives in

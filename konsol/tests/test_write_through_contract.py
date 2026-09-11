@@ -196,6 +196,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # now the only thing that creates it.
         "epm_gold.consolidation_groups",
         "epm_staging.consolidation_ancestry",
+        # listed because _RETIRED_COLUMNS ALTERs it — an ALTER against a table
+        # that does not exist fails, and so does the sync behind it
+        "epm_staging.consolidation_hierarchy",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
@@ -219,8 +222,15 @@ def test_retired_columns_are_dropped_not_left_defaulting():
     m.execute = lambda s, params=None: sql.append(s) or ""
     m.ensure_reference_tables()
     for table, cols in m._RETIRED_COLUMNS.items():
+        assert table in m._REFERENCE_TABLE_DDL, (
+            f"{table} is ALTERed but never created — the ALTER, and the sync "
+            f"behind it, fail on a volume that has never run dbt")
         for col in cols:
             assert f"ALTER TABLE {table} DROP COLUMN IF EXISTS {col}" in sql, (table, col)
+        create = sql.index(f"CREATE TABLE IF NOT EXISTS {table} {m._REFERENCE_TABLE_DDL[table]}")
+        for col in cols:
+            assert create < sql.index(
+                f"ALTER TABLE {table} DROP COLUMN IF EXISTS {col}"), (table, col)
 
     src = open(CH_PATH).read()
     body = src.split("def reconcile_all")[1].split("\ndef ")[0]

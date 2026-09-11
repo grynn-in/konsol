@@ -54,14 +54,17 @@ def test_consolidation_group_carries_no_ownership():
         assert gone not in fields, f"{gone} belongs to Ownership Period now"
 
 
-def test_consolidation_group_method_options():
-    meta = _load_json("consolidation_group")
-    for field in meta["fields"]:
-        if field["fieldname"] == "consolidation_method":
-            options = field["options"].split("\n")
-            assert "full" in options
-            assert "proportional" in options
-            assert "equity" in options
+def test_consolidation_method_options_live_on_ownership_period():
+    """F2 moved consolidation_method off Consolidation Group, which left this
+    test looping over fields that no longer contain it — a body that never ran
+    and therefore always passed. The option list it guards now belongs to
+    Ownership Period, and has a fourth value: gold_entity_ownership ranks the
+    chain full < proportional < equity < none and takes the weakest link, so an
+    unranked option would silently resolve to the strictest."""
+    meta = _load_json("ownership_period")
+    field = next(f for f in meta["fields"]
+                 if f["fieldname"] == "consolidation_method")
+    assert field["options"].split("\n") == ["full", "proportional", "equity", "none"]
 
 
 def test_consolidation_group_ch_sync():
@@ -248,7 +251,126 @@ def test_lift_patch_drops_the_columns_it_lifted():
     assert "drop column" in body
     for column in ("ownership_pct", "consolidation_method"):
         assert column in body, column
-    # the skipped-nodes branch must return BEFORE dropping
+    # the post-condition must return BEFORE dropping
     main = src.split("def execute")[1].split("def _drop_lifted_columns")[0]
-    assert main.index("if skipped:") < main.index("_drop_lifted_columns()")
-    assert "return" in main.split("if skipped:")[1].split("_drop_lifted_columns()")[0]
+    assert main.index("if unlifted:") < main.index("_drop_lifted_columns()")
+    assert "return" in main.split("if unlifted:")[1].split("_drop_lifted_columns()")[0]
+    # and it must be a real check, not a flag set during the loop
+    assert "not _has_period(n)" in main
+
+
+def test_an_entity_belongs_to_exactly_one_node():
+    """Two nodes for one entity used to mean each fed its own group. Since F2 it
+    means every shared ancestor gets a chain for the same entity twice, and
+    gold_entity_ownership merges the two chains' links into one product."""
+    src = _load_py("consolidation_group")
+    assert "_validate_entity_in_one_node" in src
+    body = src.split("def _validate_entity_in_one_node")[1].split("\n    def ")[0]
+    assert '"data_area_id": self.data_area_id' in body
+    assert "frappe.throw" in body
+
+
+def test_a_node_without_ownership_says_so():
+    """ownership_pct was reqd on the node, so a link could never lack a
+    percentage. A period cannot be required here (the node must exist first), so
+    the gap needs a signal at save time rather than only a failed dbt build."""
+    src = _load_py("consolidation_group")
+    assert "_warn_if_no_ownership_period" in src
+    body = src.split("def _warn_if_no_ownership_period")[1].split("\n    def ")[0]
+    assert "Ownership Period" in body
+    assert "msgprint" in body
+    assert "parent_consolidation_group" in body, "a root needs no period"
+    assert "in_migrate" in body, "must stay quiet during migrate and fixture import"
+
+
+def test_resync_reports_a_failed_hierarchy_write():
+    """reconcile_all records ONE entry per controller, so returning only the
+    ancestry's result would report a clean reconcile on a migrate where the
+    hierarchy write was refused."""
+    src = _load_py("consolidation_group")
+    body = src.split("def resync_staging")[1].split("\n    def ")[0]
+    assert "wrote_hierarchy" in body and "wrote_ancestry" in body
+    assert "if wrote_hierarchy is None:" in body
+
+
+def test_ownership_is_not_shipped_as_a_fixture():
+    """Fixture sync force-deletes and reinserts every shipped name on every
+    migrate, bypassing the submitted-document guard — so shipping ownership
+    reverts a user's edit (proven live: 80% -> 65% -> 80% after one migrate) and
+    undoes the patch's lifted figures.
+
+    The file must be OUT of konsol/fixtures/, not merely off the `fixtures`
+    hook: import_fixtures() imports every .json in that directory whatever the
+    hook says (the hook is read only when exporting). Removing the hook entry
+    alone was tried and the edit was still reverted.
+    """
+    assert not os.path.exists(
+        os.path.join(APP_DIR, "fixtures", "ownership_period.json")), \
+        "everything in fixtures/ is force-reimported on every migrate"
+    assert os.path.exists(
+        os.path.join(APP_DIR, "demo_data", "ownership_period.json"))
+
+    with open(os.path.join(APP_DIR, "hooks.py")) as f:
+        hooks = f.read()
+    fixtures = hooks.split("fixtures = [")[1].split("]")[0]
+    entries = [line.strip() for line in fixtures.splitlines()
+               if line.strip() and not line.strip().startswith("#")]
+    assert '"Ownership Period",' not in entries, entries
+
+    with open(os.path.join(APP_DIR, "install.py")) as f:
+        install = f.read()
+    body = install.split("def _bootstrap_ownership_periods")[1].split("\ndef ")[0]
+    assert 'frappe.db.count("Ownership Period")' in body, "only when there are none"
+    assert '"demo_data"' in body
+
+
+def test_nothing_else_ships_transactional_data_as_a_fixture():
+    """A guard for the next person: anything dropped into konsol/fixtures/ is
+    force-reimported on every migrate, so a doctype users edit does not belong
+    there. These are the submittable ones."""
+    import json
+
+    fixtures_dir = os.path.join(APP_DIR, "fixtures")
+    shipped = set()
+    for name in os.listdir(fixtures_dir):
+        if not name.endswith(".json"):
+            continue
+        with open(os.path.join(fixtures_dir, name)) as f:
+            rows = json.load(f)
+        shipped.update(r.get("doctype") for r in rows if isinstance(r, dict))
+    for doctype in ("Ownership Period", "Trial Balance Submission",
+                    "Allocation Run", "Historical Equity Rate", "IC Balance",
+                    "Consolidation Adjustment"):
+        assert doctype not in shipped, (
+            f"{doctype} is submittable transactional data; a fixture would "
+            f"force-delete and reinsert it on every migrate")
+
+
+def test_hierarchy_query_api_reads_ownership_from_periods():
+    """get_hierarchy_tree is whitelisted and selected ownership_pct /
+    consolidation_method straight off Consolidation Group. F2 drops those
+    columns, so the endpoint would have thrown MySQL 1054 — on every fresh
+    install, where they never existed at all."""
+    with open(os.path.join(APP_DIR, "api.py")) as f:
+        src = f.read()
+    body = src.split("def get_hierarchy_tree")[1].split("\ndef ")[0]
+    assert '"ownership_pct",' not in body.split("fields=[")[1].split("]")[0]
+    assert '"consolidation_method",' not in body.split("fields=[")[1].split("]")[0]
+    assert "_ownership_as_of" in body
+    resolver = src.split("def _ownership_as_of")[1].split("\ndef ")[0]
+    assert '"docstatus": 1' in resolver, "draft and cancelled periods are not ownership"
+    assert "end_date" in resolver, "an expired period is not today's ownership"
+
+
+def test_ownership_is_seeded_before_the_clickhouse_reconcile():
+    """A document saved during migrate never reaches ClickHouse — sync_table
+    no-ops while frappe.flags.in_migrate is set. reconcile_all is the one call
+    that passes force=True, so anything seeded after it stays in Frappe only.
+    Caught by assert_ownership_chain_complete failing on 108 rows."""
+    with open(os.path.join(APP_DIR, "install.py")) as f:
+        src = f.read()
+    after = src.split("def after_migrate")[1].split("\ndef ")[0]
+    # code lines only — a comment above the seeding call names the reconcile
+    calls = [line.strip() for line in after.splitlines()
+             if line.strip() and not line.strip().startswith("#")]
+    assert calls.index("_bootstrap_ownership_periods()") < calls.index("_reconcile_clickhouse()")

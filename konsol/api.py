@@ -1291,10 +1291,18 @@ def budget_save_batch():
 # ---------------------------------------------------------------------------
 
 @frappe.whitelist()
-def get_hierarchy_tree(consolidation_group=None):
+def get_hierarchy_tree(consolidation_group=None, as_of=None):
     """Return consolidation hierarchy as nested JSON tree.
 
     Uses Frappe's native tree (is_tree=1) with lft/rgt for efficient subtree queries.
+
+    F2: ``ownership_pct`` and ``consolidation_method`` are no longer columns on
+    Consolidation Group — ownership is temporal and lives in Ownership Period.
+    Selecting them here would have thrown MySQL 1054 on any site where the patch
+    had dropped them (and on every fresh install, where they never existed). The
+    keys stay in the response, resolved from the period covering ``as_of``
+    (default today), so the shape of a whitelisted endpoint does not change;
+    they are None for a node with no period, which is a real state now.
     """
     filters = {}
     if consolidation_group:
@@ -1315,24 +1323,27 @@ def get_hierarchy_tree(consolidation_group=None):
         filters=filters,
         fields=[
             "name", "consolidation_group", "data_area_id", "entity_name",
-            "parent_consolidation_group", "lft", "rgt", "ownership_pct",
-            "reporting_currency", "consolidation_method", "goodwill_method",
+            "parent_consolidation_group", "lft", "rgt",
+            "reporting_currency", "goodwill_method",
         ],
         order_by="lft asc",
         limit_page_length=0,
     )
 
     by_name = {d.name: d for d in docs}
+    ownership = _ownership_as_of(as_of)
 
     def build_node(doc):
+        period = ownership.get((doc.consolidation_group, doc.data_area_id or ""), {})
         node = {
             "name": doc.name,
             "consolidation_group": doc.consolidation_group,
             "data_area_id": doc.data_area_id,
             "entity_name": doc.entity_name,
             "parent_group": doc.parent_consolidation_group,
-            "ownership_pct": doc.ownership_pct,
-            "consolidation_method": doc.consolidation_method,
+            # what this node's PARENT owns of it, on as_of
+            "ownership_pct": period.get("ownership_pct"),
+            "consolidation_method": period.get("consolidation_method"),
             "children": [],
         }
         for d in docs:
@@ -1346,6 +1357,35 @@ def get_hierarchy_tree(consolidation_group=None):
             tree.append(build_node(d))
 
     return {"tree": tree}
+
+
+def _ownership_as_of(as_of=None):
+    """{(group, entity): {ownership_pct, consolidation_method}} on a date.
+
+    Submitted periods only, and only the one whose range covers the date — the
+    same rule the warehouse applies. A node with none is absent from the map
+    rather than defaulted: "no ownership recorded" and "0%" are different
+    answers, and conflating them is the bug F2 removed.
+    """
+    on = frappe.utils.getdate(as_of or frappe.utils.nowdate())
+    found = {}
+    for p in frappe.get_all(
+        "Ownership Period",
+        filters={"docstatus": 1},
+        fields=["consolidation_group", "data_area_id", "effective_date",
+                "end_date", "ownership_pct", "consolidation_method"],
+        order_by="effective_date asc",
+        limit_page_length=0,
+    ):
+        if frappe.utils.getdate(p.effective_date) > on:
+            continue
+        if p.end_date and frappe.utils.getdate(p.end_date) < on:
+            continue
+        found[(p.consolidation_group, p.data_area_id or "")] = {
+            "ownership_pct": p.ownership_pct,
+            "consolidation_method": p.consolidation_method,
+        }
+    return found
 
 
 # ---------------------------------------------------------------------------

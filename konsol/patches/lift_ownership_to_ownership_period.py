@@ -13,12 +13,15 @@ Idempotent, and deliberately conservative:
   date — a hand-entered period always wins over a lifted default;
 * nothing is created for a ROOT node: nobody owns the top of a hierarchy, it is
   100% by construction, and OwnershipPeriod refuses such a period;
-* a node whose old percentage was NULL or blank is skipped and named in the log
-  rather than defaulted to 100. `ownership_pct or 100` is precisely the
-  falsy-zero bug this work removes; guessing here would re-introduce it one
-  layer down.
+* whatever the tree says is carried over verbatim, including a 0. Frappe emits
+  a Float as `decimal(21,9) not null default 0`, so a node that never had a
+  percentage is indistinguishable from one deliberately set to 0 — and
+  `ownership_pct` was `reqd: 1`, so a genuine unset could not be entered
+  through the desk anyway. Inventing a 100 for the ambiguous case is
+  `ownership_pct or 100`, the falsy-zero bug this work removes, one layer down.
 
-Once every non-root node has a period, the two columns are DROPPED from
+Once every non-root node HAS a period — checked afterwards, not assumed — the
+two columns are DROPPED from
 `tabConsolidation Group`. Frappe does not remove a column when a field leaves a
 DocType JSON, so without this the old percentages sit in MariaDB forever — the
 second source of truth F2 exists to delete, still readable by any `frappe.db.sql`
@@ -65,13 +68,10 @@ def execute():
         as_dict=True,
     )
 
-    created, skipped = 0, []
+    created = 0
     for node in nodes:
         if not node.parent_consolidation_group:
             continue  # root: 100% by construction
-        if node.ownership_pct is None or node.ownership_pct == "":
-            skipped.append(node.name)
-            continue
         if _has_period(node):
             continue
         doc = frappe.get_doc({
@@ -90,13 +90,20 @@ def execute():
     frappe.logger().info(
         f"F2: lifted {created} ownership period(s) from Consolidation Group"
     )
-    if skipped:
+
+    # Post-condition, not a guess: EVERY non-root node must now have a period.
+    # A node can be missing one because its insert raised (an overlap, a date
+    # outside ClickHouse's range, a node that validate refused) — all of which
+    # leave the lift incomplete without raising here.
+    unlifted = [n.name for n in nodes
+                if n.parent_consolidation_group and not _has_period(n)]
+    if unlifted:
         frappe.logger().warning(
-            "F2: these Consolidation Group nodes had no ownership percentage to "
-            "lift and now have NO ownership at all — add an Ownership Period "
-            f"for each before the next consolidation: {', '.join(skipped)}"
+            "F2: these Consolidation Group nodes have NO Ownership Period, so "
+            "nothing below them consolidates — add one for each, then re-run "
+            "this patch. Their old ownership columns are left in place so the "
+            f"figures are recoverable: {', '.join(unlifted)}"
         )
-        # Something was left behind; keep the old columns so it can be recovered.
         return
 
     _drop_lifted_columns()
