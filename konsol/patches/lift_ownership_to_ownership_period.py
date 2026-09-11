@@ -18,6 +18,14 @@ Idempotent, and deliberately conservative:
   falsy-zero bug this work removes; guessing here would re-introduce it one
   layer down.
 
+Once every non-root node has a period, the two columns are DROPPED from
+`tabConsolidation Group`. Frappe does not remove a column when a field leaves a
+DocType JSON, so without this the old percentages sit in MariaDB forever — the
+second source of truth F2 exists to delete, still readable by any `frappe.db.sql`
+— and an upgraded site would differ from a fresh one. The drop is deliberately
+conditional: if any node could not be lifted, the column stays so the data is
+recoverable.
+
 The floor date is deliberately far back: the lifted period is the standing
 ownership "as it has always been", and any real acquisition date is recorded by
 adding a later period, not by editing this one. It is 1970-01-01 because that is
@@ -88,6 +96,32 @@ def execute():
             "lift and now have NO ownership at all — add an Ownership Period "
             f"for each before the next consolidation: {', '.join(skipped)}"
         )
+        # Something was left behind; keep the old columns so it can be recovered.
+        return
+
+    _drop_lifted_columns()
+
+
+def _drop_lifted_columns():
+    """Remove the retired columns from `tabConsolidation Group`.
+
+    Frappe adds and alters columns on migrate but never drops one whose field has
+    left the DocType JSON, so ownership_pct and consolidation_method would keep
+    their pre-F2 values in MariaDB indefinitely: invisible to the ORM, readable
+    by raw SQL, and different from what a fresh install has. Only reached once
+    every non-root node has a period.
+    """
+    for column in ("ownership_pct", "consolidation_method"):
+        if not frappe.db.has_column("Consolidation Group", column):
+            continue
+        try:
+            frappe.db.sql_ddl(
+                f"alter table `tabConsolidation Group` drop column `{column}`")
+            frappe.logger().info(f"F2: dropped Consolidation Group.{column}")
+        except Exception:  # noqa: BLE001 — a failed drop must not fail a migrate
+            frappe.logger().warning(
+                f"F2: could not drop Consolidation Group.{column}; it is unused "
+                f"but still present", exc_info=True)
 
 
 def _has_period(node):

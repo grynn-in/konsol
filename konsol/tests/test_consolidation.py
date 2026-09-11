@@ -233,3 +233,22 @@ def test_lift_patch_is_registered_and_idempotent():
     # a root has no owner, and a missing percentage is reported, never defaulted
     assert "parent_consolidation_group" in src
     assert "or 100" not in _code_only(src)
+
+
+def test_lift_patch_drops_the_columns_it_lifted():
+    """Frappe never drops a column whose field left the DocType JSON, so the old
+    percentages would sit in MariaDB indefinitely — invisible to the ORM,
+    readable by raw SQL, and different from a fresh install. The drop is
+    conditional: a node that could not be lifted keeps its data recoverable."""
+    with open(os.path.join(
+            APP_DIR, "patches", "lift_ownership_to_ownership_period.py")) as f:
+        src = f.read()
+    assert "_drop_lifted_columns" in src
+    body = src.split("def _drop_lifted_columns")[1]
+    assert "drop column" in body
+    for column in ("ownership_pct", "consolidation_method"):
+        assert column in body, column
+    # the skipped-nodes branch must return BEFORE dropping
+    main = src.split("def execute")[1].split("def _drop_lifted_columns")[0]
+    assert main.index("if skipped:") < main.index("_drop_lifted_columns()")
+    assert "return" in main.split("if skipped:")[1].split("_drop_lifted_columns()")[0]
