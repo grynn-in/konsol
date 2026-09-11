@@ -199,11 +199,13 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # listed because _RETIRED_COLUMNS ALTERs it — an ALTER against a table
         # that does not exist fails, and so does the sync behind it
         "epm_staging.consolidation_hierarchy",
-        # konsolidat#146: these two were created by a dbt seed that turned out to
-        # be the SAME relation konsol writes. The seed is deleted, so nothing
-        # else creates them.
+        # konsolidat#146: these were created by a dbt seed that turned out to be
+        # the SAME relation konsol writes. The seeds are deleted, so nothing
+        # else creates them. epm_gold.currencies joins them because the ISO list
+        # moved into the app as its own doctype.
         "epm_gold.spread_profiles",
         "epm_gold.scenario_definitions",
+        "epm_gold.currencies",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

@@ -24,6 +24,10 @@ fixtures = [
     "Budget Cycle",
     "Budget Sheet",
     "Consolidation Group",
+    # konsolidat#146: the ISO 4217 list the warehouse validates FX codes
+    # against. It was seeds/currencies.csv; it is reference data, so a fixture
+    # is right — unlike ownership, a site is not expected to edit it.
+    "ISO Currency",
     # NOT "Ownership Period" — and note that removing it from THIS list is not
     # what keeps it out. import_fixtures() imports every .json in konsol/fixtures/
     # regardless of this hook (it is read only when exporting), force-deleting

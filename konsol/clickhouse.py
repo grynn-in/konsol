@@ -510,6 +510,14 @@ _REFERENCE_TABLE_DDL = {
         "weight Float32) "
         "ENGINE = MergeTree ORDER BY (profile_id, fiscal_period)"
     ),
+    # konsolidat#146: the ISO 4217 reference list. It was seeds/currencies.csv —
+    # the one seed with no second writer, but still a table the warehouse
+    # validates against living in the dbt repo rather than the app.
+    "epm_gold.currencies": (
+        "(currency_code String, currency_name String, symbol String, "
+        "minor_unit UInt8) "
+        "ENGINE = MergeTree ORDER BY currency_code"
+    ),
     "epm_gold.scenario_definitions": (
         "(scenario_id String, scenario_name String, scenario_type String, "
         "is_active Int32) "

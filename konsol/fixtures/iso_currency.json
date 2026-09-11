@@ -1,0 +1,530 @@
+[
+ {
+  "doctype": "ISO Currency",
+  "name": "AED",
+  "currency_code": "AED",
+  "currency_name": "UAE Dirham",
+  "symbol": "د.إ",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ARS",
+  "currency_code": "ARS",
+  "currency_name": "Argentine Peso",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "AUD",
+  "currency_code": "AUD",
+  "currency_name": "Australian Dollar",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BHD",
+  "currency_code": "BHD",
+  "currency_name": "Bahraini Dinar",
+  "symbol": ".د.ب",
+  "minor_unit": 3
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BRL",
+  "currency_code": "BRL",
+  "currency_name": "Brazilian Real",
+  "symbol": "R$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CAD",
+  "currency_code": "CAD",
+  "currency_name": "Canadian Dollar",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CHF",
+  "currency_code": "CHF",
+  "currency_name": "Swiss Franc",
+  "symbol": "Fr",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CLP",
+  "currency_code": "CLP",
+  "currency_name": "Chilean Peso",
+  "symbol": "$",
+  "minor_unit": 0
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CNY",
+  "currency_code": "CNY",
+  "currency_name": "Chinese Yuan Renminbi",
+  "symbol": "¥",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "COP",
+  "currency_code": "COP",
+  "currency_name": "Colombian Peso",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CZK",
+  "currency_code": "CZK",
+  "currency_name": "Czech Koruna",
+  "symbol": "Kč",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "DKK",
+  "currency_code": "DKK",
+  "currency_name": "Danish Krone",
+  "symbol": "kr",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "EGP",
+  "currency_code": "EGP",
+  "currency_name": "Egyptian Pound",
+  "symbol": "£",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "EUR",
+  "currency_code": "EUR",
+  "currency_name": "Euro",
+  "symbol": "€",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "GBP",
+  "currency_code": "GBP",
+  "currency_name": "Pound Sterling",
+  "symbol": "£",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "HKD",
+  "currency_code": "HKD",
+  "currency_name": "Hong Kong Dollar",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "HUF",
+  "currency_code": "HUF",
+  "currency_name": "Hungarian Forint",
+  "symbol": "Ft",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "IDR",
+  "currency_code": "IDR",
+  "currency_name": "Indonesian Rupiah",
+  "symbol": "Rp",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ILS",
+  "currency_code": "ILS",
+  "currency_name": "Israeli New Shekel",
+  "symbol": "₪",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "INR",
+  "currency_code": "INR",
+  "currency_name": "Indian Rupee",
+  "symbol": "₹",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ISK",
+  "currency_code": "ISK",
+  "currency_name": "Iceland Krona",
+  "symbol": "kr",
+  "minor_unit": 0
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "JPY",
+  "currency_code": "JPY",
+  "currency_name": "Japanese Yen",
+  "symbol": "¥",
+  "minor_unit": 0
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "KRW",
+  "currency_code": "KRW",
+  "currency_name": "South Korean Won",
+  "symbol": "₩",
+  "minor_unit": 0
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "KWD",
+  "currency_code": "KWD",
+  "currency_name": "Kuwaiti Dinar",
+  "symbol": "د.ك",
+  "minor_unit": 3
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "MXN",
+  "currency_code": "MXN",
+  "currency_name": "Mexican Peso",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "MYR",
+  "currency_code": "MYR",
+  "currency_name": "Malaysian Ringgit",
+  "symbol": "RM",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "NOK",
+  "currency_code": "NOK",
+  "currency_name": "Norwegian Krone",
+  "symbol": "kr",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "NZD",
+  "currency_code": "NZD",
+  "currency_name": "New Zealand Dollar",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "OMR",
+  "currency_code": "OMR",
+  "currency_name": "Rial Omani",
+  "symbol": "ر.ع.",
+  "minor_unit": 3
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "PHP",
+  "currency_code": "PHP",
+  "currency_name": "Philippine Peso",
+  "symbol": "₱",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "PLN",
+  "currency_code": "PLN",
+  "currency_name": "Polish Zloty",
+  "symbol": "zł",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "QAR",
+  "currency_code": "QAR",
+  "currency_name": "Qatari Rial",
+  "symbol": "ر.ق",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "RON",
+  "currency_code": "RON",
+  "currency_name": "Romanian Leu",
+  "symbol": "lei",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "RUB",
+  "currency_code": "RUB",
+  "currency_name": "Russian Ruble",
+  "symbol": "₽",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "SAR",
+  "currency_code": "SAR",
+  "currency_name": "Saudi Riyal",
+  "symbol": "ر.س",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "SEK",
+  "currency_code": "SEK",
+  "currency_name": "Swedish Krona",
+  "symbol": "kr",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "SGD",
+  "currency_code": "SGD",
+  "currency_name": "Singapore Dollar",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "THB",
+  "currency_code": "THB",
+  "currency_name": "Thai Baht",
+  "symbol": "฿",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TRY",
+  "currency_code": "TRY",
+  "currency_name": "Turkish Lira",
+  "symbol": "₺",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TWD",
+  "currency_code": "TWD",
+  "currency_name": "New Taiwan Dollar",
+  "symbol": "NT$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "UAH",
+  "currency_code": "UAH",
+  "currency_name": "Ukrainian Hryvnia",
+  "symbol": "₴",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "USD",
+  "currency_code": "USD",
+  "currency_name": "US Dollar",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "VND",
+  "currency_code": "VND",
+  "currency_name": "Vietnamese Dong",
+  "symbol": "₫",
+  "minor_unit": 0
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ZAR",
+  "currency_code": "ZAR",
+  "currency_name": "South African Rand",
+  "symbol": "R",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ALL",
+  "currency_code": "ALL",
+  "currency_name": "Albanian Lek",
+  "symbol": "L",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "AMD",
+  "currency_code": "AMD",
+  "currency_name": "Armenian Dram",
+  "symbol": "֏",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ANG",
+  "currency_code": "ANG",
+  "currency_name": "Netherlands Antillean Guilder",
+  "symbol": "ƒ",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "AZN",
+  "currency_code": "AZN",
+  "currency_name": "Azerbaijani Manat",
+  "symbol": "₼",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BDT",
+  "currency_code": "BDT",
+  "currency_name": "Bangladeshi Taka",
+  "symbol": "৳",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BGN",
+  "currency_code": "BGN",
+  "currency_name": "Bulgarian Lev",
+  "symbol": "лв",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BOB",
+  "currency_code": "BOB",
+  "currency_name": "Bolivian Boliviano",
+  "symbol": "Bs.",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CUP",
+  "currency_code": "CUP",
+  "currency_name": "Cuban Peso",
+  "symbol": "$",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "DZD",
+  "currency_code": "DZD",
+  "currency_name": "Algerian Dinar",
+  "symbol": "د.ج",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "ETB",
+  "currency_code": "ETB",
+  "currency_name": "Ethiopian Birr",
+  "symbol": "Br",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "GEL",
+  "currency_code": "GEL",
+  "currency_name": "Georgian Lari",
+  "symbol": "₾",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "KGS",
+  "currency_code": "KGS",
+  "currency_name": "Kyrgyzstani Som",
+  "symbol": "с",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "KZT",
+  "currency_code": "KZT",
+  "currency_name": "Kazakhstani Tenge",
+  "symbol": "₸",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "MDL",
+  "currency_code": "MDL",
+  "currency_name": "Moldovan Leu",
+  "symbol": "L",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "MMK",
+  "currency_code": "MMK",
+  "currency_name": "Myanmar Kyat",
+  "symbol": "K",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "MNT",
+  "currency_code": "MNT",
+  "currency_name": "Mongolian Togrog",
+  "symbol": "₮",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "NGN",
+  "currency_code": "NGN",
+  "currency_name": "Nigerian Naira",
+  "symbol": "₦",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "RSD",
+  "currency_code": "RSD",
+  "currency_name": "Serbian Dinar",
+  "symbol": "дин.",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TJS",
+  "currency_code": "TJS",
+  "currency_name": "Tajikistani Somoni",
+  "symbol": "SM",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TMT",
+  "currency_code": "TMT",
+  "currency_name": "Turkmenistani Manat",
+  "symbol": "m",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "UZS",
+  "currency_code": "UZS",
+  "currency_name": "Uzbekistani Som",
+  "symbol": "som",
+  "minor_unit": 2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "XDR",
+  "currency_code": "XDR",
+  "currency_name": "IMF Special Drawing Rights",
+  "symbol": "SDR",
+  "minor_unit": 0
+ }
+]
