@@ -199,6 +199,11 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # listed because _RETIRED_COLUMNS ALTERs it — an ALTER against a table
         # that does not exist fails, and so does the sync behind it
         "epm_staging.consolidation_hierarchy",
+        # konsolidat#146: these two were created by a dbt seed that turned out to
+        # be the SAME relation konsol writes. The seed is deleted, so nothing
+        # else creates them.
+        "epm_gold.spread_profiles",
+        "epm_gold.scenario_definitions",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
@@ -317,3 +322,81 @@ def test_a_date_column_survives_an_unset_field():
     m, _ = _load_clickhouse()
     assert m._sql_value(None) != "''"
     assert m._sql_value(None) != "NULL"
+
+
+def test_no_controller_still_writes_a_deleted_seeds_relation():
+    """konsolidat#146: a dbt seed materialises into epm_gold, so a seed and a
+    write-through targeting `epm_gold.<same name>` are one ClickHouse table with
+    two writers — `dbt seed` and `bench migrate` overwrite each other, and
+    publishing the doctype fires the governed build that reverts the publish.
+
+    The three relations whose dbt readers moved to the staging tables have no
+    write-through left at all; the two that keep a reader are created here.
+    """
+    import pathlib
+
+    gone = ("epm_gold.allocation_rules", "epm_gold.ic_elimination_rules",
+            "epm_gold.consolidation_adjustments")
+    offenders = []
+    for path in pathlib.Path(APP_DIR).rglob("*.py"):
+        if "/tests/" in str(path):
+            continue
+        text = path.read_text()
+        for relation in gone:
+            # a mention inside a comment explaining the removal is fine
+            for line in text.splitlines():
+                if relation in line and not line.lstrip().startswith("#"):
+                    offenders.append(f"{path.name}: {line.strip()[:70]}")
+    assert not offenders, offenders
+
+    m, _ = _load_clickhouse()
+    for kept in ("epm_gold.spread_profiles", "epm_gold.scenario_definitions"):
+        assert kept in m._REFERENCE_TABLE_DDL, kept
+
+
+class _StagingOnly:
+    """A controller with a field-mapped STAGING table and no gold counterpart."""
+    CH_STAGING_TABLE = "epm_staging.ic_elimination_rules"
+    CH_STAGING_FIELD_MAP = {"rule_id": "rule_id"}
+
+
+class _Computed:
+    """Rows are computed, so reconcile calls resync_staging()."""
+    CH_STAGING_TABLE = "epm_staging.reporting_hierarchies"
+
+    @classmethod
+    def resync_staging(cls, force=False):
+        return 0
+
+
+def test_a_staging_only_controller_is_still_reconciled():
+    """konsolidat#146 deleted the legacy gold write-through from Allocation
+    Rule, IC Elimination Rule and Consolidation Adjustment — and all three
+    silently dropped out of reconcile with it, because discovery's staging arm
+    required resync_staging() while these carry a plain CH_STAGING_FIELD_MAP.
+    Their staging tables would then never be repaired after a fixture import,
+    which is the drift reconcile exists for. Caught by wiping
+    epm_staging.ic_elimination_rules and finding a migrate did not refill it.
+
+    reconcile_all's body already handled this shape; only the discovery
+    predicate did not reach it.
+    """
+    m, frappe = _load_clickhouse(controllers={
+        "IC Elimination Rule": _StagingOnly,
+        "Reporting Hierarchy": _Computed,
+        "Dimension Mapping": _Governed,
+    })
+    def get_all(doctype, filters=None, fields=None, pluck=None, **kw):
+        if doctype == "Module Def":
+            return ["Consolidation"] if pluck else [{"name": "Consolidation"}]
+        if doctype == "DocType":
+            names = ["IC Elimination Rule", "Reporting Hierarchy", "Dimension Mapping"]
+            return names if pluck else [{"name": n} for n in names]
+        return []
+    frappe.get_all = get_all
+
+    found = m._write_through_doctypes()
+    assert "IC Elimination Rule" in found, (
+        "a field-mapped staging table with no gold counterpart must reconcile")
+    assert "Reporting Hierarchy" in found
+    assert "Dimension Mapping" in found

@@ -11,21 +11,16 @@ from konsol.clickhouse import sync_doctype
 
 
 class ConsolidationAdjustment(Document):
-    # Legacy sync (seed replacement)
-    CH_TABLE = "epm_gold.consolidation_adjustments"
-    CH_LEGACY_FIELD_MAP = {
-        "consolidation_group": "consolidation_group",
-        "adjustment_type": "adjustment_type",
-        "journal_id": "journal_id",
-        "data_area_id": "data_area_id",
-        "fiscal_year": "fiscal_year",
-        "fiscal_period": "fiscal_period",
-        "main_account": "main_account",
-        "debit_amount": "debit_amount",
-        "credit_amount": "credit_amount",
-        "description": "description",
-        "posted_by": "posted_by",
-    }
+    # konsolidat#146: the legacy epm_gold write-through is GONE. It existed to
+    # replace a dbt seed — and seeds materialise into epm_gold, so the CSV and
+    # this sync were the SAME ClickHouse relation, overwriting each other on
+    # every `dbt seed` and every `bench migrate`. The seed is deleted and every
+    # dbt reader moved to the staging table below, which is the richer one
+    # anyway (the legacy map dropped the workflow/method columns entirely).
+    # The legacy map also had no `status` column, and the dbt model labelled
+    # everything it read from that relation 'Approved' unconditionally — so the
+    # workflow only ever held because the model preferred staging whenever it
+    # was non-empty.
 
     # PRD-16: Staging sync with workflow fields
     CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"
@@ -54,11 +49,9 @@ class ConsolidationAdjustment(Document):
             self.approved_at = now_datetime()
 
     def on_update(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_LEGACY_FIELD_MAP)
         sync_doctype(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
 
     def on_trash(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_LEGACY_FIELD_MAP)
         sync_doctype(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
 
     def on_submit(self):

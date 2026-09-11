@@ -52,9 +52,19 @@ def test_allocation_rule_id_unique():
 
 
 def test_allocation_rule_ch_sync():
+    """konsolidat#146: the legacy epm_gold write-through is gone — it shared a
+    ClickHouse relation with a dbt seed (seeds materialise into epm_gold), so
+    the CSV and the doctype overwrote each other on every build and every
+    migrate. Every dbt reader moved to the staging table, which is the richer
+    one: the legacy map dropped allocation_method and driver_formula, so a
+    formula-driven rule read back as a plain step-down."""
     content = _load_py("allocation_rule")
     assert "sync_doctype" in content
-    assert "gold.allocation_rules" in content
+    assert 'CH_STAGING_TABLE = "epm_staging.allocation_rules"' in content
+    assert "epm_gold.allocation_rules" not in content
+    staging = content.split("CH_STAGING_FIELD_MAP")[1].split("}")[0]
+    for column in ('"allocation_method"', '"driver_formula"'):
+        assert column in staging, column
 
 
 def test_allocation_rule_driver_type_options():

@@ -498,6 +498,23 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = ReplacingMergeTree(updated_at) "
         "ORDER BY (consolidation_group, data_area_id)"
     ),
+    # konsolidat#146: two more relations a dbt seed and this write-through both
+    # owned — seeds materialise into epm_gold, so seeds/spread_profiles.csv WAS
+    # epm_gold.spread_profiles. The seeds are deleted, so nothing else creates
+    # these. The other three colliding relations (allocation_rules,
+    # ic_elimination_rules, consolidation_adjustments) had no reader left once
+    # their dbt models moved to the staging tables, so their legacy write-through
+    # is gone entirely rather than given DDL here.
+    "epm_gold.spread_profiles": (
+        "(profile_id String, profile_name String, fiscal_period Int32, "
+        "weight Float32) "
+        "ENGINE = MergeTree ORDER BY (profile_id, fiscal_period)"
+    ),
+    "epm_gold.scenario_definitions": (
+        "(scenario_id String, scenario_name String, scenario_type String, "
+        "is_active Int32) "
+        "ENGINE = MergeTree ORDER BY scenario_id"
+    ),
     # F2: the link closure that makes consolidation multi-level. One row per
     # (ancestor group, entity, link between them), so dbt can multiply a chain of
     # dated ownership percentages without a recursive CTE.
@@ -573,14 +590,13 @@ def reconcile_all():
         try:
             cls = get_controller(doctype)
             if getattr(cls, "CH_TABLE", None):
-                # Some controllers name the flat map CH_LEGACY_FIELD_MAP
-                # ("legacy sync to gold.*"); missing that alias is how three of
-                # the ten write-through doctypes silently escaped
-                # reconciliation.
-                field_map = (getattr(cls, "CH_FIELD_MAP", None)
-                             or cls.CH_LEGACY_FIELD_MAP)
+                # The CH_LEGACY_FIELD_MAP alias is gone with the three "legacy
+                # sync to gold.*" write-throughs it named (konsolidat#146): each
+                # of those relations was also a dbt seed, and every dbt reader
+                # moved to the staging table.
                 _record(synced, cls.CH_TABLE,
-                        sync_doctype(doctype, cls.CH_TABLE, field_map, force=True))
+                        sync_doctype(doctype, cls.CH_TABLE, cls.CH_FIELD_MAP,
+                                     force=True))
 
             # The second table. Three controllers use the generic map pattern;
             # Consolidation Group computes its rows (tree walk) and exposes
@@ -639,13 +655,22 @@ def _write_through_doctypes():
         except Exception:
             # A doctype without an importable controller simply has no CH target.
             continue
-        if (getattr(cls, "CH_TABLE", None) and (
-                getattr(cls, "CH_FIELD_MAP", None)
-                or getattr(cls, "CH_LEGACY_FIELD_MAP", None)))\
-                or (getattr(cls, "CH_STAGING_TABLE", None)
-                    and getattr(cls, "resync_staging", None)):
-            # the second arm: staging-only controllers (Reporting Hierarchy)
-            # whose rows are computed and synced via resync_staging()
+        staging = getattr(cls, "CH_STAGING_TABLE", None)
+        if (getattr(cls, "CH_TABLE", None) and getattr(cls, "CH_FIELD_MAP", None)) \
+                or (staging and getattr(cls, "resync_staging", None)) \
+                or (staging and getattr(cls, "CH_STAGING_FIELD_MAP", None)):
+            # Three ways to be a write-through doctype, and reconcile_all's body
+            # already handles all three: a flat field-mapped gold table, rows
+            # COMPUTED by resync_staging (Reporting Hierarchy, Consolidation
+            # Group), or a field-mapped STAGING table with no gold counterpart.
+            #
+            # That last arm was missing. It did not matter while every such
+            # controller also had a CH_TABLE — but konsolidat#146 deleted the
+            # legacy gold write-through from Allocation Rule, IC Elimination
+            # Rule and Consolidation Adjustment, and all three silently dropped
+            # out of reconcile with it. Their staging tables would then never be
+            # repaired after a fixture import, which is the drift reconcile
+            # exists for.
             found.append(doctype)
     if not found:
         frappe.logger().warning(

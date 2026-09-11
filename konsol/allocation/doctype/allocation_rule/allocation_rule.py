@@ -12,18 +12,12 @@ from konsol.clickhouse import sync_doctype, sync_table
 
 
 class AllocationRule(Document):
-    # Legacy sync (seed replacement)
-    CH_TABLE = "epm_gold.allocation_rules"
-    CH_LEGACY_FIELD_MAP = {
-        "allocation_rule_id": "allocation_rule_id",
-        "rule_name": "rule_name",
-        "step_order": "step_order",
-        "source_account": "source_account",
-        "source_cost_center": "source_cost_center",
-        "driver_type": "driver_type",
-        "target_account": "target_account",
-        "description": "description",
-    }
+    # konsolidat#146: the legacy epm_gold write-through is GONE. It existed to
+    # replace a dbt seed — and seeds materialise into epm_gold, so the CSV and
+    # this sync were the SAME ClickHouse relation, overwriting each other on
+    # every `dbt seed` and every `bench migrate`. The seed is deleted and every
+    # dbt reader moved to the staging table below, which is the richer one
+    # anyway (the legacy map dropped the workflow/method columns entirely).
 
     # PRD-17/18/19: Staging sync with method + formula fields
     CH_STAGING_TABLE = "epm_staging.allocation_rules"
@@ -41,12 +35,10 @@ class AllocationRule(Document):
     }
 
     def on_update(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_LEGACY_FIELD_MAP)
         sync_doctype(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
         self._sync_tiers()
 
     def on_trash(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_LEGACY_FIELD_MAP)
         sync_doctype(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
         self._sync_tiers()
 

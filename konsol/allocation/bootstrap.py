@@ -7,17 +7,9 @@ import frappe
 
 from konsol.clickhouse import sync_doctype, sync_table
 
-RULE_LEGACY_TABLE = "epm_gold.allocation_rules"
-RULE_LEGACY_FIELD_MAP = {
-    "allocation_rule_id": "allocation_rule_id",
-    "rule_name": "rule_name",
-    "step_order": "step_order",
-    "source_account": "source_account",
-    "source_cost_center": "source_cost_center",
-    "driver_type": "driver_type",
-    "target_account": "target_account",
-    "description": "description",
-}
+# konsolidat#146: the legacy epm_gold.allocation_rules sync is gone — it shared
+# a ClickHouse relation with the dbt seed that is now deleted, and every dbt
+# reader moved to the staging table.
 RULE_STAGING_TABLE = "epm_staging.allocation_rules"
 RULE_STAGING_FIELD_MAP = {
     "allocation_rule_id": "allocation_rule_id",
@@ -68,7 +60,6 @@ def sync_allocation_config_to_clickhouse():
 
 
 def _sync_allocation_rules():
-    sync_doctype("Allocation Rule", RULE_LEGACY_TABLE, RULE_LEGACY_FIELD_MAP)
     sync_doctype("Allocation Rule", RULE_STAGING_TABLE, RULE_STAGING_FIELD_MAP)
 
 
