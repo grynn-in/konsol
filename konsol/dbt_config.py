@@ -4,6 +4,8 @@ Reads Dimension, Measure, and Fiscal Period docs from Frappe and
 regenerates the vars section of dbt_project.yml, preserving all
 non-vars sections (models, seeds, paths, etc.).
 """
+import re
+
 import frappe
 import yaml
 
@@ -45,7 +47,22 @@ MANAGED_END = "  # --- END konsol-managed vars ---"
 
 
 def render_managed_vars(managed):
-    """Render the managed keys as a vars-indented YAML block. Pure."""
+    """Render the managed keys as a vars-indented YAML block. Pure.
+
+    An empty mapping renders as markers and nothing else. yaml.dump({}) is the
+    flow scalar "{}", which indented under ``vars:`` produces
+
+        vars:
+          erp_sources: [d365_fo]
+          {}
+
+    — a mapping value where a key is expected, so the whole dbt_project.yml
+    stops parsing (yaml.scanner.ScannerError). A site with no Published
+    Dimension, Measure or Fiscal Period hits that on its first regenerate, and
+    nothing downstream can read the file again until a human edits it.
+    """
+    if not managed:
+        return MANAGED_BEGIN + "\n" + MANAGED_END
     text = yaml.dump(managed, default_flow_style=False, sort_keys=False,
                      allow_unicode=True)
     indented = "".join(
@@ -74,6 +91,20 @@ def splice_managed_block(text, rendered_block, begin=MANAGED_BEGIN, end=MANAGED_
     return text[:b] + rendered_block + text[e:]
 
 
+# A dbt model name is a file stem and a build_domain is a tag fragment; both are
+# interpolated straight into YAML here, so both are restricted to characters
+# that cannot end a scalar, open a comment or start a new key. Without this a
+# Build Model named `x: y` or `x #c` — an ordinary Frappe Data field, editable
+# by anyone who can edit Build Model — rewrites dbt_project.yml into something
+# that either fails to parse or silently re-tags other models on the next save.
+_SAFE_MODEL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_DOMAIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+class UnsafeDomainMapping(ValueError):
+    """A Build Model row cannot be rendered into YAML safely."""
+
+
 def render_model_domains(mapping):
     """Render the gold per-model domain entries, grouped by domain. Pure.
 
@@ -81,7 +112,22 @@ def render_model_domains(mapping):
         <model>:\n  +tags: ['gold', 'domain:<domain>']
     at the gold subtree's 6-space indent, with a generated header per domain
     group. The whole region is machine-owned.
+
+    Raises UnsafeDomainMapping when a name would not survive interpolation —
+    the caller refuses to write the file rather than corrupting it.
     """
+    for model, domain in mapping.items():
+        if not _SAFE_MODEL_NAME.match(str(model)):
+            raise UnsafeDomainMapping(
+                f"Build Model name {model!r} is not a valid dbt model name "
+                f"(letters, digits and underscore only) — dbt_project.yml NOT written."
+            )
+        if not _SAFE_DOMAIN.match(str(domain)):
+            raise UnsafeDomainMapping(
+                f"build_domain {domain!r} on model {model!r} is not a valid tag "
+                f"(letters, digits, '_', '-', '.') — dbt_project.yml NOT written."
+            )
+
     lines = [MANAGED_DOMAINS_BEGIN]
     by_domain = {}
     for model, domain in mapping.items():
@@ -337,8 +383,16 @@ def regenerate_model_domains():
     if not mapping:
         return
 
+    try:
+        rendered = render_model_domains(mapping)
+    except UnsafeDomainMapping as e:
+        # Refuse the whole write rather than tag some models and not others —
+        # same contract as a missing marker region.
+        frappe.logger().warning(f"model domains NOT written: {e}")
+        return
+
     updated = splice_managed_block(
-        text, render_model_domains(mapping),
+        text, rendered,
         begin=MANAGED_DOMAINS_BEGIN, end=MANAGED_DOMAINS_END,
     )
     if updated is None:

@@ -275,18 +275,50 @@ def _sync_rows_inner(table, columns, rows, key_columns, key_values):
         execute(f"INSERT INTO {table} ({col_list}) VALUES {values_sql}")
 
 
-def sync_doctype(doctype, table, field_map, force=False):
-    """Fetch all Frappe docs of a doctype and sync to ClickHouse.
+def resolve_sync_filters(doctype):
+    """Which rows of ``doctype`` belong in ClickHouse. The single answer.
 
-    For *submittable* doctypes only docstatus=1 (submitted) rows are synced:
-    drafts (0) and cancelled (2) must never reach ClickHouse. Without this the
-    full TRUNCATE+INSERT re-synced drafts and cancelled docs — so on_cancel
-    re-inserted the just-cancelled row and drafts leaked in on the next submit
-    of any doc (grynn-in/konsolidat#92, finding #1). The guard is keyed on the
-    doctype's own ``is_submittable`` so it fixes every submittable consolidation
-    doctype at once (Ownership Period, IC Balance, Consolidation Adjustment,
-    Historical Equity Rate, …) and leaves non-submittable doctypes (always
-    docstatus 0, e.g. Consolidation Group) untouched.
+    Two rules, in order:
+
+    * the controller declares ``CH_SYNC_FILTERS`` — governed reference data
+      (Dimension Mapping, Cash Flow Category) is published deliberately, and
+      only Published rows may reach the warehouse;
+    * a *submittable* doctype syncs docstatus=1 (submitted) rows only: drafts
+      (0) and cancelled (2) must never reach ClickHouse. Without this the full
+      TRUNCATE+INSERT re-synced drafts and cancelled docs — so on_cancel
+      re-inserted the just-cancelled row and drafts leaked in on the next
+      submit of any doc (grynn-in/konsolidat#92, finding #1). Keyed on the
+      doctype's own ``is_submittable`` so it covers every submittable
+      consolidation doctype at once (Ownership Period, IC Balance,
+      Consolidation Adjustment, Historical Equity Rate, …).
+
+    Both write paths go through here — the document hooks and
+    ``reconcile_all`` — because they used to disagree. publish() synced
+    Published rows only; reconcile synced *every* row of a non-submittable
+    doctype, so one `bench migrate` re-filled epm_staging.cash_flow_categories
+    with Drafts and Inactives that no consumer filters out.
+    """
+    declared = getattr(_controller(doctype), "CH_SYNC_FILTERS", None)
+    if declared:
+        return dict(declared)
+    return {"docstatus": 1} if frappe.get_meta(doctype).is_submittable else None
+
+
+def _controller(doctype):
+    """The doctype's controller class, or None when it has no importable one."""
+    from frappe.model.base_document import get_controller
+
+    try:
+        return get_controller(doctype)
+    except Exception:  # noqa: BLE001 — no controller simply means no declaration
+        return None
+
+
+def sync_doctype(doctype, table, field_map, force=False):
+    """Fetch the doctype's warehouse-eligible docs and sync them to ClickHouse.
+
+    Which rows are eligible is ``resolve_sync_filters(doctype)`` — never a
+    per-call-site decision.
 
     Args:
         doctype: Frappe DocType name (e.g. 'Allocation Rule').
@@ -294,8 +326,10 @@ def sync_doctype(doctype, table, field_map, force=False):
         field_map: Dict mapping CH column names to Frappe field names.
             e.g. {'allocation_rule_id': 'allocation_rule_id', 'rule_name': 'rule_name'}
     """
-    filters = {"docstatus": 1} if frappe.get_meta(doctype).is_submittable else None
-    return sync_doctype_filtered(doctype, table, field_map, filters=filters, force=force)
+    return sync_doctype_filtered(
+        doctype, table, field_map,
+        filters=resolve_sync_filters(doctype), force=force,
+    )
 
 
 def _record_sync_failure(table, error_type, message):
@@ -351,6 +385,11 @@ def check_health():
     return result
 
 
+def _cell(value):
+    """Warehouse cell value: an unset Frappe field is an empty string, not NULL."""
+    return "" if value is None else value
+
+
 def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
     """Fetch filtered Frappe docs and sync to ClickHouse.
 
@@ -380,7 +419,15 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
     )
     rows = []
     for doc in docs:
-        row = [doc.get(f) for f in frappe_fields]
+        # None -> '' , never a literal NULL. An unset Data/Link field arrives as
+        # None, and every one of these columns is declared non-Nullable in
+        # init-db.sql: the INSERT only survives because ClickHouse's default
+        # input_format_null_as_default rewrites NULL to the column default. On a
+        # server with that setting off, the INSERT is rejected *after*
+        # _sync_table_inner has already TRUNCATEd — so one publish of a mapping
+        # with a blank entity silently empties the whole crosswalk. Same
+        # convention ReportingHierarchy.resync_staging already uses.
+        row = [_cell(doc.get(f)) for f in frappe_fields]
         rows.append(row)
 
     modified = [d.get("modified") for d in docs if d.get("modified")]
@@ -395,6 +442,62 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
         source_max_modified=source_max_modified,
         force=force,
     )
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap DDL for the F3 reference tables
+# ---------------------------------------------------------------------------
+# KEEP IN SYNC with clickhouse/init-db.sql in konsolidat — the fresh-install
+# owner of these three tables. Docker runs init-db.sql ONLY against an empty
+# ClickHouse volume, so every stack that existed before F3 (including the
+# demo server and every developer laptop) never receives them: the seeds that
+# used to carry this data are deleted, the doctypes now write through, and
+# each sync fails with "table does not exist" until someone runs the DDL by
+# hand. Creating them here makes the upgrade path idempotent, the same way
+# Trial Balance Submission._ensure_tables does for the epm_raw pair.
+#
+# The column types must match init-db.sql exactly; ORDER BY in particular
+# cannot be changed later without dropping the table.
+_REFERENCE_TABLE_DDL = {
+    "epm_staging.dimension_mappings": (
+        "(dimension String, erp_source String, entity String, source_value String, "
+        "canonical_value String, canonical_label String, status String) "
+        "ENGINE = MergeTree ORDER BY (dimension, erp_source, entity, source_value)"
+    ),
+    "epm_staging.cash_flow_categories": (
+        "(main_account String, cf_category String, cf_line_item String, "
+        "is_cash UInt8, sign Int8, status String) "
+        "ENGINE = MergeTree ORDER BY main_account"
+    ),
+    "epm_staging.reporting_hierarchies": (
+        "(hierarchy_name String, dimension String, member_code String, "
+        "member_label String, parent_member_code String, is_group UInt8, "
+        "hierarchy_level UInt16, path String, effective_from String, "
+        "effective_to String, is_default UInt8, status String) "
+        "ENGINE = MergeTree ORDER BY (hierarchy_name, member_code)"
+    ),
+}
+
+
+def ensure_reference_tables():
+    """Create the F3 write-through reference tables if they are missing.
+
+    Best-effort and idempotent: CREATE TABLE IF NOT EXISTS never touches an
+    existing table, and an unreachable ClickHouse must not fail a migrate — the
+    sync that follows reports its own failure. Each statement is guarded on its
+    own so a server that refuses CREATE DATABASE (the database already exists
+    on every real stack) still gets its tables.
+    """
+    for sql in [
+        "CREATE DATABASE IF NOT EXISTS epm_staging",
+        *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
+          for t, body in _REFERENCE_TABLE_DDL.items()],
+    ]:
+        try:
+            execute(sql)
+        except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
+            frappe.logger().warning(
+                f"reference table bootstrap skipped: {sql[:60]}…", exc_info=True)
 
 
 def reconcile_all():
@@ -420,11 +523,12 @@ def reconcile_all():
     """
     from frappe.model.base_document import get_controller
 
+    ensure_reference_tables()
+
     synced = {}
     for doctype in _write_through_doctypes():
         try:
             cls = get_controller(doctype)
-            rows = frappe.db.count(doctype)
             if getattr(cls, "CH_TABLE", None):
                 # Some controllers name the flat map CH_LEGACY_FIELD_MAP
                 # ("legacy sync to gold.*"); missing that alias is how three of
@@ -432,11 +536,8 @@ def reconcile_all():
                 # reconciliation.
                 field_map = (getattr(cls, "CH_FIELD_MAP", None)
                              or cls.CH_LEGACY_FIELD_MAP)
-                written = sync_doctype(doctype, cls.CH_TABLE, field_map, force=True)
-                # the count actually written, not frappe.db.count: submittable
-                # doctypes sync docstatus=1 rows only, so the doc count
-                # over-reports
-                synced[cls.CH_TABLE] = written if written is not None else rows
+                _record(synced, cls.CH_TABLE,
+                        sync_doctype(doctype, cls.CH_TABLE, field_map, force=True))
 
             # The second table. Three controllers use the generic map pattern;
             # Consolidation Group computes its rows (tree walk) and exposes
@@ -444,15 +545,33 @@ def reconcile_all():
             # still syncs — TRUNCATE+INSERT of nothing empties the table,
             # which is the point.
             if getattr(cls, "resync_staging", None):
-                synced[cls.CH_STAGING_TABLE] = cls.resync_staging(force=True)
+                _record(synced, cls.CH_STAGING_TABLE, cls.resync_staging(force=True))
             elif getattr(cls, "CH_STAGING_TABLE", None) and getattr(cls, "CH_STAGING_FIELD_MAP", None):
-                written = sync_doctype(doctype, cls.CH_STAGING_TABLE, cls.CH_STAGING_FIELD_MAP, force=True)
-                synced[cls.CH_STAGING_TABLE] = written if written is not None else rows
+                _record(synced, cls.CH_STAGING_TABLE,
+                        sync_doctype(doctype, cls.CH_STAGING_TABLE,
+                                     cls.CH_STAGING_FIELD_MAP, force=True))
         except Exception:
             frappe.logger().warning(
                 f"reconcile: {doctype} skipped", exc_info=True
             )
     return synced
+
+
+def _record(synced, table, written):
+    """Record what a sync actually wrote — ``None`` when it did not write.
+
+    ``sync_table`` swallows connection/timeout/HTTP failures and returns None.
+    This used to substitute ``frappe.db.count(doctype)`` for that None, so a
+    reconcile that reached nothing still reported a row count per table and the
+    migrate log read as a clean repair. A table that did not sync now says so,
+    and the watermark (which is only stamped on success) agrees with it.
+    """
+    synced[table] = written
+    if written is None:
+        frappe.logger().warning(
+            f"reconcile: {table} NOT synced — see the ClickHouse SYNC FAILED "
+            f"entry above, or check_health()"
+        )
 
 
 def _write_through_doctypes():

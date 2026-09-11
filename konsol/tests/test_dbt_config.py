@@ -1,8 +1,9 @@
 """TDD tests for konsol.dbt_config — dbt_project.yml vars regenerator."""
 import ast
+import importlib.util
 import os
-import tempfile
-import shutil
+import sys
+import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DBT_CONFIG_PATH = os.path.join(APP_DIR, "dbt_config.py")
@@ -10,6 +11,25 @@ DBT_PROJECT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(APP_DIR)))),
     "open_epm", "dbt_project", "dbt_project.yml"
 )
+
+
+def _load():
+    """Import dbt_config with frappe stubbed, the test_budget_grain pattern.
+
+    `sys.path.insert(APP_DIR); from dbt_config import ...` was used here, and
+    dbt_config imports frappe at module level — so on any host without Frappe
+    (the CI runner, this bench) every test that did it raised
+    ModuleNotFoundError and the runner counted it as a missing dependency, not
+    a failure. That is how test_dbt_config_round_trip went on "passing" for
+    months while importing a function that no longer exists.
+    """
+    if "frappe" not in sys.modules:
+        sys.modules["frappe"] = types.ModuleType("frappe")
+    spec = importlib.util.spec_from_file_location(
+        "dbt_config_under_test", DBT_CONFIG_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_dbt_config_module_exists():
@@ -37,9 +57,9 @@ def test_dbt_config_preserves_non_vars():
     marker-delimited region, so everything else survives byte for byte (the
     old _merge_vars_into_yaml round-tripped the whole file and stripped every
     comment)."""
-    import sys
-    sys.path.insert(0, APP_DIR)
-    from dbt_config import render_managed_vars, splice_managed_block
+    m = _load()
+    render_managed_vars, splice_managed_block = (
+        m.render_managed_vars, m.splice_managed_block)
 
     doc = (
         "name: open_epm\n"
@@ -58,24 +78,40 @@ def test_dbt_config_preserves_non_vars():
     assert "erp_sources" in out
 
 def test_dbt_config_round_trip():
-    """Read real dbt_project.yml, merge vars, verify structure preserved."""
+    """Re-splice the real dbt_project.yml's own managed vars: the file must come
+    back parseable, with everything outside the markers byte-identical.
+
+    Replaces the _merge_vars_into_yaml round-trip test — F3 deleted that
+    function, so this test could only ever ImportError (where a dbt_project
+    exists) or return early (everywhere else).
+    """
     if not os.path.exists(DBT_PROJECT_PATH):
-        return  # Skip if dbt_project not available
+        return  # dbt_project lives on the Frappe host only
 
     import yaml
+    m = _load()
+
     with open(DBT_PROJECT_PATH) as f:
-        original = yaml.safe_load(f)
+        text = f.read()
+    if m.MANAGED_BEGIN not in text:
+        return  # a checkout predating the managed region
 
-    import sys
-    sys.path.insert(0, APP_DIR)
-    from dbt_config import _merge_vars_into_yaml
+    original = yaml.safe_load(text)
+    managed = {k: original["vars"][k]
+               for k in m.MANAGED_KEYS if k in original.get("vars", {})}
 
-    # Re-merge with same vars — should be idempotent
-    result = _merge_vars_into_yaml(original, original.get("vars", {}))
+    out = m.splice_managed_block(text, m.render_managed_vars(managed))
+    assert out is not None
 
+    result = yaml.safe_load(out)
     assert result["name"] == original["name"]
     assert result.get("models") == original.get("models")
-    assert result.get("seeds") == original.get("seeds")
+    # Hand-owned vars survive — the whole point of the surgical writer.
+    assert result["vars"].get("erp_sources") == original["vars"].get("erp_sources")
+    assert result["vars"].get("cluster_enabled") == original["vars"].get("cluster_enabled")
+    # And literally nothing outside the markers moved.
+    assert out.split(m.MANAGED_BEGIN)[0] == text.split(m.MANAGED_BEGIN)[0]
+    assert out.split(m.MANAGED_END)[-1] == text.split(m.MANAGED_END)[-1]
 
 
 # --- Gold model -> domain tags ---
@@ -103,15 +139,21 @@ def test_render_model_domains_tags_and_refusal():
     """F3 replacement for the _apply_model_domains tests: rendering produces
     the same +tags contract, and a file without markers is REFUSED rather than
     rewritten."""
-    import sys
-    sys.path.insert(0, APP_DIR)
-    from dbt_config import (render_model_domains, splice_managed_block,
-                            MANAGED_DOMAINS_BEGIN, MANAGED_DOMAINS_END)
+    m = _load()
 
-    out = render_model_domains({"gold_x": "consolidation"})
+    out = m.render_model_domains({"gold_x": "consolidation"})
     assert "+tags: ['gold', 'domain:consolidation']" in out
-    assert splice_managed_block(
+    assert m.splice_managed_block(
         "models: {}", out,
-        begin=MANAGED_DOMAINS_BEGIN, end=MANAGED_DOMAINS_END) is None
+        begin=m.MANAGED_DOMAINS_BEGIN, end=m.MANAGED_DOMAINS_END) is None
+
+
+def test_regenerate_model_domains_refuses_unsafe_names():
+    """A Build Model name that would break out of its YAML scalar must stop the
+    write, not corrupt dbt_project.yml."""
+    src = open(DBT_CONFIG_PATH).read()
+    body = src.split("def regenerate_model_domains")[1]
+    assert "except UnsafeDomainMapping" in body
+    assert "return" in body.split("except UnsafeDomainMapping")[1]
 
 

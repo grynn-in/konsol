@@ -109,3 +109,51 @@ def test_domains_splice_refused_without_markers():
     assert _m.splice_managed_block(
         "models: {}", "x",
         begin=_m.MANAGED_DOMAINS_BEGIN, end=_m.MANAGED_DOMAINS_END) is None
+
+
+# --- the region must stay valid YAML, and unsafe names must not reach it ---
+
+def test_empty_managed_block_is_valid_yaml_in_context():
+    """yaml.dump({}) is the flow scalar "{}" — indented under `vars:` that is a
+    mapping value where a key belongs, and the whole dbt_project.yml stops
+    parsing (ScannerError). A site with nothing Published hit it on its first
+    regenerate. Empty renders as markers and nothing else."""
+    rendered = _m.render_managed_vars({})
+    assert "{}" not in rendered
+    out = _m.splice_managed_block(DOC, rendered)
+    parsed = yaml.safe_load(out)
+    assert parsed["vars"]["erp_sources"] == ["d365_fo"]
+    assert parsed["vars"]["cluster_enabled"] is False
+    assert "dimensions" not in parsed["vars"]
+
+
+def test_domain_names_that_would_corrupt_the_yaml_are_refused():
+    """model_name and build_domain are raw-interpolated into YAML; both are
+    ordinary Frappe Data fields. A name carrying ': ', '#' or a quote used to
+    rewrite dbt_project.yml into something unparseable — or worse, parseable
+    and wrong — on the next Build Model save."""
+    for bad in ("gold_x: injected", "gold_x #c", "gold_x'", "gold x", "", "  "):
+        try:
+            _m.render_model_domains({bad: "consolidation"})
+        except _m.UnsafeDomainMapping:
+            continue
+        raise AssertionError(f"model name {bad!r} was not refused")
+
+    for bad in ("consolidation'], 'domain:evil", "con: sol", "#c", ""):
+        try:
+            _m.render_model_domains({"gold_x": bad})
+        except _m.UnsafeDomainMapping:
+            continue
+        raise AssertionError(f"domain {bad!r} was not refused")
+
+
+def test_safe_domain_names_still_render_and_parse():
+    out = _m.render_model_domains({"gold_trial_balance": "consolidation",
+                                   "gold_cash_flow_indirect": "reporting-v2"})
+    doc = _m.splice_managed_block(
+        DOMAINS_DOC, out,
+        begin=_m.MANAGED_DOMAINS_BEGIN, end=_m.MANAGED_DOMAINS_END)
+    parsed = yaml.safe_load(doc)
+    gold = parsed["models"]["open_epm"]["gold"]
+    assert gold["gold_trial_balance"]["+tags"] == ["gold", "domain:consolidation"]
+    assert gold["gold_cash_flow_indirect"]["+tags"] == ["gold", "domain:reporting-v2"]

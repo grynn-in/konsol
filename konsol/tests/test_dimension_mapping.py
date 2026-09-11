@@ -76,18 +76,32 @@ def test_permission_matrix():
 # --- controller wiring ---
 
 def test_controller_publish_syncs_warehouse_and_rebuilds():
+    """F3: publish writes through to epm_staging (Published rows only); the CSV
+    seed writer is gone. The lifecycle itself lives in the shared base class —
+    six hand-copied sync calls across two controllers is what let publish() and
+    reconcile_all() disagree about Draft rows."""
     src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
-    # F3: publish writes through to epm_staging (Published rows only); the CSV
-    # seed writer is gone.
-    assert "from konsol.clickhouse import sync_doctype_filtered" in src
-    assert "from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild" in src
-    assert "def publish" in src and "def unpublish" in src
+    assert "from konsol.governed_reference import GovernedReferenceDocument" in src
+    assert "class DimensionMapping(GovernedReferenceDocument)" in src
     assert 'CH_TABLE = "epm_staging.dimension_mappings"' in src
-    assert '"status": "Published"' in src
-    assert "request_governed_rebuild(" in src
+    assert 'CH_SYNC_FILTERS = {"status": "Published"}' in src
     assert "regenerate_dimension_mappings_seed" not in src
     # Uniqueness guard on the crosswalk key.
     assert "_validate_unique_key" in src
+    # The controller must NOT carry its own copy of the sync/lifecycle.
+    for copied in ("sync_doctype_filtered(", "def publish(", "def unpublish(",
+                   "request_governed_rebuild("):
+        assert copied not in src, f"{copied} should come from the base class"
+
+
+def test_blank_entity_duplicate_guard_matches_null():
+    """A blank Link is stored as NULL, not '' — so `{"entity": ""}` matched
+    nothing and the uniqueness guard was inert for ERP-wide defaults, the rows
+    that fan the dim_harmonize _dflt join out when duplicated."""
+    src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+    body = src.split("def _validate_unique_key")[1]
+    assert '["in", ["", None]]' in body
+    assert '"entity": self.entity or ""' not in body
 
 
 # --- seed writer ---
@@ -114,14 +128,18 @@ def test_dimension_mapping_is_a_fixture():
 def test_after_delete_resyncs_not_on_trash():
     """Deleting a Published mapping must re-sync the warehouse — via
     after_delete, NOT on_trash (on_trash runs before the row is removed, so the
-    TRUNCATE+INSERT would still include the deleted doc)."""
-    src = _read(os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+    TRUNCATE+INSERT would still include the deleted doc). Now inherited, so the
+    contract is asserted where it lives."""
+    src = _read("governed_reference.py")
     assert "def after_delete" in src
     body = src.split("def after_delete")[1]
-    assert "sync_doctype_filtered(" in body
-    assert "request_governed_rebuild(" in body
+    assert "self._resync()" in body
+    assert "_request_rebuild(" in body
     # Must NOT use on_trash (wrong timing for this).
     assert "def on_trash" not in src
+    controller = _read(
+        os.path.join("epm", "doctype", "dimension_mapping", "dimension_mapping.py"))
+    assert "def on_trash" not in controller
 
 
 def test_after_migrate_reconciles_the_warehouse():
