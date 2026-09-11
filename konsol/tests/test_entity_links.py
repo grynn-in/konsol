@@ -64,11 +64,20 @@ def test_fieldname_is_unchanged():
         assert field["fieldname"] == "data_area_id"
 
 
+# Doctypes that describe a NODE of the consolidation tree rather than an entity:
+# a roll-up group has no data_area_id, and since F2 an Ownership Period can
+# describe such a group node (how much of it its parent owns), so neither may
+# require one.
+_NODE_SCOPED = {"Consolidation Group", "Ownership Period"}
+
+
 def test_required_flags_are_preserved():
-    """Consolidation Group's roll-up nodes have no entity; the rest require one."""
+    """Node-scoped doctypes allow a blank entity; the rest require one."""
     fields = _doctypes_with_data_area()
-    assert fields["Consolidation Group"].get("reqd", 0) == 0
-    for doctype in REFERRING_DOCTYPES - {"Consolidation Group"}:
+    for doctype in _NODE_SCOPED:
+        assert fields[doctype].get("reqd", 0) == 0, (
+            f"{doctype}.data_area_id must stay optional — it names a tree node")
+    for doctype in REFERRING_DOCTYPES - _NODE_SCOPED:
         assert fields[doctype].get("reqd") == 1, f"{doctype}.data_area_id should stay required"
 
 

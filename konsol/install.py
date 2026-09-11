@@ -41,6 +41,13 @@ def after_migrate():
     # other governed table, and _reconcile_clickhouse() below re-syncs them
     # after fixture import (which does not fire on_update).
     _sync_allocation_config_to_clickhouse()
+    # BEFORE the reconcile: a document saved during migrate does not reach
+    # ClickHouse (sync_table no-ops while frappe.flags.in_migrate is set, which
+    # is deliberate — EPM Settings may not be configured yet). reconcile_all
+    # passes force=True, so it is the one call that can carry these rows
+    # through; seeding after it left the periods in Frappe and nothing in the
+    # warehouse, and assert_ownership_chain_complete failed on 108 rows.
+    _bootstrap_ownership_periods()
     _reconcile_clickhouse()
     _setup_dashboard()
     _retire_konsol_control_page()
@@ -92,6 +99,52 @@ def _restore_asset_manifest():
     except Exception:
         frappe.logger().warning(
             "assets_json redis eviction skipped after migrate", exc_info=True)
+
+
+def _bootstrap_ownership_periods():
+    """Seed the demo Ownership Periods — once, and only when there are none.
+
+    Ownership Period is deliberately NOT in the ``fixtures`` hook. Fixture sync
+    force-deletes and reinserts every shipped name on every migrate
+    (import_fixtures -> import_doc -> delete_old_doc, which bypasses the
+    submitted-document guard), so a shipped period would revert a user's edit —
+    and the figures lift_ownership_to_ownership_period had just carried over
+    from the tree — on the next migrate. Verified on the live stack: an edit
+    from 80% to 65% was back at 80% after one `bench migrate`. That is the same
+    "it re-ran and reverted the publish" failure F2 removes from the dbt side;
+    ownership is transactional data, not configuration.
+
+    So: a demo site with no ownership at all gets the demo set, and every other
+    site is left alone. Best-effort — never fail a migrate over demo data.
+    """
+    import json
+    import os
+
+    try:
+        if frappe.db.count("Ownership Period"):
+            return
+        # konsol/demo_data/, NOT konsol/fixtures/ — see that directory's README.
+        # import_fixtures() imports every .json in fixtures/ on every migrate,
+        # whatever the `fixtures` hook lists, force-deleting the existing
+        # document first. Ownership is data, not configuration.
+        path = os.path.join(frappe.get_app_path("konsol"), "demo_data",
+                            "ownership_period.json")
+        if not os.path.isfile(path):
+            return
+        with open(path) as f:
+            rows = json.load(f)
+        for row in rows:
+            if frappe.db.exists("Ownership Period", row.get("name")):
+                continue
+            doc = frappe.get_doc(dict(row, docstatus=0))
+            doc.flags.ignore_permissions = True
+            doc.insert()
+            doc.submit()
+        frappe.logger().info(
+            f"F2: seeded {len(rows)} demo ownership period(s)")
+    except Exception:
+        frappe.logger().warning(
+            "ownership period bootstrap skipped after migrate", exc_info=True)
 
 
 def _bootstrap_budget_fixtures():

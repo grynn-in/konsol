@@ -137,12 +137,16 @@ def test_filters_are_copied_not_shared():
 
 # --- what reaches the INSERT ------------------------------------------------
 
-def test_unset_fields_insert_empty_string_never_null():
-    """Every one of these columns is non-Nullable in init-db.sql. A literal
-    NULL only survives because ClickHouse defaults input_format_null_as_default
-    on; with it off the INSERT is rejected AFTER _sync_table_inner has already
-    TRUNCATEd, so one publish of a mapping with a blank entity empties the
-    whole crosswalk."""
+def test_unset_fields_insert_the_column_default_never_null():
+    """Every one of these columns is non-Nullable in init-db.sql. A literal NULL
+    only survives while ClickHouse keeps input_format_null_as_default on; with
+    it off the INSERT is rejected AFTER _sync_table_inner has already TRUNCATEd,
+    so one publish of a mapping with a blank entity empties the crosswalk.
+
+    Writing '' instead fixes that for String columns and breaks every Date one —
+    epm_staging.ownership_periods stopped syncing entirely on the live stack
+    because an Ownership Period with no acquisition_date sent '' into a Date.
+    DEFAULT means "whatever this column declares" and is right for both."""
     m, _ = _load_clickhouse(
         controllers={"Dimension Mapping": _Governed},
         docs={"Dimension Mapping": [
@@ -157,7 +161,7 @@ def test_unset_fields_insert_empty_string_never_null():
     inserts = [s for s in sql if s.startswith(f"INSERT INTO {_Governed.CH_TABLE}")]
     assert inserts, sql
     assert "NULL" not in inserts[0], inserts[0]
-    assert "('dim_cost_center', '')" in inserts[0], inserts[0]
+    assert "('dim_cost_center', DEFAULT)" in inserts[0], inserts[0]
 
 
 # --- reconcile reports what actually happened -------------------------------
@@ -187,13 +191,46 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_staging.dimension_mappings",
         "epm_staging.cash_flow_categories",
         "epm_staging.reporting_hierarchies",
+        # F2: epm_gold.consolidation_groups used to be created by `dbt seed`
+        # from the SAME relation konsol writes; the seed is deleted, so this is
+        # now the only thing that creates it.
+        "epm_gold.consolidation_groups",
+        "epm_staging.consolidation_ancestry",
+        # listed because _RETIRED_COLUMNS ALTERs it — an ALTER against a table
+        # that does not exist fails, and so does the sync behind it
+        "epm_staging.consolidation_hierarchy",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
     m.ensure_reference_tables()
-    assert any(s.startswith("CREATE DATABASE IF NOT EXISTS epm_staging") for s in sql)
+    for db in ("epm_staging", "epm_gold"):
+        assert any(s.startswith(f"CREATE DATABASE IF NOT EXISTS {db}") for s in sql), db
     for table in m._REFERENCE_TABLE_DDL:
         assert any(s.startswith(f"CREATE TABLE IF NOT EXISTS {table} (") for s in sql), table
+
+
+def test_retired_columns_are_dropped_not_left_defaulting():
+    """A column the writer stopped sending keeps its last value or its default
+    forever — an ownership percentage that no longer updates is exactly the
+    second source of truth F2 deletes."""
+    m, _ = _load_clickhouse()
+    assert m._RETIRED_COLUMNS["epm_gold.consolidation_groups"] == [
+        "ownership_pct", "consolidation_method"]
+    assert m._RETIRED_COLUMNS["epm_staging.consolidation_hierarchy"] == [
+        "effective_ownership_pct"]
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_reference_tables()
+    for table, cols in m._RETIRED_COLUMNS.items():
+        assert table in m._REFERENCE_TABLE_DDL, (
+            f"{table} is ALTERed but never created — the ALTER, and the sync "
+            f"behind it, fail on a volume that has never run dbt")
+        for col in cols:
+            assert f"ALTER TABLE {table} DROP COLUMN IF EXISTS {col}" in sql, (table, col)
+        create = sql.index(f"CREATE TABLE IF NOT EXISTS {table} {m._REFERENCE_TABLE_DDL[table]}")
+        for col in cols:
+            assert create < sql.index(
+                f"ALTER TABLE {table} DROP COLUMN IF EXISTS {col}"), (table, col)
 
     src = open(CH_PATH).read()
     body = src.split("def reconcile_all")[1].split("\ndef ")[0]
@@ -259,7 +296,7 @@ def test_datetimes_render_at_one_second_precision():
 
 def test_sql_value_still_escapes_and_passes_numbers_raw():
     m, _ = _load_clickhouse()
-    assert m._sql_value(None) == "NULL"
+    assert m._sql_value(None) == "DEFAULT"
     assert m._sql_value(12) == "12"
     assert m._sql_value(1.5) == "1.5"
     assert m._sql_value("O'Brien") == "'O\\'Brien'"
@@ -272,3 +309,11 @@ def test_both_insert_paths_share_one_value_formatter():
     src = open(CH_PATH).read()
     assert src.count("_sql_value(v) for v in row") == 2
     assert src.count('vals.append("NULL")') == 0
+
+
+def test_a_date_column_survives_an_unset_field():
+    """The regression that took epm_staging.ownership_periods offline: an
+    Ownership Period with no acquisition_date. '' is not a Date."""
+    m, _ = _load_clickhouse()
+    assert m._sql_value(None) != "''"
+    assert m._sql_value(None) != "NULL"

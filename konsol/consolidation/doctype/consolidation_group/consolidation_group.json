@@ -52,27 +52,11 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "ownership_pct",
-   "fieldtype": "Float",
-   "label": "Ownership %",
-   "reqd": 1,
-   "in_list_view": 1,
-   "description": "0-100"
-  },
-  {
    "fieldname": "reporting_currency",
    "fieldtype": "Data",
    "label": "Reporting Currency",
    "reqd": 1,
    "default": "USD"
-  },
-  {
-   "fieldname": "consolidation_method",
-   "fieldtype": "Select",
-   "label": "Consolidation Method",
-   "options": "full\nproportional\nequity",
-   "reqd": 1,
-   "in_list_view": 1
   },
   {
    "fieldname": "settings_section",
