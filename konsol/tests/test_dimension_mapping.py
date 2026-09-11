@@ -10,7 +10,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ERP_TYPES = ["d365_fo", "d365_bc", "sap_s4", "sap_ecc", "sap_b1", "erpnext"]
 # Must match the dbt seed columns (dimension_mappings.csv / dim_harmonize macro).
-SEED_COLUMNS = ["dimension", "erp_source", "source_value", "canonical_value",
+SEED_COLUMNS = ["dimension", "erp_source", "entity", "source_value", "canonical_value",
                 "canonical_label", "status"]
 
 

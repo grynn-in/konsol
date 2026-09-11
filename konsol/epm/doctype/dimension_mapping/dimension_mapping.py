@@ -1,7 +1,7 @@
 """Dimension Mapping — crosswalk from a raw ERP dimension value to a canonical one.
 
 Saves are pure metadata. Use Publish/Unpublish to (re)generate the
-seeds/dimension_mappings.csv crosswalk consumed by the dbt dim_harmonize()
+epm_staging.dimension_mappings crosswalk consumed by the dbt dim_harmonize()
 macro and request a governed rebuild. Keyed on (dimension, erp_source,
 source_value), which must be unique among non-Inactive rows.
 """
@@ -21,6 +21,7 @@ class DimensionMapping(Document):
     CH_FIELD_MAP = {
         "dimension": "dimension",
         "erp_source": "erp_source",
+        "entity": "entity",
         "source_value": "source_value",
         "canonical_value": "canonical_value",
         "canonical_label": "canonical_label",
@@ -32,16 +33,19 @@ class DimensionMapping(Document):
         self._validate_unique_key()
 
     def _validate_unique_key(self):
-        """(dimension, erp_source, source_value) must map to one canonical value.
+        """(dimension, erp_source, entity, source_value) maps to ONE canonical value.
 
         Enforced against other non-Inactive rows so a source value never has two
-        live crosswalk targets for the same ERP.
+        live crosswalk targets for the same ERP and entity. Blank entity is the
+        ERP-wide default; an entity-specific row may coexist with it and takes
+        precedence in the warehouse (konsol #111).
         """
         dupe = frappe.db.exists(
             "Dimension Mapping",
             {
                 "dimension": self.dimension,
                 "erp_source": self.erp_source,
+                "entity": self.entity or "",
                 "source_value": self.source_value,
                 "status": ["!=", "Inactive"],
                 "name": ["!=", self.name],
@@ -55,7 +59,7 @@ class DimensionMapping(Document):
 
     @frappe.whitelist()
     def publish(self):
-        """Publish: regenerate the crosswalk seed + request a governed rebuild."""
+        """Publish: re-sync the warehouse crosswalk + request a governed rebuild."""
         check_epm_admin()
         self.status = "Published"
         self.save()

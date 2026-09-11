@@ -1,7 +1,7 @@
 """Reporting Hierarchy — management reporting trees on canonical dimensions.
 
 Legal-entity consolidation uses Consolidation Group, not this doctype.
-Publish regenerates seeds/reporting_hierarchies.csv and requests a governed
+Publish re-syncs epm_staging.reporting_hierarchies and requests a governed
 reporting-scope build.
 """
 import frappe

@@ -1,7 +1,7 @@
 """Cash Flow Category — maps a balance-sheet GL account to a cash-flow line.
 
 Mirrors Dimension Mapping: saves are pure metadata; Publish/Unpublish
-(re)generates seeds/cash_flow_categories.csv (consumed by gold_cash_flow_indirect
+re-syncs epm_staging.cash_flow_categories (consumed by gold_cash_flow_indirect
 and gold_consolidated_cash_flow) and requests a governed rebuild. One Published
 mapping per main_account. Spec: grynn-in/konsolidat#63.
 """
