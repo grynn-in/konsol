@@ -86,3 +86,50 @@ def test_historical_budget_patches_are_guarded_for_fresh_installs():
         guard = 'if not frappe.db.table_exists("Budget Input")'
         assert guard in execute, f"missing fresh-install guard: {path}"
         assert execute.index("table_exists") < execute.index("frappe.get_all")
+
+
+# --- Budget Annual Input (konsolidat#146) -----------------------------------
+
+def _budget_annual_dir():
+    import os
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "epm", "doctype", "budget_annual_input")
+
+
+def test_annual_budget_input_is_konsols_not_a_seed():
+    """konsolidat#146: seeds/budget_annual_input.csv was the last seed the dbt
+    project owned. konsol already had the bottom-up path (Budget Cycle → Sheet →
+    Line → epm_gold.budget_monthly_input); this is the top-down half that
+    gold_spread_budget spreads into months by profile."""
+    import json
+    import os
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
+        src = f.read()
+    assert 'CH_TABLE = "epm_gold.budget_annual_input"' in src
+    for column in ("scenario_id", "data_area_id", "fiscal_year", "main_account",
+                   "annual_amount", "spread_profile_id"):
+        assert f'"{column}"' in src, column
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.json")) as f:
+        meta = json.load(f)
+    fields = {f["fieldname"]: f for f in meta["fields"]}
+    # the F1 invariant: a field named data_area_id is a Link to Entity
+    assert fields["data_area_id"]["fieldtype"] == "Link"
+    assert fields["data_area_id"]["options"] == "Entity"
+
+
+def test_monthly_budget_table_is_created_by_something():
+    """epm_gold.budget_monthly_input has always been a konsol write-through with
+    NOTHING that creates it — no seed, no DDL — so gold_spread_budget failed
+    every build with "Unknown table expression identifier". It is in
+    _REFERENCE_TABLE_DDL now, which cleared one of the three documented baseline
+    failures."""
+    import os
+
+    with open(os.path.join(
+            os.path.dirname(_budget_annual_dir()), "..", "..", "clickhouse.py")) as f:
+        src = f.read()
+    assert '"epm_gold.budget_monthly_input": (' in src
+    assert '"epm_gold.budget_annual_input": (' in src

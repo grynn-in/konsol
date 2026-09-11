@@ -31,6 +31,9 @@ fixtures = [
     # konsolidat#146: which fiscal calendar each ERP entity posts against. Was
     # seeds/entity_fiscal_calendars.csv; reference data, same as ISO Currency.
     "Entity Fiscal Calendar",
+    # konsolidat#146: the top-down annual budget figures. Was
+    # seeds/budget_annual_input.csv.
+    "Budget Annual Input",
     # NOT "Ownership Period" — and note that removing it from THIS list is not
     # what keeps it out. import_fixtures() imports every .json in konsol/fixtures/
     # regardless of this hook (it is read only when exporting), force-deleting

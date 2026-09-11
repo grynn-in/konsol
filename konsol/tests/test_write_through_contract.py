@@ -207,6 +207,10 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_gold.scenario_definitions",
         "epm_gold.currencies",
         "epm_gold.entity_fiscal_calendars",
+        "epm_gold.budget_annual_input",
+        # a konsol write-through that nothing ever created — the cause of the
+        # long-standing gold_spread_budget build failure
+        "epm_gold.budget_monthly_input",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
