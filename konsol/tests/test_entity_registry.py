@@ -265,9 +265,43 @@ def test_the_rebuild_request_is_a_job_queued_after_commit():
     assert ast.literal_eval(kw["enqueue_after_commit"]) is True
     assert ast.literal_eval(kw["deduplicate"]) is True and "job_id" in kw, (
         "deduplicate needs a job_id, or Frappe ignores it")
-    guard = ast.unparse(request)
+
+
+def _run_request(flags=(), enqueue_raises=False):
+    """Run the real Entity._request_rebuild against a stub frappe."""
+    import types
+    calls, logs = [], []
+
+    def enqueue(*args, **kwargs):
+        if enqueue_raises:
+            raise ConnectionError("redis down")
+        calls.append((args, kwargs))
+
+    state = types.SimpleNamespace(in_install=False, in_migrate=False, in_patch=False, in_import=False)
+    for flag in flags:
+        setattr(state, flag, True)
+    ns = {"frappe": types.SimpleNamespace(flags=state, enqueue=enqueue,
+                                          log_error=lambda **k: logs.append(k))}
+    exec(compile(ast.Module(body=[_method("_request_rebuild")], type_ignores=[]), "entity.py", "exec"), ns)
+    ns["_request_rebuild"](types.SimpleNamespace(doctype="Entity", name="X1"), "on_update")
+    return calls, logs
+
+
+def test_no_rebuild_is_requested_during_install_migrate_patch_or_import():
+    """The guard sits at enqueue time because the worker will not have these
+    flags set when the job runs. Checked by running the method, not by finding
+    the flag names in its source (#110 re-review 3)."""
     for flag in ("in_install", "in_migrate", "in_patch", "in_import"):
-        assert flag in guard, f"a job enqueued during {flag} would run after it, unguarded"
+        calls, _ = _run_request(flags=[flag])
+        assert calls == [], f"a job enqueued during {flag} would run after it, unguarded"
+    calls, _ = _run_request()
+    assert len(calls) == 1 and calls[0][0][0] == "konsol.tasks.request_consolidation_build"
+
+
+def test_a_queue_outage_logs_instead_of_failing_the_save():
+    """deduplicate=True makes enqueue query Redis inside the save."""
+    calls, logs = _run_request(enqueue_raises=True)
+    assert calls == [] and len(logs) == 1
 
 
 # frappe.enqueue's own parameters in Frappe v15 (frappe/utils/background_jobs.py).

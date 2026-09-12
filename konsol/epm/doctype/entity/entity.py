@@ -142,17 +142,24 @@ class Entity(NestedSet):
         if (frappe.flags.in_install or frappe.flags.in_migrate
                 or frappe.flags.in_patch or frappe.flags.in_import):
             return
-        frappe.enqueue(
-            "konsol.tasks.request_consolidation_build",
-            enqueue_after_commit=True,
-            job_id=f"konsol-consolidation-build::Entity::{self.name}",
-            deduplicate=True,
-            doctype=self.doctype,
-            name=self.name,
-            # NOT `method=`: that is frappe.enqueue's own first parameter, and
-            # passing it again raised TypeError on every save (caught live).
-            trigger_method=method,
-        )
+        try:
+            frappe.enqueue(
+                "konsol.tasks.request_consolidation_build",
+                enqueue_after_commit=True,
+                job_id=f"konsol-consolidation-build::Entity::{self.name}",
+                deduplicate=True,
+                doctype=self.doctype,
+                name=self.name,
+                # NOT `method=`: that is frappe.enqueue's own first parameter, and
+                # passing it again raised TypeError on every save (caught live).
+                trigger_method=method,
+            )
+        except Exception:  # noqa: BLE001 — a build request must never fail the save
+            # deduplicate=True makes enqueue query Redis NOW, inside the save.
+            # A queue outage (or QueueOverloaded) would otherwise abort an
+            # Entity edit over a rebuild request; log it and let the save
+            # commit. The next watched change, or a manual build, catches up.
+            frappe.log_error(title=f"Entity {self.name}: consolidation build not requested")
 
     def _resync(self):
         """Queue the registry sync for commit, once per transaction.
