@@ -20,6 +20,7 @@ from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.period_status import assert_open_between, first_period_affected
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
 # outside it without complaining, so a period dated 1900 or 9999 would say one
@@ -61,6 +62,24 @@ class OwnershipPeriod(Document):
         self._validate_pct_range()
         self._validate_dates_representable()
         self._check_no_gaps_or_overlaps()
+
+    def before_cancel(self):
+        """Cancel only while every period this ownership covers is open (#136):
+        from the first period its effective date affects until its end date or
+        the next period for the same group and entity, whichever comes first
+        (the warehouse takes the latest effective_date <= the period), and
+        open-ended with neither."""
+        next_start = frappe.db.get_value(
+            "Ownership Period",
+            {"consolidation_group": self.consolidation_group, "data_area_id": self.data_area_id,
+             "docstatus": 1, "effective_date": [">", self.effective_date], "name": ["!=", self.name]},
+            "effective_date", order_by="effective_date asc")
+        end, exclusive = self.end_date, False
+        if next_start:
+            next_first = first_period_affected(next_start)
+            if not end or getdate(end) >= next_first:
+                end, exclusive = next_first, True
+        assert_open_between(self.effective_date, end, action="cancel an ownership period", end_exclusive=exclusive)
 
     def on_submit(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
