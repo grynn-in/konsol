@@ -124,6 +124,6 @@ def test_an_approved_build_still_waiting_in_rq_is_not_reaped():
 def test_nothing_else_happens_when_the_reap_update_matched_no_row():
     body = _sweep_sql()
     update_end = body.index("WHERE name = %s AND workflow_state = %s")
-    check = body.index('!= note:', update_end)
+    check = body.index('!= note:\n            continue', update_end)
     assert check < body.index("UPDATE `tabPipeline Run`") and check < body.index("reaped.append")
 
