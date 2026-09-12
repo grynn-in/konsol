@@ -15,15 +15,45 @@ is what lets the two sides join without a mapping table.
 This is the *management* hierarchy — a strict tree of divisions and regions.
 Legal ownership is a DAG (an entity can have several parents through split
 holdings or a JV) and does not belong here; that is Entity Ownership's job.
+
+konsol#110: Entity writes through to ``epm_staging.entities``, the governed
+entity registry. The warehouse used to learn which entities exist, and what
+currency each keeps its books in, only from ERP extraction
+(silver_legal_entities) — so a subsidiary with no connector, submitting its
+trial balance as a file, had no row there and consolidation INNER JOINed it
+away. Identity now flows down from konsol; the ERP is the fallback.
 """
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 from frappe.utils.nestedset import NestedSet
+
+from konsol.clickhouse import sync_doctype
 
 
 class Entity(NestedSet):
     nsm_parent_field = "parent_entity"
+
+    # Every row is sent — groups and Disposed entities included. A disposed
+    # entity still has historical periods to consolidate, and dbt decides what
+    # to read (silver_entity_currencies takes leaves only).
+    #
+    # The warehouse column is accounting_currency because that is the name the
+    # consolidation joins on; the field is functional_currency because that is
+    # what an accountant calls it. Same split as Entity Fiscal Calendar's
+    # erp_data_area -> data_area_id.
+    CH_TABLE = "epm_staging.entities"
+    CH_FIELD_MAP = {
+        "data_area_id": "name",
+        "entity_name": "entity_name",
+        "parent_entity": "parent_entity",
+        "is_group": "is_group",
+        "status": "status",
+        "accounting_currency": "functional_currency",
+        "country": "country",
+        "erp_source": "erp_source",
+    }
 
     def before_naming(self):
         """Normalise before the name is derived, not after.
@@ -40,6 +70,116 @@ class Entity(NestedSet):
         self._normalise_code()
         self._guard_self_parent()
         self._guard_leaf_parenting()
+
+    # The fields the warehouse reads: silver_entity_currencies takes the
+    # currency it translates from, and is_group decides whether the row is a
+    # leaf. Editing anything else — the name, the country, the parent — changes
+    # no consolidated number, so it must not ask an EPM Admin to approve a
+    # consolidation rebuild.
+    _REBUILD_FIELDS = ("functional_currency", "is_group")
+
+    def on_update(self):
+        # Nested-set bookkeeping first: if the tree update refuses, nothing
+        # should reach the warehouse. Fires on insert as well as save.
+        super().on_update()
+        self._resync()
+        if self._changes_what_consolidation_sees():
+            self._request_rebuild("on_update")
+
+    def after_delete(self):
+        """after_delete, NOT on_trash.
+
+        ``sync_doctype`` re-sends the whole table from ``frappe.get_all``, and
+        on_trash runs BEFORE the row is removed — so a delete would re-publish
+        the entity it just deleted (konsol#120). NestedSet.on_trash still runs
+        untouched; it is what refuses to delete a node that has children.
+
+        A deleted entity's governed currency stops applying (the ERP's takes
+        over, or none does), so that is a consolidation change.
+        """
+        self._resync()
+        if self.functional_currency:
+            self._request_rebuild("after_delete")
+
+    def after_rename(self, olddn, newdn, merge=False):
+        """rename_doc never calls on_update.
+
+        It rewrites ``entity_code`` (the autoname field) and every child's
+        ``parent_entity`` with raw SQL, so without this the warehouse keeps the
+        old code — and the children point at a parent it no longer has — until
+        the next migrate reconciles. Entity has allow_rename off, but
+        rename_doc(force=True) and merges still arrive here. The code is the
+        join key, so a rename always changes what consolidation sees.
+        """
+        super().after_rename(olddn, newdn, merge)
+        self._resync()
+        self._request_rebuild("after_rename")
+
+    def _changes_what_consolidation_sees(self):
+        """Compared normalised. The previous doc is loaded from the database
+        (ints, NULL as None); incoming values are as sent. An API client
+        posting is_group "0", or clearing the currency to "" where it was NULL,
+        would otherwise read as a change and ask an EPM Admin to approve a
+        consolidation rebuild for nothing."""
+        before = self.get_doc_before_save()
+        if before is None:
+            return bool(self.functional_currency)
+        return any(_normalised(f, self.get(f)) != _normalised(f, before.get(f))
+                   for f in self._REBUILD_FIELDS)
+
+    def _request_rebuild(self, method):
+        """Request a consolidation rebuild as a job queued for after the commit.
+
+        The request inserts a Build Approval and COMMITS. Done in-process from
+        a document hook, that commit splits the save, delete or rename in two;
+        on a submit, Frappe runs on_update before on_submit, so it would land
+        docstatus=1 before on_submit has run. A job runs in its own
+        transaction instead: a save that rolls back queues nothing, and a failed
+        request is rolled back and logged by the job runner rather than raised
+        at a user whose change already committed. One job per entity at a
+        time; the debounce inside handles the rest.
+        """
+        if (frappe.flags.in_install or frappe.flags.in_migrate
+                or frappe.flags.in_patch or frappe.flags.in_import):
+            return
+        try:
+            frappe.enqueue(
+                "konsol.tasks.request_consolidation_build",
+                enqueue_after_commit=True,
+                job_id=f"konsol-consolidation-build::Entity::{self.name}",
+                deduplicate=True,
+                doctype=self.doctype,
+                name=self.name,
+                # NOT `method=`: that is frappe.enqueue's own first parameter, and
+                # passing it again raised TypeError on every save (caught live).
+                trigger_method=method,
+            )
+        except Exception:  # noqa: BLE001 — a build request must never fail the save
+            # deduplicate=True makes enqueue query Redis NOW, inside the save.
+            # A queue outage (or QueueOverloaded) would otherwise abort an
+            # Entity edit over a rebuild request; log it and let the save
+            # commit. The next watched change, or a manual build, catches up.
+            frappe.log_error(title=f"Entity {self.name}: consolidation build not requested")
+
+    def _resync(self):
+        """Queue the registry sync for commit, once per transaction.
+
+        Not inline: ClickHouse has no transaction, so a sync inside on_update
+        would publish a save that later rolls back, and the warehouse would
+        consolidate on a row MariaDB never committed (konsol#124). Same
+        after_commit pattern as Allocation Run.
+
+        CallbackManager.add appends without deduping, so a bulk edit of N
+        entities would queue N full-table syncs. The guard asks the queue
+        itself. A marker flag needs clearing on rollback, and Frappe drops the
+        rollback callbacks at the start of commit(); a commit that then failed
+        left the marker set, and every later sync in that process was skipped
+        (#110 re-review). The queue cannot disagree with itself. getattr, so a
+        Frappe that renames the attribute costs a duplicate sync, not a save.
+        """
+        queued = getattr(frappe.db.after_commit, "_functions", ())
+        if _sync_entity_registry not in queued:
+            frappe.db.after_commit.add(_sync_entity_registry)
 
     def _normalise_code(self):
         """The code is a join key, so whitespace and case drift break joins
@@ -64,3 +204,17 @@ class Entity(NestedSet):
                   "Mark it as a group, or record the relationship as ownership instead.")
                 .format(self.parent_entity)
             )
+
+
+
+def _normalised(field, value):
+    """is_group as an int, the currency with NULL and '' the same."""
+    return cint(value) if field == "is_group" else (value or "")
+
+
+def _sync_entity_registry():
+    """The one sync call. frappe.get_all ignores permissions, so a user whose
+    User Permissions scope them to one entity still re-sends every row. A
+    TRUNCATE+INSERT of only the rows they can see would delete the rest of the
+    registry."""
+    return sync_doctype("Entity", Entity.CH_TABLE, Entity.CH_FIELD_MAP)

@@ -31,6 +31,9 @@ TRIGGER_DOCTYPES = [
     "Allocation Rule",
     "Allocation Driver",
     "Allocation Run",
+    # konsol#110: a functional-currency change alters what consolidation
+    # translates from
+    "Entity",
 ]
 
 VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}
@@ -66,7 +69,7 @@ def test_doctype_build_map_exists():
 
 
 def test_doctype_build_map_covers_all_trigger_doctypes():
-    """DOCTYPE_BUILD_MAP must contain all 9 trigger doctypes."""
+    """DOCTYPE_BUILD_MAP must contain every trigger doctype."""
     tree = _parse(TASKS_PATH)
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -446,3 +449,22 @@ def test_build_model_links_to_build_scope():
     bd = next(f for f in doc["fields"] if f["fieldname"] == "build_domain")
     assert bd["fieldtype"] == "Link"
     assert bd["options"] == "Build Scope"
+
+
+def test_every_hooks_trigger_doctype_has_a_build_mapping():
+    """Enumerated from hooks.py itself, not from this file's list. Trial Balance
+    Submission sat in _dbt_trigger_doctypes with no DOCTYPE_BUILD_MAP entry, so
+    every trigger logged "No build mapping" and returned; F8's rebuild on
+    submit and cancel never fired, and a hand-maintained list here did not
+    notice (#110 re-review)."""
+    hooks_src = _read(os.path.join(os.path.dirname(TASKS_PATH), "hooks.py"))
+    block = hooks_src.split("_dbt_trigger_doctypes = [")[1].split("]")[0]
+    triggers = [ln.strip().strip('",') for ln in block.splitlines()
+                if ln.strip().startswith('"')]
+    assert triggers, "no trigger doctypes parsed from hooks.py"
+    tree = _parse(TASKS_PATH)
+    build_map = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                     if isinstance(n, ast.Assign) and any(
+                         isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
+    missing = [t for t in triggers if t not in build_map]
+    assert not missing, f"trigger doctypes with no build mapping: {missing}"

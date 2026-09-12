@@ -73,9 +73,10 @@
   },
   {
    "fieldname": "functional_currency",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
+   "options": "ISO Currency",
    "label": "Functional Currency",
-   "description": "The currency this entity keeps its books in. Not the group's reporting currency \u2014 translation depends on the difference."
+   "description": "The currency this entity keeps its books in. Not the group's reporting currency \u2014 translation depends on the difference. Consolidation translates from this; left blank, it falls back to the ERP's accounting currency, and an entity with no connector cannot consolidate until it is set."
   },
   {
    "fieldname": "country",
@@ -121,7 +122,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-06 12:00:00.000000",
+ "modified": "2026-09-12 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "EPM",
  "name": "Entity",

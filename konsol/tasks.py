@@ -37,6 +37,11 @@ DOCTYPE_BUILD_MAP = {
     "Allocation Rule": {"scope": "staging", "risk": "low"},
     "Allocation Driver": {"scope": "staging", "risk": "low"},
     "Allocation Run": {"scope": "staging", "risk": "low"},
+    # konsol#110: consolidation, not staging — `staging` selects five models,
+    # none of which read the entity registry; `+tag:domain:consolidation`
+    # reaches silver_entity_currencies and gold_consolidated_trial_balance.
+    # Requested from Entity's controller, not from doc_events.
+    "Entity": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
@@ -333,6 +338,16 @@ def _set_duration(doc):
 # ---------------------------------------------------------------------------
 # Hook: trigger governed build after consolidation/allocation doc changes
 # ---------------------------------------------------------------------------
+def request_consolidation_build(doctype, name, trigger_method):
+    """RQ job target for a build request raised after commit (Entity, #110).
+
+    Runs on_consolidation_doc_update in the job's own transaction, so its Build
+    Approval insert and commit never land inside the caller's document hooks.
+    The trigger reads only doctype and name, so a deleted document's request
+    still resolves."""
+    on_consolidation_doc_update(frappe._dict(doctype=doctype, name=name), trigger_method)
+
+
 def on_consolidation_doc_update(doc, method):
     """Called by doc_events hook for consolidation/allocation doctypes.
 
@@ -357,6 +372,12 @@ def on_consolidation_doc_update(doc, method):
         return
 
     scope = mapping["scope"]
+
+    # Serialise requests for one scope. The debounce below is check-then-insert:
+    # two workers running this at once both found nothing pending and both
+    # inserted a Build Approval (#110 re-review; per-entity jobs on several
+    # workers made it likely). The row lock is held until the commit below.
+    frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
 
     # Debounce: skip if a non-terminal PBR already exists for this scope
     existing = frappe.get_all(

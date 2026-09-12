@@ -211,6 +211,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # a konsol write-through that nothing ever created — the cause of the
         # long-standing gold_spread_budget build failure
         "epm_gold.budget_monthly_input",
+        # konsol#110: the entity registry, so a connector-less entity has a
+        # currency the consolidation can join on
+        "epm_staging.entities",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

@@ -134,10 +134,16 @@ _dbt_trigger_doctypes = [
     "Allocation Rule",
     "Allocation Driver",
     "Allocation Run",
-    # F8: a submitted TB must reach gold, and a CANCELLED one must leave it —
-    # without the trigger a cancelled trial balance lingers in consolidated
-    # results until an unrelated doc save rebuilds.
-    "Trial Balance Submission",
+    # NOT "Trial Balance Submission", though F8 meant it to be one. It never had
+    # a DOCTYPE_BUILD_MAP entry, so every trigger returned "No build mapping".
+    # Mapping it is not enough: on submit Frappe runs on_update before
+    # on_submit, and on_consolidation_doc_update COMMITS, which would land
+    # docstatus=1 before the rows are claimed. Blocked on moving the trigger
+    # out of the document hooks.
+    # NOT "Entity" (konsol#110). Its build is requested from the controller,
+    # and only when a field the warehouse reads changes — listing it here would
+    # ask an EPM Admin to approve a consolidation rebuild for a renamed
+    # country. DOCTYPE_BUILD_MAP still carries its scope.
 ]
 
 doc_events = {
