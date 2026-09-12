@@ -266,8 +266,9 @@ def test_schema_apply_budget_fields_filter_published():
     path = os.path.join(APP_DIR, "schema_apply.py")
     with open(path) as f:
         content = f.read()
-    func = _extract_function(content, "_sync_budget_custom_fields")
-    assert '"Published"' in func, "_sync_budget_custom_fields missing Published filter"
+    # The reads moved behind the sync's named lock (#135 review).
+    func = _extract_function(content, "_sync_budget_custom_fields_locked")
+    assert "status = 'Published'" in func, "_sync_budget_custom_fields_locked missing Published filter"
 
 
 # ---------------------------------------------------------------------------
