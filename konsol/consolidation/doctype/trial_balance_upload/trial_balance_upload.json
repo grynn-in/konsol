@@ -27,7 +27,8 @@
    "fieldtype": "Attach",
    "in_list_view": 1,
    "label": "File",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "default": "Draft",
@@ -123,11 +124,6 @@
    "delete": 1,
    "report": 1,
    "export": 1
-  },
-  {
-   "role": "EPM Analyst",
-   "read": 1,
-   "report": 1
   }
  ],
  "sort_field": "modified",

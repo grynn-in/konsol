@@ -25,7 +25,9 @@ export const uploadMachine = setup({
 		}),
 	},
 	guards: {
-		finished: ({ event }) => TERMINAL.has(event.output?.status),
+		// Done, or stalled: Loading with no job left to finish it.
+		finished: ({ event }) => TERMINAL.has(event.output?.status) || Boolean(event.output?.stalled),
+		refused: ({ event }) => Boolean(event.output?.refused),
 	},
 	actions: {
 		choose: assign({ file: ({ event }) => event.file, fileUrl: null, upload: null, error: null }),
@@ -68,8 +70,19 @@ export const uploadMachine = setup({
 			invoke: {
 				src: "load",
 				input: ({ context }) => ({ name: context.upload.name, skipInvalid: context.skipInvalid }),
-				onDone: { target: "loading", actions: "assignUpload" },
-				// The server re-checks before loading; its refusal is shown on the checked upload.
+				onDone: [
+					// The server re-checked and found new problems: show the fresh
+					// report and why, so the user can skip them or fix the file.
+					{
+						guard: "refused",
+						target: "checked",
+						actions: [
+							"assignUpload",
+							assign({ error: ({ event }) => new Error(event.output.refused) }),
+						],
+					},
+					{ target: "loading", actions: "assignUpload" },
+				],
 				onError: { target: "checked", actions: "assignError" },
 			},
 		},
@@ -94,6 +107,8 @@ export const uploadMachine = setup({
 		},
 		done: {
 			on: {
+				// Resume a load that stopped or finished partly; loaded rows are skipped.
+				LOAD: { target: "starting", actions: assign({ skipInvalid: ({ event }) => Boolean(event.skipInvalid), error: null }) },
 				CHOOSE: { target: "uploading", actions: "choose" },
 				RESET: { target: "idle", actions: "reset" },
 			},

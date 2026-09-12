@@ -27,6 +27,10 @@ const busy = computed(() => ["uploading", "checking", "starting"].some((s) => sn
 const loading = computed(() => snapshot.value.matches("loading"));
 const done = computed(() => snapshot.value.matches("done"));
 const canLoad = computed(() => snapshot.value.matches("checked") && upload.value?.status === "Checked" && summary.value.ready > 0);
+// A load that stopped (the worker restarted) or finished partly can pick up
+// where it left off; rows already loaded are never loaded twice.
+const canResume = computed(() => done.value && summary.value.ready > 0
+	&& (upload.value?.stalled || ["Partly Loaded", "Failed"].includes(upload.value?.status)));
 const stepText = computed(() => {
 	if (snapshot.value.matches("uploading")) return `Uploading ${ctx.value.file?.name}…`;
 	if (snapshot.value.matches("checking")) return "Checking every entity and period…";
@@ -112,8 +116,13 @@ function loadNow() {
 					</div>
 					<p class="mt-2 text-sm text-ink-gray-6 tnum">
 						<template v-if="loading">Loading… {{ upload.loaded_count }} of {{ upload.valid_count }} loaded<template v-if="upload.failed_count">, {{ upload.failed_count }} failed</template>.</template>
+						<template v-else-if="upload.stalled">The load stopped before it finished: {{ upload.loaded_count }} loaded so far.</template>
 						<template v-else>{{ upload.status }}: {{ upload.loaded_count }} loaded<template v-if="upload.failed_count">, {{ upload.failed_count }} failed</template>. The consolidation build is requested automatically.</template>
 					</p>
+					<p v-if="upload.error && !loading" class="mt-1 text-sm text-ink-gray-6">{{ upload.error }}</p>
+					<Button v-if="canResume" class="mt-3" variant="solid" @click="send({ type: 'LOAD', skipInvalid: true })">
+						Resume: load the remaining {{ summary.ready }}
+					</Button>
 				</div>
 
 				<div class="mb-3 flex flex-wrap items-center gap-3">

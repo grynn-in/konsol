@@ -47,7 +47,8 @@ def table_from_csv(text):
 
 
 def _header_name(value):
-    name = cell(value).lower().replace(" ", "_").replace("-", "_")
+    # Excel's "CSV UTF-8" puts a byte-order mark before the first header.
+    name = cell(value).lstrip("\ufeff").lower().replace(" ", "_").replace("-", "_")
     return ALIASES.get(name, name)
 
 
@@ -171,8 +172,25 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period_status, exis
         "entity": entity, "fiscal_year": year, "fiscal_period": period, "rows": len(rows),
         "total_debit": round(sum(r["debit"] for r in rows), 2),
         "total_credit": round(sum(r["credit"] for r in rows), 2),
-        "errors": errors, "ok": not errors,
+        "errors": errors, "ok": not errors, "existing": existing,
     }
+
+
+def merge_loaded(report, previous):
+    """Carry forward rows an earlier run of this upload loaded.
+
+    Re-checked, such a row is "already submitted" by that very submission:
+    it is done, not a problem, and must never be loaded again.
+    """
+    loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p["loaded"]
+              for p in previous or [] if p.get("loaded")}
+    out = []
+    for r in report:
+        name = loaded.get((r["entity"], r["fiscal_year"], r["fiscal_period"]))
+        if name and r.get("existing") == name:
+            r = {**r, "ok": True, "errors": [], "loaded": name}
+        out.append(r)
+    return out
 
 
 def outcome(loaded, failed, ready):

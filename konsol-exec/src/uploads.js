@@ -10,11 +10,12 @@ export const TERMINAL = new Set(["Loaded", "Partly Loaded", "Failed"]);
 
 export function summarize(report) {
 	const rows = report || [];
-	const ready = rows.filter((r) => r.ok).length;
+	// Ready = still to load. A loaded row stays ok but is done.
+	const ready = rows.filter((r) => r.ok && !r.loaded).length;
 	return {
 		groups: rows.length,
 		ready,
-		problems: rows.length - ready,
+		problems: rows.filter((r) => !r.ok).length,
 		lines: rows.reduce((n, r) => n + (r.rows || 0), 0),
 		entities: new Set(rows.map((r) => r.entity)).size,
 		loaded: rows.filter((r) => r.loaded).length,

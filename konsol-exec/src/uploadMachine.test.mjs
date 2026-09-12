@@ -14,8 +14,15 @@ function start(over = {}) {
 		actors: {
 			upload: fromPromise(async ({ input }) => { calls.upload += 1; if (over.uploadFails) throw new Error("too big"); return `/private/files/${input.file.name}`; }),
 			check: fromPromise(async ({ input }) => { calls.check.push(input.fileUrl); return { name: "TBU-00001", status: "Checked", valid_count: 2, report: [] }; }),
-			load: fromPromise(async ({ input }) => { calls.load.push(input); if (over.loadRefused) throw new Error("2 of 3 have problems"); return { name: input.name, status: "Loading" }; }),
-			fetchUpload: fromPromise(async () => ({ name: "TBU-00001", status: statuses[Math.min(calls.fetch++, statuses.length - 1)] })),
+			load: fromPromise(async ({ input }) => {
+				calls.load.push(input);
+				if (over.loadRefused) return { name: input.name, status: "Checked", refused: "2 of 3 have problems now", report: [{ entity: "AMHQ", ok: false }] };
+				return { name: input.name, status: "Loading" };
+			}),
+			fetchUpload: fromPromise(async () => {
+				const status = statuses[Math.min(calls.fetch++, statuses.length - 1)];
+				return { name: "TBU-00001", status, stalled: Boolean(over.stalled) && status === "Loading" };
+			}),
 			ticker: fromCallback(({ sendBack }) => { tick = () => sendBack({ type: "TICK" }); return () => { tick = null; }; }),
 		},
 	});
@@ -47,15 +54,15 @@ test("LOAD with skip polls until the upload finishes", async () => {
 	assert.equal(actor.getSnapshot().context.upload.status, "Partly Loaded");
 });
 
-test("a refused load returns to the checked upload with the reason", async () => {
+test("a refused load shows the fresh report and the reason", async () => {
 	const { actor } = start({ loadRefused: true });
 	actor.send({ type: "CHOOSE", file: { name: "tb.csv" } });
 	await flush(); await flush();
 	actor.send({ type: "LOAD" });
 	await flush(); await flush();
 	assert.ok(actor.getSnapshot().matches("checked"));
-	assert.equal(actor.getSnapshot().context.error.message, "2 of 3 have problems");
-	assert.equal(actor.getSnapshot().context.upload.name, "TBU-00001");
+	assert.equal(actor.getSnapshot().context.error.message, "2 of 3 have problems now");
+	assert.equal(actor.getSnapshot().context.upload.report[0].entity, "AMHQ");
 });
 
 test("a failed upload goes back to idle with the error, and a new file starts clean", async () => {
@@ -66,4 +73,21 @@ test("a failed upload goes back to idle with the error, and a new file starts cl
 	assert.equal(actor.getSnapshot().context.error.message, "too big");
 	actor.send({ type: "CHOOSE", file: { name: "again.xlsx" } });
 	assert.equal(actor.getSnapshot().context.error, null);
+});
+
+test("a stalled load ends the polling and can be resumed", async () => {
+	// the worker died: the server reports Loading with no job behind it
+	const { actor, calls, tick } = start({ statuses: ["Loading"], stalled: true });
+	actor.send({ type: "CHOOSE", file: { name: "tb.csv" } });
+	await flush(); await flush();
+	actor.send({ type: "LOAD" });
+	await flush();
+	assert.ok(actor.getSnapshot().matches("loading"));
+	tick(); await flush(); await flush();
+	assert.ok(actor.getSnapshot().matches("done"), "polling stops on a stalled upload");
+	assert.equal(actor.getSnapshot().context.upload.stalled, true);
+	actor.send({ type: "LOAD", skipInvalid: true });
+	await flush();
+	assert.equal(calls.load.length, 2, "resume sends a second load");
+	assert.deepEqual(calls.load[1], { name: "TBU-00001", skipInvalid: true });
 });

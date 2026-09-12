@@ -109,3 +109,30 @@ def test_outcome():
     assert M.outcome(2, 1, 3) == "Partly Loaded"
     assert M.outcome(0, 3, 3) == "Failed"
     assert M.outcome(0, 0, 0) == "Failed"
+
+
+def test_a_byte_order_mark_before_the_header_is_ignored():
+    table = [["\ufeffdata_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit"],
+             ["AMDE", "2025", "12", "1010", "1", "0"]]
+    assert list(M.split_table(table)) == [("AMDE", 2025, 12)]
+
+
+def test_loaded_rows_are_carried_forward_and_never_loaded_again():
+    previous = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "loaded": "TBS-1"},
+                {"entity": "AMUS", "fiscal_year": 2025, "fiscal_period": 12, "load_error": "boom"}]
+    fresh = [
+        {"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": False,
+         "errors": ["TBS-1 is already submitted"], "existing": "TBS-1"},
+        {"entity": "AMUS", "fiscal_year": 2025, "fiscal_period": 12, "ok": True, "errors": [], "existing": None},
+        # submitted by someone else in between: a real problem, not ours
+        {"entity": "AMHQ", "fiscal_year": 2025, "fiscal_period": 12, "ok": False,
+         "errors": ["TBS-9 is already submitted"], "existing": "TBS-9"},
+    ]
+    out = M.merge_loaded(fresh, previous)
+    assert out[0]["loaded"] == "TBS-1" and out[0]["ok"] and out[0]["errors"] == []
+    assert "loaded" not in out[1] and out[1]["ok"]
+    assert "loaded" not in out[2] and not out[2]["ok"]
+
+
+def test_the_report_names_the_existing_submission():
+    assert _check(existing="TBS-7")["existing"] == "TBS-7"

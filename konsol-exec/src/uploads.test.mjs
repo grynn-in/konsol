@@ -10,7 +10,8 @@ const report = [
 ];
 
 test("summary counts entity-periods, entities, lines and outcomes", () => {
-	assert.deepEqual(summarize(report), { groups: 4, ready: 3, problems: 1, lines: 35, entities: 3, loaded: 1, failed: 1 });
+	// the loaded AMUS row is done, not ready; AMHQ failed to load and is ready to retry
+	assert.deepEqual(summarize(report), { groups: 4, ready: 2, problems: 1, lines: 35, entities: 3, loaded: 1, failed: 1 });
 	assert.equal(summarize(null).groups, 0);
 });
 

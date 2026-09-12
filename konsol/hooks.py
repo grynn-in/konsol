@@ -169,3 +169,9 @@ has_permission = {
 }
 has_permission["Entity"] = "konsol.entity_permissions.has_entity_doc_permission"
 
+# A bulk trial balance upload holds every entity's figures (its report and
+# its file, whose read permission follows the upload): visible only to its
+# owner, or to a user who may see every entity in it.
+permission_query_conditions["Trial Balance Upload"] = "konsol.tb_bulk.upload_conditions"
+has_permission["Trial Balance Upload"] = "konsol.tb_bulk.has_upload_permission"
+
