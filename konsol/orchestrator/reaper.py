@@ -245,5 +245,104 @@ def reap_stale_build_approvals():
         except Exception:
             frappe.db.rollback()
             frappe.log_error(title=f"Follow-up build request for {row['name']} failed")
+    # Scheduled with the reaper rather than as its own entry: a new scheduler
+    # hook needs a migrate to register, and this belongs to the same sweep.
+    try:
+        follow_up_failed_starts()
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(title="Build Approval follow-up sweep failed")
     return reaped
+
+
+# tasks.run_governed_build prefixes a start failure's error_message with this.
+# The sweep below keys on it: other Failed rows with the flag (a build that ran,
+# a reaped one) have already requested their follow-up.
+START_FAILURE_PREFIX = "Governed build could not start"
+
+
+def owes_start_failure_follow_up(row, busy):
+    """True if ``row`` is a build that failed to start while holding changes it
+    absorbed when Approved (#140), and a follow-up may be requested now. Pure.
+
+    ``busy``: a Pipeline Run is active, or a Build Approval is Approved or
+    Running. The usual start failure is an active run (``_assert_no_active_run``);
+    a request made then fails the same way at once, and a follow-up auto-
+    approved next to another approval collides with it. So wait for idle.
+    """
+    def _get(key):
+        return row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+
+    return bool(
+        not busy
+        and _get("workflow_state") == "Failed"
+        and _get("rebuild_requested")
+        and not _get("started_at")
+        and (_get("error_message") or "").startswith(START_FAILURE_PREFIX)
+    )
+
+
+def _build_queue_busy():
+    """A Pipeline Run is active, or a Build Approval is about to build or building."""
+    import frappe
+
+    from konsol.orchestrator.api import ACTIVE_RUN_STATES
+
+    return bool(
+        frappe.get_all("Pipeline Run", filters={"status": ["in", list(ACTIVE_RUN_STATES)]}, limit=1)
+        or frappe.get_all("Build Approval", filters={"workflow_state": ["in", ["Approved", "Running"]]}, limit=1)
+    )
+
+
+def follow_up_failed_starts():
+    """Request the build that each start-failed, flagged Build Approval owes (#140).
+
+    One follow-up per failure: the flag is cleared in the transaction that
+    requests the follow-up, which is a new row without the flag. If that one
+    also fails to start, it asks for nothing more unless a new change was
+    absorbed into it, so a start that keeps failing can't loop. Nothing is
+    requested while the build queue is busy, and ``busy`` is re-read after
+    each request, so one sweep never lines up two builds against each other.
+    Lock order is the debounce's: the build lock, then the approval row.
+    Returns the names followed up.
+    """
+    import frappe
+
+    from konsol.build_lock import lock_build_requests
+    from konsol.tasks import request_build_for_scope
+
+    rows = frappe.get_all(
+        "Build Approval",
+        filters={"workflow_state": "Failed", "rebuild_requested": 1,
+                 "error_message": ["like", f"{START_FAILURE_PREFIX}%"]},
+        fields=["name", "workflow_state", "rebuild_requested", "started_at", "error_message", "build_scope"],
+        order_by="creation asc",
+    )
+    followed_up = []
+    for row in rows:
+        if _build_queue_busy():
+            break  # the next sweep picks up the rest
+        if not owes_start_failure_follow_up(row, busy=False):
+            continue
+        try:
+            lock_build_requests()
+            # Claim the flag under the lock: a second sweep finds it cleared.
+            owed = frappe.db.sql(
+                "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s AND workflow_state = 'Failed' FOR UPDATE",
+                row["name"],
+            )
+            if not (owed and owed[0][0]):
+                frappe.db.rollback()
+                continue
+            frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name = %s", row["name"])
+            # Commits the clear with the new request, or absorbs into (and
+            # flags) a pending build for the scope, which carries it forward.
+            request_build_for_scope(row["build_scope"], "Build Approval", row["name"])
+            followed_up.append(row["name"])
+        except Exception:
+            frappe.db.rollback()  # the flag stays: the next sweep retries
+            frappe.log_error(title=f"Follow-up build request for {row['name']} failed")
+    if followed_up:
+        frappe.logger().info(f"Build Approval follow-ups for failed starts: {followed_up}")
+    return followed_up
 

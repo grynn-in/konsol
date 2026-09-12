@@ -140,7 +140,7 @@
       "label": "Rebuild Requested",
       "default": "0",
       "read_only": 1,
-      "description": "A change arrived while this build was running. One more build is requested when it finishes (#129)."
+      "description": "A change arrived while this build was approved or running. One more build is requested when it finishes, or once nothing else is building if it failed to start (#129, #140)."
     },
     {
       "fieldname": "duration_seconds",

@@ -234,6 +234,7 @@ def run_governed_build(build_request):
     # self-block. If blocked (or startup fails), mark this request Failed and
     # re-raise so the job records the failure.
     from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
+    from konsol.orchestrator.reaper import START_FAILURE_PREFIX
 
     try:
         with single_flight_lock():
@@ -241,12 +242,18 @@ def run_governed_build(build_request):
             pipeline_run = _create_governed_pipeline_run(doc)
             doc.workflow_state = "Running"
             doc.started_at = frappe.utils.now_datetime()
+            # Starting reads every change absorbed while Approved, so their
+            # flag is spent (#140); before_save allows this one clear.
+            doc.rebuild_requested = 0
             doc.save(ignore_permissions=True)
             frappe.db.commit()
     except Exception as exc:
+        # Nothing was read, so a change absorbed while Approved keeps its
+        # flag (before_save won't clear it): reaper.follow_up_failed_starts
+        # requests that build once nothing else is building (#140).
         doc.reload()
         doc.workflow_state = "Failed"
-        doc.error_message = f"Governed build could not start: {exc}"
+        doc.error_message = f"{START_FAILURE_PREFIX}: {exc}"
         doc.completed_at = frappe.utils.now_datetime()
         _set_duration(doc)
         doc.save(ignore_permissions=True)
