@@ -215,6 +215,15 @@ def run_governed_build(build_request):
     """
     doc = frappe.get_doc("Build Approval", build_request)
 
+    # Only an Approved request builds. The reaper (#125) fails an approval whose
+    # job looked lost; if that job turns up after all, it must not resurrect a
+    # row an operator already sees as Failed.
+    if doc.workflow_state != "Approved":
+        frappe.logger().warning(
+            f"Governed build {build_request} is {doc.workflow_state}, not Approved; not building"
+        )
+        return
+
     # #67 fix 5: a governed dbt build shells `dbt` against the SAME shared project
     # dir as an orchestrator run, so the two must not run concurrently (racing
     # target/ + incremental models). Honor the orchestrator single-flight guard
