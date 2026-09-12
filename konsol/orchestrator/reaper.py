@@ -198,9 +198,9 @@ def reap_stale_build_approvals():
     rows = frappe.get_all(
         "Build Approval",
         filters={"workflow_state": ["in", ["Approved", "Running"]]},
-        fields=["name", "workflow_state", "started_at", "modified", "error_message"],
+        fields=["name", "workflow_state", "started_at", "modified", "error_message", "build_scope", "rebuild_requested"],
     )
-    reaped = []
+    reaped, follow_ups = [], []
     for row in rows:
         reason = stale_build_approval_reason(row, now)
         if not reason:
@@ -227,8 +227,19 @@ def reap_stale_build_approvals():
                  tuple(ACTIVE_RUN_STATES)),
             )
         reaped.append(row["name"])
+        if row.get("rebuild_requested"):
+            follow_ups.append(row)
     if reaped:
         frappe.db.commit()
         frappe.logger().warning(f"Build Approval reaper: marked {len(reaped)} stuck approval(s) Failed: {reaped}")
+    # A change arrived while a dead build was running (#129): it never reached
+    # gold, so request the build it was promised. After the commit above.
+    for row in follow_ups:
+        try:
+            from konsol.tasks import request_build_for_scope
+
+            request_build_for_scope(row["build_scope"], "Build Approval", row["name"])
+        except Exception:
+            frappe.log_error(title=f"Follow-up build request for {row['name']} failed")
     return reaped
 

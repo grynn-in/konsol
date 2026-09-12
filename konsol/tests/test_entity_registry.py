@@ -284,7 +284,7 @@ def test_the_build_request_debounce_is_serialised():
     check, or it serialises nothing."""
     with open(os.path.join(APP_DIR, "tasks.py")) as f:
         src = f.read()
-    body = src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0]
+    body = src.split("def request_build_for_scope")[1].split("\ndef ")[0]
     build_lock = body.index("lock_build_requests()")
     check = body.index("FROM `tabBuild Approval`")
     assert build_lock < check and "FOR UPDATE" in body[check:check + 300]

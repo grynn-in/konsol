@@ -163,8 +163,8 @@ def _creates_build_approval(call):
 
 def test_no_build_request_commits_inside_its_callers_transaction():
     """Every function that creates a Build Approval, enumerated across the app,
-    must leave the commit to its caller. Only on_consolidation_doc_update may
-    commit, because it runs inside its own job (#126). _request_governed_build
+    must leave the commit to its caller. Only on_consolidation_doc_update and
+    request_build_for_scope may commit: they run only inside jobs (#126, #129). _request_governed_build
     committed from AllocationRun.before_submit, publish and after_delete, and
     a failed submit left an orphaned approval (#130)."""
     offenders = []
@@ -181,7 +181,7 @@ def test_no_build_request_commits_inside_its_callers_transaction():
                 # Exempt, with reason: on_consolidation_doc_update runs inside its
                 # own job (#126); a @frappe.whitelist() endpoint (control_api's
                 # start_process) is a top-level request with no caller transaction.
-                if func.name == "on_consolidation_doc_update" or any(
+                if func.name in ("on_consolidation_doc_update", "request_build_for_scope") or any(
                         "whitelist" in ast.unparse(d) for d in func.decorator_list):
                     continue
                 creates = any(_creates_build_approval(c) for c in ast.walk(func) if isinstance(c, ast.Call))
@@ -213,7 +213,7 @@ def _assert_locked_debounce(body):
 def test_both_build_debounces_use_a_locking_read():
     with open(TASKS) as f:
         src = f.read()
-    _assert_locked_debounce(src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0])
+    _assert_locked_debounce(src.split("def request_build_for_scope")[1].split("\ndef ")[0])
 
 
 def test_the_publish_build_is_requested_after_the_ddl():
