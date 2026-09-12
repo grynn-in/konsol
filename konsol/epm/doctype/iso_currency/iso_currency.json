@@ -1,0 +1,84 @@
+{
+ "name": "ISO Currency",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 0,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "field:currency_code",
+ "fields": [
+  {
+   "fieldname": "currency_code",
+   "fieldtype": "Data",
+   "label": "Currency Code",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "description": "ISO 4217 alphabetic code, e.g. USD."
+  },
+  {
+   "fieldname": "currency_name",
+   "fieldtype": "Data",
+   "label": "Currency Name",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "symbol",
+   "fieldtype": "Data",
+   "label": "Symbol",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "minor_unit",
+   "fieldtype": "Int",
+   "label": "Minor Unit",
+   "in_list_view": 1,
+   "description": "ISO 4217 exponent: decimal places. 0 for JPY, 3 for KWD."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "report": 1,
+   "export": 1
+  }
+ ]
+}

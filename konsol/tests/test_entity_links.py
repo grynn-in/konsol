@@ -25,6 +25,11 @@ REFERRING_DOCTYPES = {
     "Historical Equity Rate",
     "Allocation Driver",
     "Trial Balance Submission",
+    # konsolidat#146: the top-down half of budget input, moved out of
+    # seeds/budget_annual_input.csv. Its entity IS a konsol Entity, so it takes
+    # the Link — unlike Entity Fiscal Calendar, whose key is a raw ERP data area
+    # konsol has no Entity for and is deliberately named erp_data_area.
+    "Budget Annual Input",
 }
 
 

@@ -86,3 +86,182 @@ def test_historical_budget_patches_are_guarded_for_fresh_installs():
         guard = 'if not frappe.db.table_exists("Budget Input")'
         assert guard in execute, f"missing fresh-install guard: {path}"
         assert execute.index("table_exists") < execute.index("frappe.get_all")
+
+
+# --- Budget Annual Input (konsolidat#146) -----------------------------------
+
+def _budget_annual_dir():
+    import os
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "epm", "doctype", "budget_annual_input")
+
+
+def test_annual_budget_input_is_konsols_not_a_seed():
+    """konsolidat#146: seeds/budget_annual_input.csv was the last seed the dbt
+    project owned. konsol already had the bottom-up path (Budget Cycle → Sheet →
+    Line → epm_gold.budget_monthly_input); this is the top-down half that
+    gold_spread_budget spreads into months by profile."""
+    import json
+    import os
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
+        src = f.read()
+    assert 'CH_TABLE = "epm_gold.budget_annual_input"' in src
+    for column in ("scenario_id", "data_area_id", "fiscal_year", "main_account",
+                   "annual_amount", "spread_profile_id"):
+        assert f'"{column}"' in src, column
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.json")) as f:
+        meta = json.load(f)
+    fields = {f["fieldname"]: f for f in meta["fields"]}
+    # the F1 invariant: a field named data_area_id is a Link to Entity
+    assert fields["data_area_id"]["fieldtype"] == "Link"
+    assert fields["data_area_id"]["options"] == "Entity"
+
+
+def test_monthly_budget_table_is_created_by_something():
+    """epm_gold.budget_monthly_input has always been a konsol write-through with
+    NOTHING that creates it — no seed, no DDL — so gold_spread_budget failed
+    every build with "Unknown table expression identifier". It is in
+    _REFERENCE_TABLE_DDL now, which cleared one of the three documented baseline
+    failures."""
+    import os
+
+    with open(os.path.join(
+            os.path.dirname(_budget_annual_dir()), "..", "..", "clickhouse.py")) as f:
+        src = f.read()
+    assert '"epm_gold.budget_monthly_input": (' in src
+    assert '"epm_gold.budget_annual_input": (' in src
+
+
+def test_annual_budget_shipped_links_all_resolve():
+    """EVERY Link field, not just the two I thought of.
+
+    Fixture and demo_data import both set ignore_links, so shipped rows can
+    reference records that do not exist and still load — then nobody can save
+    the row through the UI. Caught twice on this doctype: `BUDGET_2025` had no
+    Scenario, and `submitted_by: "admin"` had no User (and the field is
+    read_only, so a user could not even correct it). Enumerating the Link fields
+    from the doctype is what stops a third.
+    """
+    import json
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "demo_data", "budget_annual_input.json")) as f:
+        rows = json.load(f)
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.json")) as f:
+        meta = json.load(f)
+
+    links = {f["fieldname"]: f["options"] for f in meta["fields"]
+             if f["fieldtype"] == "Link"}
+    assert links, "the doctype has no Link fields — did the types change?"
+
+    def shipped(doctype, key):
+        path = None
+        for folder in ("fixtures", "demo_data"):
+            candidate = os.path.join(root, folder, f"{doctype.lower().replace(' ', '_')}.json")
+            if os.path.exists(candidate):
+                path = candidate
+                break
+        if path is None:
+            return None  # Frappe core doctype (User) — cannot check from here
+        with open(path) as f:
+            return {r.get(key) or r.get("name") for r in json.load(f)}
+
+    known_core = {"User": {"Administrator", "Guest"}}
+    for fieldname, target in links.items():
+        values = {row[fieldname] for row in rows if row.get(fieldname)}
+        available = shipped(target, {"Scenario": "scenario_id",
+                                     "Entity": "data_area_id"}.get(target, "name"))
+        if available is None:
+            available = known_core.get(target)
+        if available is None:
+            continue
+        missing = values - available
+        assert not missing, (
+            f"{fieldname} -> {target}: {sorted(missing)} has nothing behind it; "
+            f"import ignores links but a desk save will not")
+
+
+def test_annual_budget_lock_holds_on_delete_too():
+    """after_delete republishes immediately, so a lock that only guards validate
+    could be walked around by deleting a row instead of editing one."""
+    import os
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
+        src = f.read()
+    for hook in ("def validate", "def on_trash", "def before_cancel"):
+        body = src.split(hook)[1].split("\n    def ")[0]
+        assert "_guard_cycle_locked" in body, hook
+
+
+def test_annual_budget_grain_is_unique():
+    """gold_spread_budget unions with no dedup, so two rows at one grain produce
+    two sets of twelve monthly rows and the budget doubles. autoname is `hash`,
+    so nothing enforces it structurally."""
+    import os
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
+        src = f.read()
+    body = src.split("def _validate_unique_grain")[1].split("\n    def ")[0]
+    for field in ("scenario_id", "data_area_id", "fiscal_year", "main_account",
+                  "dim_cost_center", "dim_department"):
+        assert field in body, field
+    assert "frappe.throw" in body
+
+
+def test_annual_budget_is_seeded_not_fixtured():
+    """EPM Analyst can edit these. Everything in konsol/fixtures/ is
+    force-reimported on every migrate, so a fixture would revert an analyst's
+    revised figure — and the cycle-lock guard returns early under in_import, so
+    it would do it even for a Locked cycle."""
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert not os.path.exists(
+        os.path.join(root, "fixtures", "budget_annual_input.json"))
+    assert os.path.exists(
+        os.path.join(root, "demo_data", "budget_annual_input.json"))
+    with open(os.path.join(root, "install.py")) as f:
+        install = f.read()
+    after = install.split("def after_migrate")[1].split("\ndef ")[0]
+    calls = [l.strip() for l in after.splitlines()
+             if l.strip() and not l.strip().startswith("#")]
+    assert calls.index("_bootstrap_budget_annual_input()") < calls.index("_reconcile_clickhouse()")
+
+
+def test_budget_ddl_covers_every_in_budget_dimension():
+    """The budget dimension set is site-configurable; the DDL is not.
+
+    `budget_grain.budget_dimension_names()` derives the columns from Dimension
+    rows with in_budget=1, and both Budget Sheet's sync and dbt's
+    get_budget_dimensions() follow it — but the DDL for
+    epm_gold.budget_monthly_input / budget_annual_input names its dimension
+    columns literally. The shipped fixture has dim_business_unit at in_budget=0;
+    flip it to 1 and the INSERT names a column the table does not have.
+    sync_rows swallows the HTTPError and only logs, so the budget would silently
+    stop reaching the warehouse.
+
+    This test does not fix that — it makes the coupling fail loudly here instead
+    of silently in ClickHouse. Adding an in_budget dimension means altering both
+    tables (and konsolidat's init-db.sql) in the same change.
+    """
+    import json
+    import os
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "fixtures", "dimension.json")) as f:
+        in_budget = {d["dimension_name"] for d in json.load(f) if d.get("in_budget")}
+    with open(os.path.join(root, "clickhouse.py")) as f:
+        ch = f.read()
+
+    for table in ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input"):
+        block = ch.split(f'"{table}": (')[1].split("),")[0]
+        declared = set(re.findall(r"(dim_\w+) String", block))
+        assert declared == in_budget, (
+            f"{table} declares {sorted(declared)} but the shipped in_budget "
+            f"dimensions are {sorted(in_budget)} — add the column to both this "
+            f"DDL and konsolidat's init-db.sql")

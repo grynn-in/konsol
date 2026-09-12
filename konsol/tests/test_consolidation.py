@@ -101,9 +101,14 @@ def test_ic_elimination_rule_has_entity_patterns():
 
 
 def test_ic_elimination_rule_ch_sync():
+    """konsolidat#146: the legacy epm_gold write-through is gone — it shared a
+    ClickHouse relation with a dbt seed, so the CSV and the doctype overwrote
+    each other. Every dbt reader moved to the staging table, which is the richer
+    one (the legacy map dropped rule_type, margin_pct and asset_account)."""
     content = _load_py("ic_elimination_rule")
     assert "sync_doctype" in content
-    assert "gold.ic_elimination_rules" in content
+    assert 'CH_STAGING_TABLE = "epm_staging.ic_elimination_rules"' in content
+    assert "epm_gold.ic_elimination_rules" not in content
 
 
 # --- Consolidation Adjustment ---
@@ -136,9 +141,16 @@ def test_consolidation_adjustment_has_posted_by():
 
 
 def test_consolidation_adjustment_ch_sync():
+    """konsolidat#146: the legacy epm_gold write-through is gone. It carried no
+    `status` column and the dbt model labelled everything it read from that
+    relation 'Approved' unconditionally, so the approval workflow only ever held
+    because the model preferred staging whenever staging was non-empty."""
     content = _load_py("consolidation_adjustment")
     assert "sync_doctype" in content
-    assert "gold.consolidation_adjustments" in content
+    assert 'CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"' in content
+    assert "epm_gold.consolidation_adjustments" not in content
+    staging = content.split("CH_STAGING_FIELD_MAP")[1].split("}")[0]
+    assert '"status"' in staging, "the workflow status must reach the warehouse"
 
 
 def test_all_consolidation_doctypes_module_consolidation():

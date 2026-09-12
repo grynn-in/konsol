@@ -31,6 +31,10 @@ REFERRING_DOCTYPES = (
     # have pre-Link rows — the table_exists() guard makes it free, and the
     # invariant "every referring doctype is swept" stays checkable.
     "Trial Balance Submission",
+    # konsolidat#146: the top-down budget figures, moved out of a dbt seed. Its
+    # entity is a konsol Entity, so it takes the Link and joins the sweep — the
+    # table_exists() guard makes that free on a site that predates it.
+    "Budget Annual Input",
 )
 
 

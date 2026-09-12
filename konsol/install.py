@@ -48,6 +48,7 @@ def after_migrate():
     # through; seeding after it left the periods in Frappe and nothing in the
     # warehouse, and assert_ownership_chain_complete failed on 108 rows.
     _bootstrap_ownership_periods()
+    _bootstrap_budget_annual_input()
     _reconcile_clickhouse()
     _setup_dashboard()
     _retire_konsol_control_page()
@@ -99,6 +100,43 @@ def _restore_asset_manifest():
     except Exception:
         frappe.logger().warning(
             "assets_json redis eviction skipped after migrate", exc_info=True)
+
+
+def _bootstrap_budget_annual_input():
+    """Seed the demo annual budget rows — once, and only when there are none.
+
+    Deliberately NOT a fixture: EPM Analyst can edit these, and everything in
+    konsol/fixtures/ is force-deleted and reinserted on every migrate. A fixture
+    would revert an analyst's revised annual figure three times a day, and the
+    cycle-lock guard returns early under in_import so it would do it even for a
+    Locked cycle. See konsol/demo_data/README.md.
+
+    Before the reconcile, like the ownership periods: a document saved during
+    migrate never reaches ClickHouse, so the forced sync is the one that carries
+    it. Best-effort — never fail a migrate over demo data.
+    """
+    import json
+    import os
+
+    try:
+        if frappe.db.count("Budget Annual Input"):
+            return
+        path = os.path.join(frappe.get_app_path("konsol"), "demo_data",
+                            "budget_annual_input.json")
+        if not os.path.isfile(path):
+            return
+        with open(path) as handle:
+            rows = json.load(handle)
+        for row in rows:
+            if frappe.db.exists("Budget Annual Input", row.get("name")):
+                continue
+            doc = frappe.get_doc(dict(row))
+            doc.flags.ignore_permissions = True
+            doc.insert()
+        frappe.logger().info(f"konsol: seeded {len(rows)} demo annual budget row(s)")
+    except Exception:
+        frappe.logger().warning(
+            "annual budget bootstrap skipped after migrate", exc_info=True)
 
 
 def _bootstrap_ownership_periods():

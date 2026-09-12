@@ -498,6 +498,57 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = ReplacingMergeTree(updated_at) "
         "ORDER BY (consolidation_group, data_area_id)"
     ),
+    # konsolidat#146: two more relations a dbt seed and this write-through both
+    # owned — seeds materialise into epm_gold, so seeds/spread_profiles.csv WAS
+    # epm_gold.spread_profiles. The seeds are deleted, so nothing else creates
+    # these. The other three colliding relations (allocation_rules,
+    # ic_elimination_rules, consolidation_adjustments) had no reader left once
+    # their dbt models moved to the staging tables, so their legacy write-through
+    # is gone entirely rather than given DDL here.
+    "epm_gold.spread_profiles": (
+        "(profile_id String, profile_name String, fiscal_period Int32, "
+        "weight Float32) "
+        "ENGINE = MergeTree ORDER BY (profile_id, fiscal_period)"
+    ),
+    # konsolidat#146: the top-down annual budget, from the Budget Annual Input
+    # doctype. It was seeds/budget_annual_input.csv.
+    "epm_gold.budget_annual_input": (
+        "(scenario_id String, data_area_id String, fiscal_year UInt16, "
+        "main_account String, dim_cost_center String, dim_department String, "
+        "annual_amount Decimal(18,2), spread_profile_id String, "
+        "submitted_by String) "
+        "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
+    ),
+    # The bottom-up half, written by Budget Sheet. It has always been a konsol
+    # write-through with NOTHING that creates it — no seed, no DDL — which is
+    # why gold_spread_budget is one of the three baseline build failures
+    # ("Unknown table expression identifier 'epm_gold.budget_monthly_input'").
+    "epm_gold.budget_monthly_input": (
+        "(scenario_id String, data_area_id String, fiscal_year UInt16, "
+        "main_account String, dim_cost_center String, dim_department String, "
+        "fiscal_period UInt8, amount Decimal(18,2), layer String) "
+        "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, layer)"
+    ),
+    # konsolidat#146: which fiscal calendar each ERP legal entity posts against.
+    # It was seeds/entity_fiscal_calendars.csv, and it decides which calendar
+    # every GL line is dated into.
+    "epm_gold.entity_fiscal_calendars": (
+        "(data_area_id String, fiscal_calendar_id String) "
+        "ENGINE = MergeTree ORDER BY data_area_id"
+    ),
+    # konsolidat#146: the ISO 4217 reference list. It was seeds/currencies.csv —
+    # the one seed with no second writer, but still a table the warehouse
+    # validates against living in the dbt repo rather than the app.
+    "epm_gold.currencies": (
+        "(currency_code String, currency_name String, symbol String, "
+        "minor_unit UInt8) "
+        "ENGINE = MergeTree ORDER BY currency_code"
+    ),
+    "epm_gold.scenario_definitions": (
+        "(scenario_id String, scenario_name String, scenario_type String, "
+        "is_active Int32) "
+        "ENGINE = MergeTree ORDER BY scenario_id"
+    ),
     # F2: the link closure that makes consolidation multi-level. One row per
     # (ancestor group, entity, link between them), so dbt can multiply a chain of
     # dated ownership percentages without a recursive CTE.
@@ -507,6 +558,26 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id, link_depth)"
     ),
 }
+
+# Relations a previous release wrote and this one abandoned. Nothing truncates a
+# table once its last writer is gone, so the rows sit there forever looking live
+# — konsolidat#146 left three of them holding whichever of `dbt seed` and
+# `bench migrate` had written last, which is exactly the stale-second-source
+# confusion this work exists to remove. Dropped outright; every dbt reader moved
+# to the staging tables.
+# Retired 11 Sep 2026 (konsolidat#146). This list is permanent and unconditional:
+# if a future release legitimately recreates one of these relations it must be
+# removed from here first, or every migrate will drop it again. Nothing may
+# appear in both this and _REFERENCE_TABLE_DDL —
+# test_abandoned_relations_are_dropped_not_left_looking_live asserts that.
+_RETIRED_TABLES = (
+    "epm_gold.allocation_rules",
+    "epm_gold.ic_elimination_rules",
+    "epm_gold.consolidation_adjustments",
+    "epm_gold.allocation_drivers_headcount",
+    "epm_gold.allocation_drivers_revenue",
+    "epm_gold.allocation_drivers_sqm",
+)
 
 # Columns that a previous release created and F2 retired. ClickHouse keeps a
 # column the writer stopped sending, silently filled with its default — an
@@ -535,12 +606,42 @@ def ensure_reference_tables():
           for t, body in _REFERENCE_TABLE_DDL.items()],
         *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
+        *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
+        *_retired_watermark_cleanup(),
     ]:
         try:
             execute(sql)
         except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
             frappe.logger().warning(
                 f"reference table bootstrap skipped: {sql[:60]}…", exc_info=True)
+
+
+def _retired_watermark_cleanup():
+    """DELETE statements for retired tables' watermark rows — only if any exist.
+
+    A retired table's stamp has to go with it: sync_table writes one per
+    successful sync and assert_staging_not_stale compares them, so a row for a
+    table that no longer has a writer stays frozen while every live table
+    re-stamps, and the test reports it LAGGING and fails the build. It would
+    also assert a row count for a relation that no longer exists.
+
+    Checked first rather than issued blind, because ClickHouse records an entry
+    in system.mutations for an `ALTER TABLE ... DELETE` even when it matches
+    nothing — six of those per `bench migrate`, three times a day, forever. One
+    SELECT replaces them, and after the first migrate there is nothing to do.
+    """
+    try:
+        quoted = ", ".join(f"'{t}'" for t in _RETIRED_TABLES)
+        stale = execute(
+            f"SELECT DISTINCT table_name FROM {_WATERMARK_TABLE} "
+            f"WHERE table_name IN ({quoted})"
+        )
+    except Exception:  # noqa: BLE001 — the watermark table may not exist yet
+        return []
+    return [
+        f"ALTER TABLE {_WATERMARK_TABLE} DELETE WHERE table_name = '{name}'"
+        for name in (line.strip() for line in stale.splitlines()) if name
+    ]
 
 
 def reconcile_all():
@@ -573,14 +674,13 @@ def reconcile_all():
         try:
             cls = get_controller(doctype)
             if getattr(cls, "CH_TABLE", None):
-                # Some controllers name the flat map CH_LEGACY_FIELD_MAP
-                # ("legacy sync to gold.*"); missing that alias is how three of
-                # the ten write-through doctypes silently escaped
-                # reconciliation.
-                field_map = (getattr(cls, "CH_FIELD_MAP", None)
-                             or cls.CH_LEGACY_FIELD_MAP)
+                # The CH_LEGACY_FIELD_MAP alias is gone with the three "legacy
+                # sync to gold.*" write-throughs it named (konsolidat#146): each
+                # of those relations was also a dbt seed, and every dbt reader
+                # moved to the staging table.
                 _record(synced, cls.CH_TABLE,
-                        sync_doctype(doctype, cls.CH_TABLE, field_map, force=True))
+                        sync_doctype(doctype, cls.CH_TABLE, cls.CH_FIELD_MAP,
+                                     force=True))
 
             # The second table. Three controllers use the generic map pattern;
             # Consolidation Group computes its rows (tree walk) and exposes
@@ -639,13 +739,22 @@ def _write_through_doctypes():
         except Exception:
             # A doctype without an importable controller simply has no CH target.
             continue
-        if (getattr(cls, "CH_TABLE", None) and (
-                getattr(cls, "CH_FIELD_MAP", None)
-                or getattr(cls, "CH_LEGACY_FIELD_MAP", None)))\
-                or (getattr(cls, "CH_STAGING_TABLE", None)
-                    and getattr(cls, "resync_staging", None)):
-            # the second arm: staging-only controllers (Reporting Hierarchy)
-            # whose rows are computed and synced via resync_staging()
+        staging = getattr(cls, "CH_STAGING_TABLE", None)
+        if (getattr(cls, "CH_TABLE", None) and getattr(cls, "CH_FIELD_MAP", None)) \
+                or (staging and getattr(cls, "resync_staging", None)) \
+                or (staging and getattr(cls, "CH_STAGING_FIELD_MAP", None)):
+            # Three ways to be a write-through doctype, and reconcile_all's body
+            # already handles all three: a flat field-mapped gold table, rows
+            # COMPUTED by resync_staging (Reporting Hierarchy, Consolidation
+            # Group), or a field-mapped STAGING table with no gold counterpart.
+            #
+            # That last arm was missing. It did not matter while every such
+            # controller also had a CH_TABLE — but konsolidat#146 deleted the
+            # legacy gold write-through from Allocation Rule, IC Elimination
+            # Rule and Consolidation Adjustment, and all three silently dropped
+            # out of reconcile with it. Their staging tables would then never be
+            # repaired after a fixture import, which is the drift reconcile
+            # exists for.
             found.append(doctype)
     if not found:
         frappe.logger().warning(

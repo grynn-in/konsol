@@ -1,0 +1,410 @@
+[
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "AABJ",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "AABJ"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "AFSN",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "AFSN"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "ADC",
+  "fiscal_calendar_id": "ADC-STD",
+  "erp_data_area": "ADC"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "BEL",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "BEL"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "BRMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "BRMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "BSW7",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "BSW7"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "BW77",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "BW77"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CBD",
+  "fiscal_calendar_id": "CBD",
+  "erp_data_area": "CBD"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CCG",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "CCG"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CEL",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "CEL"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CHBK",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "CHBK"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CMBC",
+  "fiscal_calendar_id": "CMBC-CAL",
+  "erp_data_area": "CMBC"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CN01",
+  "fiscal_calendar_id": "Fiscal_CN",
+  "erp_data_area": "CN01"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CNET",
+  "fiscal_calendar_id": "Fiscal_CN",
+  "erp_data_area": "CNET"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CNMF",
+  "fiscal_calendar_id": "Fiscal_CN",
+  "erp_data_area": "CNMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CONS",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "CONS"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "CZ",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "CZ"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "DAIN",
+  "fiscal_calendar_id": "Fisscal_IN",
+  "erp_data_area": "DAIN"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "DEMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "DEMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "ERF1",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "ERF1"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "ERF2",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "ERF2"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "FRRT",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "FRRT"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "FRSI",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "FRSI"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GBFI",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GBFI"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GBMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GBMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GBSI",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GBSI"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GLCO",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GLCO"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GLMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GLMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GLRT",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GLRT"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "GLSI",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "GLSI"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "HOTP",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "HOTP"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "INMF",
+  "fiscal_calendar_id": "Fisscal_IN",
+  "erp_data_area": "INMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "ITCO",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "ITCO"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "JPMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "JPMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "LD-CAL",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "LD-CAL"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "LRP",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "LRP"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "MXMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "MXMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "MYMF",
+  "fiscal_calendar_id": "Fiscal_MY",
+  "erp_data_area": "MYMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "NGO",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "NGO"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "NHVG",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "NHVG"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "NT",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "NT"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "PDEU",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "PDEU"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "PESP",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "PESP"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "PMES",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "PMES"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "PMCO",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "PMCO"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "PMDE",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "PMDE"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "POL1",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "POL1"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "PUK",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "PUK"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "RPG",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "RPG"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "RPL",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "RPL"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "RUMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "RUMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "RURT",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "RURT"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "SAMF",
+  "fiscal_calendar_id": "Fiscal_SA",
+  "erp_data_area": "SAMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "TDBF",
+  "fiscal_calendar_id": "TDBF-STD",
+  "erp_data_area": "TDBF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "TCSU",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "TCSU"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "THMF",
+  "fiscal_calendar_id": "Fiscal_TH",
+  "erp_data_area": "THMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "THPM",
+  "fiscal_calendar_id": "Fiscal_TH",
+  "erp_data_area": "THPM"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "TLE",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "TLE"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "US01",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "US01"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "USMF",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "USMF"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "USPI",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "USPI"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "USPM",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "USPM"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "USRT",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "USRT"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "USSI",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "USSI"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "USP2",
+  "fiscal_calendar_id": "Fiscal",
+  "erp_data_area": "USP2"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "AMHQ",
+  "fiscal_calendar_id": "Standard",
+  "erp_data_area": "AMHQ"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "AMUS",
+  "fiscal_calendar_id": "Standard",
+  "erp_data_area": "AMUS"
+ },
+ {
+  "doctype": "Entity Fiscal Calendar",
+  "name": "AMDE",
+  "fiscal_calendar_id": "Standard",
+  "erp_data_area": "AMDE"
+ }
+]

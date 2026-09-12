@@ -24,6 +24,21 @@ fixtures = [
     "Budget Cycle",
     "Budget Sheet",
     "Consolidation Group",
+    # konsolidat#146: the ISO 4217 list the warehouse validates FX codes
+    # against. It was seeds/currencies.csv; it is reference data, so a fixture
+    # is right — unlike ownership, a site is not expected to edit it.
+    "ISO Currency",
+    # konsolidat#146: which fiscal calendar each ERP entity posts against. Was
+    # seeds/entity_fiscal_calendars.csv; reference data, same as ISO Currency.
+    "Entity Fiscal Calendar",
+    # NOT "Budget Annual Input". ISO Currency and Entity Fiscal Calendar are
+    # reference data a site is not expected to edit, so the force-reimport is
+    # what we want. Annual budget figures are not: EPM Analyst has write on
+    # them, and a fixture would revert an analyst's revised figure on the next
+    # migrate — the same thing that happened to the ownership periods below.
+    # Worse, the cycle-lock guard returns early under in_import, so the
+    # reimport would rewrite annual inputs even for a LOCKED cycle. Seeded once
+    # from konsol/demo_data/ by install._bootstrap_budget_annual_input.
     # NOT "Ownership Period" — and note that removing it from THIS list is not
     # what keeps it out. import_fixtures() imports every .json in konsol/fixtures/
     # regardless of this hook (it is read only when exporting), force-deleting
