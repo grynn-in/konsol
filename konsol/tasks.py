@@ -37,7 +37,11 @@ DOCTYPE_BUILD_MAP = {
     "Allocation Rule": {"scope": "staging", "risk": "low"},
     "Allocation Driver": {"scope": "staging", "risk": "low"},
     "Allocation Run": {"scope": "staging", "risk": "low"},
-    "Entity": {"scope": "staging", "risk": "low"},
+    # konsol#110: consolidation, not staging — `staging` selects five models,
+    # none of which read the entity registry; `+tag:domain:consolidation`
+    # reaches silver_entity_currencies and gold_consolidated_trial_balance.
+    # Requested from Entity's controller, not from doc_events.
+    "Entity": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype

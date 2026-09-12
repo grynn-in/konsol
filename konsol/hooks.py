@@ -138,9 +138,10 @@ _dbt_trigger_doctypes = [
     # without the trigger a cancelled trial balance lingers in consolidated
     # results until an unrelated doc save rebuilds.
     "Trial Balance Submission",
-    # konsol#110: an entity's functional currency is what consolidation
-    # translates FROM, so changing it must rebuild the consolidated models.
-    "Entity",
+    # NOT "Entity" (konsol#110). Its build is requested from the controller,
+    # and only when a field the warehouse reads changes — listing it here would
+    # ask an EPM Admin to approve a consolidation rebuild for a renamed
+    # country. DOCTYPE_BUILD_MAP still carries its scope.
 ]
 
 doc_events = {

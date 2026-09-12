@@ -130,22 +130,102 @@ def test_delete_never_syncs_from_on_trash():
     assert _method("on_trash") is None
 
 
+def _module_function(name):
+    tree = ast.parse(_src())
+    return next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name), None)
+
+
 def test_one_sync_call():
-    """The hooks all go through _resync, and _resync is the only place that
-    names sync_doctype."""
+    """Every hook goes through _resync, and the only place that names
+    sync_doctype is the module-level function _resync queues."""
     assert _src().count("sync_doctype(") == 1
-    assert "sync_doctype" in _calls(_method("_resync"))
+    assert "sync_doctype" in _calls(_module_function("_sync_entity_registry"))
 
 
-def test_a_currency_change_triggers_a_rebuild():
+def test_the_sync_waits_for_the_commit():
+    """ClickHouse has no transaction: a sync inside on_update publishes a save
+    that may still roll back, and the warehouse then consolidates on a row
+    MariaDB never committed — reproduced live in the #110 E2E (konsol#124)."""
+    calls = _calls(_method("_resync"))
+    assert "sync_doctype" not in calls and "_sync_entity_registry" not in calls, (
+        "_resync must queue the sync, not run it")
+    body = ast.dump(_method("_resync"))
+    assert "after_commit" in body and "_sync_entity_registry" in body
+    assert "after_rollback" in body and "_clear_entity_registry_sync_flag" in body
+
+
+def test_the_sync_is_queued_once_per_transaction():
+    """CallbackManager.add appends without deduping, so an unguarded bulk edit
+    of N entities queues N full-table syncs. Set on first queue, cleared by
+    the sync itself and by rollback."""
+    resync = _method("_resync")
+    first = resync.body[1] if isinstance(resync.body[0], ast.Expr) else resync.body[0]
+    assert isinstance(first, ast.If) and isinstance(first.body[0], ast.Return), (
+        "_resync must return early when a sync is already queued")
+    assert "entity_registry_sync_queued" in ast.dump(first.test)
+    for fn in ("_sync_entity_registry", "_clear_entity_registry_sync_flag"):
+        assert "entity_registry_sync_queued" in ast.dump(_module_function(fn)), fn
+
+
+# ---- rebuilds ----------------------------------------------------------------
+
+def _build_map_scope():
+    with open(os.path.join(APP_DIR, "tasks.py")) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in node.targets):
+            return ast.literal_eval(node.value)["Entity"]["scope"]
+    raise AssertionError("DOCTYPE_BUILD_MAP not found")
+
+
+def test_the_rebuild_scope_reaches_the_models_that_read_the_registry():
+    """`staging` selects tag:domain:staging — five models, none of which read
+    the registry — so a currency change used to rebuild nothing that mattered.
+    `consolidation` is ancestor-inclusive (+tag:domain:consolidation), which on
+    the live stack selects silver_entity_currencies AND
+    gold_consolidated_trial_balance (dbt ls, #110 review)."""
+    scope = _build_map_scope()
+    assert scope == "consolidation"
+    # The selector lives in tasks.SCOPE_SELECTOR, not the Build Scope fixture.
+    with open(os.path.join(APP_DIR, "tasks.py")) as f:
+        tree = ast.parse(f.read())
+    selectors = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                     if isinstance(n, ast.Assign) and any(
+                         isinstance(t, ast.Name) and t.id == "SCOPE_SELECTOR" for t in n.targets))
+    assert selectors[scope] == "+tag:domain:consolidation", (
+        "the scope must select ancestors — the registry model is upstream of "
+        "every consolidation-domain model, and gold_consolidated_trial_balance "
+        "itself is domain:actuals")
+
+
+def test_only_a_change_the_warehouse_can_see_requests_a_rebuild():
+    """The consolidation scope is high-risk, so each request waits for an EPM
+    Admin. The watched fields are exactly the ones behind the columns dbt
+    reads — accounting_currency and is_group — and nothing else."""
+    watched = set(_class_attr("_REBUILD_FIELDS"))
+    mapped = _class_attr("CH_FIELD_MAP")
+    assert watched == {mapped["accounting_currency"], mapped["is_group"]}
+
+
+def test_every_lifecycle_that_changes_what_consolidation_sees_requests_a_rebuild():
+    """Save (when a watched field changed), delete, rename — the last two are
+    not doc_events at all, so the generic trigger could never have seen them."""
+    for hook in ("on_update", "after_delete", "after_rename"):
+        assert "_request_rebuild" in _calls(_method(hook)), f"Entity.{hook} requests no rebuild"
+    assert "on_consolidation_doc_update" in _calls(_method("_request_rebuild")), (
+        "reuse the trigger path: it carries the install/migrate/import guard and the debounce")
+
+
+def test_entity_is_not_a_generic_trigger_doctype():
+    """In _dbt_trigger_doctypes every Entity save — a new country, a typo in a
+    name — would ask an EPM Admin to approve a consolidation rebuild."""
     with open(os.path.join(APP_DIR, "hooks.py")) as f:
         hooks = f.read()
     triggers = hooks.split("_dbt_trigger_doctypes = [")[1].split("]")[0]
-    assert '"Entity",' in triggers
-    with open(os.path.join(APP_DIR, "tasks.py")) as f:
-        tasks = f.read()
-    build_map = tasks.split("DOCTYPE_BUILD_MAP = {")[1].split("\n}")[0]
-    assert '"Entity":' in build_map
+    entries = [ln.strip() for ln in triggers.splitlines()
+               if ln.strip() and not ln.strip().startswith("#")]
+    assert '"Entity",' not in entries
 
 
 def test_doctype_json_is_marked_modified_after_the_link_change():

@@ -70,11 +70,20 @@ class Entity(NestedSet):
         self._guard_self_parent()
         self._guard_leaf_parenting()
 
+    # The fields the warehouse reads: silver_entity_currencies takes the
+    # currency it translates from, and is_group decides whether the row is a
+    # leaf. Editing anything else — the name, the country, the parent — changes
+    # no consolidated number, so it must not ask an EPM Admin to approve a
+    # consolidation rebuild.
+    _REBUILD_FIELDS = ("functional_currency", "is_group")
+
     def on_update(self):
         # Nested-set bookkeeping first: if the tree update refuses, nothing
         # should reach the warehouse. Fires on insert as well as save.
         super().on_update()
         self._resync()
+        if self._changes_what_consolidation_sees():
+            self._request_rebuild("on_update")
 
     def after_delete(self):
         """after_delete, NOT on_trash.
@@ -83,8 +92,13 @@ class Entity(NestedSet):
         on_trash runs BEFORE the row is removed — so a delete would re-publish
         the entity it just deleted (konsol#120). NestedSet.on_trash still runs
         untouched; it is what refuses to delete a node that has children.
+
+        A deleted entity's governed currency stops applying (the ERP's takes
+        over, or none does), so that is a consolidation change.
         """
         self._resync()
+        if self.functional_currency:
+            self._request_rebuild("after_delete")
 
     def after_rename(self, olddn, newdn, merge=False):
         """rename_doc never calls on_update.
@@ -93,17 +107,47 @@ class Entity(NestedSet):
         ``parent_entity`` with raw SQL, so without this the warehouse keeps the
         old code — and the children point at a parent it no longer has — until
         the next migrate reconciles. Entity has allow_rename off, but
-        rename_doc(force=True) and merges still arrive here.
+        rename_doc(force=True) and merges still arrive here. The code is the
+        join key, so a rename always changes what consolidation sees.
         """
         super().after_rename(olddn, newdn, merge)
         self._resync()
+        self._request_rebuild("after_rename")
+
+    def _changes_what_consolidation_sees(self):
+        before = self.get_doc_before_save()
+        if before is None:
+            return bool(self.functional_currency)
+        return any(self.get(f) != before.get(f) for f in self._REBUILD_FIELDS)
+
+    def _request_rebuild(self, method):
+        """The same path the doc_events trigger doctypes take — the install /
+        migrate / patch / import guard, the per-scope debounce, and the scope
+        from DOCTYPE_BUILD_MAP ("consolidation": the `staging` scope selects
+        neither silver_entity_currencies nor gold_consolidated_trial_balance).
+        Called from here rather than listed in hooks' _dbt_trigger_doctypes so
+        that only a change the warehouse can see requests one."""
+        from konsol.tasks import on_consolidation_doc_update
+
+        on_consolidation_doc_update(self, method)
 
     def _resync(self):
-        """The one sync call. frappe.get_all ignores permissions, so a user
-        whose User Permissions scope them to one entity still re-sends every
-        row — a TRUNCATE+INSERT of only the rows they can see would delete the
-        rest of the registry."""
-        return sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        """Queue the registry sync for commit — once per transaction.
+
+        Not synced inline: ClickHouse has no transaction, so a sync inside
+        on_update would publish a save that later rolls back, and the warehouse
+        would consolidate on a row MariaDB never committed (konsol#124). Same
+        after_commit pattern as Allocation Run.
+
+        CallbackManager.add does not dedupe, so the flag stops a bulk edit of N
+        entities queueing N full-table syncs. It is cleared by whichever of
+        commit or rollback comes first; each resets the other's callbacks.
+        """
+        if frappe.flags.entity_registry_sync_queued:
+            return
+        frappe.flags.entity_registry_sync_queued = True
+        frappe.db.after_commit.add(_sync_entity_registry)
+        frappe.db.after_rollback.add(_clear_entity_registry_sync_flag)
 
     def _normalise_code(self):
         """The code is a join key, so whitespace and case drift break joins
@@ -128,3 +172,16 @@ class Entity(NestedSet):
                   "Mark it as a group, or record the relationship as ownership instead.")
                 .format(self.parent_entity)
             )
+
+
+def _sync_entity_registry():
+    """The one sync call. frappe.get_all ignores permissions, so a user whose
+    User Permissions scope them to one entity still re-sends every row — a
+    TRUNCATE+INSERT of only the rows they can see would delete the rest of the
+    registry."""
+    frappe.flags.entity_registry_sync_queued = False
+    return sync_doctype("Entity", Entity.CH_TABLE, Entity.CH_FIELD_MAP)
+
+
+def _clear_entity_registry_sync_flag():
+    frappe.flags.entity_registry_sync_queued = False
