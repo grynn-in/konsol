@@ -22,6 +22,11 @@ import traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = os.path.join(ROOT, "konsol", "tests")
+# Tests that `import konsol...` need the app root importable. Without this
+# sys.path[0] is scripts/, and those files were skipped as "not host tests"
+# while the run still reported green.
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 
 def _discover():

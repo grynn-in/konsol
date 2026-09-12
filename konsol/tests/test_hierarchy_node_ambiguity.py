@@ -109,9 +109,12 @@ class _Thrown(Exception):
 
 
 def _member_controller(existing):
-    """Load the member controller against a stub frappe. ``existing`` maps
-    (tree, code) to the name of a member already holding that code."""
-    import importlib
+    """Load the member controller against a stub frappe, under a private
+    module name so the real one in sys.modules is never replaced by a
+    stub-bound copy. ``existing`` maps (tree, code) to the name of a member
+    already holding that code."""
+    import importlib.util
+    import os
 
     calls = []
 
@@ -131,12 +134,15 @@ def _member_controller(existing):
     fake.scrub = lambda s: s.strip().lower().replace(" ", "_").replace("-", "_")
     mods = {"frappe": fake, "frappe.model": types.ModuleType("frappe.model"),
             "frappe.model.document": document}
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "epm", "doctype", "reporting_hierarchy_member",
+                        "reporting_hierarchy_member.py")
+    spec = importlib.util.spec_from_file_location("_stub_reporting_hierarchy_member", path)
+    mod = importlib.util.module_from_spec(spec)
     saved = {k: sys.modules.get(k) for k in mods}
     sys.modules.update(mods)
     try:
-        mod = importlib.import_module(
-            "konsol.epm.doctype.reporting_hierarchy_member.reporting_hierarchy_member")
-        mod = importlib.reload(mod)
+        spec.loader.exec_module(mod)
     finally:
         for k, v in saved.items():
             if v is None:
