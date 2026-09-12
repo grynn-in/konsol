@@ -307,7 +307,7 @@ def test_a_queue_outage_logs_instead_of_failing_the_save():
 # frappe.enqueue's own parameters in Frappe v15 (frappe/utils/background_jobs.py).
 # A job kwarg with one of these names is taken by enqueue itself: `method=` raised
 # TypeError on every Entity save, and only a live run caught it.
-_ENQUEUE_PARAMS = {"method", "queue", "timeout", "event", "is_async", "job_name", "now",
+_ENQUEUE_PARAMS = {"async", "method", "queue", "timeout", "event", "is_async", "job_name", "now",
                    "enqueue_after_commit", "on_success", "on_failure", "at_front",
                    "job_id", "deduplicate"}
 _ENQUEUE_OPTIONS = {"queue", "timeout", "enqueue_after_commit", "job_id", "deduplicate",
@@ -344,3 +344,16 @@ def test_doctype_json_is_marked_modified_after_the_link_change():
     """Frappe re-syncs a DocType only when the file's `modified` is newer than
     the database's, so a fieldtype change under the old stamp never applies."""
     assert _meta()["modified"] >= "2026-09-12"
+
+
+def test_the_build_request_debounce_is_serialised_per_scope():
+    """Check-then-insert with no lock let two concurrent requests both insert
+    a Build Approval. Measured live before the fix: two simultaneous requests
+    made two approvals. The Build Scope row lock must come before the pending
+    check, or it serialises nothing."""
+    with open(os.path.join(APP_DIR, "tasks.py")) as f:
+        src = f.read()
+    body = src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0]
+    lock = body.index("FOR UPDATE")
+    check = body.index('"Build Approval",')
+    assert "tabBuild Scope" in body[:check] and lock < check

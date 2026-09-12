@@ -373,6 +373,12 @@ def on_consolidation_doc_update(doc, method):
 
     scope = mapping["scope"]
 
+    # Serialise requests for one scope. The debounce below is check-then-insert:
+    # two workers running this at once both found nothing pending and both
+    # inserted a Build Approval (#110 re-review; per-entity jobs on several
+    # workers made it likely). The row lock is held until the commit below.
+    frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
+
     # Debounce: skip if a non-terminal PBR already exists for this scope
     existing = frappe.get_all(
         "Build Approval",
