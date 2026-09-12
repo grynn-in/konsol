@@ -26,6 +26,7 @@ away. Identity now flows down from konsol; the ERP is the fallback.
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 from frappe.utils.nestedset import NestedSet
 
 from konsol.clickhouse import sync_doctype
@@ -115,39 +116,52 @@ class Entity(NestedSet):
         self._request_rebuild("after_rename")
 
     def _changes_what_consolidation_sees(self):
+        """Compared normalised. The previous doc is loaded from the database
+        (ints, NULL as None); incoming values are as sent. An API client
+        posting is_group "0", or clearing the currency to "" where it was NULL,
+        would otherwise read as a change and ask an EPM Admin to approve a
+        consolidation rebuild for nothing."""
         before = self.get_doc_before_save()
         if before is None:
             return bool(self.functional_currency)
-        return any(self.get(f) != before.get(f) for f in self._REBUILD_FIELDS)
+        return any(_normalised(f, self.get(f)) != _normalised(f, before.get(f))
+                   for f in self._REBUILD_FIELDS)
 
     def _request_rebuild(self, method):
-        """The same path the doc_events trigger doctypes take — the install /
-        migrate / patch / import guard, the per-scope debounce, and the scope
-        from DOCTYPE_BUILD_MAP ("consolidation": the `staging` scope selects
-        neither silver_entity_currencies nor gold_consolidated_trial_balance).
-        Called from here rather than listed in hooks' _dbt_trigger_doctypes so
-        that only a change the warehouse can see requests one."""
-        from konsol.tasks import on_consolidation_doc_update
+        """Request the rebuild after the commit, never inside the hook.
 
-        on_consolidation_doc_update(self, method)
+        on_consolidation_doc_update inserts a Build Approval and COMMITS. From
+        on_update, after_delete or after_rename that commit would make the
+        save, delete or rename non-atomic: whatever Frappe does after the hook
+        (the Deleted Document record, rename_password, a merge's delete of the
+        old doc) could then fail with the first half already committed. Queued
+        for commit, a save that rolls back requests nothing, which is also
+        right. It reuses the trigger path for its install / migrate / patch /
+        import guard, its per-scope debounce, and the DOCTYPE_BUILD_MAP scope
+        ("consolidation": `staging` selects neither silver_entity_currencies
+        nor gold_consolidated_trial_balance).
+        """
+        frappe.db.after_commit.add(lambda: _request_consolidation_rebuild(self, method))
 
     def _resync(self):
-        """Queue the registry sync for commit — once per transaction.
+        """Queue the registry sync for commit, once per transaction.
 
-        Not synced inline: ClickHouse has no transaction, so a sync inside
-        on_update would publish a save that later rolls back, and the warehouse
-        would consolidate on a row MariaDB never committed (konsol#124). Same
+        Not inline: ClickHouse has no transaction, so a sync inside on_update
+        would publish a save that later rolls back, and the warehouse would
+        consolidate on a row MariaDB never committed (konsol#124). Same
         after_commit pattern as Allocation Run.
 
-        CallbackManager.add does not dedupe, so the flag stops a bulk edit of N
-        entities queueing N full-table syncs. It is cleared by whichever of
-        commit or rollback comes first; each resets the other's callbacks.
+        CallbackManager.add appends without deduping, so a bulk edit of N
+        entities would queue N full-table syncs. The guard asks the queue
+        itself. A marker flag needs clearing on rollback, and Frappe drops the
+        rollback callbacks at the start of commit(); a commit that then failed
+        left the marker set, and every later sync in that process was skipped
+        (#110 re-review). The queue cannot disagree with itself. getattr, so a
+        Frappe that renames the attribute costs a duplicate sync, not a save.
         """
-        if frappe.flags.entity_registry_sync_queued:
-            return
-        frappe.flags.entity_registry_sync_queued = True
-        frappe.db.after_commit.add(_sync_entity_registry)
-        frappe.db.after_rollback.add(_clear_entity_registry_sync_flag)
+        queued = getattr(frappe.db.after_commit, "_functions", ())
+        if _sync_entity_registry not in queued:
+            frappe.db.after_commit.add(_sync_entity_registry)
 
     def _normalise_code(self):
         """The code is a join key, so whitespace and case drift break joins
@@ -174,14 +188,27 @@ class Entity(NestedSet):
             )
 
 
+
+def _normalised(field, value):
+    """is_group as an int, the currency with NULL and '' the same."""
+    return cint(value) if field == "is_group" else (value or "")
+
+
 def _sync_entity_registry():
     """The one sync call. frappe.get_all ignores permissions, so a user whose
-    User Permissions scope them to one entity still re-sends every row — a
+    User Permissions scope them to one entity still re-sends every row. A
     TRUNCATE+INSERT of only the rows they can see would delete the rest of the
     registry."""
-    frappe.flags.entity_registry_sync_queued = False
     return sync_doctype("Entity", Entity.CH_TABLE, Entity.CH_FIELD_MAP)
 
 
-def _clear_entity_registry_sync_flag():
-    frappe.flags.entity_registry_sync_queued = False
+def _request_consolidation_rebuild(doc, method):
+    """Runs after commit, so an exception here would surface to a user whose
+    change already committed. Best-effort: log it instead. The next watched
+    change, or a manual build, still rebuilds."""
+    from konsol.tasks import on_consolidation_doc_update
+
+    try:
+        on_consolidation_doc_update(doc, method)
+    except Exception:  # noqa: BLE001 — never fail a committed change over a build request
+        frappe.log_error(title=f"Entity {doc.name}: consolidation rebuild request failed")

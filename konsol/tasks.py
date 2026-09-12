@@ -42,6 +42,13 @@ DOCTYPE_BUILD_MAP = {
     # reaches silver_entity_currencies and gold_consolidated_trial_balance.
     # Requested from Entity's controller, not from doc_events.
     "Entity": {"scope": "consolidation", "risk": "high"},
+    # F8: listed in hooks' _dbt_trigger_doctypes from the start but never
+    # mapped here, so on_consolidation_doc_update logged "No build mapping" and
+    # a submitted or cancelled trial balance requested nothing (#110 re-review).
+    # consolidation: +tag:domain:consolidation reaches
+    # bronze_trial_balance_submissions -> silver_gl_entries -> gold_trial_balance
+    # -> the consolidated models.
+    "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype

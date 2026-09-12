@@ -145,26 +145,44 @@ def test_one_sync_call():
 def test_the_sync_waits_for_the_commit():
     """ClickHouse has no transaction: a sync inside on_update publishes a save
     that may still roll back, and the warehouse then consolidates on a row
-    MariaDB never committed — reproduced live in the #110 E2E (konsol#124)."""
+    MariaDB never committed. Reproduced live in the #110 E2E (konsol#124)."""
     calls = _calls(_method("_resync"))
     assert "sync_doctype" not in calls and "_sync_entity_registry" not in calls, (
         "_resync must queue the sync, not run it")
     body = ast.dump(_method("_resync"))
     assert "after_commit" in body and "_sync_entity_registry" in body
-    assert "after_rollback" in body and "_clear_entity_registry_sync_flag" in body
 
 
-def test_the_sync_is_queued_once_per_transaction():
-    """CallbackManager.add appends without deduping, so an unguarded bulk edit
-    of N entities queues N full-table syncs. Set on first queue, cleared by
-    the sync itself and by rollback."""
+def test_the_sync_is_queued_once_per_transaction_by_asking_the_queue():
+    """CallbackManager.add appends without deduping. The guard checks the
+    queue itself for the sync function. A marker flag was tried first; Frappe
+    drops the rollback callbacks at the start of commit(), so a commit that
+    failed left the flag set and silently skipped every later sync in the
+    process (#110 re-review)."""
     resync = _method("_resync")
-    first = resync.body[1] if isinstance(resync.body[0], ast.Expr) else resync.body[0]
-    assert isinstance(first, ast.If) and isinstance(first.body[0], ast.Return), (
-        "_resync must return early when a sync is already queued")
-    assert "entity_registry_sync_queued" in ast.dump(first.test)
-    for fn in ("_sync_entity_registry", "_clear_entity_registry_sync_flag"):
-        assert "entity_registry_sync_queued" in ast.dump(_module_function(fn)), fn
+    src = ast.unparse(resync)
+    assert "_functions" in src and "not in" in src and "_sync_entity_registry" in src
+    assert "frappe.flags" not in _src(), "no marker flag: it can stick"
+
+
+def _module_function_source(name):
+    fn = _module_function(name)
+    assert fn is not None, f"{name} is missing"
+    return ast.Module(body=[fn], type_ignores=[])
+
+
+def test_normalised_comparison_ignores_representation_not_value():
+    """The previous doc comes from the database (ints, NULL as None); incoming
+    values come as sent. Run the real function with a cint stand-in, not a
+    re-statement of it."""
+    ns = {"cint": lambda v: int(float(v or 0))}
+    exec(compile(_module_function_source("_normalised"), "entity.py", "exec"), ns)
+    norm = ns["_normalised"]
+    assert norm("is_group", "0") == norm("is_group", 0) == norm("is_group", None)
+    assert norm("is_group", "1") == norm("is_group", 1)
+    assert norm("functional_currency", "") == norm("functional_currency", None)
+    assert norm("functional_currency", "EUR") != norm("functional_currency", "USD")
+    assert "_normalised" in _calls(_method("_changes_what_consolidation_sees"))
 
 
 # ---- rebuilds ----------------------------------------------------------------
@@ -213,8 +231,20 @@ def test_every_lifecycle_that_changes_what_consolidation_sees_requests_a_rebuild
     not doc_events at all, so the generic trigger could never have seen them."""
     for hook in ("on_update", "after_delete", "after_rename"):
         assert "_request_rebuild" in _calls(_method(hook)), f"Entity.{hook} requests no rebuild"
-    assert "on_consolidation_doc_update" in _calls(_method("_request_rebuild")), (
+    assert "on_consolidation_doc_update" in _calls(_module_function("_request_consolidation_rebuild")), (
         "reuse the trigger path: it carries the install/migrate/import guard and the debounce")
+
+
+def test_the_rebuild_request_waits_for_the_commit():
+    """on_consolidation_doc_update commits. Called inside on_update /
+    after_delete / after_rename, that commit split the save, delete or
+    rename in two (#110 re-review)."""
+    request = _method("_request_rebuild")
+    assert "on_consolidation_doc_update" not in _calls(request)
+    assert "after_commit" in ast.dump(request)
+    guarded = _module_function("_request_consolidation_rebuild")
+    assert any(isinstance(n, ast.Try) for n in ast.walk(guarded)), (
+        "after commit, a failure must be logged, not raised at a user whose change committed")
 
 
 def test_entity_is_not_a_generic_trigger_doctype():
