@@ -135,56 +135,6 @@ def test_monthly_budget_table_is_created_by_something():
     assert '"epm_gold.budget_annual_input": (' in src
 
 
-def test_annual_budget_shipped_links_all_resolve():
-    """EVERY Link field, not just the two I thought of.
-
-    Fixture and demo_data import both set ignore_links, so shipped rows can
-    reference records that do not exist and still load — then nobody can save
-    the row through the UI. Caught twice on this doctype: `BUDGET_2025` had no
-    Scenario, and `submitted_by: "admin"` had no User (and the field is
-    read_only, so a user could not even correct it). Enumerating the Link fields
-    from the doctype is what stops a third.
-    """
-    import json
-    import os
-
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, "demo_data", "budget_annual_input.json")) as f:
-        rows = json.load(f)
-    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.json")) as f:
-        meta = json.load(f)
-
-    links = {f["fieldname"]: f["options"] for f in meta["fields"]
-             if f["fieldtype"] == "Link"}
-    assert links, "the doctype has no Link fields — did the types change?"
-
-    def shipped(doctype, key):
-        path = None
-        for folder in ("fixtures", "demo_data"):
-            candidate = os.path.join(root, folder, f"{doctype.lower().replace(' ', '_')}.json")
-            if os.path.exists(candidate):
-                path = candidate
-                break
-        if path is None:
-            return None  # Frappe core doctype (User) — cannot check from here
-        with open(path) as f:
-            return {r.get(key) or r.get("name") for r in json.load(f)}
-
-    known_core = {"User": {"Administrator", "Guest"}}
-    for fieldname, target in links.items():
-        values = {row[fieldname] for row in rows if row.get(fieldname)}
-        available = shipped(target, {"Scenario": "scenario_id",
-                                     "Entity": "data_area_id"}.get(target, "name"))
-        if available is None:
-            available = known_core.get(target)
-        if available is None:
-            continue
-        missing = values - available
-        assert not missing, (
-            f"{fieldname} -> {target}: {sorted(missing)} has nothing behind it; "
-            f"import ignores links but a desk save will not")
-
-
 def test_annual_budget_lock_holds_on_delete_too():
     """after_delete republishes immediately, so a lock that only guards validate
     could be walked around by deleting a row instead of editing one."""
@@ -210,26 +160,6 @@ def test_annual_budget_grain_is_unique():
                   "dim_cost_center", "dim_department"):
         assert field in body, field
     assert "frappe.throw" in body
-
-
-def test_annual_budget_is_seeded_not_fixtured():
-    """EPM Analyst can edit these. Everything in konsol/fixtures/ is
-    force-reimported on every migrate, so a fixture would revert an analyst's
-    revised figure — and the cycle-lock guard returns early under in_import, so
-    it would do it even for a Locked cycle."""
-    import os
-
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    assert not os.path.exists(
-        os.path.join(root, "fixtures", "budget_annual_input.json"))
-    assert os.path.exists(
-        os.path.join(root, "demo_data", "budget_annual_input.json"))
-    with open(os.path.join(root, "install.py")) as f:
-        install = f.read()
-    after = install.split("def after_migrate")[1].split("\ndef ")[0]
-    calls = [l.strip() for l in after.splitlines()
-             if l.strip() and not l.strip().startswith("#")]
-    assert calls.index("_bootstrap_budget_annual_input()") < calls.index("_reconcile_clickhouse()")
 
 
 def test_budget_ddl_covers_every_in_budget_dimension():

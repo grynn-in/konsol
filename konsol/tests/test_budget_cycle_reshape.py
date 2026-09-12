@@ -216,17 +216,11 @@ def test_after_migrate_provisions_budget_line_fields():
     assert "_sync_budget_custom_fields" in _func(src, "_sync_budget_line_custom_fields")
 
 
-def test_budget_fixtures_registered():
-    hooks = _src(os.path.join(APP_DIR, "hooks.py"))
-    assert '"Budget Cycle"' in hooks
-    assert '"Budget Sheet"' in hooks
-    cycle_fixture = os.path.join(APP_DIR, "fixtures", "budget_cycle.json")
-    sheet_fixture = os.path.join(APP_DIR, "fixtures", "budget_sheet.json")
-    assert os.path.isfile(cycle_fixture)
-    assert os.path.isfile(sheet_fixture)
-    cycles = json.load(open(cycle_fixture))
-    assert cycles[0]["scenario_id"] == "BUDGET_2024"
-    assert cycles[0]["fiscal_year"] == 2024
+def test_budget_demo_is_not_shipped():
+    """BUDGET_2024's cycle and sheets were the Alpine demo's. Budgets are
+    entered per site; a fixture would force-reimport the demo's over them."""
+    for name in ("budget_cycle.json", "budget_sheet.json"):
+        assert not os.path.exists(os.path.join(APP_DIR, "fixtures", name)), name
 
 
 def test_dashboard_includes_budget_cycle_shortcut():

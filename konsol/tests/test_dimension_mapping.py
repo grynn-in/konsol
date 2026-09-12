@@ -128,8 +128,15 @@ def test_request_governed_rebuild_skips_apply_schema():
     assert "apply_schema" not in body
 
 
-def test_dimension_mapping_is_a_fixture():
-    assert '"Dimension Mapping"' in _read("hooks.py")
+def test_dimension_mapping_is_not_a_fixture():
+    """A dimension mapping maps one site's ERP values to canonical ones. The
+    shipped rows mapped the Contoso demo's D365 cost centres, and a fixture is
+    force-reimported on every migrate, so a site's own mappings would be
+    overwritten by another company's."""
+    src = _read("hooks.py")
+    fixtures = src.split("fixtures = [")[1].split("]")[0]
+    entries = [l.strip() for l in fixtures.splitlines() if l.strip().startswith('"')]
+    assert '"Dimension Mapping",' not in entries
 
 
 def test_after_delete_resyncs_not_on_trash():

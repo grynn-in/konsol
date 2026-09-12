@@ -172,6 +172,12 @@ def test_connector_controller_regenerates_vars():
     assert "dbt_adapter_prefix" in src
 
 
-def test_connector_is_a_fixture():
+def test_connector_is_not_a_fixture():
+    """Connector sat on the fixtures hook with no file behind it, so it only
+    affected export: `bench export-fixtures` would have written every site's
+    Connector records, credentials included, into this public repo. Connectors
+    are per-site configuration."""
     src = _read(os.path.join(APP_DIR, "hooks.py"))
-    assert '"Connector"' in src
+    fixtures = src.split("fixtures = [")[1].split("]")[0]
+    entries = [l.strip() for l in fixtures.splitlines() if l.strip().startswith('"')]
+    assert '"Connector",' not in entries

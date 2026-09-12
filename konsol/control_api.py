@@ -348,7 +348,10 @@ def _prerequisites(process_id, fy, budget_locked):
         _check(
             "Consolidation Group",
             "Lists → Consolidation → Consolidation Group",
-            lambda: _exists("Consolidation Group", {"consolidation_group": "GROUP_CORP"}),
+            # Any group, not the demo's GROUP_CORP by name: that was true only
+            # on the Contoso demo, so every real site's readiness check stayed
+            # blocked. Same count-based rule as the checks below.
+            lambda: _count("Consolidation Group") >= 1,
             owner="EPM Admin",
         ),
         _check(

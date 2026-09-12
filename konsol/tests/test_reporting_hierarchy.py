@@ -98,10 +98,14 @@ def test_build_models_include_hierarchy_v2():
         assert model in names
 
 
-def test_fixtures_registered():
-    hooks = _read("hooks.py")
-    assert '"Reporting Hierarchy"' in hooks
-    assert '"Reporting Hierarchy Member"' in hooks
+def test_reporting_hierarchy_is_not_a_fixture():
+    """MGMT_DEMO was the Contoso demo's management tree. Hierarchies are built
+    per site, and a fixture would force-reimport the demo's over them."""
+    src = _read("hooks.py")
+    fixtures = src.split("fixtures = [")[1].split("]")[0]
+    entries = [l.strip() for l in fixtures.splitlines() if l.strip().startswith('"')]
+    for doctype in ("Reporting Hierarchy", "Reporting Hierarchy Member"):
+        assert f'"{doctype}",' not in entries, doctype
 
 
 def test_reporting_hierarchy_seed_unit():

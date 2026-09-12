@@ -77,27 +77,6 @@ def test_allocation_rule_driver_type_options():
             assert "sqm" in options
 
 
-def test_allocation_rule_fixture_matches_d365_demo():
-    """Demo D365 entities use SALES/HQ/PROD cost centers — not USMF 7100/IT."""
-    with open(os.path.join(FIXTURES_DIR, "allocation_rule.json")) as handle:
-        rules = json.load(handle)
-    assert len(rules) == 3
-    source_ccs = {rule["source_cost_center"] for rule in rules}
-    assert source_ccs == {"SALES", "HQ", "PROD"}
-    accounts = {rule["source_account"] for rule in rules}
-    assert accounts == {"6010"}
-
-
-def test_allocation_driver_fixture_exists_and_covers_demo_entities():
-    path = os.path.join(FIXTURES_DIR, "allocation_driver.json")
-    assert os.path.isfile(path)
-    with open(path) as handle:
-        drivers = json.load(handle)
-    assert len(drivers) == 108
-    entities = {row["data_area_id"] for row in drivers}
-    assert entities == {"AMUS", "AMHQ", "AMDE"}
-
-
 def test_after_migrate_syncs_allocation_config():
     with open(os.path.join(APP_DIR, "install.py")) as handle:
         src = handle.read()
