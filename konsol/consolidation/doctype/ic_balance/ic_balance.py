@@ -5,7 +5,7 @@ PRD-15: Used by unrealized profit elimination (ending_inventory_from_ic × margi
 import frappe
 from frappe.model.document import Document
 
-from konsol.clickhouse import sync_doctype
+from konsol.clickhouse import sync_doctype_after_commit
 
 
 class ICBalance(Document):
@@ -20,10 +20,12 @@ class ICBalance(Document):
     }
 
     def on_submit(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def on_cancel(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
-    def on_trash(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+    def after_delete(self):
+        """after_delete, not on_trash: on_trash runs before the row is gone, so
+        the full-table re-send put it straight back (#120)."""
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

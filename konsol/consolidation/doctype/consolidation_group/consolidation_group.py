@@ -22,7 +22,7 @@ This controller now publishes two things, both pure structure:
 import frappe
 from frappe.utils.nestedset import NestedSet
 
-from konsol.clickhouse import sync_doctype, sync_table
+from konsol.clickhouse import after_commit_once, sync_doctype_after_commit, sync_table
 
 
 class ConsolidationGroup(NestedSet):
@@ -57,13 +57,20 @@ class ConsolidationGroup(NestedSet):
     def on_update(self):
         self._warn_if_no_ownership_period()
         super().on_update()
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
-        self._sync_hierarchy()
+        self._queue_sync()
 
     def on_trash(self):
-        super().on_trash()
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
-        self._sync_hierarchy()
+        super().on_trash()   # the tree check; it may refuse the delete
+
+    def after_delete(self):
+        """after_delete, not on_trash: on_trash runs before the row is gone, so
+        the full-table re-send put it straight back (#120)."""
+        self._queue_sync()
+
+    def _queue_sync(self):
+        """After the commit, once per transaction (konsol#124)."""
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        after_commit_once(("consolidation_hierarchy",), type(self).resync_staging)
 
     # -- validation ---------------------------------------------------------
 

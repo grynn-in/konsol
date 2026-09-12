@@ -8,7 +8,7 @@ PRD-20: Tiered rules via child table
 import frappe
 from frappe.model.document import Document
 
-from konsol.clickhouse import sync_doctype, sync_table
+from konsol.clickhouse import after_commit_once, sync_doctype_after_commit, sync_table
 
 
 class AllocationRule(Document):
@@ -34,13 +34,18 @@ class AllocationRule(Document):
         "driver_formula": "driver_formula",
     }
 
+    # After the commit, once per transaction (konsol#124).
     def on_update(self):
-        sync_doctype(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
-        self._sync_tiers()
+        self._queue_sync()
 
-    def on_trash(self):
-        sync_doctype(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
-        self._sync_tiers()
+    def after_delete(self):
+        """after_delete, not on_trash: on_trash runs before the row is gone, so
+        the full-table re-send put it straight back (#120)."""
+        self._queue_sync()
+
+    def _queue_sync(self):
+        sync_doctype_after_commit(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
+        after_commit_once(("allocation_tiers",), self._sync_tiers)
 
     def _sync_tiers(self):
         """PRD-20: Sync all allocation tiers across all rules to epm_staging."""
