@@ -118,7 +118,7 @@ def _read_table(file_url):
     if name.endswith((".csv", ".txt")):
         # Excel's "CSV UTF-8" starts with a byte-order mark; File.get_content
         # may already have decoded it into a string, so strip it either way.
-        content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("﻿")
+        content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("\ufeff")
         return M.table_from_csv(content)
     frappe.throw("Upload a .csv or .xlsx file.")
 
