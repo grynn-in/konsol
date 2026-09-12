@@ -139,13 +139,20 @@ def split_table(table):
     return groups
 
 
-def group_csv(rows):
-    """One entity-period as the single-submission CSV (main_account,debit,credit,description)."""
+def group_csv(rows, source=None):
+    """One entity-period as the single-submission CSV (main_account,debit,credit,description).
+
+    `source` (the upload's name) is written as an extra column, which the
+    single-upload parser ignores. It records where the file came from, and
+    it makes each upload's files unique: Frappe reuses an existing File with
+    the same content, which would give this submission another upload's file.
+    """
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
-    writer.writerow(["main_account", "debit", "credit", "description"])
+    writer.writerow(["main_account", "debit", "credit", "description"] + (["source_upload"] if source else []))
     for r in rows:
-        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", "")])
+        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", "")]
+                        + ([source] if source else []))
     return out.getvalue()
 
 

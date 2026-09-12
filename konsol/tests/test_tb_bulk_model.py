@@ -151,3 +151,13 @@ def test_a_loaded_row_since_cancelled_is_a_problem_not_a_reload():
     fresh = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": True, "errors": [], "existing": None}]
     out = M.merge_loaded(fresh, previous, "TBU-00001")[0]
     assert not out["ok"] and "since been cancelled" in out["errors"][0] and "loaded" not in out
+
+
+def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
+    rows = [{"main_account": "1010", "debit": 1.0, "credit": 0.0, "description": ""}]
+    text = M.group_csv(rows, source="TBU-00042")
+    parsed = list(csv.DictReader(io.StringIO(text)))
+    assert parsed[0]["source_upload"] == "TBU-00042"
+    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1.00", "credit": "0.00"}
+    # two uploads of the same figures produce different files
+    assert M.group_csv(rows, source="TBU-00001") != M.group_csv(rows, source="TBU-00002")

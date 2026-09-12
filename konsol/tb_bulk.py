@@ -338,7 +338,7 @@ def _load_one(upload_name, key, rows):
     file_doc = frappe.get_doc({
         "doctype": "File", "is_private": 1,
         "file_name": f"{upload_name}-{key[0]}-{key[1]}-P{key[2]:02d}.csv",
-        "content": M.group_csv(rows),
+        "content": M.group_csv(rows, source=upload_name),
     }).insert()
     tbs = frappe.get_doc({"doctype": "Trial Balance Submission", "data_area_id": key[0],
                           "fiscal_year": key[1], "fiscal_period": key[2],
@@ -402,7 +402,9 @@ def run_load(upload):
                         item.pop("load_error", None)
                         loaded += 1
                         break
-                    if attempt == 1 and frappe.db.is_deadlocked(e):
+                    # Frappe re-raises MySQL 1213 as QueryDeadlockError, which
+                    # is_deadlocked (it reads args[0]) does not recognise.
+                    if attempt == 1 and (isinstance(e, frappe.QueryDeadlockError) or frappe.db.is_deadlocked(e)):
                         continue
                     item["load_error"] = strip_html(str(e)) or type(e).__name__
                     failed += 1
