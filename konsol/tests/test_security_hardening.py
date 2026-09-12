@@ -146,7 +146,7 @@ def _binds_gate(node):
     if match_nodes and isinstance(node, match_nodes):
         return node.name == _GATE
     if isinstance(node, ast.Constant):  # globals()[...] / setattr(module, ...)
-        return node.value == _GATE
+        return isinstance(node.value, str) and node.value == _GATE
     if isinstance(node, ast.Attribute):  # __code__ swaps, patching the shared check
         return not isinstance(node.ctx, ast.Load) and node.attr in (
             "__code__", _GATE, "assert_entity_access")
@@ -182,12 +182,17 @@ def test_assert_entity_access_raises_permission_error_source():
 def test_assert_entity_access_is_the_function_in_the_source():
     # Catches a rebind that happens while api.py imports (anything the static
     # tripwire cannot see): the loaded gate must be the def in api.py.
-    fn = next(node for node in ast.parse(_api_src()).body
-              if isinstance(node, ast.FunctionDef) and node.name == _GATE)
+    fn = next((node for node in ast.parse(_api_src()).body
+               if isinstance(node, ast.FunctionDef) and node.name == _GATE), None)
+    assert fn is not None, f"{_GATE} is not a plain top-level def. {_GATE_WHY}"
     code = getattr(api, _GATE).__code__
-    assert os.path.realpath(code.co_filename) == os.path.realpath(
-        os.path.join(APP_DIR, "api.py")), _GATE_WHY
-    assert code.co_firstlineno == fn.lineno, _GATE_WHY
+    expected = os.path.realpath(os.path.join(APP_DIR, "api.py"))
+    assert os.path.realpath(code.co_filename) == expected, (
+        f"{_GATE} was loaded from {code.co_filename}, expected {expected} "
+        f"(a different checkout on sys.path, or a rebind). {_GATE_WHY}")
+    assert code.co_firstlineno == fn.lineno, (
+        f"the loaded {_GATE} starts at line {code.co_firstlineno}, the def in "
+        f"api.py at line {fn.lineno}. {_GATE_WHY}")
 
 
 # ---------------------------------------------------------------------------
