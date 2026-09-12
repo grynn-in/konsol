@@ -165,12 +165,33 @@ def stale_build_approval_reason(row, now, timeout_minutes: int = STALE_BUILD_APP
     return None
 
 
+def _build_job_waiting(name):
+    """True if the approval's build job is still queued or started in RQ.
+    A build can wait behind a 30-minute pipeline run, so age alone can't tell a
+    backlog from a lost job. If RQ can't be asked, assume it is waiting: never
+    reap what we can't reason about."""
+    from frappe.utils.background_jobs import is_job_enqueued
+
+    from konsol.pipeline.doctype.build_approval.build_approval import governed_build_job_id
+
+    try:
+        return is_job_enqueued(governed_build_job_id(name))
+    except Exception:
+        return True
+
+
 def reap_stale_build_approvals():
     """Scheduled: mark stuck Build Approvals Failed so their scope can build again (#125).
 
     The UPDATE re-checks the state it read, so a job that started meanwhile
-    is never overwritten. Returns the list of reaped names.
+    is never overwritten, and bumps ``modified``, so a job that loaded the row
+    earlier fails its save on the timestamp check instead of writing Running
+    over Failed. An approval reaped from Running also has its governed
+    Pipeline Run failed: left active, it would block every new build in
+    ``_assert_no_active_run`` until reap_stale_runs caught it (120 min).
+    Returns the list of reaped names.
     """
+    from konsol.orchestrator.api import ACTIVE_RUN_STATES
     import frappe
 
     now = frappe.utils.now_datetime()
@@ -184,12 +205,24 @@ def reap_stale_build_approvals():
         reason = stale_build_approval_reason(row, now)
         if not reason:
             continue
+        if row["workflow_state"] == "Approved" and _build_job_waiting(row["name"]):
+            continue  # a backlog, not a lost job: one worker serves every queue
         note = (f"{row.get('error_message') or ''}\n[reaper] marked Failed: {reason}").strip()
         frappe.db.sql(
-            """UPDATE `tabBuild Approval` SET workflow_state = 'Failed', error_message = %s, completed_at = %s
+            """UPDATE `tabBuild Approval`
+               SET workflow_state = 'Failed', error_message = %s, completed_at = %s, modified = %s
                WHERE name = %s AND workflow_state = %s""",
-            (note, now, row["name"], row["workflow_state"]),
+            (note, now, now, row["name"], row["workflow_state"]),
         )
+        if row["workflow_state"] == "Running":
+            frappe.db.sql(
+                """UPDATE `tabPipeline Run`
+                   SET status = 'Failed', completed_at = %s, modified = %s,
+                       error_log = TRIM(CONCAT(IFNULL(error_log, ''), '\n', %s))
+                   WHERE build_approval = %s AND status IN %s""",
+                (now, now, f"[reaper] Build Approval {row['name']} reaped: {reason}", row["name"],
+                 tuple(ACTIVE_RUN_STATES)),
+            )
         reaped.append(row["name"])
     if reaped:
         frappe.db.commit()

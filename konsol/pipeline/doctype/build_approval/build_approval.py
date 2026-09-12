@@ -83,7 +83,15 @@ class BuildApproval(Document):
             # the commit, fail on DoesNotExist, and leave the row Approved, a
             # state the debounce treats as in-flight forever (#125, #128 review).
             enqueue_after_commit=True,
+            # Named, so the reaper can ask RQ whether it is still waiting (#125).
+            job_id=governed_build_job_id(self.name),
         )
         frappe.logger().info(
             f"Governed build enqueued: {self.name} (scope={self.build_scope})"
         )
+
+
+def governed_build_job_id(name):
+    """The RQ job id of a Build Approval's governed build."""
+    return f"konsol-governed-build::{name}"
+

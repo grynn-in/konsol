@@ -70,8 +70,52 @@ def test_the_sweep_is_scheduled_and_never_overwrites_a_state_it_did_not_read():
 
 
 def test_a_reaped_approval_whose_job_turns_up_late_does_not_build():
+    """The first statement after loading the doc returns unless it is Approved."""
+    import ast
     with open(os.path.join(APP_DIR, "tasks.py")) as f:
-        body = f.read().split("def run_governed_build")[1].split("\ndef ")[0]
-    guard = body.index('if doc.workflow_state != "Approved":')
-    assert guard < body.index("single_flight_lock()") and "return" in body[guard:guard + 300]
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_governed_build")
+    guard = fn.body[fn.body.index(next(n for n in fn.body if isinstance(n, ast.If))) ]
+    assert ast.unparse(guard.test) == "doc.workflow_state != 'Approved'"
+    assert isinstance(guard.body[-1], ast.Return)
+    before = fn.body[:fn.body.index(guard)]
+    assert all("get_doc" in ast.unparse(n) or isinstance(n, ast.Expr) for n in before), "nothing may run before the guard"
+
+
+def _sweep_sql():
+    with open(os.path.join(APP_DIR, "orchestrator", "reaper.py")) as f:
+        return f.read().split("def reap_stale_build_approvals")[1]
+
+
+def test_the_sweep_bumps_modified_so_a_late_save_fails_its_timestamp_check():
+    body = _sweep_sql()
+    update = body[body.index("UPDATE `tabBuild Approval`"):body.index("WHERE name = %s")]
+    assert "modified = %s" in update
+
+
+def test_a_reaped_running_build_releases_its_pipeline_run():
+    body = _sweep_sql()
+    assert 'if row["workflow_state"] == "Running":' in body
+    pr = body[body.index("UPDATE `tabPipeline Run`"):]
+    assert "SET status = 'Failed'" in pr and "WHERE build_approval = %s AND status IN %s" in pr
+
+
+def test_an_approved_build_still_waiting_in_rq_is_not_reaped():
+    """One worker serves every queue, so an approved build can wait behind a
+    30-minute pipeline run (#137 review). The sweep asks RQ by the job's id,
+    which _enqueue_build now sets, and treats an RQ error as still waiting."""
+    import ast
+    body = _sweep_sql()
+    assert 'row["workflow_state"] == "Approved" and _build_job_waiting(row["name"])' in body
+    with open(os.path.join(APP_DIR, "orchestrator", "reaper.py")) as f:
+        waiting = f.read().split("def _build_job_waiting")[1].split("\ndef ")[0]
+    assert "is_job_enqueued(governed_build_job_id(name))" in waiting
+    assert "except Exception:\n        return True" in waiting
+    path = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_enqueue_build")
+    call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "enqueue")
+    kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
+    assert kw.get("job_id") == "governed_build_job_id(self.name)"
 
