@@ -361,11 +361,31 @@ def after_commit_once(key, fn):
     ``CallbackManager.add`` doesn't dedupe, so a bulk edit of N documents would
     queue N full-table syncs. ``key`` keeps one per transaction: the queue
     itself is asked, so there's no marker to go stale after a failed commit.
+
+    Nothing is queued where the inline sync would have been skipped (install,
+    import, migrate, patch: ``sync_table``'s own guard): the queue runs at a
+    commit after those flags are cleared, so an install would sync fixtures
+    before the warehouse exists. reconcile_all repairs the tables after a
+    migrate. A queued sync that fails is logged, never raised: the save it
+    follows has already committed, and a raise would turn it into an error
+    response and drop the syncs queued behind it (#141 review).
     """
+    flags = frappe.flags
+    if flags.in_install or flags.in_import or flags.in_migrate or flags.in_patch:
+        return
     queued = getattr(frappe.db.after_commit, "_functions", ())
     if any(getattr(f, "_konsol_key", None) == key for f in queued):
         return
-    job = functools.partial(fn)
+
+    def job():
+        try:
+            fn()
+        except Exception:
+            # This runs after the request's last commit, so a plain Error Log
+            # insert would never be committed. Log to file and defer the row.
+            frappe.logger().exception(f"ClickHouse sync after commit failed: {key}")
+            frappe.log_error(title=f"ClickHouse sync after commit failed: {key}", defer_insert=True)
+
     job._konsol_key = key
     frappe.db.after_commit.add(job)
 

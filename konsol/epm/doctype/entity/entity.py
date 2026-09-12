@@ -154,9 +154,9 @@ class Entity(NestedSet):
         (#110 re-review). The queue cannot disagree with itself. getattr, so a
         Frappe that renames the attribute costs a duplicate sync, not a save.
         """
-        queued = getattr(frappe.db.after_commit, "_functions", ())
-        if _sync_entity_registry not in queued:
-            frappe.db.after_commit.add(_sync_entity_registry)
+        from konsol.clickhouse import after_commit_once
+
+        after_commit_once(("entity_registry",), _sync_entity_registry)
 
     def _normalise_code(self):
         """The code is a join key, so whitespace and case drift break joins

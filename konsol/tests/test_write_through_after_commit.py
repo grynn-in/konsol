@@ -44,11 +44,26 @@ def test_there_are_write_through_controllers_to_check():
     assert {"Scenario", "OwnershipPeriod", "ConsolidationGroup", "AllocationRule"} <= names
 
 
+def _methods(cls, classes, seen=()):
+    """A class's methods with the ones it inherits from app classes; its own
+    win. Reporting Hierarchy inherits on_update from GovernedReferenceDocument
+    and overrides the _resync it calls (#141 review)."""
+    merged = {}
+    for base in cls.bases:
+        name = ast.unparse(base).split(".")[-1]
+        if name in classes and name not in seen:
+            merged.update(_methods(classes[name], classes, seen + (cls.name,)))
+    merged.update({n.name: n for n in cls.body if isinstance(n, ast.FunctionDef)})
+    return merged
+
+
 def test_no_document_hook_writes_clickhouse_inside_the_transaction():
-    """Enumerated across every controller, following one level of self.<helper>()."""
+    """Enumerated across every controller, inherited hooks included, following
+    one level of self.<helper>()."""
+    classes = {cls.name: cls for _, cls in _controllers()}
     offenders = []
     for rel, cls in _controllers():
-        methods = {n.name: n for n in cls.body if isinstance(n, ast.FunctionDef)}
+        methods = _methods(cls, classes)
         for hook in sorted(HOOKS & set(methods)):
             for call in [n for n in ast.walk(methods[hook]) if isinstance(n, ast.Call)]:
                 name = _name(call)
@@ -63,13 +78,16 @@ def test_no_document_hook_writes_clickhouse_inside_the_transaction():
     assert not offenders, offenders
 
 
-def _after_commit_once(queue):
+def _after_commit_once(queue, flags=(), logged=None):
     """clickhouse.after_commit_once, run against a stub after-commit queue."""
     with open(CLICKHOUSE) as f:
         tree = ast.parse(f.read())
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "after_commit_once")
-    stub = types.SimpleNamespace(db=types.SimpleNamespace(
-        after_commit=types.SimpleNamespace(_functions=queue, add=queue.append)))
+    stub = types.SimpleNamespace(
+        db=types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append)),
+        flags=types.SimpleNamespace(**{f: f in flags for f in ("in_install", "in_import", "in_migrate", "in_patch")}),
+        log_error=lambda **kw: (logged if logged is not None else []).append(kw),
+        logger=lambda: types.SimpleNamespace(exception=lambda msg: None))
     ns = {"functools": functools, "frappe": stub}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), CLICKHOUSE, "exec"), ns)
     return ns["after_commit_once"]
@@ -95,3 +113,24 @@ def test_the_deferred_doctype_sync_is_keyed_by_doctype_and_table():
         src = f.read()
     body = src.split("def sync_doctype_after_commit")[1].split("\ndef ")[0]
     assert 'after_commit_once(("sync_doctype", doctype, table)' in body
+
+
+def test_nothing_is_queued_where_the_inline_sync_was_skipped():
+    """An install ran the queue after in_install was cleared, syncing fixtures
+    before the warehouse existed (#141 review)."""
+    for flag in ("in_install", "in_import", "in_migrate", "in_patch"):
+        queue = []
+        _after_commit_once(queue, flags=(flag,))(("sync_doctype", "Scenario", "t1"), lambda: None)
+        assert queue == [], flag
+
+
+def test_a_failing_sync_is_logged_not_raised():
+    """It runs after the commit: a raise would turn a committed save into an
+    error response and drop the syncs queued behind it (#141 review)."""
+    queue, logged = [], []
+    once = _after_commit_once(queue, logged=logged)
+    once(("sync_doctype", "Scenario", "t1"), lambda: 1 / 0)
+    queue[0]()   # the commit
+    assert len(logged) == 1 and "Scenario" in logged[0]["title"]
+    assert logged[0].get("defer_insert") is True, "after the last commit, a plain insert is never committed"
+
