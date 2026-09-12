@@ -106,6 +106,17 @@ def test_consolidate_assertions_and_signoff():
     assert M.signoff_stage("Locked", "waiting")["state"] == "done"
 
 
+def test_a_signed_off_or_overridden_run_is_settled():
+    assert M.assertions_stage({"status": "Red", "failed": 2, "signoff_status": "Overridden"})["state"] == "done"
+    assert M.assertions_stage({"status": "Green", "signoff_status": "Signed Off"})["summary"] == "Signed off"
+    assert M.signoff_stage("Open", M.assertions_stage({"status": "Red", "signoff_status": "Overridden"})["state"])["state"] == "ready"
+
+
+def test_builds_only_count_for_the_month_being_closed():
+    s = M.consolidate_stage({"workflow_state": "Failed", "name": "B"}, tracked=False)
+    assert (s["state"], s["summary"]) == ("idle", "Not tracked for this month")
+
+
 def test_queue_dedupes_and_puts_urgent_first():
     items = [{"id": "a", "state": "done"}, {"id": "b", "state": "error"},
              {"id": "a", "state": "error"}, {"id": "c", "state": "paused"}]

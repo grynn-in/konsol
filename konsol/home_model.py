@@ -191,7 +191,11 @@ _BUILD_STATE = {"Pending Review": "paused", "Approved": "running", "Running": "r
                 "Completed": "done", "Failed": "error", "Cancelled": "idle", "Draft": "idle"}
 
 
-def consolidate_stage(build):
+def consolidate_stage(build, tracked=True):
+    """Builds carry no period, so a build's state only means something for the
+    month being closed now. Other months say so instead of borrowing it."""
+    if not tracked:
+        return stage("consolidate", "idle", "Not tracked for this month")
     if not build:
         return stage("consolidate", "idle", "No build yet")
     state = _BUILD_STATE.get(build.get("workflow_state"), "idle")
@@ -204,6 +208,12 @@ def assertions_stage(run):
     if not run:
         return stage("assertions", "waiting", "Not run")
     status = run.get("status")
+    signoff = run.get("signoff_status")
+    if signoff == "Overridden":
+        # a Red run the Close Lead accepted with a reason: settled, not failing
+        return stage("assertions", "done", f"{status} · overridden", run=run.get("name"))
+    if signoff == "Signed Off":
+        return stage("assertions", "done", "Signed off", run=run.get("name"))
     if status in ("Queued", "Running"):
         return stage("assertions", "running", "Running", run=run.get("name"))
     if status == "Green":

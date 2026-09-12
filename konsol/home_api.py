@@ -7,10 +7,13 @@ Three read-only GET endpoints for konsol-exec's workspace (F7, 12 Sep 2026):
   month         one period: the eight-stage lane, the viewer's work queue
                 ("mine") and what they wait on ("waiting"), and system health
 
-Stage counts are group-wide context and read with get_all. Queue rows are the
-viewer's own work: they are filtered by role and entity scope, and every
-action says whether this user may take it, so the UI never offers a button
-the server would refuse. The server still refuses; this only avoids offering.
+Only users holding a Konsol role get an answer. Stage counts are group-wide
+context; the entity codes inside them and the connector details are only
+shown to group roles (Close Lead, Group Accountant, System) or trimmed to the
+viewer's own entities. Queue rows are the viewer's own work, filtered by role
+and entity scope, and every action says whether this user may take it now,
+so the UI never offers a button the server would refuse. The server still
+refuses; this only avoids offering.
 """
 from __future__ import annotations
 
@@ -24,7 +27,9 @@ from konsol.entity_permissions import allowed_entity_codes
 KONSOL_ROLES = {role for role, _ in M.TITLES}
 CLOSE_LEAD = {"EPM Admin"}
 GROUP = {"EPM Analyst"}
-ENTITY = {"Entity Accountant", "Budget Submitter"}
+WIDE = CLOSE_LEAD | GROUP | {"System Manager"}
+TB_OWNER = {"Entity Accountant"}
+BUDGET_BASE = {"Entity Accountant", "Budget Submitter"}
 REVIEWERS = {"Budget Controller": "challenge", "Budget Manager": "management", "Budget Approver": "board"}
 
 
@@ -36,6 +41,13 @@ def _roles(user=None):
         # Close Lead who also runs the system.
         return CLOSE_LEAD | GROUP | {"System Manager"}
     return set(frappe.get_roles(user))
+
+
+def _require_konsol_user(user=None):
+    user = user or frappe.session.user
+    if user == "Administrator" or _roles(user) & KONSOL_ROLES:
+        return
+    frappe.throw("Konsol needs an EPM or budget role. Ask your administrator for access.", frappe.PermissionError)
 
 
 def _desk(doctype, name=None, **query):
@@ -54,12 +66,16 @@ def _can(doctype, ptype="read", doc=None):
         return False
 
 
-def _action(label, doctype, ptype="read", name=None, doc=None, **query):
+def _action(label, doctype, ptype="read", name=None, doc=None, blocked=None, **query):
+    """A queue button. ``blocked`` is a reason the action would be refused even
+    with the role (a closed period); it wins over the permission check."""
     if ptype == "create" and name is None:
         name = "new"   # /app/<doctype>/new?field=value prefills the new form
     allowed = _can(doctype, ptype, doc=doc)
-    return {"label": label, "href": _desk(doctype, name, **query), "allowed": allowed,
-            "reason": None if allowed else "You don't have permission for this."}
+    reason = None if allowed else "You don't have permission for this."
+    if allowed and blocked:
+        allowed, reason = False, blocked
+    return {"label": label, "href": _desk(doctype, name, **query), "allowed": allowed, "reason": reason}
 
 
 def _item(item_id, state, title, detail="", stage=None, who=None, action=None, entity=None):
@@ -80,6 +96,7 @@ def _parse_period(fiscal_year, fiscal_period):
 @frappe.whitelist(methods=["GET"])
 def whoami():
     user = frappe.session.user
+    _require_konsol_user(user)
     roles = _roles(user)
     allowed = allowed_entity_codes(user)
     full_name = frappe.utils.get_fullname(user) or user
@@ -94,14 +111,15 @@ def whoami():
         # None = every entity; a list = only these (possibly empty)
         "entities": None if allowed is None else sorted(allowed),
         "can": {
-            "approve": bool(roles & (CLOSE_LEAD | {"System Manager"})) or user == "Administrator",
-            "system": "System Manager" in roles or user == "Administrator",
+            "approve": bool(roles & (CLOSE_LEAD | {"System Manager"})),
+            "system": "System Manager" in roles,
         },
     }
 
 
 @frappe.whitelist(methods=["GET"])
 def period_tree():
+    _require_konsol_user()
     now = getdate(today())
     current = now.year
     years = {current - 1, current, current + 1}
@@ -163,7 +181,7 @@ def _context(fy, p, start):
                                                      "last_sync_at"], limit_page_length=0)
     live = [c.name for c in connectors if c.enabled]
     fed = set(frappe.get_all("Connector Legal Entity",
-                             filters={"parenttype": "Connector", "parent": ["in", live or [""]]},
+                             filters={"parenttype": "Connector", "parent": ["in", live]},
                              pluck="entity_id")) if live else set()
 
     period = {"fiscal_year": fy, "fiscal_period": p}
@@ -203,7 +221,7 @@ def _context(fy, p, start):
     }
 
 
-def _stages(ctx, status):
+def _stages(ctx, status, tracked_build):
     tbs = ctx["tbs"]
     by_status = {}
     for a in ctx["adjustments"]:
@@ -216,7 +234,7 @@ def _stages(ctx, status):
         M.ownership_stage(ctx["uncovered"], len(ctx["ownership_drafts"]), len(ctx["rate_drafts"])),
         M.ic_stage(sum(1 for i in ctx["ic"] if i.docstatus == 1), sum(1 for i in ctx["ic"] if i.docstatus == 0)),
         M.adjustments_stage(by_status),
-        M.consolidate_stage(ctx["build"]),
+        M.consolidate_stage(ctx["build"], tracked=tracked_build),
         assertions,
         M.signoff_stage(status, assertions["state"]),
     ]
@@ -228,13 +246,13 @@ def _money(a):
 
 def _queue(fy, p, ctx, stages, status, user):
     roles = _roles(user)
-    is_admin = user == "Administrator"
-    lead = is_admin or bool(roles & CLOSE_LEAD)
-    group = is_admin or bool(roles & GROUP)
-    entity = bool(roles & ENTITY)
-    system = is_admin or "System Manager" in roles
+    lead = bool(roles & CLOSE_LEAD)
+    group = bool(roles & GROUP)
+    system = "System Manager" in roles
     label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
+    # A closed period refuses writes to its documents, whatever the role.
+    closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
 
@@ -249,23 +267,25 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"adj:{a.name}", "paused", f"Approve {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
                                   who=frappe.utils.get_fullname(a.owner),
-                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name)))
+                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name,
+                                                 blocked=closed)))
         for o in ctx["ownership_drafts"]:
             mine.append(_item(f"own:{o.name}", "incomplete", "Approve ownership change", o.data_area_id or "",
                               stage=3, entity=o.data_area_id,
                               action=_action("Review", "Ownership Period", "submit", o.name)))
         for r in ctx["allocation_drafts"]:
             mine.append(_item(f"alloc:{r.name}", "incomplete", "Approve allocation run", r.name, stage=5,
-                              action=_action("Review", "Allocation Run", "submit", r.name)))
+                              action=_action("Review", "Allocation Run", "submit", r.name, blocked=closed)))
         a = by_id["assertions"]
         if a["state"] == "error":
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
                               action=_action("Open results", "Assertion Run", "read", a.get("run"))))
         s = by_id["signoff"]
+        may_close = _can("Period Status", "write")
         if s["state"] == "ready":
             mine.append(_item("signoff", "ready", f"Sign off {label}", "Locks the period against further change",
-                              stage=8, action={"label": "Sign off", "step": "signoff", "allowed": True,
-                                               "reason": None}))
+                              stage=8, action={"label": "Sign off", "step": "signoff", "allowed": may_close,
+                                               "reason": None if may_close else "You don't have permission for this."}))
         elif s["state"] == "waiting" and period_open:
             mine.append(_item("signoff", "waiting", f"Sign off {label}", "Locks the period against further change",
                               stage=8, action={"label": "Sign off", "step": "signoff", "allowed": False,
@@ -276,7 +296,8 @@ def _queue(fy, p, ctx, stages, status, user):
             if a.status == "Draft":
                 mine.append(_item(f"adj:{a.name}", "incomplete", f"Draft {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
-                                  action=_action("Send for approval", "Consolidation Adjustment", "write", a.name)))
+                                  action=_action("Send for approval", "Consolidation Adjustment", "write", a.name,
+                                                 blocked=closed)))
             elif a.status == "Pending Approval" and not lead:
                 waiting.append(_item(f"adj:{a.name}", "waiting", f"{a.adjustment_type.capitalize()} adjustment",
                                      f"{a.data_area_id} · {_money(a)}", stage=5, who="Close Lead",
@@ -294,7 +315,7 @@ def _queue(fy, p, ctx, stages, status, user):
             if i.docstatus == 0:
                 mine.append(_item(f"ic:{i.name}", "incomplete", "Submit intercompany balance",
                                   f"{i.selling_entity} and {i.buying_entity}", stage=4,
-                                  action=_action("Open", "IC Balance", "submit", i.name)))
+                                  action=_action("Open", "IC Balance", "submit", i.name, blocked=closed)))
 
     if lead or group:
         missing = by_id["trial_balances"].get("missing") or []
@@ -303,13 +324,18 @@ def _queue(fy, p, ctx, stages, status, user):
                                  ", ".join(missing), stage=2, who="Entity Accountants",
                                  action=_action("Open list", "Trial Balance Submission", "read")))
 
-    if entity:
-        allowed = allowed_entity_codes(user)
-        scope = ctx["expected_tb"] if allowed is None else ctx["expected_tb"] & allowed
+    # Entity rows only for entities the user is explicitly scoped to. An
+    # unscoped user (a group role, or a Budget Submitter with no assignment)
+    # works from the group view; listing every entity here would be noise
+    # at best and, for a submitter, a list of entities they cannot touch.
+    allowed = allowed_entity_codes(user)
+    scoped = set() if allowed is None else set(allowed)
+
+    if roles & TB_OWNER:
         by_entity = {}
         for t in ctx["tbs"]:
             by_entity.setdefault(t.data_area_id, []).append(t)
-        for e in sorted(scope):
+        for e in sorted(ctx["expected_tb"] & scoped):
             docs = by_entity.get(e, [])
             done = next((t for t in docs if t.docstatus == 1), None)
             draft = next((t for t in docs if t.docstatus == 0), None)
@@ -320,7 +346,8 @@ def _queue(fy, p, ctx, stages, status, user):
             elif draft:
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · draft, not submitted",
                                   stage=2, entity=e,
-                                  action=_action("Submit", "Trial Balance Submission", "submit", draft.name)))
+                                  action=_action("Submit", "Trial Balance Submission", "submit", draft.name,
+                                                 blocked=closed)))
             elif period_open:
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · not uploaded",
                                   stage=2, entity=e,
@@ -328,25 +355,30 @@ def _queue(fy, p, ctx, stages, status, user):
                                                  data_area_id=e, fiscal_year=fy, fiscal_period=p)))
 
     reviewer_layers = [layer for role, layer in REVIEWERS.items() if role in roles]
-    if reviewer_layers or entity:
-        for c in frappe.get_all("Budget Cycle", filters={"docstatus": 0, "status": "Open"},
-                                fields=["name", "fiscal_year", "deadline"], order_by="fiscal_year"):
+    base_entities = sorted(set(ctx["leaves"]) & scoped) if roles & BUDGET_BASE else []
+    if reviewer_layers or base_entities:
+        cycles = frappe.get_all("Budget Cycle", filters={"docstatus": 0, "status": "Open"},
+                                fields=["name", "fiscal_year", "deadline"], order_by="fiscal_year")
+        sheets = {}
+        if cycles and base_entities:
+            for s in frappe.get_all("Budget Sheet",
+                                    filters={"cycle": ["in", [c.name for c in cycles]], "layer": "base",
+                                             "data_area_id": ["in", base_entities]},
+                                    fields=["name", "cycle", "data_area_id", "annual_total"], limit_page_length=0):
+                sheets[(s.cycle, s.data_area_id)] = s
+        for c in cycles:
             due = f"due {c.deadline}" if c.deadline else ""
             for layer in reviewer_layers:
                 mine.append(_item(f"budget:{c.name}:{layer}", "incomplete", f"Budget FY{c.fiscal_year} · {layer} round",
                                   due, action=_action("Open cycle", "Budget Cycle", "read", c.name)))
-            if entity:
-                allowed = allowed_entity_codes(user)
-                for e in sorted(set(ctx["leaves"]) if allowed is None else set(ctx["leaves"]) & allowed):
-                    sheet = frappe.db.get_value("Budget Sheet", {"cycle": c.name, "data_area_id": e, "layer": "base"},
-                                                ["name", "annual_total"], as_dict=True)
-                    detail = (f"{sheet.annual_total:,.2f} so far" if sheet and sheet.annual_total else "Not started")
-                    mine.append(_item(f"budget:{c.name}:{e}", "incomplete", f"Budget FY{c.fiscal_year} · {e} base",
-                                      " · ".join(x for x in (detail, due) if x), entity=e,
-                                      action=_action("Open", "Budget Sheet", "write" if sheet else "create",
-                                                     sheet.name if sheet else None,
-                                                     **({} if sheet else {"cycle": c.name, "data_area_id": e,
-                                                                           "layer": "base"}))))
+            for e in base_entities:
+                sheet = sheets.get((c.name, e))
+                detail = f"{sheet.annual_total:,.2f} so far" if sheet and sheet.annual_total else "Not started"
+                mine.append(_item(f"budget:{c.name}:{e}", "incomplete", f"Budget FY{c.fiscal_year} · {e} base",
+                                  " · ".join(x for x in (detail, due) if x), entity=e,
+                                  action=(_action("Open", "Budget Sheet", "write", sheet.name) if sheet else
+                                          _action("Start", "Budget Sheet", "create", None, cycle=c.name,
+                                                  data_area_id=e, layer="base"))))
 
     if system:
         for c in ctx["connectors"]:
@@ -375,21 +407,24 @@ def _entity_accountants_without_entities():
     return sorted(enabled - assigned)
 
 
-def _health(ctx):
+def _health(ctx, wide):
     from konsol.control_api import _worker_healthy
     build = ctx["build"]
     return {
         "worker": _worker_healthy(),
+        # Connector names and build ids are operating detail for group roles.
         "connectors": [{"name": c.name, "label": c.connector_name or c.name, "status": c.last_sync_status,
                         "at": str(c.last_sync_at) if c.last_sync_at else None}
-                       for c in ctx["connectors"] if c.enabled],
+                       for c in ctx["connectors"] if c.enabled] if wide else [],
         "last_build": ({"name": build.name, "state": build.workflow_state,
-                        "at": str(build.completed_at or build.creation)} if build else None),
+                        "at": str(build.completed_at or build.creation)} if build and wide else None),
     }
 
 
 @frappe.whitelist(methods=["GET"])
 def month(fiscal_year, fiscal_period):
+    user = frappe.session.user
+    _require_konsol_user(user)
     fy, p = _parse_period(fiscal_year, fiscal_period)
     now = getdate(today())
     start = M.period_start(fy, p)
@@ -397,8 +432,19 @@ def month(fiscal_year, fiscal_period):
     closed = frappe.db.get_value("Period Status", {"fiscal_year": str(fy), "fiscal_period": p},
                                  ["closed_by", "closed_on"], as_dict=True) or {}
     ctx = _context(fy, p, start)
-    stages = _stages(ctx, status)
-    queue = _queue(fy, p, ctx, stages, status, frappe.session.user)
+    stages = _stages(ctx, status, tracked_build=(fy, p) == (now.year, now.month))
+    queue = _queue(fy, p, ctx, stages, status, user)
+
+    wide = bool(_roles(user) & WIDE)
+    if not wide:
+        # Counts stay; the entity codes behind them are trimmed to the viewer's
+        # own entities (None = the viewer may already read every entity).
+        allowed = allowed_entity_codes(user)
+        if allowed is not None:
+            for s in stages:
+                if "missing" in s:
+                    s["missing"] = [e for e in s["missing"] if e in allowed]
+
     return {
         "period": {
             "fiscal_year": fy, "fiscal_period": p, "code": M.period_code(p), "label": M.period_label(fy, p),
@@ -410,5 +456,5 @@ def month(fiscal_year, fiscal_period):
         "stages": stages,
         "mine": queue["mine"],
         "waiting": queue["waiting"],
-        "health": _health(ctx),
+        "health": _health(ctx, wide),
     }
