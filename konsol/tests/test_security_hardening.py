@@ -121,7 +121,13 @@ def test_empty_allow_list_when_perms_configured_but_none_granted():
 # itself is exercised in test_entity_access_host.py; these check the wiring.
 _READ_GATES = {"_assert_entity_access", "entity_read_scope"}
 _CH_READS = {"_batch_query_clickhouse", "batch_query_hierarchy",
-             "_fetch_trial_balance_rows", "compile_cell_map"}
+             "_fetch_trial_balance_rows", "compile_cell_map",
+             "_clickhouse_query", "execute"}
+#: Whitelisted ClickHouse readers that need no entity scope. A new reader must
+#: either call the helper or be named here, on purpose, with its reason.
+_GROUP_LEVEL_READERS = {
+    "fx_rates": "epm_silver.silver_exchange_rates: group-wide currency rates, no entity column",
+}
 
 
 def _src(rel):
@@ -166,9 +172,15 @@ def test_every_clickhouse_read_endpoint_calls_the_entity_helper():
     }
     # Not vacuous: the known readers are found.
     assert {"epm_value", "epm_batch", "build_cell_map", "build_snapshot"} <= set(readers)
+    stale = set(_GROUP_LEVEL_READERS) - set(readers)
+    assert not stale, f"{sorted(stale)} no longer read ClickHouse; drop them from _GROUP_LEVEL_READERS"
     for name, fn in readers.items():
-        assert _calls([fn]) & _READ_GATES, \
-            f"{name} reads ClickHouse without entity_read_scope / _assert_entity_access"
+        if name in _GROUP_LEVEL_READERS:
+            continue
+        assert _calls([fn]) & _READ_GATES, (
+            f"{name} reads ClickHouse ({', '.join(sorted(_calls([fn]) & _CH_READS))}) without "
+            "entity_read_scope / _assert_entity_access. Gate it, or name it in "
+            "_GROUP_LEVEL_READERS with the reason it needs no entity scope.")
 
 
 def test_both_modes_of_k_epm_call_the_entity_helper():
@@ -216,6 +228,62 @@ def test_no_inline_entity_checks_left():
                 text = ast.unparse(right)
                 assert text != "allowed_entities" and "allowed_entity_codes" not in text, \
                     f"{rel}: inline entity check `{ast.unparse(n)}`; use entity_read_scope"
+
+
+_HELPER = "entity_read_scope"
+
+
+def _helper_bindings(tree):
+    """Every binding of the name entity_read_scope in this tree other than a
+    plain `from konsol.entity_permissions import entity_read_scope`."""
+    match_nodes = tuple(getattr(ast, n) for n in ("MatchAs", "MatchStar") if hasattr(ast, n))
+    found = []
+    for n in ast.walk(tree):
+        what = None
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                plain = (isinstance(n, ast.ImportFrom) and n.level == 0
+                         and n.module == "konsol.entity_permissions"
+                         and a.name == _HELPER and a.asname is None)
+                if plain:
+                    continue
+                if a.name == "*" or _HELPER in (a.name, a.asname, a.name.split(".")[0]):
+                    what = f"import `{ast.unparse(n)}`"
+        elif isinstance(n, ast.Name) and n.id == _HELPER and not isinstance(n.ctx, ast.Load):
+            what = f"assignment to `{_HELPER}`"
+        elif isinstance(n, ast.Attribute) and n.attr == _HELPER and not isinstance(n.ctx, ast.Load):
+            what = f"attribute assignment `{ast.unparse(n)}`"
+        elif isinstance(n, (ast.Global, ast.Nonlocal)) and _HELPER in n.names:
+            what = f"`{ast.unparse(n)}`"
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == _HELPER:
+            what = f"def/class named `{_HELPER}`"
+        elif isinstance(n, ast.arg) and n.arg == _HELPER:
+            what = f"parameter named `{_HELPER}`"
+        elif isinstance(n, ast.ExceptHandler) and n.name == _HELPER:
+            what = f"`except ... as {_HELPER}`"
+        elif match_nodes and isinstance(n, match_nodes) and n.name == _HELPER:
+            what = f"match capture `{_HELPER}`"
+        elif isinstance(n, ast.Constant) and n.value == _HELPER:
+            what = f"string constant '{_HELPER}' (the globals()/setattr route)"
+        if what:
+            found.append(f"line {getattr(n, 'lineno', '?')}: {what}")
+    return found
+
+
+def test_entity_read_scope_is_only_imported_plainly_in_api():
+    # A tripwire like the one for _assert_entity_access below: rebinding the
+    # rule inside api.py (a local lambda after the import, an alias, a
+    # global, globals()/setattr) switches the named-entity check off while
+    # every call to it still looks right.
+    tree = ast.parse(_api_src())
+    found = _helper_bindings(tree)
+    assert not found, (
+        f"api.py binds {_HELPER} other than by a plain "
+        f"`from konsol.entity_permissions import {_HELPER}`: " + "; ".join(found)
+        + ". It is the entity-access rule for ClickHouse reads; get a security review.")
+    imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+               and any(a.name == _HELPER for a in n.names)]
+    assert len(imports) >= 2, "epm_value and epm_batch each import entity_read_scope"
 
 
 _GATE = "_assert_entity_access"
