@@ -77,6 +77,12 @@ class BuildApproval(Document):
             queue="default",
             timeout=600,
             build_request=self.name,
+            # After the commit, not now. This runs inside the transaction that
+            # inserted or approved this row (since #128 often inside a job).
+            # Enqueued immediately, an idle worker could start the build before
+            # the commit, fail on DoesNotExist, and leave the row Approved, a
+            # state the debounce treats as in-flight forever (#125, #128 review).
+            enqueue_after_commit=True,
         )
         frappe.logger().info(
             f"Governed build enqueued: {self.name} (scope={self.build_scope})"

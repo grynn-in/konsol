@@ -112,23 +112,28 @@ _dbt_trigger_doctypes = [
     "Allocation Rule",
     "Allocation Driver",
     "Allocation Run",
-    # NOT "Trial Balance Submission", though F8 meant it to be one. It never had
-    # a DOCTYPE_BUILD_MAP entry, so every trigger returned "No build mapping".
-    # Mapping it is not enough: on submit Frappe runs on_update before
-    # on_submit, and on_consolidation_doc_update COMMITS, which would land
-    # docstatus=1 before the rows are claimed. Blocked on moving the trigger
-    # out of the document hooks.
+    # F8: a submitted TB must reach gold, and a CANCELLED one must leave it.
+    # Caveat: the debounce counts a Running build as pending, so a request that
+    # arrives after a running build has read its inputs is absorbed; tracked
+    # as its own issue.
+    # Safe since konsol#126: the trigger queues a job after the commit, so it
+    # can no longer commit docstatus=1 before on_submit has claimed the rows.
+    "Trial Balance Submission",
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed
     # country. DOCTYPE_BUILD_MAP still carries its scope.
 ]
 
+# queue_consolidation_build, NOT on_consolidation_doc_update: that one commits,
+# and from a document hook the commit landed mid-transaction. On submit it
+# committed docstatus=1 before on_submit ran (konsol#126). The queue runs it as a
+# job after the commit.
 doc_events = {
     dt: {
-        "on_update": "konsol.tasks.on_consolidation_doc_update",
-        "on_submit": "konsol.tasks.on_consolidation_doc_update",
-        "on_cancel": "konsol.tasks.on_consolidation_doc_update",
+        "on_update": "konsol.tasks.queue_consolidation_build",
+        "on_submit": "konsol.tasks.queue_consolidation_build",
+        "on_cancel": "konsol.tasks.queue_consolidation_build",
     }
     for dt in _dbt_trigger_doctypes
 }

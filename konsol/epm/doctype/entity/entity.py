@@ -128,38 +128,15 @@ class Entity(NestedSet):
                    for f in self._REBUILD_FIELDS)
 
     def _request_rebuild(self, method):
-        """Request a consolidation rebuild as a job queued for after the commit.
+        """Request a consolidation rebuild through the one enqueue path every
+        build trigger uses: a job queued after the commit, guarded against
+        install / migrate / patch / import, best-effort if the queue is down
+        (konsol.tasks.queue_consolidation_build, konsol#126). Entity only
+        decides WHEN: a watched field changed, a delete of an entity that had
+        a currency, a rename."""
+        from konsol.tasks import queue_consolidation_build
 
-        The request inserts a Build Approval and COMMITS. Done in-process from
-        a document hook, that commit splits the save, delete or rename in two;
-        on a submit, Frappe runs on_update before on_submit, so it would land
-        docstatus=1 before on_submit has run. A job runs in its own
-        transaction instead: a save that rolls back queues nothing, and a failed
-        request is rolled back and logged by the job runner rather than raised
-        at a user whose change already committed. One job per entity at a
-        time; the debounce inside handles the rest.
-        """
-        if (frappe.flags.in_install or frappe.flags.in_migrate
-                or frappe.flags.in_patch or frappe.flags.in_import):
-            return
-        try:
-            frappe.enqueue(
-                "konsol.tasks.request_consolidation_build",
-                enqueue_after_commit=True,
-                job_id=f"konsol-consolidation-build::Entity::{self.name}",
-                deduplicate=True,
-                doctype=self.doctype,
-                name=self.name,
-                # NOT `method=`: that is frappe.enqueue's own first parameter, and
-                # passing it again raised TypeError on every save (caught live).
-                trigger_method=method,
-            )
-        except Exception:  # noqa: BLE001 — a build request must never fail the save
-            # deduplicate=True makes enqueue query Redis NOW, inside the save.
-            # A queue outage (or QueueOverloaded) would otherwise abort an
-            # Entity edit over a rebuild request; log it and let the save
-            # commit. The next watched change, or a manual build, catches up.
-            frappe.log_error(title=f"Entity {self.name}: consolidation build not requested")
+        queue_consolidation_build(self, method)
 
     def _resync(self):
         """Queue the registry sync for commit, once per transaction.

@@ -42,6 +42,11 @@ DOCTYPE_BUILD_MAP = {
     # reaches silver_entity_currencies and gold_consolidated_trial_balance.
     # Requested from Entity's controller, not from doc_events.
     "Entity": {"scope": "consolidation", "risk": "high"},
+    # F8: a submitted trial balance must reach gold, and a cancelled one must
+    # leave it. Mapped only now that the trigger runs after the commit
+    # (konsol#126); consolidation reaches bronze_trial_balance_submissions ->
+    # silver_gl_entries -> gold_trial_balance -> the consolidated models.
+    "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
@@ -338,8 +343,47 @@ def _set_duration(doc):
 # ---------------------------------------------------------------------------
 # Hook: trigger governed build after consolidation/allocation doc changes
 # ---------------------------------------------------------------------------
+def queue_consolidation_build(doc, method):
+    """doc_events target for the build-trigger doctypes, and Entity's
+    targeted trigger: queue the build request as a job that runs after the
+    commit (konsol#126). The one enqueue path.
+
+    on_consolidation_doc_update inserts a Build Approval and COMMITS. Wired
+    straight to the document hooks, that commit landed mid-transaction: on
+    submit Frappe runs on_update BEFORE on_submit, so docstatus=1 was committed
+    before the controller's on_submit synced to ClickHouse, and a failed sync
+    left the document Submitted with nothing behind it. As a job it runs in
+    its own transaction. A save that rolls back queues nothing; a failed
+    request is rolled back and logged by the job runner.
+    """
+    if (frappe.flags.in_install or frappe.flags.in_migrate
+            or frappe.flags.in_patch or frappe.flags.in_import):
+        return
+    # A submittable doctype reaches the warehouse only once submitted
+    # (resolve_sync_filters: docstatus=1), so a draft save changes nothing
+    # dbt reads; and on submit, on_update fires as well as on_submit. For
+    # these, on_submit and on_cancel carry the signal.
+    if method == "on_update" and doc.meta.is_submittable:
+        return
+    try:
+        frappe.enqueue(
+            "konsol.tasks.request_consolidation_build",
+            enqueue_after_commit=True,
+            job_id=f"konsol-build-request::{doc.doctype}::{doc.name}",
+            deduplicate=True,
+            doctype=doc.doctype,
+            name=doc.name,
+            # NOT `method=`: that is frappe.enqueue's own first parameter,
+            # and passing it again raised TypeError on every save (#110).
+            trigger_method=method,
+        )
+    except Exception:  # noqa: BLE001 — a build request must never fail the save
+        # deduplicate=True makes enqueue query Redis now, inside the save.
+        frappe.log_error(title=f"{doc.doctype} {doc.name}: build not requested")
+
+
 def request_consolidation_build(doctype, name, trigger_method):
-    """RQ job target for a build request raised after commit (Entity, #110).
+    """RQ job target, queued by queue_consolidation_build after the commit.
 
     Runs on_consolidation_doc_update in the job's own transaction, so its Build
     Approval insert and commit never land inside the caller's document hooks.
@@ -349,7 +393,8 @@ def request_consolidation_build(doctype, name, trigger_method):
 
 
 def on_consolidation_doc_update(doc, method):
-    """Called by doc_events hook for consolidation/allocation doctypes.
+    """The build request itself. It runs INSIDE request_consolidation_build's
+    job, never from a document hook: it commits (konsol#126).
 
     Creates a Build Approval instead of firing raw dbt build.
     Uses DOCTYPE_BUILD_MAP to determine scope and risk level.
