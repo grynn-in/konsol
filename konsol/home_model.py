@@ -50,6 +50,42 @@ STAGE_OWNERS = {
     "signoff": ("EPM Admin",),
 }
 
+#: Doctypes whose submit the server refuses unless the period is open
+#: (period_status.assert_open: in before_submit, or in validate for a trial
+#: balance). A host test runs each controller against a closed period and
+#: checks this list against what actually refuses (#149).
+SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
+    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance", "Allocation Run"})
+
+#: Of those, the ones whose every save is refused in a closed period (a trial
+#: balance checks the period in validate): there the draft can only be deleted.
+#: A host test runs validate alone against a closed period and checks this list.
+SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
+
+
+def closed_period(doctype, closed_reason, verb="submit", can_delete=False):
+    """The note a queue link to ``doctype`` carries in a period that is not
+    open, as ``_action`` keywords (``closed_reason`` is None while it is open).
+
+    The home disables only what the server refuses, and annotates what the
+    server allows but can't complete. Each of these links still opens its desk
+    form, so it stays enabled and the note says the approval or submit will be
+    refused. An adjustment, IC balance or allocation run can still be
+    rejected, edited or deleted there. A trial balance draft takes no save in
+    a closed period, so all that is left is deleting it, and only a viewer
+    with the delete right can (``can_delete``; an Entity Accountant has none),
+    so the note says who can. A trial balance upload, which the server refuses
+    outright, is not offered at all.
+    """
+    if not closed_reason or doctype not in SUBMIT_NEEDS_OPEN_PERIOD:
+        return {"note": None}
+    note = f"Can't {verb}: {closed_reason}"
+    if doctype in SAVE_NEEDS_OPEN_PERIOD:
+        note += (" Delete the draft if it isn't needed." if can_delete
+                 else " Ask an EPM Admin to delete the draft if it isn't needed.")
+    return {"note": note}
+
+
 #: Most urgent first. A queue is sorted by this, then kept in insertion order.
 STATE_RANK = {"error": 0, "paused": 1, "incomplete": 2, "ready": 3, "running": 4,
               "idle": 5, "waiting": 6, "done": 7}

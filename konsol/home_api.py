@@ -66,16 +66,16 @@ def _can(doctype, ptype="read", doc=None):
         return False
 
 
-def _action(label, doctype, ptype="read", name=None, doc=None, blocked=None, **query):
-    """A queue button. ``blocked`` is a reason the action would be refused even
-    with the role (a closed period); it wins over the permission check."""
+def _action(label, doctype, ptype="read", name=None, doc=None, note=None, **query):
+    """A queue button, with whether this user may press it. ``note`` rides
+    along on an allowed action the server takes but whose outcome it can't
+    complete yet (an approval in a closed period)."""
     if ptype == "create" and name is None:
         name = "new"   # /app/<doctype>/new?field=value prefills the new form
     allowed = _can(doctype, ptype, doc=doc)
     reason = None if allowed else "You don't have permission for this."
-    if allowed and blocked:
-        allowed, reason = False, blocked
-    return {"label": label, "href": _desk(doctype, name, **query), "allowed": allowed, "reason": reason}
+    return {"label": label, "href": _desk(doctype, name, **query), "allowed": allowed, "reason": reason,
+            "note": note if allowed else None}
 
 
 def _item(item_id, state, title, detail="", stage=None, who=None, action=None, entity=None):
@@ -251,9 +251,14 @@ def _queue(fy, p, ctx, stages, status, user):
     system = "System Manager" in roles
     label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
-    # Only block what the server refuses: Trial Balance Submission checks the
-    # period in validate. Adjustments, IC balances and allocation runs only
-    # gate cancel today, so offering them disabled would contradict the desk.
+    # In a closed period, disable only what the server refuses and annotate
+    # what it allows but can't complete (M.closed_period, #149). Each queue
+    # link still opens its desk form, so it stays enabled with a note that the
+    # approval or submit will be refused: an adjustment, IC balance or
+    # allocation run can still be rejected, edited or deleted there, and a
+    # trial balance draft only deleted, by a viewer with the delete right (the
+    # note says who). The trial balance upload, which the server refuses, is
+    # not offered in a closed period.
     closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
@@ -269,14 +274,16 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"adj:{a.name}", "paused", f"Approve {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
                                   who=frappe.utils.get_fullname(a.owner),
-                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name)))
+                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name,
+                                                 **M.closed_period("Consolidation Adjustment", closed, "approve"))))
         for o in ctx["ownership_drafts"]:
             mine.append(_item(f"own:{o.name}", "incomplete", "Approve ownership change", o.data_area_id or "",
                               stage=3, entity=o.data_area_id,
                               action=_action("Review", "Ownership Period", "submit", o.name)))
         for r in ctx["allocation_drafts"]:
             mine.append(_item(f"alloc:{r.name}", "incomplete", "Approve allocation run", r.name, stage=5,
-                              action=_action("Review", "Allocation Run", "submit", r.name)))
+                              action=_action("Review", "Allocation Run", "submit", r.name,
+                                             **M.closed_period("Allocation Run", closed, "approve"))))
         a = by_id["assertions"]
         if a["state"] == "error":
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
@@ -297,7 +304,8 @@ def _queue(fy, p, ctx, stages, status, user):
             if a.status == "Draft":
                 mine.append(_item(f"adj:{a.name}", "incomplete", f"Draft {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
-                                  action=_action("Send for approval", "Consolidation Adjustment", "write", a.name)))
+                                  action=_action("Send for approval", "Consolidation Adjustment", "write", a.name,
+                                                 **M.closed_period("Consolidation Adjustment", closed, "be approved"))))
             elif a.status == "Pending Approval" and not lead:
                 waiting.append(_item(f"adj:{a.name}", "waiting", f"{a.adjustment_type.capitalize()} adjustment",
                                      f"{a.data_area_id} · {_money(a)}", stage=5, who="Close Lead",
@@ -315,7 +323,8 @@ def _queue(fy, p, ctx, stages, status, user):
             if i.docstatus == 0:
                 mine.append(_item(f"ic:{i.name}", "incomplete", "Submit intercompany balance",
                                   f"{i.selling_entity} and {i.buying_entity}", stage=4,
-                                  action=_action("Open", "IC Balance", "submit", i.name)))
+                                  action=_action("Open", "IC Balance", "submit", i.name,
+                                                 **M.closed_period("IC Balance", closed))))
 
     if lead or group:
         missing = by_id["trial_balances"].get("missing") or []
@@ -345,10 +354,14 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"tb:{e}", "done", f"Trial balance · {e}", f"{name} · submitted", stage=2,
                                   entity=e, action=_action("View", "Trial Balance Submission", "read", done.name)))
             elif draft:
+                # In a closed period the draft can only be deleted: say so only
+                # to a viewer who may (an Entity Accountant may not).
+                can_delete = bool(closed) and _can("Trial Balance Submission", "delete", doc=draft.name)
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · draft, not submitted",
                                   stage=2, entity=e,
                                   action=_action("Submit", "Trial Balance Submission", "submit", draft.name,
-                                                 blocked=closed)))
+                                                 **M.closed_period("Trial Balance Submission", closed,
+                                                                   can_delete=can_delete))))
             elif period_open:
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · not uploaded",
                                   stage=2, entity=e,
