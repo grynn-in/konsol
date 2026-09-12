@@ -21,6 +21,8 @@ from collections import deque
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = "zz142.local"
+DB_NAME = "_zz142db"
+KEY = f"konsol:reconcile_warehouse:{DB_NAME}"
 
 
 class _Callbacks:
@@ -47,6 +49,10 @@ class _Settings:
             self._store[key] = getattr(self, key)
 
 
+class _LockNotOwned(Exception):
+    """redis-py's LockNotOwnedError: releasing a lock that already expired."""
+
+
 class _Lock:
     """redis-py's Lock over a threading.Lock shared per key."""
 
@@ -56,6 +62,8 @@ class _Lock:
         self._inner = cache.inner.setdefault(name, threading.Lock())
 
     def acquire(self):
+        if self._cache.acquire_raises:
+            raise self._cache.acquire_raises
         got = self._inner.acquire(timeout=self._cache.wait_limit or self.blocking_timeout)
         if got:
             self._cache.events.append(("acquire", self.name))
@@ -63,6 +71,8 @@ class _Lock:
 
     def release(self):
         self._cache.events.append(("release", self.name))
+        if self._cache.release_raises:
+            raise _LockNotOwned("lock expired")
         self._inner.release()
 
 
@@ -70,6 +80,8 @@ class _Cache:
     def __init__(self):
         self.inner, self.events, self.locks = {}, [], []
         self.wait_limit = None  # test override of blocking_timeout
+        self.acquire_raises = None
+        self.release_raises = False
 
     def lock(self, name, timeout=None, blocking_timeout=None):
         lock = _Lock(self, name, timeout, blocking_timeout)
@@ -82,13 +94,15 @@ def _load(enqueue_raises=None, store=None):
     fake = types.ModuleType("frappe")
     fake.flags = types.SimpleNamespace(in_install="konsol")
     fake.local = types.SimpleNamespace(site=SITE)
+    fake.conf = types.SimpleNamespace(db_name=DB_NAME)
     fake.enqueued = []
     fake.errors = []
+    fake.warnings = []
     fake.cache = _Cache()
     after_commit = _Callbacks()
     fake.db = types.SimpleNamespace(after_commit=after_commit, commit=after_commit.run, exists=lambda *a: True)
     fake.logger = lambda *a, **k: types.SimpleNamespace(
-        info=lambda *a, **k: None, warning=lambda *a, **k: None)
+        info=lambda *a, **k: None, warning=lambda msg, *a, **k: fake.warnings.append(msg))
     fake.log_error = lambda title=None, message=None, **k: fake.errors.append(title)
 
     def enqueue(method, **kwargs):
@@ -127,8 +141,8 @@ def _clickhouse(store=None, reconcile_all=None):
         "port": store.get("clickhouse_port") or "8123",
         "user": store.get("clickhouse_user") or "default",
         "password": store.get("clickhouse_password") or "",
-        "secure": False,
-        "verify": True,
+        "secure": bool(store.get("clickhouse_secure", 0)),
+        "verify": bool(store.get("clickhouse_verify_tls", 1)),
     }
     stub.reconcile_all = reconcile_all or (lambda: {})
     saved = sys.modules.get("konsol.clickhouse")
@@ -151,13 +165,15 @@ def _hook(name):
     return None
 
 
-JOB = ("konsol.install.reconcile_warehouse", {"queue": "long"})
+JOB = ("konsol.install.reconcile_warehouse", {"queue": "long", "timeout": 1500})
 DEPLOYED = {"clickhouse_host": "clickhouse", "clickhouse_port": 8123,
             "clickhouse_user": "default", "clickhouse_password": "pw"}
+ALL_FAILED = {"epm_staging.scenarios": None, "epm_gold.currencies": None}
 
 
 def _configure(store, **kwargs):
-    """setup_epm_settings as init.sh calls it; returns (jobs before commit, after)."""
+    """Run setup_epm_settings the way init.sh calls it, over ``store``, and
+    return the stub frappe (``fake.enqueued`` holds what it queued)."""
     mod, fake = _load(store=store)
     with _clickhouse(fake.store):
         mod.setup_epm_settings(**{"ch_host": "clickhouse", "ch_port": 8123, "ch_password": "pw", **kwargs})
@@ -232,7 +248,16 @@ def test_warehouse_target_includes_the_password():
         assert mod._warehouse_target() == before
 
 
-# -- the job ----------------------------------------------------------------
+# -- the job: timeouts and lock ---------------------------------------------
+
+def test_timeouts_let_a_waiter_finish_before_rq_kills_it():
+    """wait + run <= job timeout <= lock timeout: RQ never kills a job that
+    waited its full wait, and a live holder never outlives its lock."""
+    mod, _ = _load()
+    assert mod.RECONCILE_WAIT_SECONDS < mod.RECONCILE_JOB_TIMEOUT <= mod.RECONCILE_LOCK_SECONDS
+    assert mod.RECONCILE_JOB_TIMEOUT - mod.RECONCILE_WAIT_SECONDS >= 300, "too little time left to run"
+    assert JOB[1]["timeout"] == mod.RECONCILE_JOB_TIMEOUT
+
 
 def test_reconcile_job_returns_reconcile_all_result_under_the_lock():
     mod, fake = _load()
@@ -244,11 +269,12 @@ def test_reconcile_job_returns_reconcile_all_result_under_the_lock():
 
     with _clickhouse(reconcile_all=reconcile_all):
         assert mod.reconcile_warehouse() == {"epm_staging.scenarios": 3, "epm_staging.currencies": None}
-    key = f"konsol:reconcile_warehouse:{SITE}"
-    assert seen == [[("acquire", key)]], "reconcile_all ran outside the lock"
-    assert fake.cache.events == [("acquire", key), ("release", key)]
+    assert seen == [[("acquire", KEY)]], "reconcile_all ran outside the lock"
+    assert fake.cache.events == [("acquire", KEY), ("release", KEY)]
     (lock,) = fake.cache.locks
-    assert lock.timeout == lock.blocking_timeout == mod.RECONCILE_LOCK_SECONDS
+    assert lock.name == KEY, "keyed on the database, so a site alias shares it"
+    assert lock.timeout == mod.RECONCILE_LOCK_SECONDS
+    assert lock.blocking_timeout == mod.RECONCILE_WAIT_SECONDS
     assert fake.errors == [], "a partial sync is not an Error Log"
 
 
@@ -266,10 +292,47 @@ def test_lock_is_released_when_reconcile_raises():
     assert [e[0] for e in fake.cache.events] == ["acquire", "release"]
 
 
+def test_release_failing_does_not_mask_the_reconcile_error():
+    mod, fake = _load()
+    fake.cache.release_raises = True
+
+    def boom():
+        raise RuntimeError("ClickHouse exploded")
+
+    with _clickhouse(reconcile_all=boom):
+        try:
+            mod.reconcile_warehouse()
+        except RuntimeError as e:
+            assert str(e) == "ClickHouse exploded"
+        else:
+            raise AssertionError("the reconcile error was swallowed")
+
+
+def test_release_failing_after_success_still_returns_the_result():
+    """An expired lock (LockNotOwnedError on release) must not fail a
+    reconcile that already synced."""
+    mod, fake = _load()
+    fake.cache.release_raises = True
+    with _clickhouse(reconcile_all=lambda: {"epm_staging.scenarios": 3}):
+        assert mod.reconcile_warehouse() == {"epm_staging.scenarios": 3}
+    assert ("release", KEY) in fake.cache.events
+
+
+def test_redis_cache_down_reconciles_without_the_lock():
+    mod, fake = _load()
+    fake.cache.acquire_raises = ConnectionError("redis_cache unreachable")
+    with _clickhouse(reconcile_all=lambda: {"epm_staging.scenarios": 3}):
+        assert mod.reconcile_warehouse() == {"epm_staging.scenarios": 3}
+    assert fake.errors == []
+    assert any("lock unavailable" in w for w in fake.warnings)
+
+
 def test_a_second_concurrent_run_waits_for_the_first():
     """Two jobs on two workers: the second must not start reconcile_all until
-    the first has finished, or their TRUNCATE/INSERTs interleave."""
+    the first has finished, or their TRUNCATE/INSERTs interleave. Daemon
+    threads and a 5 s wait keep a broken release from hanging the run."""
     mod, fake = _load()
+    fake.cache.wait_limit = 5
     log, first_inside, let_first_finish = [], threading.Event(), threading.Event()
 
     def reconcile_all():
@@ -282,8 +345,8 @@ def test_a_second_concurrent_run_waits_for_the_first():
         return {"epm_staging.scenarios": 1}
 
     with _clickhouse(reconcile_all=reconcile_all):
-        first = threading.Thread(target=mod.reconcile_warehouse, name="first")
-        second = threading.Thread(target=mod.reconcile_warehouse, name="second")
+        first = threading.Thread(target=mod.reconcile_warehouse, name="first", daemon=True)
+        second = threading.Thread(target=mod.reconcile_warehouse, name="second", daemon=True)
         first.start()
         assert first_inside.wait(5)
         second.start()
@@ -291,7 +354,7 @@ def test_a_second_concurrent_run_waits_for_the_first():
         assert log == ["first start"], f"second ran while first held the lock: {log}"
         let_first_finish.set()
         first.join(5)
-        second.join(5)
+        second.join(6)
     assert log == ["first start", "first end", "second start", "second end"]
 
 
@@ -300,17 +363,39 @@ def test_lock_never_acquired_skips_and_logs():
     fake.cache.wait_limit = 0.05
     ran = []
     with _clickhouse(reconcile_all=lambda: ran.append(1) or {}):
-        held = fake.cache.lock(f"konsol:reconcile_warehouse:{SITE}")
+        held = fake.cache.lock(KEY)
         assert held.acquire()
         assert mod.reconcile_warehouse() is None
         held.release()
-    assert ran == [] and len(fake.errors) == 1
+    assert ran == []
+    assert fake.errors == ["Warehouse reconcile skipped: another reconcile held the lock"]
 
+
+# -- the job: telling an outage from an unconfigured site ---------------------
 
 def test_every_table_failing_writes_an_error_log():
     """sync_table and reconcile_all swallow every failure, so the job ends
     successfully even when nothing reached ClickHouse."""
     mod, fake = _load()
-    with _clickhouse(reconcile_all=lambda: {"epm_staging.scenarios": None, "epm_gold.currencies": None}):
+    with _clickhouse(dict(DEPLOYED), reconcile_all=lambda: dict(ALL_FAILED)):
         mod.reconcile_warehouse()  # must not raise
+    assert fake.errors == ["Warehouse reconcile: no table synced"]
+
+
+def test_every_table_failing_on_the_untouched_default_target_only_warns():
+    """A fresh site's install-time run, before the configurator sets the real
+    target: expected, so a warning, not an Error Log."""
+    mod, fake = _load()
+    with _clickhouse({}, reconcile_all=lambda: dict(ALL_FAILED)):
+        mod.reconcile_warehouse()
+    assert fake.errors == []
+    assert any("default" in w for w in fake.warnings)
+
+
+def test_localhost_alone_is_not_the_default_target():
+    """A dev bench with ClickHouse on localhost but a password set is a real
+    outage when nothing syncs."""
+    mod, fake = _load()
+    with _clickhouse({"clickhouse_password": "pw"}, reconcile_all=lambda: dict(ALL_FAILED)):
+        mod.reconcile_warehouse()
     assert fake.errors == ["Warehouse reconcile: no table synced"]
