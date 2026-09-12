@@ -34,15 +34,12 @@ def apply_and_rebuild(doc, action):
     """
     from konsol.schema_apply import apply_schema
 
-    # Request the build FIRST (#133 review). The scope lock, the debounce and
-    # the insert can fail (a lock-wait timeout, for one); done after the DDL,
-    # that left a schema applied with no rebuild requested. "full" is
-    # high-risk, so the approval waits for an EPM Admin: no build can start
-    # before the DDL below has run. If the DDL fails, the caller's rollback
-    # takes the approval with it.
-    name = _request_governed_build(doc, action)
+    # The DDL first, then the build request, so the request's row locks are
+    # held only briefly at the end of the transaction and never across
+    # ClickHouse ALTERs (#133 re-review). apply_schema() collects its step
+    # errors instead of raising, so a failed DDL does not stop the request.
     apply_schema()
-    return name
+    return _request_governed_build(doc, action)
 
 
 def request_governed_rebuild(doc, action, scope=_PUBLISH_BUILD_SCOPE):
@@ -63,12 +60,11 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     it so publishing several config docs in a row coalesces into one rebuild.
     The PBR's own workflow handles risk → approval → preflight → governed build.
     """
-    # Serialise requests for one scope. The debounce is check-then-insert, and
-    # two requests at once both found nothing pending and both inserted (the
-    # race #128 fixed in on_consolidation_doc_update). Locks nothing for a scope
-    # with no Build Scope row (the fixture ships no "full"); those are rare,
-    # admin-only schema publishes.
-    frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
+    # Serialise every build request (konsol.build_lock): the debounce below is
+    # check-then-insert, and two requests at once both found nothing pending.
+    from konsol.build_lock import lock_build_requests
+
+    lock_build_requests()
     # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
     # the transaction's first read, taken before the Build Scope lock above: a
     # request that waited on the lock would not see the approval the holder had

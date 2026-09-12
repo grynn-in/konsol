@@ -422,7 +422,9 @@ def on_consolidation_doc_update(doc, method):
     # two workers running this at once both found nothing pending and both
     # inserted a Build Approval (#110 re-review; per-entity jobs on several
     # workers made it likely). The row lock is held until the commit below.
-    frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
+    from konsol.build_lock import lock_build_requests
+
+    lock_build_requests()
 
     # Debounce: skip if a non-terminal PBR already exists for this scope
     # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
