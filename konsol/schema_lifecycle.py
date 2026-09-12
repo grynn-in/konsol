@@ -39,8 +39,10 @@ def apply_and_rebuild(doc, action):
     # ClickHouse ALTERs (#133 re-review). apply_schema() collects its step
     # errors instead of raising, so a failed DDL does not stop the request.
     # The trade-off: if the request then fails (a lock-wait timeout, say), the
-    # publish rolls back but the ClickHouse DDL stays applied. apply_schema()
-    # only ADDS missing tables and columns, so re-publishing recovers.
+    # ClickHouse DDL stays applied; it only adds tables and columns, so
+    # re-publishing recovers. Nor is this atomic for a budget dimension:
+    # apply_schema()'s Budget Line Custom Field sync commits through
+    # frappe.db.updatedb, so the publish is already committed here (konsol#135).
     apply_schema()
     return _request_governed_build(doc, action)
 

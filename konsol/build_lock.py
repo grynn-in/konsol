@@ -12,8 +12,9 @@ It locks ONE row that always exists: Build Approval's own DocType row.
 - Not every Build Scope row in name order: each migrate re-imports the
   build_scope fixture, deleting and re-inserting the rows in FILE order in one
   transaction, so the two orders could deadlock (#133 re-review).
-Normal reads of tabDocType don't lock, and it's written only when a migrate
-syncs a changed Build Approval JSON. One row can't deadlock against itself, and
+Normal reads of tabDocType don't lock. The row is written only by a migrate
+syncing a changed Build Approval JSON (it commits per file) or a developer-mode
+save of the DocType, and each holds it only until its own commit. One row can't deadlock against itself, and
 it serialises only a few milliseconds of work: build requests are rare.
 """
 import frappe

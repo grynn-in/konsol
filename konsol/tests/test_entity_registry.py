@@ -285,6 +285,6 @@ def test_the_build_request_debounce_is_serialised():
     with open(os.path.join(APP_DIR, "tasks.py")) as f:
         src = f.read()
     body = src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0]
-    scope_lock = body.index("lock_build_requests()")
+    build_lock = body.index("lock_build_requests()")
     check = body.index("FROM `tabBuild Approval`")
-    assert scope_lock < check and "FOR UPDATE" in body[check:check + 300]
+    assert build_lock < check and "FOR UPDATE" in body[check:check + 300]

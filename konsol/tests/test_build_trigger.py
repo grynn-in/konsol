@@ -204,9 +204,9 @@ def _assert_locked_debounce(body):
     """The build lock comes first, and the pending-approval check is ITSELF a
     locking read. A plain read after the lock still sees the old snapshot
     under REPEATABLE READ (#133 review)."""
-    scope_lock = body.index("lock_build_requests()")
+    build_lock = body.index("lock_build_requests()")
     check = body.index("FROM `tabBuild Approval`")
-    assert scope_lock < check
+    assert build_lock < check
     assert "FOR UPDATE" in body[check:check + 300], "the pending-approval read must lock"
 
 
