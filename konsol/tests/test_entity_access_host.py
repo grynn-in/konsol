@@ -22,14 +22,28 @@ def _load(allowed):
     (a set of codes, or None for an unrestricted user)."""
     fake = types.ModuleType("frappe")
     fake.PermissionError = _Denied
+
+    def throw(msg, exc=Exception, *a, **k):
+        raise exc(msg)
+
+    fake.throw = throw
+    before = set(sys.modules)
     saved = sys.modules.get("frappe")
     sys.modules["frappe"] = fake
     try:
         spec = importlib.util.spec_from_file_location(
             "_host_entity_permissions", os.path.join(APP_DIR, "entity_permissions.py"))
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        try:
+            spec.loader.exec_module(mod)
+        except ImportError as e:
+            # A security pin must fail, not be counted as "needs frappe".
+            raise AssertionError(
+                f"entity_permissions needs more than a stub frappe at import: {e}")
     finally:
+        for key in set(sys.modules) - before:
+            if key.split(".")[0] in ("frappe", "konsol"):
+                del sys.modules[key]
         if saved is None:
             sys.modules.pop("frappe", None)
         else:

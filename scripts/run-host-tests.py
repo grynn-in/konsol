@@ -162,7 +162,7 @@ def main(argv):
                 except ModuleNotFoundError as exc:
                     if _skip_reason(exc):
                         # A third-party import inside the test body (yaml, requests).
-                        missing_deps.add(exc.name)
+                        missing_deps.add(exc.name or str(exc))
                         needs_pytest.append(f"{rel}::{name}")
                         total -= 1
                     else:  # a konsol module, or a submodule of an installed package
