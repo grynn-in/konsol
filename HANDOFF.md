@@ -180,6 +180,26 @@ silently finds nothing; this form works (tested):
 
     LC_ALL=C grep -rl $'\xef\xbb\xbf' konsol --include='*.py'
 
+## VBA Excel client retired (konsol #153, konsolidat #163)
+
+The user retired VBA: konsol's Office add-in (`konsol/public/excel-addin`,
+functions `K.EPM`, `K.EPM_BUDGET`, `K.EPM_VARIANCE`, `K.EPM_DEBIT`,
+`K.EPM_CREDIT`, `K.CF`, `K.EPMSAVE`) is the only Excel client.
+
+- konsolidat: `excel/OpenEPM.bas`, its parity test, the VBA-only
+  `Budget_Forecast_2024.xlsx` and its generator are gone. The VBA guide is now
+  `docs/user-guide/excel-formulas-guide.md`; every other page describes the
+  add-in. `docs/prd/` is left as history.
+- **Still to do in Excel (by a person):** `excel/Open_EPM_PnL.xlsx` calls the
+  old `=EPM()` (shows `#NAME?`; replace with `=K.EPM(`, same arguments), and
+  `excel/Open_EPM_Template.xlsx` still has VBA instruction text.
+- **The shipped add-in manifest points at `https://demo.konsolidat.com`.** The
+  functions call the server the add-in was loaded from, so a local or
+  production install must replace every demo URL in `manifest.xml` first.
+- The K.EPM redesign (named parameters via HSTACK, any dimension, basis, OPN
+  and CLS, named errors instead of silent zeros) is in the reporting-bases
+  proposal artifact, not built yet.
+
 ## State on 13 Sep — merged, open, next
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
