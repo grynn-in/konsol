@@ -192,15 +192,16 @@ _BUILD_STATE = {"Pending Review": "paused", "Approved": "running", "Running": "r
 
 
 def consolidate_stage(build, tracked=True):
-    """Builds carry no period, so a build's state only means something for the
-    month being closed now. Other months say so instead of borrowing it."""
+    """Builds carry no period, so an open period shows the latest build and
+    says it is the latest; a closed period does not borrow a later one."""
     if not tracked:
-        return stage("consolidate", "idle", "Not tracked for this month")
+        return stage("consolidate", "idle", "Not shown for a closed period")
     if not build:
         return stage("consolidate", "idle", "No build yet")
     state = _BUILD_STATE.get(build.get("workflow_state"), "idle")
-    words = {"paused": "Waiting for approval", "running": "Running", "done": "Built",
-             "error": "Failed", "idle": build.get("workflow_state") or "Not started"}
+    words = {"paused": "Latest build waiting for approval", "running": "Latest build running",
+             "done": "Latest build done", "error": "Latest build failed",
+             "idle": f"Latest build {(build.get('workflow_state') or 'not started').lower()}"}
     return stage("consolidate", state, words[state], build=build.get("name"))
 
 

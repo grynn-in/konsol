@@ -112,9 +112,10 @@ def test_a_signed_off_or_overridden_run_is_settled():
     assert M.signoff_stage("Open", M.assertions_stage({"status": "Red", "signoff_status": "Overridden"})["state"])["state"] == "ready"
 
 
-def test_builds_only_count_for_the_month_being_closed():
+def test_builds_show_as_latest_and_never_on_a_closed_period():
     s = M.consolidate_stage({"workflow_state": "Failed", "name": "B"}, tracked=False)
-    assert (s["state"], s["summary"]) == ("idle", "Not tracked for this month")
+    assert (s["state"], s["summary"]) == ("idle", "Not shown for a closed period")
+    assert M.consolidate_stage({"workflow_state": "Failed", "name": "B"})["summary"] == "Latest build failed"
 
 
 def test_queue_dedupes_and_puts_urgent_first():

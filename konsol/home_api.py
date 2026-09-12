@@ -22,7 +22,7 @@ from frappe.utils import getdate, today
 
 from konsol import home_model as M
 from konsol import period_status
-from konsol.entity_permissions import allowed_entity_codes
+from konsol.entity_permissions import allowed_entity_codes, assigned_entities, subtree_codes
 
 KONSOL_ROLES = {role for role, _ in M.TITLES}
 CLOSE_LEAD = {"EPM Admin"}
@@ -251,7 +251,9 @@ def _queue(fy, p, ctx, stages, status, user):
     system = "System Manager" in roles
     label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
-    # A closed period refuses writes to its documents, whatever the role.
+    # Only block what the server refuses: Trial Balance Submission checks the
+    # period in validate. Adjustments, IC balances and allocation runs only
+    # gate cancel today, so offering them disabled would contradict the desk.
     closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
@@ -267,15 +269,14 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"adj:{a.name}", "paused", f"Approve {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
                                   who=frappe.utils.get_fullname(a.owner),
-                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name,
-                                                 blocked=closed)))
+                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name)))
         for o in ctx["ownership_drafts"]:
             mine.append(_item(f"own:{o.name}", "incomplete", "Approve ownership change", o.data_area_id or "",
                               stage=3, entity=o.data_area_id,
                               action=_action("Review", "Ownership Period", "submit", o.name)))
         for r in ctx["allocation_drafts"]:
             mine.append(_item(f"alloc:{r.name}", "incomplete", "Approve allocation run", r.name, stage=5,
-                              action=_action("Review", "Allocation Run", "submit", r.name, blocked=closed)))
+                              action=_action("Review", "Allocation Run", "submit", r.name)))
         a = by_id["assertions"]
         if a["state"] == "error":
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
@@ -296,8 +297,7 @@ def _queue(fy, p, ctx, stages, status, user):
             if a.status == "Draft":
                 mine.append(_item(f"adj:{a.name}", "incomplete", f"Draft {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
-                                  action=_action("Send for approval", "Consolidation Adjustment", "write", a.name,
-                                                 blocked=closed)))
+                                  action=_action("Send for approval", "Consolidation Adjustment", "write", a.name)))
             elif a.status == "Pending Approval" and not lead:
                 waiting.append(_item(f"adj:{a.name}", "waiting", f"{a.adjustment_type.capitalize()} adjustment",
                                      f"{a.data_area_id} · {_money(a)}", stage=5, who="Close Lead",
@@ -315,7 +315,7 @@ def _queue(fy, p, ctx, stages, status, user):
             if i.docstatus == 0:
                 mine.append(_item(f"ic:{i.name}", "incomplete", "Submit intercompany balance",
                                   f"{i.selling_entity} and {i.buying_entity}", stage=4,
-                                  action=_action("Open", "IC Balance", "submit", i.name, blocked=closed)))
+                                  action=_action("Open", "IC Balance", "submit", i.name)))
 
     if lead or group:
         missing = by_id["trial_balances"].get("missing") or []
@@ -328,8 +328,9 @@ def _queue(fy, p, ctx, stages, status, user):
     # unscoped user (a group role, or a Budget Submitter with no assignment)
     # works from the group view; listing every entity here would be noise
     # at best and, for a submitter, a list of entities they cannot touch.
-    allowed = allowed_entity_codes(user)
-    scoped = set() if allowed is None else set(allowed)
+    # Built from the explicit assignment, not allowed_entity_codes: that
+    # returns "everything" for a System Manager, who may still hold an entity.
+    scoped = set() if user == "Administrator" else subtree_codes(assigned_entities(user))
 
     if roles & TB_OWNER:
         by_entity = {}
@@ -432,7 +433,9 @@ def month(fiscal_year, fiscal_period):
     closed = frappe.db.get_value("Period Status", {"fiscal_year": str(fy), "fiscal_period": p},
                                  ["closed_by", "closed_on"], as_dict=True) or {}
     ctx = _context(fy, p, start)
-    stages = _stages(ctx, status, tracked_build=(fy, p) == (now.year, now.month))
+    # Builds carry no period. Every open period shows the latest one, saying
+    # so; a closed period's lane does not borrow a later build.
+    stages = _stages(ctx, status, tracked_build=status == period_status.OPEN)
     queue = _queue(fy, p, ctx, stages, status, user)
 
     wide = bool(_roles(user) & WIDE)
