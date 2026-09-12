@@ -33,5 +33,14 @@ class ISOCurrency(Document):
     def on_update(self):
         sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
-    def on_trash(self):
+    def after_delete(self):
+        """after_delete, NOT on_trash.
+
+        ``sync_doctype`` re-sends the whole table from ``frappe.get_all``, and
+        on_trash runs BEFORE the row is removed — so a delete would re-publish
+        the row it just deleted and leave it live in the warehouse until
+        something else resynced this doctype. Same reasoning as
+        GovernedReferenceDocument.after_delete and the Connector registry
+        (test_connector_registry, test_dimension_mapping).
+        """
         sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

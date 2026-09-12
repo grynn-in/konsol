@@ -133,3 +133,27 @@ def test_monthly_budget_table_is_created_by_something():
         src = f.read()
     assert '"epm_gold.budget_monthly_input": (' in src
     assert '"epm_gold.budget_annual_input": (' in src
+
+
+def test_annual_budget_fixture_links_resolve():
+    """Fixture import sets ignore_links, so a fixture can reference a record
+    that does not exist and still load — and then nobody can create the same
+    row through the UI. The annual budget fixture is BUDGET_2025, which was not
+    in the Scenario fixture until this was caught.
+    """
+    import json
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "fixtures", "budget_annual_input.json")) as f:
+        rows = json.load(f)
+    with open(os.path.join(root, "fixtures", "scenario.json")) as f:
+        scenarios = {r["scenario_id"] for r in json.load(f)}
+    with open(os.path.join(root, "fixtures", "consolidation_group.json")) as f:
+        entities = {r["data_area_id"] for r in json.load(f) if r.get("data_area_id")}
+
+    for row in rows:
+        assert row["scenario_id"] in scenarios, (
+            f"{row['scenario_id']} is a Link to Scenario with no fixture behind it")
+        assert row["data_area_id"] in entities, (
+            f"{row['data_area_id']} is a Link to Entity with no node behind it")

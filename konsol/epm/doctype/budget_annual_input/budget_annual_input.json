@@ -69,8 +69,11 @@
   },
   {
    "fieldname": "submitted_by",
-   "fieldtype": "Data",
-   "label": "Submitted By"
+   "fieldtype": "Link",
+   "label": "Submitted By",
+   "options": "User",
+   "read_only": 1,
+   "description": "Set from the session user on save. An audit field on financial data is not free text."
   }
  ],
  "permissions": [

@@ -565,6 +565,11 @@ _REFERENCE_TABLE_DDL = {
 # `bench migrate` had written last, which is exactly the stale-second-source
 # confusion this work exists to remove. Dropped outright; every dbt reader moved
 # to the staging tables.
+# Retired 11 Sep 2026 (konsolidat#146). This list is permanent and unconditional:
+# if a future release legitimately recreates one of these relations it must be
+# removed from here first, or every migrate will drop it again. Nothing may
+# appear in both this and _REFERENCE_TABLE_DDL —
+# test_abandoned_relations_are_dropped_not_left_looking_live asserts that.
 _RETIRED_TABLES = (
     "epm_gold.allocation_rules",
     "epm_gold.ic_elimination_rules",
@@ -602,20 +607,41 @@ def ensure_reference_tables():
         *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
-        # ...and its watermark row with it. sync_table stamps one per successful
-        # sync and assert_staging_not_stale compares them: a row for a table
-        # that no longer has a writer stays frozen while every live table
-        # re-stamps, so the test reports it LAGGING and fails the build. Leaving
-        # the stamp behind would also assert a row count for a relation that no
-        # longer exists.
-        *[f"ALTER TABLE {_WATERMARK_TABLE} DELETE WHERE table_name = '{t}'"
-          for t in _RETIRED_TABLES],
+        *_retired_watermark_cleanup(),
     ]:
         try:
             execute(sql)
         except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
             frappe.logger().warning(
                 f"reference table bootstrap skipped: {sql[:60]}…", exc_info=True)
+
+
+def _retired_watermark_cleanup():
+    """DELETE statements for retired tables' watermark rows — only if any exist.
+
+    A retired table's stamp has to go with it: sync_table writes one per
+    successful sync and assert_staging_not_stale compares them, so a row for a
+    table that no longer has a writer stays frozen while every live table
+    re-stamps, and the test reports it LAGGING and fails the build. It would
+    also assert a row count for a relation that no longer exists.
+
+    Checked first rather than issued blind, because ClickHouse records an entry
+    in system.mutations for an `ALTER TABLE ... DELETE` even when it matches
+    nothing — six of those per `bench migrate`, three times a day, forever. One
+    SELECT replaces them, and after the first migrate there is nothing to do.
+    """
+    try:
+        quoted = ", ".join(f"'{t}'" for t in _RETIRED_TABLES)
+        stale = execute(
+            f"SELECT DISTINCT table_name FROM {_WATERMARK_TABLE} "
+            f"WHERE table_name IN ({quoted})"
+        )
+    except Exception:  # noqa: BLE001 — the watermark table may not exist yet
+        return []
+    return [
+        f"ALTER TABLE {_WATERMARK_TABLE} DELETE WHERE table_name = '{name}'"
+        for name in (line.strip() for line in stale.splitlines()) if name
+    ]
 
 
 def reconcile_all():

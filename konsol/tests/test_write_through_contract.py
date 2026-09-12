@@ -431,11 +431,80 @@ def test_abandoned_relations_are_dropped_not_left_looking_live():
     }
     # nothing may be both dropped and created
     assert not set(m._RETIRED_TABLES) & set(m._REFERENCE_TABLE_DDL)
+    # the watermark cleanup reads first and only deletes what is there, because
+    # ClickHouse logs a mutation for an ALTER ... DELETE even when it matches
+    # nothing — six per migrate, forever. Pretend every stamp is present.
     sql = []
-    m.execute = lambda s, params=None: sql.append(s) or ""
+
+    def execute(statement, params=None):
+        sql.append(statement)
+        if statement.startswith("SELECT DISTINCT table_name"):
+            return "\n".join(m._RETIRED_TABLES)
+        return ""
+
+    m.execute = execute
     m.ensure_reference_tables()
     for table in m._RETIRED_TABLES:
         assert f"DROP TABLE IF EXISTS {table}" in sql, table
         # the watermark row has to go too, or assert_staging_not_stale reports
         # the frozen stamp as LAGGING and fails every build
         assert any(f"DELETE WHERE table_name = '{table}'" in s for s in sql), table
+
+    # ...and nothing is deleted when no stamp exists
+    sql2 = []
+    m.execute = lambda statement, params=None: sql2.append(statement) or ""
+    m.ensure_reference_tables()
+    assert not any("DELETE WHERE table_name" in s for s in sql2), (
+        "a no-op ALTER ... DELETE still records a mutation")
+
+
+def test_a_write_through_controller_deletes_with_after_delete():
+    """`sync_doctype` re-sends the whole table from frappe.get_all, and on_trash
+    runs BEFORE the row is removed — so syncing there re-publishes the row being
+    deleted and the warehouse keeps it. Measured on a pre-existing offender:
+    deleting one Spread Profile took Frappe 24 -> 23 and ClickHouse 24 -> 24.
+
+    The rule is already documented in test_connector_registry and
+    test_dimension_mapping; the trap is that grepping for precedent finds the
+    WRONG answer, because ten controllers use on_trash and four of them appear
+    to work (they are submittable, so resolve_sync_filters had already excluded
+    the row). Three controllers added in konsolidat#146 copied that pattern.
+
+    KNOWN_BAD is the pre-existing set, tracked in konsol#120. It may shrink,
+    never grow.
+    """
+    import glob
+    import json
+    import re
+
+    KNOWN_BAD = {
+        # non-submittable: the bug is live for these
+        "Allocation Driver", "Allocation Rule", "Consolidation Group",
+        "IC Elimination Rule", "Scenario", "Spread Profile",
+        # submittable: masked by the docstatus=1 filter, not by design
+        "Consolidation Adjustment", "Historical Equity Rate", "IC Balance",
+        "Ownership Period",
+    }
+
+    offenders = set()
+    for py in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.py")):
+        if py.endswith("__init__.py"):
+            continue
+        src = open(py).read()
+        if "sync_doctype" not in src and "sync_table" not in src:
+            continue
+        meta_path = py[:-3] + ".json"
+        if not os.path.exists(meta_path):
+            continue
+        if not re.search(r"def on_trash\b", src):
+            continue
+        body = src.split("def on_trash")[1].split("\n    def ")[0]
+        if not any(token in body for token in ("sync_doctype", "sync_table", "_sync")):
+            continue  # on_trash for something else entirely is fine
+        offenders.add(json.load(open(meta_path))["name"])
+
+    new = offenders - KNOWN_BAD
+    assert not new, (
+        f"{sorted(new)} publish to ClickHouse from on_trash — use after_delete, "
+        f"which runs after the row is gone. See konsol#120.")
+    assert offenders <= KNOWN_BAD
