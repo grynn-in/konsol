@@ -113,6 +113,9 @@ _dbt_trigger_doctypes = [
     "Allocation Driver",
     "Allocation Run",
     # F8: a submitted TB must reach gold, and a CANCELLED one must leave it.
+    # Caveat: the debounce counts a Running build as pending, so a request that
+    # arrives after a running build has read its inputs is absorbed; tracked
+    # as its own issue.
     # Safe since konsol#126: the trigger queues a job after the commit, so it
     # can no longer commit docstatus=1 before on_submit has claimed the rows.
     "Trial Balance Submission",

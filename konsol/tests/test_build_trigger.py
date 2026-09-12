@@ -32,10 +32,15 @@ def _fn(name):
 def _run(method="on_submit", submittable=True, flags=(), raises=False):
     calls, logs = [], []
 
-    def enqueue(*args, **kwargs):
+    # Frappe v15's real signature, so a job kwarg that reuses one of enqueue's
+    # own names raises the same TypeError it raised live (#110).
+    def enqueue(method, queue="default", timeout=None, event=None, is_async=True, job_name=None,
+                now=False, enqueue_after_commit=False, *, on_success=None, on_failure=None,
+                at_front=False, job_id=None, deduplicate=False, **kwargs):
         if raises:
             raise ConnectionError("redis down")
-        calls.append((args, kwargs))
+        calls.append(((method,), dict(enqueue_after_commit=enqueue_after_commit, job_id=job_id,
+                                      deduplicate=deduplicate, **kwargs)))
 
     state = types.SimpleNamespace(**{f: f in flags for f in FLAGS})
     ns = {"frappe": types.SimpleNamespace(flags=state, enqueue=enqueue,
@@ -91,18 +96,21 @@ def test_a_queue_outage_logs_instead_of_failing_the_save():
 
 
 def test_job_kwargs_do_not_collide_with_enqueue_and_match_the_job():
-    _, kw = _run()[0][0]
-    job_args = {k for k in kw if k not in ENQUEUE_PARAMS}
-    assert not job_args & ENQUEUE_PARAMS
+    calls, logs = _run()
+    assert calls and not logs, "a collision raises TypeError in the real-signature stub"
+    _, kw = calls[0]
+    job_args = set(kw) - {"enqueue_after_commit", "job_id", "deduplicate"}
     target = _fn("request_consolidation_build")
     assert {a.arg for a in target.args.args} == job_args
 
 
 def test_only_the_job_calls_the_committing_trigger():
-    """Enumerated across every module of the app: a second caller of
-    on_consolidation_doc_update from a hook would bring the mid-transaction
-    commit back."""
-    callers = []
+    """Enumerated across every module of the app. A call, a bare reference
+    (after_commit.add(fn), a dict of handlers), or the dotted-path string (a
+    hook, enqueue, get_attr) outside request_consolidation_build would bring
+    the mid-transaction commit back."""
+    name, dotted = "on_consolidation_doc_update", "konsol.tasks.on_consolidation_doc_update"
+    offenders = []
     for root, _, files in os.walk(APP_DIR):
         if "/tests" in root:
             continue
@@ -110,11 +118,30 @@ def test_only_the_job_calls_the_committing_trigger():
             if not fn.endswith(".py"):
                 continue
             path = os.path.join(root, fn)
+            rel = os.path.relpath(path, APP_DIR)
             with open(path) as f:
                 tree = ast.parse(f.read())
-            for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-                for call in [n for n in ast.walk(func) if isinstance(n, ast.Call)]:
-                    name = getattr(call.func, "attr", None) or getattr(call.func, "id", None)
-                    if name == "on_consolidation_doc_update":
-                        callers.append(f"{os.path.relpath(path, APP_DIR)}:{func.name}")
-    assert callers == ["tasks.py:request_consolidation_build"], callers
+            allowed = set()
+            for func in ast.walk(tree):
+                if isinstance(func, ast.FunctionDef) and rel == "tasks.py" and func.name == "request_consolidation_build":
+                    allowed |= {id(n) for n in ast.walk(func)}
+            for n in ast.walk(tree):
+                ref = (isinstance(n, ast.Name) and n.id == name) or (isinstance(n, ast.Attribute) and n.attr == name)
+                if ref and id(n) not in allowed:
+                    offenders.append(f"{rel}:{n.lineno} reference")
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and dotted in n.value:
+                    offenders.append(f"{rel}:{n.lineno} string")
+    assert not offenders, offenders
+
+
+def test_the_approved_build_is_enqueued_after_commit():
+    """BuildApproval._enqueue_build ran inside the transaction that inserted
+    the row; a worker could start it before the commit and leave the row
+    Approved forever (#125). Queued after commit, it cannot."""
+    path = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_enqueue_build")
+    call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "enqueue")
+    kw = {k.arg: k.value for k in call.keywords}
+    assert "enqueue_after_commit" in kw and ast.literal_eval(kw["enqueue_after_commit"]) is True
