@@ -125,9 +125,16 @@ def test_endpoints_enforce_entity_access():
 
 
 def test_assert_entity_access_raises_permission_error_source():
+    # api._assert_entity_access delegates; the check and the raise live in
+    # entity_permissions.assert_entity_access (moved there with the Entity
+    # permission hooks, so every read path shares one rule).
     body = _api_src().split("def _assert_entity_access")[1].split("\ndef ")[0]
-    assert "raise frappe.PermissionError" in body
-    assert "entity not in allowed" in body
+    assert "assert_entity_access(entity)" in body
+    with open(os.path.join(APP_DIR, "entity_permissions.py")) as f:
+        ep = f.read()
+    fn = ep.split("def assert_entity_access")[1].split("\ndef ")[0]
+    assert "if not may_see_entity(" in fn
+    assert "raise frappe.PermissionError" in fn
 
 
 # ---------------------------------------------------------------------------
