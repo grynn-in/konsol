@@ -31,12 +31,20 @@ class BuildApproval(Document):
         # (#139 review). _doc_before_save was loaded FOR UPDATE by
         # check_if_latest, so it holds the current flag.
         before = self.get_doc_before_save()
-        if before and before.rebuild_requested and not self.rebuild_requested:
+        # The one exception is the build starting (Approved -> Running): the
+        # build reads every change absorbed so far, so the flag an Approved
+        # build carried is spent (#140). A request after the start flags the
+        # Running row again.
+        starting = before and before.workflow_state == "Approved" and self.workflow_state == "Running"
+        if before and before.rebuild_requested and not self.rebuild_requested and not starting:
             self.rebuild_requested = 1
         # Sent back to Draft to run again: that run builds everything, so the
-        # follow-up the flag promised would be a duplicate.
+        # follow-up the flag promised would be a duplicate. The old error goes
+        # too: a start-failure message left on a row that runs again would
+        # make the failed-start sweep take it for a new one (#140 review).
         if before and self.workflow_state == "Draft" and before.workflow_state != "Draft":
             self.rebuild_requested = 0
+            self.error_message = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
