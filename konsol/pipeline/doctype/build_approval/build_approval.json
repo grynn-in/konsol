@@ -135,6 +135,14 @@
       "read_only": 1
     },
     {
+      "fieldname": "rebuild_requested",
+      "fieldtype": "Check",
+      "label": "Rebuild Requested",
+      "default": "0",
+      "read_only": 1,
+      "description": "A change arrived while this build was running. One more build is requested when it finishes (#129)."
+    },
+    {
       "fieldname": "duration_seconds",
       "fieldtype": "Float",
       "label": "Duration (seconds)",
@@ -196,5 +204,5 @@
       "read": 1
     }
   ],
- "modified": "2026-09-12 13:00:00.000000"
+  "modified": "2026-09-12 13:00:00.000000"
 }

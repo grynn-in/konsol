@@ -67,7 +67,7 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     """
     # Serialise every build request (konsol.build_lock): the debounce below is
     # check-then-insert, and two requests at once both found nothing pending.
-    from konsol.build_lock import lock_build_requests
+    from konsol.build_lock import flag_running_build, lock_build_requests
 
     lock_build_requests()
     # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
@@ -76,13 +76,16 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     # just committed, and would insert a duplicate (#133 review). FOR UPDATE
     # reads the latest committed rows.
     existing = frappe.db.sql(
-        """SELECT name FROM `tabBuild Approval`
+        """SELECT name, workflow_state FROM `tabBuild Approval`
            WHERE build_scope = %(scope)s AND workflow_state IN %(states)s
            LIMIT 1 FOR UPDATE""",
         {"scope": scope, "states": tuple(_PENDING_STATES)},
         as_dict=True,
     )
     if existing:
+        # A Running build may already have read its inputs: flag it for one
+        # more build when it finishes (#129). Commits with the caller.
+        flag_running_build(existing[0])
         frappe.msgprint(
             f"A '{scope}' build is already pending ({existing[0].name}); "
             f"no duplicate build requested."

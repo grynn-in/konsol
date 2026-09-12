@@ -25,6 +25,18 @@ class BuildApproval(Document):
         State transitions happen here so we can set self.workflow_state directly
         (written with the save — no recursion, no db_set).
         """
+        # A request absorbed by this build sets rebuild_requested without
+        # bumping modified (build_lock.flag_running_build), so a form opened
+        # earlier passes the timestamp check. A save must never clear it
+        # (#139 review). _doc_before_save was loaded FOR UPDATE by
+        # check_if_latest, so it holds the current flag.
+        before = self.get_doc_before_save()
+        if before and before.rebuild_requested and not self.rebuild_requested:
+            self.rebuild_requested = 1
+        # Sent back to Draft to run again: that run builds everything, so the
+        # follow-up the flag promised would be a duplicate.
+        if before and self.workflow_state == "Draft" and before.workflow_state != "Draft":
+            self.rebuild_requested = 0
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:

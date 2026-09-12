@@ -260,54 +260,49 @@ def run_governed_build(build_request):
         if not ok:
             doc.workflow_state = "Failed"
             doc.error_message = f"Preflight failed: {msg}"
-            doc.completed_at = frappe.utils.now_datetime()
-            _set_duration(doc)
-            doc.save(ignore_permissions=True)
             _finalize_governed_pipeline_run(
                 pipeline_run,
                 status="Failed",
                 error_log=doc.error_message,
-            )
-            frappe.db.commit()
-            return
-
-        _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
-
-        # Build dbt command
-        settings = frappe.get_single("EPM Settings")
-        project_path = settings.dbt_project_path
-        cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
-
-        selector = _scope_selector(doc.build_scope)
-        if selector:
-            cmd.extend(["--select", selector])
-
-        # Execute
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=project_path,
-        )
-        output = result.stdout + "\n" + result.stderr
-        doc.build_output = output[-5000:]  # cap at 5K chars
-
-        if result.returncode == 0:
-            doc.workflow_state = "Completed"
-            _finalize_governed_pipeline_run(
-                pipeline_run,
-                status="Completed",
-                dbt_result=doc.build_output[:500],
             )
         else:
-            doc.workflow_state = "Failed"
-            doc.error_message = f"dbt build failed (rc={result.returncode})"
-            _finalize_governed_pipeline_run(
-                pipeline_run,
-                status="Failed",
-                error_log=doc.error_message,
+            _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
+
+            # Build dbt command
+            settings = frappe.get_single("EPM Settings")
+            project_path = settings.dbt_project_path
+            cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
+
+            selector = _scope_selector(doc.build_scope)
+            if selector:
+                cmd.extend(["--select", selector])
+
+            # Execute
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=project_path,
             )
+            output = result.stdout + "\n" + result.stderr
+            doc.build_output = output[-5000:]  # cap at 5K chars
+
+            if result.returncode == 0:
+                doc.workflow_state = "Completed"
+                _finalize_governed_pipeline_run(
+                    pipeline_run,
+                    status="Completed",
+                    dbt_result=doc.build_output[:500],
+                )
+            else:
+                doc.workflow_state = "Failed"
+                doc.error_message = f"dbt build failed (rc={result.returncode})"
+                _finalize_governed_pipeline_run(
+                    pipeline_run,
+                    status="Failed",
+                    error_log=doc.error_message,
+                )
 
     except subprocess.TimeoutExpired:
         doc.workflow_state = "Failed"
@@ -326,6 +321,22 @@ def run_governed_build(build_request):
             error_log=doc.error_message,
         )
 
+    _finish_governed_build(doc)
+
+
+def _finish_governed_build(doc):
+    """Persist a governed build's terminal state, then request the follow-up
+    that a change made during the build asked for (#129).
+
+    The flag is re-read under the row lock. A request that flags this row
+    holds the same lock (its debounce's FOR UPDATE) until it commits, so
+    either the flag is seen here, or the request finds this row already
+    terminal and inserts its own approval. Nothing falls between.
+    """
+    flagged = frappe.db.sql(
+        "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE", doc.name
+    )[0][0]
+    doc.rebuild_requested = flagged
     doc.completed_at = frappe.utils.now_datetime()
     _set_duration(doc)
     doc.save(ignore_permissions=True)
@@ -340,6 +351,15 @@ def run_governed_build(build_request):
             "duration": doc.duration_seconds,
         },
     )
+
+    if flagged:
+        # After the commit: the request takes the build lock, and must not
+        # wait for it while holding this row.
+        try:
+            request_build_for_scope(doc.build_scope, "Build Approval", doc.name)
+        except Exception:
+            frappe.db.rollback()   # the job commits on return; don't keep half a request
+            frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
 
 
 def _set_duration(doc):
@@ -425,14 +445,22 @@ def on_consolidation_doc_update(doc, method):
         frappe.logger().warning(f"No build mapping for doctype: {doc.doctype}")
         return
 
-    scope = mapping["scope"]
+    request_build_for_scope(mapping["scope"], doc.doctype, doc.name)
 
+
+def request_build_for_scope(scope, trigger_doctype, trigger_docname):
+    """Request a build of ``scope``: debounced, serialised, and committed.
+
+    It commits, so it runs only inside a job: request_consolidation_build's
+    (via on_consolidation_doc_update), a finished build's follow-up
+    (_finish_governed_build), and the reaper's (konsol#126, #129).
+    """
     # Serialise every build request (konsol.build_lock). The debounce below is
     # check-then-insert: two workers running this at once both found nothing
     # pending and both inserted a Build Approval (#110 re-review; per-entity
     # jobs on several workers made it likely). The lock is held until the
     # commit below.
-    from konsol.build_lock import lock_build_requests
+    from konsol.build_lock import flag_running_build, lock_build_requests
 
     lock_build_requests()
 
@@ -443,7 +471,7 @@ def on_consolidation_doc_update(doc, method):
     # just committed, and would insert a duplicate (#133 review). FOR UPDATE
     # reads the latest committed rows.
     existing = frappe.db.sql(
-        """SELECT name FROM `tabBuild Approval`
+        """SELECT name, workflow_state FROM `tabBuild Approval`
            WHERE build_scope = %s
              AND workflow_state IN ('Draft', 'Pending Review', 'Approved', 'Running')
            LIMIT 1 FOR UPDATE""",
@@ -451,6 +479,11 @@ def on_consolidation_doc_update(doc, method):
         as_dict=True,
     )
     if existing:
+        # A Running build may already have read its inputs, so this change
+        # would miss gold: flag it, and it requests one more build when it
+        # finishes (#129). A pending one will read it anyway.
+        flag_running_build(existing[0])
+        frappe.db.commit()
         frappe.logger().info(
             f"Build request already pending for scope={scope} ({existing[0].name}), skipping"
         )
@@ -460,14 +493,14 @@ def on_consolidation_doc_update(doc, method):
     pbr = frappe.new_doc("Build Approval")
     pbr.build_scope = scope
     pbr.trigger_source = "auto"
-    pbr.trigger_doctype = doc.doctype
-    pbr.trigger_docname = doc.name
+    pbr.trigger_doctype = trigger_doctype
+    pbr.trigger_docname = trigger_docname
     pbr.requested_by = frappe.session.user
     pbr.insert(ignore_permissions=True)
     frappe.db.commit()
 
     frappe.logger().info(
-        f"Build Approval {pbr.name} created (scope={scope}, trigger={doc.doctype} {doc.name})"
+        f"Build Approval {pbr.name} created (scope={scope}, trigger={trigger_doctype} {trigger_docname})"
     )
 
 
