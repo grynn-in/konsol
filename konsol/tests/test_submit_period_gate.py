@@ -79,8 +79,13 @@ def _methods_reaching_a_gate(path, class_name):
     module-level helper, or through another of its own methods."""
     with open(path) as f:
         tree = ast.parse(f.read())
-    gates = set(PERIOD_GATES)
-    funcs = {n.name: _called_names(n) for n in tree.body if isinstance(n, ast.FunctionDef)}
+    # A gate imported under another name (`import assert_open as ao`) is a
+    # gate. Known limits: a gate in an inherited method, and a gate reached
+    # through a helper imported from another konsol module, are not seen.
+    gates = set(PERIOD_GATES) | {
+        alias.asname for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        for alias in node.names if alias.name in PERIOD_GATES and alias.asname}
+    funcs ={n.name: _called_names(n) for n in tree.body if isinstance(n, ast.FunctionDef)}
     grew = True
     while grew:
         grew = False
@@ -256,18 +261,20 @@ def test_the_home_knows_exactly_which_saves_the_server_refuses():
 def test_a_helper_that_reaches_a_gate_is_never_skipped():
     src = (
         "from konsol.period_status import assert_open\n"
+        "from konsol.period_status import assert_open_between as aob\n"
         "def _module_gate(doc):\n    assert_open(doc.fiscal_year, doc.fiscal_period)\n"
         "class X:\n"
         "    def validate(self):\n        self._a()\n"
         "    def _a(self):\n        self._b()\n"
         "    def _b(self):\n        _module_gate(self)\n"
         "    def _c(self):\n        pass\n"
-        "    def _d(self):\n        period_status.assert_open_between(self.x)\n")
+        "    def _d(self):\n        period_status.assert_open_between(self.x)\n"
+        "    def _e(self):\n        aob(self.x)\n")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "gate_probe.py")
         with open(path, "w") as f:
             f.write(src)
-        assert _methods_reaching_a_gate(path, "X") == {"validate", "_a", "_b", "_d"}
+        assert _methods_reaching_a_gate(path, "X") == {"validate", "_a", "_b", "_d", "_e"}
 
 
 def test_submit_into_a_closed_period_is_refused_and_changes_nothing():
@@ -313,9 +320,17 @@ def test_closed_period_notes_what_the_server_allows_but_cannot_complete():
     assert M.closed_period("Consolidation Adjustment", CLOSED, "be approved") == {
         "note": "Can't be approved: Dec 2099 is closed."}
     assert M.closed_period("IC Balance", CLOSED) == {"note": "Can't submit: Dec 2099 is closed."}
-    # a trial balance draft takes no save there, only a delete: the note says so
-    assert M.closed_period("Trial Balance Submission", CLOSED) == {
+    # a trial balance draft takes no save there, only a delete: the note says
+    # so to a viewer who may delete, and says who may to one who can't
+    assert M.closed_period("Trial Balance Submission", CLOSED, can_delete=True) == {
         "note": "Can't submit: Dec 2099 is closed. Delete the draft if it isn't needed."}
+    assert M.closed_period("Trial Balance Submission", CLOSED, can_delete=False) == {
+        "note": "Can't submit: Dec 2099 is closed. Ask an EPM Admin to delete the draft if it isn't needed."}
+    assert M.closed_period("Trial Balance Submission", CLOSED) == M.closed_period(
+        "Trial Balance Submission", CLOSED, can_delete=False)
+    assert M.closed_period("Trial Balance Submission", None, can_delete=True) == {"note": None}
+    # the delete right only changes the trial balance note
+    assert M.closed_period("IC Balance", CLOSED, can_delete=True) == M.closed_period("IC Balance", CLOSED)
     # open period, or a doctype whose submit the server takes: nothing to say
     assert M.closed_period("IC Balance", None) == {"note": None}
     assert M.closed_period("Ownership Period", CLOSED) == {"note": None}
@@ -337,6 +352,42 @@ def test_every_home_link_to_a_gated_doctype_says_what_a_closed_period_does():
         else:
             assert not gate, ast.unparse(call)
     assert seen == set(M.SUBMIT_NEEDS_OPEN_PERIOD), seen
+
+
+def test_the_trial_balance_note_rests_on_who_may_delete_a_draft():
+    """The closed-period note sends an Entity Accountant (the only role that
+    gets trial balance rows) to an EPM Admin, because only EPM Admin and
+    System Manager may delete a draft. If these rights change, revisit
+    home_model.closed_period's trial balance note."""
+    with open(PATHS["Trial Balance Submission"][:-3] + ".json") as f:
+        perms = {p["role"]: p for p in json.load(f)["permissions"]}
+    assert perms["Entity Accountant"].get("submit") and not perms["Entity Accountant"].get("delete"), (
+        "Entity Accountant's trial balance rights changed: revisit the closed-period note")
+    assert perms["EPM Admin"].get("delete") and perms["System Manager"].get("delete"), (
+        "EPM Admin / System Manager lost delete on Trial Balance Submission: revisit the closed-period note")
+
+
+def test_the_trial_balance_link_asks_the_viewers_delete_right():
+    """home_api decides can_delete with the permission helper, only in a
+    closed period, and passes it to M.closed_period for the draft's link."""
+    tree = _home_api_tree()
+    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+               and [ast.unparse(t) for t in n.targets] == ["can_delete"]]
+    assert len(assigns) == 1, [ast.unparse(a) for a in assigns]
+    assert ast.unparse(assigns[0].value) == (
+        "bool(closed) and _can('Trial Balance Submission', 'delete', doc=draft.name)"), ast.unparse(assigns[0].value)
+    tb = [call for dt, ptype, call in _home_actions(tree) if dt == "Trial Balance Submission" and ptype == "submit"]
+    assert len(tb) == 1
+    gate = next(k.value for k in tb[0].keywords if k.arg is None)
+    assert [(k.arg, ast.unparse(k.value)) for k in gate.keywords] == [("can_delete", "can_delete")], ast.unparse(gate)
+
+
+def test_an_action_is_never_blocked_behind_the_permission_check():
+    """The closed period no longer blocks any queue link, so _action has no
+    `blocked` override: allowed is the user's permission, nothing else."""
+    fn = next(n for n in _home_api_tree().body if isinstance(n, ast.FunctionDef) and n.name == "_action")
+    params = [a.arg for a in fn.args.args + fn.args.kwonlyargs]
+    assert "blocked" not in params and "blocked" not in ast.unparse(fn), params
 
 
 def test_send_for_approval_says_the_draft_cannot_be_approved():

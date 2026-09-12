@@ -63,23 +63,26 @@ SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
 SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 
 
-def closed_period(doctype, closed_reason, verb="submit"):
+def closed_period(doctype, closed_reason, verb="submit", can_delete=False):
     """The note a queue link to ``doctype`` carries in a period that is not
     open, as ``_action`` keywords (``closed_reason`` is None while it is open).
 
     The home disables only what the server refuses, and annotates what the
-    server allows but can't complete. Each of these links opens the desk form,
-    where the server still takes something in a closed period: reject, edit or
-    delete for an adjustment, IC balance or allocation run, and delete for a
-    trial balance draft, whose every save is refused. So the link stays
-    enabled and the note says the submit will be refused. A trial balance
-    upload, which the server refuses outright, is not offered at all.
+    server allows but can't complete. Each of these links still opens its desk
+    form, so it stays enabled and the note says the approval or submit will be
+    refused. An adjustment, IC balance or allocation run can still be
+    rejected, edited or deleted there. A trial balance draft takes no save in
+    a closed period, so all that is left is deleting it, and only a viewer
+    with the delete right can (``can_delete``; an Entity Accountant has none),
+    so the note says who can. A trial balance upload, which the server refuses
+    outright, is not offered at all.
     """
     if not closed_reason or doctype not in SUBMIT_NEEDS_OPEN_PERIOD:
         return {"note": None}
     note = f"Can't {verb}: {closed_reason}"
     if doctype in SAVE_NEEDS_OPEN_PERIOD:
-        note += " Delete the draft if it isn't needed."
+        note += (" Delete the draft if it isn't needed." if can_delete
+                 else " Ask an EPM Admin to delete the draft if it isn't needed.")
     return {"note": note}
 
 

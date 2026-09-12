@@ -66,17 +66,14 @@ def _can(doctype, ptype="read", doc=None):
         return False
 
 
-def _action(label, doctype, ptype="read", name=None, doc=None, blocked=None, note=None, **query):
-    """A queue button. ``blocked`` is a reason the server would refuse the
-    action even with the role; it wins over the permission check.
-    ``note`` rides along on an allowed action the server takes but whose
-    outcome it can't complete yet (an approval in a closed period)."""
+def _action(label, doctype, ptype="read", name=None, doc=None, note=None, **query):
+    """A queue button, with whether this user may press it. ``note`` rides
+    along on an allowed action the server takes but whose outcome it can't
+    complete yet (an approval in a closed period)."""
     if ptype == "create" and name is None:
         name = "new"   # /app/<doctype>/new?field=value prefills the new form
     allowed = _can(doctype, ptype, doc=doc)
     reason = None if allowed else "You don't have permission for this."
-    if allowed and blocked:
-        allowed, reason = False, blocked
     return {"label": label, "href": _desk(doctype, name, **query), "allowed": allowed, "reason": reason,
             "note": note if allowed else None}
 
@@ -256,10 +253,12 @@ def _queue(fy, p, ctx, stages, status, user):
     period_open = status == period_status.OPEN
     # In a closed period, disable only what the server refuses and annotate
     # what it allows but can't complete (M.closed_period, #149). Each queue
-    # link opens a desk form where the server still takes reject, edit or
-    # delete, so the links stay enabled with a note that the approval or
-    # submit will be refused. The trial balance upload, which the server
-    # refuses, is not offered in a closed period.
+    # link still opens its desk form, so it stays enabled with a note that the
+    # approval or submit will be refused: an adjustment, IC balance or
+    # allocation run can still be rejected, edited or deleted there, and a
+    # trial balance draft only deleted, by a viewer with the delete right (the
+    # note says who). The trial balance upload, which the server refuses, is
+    # not offered in a closed period.
     closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
@@ -355,10 +354,14 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"tb:{e}", "done", f"Trial balance · {e}", f"{name} · submitted", stage=2,
                                   entity=e, action=_action("View", "Trial Balance Submission", "read", done.name)))
             elif draft:
+                # In a closed period the draft can only be deleted: say so only
+                # to a viewer who may (an Entity Accountant may not).
+                can_delete = bool(closed) and _can("Trial Balance Submission", "delete", doc=draft.name)
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · draft, not submitted",
                                   stage=2, entity=e,
                                   action=_action("Submit", "Trial Balance Submission", "submit", draft.name,
-                                                 **M.closed_period("Trial Balance Submission", closed))))
+                                                 **M.closed_period("Trial Balance Submission", closed,
+                                                                   can_delete=can_delete))))
             elif period_open:
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · not uploaded",
                                   stage=2, entity=e,
