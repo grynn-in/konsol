@@ -115,14 +115,107 @@ def test_empty_allow_list_when_perms_configured_but_none_granted():
     assert allowed == set()
 
 
-def test_endpoints_enforce_entity_access():
-    src = _api_src()
-    # Single-value endpoint asserts access for its entity.
-    assert "_assert_entity_access(entity)" in src
-    # Batch endpoint resolves the allow-list once and denies per-row.
-    batch = src.split("def epm_batch")[1].split("\ndef ")[0]
-    assert "allowed_entities = _allowed_entities()" in batch
-    assert "Not permitted to access entity" in batch
+# Every ClickHouse read decides entity access through
+# entity_permissions.entity_read_scope (konsol#158), directly or through
+# api._assert_entity_access -> entity_permissions.assert_entity_access. The rule
+# itself is exercised in test_entity_access_host.py; these check the wiring.
+_READ_GATES = {"_assert_entity_access", "entity_read_scope"}
+_CH_READS = {"_batch_query_clickhouse", "batch_query_hierarchy",
+             "_fetch_trial_balance_rows", "compile_cell_map"}
+
+
+def _src(rel):
+    with open(os.path.join(APP_DIR, rel)) as f:
+        return f.read()
+
+
+def _calls(nodes):
+    """Names called anywhere in these AST nodes (f(), x.f())."""
+    names = set()
+    for top in nodes:
+        for n in ast.walk(top):
+            if isinstance(n, ast.Call):
+                f = n.func
+                if isinstance(f, ast.Name):
+                    names.add(f.id)
+                elif isinstance(f, ast.Attribute):
+                    names.add(f.attr)
+    return names
+
+
+def _def(tree, name):
+    fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name), None)
+    assert fn is not None, f"no top-level def {name}"
+    return fn
+
+
+def _branch(stmts, test_src):
+    """The `if <test_src>:` statement among ``stmts``."""
+    node = next((s for s in stmts if isinstance(s, ast.If) and ast.unparse(s.test) == test_src), None)
+    assert node is not None, f"no `if {test_src}:` block"
+    return node
+
+
+def test_every_clickhouse_read_endpoint_calls_the_entity_helper():
+    tree = ast.parse(_api_src())
+    readers = {
+        fn.name: fn for fn in tree.body
+        if isinstance(fn, ast.FunctionDef)
+        and any("whitelist" in ast.unparse(d) for d in fn.decorator_list)
+        and _calls([fn]) & _CH_READS
+    }
+    # Not vacuous: the known readers are found.
+    assert {"epm_value", "epm_batch", "build_cell_map", "build_snapshot"} <= set(readers)
+    for name, fn in readers.items():
+        assert _calls([fn]) & _READ_GATES, \
+            f"{name} reads ClickHouse without entity_read_scope / _assert_entity_access"
+
+
+def test_both_modes_of_k_epm_call_the_entity_helper():
+    tree = ast.parse(_api_src())
+
+    value = _def(tree, "epm_value")
+    hier = _branch(value.body, "node_code")
+    assert "entity_read_scope" in _calls(hier.body)
+    assert "_assert_entity_access" in _calls([s for s in value.body if s is not hier])
+
+    batch = _def(tree, "epm_batch")
+    loop = next(s for s in batch.body if isinstance(s, ast.For))
+    hier = _branch(loop.body, "_is_hierarchy_mode(req)")
+    assert "entity_read_scope" in _calls(hier.body)
+    assert "entity_read_scope" in _calls([s for s in loop.body if s is not hier])
+    # The allow-list is resolved once for the batch, not once per row.
+    assert "_allowed_entities" in _calls([s for s in batch.body if s is not loop])
+    assert "_allowed_entities" not in _calls([loop])
+
+
+def test_hierarchy_reads_carry_the_allow_list_to_the_helper():
+    api_tree = ast.parse(_api_src())
+    calls = [n for n in ast.walk(api_tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "batch_query_hierarchy"]
+    assert len(calls) == 2
+    for c in calls:
+        kw = {k.arg: ast.unparse(k.value) for k in c.keywords}
+        assert kw.get("allowed_entities") == "allowed_entities", ast.unparse(c)
+    hq = ast.parse(_src("hierarchy_query.py"))
+    assert "entity_read_scope" in _calls([_def(hq, "batch_query_hierarchy")])
+    ep = ast.parse(_src("entity_permissions.py"))
+    assert "entity_read_scope" in _calls([_def(ep, "assert_entity_access")])
+
+
+def test_no_inline_entity_checks_left():
+    # The fourth way must not creep back: no `x in allowed_entities` or
+    # `x in allowed_entity_codes()` in the read paths.
+    for rel in ("api.py", "hierarchy_query.py"):
+        for n in ast.walk(ast.parse(_src(rel))):
+            if not isinstance(n, ast.Compare):
+                continue
+            if not any(isinstance(op, (ast.In, ast.NotIn)) for op in n.ops):
+                continue
+            for right in n.comparators:
+                text = ast.unparse(right)
+                assert text != "allowed_entities" and "allowed_entity_codes" not in text, \
+                    f"{rel}: inline entity check `{ast.unparse(n)}`; use entity_read_scope"
 
 
 _GATE = "_assert_entity_access"
@@ -149,7 +242,7 @@ def _binds_gate(node):
         return isinstance(node.value, str) and node.value == _GATE
     if isinstance(node, ast.Attribute):  # __code__ swaps, patching the shared check
         return not isinstance(node.ctx, ast.Load) and node.attr in (
-            "__code__", _GATE, "assert_entity_access")
+            "__code__", _GATE, "assert_entity_access", "entity_read_scope")
     return False
 
 
