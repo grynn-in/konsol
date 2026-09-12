@@ -158,6 +158,16 @@
    "label": "Auto-Reverse After (periods)",
    "default": "0",
    "description": "0 = no auto-reversal. N = reverse in period + N"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "options": "Consolidation Adjustment",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
   }
  ],
  "permissions": [

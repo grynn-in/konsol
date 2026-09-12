@@ -100,3 +100,55 @@ def test_every_installed_workflow_has_a_definition():
         installed = re.findall(r'"([^"]+)"', f.read().split("INSTALLED = (")[1].split(")")[0])
     defined = {wf["document_type"] for _, wf in _workflows()}
     assert installed and set(installed) <= defined, (installed, defined)
+
+
+def _api_function(name):
+    with open(os.path.join(APP_DIR, "api.py")) as f:
+        tree = ast.parse(f.read())
+    return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def test_the_adjustment_api_goes_through_the_workflow():
+    """The old endpoints set status and saved: approve made an Approved draft
+    that never reached the warehouse, reverse saved a submitted doc (#134 review)."""
+    for name, action in (("approve_adjustment", "Approve"), ("reverse_adjustment", "Reverse")):
+        fn = _api_function(name)
+        src = ast.unparse(fn)
+        assert f"apply_workflow(" in src and f"'{action}'" in src, name
+        assigns = [t for n in ast.walk(fn) if isinstance(n, ast.Assign) for t in n.targets
+                   if isinstance(t, ast.Attribute) and t.attr in ("status", "docstatus")]
+        saves = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("save", "submit", "cancel", "insert")]
+        assert not assigns and not saves, name
+
+
+def test_an_adjustment_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
+    for path, cls in _controllers():
+        if cls.name != "ConsolidationAdjustment":
+            continue
+        methods = {n.name: ast.unparse(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
+        assert "approved_by = self.approved_at = None" in methods["before_insert"]
+        assert "_states(0)" in methods["validate"] and "frappe.throw" in methods["validate"]
+        for hook, docstatus in (("before_submit", 1), ("before_cancel", 2)):
+            assert f"_states({docstatus})" in methods[hook] and "get_workflow_name" in methods[hook], hook
+        assert "after_delete" in methods and "on_trash" not in methods
+        return
+    raise AssertionError("ConsolidationAdjustment not found")
+
+
+def test_a_doctype_that_grants_amend_can_be_amended():
+    """Amend writes amended_from. Consolidation Adjustment granted amend but
+    had no such field, so every amend raised "Unknown column" (#134 walk)."""
+    missing = []
+    for path in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.json")):
+        with open(path) as f:
+            try:
+                d = json.load(f)
+            except ValueError:
+                continue
+        if d.get("doctype") != "DocType" or not d.get("is_submittable"):
+            continue
+        if any(p.get("amend") for p in d.get("permissions", [])):
+            if not any(f["fieldname"] == "amended_from" for f in d["fields"]):
+                missing.append(d["name"])
+    assert not missing, missing
+
