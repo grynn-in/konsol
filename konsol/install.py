@@ -191,17 +191,17 @@ ROLES = {
 def create_roles():
     """Create every role in ROLES that doesn't exist yet.
 
-    Runs from after_install and after_migrate. Frappe also creates a role the
-    first time a doctype's permission rows name it, but only as a bare name;
-    this gives each one its description and desk access, and does not depend
-    on which doctype happened to import first.
+    Runs from after_install and after_migrate. Frappe usually creates these
+    first, while syncing a doctype whose permission rows name them; this is
+    the explicit list, so a role that no permission row names yet still
+    exists. Existing roles are left exactly as the site has them. (Role has
+    no description field, so ROLES's descriptions are the record of intent.)
     """
-    for role_name, desc in ROLES.items():
+    for role_name in ROLES:
         if not frappe.db.exists("Role", role_name):
             role = frappe.new_doc("Role")
             role.role_name = role_name
             role.desk_access = 1
-            role.description = desc
             role.insert(ignore_permissions=True)
             frappe.logger().info(f"Created role: {role_name}")
     frappe.db.commit()
@@ -212,7 +212,10 @@ def _install_workflows():
     Never fails a migrate."""
     try:
         from konsol.workflows import install_workflows
-        install_workflows()
+        # Printed, not only logged: a role upgrade changes who may approve,
+        # and the person running the migrate is the one who needs to know.
+        for line in install_workflows():
+            print(f"konsol workflows: {line}")
     except Exception:
         frappe.logger().warning("workflow install skipped during migrate", exc_info=True)
 

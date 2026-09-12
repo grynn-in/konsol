@@ -60,7 +60,7 @@ def _upgrade_roles(definition):
         "name",
     )
     if not name:
-        return False
+        return None
     wf = frappe.get_doc("Workflow", name)
     plan = planned_role_upgrade(
         [(s.state, s.allow_edit) for s in wf.states],
@@ -69,14 +69,36 @@ def _upgrade_roles(definition):
         PREVIOUSLY_SHIPPED_ROLES.get(doctype),
     )
     if not plan:
-        return False
+        return None
     edit, allowed = plan
     for s in wf.states:
         s.allow_edit = edit[s.state]
     for t in wf.transitions:
         t.allowed = allowed[(t.state, t.action)]
     wf.save(ignore_permissions=True)
-    return True
+    new_roles = set(edit.values()) | set(allowed.values())
+    return {"workflow": wf.name, "granted": _grant_previous_approvers(PREVIOUSLY_SHIPPED_ROLES[doctype], new_roles)}
+
+
+def _grant_previous_approvers(previous_roles, new_roles):
+    """Give the people who could act under the old roles the new ones.
+
+    Without this, the upgrade silently takes approval away from everyone who
+    approved yesterday (they held System Manager, not EPM Admin). Runs once,
+    because the upgrade itself runs once. Administrator already holds every
+    role. Returns {user: [roles granted]} so the migrate can say so.
+    """
+    holders = set(frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", sorted(previous_roles)]},
+                                 pluck="parent")) - {"Administrator", "Guest"}
+    if not holders:
+        return {}
+    granted = {}
+    for user in frappe.get_all("User", filters={"name": ["in", sorted(holders)], "enabled": 1}, pluck="name"):
+        missing = sorted(set(new_roles) - set(frappe.get_roles(user)))
+        if missing:
+            frappe.get_doc("User", user).add_roles(*missing)
+            granted[user] = missing
+    return granted
 
 
 def _definitions():
@@ -93,8 +115,11 @@ def install_workflows():
         if doctype not in INSTALLED or not frappe.db.exists("DocType", doctype):
             continue
         if frappe.db.exists("Workflow", {"document_type": doctype}):
-            if _upgrade_roles(wf):
+            upgraded = _upgrade_roles(wf)
+            if upgraded:
                 installed.append(f"{wf['workflow_name']} (roles upgraded)")
+                for user, roles in upgraded["granted"].items():
+                    installed.append(f"{user} given {', '.join(roles)} so they keep the access they had")
             continue
         for state in wf["states"]:
             if not frappe.db.exists("Workflow State", state["state"]):

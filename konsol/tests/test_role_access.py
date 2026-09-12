@@ -96,7 +96,9 @@ def test_after_install_creates_roles_before_workflows():
 # loss both show up here rather than in production.
 MATRIX = {
     "Trial Balance Submission": {"EPM Admin": "rwcdsxa", "Entity Accountant": "rwcsxa", "EPM Analyst": "r", "EPM User": "r"},
-    "Consolidation Adjustment": {"EPM Admin": "rwcsxa", "EPM Analyst": "rwcd", "EPM User": "r"},
+    # The Close Lead approves and reverses; drafting, and amending a reversed
+    # adjustment into a new draft, is the Group Accountant's.
+    "Consolidation Adjustment": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
     "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcs", "EPM User": "r"},
     "Ownership Period": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcsx", "EPM User": "r"},
@@ -256,3 +258,83 @@ def test_a_customised_workflow_is_left_alone():
     current_states = [(s["state"], s["allow_edit"]) for s in definition["states"]]
     current_tr = [(t["state"], t["action"], t["allowed"]) for t in definition["transitions"]]
     assert wf.planned_role_upgrade(current_states, current_tr, definition, prev) is None
+
+
+def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
+    """A role with create but no edit on Draft makes a document it can never
+    touch again once saved (the review of #146 caught the Close Lead there)."""
+    wf = _workflow("Consolidation Adjustment")
+    perms = _meta("Consolidation Adjustment").get("permissions", [])
+    draft_editors = {s["allow_edit"] for s in wf["states"] if s["state"] == "Draft"}
+    senders = {t["allowed"] for t in wf["transitions"] if t["state"] == "Draft"}
+    editors = {s["allow_edit"] for s in wf["states"]}
+    for p in perms:
+        if p["role"] in FRAPPE_ROLES:
+            continue
+        if p.get("create"):
+            assert p["role"] in draft_editors and p["role"] in senders, p["role"]
+        if p.get("write"):
+            assert p["role"] in editors, p["role"]
+
+
+def test_upgrade_rewrites_roles_only_and_keeps_previous_approvers():
+    definition = _workflow("Consolidation Adjustment")
+    saved, granted = [], {}
+
+    class Row(types.SimpleNamespace):
+        pass
+
+    wf_doc = types.SimpleNamespace(
+        name="Consolidation Adjustment Workflow",
+        states=[Row(state=s["state"], doc_status=s["doc_status"], allow_edit="System Manager")
+                for s in definition["states"]],
+        transitions=[Row(state=t["state"], action=t["action"], next_state=t["next_state"], allowed="System Manager")
+                     for t in definition["transitions"]],
+        save=lambda ignore_permissions=False: saved.append(True),
+    )
+
+    class User:
+        def __init__(self, name):
+            self.name = name
+
+        def add_roles(self, *roles):
+            granted[self.name] = list(roles)
+
+    roles_of = {"ops@example.com": ["System Manager"], "lead@example.com": ["System Manager", "EPM Admin"],
+                "off@example.com": ["System Manager"]}
+
+    def get_all(doctype, filters=None, pluck=None, **kw):
+        if doctype == "Has Role":
+            return ["Administrator", "ops@example.com", "lead@example.com", "off@example.com"]
+        if doctype == "User":   # off@ is disabled
+            return [u for u in filters["name"][1] if u != "off@example.com"]
+        raise AssertionError(doctype)
+
+    with _stub_frappe(
+        db=types.SimpleNamespace(get_value=lambda dt, filters, field: "Consolidation Adjustment Workflow"),
+        get_doc=lambda dt, name: wf_doc if dt == "Workflow" else User(name),
+        get_all=get_all,
+        get_roles=lambda user=None: roles_of.get(user, []),
+    ):
+        wf = _load("workflows.py", "_wf_upgrade_under_test")
+        result = wf._upgrade_roles(definition)
+
+    assert saved == [True]
+    assert {s.state: s.allow_edit for s in wf_doc.states} == {s["state"]: s["allow_edit"] for s in definition["states"]}
+    assert {(t.state, t.action): t.allowed for t in wf_doc.transitions} == {
+        (t["state"], t["action"]): t["allowed"] for t in definition["transitions"]}
+    # nothing but the roles moved
+    assert [t.next_state for t in wf_doc.transitions] == [t["next_state"] for t in definition["transitions"]]
+    assert granted == {"ops@example.com": ["EPM Admin", "EPM Analyst"], "lead@example.com": ["EPM Analyst"]}
+    assert result["granted"] == granted
+
+
+def test_upgrade_skips_a_workflow_by_another_name():
+    saved = []
+    with _stub_frappe(
+        db=types.SimpleNamespace(get_value=lambda dt, filters, field: None),
+        get_doc=lambda *a: saved.append(a),
+    ):
+        wf = _load("workflows.py", "_wf_skip_under_test")
+        assert wf._upgrade_roles(_workflow("Consolidation Adjustment")) is None
+    assert saved == []
