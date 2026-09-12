@@ -17,7 +17,7 @@ reconcile path. The two cannot drift apart again.
 import frappe
 from frappe.model.document import Document
 
-from konsol.clickhouse import sync_doctype
+from konsol.clickhouse import sync_doctype_after_commit
 from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild
 
 _PUBLISHED = "Published"
@@ -41,8 +41,9 @@ class GovernedReferenceDocument(Document):
     # -- the one sync -------------------------------------------------------
 
     def _resync(self):
-        """Re-send the warehouse-eligible rows of this doctype. The only copy."""
-        return sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        """Re-send the warehouse-eligible rows of this doctype, after the
+        commit (konsol#124). The only copy."""
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def _request_rebuild(self, action):
         if self.BUILD_SCOPE:

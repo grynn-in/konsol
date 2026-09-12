@@ -6,7 +6,7 @@ reporting-scope build.
 """
 import frappe
 
-from konsol.clickhouse import sync_table
+from konsol.clickhouse import after_commit_once, sync_table
 from konsol.governed_reference import GovernedReferenceDocument
 from konsol.reporting_hierarchy_seed import flatten_reporting_hierarchies
 
@@ -45,8 +45,9 @@ class ReportingHierarchy(GovernedReferenceDocument):
         return sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, data, force=force)
 
     def _resync(self):
-        """The rows are computed, not field-mapped — flatten instead."""
-        return type(self).resync_staging()
+        """The rows are computed, not field-mapped — flatten instead. After
+        the commit, once per transaction (konsol#124)."""
+        after_commit_once(("reporting_hierarchies",), type(self).resync_staging)
 
     def validate(self):
         self._validate_default_unique()

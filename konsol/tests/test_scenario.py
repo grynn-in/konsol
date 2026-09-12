@@ -85,12 +85,13 @@ def test_py_calls_sync_doctype():
     assert "sync_doctype" in content
 
 
-def test_py_has_on_trash():
-    """Must define on_trash for CH sync on delete."""
+def test_py_syncs_on_delete_with_after_delete():
+    """Must sync on delete, from after_delete: on_trash runs before the row is
+    gone, so the full-table re-send put it straight back (#120)."""
     with open(PY_PATH) as f:
         tree = ast.parse(f.read())
     methods = []
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef):
             methods.append(node.name)
-    assert "on_trash" in methods
+    assert "after_delete" in methods and "on_trash" not in methods

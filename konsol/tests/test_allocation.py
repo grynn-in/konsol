@@ -266,4 +266,4 @@ def test_allocation_driver_has_on_update():
     tree = ast.parse(content)
     methods = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     assert "on_update" in methods
-    assert "on_trash" in methods
+    assert "after_delete" in methods and "on_trash" not in methods, "a delete syncs after the row is gone (#120)"

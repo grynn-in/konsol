@@ -18,7 +18,7 @@ records alone.
 """
 from frappe.model.document import Document
 
-from konsol.clickhouse import sync_doctype
+from konsol.clickhouse import sync_doctype_after_commit
 
 
 class ISOCurrency(Document):
@@ -31,7 +31,7 @@ class ISOCurrency(Document):
     }
 
     def on_update(self):
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def after_delete(self):
         """after_delete, NOT on_trash.
@@ -43,4 +43,4 @@ class ISOCurrency(Document):
         GovernedReferenceDocument.after_delete and the Connector registry
         (test_connector_registry, test_dimension_mapping).
         """
-        sync_doctype(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

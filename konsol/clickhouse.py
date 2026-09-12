@@ -8,6 +8,8 @@ Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
 from datetime import date, datetime, timezone
 
+import functools
+
 import frappe
 import requests
 
@@ -345,6 +347,52 @@ def sync_doctype(doctype, table, field_map, force=False):
         doctype, table, field_map,
         filters=resolve_sync_filters(doctype), force=force,
     )
+
+
+def after_commit_once(key, fn):
+    """Run ``fn()`` once, after the current transaction commits (konsol#124).
+
+    Document hooks must not write ClickHouse directly. ClickHouse has no
+    transaction, so an INSERT made in a hook is final at once: a save that later
+    rolls back leaves its row in the warehouse. The sync also reads its rows
+    through the same uncommitted transaction. After the commit, it publishes
+    exactly what MariaDB committed, and a rollback publishes nothing.
+
+    ``CallbackManager.add`` doesn't dedupe, so a bulk edit of N documents would
+    queue N full-table syncs. ``key`` keeps one per transaction: the queue
+    itself is asked, so there's no marker to go stale after a failed commit.
+
+    Nothing is queued where the inline sync would have been skipped (install,
+    import, migrate, patch: ``sync_table``'s own guard): the queue runs at a
+    commit after those flags are cleared, so an install would sync fixtures
+    before the warehouse exists. reconcile_all repairs the tables after a
+    migrate. A queued sync that fails is logged, never raised: the save it
+    follows has already committed, and a raise would turn it into an error
+    response and drop the syncs queued behind it (#141 review).
+    """
+    flags = frappe.flags
+    if flags.in_install or flags.in_import or flags.in_migrate or flags.in_patch:
+        return
+    queued = getattr(frappe.db.after_commit, "_functions", ())
+    if any(getattr(f, "_konsol_key", None) == key for f in queued):
+        return
+
+    def job():
+        try:
+            fn()
+        except Exception:
+            # This runs after the request's last commit, so a plain Error Log
+            # insert would never be committed. Log to file and defer the row.
+            frappe.logger().exception(f"ClickHouse sync after commit failed: {key}")
+            frappe.log_error(title=f"ClickHouse sync after commit failed: {key}", defer_insert=True)
+
+    job._konsol_key = key
+    frappe.db.after_commit.add(job)
+
+
+def sync_doctype_after_commit(doctype, table, field_map):
+    """``sync_doctype`` for a document hook: once, after the commit (konsol#124)."""
+    after_commit_once(("sync_doctype", doctype, table), functools.partial(sync_doctype, doctype, table, field_map))
 
 
 def _record_sync_failure(table, error_type, message):

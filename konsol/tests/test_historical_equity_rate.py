@@ -50,8 +50,10 @@ def test_referential_integrity_on_group_and_entity():
 
 def test_still_syncs_only_submitted_to_clickhouse():
     # finding #1 (systemic) lives in clickhouse.sync_doctype; here just confirm
-    # the doctype still routes through it on submit/cancel/trash.
+    # the doctype still routes through it on submit/cancel/delete, after the
+    # commit (konsol#124), and deletes with after_delete (#120).
     src = _src()
-    assert "sync_doctype" in src
-    for hook in ("on_submit", "on_cancel", "on_trash"):
+    assert "sync_doctype_after_commit" in src
+    for hook in ("on_submit", "on_cancel", "after_delete"):
         assert f"def {hook}" in src
+    assert "def on_trash" not in src

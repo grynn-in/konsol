@@ -275,8 +275,8 @@ def test_one_sync_call_for_the_whole_lifecycle():
     """Six copies of the filtered sync across two controllers is what let the
     paths drift; there is one now, and the lifecycle methods route through it."""
     src = _governed_reference_src()
-    assert "from konsol.clickhouse import sync_doctype" in src
-    assert src.count("sync_doctype(") == 1, "one sync call, not one per lifecycle hook"
+    assert "from konsol.clickhouse import sync_doctype_after_commit" in src
+    assert src.count("sync_doctype_after_commit(") == 1, "one sync call, not one per lifecycle hook"
     for method in ("def on_update", "def publish", "def unpublish",
                    "def after_delete", "def _resync"):
         assert method in src, method
@@ -480,14 +480,7 @@ def test_a_write_through_controller_deletes_with_after_delete():
     import json
     import re
 
-    KNOWN_BAD = {
-        # non-submittable: the bug is live for these
-        "Allocation Driver", "Allocation Rule", "Consolidation Group",
-        "IC Elimination Rule", "Scenario", "Spread Profile",
-        # submittable: masked by the docstatus=1 filter, not by design
-        "Historical Equity Rate", "IC Balance",
-        "Ownership Period",
-    }
+    KNOWN_BAD = set()   # emptied by konsol#124; it stays empty
 
     offenders = set()
     for py in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.py")):

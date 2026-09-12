@@ -154,25 +154,35 @@ def test_the_sync_waits_for_the_commit():
 
 
 def test_the_sync_is_queued_once_per_transaction_by_asking_the_queue():
-    """CallbackManager.add appends without deduping. The guard checks the
-    queue itself for the sync function. A marker flag was tried first; Frappe
-    drops the rollback callbacks at the start of commit(), so a commit that
-    failed left the flag set and silently skipped every later sync in the
-    process (#110 re-review)."""
+    """CallbackManager.add appends without deduping. A marker flag was tried
+    first; Frappe drops the rollback callbacks at the start of commit(), so a
+    commit that failed left the flag set and silently skipped every later sync
+    in the process (#110 re-review). Entity now uses the shared
+    clickhouse.after_commit_once, which asks the queue itself; its dedupe is
+    tested in test_write_through_after_commit (konsol#124)."""
     resync = _method("_resync")
     src = ast.unparse(resync)
-    assert "_functions" in src and "not in" in src and "_sync_entity_registry" in src
+    assert "after_commit_once(('entity_registry',), _sync_entity_registry)" in src
     assert "entity_registry_sync_queued" not in _src(), "no marker flag: it can stick"
-    # and behaviourally: run the real method three times against a stub queue
-    import collections, types
-    queue = collections.deque()
-    after_commit = types.SimpleNamespace(_functions=queue, add=queue.append)
-    ns = {"frappe": types.SimpleNamespace(db=types.SimpleNamespace(after_commit=after_commit)),
-          "_sync_entity_registry": lambda: None}
-    exec(compile(ast.Module(body=[resync], type_ignores=[]), "entity.py", "exec"), ns)
-    for _ in range(3):
-        ns["_resync"](None)
-    assert list(queue) == [ns["_sync_entity_registry"]], "three saves must queue one sync"
+    # and behaviourally: three saves hand the same key to the shared helper
+    import types
+    calls = []
+    clickhouse = types.SimpleNamespace(after_commit_once=lambda key, fn: calls.append((key, fn)))
+    ns = {"_sync_entity_registry": lambda: None}
+    body = ast.Module(body=[resync], type_ignores=[])
+    import sys
+    saved = sys.modules.get("konsol.clickhouse")
+    sys.modules["konsol.clickhouse"] = clickhouse
+    try:
+        exec(compile(body, "entity.py", "exec"), ns)
+        for _ in range(3):
+            ns["_resync"](None)
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.clickhouse", None)
+        else:
+            sys.modules["konsol.clickhouse"] = saved
+    assert calls == [(("entity_registry",), ns["_sync_entity_registry"])] * 3
 
 
 def _module_function_source(name):

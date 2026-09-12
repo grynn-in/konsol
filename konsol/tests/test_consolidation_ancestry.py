@@ -42,6 +42,7 @@ def _load():
     utils.nestedset = nested
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype = ch.sync_table = lambda *a, **k: None
+    ch.after_commit_once = ch.sync_doctype_after_commit = lambda *a, **k: None
     sys.modules.update({
         "frappe": frappe,
         "frappe.utils": utils,
