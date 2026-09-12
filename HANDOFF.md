@@ -1,6 +1,6 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night and on 13 September. Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night, on 13 September, and again for the role home (F7). Everything below was verified against the running stack._
 
 ## Pick up here
 
@@ -91,6 +91,51 @@ sales, operating income and NI per year match the 10-K within a tolerance. This
 session's big lesson is that "unchanged from before" is not "correct"; the
 anchors are the oracle this project never had.
 
+## The role home (F7)
+
+The user approved the design (artifact "Konsol Role Home", version 2) and every
+suggestion in it:
+
+- konsol-exec is the home: a dark title bar with the path (no period dropdown,
+  the user's explicit wish), a left navigator of fiscal years holding OPN,
+  P01–P12 and CLS with their close state, a month view, and a status bar.
+- A month is **eight ordered stages**: source data, trial balances, ownership
+  & rates, intercompany, adjustments, consolidate, assertions, sign off.
+  Budget is an annual cycle and leaves the monthly list.
+- Job titles on screen (Close Lead, Group Accountant, Entity Accountant,
+  Budget Reviewer, Viewer, System); role names unchanged (EPM Admin, EPM
+  Analyst, …). New role **Entity Accountant**; Budget Submitter stays as an
+  alias for the base layer.
+- Consolidation Adjustment: **EPM Analyst drafts** (and amends a reversed
+  one); **EPM Admin approves, rejects and reverses**.
+
+| PR | what | state |
+|---|---|---|
+| konsol **#146** | Roles and access: every role in `install.ROLES`, created on install and migrate; DocPerms opening consolidation doctypes to business roles; the adjustment workflow split; an upgrade that moves an untouched System-Manager-only workflow to the new roles and grants EPM Admin + EPM Analyst to the site's existing System Managers (Role Profile users are reported, not granted); an unassigned Entity Accountant sees no entity | merged `29a1950` |
+| konsol **#147** | `konsol/home_api.py`: GET `whoami`, `period_tree`, `month` (lane, "mine" and "waiting" queues, health); rules in `home_model.py`. Konsol roles only; entity codes and connector detail only for group roles | merged `dc4b094` |
+| konsol **#148** | konsol-exec shell: title bar, navigator, MonthView, StatusBar, `homeMachine`; the checklist no longer picks the period | merged `831719b` |
+
+Every PR was reviewed, fixed and re-reviewed, and live-verified on
+konsolidat.local with rolled-back test users. **The shell has not been seen in
+a browser**: the local stack asks for a login, and credentials are never
+typed. Log in and open `/konsol-exec/2026/9`.
+
+**Deferred** (not started): intercompany differences (IC Balance entities are
+free text, need Links + a warehouse query + a tolerance), a status on Budget
+Sheet and the budget year folder, a close calendar (working-day deadlines),
+trial balance upload inside the detail panel, nudging a person instead of a
+role, per-role desk workspaces, and konsol #149 (below).
+
+**Rules the home relies on:** an entity is in a month's close when a
+submitted ownership period covers the month's first day; it owes a manual
+trial balance unless an enabled connector's legal entities include it. Builds
+carry no period, so every open month shows the latest build, labelled as the
+latest. Actions are offered disabled only where the server refuses them.
+
+**Lesson:** a machine that throws on import passes every test that doesn't
+import it. `homeMachine.test.mjs` runs the machine with stub actors; do the
+same for any new machine.
+
 ## State on 13 Sep — merged, open, next
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
@@ -128,6 +173,7 @@ containers and run scripts or dbt from a copy.
 - konsol **#140** (a build that fails to start loses the changes absorbed while Approved; don't re-request blindly, it can loop)
 - konsol **#142** (a fresh site's staging stays empty until the first `bench migrate`)
 - konsolidat **#161** (the report's entity columns ignore the ownership window)
+- konsol **#149** (Consolidation Adjustment, IC Balance and Allocation Run can be submitted into a closed period; only cancel is gated)
 
 **Open questions for the user:**
 - Delete `scripts/generate_demo_data.py`?
@@ -192,15 +238,17 @@ measures. `countIf(period_credit > 0) = 0` would have exposed #155 weeks ago.
 
 Capture deploy's own exit code; a trailing `echo` reports 0 even on failure.
 
-**Local stack right now:** konsol `main` (through #141) hot-copied into
-backend and worker, plus #143's controllers (unmerged). The dbt project is
+**Local stack right now:** konsol `main` (through #148, the role home)
+hot-copied into backend and worker, including the built konsol-exec bundle.
+On konsolidat.local the Consolidation Adjustment workflow already carries the
+F7 roles (EPM Analyst drafts, EPM Admin approves); no test users are left. The dbt project is
 bind-mounted from the konsolidat checkout at `9e263a3`, so the next build uses
 #162's models. The Consolidation Adjustment workflow is
 installed on konsolidat.local. The AMIT and ZZ test data are gone. Nothing was
 redeployed.
 
-Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **875/875 passed across 80 files** on main; `cd konsol-exec && node --test src/*.test.mjs
-src/orchestrator/*.test.mjs` → 34/34.
+Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **897/897 passed across 82 files** on main after #146; `cd konsol-exec && node --test src/*.test.mjs
+src/orchestrator/*.test.mjs` → 48/48 with #148.
 
 Drive the live stack without a deploy by `docker cp` into
 `konsolidat_backend` (dbt files there land in `repo/dbt_project`, which is bind-mounted) plus a plain script with
