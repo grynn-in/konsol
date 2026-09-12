@@ -557,6 +557,15 @@ _REFERENCE_TABLE_DDL = {
         "link_data_area_id String, link_depth UInt8, depth UInt8, path String) "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id, link_depth)"
     ),
+    # konsol#110: the governed entity registry, from the Entity doctype. The
+    # warehouse knew entities only from ERP extraction, so one with no connector
+    # had no accounting currency and was dropped at the consolidation join.
+    "epm_staging.entities": (
+        "(data_area_id String, entity_name String, parent_entity String, "
+        "is_group UInt8, status String, accounting_currency String, "
+        "country String, erp_source String) "
+        "ENGINE = MergeTree ORDER BY data_area_id"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a

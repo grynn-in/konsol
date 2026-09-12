@@ -31,6 +31,9 @@ TRIGGER_DOCTYPES = [
     "Allocation Rule",
     "Allocation Driver",
     "Allocation Run",
+    # konsol#110: a functional-currency change alters what consolidation
+    # translates from
+    "Entity",
 ]
 
 VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}
@@ -66,7 +69,7 @@ def test_doctype_build_map_exists():
 
 
 def test_doctype_build_map_covers_all_trigger_doctypes():
-    """DOCTYPE_BUILD_MAP must contain all 9 trigger doctypes."""
+    """DOCTYPE_BUILD_MAP must contain every trigger doctype."""
     tree = _parse(TASKS_PATH)
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):

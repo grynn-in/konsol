@@ -37,6 +37,7 @@ DOCTYPE_BUILD_MAP = {
     "Allocation Rule": {"scope": "staging", "risk": "low"},
     "Allocation Driver": {"scope": "staging", "risk": "low"},
     "Allocation Run": {"scope": "staging", "risk": "low"},
+    "Entity": {"scope": "staging", "risk": "low"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
