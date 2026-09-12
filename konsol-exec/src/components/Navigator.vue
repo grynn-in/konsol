@@ -48,6 +48,7 @@ const links = computed(() => {
 	const any = (...r) => r.some((x) => roles.has(x));
 	const out = [{ label: "Close checklist", to: "/close", icon: "list" }];
 	out.push({ label: "Entities", href: "/app/entity", icon: "folder" });
+	if (props.me?.can?.approve) out.push({ label: "Upload trial balances", to: "/uploads", icon: "upload" });
 	if (any("EPM Admin", "EPM Analyst", "Entity Accountant", "System Manager")) {
 		out.push({ label: "Trial balances", href: "/app/trial-balance-submission", icon: "file-text" });
 	}

@@ -85,6 +85,7 @@ function openStage(stage) {
 					<p class="mt-1 text-base text-ink-gray-6">{{ subtitle }}</p>
 				</div>
 				<div class="flex flex-wrap items-center gap-2">
+					<Button v-if="home.me.value?.can?.approve" variant="subtle" @click="home.router.push('/uploads')">Upload trial balances</Button>
 					<Badge :theme="PERIOD_THEME[month.period.status] || 'gray'" size="lg" variant="subtle">{{ month.period.status }}</Badge>
 					<Badge theme="gray" size="lg" variant="subtle">{{ month.period.code }}</Badge>
 				</div>

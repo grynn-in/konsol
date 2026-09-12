@@ -80,6 +80,7 @@ export function crumbsFor(where) {
 	if (name === "month" && hasPeriod) return [...base, { label: "Close" }];
 	if ((name === "step" || name === "step-tab") && hasPeriod) return [...base, { label: stepLabel || "Step" }];
 	if (name === "close" && hasPeriod) return [...base, { label: "Close checklist" }];
+	if (name === "uploads") return [{ label: "Group" }, { label: "Upload trial balances" }];
 	return [{ label: "Konsol" }];
 }
 
