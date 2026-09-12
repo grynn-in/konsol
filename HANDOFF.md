@@ -174,11 +174,29 @@ State: **merged `c2f2a16`**, reviewed four times, every finding fixed and live-v
 (`live_tbu*.py` in the session scratchpad; FY2099 test data, cleaned up).
 
 **Trap:** twice a whole-file rewrite put a raw, invisible U+FEFF into a
-Python string literal where `"﻿"` was meant. It still runs, but check
+Python string literal where `"\ufeff"` was meant. It still runs, but check
 after writing code that mentions the byte-order mark. On macOS, `grep -P`
 silently finds nothing; this form works (tested):
 
     LC_ALL=C grep -rl $'\xef\xbb\xbf' konsol --include='*.py'
+
+## Hierarchy node resolution is strict (konsol #155, konsolidat #164)
+
+K.EPM's `node` with `hierarchy` left blank now resolves only when exactly one
+Published Reporting Hierarchy holds that code; several is `#VALUE!` naming
+them, none says so. It used to take the tree edited most recently, so a value
+could flip when someone edited another tree. `is_default` plays no part in
+formula resolution (it drives the unassigned-members check only). Group member
+codes are unique within a tree like leaf codes (the closure joins on code),
+and a named hierarchy is passed on in its stored spelling (ClickHouse is
+case-sensitive). Live site at merge: one tree (MGMT_DEMO), no shared codes.
+
+Host test runner (same PR): `scripts/run-host-tests.py` now imports konsol,
+skips a file only when it needs frappe, pytest or a third-party module (each
+skipped file is listed with its reason), fails the run on any other load
+error such as a broken konsol import, and resets frappe/konsol modules after
+each file so one file's stub frappe cannot leak into the next. Before, three
+files that import konsol never ran and the run still reported green.
 
 ## VBA Excel client retired (konsol #153, konsolidat #163)
 

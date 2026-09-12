@@ -709,8 +709,9 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     `scenario`; if neither pins a fact, `scenario` resolves it via scenario_key.
 
     When ``node`` (or ``hierarchy_node``) is set, queries hierarchy gold tables
-    instead of flat entity facts. ``hierarchy`` is optional when a default tree
-    exists or the node is unique across published hierarchies.
+    instead of flat entity facts. ``hierarchy`` may be blank only when exactly
+    one published hierarchy holds the node; a node in several is an error
+    that names them.
     """
     from konsol.hierarchy_query import batch_query_hierarchy, entity_is_wildcard
     from konsol.hierarchy_query import validate_hierarchy_read

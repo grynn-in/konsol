@@ -236,14 +236,21 @@ def test_dashboard_includes_budget_cycle_shortcut():
 
 
 def test_dashboard_workflow_card_order():
-    dash = _src(os.path.join(APP_DIR, "dashboard.py"))
-    assert '("Budget"' in dash
-    assert '("EPM Registry"' in dash
-    assert '("EPM Models"' not in dash
-    budget_pos = dash.index('"Budget"')
-    registry_pos = dash.index('"EPM Registry"')
-    pipeline_pos = dash.index('"Data Pipeline"')
-    assert budget_pos < registry_pos < pipeline_pos
+    # The workspace was redesigned (#86) into one card per process, in process
+    # order. The old Budget / EPM Registry / Data Pipeline cards survive only in
+    # the set _workspace_needs_refresh() uses to detect and rebuild them.
+    import ast
+    tree = ast.parse(_src(os.path.join(APP_DIR, "dashboard.py")))
+    cards = next(n.value for n in tree.body if isinstance(n, ast.Assign)
+                 and getattr(n.targets[0], "id", None) == "_CARDS")
+    titles = [c.elts[0].value for c in cards.elts]
+    budget = next(c for c in cards.elts if c.elts[0].value == "Budgeting & Planning")
+    assert "Budget Cycle" in [e.value for e in budget.elts[1].elts]
+    for old in ("Budget", "EPM Registry", "EPM Models", "Data Pipeline"):
+        assert old not in titles, old
+    order = ["Pipeline & Ingestion", "Model & Metadata", "Budgeting & Planning",
+             "Allocations", "Consolidation"]
+    assert [t for t in titles if t in order] == order
 
 
 def test_shared_line_matcher_replaces_duplicates():

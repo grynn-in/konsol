@@ -24,12 +24,18 @@ class ReportingHierarchyMember(Document):
             )
 
     def _validate_member_code(self):
-        if self.is_group:
-            if not self.member_code:
-                self.member_code = frappe.scrub(self.member_label).upper()[:140]
-            return
+        if self.is_group and not self.member_code:
+            if not self.member_label:
+                return  # Frappe's mandatory check reports the missing label
+            self.member_code = frappe.scrub(self.member_label).upper()[:140]
         if not self.member_code:
-            frappe.throw("Member Code is required for leaf nodes (Is Group = unchecked).")
+            frappe.throw(
+                "Set a Member Code for this group node." if self.is_group
+                else "Member Code is required for leaf nodes (Is Group = unchecked)."
+            )
+        # Group codes too: K.EPM's node argument and the warehouse rollup
+        # (gold_reporting_hierarchy_closure joins on member_code) find a node
+        # by its code, so two members sharing one can't be told apart.
         dupe = frappe.db.exists(
             "Reporting Hierarchy Member",
             {
@@ -41,7 +47,8 @@ class ReportingHierarchyMember(Document):
         if dupe:
             frappe.throw(
                 f"Member code '{self.member_code}' already exists in this hierarchy "
-                f"({dupe})."
+                f"({dupe}). Formulas and the warehouse find a node by its code, "
+                "so set a different Member Code."
             )
 
     def _validate_no_cycles(self):

@@ -67,8 +67,44 @@ def entity_is_wildcard(entity):
     return (entity or "").strip().upper() in _ENTITY_WILDCARD
 
 
+def choose_hierarchy(node_code, trees):
+    """Pick the tree for a node when the formula names none.
+
+    ``trees`` lists the published hierarchies that hold the node's code.
+    Exactly one is an answer. None, or several, is an error, never a guess:
+    the resolver used to take whichever tree was edited last, so a formula's
+    value could change when someone edited a different tree.
+    """
+    if len(trees) == 1:
+        return trees[0], None
+    if not trees:
+        return None, f"Node '{node_code}' is not in any published Reporting Hierarchy."
+    return None, (
+        f"Node '{node_code}' is in {len(trees)} published hierarchies "
+        f"({', '.join(trees)}). Pass the hierarchy name to choose one."
+    )
+
+
+def choose_member(node_code, hierarchy_name, members):
+    """The one member of a tree carrying ``node_code``, or an error.
+
+    Two members sharing a code can't be told apart by a formula or by the
+    warehouse rollup, which joins on the code.
+    """
+    if not members:
+        return None, f"Node '{node_code}' not found in hierarchy '{hierarchy_name}'"
+    if len(members) > 1:
+        labels = ", ".join(str(m.get("member_label") or "?") for m in members)
+        return None, (
+            f"Node '{node_code}' is used by {len(members)} members of hierarchy "
+            f"'{hierarchy_name}' ({labels}). Give each member its own Member Code."
+        )
+    return members[0], None
+
+
 def resolve_hierarchy_name(hierarchy_name, node_code):
-    """Resolve hierarchy_name; default to tree containing node or is_default."""
+    """The tree to read: the one named, else the only published tree holding
+    the node. A node in several published trees is an error that names them."""
     import frappe
 
     node_code = (node_code or "").strip()
@@ -77,42 +113,29 @@ def resolve_hierarchy_name(hierarchy_name, node_code):
 
     hierarchy_name = (hierarchy_name or "").strip()
     if hierarchy_name:
-        if not frappe.db.exists(
+        # MariaDB matches 'mgmt_2026' to MGMT_2026; ClickHouse would not, so
+        # pass the stored spelling on.
+        stored = frappe.db.get_value(
             "Reporting Hierarchy",
             {"hierarchy_name": hierarchy_name, "status": "Published"},
-        ):
+            "hierarchy_name",
+        )
+        if not stored:
             return None, f"Reporting Hierarchy '{hierarchy_name}' not found or not published"
-        return hierarchy_name, None
+        return stored, None
 
-    members = frappe.get_all(
+    holders = sorted(set(frappe.get_all(
         "Reporting Hierarchy Member",
         filters={"member_code": node_code},
-        fields=["reporting_hierarchy"],
-        order_by="modified desc",
-        limit_page_length=1,
-    )
-    if members:
-        header = frappe.db.get_value(
-            "Reporting Hierarchy",
-            members[0].reporting_hierarchy,
-            ["hierarchy_name", "status", "is_default"],
-            as_dict=True,
-        )
-        if header and header.status == "Published":
-            return header.hierarchy_name, None
-
-    default = frappe.db.get_value(
+        pluck="reporting_hierarchy",
+    )))
+    trees = frappe.get_all(
         "Reporting Hierarchy",
-        {"status": "Published", "is_default": 1},
-        "hierarchy_name",
-    )
-    if default:
-        return default, None
-
-    return None, (
-        f"Could not resolve hierarchy for node '{node_code}'. "
-        "Pass hierarchy explicitly or mark one hierarchy as default."
-    )
+        filters={"name": ["in", holders], "status": "Published"},
+        pluck="hierarchy_name",
+        order_by="hierarchy_name asc",
+    ) if holders else []
+    return choose_hierarchy(node_code, trees)
 
 
 def get_hierarchy_member(hierarchy_name, node_code):
@@ -130,14 +153,14 @@ def get_hierarchy_member(hierarchy_name, node_code):
     if header.status != "Published":
         return None, f"Reporting Hierarchy '{hierarchy_name}' is not published"
 
-    member = frappe.db.get_value(
+    member, err = choose_member(node_code, hierarchy_name, frappe.get_all(
         "Reporting Hierarchy Member",
-        {"reporting_hierarchy": header.name, "member_code": node_code},
-        ["member_code", "member_label", "is_group"],
-        as_dict=True,
-    )
-    if not member:
-        return None, f"Node '{node_code}' not found in hierarchy '{hierarchy_name}'"
+        filters={"reporting_hierarchy": header.name, "member_code": node_code},
+        fields=["member_code", "member_label", "is_group"],
+        order_by="name asc",
+    ))
+    if err:
+        return None, err
     return {
         "hierarchy_name": hierarchy_name,
         "dimension": header.dimension,
