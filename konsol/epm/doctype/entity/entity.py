@@ -128,20 +128,29 @@ class Entity(NestedSet):
                    for f in self._REBUILD_FIELDS)
 
     def _request_rebuild(self, method):
-        """Request the rebuild after the commit, never inside the hook.
+        """Request a consolidation rebuild as a job queued for after the commit.
 
-        on_consolidation_doc_update inserts a Build Approval and COMMITS. From
-        on_update, after_delete or after_rename that commit would make the
-        save, delete or rename non-atomic: whatever Frappe does after the hook
-        (the Deleted Document record, rename_password, a merge's delete of the
-        old doc) could then fail with the first half already committed. Queued
-        for commit, a save that rolls back requests nothing, which is also
-        right. It reuses the trigger path for its install / migrate / patch /
-        import guard, its per-scope debounce, and the DOCTYPE_BUILD_MAP scope
-        ("consolidation": `staging` selects neither silver_entity_currencies
-        nor gold_consolidated_trial_balance).
+        The request inserts a Build Approval and COMMITS. Done in-process from
+        a document hook, that commit splits the save, delete or rename in two;
+        on a submit, Frappe runs on_update before on_submit, so it would land
+        docstatus=1 before on_submit has run. A job runs in its own
+        transaction instead: a save that rolls back queues nothing, and a failed
+        request is rolled back and logged by the job runner rather than raised
+        at a user whose change already committed. One job per entity at a
+        time; the debounce inside handles the rest.
         """
-        frappe.db.after_commit.add(lambda: _request_consolidation_rebuild(self, method))
+        if (frappe.flags.in_install or frappe.flags.in_migrate
+                or frappe.flags.in_patch or frappe.flags.in_import):
+            return
+        frappe.enqueue(
+            "konsol.tasks.request_consolidation_build",
+            enqueue_after_commit=True,
+            job_id=f"konsol-consolidation-build::Entity::{self.name}",
+            deduplicate=True,
+            doctype=self.doctype,
+            name=self.name,
+            method=method,
+        )
 
     def _resync(self):
         """Queue the registry sync for commit, once per transaction.
@@ -200,15 +209,3 @@ def _sync_entity_registry():
     TRUNCATE+INSERT of only the rows they can see would delete the rest of the
     registry."""
     return sync_doctype("Entity", Entity.CH_TABLE, Entity.CH_FIELD_MAP)
-
-
-def _request_consolidation_rebuild(doc, method):
-    """Runs after commit, so an exception here would surface to a user whose
-    change already committed. Best-effort: log it instead. The next watched
-    change, or a manual build, still rebuilds."""
-    from konsol.tasks import on_consolidation_doc_update
-
-    try:
-        on_consolidation_doc_update(doc, method)
-    except Exception:  # noqa: BLE001 — never fail a committed change over a build request
-        frappe.log_error(title=f"Entity {doc.name}: consolidation rebuild request failed")

@@ -34,7 +34,6 @@ TRIGGER_DOCTYPES = [
     # konsol#110: a functional-currency change alters what consolidation
     # translates from
     "Entity",
-    "Trial Balance Submission",
 ]
 
 VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}

@@ -42,13 +42,6 @@ DOCTYPE_BUILD_MAP = {
     # reaches silver_entity_currencies and gold_consolidated_trial_balance.
     # Requested from Entity's controller, not from doc_events.
     "Entity": {"scope": "consolidation", "risk": "high"},
-    # F8: listed in hooks' _dbt_trigger_doctypes from the start but never
-    # mapped here, so on_consolidation_doc_update logged "No build mapping" and
-    # a submitted or cancelled trial balance requested nothing (#110 re-review).
-    # consolidation: +tag:domain:consolidation reaches
-    # bronze_trial_balance_submissions -> silver_gl_entries -> gold_trial_balance
-    # -> the consolidated models.
-    "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
@@ -345,6 +338,16 @@ def _set_duration(doc):
 # ---------------------------------------------------------------------------
 # Hook: trigger governed build after consolidation/allocation doc changes
 # ---------------------------------------------------------------------------
+def request_consolidation_build(doctype, name, method):
+    """RQ job target for a build request raised after commit (Entity, #110).
+
+    Runs on_consolidation_doc_update in the job's own transaction, so its Build
+    Approval insert and commit never land inside the caller's document hooks.
+    The trigger reads only doctype and name, so a deleted document's request
+    still resolves."""
+    on_consolidation_doc_update(frappe._dict(doctype=doctype, name=name), method)
+
+
 def on_consolidation_doc_update(doc, method):
     """Called by doc_events hook for consolidation/allocation doctypes.
 

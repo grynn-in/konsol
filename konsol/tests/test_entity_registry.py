@@ -162,7 +162,17 @@ def test_the_sync_is_queued_once_per_transaction_by_asking_the_queue():
     resync = _method("_resync")
     src = ast.unparse(resync)
     assert "_functions" in src and "not in" in src and "_sync_entity_registry" in src
-    assert "frappe.flags" not in _src(), "no marker flag: it can stick"
+    assert "entity_registry_sync_queued" not in _src(), "no marker flag: it can stick"
+    # and behaviourally: run the real method three times against a stub queue
+    import collections, types
+    queue = collections.deque()
+    after_commit = types.SimpleNamespace(_functions=queue, add=queue.append)
+    ns = {"frappe": types.SimpleNamespace(db=types.SimpleNamespace(after_commit=after_commit)),
+          "_sync_entity_registry": lambda: None}
+    exec(compile(ast.Module(body=[resync], type_ignores=[]), "entity.py", "exec"), ns)
+    for _ in range(3):
+        ns["_resync"](None)
+    assert list(queue) == [ns["_sync_entity_registry"]], "three saves must queue one sync"
 
 
 def _module_function_source(name):
@@ -227,24 +237,37 @@ def test_only_a_change_the_warehouse_can_see_requests_a_rebuild():
 
 
 def test_every_lifecycle_that_changes_what_consolidation_sees_requests_a_rebuild():
-    """Save (when a watched field changed), delete, rename — the last two are
+    """Save (when a watched field changed), delete, rename. The last two are
     not doc_events at all, so the generic trigger could never have seen them."""
     for hook in ("on_update", "after_delete", "after_rename"):
         assert "_request_rebuild" in _calls(_method(hook)), f"Entity.{hook} requests no rebuild"
-    assert "on_consolidation_doc_update" in _calls(_module_function("_request_consolidation_rebuild")), (
-        "reuse the trigger path: it carries the install/migrate/import guard and the debounce")
+    with open(os.path.join(APP_DIR, "tasks.py")) as f:
+        tasks = ast.parse(f.read())
+    job = next((n for n in tasks.body if isinstance(n, ast.FunctionDef)
+                and n.name == "request_consolidation_build"), None)
+    assert job is not None, "the job target is missing from tasks.py"
+    assert "on_consolidation_doc_update" in _calls(job), (
+        "reuse the trigger path: it carries the scope map and the debounce")
 
 
-def test_the_rebuild_request_waits_for_the_commit():
-    """on_consolidation_doc_update commits. Called inside on_update /
-    after_delete / after_rename, that commit split the save, delete or
-    rename in two (#110 re-review)."""
+def test_the_rebuild_request_is_a_job_queued_after_commit():
+    """on_consolidation_doc_update inserts a Build Approval and commits. Run
+    inside on_update / after_delete / after_rename that commit split the
+    operation in two, and a failure logged after the last commit was lost
+    (#110 re-reviews 2 and 3). A job queued after commit runs in its own
+    transaction, and the job runner rolls back and logs a failure."""
     request = _method("_request_rebuild")
     assert "on_consolidation_doc_update" not in _calls(request)
-    assert "after_commit" in ast.dump(request)
-    guarded = _module_function("_request_consolidation_rebuild")
-    assert any(isinstance(n, ast.Try) for n in ast.walk(guarded)), (
-        "after commit, a failure must be logged, not raised at a user whose change committed")
+    call = next(n for n in ast.walk(request) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr == "enqueue")
+    kw = {k.arg: k.value for k in call.keywords}
+    assert ast.literal_eval(call.args[0]) == "konsol.tasks.request_consolidation_build"
+    assert ast.literal_eval(kw["enqueue_after_commit"]) is True
+    assert ast.literal_eval(kw["deduplicate"]) is True and "job_id" in kw, (
+        "deduplicate needs a job_id, or Frappe ignores it")
+    guard = ast.unparse(request)
+    for flag in ("in_install", "in_migrate", "in_patch", "in_import"):
+        assert flag in guard, f"a job enqueued during {flag} would run after it, unguarded"
 
 
 def test_entity_is_not_a_generic_trigger_doctype():
