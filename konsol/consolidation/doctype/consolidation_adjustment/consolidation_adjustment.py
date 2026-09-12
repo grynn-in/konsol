@@ -47,11 +47,11 @@ class ConsolidationAdjustment(Document):
     }
 
     def before_insert(self):
-        """A new adjustment starts as a draft. An amendment copies the
-        cancelled original's status and approver (copy_doc ignores no_copy
-        when amending), and the workflow refuses a new doc in a later state."""
-        if self.status and self.status not in _states(0):
-            self.status = _first_state()
+        """Every new adjustment starts in the first state with no approver. An
+        amendment or a Duplicate copies status and approver (status isn't
+        no_copy, and copy_doc ignores no_copy when amending), and the workflow
+        refuses a new doc in any state but its first."""
+        self.status = _first_state()
         self.approved_by = self.approved_at = None
 
     def validate(self):

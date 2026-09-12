@@ -117,7 +117,7 @@ def test_the_adjustment_api_goes_through_the_workflow():
         assert f"apply_workflow(" in src and f"'{action}'" in src, name
         assigns = [t for n in ast.walk(fn) if isinstance(n, ast.Assign) for t in n.targets
                    if isinstance(t, ast.Attribute) and t.attr in ("status", "docstatus")]
-        saves = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("save", "submit", "cancel", "insert")]
+        saves = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("save", "submit", "cancel", "insert", "set", "set_value", "db_set")]
         assert not assigns and not saves, name
 
 
