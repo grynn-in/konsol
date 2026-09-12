@@ -3,9 +3,11 @@
  * month at a time.
  *
  * The month follows the URL: the shell sends OPEN whenever the route names a
- * period, and a later OPEN re-enters `loading`, which cancels the request for
- * the month the user has already left. A slow ticker keeps the open month
- * fresh while people work in the desk in another tab.
+ * period. OPEN is kept in every state (booting, failed, ready), so a period
+ * chosen before boot or while boot has failed is the one loaded afterwards.
+ * An OPEN during `loading` re-enters it, which cancels the request for the
+ * month the user already left. A slow ticker refreshes the open month, but
+ * only from `idle`: a tick never cancels a slow request in flight.
  */
 import { setup, assign, fromPromise, fromCallback } from "xstate";
 import { whoami, periodTree, getMonth } from "../homeApi.js";
@@ -28,8 +30,10 @@ export const homeMachine = setup({
 		hasWant: ({ context }) => Boolean(context.want),
 	},
 	actions: {
+		// A new period starts clean: the last month's error is not this one's.
 		setWant: assign({
 			want: ({ event }) => ({ year: Number(event.year), period: Number(event.period) }),
+			error: null,
 		}),
 		assignBoot: assign({
 			me: ({ event }) => event.output.me,
@@ -55,16 +59,23 @@ export const homeMachine = setup({
 				onError: { target: "failed", actions: "assignError" },
 			},
 		},
-		failed: { on: { RETRY: "booting" } },
+		failed: {
+			on: {
+				RETRY: "booting",
+				OPEN: { actions: "setWant" },
+			},
+		},
 		ready: {
+			initial: "idle",
 			invoke: { src: "ticker" },
 			on: {
 				OPEN: { target: ".loading", reenter: true, actions: "setWant" },
-				TICK: { guard: "hasWant", target: ".loading", reenter: true },
 				REFRESH: { guard: "hasWant", target: ".loading", reenter: true },
 			},
 			states: {
-				idle: {},
+				idle: {
+					on: { TICK: { guard: "hasWant", target: "loading" } },
+				},
 				loading: {
 					invoke: {
 						src: "loadMonth",

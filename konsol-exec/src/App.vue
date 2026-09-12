@@ -7,12 +7,13 @@
  * Two machines: `home` (who is looking, the fiscal tree, one month) drives
  * the shell and the month view; `plane` (the close snapshot) still drives the
  * close steps. When the route names a period, both are told, so a step opened
- * from the lane shows the same month the navigator has selected.
+ * from the lane shows the same month the navigator has selected. A home
+ * failure only affects the month view; the close steps keep working.
  */
 import { computed, provide, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useMachine } from "@xstate/vue";
-import { FrappeUIProvider, Toast, toast } from "frappe-ui";
+import { Button, FrappeUIProvider, Toast, toast } from "frappe-ui";
 import ShellTitleBar from "./components/ShellTitleBar.vue";
 import Navigator from "./components/Navigator.vue";
 import StatusBar from "./components/StatusBar.vue";
@@ -47,6 +48,8 @@ watch(
 
 const planeLoading = computed(() => snapshot.value.matches("loading"));
 const planeFailed = computed(() => snapshot.value.matches("failed"));
+// The plane only takes SET_PERIOD in `ready`; anywhere else it is dropped.
+const planeReady = computed(() => snapshot.value.matches("ready"));
 
 // ── workspace ──
 const { snapshot: homeSnap, send: homeSend } = useMachine(homeMachine);
@@ -58,25 +61,35 @@ const homeFailed = computed(() => homeSnap.value.matches("failed"));
 provide("home", { me, tree, month, error: homeError, send: homeSend, router });
 
 const isMonth = computed(() => route.name === "month");
+const routePeriod = computed(() => (isMonth.value ? parsePeriodRoute(route.params) : null));
 
 /** The period the shell is showing: the URL on a month page, the plane's on a step. */
 const selected = computed(() => {
-	if (isMonth.value) return parsePeriodRoute(route.params);
+	if (isMonth.value) return routePeriod.value;
 	const p = period.value;
 	return p?.year && p?.period !== "" && p?.period != null ? { year: Number(p.year), period: Number(p.period) } : null;
 });
 
-// Route → both machines. Re-run when the plane finishes loading, because the
-// plane ignores SET_PERIOD until it is ready.
+// Route → home: once per period change.
 watch(
-	() => [route.name, route.params.year, route.params.period, planeLoading.value],
+	() => routePeriod.value && `${routePeriod.value.year}/${routePeriod.value.period}`,
+	(key) => {
+		if (!key) return;
+		homeSend({ type: "OPEN", year: routePeriod.value.year, period: routePeriod.value.period });
+	},
+	{ immediate: true }
+);
+
+// Route → plane: whenever the plane is ready and on a different period. It
+// re-checks each time the plane returns to ready, so a SET_PERIOD dropped
+// while it was refreshing or starting a run is sent again.
+watch(
+	() => [routePeriod.value?.year, routePeriod.value?.period, planeReady.value],
 	() => {
-		if (!isMonth.value) return;
-		const want = parsePeriodRoute(route.params);
-		if (!want) return;
-		homeSend({ type: "OPEN", year: want.year, period: want.period });
+		const want = routePeriod.value;
+		if (!want || !planeReady.value) return;
 		const cur = period.value;
-		if (!planeLoading.value && (String(cur?.year) !== String(want.year) || String(cur?.period) !== String(want.period))) {
+		if (String(cur?.year) !== String(want.year) || String(cur?.period) !== String(want.period)) {
 			send({ type: "SET_PERIOD", year: String(want.year), period: String(want.period) });
 		}
 	},
@@ -100,6 +113,10 @@ const mineCount = computed(() => {
 const busy = computed(() => snapshot.value.matches("refreshing") || homeSnap.value.matches({ ready: "loading" }));
 const workerHealthy = computed(() => (month.value?.health ? month.value.health.worker : data.value?.worker_healthy !== false));
 
+const homeMessage = computed(() => homeError.value?.message || String(homeError.value || ""));
+// A missing role is not something Retry can fix.
+const noAccess = computed(() => /needs an EPM or budget role/i.test(homeMessage.value));
+
 function refresh() {
 	send({ type: "REFRESH" });
 	homeSend({ type: "REFRESH" });
@@ -120,13 +137,16 @@ function refresh() {
 					:me="me"
 				/>
 				<main class="min-w-0 flex-1 overflow-y-auto">
-					<ErrorState
-						v-if="homeFailed"
-						:error="homeError"
-						:busy="false"
-						@retry="homeSend({ type: 'RETRY' })"
-					/>
-					<RouterView v-else-if="isMonth" />
+					<template v-if="isMonth">
+						<div v-if="homeFailed" class="mx-auto max-w-xl px-6 py-16 text-center">
+							<h1 class="text-xl font-semibold text-ink-gray-9">
+								{{ noAccess ? "No access to Konsol" : "The workspace could not load" }}
+							</h1>
+							<p class="mt-2 text-base text-ink-gray-6">{{ homeMessage }}</p>
+							<Button v-if="!noAccess" class="mt-5" variant="solid" @click="homeSend({ type: 'RETRY' })">Try again</Button>
+						</div>
+						<RouterView v-else />
+					</template>
 					<AppSkeleton v-else-if="planeLoading" />
 					<ErrorState v-else-if="planeFailed" :error="loadError" :busy="false" @retry="send({ type: 'RETRY' })" />
 					<RouterView v-else />

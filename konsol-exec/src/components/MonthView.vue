@@ -7,6 +7,9 @@
  * tinted and marked "You". The queue only holds what the server says is yours,
  * and every button carries whether you may press it: a refused action shows
  * disabled with the reason, never as a button that fails after the click.
+ *
+ * Each row is two controls side by side, never one inside the other: a
+ * button that selects the row (aria-pressed), and the row's action.
  */
 import { computed, inject, ref, watch } from "vue";
 import { Badge, Button } from "frappe-ui";
@@ -40,6 +43,14 @@ const subtitle = computed(() => {
 	const parts = ["Month-end close", `${m.period.entities_in_close} entities in the close`];
 	if (m.period.closed_by) parts.push(`signed off by ${m.period.closed_by}`);
 	return parts.join(" · ");
+});
+
+const sections = computed(() => {
+	const m = month.value;
+	if (!m) return [];
+	const out = [{ id: "mine", title: "Needs you", count: needsYou.value, items: m.mine, empty: `Nothing needs you in ${m.period.label}.` }];
+	if (m.waiting.length) out.push({ id: "waiting", title: "Waiting on others", count: m.waiting.length, items: m.waiting });
+	return out;
 });
 
 function stageName(n) {
@@ -99,67 +110,45 @@ function openStage(stage) {
 
 			<div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
 				<div class="space-y-6">
-					<section>
+					<section v-for="sec in sections" :key="sec.id">
 						<h2 class="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-ink-gray-5">
-							Needs you
-							<span class="tnum rounded-full bg-surface-gray-2 px-2 text-xs text-ink-gray-6">{{ needsYou }}</span>
+							{{ sec.title }}
+							<span class="tnum rounded-full bg-surface-gray-2 px-2 text-xs text-ink-gray-6">{{ sec.count }}</span>
 						</h2>
-						<ul v-if="month.mine.length" class="divide-y divide-outline-gray-1 overflow-hidden rounded-lg border border-outline-gray-2">
-							<li v-for="item in month.mine" :key="item.id">
-								<div
-									role="button"
-									tabindex="0"
-									class="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"
-									:class="selected?.id === item.id ? 'bg-surface-gray-2' : 'hover:bg-surface-gray-1'"
+						<ul v-if="sec.items.length" class="divide-y divide-outline-gray-1 overflow-hidden rounded-lg border border-outline-gray-2">
+							<li
+								v-for="item in sec.items"
+								:key="item.id"
+								class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"
+								:class="selected?.id === item.id ? 'bg-surface-gray-2' : 'hover:bg-surface-gray-1'"
+							>
+								<button
+									type="button"
+									class="flex min-w-[12rem] flex-1 items-center gap-3 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-outline-gray-3"
+									:aria-pressed="selected?.id === item.id"
 									@click="selectedId = item.id"
-									@keydown.enter="selectedId = item.id"
 								>
 									<StatusBadge :state="item.state" />
-									<div class="min-w-[12rem] flex-1">
-										<div class="text-base font-medium text-ink-gray-9">{{ item.title }}</div>
-										<div class="text-sm text-ink-gray-5">{{ item.detail }}</div>
-									</div>
-									<span v-if="item.stage" class="text-xs text-ink-gray-5">Stage {{ item.stage }}</span>
-									<Button
-										v-if="item.action"
-										size="sm"
-										:variant="item.state === 'done' ? 'ghost' : 'subtle'"
-										:disabled="!item.action.allowed"
-										:title="item.action.allowed ? '' : item.action.reason"
-										@click.stop="act(item)"
-									>{{ item.action.label }}</Button>
-								</div>
+									<span class="min-w-0 flex-1">
+										<span class="block text-base font-medium text-ink-gray-9">{{ item.title }}</span>
+										<span class="block text-sm text-ink-gray-5">{{ item.detail }}</span>
+									</span>
+								</button>
+								<span v-if="sec.id === 'waiting' && item.who" class="text-sm text-ink-gray-5">{{ item.who }}</span>
+								<span v-else-if="item.stage" class="text-xs text-ink-gray-5">Stage {{ item.stage }}</span>
+								<Button
+									v-if="item.action && sec.id === 'mine'"
+									size="sm"
+									:variant="item.state === 'done' ? 'ghost' : 'subtle'"
+									:disabled="!item.action.allowed"
+									:title="item.action.allowed ? '' : item.action.reason"
+									@click="act(item)"
+								>{{ item.action.label }}</Button>
 							</li>
 						</ul>
 						<p v-else class="rounded-lg border border-dashed border-outline-gray-2 px-4 py-6 text-center text-base text-ink-gray-5">
-							Nothing needs you in {{ month.period.label }}.
+							{{ sec.empty }}
 						</p>
-					</section>
-
-					<section v-if="month.waiting.length">
-						<h2 class="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-ink-gray-5">
-							Waiting on others
-							<span class="tnum rounded-full bg-surface-gray-2 px-2 text-xs text-ink-gray-6">{{ month.waiting.length }}</span>
-						</h2>
-						<ul class="divide-y divide-outline-gray-1 overflow-hidden rounded-lg border border-outline-gray-2">
-							<li v-for="item in month.waiting" :key="item.id">
-								<div
-									role="button"
-									tabindex="0"
-									class="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"
-									:class="selected?.id === item.id ? 'bg-surface-gray-2' : 'hover:bg-surface-gray-1'"
-									@click="selectedId = item.id"
-									@keydown.enter="selectedId = item.id"
-								>
-									<StatusBadge :state="item.state" />
-									<div class="min-w-[12rem] flex-1">
-										<div class="text-base font-medium text-ink-gray-9">{{ item.title }}</div>
-										<div class="text-sm text-ink-gray-5">{{ item.detail }}</div>
-									</div>
-									<span v-if="item.who" class="text-sm text-ink-gray-5">{{ item.who }}</span>
-								</div>
-							</li>
-						</ul>
 					</section>
 				</div>
 
