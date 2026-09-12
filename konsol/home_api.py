@@ -251,9 +251,9 @@ def _queue(fy, p, ctx, stages, status, user):
     system = "System Manager" in roles
     label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
-    # Only block what the server refuses: Trial Balance Submission checks the
-    # period in validate. Adjustments, IC balances and allocation runs only
-    # gate cancel today, so offering them disabled would contradict the desk.
+    # Only block what the server refuses: the submit of the doctypes in
+    # M.SUBMIT_NEEDS_OPEN_PERIOD needs an open period (#149). Saving a draft
+    # or sending it for approval does not, so those stay offered.
     closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
@@ -269,14 +269,16 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"adj:{a.name}", "paused", f"Approve {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
                                   who=frappe.utils.get_fullname(a.owner),
-                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name)))
+                                  action=_action("Review", "Consolidation Adjustment", "submit", a.name,
+                                                 blocked=M.submit_blocked("Consolidation Adjustment", closed))))
         for o in ctx["ownership_drafts"]:
             mine.append(_item(f"own:{o.name}", "incomplete", "Approve ownership change", o.data_area_id or "",
                               stage=3, entity=o.data_area_id,
                               action=_action("Review", "Ownership Period", "submit", o.name)))
         for r in ctx["allocation_drafts"]:
             mine.append(_item(f"alloc:{r.name}", "incomplete", "Approve allocation run", r.name, stage=5,
-                              action=_action("Review", "Allocation Run", "submit", r.name)))
+                              action=_action("Review", "Allocation Run", "submit", r.name,
+                                             blocked=M.submit_blocked("Allocation Run", closed))))
         a = by_id["assertions"]
         if a["state"] == "error":
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
@@ -315,7 +317,8 @@ def _queue(fy, p, ctx, stages, status, user):
             if i.docstatus == 0:
                 mine.append(_item(f"ic:{i.name}", "incomplete", "Submit intercompany balance",
                                   f"{i.selling_entity} and {i.buying_entity}", stage=4,
-                                  action=_action("Open", "IC Balance", "submit", i.name)))
+                                  action=_action("Open", "IC Balance", "submit", i.name,
+                                                 blocked=M.submit_blocked("IC Balance", closed))))
 
     if lead or group:
         missing = by_id["trial_balances"].get("missing") or []
@@ -348,7 +351,7 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · draft, not submitted",
                                   stage=2, entity=e,
                                   action=_action("Submit", "Trial Balance Submission", "submit", draft.name,
-                                                 blocked=closed)))
+                                                 blocked=M.submit_blocked("Trial Balance Submission", closed))))
             elif period_open:
                 mine.append(_item(f"tb:{e}", "incomplete", f"Trial balance · {e}", f"{name} · not uploaded",
                                   stage=2, entity=e,

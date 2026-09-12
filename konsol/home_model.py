@@ -50,6 +50,20 @@ STAGE_OWNERS = {
     "signoff": ("EPM Admin",),
 }
 
+#: Doctypes whose submit the server refuses unless the period is open
+#: (period_status.assert_open: in before_submit, or in validate for a trial
+#: balance). The home disables their submit buttons in a closed period, so it
+#: never offers what the server refuses, and never blocks what it allows (#149).
+SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
+    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance", "Allocation Run"})
+
+
+def submit_blocked(doctype, closed_reason):
+    """Why submitting ``doctype`` would be refused now, or None.
+    ``closed_reason`` is None while the period is open."""
+    return closed_reason if doctype in SUBMIT_NEEDS_OPEN_PERIOD else None
+
+
 #: Most urgent first. A queue is sorted by this, then kept in insertion order.
 STATE_RANK = {"error": 0, "paused": 1, "incomplete": 2, "ready": 3, "running": 4,
               "idle": 5, "waiting": 6, "done": 7}

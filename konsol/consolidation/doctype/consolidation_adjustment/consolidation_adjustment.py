@@ -64,7 +64,12 @@ class ConsolidationAdjustment(Document):
     def before_submit(self):
         """Submit IS the approval (decided 12 Sep 2026). The old on_submit
         called self.save() on the submitted doc, an update-after-submit on a
-        field that isn't allow_on_submit, so every submit raised (#131)."""
+        field that isn't allow_on_submit, so every submit raised (#131).
+
+        Approve only while the period is open: a closed period takes no
+        further change, so a draft whose period closed while it waited for
+        review is corrected by a new adjustment in an open period (#149)."""
+        assert_open(self.fiscal_year, self.fiscal_period, action="approve a consolidation adjustment")
         if get_workflow_name(self.doctype):
             # apply_workflow sets the submitted state before it submits. A
             # direct submit would land a review state at docstatus 1.
