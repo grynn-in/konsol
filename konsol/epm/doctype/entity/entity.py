@@ -149,7 +149,9 @@ class Entity(NestedSet):
             deduplicate=True,
             doctype=self.doctype,
             name=self.name,
-            method=method,
+            # NOT `method=`: that is frappe.enqueue's own first parameter, and
+            # passing it again raised TypeError on every save (caught live).
+            trigger_method=method,
         )
 
     def _resync(self):

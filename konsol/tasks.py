@@ -338,14 +338,14 @@ def _set_duration(doc):
 # ---------------------------------------------------------------------------
 # Hook: trigger governed build after consolidation/allocation doc changes
 # ---------------------------------------------------------------------------
-def request_consolidation_build(doctype, name, method):
+def request_consolidation_build(doctype, name, trigger_method):
     """RQ job target for a build request raised after commit (Entity, #110).
 
     Runs on_consolidation_doc_update in the job's own transaction, so its Build
     Approval insert and commit never land inside the caller's document hooks.
     The trigger reads only doctype and name, so a deleted document's request
     still resolves."""
-    on_consolidation_doc_update(frappe._dict(doctype=doctype, name=name), method)
+    on_consolidation_doc_update(frappe._dict(doctype=doctype, name=name), trigger_method)
 
 
 def on_consolidation_doc_update(doc, method):

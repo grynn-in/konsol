@@ -270,6 +270,31 @@ def test_the_rebuild_request_is_a_job_queued_after_commit():
         assert flag in guard, f"a job enqueued during {flag} would run after it, unguarded"
 
 
+# frappe.enqueue's own parameters in Frappe v15 (frappe/utils/background_jobs.py).
+# A job kwarg with one of these names is taken by enqueue itself: `method=` raised
+# TypeError on every Entity save, and only a live run caught it.
+_ENQUEUE_PARAMS = {"method", "queue", "timeout", "event", "is_async", "job_name", "now",
+                   "enqueue_after_commit", "on_success", "on_failure", "at_front",
+                   "job_id", "deduplicate"}
+_ENQUEUE_OPTIONS = {"queue", "timeout", "enqueue_after_commit", "job_id", "deduplicate",
+                    "at_front", "job_name", "now", "is_async", "event", "on_success", "on_failure"}
+
+
+def test_job_kwargs_do_not_collide_with_enqueue_parameters():
+    """Every keyword passed to frappe.enqueue is either one of enqueue's options
+    or a job argument, and no job argument may reuse an enqueue parameter name.
+    The job target must accept exactly the job arguments."""
+    call = next(n for n in ast.walk(_method("_request_rebuild")) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr == "enqueue")
+    job_args = {k.arg for k in call.keywords} - _ENQUEUE_OPTIONS
+    assert not job_args & _ENQUEUE_PARAMS, f"collides with frappe.enqueue: {job_args & _ENQUEUE_PARAMS}"
+    with open(os.path.join(APP_DIR, "tasks.py")) as f:
+        target = next(n for n in ast.parse(f.read()).body if isinstance(n, ast.FunctionDef)
+                      and n.name == "request_consolidation_build")
+    assert {a.arg for a in target.args.args} == job_args, (
+        "the job target's parameters must match the job arguments passed")
+
+
 def test_entity_is_not_a_generic_trigger_doctype():
     """In _dbt_trigger_doctypes every Entity save — a new country, a typo in a
     name — would ask an EPM Admin to approve a consolidation rebuild."""
