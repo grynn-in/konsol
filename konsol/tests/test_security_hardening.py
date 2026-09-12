@@ -125,38 +125,36 @@ def test_endpoints_enforce_entity_access():
 
 
 def test_assert_entity_access_raises_permission_error_source():
-    # api._assert_entity_access must hand every entity to
-    # entity_permissions.assert_entity_access, which raises (behaviour pinned in
-    # test_entity_access_host.py). Parsed, not substring-matched: a commented-out
-    # call, an early return or a local stand-in fails this; a keyword argument
-    # or a module-qualified call does not.
+    # A tripwire, not a parser of intent: api._assert_entity_access must be
+    # exactly "import the shared check, call it with entity", defined once, with
+    # no decorator. Try/except, a second user argument, a blanked entity, a
+    # yield, a later redefinition all change this shape and fail here, so any
+    # change to the function forces a fresh security review. The check itself
+    # is exercised in test_entity_access_host.py.
     import ast
 
     tree = ast.parse(_api_src())
+
+    def binds(node, name):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return node.name == name
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return any((a.asname or a.name.split(".")[0]) == name for a in node.names)
+        targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+        return any(isinstance(t, ast.Name) and t.id == name for t in targets if t is not None)
+
+    assert sum(binds(n, "_assert_entity_access") for n in tree.body) == 1, \
+        "_assert_entity_access bound more than once in api.py"
     fn = next(n for n in tree.body
               if isinstance(n, ast.FunctionDef) and n.name == "_assert_entity_access")
-    nodes = list(ast.walk(fn))
-    assert not any(isinstance(n, ast.Return) for n in nodes), "early return"
-    assert not any(isinstance(n, ast.Assign) and any(
-        getattr(t, "id", None) == "assert_entity_access" for t in n.targets)
-        for n in nodes), "assert_entity_access rebound locally"
-
-    calls = [n for n in nodes if isinstance(n, ast.Call) and "assert_entity_access" in (
-        getattr(n.func, "id", None), getattr(n.func, "attr", None))]
-    assert calls, "no call to assert_entity_access"
-    call = calls[0]
-    assert (call.args and ast.unparse(call.args[0]) == "entity") or any(
-        k.arg == "code" and ast.unparse(k.value) == "entity" for k in call.keywords)
-
-    imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
-    if isinstance(call.func, ast.Name):
-        assert any(n.module == "konsol.entity_permissions"
-                   and any(a.name == "assert_entity_access" and not a.asname for a in n.names)
-                   for n in imports)
-    else:
-        assert ast.unparse(call.func.value) == "entity_permissions"
-        assert any(n.module == "konsol" and any(a.name == "entity_permissions" for a in n.names)
-                   for n in imports)
+    assert not fn.decorator_list
+    assert ast.unparse(fn.args) == "entity"
+    body = [n for n in fn.body
+            if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
+    assert [ast.unparse(n) for n in body] == [
+        "from konsol.entity_permissions import assert_entity_access",
+        "assert_entity_access(entity)",
+    ]
 
 
 # ---------------------------------------------------------------------------
