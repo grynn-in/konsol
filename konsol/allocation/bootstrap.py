@@ -24,14 +24,6 @@ RULE_STAGING_FIELD_MAP = {
     "driver_formula": "driver_formula",
 }
 
-LEGACY_DRIVER_TYPES = ["headcount", "revenue", "sqm"]
-LEGACY_DRIVER_COLUMNS = [
-    "data_area_id",
-    "cost_center",
-    "driver_value",
-    "fiscal_year",
-    "fiscal_period",
-]
 STAGING_DRIVER_COLUMNS = [
     "driver_type",
     "data_area_id",
@@ -67,17 +59,13 @@ def _sync_allocation_drivers():
     if not frappe.db.table_exists("Allocation Driver"):
         return
 
-    for dtype in LEGACY_DRIVER_TYPES:
-        table = f"epm_gold.allocation_drivers_{dtype}"
-        docs = frappe.get_all(
-            "Allocation Driver",
-            filters={"driver_type": dtype},
-            fields=LEGACY_DRIVER_COLUMNS,
-            limit_page_length=0,
-        )
-        rows = [[doc.get(column) for column in LEGACY_DRIVER_COLUMNS] for doc in docs]
-        sync_table(table, LEGACY_DRIVER_COLUMNS, rows)
-
+    # konsolidat#146: the per-driver-type epm_gold.allocation_drivers_{type}
+    # tables are gone. They were the same ClickHouse relations as the three
+    # deleted seeds, and every dbt reader moved to the single staging table
+    # below — which carries every type in one table with a driver_type column.
+    # Writing them here while ensure_reference_tables() DROPs them each
+    # reconcile would fail the INSERT on every sync and leave check_health()
+    # permanently degraded.
     docs = frappe.get_all(
         "Allocation Driver",
         fields=STAGING_DRIVER_COLUMNS,

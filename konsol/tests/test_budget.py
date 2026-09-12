@@ -135,25 +135,133 @@ def test_monthly_budget_table_is_created_by_something():
     assert '"epm_gold.budget_annual_input": (' in src
 
 
-def test_annual_budget_fixture_links_resolve():
-    """Fixture import sets ignore_links, so a fixture can reference a record
-    that does not exist and still load — and then nobody can create the same
-    row through the UI. The annual budget fixture is BUDGET_2025, which was not
-    in the Scenario fixture until this was caught.
+def test_annual_budget_shipped_links_all_resolve():
+    """EVERY Link field, not just the two I thought of.
+
+    Fixture and demo_data import both set ignore_links, so shipped rows can
+    reference records that do not exist and still load — then nobody can save
+    the row through the UI. Caught twice on this doctype: `BUDGET_2025` had no
+    Scenario, and `submitted_by: "admin"` had no User (and the field is
+    read_only, so a user could not even correct it). Enumerating the Link fields
+    from the doctype is what stops a third.
     """
     import json
     import os
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, "fixtures", "budget_annual_input.json")) as f:
+    with open(os.path.join(root, "demo_data", "budget_annual_input.json")) as f:
         rows = json.load(f)
-    with open(os.path.join(root, "fixtures", "scenario.json")) as f:
-        scenarios = {r["scenario_id"] for r in json.load(f)}
-    with open(os.path.join(root, "fixtures", "consolidation_group.json")) as f:
-        entities = {r["data_area_id"] for r in json.load(f) if r.get("data_area_id")}
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.json")) as f:
+        meta = json.load(f)
 
-    for row in rows:
-        assert row["scenario_id"] in scenarios, (
-            f"{row['scenario_id']} is a Link to Scenario with no fixture behind it")
-        assert row["data_area_id"] in entities, (
-            f"{row['data_area_id']} is a Link to Entity with no node behind it")
+    links = {f["fieldname"]: f["options"] for f in meta["fields"]
+             if f["fieldtype"] == "Link"}
+    assert links, "the doctype has no Link fields — did the types change?"
+
+    def shipped(doctype, key):
+        path = None
+        for folder in ("fixtures", "demo_data"):
+            candidate = os.path.join(root, folder, f"{doctype.lower().replace(' ', '_')}.json")
+            if os.path.exists(candidate):
+                path = candidate
+                break
+        if path is None:
+            return None  # Frappe core doctype (User) — cannot check from here
+        with open(path) as f:
+            return {r.get(key) or r.get("name") for r in json.load(f)}
+
+    known_core = {"User": {"Administrator", "Guest"}}
+    for fieldname, target in links.items():
+        values = {row[fieldname] for row in rows if row.get(fieldname)}
+        available = shipped(target, {"Scenario": "scenario_id",
+                                     "Entity": "data_area_id"}.get(target, "name"))
+        if available is None:
+            available = known_core.get(target)
+        if available is None:
+            continue
+        missing = values - available
+        assert not missing, (
+            f"{fieldname} -> {target}: {sorted(missing)} has nothing behind it; "
+            f"import ignores links but a desk save will not")
+
+
+def test_annual_budget_lock_holds_on_delete_too():
+    """after_delete republishes immediately, so a lock that only guards validate
+    could be walked around by deleting a row instead of editing one."""
+    import os
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
+        src = f.read()
+    for hook in ("def validate", "def on_trash", "def before_cancel"):
+        body = src.split(hook)[1].split("\n    def ")[0]
+        assert "_guard_cycle_locked" in body, hook
+
+
+def test_annual_budget_grain_is_unique():
+    """gold_spread_budget unions with no dedup, so two rows at one grain produce
+    two sets of twelve monthly rows and the budget doubles. autoname is `hash`,
+    so nothing enforces it structurally."""
+    import os
+
+    with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
+        src = f.read()
+    body = src.split("def _validate_unique_grain")[1].split("\n    def ")[0]
+    for field in ("scenario_id", "data_area_id", "fiscal_year", "main_account",
+                  "dim_cost_center", "dim_department"):
+        assert field in body, field
+    assert "frappe.throw" in body
+
+
+def test_annual_budget_is_seeded_not_fixtured():
+    """EPM Analyst can edit these. Everything in konsol/fixtures/ is
+    force-reimported on every migrate, so a fixture would revert an analyst's
+    revised figure — and the cycle-lock guard returns early under in_import, so
+    it would do it even for a Locked cycle."""
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert not os.path.exists(
+        os.path.join(root, "fixtures", "budget_annual_input.json"))
+    assert os.path.exists(
+        os.path.join(root, "demo_data", "budget_annual_input.json"))
+    with open(os.path.join(root, "install.py")) as f:
+        install = f.read()
+    after = install.split("def after_migrate")[1].split("\ndef ")[0]
+    calls = [l.strip() for l in after.splitlines()
+             if l.strip() and not l.strip().startswith("#")]
+    assert calls.index("_bootstrap_budget_annual_input()") < calls.index("_reconcile_clickhouse()")
+
+
+def test_budget_ddl_covers_every_in_budget_dimension():
+    """The budget dimension set is site-configurable; the DDL is not.
+
+    `budget_grain.budget_dimension_names()` derives the columns from Dimension
+    rows with in_budget=1, and both Budget Sheet's sync and dbt's
+    get_budget_dimensions() follow it — but the DDL for
+    epm_gold.budget_monthly_input / budget_annual_input names its dimension
+    columns literally. The shipped fixture has dim_business_unit at in_budget=0;
+    flip it to 1 and the INSERT names a column the table does not have.
+    sync_rows swallows the HTTPError and only logs, so the budget would silently
+    stop reaching the warehouse.
+
+    This test does not fix that — it makes the coupling fail loudly here instead
+    of silently in ClickHouse. Adding an in_budget dimension means altering both
+    tables (and konsolidat's init-db.sql) in the same change.
+    """
+    import json
+    import os
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "fixtures", "dimension.json")) as f:
+        in_budget = {d["dimension_name"] for d in json.load(f) if d.get("in_budget")}
+    with open(os.path.join(root, "clickhouse.py")) as f:
+        ch = f.read()
+
+    for table in ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input"):
+        block = ch.split(f'"{table}": (')[1].split("),")[0]
+        declared = set(re.findall(r"(dim_\w+) String", block))
+        assert declared == in_budget, (
+            f"{table} declares {sorted(declared)} but the shipped in_budget "
+            f"dimensions are {sorted(in_budget)} — add the column to both this "
+            f"DDL and konsolidat's init-db.sql")

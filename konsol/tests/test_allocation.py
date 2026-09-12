@@ -237,19 +237,49 @@ def test_allocation_driver_has_required_fields():
         assert f in fields, f"Missing field: {f}"
 
 
-def test_allocation_driver_splits_by_type():
-    """Must sync to separate CH tables per driver_type."""
+def test_allocation_driver_syncs_one_unified_table():
+    """konsolidat#146: the per-driver-type tables are gone.
+
+    The controller wrote `gold.allocation_drivers_{type}` and
+    allocation/bootstrap.py wrote the `epm_gold` spelling of the same three
+    names — which were the three deleted seeds' relations, and are now in
+    _RETIRED_TABLES, dropped on every reconcile. A writer and a drop list in
+    opposition would fail the INSERT on every sync and leave check_health()
+    permanently degraded.
+
+    Every dbt reader uses epm_staging.allocation_drivers, which carries all
+    types in one table with a driver_type column.
+    """
+    import ast as _ast
+
     content = _load_py("allocation_driver")
-    assert "allocation_drivers_headcount" in content or "allocation_drivers_{" in content
-    # Must filter by driver_type
+    assert "epm_staging.allocation_drivers" in content
     assert "driver_type" in content
+    # code only — the module docstring names the tables it removed
+    code = content
+    for node in _ast.walk(_ast.parse(content)):
+        if isinstance(node, _ast.Constant) and isinstance(node.value, str) and node.value:
+            code = code.replace(node.value, "")
+    assert "allocation_drivers_{" not in code
+    assert "allocation_drivers_headcount" not in code
 
 
 def test_allocation_driver_ch_sync_all_types():
-    """Must handle headcount, revenue, sqm types."""
+    """Every driver type reaches the warehouse.
+
+    It used to assert the three type names appeared in the controller source,
+    which was only true while the controller carried a hardcoded
+    LEGACY_DRIVER_TYPES list and a table per type. The unified staging table
+    carries them all with a driver_type column, so the thing to check is that
+    the column is synced and the doctype still offers the three types.
+    """
     content = _load_py("allocation_driver")
-    for dtype in ["headcount", "revenue", "sqm"]:
-        assert dtype in content
+    assert '"driver_type"' in content
+    meta = _load_json("allocation_driver")
+    options = next(f for f in meta["fields"]
+                   if f["fieldname"] == "driver_type")["options"].split("\n")
+    for dtype in ("headcount", "revenue", "sqm"):
+        assert dtype in options, dtype
 
 
 def test_allocation_driver_has_on_update():

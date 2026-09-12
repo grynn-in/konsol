@@ -33,6 +33,49 @@ class BudgetAnnualInput(Document):
     def validate(self):
         self._stamp_submitter()
         self._guard_cycle_locked()
+        self._validate_unique_grain()
+
+    def before_cancel(self):
+        self._guard_cycle_locked()
+
+    def on_trash(self):
+        """The lock has to hold on DELETE too, not just on edit.
+
+        after_delete republishes the table immediately, so without this a locked
+        cycle could still be changed by deleting a row instead of editing one —
+        the same hole through the budget lock, via the other verb. on_trash is
+        the right hook for a REFUSAL (it runs before the row is gone, so the
+        throw prevents the delete); the publish stays in after_delete.
+        """
+        self._guard_cycle_locked()
+
+    def _validate_unique_grain(self):
+        """One annual figure per (scenario, entity, year, account, dimensions).
+
+        gold_spread_budget inner-joins the profile and unions the result with no
+        dedup and no aggregation, so two rows at the same grain produce two sets
+        of twelve monthly rows and the budget silently doubles. The CSV this
+        replaced had implicit uniqueness; autoname is `hash`, so nothing here
+        does. Budget Sheet protects its own grain the same way, via digest_name.
+        """
+        grain = {
+            "scenario_id": self.scenario_id,
+            "data_area_id": self.data_area_id,
+            "fiscal_year": self.fiscal_year,
+            "main_account": self.main_account,
+            # blank Data fields really are '' here, not NULL — these are Data,
+            # not Link, so the F3 ["is", "not set"] trap does not apply
+            "dim_cost_center": self.dim_cost_center or "",
+            "dim_department": self.dim_department or "",
+            "name": ["!=", self.name],
+        }
+        dupe = frappe.db.exists("Budget Annual Input", grain)
+        if dupe:
+            frappe.throw(
+                f"An annual budget row already exists for {self.scenario_id} / "
+                f"{self.data_area_id} / {self.fiscal_year} / {self.main_account} "
+                f"({dupe}). Two rows at one grain double the spread budget."
+            )
 
     def _stamp_submitter(self):
         """submitted_by is an audit field, not free text."""

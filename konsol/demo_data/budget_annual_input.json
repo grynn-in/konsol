@@ -10,7 +10,7 @@
   "dim_department": "SALES",
   "annual_amount": 1200000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -23,7 +23,7 @@
   "dim_department": "MARKETING",
   "annual_amount": 600000.0,
   "spread_profile_id": "SEASONAL_RETAIL",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -36,7 +36,7 @@
   "dim_department": "IT",
   "annual_amount": 360000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -49,7 +49,7 @@
   "dim_department": "SALES",
   "annual_amount": 2400000.0,
   "spread_profile_id": "SEASONAL_RETAIL",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -62,7 +62,7 @@
   "dim_department": "MGMT",
   "annual_amount": 6000000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -75,7 +75,7 @@
   "dim_department": "MGMT",
   "annual_amount": 1500000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -88,7 +88,7 @@
   "dim_department": "SALES",
   "annual_amount": 9600000.0,
   "spread_profile_id": "SEASONAL_RETAIL",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -101,7 +101,7 @@
   "dim_department": "SALES",
   "annual_amount": 3840000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -114,7 +114,7 @@
   "dim_department": "SALES",
   "annual_amount": 2400000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -127,7 +127,7 @@
   "dim_department": "OPS",
   "annual_amount": 7200000.0,
   "spread_profile_id": "SEASONAL_RETAIL",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -140,7 +140,7 @@
   "dim_department": "OPS",
   "annual_amount": 2880000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  },
  {
   "doctype": "Budget Annual Input",
@@ -153,6 +153,6 @@
   "dim_department": "OPS",
   "annual_amount": 1800000.0,
   "spread_profile_id": "EVEN",
-  "submitted_by": "admin"
+  "submitted_by": "Administrator"
  }
 ]
