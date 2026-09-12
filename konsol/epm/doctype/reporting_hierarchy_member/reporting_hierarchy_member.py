@@ -25,7 +25,9 @@ class ReportingHierarchyMember(Document):
 
     def _validate_member_code(self):
         if self.is_group and not self.member_code:
-            self.member_code = frappe.scrub(self.member_label or "").upper()[:140]
+            if not self.member_label:
+                return  # Frappe's mandatory check reports the missing label
+            self.member_code = frappe.scrub(self.member_label).upper()[:140]
         if not self.member_code:
             frappe.throw(
                 "Set a Member Code for this group node." if self.is_group

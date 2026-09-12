@@ -180,6 +180,17 @@ silently finds nothing; this form works (tested):
 
     LC_ALL=C grep -rl $'\xef\xbb\xbf' konsol --include='*.py'
 
+## Hierarchy node resolution is strict (konsol #155, konsolidat #164)
+
+K.EPM's `node` with `hierarchy` left blank now resolves only when exactly one
+Published Reporting Hierarchy holds that code; several is `#VALUE!` naming
+them, none says so. It used to take the tree edited most recently, so a value
+could flip when someone edited another tree. `is_default` plays no part in
+formula resolution (it drives the unassigned-members check only). Group member
+codes are unique within a tree like leaf codes (the closure joins on code),
+and a named hierarchy is passed on in its stored spelling (ClickHouse is
+case-sensitive). Live site at merge: one tree (MGMT_DEMO), no shared codes.
+
 ## VBA Excel client retired (konsol #153, konsolidat #163)
 
 The user retired VBA: konsol's Office add-in (`konsol/public/excel-addin`,

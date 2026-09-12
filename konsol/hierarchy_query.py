@@ -113,12 +113,16 @@ def resolve_hierarchy_name(hierarchy_name, node_code):
 
     hierarchy_name = (hierarchy_name or "").strip()
     if hierarchy_name:
-        if not frappe.db.exists(
+        # MariaDB matches 'mgmt_2026' to MGMT_2026; ClickHouse would not, so
+        # pass the stored spelling on.
+        stored = frappe.db.get_value(
             "Reporting Hierarchy",
             {"hierarchy_name": hierarchy_name, "status": "Published"},
-        ):
+            "hierarchy_name",
+        )
+        if not stored:
             return None, f"Reporting Hierarchy '{hierarchy_name}' not found or not published"
-        return hierarchy_name, None
+        return stored, None
 
     holders = sorted(set(frappe.get_all(
         "Reporting Hierarchy Member",
