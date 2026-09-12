@@ -12,16 +12,19 @@ Flow (konsol-exec's upload page, or the Trial Balance Upload form):
   3. `run_load` (a background job, run as the user who asked) creates one
      ordinary Trial Balance Submission per ready entity-period and submits
      it. Each one commits on its own: its rows are in the warehouse once
-     submitted, so a later failure must not roll it back. Progress is
-     written to the upload as it goes.
-  4. A load that stopped (worker restart, timeout) or finished partly can be
-     resumed with `load` again: rows already loaded are carried forward and
-     never loaded twice.
+     submitted, so a later failure must not roll it back. Progress is saved
+     after every row. The job stops itself before the worker's hard time
+     limit, so it is never killed mid-row.
+  4. A load that stopped (worker restart, time limit) or finished partly can
+     be resumed with `load` again: rows already loaded are carried forward
+     and never loaded twice, and a warehouse claim left behind by a
+     submission that never committed is released first.
 
 Only the Close Lead (EPM Admin) or a System Manager may load. An upload is
 visible to a user only if they may see every entity in it (or uploaded it).
 """
 import json
+import time
 from io import BytesIO
 
 import frappe
@@ -40,6 +43,10 @@ from konsol.entity_permissions import allowed_entity_codes
 DOCTYPE = "Trial Balance Upload"
 TERMINAL = ("Loaded", "Partly Loaded", "Failed")
 JOB_PREFIX = "konsol-tb-upload::"
+JOB_TIMEOUT = 3600
+#: The job stops itself this long after starting, well inside JOB_TIMEOUT, so
+#: RQ never has to kill it between a row's warehouse claim and its commit.
+TIME_BUDGET_SECONDS = 3000
 
 
 def _job_id(name):
@@ -111,7 +118,7 @@ def _read_table(file_url):
     if name.endswith((".csv", ".txt")):
         # Excel's "CSV UTF-8" starts with a byte-order mark; File.get_content
         # may already have decoded it into a string, so strip it either way.
-        content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("\ufeff")
+        content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("﻿")
         return M.table_from_csv(content)
     frappe.throw("Upload a .csv or .xlsx file.")
 
@@ -138,22 +145,24 @@ def _check(table):
     existing = {}
     for r in frappe.get_all("Trial Balance Submission",
                             filters={"docstatus": 1, "data_area_id": ["in", entities]},
-                            fields=["name", "data_area_id", "fiscal_year", "fiscal_period"],
+                            fields=["name", "data_area_id", "fiscal_year", "fiscal_period", "tb_file"],
                             limit_page_length=0):
-        existing[(r.data_area_id, int(r.fiscal_year), int(r.fiscal_period))] = r.name
+        existing[(r.data_area_id, int(r.fiscal_year), int(r.fiscal_period))] = r
     chart = _chart_accounts()
-    report = [
-        M.check_group(key, rows, known_accounts=chart, visible=key[0] in visible, leaf=key[0] in leaf,
-                      period_status=statuses.get((key[1], key[2])), existing=existing.get(key),
-                      validate_rows=validate_tb_rows)
-        for key, rows in groups.items()
-    ]
+    report = []
+    for key, rows in groups.items():
+        found = existing.get(key)
+        item = M.check_group(key, rows, known_accounts=chart, visible=key[0] in visible, leaf=key[0] in leaf,
+                             period_status=statuses.get((key[1], key[2])),
+                             existing=found.name if found else None, validate_rows=validate_tb_rows)
+        item["existing_file"] = found.tb_file if found else None
+        report.append(item)
     return groups, report
 
 
 def _record_check(doc):
-    """Check the file and write the report onto the upload. Rows an earlier
-    run of this upload loaded are carried forward as loaded."""
+    """Check the file and write the report onto the upload. Rows this upload
+    loaded before are carried forward as loaded (see merge_loaded)."""
     previous = json.loads(doc.report or "[]")
     try:
         _, report = _check(_read_table(doc.upload_file))
@@ -161,7 +170,7 @@ def _record_check(doc):
         doc.status, doc.error, doc.report = "Failed", str(e), "[]"
         doc.group_count = doc.valid_count = doc.total_rows = doc.loaded_count = 0
     else:
-        report = M.merge_loaded(report, previous)
+        report = M.merge_loaded(report, previous, doc.name)
         doc.report = json.dumps(report)
         doc.group_count = len(report)
         doc.valid_count = sum(1 for r in report if r["ok"])
@@ -203,7 +212,8 @@ def load(name, skip_invalid=0):
 
     Also resumes an upload whose load stopped or finished partly. New
     problems found by the re-check come back as `refused` with the fresh
-    report (saved), so the page can show them and offer to skip them.
+    report (saved), so the page can show them and offer to skip them. A
+    refused resume keeps the upload's earlier outcome.
     """
     _require_loader()
     doc = frappe.get_doc(DOCTYPE, name)
@@ -212,20 +222,28 @@ def load(name, skip_invalid=0):
     if doc.status != "Checked" and not resumable:
         frappe.throw("This upload is still loading." if doc.status == "Loading"
                      else f"This upload is {doc.status.lower()}; there is nothing left to load.")
+    was = (doc.status, doc.failed_count, doc.error)
+
+    def refuse(reason):
+        if resumable:
+            doc.status, doc.failed_count, doc.error = was
+            doc.save()
+        return _payload(doc, refused=reason)
+
     _record_check(doc)
     if doc.status == "Failed":
-        return _payload(doc, refused="The file could not be read.")
+        return refuse(doc.error or "The file could not be read.")
     report = json.loads(doc.report or "[]")
     ready = sum(1 for r in report if r["ok"] and not r.get("loaded"))
     problems = sum(1 for r in report if not r["ok"])
     if not ready:
-        return _payload(doc, refused="Nothing in this file is left to load.")
+        return refuse("Nothing in this file is left to load.")
     if problems and not cint(skip_invalid):
-        return _payload(doc, refused=f"{problems} of {len(report)} entity-periods have problems now. "
-                                     f"Load only the {ready} that {'is' if ready == 1 else 'are'} ready, or fix the file.")
+        return refuse(f"{problems} of {len(report)} entity-periods have problems now. "
+                      f"Load only the {ready} that {'is' if ready == 1 else 'are'} ready, or fix the file.")
     doc.status = "Loading"
     doc.save()
-    frappe.enqueue("konsol.tb_bulk.run_load", queue="long", timeout=3600, job_id=_job_id(doc.name),
+    frappe.enqueue("konsol.tb_bulk.run_load", queue="long", timeout=JOB_TIMEOUT, job_id=_job_id(doc.name),
                    deduplicate=True, enqueue_after_commit=True, upload=doc.name)
     return _payload(doc)
 
@@ -244,6 +262,65 @@ def recent_uploads(limit=8):
                            order_by="creation desc", limit_page_length=min(cint(limit) or 8, 50))
 
 
+# ── the warehouse claim, kept honest ───────────────────────────────────────
+
+def _unclaim(batch_id):
+    try:
+        execute(f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id = '{_sql_str(batch_id)}' "
+                "SETTINGS mutations_sync = 1")
+    except Exception:
+        frappe.log_error(title=f"Could not remove the claim for trial balance batch {batch_id}")
+
+
+def _committed(batch_id):
+    """The submitted submission that owns batch_id, read past any snapshot."""
+    return frappe.db.get_value("Trial Balance Submission", {"batch_id": batch_id, "docstatus": 1}, "name",
+                               for_update=True)
+
+
+def _settle(batch_id):
+    """After a row failed with its batch possibly claimed: if its submission
+    committed anyway (the failure came after the commit, e.g. in an
+    after-commit callback), return its name and keep the claim; otherwise
+    remove the claim, so consolidation never counts rows without a
+    submission behind them."""
+    if not batch_id:
+        return None
+    name = _committed(batch_id)
+    if name:
+        return name
+    _unclaim(batch_id)
+    return None
+
+
+def _release_orphan_claims(report):
+    """Before a (re)load: release claims on this upload's entity-periods
+    whose submission never committed (a worker killed between claim and
+    commit). Each entity is locked first, so a submission for it that is
+    still in flight elsewhere finishes before we look."""
+    keys = sorted({(r["entity"], int(r["fiscal_year"]), int(r["fiscal_period"])) for r in report})
+    if not keys:
+        return 0
+    tuples = ", ".join(f"('{_sql_str(e)}', {y}, {p})" for e, y, p in keys)
+    try:
+        text = execute(f"SELECT batch_id, data_area_id FROM {CONTROL_TABLE} "
+                       f"WHERE (data_area_id, fiscal_year, fiscal_period) IN ({tuples})")
+    except Exception:
+        return 0   # no claims table yet: nothing can be orphaned
+    released = 0
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[0]:
+            continue
+        batch_id, entity = parts[0], parts[1]
+        frappe.db.sql("SELECT `name` FROM `tabEntity` WHERE `name` = %s FOR UPDATE", entity)
+        if not _committed(batch_id):
+            _unclaim(batch_id)
+            released += 1
+        frappe.db.commit()   # release the entity lock before the next one
+    return released
+
+
 # ── the load job ───────────────────────────────────────────────────────────
 
 def _save_progress(name, report, loaded, failed, status=None, error=None):
@@ -256,16 +333,21 @@ def _save_progress(name, report, loaded, failed, status=None, error=None):
     frappe.db.commit()
 
 
-def _unclaim(batch_id):
-    """A submission whose Frappe commit failed after on_submit claimed its
-    batch must not stay counted in the warehouse: remove the claim."""
-    if not batch_id:
-        return
-    try:
-        execute(f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id = '{_sql_str(batch_id)}' "
-                "SETTINGS mutations_sync = 1")
-    except Exception:
-        frappe.log_error(title=f"Could not remove the claim for trial balance batch {batch_id}")
+def _load_one(upload_name, key, rows):
+    """Insert and attach one entity-period's submission (not yet submitted)."""
+    file_doc = frappe.get_doc({
+        "doctype": "File", "is_private": 1,
+        "file_name": f"{upload_name}-{key[0]}-{key[1]}-P{key[2]:02d}.csv",
+        "content": M.group_csv(rows),
+    }).insert()
+    tbs = frappe.get_doc({"doctype": "Trial Balance Submission", "data_area_id": key[0],
+                          "fiscal_year": key[1], "fiscal_period": key[2],
+                          "tb_file": file_doc.file_url}).insert()
+    # Attach before submitting: on_submit lands and claims the rows, so
+    # nothing but the commit may follow it.
+    frappe.db.set_value("File", file_doc.name, {"attached_to_doctype": "Trial Balance Submission",
+                                                "attached_to_name": tbs.name}, update_modified=False)
+    return tbs
 
 
 def run_load(upload):
@@ -273,63 +355,72 @@ def run_load(upload):
 
     Runs as the user who asked (Frappe sets the job's user), so permissions
     and entity scope apply to every row. Each entity-period commits on its
-    own; a failure is recorded on that row and the rest carry on. A job
-    timeout is not one row's failure: it stops the load, which can then be
-    resumed.
+    own and progress is saved after each one; a failure is recorded on that
+    row and the rest carry on; a deadlock is retried once. The job stops
+    itself at TIME_BUDGET_SECONDS so it can be resumed cleanly.
     """
     from rq.timeouts import BaseTimeoutException
 
+    started = time.monotonic()
     doc = frappe.get_doc(DOCTYPE, upload)
     report = json.loads(doc.report or "[]")
     loaded = sum(1 for r in report if r.get("loaded"))
     failed = 0
     in_flight = None
     try:
+        _release_orphan_claims(report)
         groups = M.split_table(_read_table(doc.upload_file))
         ready = [r for r in report if r["ok"] and not r.get("loaded")]
         total = loaded + len(ready)
-        for i, item in enumerate(ready, start=1):
+        stopped = False
+        for item in ready:
+            if time.monotonic() - started > TIME_BUDGET_SECONDS:
+                stopped = True
+                break
             key = (item["entity"], int(item["fiscal_year"]), int(item["fiscal_period"]))
-            in_flight = None
-            try:
-                file_doc = frappe.get_doc({
-                    "doctype": "File", "is_private": 1,
-                    "file_name": f"{doc.name}-{key[0]}-{key[1]}-P{key[2]:02d}.csv",
-                    "content": M.group_csv(groups[key]),
-                }).insert()
-                tbs = frappe.get_doc({"doctype": "Trial Balance Submission", "data_area_id": key[0],
-                                      "fiscal_year": key[1], "fiscal_period": key[2],
-                                      "tb_file": file_doc.file_url}).insert()
-                # Attach before submitting: on_submit lands and claims the
-                # rows, so nothing but the commit may follow it.
-                frappe.db.set_value("File", file_doc.name,
-                                    {"attached_to_doctype": "Trial Balance Submission",
-                                     "attached_to_name": tbs.name}, update_modified=False)
-                in_flight = tbs.batch_id
-                tbs.submit()
-                frappe.db.commit()
+            for attempt in (1, 2):
                 in_flight = None
-                item["loaded"] = tbs.name
-                item.pop("load_error", None)
-                loaded += 1
-            except BaseTimeoutException:
-                raise
-            except Exception as e:
-                frappe.db.rollback()
-                _unclaim(in_flight)
-                in_flight = None
-                frappe.clear_messages()
-                item["load_error"] = strip_html(str(e)) or type(e).__name__
-                failed += 1
-            if i % 10 == 0:
-                _save_progress(doc.name, report, loaded, failed)
-        _save_progress(doc.name, report, loaded, failed, status=M.outcome(loaded, failed, total))
+                try:
+                    tbs = _load_one(doc.name, key, groups[key])
+                    in_flight = tbs.batch_id
+                    tbs.submit()
+                    frappe.db.commit()
+                    in_flight = None
+                    item["loaded"] = tbs.name
+                    item.pop("load_error", None)
+                    loaded += 1
+                    break
+                except BaseTimeoutException:
+                    raise
+                except Exception as e:
+                    frappe.db.rollback()
+                    frappe.clear_messages()
+                    committed = _settle(in_flight)
+                    in_flight = None
+                    if committed:
+                        item["loaded"] = committed
+                        item.pop("load_error", None)
+                        loaded += 1
+                        break
+                    if attempt == 1 and frappe.db.is_deadlocked(e):
+                        continue
+                    item["load_error"] = strip_html(str(e)) or type(e).__name__
+                    failed += 1
+                    break
+            _save_progress(doc.name, report, loaded, failed)
+        if stopped:
+            _save_progress(doc.name, report, loaded, failed, status="Partly Loaded" if loaded else "Failed",
+                           error="Stopped at the time limit; resume the load to finish it.")
+        else:
+            _save_progress(doc.name, report, loaded, failed, status=M.outcome(loaded, failed, total))
     except Exception as e:
         frappe.db.rollback()
-        _unclaim(in_flight)
+        # A row caught mid-flight keeps its claim only if it committed; the
+        # re-check on resume recognises it by its file either way.
+        _settle(in_flight)
         if not isinstance(e, BaseTimeoutException):
             frappe.log_error(title=f"Trial balance upload {doc.name} failed")
-        reason = ("The load ran out of time; resume it to load the rest." if isinstance(e, BaseTimeoutException)
+        reason = ("The load ran out of time; resume it to finish." if isinstance(e, BaseTimeoutException)
                   else strip_html(str(e)) or type(e).__name__)
         _save_progress(doc.name, report, loaded, failed, status="Partly Loaded" if loaded else "Failed",
                        error=reason)

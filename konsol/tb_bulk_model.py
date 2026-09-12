@@ -176,19 +176,32 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period_status, exis
     }
 
 
-def merge_loaded(report, previous):
-    """Carry forward rows an earlier run of this upload loaded.
+def merge_loaded(report, previous, upload_name=None):
+    """Carry forward rows this upload loaded before.
 
-    Re-checked, such a row is "already submitted" by that very submission:
-    it is done, not a problem, and must never be loaded again.
+    Re-checked, such a row is "already submitted" by its own submission: it
+    is done, not a problem, and must never be loaded again. It is recognised
+    by the name recorded in the previous report, or, when a load stopped
+    before recording it, by the submission's file, which this upload names
+    "<upload>-<entity>-<year>-P<period>.csv". A row this upload loaded that
+    has since been cancelled becomes a problem: resuming must not quietly
+    load old figures again.
     """
     loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p["loaded"]
               for p in previous or [] if p.get("loaded")}
+    prefix = f"{upload_name}-" if upload_name else None
     out = []
     for r in report:
-        name = loaded.get((r["entity"], r["fiscal_year"], r["fiscal_period"]))
-        if name and r.get("existing") == name:
-            r = {**r, "ok": True, "errors": [], "loaded": name}
+        before = loaded.get((r["entity"], r["fiscal_year"], r["fiscal_period"]))
+        existing = r.get("existing")
+        ours = bool(existing) and (existing == before or (
+            prefix and (r.get("existing_file") or "").rsplit("/", 1)[-1].startswith(prefix)))
+        if ours:
+            r = {**r, "ok": True, "errors": [], "loaded": existing}
+        elif before and not existing:
+            r = {**r, "ok": False,
+                 "errors": [f"Loaded earlier as {before}, which has since been cancelled. "
+                            "Upload the file again if it should be loaded anew."]}
         out.append(r)
     return out
 

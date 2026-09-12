@@ -136,3 +136,18 @@ def test_loaded_rows_are_carried_forward_and_never_loaded_again():
 
 def test_the_report_names_the_existing_submission():
     assert _check(existing="TBS-7")["existing"] == "TBS-7"
+
+
+def test_a_row_loaded_by_a_stopped_run_is_recognised_by_its_file():
+    fresh = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": False, "errors": ["already"],
+              "existing": "TBS-5", "existing_file": "/private/files/TBU-00009-AMDE-2025-P12.csv"}]
+    assert M.merge_loaded(fresh, [], "TBU-00009")[0]["loaded"] == "TBS-5"
+    # another upload's file is not ours
+    assert "loaded" not in M.merge_loaded(fresh, [], "TBU-00010")[0]
+
+
+def test_a_loaded_row_since_cancelled_is_a_problem_not_a_reload():
+    previous = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "loaded": "TBS-1"}]
+    fresh = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": True, "errors": [], "existing": None}]
+    out = M.merge_loaded(fresh, previous, "TBU-00001")[0]
+    assert not out["ok"] and "since been cancelled" in out["errors"][0] and "loaded" not in out

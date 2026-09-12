@@ -366,6 +366,13 @@ class TrialBalanceSubmission(Document):
             )
 
 
+def on_doctype_update():
+    """Index the one-live-submission check: it is a locking read on
+    (entity, year, period), and without an index InnoDB locks every row of
+    the table for it (#151 review). Runs on doctype sync and after migrate."""
+    frappe.db.add_index("Trial Balance Submission", ["data_area_id", "fiscal_year", "fiscal_period"])
+
+
 def reap_unclaimed_submissions():
     """Delete landed rows whose batch was never claimed (daily scheduler).
 
