@@ -85,6 +85,22 @@
     {
       "role": "Budget Controller",
       "read": 1
+    },
+    {
+      "role": "Budget Approver",
+      "read": 1,
+      "report": 1,
+      "print": 1,
+      "export": 1,
+      "email": 1
+    },
+    {
+      "role": "Entity Accountant",
+      "read": 1,
+      "report": 1,
+      "print": 1,
+      "export": 1,
+      "email": 1
     }
   ]
 }

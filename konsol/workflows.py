@@ -20,6 +20,64 @@ import frappe
 
 INSTALLED = ("Consolidation Adjustment",)
 
+#: The roles an earlier release shipped in each workflow. A site whose
+#: workflow still carries exactly these, on exactly our states and
+#: transitions, never customised it, so it takes the current definition's
+#: roles. Anything else is the site's own choice and is left alone.
+#: Consolidation Adjustment shipped as System Manager only until F7
+#: (12 Sep 2026), when drafting went to EPM Analyst and approval to EPM Admin.
+PREVIOUSLY_SHIPPED_ROLES = {
+    "Consolidation Adjustment": frozenset({"System Manager"}),
+}
+
+
+def planned_role_upgrade(states, transitions, definition, previous_roles):
+    """The role changes to make to an installed workflow, or None.
+
+    ``states`` is [(state, allow_edit)], ``transitions`` is
+    [(state, action, allowed)], both as installed. Pure, so it is testable
+    without a site.
+    """
+    if not previous_roles:
+        return None
+    installed_roles = {r for _, r in states} | {r for _, _, r in transitions}
+    if installed_roles != set(previous_roles):
+        return None
+    edit = {s["state"]: s["allow_edit"] for s in definition["states"]}
+    allowed = {(t["state"], t["action"]): t["allowed"] for t in definition["transitions"]}
+    if {s for s, _ in states} != set(edit) or {(s, a) for s, a, _ in transitions} != set(allowed):
+        return None
+    if all(edit[s] == r for s, r in states) and all(allowed[(s, a)] == r for s, a, r in transitions):
+        return None
+    return edit, allowed
+
+
+def _upgrade_roles(definition):
+    doctype = definition["document_type"]
+    name = frappe.db.get_value(
+        "Workflow",
+        {"document_type": doctype, "workflow_name": definition.get("workflow_name") or definition["name"]},
+        "name",
+    )
+    if not name:
+        return False
+    wf = frappe.get_doc("Workflow", name)
+    plan = planned_role_upgrade(
+        [(s.state, s.allow_edit) for s in wf.states],
+        [(t.state, t.action, t.allowed) for t in wf.transitions],
+        definition,
+        PREVIOUSLY_SHIPPED_ROLES.get(doctype),
+    )
+    if not plan:
+        return False
+    edit, allowed = plan
+    for s in wf.states:
+        s.allow_edit = edit[s.state]
+    for t in wf.transitions:
+        t.allowed = allowed[(t.state, t.action)]
+    wf.save(ignore_permissions=True)
+    return True
+
 
 def _definitions():
     root = frappe.get_app_path("konsol")
@@ -35,6 +93,8 @@ def install_workflows():
         if doctype not in INSTALLED or not frappe.db.exists("DocType", doctype):
             continue
         if frappe.db.exists("Workflow", {"document_type": doctype}):
+            if _upgrade_roles(wf):
+                installed.append(f"{wf['workflow_name']} (roles upgraded)")
             continue
         for state in wf["states"]:
             if not frappe.db.exists("Workflow State", state["state"]):

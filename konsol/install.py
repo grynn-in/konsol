@@ -35,7 +35,7 @@ def after_migrate():
     crosswalk seed reflects fixture-loaded Dimension Mapping docs, allocation
     config is synced to ClickHouse, and the Konsolidat desk workspace is present."""
     _restore_asset_manifest()
-    _create_roles()
+    create_roles()
     # F3: the three seed regenerators are gone — Dimension Mapping, Cash Flow
     # Category and Reporting Hierarchy write through to epm_staging like every
     # other governed table, and _reconcile_clickhouse() below re-syncs them
@@ -173,14 +173,30 @@ def _reconcile_clickhouse():
         frappe.logger().warning("ClickHouse reconcile skipped after migrate", exc_info=True)
 
 
-def _create_roles():
-    """Create EPM User, EPM Analyst, EPM Admin roles if they don't exist."""
-    roles = {
-        "EPM User": "Can save docs that trigger builds, read-only on build requests",
-        "EPM Analyst": "Can create manual build requests, view build history",
-        "EPM Admin": "Can approve high-risk builds, full pipeline access",
-    }
-    for role_name, desc in roles.items():
+#: Every role konsol's permissions, workflows and budget layers name (F7,
+#: 12 Sep 2026). The screen shows job titles; these names are what the code
+#: checks. test_role_access asserts nothing the app names is missing here.
+ROLES = {
+    "EPM User": "Viewer: reads periods, reports and close status for their entities",
+    "EPM Analyst": "Group Accountant: drafts adjustments, rates, ownership, intercompany and allocations; requests builds",
+    "EPM Admin": "Close Lead: runs the close, approves builds and adjustments, signs off periods",
+    "Entity Accountant": "Uploads and submits trial balances and fills in the base budget, for their own entities only",
+    "Budget Submitter": "Base budget layer (kept as an alias; Entity Accountant is the new name)",
+    "Budget Controller": "Challenge budget layer",
+    "Budget Manager": "Management budget layer; locks the budget cycle",
+    "Budget Approver": "Board budget layer",
+}
+
+
+def create_roles():
+    """Create every role in ROLES that doesn't exist yet.
+
+    Runs from after_install and after_migrate. Frappe also creates a role the
+    first time a doctype's permission rows name it, but only as a bare name;
+    this gives each one its description and desk access, and does not depend
+    on which doctype happened to import first.
+    """
+    for role_name, desc in ROLES.items():
         if not frappe.db.exists("Role", role_name):
             role = frappe.new_doc("Role")
             role.role_name = role_name

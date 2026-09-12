@@ -291,13 +291,14 @@ def test_airbyte_webhook_updates_settings():
 # ===================================================================
 
 def test_install_has_create_roles():
-    """install.py must define _create_roles function."""
+    """install.py must define create_roles (after_install and after_migrate call it)."""
     funcs = _func_names(_parse(INSTALL_PATH))
-    assert "_create_roles" in funcs
+    assert "create_roles" in funcs
 
 
 def test_install_creates_epm_roles():
-    """_create_roles must create EPM User, EPM Analyst, EPM Admin."""
+    """create_roles must create EPM User, EPM Analyst, EPM Admin (the full
+    list is pinned by test_role_access)."""
     content = _read(INSTALL_PATH)
     for role in ("EPM User", "EPM Analyst", "EPM Admin"):
         assert role in content, f"Missing role: {role}"

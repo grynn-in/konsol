@@ -66,6 +66,35 @@
    "write": 1,
    "create": 1,
    "delete": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
   }
  ]
 }

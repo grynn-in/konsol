@@ -24,6 +24,13 @@ LAYER_ROLES = {
     "board": "Budget Approver",
 }
 
+# Roles that may stand in for a layer's owner. Entity Accountant is the new
+# name for the person who fills in the base layer (12 Sep 2026); Budget
+# Submitter stays so existing users keep working.
+LAYER_ROLE_ALIASES = {
+    "Budget Submitter": ("Entity Accountant",),
+}
+
 CLICKHOUSE_TABLE = "epm_gold.budget_monthly_input"
 
 
@@ -73,7 +80,10 @@ class BudgetSheet(Document):
             return
         # normalize so a mis-cased layer ('Base') can't slip past the role gate.
         required_role = LAYER_ROLES.get(normalize_layer(self.layer))
-        if required_role and required_role not in user_roles:
+        if not required_role:
+            return
+        accepted = {required_role, *LAYER_ROLE_ALIASES.get(required_role, ())}
+        if not accepted & set(user_roles):
             frappe.throw(
                 f"You need the '{required_role}' role to edit the "
                 f"'{self.layer}' budget layer.",
