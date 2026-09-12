@@ -92,8 +92,12 @@ scheduler_events = {
         # dead worker) so the single-flight guard can't wedge permanently (#67).
         # Runs every 15 minutes; the staleness timeout itself is generous
         # (STALE_RUN_TIMEOUT_MINUTES) so a long dbt step is never falsely reaped.
+        # Also release Build Approvals stuck Approved (job lost) or Running
+        # (worker died): the build debounce counts both as in flight, so one
+        # stuck row blocks every auto-build for its scope (#125).
         "*/15 * * * *": [
-            "konsol.orchestrator.reaper.reap_stale_runs"
+            "konsol.orchestrator.reaper.reap_stale_runs",
+            "konsol.orchestrator.reaper.reap_stale_build_approvals",
         ],
     }
 }
