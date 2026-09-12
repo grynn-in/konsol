@@ -1,6 +1,6 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night. Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night and on 13 September. Everything below was verified against the running stack._
 
 ## Pick up here
 
@@ -91,7 +91,7 @@ sales, operating income and NI per year match the 10-K within a tolerance. This
 session's big lesson is that "unchanged from before" is not "correct"; the
 anchors are the oracle this project never had.
 
-## State at end of 12 Sep (night) — merged, open, next
+## State on 13 Sep — merged, open, next
 
 **User rules (12 Sep):** remove the demo; fill with Ecolab data when Grok's
 corrected workbook is ready; until then keep fixing bugs and merging. **Test
@@ -107,6 +107,11 @@ containers and run scripts or dbt from a copy.
 | konsol **#133** + konsol-cli **#5** | #130: a governed build request commits with its caller. The 14 `cli_api` writes are POST-only (the CLI/MCP POST them). Both debounces take one global lock (the `tabDocType` 'Build Approval' row), then a locking read of `tabBuild Approval` (indexed on `build_scope`) | merged `b5e0786` / `01721c0` |
 | konsol **#134** / konsolidat **#159** | #131: Consolidation Adjustment follows the conventions below. The workflow is installed by `konsol/workflows.py`; `approve_adjustment` / `reverse_adjustment` go through `apply_workflow`; amend works (`amended_from` added) | merged `530fe16` / `9911947` |
 | konsol **#137** | #125: a Build Approval reaper (30 min; spares a job still in RQ; releases the governed Pipeline Run); `run_governed_build` builds only an Approved row; the build job is named and deduplicated | merged `951b0b8` |
+| konsol **#139** | #129: a change made while a build runs gets one more build (`rebuild_requested` on the Running approval, re-read under lock at the finish; the reaper follows up a flagged dead build) | merged `859be1f` |
+| konsol **#141** | #124: every write-through sync runs after the commit, once per transaction (`clickhouse.after_commit_once`); deletes from `after_delete`; nothing queued during install/import/migrate; a failed sync is logged, never raised | merged `8534c52` |
+| konsolidat **#160** | #153: the consolidation report reads ownership from `gold_entity_ownership` | merged `d96c08a` |
+| konsolidat **#162** | #154: the four consolidation models delete their scope (pre_hook + append; `gold_fully_consolidated_tb` is a table), so a key that left the SELECT leaves the table. Accepted: a failed run leaves its slice empty until the next run | merged `9e263a3` |
+| konsol **#143** | #136: cancel only while the period is open (IC Balance, Allocation Run, Historical Equity Rate, Ownership Period; `period_status.assert_open_on` for dates); Budget Cycle locks in `before_submit` and pushes after the commit | open at writing |
 
 **Conventions for submittable and workflow doctypes (decided 12 Sep):**
 1. **Submit is the approval.** Review states are docstatus 0; Approve = submit; nothing changes after submit.
@@ -117,11 +122,10 @@ containers and run scripts or dbt from a copy.
 `test_workflow_convention.py` enforces what it can. #136 lists the five doctypes that still break these.
 
 **Next bugs:**
-- konsol **#129** (the debounce absorbs requests during a Running build)
-- **#124** (in-transaction write-throughs)
-- **#136** (five doctypes against the conventions)
-- **#135** (a budget-dimension publish commits mid-transaction: Custom Field → `updatedb` commits)
-- konsolidat **#154**, **#153**
+- konsol **#135** (a budget-dimension publish commits mid-transaction: Custom Field → `updatedb` commits)
+- konsol **#140** (a build that fails to start loses the changes absorbed while Approved; don't re-request blindly, it can loop)
+- konsol **#142** (a fresh site's staging stays empty until the first `bench migrate`)
+- konsolidat **#161** (the report's entity columns ignore the ownership window)
 
 **Open questions for the user:**
 - Delete `scripts/generate_demo_data.py`?
@@ -133,12 +137,18 @@ containers and run scripts or dbt from a copy.
 - The host runner **silently skips** a test file whose imports fail, and any `from konsol… import` needs frappe. Load the module by path, or exec the controller against a stub frappe (`test_consolidation_adjustment_lifecycle.py`). Check that a new test file is counted.
 - `validate_workflow` never checks a state's docstatus, and a direct `submit()` under a workflow isn't a transition. Guard both in the controller.
 - A `docker cp`'d dir must be `chown`ed to frappe, or dbt exits 2 silently. Grep for `OK created`, not just PASS/FAIL.
+- `frappe.db.after_commit` callbacks run after the last commit: one that raises breaks a committed request, and anything they write is never committed. Log with `log_error(..., defer_insert=True)`, and check the install/migrate flags when queuing, not when running.
+- A contract test over controllers must merge inherited methods (Reporting Hierarchy inherits `on_update` and overrides the `_resync` it calls). Mutation-check a new test against the pre-fix code.
+- dbt `delete+insert` never removes a key that left the SELECT. Replacing a slice means deleting the slice itself (#154).
 
 ## Found this session (all filed)
 
 | issue | what |
 |---|---|
 | konsolidat **#155** | **P0.** Every GL credit is booked as a debit. `4caf9aa` (#118, 29 Jun) dropped `IsCredit` from `stg_d365_fo__gl_entries`; the raw data carries the sign **only** there (927/927 vouchers balance with the flag, 0/927 as signed). This is baseline error `assert_silver_gl_debit_credit_balance`, **not** a "demo-data tension". Budgets lose their sign in the generator itself. |
+| konsol **#140** | A build that fails to start loses the changes it absorbed while Approved |
+| konsol **#142** | A fresh site's warehouse staging stays empty until the first `bench migrate` |
+| konsolidat **#161** | The consolidation report's entity columns include periods outside the ownership window |
 | konsol **#135** | A budget-dimension publish commits mid-transaction: `apply_schema`'s Budget Line Custom Field sync commits through `frappe.db.updatedb` |
 | konsol **#136** | Five more submittable doctypes break the conventions (sync in the transaction, `db_set` after submit, no period gate) |
 | konsol **#124** | 32 write-through hook syncs across 14 controllers run *before* commit, so a rollback leaves a ghost row in ClickHouse. Entity is fixed in #123. |
@@ -180,13 +190,14 @@ measures. `countIf(period_credit > 0) = 0` would have exposed #155 weeks ago.
 
 Capture deploy's own exit code; a trailing `echo` reports 0 even on failure.
 
-**Local stack right now:** konsol `main` (through #137) hot-copied into
-backend and worker. The Consolidation Adjustment workflow is
+**Local stack right now:** konsol `main` (through #141) hot-copied into
+backend and worker, plus #143's controllers (unmerged). The dbt project is
+bind-mounted from the konsolidat checkout at `9e263a3`, so the next build uses
+#162's models. The Consolidation Adjustment workflow is
 installed on konsolidat.local. The AMIT and ZZ test data are gone. Nothing was
 redeployed.
 
-Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **846/846
-across 77 files** on main; `cd konsol-exec && node --test src/*.test.mjs
+Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **875/875 passed across 80 files** on main; `cd konsol-exec && node --test src/*.test.mjs
 src/orchestrator/*.test.mjs` → 34/34.
 
 Drive the live stack without a deploy by `docker cp` into
