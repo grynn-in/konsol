@@ -277,14 +277,14 @@ def test_doctype_json_is_marked_modified_after_the_link_change():
     assert _meta()["modified"] >= "2026-09-12"
 
 
-def test_the_build_request_debounce_is_serialised_per_scope():
+def test_the_build_request_debounce_is_serialised():
     """Check-then-insert with no lock let two concurrent requests both insert
     a Build Approval. Measured live before the fix: two simultaneous requests
-    made two approvals. The Build Scope row lock must come before the pending
+    made two approvals. The build lock must come before the pending
     check, or it serialises nothing."""
     with open(os.path.join(APP_DIR, "tasks.py")) as f:
         src = f.read()
     body = src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0]
-    lock = body.index("FOR UPDATE")
-    check = body.index('"Build Approval",')
-    assert "tabBuild Scope" in body[:check] and lock < check
+    build_lock = body.index("lock_build_requests()")
+    check = body.index("FROM `tabBuild Approval`")
+    assert build_lock < check and "FOR UPDATE" in body[check:check + 300]

@@ -33,6 +33,16 @@ def apply_and_rebuild(doc, action):
     a build for this scope is already pending).
     """
     from konsol.schema_apply import apply_schema
+
+    # The DDL first, then the build request, so the request's row locks are
+    # held only briefly at the end of the transaction and never across
+    # ClickHouse ALTERs (#133 re-review). apply_schema() collects its step
+    # errors instead of raising, so a failed DDL does not stop the request.
+    # The trade-off: if the request then fails (a lock-wait timeout, say), the
+    # ClickHouse DDL stays applied; it only adds tables and columns, so
+    # re-publishing recovers. Nor is this atomic for a budget dimension:
+    # apply_schema()'s Budget Line Custom Field sync commits through
+    # frappe.db.updatedb, so the publish is already committed here (konsol#135).
     apply_schema()
     return _request_governed_build(doc, action)
 
@@ -55,15 +65,27 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     it so publishing several config docs in a row coalesces into one rebuild.
     The PBR's own workflow handles risk → approval → preflight → governed build.
     """
-    existing = frappe.get_all(
-        "Build Approval",
-        filters={"build_scope": scope, "workflow_state": ["in", _PENDING_STATES]},
-        limit=1,
+    # Serialise every build request (konsol.build_lock): the debounce below is
+    # check-then-insert, and two requests at once both found nothing pending.
+    from konsol.build_lock import lock_build_requests
+
+    lock_build_requests()
+    # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
+    # the transaction's first read, taken before the build lock above: a
+    # request that waited on the lock would not see the approval the holder had
+    # just committed, and would insert a duplicate (#133 review). FOR UPDATE
+    # reads the latest committed rows.
+    existing = frappe.db.sql(
+        """SELECT name FROM `tabBuild Approval`
+           WHERE build_scope = %(scope)s AND workflow_state IN %(states)s
+           LIMIT 1 FOR UPDATE""",
+        {"scope": scope, "states": tuple(_PENDING_STATES)},
+        as_dict=True,
     )
     if existing:
         frappe.msgprint(
             f"A '{scope}' build is already pending ({existing[0].name}); "
-            f"schema applied — no duplicate build requested."
+            f"no duplicate build requested."
         )
         return existing[0].name
 
@@ -73,11 +95,17 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     pbr.trigger_doctype = doc.doctype
     pbr.trigger_docname = doc.name
     pbr.requested_by = frappe.session.user
+    # No commit (konsol#130). The approval commits or rolls back WITH the
+    # caller's transaction. Committing here made AllocationRun.before_submit,
+    # every publish, and GovernedReferenceDocument.after_delete non-atomic: a
+    # submit that failed after this point left an orphaned approval for a run
+    # that never existed. The commit used to be needed so the build job could
+    # see the row; since #128, BuildApproval._enqueue_build enqueues only
+    # after the commit, so it can.
     pbr.insert(ignore_permissions=True)
-    frappe.db.commit()
 
     frappe.msgprint(
-        f"Schema applied. Build request {pbr.name} created (scope={scope}). "
+        f"Build request {pbr.name} created (scope={scope}). "
         f"High-risk builds require EPM Admin approval before running."
     )
     return pbr.name

@@ -418,20 +418,28 @@ def on_consolidation_doc_update(doc, method):
 
     scope = mapping["scope"]
 
-    # Serialise requests for one scope. The debounce below is check-then-insert:
-    # two workers running this at once both found nothing pending and both
-    # inserted a Build Approval (#110 re-review; per-entity jobs on several
-    # workers made it likely). The row lock is held until the commit below.
-    frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
+    # Serialise every build request (konsol.build_lock). The debounce below is
+    # check-then-insert: two workers running this at once both found nothing
+    # pending and both inserted a Build Approval (#110 re-review; per-entity
+    # jobs on several workers made it likely). The lock is held until the
+    # commit below.
+    from konsol.build_lock import lock_build_requests
+
+    lock_build_requests()
 
     # Debounce: skip if a non-terminal PBR already exists for this scope
-    existing = frappe.get_all(
-        "Build Approval",
-        filters={
-            "build_scope": scope,
-            "workflow_state": ["in", ["Draft", "Pending Review", "Approved", "Running"]],
-        },
-        limit=1,
+    # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
+    # the transaction's first read, taken before the build lock above: a
+    # request that waited on the lock would not see the approval the holder had
+    # just committed, and would insert a duplicate (#133 review). FOR UPDATE
+    # reads the latest committed rows.
+    existing = frappe.db.sql(
+        """SELECT name FROM `tabBuild Approval`
+           WHERE build_scope = %s
+             AND workflow_state IN ('Draft', 'Pending Review', 'Approved', 'Running')
+           LIMIT 1 FOR UPDATE""",
+        scope,
+        as_dict=True,
     )
     if existing:
         frappe.logger().info(

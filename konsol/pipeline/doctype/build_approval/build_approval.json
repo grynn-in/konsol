@@ -16,6 +16,7 @@
     },
     {
       "fieldname": "build_scope",
+      "search_index": 1,
       "fieldtype": "Select",
       "label": "Build Scope",
       "options": "staging\nactuals\nscenarios\nconsolidation\nreporting\nfull",
@@ -194,5 +195,6 @@
       "role": "EPM User",
       "read": 1
     }
-  ]
+  ],
+ "modified": "2026-09-12 13:00:00.000000"
 }

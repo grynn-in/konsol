@@ -145,3 +145,128 @@ def test_the_approved_build_is_enqueued_after_commit():
     call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "enqueue")
     kw = {k.arg: k.value for k in call.keywords}
     assert "enqueue_after_commit" in kw and ast.literal_eval(kw["enqueue_after_commit"]) is True
+
+
+def _creates_build_approval(call):
+    """new_doc("Build Approval") or get_doc({"doctype": "Build Approval", ...}).
+    Loading one by name (run_governed_build, inside its build job) is not
+    creating one."""
+    name = getattr(call.func, "attr", None) or getattr(call.func, "id", None)
+    if name == "new_doc" and call.args and isinstance(call.args[0], ast.Constant):
+        return call.args[0].value == "Build Approval"
+    if name == "get_doc" and call.args and isinstance(call.args[0], ast.Dict):
+        return any(isinstance(k, ast.Constant) and k.value == "doctype"
+                   and isinstance(v, ast.Constant) and v.value == "Build Approval"
+                   for k, v in zip(call.args[0].keys, call.args[0].values))
+    return False
+
+
+def test_no_build_request_commits_inside_its_callers_transaction():
+    """Every function that creates a Build Approval, enumerated across the app,
+    must leave the commit to its caller. Only on_consolidation_doc_update may
+    commit, because it runs inside its own job (#126). _request_governed_build
+    committed from AllocationRun.before_submit, publish and after_delete, and
+    a failed submit left an orphaned approval (#130)."""
+    offenders = []
+    for root, _, files in os.walk(APP_DIR):
+        if "/tests" in root:
+            continue
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(root, fn)
+            with open(path) as f:
+                tree = ast.parse(f.read())
+            for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+                # Exempt, with reason: on_consolidation_doc_update runs inside its
+                # own job (#126); a @frappe.whitelist() endpoint (control_api's
+                # start_process) is a top-level request with no caller transaction.
+                if func.name == "on_consolidation_doc_update" or any(
+                        "whitelist" in ast.unparse(d) for d in func.decorator_list):
+                    continue
+                creates = any(_creates_build_approval(c) for c in ast.walk(func) if isinstance(c, ast.Call))
+                commits = any(isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "commit"
+                              for c in ast.walk(func))
+                if creates and commits:
+                    offenders.append(f"{os.path.relpath(path, APP_DIR)}:{func.name}")
+    assert not offenders, offenders
+
+
+def test_the_governed_build_debounce_is_serialised():
+    path = os.path.join(APP_DIR, "schema_lifecycle.py")
+    with open(path) as f:
+        src = f.read()
+    body = src.split("def _request_governed_build")[1].split("\ndef ")[0]
+    _assert_locked_debounce(body)
+
+
+def _assert_locked_debounce(body):
+    """The build lock comes first, and the pending-approval check is ITSELF a
+    locking read. A plain read after the lock still sees the old snapshot
+    under REPEATABLE READ (#133 review)."""
+    build_lock = body.index("lock_build_requests()")
+    check = body.index("FROM `tabBuild Approval`")
+    assert build_lock < check
+    assert "FOR UPDATE" in body[check:check + 300], "the pending-approval read must lock"
+
+
+def test_both_build_debounces_use_a_locking_read():
+    with open(TASKS) as f:
+        src = f.read()
+    _assert_locked_debounce(src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0])
+
+
+def test_the_publish_build_is_requested_after_the_ddl():
+    """Its row locks must not be held across ClickHouse ALTERs (#133 re-review)."""
+    with open(os.path.join(APP_DIR, "schema_lifecycle.py")) as f:
+        body = f.read().split("def apply_and_rebuild")[1].split("\ndef ")[0]
+    code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
+    assert code.index("apply_schema()") < code.index("_request_governed_build(")
+
+
+def test_the_debounce_column_is_indexed_on_fresh_and_existing_sites():
+    """Unindexed, FOR UPDATE scanned and locked every Build Approval row. The
+    DocType covers fresh installs (patches never run there); the patch covers
+    existing sites."""
+    import json
+    meta = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.json")
+    field = next(f for f in json.load(open(meta))["fields"] if f["fieldname"] == "build_scope")
+    assert field.get("search_index") == 1
+    with open(os.path.join(APP_DIR, "patches.txt")) as f:
+        assert "konsol.patches.add_build_approval_scope_index" in f.read()
+
+
+def test_every_cli_write_endpoint_is_post_only():
+    """Enumerated from cli_api.py. A GET request is rolled back at the end, so
+    a write over GET silently vanished. Only the named read endpoints may take
+    GET; every new endpoint is POST-only until added to that list."""
+    with open(os.path.join(APP_DIR, "cli_api.py")) as f:
+        tree = ast.parse(f.read())
+    # Explicit, not by prefix: a future write named get_... must not slip through.
+    reads = {"list_dimensions_api", "get_dimension_api", "list_measures_api", "get_measure_api",
+             "get_schema_status_api", "list_fact_tables_api", "get_fact_table_api",
+             "list_connectors_api", "get_connector_api", "test_connector_extract_api",
+             "test_connector_writeback_api", "list_erp_sources_api", "export_config_api",
+             "diff_config_api"}
+    offenders = []
+    for fn in [n for n in tree.body if isinstance(n, ast.FunctionDef)]:
+        deco = [ast.unparse(d) for d in fn.decorator_list if "whitelist" in ast.unparse(d)]
+        if not deco or fn.name in reads:
+            continue
+        if deco[0] != "frappe.whitelist(methods=['POST'])":
+            offenders.append(f"{fn.name}: {deco[0]}")
+    assert not offenders, offenders
+
+
+def test_the_build_lock_is_one_row_that_always_exists():
+    """Per scope, "full" (which may not have a Build Scope row) locked only a
+    gap, and two full requests deadlocked (1213, live). Every Build Scope row
+    in name order could deadlock with the migrate's fixture re-import, which
+    rewrites them in file order (#133 re-review). One row that always exists
+    has neither problem."""
+    with open(os.path.join(APP_DIR, "build_lock.py")) as f:
+        src = f.read()
+    sql = src.split("frappe.db.sql(")[1].split(")")[0]
+    assert "FROM `tabDocType` WHERE name = 'Build Approval'" in sql and "FOR UPDATE" in sql
+    assert "Build Scope`" not in sql
+
