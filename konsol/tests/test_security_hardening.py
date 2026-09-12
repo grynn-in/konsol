@@ -11,12 +11,18 @@ ClickHouse, and (deliberately) no monkeypatching. The security *policy* lives
 in side-effect-free helpers that take plain arguments, so it can be asserted
 directly; the thin Frappe wiring around it is checked by source inspection,
 matching the style used elsewhere in this test suite.
+
+The source-only entity-access checks (every ClickHouse reader calls the
+entity helper, and the two tripwires) live in test_security_source.py, which
+needs no frappe, so CI runs them. This file keeps the live check that needs
+the real konsol.api.
 """
 import ast
 import os
 
 from konsol import api
 from konsol import clickhouse
+from konsol.tests.test_security_source import _GATE, _GATE_WHY
 
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,70 +119,6 @@ def test_empty_allow_list_when_perms_configured_but_none_granted():
     # Configured doctype but no grants → user sees no entities (deny-by-default).
     allowed = api._resolve_allowed_entities("alice", ["EPM User"], "Legal Entity", {})
     assert allowed == set()
-
-
-def test_endpoints_enforce_entity_access():
-    src = _api_src()
-    # Single-value endpoint asserts access for its entity.
-    assert "_assert_entity_access(entity)" in src
-    # Batch endpoint resolves the allow-list once and denies per-row.
-    batch = src.split("def epm_batch")[1].split("\ndef ")[0]
-    assert "allowed_entities = _allowed_entities()" in batch
-    assert "Not permitted to access entity" in batch
-
-
-_GATE = "_assert_entity_access"
-_GATE_WHY = (f"api.{_GATE} changed or was rebound. It is the entity-access gate for "
-             "ClickHouse reads (the check itself is tested in test_entity_access_host.py). "
-             "Get a security review, then update this tripwire.")
-
-
-def _binds_gate(node):
-    """Does this AST node bind, rebind or name the gate anywhere in api.py?"""
-    match_nodes = tuple(getattr(ast, n) for n in ("MatchAs", "MatchStar") if hasattr(ast, n))
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return node.name == _GATE
-    if isinstance(node, (ast.Import, ast.ImportFrom)):
-        return any(a.name == "*" or (a.asname or a.name.split(".")[0]) == _GATE
-                   for a in node.names)
-    if isinstance(node, ast.Name):
-        return node.id == _GATE and not isinstance(node.ctx, ast.Load)
-    if isinstance(node, (ast.Global, ast.Nonlocal)):
-        return _GATE in node.names
-    if match_nodes and isinstance(node, match_nodes):
-        return node.name == _GATE
-    if isinstance(node, ast.Constant):  # globals()[...] / setattr(module, ...)
-        return isinstance(node.value, str) and node.value == _GATE
-    if isinstance(node, ast.Attribute):  # __code__ swaps, patching the shared check
-        return not isinstance(node.ctx, ast.Load) and node.attr in (
-            "__code__", _GATE, "assert_entity_access")
-    return False
-
-
-def test_assert_entity_access_raises_permission_error_source():
-    # A tripwire, not a parser of intent. api._assert_entity_access must be
-    # exactly "import the shared check, call it with entity", bound once in the
-    # whole file, with no decorator. Wrapping the call, adding a user argument,
-    # blanking entity, a yield, or a later rebind anywhere in api.py (a def in a
-    # block, unpacking, globals()/setattr, a __code__ swap) all fail here.
-    # Limits: a sys.modules swap or exec() of a built string cannot be seen
-    # statically; test_assert_entity_access_is_the_function_in_the_source checks
-    # the loaded function instead.
-    tree = ast.parse(_api_src())
-    n = sum(_binds_gate(node) for node in ast.walk(tree))
-    assert n == 1, f"expected exactly 1 binding of {_GATE} in api.py, found {n}. {_GATE_WHY}"
-    fn = next((node for node in tree.body
-               if isinstance(node, ast.FunctionDef) and node.name == _GATE), None)
-    assert fn is not None, f"{_GATE} is not a plain top-level def. {_GATE_WHY}"
-    assert not fn.decorator_list, f"{_GATE} has a decorator. {_GATE_WHY}"
-    assert ast.unparse(fn.args) == "entity", \
-        f"{_GATE} signature is ({ast.unparse(fn.args)}), expected (entity). {_GATE_WHY}"
-    body = [ast.unparse(node) for node in fn.body
-            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant))]
-    assert body == [
-        "from konsol.entity_permissions import assert_entity_access",
-        "assert_entity_access(entity)",
-    ], f"{_GATE} body is {body}. {_GATE_WHY}"
 
 
 def test_assert_entity_access_is_the_function_in_the_source():
