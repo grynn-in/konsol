@@ -93,6 +93,43 @@ anchors are the oracle this project never had.
 
 ## State on 13 Sep — merged, open, next
 
+### Pick up here first: finish konsol #143 (#136)
+Worktree `~/Documents/frappe-bench/konsol-wt-136`, branch
+`fix/136-submittable-convention`. Pushed `9937561`; the review-round fixes are
+in the worktree, **uncommitted**, and pass the host suite (880/880).
+
+The review found a blocker and three gaps. Done (uncommitted):
+- **Dates are gated the way the warehouse applies them.**
+  `period_status.first_period_affected(date)` rounds a date after the 1st up to
+  the next month, because the warehouse applies a record from each month
+  start on or after its date.
+- **Whole ranges are gated, not one month.** `assert_open_between(start, end,
+  end_exclusive)` refuses when any Closed or Locked Period Status falls in
+  the range.
+  - An Ownership Period's range runs from `effective_date` to `end_date`, or is open-ended.
+  - A Historical Equity Rate's range runs until the next rate for the same group, entity and account.
+- **Trial Balance Submission's cancel is gated.** It has a `before_cancel` gate
+  now. `validate()` never runs on cancel, so its old period check never applied.
+
+Still to do:
+1. **The blocker:** `konsol/tests/test_budget_cycle_reshape.py:62-73, 196-199`
+   still assert the old Budget Cycle shape (the sync and `db_set` inside
+   `on_submit`/`on_cancel`). Rewrite them against `before_submit`,
+   `before_cancel` and `_push_sheets`. The host runner skips this file, so CI
+   never ran it; check why, and make sure the rewrite is actually counted.
+2. `konsol/d365_writeback.py:7, 563, 585`: the docstrings still say
+   `BudgetCycle.on_submit` enqueues the push. It's `_push_sheets`, after the commit.
+3. Hot-copy and re-prove live:
+   - a mid-month rate
+   - an ownership range with a later closed month
+   - a Trial Balance Submission cancel in a closed period
+
+   `scratchpad/live_136b.py` was the pattern; build a Historical Equity Rate
+   with AMG + AMDE, a member entity.
+4. Commit, push, comment, re-review the fix commit, then squash-merge and verify main CI.
+5. Then update this file's #143 row to merged.
+
+
 **User rules (12 Sep):** remove the demo; fill with Ecolab data when Grok's
 corrected workbook is ready; until then keep fixing bugs and merging. **Test
 live, but DON'T DEPLOY**: no `deploy.sh`, it wastes time. Hot-copy into the
@@ -111,7 +148,7 @@ containers and run scripts or dbt from a copy.
 | konsol **#141** | #124: every write-through sync runs after the commit, once per transaction (`clickhouse.after_commit_once`); deletes from `after_delete`; nothing queued during install/import/migrate; a failed sync is logged, never raised | merged `8534c52` |
 | konsolidat **#160** | #153: the consolidation report reads ownership from `gold_entity_ownership` | merged `d96c08a` |
 | konsolidat **#162** | #154: the four consolidation models delete their scope (pre_hook + append; `gold_fully_consolidated_tb` is a table), so a key that left the SELECT leaves the table. Accepted: a failed run leaves its slice empty until the next run | merged `9e263a3` |
-| konsol **#143** | #136: cancel only while the period is open (IC Balance, Allocation Run, Historical Equity Rate, Ownership Period; `period_status.assert_open_on` for dates); Budget Cycle locks in `before_submit` and pushes after the commit | open at writing |
+| konsol **#143** | #136: cancel only while the period is open (IC Balance, Allocation Run, Historical Equity Rate, Ownership Period; `period_status.assert_open_on` for dates); Budget Cycle locks in `before_submit` and pushes after the commit | open: review round in progress (below) |
 
 **Conventions for submittable and workflow doctypes (decided 12 Sep):**
 1. **Submit is the approval.** Review states are docstatus 0; Approve = submit; nothing changes after submit.
