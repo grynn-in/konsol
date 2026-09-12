@@ -39,6 +39,9 @@ fixtures = [
 # Fresh installs never run after_migrate, so the role and workflow installers
 # are here too. Roles first: a workflow transition links to its role.
 after_install = ["konsol.install.create_roles", "konsol.workflows.install_workflows"]
+# Fills a fresh site's warehouse (#142): queues reconcile_all as a job after
+# the install commits. after_sync, because after_install runs before fixtures.
+after_sync = ["konsol.install.after_sync"]
 after_migrate = ["konsol.install.after_migrate"]
 
 # Includes in <head>
