@@ -250,83 +250,14 @@ def test_every_lifecycle_that_changes_what_consolidation_sees_requests_a_rebuild
         "reuse the trigger path: it carries the scope map and the debounce")
 
 
-def test_the_rebuild_request_is_a_job_queued_after_commit():
-    """on_consolidation_doc_update inserts a Build Approval and commits. Run
-    inside on_update / after_delete / after_rename that commit split the
-    operation in two, and a failure logged after the last commit was lost
-    (#110 re-reviews 2 and 3). A job queued after commit runs in its own
-    transaction, and the job runner rolls back and logs a failure."""
-    request = _method("_request_rebuild")
-    assert "on_consolidation_doc_update" not in _calls(request)
-    call = next(n for n in ast.walk(request) if isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute) and n.func.attr == "enqueue")
-    kw = {k.arg: k.value for k in call.keywords}
-    assert ast.literal_eval(call.args[0]) == "konsol.tasks.request_consolidation_build"
-    assert ast.literal_eval(kw["enqueue_after_commit"]) is True
-    assert ast.literal_eval(kw["deduplicate"]) is True and "job_id" in kw, (
-        "deduplicate needs a job_id, or Frappe ignores it")
-
-
-def _run_request(flags=(), enqueue_raises=False):
-    """Run the real Entity._request_rebuild against a stub frappe."""
-    import types
-    calls, logs = [], []
-
-    def enqueue(*args, **kwargs):
-        if enqueue_raises:
-            raise ConnectionError("redis down")
-        calls.append((args, kwargs))
-
-    state = types.SimpleNamespace(in_install=False, in_migrate=False, in_patch=False, in_import=False)
-    for flag in flags:
-        setattr(state, flag, True)
-    ns = {"frappe": types.SimpleNamespace(flags=state, enqueue=enqueue,
-                                          log_error=lambda **k: logs.append(k))}
-    exec(compile(ast.Module(body=[_method("_request_rebuild")], type_ignores=[]), "entity.py", "exec"), ns)
-    ns["_request_rebuild"](types.SimpleNamespace(doctype="Entity", name="X1"), "on_update")
-    return calls, logs
-
-
-def test_no_rebuild_is_requested_during_install_migrate_patch_or_import():
-    """The guard sits at enqueue time because the worker will not have these
-    flags set when the job runs. Checked by running the method, not by finding
-    the flag names in its source (#110 re-review 3)."""
-    for flag in ("in_install", "in_migrate", "in_patch", "in_import"):
-        calls, _ = _run_request(flags=[flag])
-        assert calls == [], f"a job enqueued during {flag} would run after it, unguarded"
-    calls, _ = _run_request()
-    assert len(calls) == 1 and calls[0][0][0] == "konsol.tasks.request_consolidation_build"
-
-
-def test_a_queue_outage_logs_instead_of_failing_the_save():
-    """deduplicate=True makes enqueue query Redis inside the save."""
-    calls, logs = _run_request(enqueue_raises=True)
-    assert calls == [] and len(logs) == 1
-
-
-# frappe.enqueue's own parameters in Frappe v15 (frappe/utils/background_jobs.py).
-# A job kwarg with one of these names is taken by enqueue itself: `method=` raised
-# TypeError on every Entity save, and only a live run caught it.
-_ENQUEUE_PARAMS = {"async", "method", "queue", "timeout", "event", "is_async", "job_name", "now",
-                   "enqueue_after_commit", "on_success", "on_failure", "at_front",
-                   "job_id", "deduplicate"}
-_ENQUEUE_OPTIONS = {"queue", "timeout", "enqueue_after_commit", "job_id", "deduplicate",
-                    "at_front", "job_name", "now", "is_async", "event", "on_success", "on_failure"}
-
-
-def test_job_kwargs_do_not_collide_with_enqueue_parameters():
-    """Every keyword passed to frappe.enqueue is either one of enqueue's options
-    or a job argument, and no job argument may reuse an enqueue parameter name.
-    The job target must accept exactly the job arguments."""
-    call = next(n for n in ast.walk(_method("_request_rebuild")) if isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute) and n.func.attr == "enqueue")
-    job_args = {k.arg for k in call.keywords} - _ENQUEUE_OPTIONS
-    assert not job_args & _ENQUEUE_PARAMS, f"collides with frappe.enqueue: {job_args & _ENQUEUE_PARAMS}"
-    with open(os.path.join(APP_DIR, "tasks.py")) as f:
-        target = next(n for n in ast.parse(f.read()).body if isinstance(n, ast.FunctionDef)
-                      and n.name == "request_consolidation_build")
-    assert {a.arg for a in target.args.args} == job_args, (
-        "the job target's parameters must match the job arguments passed")
+def test_the_rebuild_request_goes_through_the_shared_queue():
+    """Entity decides when; konsol.tasks.queue_consolidation_build decides how
+    (a job after the commit, guarded, best-effort). Its behaviour is tested in
+    test_build_trigger.py. Entity must not enqueue, or call the committing
+    trigger, itself (konsol#126)."""
+    calls = _calls(_method("_request_rebuild"))
+    assert "queue_consolidation_build" in calls
+    assert not {"enqueue", "on_consolidation_doc_update"} & calls
 
 
 def test_entity_is_not_a_generic_trigger_doctype():
