@@ -38,6 +38,9 @@ def apply_and_rebuild(doc, action):
     # held only briefly at the end of the transaction and never across
     # ClickHouse ALTERs (#133 re-review). apply_schema() collects its step
     # errors instead of raising, so a failed DDL does not stop the request.
+    # The trade-off: if the request then fails (a lock-wait timeout, say), the
+    # publish rolls back but the ClickHouse DDL stays applied. apply_schema()
+    # only ADDS missing tables and columns, so re-publishing recovers.
     apply_schema()
     return _request_governed_build(doc, action)
 
@@ -66,7 +69,7 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
 
     lock_build_requests()
     # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
-    # the transaction's first read, taken before the Build Scope lock above: a
+    # the transaction's first read, taken before the build lock above: a
     # request that waited on the lock would not see the approval the holder had
     # just committed, and would insert a duplicate (#133 review). FOR UPDATE
     # reads the latest committed rows.

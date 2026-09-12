@@ -192,7 +192,7 @@ def test_no_build_request_commits_inside_its_callers_transaction():
     assert not offenders, offenders
 
 
-def test_the_governed_build_debounce_is_serialised_per_scope():
+def test_the_governed_build_debounce_is_serialised():
     path = os.path.join(APP_DIR, "schema_lifecycle.py")
     with open(path) as f:
         src = f.read()
@@ -201,7 +201,7 @@ def test_the_governed_build_debounce_is_serialised_per_scope():
 
 
 def _assert_locked_debounce(body):
-    """The scope lock comes first, and the pending-approval check is ITSELF a
+    """The build lock comes first, and the pending-approval check is ITSELF a
     locking read. A plain read after the lock still sees the old snapshot
     under REPEATABLE READ (#133 review)."""
     scope_lock = body.index("lock_build_requests()")
@@ -258,13 +258,15 @@ def test_every_cli_write_endpoint_is_post_only():
     assert not offenders, offenders
 
 
-def test_the_build_lock_takes_every_scope_in_one_order():
+def test_the_build_lock_is_one_row_that_always_exists():
     """Per scope, "full" (which may not have a Build Scope row) locked only a
-    gap, and two full requests deadlocked (1213, live). The lock must take
-    every row, in a fixed order, with no WHERE a scope could miss."""
+    gap, and two full requests deadlocked (1213, live). Every Build Scope row
+    in name order could deadlock with the migrate's fixture re-import, which
+    rewrites them in file order (#133 re-review). One row that always exists
+    has neither problem."""
     with open(os.path.join(APP_DIR, "build_lock.py")) as f:
         src = f.read()
     sql = src.split("frappe.db.sql(")[1].split(")")[0]
-    assert "FROM `tabBuild Scope`" in sql and "ORDER BY name" in sql and "FOR UPDATE" in sql
-    assert "WHERE" not in sql.upper()
+    assert "FROM `tabDocType` WHERE name = 'Build Approval'" in sql and "FOR UPDATE" in sql
+    assert "Build Scope`" not in sql
 
