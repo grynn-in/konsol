@@ -7,7 +7,7 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
-from konsol.period_status import assert_open_on
+from konsol.period_status import assert_open_between, first_period_affected
 from konsol.epm.budget_grain import digest_name
 
 
@@ -92,9 +92,17 @@ class HistoricalEquityRate(Document):
             )
 
     def before_cancel(self):
-        """Cancel only while the period containing the rate date is open
-        (decided 12 Sep 2026; #136)."""
-        assert_open_on(self.rate_date, action="cancel a historical equity rate")
+        """Cancel only while every period the rate applies to is open (#136).
+        A rate applies from the first period its date affects until the next
+        rate for the same group, entity and account, or indefinitely."""
+        next_rate = frappe.db.get_value(
+            "Historical Equity Rate",
+            {"consolidation_group": self.consolidation_group, "data_area_id": self.data_area_id,
+             "main_account": self.main_account, "docstatus": 1,
+             "rate_date": [">", self.rate_date], "name": ["!=", self.name]},
+            "rate_date", order_by="rate_date asc")
+        assert_open_between(self.rate_date, first_period_affected(next_rate) if next_rate else None,
+                            action="cancel a historical equity rate", end_exclusive=True)
 
     def on_submit(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

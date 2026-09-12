@@ -223,6 +223,11 @@ class TrialBalanceSubmission(Document):
             f"{int(self.fiscal_period)}, {int(self.row_count)}, now())"
         )
 
+    def before_cancel(self):
+        """validate() isn't run on cancel, so its period gate never applied
+        here: a cancel dropped the batch from a closed period (#143 review)."""
+        assert_open(self.fiscal_year, self.fiscal_period, action="cancel a trial balance submission")
+
     def on_cancel(self):
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.

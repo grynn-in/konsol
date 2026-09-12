@@ -79,19 +79,63 @@ def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=Non
     return doc
 
 
-def assert_open_on(date, action="run"):
-    """Refuse work against the closed period that contains ``date``.
+# The warehouse's period start (dbt build_date_from_year_period): period P of
+# year Y is the month starting Y-P-01.
+_PERIOD_START = "STR_TO_DATE(CONCAT(fiscal_year, '-', LPAD(fiscal_period, 2, '0'), '-01'), '%%Y-%%m-%%d')"
 
-    For a date-keyed document (decided 12 Sep 2026: "the period containing
-    its date"). The mapping is the warehouse's: build_date_from_year_period
-    makes fiscal period P of year Y the month starting Y-P-01, so a date falls
-    in (its year, its month). If that macro ever learns a non-calendar fiscal
-    year, this must follow it.
+
+def first_period_affected(date):
+    """The first period a date-keyed record changes, as the warehouse applies it.
+
+    The warehouse applies a record to the periods whose start (the 1st of the
+    month) is on or after its date. So a record dated the 1st first affects
+    that month, and one dated later in the month first affects the next
+    (#143 review). If build_date_from_year_period ever learns a non-calendar
+    fiscal year, this must follow it.
+    """
+    import datetime
+
+    from frappe.utils import getdate
+
+    d = getdate(date) if date else None
+    if d is None:
+        return None
+    if d.day == 1:
+        return d
+    return (d.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+
+
+def assert_open_between(start_date, end_date=None, action="run", end_exclusive=False):
+    """Refuse when any Closed or Locked period falls in the range a date-keyed
+    record affects: from the first period ``start_date`` affects, up to
+    ``end_date`` (the periods starting on or before it; before it with
+    ``end_exclusive``), or open-ended when there is no end.
+
+    Gating one month wasn't enough: an ownership period or an equity rate
+    changes every month it covers, so a cancel with only its first month open
+    rewrote the closed months after it (#143 review).
     """
     from frappe.utils import getdate
 
-    d = getdate(date)
-    if d is None:
+    first = first_period_affected(start_date)
+    if first is None:
         return
-    assert_open(d.year, d.month, action=action)
-
+    where = [f"status IN %(settled)s", f"{_PERIOD_START} >= %(first)s"]
+    params = {"settled": tuple(SETTLED), "first": first}
+    if end_date:
+        where.append(f"{_PERIOD_START} {'<' if end_exclusive else '<='} %(end)s")
+        params["end"] = getdate(end_date)
+    rows = frappe.db.sql(
+        f"SELECT fiscal_year, fiscal_period, status FROM `tabPeriod Status` "
+        f"WHERE {' AND '.join(where)} ORDER BY {_PERIOD_START} LIMIT 1",
+        params,
+        as_dict=True,
+    )
+    if rows:
+        r = rows[0]
+        frappe.throw(
+            frappe._("Cannot {0}: it changes fiscal period {1} of FY{2}, which is {3}.").format(
+                action, r.fiscal_period, r.fiscal_year, str(r.status).lower()
+            ),
+            frappe.ValidationError,
+        )
