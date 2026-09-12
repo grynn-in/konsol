@@ -323,7 +323,8 @@ def test_upgrade_rewrites_roles_only_and_keeps_previous_approvers():
         raise AssertionError(doctype)
 
     with _stub_frappe(
-        db=types.SimpleNamespace(get_value=lambda dt, filters, field: "Consolidation Adjustment Workflow"),
+        db=types.SimpleNamespace(get_value=lambda dt, filters, field: "Consolidation Adjustment Workflow",
+                                 savepoint=lambda name: None, rollback=lambda save_point=None: None),
         get_doc=lambda dt, name: wf_doc if dt == "Workflow" else User(name),
         get_all=get_all,
         get_roles=lambda user=None: roles_of.get(user, []),
@@ -353,6 +354,31 @@ def test_whoever_can_amend_can_open_the_cancelled_state():
     for p in _meta("Consolidation Adjustment").get("permissions", []):
         if p.get("amend") and p["role"] not in FRAPPE_ROLES:
             assert p["role"] in cancelled_editors, p["role"]
+
+
+def test_a_failed_grant_is_rolled_back_to_its_savepoint_and_reported():
+    calls = []
+
+    class Broken:
+        def add_roles(self, *roles):
+            calls.append(("add", roles))
+            raise RuntimeError("on_update failed")
+
+    with _stub_frappe(
+        db=types.SimpleNamespace(savepoint=lambda name: calls.append(("savepoint", name)),
+                                 rollback=lambda save_point=None: calls.append(("rollback", save_point))),
+        get_all=lambda doctype, filters=None, pluck=None, fields=None, **kw: (
+            ["ops@example.com"] if doctype == "Has Role"
+            else [types.SimpleNamespace(name="ops@example.com", role_profile_name=None)]),
+        get_roles=lambda user=None: ["System Manager"],
+        get_doc=lambda dt, name: Broken(),
+    ):
+        wf = _load("workflows.py", "_wf_grant_fail_under_test")
+        granted, notes = wf._grant_previous_approvers({"System Manager"}, {"EPM Admin"})
+    assert granted == {}
+    assert [c[0] for c in calls] == ["savepoint", "add", "rollback"]
+    assert calls[0][1] == calls[2][1]
+    assert any("ops@example.com" in n and "by hand" in n for n in notes)
 
 
 def test_upgrade_skips_a_workflow_by_another_name():

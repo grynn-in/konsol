@@ -109,9 +109,15 @@ def _grant_previous_approvers(previous_roles, new_roles):
             notes.append(f"{u.name} has Role Profile {u.role_profile_name}: add {', '.join(missing)} "
                          f"to that profile to keep their access")
             continue
+        # A save can fail after its role rows are written (e.g. in on_update).
+        # Roll back to here so a failed grant leaves nothing half-done; if the
+        # whole transaction is gone (a deadlock), the rollback raises and the
+        # migrate stops, rather than reporting an upgrade that was lost.
+        frappe.db.savepoint("konsol_grant_approver")
         try:
             frappe.get_doc("User", u.name).add_roles(*missing)
         except Exception as e:
+            frappe.db.rollback(save_point="konsol_grant_approver")
             notes.append(f"{u.name}: could not add {', '.join(missing)} ({type(e).__name__}); add them by hand")
             continue
         stuck = sorted(set(missing) & set(frappe.get_roles(u.name)))
