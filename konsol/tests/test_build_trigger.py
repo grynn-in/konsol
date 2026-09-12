@@ -145,3 +145,57 @@ def test_the_approved_build_is_enqueued_after_commit():
     call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "enqueue")
     kw = {k.arg: k.value for k in call.keywords}
     assert "enqueue_after_commit" in kw and ast.literal_eval(kw["enqueue_after_commit"]) is True
+
+
+def _creates_build_approval(call):
+    """new_doc("Build Approval") or get_doc({"doctype": "Build Approval", ...}).
+    Loading one by name (run_governed_build, inside its build job) is not
+    creating one."""
+    name = getattr(call.func, "attr", None) or getattr(call.func, "id", None)
+    if name == "new_doc" and call.args and isinstance(call.args[0], ast.Constant):
+        return call.args[0].value == "Build Approval"
+    if name == "get_doc" and call.args and isinstance(call.args[0], ast.Dict):
+        return any(isinstance(k, ast.Constant) and k.value == "doctype"
+                   and isinstance(v, ast.Constant) and v.value == "Build Approval"
+                   for k, v in zip(call.args[0].keys, call.args[0].values))
+    return False
+
+
+def test_no_build_request_commits_inside_its_callers_transaction():
+    """Every function that creates a Build Approval, enumerated across the app,
+    must leave the commit to its caller. Only on_consolidation_doc_update may
+    commit, because it runs inside its own job (#126). _request_governed_build
+    committed from AllocationRun.before_submit, publish and after_delete, and
+    a failed submit left an orphaned approval (#130)."""
+    offenders = []
+    for root, _, files in os.walk(APP_DIR):
+        if "/tests" in root:
+            continue
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(root, fn)
+            with open(path) as f:
+                tree = ast.parse(f.read())
+            for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+                # Exempt, with reason: on_consolidation_doc_update runs inside its
+                # own job (#126); a @frappe.whitelist() endpoint (control_api's
+                # start_process) is a top-level request with no caller transaction.
+                if func.name == "on_consolidation_doc_update" or any(
+                        "whitelist" in ast.unparse(d) for d in func.decorator_list):
+                    continue
+                creates = any(_creates_build_approval(c) for c in ast.walk(func) if isinstance(c, ast.Call))
+                commits = any(isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "commit"
+                              for c in ast.walk(func))
+                if creates and commits:
+                    offenders.append(f"{os.path.relpath(path, APP_DIR)}:{func.name}")
+    assert not offenders, offenders
+
+
+def test_the_governed_build_debounce_is_serialised_per_scope():
+    path = os.path.join(APP_DIR, "schema_lifecycle.py")
+    with open(path) as f:
+        src = f.read()
+    body = src.split("def _request_governed_build")[1].split("\ndef ")[0]
+    assert "FOR UPDATE" in body and body.index("FOR UPDATE") < body.index('"Build Approval",')
+

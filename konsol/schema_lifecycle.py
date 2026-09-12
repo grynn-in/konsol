@@ -55,6 +55,12 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     it so publishing several config docs in a row coalesces into one rebuild.
     The PBR's own workflow handles risk → approval → preflight → governed build.
     """
+    # Serialise requests for one scope. The debounce is check-then-insert, and
+    # two requests at once both found nothing pending and both inserted (the
+    # race #128 fixed in on_consolidation_doc_update). Locks nothing for a scope
+    # with no Build Scope row (the fixture ships no "full"); those are rare,
+    # admin-only schema publishes.
+    frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
     existing = frappe.get_all(
         "Build Approval",
         filters={"build_scope": scope, "workflow_state": ["in", _PENDING_STATES]},
@@ -73,8 +79,14 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     pbr.trigger_doctype = doc.doctype
     pbr.trigger_docname = doc.name
     pbr.requested_by = frappe.session.user
+    # No commit (konsol#130). The approval commits or rolls back WITH the
+    # caller's transaction. Committing here made AllocationRun.before_submit,
+    # every publish, and GovernedReferenceDocument.after_delete non-atomic: a
+    # submit that failed after this point left an orphaned approval for a run
+    # that never existed. The commit used to be needed so the build job could
+    # see the row; since #128, BuildApproval._enqueue_build enqueues only
+    # after the commit, so it can.
     pbr.insert(ignore_permissions=True)
-    frappe.db.commit()
 
     frappe.msgprint(
         f"Schema applied. Build request {pbr.name} created (scope={scope}). "
