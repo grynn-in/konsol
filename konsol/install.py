@@ -18,6 +18,7 @@ def setup_epm_settings(
         frappe.logger().warning("EPM Settings doctype not found. Skipping setup.")
         return
 
+    before = _warehouse_target()
     settings = frappe.get_single("EPM Settings")
     settings.clickhouse_host = ch_host
     settings.clickhouse_port = int(ch_port)
@@ -26,8 +27,93 @@ def setup_epm_settings(
     settings.dbt_project_path = dbt_project_path
     settings.flags.ignore_permissions = True
     settings.save()
+    # #142: the configurator sets the connection only after install-app, so a
+    # fresh site's install-time reconcile ran against the default target
+    # (localhost) and reached nothing. Fill the warehouse now that the real
+    # target is known. An unchanged target (every redeploy of an existing
+    # site) queues nothing: that deploy's bench migrate already reconciled.
+    if _warehouse_target() != before:
+        enqueue_reconcile_after_commit()
     frappe.db.commit()
     frappe.logger().info(f"EPM Settings configured: ClickHouse at {ch_host}:{ch_port}")
+
+
+def _warehouse_target():
+    """The ClickHouse connection EPM Settings points at, password included, so
+    a rotated password counts as a new target."""
+    from konsol.clickhouse import get_connection
+
+    return {key: str(value) for key, value in get_connection().items()}
+
+
+#: The worker job that fills the warehouse after an install, or after the
+#: ClickHouse target changes (#142). It is a sync, not a build, so it does not
+#: go through konsol.tasks.queue_consolidation_build.
+RECONCILE_JOB = "konsol.install.reconcile_warehouse"
+
+
+def after_sync():
+    """install-app's last hook: queue a warehouse reconcile for after the commit.
+
+    Without it a fresh site's write-through tables (Scenario, ISO Currency,
+    Spread Profile and every other fixture-loaded doctype) stay empty until the
+    first bench migrate (#142). after_migrate is the only other caller of
+    reconcile_all, and nothing syncs during an install: sync_table and
+    clickhouse.after_commit_once both stand down while frappe.flags.in_install
+    is set.
+
+    This is ``after_sync``, not ``after_install``. install-app runs
+    after_install before it imports fixtures, and every fixture file commits,
+    so a callback registered there would queue the job at the first fixture
+    commit and a worker could publish half the reference data. after_sync runs
+    after the fixtures and customizations, and Frappe calls it from install-app
+    only, never from migrate.
+    """
+    enqueue_reconcile_after_commit()
+
+
+def enqueue_reconcile_after_commit():
+    """Queue ``reconcile_warehouse`` as a worker job once this transaction commits.
+
+    The job runs in a fresh worker context with no install or migrate flag set,
+    so sync_table writes, and it reads what the commit published.
+
+    Not ``frappe.enqueue(..., enqueue_after_commit=True)``: Frappe runs
+    after-commit callbacks unguarded, so a Redis outage there would raise out of
+    install-app's final commit and fail the install over a step the next
+    ``bench migrate`` repeats anyway.
+    """
+
+    def enqueue():
+        try:
+            frappe.enqueue(RECONCILE_JOB, queue="long")
+        except Exception as e:  # noqa: BLE001 — never fail an install over it
+            frappe.logger().warning("warehouse reconcile not queued", exc_info=True)
+            print(
+                f"konsol: warehouse reconcile not queued ({type(e).__name__}: {e}); "
+                "the next bench migrate, or `bench execute konsol.clickhouse.reconcile_all`, fills it"
+            )
+
+    frappe.db.after_commit.add(enqueue)
+
+
+def reconcile_warehouse():
+    """Worker job: re-sync every write-through table through ``reconcile_all``.
+
+    Best-effort like the migrate-time reconcile: a table that did not sync
+    (ClickHouse unreachable, wrong target) is logged, not raised. Returns
+    reconcile_all's table -> row count map (None for a table that did not sync).
+    """
+    from konsol.clickhouse import reconcile_all
+
+    synced = reconcile_all()
+    failed = sorted(table for table, rows in synced.items() if rows is None)
+    frappe.logger().info(
+        f"reconcile job: synced {len(synced) - len(failed)} of {len(synced)} write-through tables"
+    )
+    if failed:
+        frappe.logger().warning(f"reconcile job: not synced: {', '.join(failed)}")
+    return synced
 
 
 def after_migrate():
