@@ -64,10 +64,14 @@ def _skip_reason(exc):
             return "needs frappe"
         if isinstance(exc, ModuleNotFoundError) and root and root != "konsol":
             # Only when the package itself is absent; a missing submodule of
-            # an installed one (requests.nonexistent) is a bug.
-            if importlib.util.find_spec(root) is None:
-                return f"needs {root}"
-            return None
+            # an installed (or stubbed) one, e.g. requests.nonexistent, is a bug.
+            if root in sys.modules:
+                return None
+            try:
+                present = importlib.util.find_spec(root) is not None
+            except (ImportError, ValueError):
+                present = True
+            return None if present else f"needs {root}"
         if exc.name is None and str(exc).startswith("needs "):
             return str(exc)  # a test's own guard, e.g. ImportError("needs yaml")
     return None
@@ -83,11 +87,14 @@ def _isolate(before):
     frappe installed by one file cannot bind the konsol modules a later file
     imports. Real frappe modules stay loaded: frappe raises the gc threshold
     every time it is imported, and re-importing it per file overflows it."""
+    # If the file left a stub `frappe`, the real frappe.* submodules it
+    # imported are orphans under that stub: drop them with it.
+    stub_frappe = "frappe" in sys.modules and _is_stub(sys.modules["frappe"])
     for key in list(sys.modules):
         root = key.split(".")[0]
         if key in before or root not in ("frappe", "konsol"):
             continue
-        if root == "konsol" or _is_stub(sys.modules[key]):
+        if root == "konsol" or stub_frappe or _is_stub(sys.modules[key]):
             del sys.modules[key]
     for key, mod in before.items():
         if key.split(".")[0] in ("frappe", "konsol") and sys.modules.get(key) is not mod:
@@ -120,10 +127,15 @@ def main(argv):
                     failures.append((rel, "<load>", f"{type(exc).__name__}: {exc}",
                                      traceback.format_exc()))
                 continue
+            except KeyboardInterrupt:
+                raise
             except BaseException as exc:
-                if not _is_skip(exc):
-                    raise
-                skipped.append((rel, f"skipped: {exc}"))
+                if _is_skip(exc):
+                    skipped.append((rel, f"skipped: {exc}"))
+                else:  # SystemExit at import would end the run silently
+                    load_failures += 1
+                    failures.append((rel, "<load>", f"{type(exc).__name__}: {exc}",
+                                     traceback.format_exc()))
                 continue
 
             for name in dir(module):
@@ -148,10 +160,14 @@ def main(argv):
                     fn()
                     passed += 1
                 except ModuleNotFoundError as exc:
-                    # A third-party import inside the test body (yaml, requests).
-                    missing_deps.add(exc.name)
-                    needs_pytest.append(f"{rel}::{name}")
-                    total -= 1
+                    if _skip_reason(exc):
+                        # A third-party import inside the test body (yaml, requests).
+                        missing_deps.add(exc.name)
+                        needs_pytest.append(f"{rel}::{name}")
+                        total -= 1
+                    else:  # a konsol module, or a submodule of an installed package
+                        failures.append((rel, name, f"{type(exc).__name__}: {exc}",
+                                         traceback.format_exc()))
                 except KeyboardInterrupt:
                     raise
                 except BaseException as exc:

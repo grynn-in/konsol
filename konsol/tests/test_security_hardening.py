@@ -126,15 +126,29 @@ def test_endpoints_enforce_entity_access():
 
 def test_assert_entity_access_raises_permission_error_source():
     # api._assert_entity_access delegates; the check and the raise live in
-    # entity_permissions.assert_entity_access (moved there with the Entity
-    # permission hooks, so every read path shares one rule).
-    body = _api_src().split("def _assert_entity_access")[1].split("\ndef ")[0]
-    assert "assert_entity_access(entity)" in body
+    # entity_permissions.assert_entity_access, so every read path shares one
+    # rule. Parsed, not substring-matched: a commented-out call or an early
+    # return must fail this. Behaviour is pinned in test_entity_access_host.py.
+    import ast
+
+    api_fn = next(n for n in ast.parse(_api_src()).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_assert_entity_access")
+    stmts = [n for n in api_fn.body
+             if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
+    call_at = next(i for i, n in enumerate(stmts)
+                   if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+                   and getattr(n.value.func, "id", None) == "assert_entity_access")
+    assert not any(isinstance(n, ast.Return) for n in stmts[:call_at])
+    assert [ast.unparse(a) for a in stmts[call_at].value.args] == ["entity"]
+
     with open(os.path.join(APP_DIR, "entity_permissions.py")) as f:
-        ep = f.read()
-    fn = ep.split("def assert_entity_access")[1].split("\ndef ")[0]
-    assert "if not may_see_entity(" in fn
-    assert "raise frappe.PermissionError" in fn
+        ep = ast.parse(f.read())
+    fn = next(n for n in ep.body
+              if isinstance(n, ast.FunctionDef) and n.name == "assert_entity_access")
+    guard = next(n for n in fn.body if isinstance(n, ast.If))
+    assert ast.unparse(guard.test).startswith("not may_see_entity(")
+    assert isinstance(guard.body[0], ast.Raise)
+    assert "PermissionError" in ast.unparse(guard.body[0])
 
 
 # ---------------------------------------------------------------------------
