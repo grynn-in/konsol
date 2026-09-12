@@ -77,11 +77,6 @@ def test_shipped_as_a_fixture_and_registered():
 CAL_DIR = os.path.join(APP_DIR, "epm", "doctype", "entity_fiscal_calendar")
 
 
-def _cal_fixture():
-    with open(os.path.join(APP_DIR, "fixtures", "entity_fiscal_calendar.json")) as f:
-        return json.load(f)
-
-
 def test_fiscal_calendar_mapping_is_keyed_on_the_erp_entity_code():
     with open(os.path.join(CAL_DIR, "entity_fiscal_calendar.json")) as f:
         meta = json.load(f)
@@ -93,23 +88,6 @@ def test_fiscal_calendar_mapping_is_keyed_on_the_erp_entity_code():
     assert not any(f["fieldname"] == "data_area_id" for f in meta["fields"]), (
         "a field named data_area_id must be a Link to Entity (test_entity_links); "
         "this one maps raw ERP codes konsol has no Entity for")
-
-
-def test_fiscal_calendar_mapping_keeps_every_entity_the_seed_had():
-    """Its own doctype, not a field on Entity: the list covers 68 D365 data
-    areas of which the warehouse currently sees seven. Putting the other 61 on
-    Entity would fill the consolidation entity master with entities nobody
-    consolidates; dropping them would silently date a Chinese entity into
-    'Fiscal' instead of 'Fiscal_CN' the day someone loads its ledger."""
-    rows = _cal_fixture()
-    assert len(rows) == 68
-    assert all(r["erp_data_area"] for r in rows), "the seed's blank row is dropped"
-    by_entity = {r["erp_data_area"]: r["fiscal_calendar_id"] for r in rows}
-    # the three the demo ledger actually needs a non-default calendar for
-    for entity in ("AMHQ", "AMUS", "AMDE"):
-        assert by_entity[entity] == "Standard", entity
-    # and one the warehouse has never seen, kept so it is right when it arrives
-    assert by_entity["CNMF"] == "Fiscal_CN"
 
 
 def test_fiscal_calendar_writes_through():

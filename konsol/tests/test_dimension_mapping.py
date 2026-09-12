@@ -4,6 +4,7 @@ Parse the doctype JSON / controller / dbt_config source without a live Frappe
 site, mirroring test_connector_registry.py / test_fact_registry.py.
 """
 import json
+import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -128,8 +129,16 @@ def test_request_governed_rebuild_skips_apply_schema():
     assert "apply_schema" not in body
 
 
-def test_dimension_mapping_is_a_fixture():
-    assert '"Dimension Mapping"' in _read("hooks.py")
+def test_dimension_mapping_is_not_a_fixture():
+    """A dimension mapping maps one site's ERP values to canonical ones. The
+    shipped rows mapped the Contoso demo's D365 cost centres, and a fixture is
+    force-reimported on every migrate, so a site's own mappings would be
+    overwritten by another company's."""
+    src = _read("hooks.py")
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "fixtures" for t in n.targets))
+    entries = [f'"{e if isinstance(e, str) else e.get("dt")}",' for e in ast.literal_eval(node.value)]
+    assert '"Dimension Mapping",' not in entries
 
 
 def test_after_delete_resyncs_not_on_trash():

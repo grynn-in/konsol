@@ -1,5 +1,6 @@
 """Structural tests for Reporting Hierarchy doctypes + seed regeneration."""
 import json
+import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -98,10 +99,15 @@ def test_build_models_include_hierarchy_v2():
         assert model in names
 
 
-def test_fixtures_registered():
-    hooks = _read("hooks.py")
-    assert '"Reporting Hierarchy"' in hooks
-    assert '"Reporting Hierarchy Member"' in hooks
+def test_reporting_hierarchy_is_not_a_fixture():
+    """MGMT_DEMO was the Contoso demo's management tree. Hierarchies are built
+    per site, and a fixture would force-reimport the demo's over them."""
+    src = _read("hooks.py")
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "fixtures" for t in n.targets))
+    entries = [f'"{e if isinstance(e, str) else e.get("dt")}",' for e in ast.literal_eval(node.value)]
+    for doctype in ("Reporting Hierarchy", "Reporting Hierarchy Member"):
+        assert f'"{doctype}",' not in entries, doctype
 
 
 def test_reporting_hierarchy_seed_unit():

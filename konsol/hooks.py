@@ -12,46 +12,24 @@ app_license = "MIT"
 # Fixtures — demo data loaded on install/migrate
 # ------------------------------------------------
 fixtures = [
+    # Reference data only: definitions the app needs on any site. Everything
+    # in konsol/fixtures/ is force-reimported on EVERY migrate. import_fixtures
+    # reads the directory, not this list; the list only matters for export.
+    # So a file there must never hold data a site edits, or a demo company.
+    #
+    # The Contoso/Alpine demo (Consolidation Group, Allocation Rule/Driver,
+    # Budget Cycle/Sheet, IC Elimination Rule, Dimension Mapping, Cash Flow
+    # Category, Entity Fiscal Calendar, Reporting Hierarchy, the dated
+    # Scenarios, and demo_data/'s ownership and annual budget) was removed on
+    # 12 Sep 2026. Real data arrives through connectors and Trial Balance
+    # Submission.
     "Fiscal Period",
     "Dimension",
-    "Dimension Mapping",
-    "Cash Flow Category",
-    "Reporting Hierarchy",
-    "Reporting Hierarchy Member",
     "Measure",
     "Dataset",
     "Scenario",
-    "Budget Cycle",
-    "Budget Sheet",
-    "Consolidation Group",
-    # konsolidat#146: the ISO 4217 list the warehouse validates FX codes
-    # against. It was seeds/currencies.csv; it is reference data, so a fixture
-    # is right — unlike ownership, a site is not expected to edit it.
     "ISO Currency",
-    # konsolidat#146: which fiscal calendar each ERP entity posts against. Was
-    # seeds/entity_fiscal_calendars.csv; reference data, same as ISO Currency.
-    "Entity Fiscal Calendar",
-    # NOT "Budget Annual Input". ISO Currency and Entity Fiscal Calendar are
-    # reference data a site is not expected to edit, so the force-reimport is
-    # what we want. Annual budget figures are not: EPM Analyst has write on
-    # them, and a fixture would revert an analyst's revised figure on the next
-    # migrate — the same thing that happened to the ownership periods below.
-    # Worse, the cycle-lock guard returns early under in_import, so the
-    # reimport would rewrite annual inputs even for a LOCKED cycle. Seeded once
-    # from konsol/demo_data/ by install._bootstrap_budget_annual_input.
-    # NOT "Ownership Period" — and note that removing it from THIS list is not
-    # what keeps it out. import_fixtures() imports every .json in konsol/fixtures/
-    # regardless of this hook (it is read only when exporting), force-deleting
-    # each existing document first, so the demo periods live in konsol/demo_data/
-    # instead. See that directory's README: shipping ownership as a fixture
-    # reverted a user's edit on the next migrate (80% -> 65% -> 80%, proven on
-    # the live stack), which is the failure F2 removes from the dbt side
-    # arriving through Frappe.
-    "IC Elimination Rule",
-    "Allocation Rule",
-    "Allocation Driver",
     "Spread Profile",
-    "Connector",
     "Build Scope",
     "Build Model",
     "Pipeline",

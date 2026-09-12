@@ -305,35 +305,14 @@ def test_resync_reports_a_failed_hierarchy_write():
     assert "if wrote_hierarchy is None:" in body
 
 
-def test_ownership_is_not_shipped_as_a_fixture():
-    """Fixture sync force-deletes and reinserts every shipped name on every
-    migrate, bypassing the submitted-document guard — so shipping ownership
-    reverts a user's edit (proven live: 80% -> 65% -> 80% after one migrate) and
-    undoes the patch's lifted figures.
-
-    The file must be OUT of konsol/fixtures/, not merely off the `fixtures`
-    hook: import_fixtures() imports every .json in that directory whatever the
-    hook says (the hook is read only when exporting). Removing the hook entry
-    alone was tried and the edit was still reverted.
-    """
-    assert not os.path.exists(
-        os.path.join(APP_DIR, "fixtures", "ownership_period.json")), \
-        "everything in fixtures/ is force-reimported on every migrate"
-    assert os.path.exists(
-        os.path.join(APP_DIR, "demo_data", "ownership_period.json"))
-
-    with open(os.path.join(APP_DIR, "hooks.py")) as f:
-        hooks = f.read()
-    fixtures = hooks.split("fixtures = [")[1].split("]")[0]
-    entries = [line.strip() for line in fixtures.splitlines()
-               if line.strip() and not line.strip().startswith("#")]
-    assert '"Ownership Period",' not in entries, entries
-
+def test_ownership_is_not_shipped_at_all():
+    """Ownership is the site's own structure. It was never allowed in
+    fixtures/ (force-reimport reverted a user's 80% -> 65% edit on the next
+    migrate), and the demo_data/ seed that replaced it is gone with the demo."""
+    assert not os.path.exists(os.path.join(APP_DIR, "fixtures", "ownership_period.json"))
+    assert not os.path.exists(os.path.join(APP_DIR, "demo_data"))
     with open(os.path.join(APP_DIR, "install.py")) as f:
-        install = f.read()
-    body = install.split("def _bootstrap_ownership_periods")[1].split("\ndef ")[0]
-    assert 'frappe.db.count("Ownership Period")' in body, "only when there are none"
-    assert '"demo_data"' in body
+        assert "_bootstrap_ownership_periods" not in f.read()
 
 
 def test_nothing_else_ships_transactional_data_as_a_fixture():
@@ -374,15 +353,12 @@ def test_hierarchy_query_api_reads_ownership_from_periods():
     assert "end_date" in resolver, "an expired period is not today's ownership"
 
 
-def test_ownership_is_seeded_before_the_clickhouse_reconcile():
-    """A document saved during migrate never reaches ClickHouse — sync_table
-    no-ops while frappe.flags.in_migrate is set. reconcile_all is the one call
-    that passes force=True, so anything seeded after it stays in Frappe only.
-    Caught by assert_ownership_chain_complete failing on 108 rows."""
+def test_after_migrate_still_reconciles_clickhouse():
+    """Nothing is seeded during migrate any more, but the rule stands for the
+    next thing that is: a document saved while frappe.flags.in_migrate is set
+    never reaches ClickHouse, and reconcile_all (force=True) is the call that
+    carries it through, so any seeding must sit above it."""
     with open(os.path.join(APP_DIR, "install.py")) as f:
         src = f.read()
     after = src.split("def after_migrate")[1].split("\ndef ")[0]
-    # code lines only — a comment above the seeding call names the reconcile
-    calls = [line.strip() for line in after.splitlines()
-             if line.strip() and not line.strip().startswith("#")]
-    assert calls.index("_bootstrap_ownership_periods()") < calls.index("_reconcile_clickhouse()")
+    assert "_reconcile_clickhouse()" in after
