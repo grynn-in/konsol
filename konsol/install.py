@@ -216,6 +216,7 @@ def _install_workflows():
         # and the person running the migrate is the one who needs to know.
         for line in install_workflows():
             print(f"konsol workflows: {line}")
-    except Exception:
+    except Exception as e:
         frappe.logger().warning("workflow install skipped during migrate", exc_info=True)
+        print(f"konsol workflows: skipped ({type(e).__name__}: {e}); the next migrate tries again")
 

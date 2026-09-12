@@ -110,9 +110,10 @@ def _grant_previous_approvers(previous_roles, new_roles):
                          f"to that profile to keep their access")
             continue
         # A save can fail after its role rows are written (e.g. in on_update).
-        # Roll back to here so a failed grant leaves nothing half-done; if the
-        # whole transaction is gone (a deadlock), the rollback raises and the
-        # migrate stops, rather than reporting an upgrade that was lost.
+        # Roll back to here so a failed grant leaves nothing half-done. If the
+        # whole transaction is gone (a deadlock), the rollback itself raises:
+        # the workflow save was undone too, install._install_workflows prints
+        # the failure, and the next migrate tries the upgrade again.
         frappe.db.savepoint("konsol_grant_approver")
         try:
             frappe.get_doc("User", u.name).add_roles(*missing)
