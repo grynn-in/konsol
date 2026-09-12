@@ -174,7 +174,7 @@ State: **merged `c2f2a16`**, reviewed four times, every finding fixed and live-v
 (`live_tbu*.py` in the session scratchpad; FY2099 test data, cleaned up).
 
 **Trap:** twice a whole-file rewrite put a raw, invisible U+FEFF into a
-Python string literal where `"﻿"` was meant. It still runs, but check
+Python string literal where `"\ufeff"` was meant. It still runs, but check
 after writing code that mentions the byte-order mark. On macOS, `grep -P`
 silently finds nothing; this form works (tested):
 
