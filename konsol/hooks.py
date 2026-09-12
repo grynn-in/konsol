@@ -36,6 +36,8 @@ fixtures = [
 ]
 
 # After migrate — create EPM roles
+# Fresh installs never run after_migrate, so the workflow installer is here too.
+after_install = ["konsol.workflows.install_workflows"]
 after_migrate = ["konsol.install.after_migrate"]
 
 # Includes in <head>

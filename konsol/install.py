@@ -46,6 +46,7 @@ def after_migrate():
     # (force=True) is the one call that carries such rows through. Nothing is
     # seeded now; the demo ownership and annual budget that were are gone.
     _reconcile_clickhouse()
+    _install_workflows()
     _setup_dashboard()
     _retire_konsol_control_page()
     _sync_budget_line_custom_fields()
@@ -188,3 +189,14 @@ def _create_roles():
             role.insert(ignore_permissions=True)
             frappe.logger().info(f"Created role: {role_name}")
     frappe.db.commit()
+
+
+def _install_workflows():
+    """Create the app's workflows if missing; never overwrite a site's own.
+    Never fails a migrate."""
+    try:
+        from konsol.workflows import install_workflows
+        install_workflows()
+    except Exception:
+        frappe.logger().warning("workflow install skipped during migrate", exc_info=True)
+
