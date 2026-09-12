@@ -136,6 +136,50 @@ latest. Actions are offered disabled only where the server refuses them.
 import it. `homeMachine.test.mjs` runs the machine with stub actors; do the
 same for any new machine.
 
+## Bulk trial balance upload (konsol #151)
+
+Asked for by the user: the Ecolab trial balance covers hundreds of entities,
+and one file per entity is not workable. **This is the path for loading
+Grok's corrected workbook** (sheet 09, local currency) once it balances.
+
+- One CSV or Excel file (first sheet): `data_area_id, fiscal_year,
+  fiscal_period, main_account, debit, credit[, description]`; `entity`,
+  `year`, `period`, `account` are accepted too. Amounts in each entity's own
+  currency, both columns positive, periods 1–12.
+- konsol-exec **/konsol-exec/uploads** (navigator "Upload trial balances", and
+  a button on the month view). Check first: every entity-period is run
+  through the single-upload rules (the same validator), plus entity access,
+  group nodes, closed periods and already-submitted entity-periods. Nothing
+  loads until "Load N" (or "Load N, skip M").
+- The load is a background job, run as the user: one ordinary Trial Balance
+  Submission per entity-period, each committed on its own, progress saved
+  after every row, stopping itself before the RQ time limit. A stopped or
+  partly loaded upload resumes without loading anything twice; claims left
+  by a submission that never committed are released first (under the
+  entity lock).
+- Doctype **Trial Balance Upload** is the audit trail. Close Lead (EPM
+  Admin) and System Manager only; a user limited to some entities sees only
+  uploads they own or whose every entity they may see.
+- Also changed on the single path: Excel "CSV UTF-8" files (byte-order
+  mark) are read; Trial Balance Submission locks its entity and does a
+  locking duplicate read, indexed on (data_area_id, fiscal_year,
+  fiscal_period), so two submissions can never both claim one entity-period.
+
+- Each generated per-entity file is named `<upload>-<entity>-<year>-P<period>.csv`
+  and carries a `source_upload` column (ignored by the parser). That keeps
+  every upload's files unique (Frappe reuses a File with the same content)
+  and lets a resume recognise its own rows.
+
+State: **merged `c2f2a16`**, reviewed four times, every finding fixed and live-verified
+(`live_tbu*.py` in the session scratchpad; FY2099 test data, cleaned up).
+
+**Trap:** twice a whole-file rewrite put a raw, invisible U+FEFF into a
+Python string literal where `"﻿"` was meant. It still runs, but check
+after writing code that mentions the byte-order mark. On macOS, `grep -P`
+silently finds nothing; this form works (tested):
+
+    LC_ALL=C grep -rl $'\xef\xbb\xbf' konsol --include='*.py'
+
 ## State on 13 Sep — merged, open, next
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
