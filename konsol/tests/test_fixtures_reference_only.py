@@ -5,6 +5,7 @@ there overwrites whatever a site has under the same name. That is right for a
 currency list and wrong for anything a site owns. These tests ENUMERATE the
 directory rather than naming the files someone thought of.
 """
+import ast
 import glob
 import json
 import os
@@ -29,9 +30,13 @@ def _shipped():
 
 
 def _hooks_fixtures():
+    """Parsed, not split on "]": a future {"dt": ..., "filters": [[...]]} entry
+    would cut a text split short without any error."""
     with open(os.path.join(APP_DIR, "hooks.py")) as f:
-        block = f.read().split("fixtures = [")[1].split("]")[0]
-    return [l.strip().strip('",') for l in block.splitlines() if l.strip().startswith('"')]
+        tree = ast.parse(f.read())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "fixtures" for t in n.targets))
+    return [e if isinstance(e, str) else e.get("dt") for e in ast.literal_eval(node.value)]
 
 
 def _meta(doctype):
@@ -65,21 +70,32 @@ def test_no_shipped_row_belongs_to_a_company():
 def test_every_link_in_a_shipped_row_resolves():
     """On an empty site the only records that exist are the ones shipped here,
     so a Link must point at a shipped row or be empty. Fixture import sets
-    ignore_links, so a dangling one would load and then be unsaveable."""
+    ignore_links, so a dangling one would load and then be unsaveable. Child
+    rows are walked too, since that is where most shipped links live (Dataset's
+    measures and dimensions)."""
     by_doctype = {}
     for rows in _shipped().values():
         for r in rows:
             by_doctype.setdefault(r["doctype"], set()).add(r["name"])
-    dangling = []
+    dangling, checked = [], {"top": 0, "child": 0}
+
+    def walk(doctype, row, where, depth):
+        fields = _meta(doctype)["fields"]
+        for f in fields:
+            value = row.get(f["fieldname"])
+            if f["fieldtype"] == "Link" and value:
+                checked["child" if depth else "top"] += 1
+                if value not in by_doctype.get(f["options"], set()):
+                    dangling.append(f"{where}.{f['fieldname']} -> {f['options']} {value!r}")
+            elif f["fieldtype"] in ("Table", "Table MultiSelect"):
+                for i, child in enumerate(value or []):
+                    walk(f["options"], child, f"{where}.{f['fieldname']}[{i}]", depth + 1)
+
     for rows in _shipped().values():
         for r in rows:
-            links = {f["fieldname"]: f["options"] for f in _meta(r["doctype"])["fields"]
-                     if f["fieldtype"] == "Link"}
-            for field, target in links.items():
-                value = r.get(field)
-                if value and value not in by_doctype.get(target, set()):
-                    dangling.append(f"{r['doctype']} {r['name']}.{field} -> {target} {value!r}")
+            walk(r["doctype"], r, f"{r['doctype']} {r['name']}", 0)
     assert not dangling, dangling[:10]
+    assert checked["top"] and checked["child"], f"checked nothing real: {checked}"
 
 
 def test_no_demo_seeding_survives():

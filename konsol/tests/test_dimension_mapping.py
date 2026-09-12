@@ -4,6 +4,7 @@ Parse the doctype JSON / controller / dbt_config source without a live Frappe
 site, mirroring test_connector_registry.py / test_fact_registry.py.
 """
 import json
+import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -134,8 +135,9 @@ def test_dimension_mapping_is_not_a_fixture():
     force-reimported on every migrate, so a site's own mappings would be
     overwritten by another company's."""
     src = _read("hooks.py")
-    fixtures = src.split("fixtures = [")[1].split("]")[0]
-    entries = [l.strip() for l in fixtures.splitlines() if l.strip().startswith('"')]
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "fixtures" for t in n.targets))
+    entries = [f'"{e if isinstance(e, str) else e.get("dt")}",' for e in ast.literal_eval(node.value)]
     assert '"Dimension Mapping",' not in entries
 
 

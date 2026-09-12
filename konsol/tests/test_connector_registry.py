@@ -4,6 +4,7 @@ Parse the doctype JSON / controllers / dbt_config source without a live Frappe
 site, mirroring test_fact_registry.py / test_config_doctypes.py.
 """
 import json
+import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -178,6 +179,7 @@ def test_connector_is_not_a_fixture():
     Connector records, credentials included, into this public repo. Connectors
     are per-site configuration."""
     src = _read(os.path.join(APP_DIR, "hooks.py"))
-    fixtures = src.split("fixtures = [")[1].split("]")[0]
-    entries = [l.strip() for l in fixtures.splitlines() if l.strip().startswith('"')]
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "fixtures" for t in n.targets))
+    entries = [f'"{e if isinstance(e, str) else e.get("dt")}",' for e in ast.literal_eval(node.value)]
     assert '"Connector",' not in entries
