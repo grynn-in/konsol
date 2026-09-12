@@ -214,6 +214,9 @@ def reap_stale_build_approvals():
                WHERE name = %s AND workflow_state = %s""",
             (note, now, now, row["name"], row["workflow_state"]),
         )
+        # The UPDATE matched nothing if the row moved on meanwhile.
+        if frappe.db.get_value("Build Approval", row["name"], "error_message") != note:
+            continue
         if row["workflow_state"] == "Running":
             frappe.db.sql(
                 """UPDATE `tabPipeline Run`

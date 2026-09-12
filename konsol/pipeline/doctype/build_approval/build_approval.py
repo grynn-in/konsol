@@ -84,7 +84,12 @@ class BuildApproval(Document):
             # state the debounce treats as in-flight forever (#125, #128 review).
             enqueue_after_commit=True,
             # Named, so the reaper can ask RQ whether it is still waiting (#125).
+            # deduplicate: skip if that job is still queued or running, and
+            # otherwise delete the finished one first. RQ reuses the old key
+            # with its 10-minute result TTL, so a re-approval soon after a run
+            # could expire before a worker reached it and never build.
             job_id=governed_build_job_id(self.name),
+            deduplicate=True,
         )
         frappe.logger().info(
             f"Governed build enqueued: {self.name} (scope={self.build_scope})"
