@@ -485,7 +485,7 @@ def test_a_write_through_controller_deletes_with_after_delete():
         "Allocation Driver", "Allocation Rule", "Consolidation Group",
         "IC Elimination Rule", "Scenario", "Spread Profile",
         # submittable: masked by the docstatus=1 filter, not by design
-        "Consolidation Adjustment", "Historical Equity Rate", "IC Balance",
+        "Historical Equity Rate", "IC Balance",
         "Ownership Period",
     }
 

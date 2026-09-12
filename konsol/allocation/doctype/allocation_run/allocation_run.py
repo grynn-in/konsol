@@ -80,9 +80,13 @@ class AllocationRun(Document):
     def on_submit(self):
         frappe.db.after_commit.add(sync_allocation_runs_to_clickhouse)
 
-    def on_cancel(self):
+    def before_cancel(self):
+        # Set before the cancel is written. The old on_cancel called
+        # self.save() on the cancelled doc, which Frappe refuses ("Cannot edit
+        # cancelled document"), so every cancel failed (#131's convention).
         self.status = "Reversed"
-        self.save()
+
+    def on_cancel(self):
         frappe.db.after_commit.add(sync_allocation_runs_to_clickhouse)
 
     def on_trash(self):

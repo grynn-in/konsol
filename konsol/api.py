@@ -1456,17 +1456,11 @@ def get_reporting_hierarchy_tree(hierarchy_name=None):
 
 @frappe.whitelist(methods=["POST"])
 def approve_adjustment(name):
-    """Approve a Consolidation Adjustment (Pending Approval -> Approved)."""
-    doc = frappe.get_doc("Consolidation Adjustment", name)
-    if doc.status != "Pending Approval":
-        frappe.throw(
-            f"Cannot approve: current status is '{doc.status}', expected 'Pending Approval'",
-            frappe.ValidationError,
-        )
-    doc.status = "Approved"
-    doc.approved_by = frappe.session.user
-    doc.approved_at = now_datetime()
-    doc.save()
+    """Approve a Consolidation Adjustment: the workflow's Approve, which
+    submits it (#131). Pending Approval -> Approved."""
+    from frappe.model.workflow import apply_workflow
+
+    doc = apply_workflow(frappe.get_doc("Consolidation Adjustment", name), "Approve")
     return {
         "status": doc.status,
         "approved_by": doc.approved_by,
@@ -1476,45 +1470,15 @@ def approve_adjustment(name):
 
 @frappe.whitelist(methods=["POST"])
 def reverse_adjustment(name):
-    """Reverse an Approved Consolidation Adjustment.
+    """Reverse an Approved Consolidation Adjustment: the workflow's Reverse,
+    which cancels it and so removes it from the warehouse (#131). Refused once
+    its period is closed; a correction then is a new adjustment in an open
+    period. It used to insert a mirror adjustment and save() the submitted
+    original, which always raised."""
+    from frappe.model.workflow import apply_workflow
 
-    Creates a reversal doc with negated amounts, links both via reversal_journal_id.
-    """
-    doc = frappe.get_doc("Consolidation Adjustment", name)
-    if doc.status != "Approved":
-        frappe.throw(
-            f"Cannot reverse: current status is '{doc.status}', expected 'Approved'",
-            frappe.ValidationError,
-        )
-
-    reversal = frappe.new_doc("Consolidation Adjustment")
-    reversal.consolidation_group = doc.consolidation_group
-    reversal.adjustment_type = doc.adjustment_type
-    reversal.journal_id = f"REV-{doc.journal_id}"
-    reversal.data_area_id = doc.data_area_id
-    reversal.fiscal_year = doc.fiscal_year
-    reversal.fiscal_period = doc.fiscal_period
-    reversal.main_account = doc.main_account
-    reversal.debit_amount = doc.credit_amount  # swap
-    reversal.credit_amount = doc.debit_amount  # swap
-    reversal.description = f"Reversal of {doc.name}"
-    reversal.posted_by = frappe.session.user
-    reversal.status = "Approved"
-    reversal.approved_by = frappe.session.user
-    reversal.approved_at = now_datetime()
-    reversal.reversal_journal_id = doc.name
-    reversal.insert()
-    reversal.submit()
-
-    doc.status = "Reversed"
-    doc.reversal_journal_id = reversal.name
-    doc.save()
-
-    return {
-        "original": doc.name,
-        "reversal": reversal.name,
-        "status": "Reversed",
-    }
+    doc = apply_workflow(frappe.get_doc("Consolidation Adjustment", name), "Reverse")
+    return {"original": doc.name, "status": doc.status}
 
 
 # ---------------------------------------------------------------------------
