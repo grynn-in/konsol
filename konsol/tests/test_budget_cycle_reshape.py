@@ -60,17 +60,21 @@ def test_period_fields_module_is_frappe_free():
 # --- the lock gate (Budget Cycle) ------------------------------------------
 
 def test_cycle_lock_fires_sync_and_d365_once_per_sheet():
-    on_submit = _func(_src(CYCLE_PY), "on_submit")
-    assert "_sync_to_clickhouse" in on_submit
-    assert "enqueue_push_budget_sheet" in on_submit
-    assert 'status", "Locked"' in on_submit  # docstatus 0->1 sets Locked
+    # The lock is set before the submit is written (#136), and the sheet sync
+    # and D365 push run once per sheet after the commit (_push_sheets).
+    src = _src(CYCLE_PY)
+    assert 'self.status = "Locked"' in _func(src, "before_submit")
+    push = _func(src, "_push_sheets")
+    assert "_sync_to_clickhouse" in push and "enqueue_push_budget_sheet" in push
+    assert "after_commit_once" in _func(src, "on_submit")
 
 
 def test_cycle_cancel_reopens_and_withdraws():
-    on_cancel = _func(_src(CYCLE_PY), "on_cancel")
-    assert 'status", "Open"' in on_cancel
-    assert "active=False" in on_cancel          # ClickHouse rows withdrawn
-    assert "withdraw_budget_sheet" in on_cancel
+    src = _src(CYCLE_PY)
+    assert 'self.status = "Open"' in _func(src, "before_cancel")
+    on_cancel = _func(src, "on_cancel")
+    assert "_push_sheets, False" in on_cancel     # ClickHouse rows withdrawn after the commit
+    assert "withdraw_budget_sheet" in _func(src, "_push_sheets")
 
 
 # --- wide -> tall explode (Budget Sheet) -----------------------------------
@@ -195,8 +199,8 @@ def test_d365_jobs_guard_on_cycle_state():
 
 def test_lock_is_isolated_per_sheet():
     # Fix #8: one sheet's failure doesn't abort the whole lock.
-    on_submit = _func(_src(CYCLE_PY), "on_submit")
-    assert "try:" in on_submit and "log_error" in on_submit
+    push = _func(_src(CYCLE_PY), "_push_sheets")
+    assert "try:" in push and "log_error" in push
 
 
 def test_migration_provisions_dims_and_normalizes_and_purges_ch():

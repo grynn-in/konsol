@@ -55,13 +55,9 @@ def test_every_listed_doctype_gates_its_cancel_on_the_period():
 
 def test_no_controller_db_sets_itself_on_submit_or_cancel():
     """db_set in on_submit/on_cancel changes a submitted/cancelled doc: set
-    the field in before_submit/before_cancel (#136)."""
-    # Budget Cycle's lock IS the D365 write-back push, which is being dumped
-    # and redesigned (Deepak, 13 Sep 2026): exempt until then.
+    the field in before_submit/before_cancel (Budget Cycle did; #136)."""
     offenders = []
     for rel, cls in _classes():
-        if cls.name == "BudgetCycle":
-            continue
         for hook in ("on_submit", "on_cancel"):
             fn = _method(cls, hook)
             if fn is None:
@@ -103,3 +99,20 @@ def test_the_range_gate_checks_every_period_in_the_range():
     body = ast.unparse(_period_status_fn("assert_open_between"))
     assert "status IN %(settled)s" in body and ">= %(first)s" in body
     assert "'<' if end_exclusive else '<='" in body
+
+
+def test_budget_cycle_locks_before_the_transition_and_pushes_after_the_commit():
+    """The D365 push/withdraw calls are untouched (the write-back is being
+    redesigned); they only run after the commit now, with the sheet sync."""
+    for rel, cls in _classes():
+        if cls.name != "BudgetCycle":
+            continue
+        src = {name: ast.unparse(_method(cls, name)) for name in ("before_submit", "on_submit", "before_cancel", "on_cancel", "_push_sheets")}
+        assert "self.status = 'Locked'" in src["before_submit"]
+        assert "self.status = 'Open'" in src["before_cancel"]
+        for hook in ("on_submit", "on_cancel"):
+            assert "after_commit_once(" in src[hook] and "_sync_to_clickhouse" not in src[hook], hook
+        assert "enqueue_push_budget_sheet" in src["_push_sheets"] and "withdraw_budget_sheet" in src["_push_sheets"]
+        return
+    raise AssertionError("BudgetCycle not found")
+
