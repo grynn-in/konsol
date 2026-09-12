@@ -25,6 +25,15 @@ class BuildApproval(Document):
         State transitions happen here so we can set self.workflow_state directly
         (written with the save — no recursion, no db_set).
         """
+        # A request absorbed by this build sets rebuild_requested without
+        # bumping modified (build_lock.flag_running_build), so a form opened
+        # earlier passes the timestamp check. A save must never clear it
+        # (#139 review). A locking read: a plain one may predate the flag.
+        if not self.is_new() and not self.rebuild_requested:
+            current = frappe.db.sql(
+                "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE", self.name)
+            if current and current[0][0]:
+                self.rebuild_requested = 1
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:

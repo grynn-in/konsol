@@ -214,8 +214,11 @@ def reap_stale_build_approvals():
                WHERE name = %s AND workflow_state = %s""",
             (note, now, now, row["name"], row["workflow_state"]),
         )
-        # The UPDATE matched nothing if the row moved on meanwhile.
-        if frappe.db.get_value("Build Approval", row["name"], "error_message") != note:
+        # Read after our own UPDATE, which saw the latest row: a flag set since
+        # the get_all above is visible here (#139 review). A row that moved on
+        # meanwhile didn't match, and still carries its own error_message.
+        after = frappe.db.get_value("Build Approval", row["name"], ["error_message", "rebuild_requested"], as_dict=True)
+        if after.error_message != note:
             continue
         if row["workflow_state"] == "Running":
             frappe.db.sql(
@@ -227,7 +230,7 @@ def reap_stale_build_approvals():
                  tuple(ACTIVE_RUN_STATES)),
             )
         reaped.append(row["name"])
-        if row.get("rebuild_requested"):
+        if after.rebuild_requested:
             follow_ups.append(row)
     if reaped:
         frappe.db.commit()
@@ -240,6 +243,7 @@ def reap_stale_build_approvals():
 
             request_build_for_scope(row["build_scope"], "Build Approval", row["name"])
         except Exception:
+            frappe.db.rollback()
             frappe.log_error(title=f"Follow-up build request for {row['name']} failed")
     return reaped
 

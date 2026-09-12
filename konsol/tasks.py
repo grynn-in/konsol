@@ -265,46 +265,44 @@ def run_governed_build(build_request):
                 status="Failed",
                 error_log=doc.error_message,
             )
-            _finish_governed_build(doc)
-            return
-
-        _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
-
-        # Build dbt command
-        settings = frappe.get_single("EPM Settings")
-        project_path = settings.dbt_project_path
-        cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
-
-        selector = _scope_selector(doc.build_scope)
-        if selector:
-            cmd.extend(["--select", selector])
-
-        # Execute
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=project_path,
-        )
-        output = result.stdout + "\n" + result.stderr
-        doc.build_output = output[-5000:]  # cap at 5K chars
-
-        if result.returncode == 0:
-            doc.workflow_state = "Completed"
-            _finalize_governed_pipeline_run(
-                pipeline_run,
-                status="Completed",
-                dbt_result=doc.build_output[:500],
-            )
         else:
-            doc.workflow_state = "Failed"
-            doc.error_message = f"dbt build failed (rc={result.returncode})"
-            _finalize_governed_pipeline_run(
-                pipeline_run,
-                status="Failed",
-                error_log=doc.error_message,
+            _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
+
+            # Build dbt command
+            settings = frappe.get_single("EPM Settings")
+            project_path = settings.dbt_project_path
+            cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
+
+            selector = _scope_selector(doc.build_scope)
+            if selector:
+                cmd.extend(["--select", selector])
+
+            # Execute
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=project_path,
             )
+            output = result.stdout + "\n" + result.stderr
+            doc.build_output = output[-5000:]  # cap at 5K chars
+
+            if result.returncode == 0:
+                doc.workflow_state = "Completed"
+                _finalize_governed_pipeline_run(
+                    pipeline_run,
+                    status="Completed",
+                    dbt_result=doc.build_output[:500],
+                )
+            else:
+                doc.workflow_state = "Failed"
+                doc.error_message = f"dbt build failed (rc={result.returncode})"
+                _finalize_governed_pipeline_run(
+                    pipeline_run,
+                    status="Failed",
+                    error_log=doc.error_message,
+                )
 
     except subprocess.TimeoutExpired:
         doc.workflow_state = "Failed"
@@ -360,6 +358,7 @@ def _finish_governed_build(doc):
         try:
             request_build_for_scope(doc.build_scope, "Build Approval", doc.name)
         except Exception:
+            frappe.db.rollback()   # the job commits on return; don't keep half a request
             frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
 
 

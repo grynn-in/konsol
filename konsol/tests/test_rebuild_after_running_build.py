@@ -40,7 +40,10 @@ def test_every_terminal_path_after_running_goes_through_the_finish():
     finishes = [c for c in calls if getattr(c.func, "id", "") == "_finish_governed_build"]
     # the Running save, and the could-not-start save (a flag needs Running)
     assert len(saves) == 2, len(saves)
-    assert len(finishes) == 2, "the preflight failure and the end of the build"
+    assert len(finishes) == 1, "one finish, after the try, that every terminal path reaches once"
+    assert any(isinstance(n, ast.Expr) and getattr(n.value, "func", None) is not None
+               and getattr(n.value.func, "id", "") == "_finish_governed_build" for n in fn.body), (
+        "the finish is a top-level statement, not inside the try (#139 review)")
 
 
 def test_the_finish_rereads_the_flag_under_lock_and_requests_after_commit():
@@ -84,3 +87,23 @@ def test_request_build_for_scope_is_called_only_from_jobs():
                 if (ref or text) and id(n) not in allowed:
                     offenders.append(f"{os.path.relpath(path, APP_DIR)}:{n.lineno}")
     assert not offenders, offenders
+
+
+def test_a_save_never_clears_the_flag():
+    """The flag doesn't bump modified, so a form opened before it passes the
+    timestamp check; its save must not write the flag back to 0 (#139 review)."""
+    path = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "before_save")
+    src = ast.unparse(fn)
+    assert "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE" in src
+    assert "self.rebuild_requested = 1" in src
+
+
+def test_the_reaper_reads_the_flag_after_its_own_update():
+    with open(os.path.join(APP_DIR, "orchestrator", "reaper.py")) as f:
+        body = f.read().split("def reap_stale_build_approvals")[1]
+    assert body.index("WHERE name = %s AND workflow_state = %s") < body.index('"rebuild_requested"], as_dict=True)')
+    assert "if after.rebuild_requested:" in body
+
