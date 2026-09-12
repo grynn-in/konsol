@@ -1,6 +1,6 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026. Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night. Everything below was verified against the running stack._
 
 ## Pick up here
 
@@ -14,25 +14,16 @@ Contoso/Alpine demo data is being replaced, not repaired.
 
 ### Before wiping anything
 
-1. **Finish #110 first. The Ecolab load depends on it.** The Ecolab entities
-   have no ERP connector, so their TBs enter through Trial Balance Submission,
-   and until #110 a connector-less entity has no currency and is dropped at
-   consolidation. State: konsol **#123** (`464f71f`) and konsolidat **#151**
-   (`6400e15`) are open, MERGEABLE and CI-green. Fix the re-review items below,
-   then **merge konsol #123 first**, then #151.
+1. **#110 is done** (konsol #123, konsolidat #151). Connector-less Ecolab
+   entities get their currency from konsol's Entity, so their Trial Balance
+   Submissions consolidate.
 2. **Confirm the wipe's scope with the user, and back up first**
    (`docker compose --profile backup run --rm backup` in `repo/`). "Completely"
    means the MariaDB site *and* the ClickHouse volume. It can't be undone.
-3. **Emptying won't stick without a code change.** `konsol/fixtures/` is
-   force-reimported on **every** migrate (contract 7), and it carries the demo:
-   Consolidation Group, Connector, Scenario, IC Elimination Rule, Allocation
-   Rule/Driver, Spread Profile, Budget Sheet, Dimension Mapping, Reporting
-   Hierarchy (`hooks.py:14-58`). `konsol/demo_data/` seeds ownership and annual
-   budget once. The Entity backfill patch rebuilds Entities from Consolidation
-   Group. And `scripts/generate_demo_data.py` fills `epm_raw` in konsolidat. Split
-   *reference* fixtures (ISO Currency, Fiscal Period, Dimension, Build
-   Scope/Model, Pipeline, Entity Fiscal Calendar?) from *demo* ones, and remove
-   or gate the demo set, or the next migrate brings Contoso back.
+3. **The demo no longer comes back on migrate** (konsol #127, konsolidat
+   #156): `konsol/fixtures/` holds reference data only, and `raw-schema.sql`
+   replaced demo-data.sql. `scripts/generate_demo_data.py` still exists; ask
+   whether to delete it.
 
 ### The workbook (inspected, not yet loaded)
 
@@ -100,35 +91,36 @@ sales, operating income and NI per year match the 10-K within a tolerance. This
 session's big lesson is that "unchanged from before" is not "correct"; the
 anchors are the oracle this project never had.
 
-## State at end of 12 Sep — merged, open, next
+## State at end of 12 Sep (night) — merged, open, next
 
-**User rules added today:** remove the demo; fill with Ecolab data when Grok's
+**User rules (12 Sep):** remove the demo; fill with Ecolab data when Grok's
 corrected workbook is ready; until then keep fixing bugs and merging. **Test
 live, but DON'T DEPLOY**: no `deploy.sh`, it wastes time. Hot-copy into the
 containers and run scripts or dbt from a copy.
 
 | PR | what | state |
 |---|---|---|
-| konsol **#123** / konsolidat **#151** | #110 entity registry | **merged** (`becb5a2` / `71d7dc7`) |
-| konsol **#127** / konsolidat **#156** | demo fixtures removed / raw schema replaces demo-data.sql | **merged** (`d13f420` / `1c84114`) |
-| konsol **#128** | #126: the build trigger queues a job after commit; TBS mapped; `_enqueue_build` after commit (likely #125's root cause) | **merged** `4796146`; #126 closed. Live A/B: a failed submit left `docstatus` 1 on main, 0 after |
-| konsolidat **#157** | #155: every D365 voucher nets to zero at staging; demo BU hack removed; not_null on the key and amount | **merged** `dbfcacf`; #155 closed. A SYNTAX_ERROR that CI's `dbt parse` missed was caught live and fixed |
+| konsol **#123** / konsolidat **#151** | #110 entity registry | merged (`becb5a2` / `71d7dc7`) |
+| konsol **#127** / konsolidat **#156** | demo fixtures removed / raw schema replaces demo-data.sql | merged (`d13f420` / `1c84114`) |
+| konsol **#128** | #126: the build trigger queues a job after commit; TBS mapped | merged `4796146` |
+| konsolidat **#157** | #155: every D365 voucher nets to zero at staging | merged `dbfcacf` |
+| konsol **#133** + konsol-cli **#5** | #130: a governed build request commits with its caller. The 14 `cli_api` writes are POST-only (the CLI/MCP POST them). Both debounces take one global lock (the `tabDocType` 'Build Approval' row), then a locking read of `tabBuild Approval` (indexed on `build_scope`) | merged `b5e0786` / `01721c0` |
+| konsol **#134** / konsolidat **#159** | #131: Consolidation Adjustment follows the conventions below. The workflow is installed by `konsol/workflows.py`; `approve_adjustment` / `reverse_adjustment` go through `apply_workflow`; amend works (`amended_from` added) | merged `530fe16` / `9911947` |
+| konsol **#137** | #125: a Build Approval reaper (30 min; spares a job still in RQ; releases the governed Pipeline Run); `run_governed_build` builds only an Approved row; the build job is named and deduplicated | merged `951b0b8` |
 
-**Since #157:** local dbt builds show a third error (the voucher test
-FAILs 927 on the unsigned demo raw data), and GL layers stay frozen on the demo
-data until the wipe. `severity='error'` was kept on purpose; `warn` is one line
-away if quiet builds are wanted meanwhile.
+**Conventions for submittable and workflow doctypes (decided 12 Sep):**
+1. **Submit is the approval.** Review states are docstatus 0; Approve = submit; nothing changes after submit.
+2. **Cancel only while the period is open** (`before_cancel` → `period_status.assert_open`). A cancelled document leaves the warehouse; after close, correct with a new document.
+3. **Workflows are installed once** (create if missing, never overwrite), from `after_install` and `after_migrate` via `konsol/workflows.py`, because patches never run on a fresh install. Only doctypes in `INSTALLED` get theirs.
+4. Never `self.save()` in `on_submit` / `on_cancel`; set fields in `before_submit` / `before_cancel`; sync after the commit; walk every transition live.
 
-**The wipe** (still to confirm with the user):
-- Bronze GL is incremental delete+insert, so after wiping raw run `dbt run --select bronze_general_journal_account_entries+ --full-refresh`, or the demo rows persist.
-- `gold_consolidated_trial_balance` needs a full refresh too (konsolidat#154).
+`test_workflow_convention.py` enforces what it can. #136 lists the five doctypes that still break these.
 
 **Next bugs:**
-- konsol **#130** (request_governed_rebuild commits in hooks: same class as #126)
-- **#129** (the debounce absorbs requests during a Running build: affects TB changes)
-- **#131** (Consolidation Adjustment approval never reaches staging)
-- **#124** (13 in-transaction write-throughs)
-- **#125** (Build Approval reaper; #128 probably removes the cause but not a stuck row)
+- konsol **#129** (the debounce absorbs requests during a Running build)
+- **#124** (in-transaction write-throughs)
+- **#136** (five doctypes against the conventions)
+- **#135** (a budget-dimension publish commits mid-transaction: Custom Field → `updatedb` commits)
 - konsolidat **#154**, **#153**
 
 **Open questions for the user:**
@@ -137,15 +129,18 @@ away if quiet builds are wanted meanwhile.
 - The wipe scope.
 
 **Lessons:**
-- Live-verify every hook and model change: 814 static tests missed an enqueue TypeError, and `dbt parse` missed a SYNTAX_ERROR.
-- A `docker cp`'d dir must be `chown`ed to frappe, or dbt exits 2 silently.
-- Grep for `OK created`, not just PASS/FAIL.
+- Live-verify every hook and model change. 814 static tests missed an enqueue TypeError, and `dbt parse` missed a SYNTAX_ERROR.
+- The host runner **silently skips** a test file whose imports fail, and any `from konsol… import` needs frappe. Load the module by path, or exec the controller against a stub frappe (`test_consolidation_adjustment_lifecycle.py`). Check that a new test file is counted.
+- `validate_workflow` never checks a state's docstatus, and a direct `submit()` under a workflow isn't a transition. Guard both in the controller.
+- A `docker cp`'d dir must be `chown`ed to frappe, or dbt exits 2 silently. Grep for `OK created`, not just PASS/FAIL.
 
 ## Found this session (all filed)
 
 | issue | what |
 |---|---|
 | konsolidat **#155** | **P0.** Every GL credit is booked as a debit. `4caf9aa` (#118, 29 Jun) dropped `IsCredit` from `stg_d365_fo__gl_entries`; the raw data carries the sign **only** there (927/927 vouchers balance with the flag, 0/927 as signed). This is baseline error `assert_silver_gl_debit_credit_balance`, **not** a "demo-data tension". Budgets lose their sign in the generator itself. |
+| konsol **#135** | A budget-dimension publish commits mid-transaction: `apply_schema`'s Budget Line Custom Field sync commits through `frappe.db.updatedb` |
+| konsol **#136** | Five more submittable doctypes break the conventions (sync in the transaction, `db_set` after submit, no period gate) |
 | konsol **#124** | 32 write-through hook syncs across 14 controllers run *before* commit, so a rollback leaves a ghost row in ClickHouse. Entity is fixed in #123. |
 | konsol **#129** | The debounce counts a Running build as pending, so a TB change during a build can miss gold |
 | konsol **#130** | `request_governed_rebuild` commits inside hooks (Allocation Run before_submit, schema publish) |
@@ -170,9 +165,9 @@ measures. `countIf(period_credit > 0) = 0` would have exposed #155 weeks ago.
 
 | what | where |
 |---|---|
-| konsol (Frappe app), EDIT HERE | `~/Documents/frappe-bench/bench-15/apps/konsol`, on `feat/110-entity-registry` @ 464f71f, clean |
-| konsolidat #110 work | **worktree** `~/Documents/grynn/konsolidat/wt-110` @ 6400e15. Remove it after merge (`git worktree remove`) |
-| konsolidat deploy checkout | `~/Documents/grynn/konsolidat/repo` on `main` @ 3474a1e, **dirty with the #110 dbt files**. The container's `/home/frappe/dbt_project` is a **bind mount** of `repo/dbt_project`, so every `docker cp` there, and the `rm` of the retired guard, wrote into this checkout. Once #151 merges, `git -C repo checkout -- dbt_project && git -C repo clean -fd dbt_project && git -C repo pull`. Don't deploy from it before then |
+| konsol (Frappe app), EDIT HERE | `~/Documents/frappe-bench/bench-15/apps/konsol` on `main`. Each PR gets a worktree, `~/Documents/frappe-bench/konsol-wt-<issue>`, removed after merge |
+| konsol CLAUDE.md | **local only**: `konsol/.gitignore` ignores it on purpose (public repo). It holds the Frappe rules and the conventions above. Never force-add it |
+| konsolidat deploy checkout | `~/Documents/grynn/konsolidat/repo` on `main` @ `9911947`, clean. The container's `/home/frappe/dbt_project` is a **bind mount** of `repo/dbt_project`: a `docker cp` there writes into this checkout |
 | Deploy-owned checkout, NEVER EDIT | `repo/docker/frappe/konsol` |
 | Engram | `.claude/memory/` in the bench checkout (gitignored) |
 | Local stack | `http://localhost:8069`, site `konsolidat.local`, creds `repo/.credentials` |
@@ -185,14 +180,13 @@ measures. `countIf(period_credit > 0) = 0` would have exposed #155 weeks ago.
 
 Capture deploy's own exit code; a trailing `echo` reports 0 even on failure.
 
-**Local stack right now:** deployed `main` ac0c24a plus #110 branch files
-hot-copied (konsol entity.py, entity.json, clickhouse.py, hooks.py, tasks.py;
-the dbt model, tests and ymls; the retired guard deleted in the container). Test
-data AMIT / CG-AMG-AMIT / OP-AMG-AMIT-1970-01-01 / TBS-AMIT-2024-P12-012 is
-still present. All of it goes with the wipe.
+**Local stack right now:** konsol `main` (through #137) hot-copied into
+backend and worker. The Consolidation Adjustment workflow is
+installed on konsolidat.local. The AMIT and ZZ test data are gone. Nothing was
+redeployed.
 
-Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **811/811
-across 73 files**; `cd konsol-exec && node --test src/*.test.mjs
+Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **846/846
+across 77 files** on main; `cd konsol-exec && node --test src/*.test.mjs
 src/orchestrator/*.test.mjs` → 34/34.
 
 Drive the live stack without a deploy by `docker cp` into
