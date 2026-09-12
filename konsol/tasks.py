@@ -425,13 +425,18 @@ def on_consolidation_doc_update(doc, method):
     frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
 
     # Debounce: skip if a non-terminal PBR already exists for this scope
-    existing = frappe.get_all(
-        "Build Approval",
-        filters={
-            "build_scope": scope,
-            "workflow_state": ["in", ["Draft", "Pending Review", "Approved", "Running"]],
-        },
-        limit=1,
+    # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
+    # the transaction's first read, taken before the Build Scope lock above: a
+    # request that waited on the lock would not see the approval the holder had
+    # just committed, and would insert a duplicate (#133 review). FOR UPDATE
+    # reads the latest committed rows.
+    existing = frappe.db.sql(
+        """SELECT name FROM `tabBuild Approval`
+           WHERE build_scope = %s
+             AND workflow_state IN ('Draft', 'Pending Review', 'Approved', 'Running')
+           LIMIT 1 FOR UPDATE""",
+        scope,
+        as_dict=True,
     )
     if existing:
         frappe.logger().info(

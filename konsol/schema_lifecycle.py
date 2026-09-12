@@ -33,8 +33,16 @@ def apply_and_rebuild(doc, action):
     a build for this scope is already pending).
     """
     from konsol.schema_apply import apply_schema
+
+    # Request the build FIRST (#133 review). The scope lock, the debounce and
+    # the insert can fail (a lock-wait timeout, for one); done after the DDL,
+    # that left a schema applied with no rebuild requested. "full" is
+    # high-risk, so the approval waits for an EPM Admin: no build can start
+    # before the DDL below has run. If the DDL fails, the caller's rollback
+    # takes the approval with it.
+    name = _request_governed_build(doc, action)
     apply_schema()
-    return _request_governed_build(doc, action)
+    return name
 
 
 def request_governed_rebuild(doc, action, scope=_PUBLISH_BUILD_SCOPE):
@@ -61,15 +69,22 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     # with no Build Scope row (the fixture ships no "full"); those are rare,
     # admin-only schema publishes.
     frappe.db.sql("SELECT name FROM `tabBuild Scope` WHERE name = %s FOR UPDATE", scope)
-    existing = frappe.get_all(
-        "Build Approval",
-        filters={"build_scope": scope, "workflow_state": ["in", _PENDING_STATES]},
-        limit=1,
+    # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
+    # the transaction's first read, taken before the Build Scope lock above: a
+    # request that waited on the lock would not see the approval the holder had
+    # just committed, and would insert a duplicate (#133 review). FOR UPDATE
+    # reads the latest committed rows.
+    existing = frappe.db.sql(
+        """SELECT name FROM `tabBuild Approval`
+           WHERE build_scope = %(scope)s AND workflow_state IN %(states)s
+           LIMIT 1 FOR UPDATE""",
+        {"scope": scope, "states": tuple(_PENDING_STATES)},
+        as_dict=True,
     )
     if existing:
         frappe.msgprint(
             f"A '{scope}' build is already pending ({existing[0].name}); "
-            f"schema applied — no duplicate build requested."
+            f"no duplicate build requested."
         )
         return existing[0].name
 
@@ -89,7 +104,7 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     pbr.insert(ignore_permissions=True)
 
     frappe.msgprint(
-        f"Schema applied. Build request {pbr.name} created (scope={scope}). "
+        f"Build request {pbr.name} created (scope={scope}). "
         f"High-risk builds require EPM Admin approval before running."
     )
     return pbr.name

@@ -197,5 +197,45 @@ def test_the_governed_build_debounce_is_serialised_per_scope():
     with open(path) as f:
         src = f.read()
     body = src.split("def _request_governed_build")[1].split("\ndef ")[0]
-    assert "FOR UPDATE" in body and body.index("FOR UPDATE") < body.index('"Build Approval",')
+    _assert_locked_debounce(body)
+
+
+def _assert_locked_debounce(body):
+    """The scope lock comes first, and the pending-approval check is ITSELF a
+    locking read. A plain read after the lock still sees the old snapshot
+    under REPEATABLE READ (#133 review)."""
+    scope_lock = body.index("tabBuild Scope")
+    check = body.index("FROM `tabBuild Approval`")
+    assert scope_lock < check
+    assert "FOR UPDATE" in body[check:check + 300], "the pending-approval read must lock"
+
+
+def test_both_build_debounces_use_a_locking_read():
+    with open(TASKS) as f:
+        src = f.read()
+    _assert_locked_debounce(src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0])
+
+
+def test_the_publish_build_is_requested_before_the_ddl():
+    with open(os.path.join(APP_DIR, "schema_lifecycle.py")) as f:
+        body = f.read().split("def apply_and_rebuild")[1].split("\ndef ")[0]
+    code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
+    assert code.index("_request_governed_build(") < code.index("apply_schema()")
+
+
+def test_every_cli_write_endpoint_is_post_only():
+    """Enumerated from cli_api.py. A GET request is rolled back at the end, so
+    a write over GET silently vanished. Reads (list_/get_/export_/diff_/test_,
+    *_status_api) may take GET."""
+    with open(os.path.join(APP_DIR, "cli_api.py")) as f:
+        tree = ast.parse(f.read())
+    reads = ("list_", "get_", "export_", "diff_", "test_")
+    offenders = []
+    for fn in [n for n in tree.body if isinstance(n, ast.FunctionDef)]:
+        deco = [ast.unparse(d) for d in fn.decorator_list if "whitelist" in ast.unparse(d)]
+        if not deco or fn.name.startswith(reads) or fn.name.endswith("_status_api"):
+            continue
+        if deco[0] != "frappe.whitelist(methods=['POST'])":
+            offenders.append(f"{fn.name}: {deco[0]}")
+    assert not offenders, offenders
 

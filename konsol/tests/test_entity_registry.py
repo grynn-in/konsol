@@ -285,6 +285,6 @@ def test_the_build_request_debounce_is_serialised_per_scope():
     with open(os.path.join(APP_DIR, "tasks.py")) as f:
         src = f.read()
     body = src.split("def on_consolidation_doc_update")[1].split("\ndef ")[0]
-    lock = body.index("FOR UPDATE")
-    check = body.index('"Build Approval",')
-    assert "tabBuild Scope" in body[:check] and lock < check
+    scope_lock = body.index("tabBuild Scope")
+    check = body.index("FROM `tabBuild Approval`")
+    assert scope_lock < check and "FOR UPDATE" in body[check:check + 300]

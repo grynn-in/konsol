@@ -56,19 +56,22 @@ def get_dimension_api(name):
     return get_dimension(name)
 
 
-@frappe.whitelist()
+# Every endpoint that writes is POST-only. A GET request is rolled back at the
+# end (frappe/app.py), so a write over GET silently vanished once nothing
+# committed mid-request (#133 review; the konsol CLI and MCP now POST).
+@frappe.whitelist(methods=["POST"])
 def upsert_dimension_api(spec, publish=False):
     """Create or update a Dimension doc. Pass spec as a JSON object."""
     return upsert_dimension(_parse_spec(spec), publish=frappe.utils.cint(publish))
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def publish_dimension_api(name):
     """Publish a Dimension doc and request a governed rebuild."""
     return publish_dimension(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def unpublish_dimension_api(name):
     """Unpublish a Dimension doc and request a governed rebuild."""
     return unpublish_dimension(name)
@@ -86,25 +89,25 @@ def get_measure_api(name):
     return get_measure(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def upsert_measure_api(spec, publish=False):
     """Create or update a Measure doc. Pass spec as a JSON object."""
     return upsert_measure(_parse_spec(spec), publish=frappe.utils.cint(publish))
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def publish_measure_api(name):
     """Publish a Measure doc and request a governed rebuild."""
     return publish_measure(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def unpublish_measure_api(name):
     """Unpublish a Measure doc and request a governed rebuild."""
     return unpublish_measure(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def apply_schema_api(run_dbt=False):
     """Apply schema from published config (dbt vars, ClickHouse DDL, budget fields)."""
     return apply_schema(run_dbt=frappe.utils.cint(run_dbt))
@@ -128,19 +131,19 @@ def get_fact_table_api(name):
     return get_fact_table(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def upsert_fact_table_api(spec, publish=False):
     """Create or update a Dataset doc. Pass spec as a JSON object."""
     return upsert_fact_table(_parse_spec(spec), publish=frappe.utils.cint(publish))
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def publish_fact_table_api(name):
     """Publish a Dataset doc and request a governed rebuild."""
     return publish_fact_table(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def unpublish_fact_table_api(name):
     """Unpublish a Dataset doc and request a governed rebuild."""
     return unpublish_fact_table(name)
@@ -161,13 +164,13 @@ def get_connector_api(name):
     return get_connector(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def upsert_connector_api(spec):
     """Create or update a Connector doc. Pass spec as a JSON object."""
     return upsert_connector(_parse_spec(spec))
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def delete_connector_api(name):
     """Delete a Connector doc by ID (CONN-...) or connector_name."""
     return delete_connector(name)
@@ -189,7 +192,7 @@ def test_connector_writeback_api(name):
     return test_connector_writeback(name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def provision_connector_airbyte_api(name):
     """Test extract creds and provision Airbyte source + connection for a Connector."""
     from konsol.airbyte_service import provision_connector_airbyte
@@ -209,7 +212,7 @@ def export_config_api(status=None):
     return export_config(status=status)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def apply_config_api(spec, publish=False, prune=False):
     """Apply a config bundle (dimensions, measures, fact tables, connectors)."""
     return apply_config(
