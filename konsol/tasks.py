@@ -363,7 +363,7 @@ def _finish_governed_build(doc):
         # After the commit: the request takes the build lock, and must not
         # wait for it while holding this row.
         try:
-            request_build_for_scope(doc.build_scope, "Build Approval", doc.name)
+            request_build_for_scope(doc.build_scope, "Build Approval", doc.name, carries_changes=True)
         except Exception:
             frappe.db.rollback()   # the job commits on return; don't keep half a request
             frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
@@ -455,12 +455,17 @@ def on_consolidation_doc_update(doc, method):
     request_build_for_scope(mapping["scope"], doc.doctype, doc.name)
 
 
-def request_build_for_scope(scope, trigger_doctype, trigger_docname):
+def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_changes=False):
     """Request a build of ``scope``: debounced, serialised, and committed.
 
     It commits, so it runs only inside a job: request_consolidation_build's
     (via on_consolidation_doc_update), a finished build's follow-up
-    (_finish_governed_build), and the reaper's (konsol#126, #129).
+    (_finish_governed_build), and the reaper's (konsol#126, #129, #140).
+
+    ``carries_changes``: this is a follow-up, requested for changes an earlier
+    build absorbed and never read. The new approval is flagged like an
+    absorbing one, so if it too fails to start, the sweep retries it (#140
+    review). Absorbed into a pending build instead, the debounce flags that.
     """
     # Serialise every build request (konsol.build_lock). The debounce below is
     # check-then-insert: two workers running this at once both found nothing
@@ -503,6 +508,7 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname):
     pbr.trigger_doctype = trigger_doctype
     pbr.trigger_docname = trigger_docname
     pbr.requested_by = frappe.session.user
+    pbr.rebuild_requested = 1 if carries_changes else 0
     pbr.insert(ignore_permissions=True)
     frappe.db.commit()
 

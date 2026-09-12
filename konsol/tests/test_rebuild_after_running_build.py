@@ -26,12 +26,12 @@ def test_both_debounces_flag_a_running_build():
         assert src.index("flag_running_build(existing[0])") > src.index("FOR UPDATE"), name
 
 
-def test_only_an_approved_or_running_build_is_flagged_and_modified_is_not_bumped():
+def test_a_pending_or_running_build_is_flagged_and_modified_is_not_bumped():
     path = os.path.join(APP_DIR, "build_lock.py")
     src = ast.unparse(_fn(path, "flag_running_build"))
     assert "row.get('workflow_state') in FLAGGED_STATES" in src
     with open(path) as f:
-        assert 'FLAGGED_STATES = ("Approved", "Running")' in f.read()   # #140
+        assert 'FLAGGED_STATES = ("Draft", "Pending Review", "Approved", "Running")' in f.read()   # #140
     sql = src.split("frappe.db.sql(")[1]
     assert "rebuild_requested = 1" in sql and "modified" not in sql
 
