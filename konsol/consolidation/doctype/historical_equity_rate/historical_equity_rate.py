@@ -7,6 +7,7 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.period_status import assert_open_on
 from konsol.epm.budget_grain import digest_name
 
 
@@ -89,6 +90,11 @@ class HistoricalEquityRate(Document):
                 "in Consolidation Group.",
                 frappe.ValidationError,
             )
+
+    def before_cancel(self):
+        """Cancel only while the period containing the rate date is open
+        (decided 12 Sep 2026; #136)."""
+        assert_open_on(self.rate_date, action="cancel a historical equity rate")
 
     def on_submit(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

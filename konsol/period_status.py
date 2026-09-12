@@ -77,3 +77,21 @@ def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=Non
         doc.end_date = end_date
     doc.save()
     return doc
+
+
+def assert_open_on(date, action="run"):
+    """Refuse work against the closed period that contains ``date``.
+
+    For a date-keyed document (decided 12 Sep 2026: "the period containing
+    its date"). The mapping is the warehouse's: build_date_from_year_period
+    makes fiscal period P of year Y the month starting Y-P-01, so a date falls
+    in (its year, its month). If that macro ever learns a non-calendar fiscal
+    year, this must follow it.
+    """
+    from frappe.utils import getdate
+
+    d = getdate(date)
+    if d is None:
+        return
+    assert_open(d.year, d.month, action=action)
+

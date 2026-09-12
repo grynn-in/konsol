@@ -20,6 +20,7 @@ from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.period_status import assert_open_on
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
 # outside it without complaining, so a period dated 1900 or 9999 would say one
@@ -61,6 +62,11 @@ class OwnershipPeriod(Document):
         self._validate_pct_range()
         self._validate_dates_representable()
         self._check_no_gaps_or_overlaps()
+
+    def before_cancel(self):
+        """Cancel only while the period containing the effective date is open
+        (decided 12 Sep 2026: "the period containing its date"; #136)."""
+        assert_open_on(self.effective_date, action="cancel an ownership period")
 
     def on_submit(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

@@ -6,12 +6,15 @@ rights writes budget cells via Excel; the application manager **submits** the
 cycle (docstatus 1) at the deadline, which locks every sheet and fires the
 ClickHouse sync + D365 write-back once per sheet. Cancel reopens for amendment.
 """
+import functools
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
 from konsol.epm.budget_grain import digest_name
+from konsol.clickhouse import after_commit_once
 
 
 class BudgetCycle(Document):
@@ -47,52 +50,56 @@ class BudgetCycle(Document):
         one 140-char name (see budget_grain.digest_name)."""
         self.name = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
 
+    def before_submit(self):
+        """Lock the cycle. Set here, before the submit is written, not with
+        db_set in on_submit: nothing changes after submit (decided 12 Sep 2026;
+        #136)."""
+        self.status = "Locked"
+        self.locked_by = frappe.session.user
+        self.locked_on = now_datetime()
+
     def on_submit(self):
-        """Lock the cycle: freeze sheets, sync ClickHouse, push D365.
+        """Push the locked sheets downstream, after the commit (#124/#136)."""
+        after_commit_once(("budget_cycle", self.name, "lock"), functools.partial(self._push_sheets, True))
 
-        Each sheet is isolated: one sheet's ClickHouse/enqueue failure is logged
-        and skipped (its d365 status surfaces the gap) rather than aborting the
-        whole lock and rolling back every other sheet's already-applied sync.
-        """
-        self.db_set("status", "Locked", update_modified=False)
-        self.db_set("locked_by", frappe.session.user, update_modified=False)
-        self.db_set("locked_on", now_datetime(), update_modified=False)
-
-        for sheet in self._sheets():
-            try:
-                sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=True)
-                if self._d365_enabled_for(sheet.data_area_id):
-                    from konsol.d365_writeback import enqueue_push_budget_sheet
-                    enqueue_push_budget_sheet(sheet.name)
-            except Exception:
-                frappe.log_error(
-                    title=f"Budget Cycle lock: sheet {sheet.name} sync/push failed",
-                    message=frappe.get_traceback(),
-                )
+    def before_cancel(self):
+        """Unlock the cycle: reopen its sheets for editing."""
+        self.status = "Open"
+        self.locked_by = None
+        self.locked_on = None
 
     def on_cancel(self):
-        """Unlock the cycle: withdraw downstream and reopen sheets for editing."""
-        self.db_set("status", "Open", update_modified=False)
-        self.db_set("locked_by", None, update_modified=False)
-        self.db_set("locked_on", None, update_modified=False)
+        """Withdraw the sheets downstream, after the commit (#124/#136)."""
+        for sheet in self._sheets():
+            if not self._d365_enabled_for(sheet.data_area_id) and sheet.meta.has_field("d365_writeback_status"):
+                # Write-back off: no withdraw job will clear the status, so clear
+                # it here, inside the transaction; else a stale 'Pushed' makes a
+                # later re-lock skip the push. (A write after the commit would
+                # never be committed.)
+                sheet.db_set("d365_writeback_status", "", update_modified=False)
+        after_commit_once(("budget_cycle", self.name, "unlock"), functools.partial(self._push_sheets, False))
 
+    def _push_sheets(self, active):
+        """Sync every sheet to ClickHouse and queue its D365 push (lock) or
+        withdraw (unlock). Runs after the commit, so a sheet synced here can't
+        outlive a lock that rolled back. Each sheet is isolated: one sheet's
+        failure is logged and the rest proceed. The log is deferred, because
+        this runs after the last commit."""
         for sheet in self._sheets():
             try:
-                sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=False)
+                sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=active)
                 if self._d365_enabled_for(sheet.data_area_id):
-                    frappe.enqueue(
-                        "konsol.d365_writeback.withdraw_budget_sheet",
-                        queue="long",
-                        name=sheet.name,
-                    )
-                elif sheet.meta.has_field("d365_writeback_status"):
-                    # Write-back off: no withdraw job to clear status, so clear it
-                    # here — else a stale 'Pushed' makes a later re-lock skip the push.
-                    sheet.db_set("d365_writeback_status", "", update_modified=False)
+                    if active:
+                        from konsol.d365_writeback import enqueue_push_budget_sheet
+
+                        enqueue_push_budget_sheet(sheet.name)
+                    else:
+                        frappe.enqueue("konsol.d365_writeback.withdraw_budget_sheet", queue="long", name=sheet.name)
             except Exception:
                 frappe.log_error(
-                    title=f"Budget Cycle unlock: sheet {sheet.name} withdraw failed",
+                    title=f"Budget Cycle {'lock' if active else 'unlock'}: sheet {sheet.name} sync/push failed",
                     message=frappe.get_traceback(),
+                    defer_insert=True,
                 )
 
     # ------------------------------------------------------------------

@@ -8,6 +8,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
+from konsol.period_status import assert_open
 from konsol.schema_lifecycle import request_governed_rebuild
 
 # The gold_allocation_* models carry build_domain "consolidation" in
@@ -81,6 +82,8 @@ class AllocationRun(Document):
         frappe.db.after_commit.add(sync_allocation_runs_to_clickhouse)
 
     def before_cancel(self):
+        # Reverse only while the period is open (decided 12 Sep 2026; #136).
+        assert_open(self.fiscal_year, self.fiscal_period, action="reverse an allocation run")
         # Set before the cancel is written. The old on_cancel called
         # self.save() on the cancelled doc, which Frappe refuses ("Cannot edit
         # cancelled document"), so every cancel failed (#131's convention).
