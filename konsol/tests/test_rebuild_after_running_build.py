@@ -97,8 +97,10 @@ def test_a_save_never_clears_the_flag():
         tree = ast.parse(f.read())
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "before_save")
     src = ast.unparse(fn)
-    assert "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE" in src
-    assert "self.rebuild_requested = 1" in src
+    assert "before = self.get_doc_before_save()" in src   # loaded FOR UPDATE by check_if_latest
+    assert "if before and before.rebuild_requested and (not self.rebuild_requested):" in src
+    assert src.index("self.rebuild_requested = 1") < src.index("self.rebuild_requested = 0"), (
+        "keep a set flag, then clear it only on a reset to Draft")
 
 
 def test_the_reaper_reads_the_flag_after_its_own_update():

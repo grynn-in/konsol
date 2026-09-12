@@ -28,12 +28,15 @@ class BuildApproval(Document):
         # A request absorbed by this build sets rebuild_requested without
         # bumping modified (build_lock.flag_running_build), so a form opened
         # earlier passes the timestamp check. A save must never clear it
-        # (#139 review). A locking read: a plain one may predate the flag.
-        if not self.is_new() and not self.rebuild_requested:
-            current = frappe.db.sql(
-                "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE", self.name)
-            if current and current[0][0]:
-                self.rebuild_requested = 1
+        # (#139 review). _doc_before_save was loaded FOR UPDATE by
+        # check_if_latest, so it holds the current flag.
+        before = self.get_doc_before_save()
+        if before and before.rebuild_requested and not self.rebuild_requested:
+            self.rebuild_requested = 1
+        # Sent back to Draft to run again: that run builds everything, so the
+        # follow-up the flag promised would be a duplicate.
+        if before and self.workflow_state == "Draft" and before.workflow_state != "Draft":
+            self.rebuild_requested = 0
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
