@@ -26,9 +26,17 @@ _CH_TYPE_MAP = {
 }
 
 
+_BUDGET_FIELD_SYNC_JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
+
+
 @frappe.whitelist()
 def apply_schema(run_dbt=False):
     """Read all config doctypes, regenerate everything in one shot.
+
+    The standalone action (Apply Schema, `konsol apply-schema`). It syncs the
+    Budget Line Custom Fields inline, and that commits (see
+    queue_budget_custom_field_sync); nothing else is pending in its
+    transaction. A publish calls apply_schema_for_publish instead.
 
     Args:
         run_dbt: If True, enqueue a background dbt build after schema changes.
@@ -39,9 +47,86 @@ def apply_schema(run_dbt=False):
     Raises:
         frappe.PermissionError: If caller lacks EPM Admin role.
     """
+    _check_schema_role()
+    summary = _apply_schema_steps()
+
+    # 4. Sync Budget Line custom fields (in_budget dimension columns)
+    try:
+        summary["budget_fields_synced"] = _sync_budget_custom_fields()
+    except Exception as e:
+        summary["errors"].append(f"Budget fields: {str(e)}")
+        frappe.log_error("schema_apply: budget fields failed", frappe.get_traceback())
+
+    # 5. Optional dbt build
+    if run_dbt or frappe.form_dict.get("run_dbt"):
+        try:
+            frappe.enqueue(
+                "konsol.tasks.run_dbt_build_async",
+                queue="long",
+                timeout=600,
+            )
+            summary["dbt_triggered"] = True
+        except Exception as e:
+            summary["errors"].append(f"dbt trigger: {str(e)}")
+
+    return summary
+
+
+def apply_schema_for_publish():
+    """apply_schema inside a publish's transaction (konsol#135).
+
+    Steps 1-3 as apply_schema. The Budget Line Custom Field sync is queued for
+    after the commit instead of run here: a Custom Field insert commits, so it
+    committed the publish's save halfway and split it from the build request
+    that follows. A publish that rolls back queues nothing.
+    """
+    _check_schema_role()
+    summary = _apply_schema_steps()
+    try:
+        summary["budget_fields_synced"] = queue_budget_custom_field_sync()
+    except Exception as e:
+        # Redis unreachable, say. The publish stands; after_migrate, the next
+        # publish or a manual apply_schema repairs Budget Line.
+        summary["errors"].append(f"Budget fields: {str(e)}")
+        frappe.log_error("schema_apply: budget field sync not queued", frappe.get_traceback())
+    return summary
+
+
+def queue_budget_custom_field_sync():
+    """Sync Budget Line's Custom Fields in a job enqueued after the commit.
+
+    The sync cannot run inside a transaction that has other work in it:
+    CustomField.on_update calls frappe.db.updatedb, which ends with an
+    unconditional commit (a DDL change can't be transactional in MariaDB).
+
+    A job, not frappe.db.after_commit.add: the sync's deletes don't commit on
+    their own, and an after-commit callback that failed halfway could only
+    discard its work with frappe.db.rollback(), which also drops every
+    callback queued behind it. The job has its own transaction, which the job
+    runner commits, or rolls back and logs. It reads the committed
+    dimensions, and the sync is a full diff, so running it twice is harmless.
+    """
+    frappe.enqueue(_BUDGET_FIELD_SYNC_JOB, queue="short", enqueue_after_commit=True)
+    return ["queued after commit"]
+
+
+def sync_budget_custom_fields_job():
+    """Job for queue_budget_custom_field_sync. The job runner commits."""
+    actions = _sync_budget_custom_fields()
+    if actions:
+        frappe.logger().info(f"Budget Line custom fields synced: {actions}")
+    return actions
+
+
+def _check_schema_role():
     allowed_roles = {"EPM Admin", "System Manager", "Administrator"}
     if not allowed_roles.intersection(set(frappe.get_roles())):
         frappe.throw("Only EPM Admin users can apply schema changes", frappe.PermissionError)
+
+
+def _apply_schema_steps():
+    """apply_schema's steps 1-3: dbt vars and ClickHouse DDL. No MariaDB writes
+    other than error logs, so no commit."""
     summary = {
         "vars_updated": False,
         "columns_added": [],
@@ -75,25 +160,6 @@ def apply_schema(run_dbt=False):
     except Exception as e:
         summary["errors"].append(f"Fact tables: {str(e)}")
         frappe.log_error("schema_apply: fact tables failed", frappe.get_traceback())
-
-    # 4. Sync Budget Line custom fields (in_budget dimension columns)
-    try:
-        summary["budget_fields_synced"] = _sync_budget_custom_fields()
-    except Exception as e:
-        summary["errors"].append(f"Budget fields: {str(e)}")
-        frappe.log_error("schema_apply: budget fields failed", frappe.get_traceback())
-
-    # 5. Optional dbt build
-    if run_dbt or frappe.form_dict.get("run_dbt"):
-        try:
-            frappe.enqueue(
-                "konsol.tasks.run_dbt_build_async",
-                queue="long",
-                timeout=600,
-            )
-            summary["dbt_triggered"] = True
-        except Exception as e:
-            summary["errors"].append(f"dbt trigger: {str(e)}")
 
     return summary
 
