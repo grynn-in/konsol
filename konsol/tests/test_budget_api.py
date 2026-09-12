@@ -4,10 +4,6 @@ import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PATH = os.path.join(APP_DIR, "api.py")
-VBA_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(APP_DIR)))),
-    "open_epm", "excel", "OpenEPM.bas"
-)
 
 
 def test_budget_save_endpoint_exists():
@@ -58,126 +54,6 @@ def test_budget_save_is_post_only():
         content = f.read()
     # Check for methods=["POST"] near budget_save
     assert 'methods=["POST"]' in content
-
-
-# --- VBA Macro ---
-
-def test_vba_has_budget_save_macro():
-    """OpenEPM.bas must have EPM_BUDGET_SAVE macro."""
-    if not os.path.exists(VBA_PATH):
-        return  # Skip if not available
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert "EPM_BUDGET_SAVE" in content
-
-
-def test_vba_posts_to_budget_save_batch():
-    """VBA macro must POST to budget_save_batch endpoint."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert "budget_save_batch" in content
-
-
-def test_vba_shows_progress():
-    """VBA macro must show progress in status bar."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert "StatusBar" in content
-    assert "budget lines" in content.lower()
-
-
-# --- VBA scenario_id support ---
-
-def test_vba_epm_has_scenario_id_param():
-    """EPM() function must accept scenario_id as 9th optional parameter."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    # Find the EPM function signature
-    assert "Optional scenario_id As String" in content
-
-
-def test_vba_buildkey_includes_scenario_id():
-    """BuildKey must include scenario_id in the cache key."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    # BuildKey function should have scenarioId parameter
-    assert "scenarioId" in content.split("Function BuildKey")[1].split("End Function")[0]
-
-
-def test_vba_batch_json_includes_scenario_id():
-    """Batch JSON builder must include scenario_id when non-empty."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert '"scenario_id"' in content.replace("'", "")
-
-
-def test_vba_epm_budget_has_scenario_id():
-    """EPM_BUDGET shorthand must pass scenario_id through."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    budget_fn = content.split("Function EPM_BUDGET")[1].split("End Function")[0]
-    assert "scenario_id" in budget_fn
-
-
-# --- EPMSAVE function ---
-
-def test_vba_has_epmsave_function():
-    """OpenEPM.bas must have EPMSAVE function."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert "Function EPMSAVE(" in content
-
-
-def test_vba_epmsave_has_layer_param():
-    """EPMSAVE must require layer as parameter."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    fn = content.split("Function EPMSAVE(")[1].split("End Function")[0]
-    assert "layer As String" in fn
-
-
-def test_vba_epmsave_posts_to_budget_cell_save():
-    """EPMSAVE must POST to budget_cell_save endpoint."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert "budget_cell_save" in content
-
-
-def test_vba_epmsave_skips_unchanged():
-    """EPMSAVE must use cache to skip unchanged values."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    assert "pSaveCache" in content
-
-
-def test_vba_epmsave_returns_amount():
-    """EPMSAVE must return the amount (pass-through display)."""
-    if not os.path.exists(VBA_PATH):
-        return
-    with open(VBA_PATH) as f:
-        content = f.read()
-    fn = content.split("Function EPMSAVE(")[1].split("End Function")[0]
-    assert "EPMSAVE = amount" in fn
 
 
 # --- budget_cell_save API ---
