@@ -19,6 +19,7 @@ import inspect
 import os
 import sys
 import traceback
+import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = os.path.join(ROOT, "konsol", "tests")
@@ -27,9 +28,6 @@ TESTS = os.path.join(ROOT, "konsol", "tests")
 # while the run still reported green.
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-
-#: Module trees a test file may stub or bind to a stub; reset after each file.
-_ISOLATED = ("frappe", "konsol")
 
 
 def _discover():
@@ -46,31 +44,53 @@ def _load(path):
     return module
 
 
+def _is_skip(exc):
+    """A test's own "skip me": unittest.SkipTest, or pytest's Skipped (from
+    importorskip / pytest.skip), which is a BaseException and would otherwise
+    escape the runner."""
+    return isinstance(exc, unittest.SkipTest) or type(exc).__name__ == "Skipped"
+
+
 def _skip_reason(exc):
     """Why a file cannot run on a host, or None when its load error is a real
-    failure. Only a missing third-party module, pytest or frappe is a reason:
-    a broken konsol import (a renamed name, a syntax error) must fail the run,
-    not vanish into the skipped count."""
+    failure. A broken konsol import (a renamed name, a missing submodule of an
+    installed package, a syntax error) must fail the run, not vanish into the
+    skipped count."""
+    if _is_skip(exc):
+        return f"skipped: {exc}"
     if isinstance(exc, ImportError):
         root = (exc.name or "").split(".")[0]
         if root == "frappe":
             return "needs frappe"
         if isinstance(exc, ModuleNotFoundError) and root and root != "konsol":
-            return f"needs {root}"
+            # Only when the package itself is absent; a missing submodule of
+            # an installed one (requests.nonexistent) is a bug.
+            if importlib.util.find_spec(root) is None:
+                return f"needs {root}"
+            return None
         if exc.name is None and str(exc).startswith("needs "):
             return str(exc)  # a test's own guard, e.g. ImportError("needs yaml")
     return None
 
 
+def _is_stub(module):
+    """A stand-in module a test built (types.ModuleType), not a real import."""
+    return getattr(module, "__file__", None) is None and not hasattr(module, "__path__")
+
+
 def _isolate(before):
-    """Put frappe and konsol modules back as they were before a file ran, so a
-    stub frappe that one file installs cannot bind the konsol modules a later
-    file imports."""
-    for key in [k for k in sys.modules if k.split(".")[0] in _ISOLATED]:
-        if key not in before:
+    """Undo what one file did to konsol and to any stub frappe, so a stub
+    frappe installed by one file cannot bind the konsol modules a later file
+    imports. Real frappe modules stay loaded: frappe raises the gc threshold
+    every time it is imported, and re-importing it per file overflows it."""
+    for key in list(sys.modules):
+        root = key.split(".")[0]
+        if key in before or root not in ("frappe", "konsol"):
+            continue
+        if root == "konsol" or _is_stub(sys.modules[key]):
             del sys.modules[key]
     for key, mod in before.items():
-        if key.split(".")[0] in _ISOLATED and sys.modules.get(key) is not mod:
+        if key.split(".")[0] in ("frappe", "konsol") and sys.modules.get(key) is not mod:
             sys.modules[key] = mod
 
 
@@ -79,6 +99,7 @@ def main(argv):
     total = passed = 0
     failures = []
     skipped = []
+    load_failures = 0
     needs_pytest = []
     missing_deps = set()
 
@@ -88,15 +109,21 @@ def main(argv):
         try:
             try:
                 module = _load(path)
-            except Exception as exc:
+            except (Exception, unittest.SkipTest) as exc:
                 reason = _skip_reason(exc)
                 if reason:
                     # Needs a live site, pytest or a third-party module: not a
                     # host test here. Listed below, so a skip is never silent.
                     skipped.append((rel, reason))
                 else:
+                    load_failures += 1
                     failures.append((rel, "<load>", f"{type(exc).__name__}: {exc}",
                                      traceback.format_exc()))
+                continue
+            except BaseException as exc:
+                if not _is_skip(exc):
+                    raise
+                skipped.append((rel, f"skipped: {exc}"))
                 continue
 
             for name in dir(module):
@@ -125,13 +152,21 @@ def main(argv):
                     missing_deps.add(exc.name)
                     needs_pytest.append(f"{rel}::{name}")
                     total -= 1
-                except Exception as exc:
-                    failures.append((rel, name, f"{type(exc).__name__}: {exc}",
-                                     traceback.format_exc()))
+                except KeyboardInterrupt:
+                    raise
+                except BaseException as exc:
+                    if _is_skip(exc):
+                        # importorskip inside a test body: skipped, not failed
+                        needs_pytest.append(f"{rel}::{name}")
+                        total -= 1
+                    else:  # includes SystemExit, which would end the run silently
+                        failures.append((rel, name, f"{type(exc).__name__}: {exc}",
+                                         traceback.format_exc()))
         finally:
             _isolate(before)
 
-    print(f"{passed}/{total} passed across {len(paths) - len(skipped)} files")
+    ran = len(paths) - len(skipped) - load_failures
+    print(f"{passed}/{total} passed across {ran} files")
 
     if skipped:
         print(f"\n{len(skipped)} file(s) skipped (need a live site, pytest, or a "
@@ -141,12 +176,17 @@ def main(argv):
 
     if needs_pytest:
         extra = f"; missing modules: {', '.join(sorted(missing_deps))}" if missing_deps else ""
-        print(f"{len(needs_pytest)} test(s) skipped (need a pytest fixture{extra})")
+        print(f"{len(needs_pytest)} test(s) skipped (need a pytest fixture, "
+              f"a skip, or a module{extra})")
 
     if failures:
         print(f"\n{len(failures)} failure(s):")
         for rel, name, msg, tb in failures:
             print(f"\n  {rel}::{name}\n    {msg}")
+            if name == "<load>":
+                # the cause is usually deep inside a konsol import
+                for line in tb.rstrip().splitlines()[-6:]:
+                    print(f"      {line}")
         return 1
     return 0
 
