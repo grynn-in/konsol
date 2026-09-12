@@ -52,16 +52,31 @@ STAGE_OWNERS = {
 
 #: Doctypes whose submit the server refuses unless the period is open
 #: (period_status.assert_open: in before_submit, or in validate for a trial
-#: balance). The home disables their submit buttons in a closed period, so it
-#: never offers what the server refuses, and never blocks what it allows (#149).
+#: balance). A host test runs each controller against a closed period and
+#: checks this list against what actually refuses (#149).
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
     "Trial Balance Submission", "Consolidation Adjustment", "IC Balance", "Allocation Run"})
 
+#: Of those, the ones whose every save is refused in a closed period (a trial
+#: balance checks the period in validate), so their form has nothing left to do.
+SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 
-def submit_blocked(doctype, closed_reason):
-    """Why submitting ``doctype`` would be refused now, or None.
-    ``closed_reason`` is None while the period is open."""
-    return closed_reason if doctype in SUBMIT_NEEDS_OPEN_PERIOD else None
+
+def closed_period(doctype, closed_reason, verb="submit"):
+    """What a queue link to ``doctype`` says in a period that is not open, as
+    ``_action`` keywords (``closed_reason`` is None while it is open).
+
+    The home disables only what the server refuses, and annotates what the
+    server allows but can't complete. A trial balance form takes no save at
+    all in a closed period, so its link is blocked. An adjustment, IC balance
+    or allocation run can still be opened, rejected, edited or deleted there,
+    so its link stays enabled with a note that the submit will be refused.
+    """
+    if not closed_reason or doctype not in SUBMIT_NEEDS_OPEN_PERIOD:
+        return {"blocked": None, "note": None}
+    if doctype in SAVE_NEEDS_OPEN_PERIOD:
+        return {"blocked": closed_reason, "note": None}
+    return {"blocked": None, "note": f"Can't {verb}: {closed_reason}"}
 
 
 #: Most urgent first. A queue is sorted by this, then kept in insertion order.

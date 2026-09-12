@@ -6,7 +6,9 @@
  * The lane is the same for every role (shared context); stages you own are
  * tinted and marked "You". The queue only holds what the server says is yours,
  * and every button carries whether you may press it: a refused action shows
- * disabled with the reason, never as a button that fails after the click.
+ * disabled with the reason, never as a button that fails after the click. An
+ * allowed button can carry a note: the form opens, but what it leads to can't
+ * be completed yet (an approval in a closed period).
  *
  * Each row is two controls side by side, never one inside the other: a
  * button that selects the row (aria-pressed), and the row's action.
@@ -14,7 +16,7 @@
 import { computed, inject, ref, watch } from "vue";
 import { Badge, Button } from "frappe-ui";
 import StatusBadge from "./StatusBadge.vue";
-import { isMine, stageTarget, firstOpenItem, openCount, PERIOD_THEME } from "../home.js";
+import { isMine, stageTarget, firstOpenItem, openCount, actionHint, PERIOD_THEME } from "../home.js";
 
 const props = defineProps({
 	year: { type: String, required: true },
@@ -137,12 +139,13 @@ function openStage(stage) {
 								</button>
 								<span v-if="sec.id === 'waiting' && item.who" class="text-sm text-ink-gray-5">{{ item.who }}</span>
 								<span v-else-if="item.stage" class="text-xs text-ink-gray-5">Stage {{ item.stage }}</span>
+								<span v-if="item.action && sec.id === 'mine' && item.action.allowed && item.action.note" class="text-xs text-ink-gray-5">{{ item.action.note }}</span>
 								<Button
 									v-if="item.action && sec.id === 'mine'"
 									size="sm"
 									:variant="item.state === 'done' ? 'ghost' : 'subtle'"
 									:disabled="!item.action.allowed"
-									:title="item.action.allowed ? '' : item.action.reason"
+									:title="actionHint(item.action)"
 									@click="act(item)"
 								>{{ item.action.label }}</Button>
 							</li>
@@ -170,7 +173,7 @@ function openStage(stage) {
 						</dl>
 						<div v-if="selected.action" class="space-y-2 border-t border-outline-gray-1 px-4 py-3">
 							<Button variant="solid" :disabled="!selected.action.allowed" @click="act(selected)">{{ selected.action.label }}</Button>
-							<p v-if="!selected.action.allowed" class="text-sm text-ink-gray-5">{{ selected.action.reason }}</p>
+							<p v-if="actionHint(selected.action)" class="text-sm text-ink-gray-5">{{ actionHint(selected.action) }}</p>
 						</div>
 					</template>
 					<p v-else class="px-4 py-6 text-sm text-ink-gray-5">Nothing selected.</p>
