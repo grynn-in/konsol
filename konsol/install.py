@@ -97,22 +97,66 @@ def enqueue_reconcile_after_commit():
     frappe.db.after_commit.add(enqueue)
 
 
+#: How long one reconcile may hold the lock, and how long the next one waits
+#: for it. Matches the long queue's job timeout.
+RECONCILE_LOCK_SECONDS = 1500
+
+
 def reconcile_warehouse():
     """Worker job: re-sync every write-through table through ``reconcile_all``.
 
-    Best-effort like the migrate-time reconcile: a table that did not sync
-    (ClickHouse unreachable, wrong target) is logged, not raised. Returns
-    reconcile_all's table -> row count map (None for a table that did not sync).
+    Runs are serialised per site by a Redis lock that waits. A fresh deploy
+    queues two of these (after install, and after the configurator sets the
+    ClickHouse target), and sync_table's TRUNCATE and INSERT are separate
+    statements: two concurrent runs could interleave them (A truncates, B
+    truncates, A inserts, B inserts) and double every row. The second run
+    waits, then reconciles against the newest target. Not
+    ``frappe.enqueue(job_id=..., deduplicate=True)``: that also drops a job
+    whose twin has already *started*, i.e. the one carrying the real target.
+
+    Best-effort like the migrate-time reconcile: a table that did not sync is
+    logged, not raised. When no table synced at all (ClickHouse unreachable,
+    wrong target) an Error Log says so, because the job itself still ends
+    successfully. Returns reconcile_all's table -> row count map (None for a
+    table that did not sync), or None when the lock was never acquired.
     """
     from konsol.clickhouse import reconcile_all
 
-    synced = reconcile_all()
+    lock = frappe.cache.lock(
+        f"konsol:reconcile_warehouse:{frappe.local.site}",
+        timeout=RECONCILE_LOCK_SECONDS,
+        blocking_timeout=RECONCILE_LOCK_SECONDS,
+    )
+    if not lock.acquire():
+        frappe.log_error(
+            title="Warehouse reconcile skipped: another reconcile held the lock",
+            message=f"Waited {RECONCILE_LOCK_SECONDS}s for konsol:reconcile_warehouse:"
+            f"{frappe.local.site}. Run `bench execute konsol.clickhouse.reconcile_all`.",
+        )
+        return None
+    try:
+        synced = reconcile_all()
+    finally:
+        try:
+            lock.release()
+        except Exception:  # noqa: BLE001 — an expired lock is already gone
+            frappe.logger().warning("reconcile job: lock release failed", exc_info=True)
+
     failed = sorted(table for table, rows in synced.items() if rows is None)
     frappe.logger().info(
         f"reconcile job: synced {len(synced) - len(failed)} of {len(synced)} write-through tables"
     )
     if failed:
         frappe.logger().warning(f"reconcile job: not synced: {', '.join(failed)}")
+    if synced and len(failed) == len(synced):
+        frappe.log_error(
+            title="Warehouse reconcile: no table synced",
+            message=f"None of the {len(synced)} write-through tables reached ClickHouse. "
+            "Check the ClickHouse connection in EPM Settings, then run "
+            "`bench execute konsol.clickhouse.reconcile_all`. On a fresh Docker deploy the "
+            "install-time run meets the default localhost target; a second run follows "
+            "once the configurator sets the real one.",
+        )
     return synced
 
 

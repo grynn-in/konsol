@@ -5,16 +5,22 @@ while frappe.flags.in_install is set), and after_migrate was the only caller of
 reconcile_all, so a new site's write-through tables stayed empty until the
 first bench migrate. install.py now queues a reconcile job after the install
 commits, and again when the configurator points EPM Settings at the real
-ClickHouse. Loaded under a private module name with a stub frappe.
+ClickHouse. Loaded under a private module name with a stub frappe and a stub
+konsol.clickhouse; install.py's own functions (_warehouse_target included) run
+unmodified.
 """
 import ast
+import contextlib
 import importlib.util
 import os
 import sys
+import threading
+import time
 import types
 from collections import deque
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SITE = "zz142.local"
 
 
 class _Callbacks:
@@ -41,21 +47,49 @@ class _Settings:
             self._store[key] = getattr(self, key)
 
 
-def _load(enqueue_raises=None, target=None):
-    """install.py over a stub frappe. ``target`` is the EPM Settings store
-    that _warehouse_target reads."""
+class _Lock:
+    """redis-py's Lock over a threading.Lock shared per key."""
+
+    def __init__(self, cache, name, timeout, blocking_timeout):
+        self._cache, self.name = cache, name
+        self.timeout, self.blocking_timeout = timeout, blocking_timeout
+        self._inner = cache.inner.setdefault(name, threading.Lock())
+
+    def acquire(self):
+        got = self._inner.acquire(timeout=self._cache.wait_limit or self.blocking_timeout)
+        if got:
+            self._cache.events.append(("acquire", self.name))
+        return got
+
+    def release(self):
+        self._cache.events.append(("release", self.name))
+        self._inner.release()
+
+
+class _Cache:
+    def __init__(self):
+        self.inner, self.events, self.locks = {}, [], []
+        self.wait_limit = None  # test override of blocking_timeout
+
+    def lock(self, name, timeout=None, blocking_timeout=None):
+        lock = _Lock(self, name, timeout, blocking_timeout)
+        self.locks.append(lock)
+        return lock
+
+
+def _load(enqueue_raises=None, store=None):
+    """install.py over a stub frappe. ``store`` is the EPM Settings record."""
     fake = types.ModuleType("frappe")
     fake.flags = types.SimpleNamespace(in_install="konsol")
+    fake.local = types.SimpleNamespace(site=SITE)
     fake.enqueued = []
-    fake.printed = []
+    fake.errors = []
+    fake.cache = _Cache()
     after_commit = _Callbacks()
-
-    def commit():
-        after_commit.run()
-
-    fake.db = types.SimpleNamespace(after_commit=after_commit, commit=commit, exists=lambda *a: True)
+    fake.db = types.SimpleNamespace(after_commit=after_commit, commit=after_commit.run, exists=lambda *a: True)
     fake.logger = lambda *a, **k: types.SimpleNamespace(
         info=lambda *a, **k: None, warning=lambda *a, **k: None)
+    fake.log_error = lambda title=None, message=None, **k: fake.errors.append(title)
 
     def enqueue(method, **kwargs):
         if enqueue_raises:
@@ -63,8 +97,8 @@ def _load(enqueue_raises=None, target=None):
         fake.enqueued.append((method, kwargs))
 
     fake.enqueue = enqueue
-    store = target if target is not None else {}
-    fake.get_single = lambda doctype: _Settings(store)
+    fake.store = store if store is not None else {}
+    fake.get_single = lambda doctype: _Settings(fake.store)
 
     saved = sys.modules.get("frappe")
     sys.modules["frappe"] = fake
@@ -79,8 +113,33 @@ def _load(enqueue_raises=None, target=None):
         else:
             sys.modules["frappe"] = saved
     mod.frappe = fake
-    mod._warehouse_target = lambda: dict(store)
     return mod, fake
+
+
+@contextlib.contextmanager
+def _clickhouse(store=None, reconcile_all=None):
+    """konsol.clickhouse stub. get_connection mirrors the real one: it reads
+    EPM Settings, password included, with the doctype's defaults."""
+    stub = types.ModuleType("konsol.clickhouse")
+    store = store if store is not None else {}
+    stub.get_connection = lambda: {
+        "host": store.get("clickhouse_host") or "localhost",
+        "port": store.get("clickhouse_port") or "8123",
+        "user": store.get("clickhouse_user") or "default",
+        "password": store.get("clickhouse_password") or "",
+        "secure": False,
+        "verify": True,
+    }
+    stub.reconcile_all = reconcile_all or (lambda: {})
+    saved = sys.modules.get("konsol.clickhouse")
+    sys.modules["konsol.clickhouse"] = stub
+    try:
+        yield stub
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.clickhouse", None)
+        else:
+            sys.modules["konsol.clickhouse"] = saved
 
 
 def _hook(name):
@@ -91,6 +150,21 @@ def _hook(name):
             return ast.literal_eval(node.value)
     return None
 
+
+JOB = ("konsol.install.reconcile_warehouse", {"queue": "long"})
+DEPLOYED = {"clickhouse_host": "clickhouse", "clickhouse_port": 8123,
+            "clickhouse_user": "default", "clickhouse_password": "pw"}
+
+
+def _configure(store, **kwargs):
+    """setup_epm_settings as init.sh calls it; returns (jobs before commit, after)."""
+    mod, fake = _load(store=store)
+    with _clickhouse(fake.store):
+        mod.setup_epm_settings(**{"ch_host": "clickhouse", "ch_port": 8123, "ch_password": "pw", **kwargs})
+    return fake
+
+
+# -- install-app ------------------------------------------------------------
 
 def test_install_hook_is_after_sync_not_after_install():
     """after_install runs before fixtures are imported, and each fixture file
@@ -105,16 +179,15 @@ def test_after_sync_queues_the_job_only_at_the_commit():
     mod.after_sync()
     assert fake.enqueued == [], "queued inside the install transaction"
     fake.db.commit()
-    assert fake.enqueued == [(mod.RECONCILE_JOB, {"queue": "long"})]
+    assert fake.enqueued == [JOB]
     fake.db.commit()
     assert len(fake.enqueued) == 1, "a later commit queued it again"
 
 
 def test_the_job_is_reconcile_not_a_build():
     mod, _ = _load()
-    assert mod.RECONCILE_JOB == "konsol.install.reconcile_warehouse"
+    assert mod.RECONCILE_JOB == JOB[0]
     assert callable(mod.reconcile_warehouse)
-    assert "queue_consolidation_build" not in mod.RECONCILE_JOB
 
 
 def test_redis_down_does_not_fail_the_install_commit():
@@ -124,36 +197,120 @@ def test_redis_down_does_not_fail_the_install_commit():
     assert fake.enqueued == []
 
 
-def test_reconcile_job_returns_reconcile_all_result():
-    mod, _ = _load()
-    stub = types.ModuleType("konsol.clickhouse")
-    stub.reconcile_all = lambda: {"epm_staging.scenarios": 3, "epm_staging.currencies": None}
-    saved = sys.modules.get("konsol.clickhouse")
-    sys.modules["konsol.clickhouse"] = stub
-    try:
-        assert mod.reconcile_warehouse() == {"epm_staging.scenarios": 3, "epm_staging.currencies": None}
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.clickhouse", None)
-        else:
-            sys.modules["konsol.clickhouse"] = saved
+# -- the configurator (setup_epm_settings) ------------------------------------
 
-
-def test_configurator_setting_a_new_target_queues_the_job():
+def test_configurator_setting_a_new_target_queues_the_job_after_the_commit():
     """init.sh configures ClickHouse after install-app, so the install-time
-    job ran against the default target. A changed target reconciles again."""
-    store = {"clickhouse_host": "localhost", "clickhouse_port": "8123",
-             "clickhouse_user": "default", "clickhouse_password": ""}
-    mod, fake = _load(target=store)
-    mod.setup_epm_settings(ch_host="clickhouse", ch_port=8123, ch_password="pw")
-    assert fake.enqueued == [(mod.RECONCILE_JOB, {"queue": "long"})]
+    job ran against the default target. A changed target reconciles again,
+    once the new settings are committed."""
+    mod, fake = _load(store={})  # a fresh site: every field at its default
+    with _clickhouse(fake.store):
+        fake.db.commit = lambda: fake.enqueued.append("COMMIT") or fake.db.after_commit.run()
+        mod.setup_epm_settings(ch_host="clickhouse", ch_port=8123, ch_password="pw")
+    assert fake.enqueued == ["COMMIT", JOB], f"queued before the commit: {fake.enqueued}"
+
+
+def test_password_change_queues_the_job():
+    fake = _configure(dict(DEPLOYED), ch_password="rotated")
+    assert fake.enqueued == [JOB]
 
 
 def test_redeploy_with_the_same_target_queues_nothing():
     """Every deploy of an existing site runs setup_epm_settings after a
     migrate that has already reconciled."""
-    store = {"clickhouse_host": "clickhouse", "clickhouse_port": 8123,
-             "clickhouse_user": "default", "clickhouse_password": "pw"}
-    mod, fake = _load(target=store)
-    mod.setup_epm_settings(ch_host="clickhouse", ch_port=8123, ch_password="pw")
+    fake = _configure(dict(DEPLOYED))
     assert fake.enqueued == []
+
+
+def test_warehouse_target_includes_the_password():
+    mod, fake = _load(store=dict(DEPLOYED))
+    with _clickhouse(fake.store):
+        before = mod._warehouse_target()
+        fake.store["clickhouse_password"] = "rotated"
+        assert mod._warehouse_target() != before
+        fake.store["clickhouse_password"] = "pw"
+        assert mod._warehouse_target() == before
+
+
+# -- the job ----------------------------------------------------------------
+
+def test_reconcile_job_returns_reconcile_all_result_under_the_lock():
+    mod, fake = _load()
+    seen = []
+
+    def reconcile_all():
+        seen.append(list(fake.cache.events))
+        return {"epm_staging.scenarios": 3, "epm_staging.currencies": None}
+
+    with _clickhouse(reconcile_all=reconcile_all):
+        assert mod.reconcile_warehouse() == {"epm_staging.scenarios": 3, "epm_staging.currencies": None}
+    key = f"konsol:reconcile_warehouse:{SITE}"
+    assert seen == [[("acquire", key)]], "reconcile_all ran outside the lock"
+    assert fake.cache.events == [("acquire", key), ("release", key)]
+    (lock,) = fake.cache.locks
+    assert lock.timeout == lock.blocking_timeout == mod.RECONCILE_LOCK_SECONDS
+    assert fake.errors == [], "a partial sync is not an Error Log"
+
+
+def test_lock_is_released_when_reconcile_raises():
+    mod, fake = _load()
+
+    def boom():
+        raise RuntimeError("ClickHouse exploded")
+
+    with _clickhouse(reconcile_all=boom):
+        try:
+            mod.reconcile_warehouse()
+        except RuntimeError:
+            pass
+    assert [e[0] for e in fake.cache.events] == ["acquire", "release"]
+
+
+def test_a_second_concurrent_run_waits_for_the_first():
+    """Two jobs on two workers: the second must not start reconcile_all until
+    the first has finished, or their TRUNCATE/INSERTs interleave."""
+    mod, fake = _load()
+    log, first_inside, let_first_finish = [], threading.Event(), threading.Event()
+
+    def reconcile_all():
+        name = threading.current_thread().name
+        log.append(f"{name} start")
+        if name == "first":
+            first_inside.set()
+            let_first_finish.wait(5)
+        log.append(f"{name} end")
+        return {"epm_staging.scenarios": 1}
+
+    with _clickhouse(reconcile_all=reconcile_all):
+        first = threading.Thread(target=mod.reconcile_warehouse, name="first")
+        second = threading.Thread(target=mod.reconcile_warehouse, name="second")
+        first.start()
+        assert first_inside.wait(5)
+        second.start()
+        time.sleep(0.2)
+        assert log == ["first start"], f"second ran while first held the lock: {log}"
+        let_first_finish.set()
+        first.join(5)
+        second.join(5)
+    assert log == ["first start", "first end", "second start", "second end"]
+
+
+def test_lock_never_acquired_skips_and_logs():
+    mod, fake = _load()
+    fake.cache.wait_limit = 0.05
+    ran = []
+    with _clickhouse(reconcile_all=lambda: ran.append(1) or {}):
+        held = fake.cache.lock(f"konsol:reconcile_warehouse:{SITE}")
+        assert held.acquire()
+        assert mod.reconcile_warehouse() is None
+        held.release()
+    assert ran == [] and len(fake.errors) == 1
+
+
+def test_every_table_failing_writes_an_error_log():
+    """sync_table and reconcile_all swallow every failure, so the job ends
+    successfully even when nothing reached ClickHouse."""
+    mod, fake = _load()
+    with _clickhouse(reconcile_all=lambda: {"epm_staging.scenarios": None, "epm_gold.currencies": None}):
+        mod.reconcile_warehouse()  # must not raise
+    assert fake.errors == ["Warehouse reconcile: no table synced"]
