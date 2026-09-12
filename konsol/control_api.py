@@ -320,7 +320,7 @@ def _prerequisites(process_id, fy, budget_locked):
                 "Pipeline Run",
                 "Lists → Pipeline → Pipeline Run",
                 _recent_pipeline_ok,
-                owner="Data Engineer",
+                owner="System Manager",
                 stale_hours=24,
             ),
             _check(

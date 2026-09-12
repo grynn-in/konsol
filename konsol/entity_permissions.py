@@ -42,8 +42,23 @@ ENTITY_SCOPED_DOCTYPES = (
 BYPASS_ROLES = frozenset({"System Manager", "Administrator"})
 
 
+#: Roles whose holders work on named entities only (F7, 12 Sep 2026). A user
+#: holding one of these, and none of GROUP_ROLES, sees NO entity until given
+#: one: an Entity Accountant not yet assigned must not see every entity's
+#: trial balance. Everyone else keeps Frappe's "no assignment, no restriction".
+ENTITY_ONLY_ROLES = frozenset({"Entity Accountant"})
+
+#: Roles that work across the group. Holding one keeps the usual default.
+GROUP_ROLES = frozenset({"EPM Admin", "EPM Analyst"})
+
+
 def _bypasses(user, roles):
     return user == "Administrator" or bool(BYPASS_ROLES & set(roles or []))
+
+
+def _entity_only(roles):
+    roles = set(roles or [])
+    return bool(ENTITY_ONLY_ROLES & roles) and not (GROUP_ROLES & roles)
 
 
 def assigned_entities(user=None):
@@ -108,12 +123,13 @@ def allowed_entity_codes(user=None):
     distinguish the two.
     """
     user = user or frappe.session.user
-    if _bypasses(user, frappe.get_roles(user)):
+    roles = frappe.get_roles(user)
+    if _bypasses(user, roles):
         return None
 
     assigned = assigned_entities(user)
     if not assigned:
-        return set() if _restrict_by_default() else None
+        return set() if (_restrict_by_default() or _entity_only(roles)) else None
 
     return subtree_codes(assigned)
 

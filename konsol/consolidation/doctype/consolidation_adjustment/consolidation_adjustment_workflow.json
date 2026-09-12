@@ -11,22 +11,22 @@
   {
    "state": "Draft",
    "doc_status": "0",
-   "allow_edit": "System Manager"
+   "allow_edit": "EPM Analyst"
   },
   {
    "state": "Pending Approval",
    "doc_status": "0",
-   "allow_edit": "System Manager"
+   "allow_edit": "EPM Admin"
   },
   {
    "state": "Approved",
    "doc_status": "1",
-   "allow_edit": "System Manager"
+   "allow_edit": "EPM Admin"
   },
   {
    "state": "Reversed",
    "doc_status": "2",
-   "allow_edit": "System Manager"
+   "allow_edit": "EPM Analyst"
   }
  ],
  "transitions": [
@@ -34,28 +34,28 @@
    "state": "Draft",
    "action": "Send for Approval",
    "next_state": "Pending Approval",
-   "allowed": "System Manager",
+   "allowed": "EPM Analyst",
    "allow_self_approval": 1
   },
   {
    "state": "Pending Approval",
    "action": "Reject",
    "next_state": "Draft",
-   "allowed": "System Manager",
+   "allowed": "EPM Admin",
    "allow_self_approval": 1
   },
   {
    "state": "Pending Approval",
    "action": "Approve",
    "next_state": "Approved",
-   "allowed": "System Manager",
+   "allowed": "EPM Admin",
    "allow_self_approval": 1
   },
   {
    "state": "Approved",
    "action": "Reverse",
    "next_state": "Reversed",
-   "allowed": "System Manager",
+   "allowed": "EPM Admin",
    "allow_self_approval": 1
   }
  ]

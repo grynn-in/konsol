@@ -20,6 +20,114 @@ import frappe
 
 INSTALLED = ("Consolidation Adjustment",)
 
+#: The roles an earlier release shipped in each workflow. A site whose
+#: workflow still carries exactly these, on exactly our states and
+#: transitions, never customised it, so it takes the current definition's
+#: roles. Anything else is the site's own choice and is left alone.
+#: Consolidation Adjustment shipped as System Manager only until F7
+#: (12 Sep 2026), when drafting went to EPM Analyst and approval to EPM Admin.
+PREVIOUSLY_SHIPPED_ROLES = {
+    "Consolidation Adjustment": frozenset({"System Manager"}),
+}
+
+
+def planned_role_upgrade(states, transitions, definition, previous_roles):
+    """The role changes to make to an installed workflow, or None.
+
+    ``states`` is [(state, allow_edit)], ``transitions`` is
+    [(state, action, allowed)], both as installed. Pure, so it is testable
+    without a site.
+    """
+    if not previous_roles:
+        return None
+    installed_roles = {r for _, r in states} | {r for _, _, r in transitions}
+    if installed_roles != set(previous_roles):
+        return None
+    edit = {s["state"]: s["allow_edit"] for s in definition["states"]}
+    allowed = {(t["state"], t["action"]): t["allowed"] for t in definition["transitions"]}
+    if {s for s, _ in states} != set(edit) or {(s, a) for s, a, _ in transitions} != set(allowed):
+        return None
+    if all(edit[s] == r for s, r in states) and all(allowed[(s, a)] == r for s, a, r in transitions):
+        return None
+    return edit, allowed
+
+
+def _upgrade_roles(definition):
+    doctype = definition["document_type"]
+    name = frappe.db.get_value(
+        "Workflow",
+        {"document_type": doctype, "workflow_name": definition.get("workflow_name") or definition["name"]},
+        "name",
+    )
+    if not name:
+        return None
+    wf = frappe.get_doc("Workflow", name)
+    plan = planned_role_upgrade(
+        [(s.state, s.allow_edit) for s in wf.states],
+        [(t.state, t.action, t.allowed) for t in wf.transitions],
+        definition,
+        PREVIOUSLY_SHIPPED_ROLES.get(doctype),
+    )
+    if not plan:
+        return None
+    edit, allowed = plan
+    for s in wf.states:
+        s.allow_edit = edit[s.state]
+    for t in wf.transitions:
+        t.allowed = allowed[(t.state, t.action)]
+    wf.save(ignore_permissions=True)
+    new_roles = set(edit.values()) | set(allowed.values())
+    granted, notes = _grant_previous_approvers(PREVIOUSLY_SHIPPED_ROLES[doctype], new_roles)
+    return {"workflow": wf.name, "granted": granted, "notes": notes}
+
+
+def _grant_previous_approvers(previous_roles, new_roles):
+    """Give the people who could act under the old roles the new ones.
+
+    Without this, the upgrade silently takes approval away from everyone who
+    approved yesterday (they held System Manager, not EPM Admin). Runs once,
+    because the upgrade itself runs once, so it reports every user it could
+    not help rather than failing quietly. Administrator already holds every
+    role.
+
+    Returns ({user: [roles that stuck]}, [notes for the migrate output]).
+    """
+    holders = set(frappe.get_all("Has Role", filters={"parenttype": "User", "role": ["in", sorted(previous_roles)]},
+                                 pluck="parent")) - {"Administrator", "Guest"}
+    if not holders:
+        return {}, []
+    granted, notes = {}, []
+    users = frappe.get_all("User", filters={"name": ["in", sorted(holders)], "enabled": 1},
+                           fields=["name", "role_profile_name"])
+    for u in users:
+        missing = sorted(set(new_roles) - set(frappe.get_roles(u.name)))
+        if not missing:
+            continue
+        if u.role_profile_name:
+            # Saving a user rebuilds its roles from the profile, which would
+            # wipe the grant straight away. The profile is where it belongs.
+            notes.append(f"{u.name} has Role Profile {u.role_profile_name}: add {', '.join(missing)} "
+                         f"to that profile to keep their access")
+            continue
+        # A save can fail after its role rows are written (e.g. in on_update).
+        # Roll back to here so a failed grant leaves nothing half-done. If the
+        # whole transaction is gone (a deadlock), the rollback itself raises:
+        # the workflow save was undone too, install._install_workflows prints
+        # the failure, and the next migrate tries the upgrade again.
+        frappe.db.savepoint("konsol_grant_approver")
+        try:
+            frappe.get_doc("User", u.name).add_roles(*missing)
+        except Exception as e:
+            frappe.db.rollback(save_point="konsol_grant_approver")
+            notes.append(f"{u.name}: could not add {', '.join(missing)} ({type(e).__name__}); add them by hand")
+            continue
+        stuck = sorted(set(missing) & set(frappe.get_roles(u.name)))
+        if stuck:
+            granted[u.name] = stuck
+        if stuck != missing:
+            notes.append(f"{u.name}: {', '.join(sorted(set(missing) - set(stuck)))} did not stick; add by hand")
+    return granted, notes
+
 
 def _definitions():
     root = frappe.get_app_path("konsol")
@@ -35,6 +143,12 @@ def install_workflows():
         if doctype not in INSTALLED or not frappe.db.exists("DocType", doctype):
             continue
         if frappe.db.exists("Workflow", {"document_type": doctype}):
+            upgraded = _upgrade_roles(wf)
+            if upgraded:
+                installed.append(f"{wf['workflow_name']} (roles upgraded)")
+                for user, roles in upgraded["granted"].items():
+                    installed.append(f"{user} given {', '.join(roles)} so they keep the access they had")
+                installed.extend(upgraded["notes"])
             continue
         for state in wf["states"]:
             if not frappe.db.exists("Workflow State", state["state"]):
