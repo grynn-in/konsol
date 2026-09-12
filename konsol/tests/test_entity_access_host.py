@@ -261,7 +261,8 @@ class _Endpoints:
         self.api, self.ep, self.hq = _load_api(), _load(allowed), _load_hq()
         self.flat, self.hier = [], []
         api, hq = self.api, self.hq
-        api._allowed_entities = lambda: allowed
+        # api._allowed_entities is NOT stubbed: the real one reads the private
+        # entity_permissions below, whose allowed_entity_codes is fixed.
         api._resolve_and_validate = lambda fact, scenario, measure, dims: (
             types.SimpleNamespace(fact_name="f"), None)
 
@@ -306,6 +307,14 @@ def test_epm_value_refuses_a_forbidden_entity_before_any_query():
             assert str(err) == _REFUSED_US01
         else:
             raise AssertionError(f"epm_value did not refuse US01 ({mode or 'flat'})")
+    # A blank flat entity would query data_area_id = '' (gold variance tables
+    # hold such rows). In hierarchy mode blank is the wildcard, tested below.
+    try:
+        e.value("")
+    except _Denied as err:
+        assert str(err) == "Not permitted to access entity ''"
+    else:
+        raise AssertionError("epm_value did not refuse a blank entity (flat)")
     assert e.flat == [] and e.hier == []
 
 
@@ -322,9 +331,10 @@ def test_epm_value_reads_a_permitted_entity_and_a_scoped_wildcard():
 def test_epm_batch_refuses_forbidden_rows_and_queries_only_the_rest():
     e = _Endpoints({"DE01"})
     out = e.batch([_row("DE01"), _row("US01"), _row("DE01", "N"), _row("US01", "N"),
-                   _row("ALL", "N")])
-    assert out["errors"] == [None, _REFUSED_US01, None, _REFUSED_US01, None]
-    assert out["values"] == [1.0, None, 2.0, None, 2.0]
+                   _row("ALL", "N"), _row("")])
+    assert out["errors"] == [None, _REFUSED_US01, None, _REFUSED_US01, None,
+                             "Not permitted to access entity ''"]
+    assert out["values"] == [1.0, None, 2.0, None, 2.0, None]
     assert e.flat == ["DE01"]
     assert e.hier == [("DE01", {"DE01"}), ("ALL", {"DE01"})]
 
@@ -336,3 +346,37 @@ def test_endpoints_let_an_unrestricted_reader_read_any_entity():
     assert "errors" not in e.batch([_row("US01"), _row("US01", "N")])
     assert e.flat == ["US01", "US01"]
     assert [x for x, _ in e.hier] == ["US01", "US01"]
+
+
+# ── test_security_source.py must load without frappe (#163 review) ──────────
+
+def _loads_without_frappe(path):
+    """Load a test file under a private name with frappe blocked and every
+    konsol module unloaded, so an import that reaches frappe, directly or
+    through konsol (konsol.clickhouse imports it), raises here. The runner
+    would instead report the file as "needs frappe" and exit 0. Returns the
+    ImportError, or None. Mirrored in test_security_source.py."""
+    hidden = {k: sys.modules.pop(k) for k in list(sys.modules)
+              if k.split(".")[0] in ("frappe", "konsol")}
+    sys.modules["frappe"] = None
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_frappe_free_" + os.path.basename(path)[:-3], path)
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+        return None
+    except ImportError as e:
+        return e
+    finally:
+        for k in [k for k in sys.modules if k.split(".")[0] in ("frappe", "konsol")]:
+            del sys.modules[k]
+        sys.modules.update(hidden)
+
+
+def test_security_source_loads_without_frappe():
+    # CI has no frappe. If test_security_source.py needed it, the runner would
+    # skip the whole file and still pass. A guard inside that file can never
+    # run in that case, so it lives here, in a file that always loads.
+    err = _loads_without_frappe(os.path.join(APP_DIR, "tests", "test_security_source.py"))
+    assert err is None, (
+        f"test_security_source.py cannot load without frappe ({err}); CI would skip it "
+        "and none of its entity-access checks would run")

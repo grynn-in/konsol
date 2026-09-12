@@ -3,7 +3,9 @@
 Moved out of test_security_hardening.py, which imports konsol.api and so needs
 real frappe: the host runner and CI skip that whole file, so these checks never
 ran there. They read api.py and its neighbours as text and parse them with ast,
-so this file imports neither frappe nor konsol.api (see the last test).
+so this file imports neither frappe nor konsol.api. test_entity_access_host.py
+loads it with frappe blocked and fails if it cannot, since a guard in this file
+could not run once the runner skipped it.
 
 The live check that the loaded api._assert_entity_access is the def in api.py
 (test_assert_entity_access_is_the_function_in_the_source) stays in
@@ -247,18 +249,81 @@ def test_assert_entity_access_raises_permission_error_source():
     ], f"{_GATE} body is {body}. {_GATE_WHY}"
 
 
-def test_this_file_runs_without_frappe():
-    # The point of this file: CI has no frappe. A module-level import of frappe
-    # or konsol.api would turn every check above into a silent skip.
-    with open(os.path.abspath(__file__)) as f:
-        tree = ast.parse(f.read())
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            mods = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            mods = [f"{node.module}.{a.name}" for a in node.names]
-        else:
-            continue
-        for m in mods:
-            assert m.split(".")[0] != "frappe" and not m.startswith("konsol.api"), \
-                f"module-level import `{ast.unparse(node)}` needs frappe; CI would skip this file"
+_GUARDED = {_HELPER, _GATE, "assert_entity_access"}
+_EP_MODULE = "konsol.entity_permissions"
+
+
+def _patch_routes(tree):
+    """Routes to replace an entity-access function that the two binding
+    tripwires above do not see:
+
+    * a keyword argument named after a guarded function, e.g.
+      ``vars(module).update(entity_read_scope=...)``;
+    * a handle on the entity_permissions module itself: ``import
+      konsol.entity_permissions`` (aliased or not), ``from konsol import
+      entity_permissions``, or its name as a string (importlib, sys.modules).
+
+    api.py needs none of these: it imports the functions it calls by name, so
+    the rule has no false positives on the current file.
+    """
+    found = []
+    for n in ast.walk(tree):
+        what = None
+        if isinstance(n, ast.keyword) and n.arg in _GUARDED:
+            what = f"keyword argument `{n.arg}=`"
+        elif isinstance(n, ast.Import) and any(a.name == _EP_MODULE for a in n.names):
+            what = f"`{ast.unparse(n)}` (a handle on the module)"
+        elif (isinstance(n, ast.ImportFrom) and n.level == 0 and n.module == "konsol"
+              and any(a.name in ("entity_permissions", "*") for a in n.names)):
+            what = f"`{ast.unparse(n)}` (a handle on the module)"
+        elif isinstance(n, ast.Constant) and n.value == _EP_MODULE:
+            what = f"string '{_EP_MODULE}' (the importlib / sys.modules route)"
+        if what:
+            found.append(f"line {getattr(n, 'lineno', '?')}: {what}")
+    return found
+
+
+def test_api_has_no_route_to_patch_the_entity_rules():
+    # A static tripwire cannot be complete: exec() of a built string, a
+    # sys.modules swap done from another module, or getattr chains on objects
+    # that reach the module are out of its sight. It catches the plain routes;
+    # the endpoint tests in test_entity_access_host.py and the live check in
+    # test_security_hardening.py cover behaviour.
+    found = _patch_routes(ast.parse(_api_src()))
+    assert not found, (
+        "api.py has a route to replace an entity-access function: " + "; ".join(found)
+        + ". api.py imports the functions it calls by name "
+        f"(`from {_EP_MODULE} import ...`); get a security review.")
+
+
+def _loads_without_frappe(path):
+    """Mirror of the helper in test_entity_access_host.py: load a test file
+    with frappe blocked and every konsol module unloaded. Returns the
+    ImportError, or None."""
+    import importlib.util
+    import sys
+
+    hidden = {k: sys.modules.pop(k) for k in list(sys.modules)
+              if k.split(".")[0] in ("frappe", "konsol")}
+    sys.modules["frappe"] = None
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_frappe_free_" + os.path.basename(path)[:-3], path)
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+        return None
+    except ImportError as e:
+        return e
+    finally:
+        for k in [k for k in sys.modules if k.split(".")[0] in ("frappe", "konsol")]:
+            del sys.modules[k]
+        sys.modules.update(hidden)
+
+
+def test_entity_access_host_loads_without_frappe():
+    # The reverse of test_entity_access_host.test_security_source_loads_without_frappe:
+    # each file checks the other, so neither can fall into the runner's
+    # "needs frappe" skip without the other failing.
+    err = _loads_without_frappe(os.path.join(APP_DIR, "tests", "test_entity_access_host.py"))
+    assert err is None, (
+        f"test_entity_access_host.py cannot load without frappe ({err}); CI would skip it "
+        "and none of its entity-access tests would run")
