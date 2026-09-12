@@ -47,6 +47,7 @@ def after_migrate():
     # seeded now; the demo ownership and annual budget that were are gone.
     _reconcile_clickhouse()
     _install_workflows()
+    _ensure_indexes()
     _setup_dashboard()
     _retire_konsol_control_page()
     _sync_budget_line_custom_fields()
@@ -205,6 +206,16 @@ def create_roles():
             role.insert(ignore_permissions=True)
             frappe.logger().info(f"Created role: {role_name}")
     frappe.db.commit()
+
+
+def _ensure_indexes():
+    """Indexes a doctype sync only adds when its JSON changes. Idempotent;
+    never fails a migrate."""
+    try:
+        from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission import on_doctype_update
+        on_doctype_update()
+    except Exception:
+        frappe.logger().warning("index setup skipped during migrate", exc_info=True)
 
 
 def _install_workflows():

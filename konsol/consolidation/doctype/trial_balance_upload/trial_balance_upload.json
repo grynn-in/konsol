@@ -1,0 +1,133 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:TBU-{#####}",
+ "creation": "2026-09-12 22:00:00.000000",
+ "description": "One bulk trial balance file (many entities and periods) and what became of it. Checked and loaded by konsol/tb_bulk.py; each ready entity-period becomes an ordinary Trial Balance Submission.",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "upload_file",
+  "status",
+  "col_break_1",
+  "group_count",
+  "valid_count",
+  "total_rows",
+  "col_break_2",
+  "loaded_count",
+  "failed_count",
+  "result_section",
+  "error",
+  "report"
+ ],
+ "fields": [
+  {
+   "fieldname": "upload_file",
+   "fieldtype": "Attach",
+   "in_list_view": 1,
+   "label": "File",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nChecked\nLoading\nLoaded\nPartly Loaded\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "group_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Entity-periods",
+   "read_only": 1
+  },
+  {
+   "fieldname": "valid_count",
+   "fieldtype": "Int",
+   "label": "Ready",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_rows",
+   "fieldtype": "Int",
+   "label": "Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "loaded_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Loaded",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_count",
+   "fieldtype": "Int",
+   "label": "Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_section",
+   "fieldtype": "Section Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Problem with the file",
+   "read_only": 1
+  },
+  {
+   "fieldname": "report",
+   "fieldtype": "Code",
+   "label": "Report",
+   "options": "JSON",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-12 22:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "Trial Balance Upload",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

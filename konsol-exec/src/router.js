@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import CloseChecklist from "./components/CloseChecklist.vue";
 import StepDetail from "./components/StepDetail.vue";
 import MonthView from "./components/MonthView.vue";
+import UploadView from "./components/UploadView.vue";
 import { currentMonthPath } from "./home.js";
 
 /**
@@ -15,6 +16,7 @@ import { currentMonthPath } from "./home.js";
 const routes = [
 	{ path: "/", redirect: () => currentMonthPath() },
 	{ path: "/:year(\\d{4})/:period(\\d{1,2})", name: "month", component: MonthView, props: true },
+	{ path: "/uploads", name: "uploads", component: UploadView },
 	{ path: "/close", name: "close", component: CloseChecklist },
 	{ path: "/close/:step", name: "step", component: StepDetail, props: true },
 	{ path: "/close/:step/:tab", name: "step-tab", component: StepDetail, props: true },

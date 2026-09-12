@@ -183,6 +183,11 @@ class TrialBalanceSubmission(Document):
         # else.
         assert_open(self.fiscal_year, self.fiscal_period,
                     action="submit a trial balance")
+        # Serialize submissions for one entity: without this lock two
+        # concurrent submits (a bulk load and a month-view upload) could both
+        # pass the duplicate check below and both claim, doubling the entity
+        # in consolidation (#151 review). Held until the request commits.
+        frappe.db.sql("SELECT `name` FROM `tabEntity` WHERE `name` = %s FOR UPDATE", self.data_area_id)
         self._check_no_other_submission()
 
         rows = self._parse_file()
@@ -275,6 +280,8 @@ class TrialBalanceSubmission(Document):
                 "name": ["!=", self.name],
             },
             "name",
+            # a locking read sees the latest committed rows (REPEATABLE READ)
+            for_update=True,
         )
         if other:
             frappe.throw(
@@ -288,8 +295,9 @@ class TrialBalanceSubmission(Document):
             frappe.throw("Attach a trial balance CSV first")
         file_doc = frappe.get_doc("File", {"file_url": self.tb_file})
         content = file_doc.get_content()
-        if isinstance(content, bytes):
-            content = content.decode("utf-8-sig")
+        # Excel's "CSV UTF-8" starts with a byte-order mark, which get_content
+        # may already have decoded into the string.
+        content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("\ufeff")
         try:
             return parse_tb_csv(content)
         except ValueError as e:
@@ -356,6 +364,13 @@ class TrialBalanceSubmission(Document):
                 "credit_amount, description, submission_name, submitted_at) "
                 "VALUES " + ", ".join(values[i:i + batch_size])
             )
+
+
+def on_doctype_update():
+    """Index the one-live-submission check: it is a locking read on
+    (entity, year, period), and without an index InnoDB locks every row of
+    the table for it (#151 review). Runs on doctype sync and after migrate."""
+    frappe.db.add_index("Trial Balance Submission", ["data_area_id", "fiscal_year", "fiscal_period"])
 
 
 def reap_unclaimed_submissions():

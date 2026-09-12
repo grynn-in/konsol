@@ -62,6 +62,8 @@ const homeFailed = computed(() => homeSnap.value.matches("failed"));
 provide("home", { me, tree, month, error: homeError, send: homeSend, router });
 
 const isMonth = computed(() => route.name === "month");
+// Pages that run on the home machine alone and never wait for the close plane.
+const standalone = computed(() => route.name === "uploads");
 const routePeriod = computed(() => (isMonth.value ? parsePeriodRoute(route.params) : null));
 
 /** The period the shell is showing: the URL on a month page, the plane's on a step. */
@@ -148,6 +150,7 @@ function refresh() {
 						</div>
 						<RouterView v-else />
 					</template>
+					<RouterView v-else-if="standalone" />
 					<AppSkeleton v-else-if="planeLoading" />
 					<ErrorState v-else-if="planeFailed" :error="loadError" :busy="false" @retry="send({ type: 'RETRY' })" />
 					<RouterView v-else />

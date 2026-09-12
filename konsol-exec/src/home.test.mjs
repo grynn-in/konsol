@@ -48,6 +48,7 @@ test("the path always says year, month, then view", () => {
 	assert.equal(step[0].to, undefined);
 	assert.equal(step[2].label, "Sign off period");
 	assert.deepEqual(crumbsFor({ name: "month" }), [{ label: "Konsol" }]);
+	assert.deepEqual(crumbsFor({ name: "uploads" }).map((c) => c.label), ["Group", "Upload trial balances"]);
 });
 
 test("navigator opens the current and the selected year", () => {

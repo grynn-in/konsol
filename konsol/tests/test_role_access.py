@@ -110,6 +110,9 @@ MATRIX = {
     "Pipeline Run": {"EPM Admin": "rw", "EPM Analyst": "r", "EPM User": "r"},
     "Assertion Run": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r"},
     "Period Status": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
+    # bulk trial balance upload: only the role that submits trial balances loads
+    # it holds every entity's figures, so not even read for the Analyst
+    "Trial Balance Upload": {"EPM Admin": "rwcd", "EPM Analyst": ""},
     "Budget Sheet": {"Budget Submitter": "rwc", "Entity Accountant": "rwc", "Budget Controller": "rw",
                      "Budget Manager": "rw", "Budget Approver": "rw"},
     "Budget Cycle": {"Budget Manager": "rwcsx", "Budget Submitter": "r", "Budget Controller": "r",
