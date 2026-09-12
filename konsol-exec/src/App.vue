@@ -24,6 +24,7 @@ import { homeMachine } from "./machines/homeMachine.js";
 import { formatPeriod } from "./period.js";
 import { closeSteps } from "./domain.js";
 import { crumbsFor, openCount, parsePeriodRoute } from "./home.js";
+import { isNoAccess } from "./homeApi.js";
 
 const router = useRouter();
 const route = useRoute();
@@ -114,8 +115,8 @@ const busy = computed(() => snapshot.value.matches("refreshing") || homeSnap.val
 const workerHealthy = computed(() => (month.value?.health ? month.value.health.worker : data.value?.worker_healthy !== false));
 
 const homeMessage = computed(() => homeError.value?.message || String(homeError.value || ""));
-// A missing role is not something Retry can fix.
-const noAccess = computed(() => /needs an EPM or budget role/i.test(homeMessage.value));
+// A missing role is not something Retry can fix: decided by status and type.
+const noAccess = computed(() => isNoAccess(homeError.value));
 
 function refresh() {
 	send({ type: "REFRESH" });

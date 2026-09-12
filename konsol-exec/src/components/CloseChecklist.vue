@@ -38,9 +38,6 @@ const remaining = computed(() => steps.value.filter((s) => !SETTLED.has(s.state)
 <template>
 	<div class="mx-auto max-w-4xl px-6 py-8">
 		<div class="mb-7">
-			<!-- U3: the heading is what the page IS. And because the period IS the
-			     page, the heading carries the control rather than repeating a
-			     selection made somewhere else. -->
 			<!-- The period is chosen in the navigator and carried by the URL (F7);
 			     the checklist shows it, it does not choose it. -->
 			<h1 class="text-2xl font-semibold tracking-tight text-ink-gray-9">
