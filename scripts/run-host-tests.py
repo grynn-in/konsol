@@ -28,6 +28,9 @@ TESTS = os.path.join(ROOT, "konsol", "tests")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+#: Module trees a test file may stub or bind to a stub; reset after each file.
+_ISOLATED = ("frappe", "konsol")
+
 
 def _discover():
     for name in sorted(os.listdir(TESTS)):
@@ -43,6 +46,34 @@ def _load(path):
     return module
 
 
+def _skip_reason(exc):
+    """Why a file cannot run on a host, or None when its load error is a real
+    failure. Only a missing third-party module, pytest or frappe is a reason:
+    a broken konsol import (a renamed name, a syntax error) must fail the run,
+    not vanish into the skipped count."""
+    if isinstance(exc, ImportError):
+        root = (exc.name or "").split(".")[0]
+        if root == "frappe":
+            return "needs frappe"
+        if isinstance(exc, ModuleNotFoundError) and root and root != "konsol":
+            return f"needs {root}"
+        if exc.name is None and str(exc).startswith("needs "):
+            return str(exc)  # a test's own guard, e.g. ImportError("needs yaml")
+    return None
+
+
+def _isolate(before):
+    """Put frappe and konsol modules back as they were before a file ran, so a
+    stub frappe that one file installs cannot bind the konsol modules a later
+    file imports."""
+    for key in [k for k in sys.modules if k.split(".")[0] in _ISOLATED]:
+        if key not in before:
+            del sys.modules[key]
+    for key, mod in before.items():
+        if key.split(".")[0] in _ISOLATED and sys.modules.get(key) is not mod:
+            sys.modules[key] = mod
+
+
 def main(argv):
     paths = argv[1:] or list(_discover())
     total = passed = 0
@@ -53,49 +84,60 @@ def main(argv):
 
     for path in paths:
         rel = os.path.relpath(path, ROOT)
+        before = dict(sys.modules)
         try:
-            module = _load(path)
-        except Exception as exc:
-            # A module needing frappe (or pytest) is not a failure here — it is
-            # simply not a host test. Say so rather than reporting a red run.
-            skipped.append((rel, f"{type(exc).__name__}: {exc}"))
-            continue
-
-        for name in dir(module):
-            if not name.startswith("test_"):
-                continue
-            fn = getattr(module, name)
-            if not callable(fn):
-                continue
-
-            # Tests taking arguments want a pytest fixture (monkeypatch, tmp_path).
-            # Not runnable here, and not a failure — report them honestly.
             try:
-                takes_fixtures = bool(inspect.signature(fn).parameters)
-            except (TypeError, ValueError):
-                takes_fixtures = False
-            if takes_fixtures:
-                needs_pytest.append(f"{rel}::{name}")
-                continue
-
-            total += 1
-            try:
-                fn()
-                passed += 1
-            except ModuleNotFoundError as exc:
-                # A third-party import inside the test body (yaml, requests).
-                missing_deps.add(exc.name)
-                needs_pytest.append(f"{rel}::{name}")
-                total -= 1
+                module = _load(path)
             except Exception as exc:
-                failures.append((rel, name, f"{type(exc).__name__}: {exc}",
-                                 traceback.format_exc()))
+                reason = _skip_reason(exc)
+                if reason:
+                    # Needs a live site, pytest or a third-party module: not a
+                    # host test here. Listed below, so a skip is never silent.
+                    skipped.append((rel, reason))
+                else:
+                    failures.append((rel, "<load>", f"{type(exc).__name__}: {exc}",
+                                     traceback.format_exc()))
+                continue
+
+            for name in dir(module):
+                if not name.startswith("test_"):
+                    continue
+                fn = getattr(module, name)
+                if not callable(fn):
+                    continue
+
+                # Tests taking arguments want a pytest fixture (monkeypatch,
+                # tmp_path). Not runnable here, and not a failure — report them.
+                try:
+                    takes_fixtures = bool(inspect.signature(fn).parameters)
+                except (TypeError, ValueError):
+                    takes_fixtures = False
+                if takes_fixtures:
+                    needs_pytest.append(f"{rel}::{name}")
+                    continue
+
+                total += 1
+                try:
+                    fn()
+                    passed += 1
+                except ModuleNotFoundError as exc:
+                    # A third-party import inside the test body (yaml, requests).
+                    missing_deps.add(exc.name)
+                    needs_pytest.append(f"{rel}::{name}")
+                    total -= 1
+                except Exception as exc:
+                    failures.append((rel, name, f"{type(exc).__name__}: {exc}",
+                                     traceback.format_exc()))
+        finally:
+            _isolate(before)
 
     print(f"{passed}/{total} passed across {len(paths) - len(skipped)} files")
 
     if skipped:
         print(f"\n{len(skipped)} file(s) skipped (need a live site, pytest, or a "
-              f"third-party module)")
+              f"third-party module):")
+        for rel, reason in skipped:
+            print(f"  {rel}: {reason}")
 
     if needs_pytest:
         extra = f"; missing modules: {', '.join(sorted(missing_deps))}" if missing_deps else ""

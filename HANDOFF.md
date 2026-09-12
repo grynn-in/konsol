@@ -191,6 +191,13 @@ codes are unique within a tree like leaf codes (the closure joins on code),
 and a named hierarchy is passed on in its stored spelling (ClickHouse is
 case-sensitive). Live site at merge: one tree (MGMT_DEMO), no shared codes.
 
+Host test runner (same PR): `scripts/run-host-tests.py` now imports konsol,
+skips a file only when it needs frappe, pytest or a third-party module (each
+skipped file is listed with its reason), fails the run on any other load
+error such as a broken konsol import, and resets frappe/konsol modules after
+each file so one file's stub frappe cannot leak into the next. Before, three
+files that import konsol never ran and the run still reported green.
+
 ## VBA Excel client retired (konsol #153, konsolidat #163)
 
 The user retired VBA: konsol's Office add-in (`konsol/public/excel-addin`,
