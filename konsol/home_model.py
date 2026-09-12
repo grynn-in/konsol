@@ -58,25 +58,29 @@ SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
     "Trial Balance Submission", "Consolidation Adjustment", "IC Balance", "Allocation Run"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
-#: balance checks the period in validate), so their form has nothing left to do.
+#: balance checks the period in validate): there the draft can only be deleted.
+#: A host test runs validate alone against a closed period and checks this list.
 SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 
 
 def closed_period(doctype, closed_reason, verb="submit"):
-    """What a queue link to ``doctype`` says in a period that is not open, as
-    ``_action`` keywords (``closed_reason`` is None while it is open).
+    """The note a queue link to ``doctype`` carries in a period that is not
+    open, as ``_action`` keywords (``closed_reason`` is None while it is open).
 
     The home disables only what the server refuses, and annotates what the
-    server allows but can't complete. A trial balance form takes no save at
-    all in a closed period, so its link is blocked. An adjustment, IC balance
-    or allocation run can still be opened, rejected, edited or deleted there,
-    so its link stays enabled with a note that the submit will be refused.
+    server allows but can't complete. Each of these links opens the desk form,
+    where the server still takes something in a closed period: reject, edit or
+    delete for an adjustment, IC balance or allocation run, and delete for a
+    trial balance draft, whose every save is refused. So the link stays
+    enabled and the note says the submit will be refused. A trial balance
+    upload, which the server refuses outright, is not offered at all.
     """
     if not closed_reason or doctype not in SUBMIT_NEEDS_OPEN_PERIOD:
-        return {"blocked": None, "note": None}
+        return {"note": None}
+    note = f"Can't {verb}: {closed_reason}"
     if doctype in SAVE_NEEDS_OPEN_PERIOD:
-        return {"blocked": closed_reason, "note": None}
-    return {"blocked": None, "note": f"Can't {verb}: {closed_reason}"}
+        note += " Delete the draft if it isn't needed."
+    return {"note": note}
 
 
 #: Most urgent first. A queue is sorted by this, then kept in insertion order.

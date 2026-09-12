@@ -67,8 +67,8 @@ def _can(doctype, ptype="read", doc=None):
 
 
 def _action(label, doctype, ptype="read", name=None, doc=None, blocked=None, note=None, **query):
-    """A queue button. ``blocked`` is a reason the action would be refused even
-    with the role (a closed period); it wins over the permission check.
+    """A queue button. ``blocked`` is a reason the server would refuse the
+    action even with the role; it wins over the permission check.
     ``note`` rides along on an allowed action the server takes but whose
     outcome it can't complete yet (an approval in a closed period)."""
     if ptype == "create" and name is None:
@@ -254,11 +254,12 @@ def _queue(fy, p, ctx, stages, status, user):
     system = "System Manager" in roles
     label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
-    # In a closed period, block only what the server refuses and annotate
-    # what it allows but can't complete (M.closed_period, #149): a trial
-    # balance takes no save, so its link is blocked; an adjustment, IC balance
-    # or allocation run can still be opened, rejected or edited, so its link
-    # stays enabled with a note that the approval or submit will be refused.
+    # In a closed period, disable only what the server refuses and annotate
+    # what it allows but can't complete (M.closed_period, #149). Each queue
+    # link opens a desk form where the server still takes reject, edit or
+    # delete, so the links stay enabled with a note that the approval or
+    # submit will be refused. The trial balance upload, which the server
+    # refuses, is not offered in a closed period.
     closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
@@ -305,7 +306,7 @@ def _queue(fy, p, ctx, stages, status, user):
                 mine.append(_item(f"adj:{a.name}", "incomplete", f"Draft {a.adjustment_type} adjustment",
                                   f"{a.data_area_id} · {_money(a)}", stage=5, entity=a.data_area_id,
                                   action=_action("Send for approval", "Consolidation Adjustment", "write", a.name,
-                                                 **M.closed_period("Consolidation Adjustment", closed, "approve"))))
+                                                 **M.closed_period("Consolidation Adjustment", closed, "be approved"))))
             elif a.status == "Pending Approval" and not lead:
                 waiting.append(_item(f"adj:{a.name}", "waiting", f"{a.adjustment_type.capitalize()} adjustment",
                                      f"{a.data_area_id} · {_money(a)}", stage=5, who="Close Lead",

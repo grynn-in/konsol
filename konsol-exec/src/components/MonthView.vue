@@ -139,7 +139,7 @@ function openStage(stage) {
 								</button>
 								<span v-if="sec.id === 'waiting' && item.who" class="text-sm text-ink-gray-5">{{ item.who }}</span>
 								<span v-else-if="item.stage" class="text-xs text-ink-gray-5">Stage {{ item.stage }}</span>
-								<span v-if="item.action && sec.id === 'mine' && item.action.allowed && item.action.note" class="text-xs text-ink-gray-5">{{ item.action.note }}</span>
+								<span v-if="item.action && sec.id === 'mine' && actionHint(item.action)" class="text-xs text-ink-gray-5">{{ actionHint(item.action) }}</span>
 								<Button
 									v-if="item.action && sec.id === 'mine'"
 									size="sm"
