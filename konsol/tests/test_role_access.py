@@ -301,13 +301,25 @@ def test_upgrade_rewrites_roles_only_and_keeps_previous_approvers():
             granted[self.name] = list(roles)
 
     roles_of = {"ops@example.com": ["System Manager"], "lead@example.com": ["System Manager", "EPM Admin"],
-                "off@example.com": ["System Manager"]}
+                "off@example.com": ["System Manager"], "prof@example.com": ["System Manager"]}
+    users = {"ops@example.com": (1, None), "lead@example.com": (1, None), "off@example.com": (0, None),
+             "prof@example.com": (1, "Accounts")}
 
-    def get_all(doctype, filters=None, pluck=None, **kw):
+    class User:  # noqa: F811 - add_roles must change what get_roles returns
+        def __init__(self, name):
+            self.name = name
+
+        def add_roles(self, *roles):
+            granted[self.name] = list(roles)
+            roles_of[self.name] = roles_of[self.name] + list(roles)
+
+    def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
         if doctype == "Has Role":
-            return ["Administrator", "ops@example.com", "lead@example.com", "off@example.com"]
-        if doctype == "User":   # off@ is disabled
-            return [u for u in filters["name"][1] if u != "off@example.com"]
+            return ["Administrator", *users]
+        if doctype == "User":
+            rows = [n for n in filters["name"][1]
+                    if "enabled" not in filters or users[n][0] == filters["enabled"]]
+            return [types.SimpleNamespace(name=n, role_profile_name=users[n][1]) for n in rows]
         raise AssertionError(doctype)
 
     with _stub_frappe(
@@ -325,8 +337,22 @@ def test_upgrade_rewrites_roles_only_and_keeps_previous_approvers():
         (t["state"], t["action"]): t["allowed"] for t in definition["transitions"]}
     # nothing but the roles moved
     assert [t.next_state for t in wf_doc.transitions] == [t["next_state"] for t in definition["transitions"]]
+    # off@ is disabled and prof@ is on a Role Profile: neither is granted,
+    # and the Role Profile user is reported rather than silently dropped
     assert granted == {"ops@example.com": ["EPM Admin", "EPM Analyst"], "lead@example.com": ["EPM Analyst"]}
     assert result["granted"] == granted
+    assert any("prof@example.com" in n and "Accounts" in n for n in result["notes"]), result["notes"]
+    assert not any("off@example.com" in n for n in result["notes"])
+
+
+def test_whoever_can_amend_can_open_the_cancelled_state():
+    """The desk strips amend from a form the workflow makes read-only, so the
+    amending role must be allow_edit on every cancelled (docstatus 2) state."""
+    wf = _workflow("Consolidation Adjustment")
+    cancelled_editors = {s["allow_edit"] for s in wf["states"] if int(s["doc_status"]) == 2}
+    for p in _meta("Consolidation Adjustment").get("permissions", []):
+        if p.get("amend") and p["role"] not in FRAPPE_ROLES:
+            assert p["role"] in cancelled_editors, p["role"]
 
 
 def test_upgrade_skips_a_workflow_by_another_name():
