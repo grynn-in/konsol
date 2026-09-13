@@ -589,7 +589,7 @@ _REFERENCE_TABLE_DDL = {
     # validates against living in the dbt repo rather than the app.
     "epm_gold.currencies": (
         "(currency_code String, currency_name String, symbol String, "
-        "minor_unit UInt8) "
+        "minor_unit UInt8, usd_log10 Float64 DEFAULT nan) "
         "ENGINE = MergeTree ORDER BY currency_code"
     ),
     "epm_gold.scenario_definitions": (
@@ -617,9 +617,15 @@ _REFERENCE_TABLE_DDL = {
     # konsol#103: the governed group exchange rates, from Group Exchange Rate
     # (submitted rows only). gold_consolidated_trial_balance translates from
     # this, never from the ERP feed; `document` names the approving record.
+    # `rate` is the quote as entered: units of to per 1 from, or, when
+    # inverse_quote = 1, units of from per 1 to (a small rate keeps its digits
+    # that way; MariaDB stores 9 decimal places). Translation uses
+    # if(inverse_quote = 1, 1 / rate, rate). Added to existing tables by
+    # _ADDED_COLUMNS below.
     "epm_staging.group_exchange_rates": (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String, "
+        "inverse_quote UInt8 DEFAULT 0) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
 }
@@ -655,6 +661,25 @@ _RETIRED_COLUMNS = {
 }
 
 
+# Columns a later release added to a table that already exists on older
+# stacks. CREATE TABLE IF NOT EXISTS never touches an existing table, so each
+# is added here too; ADD COLUMN IF NOT EXISTS is metadata-only and idempotent.
+# The same column must be in the CREATE above, at the end, so a fresh table
+# and an upgraded one agree.
+_ADDED_COLUMNS = {
+    # konsol#103: ISO Currency's magnitude reference for the group rate guard;
+    # NaN until the ISO Currency write-through fills it
+    "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
+    # konsol#103: a small rate is stored the other way round
+    "epm_staging.group_exchange_rates": [("inverse_quote", "UInt8 DEFAULT 0")],
+}
+
+
+def _added_column_ddl(tables):
+    return [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {c} {typ}"
+            for t, cols in _ADDED_COLUMNS.items() if t in tables for c, typ in cols]
+
+
 def ensure_reference_tables():
     """Create the write-through reference tables, and drop the retired columns.
 
@@ -669,6 +694,7 @@ def ensure_reference_tables():
         "CREATE DATABASE IF NOT EXISTS epm_gold",
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
+        *_added_column_ddl(_REFERENCE_TABLE_DDL),
         *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],

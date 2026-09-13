@@ -218,7 +218,27 @@ def _context(fy, p, start):
         "assertion": runs[0] if runs else None,
         "allocation_drafts": frappe.get_all("Allocation Run", filters={**period, "docstatus": 0},
                                             fields=["name"], limit_page_length=0),
+        # konsol#103: the period's group rates waiting for approval, and the
+        # close gate's own answer on which translated keys still lack one
+        "group_rate_drafts": frappe.get_all("Group Exchange Rate", filters={**period, "docstatus": 0},
+                                            fields=["name", "from_currency", "to_currency", "rate_type"],
+                                            order_by="from_currency, to_currency, rate_type",
+                                            limit_page_length=0),
+        **_rate_gate(fy, p),
     }
+
+
+def _rate_gate(fy, p):
+    """{"missing_rates": [labels], "rates_error": None | why}, as the close gate
+    sees it (group_rates.rate_gate). The home never fails on it: an unexpected
+    error is shown as "can't be checked", which is what the gate would do."""
+    from konsol import group_rates
+
+    try:
+        missing, error = group_rates.rate_gate(fy, p)
+    except Exception as e:  # noqa: BLE001
+        missing, error = None, type(e).__name__
+    return {"missing_rates": [M.rate_label(k) for k in missing or ()], "rates_error": error}
 
 
 def _stages(ctx, status, tracked_build):
@@ -231,7 +251,9 @@ def _stages(ctx, status, tracked_build):
         M.source_stage(ctx["connectors"]),
         M.tb_stage(ctx["expected_tb"], {t.data_area_id for t in tbs if t.docstatus == 1},
                    {t.data_area_id for t in tbs if t.docstatus == 0}, ctx["via_connector"]),
-        M.ownership_stage(ctx["uncovered"], len(ctx["ownership_drafts"]), len(ctx["rate_drafts"])),
+        M.ownership_stage(ctx["uncovered"], len(ctx["ownership_drafts"]), len(ctx["rate_drafts"]),
+                          group_rate_drafts=len(ctx["group_rate_drafts"]),
+                          missing_rates=ctx["missing_rates"], rates_error=ctx["rates_error"]),
         M.ic_stage(sum(1 for i in ctx["ic"] if i.docstatus == 1), sum(1 for i in ctx["ic"] if i.docstatus == 0)),
         M.adjustments_stage(by_status),
         M.consolidate_stage(ctx["build"], tracked=tracked_build),
@@ -325,6 +347,27 @@ def _queue(fy, p, ctx, stages, status, user):
                                   f"{i.selling_entity} and {i.buying_entity}", stage=4,
                                   action=_action("Open", "IC Balance", "submit", i.name,
                                                  **M.closed_period("IC Balance", closed))))
+
+    # konsol#103: the period's group exchange rates. Drafts wait for the Close
+    # Lead's approval (submit); what the close gate still lacks is the Group
+    # Accountant's work, and waits on them for a Close Lead who isn't one.
+    rates = by_id["ownership"]
+    for r in M.group_rate_items(
+            lead, group,
+            [M.rate_label((d.from_currency, d.to_currency, d.rate_type)) for d in ctx["group_rate_drafts"]],
+            rates.get("missing_rates") or [], rates.get("rates_error"), period_open, label):
+        action = None
+        if r["action"] == "approve":
+            action = _action("Review", "Group Exchange Rate", "submit", None,
+                             **M.closed_period("Group Exchange Rate", closed, "approve"),
+                             fiscal_year=fy, fiscal_period=p, docstatus=0)
+        elif r["action"] == "prefill":
+            # the list, where "Pre-fill from ERP" is; offered in an open period only
+            action = _action("Pre-fill or enter", "Group Exchange Rate", "write", None,
+                             **M.closed_period("Group Exchange Rate", closed),
+                             fiscal_year=fy, fiscal_period=p)
+        (mine if r["queue"] == "mine" else waiting).append(
+            _item(r["id"], r["state"], r["title"], r["detail"], stage=3, who=r["who"], action=action))
 
     if lead or group:
         missing = by_id["trial_balances"].get("missing") or []

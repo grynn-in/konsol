@@ -21,6 +21,7 @@
   "fiscal_year",
   "fiscal_period",
   "rate",
+  "inverse_quote",
   "source_section",
   "source",
   "erp_rate",
@@ -87,7 +88,15 @@
    "label": "Rate",
    "reqd": 1,
    "in_list_view": 1,
-   "description": "Units of the group reporting currency per 1 unit of the from-currency. A true rate: no multiplier (#138)."
+   "description": "The quote. Normally units of the group reporting currency per 1 unit of the from-currency; with Inverse Quote ticked, units of the from-currency per 1 unit of the group currency. A true rate: no multiplier (#138). A quote below 0.1 is entered the other way round, so it keeps its digits."
+  },
+  {
+   "fieldname": "inverse_quote",
+   "fieldtype": "Check",
+   "label": "Inverse Quote",
+   "default": "0",
+   "in_list_view": 1,
+   "description": "Ticked: Rate is units of the from-currency per 1 unit of the group currency (1350 KRW per USD), for a currency whose rate into the group currency is far below 1. MariaDB keeps 9 decimal places, which would leave KRW to USD 0.00074 with 5 significant digits; the warehouse inverts it at full precision."
   },
   {
    "fieldname": "source_section",
@@ -102,7 +111,8 @@
    "label": "Source",
    "read_only": 1,
    "in_standard_filter": 1,
-   "description": "Manual: entered by a person. ERP pre-fill: proposed from the ERP feed and accepted by a person; editing the rate makes it Manual. Adoption: taken over from the ERP feed by the one-time upgrade (konsol#103), authored by the system and not reviewed by a person."
+   "description": "Manual: entered by a person. ERP pre-fill: proposed from the ERP feed and accepted by a person; editing the rate makes it Manual. Adoption: taken over from the ERP feed by the one-time upgrade (konsol#103), authored by the system and not reviewed by a person.",
+   "no_copy": 1
   },
   {
    "fieldname": "erp_rate",
@@ -111,7 +121,7 @@
    "label": "ERP Quote",
    "read_only": 1,
    "no_copy": 1,
-   "description": "What the ERP feed quoted when this rate was proposed. Reference only: translation never reads the ERP feed."
+   "description": "What the ERP feed quoted when this rate was proposed, in the same direction as Rate. Reference only: translation never reads the ERP feed. Recorded by Pre-fill from ERP only."
   },
   {
    "fieldname": "col_break_2",
@@ -130,7 +140,7 @@
    "label": "Reason for Change",
    "no_copy": 1,
    "mandatory_depends_on": "eval:doc.amended_from",
-   "description": "Required when this rate amends a cancelled one. A rate in a closed period changes only after the period is reopened; the reopen, the cancelled rate and this reason are the audit trail."
+   "description": "Required when this rate amends a cancelled one, and when it moves more than 50% from the previous approved rate for its key or from the ERP quote. A rate in a closed period changes only after the period is reopened; the reopen, the cancelled rate and this reason are the audit trail."
   },
   {
    "fieldname": "amended_from",

@@ -32,13 +32,20 @@ def _fields():
 
 # -- a stub frappe ---------------------------------------------------------------
 
+#: What the ISO Currency fixture says, for the stub (a subset; XAU has none).
+REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW": 3.13, "IDR": 4.21,
+        "VND": 4.40, "ARS": 3.1, "SEK": 1.02, "XAU": 0.0}
+
+
 def _frappe(record, *, period_open=True, group_currencies=("CHF", "USD"), duplicate=None,
-            user="approver@example.com", flags=None, fiscal_periods=range(0, 14)):
+            user="approver@example.com", flags=None, fiscal_periods=range(0, 14), refs=None, previous=None):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
+    refs = REFS if refs is None else refs
 
     def throw(msg, exc=None, *a, **k):
+        record.setdefault("thrown", []).append(getattr(exc, "__name__", None))
         raise Refused(msg)
 
     def sql(query, params=(), *a, **k):
@@ -47,6 +54,14 @@ def _frappe(record, *, period_open=True, group_currencies=("CHF", "USD"), duplic
             return [(1,)] if params[0] in group_currencies else []
         if "FOR UPDATE" in query:
             return [(duplicate,)] if duplicate else []
+        if "ORDER BY fiscal_year DESC" in query:   # group_rates.previous_approved
+            return [previous] if previous else []
+        return []
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        if doctype == "ISO Currency":
+            return [types.SimpleNamespace(name=c, usd_log10=refs[c], get=lambda f, c=c: refs[c])
+                    for c in filters["name"][1] if c in refs]
         return []
 
     frappe.throw = throw
@@ -55,6 +70,8 @@ def _frappe(record, *, period_open=True, group_currencies=("CHF", "USD"), duplic
     frappe.flags = types.SimpleNamespace(**(flags or {}))
     frappe.flags.get = lambda k, d=None: getattr(frappe.flags, k, d)
     frappe.session = types.SimpleNamespace(user=user)
+    frappe.get_all = get_all
+    frappe.clear_last_message = lambda: record.setdefault("cleared", []).append(1)
     frappe.db = types.SimpleNamespace(
         sql=sql,
         exists=lambda dt, f=None: dt == "Fiscal Period" and f["fiscal_period"] in fiscal_periods,
@@ -87,6 +104,7 @@ def _controller(**kw):
     period_open = kw.get("period_open", True)
 
     class Document:
+        """A draft: new unless ``_before`` (the saved version) is given."""
         def __init__(self, **fields):
             self.__dict__.update(fields)
 
@@ -97,6 +115,13 @@ def _controller(**kw):
 
         def get(self, name, default=None):
             return self.__dict__.get(name, default)
+
+        def is_new(self):
+            return self.__dict__.get("_before") is None
+
+        def get_doc_before_save(self):
+            before = self.__dict__.get("_before")
+            return types.SimpleNamespace(**before) if before is not None else None
 
     def assert_open(fiscal_year, fiscal_period, action="run"):
         record["gates"].append((fiscal_year, fiscal_period, action))
@@ -184,28 +209,60 @@ def test_group_accountants_draft_and_the_close_lead_approves():
 # -- the controller ----------------------------------------------------------------
 
 def _validate(**fields):
-    module, record = _controller(**fields.pop("_ctx", {}))
+    """(refused, doc, message) for one validate() of a draft with ``fields``."""
+    ctx = fields.pop("_ctx", {})
+    module, record = _controller(**ctx)
     d = _doc(module, **fields)
     saved = sys.modules.get("konsol.group_rates"), sys.modules.get("konsol")
-    rules = _rules_module(_frappe({}))
+    rules = _rules_module(_frappe({}, **{k: v for k, v in ctx.items() if k in ("refs", "previous")}))
     konsol = types.ModuleType("konsol")
     konsol.group_rates = rules
     sys.modules["konsol"], sys.modules["konsol.group_rates"] = konsol, rules
+    message = None
     try:
-        refused = _refused(d.validate)
+        d.validate()
+    except Refused as e:
+        message = str(e)
     finally:
         for name, old in zip(("konsol.group_rates", "konsol"), saved):
             if old is None:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = old
-    return refused, d
+    return message is not None, d, message
 
 
 def test_a_plausible_true_rate_is_accepted():
     assert not _validate()[0]
-    assert not _validate(from_currency="JPY", to_currency="USD", rate=0.00664305)[0]
     assert not _validate(from_currency="USD", to_currency="CHF", rate_type="Average", rate=0.8762)[0]
+    # a small rate is quoted the other way round: 150.53 JPY per USD
+    assert not _validate(from_currency="JPY", to_currency="USD", rate=150.53, inverse_quote=1)[0]
+
+
+def test_idr_and_vnd_into_usd_pass():
+    """The #138 wide band [1e-4, 1e4] refused both, so a group holding either
+    could never close."""
+    assert not _validate(from_currency="IDR", to_currency="USD", rate=16350.5, inverse_quote=1)[0]
+    assert not _validate(from_currency="VND", to_currency="USD", rate=25380, inverse_quote=1)[0]
+    refused, _, msg = _validate(from_currency="IDR", to_currency="USD", rate=0.0000611)
+    assert refused and "below 0.1" in msg and "IDR per 1 USD" in msg, "entered the other way round"
+
+
+def test_a_100x_error_on_jpy_is_refused():
+    """The wide band could not catch it; the reference can."""
+    refused, _, msg = _validate(from_currency="JPY", to_currency="USD", rate=15053, inverse_quote=1)
+    assert refused and "x below" in msg and "(#138)" in msg
+    assert _validate(from_currency="JPY", to_currency="USD", rate=1.5053, inverse_quote=1)[0]
+    assert _validate(from_currency="USD", to_currency="CHF", rate=87.62)[0]
+
+
+def test_a_currency_with_no_reference_is_refused():
+    refused, _, msg = _validate(from_currency="XAU", rate=2100.0)
+    assert refused and "set USD Reference (log10) (usd_log10) on ISO Currency XAU" in msg
+    refs = dict(REFS, EUR=0.0)
+    assert _validate(_ctx={"refs": refs})[0], "0 is 'not set' for any currency but USD"
+    assert not _validate(from_currency="USD", to_currency="CHF", rate=0.8762,
+                         _ctx={"refs": dict(REFS, USD=0.0)})[0], "USD is the anchor"
 
 
 def test_the_guards_refuse():
@@ -220,16 +277,58 @@ def test_the_guards_refuse():
     assert _validate(fiscal_year=2150)[0]
 
 
+def test_a_move_over_half_needs_a_reason():
+    """Soft: ARS fell 55% in Dec 2023, so a big move is allowed with a reason."""
+    ars = dict(from_currency="ARS", to_currency="USD", rate=808.45, inverse_quote=1)
+    previous = ("GER-2099-11-ARS-USD-Closing-01", 366.5, 1, 2099, 11)
+    refused, _, msg = _validate(_ctx={"previous": previous}, **ars)
+    assert refused and "-55% from the previous approved rate FY2099 P11" in msg
+    assert not _validate(_ctx={"previous": previous}, change_reason="Devaluation, 13 Dec", **ars)[0]
+    assert not _validate(_ctx={"previous": ("GER-P11", 800.0, 1, 2099, 11)}, **ars)[0], "a small move"
+    # from the ERP quote it was proposed from (same direction as the rate)
+    refused, _, msg = _validate(rate=1.5, erp_rate=0.9478, source="Manual",
+                                _before=dict(source="Manual", erp_rate=0.9478, inverse_quote=0))
+    assert refused and "from the ERP quote" in msg
+    # an amendment always needs one
+    assert _validate(amended_from="GER-2099-12-EUR-CHF-Closing-01", change_reason="")[0]
+
+
 def test_an_amendment_must_say_why():
     assert _validate(amended_from="GER-2099-12-EUR-CHF-Closing-01", change_reason="")[0]
     assert not _validate(amended_from="GER-2099-12-EUR-CHF-Closing-01", change_reason="Board rate")[0]
 
 
 def test_a_pre_filled_rate_a_person_changed_is_manual():
-    _, d = _validate(source="ERP pre-fill", erp_rate=0.9478, rate=0.95)
+    prefilled = dict(source="ERP pre-fill", erp_rate=0.9478, inverse_quote=0)
+    _, d, _ = _validate(source="ERP pre-fill", erp_rate=0.9478, rate=0.95, _before=prefilled)
     assert d.source == "Manual"
-    _, d = _validate(source="ERP pre-fill", erp_rate=0.9478, rate=0.9478)
+    _, d, _ = _validate(source="ERP pre-fill", erp_rate=0.9478, rate=0.9478, _before=prefilled)
     assert d.source == "ERP pre-fill"
+    # turning the direction round is a change too, and the quote follows it
+    refused, d, _ = _validate(source="ERP pre-fill", erp_rate=1.1236, rate=1.1236, inverse_quote=0,
+                             from_currency="USD", to_currency="CHF", change_reason="flip",
+                             _before=dict(prefilled, erp_rate=1.1236, inverse_quote=1))
+    assert not refused and d.source == "Manual" and abs(d.erp_rate - 1 / 1.1236) < 1e-9
+
+
+def test_a_forged_source_is_refused():
+    """source and erp_rate are read-only in the form only: REST writes them."""
+    refused, _, msg = _validate(source="Adoption")
+    assert refused and "one-time rate adoption" in msg
+    refused, _, msg = _validate(source="ERP pre-fill", erp_rate=0.9478)
+    assert refused and "Pre-fill from ERP" in msg
+    assert _validate(source="Manual", erp_rate=0.9478)[0], "an ERP quote only the pre-fill records"
+    refused, _, _ = _validate(source="Adoption", _before=dict(source="Manual", erp_rate=0))
+    assert refused, "relabelling a saved rate"
+    # the real writers, each under its own flag
+    assert not _validate(source="ERP pre-fill", erp_rate=0.9478,
+                         _ctx={"flags": {"konsol_prefilling_rates": True}})[0]
+    assert not _validate(source="Adoption", _ctx={"flags": {"konsol_adopting_rates": True},
+                                                  "user": "Administrator"})[0]
+    assert _validate(source="Adoption", _ctx={"flags": {"konsol_adopting_rates": True}})[0], "only the system"
+    # a saved pre-filled draft keeps its label when a person (no flag) saves it again
+    assert not _validate(source="ERP pre-fill", erp_rate=0.9478,
+                         _before=dict(source="ERP pre-fill", erp_rate=0.9478, inverse_quote=0))[0]
 
 
 def test_submit_is_gated_on_the_open_period():
@@ -289,11 +388,26 @@ def test_the_staging_ddl_matches_the_field_map():
     body = ddl["epm_staging.group_exchange_rates"]
     assert body == (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String, inverse_quote UInt8 DEFAULT 0) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)")
     module, _ = _controller()
     cols = [c.strip().split()[0] for c in body[1:body.index(")")].split(",")]
     assert cols == list(module.GroupExchangeRate.CH_FIELD_MAP)
+
+
+def test_a_small_rate_is_quoted_the_other_way_round():
+    """A Frappe Float is decimal(21,9): KRW -> USD 1/1350 would keep about 6
+    significant digits, IDR fewer. The quote is kept where it has its digits,
+    and the warehouse inverts it (inverse_quote)."""
+    f = _fields()
+    assert f["inverse_quote"]["fieldtype"] == "Check"
+    r = _rules()
+    assert r.as_stored(0.9478) == (0.9478, 0)
+    assert r.as_stored(1 / 150) == (150.0, 1), "the ERP's USD -> JPY 150 stays exactly 150"
+    quote, inverse = r.as_stored(1 / 16350.123456)
+    assert inverse == 1 and abs(quote - 16350.123456) < 1e-6
+    assert abs(r.effective_rate(quote, inverse) * 16350.123456 - 1) < 1e-12
+    assert r.effective_rate(0.9478, 0) == 0.9478 and r.effective_rate(0, 1) == 0.0
 
 
 # -- the rules ------------------------------------------------------------------------
@@ -302,15 +416,110 @@ def _rules(**overrides):
     return _rules_module(_frappe({}), overrides)
 
 
-def test_the_magnitude_guard_is_the_dbt_one():
-    """#138: the same bands as konsolidat's assert_exchange_rate_sane_magnitude."""
+def test_the_magnitude_guard_reads_iso_currency():
+    """One rule and one home: ISO Currency.usd_log10 (roughly log10 of units per
+    1 USD). Refused when abs(log10(rate) - (usd_log10(to) - usd_log10(from))) > 1.
+    No list of currencies and no bounds live in konsol any more."""
+    src = open(RULES).read()
+    assert "WIDE_BAND" not in src and "TIGHT_BOUNDS" not in src and "WIDE_BOUNDS" not in src
     r = _rules()
-    assert r.WIDE_BAND == {"JPY", "KRW", "IDR", "VND", "HUF", "CLP", "ISK", "INR", "RUB", "PHP", "TRY", "THB", "CZK"}
-    assert (r.TIGHT_BOUNDS, r.WIDE_BOUNDS) == ((0.05, 20.0), (0.0001, 10000.0))
+    assert (r.REFERENCE_FIELD, r.REFERENCE_CURRENCY, r.MAGNITUDE_TOLERANCE_DECADES) == ("usd_log10", "USD", 1.0)
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "usd_references")
+    assert '"ISO Currency"' in ast.unparse(fn).replace("'", '"')
+    body = ast.unparse(next(n for n in ast.parse(src).body
+                            if isinstance(n, ast.FunctionDef) and n.name == "magnitude_problem"))
+    assert "math.log10(rate) - expected" in body and "refs[to_currency] - refs[from_currency]" in body
+    assert "abs(off) <= MAGNITUDE_TOLERANCE_DECADES" in body
     assert r.magnitude_problem("EUR", "USD", 1.08) is None
-    assert "outside [0.05, 20]" in r.magnitude_problem("EUR", "USD", 108.9)
+    assert "x above" in r.magnitude_problem("EUR", "USD", 108.9)
     assert r.magnitude_problem("USD", "JPY", 150.5) is None
     assert r.magnitude_problem("JPY", "USD", 0.00000664)
+    assert r.magnitude_problem("IDR", "USD", 1 / 16350) is None
+    assert r.magnitude_problem("VND", "USD", 1 / 25380) is None
+    # the edge: 10x from the reference passes, just over it doesn't
+    assert r.magnitude_problem("USD", "SEK", 10 ** 1.02 * 9.9) is None
+    assert r.magnitude_problem("USD", "SEK", 10 ** 1.02 * 10.1)
+
+
+def test_the_move_rule():
+    r = _rules()
+    assert r.move_problem(1.0, (1.4, "P11"), None) is None, "-29%"
+    assert "-55%" in r.move_problem(0.45, (1.0, "P11"), None)
+    assert "+60%" in r.move_problem(1.6, None, 1.0)
+    assert r.move_problem(1.6, None, None) is None, "no previous rate, no quote: nothing to compare"
+    assert r.MOVE_NEEDS_REASON == 0.5
+
+
+def test_every_iso_currency_has_a_reference():
+    with open(os.path.join(APP_DIR, "fixtures", "iso_currency.json")) as f:
+        rows = json.load(f)
+    by_code = {r["currency_code"]: r.get("usd_log10") for r in rows}
+    assert len(by_code) == 66
+    unset = sorted(c for c, v in by_code.items() if not isinstance(v, (int, float)) or (v == 0 and c != "USD"))
+    assert not unset, unset
+    assert all(-5 <= v <= 10 for v in by_code.values())
+    # the anchors the rule was specified with
+    for code, value in {"USD": 0, "EUR": -0.03, "JPY": 2.17, "KRW": 3.13, "IDR": 4.21, "VND": 4.40}.items():
+        assert abs(by_code[code] - value) < 0.005, code
+    with open(os.path.join(APP_DIR, "epm", "doctype", "iso_currency", "iso_currency.json")) as f:
+        field = next(x for x in json.load(f)["fields"] if x["fieldname"] == "usd_log10")
+    assert field["fieldtype"] == "Float"
+    with open(os.path.join(APP_DIR, "epm", "doctype", "iso_currency", "iso_currency.py")) as f:
+        assert '"usd_log10": "usd_log10"' in f.read(), "written through to epm_gold.currencies"
+
+
+def test_the_currencies_ddl_carries_the_reference():
+    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
+        tree = ast.parse(f.read())
+    consts = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+              and getattr(n.targets[0], "id", "") in ("_REFERENCE_TABLE_DDL", "_ADDED_COLUMNS")}
+    # identical to konsolidat's clickhouse/init-db.sql; NaN = never synced
+    assert consts["_REFERENCE_TABLE_DDL"]["epm_gold.currencies"] == (
+        "(currency_code String, currency_name String, symbol String, minor_unit UInt8, "
+        "usd_log10 Float64 DEFAULT nan) "
+        "ENGINE = MergeTree ORDER BY currency_code")
+    # a table that already shipped gets the column on the next migrate, at the
+    # end of its CREATE so a fresh table and an upgraded one agree
+    added = consts["_ADDED_COLUMNS"]
+    assert ("usd_log10", "Float64 DEFAULT nan") in added["epm_gold.currencies"]
+    assert ("inverse_quote", "UInt8 DEFAULT 0") in added["epm_staging.group_exchange_rates"]
+    for table in ("epm_gold.currencies", "epm_staging.group_exchange_rates"):
+        body = consts["_REFERENCE_TABLE_DDL"][table]
+        columns = body[:body.index(") ENGINE")]
+        for name, typ in added[table]:
+            assert columns.endswith(f"{name} {typ}"), (table, name)
+    sql = []
+    m = _clickhouse_module(lambda s, params=None: sql.append(s) or "")
+    m.ensure_reference_tables()
+    for stmt in ("ALTER TABLE epm_gold.currencies ADD COLUMN IF NOT EXISTS usd_log10 Float64 DEFAULT nan",
+                 "ALTER TABLE epm_staging.group_exchange_rates ADD COLUMN IF NOT EXISTS inverse_quote UInt8 DEFAULT 0"):
+        assert stmt in sql and sql.index(stmt) > sql.index(
+            "CREATE TABLE IF NOT EXISTS " + stmt.split()[2] + " " + consts["_REFERENCE_TABLE_DDL"][stmt.split()[2]])
+
+
+def _clickhouse_module(execute):
+    """konsol.clickhouse, loaded by path against stubs, with ``execute`` replaced."""
+    mods = {n: types.ModuleType(n) for n in ("frappe", "requests", "requests.exceptions")}
+    mods["frappe"].logger = lambda *a, **k: types.SimpleNamespace(warning=lambda *a, **k: None,
+                                                                  error=lambda *a, **k: None)
+    mods["frappe"].flags = types.SimpleNamespace()
+    mods["requests"].exceptions = mods["requests.exceptions"]
+    for name in ("ConnectionError", "Timeout", "HTTPError"):
+        setattr(mods["requests.exceptions"], name, type(name, (Exception,), {}))
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("ch_under_test", os.path.join(APP_DIR, "clickhouse.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    module.execute = execute
+    return module
 
 
 def test_the_period_date_is_the_warehouse_one():
@@ -367,8 +576,8 @@ def test_the_pre_fill_proposes_drafts_and_never_submits():
 
 
 def test_the_pre_fill_in_action():
-    inserted = []
-    frappe = _frappe({})
+    inserted, record = [], {}
+    frappe = _frappe(record)
     frappe.only_for = lambda roles: inserted.append(("roles", roles))
     frappe.get_all = lambda *a, **k: [types.SimpleNamespace(from_currency="GBP", to_currency="CHF",
                                                              rate_type="Closing")]
@@ -379,27 +588,51 @@ def test_the_pre_fill_in_action():
             self.name = f"GER-{d['from_currency']}-{d['rate_type']}"
 
         def insert(self):
-            if self["rate"] > 20:
-                raise frappe.ValidationError("outside [0.05, 20]")
+            assert frappe.flags.konsol_prefilling_rates is True, "the pre-fill's own flag"
+            if self["from_currency"] == "SEK":   # the controller refused (e.g. a move needing a reason)
+                raise frappe.ValidationError("moves +80%")
             inserted.append(dict(self))
     frappe.get_doc = Doc
     r = _rules_module(frappe, {
-        "required_pairs": lambda fy, fp: {("EUR", "CHF"), ("GBP", "CHF"), ("SEK", "CHF"), ("XAU", "CHF")},
-        "erp_quote_rows": lambda as_of: ROWS + [("d365_fo", "Closing", "XAU", "CHF", 2100.0, "2024-03-01")],
+        "required_pairs": lambda fp, fy: {("EUR", "CHF"), ("GBP", "CHF"), ("SEK", "CHF"), ("XAU", "CHF"),
+                                          ("JPY", "CHF"), ("NOK", "CHF")},
+        "erp_quote_rows": lambda as_of: ROWS + [
+            ("d365_fo", "Closing", "XAU", "CHF", 2100.0, "2024-03-01"),
+            ("d365_fo", "Closing", "SEK", "CHF", 0.085, "2024-03-01"),
+            ("d365_fo", "Closing", "CHF", "JPY", 170.0, "2024-03-01"),
+            ("d365_fo", "Closing", "NOK", "CHF", 8.3, "2024-03-01")],
+        "usd_references": lambda codes: {c: REFS.get(c) if c != "XAU" else None for c in codes} | {"NOK": 1.03},
     })
     out = r.prefill_from_erp("2024", "3")
     assert inserted[0] == ("roles", ("EPM Analyst", "EPM Admin", "System Manager"))
     drafts = inserted[1:]
-    assert {(d["from_currency"], d["rate_type"]) for d in drafts} == {("EUR", "Closing"), ("EUR", "Average"), ("GBP", "Average")}
+    assert {(d["from_currency"], d["rate_type"]) for d in drafts} == {
+        ("EUR", "Closing"), ("EUR", "Average"), ("GBP", "Average"), ("JPY", "Closing")}
     assert all(d["source"] == "ERP pre-fill" and d["erp_rate"] == d["rate"] and "docstatus" not in d for d in drafts)
     eur_avg = next(d for d in drafts if d["from_currency"] == "EUR" and d["rate_type"] == "Average")
-    assert eur_avg["rate"] == 0.945 and "Default" in eur_avg["source_note"]
+    assert eur_avg["rate"] == 0.945 and eur_avg["inverse_quote"] == 0 and "Default" in eur_avg["source_note"]
+    jpy = next(d for d in drafts if d["from_currency"] == "JPY")
+    assert (jpy["rate"], jpy["inverse_quote"]) == (170.0, 1), "the ERP's CHF -> JPY 170, kept exact"
     assert out["existing"] == ["GBP → CHF Closing"]
-    assert "SEK → CHF Closing" in out["no_quote"]
-    assert any(x.startswith("XAU → CHF Closing") for x in out["refused"])
+    assert "SEK → CHF Average" in out["no_quote"]
+    refused = dict(x.split(": ", 1) for x in out["refused"])
+    assert "No magnitude reference for XAU" in refused["XAU → CHF Closing"]
+    assert "x above" in refused["NOK → CHF Closing"], "NOK 8.3 CHF is a scaling error"
+    assert refused["SEK → CHF Closing"] == "moves +80%"
+    # the guard runs before the insert, so only the controller's refusal logged a message
+    assert record.get("cleared") == [1] and frappe.flags.konsol_prefilling_rates is False
 
 
-def _gate(pairs=None, approved=(), error=None):
+def test_the_pre_fill_checks_the_magnitude_before_the_insert():
+    """frappe.throw logs to message_log before it raises: a refused proposal
+    must not pop a dialog, so the guard runs first and the rest are cleared."""
+    body = ast.unparse(next(n for n in ast.parse(open(RULES).read()).body
+                            if isinstance(n, ast.FunctionDef) and n.name == "prefill_from_erp"))
+    assert body.index("magnitude_problem(") < body.index("doc.insert()")
+    assert "frappe.clear_last_message()" in body
+
+
+def _gate(pairs=None, approved=(), error=None, built=True):
     frappe = _frappe({})
     frappe.get_all = lambda *a, **k: [types.SimpleNamespace(from_currency=f, to_currency=t, rate_type=rt)
                                       for f, t, rt in approved]
@@ -408,7 +641,12 @@ def _gate(pairs=None, approved=(), error=None):
         if error:
             raise error
         return set(pairs or ())
-    return _rules_module(frappe, {"required_pairs": required})
+
+    def ledgers():
+        if isinstance(built, Exception):
+            raise built
+        return built
+    return _rules_module(frappe, {"required_pairs": required, "ledgers_built": ledgers})
 
 
 def test_the_close_gate():
@@ -427,8 +665,71 @@ def test_the_close_gate():
 
 def test_the_close_gate_fails_closed_when_the_warehouse_cannot_answer():
     assert _refused(_gate(error=ConnectionError("down")).assert_rates_complete, 2024, 3)
-    unknown = Exception("Code: 60. DB::Exception: Unknown table ... (UNKNOWN_TABLE)")
-    assert not _refused(_gate(error=unknown).assert_rates_complete, 2024, 3), "never built: no ledgers"
+    unknown = Exception("Code: 60. DB::Exception: Table epm_gold.gold_trial_balance does not exist. "
+                        "(UNKNOWN_TABLE) (version 24.8.4.13)")
+    no_db = Exception("Code: 81. DB::Exception: Database epm_gold does not exist. (UNKNOWN_DATABASE)")
+    assert not _refused(_gate(error=unknown, built=False).assert_rates_complete, 2024, 3), "never built"
+    assert not _refused(_gate(error=no_db, built=False).assert_rates_complete, 2024, 3), "never built"
+    # a built warehouse missing a table the pairs need (gold_entity_ownership) can't answer
+    missing_ownership = Exception("Code: 60. DB::Exception: Table epm_gold.gold_entity_ownership does "
+                                  "not exist. (UNKNOWN_TABLE)")
+    assert _refused(_gate(error=missing_ownership, built=True).assert_rates_complete, 2024, 3)
+    assert _refused(_gate(error=unknown, built=ConnectionError("down")).assert_rates_complete, 2024, 3)
+    # the token, not a code substring: Code 600-609 is not UNKNOWN_TABLE
+    other = Exception("Code: 605. DB::Exception: something else. (SOME_OTHER_ERROR)")
+    assert _refused(_gate(error=other, built=False).assert_rates_complete, 2024, 3)
+    assert _rules().ch_error_names(unknown) == {"UNKNOWN_TABLE"}
+    assert _gate(error=ConnectionError("down")).rate_gate(2024, 3) == (None, "ConnectionError")
+
+
+def test_the_gate_asks_only_for_what_translation_translates():
+    """#103 review: the gate asked for every ancestor group; translation drops
+    equity and 'none' methods, incomplete chains and rows outside the ownership
+    window. The pairs now come from gold_entity_ownership with that filter."""
+    sql = []
+    frappe = _frappe({})
+    r = _rules_module(frappe, {"_ch_rows": lambda s, params=None: sql.append((s, params)) or [("IDR", "USD")]})
+    assert r.required_pairs(2024, 3) == {("IDR", "USD")}
+    [(s, params)] = sql
+    assert "epm_gold.gold_entity_ownership" in s and "consolidation_ancestry" not in s
+    assert "consolidation_method NOT IN ('equity', 'none') AND has_complete_chain = 1" in s
+    assert s.count("fiscal_year = {fy:UInt16} AND fiscal_period = {fp:UInt16}") == 2
+    assert params == {"fy": 2024, "fp": 3}
+
+
+def test_the_gate_reads_existence_before_passing():
+    sql = []
+    r = _rules_module(_frappe({}), {"_ch_rows": lambda s, params=None: sql.append(s) or [[0]]})
+    assert r.ledgers_built() is False and sql == ["EXISTS TABLE epm_gold.gold_trial_balance"]
+
+
+def _adoption(error):
+    frappe = _frappe({}, user="Administrator")
+    frappe.local = types.SimpleNamespace(site="konsolidat.local")
+
+    def fail():
+        raise error
+    return _rules_module(frappe, {"translated_rates": fail})
+
+
+def test_the_adoption_before_the_warehouse_exists():
+    """init.sh can run bench migrate before ClickHouse is ready. A database
+    that doesn't exist yet (UNKNOWN_DATABASE) has nothing to adopt, like a
+    missing table; a ClickHouse that can't be reached fails loudly and names
+    the command that finishes the job."""
+    for text in ("Code: 81. DB::Exception: Database epm_gold does not exist. (UNKNOWN_DATABASE)",
+                 "Code: 60. DB::Exception: Table epm_gold.gold_consolidated_trial_balance does not exist. "
+                 "(UNKNOWN_TABLE)"):
+        assert _adoption(Exception(text)).adopt_erp_rates() == {"adopted": [], "skipped": [], "refused": []}
+    for error in (ConnectionError("Connection refused"),
+                  Exception("Code: 606. DB::Exception: Code: 60 lookalike (SOMETHING_ELSE)")):
+        try:
+            _adoption(error).adopt_erp_rates()
+        except RuntimeError as e:
+            assert "bench --site konsolidat.local execute konsol.group_rates.adopt_erp_rates" in str(e)
+            assert e.__cause__ is error
+        else:
+            raise AssertionError("an unreachable warehouse must fail the migrate")
 
 
 def test_the_adoption_plan():
