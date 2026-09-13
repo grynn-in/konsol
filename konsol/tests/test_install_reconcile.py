@@ -12,6 +12,8 @@ unmodified.
 import ast
 import contextlib
 import importlib.util
+import json
+import re
 import os
 import sys
 import threading
@@ -131,9 +133,10 @@ def _load(enqueue_raises=None, store=None):
 
 
 @contextlib.contextmanager
-def _clickhouse(store=None, reconcile_all=None):
+def _clickhouse(store=None, reconcile_all=None, unreachable=False):
     """konsol.clickhouse stub. get_connection mirrors the real one: it reads
-    EPM Settings, password included, with the doctype's defaults."""
+    EPM Settings, password included, with the doctype's defaults. execute
+    answers the reachability probe, or raises when ``unreachable``."""
     stub = types.ModuleType("konsol.clickhouse")
     store = store if store is not None else {}
     stub.get_connection = lambda: {
@@ -145,6 +148,15 @@ def _clickhouse(store=None, reconcile_all=None):
         "verify": bool(store.get("clickhouse_verify_tls", 1)),
     }
     stub.reconcile_all = reconcile_all or (lambda: {})
+    stub.probes = []
+
+    def execute(sql, params=None):
+        stub.probes.append(sql)
+        if unreachable:
+            raise ConnectionError("Read timed out. (read timeout=30)")
+        return "1"
+
+    stub.execute = execute
     saved = sys.modules.get("konsol.clickhouse")
     sys.modules["konsol.clickhouse"] = stub
     try:
@@ -165,7 +177,12 @@ def _hook(name):
     return None
 
 
-JOB = ("konsol.install.reconcile_warehouse", {"queue": "long", "timeout": 1500})
+JOB = ("konsol.install.reconcile_warehouse", {"queue": "long", "timeout": 1500, "install_time": False})
+INSTALL_JOB = (JOB[0], {**JOB[1], "install_time": True})
+#: frappe.enqueue's own parameters (v15); a job kwarg must not be one of them.
+ENQUEUE_PARAMS = {"method", "queue", "timeout", "event", "is_async", "job_name", "now",
+                  "enqueue_after_commit", "on_success", "on_failure", "at_front", "job_id",
+                  "deduplicate", "async"}
 DEPLOYED = {"clickhouse_host": "clickhouse", "clickhouse_port": 8123,
             "clickhouse_user": "default", "clickhouse_password": "pw"}
 ALL_FAILED = {"epm_staging.scenarios": None, "epm_gold.currencies": None}
@@ -195,7 +212,7 @@ def test_after_sync_queues_the_job_only_at_the_commit():
     mod.after_sync()
     assert fake.enqueued == [], "queued inside the install transaction"
     fake.db.commit()
-    assert fake.enqueued == [JOB]
+    assert fake.enqueued == [INSTALL_JOB], "after_sync must mark its run install_time"
     fake.db.commit()
     assert len(fake.enqueued) == 1, "a later commit queued it again"
 
@@ -204,6 +221,10 @@ def test_the_job_is_reconcile_not_a_build():
     mod, _ = _load()
     assert mod.RECONCILE_JOB == JOB[0]
     assert callable(mod.reconcile_warehouse)
+
+
+def test_install_time_is_a_job_kwarg_not_an_enqueue_parameter():
+    assert "install_time" not in ENQUEUE_PARAMS
 
 
 def test_redis_down_does_not_fail_the_install_commit():
@@ -250,12 +271,25 @@ def test_warehouse_target_includes_the_password():
 
 # -- the job: timeouts and lock ---------------------------------------------
 
+def _request_timeout():
+    """clickhouse.execute's per-request timeout, read from its source."""
+    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
+        src = f.read()
+    body = src[src.index("def execute("):]
+    body = body[:body.index("\ndef ")]
+    (seconds,) = re.findall(r"timeout=(\d+)", body)
+    return int(seconds)
+
+
 def test_timeouts_let_a_waiter_finish_before_rq_kills_it():
-    """wait + run <= job timeout <= lock timeout: RQ never kills a job that
-    waited its full wait, and a live holder never outlives its lock."""
+    """wait + run <= job timeout <= lock timeout: a live holder never outlives
+    its lock, and a job that waited its full wait still has time to run. The
+    worst case that is not fast is an unreachable ClickHouse, which the probe
+    detects in one request timeout, so that must fit in what is left."""
     mod, _ = _load()
     assert mod.RECONCILE_WAIT_SECONDS < mod.RECONCILE_JOB_TIMEOUT <= mod.RECONCILE_LOCK_SECONDS
-    assert mod.RECONCILE_JOB_TIMEOUT - mod.RECONCILE_WAIT_SECONDS >= 300, "too little time left to run"
+    left = mod.RECONCILE_JOB_TIMEOUT - mod.RECONCILE_WAIT_SECONDS
+    assert left > _request_timeout(), f"an unreachable probe ({_request_timeout()} s) outlasts the {left} s left"
     assert JOB[1]["timeout"] == mod.RECONCILE_JOB_TIMEOUT
 
 
@@ -382,14 +416,30 @@ def test_every_table_failing_writes_an_error_log():
     assert fake.errors == ["Warehouse reconcile: no table synced"]
 
 
-def test_every_table_failing_on_the_untouched_default_target_only_warns():
+def test_install_time_run_on_the_untouched_default_target_only_warns():
     """A fresh site's install-time run, before the configurator sets the real
     target: expected, so a warning, not an Error Log."""
     mod, fake = _load()
     with _clickhouse({}, reconcile_all=lambda: dict(ALL_FAILED)):
-        mod.reconcile_warehouse()
+        mod.reconcile_warehouse(install_time=True)
     assert fake.errors == []
-    assert any("default" in w for w in fake.warnings)
+    assert any("install time" in w for w in fake.warnings)
+
+
+def test_default_target_outside_install_time_is_an_error_log():
+    """A dev bench pointed at ClickHouse's out-of-the-box login has the
+    default target too. Its reconcile reaching nothing is a real outage."""
+    mod, fake = _load()
+    with _clickhouse({}, reconcile_all=lambda: dict(ALL_FAILED)):
+        mod.reconcile_warehouse()
+    assert fake.errors == ["Warehouse reconcile: no table synced"]
+
+
+def test_install_time_on_a_configured_target_is_an_error_log():
+    mod, fake = _load()
+    with _clickhouse(dict(DEPLOYED), reconcile_all=lambda: dict(ALL_FAILED)):
+        mod.reconcile_warehouse(install_time=True)
+    assert fake.errors == ["Warehouse reconcile: no table synced"]
 
 
 def test_localhost_alone_is_not_the_default_target():
@@ -397,5 +447,58 @@ def test_localhost_alone_is_not_the_default_target():
     outage when nothing syncs."""
     mod, fake = _load()
     with _clickhouse({"clickhouse_password": "pw"}, reconcile_all=lambda: dict(ALL_FAILED)):
-        mod.reconcile_warehouse()
+        mod.reconcile_warehouse(install_time=True)
     assert fake.errors == ["Warehouse reconcile: no table synced"]
+
+
+# -- the job: an unreachable ClickHouse ---------------------------------------
+
+def test_unreachable_clickhouse_skips_the_reconcile_at_once():
+    """One probe, not a 30 s timeout per bootstrap statement and sync."""
+    mod, fake = _load()
+    ran = []
+    with _clickhouse(dict(DEPLOYED), reconcile_all=lambda: ran.append(1) or {}, unreachable=True) as ch:
+        assert mod.reconcile_warehouse() is None
+    assert ch.probes == ["SELECT 1"]
+    assert ran == [], "reconciled an unreachable ClickHouse"
+    assert fake.errors == ["Warehouse reconcile: ClickHouse unreachable"]
+    assert [e[0] for e in fake.cache.events] == ["acquire", "release"]
+
+
+def test_unreachable_default_target_at_install_time_only_warns():
+    mod, fake = _load()
+    with _clickhouse({}, unreachable=True):
+        assert mod.reconcile_warehouse(install_time=True) is None
+    assert fake.errors == []
+    assert any("install time" in w for w in fake.warnings)
+
+
+def test_reachable_clickhouse_is_probed_before_reconciling():
+    mod, fake = _load()
+    order = []
+    with _clickhouse(dict(DEPLOYED), reconcile_all=lambda: order.append("reconcile") or {"t": 1}) as ch:
+        ch_execute = ch.execute
+        ch.execute = lambda sql, params=None: order.append(sql) or ch_execute(sql)
+        mod.reconcile_warehouse()
+    assert order == ["SELECT 1", "reconcile"]
+
+
+# -- UNCONFIGURED_TARGET is what install-app leaves -------------------------
+
+def test_unconfigured_target_matches_the_epm_settings_defaults():
+    """init_singles saves the doctype defaults at install-app; get_connection
+    turns them into the target. Changing a default must change this too."""
+    with open(os.path.join(APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json")) as f:
+        fields = {fl["fieldname"]: fl for fl in json.load(f)["fields"]}
+    default = lambda name: fields[name].get("default")
+    assert default("clickhouse_password") is None, "the password has no default"
+    from_json = {
+        "host": default("clickhouse_host"),
+        "port": default("clickhouse_port"),
+        "user": default("clickhouse_user"),
+        "password": "",
+        "secure": str(bool(int(default("clickhouse_secure")))),
+        "verify": str(bool(int(default("clickhouse_verify_tls")))),
+    }
+    mod, _ = _load()
+    assert from_json == mod.UNCONFIGURED_TARGET
