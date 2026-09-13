@@ -69,17 +69,26 @@ class _Throw(Exception):
     pass
 
 
-class _Retry(Exception):
-    """frappe.RetryBackgroundJobError."""
-
-
 class _Validation(Exception):
-    """frappe.ValidationError."""
+    """frappe.ValidationError (CustomField.validate: "already exists")."""
+
+
+class _Duplicate(Exception):
+    """frappe.DuplicateEntryError (db_insert)."""
+
+
+def _cint(s, default=0):
+    """frappe.utils.cint."""
+    try:
+        return int(float(s))
+    except Exception:
+        return default
 
 
 def _stub_frappe(enqueued, logged, enqueue_error=None, form_dict=None):
-    """A frappe for apply_schema. set_user behaves as v15's: it rewrites the
-    session in place (user, sid, data) and clears form_dict."""
+    """A frappe for apply_schema. set_user behaves as v15's (__init__.py:641):
+    it rewrites the session in place (user, sid, data), clears form_dict and
+    resets the permission caches (local.user_perms, local.cache)."""
     session = _D(user="zz@example.com", sid="sid-of-the-request", data=_D(csrf_token="t"))
     fr = types.SimpleNamespace(
         throw=lambda msg, exc=None: (_ for _ in ()).throw(_Throw(msg)),
@@ -88,8 +97,10 @@ def _stub_frappe(enqueued, logged, enqueue_error=None, form_dict=None):
         log_error=lambda *a, **kw: logged.append(a),
         get_traceback=lambda: "tb",
         logger=lambda: types.SimpleNamespace(info=lambda msg: None, warning=lambda msg: None),
+        utils=types.SimpleNamespace(cint=_cint),
         session=session,
-        local=types.SimpleNamespace(session=session, form_dict=_D(form_dict or {})),
+        local=types.SimpleNamespace(session=session, form_dict=_D(form_dict or {}),
+                                    user_perms="perms:zz@example.com", cache={"k": "zz"}),
     )
     fr.form_dict = fr.local.form_dict
 
@@ -98,6 +109,8 @@ def _stub_frappe(enqueued, logged, enqueue_error=None, form_dict=None):
         session.sid = user
         session.data = _D()
         fr.local.form_dict = fr.form_dict = _D()
+        fr.local.user_perms = None
+        fr.local.cache = {}
 
     def enqueue(method, **kw):
         if enqueue_error:
@@ -113,6 +126,9 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
 
     def sync():
         synced.append(fr.session.user)
+        # get_user() builds the permission cache lazily, for whoever is the user
+        fr.local.user_perms = "perms:" + fr.session.user
+        fr.local.cache["k"] = fr.session.user
         if sync_error:
             raise sync_error
         return ["added dim_x"]
@@ -148,19 +164,24 @@ def test_a_publish_is_not_failed_by_an_enqueue_error():
     assert any("Budget fields" in e for e in summary["errors"]) and logged
 
 
-def test_the_standalone_apply_schema_syncs_inline_as_administrator_and_restores_the_caller():
-    """An EPM Admin may not create Custom Fields, or delete Administrator's.
-    set_user clears form_dict, so run_dbt is read first, and the dbt build is
-    queued as the caller, whose session is restored whole."""
-    enqueued, logged, synced = [], [], []
-    ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": 1})
-    fr = ns["frappe"]
-    form_dict = fr.local.form_dict
-    summary = ns["apply_schema"]()
-    assert synced == ["Administrator"] and summary["budget_fields_synced"] == ["added dim_x"]
+def _assert_caller_restored(fr, form_dict):
     assert fr.session.user == "zz@example.com"
     assert fr.session.sid == "sid-of-the-request" and fr.session.data == {"csrf_token": "t"}
     assert fr.local.form_dict is form_dict
+    # set_user(caller) resets the caches the sync filled as Administrator
+    assert fr.local.user_perms is None and fr.local.cache == {}, (fr.local.user_perms, fr.local.cache)
+
+
+def test_the_standalone_apply_schema_syncs_inline_as_administrator_and_restores_the_caller():
+    """An EPM Admin may not create Custom Fields, or delete Administrator's.
+    The dbt build is queued as the caller, whose session is restored whole."""
+    enqueued, logged, synced = [], [], []
+    ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "1"})
+    fr = ns["frappe"]
+    form_dict = fr.local.form_dict
+    summary = ns["apply_schema"](run_dbt="1")   # Frappe passes form_dict as the kwargs
+    assert synced == ["Administrator"] and summary["budget_fields_synced"] == ["added dim_x"]
+    _assert_caller_restored(fr, form_dict)
     assert [(e["method"], e["user"]) for e in enqueued] == [(DBT_JOB, "zz@example.com")]
     assert summary["dbt_triggered"] is True
 
@@ -168,10 +189,24 @@ def test_the_standalone_apply_schema_syncs_inline_as_administrator_and_restores_
 def test_the_caller_is_restored_when_the_standalone_sync_fails():
     enqueued, logged, synced = [], [], []
     ns = _publish_ns(enqueued, logged, synced, sync_error=RuntimeError("DDL failed"))
+    form_dict = ns["frappe"].local.form_dict
     summary = ns["apply_schema"]()
     assert synced == ["Administrator"] and any("Budget fields" in e for e in summary["errors"])
-    assert ns["frappe"].session.user == "zz@example.com"
-    assert ns["frappe"].session.sid == "sid-of-the-request"
+    _assert_caller_restored(ns["frappe"], form_dict)
+
+
+def test_run_dbt_zero_queues_no_dbt_build():
+    """cli_api passes cint(run_dbt); a form_dict fallback turned 0 back into
+    the truthy string "0"."""
+    for value in (0, "0", False, None, ""):
+        enqueued, logged, synced = [], [], []
+        ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "0"})
+        summary = ns["apply_schema"](run_dbt=value)
+        assert enqueued == [] and summary["dbt_triggered"] is False, repr(value)
+    for value in (1, "1", True):
+        enqueued, logged, synced = [], [], []
+        ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "1"})
+        assert ns["apply_schema"](run_dbt=value)["dbt_triggered"] is True, repr(value)
 
 
 def test_the_standalone_apply_schema_is_post_only():
@@ -190,16 +225,25 @@ def test_the_queued_job_path_resolves_to_a_module_function():
     assert "_sync_budget_custom_fields" in {_call_name(c) for c in _calls(job)}
 
 
-def test_the_job_syncs_as_administrator_and_retries_a_busy_lock():
+def test_the_job_syncs_as_administrator_and_waits_for_the_lock_itself():
     """It runs as the publisher, and an EPM Admin can neither create a Custom
-    Field nor delete one Administrator created. A busy lock is retried by the
-    job runner, not skipped: the holder may have read before this commit."""
+    Field nor delete one Administrator created."""
     calls = []
     ns = {"frappe": types.SimpleNamespace(set_user=lambda u: calls.append(("set_user", u)),
                                           logger=lambda: types.SimpleNamespace(info=lambda m: None)),
           "_sync_budget_custom_fields": lambda **kw: calls.append(("sync", kw)) or []}
-    _load({"sync_budget_custom_fields_job"}, ns)["sync_budget_custom_fields_job"]()
-    assert calls == [("set_user", "Administrator"), ("sync", {"retry_on_busy": True})]
+    ns = _load({"sync_budget_custom_fields_job"}, ns)
+    ns["sync_budget_custom_fields_job"]()
+    assert calls == [("set_user", "Administrator"), ("sync", {"in_job": True})]
+    wait = ns["_BUDGET_FIELD_SYNC_JOB_LOCK_ATTEMPTS"] * ns["_BUDGET_FIELD_SYNC_LOCK_WAIT"]
+    assert wait < 300, "the short queue's job timeout"
+
+
+def test_the_sync_does_not_rely_on_frappes_job_retry():
+    """v15's retry path (RetryBackgroundJobError) ends every retried job in
+    AttributeError and loses its Error Log."""
+    used = {n.attr for n in ast.walk(_tree(SCHEMA_APPLY)) if isinstance(n, ast.Attribute)}
+    assert "RetryBackgroundJobError" not in used
 
 
 def test_the_publish_path_neither_syncs_inline_nor_commits():
@@ -261,8 +305,9 @@ def _run_publish(touched, enqueued):
         whitelist=lambda *a, **kw: (lambda f: f),
         enqueue=lambda method, **kw: enqueued.append((method, kw)),
         get_roles=lambda *a: ["EPM Admin"], throw=refuse("throw"), PermissionError=PermissionError,
-        RetryBackgroundJobError=_Retry, log_error=lambda *a, **kw: None, get_traceback=lambda: "",
+        log_error=lambda *a, **kw: None, get_traceback=lambda: "",
         form_dict=_D(), msgprint=lambda *a, **kw: None, conf=types.SimpleNamespace(db_name="_zz"),
+        utils=types.SimpleNamespace(cint=_cint),
         logger=lambda: types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None,
                                              exception=lambda *a, **k: None),
         session=session, local=types.SimpleNamespace(session=session, form_dict=_D()),
@@ -315,48 +360,83 @@ def test_after_migrate_re_runs_the_sync_as_the_repair_path():
 # --- the sync itself: serialised, idempotent, right after publish and unpublish ---
 
 class _Site:
-    """MariaDB for the sync: a named lock, transactions, Dimension rows and
-    Budget Line Custom Fields. Violations are recorded, not raised: the sync
-    swallows a failing RELEASE_LOCK."""
+    """MariaDB as the sync sees it: a named lock, and REPEATABLE READ
+    transactions over Budget Line's Custom Fields. A transaction reads its
+    snapshot (taken at its last commit or rollback) plus its own uncommitted
+    writes; a row another session commits later stays invisible to it.
+    Violations are recorded, not raised: the sync swallows a failing
+    RELEASE_LOCK."""
 
     def __init__(self, lock=1):
-        self.lock = lock          # what GET_LOCK returns: 1, 0 (timeout) or None (error)
+        self.lock = lock          # GET_LOCK's result, or a list of results, one per call
+        self.lock_calls = 0
         self.held = False
-        self.fresh = False        # a commit since the lock was taken: the snapshot is current
-        self.pending = []         # uncommitted writes (a delete does not commit itself)
+        self.fresh = False        # a new snapshot since the lock was taken
+        self.committed = {}       # name -> row: what MariaDB has committed
+        self.snap = {}            # this transaction's snapshot of it
+        self.own = []             # uncommitted writes: ("insert", name, row) / ("delete", name)
         self.violations = []
         self.lock_names = []
         self.dimensions = {}
-        self.fields = {}          # name -> {"fieldname", "creation"}
         self.clock = 0
+        self.stamp_before_validate = True   # False in a migrate or patch
         self.fail_insert = None   # None, "before" (validate), "after" (updatedb's DDL)
+        self.fail_delete = set()
         self.release_error = None
         self.logged = []
         self.exceptions = []
 
-    def _stamp(self):
-        self.clock += 1
-        return f"2026-09-13 00:00:{self.clock:02d}"
+    # -- transactions --
+    def seed(self, fieldname, creation="old"):
+        self.committed[f"Budget Line-{fieldname}"] = {"fieldname": fieldname, "creation": creation}
+        self.snap = dict(self.committed)
 
-    def commit(self):
-        self.pending.clear()
+    def visible(self):
+        rows = dict(self.snap)
+        for write in self.own:
+            if write[0] == "insert":
+                rows[write[1]] = write[2]
+            else:
+                rows.pop(write[1], None)
+        return rows
+
+    def _new_transaction(self):
+        self.own = []
+        self.snap = dict(self.committed)
         if self.held:
             self.fresh = True
 
+    def commit(self):
+        for write in self.own:
+            if write[0] == "insert":
+                self.committed[write[1]] = write[2]
+            else:
+                self.committed.pop(write[1], None)
+        self._new_transaction()
+
+    def rollback(self):
+        self._new_transaction()
+
+    def commit_elsewhere(self, fieldname):
+        """Another session commits the field: not in this snapshot."""
+        self.committed[f"Budget Line-{fieldname}"] = {"fieldname": fieldname, "creation": "theirs"}
+
+    # -- SQL --
     def sql(self, query, values=None, as_dict=False):
         q = " ".join(query.split())
-        if q.startswith("SELECT GET_LOCK"):
-            self.lock_names.append(values[0])
-            self.held, self.fresh = self.lock == 1, False
-            return ((self.lock,),)
-        assert q.startswith("SELECT RELEASE_LOCK"), q
         self.lock_names.append(values[0])
+        if q.startswith("SELECT GET_LOCK"):
+            self.lock_calls += 1
+            result = self.lock.pop(0) if isinstance(self.lock, list) else self.lock
+            self.held, self.fresh = result == 1, False
+            return ((result,),)
+        assert q.startswith("SELECT RELEASE_LOCK"), q
         if self.release_error:
             raise self.release_error
         if not self.held:
             self.violations.append("released a lock it does not hold")
-        if self.pending:
-            self.violations.append(f"released with uncommitted work: {self.pending}")
+        if self.own:
+            self.violations.append(f"released with uncommitted work: {self.own}")
         self.held = False
         return ((1,),)
 
@@ -374,18 +454,19 @@ class _Site:
                     for n, d in self.dimensions.items()
                     if d["in_budget"] == 1 and d["status"] == "Published"]
         assert doctype == "Custom Field" and filters == {"dt": "Budget Line", "fieldname": ("like", "dim_%")}
-        return [types.SimpleNamespace(name=n, fieldname=f["fieldname"]) for n, f in self.fields.items()
-                if f["fieldname"].startswith("dim_")]
+        return [types.SimpleNamespace(name=n, fieldname=r["fieldname"]) for n, r in self.visible().items()
+                if r["fieldname"].startswith("dim_")]
 
     def exists(self, doctype, filters):
-        assert doctype == "Custom Field" and filters["creation"][0] == "!="
-        return next((n for n, f in self.fields.items()
-                     if f["fieldname"] == filters["fieldname"] and f["creation"] != filters["creation"][1]),
-                    None)
+        assert doctype == "Custom Field"
+        creation = filters.get("creation")
+        return next((n for n, r in self.visible().items()
+                     if r["fieldname"] == filters["fieldname"]
+                     and (creation is None or r["creation"] != creation[1])), None)
 
-    def committed_elsewhere(self, fieldname):
-        """Another session commits the field after this sync read."""
-        self.fields[f"Budget Line-{fieldname}"] = {"fieldname": fieldname, "creation": "earlier"}
+    def _stamp(self):
+        self.clock += 1
+        return f"2026-09-13 00:00:{self.clock:02d}"
 
     def new_doc(self, doctype):
         site = self
@@ -394,28 +475,33 @@ class _Site:
             def insert(self):
                 if not site.held:
                     site.violations.append("wrote outside the lock")
-                self.creation = site._stamp()          # set_user_and_timestamp, before validate
+                self.creation = site._stamp() if site.stamp_before_validate else None
                 name = f"{self.dt}-{self.fieldname}"
-                if name in site.fields or site.fail_insert == "before":
+                if name in site.visible() or site.fail_insert == "before":   # validate (get_meta)
                     raise _Validation(f"A field with the name {self.fieldname} already exists")
-                site.fields[name] = {"fieldname": self.fieldname, "creation": self.creation}
+                if name in site.committed:                                    # db_insert's unique key
+                    raise _Duplicate(name)
+                self.creation = self.creation or site._stamp()                # db_insert stamps it
+                site.own.append(("insert", name, {"fieldname": self.fieldname, "creation": self.creation}))
                 if site.fail_insert == "after":
                     raise RuntimeError("updatedb: ALTER TABLE failed")
-                site.commit()                          # updatedb commits
+                site.commit()                                                 # updatedb commits
 
         return CustomField()
 
     def delete_doc(self, doctype, name):
         if not self.held:
             self.violations.append("wrote outside the lock")
-        del self.fields[name]
-        self.pending.append(("delete", name))
+        if name in self.fail_delete:
+            raise RuntimeError(f"delete of {name} failed")
+        self.own.append(("delete", name))
 
     def frappe(self):
         return types.SimpleNamespace(
-            db=types.SimpleNamespace(sql=self.sql, commit=self.commit, exists=self.exists),
+            db=types.SimpleNamespace(sql=self.sql, commit=self.commit, rollback=self.rollback,
+                                     exists=self.exists),
             get_all=self.get_all, new_doc=self.new_doc, delete_doc=self.delete_doc,
-            conf=types.SimpleNamespace(db_name="_zzdb"), RetryBackgroundJobError=_Retry,
+            conf=types.SimpleNamespace(db_name="_zzdb"),
             log_error=lambda *a, **kw: self.logged.append(a),
             logger=lambda: types.SimpleNamespace(exception=lambda msg: self.exceptions.append(msg)))
 
@@ -433,10 +519,14 @@ def _site_with(**dims):
     return site
 
 
+def _fieldnames(site):
+    return {r["fieldname"] for r in site.committed.values()}
+
+
 def test_the_sync_is_idempotent_and_follows_publish_and_unpublish():
     site = _site_with(dim_cost_center="Published")
-    site.fields["Budget Line-dim_cost_center"] = {"fieldname": "dim_cost_center", "creation": "old"}
-    site.fields["Budget Line-other_field"] = {"fieldname": "other_field", "creation": "old"}   # left alone
+    site.seed("dim_cost_center")
+    site.seed("other_field")   # not a dimension field: left alone
     sync = _sync(site)
 
     site.dimensions["dim_zz"] = {"label": "ZZ", "in_budget": 1, "status": "Published"}
@@ -446,7 +536,7 @@ def test_the_sync_is_idempotent_and_follows_publish_and_unpublish():
     site.dimensions["dim_zz"]["status"] = "Inactive"   # unpublished
     assert sync() == ["removed dim_zz"]
     assert sync() == []
-    assert {f["fieldname"] for f in site.fields.values()} == {"dim_cost_center", "other_field"}
+    assert _fieldnames(site) == {"dim_cost_center", "other_field"}
     assert site.violations == [] and not site.held
 
 
@@ -455,47 +545,78 @@ def test_reads_follow_a_commit_under_the_lock_and_the_release_follows_the_last_c
     while they were pending. And Frappe's own reads (validate's get_meta,
     delete_doc's get_doc) are plain, so the snapshot must postdate the lock."""
     site = _site_with(dim_zz="Inactive")
-    site.fields["Budget Line-dim_zz"] = {"fieldname": "dim_zz", "creation": "old"}
+    site.seed("dim_zz")
     assert _sync(site)() == ["removed dim_zz"]
     assert site.violations == [], site.violations
+    assert _fieldnames(site) == set()
+
+
+def test_a_failing_delete_rolls_back_before_the_lock_is_released():
+    """Every inline caller catches the error and commits: without the
+    rollback, the earlier delete would land outside the lock. (An ALTER
+    commits implicitly, so an add whose DDL ran is committed already.)"""
+    site = _site_with(dim_a="Inactive", dim_b="Inactive")
+    site.seed("dim_a")
+    site.seed("dim_b")
+    site.fail_delete = {"Budget Line-dim_b"}
+    try:
+        _sync(site)()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("the failing delete must propagate")
+    assert site.violations == [], site.violations
+    site.commit()   # the caller commits after catching it
+    assert _fieldnames(site) == {"dim_a", "dim_b"}, "nothing half-done committed outside the lock"
 
 
 def test_a_dimension_not_in_budget_gets_no_field():
     site = _Site()
     site.dimensions["dim_business_unit"] = {"label": "BU", "in_budget": 0, "status": "Published"}
-    assert _sync(site)() == [] and site.fields == {}
+    assert _sync(site)() == [] and site.committed == {}
 
 
-def test_a_field_committed_elsewhere_meanwhile_counts_as_synced():
-    """validate refuses it ("already exists", a ValidationError) before
-    db_insert could raise DuplicateEntryError."""
-    site = _site_with(dim_zz="Published")
-    original_get_all = site.get_all
+def _field_lands_after_the_read(site, fieldname):
+    original = site.get_all
 
-    def get_all(doctype, **kw):   # the field lands right after this sync read
-        rows = original_get_all(doctype, **kw)
+    def get_all(doctype, **kw):
+        rows = original(doctype, **kw)
         if doctype == "Custom Field":
-            site.committed_elsewhere("dim_zz")
+            site.commit_elsewhere(fieldname)
         return rows
 
     site.get_all = get_all
-    assert _sync(site)() == []
-    assert site.fields["Budget Line-dim_zz"]["creation"] == "earlier" and not site.held
 
 
-def test_our_own_insert_failing_after_the_row_is_written_still_raises():
-    """updatedb's DDL failed: the row is ours (our creation stamp). Passing it
-    off as success would commit a field with no column."""
-    for when in ("after", "before"):
+def test_a_field_committed_elsewhere_after_the_read_counts_as_synced():
+    """It is not in this transaction's snapshot: the check must roll back
+    to see it. In a migrate or patch, creation is not stamped before validate."""
+    for stamped in (True, False):
         site = _site_with(dim_zz="Published")
-        site.fail_insert = when
-        try:
-            _sync(site)()
-        except (RuntimeError, _Validation):
-            pass
-        else:
-            raise AssertionError(f"insert failing {when} the row: swallowed")
-        assert not site.held, when
+        site.stamp_before_validate = stamped
+        _field_lands_after_the_read(site, "dim_zz")
+        assert _sync(site)() == [], stamped
+        assert site.committed["Budget Line-dim_zz"]["creation"] == "theirs", stamped
+        assert site.violations == [] and not site.held, stamped
+
+
+def test_our_own_insert_failing_still_raises():
+    """updatedb's DDL failed after our row was written (our creation stamp),
+    or validate refused it with nobody else's row there. Passing either off
+    as success would commit a field with no column, or hide the error."""
+    for stamped in (True, False):
+        for when in ("after", "before"):
+            site = _site_with(dim_zz="Published")
+            site.stamp_before_validate = stamped
+            site.fail_insert = when
+            try:
+                _sync(site)()
+            except (RuntimeError, _Validation):
+                pass
+            else:
+                raise AssertionError(f"insert failing {when} the row (stamped={stamped}): swallowed")
+            assert site.violations == [] and not site.held, (when, stamped)
+            assert site.committed == {}, (when, stamped)
 
 
 def test_an_inline_sync_that_cannot_get_the_lock_is_logged_and_skipped():
@@ -503,22 +624,30 @@ def test_an_inline_sync_that_cannot_get_the_lock_is_logged_and_skipped():
         site = _site_with(dim_zz="Published")
         site.lock = result
         assert _sync(site)() == [], result
-        assert site.fields == {} and len(site.logged) == 1, result
+        assert site.committed == {} and len(site.logged) == 1 and site.lock_calls == 1, result
         assert site.violations == [], result
 
 
-def test_the_job_retries_when_it_cannot_get_the_lock():
-    """Skipping would drop a publish committed after the holder read."""
+def test_the_job_waits_for_the_lock_then_raises_a_plain_error():
+    """Skipping would drop a publish committed after the holder read. A plain
+    error, so the job runner logs and commits it (not RetryBackgroundJobError)."""
     for result in (0, None):
         site = _site_with(dim_zz="Published")
-        site.lock = result
+        site.lock = [result] * 3
         try:
-            _sync(site)(retry_on_busy=True)
-        except _Retry:
+            _sync(site)(in_job=True)
+        except TimeoutError:
             pass
         else:
-            raise AssertionError("a busy lock in the job must raise RetryBackgroundJobError")
-        assert site.fields == {} and site.logged == [], result
+            raise AssertionError("a lock still busy after the job's attempts must raise")
+        assert site.lock_calls == 3 and site.committed == {} and site.logged == [], result
+
+
+def test_the_job_syncs_once_a_later_attempt_gets_the_lock():
+    site = _site_with(dim_zz="Published")
+    site.lock = [0, 1]
+    assert _sync(site)(in_job=True) == ["added dim_zz"]
+    assert site.lock_calls == 2 and site.violations == []
 
 
 def test_the_lock_is_released_when_the_sync_fails():
@@ -528,7 +657,7 @@ def test_the_lock_is_released_when_the_sync_fails():
         _sync(site)()
     except RuntimeError:
         pass
-    assert not site.held
+    assert not site.held and site.violations == []
 
 
 def test_a_failing_release_does_not_hide_the_sync_error():

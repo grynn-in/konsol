@@ -31,6 +31,8 @@ _BUDGET_FIELD_SYNC_JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
 # (_budget_field_sync_lock adds the database name).
 _BUDGET_FIELD_SYNC_LOCK = "konsol_budget_field_sync"
 _BUDGET_FIELD_SYNC_LOCK_WAIT = 30  # seconds
+# The job's GET_LOCK attempts: 3 x 30 s, well inside the short queue's 300 s.
+_BUDGET_FIELD_SYNC_JOB_LOCK_ATTEMPTS = 3
 
 
 # POST only: a GET is rolled back at the end of the request, and the sync's
@@ -55,8 +57,10 @@ def apply_schema(run_dbt=False):
         frappe.PermissionError: If caller lacks EPM Admin role.
     """
     _check_schema_role()
-    # Read now: the switch to Administrator below clears form_dict.
-    run_dbt = run_dbt or frappe.form_dict.get("run_dbt")
+    # Frappe passes form_dict as the kwargs, so over HTTP run_dbt is "0" or
+    # "1", and a string "0" is truthy. No form_dict fallback: it turned a
+    # caller's cint'd 0 back into "0" and queued a build nobody asked for.
+    run_dbt = frappe.utils.cint(run_dbt)
     summary = _apply_schema_steps()
 
     # 4. Sync Budget Line custom fields (in_budget dimension columns), as
@@ -139,7 +143,7 @@ def sync_budget_custom_fields_job():
     # role (_check_schema_role), and the job takes no arguments: it only
     # brings Budget Line in line with the committed dimensions.
     frappe.set_user("Administrator")
-    actions = _sync_budget_custom_fields(retry_on_busy=True)
+    actions = _sync_budget_custom_fields(in_job=True)
     if actions:
         frappe.logger().info(f"Budget Line custom fields synced: {actions}")
     return actions
@@ -392,7 +396,7 @@ def _upsert_dbt_source(fact):
     return False
 
 
-def _sync_budget_custom_fields(retry_on_busy=False):
+def _sync_budget_custom_fields(in_job=False):
     """Ensure Budget Line has Custom Fields for all in_budget Published dimensions.
 
     The wide budget lines carry the dimension columns (account + dims + 12
@@ -412,17 +416,30 @@ def _sync_budget_custom_fields(retry_on_busy=False):
     commit, so the next holder sees all of its work (a delete does not commit
     on its own).
 
-    A sync that cannot get the lock in time: with retry_on_busy (the job) it
-    raises RetryBackgroundJobError, which the job runner retries (5 times,
-    with backoff); an inline caller logs and skips, and Budget Line waits for
-    the next publish, apply_schema or migrate.
+    A sync that cannot get the lock in time: the job (in_job) tries
+    _BUDGET_FIELD_SYNC_JOB_LOCK_ATTEMPTS times, then raises a plain error,
+    which the job runner logs and commits. Skipping there could drop a
+    publish committed after the holder read. Not RetryBackgroundJobError:
+    Frappe v15's retry path ends every retried job in AttributeError and
+    loses its Error Log. An inline caller logs and skips, and Budget Line
+    waits for the next publish, apply_schema or migrate.
+
+    On an error it rolls back before releasing the lock. After its first
+    commit only its own work can be pending (earlier deletes, a half-inserted
+    row), and a caller that catches the error and commits would otherwise
+    land it outside the lock. An ALTER commits implicitly, so a field whose
+    DDL already ran stays.
     """
     lock = _budget_field_sync_lock()
-    got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock, _BUDGET_FIELD_SYNC_LOCK_WAIT))
-    if not got or got[0][0] != 1:  # 0: timed out; NULL: error
+    got = None
+    for _ in range(_BUDGET_FIELD_SYNC_JOB_LOCK_ATTEMPTS if in_job else 1):
+        got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock, _BUDGET_FIELD_SYNC_LOCK_WAIT))
+        if got and got[0][0] == 1:  # 0: timed out; NULL: error
+            break
+    else:
         msg = f"GET_LOCK('{lock}') returned {got!r}: another Budget Line field sync holds it."
-        if retry_on_busy:
-            raise frappe.RetryBackgroundJobError(msg)
+        if in_job:
+            raise TimeoutError(msg)
         frappe.log_error("schema_apply: budget field sync skipped", msg)
         return []
     try:
@@ -435,6 +452,12 @@ def _sync_budget_custom_fields(retry_on_busy=False):
         # holder must see them.
         frappe.db.commit()
         return actions
+    except BaseException:
+        try:
+            frappe.db.rollback()
+        except Exception:
+            frappe.logger().exception("schema_apply: rollback after a failed budget field sync failed")
+        raise
     finally:
         try:
             frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock,))
@@ -452,16 +475,24 @@ def _budget_field_sync_lock():
 def _created_elsewhere(cf):
     """Whether a failed insert of ``cf`` met a field committed outside this sync.
 
-    That field fails CustomField.validate ("already exists", a ValidationError)
-    before db_insert could raise DuplicateEntryError, and it meets the goal.
-    A row stamped with our own creation time is ours, failing after the
-    insert (updatedb's DDL): that must not pass as success.
+    That field fails CustomField.validate ("already exists", a
+    ValidationError) or db_insert (DuplicateEntryError), and it meets the
+    goal. Rolls back first: a field committed after this transaction's
+    snapshot is invisible to it. That is safe here because the adds run
+    before any delete and each successful add has committed (updatedb), so
+    only this failed add's own work is pending.
+
+    Ours must not pass as success: a row with our creation stamp is ours,
+    failing after the insert (updatedb's DDL). In a migrate or patch Frappe
+    stamps creation only in db_insert, so no stamp means ours was never
+    written, and any row there is someone else's.
     """
+    frappe.db.rollback()
+    filters = {"dt": cf.dt, "fieldname": cf.fieldname}
     creation = getattr(cf, "creation", None)
-    if not creation:
-        return False
-    return bool(frappe.db.exists("Custom Field", {
-        "dt": cf.dt, "fieldname": cf.fieldname, "creation": ("!=", creation)}))
+    if creation:
+        filters["creation"] = ("!=", creation)
+    return bool(frappe.db.exists("Custom Field", filters))
 
 
 def _sync_budget_custom_fields_locked():
