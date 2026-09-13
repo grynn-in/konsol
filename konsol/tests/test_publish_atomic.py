@@ -380,7 +380,9 @@ class _Site:
         self.dimensions = {}
         self.clock = 0
         self.stamp_before_validate = True   # False in a migrate or patch
-        self.fail_insert = None   # None, "before" (validate), "after" (updatedb's DDL)
+        # None, "validate" (CustomField.validate), "db_table_validate" (updatedb,
+        # before any DDL) or "alter" (the ALTER, after sql_ddl's commit)
+        self.fail_insert = None
         self.fail_delete = set()
         self.release_error = None
         self.logged = []
@@ -475,17 +477,23 @@ class _Site:
             def insert(self):
                 if not site.held:
                     site.violations.append("wrote outside the lock")
+                # set_user_and_timestamp: not in an install, migrate or patch
                 self.creation = site._stamp() if site.stamp_before_validate else None
                 name = f"{self.dt}-{self.fieldname}"
-                if name in site.visible() or site.fail_insert == "before":   # validate (get_meta)
+                if name in site.visible() or site.fail_insert == "validate":  # CustomField.validate (get_meta)
                     raise _Validation(f"A field with the name {self.fieldname} already exists")
-                if name in site.committed:                                    # db_insert's unique key
+                self.creation = self.creation or site._stamp()   # db_insert stamps it before the INSERT
+                if name in site.committed:                       # the INSERT hits the unique key
                     raise _Duplicate(name)
-                self.creation = self.creation or site._stamp()                # db_insert stamps it
                 site.own.append(("insert", name, {"fieldname": self.fieldname, "creation": self.creation}))
-                if site.fail_insert == "after":
+                # on_update -> updatedb: MariaDBTable.validate, then the ALTER through
+                # sql_ddl, which commits before it runs; then updatedb's own commit.
+                if site.fail_insert == "db_table_validate":
+                    raise _Validation("updatedb: MariaDBTable.validate refused the column")
+                if site.fail_insert == "alter":
+                    site.commit()
                     raise RuntimeError("updatedb: ALTER TABLE failed")
-                site.commit()                                                 # updatedb commits
+                site.commit()
 
         return CustomField()
 
@@ -600,23 +608,54 @@ def test_a_field_committed_elsewhere_after_the_read_counts_as_synced():
         assert site.violations == [] and not site.held, stamped
 
 
-def test_our_own_insert_failing_still_raises():
-    """updatedb's DDL failed after our row was written (our creation stamp),
-    or validate refused it with nobody else's row there. Passing either off
-    as success would commit a field with no column, or hide the error."""
+def test_the_adds_run_before_the_deletes():
+    """_created_elsewhere rolls back to see a field committed after the read.
+    That discards only the failed add's own work because no delete has run
+    yet. With the deletes first, the rollback threw a pending delete away:
+    the sync reported 'removed dim_old' and dim_old stayed."""
+    site = _site_with(dim_old="Inactive", dim_zz="Published")
+    site.seed("dim_old")
+    _field_lands_after_the_read(site, "dim_zz")
+    assert _sync(site)() == ["removed dim_old"]
+    assert _fieldnames(site) == {"dim_zz"}, "dim_old removed, dim_zz synced"
+    assert site.committed["Budget Line-dim_zz"]["creation"] == "theirs"
+    assert site.violations == [] and not site.held
+
+
+def _sync_raises(site, errors):
+    try:
+        _sync(site)()
+    except errors:
+        return True
+    return False
+
+
+def test_an_insert_refused_before_any_ddl_raises_and_commits_nothing():
+    """CustomField.validate refused it with nobody else's field there, or
+    updatedb's MariaDBTable.validate refused the column before any DDL ran.
+    Our row, if written, is still pending, and the rollback discards it."""
     for stamped in (True, False):
-        for when in ("after", "before"):
+        for when in ("validate", "db_table_validate"):
             site = _site_with(dim_zz="Published")
             site.stamp_before_validate = stamped
             site.fail_insert = when
-            try:
-                _sync(site)()
-            except (RuntimeError, _Validation):
-                pass
-            else:
-                raise AssertionError(f"insert failing {when} the row (stamped={stamped}): swallowed")
-            assert site.violations == [] and not site.held, (when, stamped)
+            assert _sync_raises(site, (_Validation,)), f"swallowed: {when}, stamped={stamped}"
             assert site.committed == {}, (when, stamped)
+            assert site.violations == [] and not site.held, (when, stamped)
+
+
+def test_an_alter_failure_leaves_our_row_committed_and_still_raises():
+    """sql_ddl commits before the ALTER, so our Custom Field row is already
+    committed when the ALTER fails, with no column behind it. It carries our
+    own creation stamp, which the exists-check excludes: passing it off as a
+    field created elsewhere would hide that failure."""
+    for stamped in (True, False):
+        site = _site_with(dim_zz="Published")
+        site.stamp_before_validate = stamped
+        site.fail_insert = "alter"
+        assert _sync_raises(site, (RuntimeError,)), f"swallowed: stamped={stamped}"
+        assert site.committed["Budget Line-dim_zz"]["creation"] != "theirs", stamped
+        assert site.violations == [] and not site.held, stamped
 
 
 def test_an_inline_sync_that_cannot_get_the_lock_is_logged_and_skipped():
@@ -652,7 +691,7 @@ def test_the_job_syncs_once_a_later_attempt_gets_the_lock():
 
 def test_the_lock_is_released_when_the_sync_fails():
     site = _site_with(dim_zz="Published")
-    site.fail_insert = "after"
+    site.fail_insert = "alter"
     try:
         _sync(site)()
     except RuntimeError:
@@ -662,7 +701,7 @@ def test_the_lock_is_released_when_the_sync_fails():
 
 def test_a_failing_release_does_not_hide_the_sync_error():
     site = _site_with(dim_zz="Published")
-    site.fail_insert = "after"
+    site.fail_insert = "alter"
     site.release_error = ConnectionError("server has gone away")
     try:
         _sync(site)()
