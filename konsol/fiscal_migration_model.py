@@ -108,6 +108,15 @@ def plan(used_pairs, ps_rows, existing_years):
         targets[year] = info["rows"]
     planned = {y["year"] for y in create}
 
+    for year, period in sorted(used_pairs):
+        if year not in existing_years:
+            continue  # a year the plan itself creates already covers used periods
+        target = next((t for t in targets[year] if t["period"] == period), None)
+        if target is None:
+            conflicts.append(
+                "Fiscal year %d period %d is used by documents but not "
+                "declared in Fiscal Year %d." % (year, period, year))
+
     moves = []
     for row in sorted(ps_rows, key=lambda r: (r["fiscal_year"], r["fiscal_period"])):
         year = row["fiscal_year"]
