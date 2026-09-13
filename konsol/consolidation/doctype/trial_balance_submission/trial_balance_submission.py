@@ -18,8 +18,16 @@ transactions, so correctness comes from ordering, not atomicity:
      gives this for free), never an edit of landed rows.
 
 CSV contract (header required, case-insensitive):
-    main_account,debit,credit[,description]
-Amounts are in the entity's accounting currency. One row per account.
+    main_account,debit,credit[,description][,partner_data_area_id]
+Amounts are in the entity's accounting currency. One row per account and
+partner.
+
+partner_data_area_id (konsol#159; `partner`, `partner_entity`, `partner_id`
+and `counterparty` are accepted too) is the OTHER group entity a row is held
+with. It is optional on every row and every account (decision 2, 13 Sep 2026):
+a row on an intercompany account without one loads, is never eliminated, and
+consolidation lists it as unmatched. Nothing guesses it. When given, it must be
+an existing non-group Entity and never the row's own entity.
 """
 
 import csv
@@ -30,7 +38,7 @@ import uuid
 import frappe
 from frappe.model.document import Document
 
-from konsol.clickhouse import execute
+from konsol.clickhouse import ensure_raw_tables, execute
 from konsol.period_status import assert_open
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
@@ -42,11 +50,23 @@ BALANCE_TOLERANCE = 0.01
 
 _REQUIRED_COLUMNS = ("main_account", "debit", "credit")
 
+#: The intercompany partner entity on a row (konsol#159).
+PARTNER = "partner_data_area_id"
+#: Other header spellings accepted for PARTNER.
+PARTNER_ALIASES = ("partner", "partner_entity", "partner_id", "counterparty")
+
+
+def _column(header):
+    name = (header or "").strip().lower()
+    return PARTNER if name in PARTNER_ALIASES else name
+
 
 def parse_tb_csv(text):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
-    Returns a list of {main_account, debit, credit, description}.
+    Returns a list of {main_account, debit, credit, description,
+    partner_data_area_id}; the partner is '' when the file has no partner
+    column or the cell is blank.
     Raises ValueError with a human-readable message on structural problems —
     a missing header, a non-numeric amount, a blank account. Business
     validation (balance, duplicates, chart membership) is validate_tb_rows()'s
@@ -55,12 +75,17 @@ def parse_tb_csv(text):
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise ValueError("The file is empty — expected a CSV header row")
-    headers = [h.strip().lower() for h in reader.fieldnames]
+    headers = [_column(h) for h in reader.fieldnames]
     missing = [c for c in _REQUIRED_COLUMNS if c not in headers]
     if missing:
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} — the header must be "
-            "main_account,debit,credit[,description]"
+            "main_account,debit,credit[,description][,partner_data_area_id]"
+        )
+    if headers.count(PARTNER) > 1:
+        raise ValueError(
+            "Two partner columns: keep one of partner_data_area_id, "
+            + ", ".join(PARTNER_ALIASES)
         )
 
     rows = []
@@ -73,7 +98,7 @@ def parse_tb_csv(text):
                 f"Line {lineno}: more cells than the header has columns "
                 "(a stray comma?)"
             )
-        item = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()
+        item = {_column(k): (v or "").strip() for k, v in raw.items()
                 if k is not None}
         account = item.get("main_account", "")
         if not account:
@@ -104,32 +129,69 @@ def parse_tb_csv(text):
             "debit": round(debit, 2),
             "credit": round(credit, 2),
             "description": item.get("description", ""),
+            PARTNER: item.get(PARTNER, ""),
         })
     if not rows:
         raise ValueError("The file has a header but no data rows")
     return rows
 
 
-def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE):
+def _row_label(r):
+    partner = r.get(PARTNER) or ""
+    return f"{r['main_account']} (partner {partner})" if partner else r["main_account"]
+
+
+def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
+                     entity=None, known_entities=None):
     """Business validation over parsed rows. Pure; host-testable.
 
     Returns a list of error strings — empty means valid. known_accounts is the
     group chart (an iterable of account codes) or None to skip that check
     (the caller decides whether skipping is acceptable; the doctype does not).
+
+    Partners (konsol#159): `entity` is the submitting entity, and a row may
+    not name it as its own partner. known_entities is every entity a partner
+    may be (the non-group Entities), or None to skip that check. A blank
+    partner is always valid: the partner is optional (decision 2).
     """
     errors = []
 
+    # One row per (account, partner): an entity may hold one intercompany
+    # account with several partners, one row each.
     seen, dupes = set(), set()
     for r in rows:
-        acct = r["main_account"]
-        if acct in seen:
-            dupes.add(acct)
-        seen.add(acct)
+        key = (r["main_account"], r.get(PARTNER) or "")
+        if key in seen:
+            dupes.add(_row_label(r))
+        seen.add(key)
     if dupes:
         errors.append(
             f"Duplicate account rows: {', '.join(sorted(dupes))} — "
-            "one row per account; merge them before submitting"
+            "one row per account and partner; merge them before submitting"
         )
+
+    partnered = [r for r in rows if r.get(PARTNER)]
+    if entity:
+        own = sorted({r["main_account"] for r in partnered
+                      if r[PARTNER].upper() == entity.upper()})
+        if own:
+            errors.append(
+                f"Partner is the entity itself ({entity}) on: {', '.join(own)} — "
+                "a partner is the other group entity; leave it blank for a third party"
+            )
+    if known_entities is not None:
+        known = set(known_entities)
+        by_upper = {e.upper(): e for e in known}
+        unknown = sorted({r[PARTNER] for r in partnered
+                          if r[PARTNER] not in known
+                          and not (entity and r[PARTNER].upper() == entity.upper())})
+        if unknown:
+            named = [f"{u} (did you mean {by_upper[u.upper()]}?)" if u.upper() in by_upper else u
+                     for u in unknown]
+            errors.append(
+                f"Unknown partner entit{'y' if len(unknown) == 1 else 'ies'}: {', '.join(named)} — "
+                "a partner must be an existing entity that is not a group"
+            )
 
     negative = sorted({r["main_account"] for r in rows
                        if r["debit"] < 0 or r["credit"] < 0})
@@ -159,6 +221,31 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE):
             )
 
     return errors
+
+
+def partnerless_ic_accounts(rows, ic_accounts):
+    """The intercompany-account rows that name no partner. Pure; host-testable.
+
+    Not an error (decision 2: the partner is optional). Such a row loads and is
+    never eliminated; consolidation lists it as unmatched, so the uploader is
+    warned. Returns the accounts, one per row (sorted).
+    """
+    ic = set(ic_accounts or ())
+    return sorted(r["main_account"] for r in rows
+                  if r["main_account"] in ic and not r.get(PARTNER))
+
+
+def partnerless_warning(accounts):
+    """The warning shown for partnerless_ic_accounts(), or '' for none."""
+    if not accounts:
+        return ""
+    n = len(accounts)
+    return (
+        f"{n} intercompany row{'' if n == 1 else 's'} without a partner "
+        f"(account{'' if n == 1 else 's'} {', '.join(accounts)}). "
+        f"{'It loads' if n == 1 else 'They load'}, but {'is' if n == 1 else 'are'} never eliminated: "
+        "consolidation lists them as unmatched. Add partner_data_area_id to eliminate them."
+    )
 
 
 def _sql_str(value):
@@ -191,7 +278,9 @@ class TrialBalanceSubmission(Document):
         self._check_no_other_submission()
 
         rows = self._parse_file()
-        errors = validate_tb_rows(rows, known_accounts=self._chart_accounts())
+        errors = validate_tb_rows(rows, known_accounts=self._chart_accounts(),
+                                  entity=self.data_area_id,
+                                  known_entities=self._partner_entities(rows))
 
         self.row_count = len(rows)
         self.total_debit = round(sum(r["debit"] for r in rows), 2)
@@ -202,7 +291,13 @@ class TrialBalanceSubmission(Document):
             # message IS the feedback.
             frappe.throw("Trial balance failed validation:\n" + "\n".join(errors))
         self.validation_status = "Valid"
-        self.validation_message = ""
+        # A warning, not an error (decision 2): kept on the document so the
+        # submitter and the reviewer both see it.
+        self.validation_message = partnerless_warning(
+            partnerless_ic_accounts(rows, self._ic_accounts()))
+        if self.validation_message:
+            frappe.msgprint(self.validation_message, title="Intercompany rows without a partner",
+                            indicator="orange")
 
     def on_submit(self):
         rows = self._parse_file()
@@ -322,27 +417,29 @@ class TrialBalanceSubmission(Document):
             )
         return {line.strip() for line in text.splitlines() if line.strip()}
 
+    @staticmethod
+    def _partner_entities(rows):
+        """Every entity a partner may name: the non-group Entities, or None
+        when no row names a partner (nothing to check). get_all, not
+        get_list: a partner is named here, not read, so the submitter's entity
+        scope does not limit which counterparty they may name."""
+        if not any(r.get(PARTNER) for r in rows):
+            return None
+        return set(frappe.get_all("Entity", filters={"is_group": 0}, pluck="name",
+                                  limit_page_length=0))
+
+    @staticmethod
+    def _ic_accounts():
+        from konsol.consolidation.doctype.intercompany_account.intercompany_account import (
+            intercompany_accounts,
+        )
+        return intercompany_accounts()
+
     def _ensure_tables(self):
-        execute(
-            f"CREATE TABLE IF NOT EXISTS {RAW_TABLE} ("
-            "batch_id String, data_area_id String, fiscal_year UInt16, "
-            "fiscal_period UInt8, main_account String, "
-            "debit_amount Float64, credit_amount Float64, "
-            "description String, submission_name String, "
-            "submitted_at DateTime"
-            ") ENGINE = MergeTree ORDER BY (batch_id, main_account)"
-        )
-        # KEEP IN SYNC with clickhouse/init-db.sql in konsolidat (the fresh-
-        # install owner of the same two schemas). ReplacingMergeTree keyed on
-        # batch_id: a duplicated claim collapses instead of fanning out the
-        # bronze join.
-        execute(
-            f"CREATE TABLE IF NOT EXISTS {CONTROL_TABLE} ("
-            "batch_id String, submission_name String, data_area_id String, "
-            "fiscal_year UInt16, fiscal_period UInt8, row_count UInt32, "
-            "claimed_at DateTime"
-            ") ENGINE = ReplacingMergeTree(claimed_at) ORDER BY batch_id"
-        )
+        # The DDL lives in konsol.clickhouse (KEEP IN SYNC with konsolidat's
+        # clickhouse/init-db.sql); this also adds the partner column to a
+        # table created before konsol#159.
+        ensure_raw_tables()
 
     def _land_rows(self, rows):
         values = []
@@ -354,14 +451,16 @@ class TrialBalanceSubmission(Document):
                 f"'{_sql_str(r['main_account'])}', "
                 f"{float(r['debit'])}, {float(r['credit'])}, "
                 f"'{_sql_str(r['description'])}', "
-                f"'{_sql_str(self.name)}', now())"
+                f"'{_sql_str(self.name)}', now(), "
+                f"'{_sql_str(r.get(PARTNER) or '')}')"
             )
         batch_size = 1000
         for i in range(0, len(values), batch_size):
             execute(
                 f"INSERT INTO {RAW_TABLE} (batch_id, data_area_id, "
                 "fiscal_year, fiscal_period, main_account, debit_amount, "
-                "credit_amount, description, submission_name, submitted_at) "
+                "credit_amount, description, submission_name, submitted_at, "
+                f"{PARTNER}) "
                 "VALUES " + ", ".join(values[i:i + batch_size])
             )
 

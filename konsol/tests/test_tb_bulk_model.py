@@ -30,7 +30,8 @@ def test_splits_into_entity_periods_in_file_order():
     groups = M.split_table(table)
     assert list(groups) == [("AMDE", 2025, 12), ("AMUS", 2025, 12), ("AMDE", 2024, 12)]
     assert [r["main_account"] for r in groups[("AMDE", 2025, 12)]] == ["1010", "2010"]
-    assert groups[("AMUS", 2025, 12)][0] == {"main_account": "1010", "debit": 0.0, "credit": 5.0, "description": ""}
+    assert groups[("AMUS", 2025, 12)][0] == {"main_account": "1010", "debit": 0.0, "credit": 5.0, "description": "",
+                                             "partner_data_area_id": ""}
 
 
 def test_header_is_forgiving_about_case_spaces_and_aliases():
@@ -72,12 +73,13 @@ def test_missing_columns_and_empty_files():
 def test_group_csv_is_the_single_upload_contract():
     rows = [{"main_account": "1010", "debit": 1234.5, "credit": 0.0, "description": "cash, main"}]
     parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows))))
-    assert parsed == [{"main_account": "1010", "debit": "1234.50", "credit": "0.00", "description": "cash, main"}]
+    assert parsed == [{"main_account": "1010", "debit": "1234.50", "credit": "0.00", "description": "cash, main",
+                       "partner_data_area_id": ""}]
 
 
 def _check(**over):
     facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True, period_status="Open", existing=None,
-                 validate_rows=lambda rows, known_accounts=None: [])
+                 validate_rows=lambda rows, **kw: [])
     facts.update(over)
     rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0}, {"main_account": "2010", "debit": 0.0, "credit": 5.0}]
     return M.check_group(("AMDE", 2025, 12), rows, **facts)
@@ -94,13 +96,13 @@ def test_every_single_upload_rule_applies():
     assert "is closed" in _check(period_status="Closed")["errors"][0]
     assert "already submitted" in _check(existing="TBS-00001")["errors"][0]
     # the single-submission validator's verdict is carried through as-is
-    r = _check(validate_rows=lambda rows, known_accounts=None: ["Debits (5.00) do not equal credits"])
+    r = _check(validate_rows=lambda rows, **kw: ["Debits (5.00) do not equal credits"])
     assert not r["ok"] and r["errors"] == ["Debits (5.00) do not equal credits"]
 
 
 def test_period_outside_1_to_12_is_refused():
     r = M.check_group(("AMDE", 2025, 13), [], known_accounts=set(), visible=True, leaf=True, period_status=None,
-                      existing=None, validate_rows=lambda rows, known_accounts=None: [])
+                      existing=None, validate_rows=lambda rows, **kw: [])
     assert "must be 1 to 12" in r["errors"][0]
 
 
@@ -161,3 +163,36 @@ def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
     assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1.00", "credit": "0.00"}
     # two uploads of the same figures produce different files
     assert M.group_csv(rows, source="TBU-00001") != M.group_csv(rows, source="TBU-00002")
+
+
+# --- konsol#159: the intercompany partner -----------------------------------
+
+def test_the_partner_column_and_its_aliases_are_carried_to_each_row():
+    for name in ("partner_data_area_id", "Partner", "partner entity", "counterparty"):
+        table = [HEADER + [name],
+                 ["ZZA", "2099", "1", "4030", "", "100", "ZZB"],
+                 ["ZZA", "2099", "1", "1010", "100", "", ""]]
+        rows = M.split_table(table)[("ZZA", 2099, 1)]
+        assert [r["partner_data_area_id"] for r in rows] == ["ZZB", ""], name
+    assert "Two partner columns" in _raises(M.split_table, [HEADER + ["partner", "counterparty"]])
+
+
+def test_group_csv_carries_the_partner_to_the_single_upload():
+    rows = [{"main_account": "4030", "debit": 0.0, "credit": 100.0, "description": "", "partner_data_area_id": "ZZB"}]
+    parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows, source="TBU-1"))))
+    assert parsed[0]["partner_data_area_id"] == "ZZB"
+
+
+def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports_warnings():
+    seen = {}
+
+    def validate(rows, **kw):
+        seen.update(kw)
+        return []
+
+    r = _check(validate_rows=validate, known_entities={"ZZA", "ZZB"},
+               warnings=["1 intercompany row without a partner"], partnerless_ic_rows=1)
+    assert seen == {"known_accounts": {"1010", "2010"}, "entity": "AMDE", "known_entities": {"ZZA", "ZZB"}}
+    # a warning never stops the load
+    assert r["ok"] and r["warnings"] == ["1 intercompany row without a partner"] and r["partnerless_ic_rows"] == 1
+    assert _check()["warnings"] == [] and _check()["partnerless_ic_rows"] == 0

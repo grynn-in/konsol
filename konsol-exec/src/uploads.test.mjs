@@ -11,8 +11,16 @@ const report = [
 
 test("summary counts entity-periods, entities, lines and outcomes", () => {
 	// the loaded AMUS row is done, not ready; AMHQ failed to load and is ready to retry
-	assert.deepEqual(summarize(report), { groups: 4, ready: 2, problems: 1, lines: 35, entities: 3, loaded: 1, failed: 1 });
+	assert.deepEqual(summarize(report), { groups: 4, ready: 2, problems: 1, lines: 35, entities: 3, loaded: 1, failed: 1, partnerless: 0 });
 	assert.equal(summarize(null).groups, 0);
+});
+
+test("a ready row shows its warnings; partnerless intercompany rows are counted (konsol#159)", () => {
+	const warned = { entity: "ZZA", fiscal_year: 2099, fiscal_period: 1, rows: 3, ok: true, errors: [],
+		warnings: ["1 intercompany row without a partner"], partnerless_ic_rows: 1 };
+	assert.deepEqual(rowStatus(warned), { state: "ready", label: "Ready", note: "1 intercompany row without a partner" });
+	assert.equal(summarize([...report, warned]).partnerless, 1);
+	assert.equal(summarize([...report, warned]).ready, 3);
 });
 
 test("each row says ready, problem, loaded or failed", () => {

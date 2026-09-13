@@ -73,6 +73,28 @@ def test_consolidation_group_ch_sync():
     assert "gold.consolidation_groups" in content
 
 
+def test_a_group_carries_its_intercompany_difference_account_and_tolerance():
+    """konsol#159, decision 4: a mismatched pair eliminates the matched amount
+    and books the difference to an account set per consolidation group, shown
+    against a tolerance. Written through with the node, so the engine reads it
+    from epm_gold.consolidation_groups."""
+    meta = _load_json("consolidation_group")
+    fields = {f["fieldname"]: f for f in meta["fields"]}
+    assert fields["ic_difference_account"]["fieldtype"] == "Data"
+    assert fields["ic_difference_tolerance"]["fieldtype"] == "Float"
+    for f in ("ic_difference_account", "ic_difference_tolerance"):
+        # shown only where consolidation reads them: the node with no entity
+        assert fields[f].get("depends_on") == "eval:!doc.data_area_id", f
+    content = _load_py("consolidation_group")
+    for f in ("ic_difference_account", "ic_difference_tolerance"):
+        assert f'"{f}": "{f}"' in content, f
+    # a locking read of Published Intercompany Account rows (#173 re-review L5)
+    assert "_validate_ic_difference" in content and "FROM `tabIntercompany Account`" in content
+    # decision 13 (13 Sep 2026): only booking differences count against the tolerance
+    assert "booking difference" in fields["ic_difference_tolerance"]["description"]
+    assert "never counts" in fields["ic_difference_tolerance"]["description"]
+
+
 # --- IC Elimination Rule ---
 
 def test_ic_elimination_rule_json_exists():

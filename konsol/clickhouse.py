@@ -531,10 +531,22 @@ _REFERENCE_TABLE_DDL = {
     # relation konsol TRUNCATE+INSERTs, so every governed build overwrote the
     # live tree with a June CSV and every migrate overwrote it back. The seed is
     # deleted, so this is now the only thing that creates the table.
+    # konsol#159: a group node also carries where its intercompany differences
+    # are booked, and the tolerance they are shown against (decision 4, 13 Sep
+    # 2026). Added to existing tables by _ADDED_COLUMNS below.
     "epm_gold.consolidation_groups": (
         "(consolidation_group String, data_area_id String, entity_name String, "
-        "reporting_currency String) "
+        "reporting_currency String, ic_difference_account String DEFAULT '', "
+        "ic_difference_tolerance Float64 DEFAULT 0) "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)"
+    ),
+    # konsol#159: the intercompany flag on the group chart (decision 3). One row
+    # per Published Intercompany Account; counterpart_account is the account the
+    # partner books the other side on ('' = the same account).
+    "epm_staging.intercompany_accounts": (
+        "(main_account String, counterpart_account String, description String, "
+        "status String) "
+        "ENGINE = MergeTree ORDER BY main_account"
     ),
     # F2: the flat tree. Listed here because _RETIRED_COLUMNS ALTERs it — on a
     # stack that has never run dbt the table would not exist, the ALTER would
@@ -658,6 +670,27 @@ _RETIRED_COLUMNS = {
     "epm_gold.consolidation_groups": ["ownership_pct", "consolidation_method"],
 }
 
+# The trial-balance landing and control tables (F8). KEEP IN SYNC with
+# clickhouse/init-db.sql in konsolidat, which creates them on a fresh volume.
+# Trial Balance Submission lands and claims its rows here, and bronze reads
+# raw INNER JOIN control. ReplacingMergeTree on the control table: a duplicated
+# claim collapses instead of fanning out the bronze join.
+_RAW_TABLE_DDL = {
+    "epm_raw.trial_balance_submissions": (
+        "(batch_id String, data_area_id String, fiscal_year UInt16, "
+        "fiscal_period UInt8, main_account String, "
+        "debit_amount Float64, credit_amount Float64, "
+        "description String, submission_name String, submitted_at DateTime, "
+        "partner_data_area_id String DEFAULT '') "
+        "ENGINE = MergeTree ORDER BY (batch_id, main_account)"
+    ),
+    "epm_raw.trial_balance_submission_control": (
+        "(batch_id String, submission_name String, data_area_id String, "
+        "fiscal_year UInt16, fiscal_period UInt8, row_count UInt32, "
+        "claimed_at DateTime) "
+        "ENGINE = ReplacingMergeTree(claimed_at) ORDER BY batch_id"
+    ),
+}
 
 # Columns a later release added to a table that already exists on older
 # stacks. CREATE TABLE IF NOT EXISTS never touches an existing table, so each
@@ -665,6 +698,13 @@ _RETIRED_COLUMNS = {
 # The same column must be in the CREATE above, at the end, so a fresh table
 # and an upgraded one agree.
 _ADDED_COLUMNS = {
+    # konsol#159: the intercompany partner on every trial balance row
+    "epm_raw.trial_balance_submissions": [("partner_data_area_id", "String DEFAULT ''")],
+    # konsol#159: where a group books intercompany differences, and their tolerance
+    "epm_gold.consolidation_groups": [
+        ("ic_difference_account", "String DEFAULT ''"),
+        ("ic_difference_tolerance", "Float64 DEFAULT 0"),
+    ],
     # konsol#103: ISO Currency's magnitude reference for the group rate guard;
     # NaN until the ISO Currency write-through fills it
     "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
@@ -674,6 +714,20 @@ _ADDED_COLUMNS = {
 def _added_column_ddl(tables):
     return [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {c} {typ}"
             for t, cols in _ADDED_COLUMNS.items() if t in tables for c, typ in cols]
+
+
+def ensure_raw_tables():
+    """Create the trial-balance landing tables and add any newer columns.
+
+    Raises on failure: a submission must never land rows into a table that is
+    missing a column it writes. ensure_reference_tables() calls it best-effort,
+    so a migrate also upgrades a stack nobody has submitted to since.
+    """
+    execute("CREATE DATABASE IF NOT EXISTS epm_raw")
+    for table, body in _RAW_TABLE_DDL.items():
+        execute(f"CREATE TABLE IF NOT EXISTS {table} {body}")
+    for sql in _added_column_ddl(_RAW_TABLE_DDL):
+        execute(sql)
 
 
 def ensure_reference_tables():
@@ -701,6 +755,13 @@ def ensure_reference_tables():
         except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
             frappe.logger().warning(
                 f"reference table bootstrap skipped: {sql[:60]}…", exc_info=True)
+    # konsol#159: the raw landing tables too, so a migrate adds the partner
+    # column even on a stack where nobody has submitted a trial balance since
+    # — bronze reads it.
+    try:
+        ensure_raw_tables()
+    except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
+        frappe.logger().warning("raw table bootstrap skipped", exc_info=True)
 
 
 def _retired_watermark_cleanup():

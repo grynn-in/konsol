@@ -3,7 +3,10 @@
  *
  * An upload's report has one row per entity-period in the file:
  * {entity, fiscal_year, fiscal_period, rows, total_debit, total_credit,
- *  errors[], ok, loaded?, load_error?}.
+ *  errors[], ok, warnings[]?, partnerless_ic_rows?, loaded?, load_error?}.
+ *
+ * Warnings never stop a load: an intercompany row without a partner loads,
+ * and is never eliminated (konsol#159).
  */
 
 export const TERMINAL = new Set(["Loaded", "Partly Loaded", "Failed"]);
@@ -20,6 +23,7 @@ export function summarize(report) {
 		entities: new Set(rows.map((r) => r.entity)).size,
 		loaded: rows.filter((r) => r.loaded).length,
 		failed: rows.filter((r) => r.load_error).length,
+		partnerless: rows.reduce((n, r) => n + (r.partnerless_ic_rows || 0), 0),
 	};
 }
 
@@ -28,7 +32,7 @@ export function rowStatus(r) {
 	if (r.loaded) return { state: "done", label: "Loaded", note: r.loaded };
 	if (r.load_error) return { state: "error", label: "Load failed", note: r.load_error };
 	if (!r.ok) return { state: "error", label: "Problem", note: (r.errors || []).join(" · ") };
-	return { state: "ready", label: "Ready", note: "" };
+	return { state: "ready", label: "Ready", note: (r.warnings || []).join(" · ") };
 }
 
 export function visibleRows(report, problemsOnly) {

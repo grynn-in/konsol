@@ -73,6 +73,22 @@
    "description": "PRD-13: partial = NCI at proportional net assets; full = NCI at fair value"
   },
   {
+   "fieldname": "ic_difference_account",
+   "fieldtype": "Data",
+   "search_index": 1,
+   "label": "Intercompany Difference Account",
+   "depends_on": "eval:!doc.data_area_id",
+   "description": "Group chart account where this group books intercompany differences: what is left when the two sides of a pair don't match. Blank: only the matched amount is eliminated, and the difference stays on the intercompany accounts."
+  },
+  {
+   "fieldname": "ic_difference_tolerance",
+   "fieldtype": "Float",
+   "label": "Intercompany Difference Tolerance",
+   "default": "0",
+   "depends_on": "eval:!doc.data_area_id",
+   "description": "A booking difference (both sides in one functional currency) up to this amount, at 100% in reporting currency, is within tolerance; above it, over tolerance. An fx difference (sides in different currencies, or translation alone) is shown but never counts against it."
+  },
+  {
    "fieldname": "lft",
    "fieldtype": "Int",
    "label": "Left",

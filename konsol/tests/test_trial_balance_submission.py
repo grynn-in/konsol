@@ -35,7 +35,7 @@ _stub("frappe")
 _stub("frappe.model")
 _stub("frappe.model.document", Document=_Doc)
 _stub("konsol")
-_stub("konsol.clickhouse", execute=lambda *a, **k: "")
+_stub("konsol.clickhouse", execute=lambda *a, **k: "", ensure_raw_tables=lambda: None)
 _stub("konsol.period_status", assert_open=lambda *a, **k: None)
 
 _spec = importlib.util.spec_from_file_location("tbs_under_test", _SRC)
@@ -49,7 +49,7 @@ def test_parse_good_file():
     rows = _m.parse_tb_csv(GOOD)
     assert len(rows) == 2
     assert rows[0] == {"main_account": "1010", "debit": 100.5,
-                       "credit": 0.0, "description": ""}
+                       "credit": 0.0, "description": "", "partner_data_area_id": ""}
 
 
 def test_parse_accepts_description_and_case_insensitive_header():
@@ -165,3 +165,78 @@ def test_parse_rounds_to_cents_so_stored_equals_validated():
     errs = _m.validate_tb_rows(_m.parse_tb_csv(
         "main_account,debit,credit\n1010,10.019,0\n2010,0,10.001\n"))
     assert any("do not equal" in e for e in errs)  # 10.02 vs 10.00 -> 0.02 > 0.01
+
+
+# --- konsol#159: the intercompany partner -----------------------------------
+
+IC = "main_account,debit,credit,description,partner_data_area_id\n"
+
+
+def test_parse_reads_the_partner_and_its_aliases():
+    rows = _m.parse_tb_csv(IC + "4030,0,100,IC sales,ZZB\n1010,100,0,,\n")
+    assert rows[0]["partner_data_area_id"] == "ZZB"
+    assert rows[1]["partner_data_area_id"] == ""
+    for alias in ("partner", "Partner_Entity", "PARTNER_ID", "counterparty"):
+        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias}\n4030,0,5, ZZB \n1010,5,0,\n")
+        assert rows[0]["partner_data_area_id"] == "ZZB", alias
+
+
+def test_parse_refuses_two_partner_columns():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit,partner,partner_data_area_id\n4030,0,5,ZZB,ZZB\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "Two partner columns" in str(e)
+
+
+def _prow(account, debit, credit, partner=""):
+    return {"main_account": account, "debit": debit, "credit": credit,
+            "description": "", "partner_data_area_id": partner}
+
+
+def test_one_account_may_carry_several_partners_but_not_one_partner_twice():
+    rows = [_prow("4030", 0, 60, "ZZB"), _prow("4030", 0, 40, "ZZC"), _prow("1010", 100, 0)]
+    assert _m.validate_tb_rows(rows) == []
+    errs = _m.validate_tb_rows(rows + [_prow("4030", 0, 1, "ZZB"), _prow("1010", 1, 0, "")])
+    dup = next(e for e in errs if "Duplicate" in e)
+    assert "4030 (partner ZZB)" in dup and "1010" in dup and "ZZC" not in dup
+
+
+def test_a_partner_equal_to_the_entity_is_refused():
+    rows = [_prow("4030", 0, 10, "zza"), _prow("1010", 10, 0)]
+    errs = _m.validate_tb_rows(rows, entity="ZZA", known_entities={"ZZA", "ZZB"})
+    assert len(errs) == 1 and "entity itself (ZZA)" in errs[0] and "4030" in errs[0]
+
+
+def test_an_unknown_partner_is_refused_and_a_case_slip_is_named():
+    rows = [_prow("4030", 0, 10, "ZZX"), _prow("5030", 5, 0, "zzb"), _prow("1010", 5, 0)]
+    errs = _m.validate_tb_rows(rows, entity="ZZA", known_entities={"ZZA", "ZZB"})
+    assert len(errs) == 1
+    assert "ZZX" in errs[0] and "zzb (did you mean ZZB?)" in errs[0]
+    # no entity list: the partner is not checked against Entity
+    assert _m.validate_tb_rows(rows, entity="ZZA") == []
+
+
+def test_the_partner_is_optional():
+    """Decision 2: a row on an intercompany account without a partner is valid;
+    it is warned about, never refused."""
+    rows = [_prow("4030", 0, 10), _prow("1010", 10, 0)]
+    assert _m.validate_tb_rows(rows, entity="ZZA", known_entities={"ZZA", "ZZB"}) == []
+    assert _m.partnerless_ic_accounts(rows, {"4030", "5030"}) == ["4030"]
+    assert _m.partnerless_ic_accounts([_prow("4030", 0, 10, "ZZB")], {"4030"}) == []
+    assert _m.partnerless_ic_accounts(rows, set()) == []
+    msg = _m.partnerless_warning(["4030"])
+    assert "1 intercompany row without a partner" in msg and "never eliminated" in msg
+    assert "2 intercompany rows" in _m.partnerless_warning(["4030", "5030"])
+    assert _m.partnerless_warning([]) == ""
+
+
+def test_the_partner_lands_in_the_raw_table():
+    sent = []
+    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+    doc = _m.TrialBalanceSubmission()
+    doc.batch_id, doc.data_area_id, doc.fiscal_year, doc.fiscal_period, doc.name = "b1", "ZZA", 2099, 1, "TBS-1"
+    doc._land_rows([_prow("4030", 0, 10, "ZZB"), _prow("1010", 10, 0)])
+    assert len(sent) == 1
+    assert "submitted_at, partner_data_area_id) VALUES" in sent[0]
+    assert "now(), 'ZZB')" in sent[0] and "now(), '')" in sent[0]

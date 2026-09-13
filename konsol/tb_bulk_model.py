@@ -9,16 +9,20 @@ live submission per entity-period, and the uploader may access the entity.
 File contract (header required, case-insensitive; CSV, or the first sheet of
 an .xlsx workbook):
 
-    data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description]
+    data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description][, partner_data_area_id]
 
-`entity`, `year`, `period` and `account` are accepted for the first four.
-Amounts are in each entity's own accounting currency, one row per account,
-debits and credits both positive (the same contract as a single upload).
+`entity`, `year`, `period` and `account` are accepted for the first four, and
+`partner`, `partner_entity`, `partner_id` or `counterparty` for the partner.
+Amounts are in each entity's own accounting currency, one row per account and
+partner, debits and credits both positive (the same contract as a single
+upload). The partner is the other group entity an intercompany row is held
+with; it is optional (konsol#159).
 """
 import csv
 import io
 import math
 
+PARTNER = "partner_data_area_id"
 REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit")
 ALIASES = {
     "entity": "data_area_id",
@@ -28,6 +32,11 @@ ALIASES = {
     "period": "fiscal_period",
     "account": "main_account",
     "account_id": "main_account",
+    # the single upload accepts the same spellings
+    "partner": PARTNER,
+    "partner_entity": PARTNER,
+    "partner_id": PARTNER,
+    "counterparty": PARTNER,
 }
 #: Structural problems are reported together, up to this many lines.
 MAX_LINE_ERRORS = 20
@@ -84,9 +93,10 @@ def split_table(table):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
     Keys keep the order they first appear in the file. Each row is
-    {main_account, debit, credit, description}, the shape a single
-    submission parses. Raises ValueError listing every structural problem
-    (up to MAX_LINE_ERRORS lines) so a file can be fixed in one pass.
+    {main_account, debit, credit, description, partner_data_area_id}, the
+    shape a single submission parses. Raises ValueError listing every
+    structural problem (up to MAX_LINE_ERRORS lines) so a file can be fixed
+    in one pass.
     """
     lines = [(i, row) for i, row in enumerate(table, start=1) if any(cell(c) for c in row)]
     if not lines:
@@ -98,7 +108,10 @@ def split_table(table):
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be "
             "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description]"
+            "[, partner_data_area_id]"
         )
+    if names.count(PARTNER) > 1:
+        raise ValueError(f"Two partner columns on line {head_line}: keep one")
     col = {n: names.index(n) for n in set(names)}
 
     groups, errors = {}, []
@@ -128,7 +141,7 @@ def split_table(table):
             continue
         groups.setdefault((entity, year, period), []).append({
             "main_account": account, "debit": debit, "credit": credit,
-            "description": cell(get("description")),
+            "description": cell(get("description")), PARTNER: cell(get(PARTNER)),
         })
 
     if errors:
@@ -140,7 +153,8 @@ def split_table(table):
 
 
 def group_csv(rows, source=None):
-    """One entity-period as the single-submission CSV (main_account,debit,credit,description).
+    """One entity-period as the single-submission CSV
+    (main_account,debit,credit,description,partner_data_area_id).
 
     `source` (the upload's name) is written as an extra column, which the
     single-upload parser ignores. It records where the file came from, and
@@ -149,18 +163,23 @@ def group_csv(rows, source=None):
     """
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
-    writer.writerow(["main_account", "debit", "credit", "description"] + (["source_upload"] if source else []))
+    writer.writerow(["main_account", "debit", "credit", "description", PARTNER]
+                    + (["source_upload"] if source else []))
     for r in rows:
-        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", "")]
-                        + ([source] if source else []))
+        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", ""),
+                         r.get(PARTNER, "")] + ([source] if source else []))
     return out.getvalue()
 
 
-def check_group(key, rows, *, known_accounts, visible, leaf, period_status, existing, validate_rows):
+def check_group(key, rows, *, known_accounts, visible, leaf, period_status, existing, validate_rows,
+                known_entities=None, warnings=(), partnerless_ic_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
     The facts come from the caller; `validate_rows` is the single-submission
     validator, so the bulk path can never accept what a single upload refuses.
+    `known_entities` are the entities a partner may name. `warnings` never stop
+    a load (an intercompany row without a partner is allowed, and reported:
+    `partnerless_ic_rows` counts them).
     """
     entity, year, period = key
     errors = []
@@ -174,12 +193,13 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period_status, exis
         errors.append(f"FY{year} P{period:02d} is {period_status.lower()}")
     if existing:
         errors.append(f"{existing} is already submitted for this entity and period; cancel or amend it first")
-    errors.extend(validate_rows(rows, known_accounts=known_accounts))
+    errors.extend(validate_rows(rows, known_accounts=known_accounts, entity=entity, known_entities=known_entities))
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period, "rows": len(rows),
         "total_debit": round(sum(r["debit"] for r in rows), 2),
         "total_credit": round(sum(r["credit"] for r in rows), 2),
         "errors": errors, "ok": not errors, "existing": existing,
+        "warnings": list(warnings), "partnerless_ic_rows": partnerless_ic_rows,
     }
 
 
