@@ -130,8 +130,14 @@ def test_the_tree_dialog_asks_a_group_node_for_its_currency():
         src = f.read()
     assert 'frappe.treeview_settings["Consolidation Group"]' in src
     fields = {m.group(1): m.group(0) for m in re.finditer(r'fieldname: "(\w+)".*?\}', src, re.S)}
-    # opts.fields replaces the dialog's default list, so is_group must be in it
-    assert set(fields) == {"is_group", "data_area_id", "reporting_currency"}
+    order = [m.group(1) for m in re.finditer(r'fieldname: "(\w+)"', src)]
+    # opts.fields replaces the dialog's default list, so is_group must be in it;
+    # the node's own reqd fields are listed first so they don't land last
+    assert set(fields) == {"consolidation_group", "entity_name", "is_group", "data_area_id", "reporting_currency"}
+    assert order[:2] == ["consolidation_group", "entity_name"], order
+    # ticking Is Group clears a hidden entity, or the group would be saved with it
+    is_group_block = src.split('fieldname: "is_group"', 1)[1].split('fieldname: "data_area_id"', 1)[0]
+    assert 'set_value("data_area_id", "")' in is_group_block
     rule = _field("reporting_currency")["mandatory_depends_on"]
     assert rule == "eval:doc.is_group || !doc.data_area_id"
     assert f'mandatory_depends_on: "{rule}"' in fields["reporting_currency"]
