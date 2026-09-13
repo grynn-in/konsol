@@ -66,11 +66,13 @@ class _Refused(Exception):
     pass
 
 
-def _doc(status, before_status, name="ICA-4030"):
+def _doc(status, before_status, name="ICA-4030", before_counterpart="5030"):
     d = M.IntercompanyAccount()
     d.name, d.main_account, d.counterpart_account, d.status = name, "4030", "5030", status
     d.flags = _Flags()
-    d.get_doc_before_save = lambda: types.SimpleNamespace(status=before_status) if before_status else None
+    d.get_doc_before_save = lambda: (types.SimpleNamespace(status=before_status, main_account="4030",
+                                                           counterpart_account=before_counterpart)
+                                     if before_status else None)
     return d
 
 
@@ -83,7 +85,7 @@ def test_every_save_of_a_published_row_needs_the_close_lead():
     M.check_epm_admin = lambda: admin.append(1)
     try:
         for status, before, want_admin, want_checks in [
-            ("Published", "Published", True, False),   # editing a live flag
+            ("Published", "Published", True, False),   # editing a live flag's description
             ("Draft", "Published", True, False),       # pulling it back to Draft
             ("Inactive", "Published", True, False),   # unpublishing by a plain save
             ("Published", "Draft", True, True),        # publishing by a plain save
@@ -98,26 +100,47 @@ def test_every_save_of_a_published_row_needs_the_close_lead():
             d._guard_publish()
             assert bool(admin) == want_admin, (status, before)
             assert bool(checks) == want_checks, (status, before)
+        # re-review K1: editing a live row's accounts is a publish of new
+        # accounts, so it passes the publish checks (chart, difference account)
+        for before_counterpart in ("6070", ""):
+            admin.clear(), checks.clear()
+            d = _doc("Published", "Published", before_counterpart=before_counterpart)
+            d._before_publish = lambda: checks.append(1)
+            d._guard_publish()
+            assert admin and checks, before_counterpart
     finally:
         M.check_epm_admin = saved
 
 
-def test_the_publish_checks_run_once_per_save():
+def test_the_publish_checks_run_once_per_save_for_the_same_accounts():
     """publish() runs _before_publish, then saves, and the save would run it
-    again from _guard_publish; the second call must not re-read the chart."""
+    again from _guard_publish; the second call must not re-read the chart.
+    Re-review K3: the flag records which accounts were checked, so other
+    accounts are checked anew."""
     d = _doc("Published", "Draft")
-    d.flags.ica_publish_checked = True
+    d.flags.ica_publish_checked = ("4030", "5030")
     assert M.IntercompanyAccount._before_publish(d) is None   # returns before touching frappe
+    d.counterpart_account = "6070"
+    try:
+        M.IntercompanyAccount._before_publish(d)   # reaches the chart check
+        assert False, "other accounts were not checked"
+    except (ImportError, AttributeError):
+        pass
 
 
 def test_the_one_pair_check_is_a_locking_read():
     """#173 review A4: under REPEATABLE READ a plain read can miss a row
-    another transaction committed, so two saves could both pass."""
+    another transaction committed, so two saves could both pass.
+    Re-review K2: one serialising lock first (the build_lock pattern), then
+    locking reads by equality on the indexed account columns only, never a
+    scan of every row, which deadlocked two unrelated saves."""
     sent = []
 
     def sql(query, values=None, as_dict=False):
         sent.append((query, values))
-        return [_Flags(name="ICA-5030", main_account="5030", counterpart_account="")]
+        if "`main_account` = %s" in query and values[0] == "5030":
+            return [_Flags(name="ICA-5030", main_account="5030", counterpart_account="")]
+        return []
 
     def throw(msg, *a, **k):
         raise _Refused(msg)
@@ -130,9 +153,14 @@ def test_the_one_pair_check_is_a_locking_read():
         assert False, "the conflicting pair was not refused"
     except _Refused as e:
         assert "ICA-5030 already pairs" in str(e)
-    query, values = sent[0]
-    assert query.rstrip().endswith("FOR UPDATE") and "`status` != 'Inactive'" in query
-    assert values == ("ICA-4030",)
+    lock, values = sent[0]
+    assert lock == "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE" and values == ("Intercompany Account",)
+    reads = sent[1:]
+    assert len(reads) == 4, reads   # two accounts x two indexed columns
+    for query, values in reads:
+        assert query.rstrip().endswith("FOR UPDATE") and "`status` != 'Inactive'" in query
+        assert ("`main_account` = %s" in query) != ("`counterpart_account` = %s" in query), query
+        assert values[1] == "ICA-4030" and values[0] in ("4030", "5030")
 
 
 def test_doctype_contract():

@@ -83,8 +83,8 @@ def test_a_group_carries_its_intercompany_difference_account_and_tolerance():
     assert fields["ic_difference_account"]["fieldtype"] == "Data"
     assert fields["ic_difference_tolerance"]["fieldtype"] == "Float"
     for f in ("ic_difference_account", "ic_difference_tolerance"):
-        # the group-node definition konsol#172 uses: is_group, or no entity
-        assert fields[f].get("depends_on") == "eval:doc.is_group || !doc.data_area_id", f
+        # shown only where consolidation reads them: the node with no entity
+        assert fields[f].get("depends_on") == "eval:!doc.data_area_id", f
     content = _load_py("consolidation_group")
     for f in ("ic_difference_account", "ic_difference_tolerance"):
         assert f'"{f}": "{f}"' in content, f

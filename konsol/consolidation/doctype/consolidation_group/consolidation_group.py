@@ -66,13 +66,21 @@ class ConsolidationGroup(NestedSet):
         itself intercompany (its postings would be eliminated in turn), and
         the tolerance is not negative."""
         self.ic_difference_account = (self.ic_difference_account or "").strip()
-        # A group node is one flagged is_group or one with no entity, as
-        # konsol#172 defines it.
-        # TODO: use _is_group_node() after #172
-        if not (self.is_group or not self.data_area_id):
-            if self.ic_difference_account or float(self.ic_difference_tolerance or 0):
+        has_settings = bool(self.ic_difference_account or float(self.ic_difference_tolerance or 0))
+        if not self._is_group_node():
+            if has_settings:
                 frappe.throw("Only a group node books intercompany differences; "
                              "set the account and tolerance on the group.")
+            return
+        # gold_ic_reconciliation reads a group's settings from the group's own
+        # row, the one with no entity (data_area_id = ''). On a group node that
+        # also carries an entity they would be ignored silently (#173
+        # re-review), so they are refused there.
+        if self.data_area_id:
+            if has_settings:
+                frappe.throw(f"This node carries entity {self.data_area_id}. Intercompany difference "
+                             "settings belong on the group's own node, the one without an entity: "
+                             "consolidation reads them only from there.")
             return
         if float(self.ic_difference_tolerance or 0) < 0:
             frappe.throw("The intercompany difference tolerance cannot be negative.")

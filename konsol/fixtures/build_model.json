@@ -37,6 +37,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_trial_balance_by_partner",
+  "model_name": "gold_trial_balance_by_partner",
+  "build_domain": "actuals"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_ytd_trial_balance",
   "model_name": "gold_ytd_trial_balance",
   "build_domain": "actuals"
@@ -135,6 +141,12 @@
   "doctype": "Build Model",
   "name": "gold_ic_reconciliation",
   "model_name": "gold_ic_reconciliation",
+  "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_ic_unmatched",
+  "model_name": "gold_ic_unmatched",
   "build_domain": "consolidation"
  },
  {

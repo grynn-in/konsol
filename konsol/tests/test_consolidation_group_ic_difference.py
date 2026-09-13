@@ -105,12 +105,18 @@ def test_a_leaf_books_no_differences():
         _node(0, "ZZA")._validate_ic_difference()   # nothing set: fine
 
 
-def test_a_group_node_is_is_group_or_no_entity():
-    """The definition konsol#172 introduces (_is_group_node)."""
+def test_settings_live_on_the_group_node_without_an_entity():
+    """A group node (konsol#172's _is_group_node: is_group, or no entity)
+    carries them, but only on the row with no entity: gold_ic_reconciliation
+    reads data_area_id = '' only, so on a node that also carries an entity
+    they would be ignored silently (#173 re-review)."""
     with _facts(chart={"2100"}) as reads:
         _node(1, "", " 2100 ", tolerance=5)._validate_ic_difference()
         _node(0, "", "2100")._validate_ic_difference()
         assert len(reads) == 2
+        _refused(_node(1, "ZZX", "2100"), "carries entity ZZX")
+        _refused(_node(1, "ZZX", "", tolerance=5), "carries entity ZZX")
+        _node(1, "ZZX")._validate_ic_difference()   # nothing set: fine
 
 
 def test_the_account_must_be_in_the_group_chart_when_it_changes():

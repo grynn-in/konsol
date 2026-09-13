@@ -26,6 +26,7 @@
   {
    "fieldname": "counterpart_account",
    "fieldtype": "Data",
+   "search_index": 1,
    "label": "Counterpart Account",
    "in_list_view": 1,
    "description": "The account the partner books the other side on: intercompany payable for an intercompany receivable, cost for revenue. Leave blank when both sides use this same account. Each account belongs to one pair."

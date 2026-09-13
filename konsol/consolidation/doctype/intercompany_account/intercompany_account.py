@@ -45,6 +45,14 @@ def pair_conflicts(main_account, counterpart_account, others):
             if pair_of(m, c) != mine and set(pair_of(m, c)) & set(mine)]
 
 
+def _accounts(doc):
+    """The row's (main, counterpart) as they are stored: stripped, and a
+    counterpart equal to the account blank."""
+    main = (doc.main_account or "").strip()
+    counterpart = (doc.counterpart_account or "").strip()
+    return main, "" if counterpart == main else counterpart
+
+
 def intercompany_accounts():
     """Every account flagged intercompany: each Published row's account and
     its counterpart. An empty set on a site the doctype has not reached yet
@@ -69,60 +77,84 @@ class IntercompanyAccount(GovernedReferenceDocument):
     BUILD_SCOPE = "consolidation"
 
     def validate(self):
-        self.main_account = (self.main_account or "").strip()
-        self.counterpart_account = (self.counterpart_account or "").strip()
-        if self.counterpart_account == self.main_account:
-            self.counterpart_account = ""   # the same account: blank says so
+        self.main_account, self.counterpart_account = _accounts(self)
         self._guard_publish()
         if self.status != "Inactive":
             self._validate_one_pair()
 
     def _guard_publish(self):
-        """A Published row is the Close Lead's (#173 review, A1 and A2).
+        """A Published row is the Close Lead's (#173 review A1, A2; re-review K1).
 
         - Any save of a row that WAS Published needs EPM Admin: editing its
           accounts changes what consolidation eliminates, and moving it out of
-          Published (to Draft or Inactive) stops eliminating it. Checking only
-          the move into Published let an EPM Analyst do both.
-        - A move INTO Published needs EPM Admin and passes the publish checks,
-          through publish() or a plain save alike: on_update writes a
-          Published row through either way.
+          Published (to Draft or Inactive) stops eliminating it.
+        - A row that is Published after the save passes the publish checks
+          whenever it has just become Published (through publish() or a plain
+          save alike) or either account changed. An edit of a live row's
+          accounts is a publish of new accounts: without the checks an admin
+          could point a live flag at an account outside the chart, or at a
+          group's difference account, and it would be written through.
         """
         before = self.get_doc_before_save()
         was = before.status if before else None
         if was == _PUBLISHED or self.status == _PUBLISHED:
             check_epm_admin()
-        if self.status == _PUBLISHED and was != _PUBLISHED:
+        if self.status != _PUBLISHED:
+            return
+        if was != _PUBLISHED or _accounts(before) != (self.main_account, self.counterpart_account):
             self._before_publish()
 
     def _validate_one_pair(self):
-        # A locking read (CLAUDE.md, MariaDB REPEATABLE READ). A plain read can
-        # miss a row another transaction committed after this one's first
-        # read, so two saves at once could each pass and pair one account
-        # twice. FOR UPDATE reads the latest committed rows and holds what it
-        # scanned until the commit.
-        others = frappe.db.sql(
-            "SELECT `name`, `main_account`, `counterpart_account` FROM `tabIntercompany Account` "
-            "WHERE `name` != %s AND `status` != 'Inactive' FOR UPDATE",
-            (self.name or "",), as_dict=True)
+        """Refuse an account that another live row pairs differently.
+
+        Two saves at once must not both pass (#173 review A4, re-review K2):
+        - First one lock, on a row that always exists: this doctype's own
+          tabDocType row (the konsol.build_lock pattern). It serialises every
+          Intercompany Account validation, so two new rows naming the same
+          account are refused cleanly rather than both inserted.
+        - Then a locking read (it reads the latest committed rows under
+          REPEATABLE READ) of only the rows that share one of this row's
+          accounts, by equality on indexed columns (main_account is unique,
+          counterpart_account has search_index). An unindexed scan locked
+          every row it read, and Frappe has already locked this document's
+          own row by now, so two unrelated saves could deadlock.
+        Two concurrent edits of rows that share an account can still meet on
+        each other's rows. InnoDB then aborts one (a retryable deadlock),
+        which never pairs an account twice.
+        """
+        frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", (DOCTYPE,))
+        others = {}
+        for account in sorted({a for a in (self.main_account, self.counterpart_account) if a}):
+            for column in ("main_account", "counterpart_account"):
+                for o in frappe.db.sql(
+                        f"SELECT `name`, `main_account`, `counterpart_account` FROM `tabIntercompany Account` "
+                        f"WHERE `{column}` = %s AND `name` != %s AND `status` != 'Inactive' FOR UPDATE",
+                        (account, self.name or ""), as_dict=True):
+                    others[o.name] = o
         clash = pair_conflicts(self.main_account, self.counterpart_account,
-                               [(o.name, o.main_account, o.counterpart_account) for o in others])
+                               [(o.name, o.main_account, o.counterpart_account) for o in others.values()])
         if clash:
             frappe.throw(
-                f"{', '.join(clash)} already pairs one of these accounts differently. "
+                f"{', '.join(sorted(clash))} already pairs one of these accounts differently. "
                 "Each account belongs to one intercompany pair, or one side would be "
                 "eliminated twice. Make the other row Inactive first.")
 
     def _before_publish(self):
         """Both accounts must be in the group chart, and neither may be a
         group's intercompany-difference account (its postings would be
-        eliminated in turn). Once per save: publish() runs it, and the save
-        it makes would run it again from _guard_publish."""
-        if self.flags.ica_publish_checked:
+        eliminated in turn).
+
+        publish() runs this, then saves, and the save would run it again from
+        _guard_publish. The flag records WHICH accounts were checked (re-review
+        K3), so the second call is skipped only for the same accounts; a
+        document reused for another save with other accounts is checked anew.
+        """
+        checked = _accounts(self)
+        if self.flags.ica_publish_checked == checked:
             return
         from konsol.tb_bulk import _chart_accounts
 
-        accounts = [a for a in ((self.main_account or "").strip(), (self.counterpart_account or "").strip()) if a]
+        accounts = [a for a in checked if a]
         chart = _chart_accounts()
         missing = [a for a in accounts if a not in chart]
         if missing:
@@ -133,4 +165,4 @@ class IntercompanyAccount(GovernedReferenceDocument):
             frappe.throw(
                 f"{', '.join(accounts)}: {', '.join(diff)} books intercompany differences "
                 "to this account, so it cannot also be an intercompany account.")
-        self.flags.ica_publish_checked = True
+        self.flags.ica_publish_checked = checked
