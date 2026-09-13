@@ -85,7 +85,7 @@ def _methods_reaching_a_gate(path, class_name):
     gates = set(PERIOD_GATES) | {
         alias.asname for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
         for alias in node.names if alias.name in PERIOD_GATES and alias.asname}
-    funcs ={n.name: _called_names(n) for n in tree.body if isinstance(n, ast.FunctionDef)}
+    funcs = {n.name: _called_names(n) for n in tree.body if isinstance(n, ast.FunctionDef)}
     grew = True
     while grew:
         grew = False
@@ -360,7 +360,7 @@ def test_the_trial_balance_note_rests_on_who_may_delete_a_draft():
     System Manager may delete a draft. If these rights change, revisit
     home_model.closed_period's trial balance note."""
     with open(PATHS["Trial Balance Submission"][:-3] + ".json") as f:
-        perms = {p["role"]: p for p in json.load(f)["permissions"]}
+        perms = {p["role"]: p for p in json.load(f)["permissions"] if not p.get("permlevel")}
     assert perms["Entity Accountant"].get("submit") and not perms["Entity Accountant"].get("delete"), (
         "Entity Accountant's trial balance rights changed: revisit the closed-period note")
     assert perms["EPM Admin"].get("delete") and perms["System Manager"].get("delete"), (
