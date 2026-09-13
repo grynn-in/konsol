@@ -177,6 +177,7 @@ def _load(path, period_open):
     mods["konsol.clickhouse"].sync_doctype = lambda *a: None
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a: None
     mods["konsol.clickhouse"].execute = lambda *a, **k: None
+    mods["konsol.clickhouse"].ensure_raw_tables = lambda *a, **k: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_open_between = assert_open_between
     mods["konsol.period_status"].first_period_affected = lambda d: d

@@ -53,7 +53,7 @@
    "fieldtype": "Attach",
    "label": "Trial Balance CSV",
    "reqd": 1,
-   "description": "CSV with header: main_account,debit,credit[,description]. Amounts in the entity's accounting currency."
+   "description": "CSV with header: main_account,debit,credit[,description][,partner_data_area_id]. Amounts in the entity's accounting currency. partner_data_area_id is the other group entity an intercompany row is held with (optional; without it the row is never eliminated)."
   },
   {
    "fieldname": "batch_id",

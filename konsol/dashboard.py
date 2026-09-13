@@ -55,6 +55,7 @@ _LABELS = {
     "Ownership Period": "Ownership Periods",
     "Historical Equity Rate": "Historical Equity Rates",
     "IC Elimination Rule": "IC Elimination Rules",
+    "Intercompany Account": "Intercompany Accounts",
     "IC Balance": "IC Balances",
     "Consolidation Adjustment": "Consolidation Adjustments",
     "Assertion Run": "Assertion Runs",
@@ -107,7 +108,7 @@ _CARDS = [
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
-        "IC Elimination Rule", "IC Balance", "Consolidation Adjustment",
+        "IC Elimination Rule", "Intercompany Account", "IC Balance", "Consolidation Adjustment",
     ]),
     ("Assertions", [
         "Assertion Run",

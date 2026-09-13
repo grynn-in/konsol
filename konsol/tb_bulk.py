@@ -33,9 +33,12 @@ from frappe.utils import cint, strip_html
 from konsol import period_status
 from konsol import tb_bulk_model as M
 from konsol.clickhouse import execute
+from konsol.consolidation.doctype.intercompany_account.intercompany_account import intercompany_accounts
 from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission import (
     CONTROL_TABLE,
     _sql_str,
+    partnerless_ic_accounts,
+    partnerless_warning,
     validate_tb_rows,
 )
 from konsol.entity_permissions import allowed_entity_codes
@@ -149,12 +152,20 @@ def _check(table):
                             limit_page_length=0):
         existing[(r.data_area_id, int(r.fiscal_year), int(r.fiscal_period))] = r
     chart = _chart_accounts()
+    # A partner is named, not read: every non-group Entity, whatever the
+    # uploader's own entity scope (get_all, not get_list).
+    partners = set(frappe.get_all("Entity", filters={"is_group": 0}, pluck="name", limit_page_length=0))
+    ic = intercompany_accounts()
     report = []
     for key, rows in groups.items():
         found = existing.get(key)
+        partnerless = partnerless_ic_accounts(rows, ic)
         item = M.check_group(key, rows, known_accounts=chart, visible=key[0] in visible, leaf=key[0] in leaf,
                              period_status=statuses.get((key[1], key[2])),
-                             existing=found.name if found else None, validate_rows=validate_tb_rows)
+                             existing=found.name if found else None, validate_rows=validate_tb_rows,
+                             known_entities=partners,
+                             warnings=[partnerless_warning(partnerless)] if partnerless else [],
+                             partnerless_ic_rows=len(partnerless))
         item["existing_file"] = found.tb_file if found else None
         report.append(item)
     return groups, report
@@ -182,12 +193,16 @@ def _record_check(doc):
 
 
 def _payload(doc, refused=None):
+    report = json.loads(doc.report or "[]")
     return {
+        # konsol#159: intercompany rows without a partner load but are never
+        # eliminated; the check reports how many.
+        "partnerless_ic_rows": sum(r.get("partnerless_ic_rows") or 0 for r in report),
         "name": doc.name, "status": doc.status, "file_url": doc.upload_file,
         "file_name": (doc.upload_file or "").rsplit("/", 1)[-1],
         "group_count": doc.group_count, "valid_count": doc.valid_count, "total_rows": doc.total_rows,
         "loaded_count": doc.loaded_count, "failed_count": doc.failed_count, "error": doc.error,
-        "report": json.loads(doc.report or "[]"), "owner": frappe.utils.get_fullname(doc.owner),
+        "report": report, "owner": frappe.utils.get_fullname(doc.owner),
         "creation": str(doc.creation),
         # Loading, but no job queued or running: the worker stopped.
         "stalled": doc.status == "Loading" and not _job_running(doc.name),

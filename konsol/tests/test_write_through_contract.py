@@ -217,6 +217,8 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#103: the governed group exchange rates; translation reads
         # only these, so the table must exist before the first approval syncs
         "epm_staging.group_exchange_rates",
+        # konsol#159: the intercompany flag on the group chart
+        "epm_staging.intercompany_accounts",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
@@ -225,6 +227,46 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         assert any(s.startswith(f"CREATE DATABASE IF NOT EXISTS {db}") for s in sql), db
     for table in m._REFERENCE_TABLE_DDL:
         assert any(s.startswith(f"CREATE TABLE IF NOT EXISTS {table} (") for s in sql), table
+
+
+def test_added_columns_reach_tables_that_already_exist():
+    """konsol#159. CREATE TABLE IF NOT EXISTS never touches an existing table,
+    so a column added later must also be ADDed — and sit at the end of the
+    CREATE, so a fresh table and an upgraded one agree."""
+    m, _ = _load_clickhouse()
+    assert m._ADDED_COLUMNS["epm_raw.trial_balance_submissions"] == [
+        ("partner_data_area_id", "String DEFAULT ''")]
+    assert [c for c, _t in m._ADDED_COLUMNS["epm_gold.consolidation_groups"]] == [
+        "ic_difference_account", "ic_difference_tolerance"]
+    ddl = {**m._REFERENCE_TABLE_DDL, **m._RAW_TABLE_DDL}
+    for table, cols in m._ADDED_COLUMNS.items():
+        body = ddl[table]
+        tail = body[:body.index(") ENGINE")]
+        assert tail.endswith(", ".join(f"{c} {t}" for c, t in cols)), table
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_reference_tables()
+    for table, cols in m._ADDED_COLUMNS.items():
+        create = sql.index(f"CREATE TABLE IF NOT EXISTS {table} {ddl[table]}")
+        for c, t in cols:
+            assert create < sql.index(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} {t}"), (table, c)
+    assert "CREATE DATABASE IF NOT EXISTS epm_raw" in sql
+
+
+def test_raw_table_bootstrap_raises_for_a_submission():
+    """A submission must never land rows into a table missing a column it
+    writes, so ensure_raw_tables raises; the migrate path swallows it."""
+    m, _ = _load_clickhouse()
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    m.execute = boom
+    try:
+        m.ensure_raw_tables()
+        assert False, "expected the failure to propagate"
+    except RuntimeError:
+        pass
 
 
 def test_retired_columns_are_dropped_not_left_defaulting():

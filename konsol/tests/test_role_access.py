@@ -103,6 +103,9 @@ MATRIX = {
     "Ownership Period": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcsx", "EPM User": "r"},
     "IC Elimination Rule": {"EPM Admin": "rwcd", "EPM Analyst": "r"},
+    # konsol#159: the Group Accountant drafts the flag; publishing is the
+    # Close Lead's (check_epm_admin, also on a plain save to Published)
+    "Intercompany Account": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
     "Consolidation Group": {"EPM Admin": "rwcd", "EPM Analyst": "r", "EPM User": "r"},
     "Allocation Run": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "Allocation Rule": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},

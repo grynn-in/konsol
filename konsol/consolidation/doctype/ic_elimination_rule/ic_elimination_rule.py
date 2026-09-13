@@ -31,6 +31,17 @@ class ICEliminationRule(Document):
         "asset_account": "asset_account",
     }
 
+    def validate(self):
+        # konsol#159 / konsolidat#148 (decision 3, 13 Sep 2026): balance
+        # eliminations come from the Intercompany Account flag and the partner
+        # on each trial balance row. This doctype stays for the special cases.
+        if self.rule_type == "balance":
+            frappe.msgprint(
+                "Balance eliminations are driven by Intercompany Account and the partner "
+                "on each trial balance row; a balance rule no longer eliminates anything. "
+                "Rules of type unrealized_profit still apply.",
+                title="Balance rules are not used", indicator="orange")
+
     def on_update(self):
         sync_doctype_after_commit(self.doctype, self.CH_STAGING_TABLE, self.CH_STAGING_FIELD_MAP)
 

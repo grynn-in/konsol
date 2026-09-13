@@ -34,6 +34,11 @@ class ConsolidationGroup(NestedSet):
         "data_area_id": "data_area_id",
         "entity_name": "entity_name",
         "reporting_currency": "reporting_currency",
+        # konsol#159 (decision 4): where a group books the difference left
+        # when a pair's two sides don't match, and the tolerance it is shown
+        # against. Group nodes only.
+        "ic_difference_account": "ic_difference_account",
+        "ic_difference_tolerance": "ic_difference_tolerance",
     }
 
     # PRD-8 / F2: the link closure, computed by a tree walk.
@@ -54,6 +59,28 @@ class ConsolidationGroup(NestedSet):
     def validate(self):
         self._validate_entity_in_one_node()
         self._validate_reporting_currency()
+        self._validate_ic_difference()
+
+    def _validate_ic_difference(self):
+        """The intercompany-difference account belongs to a group node, is not
+        itself intercompany (its postings would be eliminated in turn), and
+        the tolerance is not negative."""
+        self.ic_difference_account = (self.ic_difference_account or "").strip()
+        if not self.is_group:
+            if self.ic_difference_account or float(self.ic_difference_tolerance or 0):
+                frappe.throw("Only a group node books intercompany differences; "
+                             "set the account and tolerance on the group.")
+            return
+        if float(self.ic_difference_tolerance or 0) < 0:
+            frappe.throw("The intercompany difference tolerance cannot be negative.")
+        if self.ic_difference_account:
+            from konsol.consolidation.doctype.intercompany_account.intercompany_account import (
+                intercompany_accounts,
+            )
+            if self.ic_difference_account in intercompany_accounts():
+                frappe.throw(
+                    f"{self.ic_difference_account} is an Intercompany Account. Book "
+                    "differences to an account that is not eliminated itself.")
 
     def on_update(self):
         self._warn_if_no_ownership_period()
