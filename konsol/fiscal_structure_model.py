@@ -170,6 +170,92 @@ def regular_period_problems(year, rows):
     return errors
 
 
+KNOWN_TYPES = {"Opening", "Regular", "Closing", "Adjustment"}
+
+
+def placement_problems(year, rows):
+    """Return error strings for the placement of Opening/Closing/Adjustment rows.
+
+    Regular rows are checked by `regular_period_problems`; this checks the
+    other three types against `year` and against the Regular periods:
+
+    - Opening: at most one; it must be period 0 (and no other type may use
+      0); it is exactly one day, the year's start_date.
+    - Closing: at most one; its period is above every Regular period; it is
+      exactly one day, the year's end_date.
+    - Adjustment: any number; each period is above every Regular period;
+      each lies inside the year.
+
+    A row whose `type` is none of Opening/Regular/Closing/Adjustment is
+    refused by name. Each error names the offending row's code.
+    """
+    errors = []
+
+    y_start = year.get("start_date")
+    y_end = year.get("end_date")
+
+    def is_period_number(p):
+        return isinstance(p, int) and not isinstance(p, bool)
+
+    regular_periods = [r["period"] for r in rows
+                        if r.get("type") == "Regular" and is_period_number(r.get("period"))]
+    max_regular = max(regular_periods) if regular_periods else None
+
+    for r in rows:
+        if r.get("type") not in KNOWN_TYPES:
+            errors.append(f"Row {r.get('code')!r}: unknown period type {r.get('type')!r}")
+
+    openings = [r for r in rows if r.get("type") == "Opening"]
+    closings = [r for r in rows if r.get("type") == "Closing"]
+    adjustments = [r for r in rows if r.get("type") == "Adjustment"]
+
+    if len(openings) > 1:
+        codes = ", ".join(repr(r.get("code")) for r in openings)
+        errors.append(f"Only one Opening period is allowed: {codes}")
+
+    for r in openings:
+        code = r.get("code")
+        period = r.get("period")
+        if period != 0:
+            errors.append(f"Opening period {code!r} must be period 0, not {period!r}")
+        start, end = r.get("start_date"), r.get("end_date")
+        if y_start is not None and (start != y_start or end != y_start):
+            errors.append(f"Opening period {code!r} must be one day, the year start {y_start}")
+
+    for r in rows:
+        if r.get("type") != "Opening" and r.get("period") == 0:
+            errors.append(f"Period 0 is reserved for Opening, but row {r.get('code')!r} "
+                          f"is {r.get('type')!r}")
+
+    if len(closings) > 1:
+        codes = ", ".join(repr(r.get("code")) for r in closings)
+        errors.append(f"Only one Closing period is allowed: {codes}")
+
+    for r in closings:
+        code = r.get("code")
+        period = r.get("period")
+        if max_regular is not None and is_period_number(period) and period <= max_regular:
+            errors.append(f"Closing period {code!r} (period {period}) must be above every "
+                          f"Regular period (highest is {max_regular})")
+        start, end = r.get("start_date"), r.get("end_date")
+        if y_end is not None and (start != y_end or end != y_end):
+            errors.append(f"Closing period {code!r} must be one day, the year end {y_end}")
+
+    for r in adjustments:
+        code = r.get("code")
+        period = r.get("period")
+        if max_regular is not None and is_period_number(period) and period <= max_regular:
+            errors.append(f"Adjustment period {code!r} (period {period}) must be above every "
+                          f"Regular period (highest is {max_regular})")
+        start, end = r.get("start_date"), r.get("end_date")
+        if y_start is not None and start is not None and start < y_start:
+            errors.append(f"Adjustment period {code!r} starts {start} before the year start {y_start}")
+        if y_end is not None and end is not None and end > y_end:
+            errors.append(f"Adjustment period {code!r} ends {end} after the year end {y_end}")
+
+    return errors
+
+
 def _join(row_nos):
     """Format 1-based row numbers as "2 and 5" or "2, 5 and 9"."""
     row_nos = sorted(row_nos)
