@@ -13,9 +13,10 @@ Run on a live bench (ZZ data only, FY2099; rolled back or deleted):
 or, where tests are disabled for the site, from a plain script that calls
 ``frappe.init(site); frappe.connect()`` and then ``unittest.main(module=...)``.
 """
+import os
 import subprocess
 import sys
-import threading
+import time
 import unittest
 
 import frappe
@@ -159,6 +160,13 @@ class GateBenchTest(unittest.TestCase):
 
 PUBLISHER = ("import frappe; frappe.init(site={site!r}); frappe.connect(); "
              "from konsol.group_rates import publish_rates; print(publish_rates(force=True)); frappe.destroy()")
+#: A reader in its own process (frappe.local is per thread): counts the
+#: published rows until the stop file appears, one count per line.
+READER = ("import os, frappe; frappe.init(site={site!r}); frappe.connect(); "
+          "from konsol.clickhouse import execute\n"
+          "while not os.path.exists({stop!r}):\n"
+          "    print(execute('SELECT count() FROM epm_staging.group_exchange_rates'), flush=True)\n"
+          "frappe.destroy()")
 
 
 class PublishBenchTest(unittest.TestCase):
@@ -169,18 +177,21 @@ class PublishBenchTest(unittest.TestCase):
         approved = frappe.db.count("Group Exchange Rate", {"docstatus": 1})
         if not approved:
             self.skipTest("no approved Group Exchange Rate to publish")
-        counts, stop = [], threading.Event()
-
-        def read():
-            while not stop.is_set():
-                counts.append(_count("SELECT count() FROM epm_staging.group_exchange_rates"))
-        reader = threading.Thread(target=read)
-        reader.start()
-        procs = [subprocess.Popen([sys.executable, "-c", PUBLISHER.format(site=frappe.local.site)],
+        site = frappe.local.site
+        stop = os.path.abspath("zz103_publish_reader_stop")
+        if os.path.exists(stop):
+            os.remove(stop)
+        reader = subprocess.Popen([sys.executable, "-c", READER.format(site=site, stop=stop)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(2)   # the reader is reading before the first publish starts
+        procs = [subprocess.Popen([sys.executable, "-c", PUBLISHER.format(site=site)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(6)]
         results = [p.communicate(timeout=300) for p in procs]
-        stop.set()
-        reader.join()
+        time.sleep(1)
+        open(stop, "w").close()
+        out, err = reader.communicate(timeout=60)
+        os.remove(stop)
+        counts = [int(line) for line in out.split() if line.strip().isdigit()]
         published = [out.strip().splitlines()[-1] if out.strip() else err[-200:] for out, err in results]
         self.assertEqual(published, [str(approved)] * 6, published)
         self.assertEqual(_count("SELECT count() FROM epm_staging.group_exchange_rates"), approved)
