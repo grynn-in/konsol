@@ -142,6 +142,20 @@ def test_conflicts_named():
     assert "2024" in changed[0] and "P03" in changed[0]
 
 
+def test_used_period_missing_from_existing_year_is_a_conflict():
+    rows_2024 = M.plan({(2024, 1)}, [], {})["create"][0]["rows"]
+    existing = {2024: {"rows": copy.deepcopy(rows_2024)}}
+
+    result = M.plan({(2024, 14)}, [], existing)
+    assert result["create"] == []
+    assert result["moves"] == []
+    assert len(result["conflicts"]) == 1
+    assert "2024" in result["conflicts"][0] and "14" in result["conflicts"][0]
+
+    result = M.plan({(2024, 5)}, [], existing)
+    assert result["conflicts"] == []
+
+
 def test_second_plan_is_empty():
     used = {(2024, 5), (2025, 1), (2025, 14)}
     ps_rows = [
