@@ -62,12 +62,14 @@ SCOPE_SELECTOR = {
     "scenarios": "tag:domain:scenarios",
     "consolidation": "+tag:domain:consolidation",
     "reporting": "+tag:domain:reporting",
-    # konsol#182: the group chart and everything it classifies. Not
-    # +tag:domain:consolidation, which selects consolidation models and their
-    # ANCESTORS: the balance sheet, P&L and variance models sit downstream of
-    # silver_main_accounts and would stay stale. Needs no epm_raw (a TB-only
-    # site's chart comes from konsol), so it is not in RAW_DEPENDENT_SCOPES.
-    "chart": "silver_main_accounts+",
+    # konsol#182: the group chart, everything it classifies, and everything
+    # those read (@). Not +tag:domain:consolidation, which would leave the
+    # balance sheet, P&L and variance models downstream of silver_main_accounts
+    # stale; not silver_main_accounts+ alone, which fails on a site that has
+    # never built (its models read bronze, the period and reporting
+    # hierarchies). Needs no epm_raw (a TB-only site's chart comes from
+    # konsol), so it is not in RAW_DEPENDENT_SCOPES.
+    "chart": "@silver_main_accounts",
     "full": None,  # no selector = full build
 }
 
