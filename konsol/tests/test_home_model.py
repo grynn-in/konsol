@@ -79,6 +79,58 @@ def test_trial_balance_stage():
     assert M.tb_stage({"AMDE"}, {"ZZX"}, set())["state"] == "incomplete"
 
 
+def test_ownership_stage_counts_the_group_rates():
+    """konsol#103: the stage is never Complete while the close gate would
+    refuse, and pre-filled drafts are counted."""
+    done = M.ownership_stage(set(), 0, 0)
+    assert (done["state"], done["summary"], done["missing_rates"]) == ("done", "Complete", [])
+    s = M.ownership_stage(set(), 0, 0, missing_rates=["EUR → USD Average", "EUR → USD Closing"])
+    assert (s["state"], s["summary"]) == ("incomplete", "2 rates missing")
+    assert s["missing_rates"] == ["EUR → USD Average", "EUR → USD Closing"]
+    s = M.ownership_stage(set(), 0, 0, group_rate_drafts=3, missing_rates=["EUR → USD Closing"])
+    assert s["summary"] == "1 rate missing · 3 rates to approve"
+    assert M.ownership_stage(set(), 0, 0, group_rate_drafts=1)["summary"] == "1 rate to approve"
+    s = M.ownership_stage(set(), 0, 0, rates_error="ConnectionError")
+    assert (s["state"], s["summary"]) == ("error", "rates can't be checked"), "the gate refuses: never Complete"
+    s = M.ownership_stage({"AMDE"}, 1, 0, missing_rates=["X"])
+    assert s["summary"] == "1 without ownership · 1 rate missing · 1 to submit" and s["missing"] == ["AMDE"]
+    assert M.rate_label(("IDR", "USD", "Closing")) == "IDR → USD Closing"
+    # a group with no reporting currency: the gate refuses, so the stage is an error
+    s = M.ownership_stage(set(), 0, 0, missing_rates=["X"],
+                          rate_blockers=["Consolidation Group ZZ has no reporting currency"])
+    assert (s["state"], s["summary"]) == ("error", "1 group without a reporting currency · 1 rate missing")
+    assert s["rate_blockers"] == ["Consolidation Group ZZ has no reporting currency"]
+
+
+def test_group_rates_in_the_queues():
+    """Approval is the Close Lead's; missing rates are the Group Accountant's."""
+    drafts, missing = ["EUR → USD Closing", "EUR → USD Average"], ["IDR → USD Closing"]
+
+    def items(lead, group, error=None, period_open=True, d=drafts, m=missing):
+        return {(i["queue"], i["id"], i["state"], i["who"], i["action"])
+                for i in M.group_rate_items(lead, group, d, m, error, period_open, "Dec 2099")}
+    assert items(True, False) == {("mine", "gxr:approve", "paused", None, "approve"),
+                                  ("waiting", "gxr:missing", "incomplete", "Group Accountants", None)}
+    assert items(False, True) == {("waiting", "gxr:approve", "waiting", "Close Lead", None),
+                                  ("mine", "gxr:missing", "incomplete", None, "prefill")}
+    assert items(True, True) == {("mine", "gxr:approve", "paused", None, "approve"),
+                                 ("mine", "gxr:missing", "incomplete", None, "prefill")}
+    assert items(False, False) == set(), "nobody else sees group rates"
+    assert ("mine", "gxr:unknown", "error", None, None) in items(True, False, error="ConnectionError")
+    assert not any(i[1] == "gxr:missing" for i in items(False, True, period_open=False)), \
+        "no rate can be approved into a closed period"
+    [approve] = [i for i in M.group_rate_items(True, False, drafts, [], None, True, "Dec 2099")]
+    assert approve["title"] == "Approve 2 group exchange rates" and approve["detail"] == ", ".join(drafts)
+    assert M.few([str(i) for i in range(8)]) == "0, 1, 2, 3, 4, 5 and 2 more"
+    why = "Consolidation Group ZZ has no reporting currency"
+    for lead, group in ((True, False), (False, True)):
+        [blocked] = [i for i in M.group_rate_items(lead, group, [], [], None, True, "Dec 2099", blockers=[why])
+                     if i["id"].startswith("gxr:blocked")]
+        assert (blocked["queue"], blocked["state"], blocked["title"], blocked["action"]) == (
+            "mine", "error", why, "groups")
+    assert M.group_rate_items(False, False, [], [], None, True, "Dec 2099", blockers=[why]) == []
+
+
 def test_ownership_and_ic_stages():
     assert M.ownership_stage({"AMDE"}, 0, 0)["state"] == "incomplete"
     assert M.ownership_stage(set(), 1, 1)["summary"] == "2 to submit"

@@ -35,7 +35,7 @@ _CH_READS = {"_batch_query_clickhouse", "batch_query_hierarchy",
 #: Whitelisted ClickHouse readers that need no entity scope. A new reader must
 #: either call the helper or be named here, on purpose, with its reason.
 _GROUP_LEVEL_READERS = {
-    "fx_rates": "epm_silver.silver_exchange_rates: group-wide currency rates, no entity column",
+    "fx_rates": "epm_staging.group_exchange_rates: the group's governed currency rates, no entity column",
 }
 
 

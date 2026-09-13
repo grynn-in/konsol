@@ -26,7 +26,23 @@ class PeriodStatus(Document):
     def validate(self):
         self._validate_period_exists()
         self._guard_reopen()
+        self._require_group_rates_to_close()
         self._stamp_closure()
+
+    def _require_group_rates_to_close(self):
+        """konsol#103: a period closes only when every currency in its ledgers
+        has an approved Closing and Average rate into each group reporting
+        currency it is translated into. Checked on the move into Closed or
+        Locked from Open; a reopen, or Closed -> Locked, is not a close.
+
+        Closing is what locks the rates (their submit and cancel then refuse),
+        so this is the last point a missing rate can be caught by a person
+        rather than by a failed build."""
+        if self.status not in SETTLED or self._previous_status() in SETTLED:
+            return
+        from konsol.group_rates import assert_rates_complete
+
+        assert_rates_complete(self.fiscal_year, self.fiscal_period)
 
     def _validate_period_exists(self):
         """`fiscal_period` is the period *number*, not a Fiscal Period name.

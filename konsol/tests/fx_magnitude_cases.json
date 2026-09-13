@@ -1,0 +1,19 @@
+{
+ "about": "The shared FX magnitude cases (konsol #174 / konsolidat #176). The SAME list runs through konsol's konsol.group_rates.magnitude_verdict (test_group_exchange_rate.py) and konsolidat's dbt_project/tests/assert_fx_magnitude_cases.sql (fx_magnitude_problem). Keep them case for case. A reference of \"nan\" is NaN. expected: ok | implausible | no_reference | invalid.",
+ "rule": "no reference: isNaN(usd_log10) OR (usd_log10 = 0 AND currency_code != 'USD'); invalid: rate not finite or <= 0 (checked first); implausible: abs(log10(rate) - (usd_log10(to) - usd_log10(from))) > 1",
+ "cases": [
+  {"from": "JPY", "to": "USD", "rate": 0.006607, "from_log10": 2.17, "to_log10": 0.0, "expected": "ok", "note": "true JPY"},
+  {"from": "JPY", "to": "USD", "rate": 0.6607, "from_log10": 2.17, "to_log10": 0.0, "expected": "implausible", "note": "JPY x100"},
+  {"from": "USD", "to": "JPY", "rate": 151.35, "from_log10": 0.0, "to_log10": 2.17, "expected": "ok", "note": "the other direction"},
+  {"from": "IDR", "to": "USD", "rate": 0.0000617, "from_log10": 4.21, "to_log10": 0.0, "expected": "ok", "note": "true IDR (the old [1e-4, 1e4] band refused it)"},
+  {"from": "IDR", "to": "USD", "rate": 0.00617, "from_log10": 4.21, "to_log10": 0.0, "expected": "implausible", "note": "IDR x100"},
+  {"from": "USD", "to": "USD", "rate": 1.0, "from_log10": 0.0, "to_log10": 0.0, "expected": "ok", "note": "USD into itself"},
+  {"from": "XNR", "to": "USD", "rate": 0.5, "from_log10": "nan", "to_log10": 0.0, "expected": "no_reference", "note": "a NaN reference"},
+  {"from": "XZR", "to": "USD", "rate": 0.5, "from_log10": 0.0, "to_log10": 0.0, "expected": "no_reference", "note": "0 for a non-USD currency = unset"},
+  {"from": "XPG", "to": "USD", "rate": 0.001, "from_log10": 3.0, "to_log10": 0.0, "expected": "ok", "note": "a currency pegged at 0.001"},
+  {"from": "JPY", "to": "USD", "rate": 0.0, "from_log10": 2.17, "to_log10": 0.0, "expected": "invalid", "note": "zero"},
+  {"from": "JPY", "to": "USD", "rate": "nan", "from_log10": 2.17, "to_log10": 0.0, "expected": "invalid", "note": "not a finite number"},
+  {"from": "XPG", "to": "USD", "rate": 0.01, "from_log10": 3.0, "to_log10": 0.0, "expected": "ok", "note": "exactly 1 decade off: refused only when > 1, never >= 1"},
+  {"from": "XNR", "to": "USD", "rate": 0.0, "from_log10": "nan", "to_log10": 0.0, "expected": "invalid", "note": "invalid before no reference: the rate is checked first"}
+ ]
+}

@@ -5,7 +5,8 @@
   "currency_code": "AED",
   "currency_name": "UAE Dirham",
   "symbol": "د.إ",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.565
  },
  {
   "doctype": "ISO Currency",
@@ -13,7 +14,8 @@
   "currency_code": "ARS",
   "currency_name": "Argentine Peso",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 3.1
  },
  {
   "doctype": "ISO Currency",
@@ -21,7 +23,8 @@
   "currency_code": "AUD",
   "currency_name": "Australian Dollar",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.18
  },
  {
   "doctype": "ISO Currency",
@@ -29,7 +32,8 @@
   "currency_code": "BHD",
   "currency_name": "Bahraini Dinar",
   "symbol": ".د.ب",
-  "minor_unit": 3
+  "minor_unit": 3,
+  "usd_log10": -0.425
  },
  {
   "doctype": "ISO Currency",
@@ -37,7 +41,8 @@
   "currency_code": "BRL",
   "currency_name": "Brazilian Real",
   "symbol": "R$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.74
  },
  {
   "doctype": "ISO Currency",
@@ -45,7 +50,8 @@
   "currency_code": "CAD",
   "currency_name": "Canadian Dollar",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.14
  },
  {
   "doctype": "ISO Currency",
@@ -53,7 +59,8 @@
   "currency_code": "CHF",
   "currency_name": "Swiss Franc",
   "symbol": "Fr",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": -0.05
  },
  {
   "doctype": "ISO Currency",
@@ -61,7 +68,8 @@
   "currency_code": "CLP",
   "currency_name": "Chilean Peso",
   "symbol": "$",
-  "minor_unit": 0
+  "minor_unit": 0,
+  "usd_log10": 2.97
  },
  {
   "doctype": "ISO Currency",
@@ -69,7 +77,8 @@
   "currency_code": "CNY",
   "currency_name": "Chinese Yuan Renminbi",
   "symbol": "¥",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.86
  },
  {
   "doctype": "ISO Currency",
@@ -77,7 +86,8 @@
   "currency_code": "COP",
   "currency_name": "Colombian Peso",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 3.61
  },
  {
   "doctype": "ISO Currency",
@@ -85,7 +95,8 @@
   "currency_code": "CZK",
   "currency_name": "Czech Koruna",
   "symbol": "Kč",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.36
  },
  {
   "doctype": "ISO Currency",
@@ -93,7 +104,8 @@
   "currency_code": "DKK",
   "currency_name": "Danish Krone",
   "symbol": "kr",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.84
  },
  {
   "doctype": "ISO Currency",
@@ -101,7 +113,8 @@
   "currency_code": "EGP",
   "currency_name": "Egyptian Pound",
   "symbol": "£",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.69
  },
  {
   "doctype": "ISO Currency",
@@ -109,7 +122,8 @@
   "currency_code": "EUR",
   "currency_name": "Euro",
   "symbol": "€",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": -0.03
  },
  {
   "doctype": "ISO Currency",
@@ -117,7 +131,8 @@
   "currency_code": "GBP",
   "currency_name": "Pound Sterling",
   "symbol": "£",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": -0.1
  },
  {
   "doctype": "ISO Currency",
@@ -125,7 +140,8 @@
   "currency_code": "HKD",
   "currency_name": "Hong Kong Dollar",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.89
  },
  {
   "doctype": "ISO Currency",
@@ -133,7 +149,8 @@
   "currency_code": "HUF",
   "currency_name": "Hungarian Forint",
   "symbol": "Ft",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.56
  },
  {
   "doctype": "ISO Currency",
@@ -141,7 +158,8 @@
   "currency_code": "IDR",
   "currency_name": "Indonesian Rupiah",
   "symbol": "Rp",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 4.21
  },
  {
   "doctype": "ISO Currency",
@@ -149,7 +167,8 @@
   "currency_code": "ILS",
   "currency_name": "Israeli New Shekel",
   "symbol": "₪",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.56
  },
  {
   "doctype": "ISO Currency",
@@ -157,7 +176,8 @@
   "currency_code": "INR",
   "currency_name": "Indian Rupee",
   "symbol": "₹",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.93
  },
  {
   "doctype": "ISO Currency",
@@ -165,7 +185,8 @@
   "currency_code": "ISK",
   "currency_name": "Iceland Krona",
   "symbol": "kr",
-  "minor_unit": 0
+  "minor_unit": 0,
+  "usd_log10": 2.14
  },
  {
   "doctype": "ISO Currency",
@@ -173,7 +194,8 @@
   "currency_code": "JPY",
   "currency_name": "Japanese Yen",
   "symbol": "¥",
-  "minor_unit": 0
+  "minor_unit": 0,
+  "usd_log10": 2.17
  },
  {
   "doctype": "ISO Currency",
@@ -181,7 +203,8 @@
   "currency_code": "KRW",
   "currency_name": "South Korean Won",
   "symbol": "₩",
-  "minor_unit": 0
+  "minor_unit": 0,
+  "usd_log10": 3.13
  },
  {
   "doctype": "ISO Currency",
@@ -189,7 +212,8 @@
   "currency_code": "KWD",
   "currency_name": "Kuwaiti Dinar",
   "symbol": "د.ك",
-  "minor_unit": 3
+  "minor_unit": 3,
+  "usd_log10": -0.51
  },
  {
   "doctype": "ISO Currency",
@@ -197,7 +221,8 @@
   "currency_code": "MXN",
   "currency_name": "Mexican Peso",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.27
  },
  {
   "doctype": "ISO Currency",
@@ -205,7 +230,8 @@
   "currency_code": "MYR",
   "currency_name": "Malaysian Ringgit",
   "symbol": "RM",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.64
  },
  {
   "doctype": "ISO Currency",
@@ -213,7 +239,8 @@
   "currency_code": "NOK",
   "currency_name": "Norwegian Krone",
   "symbol": "kr",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.03
  },
  {
   "doctype": "ISO Currency",
@@ -221,7 +248,8 @@
   "currency_code": "NZD",
   "currency_name": "New Zealand Dollar",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.23
  },
  {
   "doctype": "ISO Currency",
@@ -229,7 +257,8 @@
   "currency_code": "OMR",
   "currency_name": "Rial Omani",
   "symbol": "ر.ع.",
-  "minor_unit": 3
+  "minor_unit": 3,
+  "usd_log10": -0.415
  },
  {
   "doctype": "ISO Currency",
@@ -237,7 +266,8 @@
   "currency_code": "PHP",
   "currency_name": "Philippine Peso",
   "symbol": "₱",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.76
  },
  {
   "doctype": "ISO Currency",
@@ -245,7 +275,8 @@
   "currency_code": "PLN",
   "currency_name": "Polish Zloty",
   "symbol": "zł",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.6
  },
  {
   "doctype": "ISO Currency",
@@ -253,7 +284,8 @@
   "currency_code": "QAR",
   "currency_name": "Qatari Rial",
   "symbol": "ر.ق",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.561
  },
  {
   "doctype": "ISO Currency",
@@ -261,7 +293,8 @@
   "currency_code": "RON",
   "currency_name": "Romanian Leu",
   "symbol": "lei",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.66
  },
  {
   "doctype": "ISO Currency",
@@ -269,7 +302,8 @@
   "currency_code": "RUB",
   "currency_name": "Russian Ruble",
   "symbol": "₽",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.95
  },
  {
   "doctype": "ISO Currency",
@@ -277,7 +311,8 @@
   "currency_code": "SAR",
   "currency_name": "Saudi Riyal",
   "symbol": "ر.س",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.574
  },
  {
   "doctype": "ISO Currency",
@@ -285,7 +320,8 @@
   "currency_code": "SEK",
   "currency_name": "Swedish Krona",
   "symbol": "kr",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.02
  },
  {
   "doctype": "ISO Currency",
@@ -293,7 +329,8 @@
   "currency_code": "SGD",
   "currency_name": "Singapore Dollar",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.12
  },
  {
   "doctype": "ISO Currency",
@@ -301,7 +338,8 @@
   "currency_code": "THB",
   "currency_name": "Thai Baht",
   "symbol": "฿",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.53
  },
  {
   "doctype": "ISO Currency",
@@ -309,7 +347,8 @@
   "currency_code": "TRY",
   "currency_name": "Turkish Lira",
   "symbol": "₺",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.6
  },
  {
   "doctype": "ISO Currency",
@@ -317,7 +356,8 @@
   "currency_code": "TWD",
   "currency_name": "New Taiwan Dollar",
   "symbol": "NT$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.5
  },
  {
   "doctype": "ISO Currency",
@@ -325,7 +365,8 @@
   "currency_code": "UAH",
   "currency_name": "Ukrainian Hryvnia",
   "symbol": "₴",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.61
  },
  {
   "doctype": "ISO Currency",
@@ -333,7 +374,8 @@
   "currency_code": "USD",
   "currency_name": "US Dollar",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.0
  },
  {
   "doctype": "ISO Currency",
@@ -341,7 +383,8 @@
   "currency_code": "VND",
   "currency_name": "Vietnamese Dong",
   "symbol": "₫",
-  "minor_unit": 0
+  "minor_unit": 0,
+  "usd_log10": 4.4
  },
  {
   "doctype": "ISO Currency",
@@ -349,7 +392,8 @@
   "currency_code": "ZAR",
   "currency_name": "South African Rand",
   "symbol": "R",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.26
  },
  {
   "doctype": "ISO Currency",
@@ -357,7 +401,8 @@
   "currency_code": "ALL",
   "currency_name": "Albanian Lek",
   "symbol": "L",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.96
  },
  {
   "doctype": "ISO Currency",
@@ -365,7 +410,8 @@
   "currency_code": "AMD",
   "currency_name": "Armenian Dram",
   "symbol": "֏",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.59
  },
  {
   "doctype": "ISO Currency",
@@ -373,7 +419,8 @@
   "currency_code": "ANG",
   "currency_name": "Netherlands Antillean Guilder",
   "symbol": "ƒ",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.253
  },
  {
   "doctype": "ISO Currency",
@@ -381,7 +428,8 @@
   "currency_code": "AZN",
   "currency_name": "Azerbaijani Manat",
   "symbol": "₼",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.23
  },
  {
   "doctype": "ISO Currency",
@@ -389,7 +437,8 @@
   "currency_code": "BDT",
   "currency_name": "Bangladeshi Taka",
   "symbol": "৳",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.08
  },
  {
   "doctype": "ISO Currency",
@@ -397,7 +446,8 @@
   "currency_code": "BGN",
   "currency_name": "Bulgarian Lev",
   "symbol": "лв",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.26
  },
  {
   "doctype": "ISO Currency",
@@ -405,7 +455,8 @@
   "currency_code": "BOB",
   "currency_name": "Bolivian Boliviano",
   "symbol": "Bs.",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.84
  },
  {
   "doctype": "ISO Currency",
@@ -413,7 +464,8 @@
   "currency_code": "CUP",
   "currency_name": "Cuban Peso",
   "symbol": "$",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.38
  },
  {
   "doctype": "ISO Currency",
@@ -421,7 +473,8 @@
   "currency_code": "DZD",
   "currency_name": "Algerian Dinar",
   "symbol": "د.ج",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.13
  },
  {
   "doctype": "ISO Currency",
@@ -429,7 +482,8 @@
   "currency_code": "ETB",
   "currency_name": "Ethiopian Birr",
   "symbol": "Br",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.1
  },
  {
   "doctype": "ISO Currency",
@@ -437,7 +491,8 @@
   "currency_code": "GEL",
   "currency_name": "Georgian Lari",
   "symbol": "₾",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.43
  },
  {
   "doctype": "ISO Currency",
@@ -445,7 +500,8 @@
   "currency_code": "KGS",
   "currency_name": "Kyrgyzstani Som",
   "symbol": "с",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.94
  },
  {
   "doctype": "ISO Currency",
@@ -453,7 +509,8 @@
   "currency_code": "KZT",
   "currency_name": "Kazakhstani Tenge",
   "symbol": "₸",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.7
  },
  {
   "doctype": "ISO Currency",
@@ -461,7 +518,8 @@
   "currency_code": "MDL",
   "currency_name": "Moldovan Leu",
   "symbol": "L",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.24
  },
  {
   "doctype": "ISO Currency",
@@ -469,7 +527,8 @@
   "currency_code": "MMK",
   "currency_name": "Myanmar Kyat",
   "symbol": "K",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 3.32
  },
  {
   "doctype": "ISO Currency",
@@ -477,7 +536,8 @@
   "currency_code": "MNT",
   "currency_name": "Mongolian Togrog",
   "symbol": "₮",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 3.53
  },
  {
   "doctype": "ISO Currency",
@@ -485,7 +545,8 @@
   "currency_code": "NGN",
   "currency_name": "Nigerian Naira",
   "symbol": "₦",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 3.19
  },
  {
   "doctype": "ISO Currency",
@@ -493,7 +554,8 @@
   "currency_code": "RSD",
   "currency_name": "Serbian Dinar",
   "symbol": "дин.",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 2.04
  },
  {
   "doctype": "ISO Currency",
@@ -501,7 +563,8 @@
   "currency_code": "TJS",
   "currency_name": "Tajikistani Somoni",
   "symbol": "SM",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 1.03
  },
  {
   "doctype": "ISO Currency",
@@ -509,7 +572,8 @@
   "currency_code": "TMT",
   "currency_name": "Turkmenistani Manat",
   "symbol": "m",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 0.544
  },
  {
   "doctype": "ISO Currency",
@@ -517,7 +581,8 @@
   "currency_code": "UZS",
   "currency_name": "Uzbekistani Som",
   "symbol": "som",
-  "minor_unit": 2
+  "minor_unit": 2,
+  "usd_log10": 4.1
  },
  {
   "doctype": "ISO Currency",
@@ -525,6 +590,34 @@
   "currency_code": "XDR",
   "currency_name": "IMF Special Drawing Rights",
   "symbol": "SDR",
-  "minor_unit": 0
+  "minor_unit": 0,
+  "usd_log10": -0.12
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "PAB",
+  "currency_code": "PAB",
+  "currency_name": "Panamanian Balboa",
+  "symbol": "B/.",
+  "minor_unit": 2,
+  "usd_log10": 0.001
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BSD",
+  "currency_code": "BSD",
+  "currency_name": "Bahamian Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.001
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BMD",
+  "currency_code": "BMD",
+  "currency_name": "Bermudian Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.001
  }
 ]

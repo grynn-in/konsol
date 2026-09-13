@@ -14,8 +14,11 @@ Antillean Guilder" instead of "ANG". It also has no ISO exponent, only Frappe's
 zero-decimal ones.
 
 So konsol keeps its own list, keyed on the code, and leaves Frappe's Currency
-records alone.
+records alone. It is seeded (konsol.currency_references), not a fixture: a
+fixture is force re-imported on every migrate, which reverted a site's own
+usd_log10 (konsol#103).
 """
+import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
@@ -28,7 +31,17 @@ class ISOCurrency(Document):
         "currency_name": "currency_name",
         "symbol": "symbol",
         "minor_unit": "minor_unit",
+        "usd_log10": "usd_log10",
     }
+
+    def validate(self):
+        """usd_log10 is roughly log10 of units per 1 USD (konsol#103): real
+        currencies sit between about -1 (KWD) and 5 (IRR at market). Outside
+        [-5, 10] is a typo that would refuse every rate in this currency."""
+        value = float(self.usd_log10 or 0)
+        if not -5 <= value <= 10:
+            frappe.throw(f"USD Reference (log10) {value:g} is not a plausible log10 of units per 1 USD.",
+                         frappe.ValidationError)
 
     def on_update(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)

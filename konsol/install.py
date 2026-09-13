@@ -73,7 +73,25 @@ def after_sync():
     on a fresh Docker site the configurator sets the real ClickHouse target
     only after install-app (see reconcile_warehouse).
     """
+    _seed_iso_currencies()
     enqueue_reconcile_after_commit(install_time=True)
+
+
+def _seed_iso_currencies():
+    """The ISO list and its magnitude references (konsol#103): inserted where a
+    site lacks a code, a usd_log10 filled only where it is unset, so a site's
+    edit survives. Not a fixture: a fixture is force re-imported on every
+    migrate and would revert it. Before the reconcile, which publishes them.
+    Best-effort: never fail a migrate or an install over it."""
+    try:
+        from konsol.currency_references import seed_iso_currencies
+
+        out = seed_iso_currencies()
+        if out["inserted"] or out["filled"]:
+            print(f"konsol: ISO Currency seeded: {len(out['inserted'])} inserted, "
+                  f"{len(out['filled'])} magnitude references filled")
+    except Exception:  # noqa: BLE001
+        frappe.log_error(title="konsol: ISO Currency seed failed")
 
 
 def enqueue_reconcile_after_commit(install_time=False):
@@ -266,6 +284,7 @@ def after_migrate():
     # no-ops while frappe.flags.in_migrate is set, and reconcile_all
     # (force=True) is the one call that carries such rows through. Nothing is
     # seeded now; the demo ownership and annual budget that were are gone.
+    _seed_iso_currencies()
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()

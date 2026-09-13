@@ -41,6 +41,14 @@
    "label": "Minor Unit",
    "in_list_view": 1,
    "description": "ISO 4217 exponent: decimal places. 0 for JPY, 3 for KWD."
+  },
+  {
+   "fieldname": "usd_log10",
+   "fieldtype": "Float",
+   "precision": "3",
+   "label": "USD Reference (log10)",
+   "in_list_view": 1,
+   "description": "Roughly log10 of this currency's units per 1 USD (USD 0, EUR -0.03, JPY 2.17, IDR 4.21). An order-of-magnitude reference for the group exchange rate guard (konsol#103, #138): a rate more than 10x from what these imply is refused. Not a rate; refresh it only when a currency moves by a factor of three or more. 0 means not set, except for USD, the anchor, so a currency pegged 1:1 to USD (PAB, BSD, BMD) is 0.001, a negligible 0.2%. konsol fills it only where it is unset; your edit is kept."
   }
  ],
  "permissions": [

@@ -1,7 +1,12 @@
-"""Read-only FX-rates endpoint (konsolidat#91 Part B). Static-assertion style —
-the endpoint hits ClickHouse, so we assert the wiring/safety in source."""
+"""Read-only FX-rates endpoint (konsolidat#91 Part B; konsol#103, #175).
+
+One source of truth for FX rates (decided 13 Sep 2026): the endpoint returns
+the governed rates konsol publishes, not the ERP feed. The function is run
+here against a stub ClickHouse, and its wiring is asserted in source."""
 import ast
 import os
+import sys
+import types
 
 API = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api.py")
 
@@ -9,6 +14,34 @@ API = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 def _src():
     with open(API) as f:
         return f.read()
+
+
+def _fx_rates(execute):
+    """api.fx_rates and the constants it reads, compiled alone against stubs."""
+    tree = ast.parse(_src())
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name == "fx_rates")
+            or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in
+                ("GOVERNED_FX_TABLE", "_PERIOD_START_SQL"))]
+    ns = {"frappe": types.SimpleNamespace(whitelist=lambda *a, **k: (lambda fn: fn))}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), API, "exec"), ns)
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.execute = execute
+    fn = ns["fx_rates"]
+
+    def call(**kw):
+        saved = {n: sys.modules.get(n) for n in ("konsol", "konsol.clickhouse")}
+        sys.modules["konsol.clickhouse"] = ch
+        sys.modules.setdefault("konsol", types.ModuleType("konsol"))
+        try:
+            return fn(**kw)
+        finally:
+            for n, old in saved.items():
+                if old is None:
+                    sys.modules.pop(n, None)
+                else:
+                    sys.modules[n] = old
+    return call
 
 
 def test_fx_rates_defined_and_whitelisted():
@@ -22,16 +55,35 @@ def test_fx_rates_defined_and_whitelisted():
     assert not any("allow_guest" in d for d in decs)
 
 
-def test_fx_rates_is_read_only_and_parameterized():
-    src = _src().split("def fx_rates(")[1]
-    # read-only: SELECT from the silver rates view, no write verbs
-    assert "silver_exchange_rates" in src
+def test_fx_rates_is_read_only_and_reads_the_governed_rates():
+    src = _src().split("def fx_rates(")[1].split("\n@frappe.whitelist")[0]
+    assert "GOVERNED_FX_TABLE" in src and "silver_exchange_rates" not in src
     for verb in ("INSERT", "TRUNCATE", "ALTER", "DELETE", "DROP"):
         assert verb not in src
-    # filters bound as CH params (injection-safe), not f-string interpolated values
-    assert "{fc:String}" in src and "{rt:String}" in src
     # limit is integer-cast + bounded
     assert "int(limit)" in src and "min(" in src
+
+
+def test_filters_are_bound_as_param_prefixed_http_parameters():
+    """#175: ClickHouse reads a bare query-string name as a SETTING, so every
+    filtered call failed with UNKNOWN_SETTING. Values go as param_<name>."""
+    calls = []
+    fx_rates = _fx_rates(lambda sql, params=None: calls.append((sql, params)) or
+                         '{"data": [{"from_currency": "JPY", "rate": 0.006607}]}')
+    out = fx_rates(from_currency="jpy", to_currency="USD", rate_type="Closing", fiscal_year="2099",
+                   fiscal_period=12, as_of="2099-12-31", limit="9999")
+    [(sql, params)] = calls
+    assert params == {"param_fc": "JPY", "param_tc": "USD", "param_rt": "Closing", "param_fy": 2099,
+                      "param_fp": 12, "param_asof": "2099-12-31"}
+    for bound in ("{fc:String}", "{tc:String}", "{rt:String}", "{fy:UInt16}", "{fp:UInt8}", "{asof:Date}"):
+        assert bound in sql, bound
+    assert "FROM epm_staging.group_exchange_rates WHERE" in sql and "LIMIT 5000 " in sql
+    assert " rate, document " in sql, "the true rate, as published"
+    assert "silver_exchange_rates" not in sql and "exchange_rate_type" not in sql, "never the ERP feed"
+    assert out == {"rows": [{"from_currency": "JPY", "rate": 0.006607}], "count": 1}
+    calls.clear()
+    fx_rates()
+    assert calls[0][1] == {} and " WHERE " not in calls[0][0]
 
 
 def test_fx_rates_uses_execute_helper():

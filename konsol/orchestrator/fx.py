@@ -1,31 +1,26 @@
-"""FX surfacing — read view + query builder (PRD-18, konsolidat#91 B/C).
+"""FX surfacing: read view + query builder (PRD-18, konsolidat#91 B/C).
 
-Surfaces the consolidation FX rates the dbt silver layer derives from D365 so
-the konsol-exec SPA can show *which* rate translated each entity. The silver
-model ``epm_silver.silver_exchange_rates`` (konsolidat#107) carries both the
-directly-quoted pairs and the synthesised inverse pairs, with columns
-``from_currency`` / ``to_currency`` / ``exchange_rate`` / ``valid_from`` /
-``valid_to`` / ``exchange_rate_type``.
+Surfaces the group's GOVERNED exchange rates to the konsol-exec SPA: the
+approved Group Exchange Rates (konsol#103) konsol publishes to
+``epm_staging.group_exchange_rates``, each the true rate, units of
+``to_currency`` per 1 ``from_currency``, one per fiscal period and rate type.
+One source of truth for FX rates (decided 13 Sep 2026): these are the rates
+translation uses. The ERP feed (``epm_silver.silver_exchange_rates``) is not
+shown as "the rates" anywhere; it is only an input to Pre-fill from ERP.
 
-This module lands the **read view** only:
-
-- :func:`build_fx_query` — the **pure testable core**. Builds an injection-safe
-  ``SELECT`` over the silver table, filterable by from/to currency, as-of date,
-  rate type and source. Currency codes are validated against ``^[A-Z]{3}$`` and
-  every other filter is validated against a strict allow-list pattern, so no
-  caller-supplied value reaches the SQL string unchecked.
-- :func:`normalize_fx_rows` — shape raw ClickHouse result rows (tuples + a
+- :func:`build_fx_query` is the **pure testable core**. It builds an
+  injection-safe ``SELECT`` over the governed table, filterable by from/to
+  currency, as-of date (a period applies from its first day), rate type and
+  source. Currency codes are validated against ``^[A-Z]{3}$`` and every other
+  filter against a strict allow-list pattern, so no caller-supplied value
+  reaches the SQL string unchecked.
+- :func:`normalize_fx_rows` shapes raw ClickHouse result rows (tuples + a
   column-name header) into the canonical ``{from, to, rate, as_of, type,
   source}`` dicts the SPA consumes, tolerating the empty case.
-- :func:`get_fx_rates` — the frappe/ClickHouse-bound ``@whitelist()`` API. Like
-  the rest of the orchestrator core this module imports on the host **without**
-  frappe: the ``whitelist`` decorator degrades to a no-op and the
+- :func:`get_fx_rates` is the frappe/ClickHouse-bound ``@whitelist()`` API.
+  Like the rest of the orchestrator core this module imports on the host
+  **without** frappe: the ``whitelist`` decorator degrades to a no-op and the
   ``from konsol.clickhouse import execute`` call lives inside the function.
-
-Part C (a manual-entry Exchange Rate doctype UNION'd in as a ``manual``
-``erp_source``) is a follow-up — the ``source`` column is already projected
-(constant ``'d365'`` for the silver rows) so the future UNION + filter slots in
-without changing this read view's shape.
 """
 from __future__ import annotations
 
@@ -45,12 +40,15 @@ except Exception:  # pragma: no cover - host import path (no bench)
         return deco
 
 
-# Fully-qualified silver FX table (konsolidat#107 — includes inverse pairs).
-FX_TABLE = "epm_silver.silver_exchange_rates"
+# The governed rates konsol publishes (konsol#103): true rates, one source.
+FX_TABLE = "epm_staging.group_exchange_rates"
 
-# Constant erp_source label for the silver rows. Part C will UNION a 'manual'
-# source in; the column already exists here so the SPA filter is forward-stable.
-SILVER_SOURCE = "d365"
+# The `source` every row carries: governed by konsol (Group Exchange Rate).
+GOVERNED_SOURCE = "konsol"
+
+# The date a fiscal period's rate applies from (dbt build_date_from_year_period:
+# the 1st of month P; OPN takes January's, CLS December's).
+PERIOD_START_SQL = "makeDate(fiscal_year, greatest(least(fiscal_period, 12), 1), 1)"
 
 # Validation patterns — every caller-supplied filter must match one of these
 # before it is interpolated, so the query is injection-safe.
@@ -89,7 +87,7 @@ def build_fx_query(filters: Optional[Dict] = None) -> str:
     """Build an injection-safe ``SELECT`` over :data:`FX_TABLE`.
 
     ``filters`` may carry any of ``from_currency`` / ``to_currency`` (3-letter
-    ISO codes), ``as_of`` (``YYYY-MM-DD`` — rates effective on or before),
+    ISO codes), ``as_of`` (``YYYY-MM-DD``: periods starting on or before it),
     ``rate_type`` and ``source``. Each value is validated before interpolation;
     a value that fails its pattern raises ``ValueError`` (no unchecked value
     ever reaches the SQL string). An empty / ``None`` ``filters`` yields the
@@ -124,10 +122,10 @@ def build_fx_query(filters: Optional[Dict] = None) -> str:
         "    SELECT\n"
         "        from_currency,\n"
         "        to_currency,\n"
-        "        exchange_rate AS rate,\n"
-        "        valid_from AS as_of,\n"
-        "        exchange_rate_type AS rate_type,\n"
-        f"        '{SILVER_SOURCE}' AS source\n"
+        "        rate,\n"
+        f"        {PERIOD_START_SQL} AS as_of,\n"
+        "        rate_type,\n"
+        f"        '{GOVERNED_SOURCE}' AS source\n"
         f"    FROM {FX_TABLE}\n"
         ") AS fx"
     )

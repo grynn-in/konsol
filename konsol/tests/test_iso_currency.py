@@ -17,7 +17,8 @@ def _meta():
 
 
 def _fixture():
-    with open(os.path.join(APP_DIR, "fixtures", "iso_currency.json")) as f:
+    """The shipped list: seeded by konsol.currency_references, not a fixture."""
+    with open(os.path.join(APP_DIR, "reference_data", "iso_currencies.json")) as f:
         return json.load(f)
 
 
@@ -42,7 +43,7 @@ def test_writes_through_to_the_relation_the_warehouse_validates_against():
 
 def test_fixture_carries_the_whole_iso_list_the_seed_had():
     rows = _fixture()
-    assert len(rows) == 66, "the deleted seed had 66 codes"
+    assert len(rows) == 69, "the deleted seed's 66 codes, and PAB, BSD and BMD (pegged to USD)"
     codes = {r["currency_code"] for r in rows}
     # the six Frappe does not ship at all — the reason enriching Currency would
     # have lost data even if the naming worked
@@ -60,16 +61,19 @@ def test_minor_unit_is_the_iso_exponent_not_frappes_fraction_units():
     assert by_code["USD"]["minor_unit"] == 2
 
 
-def test_shipped_as_a_fixture_and_registered():
-    """Reference data, not transactional: unlike ownership, a site is not
-    expected to edit it, so the force-reimport fixtures do on every migrate is
-    the behaviour we want."""
+def test_seeded_not_a_fixture():
+    """A site edits usd_log10 (konsol#103), and a fixture is force re-imported
+    on every migrate, which reverted the edit. The list is seeded instead:
+    inserted where missing, filled only where unset (test_currency_references)."""
     with open(os.path.join(APP_DIR, "hooks.py")) as f:
         hooks = f.read()
     fixtures = hooks.split("fixtures = [")[1].split("]")[0]
     entries = [line.strip() for line in fixtures.splitlines()
                if line.strip() and not line.strip().startswith("#")]
-    assert '"ISO Currency",' in entries
+    assert '"ISO Currency",' not in entries
+    assert not os.path.exists(os.path.join(APP_DIR, "fixtures", "iso_currency.json"))
+    with open(os.path.join(APP_DIR, "install.py")) as f:
+        assert "seed_iso_currencies" in f.read()
 
 
 # --- Entity Fiscal Calendar (konsolidat#146) --------------------------------

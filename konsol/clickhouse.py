@@ -589,7 +589,7 @@ _REFERENCE_TABLE_DDL = {
     # validates against living in the dbt repo rather than the app.
     "epm_gold.currencies": (
         "(currency_code String, currency_name String, symbol String, "
-        "minor_unit UInt8) "
+        "minor_unit UInt8, usd_log10 Float64 DEFAULT nan) "
         "ENGINE = MergeTree ORDER BY currency_code"
     ),
     "epm_gold.scenario_definitions": (
@@ -613,6 +613,18 @@ _REFERENCE_TABLE_DDL = {
         "is_group UInt8, status String, accounting_currency String, "
         "country String, erp_source String) "
         "ENGINE = MergeTree ORDER BY data_area_id"
+    ),
+    # konsol#103: the governed group exchange rates, from Group Exchange Rate
+    # (submitted rows only). gold_consolidated_trial_balance translates from
+    # this, never from the ERP feed; `document` names the approving record.
+    # `rate` is the TRUE rate, units of to_currency per 1 from_currency, as
+    # Float64: konsol computes it once (quote / quoted_per) when it publishes,
+    # and the warehouse never scales or inverts it. One source of truth for FX
+    # rates (decided 13 Sep 2026).
+    "epm_staging.group_exchange_rates": (
+        "(to_currency String, from_currency String, fiscal_year UInt16, "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
 }
 
@@ -647,6 +659,23 @@ _RETIRED_COLUMNS = {
 }
 
 
+# Columns a later release added to a table that already exists on older
+# stacks. CREATE TABLE IF NOT EXISTS never touches an existing table, so each
+# is added here too; ADD COLUMN IF NOT EXISTS is metadata-only and idempotent.
+# The same column must be in the CREATE above, at the end, so a fresh table
+# and an upgraded one agree.
+_ADDED_COLUMNS = {
+    # konsol#103: ISO Currency's magnitude reference for the group rate guard;
+    # NaN until the ISO Currency write-through fills it
+    "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
+}
+
+
+def _added_column_ddl(tables):
+    return [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {c} {typ}"
+            for t, cols in _ADDED_COLUMNS.items() if t in tables for c, typ in cols]
+
+
 def ensure_reference_tables():
     """Create the write-through reference tables, and drop the retired columns.
 
@@ -661,6 +690,7 @@ def ensure_reference_tables():
         "CREATE DATABASE IF NOT EXISTS epm_gold",
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
+        *_added_column_ddl(_REFERENCE_TABLE_DDL),
         *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],

@@ -28,7 +28,9 @@ fixtures = [
     "Measure",
     "Dataset",
     "Scenario",
-    "ISO Currency",
+    # ISO Currency is NOT a fixture (konsol#103): a force re-import on every
+    # migrate reverted a site's own usd_log10. konsol.currency_references seeds
+    # it from reference_data/iso_currencies.json, filling only what is unset.
     "Spread Profile",
     "Build Scope",
     "Build Model",
@@ -129,6 +131,10 @@ _dbt_trigger_doctypes = [
     # Safe since konsol#126: the trigger queues a job after the commit, so it
     # can no longer commit docstatus=1 before on_submit has claimed the rows.
     "Trial Balance Submission",
+    # konsol#103: an approved (or cancelled) group rate changes what
+    # gold_consolidated_trial_balance translates at. Submittable, so only
+    # on_submit / on_cancel request the build; a draft save requests nothing.
+    "Group Exchange Rate",
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed
