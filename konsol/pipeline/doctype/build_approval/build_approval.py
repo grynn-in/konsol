@@ -18,6 +18,15 @@ SCOPE_RISK = {
 }
 
 
+# konsol.build_lock.BUILD_WRITER_FLAG, by name: set only around konsol's own
+# saves that move a build out of Running (build_lock.build_writer).
+BUILD_WRITER_FLAG = "konsol_build_writer"
+RUNNING_BUILD_MESSAGE = (
+    "This build is running. Wait for it to finish, or for the reaper to fail it "
+    "after 30 minutes, then reset it."
+)
+
+
 class BuildApproval(Document):
     def before_save(self):
         """Auto-set risk level, apply workflow transitions, populate sync info.
@@ -31,6 +40,15 @@ class BuildApproval(Document):
         # (#139 review). _doc_before_save was loaded FOR UPDATE by
         # check_if_latest, so it holds the current flag.
         before = self.get_doc_before_save()
+        # Only konsol's build path moves a build out of Running: the build
+        # job's finish, start-failure and stopped-before-dbt saves, marked
+        # with build_lock.build_writer(), and the reaper, which writes with
+        # SQL and so never reaches this hook. A manual move (a reset to
+        # Draft, or to Pending Review) left the job, still alive, to finish
+        # over it (#140 review). konsol #168 covers the other manual moves.
+        if (before and before.workflow_state == "Running" and self.workflow_state != "Running"
+                and not frappe.flags.get(BUILD_WRITER_FLAG)):
+            frappe.throw(RUNNING_BUILD_MESSAGE, frappe.ValidationError, title="Build is running")
         # The one exception is the build starting (Approved -> Running): the
         # build reads every change absorbed so far, so the flag an Approved
         # build carried is spent (#140). A request after the start flags the
@@ -55,16 +73,10 @@ class BuildApproval(Document):
                     # Finished (Completed, or Failed after it started): that
                     # run's finish, or the reaper, already requested the
                     # follow-up its flag asked for, so keeping it would
-                    # duplicate that. A Running row's flag holds changes
-                    # absorbed during the build that nothing has followed up
-                    # yet, and a Cancelled row's was never acted on (its
-                    # changes were dropped with it): both keep the flag.
+                    # duplicate that. A Cancelled row's flag was never acted
+                    # on (its changes were dropped with it), so it keeps it.
+                    # A Running row can't be reset (above).
                     self.rebuild_requested = 0
-            if before.workflow_state == "Running":
-                # A dead worker leaves its governed Pipeline Run active, which
-                # blocks every build until reap_stale_runs (120 min); on_update
-                # fails it in this save's transaction.
-                self.flags.reset_while_running = True
             # The old error goes, since a start-failure message left on a row
             # that runs again would make the failed-start sweep take it for a
             # new one (#140 review). A row that never started keeps its flag:
@@ -94,9 +106,6 @@ class BuildApproval(Document):
         Only fires on the save where the state actually changed — editing an
         already-Approved doc won't re-enqueue a duplicate build.
         """
-        if self.flags.get("reset_while_running"):
-            self.flags.reset_while_running = False
-            self._fail_active_runs_of_reset_build()
         if not self.has_value_changed("workflow_state"):
             return
 
@@ -106,41 +115,6 @@ class BuildApproval(Document):
             frappe.publish_realtime(
                 "build_request_pending",
                 {"name": self.name, "scope": self.build_scope},
-            )
-
-    def _fail_active_runs_of_reset_build(self):
-        """A Running build was reset to Draft: if its job is dead, fail its
-        governed Pipeline Run while it is still active (#140 re-review).
-
-        A dead worker's run would block every build until reap_stale_runs.
-        But the active run is also the only thing that keeps a second dbt
-        build out of the shared project (_assert_no_active_run, #67 fix 5).
-        So while the build's job is alive, or RQ can't tell (the reaper's
-        check), the run stays active and the job finalizes it itself; a job
-        RQ doesn't see finds its run finished and stops before dbt
-        (tasks.run_governed_build). Each run is locked and re-read first, so
-        one the job finished meanwhile is skipped with no timestamp error (and
-        no red message in the desk). No commit: the save that reset the row
-        carries it.
-        """
-        from konsol.orchestrator.api import ACTIVE_RUN_STATES
-        from konsol.orchestrator.reaper import _build_job_waiting
-        from konsol.tasks import _finalize_governed_pipeline_run
-
-        if _build_job_waiting(self.name):
-            return
-        runs = frappe.get_all(
-            "Pipeline Run",
-            filters={"build_approval": self.name, "status": ["in", list(ACTIVE_RUN_STATES)]},
-            pluck="name",
-        )
-        for run in runs:
-            current = frappe.db.sql("SELECT status FROM `tabPipeline Run` WHERE name = %s FOR UPDATE", run)
-            if not current or current[0][0] not in ACTIVE_RUN_STATES:
-                continue   # the build's own job finished it meanwhile
-            _finalize_governed_pipeline_run(
-                run, status="Failed", commit=False,
-                error_log=f"Build Approval {self.name} reset by {frappe.session.user} while Running",
             )
 
     def _populate_sync_info(self):

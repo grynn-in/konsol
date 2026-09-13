@@ -17,7 +17,28 @@ syncing a changed Build Approval JSON (it commits per file) or a developer-mode
 save of the DocType, and each holds it only until its own commit. One row can't deadlock against itself, and
 it serialises only a few milliseconds of work: build requests are rare.
 """
+from contextlib import contextmanager
+
 import frappe
+
+# Set only around konsol's own saves that move a Build Approval out of Running
+# (the build job's finish and its start-failure and stopped-before-dbt paths).
+# BuildApproval.before_save refuses any other move off Running (#140). It
+# lives in frappe.flags, which is local to one request or job.
+BUILD_WRITER_FLAG = "konsol_build_writer"
+
+
+@contextmanager
+def build_writer():
+    """Mark the saves inside as konsol's build path, which may move a Build
+    Approval out of Running. Restored on exit, error or not, so it can't
+    leak past the save it wraps."""
+    previous = frappe.flags.get(BUILD_WRITER_FLAG)
+    frappe.flags[BUILD_WRITER_FLAG] = True
+    try:
+        yield
+    finally:
+        frappe.flags[BUILD_WRITER_FLAG] = previous
 
 
 def lock_build_requests():

@@ -227,10 +227,21 @@ def test_every_state_the_debounce_absorbs_into_is_flagged():
     assert set(build_lock.FLAGGED_STATES) == {"Draft", "Pending Review", "Approved", "Running"}
 
 
+class ValidationError(Exception):
+    pass
+
+
 def _build_approval(frappe=None):
     frappe = frappe or _frappe_stub()
     if not hasattr(frappe, "session"):
         frappe.session = types.SimpleNamespace(user="Administrator")
+    if not hasattr(frappe, "flags"):
+        frappe.flags = _D()
+    frappe.ValidationError = ValidationError
+
+    def throw(msg, exc=Exception, **k):
+        raise exc(msg)
+    frappe.throw = throw
 
     def get_single(_):
         raise RuntimeError("no settings on the host")
@@ -259,8 +270,12 @@ def _build_approval(frappe=None):
     return _load("build_approval_140", path, mods).BuildApproval
 
 
-def _save(before_state, before_flag, state, flag, scope="staging", error_message=None, started_at=None):
-    BuildApproval = _build_approval()
+def _save(before_state, before_flag, state, flag, scope="staging", error_message=None, started_at=None,
+          writer=False):
+    """before_save on one move. ``writer``: saved inside build_lock.build_writer()."""
+    frappe = _frappe_stub()
+    frappe.flags = _D(konsol_build_writer=True) if writer else _D()
+    BuildApproval = _build_approval(frappe)
     run = dict(started_at=started_at, completed_at=started_at and started_at + timedelta(minutes=5),
                duration_seconds=300.0 if started_at else 0)
     before = types.SimpleNamespace(workflow_state=before_state, rebuild_requested=before_flag, **run)
@@ -296,14 +311,59 @@ def test_a_reset_of_a_finished_row_spends_its_flag():
         assert doc.rebuild_requested == 0 and doc.started_at is None, state
 
 
-def test_a_reset_of_a_running_row_keeps_its_unspent_flag():
-    """Its flag holds changes absorbed during the build that nothing has
-    followed up: the build's own finish will fail its save (#140 re-review).
-    The timing still goes, so the row can be reaped and followed up."""
-    doc = _save("Running", 1, "Draft", 1, started_at=START)
-    assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved"
-    assert (doc.started_at, doc.completed_at, doc.duration_seconds) == (None, None, 0)
-    assert _save("Running", 1, "Draft", 0, started_at=START).rebuild_requested == 1, "a form opened before the flag"
+RUNNING_MESSAGE = ("This build is running. Wait for it to finish, or for the reaper to fail it "
+                   "after 30 minutes, then reset it.")
+
+
+def _refused(before_state, state, **kw):
+    try:
+        _save(before_state, 1, state, 1, started_at=START, **kw)
+    except ValidationError as exc:
+        return str(exc)
+    return None
+
+
+def test_a_manual_move_off_running_is_refused():
+    """Only the build job and the reaper move a build out of Running: a reset
+    left the job, still alive, to finish over it (#140 review)."""
+    for state in ("Draft", "Pending Review", "Approved", "Completed", "Failed", "Cancelled"):
+        assert _refused("Running", state) == RUNNING_MESSAGE, state
+
+
+def test_the_build_path_still_moves_a_build_off_running():
+    for state in ("Completed", "Failed"):
+        assert _refused("Running", state, writer=True) is None, state
+    assert _refused("Running", "Running") is None, "saving a Running row without moving it is fine"
+    assert _refused("Completed", "Draft") is None, "a finished row can still be reset"
+
+
+def test_the_writer_flag_is_one_name_in_both_modules():
+    path = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+    with open(path) as f:
+        controller = f.read()
+    with open(os.path.join(APP_DIR, "build_lock.py")) as f:
+        build_lock = f.read()
+    assert 'BUILD_WRITER_FLAG = "konsol_build_writer"' in controller
+    assert 'BUILD_WRITER_FLAG = "konsol_build_writer"' in build_lock
+    assert "_fail_active_runs_of_reset_build" not in controller, "a Running row can no longer be reset"
+
+
+def test_the_writer_flag_is_set_only_inside_and_never_leaks():
+    frappe = _frappe_stub()
+    frappe.flags = _D()
+    build_lock = _load("build_lock_writer", os.path.join(APP_DIR, "build_lock.py"), {"frappe": frappe})
+    with build_lock.build_writer():
+        assert frappe.flags.konsol_build_writer is True
+        with build_lock.build_writer():
+            assert frappe.flags.konsol_build_writer is True
+        assert frappe.flags.konsol_build_writer is True, "a nested exit keeps the outer mark"
+    assert not frappe.flags.konsol_build_writer
+    try:
+        with build_lock.build_writer():
+            raise RuntimeError("the save failed")
+    except RuntimeError:
+        pass
+    assert not frappe.flags.konsol_build_writer, "restored on an error too"
 
 
 def test_a_reset_of_a_cancelled_row_that_started_keeps_its_flag():
@@ -313,89 +373,10 @@ def test_a_reset_of_a_cancelled_row_that_started_keeps_its_flag():
     assert doc.rebuild_requested == 1 and doc.started_at is None
 
 
-def _reset_running(runs, before_state="Running", job_alive=False, latest=None):
-    """Reset a started row to Draft through before_save and on_update.
-
-    ``runs``: its Pipeline Runs as listed, name -> status. ``latest``: their
-    status once the hook locks them (the job may have finished one since).
-    ``job_alive``: the reaper's RQ check. Returns (doc, finalized runs,
-    enqueued); ``_reset_running.last`` holds the runs locked."""
-    frappe = _frappe_stub()
-    frappe.session = types.SimpleNamespace(user="ZZ Operator")
-    finalized, enqueued, locked = [], [], []
-
-    def get_all(doctype, filters=None, pluck=None, **k):
-        assert doctype == "Pipeline Run" and filters["build_approval"] == "BA-1" and pluck == "name"
-        return [n for n, st in runs.items() if st in filters["status"][1]]
-
-    def sql(query, params=None, **k):
-        assert query == "SELECT status FROM `tabPipeline Run` WHERE name = %s FOR UPDATE", query
-        locked.append(params)
-        return (((latest or {}).get(params, runs[params]),),)
-    frappe.db.sql = sql
-    frappe.get_all = get_all
-    frappe.enqueue = lambda *a, **k: enqueued.append(k.get("build_request"))
-    frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None)
-    frappe.publish_realtime = lambda *a, **k: None
-    _reset_running.last = {"locked": locked}
-    extra = {"konsol.tasks": types.SimpleNamespace(
-                 _finalize_governed_pipeline_run=lambda run, **kw: finalized.append((run, kw))),
-             "konsol.orchestrator.api": types.SimpleNamespace(ACTIVE_RUN_STATES=ACTIVE),
-             "konsol.orchestrator.reaper": types.SimpleNamespace(_build_job_waiting=lambda name: job_alive)}
-    BuildApproval = _build_approval(frappe)
-    saved = {m: sys.modules.get(m) for m in extra}
-    sys.modules.update(extra)
-    try:
-        run = dict(started_at=START, completed_at=START + timedelta(minutes=5), duration_seconds=300.0)
-        before = types.SimpleNamespace(workflow_state=before_state, rebuild_requested=1, **run)
-        doc = BuildApproval(before=before, name="BA-1", workflow_state="Draft", rebuild_requested=1,
-                            build_scope="staging", requested_by="Administrator", error_message=None, **run)
-        doc.before_save()
-        doc.on_update()
-    finally:
-        _restore(saved)
-    return doc, finalized, enqueued
-
-
-def test_a_running_reset_leaves_the_run_of_a_live_job_active():
-    """The active run is what keeps a second dbt build out of the shared
-    project while the job is alive, or RQ can't tell (#140 re-review, High)."""
-    doc, finalized, enqueued = _reset_running({"PR-1": "Transforming"}, job_alive=True)
-    assert finalized == [] and _reset_running.last["locked"] == []
-    assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved"
-
-
-def test_a_running_reset_fails_its_still_active_run():
-    """No job alive: a dead worker's run would block every build for up to 120 min (#140 re-review)."""
-    doc, finalized, enqueued = _reset_running({"PR-1": "Transforming", "PR-0": "Failed"})
-    assert finalized == [("PR-1", {"status": "Failed", "commit": False,
-                                   "error_log": "Build Approval BA-1 reset by ZZ Operator while Running"})]
-    assert _reset_running.last["locked"] == ["PR-1"], "only an active run is locked, never a finished one"
-    assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved" and enqueued == ["BA-1"]
-
-
-def test_a_running_reset_leaves_a_run_the_job_already_finished():
-    assert _reset_running({"PR-1": "Completed"})[1] == []
-
-
-def test_a_run_the_job_finished_since_the_list_is_skipped_quietly():
-    """Locked and re-read before it is failed, so there is no timestamp error,
-    whose red "Document has been modified" message an operator would read as
-    a failed reset and repeat (#140 re-review)."""
-    doc, finalized, _ = _reset_running({"PR-1": "Transforming"}, latest={"PR-1": "Completed"})
-    assert _reset_running.last["locked"] == ["PR-1"]
-    assert finalized == [] and doc.workflow_state == "Approved", "the reset itself still saves"
-
-
-def test_only_a_reset_from_running_touches_runs():
-    for state in ("Completed", "Failed", "Cancelled"):
-        assert _reset_running({"PR-1": "Queued"}, before_state=state)[1] == [], state
-
-
 def test_only_a_reset_clears_a_run():
     doc = _save("Completed", 1, "Completed", 1, started_at=START)
     assert doc.started_at == START and doc.duration_seconds == 300.0 and doc.rebuild_requested == 1
-    doc = _save("Running", 1, "Failed", 0, started_at=START)
+    doc = _save("Running", 1, "Failed", 0, started_at=START, writer=True)
     assert doc.started_at == START and doc.rebuild_requested == 1
 
 
@@ -413,7 +394,7 @@ def test_approving_a_pending_review_build_keeps_what_it_absorbed():
 
 
 def test_a_running_build_finishing_keeps_the_flag():
-    assert _save("Running", 1, "Completed", 0).rebuild_requested == 1
+    assert _save("Running", 1, "Completed", 0, writer=True).rebuild_requested == 1
     assert _save("Running", 1, "Running", 0).rebuild_requested == 1
 
 
@@ -845,6 +826,9 @@ class StartSite:
         self.warnings = []
         self.stale = set()      # docs changed since a job loaded them: their save fails
         self.requests = []
+        self.frappe = None
+        self.moves_off_running = []   # per save that moved a row out of Running: was it marked?
+        self.get_doc_calls = []
 
     def doc(self, fields):
         site = self
@@ -863,6 +847,10 @@ class StartSite:
             def save(self, **k):
                 if (self.doctype, self.name) in site.stale:   # check_if_latest, before any write
                     raise TimestampMismatchError("Document has been modified after you have opened it")
+                current = site.pending.get((self.doctype, self.name)) or site.committed.get((self.doctype, self.name))
+                if (self.doctype == "Build Approval" and current and current["workflow_state"] == "Running"
+                        and self.workflow_state != "Running"):
+                    site.moves_off_running.append(bool(site.frappe.flags.get("konsol_build_writer")))
                 site.pending[(self.doctype, self.name)] = self._fields()
                 if self.doctype == "Build Approval" and self.workflow_state == "Running" and site.fail_running_save:
                     # The row is written, then a later step of the save fails,
@@ -880,6 +868,8 @@ class StartSite:
         return Doc(fields)
 
     def get_doc(self, arg, name=None, **kw):
+        if not isinstance(arg, dict):
+            self.get_doc_calls.append((arg, name, kw.get("for_update", False)))
         return self.doc(arg if isinstance(arg, dict) else dict(self.committed[(arg, name)]))
 
     def commit(self):
@@ -890,9 +880,13 @@ class StartSite:
     def rollback(self):
         self.pending = {}
 
-    def sql(self, query, params=None, **k):
-        assert "SELECT rebuild_requested" in query and "FOR UPDATE" in query, query   # the finish's re-read
-        return ((self.committed[("Build Approval", params)]["rebuild_requested"],),)
+    def sql(self, query, params=None, as_dict=False, **k):
+        assert "FOR UPDATE" in query, query
+        row = self.committed[("Build Approval", params)]
+        if "SELECT rebuild_requested" in query:   # the finish's re-read
+            return ((row["rebuild_requested"],),)
+        assert "SELECT workflow_state, started_at" in query and as_dict, query   # _stop_before_dbt's
+        return [_D(workflow_state=row["workflow_state"], started_at=row["started_at"])]
 
     def active_runs(self):
         return [k for k, r in self.committed.items() if k[0] == "Pipeline Run" and r["status"] in ACTIVE]
@@ -909,13 +903,18 @@ class StartSite:
         frappe.get_single = lambda name: types.SimpleNamespace(dbt_project_path="/zz/dbt")
         frappe.session = types.SimpleNamespace(user="Administrator")
         frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=self.warnings.append)
+        frappe.flags = _D()
+        frappe.log_error = lambda *a, **k: None
+        self.frappe = frappe
+        # the real build_lock, bound to this stub, so build_writer() marks these saves
+        build_lock = _load("build_lock_start", os.path.join(APP_DIR, "build_lock.py"), {"frappe": frappe})
 
         def guard():
             if self.guard_error:
                 raise RuntimeError(self.guard_error)
         api_mod = types.SimpleNamespace(single_flight_lock=contextlib.nullcontext, _assert_no_active_run=guard)
         mods = {"frappe": frappe, "konsol.airbyte_service": types.SimpleNamespace(AirbyteClient=object),
-                "konsol.orchestrator.reaper": reaper,
+                "konsol.orchestrator.reaper": reaper, "konsol.build_lock": build_lock,
                 "konsol.orchestrator.api": api_mod if api == "stub" else None}   # None: the import fails
         saved = {m: sys.modules.get(m) for m in mods}
         sys.modules.update(mods)
@@ -967,35 +966,43 @@ def test_a_row_cancelled_while_the_job_loaded_it_stays_cancelled():
     assert len(site.warnings) == 1 and "it is Cancelled now, not Approved, so it is left Cancelled" in site.warnings[0]
 
 
-def test_the_old_job_finishing_after_a_running_reset_overwrites_nothing():
-    """The worker was alive: after the reset (Approved again, never started,
-    flag kept) its job finishes. Its save fails the timestamp check, so it
-    overwrites nothing and requests nothing; the reaper then fails the row,
-    whose re-approval's enqueue was skipped, and follows it up (#140 re-review)."""
-    site = StartSite()
-    site.committed[("Build Approval", "BA-1")].update(workflow_state="Approved", rebuild_requested=1, started_at=None)
-    site.stale.add(("Build Approval", "BA-1"))   # the reset bumped modified
-    job_doc = dict(site.committed[("Build Approval", "BA-1")], workflow_state="Completed", started_at=START)
+def _job(site, preflight_does=None, dbt=None, rc=0):
+    """``call`` for StartSite.start: run_governed_build with the preflight
+    passing (after ``preflight_does``) and dbt recorded, not run."""
+    dbt = [] if dbt is None else dbt
 
-    def finish(tasks):
+    def job(tasks):
+        def preflight(scope):
+            if preflight_does:
+                preflight_does()
+            return True, "ok"
+        tasks._preflight_check = preflight
+        tasks.subprocess = types.SimpleNamespace(   # this module's only
+            run=lambda *a, **k: dbt.append(a) or types.SimpleNamespace(returncode=rc, stdout="", stderr=""),
+            TimeoutExpired=TimeoutError)
         tasks.request_build_for_scope = lambda *a, **k: site.requests.append(a)
-        tasks._finish_governed_build(site.doc(job_doc))
-    assert isinstance(site.start(call=finish), TimestampMismatchError)
-    ba = site.committed[("Build Approval", "BA-1")]
-    assert ba["workflow_state"] == "Approved" and ba["started_at"] is None and ba["rebuild_requested"] == 1
-    assert site.requests == [] and site.commits == []
-    reaper_site = FakeSite([lost_job("BA-1")])   # the same row, its job gone
-    assert reaper_site.tick() == ["BA-1"]
-    assert reaper_site.requests == [("staging", "Build Approval", "BA-1")]
+        tasks.run_governed_build("BA-1")
+    return job
+
+
+def test_every_move_off_running_is_marked_as_the_build_path():
+    """Its own finish is the build path's move out of Running (the guard in
+    BuildApproval.before_save lets only marked saves through)."""
+    for rc, state in ((0, "Completed"), (1, "Failed")):
+        site = StartSite()
+        assert site.start(call=_job(site, rc=rc)) is None
+        assert site.committed[("Build Approval", "BA-1")]["workflow_state"] == state
+        assert site.moves_off_running == [True], (state, site.moves_off_running)
+        assert not site.frappe.flags.get("konsol_build_writer"), "and the mark is gone afterwards"
 
 
 def test_a_terminal_run_is_never_made_active_again():
-    """A reset failed the run; the job, still going, must not revive it. Its
-    final status (the truth) still lands."""
+    """A cancelled run: the job, still going, must not revive it. Its final
+    status (the truth) still lands. Read with a lock, so the save that
+    follows can't fail its timestamp check."""
     site = StartSite()
     site.committed[("Pipeline Run", "PR-1")] = dict(
-        doctype="Pipeline Run", name="PR-1", status="Failed", completed_at=START,
-        error_log="Build Approval BA-1 reset by ZZ Operator while Running")
+        doctype="Pipeline Run", name="PR-1", status="Cancelled", completed_at=START, error_log=None)
     seen = []
 
     def finalize(tasks):
@@ -1003,31 +1010,42 @@ def test_a_terminal_run_is_never_made_active_again():
         seen.append(site.committed[("Pipeline Run", "PR-1")]["status"])
         seen.append(tasks._finalize_governed_pipeline_run("PR-1", status="Completed", dbt_result="ok"))
     assert site.start(call=finalize) is None
-    assert seen == [False, "Failed", True], "it reports whether it applied the status"
+    assert seen == [False, "Cancelled", True], "it reports whether it applied the status"
     assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Completed"
+    assert site.get_doc_calls == [("Pipeline Run", "PR-1", True)] * 2, "a locking read, every time"
 
 
-def test_a_job_whose_run_was_finished_meanwhile_never_starts_dbt():
-    """A reset (with no job visible to RQ) or a reaper finished the run while
-    this job started, so another build may hold the dbt project. The job
-    stops before dbt, with a log line, and requests nothing (#140 re-review, High)."""
+def test_a_run_cancelled_in_the_preflight_window_fails_the_row_not_leaves_it_running():
+    """An EPM admin can cancel a governed run (orchestrator cancel_run) between
+    the Running commit and Transforming. The job doesn't start dbt, since
+    another build may hold the project, and finishes its own row as Failed
+    with the reason, instead of leaving it Running for the reaper (#140 re-review)."""
     site = StartSite()
     dbt = []
 
-    def job(tasks):
-        def preflight(scope):
-            site.committed[("Pipeline Run", "PR-1")]["status"] = "Failed"   # the reset, committed meanwhile
-            return True, "ok"
-        tasks._preflight_check = preflight
-        tasks.subprocess = types.SimpleNamespace(   # this module's only
-            run=lambda *a, **k: dbt.append(a) or types.SimpleNamespace(returncode=0, stdout="", stderr=""),
-            TimeoutExpired=TimeoutError)
-        tasks.request_build_for_scope = lambda *a, **k: site.requests.append(a)
-        tasks.run_governed_build("BA-1")
-    assert site.start(call=job) is None
+    def cancel():
+        site.committed[("Pipeline Run", "PR-1")]["status"] = "Cancelled"   # cancel_run, committed meanwhile
+    assert site.start(call=_job(site, preflight_does=cancel, dbt=dbt)) is None
     assert dbt == [] and site.requests == []
-    assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Failed"
+    ba = site.committed[("Build Approval", "BA-1")]
+    assert ba["workflow_state"] == "Failed" and ba["started_at"] == START
+    assert ba["error_message"].startswith("Governed build stopped: its Pipeline Run was finished before dbt started")
+    assert site.moves_off_running == [True], "through the build path's own finish"
+    assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Cancelled"
     assert any("was finished before dbt started; not building" in w for w in site.warnings), site.warnings
+
+
+def test_a_row_the_reaper_failed_meanwhile_is_left_as_it_is():
+    """Only a row still Running from this job's start is this job's to finish."""
+    site = StartSite()
+
+    def reaped():
+        site.committed[("Pipeline Run", "PR-1")]["status"] = "Failed"
+        site.committed[("Build Approval", "BA-1")].update(workflow_state="Failed", error_message="[reaper] marked Failed")
+    assert site.start(call=_job(site, preflight_does=reaped)) is None
+    ba = site.committed[("Build Approval", "BA-1")]
+    assert ba["workflow_state"] == "Failed" and ba["error_message"] == "[reaper] marked Failed"
+    assert site.moves_off_running == []
 
 
 def test_a_refused_start_leaves_no_pipeline_run():
