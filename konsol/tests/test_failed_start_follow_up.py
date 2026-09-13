@@ -185,13 +185,42 @@ def _build_approval():
     return _load("build_approval_140", path, mods).BuildApproval
 
 
-def _save(before_state, before_flag, state, flag, scope="staging", error_message=None):
+def _save(before_state, before_flag, state, flag, scope="staging", error_message=None, started_at=None):
     BuildApproval = _build_approval()
-    before = types.SimpleNamespace(workflow_state=before_state, rebuild_requested=before_flag)
+    run = dict(started_at=started_at, completed_at=started_at and started_at + timedelta(minutes=5),
+               duration_seconds=300.0 if started_at else 0)
+    before = types.SimpleNamespace(workflow_state=before_state, rebuild_requested=before_flag, **run)
     doc = BuildApproval(before=before, workflow_state=state, rebuild_requested=flag, build_scope=scope,
-                        requested_by="Administrator", error_message=error_message)
+                        requested_by="Administrator", error_message=error_message, **run)
     doc.before_save()
     return doc
+
+
+def _reset(row):
+    """An operator sends ``row`` back to Draft: the controller's before_save."""
+    BuildApproval = _build_approval()
+    doc = BuildApproval(before=types.SimpleNamespace(**row),
+                        **dict(row, workflow_state="Draft", requested_by="Administrator"))
+    doc.before_save()
+    return {k: getattr(doc, k) for k in row}
+
+
+def test_a_reset_of_a_row_that_ran_starts_it_over():
+    """Its old start would hide its next start failure from the sweep and a
+    lost job from the reaper. Its flag was spent by that run's finish, so it
+    goes too (#140 re-review)."""
+    doc = _save("Completed", 1, "Draft", 1, started_at=START)
+    assert (doc.started_at, doc.completed_at, doc.duration_seconds) == (None, None, 0)
+    assert doc.rebuild_requested == 0 and doc.workflow_state == "Approved"
+    doc = _save("Failed", 1, "Draft", 0, error_message="dbt build failed (rc=1)", started_at=START)   # a stale form
+    assert doc.rebuild_requested == 0 and doc.error_message is None and doc.started_at is None
+
+
+def test_only_a_reset_clears_a_run():
+    doc = _save("Completed", 1, "Completed", 1, started_at=START)
+    assert doc.started_at == START and doc.duration_seconds == 300.0 and doc.rebuild_requested == 1
+    doc = _save("Running", 1, "Failed", 0, started_at=START)
+    assert doc.started_at == START and doc.rebuild_requested == 1
 
 
 def test_starting_spends_the_flag():
@@ -489,6 +518,33 @@ def test_a_reaped_running_build_is_still_followed_up():
     assert site.rows["BA-1"]["rebuild_requested"] == 0 and site.rows["BA-F1"]["rebuild_requested"] == 1
 
 
+def ran(name, **fields):
+    """A row whose build started and finished; its finish requested the follow-up its flag asked for."""
+    row = dict(name=name, workflow_state="Completed", rebuild_requested=1, started_at=START,
+               completed_at=START + timedelta(minutes=5), duration_seconds=300.0, modified=START,
+               error_message=None, build_scope="staging", trigger_doctype="ZZ", trigger_docname="ZZ-change")
+    row.update(fields)
+    return row
+
+
+def test_a_row_that_ran_is_reset_and_fails_to_start_gets_one_follow_up():
+    row = _reset(ran("BA-1"))
+    assert row["workflow_state"] == "Approved" and row["started_at"] is None and row["rebuild_requested"] == 0
+    site = FakeSite([row])
+    site.rows["BA-1"]["rebuild_requested"] = 1   # a change absorbed while it waited to run again
+    site.fails_to_start("BA-1")
+    assert site.sweep() == ["BA-1"]
+    assert site.sweep() == [] and site.requests == [("staging", "Build Approval", "BA-1")]
+
+
+def test_a_row_that_ran_is_reset_and_loses_its_job_is_reaped():
+    """With its old started_at, stale_build_approval_reason never reaped it,
+    and it absorbed every request for its scope for ever (#125, #140 re-review)."""
+    site = FakeSite([_reset(ran("BA-1", workflow_state="Failed", error_message="dbt build failed (rc=1)"))])
+    assert site.tick() == ["BA-1"]
+    assert site.requests == [], "its old flag was spent, and nothing new was absorbed"
+
+
 def test_a_retry_that_builds_resets_the_chain():
     site = FakeSite([failed_start("BA-1")])
     site.sweep()
@@ -543,7 +599,7 @@ ACTIVE = ("Queued", "Extracting", "Transforming", "Running")
 class StartSite:
     """Documents with a committed store and one open transaction."""
 
-    def __init__(self, fail_running_save=False, guard_error=None):
+    def __init__(self, fail_running_save=False, guard_error=None, cancel_meanwhile=False):
         self.committed = {("Build Approval", "BA-1"): dict(
             doctype="Build Approval", name="BA-1", workflow_state="Approved", rebuild_requested=1,
             started_at=None, completed_at=None, error_message=None, build_scope="staging",
@@ -552,6 +608,7 @@ class StartSite:
         self.commits = []
         self.fail_running_save = fail_running_save
         self.guard_error = guard_error
+        self.cancel_meanwhile = cancel_meanwhile
 
     def doc(self, fields):
         site = self
@@ -568,12 +625,19 @@ class StartSite:
                 site.pending[(self.doctype, self.name)] = self._fields()
 
             def save(self, **k):
-                if self.doctype == "Build Approval" and self.workflow_state == "Running" and site.fail_running_save:
-                    raise RuntimeError("Document has been modified after you have opened it")
                 site.pending[(self.doctype, self.name)] = self._fields()
+                if self.doctype == "Build Approval" and self.workflow_state == "Running" and site.fail_running_save:
+                    # The row is written, then a later step of the save fails,
+                    # as an after-save hook would: the open transaction holds
+                    # a Running row with started_at set and the flag cleared.
+                    if site.cancel_meanwhile:   # an operator cancelled it meanwhile
+                        site.committed[(self.doctype, self.name)]["workflow_state"] = "Cancelled"
+                    raise RuntimeError("Document has been modified after you have opened it")
 
             def reload(self):
-                self.__dict__.update(site.committed[(self.doctype, self.name)])
+                key = (self.doctype, self.name)
+                # a read sees the transaction's own writes, as MariaDB's does
+                self.__dict__.update(site.pending.get(key) or site.committed[key])
 
         return Doc(fields)
 
@@ -633,6 +697,26 @@ def test_a_start_failure_fails_its_pipeline_run_in_the_same_commit():
     assert ba["rebuild_requested"] == 1 and not ba["started_at"], "the half-written Running save is dropped"
     assert site.commits[-1] == [("Build Approval", "BA-1"), ("Pipeline Run", "PR-1")], site.commits
     assert site.active_runs() == []
+
+
+def test_a_start_failure_rolls_back_the_half_written_running_save():
+    """Without the rollback, the failure path reloads the Running row the save
+    wrote, and commits its start and its cleared flag: the absorbed changes
+    are lost, and the row looks as if it ran."""
+    site = StartSite(fail_running_save=True)
+    site.start()
+    ba = site.committed[("Build Approval", "BA-1")]
+    assert ba["rebuild_requested"] == 1 and ba["started_at"] is None and ba["workflow_state"] == "Failed"
+
+
+def test_a_row_cancelled_while_the_job_loaded_it_stays_cancelled():
+    """Marked Failed with the start-failure message, a Cancelled row would be
+    followed up. Its Pipeline Run still fails (#140 re-review)."""
+    site = StartSite(fail_running_save=True, cancel_meanwhile=True)
+    assert site.start() is not None
+    ba = site.committed[("Build Approval", "BA-1")]
+    assert ba["workflow_state"] == "Cancelled" and ba["error_message"] is None
+    assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Failed" and site.active_runs() == []
 
 
 def test_a_refused_start_leaves_no_pipeline_run():

@@ -36,15 +36,30 @@ class BuildApproval(Document):
         # build carried is spent (#140). A request after the start flags the
         # Running row again.
         starting = before and before.workflow_state == "Approved" and self.workflow_state == "Running"
-        if before and before.rebuild_requested and not self.rebuild_requested and not starting:
+        # Sent back to Draft to run again (below). A row that ran once is
+        # the other exception: its flag was spent already.
+        resetting = before and self.workflow_state == "Draft" and before.workflow_state != "Draft"
+        rerun = resetting and before.started_at
+        if before and before.rebuild_requested and not self.rebuild_requested and not starting and not rerun:
             self.rebuild_requested = 1
-        # Sent back to Draft to run again: the old error goes, since a
-        # start-failure message left on a row that runs again would make the
-        # failed-start sweep take it for a new one (#140 review). The flag
-        # stays: the row hasn't built yet, and if its next start fails, the
-        # changes it absorbed are still owed. Only the start spends it
-        # (tasks.run_governed_build), so keeping it costs no build.
-        if before and self.workflow_state == "Draft" and before.workflow_state != "Draft":
+        if resetting:
+            if before.started_at:
+                # A row that ran once runs again as new. Its old start would
+                # hide its next start failure from the sweep, and a lost job
+                # from the reaper (#140 re-review). The flag was spent: that
+                # run's finish, or the reaper, requested its follow-up, so
+                # keeping it would request a duplicate. Version history keeps
+                # the old values.
+                self.started_at = None
+                self.completed_at = None
+                self.duration_seconds = 0
+                self.rebuild_requested = 0
+            # The old error goes, since a start-failure message left on a row
+            # that runs again would make the failed-start sweep take it for a
+            # new one (#140 review). A row that never started keeps its flag:
+            # it hasn't built, and if its next start fails, the changes it
+            # absorbed are still owed. Only the start spends it
+            # (tasks.run_governed_build), so keeping it costs no build.
             self.error_message = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 

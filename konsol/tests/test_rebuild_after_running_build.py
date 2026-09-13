@@ -102,10 +102,14 @@ def test_a_save_never_clears_the_flag():
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "before_save")
     src = ast.unparse(fn)
     assert "before = self.get_doc_before_save()" in src   # loaded FOR UPDATE by check_if_latest
-    assert "if before and before.rebuild_requested and (not self.rebuild_requested) and (not starting):" in src
+    assert ("if before and before.rebuild_requested and (not self.rebuild_requested) and (not starting) "
+            "and (not rerun):") in src
     assert "starting = before and before.workflow_state == 'Approved' and (self.workflow_state == 'Running')" in src
-    assert "self.rebuild_requested = 0" not in src, (
-        "no save clears it, not even a reset to Draft: only the start spends it (#140 re-review)")
+    assert "rerun = resetting and before.started_at" in src
+    # The one clear in a save: a reset of a row that ran, whose flag its run's
+    # finish (or the reaper) already spent (#140 re-review).
+    assert src.count("self.rebuild_requested = 0") == 1
+    assert src.index("if resetting:") < src.index("if before.started_at:") < src.index("self.rebuild_requested = 0")
 
 
 def test_the_reaper_reads_the_flag_after_its_own_update():

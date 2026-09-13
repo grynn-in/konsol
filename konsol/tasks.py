@@ -258,20 +258,28 @@ def run_governed_build(build_request):
         # outlives it: _create_governed_pipeline_run committed it.
         frappe.db.rollback()
         message = f"{START_FAILURE_PREFIX}: {exc}"
-        # Nothing was read, so a change absorbed while pending keeps its
-        # flag (before_save won't clear it): reaper.follow_up_failed_starts
-        # requests that build once nothing else is building (#140).
         doc.reload()
-        doc.workflow_state = "Failed"
-        doc.error_message = message
-        doc.completed_at = frappe.utils.now_datetime()
-        _set_duration(doc)
         if pipeline_run:
             # Left Queued, the run would block every build, the follow-up's
             # included, until reap_stale_runs caught it (120 min). Failed in
             # the commit that fails the approval (#140 re-review).
             _finalize_governed_pipeline_run(pipeline_run, status="Failed", error_log=message, commit=False)
-        doc.save(ignore_permissions=True)
+        if doc.workflow_state == "Approved":
+            # Nothing was read, so a change absorbed while pending keeps its
+            # flag (before_save won't clear it): reaper.follow_up_failed_starts
+            # requests that build once nothing else is building (#140).
+            doc.workflow_state = "Failed"
+            doc.error_message = message
+            doc.completed_at = frappe.utils.now_datetime()
+            _set_duration(doc)
+            doc.save(ignore_permissions=True)
+        else:
+            # It moved on while the job loaded it: cancelled by an operator,
+            # or failed by the reaper, which followed it up. Leave it be; as a
+            # start failure a Cancelled row would be followed up (#140 re-review).
+            frappe.logger().warning(
+                f"Governed build {doc.name} could not start and is now {doc.workflow_state}; left as it is"
+            )
         frappe.db.commit()
         raise
 
