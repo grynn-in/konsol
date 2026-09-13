@@ -5,7 +5,7 @@ A fiscal year's periods are given as a list of dicts, each with at least
 checks the whole list at once and names every offending row, rather than
 stopping at the first problem.
 """
-from datetime import date
+from datetime import date, timedelta
 
 MIN_PERIOD = 0
 MAX_PERIOD = 255
@@ -106,6 +106,66 @@ def year_problems(year, rows):
                 errors.append(
                     f"Row {row_no} ({code!r}): end_date {r_end} is outside the year {start}..{end}"
                 )
+
+    return errors
+
+
+def regular_period_problems(year, rows):
+    """Return error strings unless the Regular rows of `rows` tile `year` exactly.
+
+    Only rows with `type == "Regular"` are checked (Opening, Closing and
+    Adjustment rows are ignored). They must exist, be numbered 1..n with no
+    gaps, and, in period order, run from the year's start_date to its
+    end_date with each one starting the day after the previous one ends.
+    """
+    regular = [r for r in rows if r.get("type") == "Regular"]
+    if not regular:
+        return ["No Regular periods"]
+
+    errors = []
+
+    numbered = [r for r in regular
+                if isinstance(r.get("period"), int) and not isinstance(r.get("period"), bool)]
+    numbers = sorted(r["period"] for r in numbered)
+    missing = sorted(set(range(1, len(numbers) + 1)) - set(numbers))
+    if numbers != list(range(1, len(numbers) + 1)):
+        listed = ", ".join(str(n) for n in numbers)
+        if missing:
+            what = ", ".join(str(n) for n in missing)
+            verb = "is" if len(missing) == 1 else "are"
+            errors.append(f"Regular periods are numbered {listed}: {what} {verb} missing")
+        else:
+            errors.append(f"Regular periods are numbered {listed}: they must run 1..{len(numbers)}")
+
+    dated = [r for r in numbered if r.get("start_date") is not None and r.get("end_date") is not None]
+    if not dated:
+        return errors
+    dated.sort(key=lambda r: (r["period"], r["start_date"]))
+
+    y_start = year.get("start_date")
+    y_end = year.get("end_date")
+    first, last = dated[0], dated[-1]
+
+    if y_start is not None and first["start_date"] != y_start:
+        side = "after" if first["start_date"] > y_start else "before"
+        errors.append(f"The first Regular period {first.get('code')} starts {first['start_date']}, "
+                      f"{side} the year start {y_start}")
+
+    for prev, cur in zip(dated, dated[1:]):
+        day_after = prev["end_date"] + timedelta(days=1)
+        if cur["start_date"] > day_after:
+            gap = (cur["start_date"] - day_after).days
+            unit = "day" if gap == 1 else "days"
+            errors.append(f"{cur.get('code')} starts {cur['start_date']} but {prev.get('code')} "
+                          f"ends {prev['end_date']}: a gap of {gap} {unit}")
+        elif cur["start_date"] < day_after:
+            errors.append(f"{cur.get('code')} overlaps {prev.get('code')}: {cur.get('code')} starts "
+                          f"{cur['start_date']} but {prev.get('code')} ends {prev['end_date']}")
+
+    if y_end is not None and last["end_date"] != y_end:
+        side = "before" if last["end_date"] < y_end else "after"
+        errors.append(f"The last Regular period {last.get('code')} ends {last['end_date']}, "
+                      f"{side} the year end {y_end}")
 
     return errors
 
