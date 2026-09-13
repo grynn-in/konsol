@@ -171,7 +171,7 @@ def group_csv(rows, source=None):
     return out.getvalue()
 
 
-def check_group(key, rows, *, known_accounts, visible, leaf, period_status, existing, validate_rows,
+def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_types, existing, validate_rows,
                 known_entities=None, warnings=(), partnerless_ic_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
@@ -180,22 +180,30 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period_status, exis
     `known_entities` are the entities a partner may name. `warnings` never stop
     a load (an intercompany row without a partner is allowed, and reported:
     `partnerless_ic_rows` counts them).
+
+    `period` is None when the (year, period) is not a declared period, else a
+    dict with at least `code`, `type` (Opening/Regular/Closing/Adjustment) and
+    `status` (the effective status: Open/Closed/Locked). `postable_types` is
+    the set of period types this site accepts trial balances for (Regular is
+    always in it).
     """
-    entity, year, period = key
+    entity, year, period_no = key
     errors = []
     if not visible:
         errors.append(f"Entity {entity} does not exist, or you have no access to it")
     elif not leaf:
         errors.append(f"{entity} is a group; trial balances belong to the entities under it")
-    if not 1 <= period <= 12:
-        errors.append("Fiscal period must be 1 to 12")
-    elif period_status and period_status != "Open":
-        errors.append(f"FY{year} P{period:02d} is {period_status.lower()}")
+    if period is None:
+        errors.append(f"FY{year} P{period_no} is not declared")
+    elif period["type"] not in postable_types:
+        errors.append(f"{period['code']} ({period['type']}) does not take trial balances on this site")
+    elif period["status"] != "Open":
+        errors.append(f"FY{year} P{period_no:02d} is {period['status'].lower()}")
     if existing:
         errors.append(f"{existing} is already submitted for this entity and period; cancel or amend it first")
     errors.extend(validate_rows(rows, known_accounts=known_accounts, entity=entity, known_entities=known_entities))
     return {
-        "entity": entity, "fiscal_year": year, "fiscal_period": period, "rows": len(rows),
+        "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
         "total_debit": round(sum(r["debit"] for r in rows), 2),
         "total_credit": round(sum(r["credit"] for r in rows), 2),
         "errors": errors, "ok": not errors, "existing": existing,
