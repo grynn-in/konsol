@@ -20,6 +20,7 @@ _PERIOD_DATA = {
     "Group Exchange Rate": True,
     "Allocation Run": True,
     "Allocation Driver": False,
+    "Assertion Run": False,
 }
 
 #: Doctypes whose documents carry a fiscal year + period that must be declared.
@@ -29,7 +30,6 @@ DOCTYPES_USING_PERIODS = tuple(_PERIOD_DATA)
 NOT_PERIOD_DATA = {
     "Period Status": "the period calendar itself: it declares open/closed periods, it does not use them",
     "Pipeline Run": "a build log: the period is a run parameter, the data it builds lives in the warehouse",
-    "Assertion Run": "a close-check log: it records checks run against a period, not data posted to it",
 }
 
 
