@@ -159,6 +159,56 @@ def _monthly_year():
     return year, months
 
 
+def urow(period, code, start_date, end_date):
+    return {"period": period, "code": code, "start_date": start_date, "end_date": end_date}
+
+
+def test_used_rows_are_frozen():
+    year = fy(2025, date(2025, 1, 1), date(2025, 12, 31))
+    old_rows = [
+        urow(1, "P01", date(2025, 1, 1), date(2025, 3, 31)),
+        urow(2, "P02", date(2025, 4, 1), date(2025, 6, 30)),
+        urow(3, "P03", date(2025, 7, 1), date(2025, 9, 30)),
+        urow(4, "P04", date(2025, 10, 1), date(2025, 12, 31)),
+    ]
+    used_periods = {1, 3}
+
+    # removing a used row (P03 gone)
+    new_rows = old_rows[:2] + old_rows[3:]
+    errors = M.used_period_problems(year, year, old_rows, new_rows, used_periods)
+    assert any("P03 can't be removed" in e and "documents use it" in e for e in errors), errors
+
+    # renumbering a used row (P03's period changed; matched by code)
+    new_rows = [dict(r) for r in old_rows]
+    new_rows[2] = dict(new_rows[2], period=5)
+    errors = M.used_period_problems(year, year, old_rows, new_rows, used_periods)
+    assert any("P03 can't be renumbered" in e and "documents use it" in e for e in errors), errors
+
+    # re-dating a used row (P01's end_date changed)
+    new_rows = [dict(r) for r in old_rows]
+    new_rows[0] = dict(new_rows[0], end_date=date(2025, 3, 30))
+    errors = M.used_period_problems(year, year, old_rows, new_rows, used_periods)
+    assert any("P01 can't be re-dated" in e and "documents use it" in e for e in errors), errors
+
+    # re-dating the year itself, once any period is used
+    new_year = fy(2025, date(2025, 1, 2), date(2025, 12, 31))
+    errors = M.used_period_problems(year, new_year, old_rows, old_rows, used_periods)
+    assert any("The year's dates can't change" in e and "documents use its periods" in e
+               for e in errors), errors
+
+    # the same edits on unused rows (P02, P04) pass
+    new_rows = old_rows[:1] + old_rows[2:]  # remove unused P02
+    assert M.used_period_problems(year, year, old_rows, new_rows, used_periods) == []
+
+    new_rows = [dict(r) for r in old_rows]
+    new_rows[1] = dict(new_rows[1], period=6)  # renumber unused P02
+    assert M.used_period_problems(year, year, old_rows, new_rows, used_periods) == []
+
+    new_rows = [dict(r) for r in old_rows]
+    new_rows[3] = dict(new_rows[3], start_date=date(2025, 10, 5))  # re-date unused P04
+    assert M.used_period_problems(year, year, old_rows, new_rows, used_periods) == []
+
+
 def test_opening_closing_adjustment_placement():
     year, months = _monthly_year()
 
