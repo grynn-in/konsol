@@ -105,11 +105,15 @@ def test_a_save_never_clears_the_flag():
     assert ("if before and before.rebuild_requested and (not self.rebuild_requested) and (not starting) "
             "and (not rerun):") in src
     assert "starting = before and before.workflow_state == 'Approved' and (self.workflow_state == 'Running')" in src
-    assert "rerun = resetting and before.started_at" in src
-    # The one clear in a save: a reset of a row that ran, whose flag its run's
-    # finish (or the reaper) already spent (#140 re-review).
+    rerun = next(line for line in src.splitlines() if line.strip().startswith("rerun ="))
+    assert "resetting and before.started_at and" in rerun, rerun
+    assert "before.workflow_state in ('Completed', 'Failed')" in rerun, rerun
+    # The one clear in a save: a reset of a row that finished, whose flag its
+    # run's finish (or the reaper) already spent (#140 re-review). A Running
+    # or Cancelled row keeps it.
     assert src.count("self.rebuild_requested = 0") == 1
-    assert src.index("if resetting:") < src.index("if before.started_at:") < src.index("self.rebuild_requested = 0")
+    order = [src.index(s) for s in ("if resetting:", "if before.started_at:", "if rerun:", "self.rebuild_requested = 0")]
+    assert order == sorted(order), order
 
 
 def test_the_reaper_reads_the_flag_after_its_own_update():

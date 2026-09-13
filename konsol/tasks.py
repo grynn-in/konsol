@@ -274,11 +274,13 @@ def run_governed_build(build_request):
             _set_duration(doc)
             doc.save(ignore_permissions=True)
         else:
-            # It moved on while the job loaded it: cancelled by an operator,
-            # or failed by the reaper, which followed it up. Leave it be; as a
-            # start failure a Cancelled row would be followed up (#140 re-review).
+            # It moved on while the job loaded it (an operator cancelled or
+            # reset it, or the reaper failed it), so it isn't this job's to
+            # fail. Leave it in the state it is in: marked a start failure,
+            # a Cancelled row would be followed up (#140 re-review).
             frappe.logger().warning(
-                f"Governed build {doc.name} could not start and is now {doc.workflow_state}; left as it is"
+                f"Governed build {doc.name} could not start ({exc}); it is {doc.workflow_state} now, "
+                f"not Approved, so it is left {doc.workflow_state}"
             )
         frappe.db.commit()
         raise

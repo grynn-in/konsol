@@ -123,6 +123,32 @@ def test_the_chain_counts_every_ancestor_that_never_started():
     assert length("BA-X") == 1 and length("BA-missing") == 0
 
 
+def test_the_chain_stops_at_a_row_that_built_since():
+    """A reset clears started_at, so a row that built in between is known by
+    its Pipeline Runs (ever_built, set by the lookup) (#140 re-review)."""
+    link = dict(trigger_doctype="Build Approval")
+    rows = {
+        "BA-A": _row(name="BA-A", trigger_doctype="Entity"),
+        "BA-B": _row(name="BA-B", trigger_docname="BA-A", **link),
+        "BA-C": _row(name="BA-C", trigger_docname="BA-B", **link),
+        "BA-D": _row(name="BA-D", trigger_docname="BA-C", ever_built=True, **link),   # built, reset, failed
+        "BA-E": _row(name="BA-E", trigger_docname="BA-D", **link),
+    }
+    length = lambda n: reaper.start_failure_chain_length(n, rows.get)
+    assert length("BA-C") == 2
+    assert length("BA-D") == 0, "it built since: its chain starts again"
+    assert length("BA-E") == 0, "its parent built"
+
+
+def test_which_pipeline_runs_show_a_build():
+    shows = reaper.run_shows_a_build
+    assert shows({"status": "Completed"})
+    assert shows({"status": "Failed", "error_log": "Preflight failed: ClickHouse unhealthy"})
+    assert shows({"status": "Failed", "error_log": "[reaper] Build Approval BA-1 reaped: running for >30m"})
+    assert not shows({"status": "Failed", "error_log": FAILED_MSG}), "a start that failed after the run was created"
+    assert shows({"status": "Queued"}), "a legacy run a start failure left Queued: err toward a retry"
+
+
 def test_the_prefix_is_the_one_run_governed_build_writes():
     assert reaper.START_FAILURE_PREFIX == PREFIX
     with open(TASKS) as f:
@@ -216,6 +242,29 @@ def test_a_reset_of_a_row_that_ran_starts_it_over():
     assert doc.rebuild_requested == 0 and doc.error_message is None and doc.started_at is None
 
 
+def test_a_reset_of_a_finished_row_spends_its_flag():
+    for state in ("Completed", "Failed"):
+        doc = _save(state, 1, "Draft", 1, started_at=START)
+        assert doc.rebuild_requested == 0 and doc.started_at is None, state
+
+
+def test_a_reset_of_a_running_row_keeps_its_unspent_flag():
+    """Its flag holds changes absorbed during the build that nothing has
+    followed up: the build's own finish will fail its save (#140 re-review).
+    The timing still goes, so the row can be reaped and followed up."""
+    doc = _save("Running", 1, "Draft", 1, started_at=START)
+    assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved"
+    assert (doc.started_at, doc.completed_at, doc.duration_seconds) == (None, None, 0)
+    assert _save("Running", 1, "Draft", 0, started_at=START).rebuild_requested == 1, "a form opened before the flag"
+
+
+def test_a_reset_of_a_cancelled_row_that_started_keeps_its_flag():
+    """Chosen: kept. Cancelling dropped the row's changes without acting on
+    its flag, so sending it back to run again owes them again."""
+    doc = _save("Cancelled", 1, "Draft", 1, started_at=START)
+    assert doc.rebuild_requested == 1 and doc.started_at is None
+
+
 def test_only_a_reset_clears_a_run():
     doc = _save("Completed", 1, "Completed", 1, started_at=START)
     assert doc.started_at == START and doc.duration_seconds == 300.0 and doc.rebuild_requested == 1
@@ -292,9 +341,10 @@ class FakeSite:
     """Build Approvals and Pipeline Runs, with commit/rollback of the flags,
     a clock, and the reaper's writes."""
 
-    def __init__(self, rows, active_runs=0, request_fails=False):
+    def __init__(self, rows, active_runs=0, request_fails=False, runs=None):
         self.rows = {r["name"]: dict(r) for r in rows}
         self.active_runs = active_runs
+        self.runs = runs or {}   # Build Approval name -> its Pipeline Runs
         self.request_fails = request_fails
         self.now = START
         self.pending = {}
@@ -308,6 +358,8 @@ class FakeSite:
 
     def get_all(self, doctype, filters=None, fields=None, limit=None, order_by=None):
         if doctype == "Pipeline Run":
+            if "build_approval" in (filters or {}):   # the chain's evidence of a build
+                return [dict(r) for r in self.runs.get(filters["build_approval"], [])]
             return [{"name": "PR-1"}] * self.active_runs
         states = filters["workflow_state"]
         if isinstance(states, list):   # ["in", [...]]: the busy check, or the reaper's candidates
@@ -545,6 +597,22 @@ def test_a_row_that_ran_is_reset_and_loses_its_job_is_reaped():
     assert site.requests == [], "its old flag was spent, and nothing new was absorbed"
 
 
+def test_a_capped_chain_that_built_then_was_reset_is_followed_up_again():
+    """A, B and C failed to start; D, the third follow-up, ran and Completed.
+    D was reset, absorbed a change, and failed to start. Its trigger links
+    still count three rows that never started, but D built in between."""
+    chain = [dict(failed_start("BA-A"), rebuild_requested=0)]
+    for name, parent in (("BA-B", "BA-A"), ("BA-C", "BA-B"), ("BA-D", "BA-C")):
+        chain.append(dict(failed_start(name), trigger_doctype="Build Approval", trigger_docname=parent,
+                          rebuild_requested=0 if name != "BA-D" else 1))
+    site = FakeSite(chain, runs={"BA-D": [{"status": "Completed", "error_log": None}],
+                                 "BA-C": [{"status": "Failed", "error_log": FAILED_MSG}]})
+    assert site.sweep() == ["BA-D"] and site.errors == []
+    control = FakeSite(chain)   # the same rows, no evidence that D built
+    assert control.sweep() == [] and control.errors == [
+        "Build Approval BA-D: gave up after 3 follow-up builds failed to start"]
+
+
 def test_a_retry_that_builds_resets_the_chain():
     site = FakeSite([failed_start("BA-1")])
     site.sweep()
@@ -609,6 +677,7 @@ class StartSite:
         self.fail_running_save = fail_running_save
         self.guard_error = guard_error
         self.cancel_meanwhile = cancel_meanwhile
+        self.warnings = []
 
     def doc(self, fields):
         site = self
@@ -661,7 +730,7 @@ class StartSite:
         frappe.db = types.SimpleNamespace(commit=self.commit, rollback=self.rollback)
         frappe.utils = types.SimpleNamespace(now_datetime=lambda: START)
         frappe.session = types.SimpleNamespace(user="Administrator")
-        frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None)
+        frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=self.warnings.append)
 
         def guard():
             if self.guard_error:
@@ -717,6 +786,7 @@ def test_a_row_cancelled_while_the_job_loaded_it_stays_cancelled():
     ba = site.committed[("Build Approval", "BA-1")]
     assert ba["workflow_state"] == "Cancelled" and ba["error_message"] is None
     assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Failed" and site.active_runs() == []
+    assert len(site.warnings) == 1 and "it is Cancelled now, not Approved, so it is left Cancelled" in site.warnings[0]
 
 
 def test_a_refused_start_leaves_no_pipeline_run():

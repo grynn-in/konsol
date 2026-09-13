@@ -340,15 +340,25 @@ def start_failure_chain_length(name, lookup):
     whether it failed to start or its job was lost and it was reaped; a
     parent that started (or never existed) ends the chain. No new field, so
     no migrate.
+
+    A row that has built since ends it too, the row itself included. A reset
+    to Draft clears ``started_at``, so ``lookup`` marks ``ever_built`` from
+    the row's Pipeline Runs (:func:`run_shows_a_build`); otherwise a chain
+    that built in between and was then reset would be given up on at once
+    (#140 re-review).
     """
     count, seen = 0, {name}
     row = lookup(name)
+    if row and _get(row, "ever_built"):
+        return 0
     while row and _get(row, "trigger_doctype") == "Build Approval":
         parent_name = _get(row, "trigger_docname")
         if not parent_name or parent_name in seen:
             break
         parent = lookup(parent_name)
         if not parent or not never_started(parent):
+            break
+        if _get(parent, "ever_built"):
             break
         count += 1
         seen.add(parent_name)
@@ -378,7 +388,34 @@ _CHAIN_FIELDS = ["name", "workflow_state", "started_at", "error_message", "trigg
 def _lookup_build_approval(name):
     import frappe
 
-    return frappe.db.get_value("Build Approval", name, _CHAIN_FIELDS, as_dict=True)
+    row = frappe.db.get_value("Build Approval", name, _CHAIN_FIELDS, as_dict=True)
+    if row:
+        row["ever_built"] = _ever_built(name)
+    return row
+
+
+def run_shows_a_build(run):
+    """True if a governed Pipeline Run shows its Build Approval got past the
+    start. Pure.
+
+    _create_governed_pipeline_run links a run to the approval at every start
+    that passes the single-flight check, and a start that fails after that
+    fails the run with the start-failure message. Any other run means the
+    build ran (Completed, Failed on preflight or dbt, reaped mid-build). A
+    legacy run that a pre-#140 start failure left Queued counts as built:
+    that errs toward one more retry, never toward a lost change.
+    """
+    return not (_get(run, "status") == "Failed"
+                and (_get(run, "error_log") or "").startswith(START_FAILURE_PREFIX))
+
+
+def _ever_built(name):
+    """``name`` got past its start at least once: evidence a reset to Draft
+    leaves in place (it clears started_at)."""
+    import frappe
+
+    runs = frappe.get_all("Pipeline Run", filters={"build_approval": name}, fields=["status", "error_log"])
+    return any(run_shows_a_build(r) for r in runs)
 
 
 def _give_up(name, scope, so_far, last_error):
