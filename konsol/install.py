@@ -198,11 +198,15 @@ def reconcile_warehouse(install_time=False):
         target = _warehouse_target()
         try:
             execute("SELECT 1")
-        except Exception as e:  # noqa: BLE001 — unreachable: skip, never raise
+        except Exception as e:  # noqa: BLE001 — unreachable or refused: skip, never raise
+            # An HTTP error means ClickHouse answered (wrong password, server
+            # error); anything else means it could not be reached.
+            status = getattr(getattr(e, "response", None), "status_code", None)
             _report_nothing_synced(
                 target,
                 install_time,
-                title="Warehouse reconcile: ClickHouse unreachable",
+                title=(f"Warehouse reconcile: ClickHouse refused the probe (HTTP {status})"
+                       if status else "Warehouse reconcile: ClickHouse unreachable"),
                 detail=f"SELECT 1 failed ({type(e).__name__}: {e}); no table was synced.",
             )
             return None

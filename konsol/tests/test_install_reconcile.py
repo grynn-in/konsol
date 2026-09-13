@@ -152,6 +152,8 @@ def _clickhouse(store=None, reconcile_all=None, unreachable=False):
 
     def execute(sql, params=None):
         stub.probes.append(sql)
+        if isinstance(unreachable, BaseException):
+            raise unreachable
         if unreachable:
             raise ConnectionError("Read timed out. (read timeout=30)")
         return "1"
@@ -223,8 +225,34 @@ def test_the_job_is_reconcile_not_a_build():
     assert callable(mod.reconcile_warehouse)
 
 
+def _frappe_enqueue_params():
+    """frappe.enqueue's parameter names read from Frappe's source, or None
+    when Frappe isn't next to this app (a bare host checkout)."""
+    candidates = [os.path.join(APP_DIR, "..", "..", "frappe", "frappe", "utils", "background_jobs.py")]
+    try:
+        spec = importlib.util.find_spec("frappe")
+        if spec and spec.submodule_search_locations:
+            candidates.append(os.path.join(list(spec.submodule_search_locations)[0],
+                                           "utils", "background_jobs.py"))
+    except (ImportError, ValueError):
+        pass
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path) as f:
+                tree = ast.parse(f.read())
+            fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "enqueue")
+            args = fn.args
+            names = {a.arg for a in args.posonlyargs + args.args + args.kwonlyargs}
+            return names | {"async"}  # popped from **kwargs inside enqueue
+    return None
+
+
 def test_install_time_is_a_job_kwarg_not_an_enqueue_parameter():
-    assert "install_time" not in ENQUEUE_PARAMS
+    params = _frappe_enqueue_params()
+    if params is not None:
+        # Keep the hand-written list honest wherever Frappe's source is present.
+        assert ENQUEUE_PARAMS == params, f"frappe.enqueue now takes {sorted(params ^ ENQUEUE_PARAMS)}"
+    assert "install_time" not in (params or ENQUEUE_PARAMS)
 
 
 def test_redis_down_does_not_fail_the_install_commit():
@@ -465,6 +493,18 @@ def test_unreachable_clickhouse_skips_the_reconcile_at_once():
     assert [e[0] for e in fake.cache.events] == ["acquire", "release"]
 
 
+def test_a_refused_probe_is_titled_as_refused_not_unreachable():
+    """ClickHouse answered (wrong password): skip all the same, but say so."""
+    refused = Exception("401 Client Error: Unauthorized")
+    refused.response = types.SimpleNamespace(status_code=401)
+    mod, fake = _load()
+    ran = []
+    with _clickhouse(dict(DEPLOYED), reconcile_all=lambda: ran.append(1) or {}, unreachable=refused):
+        assert mod.reconcile_warehouse() is None
+    assert ran == []
+    assert fake.errors == ["Warehouse reconcile: ClickHouse refused the probe (HTTP 401)"]
+
+
 def test_unreachable_default_target_at_install_time_only_warns():
     mod, fake = _load()
     with _clickhouse({}, unreachable=True):
@@ -490,15 +530,12 @@ def test_unconfigured_target_matches_the_epm_settings_defaults():
     turns them into the target. Changing a default must change this too."""
     with open(os.path.join(APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json")) as f:
         fields = {fl["fieldname"]: fl for fl in json.load(f)["fields"]}
-    default = lambda name: fields[name].get("default")
-    assert default("clickhouse_password") is None, "the password has no default"
-    from_json = {
-        "host": default("clickhouse_host"),
-        "port": default("clickhouse_port"),
-        "user": default("clickhouse_user"),
-        "password": "",
-        "secure": str(bool(int(default("clickhouse_secure")))),
-        "verify": str(bool(int(default("clickhouse_verify_tls")))),
-    }
+    assert fields["clickhouse_password"].get("default") is None, "the password has no default"
+    # What init_singles stores: Check fields as ints, the rest as given.
+    checks = {n for n, fl in fields.items() if fl.get("fieldtype") == "Check"}
+    store = {n: (int(fl["default"]) if n in checks else fl["default"])
+             for n, fl in fields.items()
+             if n.startswith("clickhouse_") and fl.get("default") is not None}
     mod, _ = _load()
-    assert from_json == mod.UNCONFIGURED_TARGET
+    with _clickhouse(store):
+        assert mod._warehouse_target() == mod.UNCONFIGURED_TARGET
