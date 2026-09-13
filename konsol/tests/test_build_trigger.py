@@ -221,7 +221,7 @@ def test_the_publish_build_is_requested_after_the_ddl():
     with open(os.path.join(APP_DIR, "schema_lifecycle.py")) as f:
         body = f.read().split("def apply_and_rebuild")[1].split("\ndef ")[0]
     code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
-    assert code.index("apply_schema()") < code.index("_request_governed_build(")
+    assert code.index("apply_schema_for_publish()") < code.index("_request_governed_build(")
 
 
 def test_the_debounce_column_is_indexed_on_fresh_and_existing_sites():

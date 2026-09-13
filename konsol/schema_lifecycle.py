@@ -32,18 +32,19 @@ def apply_and_rebuild(doc, action):
     `dbt build` — see module note. Returns the PBR name (or the existing one if
     a build for this scope is already pending).
     """
-    from konsol.schema_apply import apply_schema
+    from konsol.schema_apply import apply_schema_for_publish
 
     # The DDL first, then the build request, so the request's row locks are
     # held only briefly at the end of the transaction and never across
-    # ClickHouse ALTERs (#133 re-review). apply_schema() collects its step
-    # errors instead of raising, so a failed DDL does not stop the request.
+    # ClickHouse ALTERs (#133 re-review). The schema step collects its errors
+    # instead of raising, so a failed DDL does not stop the request.
     # The trade-off: if the request then fails (a lock-wait timeout, say), the
     # ClickHouse DDL stays applied; it only adds tables and columns, so
-    # re-publishing recovers. Nor is this atomic for a budget dimension:
-    # apply_schema()'s Budget Line Custom Field sync commits through
-    # frappe.db.updatedb, so the publish is already committed here (konsol#135).
-    apply_schema()
+    # re-publishing recovers. The Budget Line Custom Field sync is not in this
+    # transaction: a Custom Field insert commits (frappe.db.updatedb), so it
+    # runs in a job enqueued after the commit. The publish, its row and its
+    # build request commit or roll back together (konsol#135).
+    apply_schema_for_publish()
     return _request_governed_build(doc, action)
 
 
