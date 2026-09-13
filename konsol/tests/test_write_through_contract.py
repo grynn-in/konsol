@@ -221,6 +221,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_staging.intercompany_accounts",
         # konsol#182: the group chart of accounts (Main Account)
         "epm_staging.main_accounts",
+        # konsol#189: the declared fiscal periods; konsolidat reads it for
+        # period dates
+        "epm_staging.fiscal_periods",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
