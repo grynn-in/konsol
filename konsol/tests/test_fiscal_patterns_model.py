@@ -1,0 +1,81 @@
+"""Monthly (12) fiscal period generation, pure: konsol/fiscal_patterns_model.py.
+
+Loaded by path; the module imports nothing from frappe or konsol.
+"""
+import datetime
+import importlib.util
+import os
+
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_spec = importlib.util.spec_from_file_location(
+    "fpm_under_test", os.path.join(APP_DIR, "fiscal_patterns_model.py"))
+M = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(M)
+
+
+def d(y, m, day):
+    return datetime.date(y, m, day)
+
+
+def test_monthly_calendar_year():
+    rows = M.monthly_periods(d(2025, 1, 1), d(2025, 12, 31))
+    assert len(rows) == 12
+
+    jan = rows[0]
+    assert jan["period"] == 1
+    assert jan["code"] == "P01"
+    assert jan["label"] == "Jan 2025"
+    assert jan["type"] == "Regular"
+    assert jan["start_date"] == d(2025, 1, 1)
+    assert jan["end_date"] == d(2025, 1, 31)
+    assert jan["quarter"] == "Q1"
+
+    for i, row in enumerate(rows, start=1):
+        assert row["period"] == i
+        assert row["code"] == "P%02d" % i
+
+    assert rows[11]["code"] == "P12"
+    assert rows[11]["label"] == "Dec 2025"
+    assert rows[11]["start_date"] == d(2025, 12, 1)
+    assert rows[11]["end_date"] == d(2025, 12, 31)
+    assert rows[11]["quarter"] == "Q4"
+
+    # contiguity: each period ends the day before the next starts
+    for prev, nxt in zip(rows, rows[1:]):
+        assert prev["end_date"] + datetime.timedelta(days=1) == nxt["start_date"]
+
+    quarters = [row["quarter"] for row in rows]
+    assert quarters == ["Q1"] * 3 + ["Q2"] * 3 + ["Q3"] * 3 + ["Q4"] * 3
+
+
+def test_monthly_mid_month_start():
+    rows = M.monthly_periods(d(2025, 4, 6), d(2026, 4, 5))
+    assert len(rows) == 12
+
+    p1 = rows[0]
+    assert p1["start_date"] == d(2025, 4, 6)
+    assert p1["end_date"] == d(2025, 5, 5)
+    assert p1["label"] == "Apr 2025"
+    assert p1["quarter"] == "Q1"
+
+    p12 = rows[11]
+    assert p12["code"] == "P12"
+    assert p12["start_date"] == d(2026, 3, 6)
+    assert p12["end_date"] == d(2026, 4, 5)
+    assert p12["label"] == "Mar 2026"
+    assert p12["quarter"] == "Q4"
+
+    for row in rows:
+        assert row["start_date"].day == 6
+
+    for prev, nxt in zip(rows, rows[1:]):
+        assert prev["end_date"] + datetime.timedelta(days=1) == nxt["start_date"]
+
+
+def test_monthly_refuses_wrong_length():
+    try:
+        M.monthly_periods(d(2025, 1, 1), d(2026, 1, 31))
+    except ValueError as e:
+        assert "13" in str(e), str(e)
+    else:
+        raise AssertionError("expected ValueError for a 13-month span")
