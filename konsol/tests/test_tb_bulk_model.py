@@ -78,8 +78,9 @@ def test_group_csv_is_the_single_upload_contract():
 
 
 def _check(**over):
-    facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True, period_status="Open", existing=None,
-                 validate_rows=lambda rows, **kw: [])
+    facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True,
+                 period={"code": "P12", "type": "Regular", "status": "Open"}, postable_types={"Regular"},
+                 existing=None, validate_rows=lambda rows, **kw: [])
     facts.update(over)
     rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0}, {"main_account": "2010", "debit": 0.0, "credit": 5.0}]
     return M.check_group(("AMDE", 2025, 12), rows, **facts)
@@ -93,17 +94,26 @@ def test_a_clean_group_is_ready():
 def test_every_single_upload_rule_applies():
     assert "no access" in _check(visible=False)["errors"][0]
     assert "is a group" in _check(leaf=False)["errors"][0]
-    assert "is closed" in _check(period_status="Closed")["errors"][0]
     assert "already submitted" in _check(existing="TBS-00001")["errors"][0]
     # the single-submission validator's verdict is carried through as-is
     r = _check(validate_rows=lambda rows, **kw: ["Debits (5.00) do not equal credits"])
     assert not r["ok"] and r["errors"] == ["Debits (5.00) do not equal credits"]
 
 
-def test_period_outside_1_to_12_is_refused():
-    r = M.check_group(("AMDE", 2025, 13), [], known_accounts=set(), visible=True, leaf=True, period_status=None,
-                      existing=None, validate_rows=lambda rows, **kw: [])
-    assert "must be 1 to 12" in r["errors"][0]
+def test_closed_period_refused():
+    r = _check(period={"code": "P12", "type": "Regular", "status": "Closed"})
+    assert "is closed" in r["errors"][0]
+
+
+def test_undeclared_period_refused():
+    r = M.check_group(("AMDE", 2025, 14), [], known_accounts=set(), visible=True, leaf=True, period=None,
+                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [])
+    assert r["errors"][0] == "FY2025 P14 is not declared"
+
+
+def test_unpostable_type_refused():
+    r = _check(period={"code": "CLS", "type": "Closing", "status": "Open"}, postable_types={"Regular"})
+    assert "does not take trial balances on this site" in r["errors"][0]
 
 
 def test_outcome():
