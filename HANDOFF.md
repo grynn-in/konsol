@@ -33,7 +33,7 @@ Contoso/Alpine demo data is being replaced, not repaired.
 | 01_CoA | group chart `ECL_GROUP_GAAP`: posting accounts 1000–9000 plus parents; account_type, normal_balance D/C, time_balance, **fx_method closing/average/historical**, cf_category, allow_ic | 87 |
 | 02_LegalEntities | data_area_id (`US_ECL`, `US_USA`, …), accounting_currency, parent_data_area, ownership_pct, is_tb_entity, region/division/platform | 83 |
 | 03_DivisionHierarchy | management dimension (GW, GIS, Pest, LS …); keep it **off** the legal tree | 27 |
-| 04_AcquisitionEvents | acquisitions and disposals with price and goodwill (Nalco 2011, Champion 2013–2020, Purolite 2021, Ovivo 2025 …) | 12 |
+| 04_AcquisitionEvents | acquisitions and disposals with price and goodwill | 12 |
 | 05_OwnershipPeriods | group `ECL_GROUP`; methods **`parent`** / `full`; 100%; dates 1924-02-18 … 2025-12-16, end 2020-06-03 / **9999-12-31** | 83 |
 | 06_FX_Rates | **USD per 1 unit**, AVERAGE + CLOSING, annual 2010–2025, 20 currencies | 640 |
 | 07_PublishedAnchors | 10-K consolidated targets, USD **millions** | 34 |
@@ -52,7 +52,7 @@ Measured on 12 Sep from sheets 08 and 09 (stdlib xlsx parse; there is no openpyx
 - The gap isn't the year's NI counted twice (0/559 match), and the balance sheet doesn't net on its own (0/559). Gap ÷ P&L total has a median of −10×, ranging from −704× to +4×.
 - **Cause: the credit side of equity and financing was never generated.** Of the posting equity accounts, only `3000` Common stock and `3100` Retained earnings appear in the TB. `3010` APIC, `3020` Treasury, `3200`/`3300` AOCI (including CTA) and `3400` NCI never do.
   - US_USA 2015 (USD k): assets +3,557,447; liabilities −1,150,698; equity −477,424; revenue −3,152,284; expense +2,930,177, so **+1,707,218 unbalanced**.
-  - Group balance-sheet surplus: +3.6bn in 2010, +9.9bn in 2011 (Nalco's assets arrive with no funding).
+  - Group balance-sheet surplus: +3.6bn in 2010, +9.9bn in 2011 (a large acquisition's assets arrive with no funding).
 - **Consequence:** Trial Balance Submission refuses every file (`validate_tb_rows`: debits ≠ credits). Any plug the loader invents makes the consolidated balance sheet, and CTA, meaningless.
 - 11_Control_Checks doesn't foot and contradicts its own note. Sales come out **141–471m below** published in every year, while the note says TB sales should *exceed* published by the IC share. 2020 NI is off by +1.8bn and assets by ±2bn.
 
