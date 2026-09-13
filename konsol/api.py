@@ -1648,22 +1648,35 @@ def connector_health():
     )
 
 
-@frappe.whitelist()
-def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, limit=500):
-    """Read-only FX rates that drive consolidation translation (konsolidat#91 Part B).
+#: The governed group exchange rates (konsol#103): the one source of truth for
+#: FX rates, published by konsol as TRUE rates (units of to per 1 from).
+GOVERNED_FX_TABLE = "epm_staging.group_exchange_rates"
+#: The date a fiscal period's rate applies from (dbt build_date_from_year_period:
+#: the 1st of month P; OPN takes January's, CLS December's).
+_PERIOD_START_SQL = "makeDate(fiscal_year, greatest(least(fiscal_period, 12), 1), 1)"
 
-    Surfaces `epm_silver.silver_exchange_rates` so users can audit exactly which
-    rate translated an entity, without granting raw ClickHouse access. Login
-    required; no write path. Optional filters:
+
+@frappe.whitelist()
+def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, fiscal_year=None,
+             fiscal_period=None, limit=500):
+    """Read-only: the group's governed exchange rates, the ones translation uses.
+
+    One source of truth (decided 13 Sep 2026): the approved Group Exchange
+    Rates konsol publishes to ``epm_staging.group_exchange_rates``, each the
+    true rate, units of ``to_currency`` per 1 ``from_currency``. The ERP feed is
+    not a rate here; it is only an input to Pre-fill from ERP. Login required;
+    no write path. Optional filters:
 
       from_currency / to_currency  ISO codes (e.g. "EUR", "USD")
-      rate_type                    "Closing" | "Average" | "Default" | ...
-      as_of                        only rates effective on/before this date (YYYY-MM-DD)
+      rate_type                    "Closing" | "Average"
+      fiscal_year / fiscal_period  one year, one period
+      as_of                        periods starting on/before this date (YYYY-MM-DD)
       limit                        row cap (1..5000, default 500)
 
-    Filter values are bound as ClickHouse HTTP params ({name:String/Date}) — not
-    interpolated — so they're injection-safe; the table is a fixed literal and the
-    limit is integer-cast.
+    Filter values are bound as ClickHouse HTTP query parameters: ``{name:Type}``
+    in the SQL and ``param_<name>`` on the wire (#175: a bare name is read as a
+    setting and the call fails with UNKNOWN_SETTING). Never interpolated; the
+    table is a fixed literal and the limit is integer-cast.
     """
     import json
 
@@ -1673,16 +1686,22 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, l
     params = {}
     if from_currency:
         params["fc"] = str(from_currency).upper()
-        conds.append("upper(from_currency) = {fc:String}")
+        conds.append("from_currency = {fc:String}")
     if to_currency:
         params["tc"] = str(to_currency).upper()
-        conds.append("upper(to_currency) = {tc:String}")
+        conds.append("to_currency = {tc:String}")
     if rate_type:
         params["rt"] = str(rate_type)
-        conds.append("exchange_rate_type = {rt:String}")
+        conds.append("rate_type = {rt:String}")
+    if fiscal_year not in (None, ""):
+        params["fy"] = int(fiscal_year)
+        conds.append("fiscal_year = {fy:UInt16}")
+    if fiscal_period not in (None, ""):
+        params["fp"] = int(fiscal_period)
+        conds.append("fiscal_period = {fp:UInt8}")
     if as_of:
         params["asof"] = str(as_of)
-        conds.append("valid_from <= {asof:Date}")
+        conds.append(f"{_PERIOD_START_SQL} <= {{asof:Date}}")
 
     try:
         lim = int(limit)
@@ -1692,13 +1711,13 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, l
 
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     sql = (
-        "SELECT from_currency, to_currency, exchange_rate_type, "
-        "toString(valid_from) AS valid_from, exchange_rate "
-        "FROM epm_silver.silver_exchange_rates"
+        "SELECT from_currency, to_currency, rate_type, fiscal_year, fiscal_period, "
+        f"toString({_PERIOD_START_SQL}) AS period_start, rate, document "
+        f"FROM {GOVERNED_FX_TABLE}"
         f"{where} "
-        "ORDER BY from_currency, to_currency, exchange_rate_type, valid_from DESC "
+        "ORDER BY from_currency, to_currency, rate_type, fiscal_year DESC, fiscal_period DESC "
         f"LIMIT {lim} FORMAT JSON"
     )
-    raw = execute(sql, params)
+    raw = execute(sql, {f"param_{k}": v for k, v in params.items()})
     rows = json.loads(raw).get("data", []) if raw else []
     return {"rows": rows, "count": len(rows)}

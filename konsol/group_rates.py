@@ -13,6 +13,11 @@ rows authored by the system and labelled "Adoption", the rates the warehouse
 already translated each period at, so the translation that reads only
 governed rates (konsolidat#93) gives the same figures on its first build.
 
+A rate is entered as a quote per 1, 10, 100, 1,000 or 10,000 units of the
+from-currency (0.6607 USD per 100 JPY) and published as its true rate
+(0.006607), computed once by konsol: one source of truth for FX rates, and the
+warehouse never scales or inverts one. Every check below works on the true rate.
+
 Two plausibility checks guard entry (the #138 review):
 
 * **Hard:** a rate more than 10x from what the ISO Currency references imply
@@ -55,29 +60,57 @@ REFERENCE_FIELD = "usd_log10"
 MAGNITUDE_TOLERANCE_DECADES = 1.0
 #: A move larger than this fraction needs a Reason for Change.
 MOVE_NEEDS_REASON = 0.5
-#: A quote is stored in the direction that keeps its digits: MariaDB keeps 9
-#: decimal places, so a quote below 0.1 (KRW -> USD 0.00074) is entered and
-#: stored the other way round (1350 KRW per USD) and inverted in the warehouse.
-MIN_QUOTE = 0.1
+#: "Quoted per" (decided 13 Sep 2026: one source of truth, published by konsol).
+#: A quote is units of the group currency per this many units of the
+#: from-currency, so its direction never flips: 0.6607 USD per 100 JPY. The
+#: TRUE rate is quote / quoted_per; konsol computes it once, when it publishes,
+#: and the warehouse never scales or inverts a rate.
+QUOTED_PER = (1, 10, 100, 1000, 10000)
+#: MariaDB keeps 9 decimal places. A quote must keep at least this many
+#: significant digits there (0.0001 or more); a bigger Quoted per fixes it.
+MIN_SIGNIFICANT_DIGITS = 6
+#: The pre-fill and the adoption aim higher: the smallest Quoted per that puts
+#: the quote at 0.1 or more (9 significant digits). JPY -> USD is per 100.
+PREFERRED_MIN_QUOTE = 0.1
 
 
 # -- pure rules -----------------------------------------------------------------
 
-def effective_rate(rate, inverse_quote):
+def true_rate(quote, quoted_per):
     """Units of the group currency per 1 unit of the from-currency."""
-    rate = float(rate or 0)
-    if not rate:
-        return 0.0
-    return 1.0 / rate if int(inverse_quote or 0) else rate
+    return float(quote or 0) / int(quoted_per or 1)
 
 
-def as_stored(rate):
-    """(quote, inverse_quote) for a rate "to per 1 from": the rate itself when
-    it keeps its digits at 9 decimal places, else its inverse."""
+def significant_digits(quote):
+    """How many significant digits ``quote`` keeps at 9 decimal places:
+    0.0066 keeps 7 (0.006600000), 0.66 keeps 9, 0.0000394 only 5."""
+    quote = float(quote or 0)
+    if quote <= 0:
+        return 0
+    return 9 + math.floor(math.log10(quote)) + 1
+
+
+def choose_quoted_per(rate):
+    """(quote, quoted_per) for a true ``rate``: the smallest Quoted per that
+    puts the quote at 0.1 or more (the largest, if none does). Quote at 9 dp."""
     rate = float(rate)
-    if rate >= MIN_QUOTE:
-        return round(rate, 9), 0
-    return round(1.0 / rate, 9), 1
+    per = next((p for p in QUOTED_PER if rate * p >= PREFERRED_MIN_QUOTE), QUOTED_PER[-1])
+    return round(rate * per, 9), per
+
+
+def quote_label(quote, quoted_per, from_currency, to_currency):
+    """The quote as a person reads it: "0.6607 USD per 100 JPY"."""
+    per = int(quoted_per or 1)
+    return f"{float(quote or 0):.9g} {to_currency} per {f'{per:,} ' if per > 1 else ''}{from_currency}"
+
+
+def published_rows(docs):
+    """epm_staging.group_exchange_rates rows for approved rates: (to, from,
+    fiscal year, fiscal period, rate type, TRUE rate, document). The one place
+    a quote becomes a rate; Float64 in the warehouse keeps what MariaDB's 9
+    decimal places can't."""
+    return [[d.to_currency, d.from_currency, int(d.fiscal_year), int(d.fiscal_period), d.rate_type,
+             true_rate(d.quote, d.quoted_per), d.name] for d in docs]
 
 
 def usd_reference(code, value):
@@ -124,26 +157,28 @@ def magnitude_problem(from_currency, to_currency, rate, refs=None):
             f"references imply (usd_log10 {to_currency} {refs[to_currency]:g}, {from_currency} "
             f"{refs[from_currency]:g}); more than 10x off is a scaling error, not a market move (#138). "
             f"Enter the true rate: units of {to_currency} per 1 {from_currency}, with no multiplier, "
-            "or tick the inverse quote and enter it the other way round.")
+            f"or quote it per 10, 100, 1,000 or 10,000 {from_currency} (Quoted Per).")
 
 
-def move_problem(rate, previous=None, erp_rate=None):
+def move_problem(rate, previous=None, erp_rate=None, unit=""):
     """None, or why ``rate`` needs a Reason for Change: it moves more than 50%
     from ``previous`` ((rate, label) of the last approved rate for its key) or
     from ``erp_rate`` (the ERP quote it was proposed from). Rates are "to per
-    1 from"."""
+    1 from", whatever unit they are quoted per; ``unit`` labels them
+    ("USD per JPY")."""
     rate = float(rate)
+    unit = f" {unit}" if unit else ""
     moves = []
     for ref, what in ((previous[0], f"the previous approved rate {previous[1]}") if previous else (None, None),
                       (erp_rate, "the ERP quote")):
         if ref and float(ref) > 0:
             change = rate / float(ref) - 1.0
             if abs(change) > MOVE_NEEDS_REASON:
-                moves.append(f"{change:+.0%} from {what} ({float(ref):.9g})")
+                moves.append(f"{change:+.0%} from {what} ({float(ref):.9g}{unit})")
     if not moves:
         return None
-    return ("This rate moves " + " and ".join(moves) + ". A move over 50% can be real, but say why "
-            "(Reason for Change) before it is saved.")
+    return (f"This rate ({rate:.9g}{unit}) moves " + " and ".join(moves) + ". A move over 50% can be "
+            "real, but say why (Reason for Change) before it is saved.")
 
 
 def period_start(fiscal_year, fiscal_period):
@@ -204,8 +239,12 @@ def _sig(rate):
     return float(f"{float(rate):.12g}")
 
 
-def describe_quotes(quotes, fiscal_year, fiscal_period):
-    parts = [f"{q['source']} {q['erp_type']} {q['rate']:.9g}, valid from {q['valid_from']} ({q['how']})"
+def describe_quotes(quotes, fiscal_year, fiscal_period, from_currency=None, to_currency=None):
+    """The source note: every ERP source's quote, as units of the group
+    currency per 1 unit of the from-currency, whatever unit the draft is
+    quoted per."""
+    unit = f" {to_currency} per {from_currency}" if from_currency and to_currency else ""
+    parts = [f"{q['source']} {q['erp_type']} {q['rate']:.9g}{unit}, valid from {q['valid_from']} ({q['how']})"
              for q in quotes]
     note = f"Pre-filled from the ERP feed for FY{fiscal_year} P{fiscal_period}: " + "; ".join(parts) + "."
     if len({_sig(q["rate"]) for q in quotes}) > 1:
@@ -221,7 +260,8 @@ def plan_adoption(used, governed, quote_rows_by_period, today):
     rates]) as gold_consolidated_trial_balance translated them. ``governed``:
     keys (from, to, fy, fp, rate_type) that already have an approved rate.
     Returns [("adopt", key, rate, erp_rate, note) | ("skip", key, reason)],
-    rates "to per 1 from" (``as_stored`` picks the direction to keep).
+    true rates "to per 1 from" (``choose_quoted_per`` picks the unit to enter
+    them per).
     """
     actions = []
     for f, t, fy, fp, closing, average in used:
@@ -354,7 +394,7 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
     key in an earlier period, or None. The last approved one, so a gap (a
     period with no rate) compares with the rate before it."""
     rows = frappe.db.sql(
-        "SELECT name, rate, inverse_quote, fiscal_year, fiscal_period FROM `tabGroup Exchange Rate` "
+        "SELECT name, quote, quoted_per, fiscal_year, fiscal_period FROM `tabGroup Exchange Rate` "
         "WHERE to_currency = %s AND from_currency = %s AND rate_type = %s AND docstatus = 1 "
         "AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s)) "
         "ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 1",
@@ -362,8 +402,8 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
     )
     if not rows:
         return None
-    name, rate, inverse, fy, fp = rows[0]
-    return effective_rate(rate, inverse), f"FY{fy} P{fp} ({name})"
+    name, quote, per, fy, fp = rows[0]
+    return true_rate(quote, per), f"FY{fy} P{fp} ({name})"
 
 
 # -- the close gate -------------------------------------------------------------------
@@ -463,12 +503,14 @@ def prefill_from_erp(fiscal_year, fiscal_period):
                     # The #138 guard refusing an ERP quote is the guard working.
                     out["refused"].append(f"{label}: {problem}")
                     continue
-                quote, inverse = as_stored(quotes[0]["rate"])
+                quote, per = choose_quoted_per(quotes[0]["rate"])
+                note = describe_quotes(quotes, fy, fp, f, t)
+                if per > 1:
+                    note += f" Entered as {quote_label(quote, per, f, t)}, so it keeps its digits."
                 doc = frappe.get_doc({
                     "doctype": DOCTYPE, "to_currency": t, "from_currency": f, "rate_type": rate_type,
-                    "fiscal_year": fy, "fiscal_period": fp, "rate": quote, "inverse_quote": inverse,
-                    "erp_rate": quote, "source": PREFILL_SOURCE,
-                    "source_note": describe_quotes(quotes, fy, fp),
+                    "fiscal_year": fy, "fiscal_period": fp, "quote": quote, "quoted_per": str(per),
+                    "erp_quote": quote, "source": PREFILL_SOURCE, "source_note": note,
                 })
                 try:
                     doc.insert()
@@ -560,15 +602,15 @@ def adopt_erp_rates(dry_run=False):
             if dry_run:
                 summary["adopted"].append(f"{label} = {rate:.9g} (dry run)")
                 continue
-            quote, inverse = as_stored(rate)
+            quote, per = choose_quoted_per(rate)
             frappe.db.savepoint("konsol_rate_adoption")
             try:
                 doc = frappe.get_doc({
                     "doctype": DOCTYPE, "from_currency": key[0], "to_currency": key[1],
                     "fiscal_year": key[2], "fiscal_period": key[3], "rate_type": key[4],
-                    "rate": quote, "inverse_quote": inverse,
-                    # the ERP quote in the same direction as the stored rate
-                    "erp_rate": round(effective_rate(erp_rate, inverse), 9) if erp_rate else None,
+                    "quote": quote, "quoted_per": str(per),
+                    # the ERP quote, per the same unit
+                    "erp_quote": round(erp_rate * per, 9) if erp_rate else None,
                     "source": ADOPTION_SOURCE, "source_note": note,
                 })
                 doc.insert(ignore_permissions=True)

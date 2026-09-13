@@ -20,11 +20,12 @@
   "col_break_1",
   "fiscal_year",
   "fiscal_period",
-  "rate",
-  "inverse_quote",
+  "quote",
+  "quoted_per",
+  "quote_label",
   "source_section",
   "source",
-  "erp_rate",
+  "erp_quote",
   "col_break_2",
   "source_note",
   "change_reason",
@@ -82,21 +83,30 @@
    "description": "The period number, as on Period Status (1-12; 0 = OPN, 13 = CLS)."
   },
   {
-   "fieldname": "rate",
+   "fieldname": "quote",
    "fieldtype": "Float",
    "precision": "9",
-   "label": "Rate",
+   "label": "Quote",
    "reqd": 1,
-   "in_list_view": 1,
-   "description": "The quote. Normally units of the group reporting currency per 1 unit of the from-currency; with Inverse Quote ticked, units of the from-currency per 1 unit of the group currency. A true rate: no multiplier (#138). A quote below 0.1 is entered the other way round, so it keeps its digits."
+   "description": "Units of the group reporting currency per Quoted Per units of the from-currency: 0.6607 USD per 100 JPY. A true quote, no other multiplier (#138). The rate konsol publishes is Quote / Quoted Per, the one source of truth for this rate."
   },
   {
-   "fieldname": "inverse_quote",
-   "fieldtype": "Check",
-   "label": "Inverse Quote",
-   "default": "0",
+   "fieldname": "quoted_per",
+   "fieldtype": "Select",
+   "options": "1\n10\n100\n1000\n10000",
+   "default": "1",
+   "label": "Quoted Per",
+   "reqd": 1,
+   "description": "How many units of the from-currency the quote is for. Quote a weak currency per 100, 1,000 or 10,000 so it keeps its digits (MariaDB keeps 9 decimal places): JPY per 100, KRW per 1,000, IDR and VND per 10,000. The direction never changes."
+  },
+  {
+   "fieldname": "quote_label",
+   "fieldtype": "Data",
+   "label": "Rate As Quoted",
+   "read_only": 1,
    "in_list_view": 1,
-   "description": "Ticked: Rate is units of the from-currency per 1 unit of the group currency (1350 KRW per USD), for a currency whose rate into the group currency is far below 1. MariaDB keeps 9 decimal places, which would leave KRW to USD 0.00074 with 5 significant digits; the warehouse inverts it at full precision."
+   "no_copy": 1,
+   "description": "The quote as entered, with its unit. Set on save."
   },
   {
    "fieldname": "source_section",
@@ -115,13 +125,13 @@
    "no_copy": 1
   },
   {
-   "fieldname": "erp_rate",
+   "fieldname": "erp_quote",
    "fieldtype": "Float",
    "precision": "9",
    "label": "ERP Quote",
    "read_only": 1,
    "no_copy": 1,
-   "description": "What the ERP feed quoted when this rate was proposed, in the same direction as Rate. Reference only: translation never reads the ERP feed. Recorded by Pre-fill from ERP only."
+   "description": "What the ERP feed quoted when this rate was proposed, per the same Quoted Per. Reference only: translation never reads the ERP feed. Recorded by Pre-fill from ERP only."
   },
   {
    "fieldname": "col_break_2",

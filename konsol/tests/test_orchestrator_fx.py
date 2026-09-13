@@ -1,7 +1,7 @@
 """PRD-18 — FX surfacing (pure core).
 
 Host tests for the pure :mod:`konsol.orchestrator.fx` module: ``build_fx_query``
-(safe SQL over ``epm_silver.silver_exchange_rates``, filterable by from/to
+(safe SQL over the governed ``epm_staging.group_exchange_rates``, filterable by from/to
 currency, as-of date, rate type and source — injection-safe currency codes) and
 ``normalize_fx_rows`` (shape raw ClickHouse result rows into the canonical
 ``{from, to, rate, as_of, type, source}`` dicts, incl. the empty case). No
@@ -32,14 +32,24 @@ def test_fx_module_has_no_toplevel_frappe_import():
 
 def test_build_fx_query_no_filter():
     sql = fx.build_fx_query({})
-    assert "epm_silver.silver_exchange_rates" in sql
+    assert "epm_staging.group_exchange_rates" in sql
     assert "WHERE" not in sql
 
 
 def test_build_fx_query_none_filters():
     sql = fx.build_fx_query(None)
-    assert "epm_silver.silver_exchange_rates" in sql
+    assert "epm_staging.group_exchange_rates" in sql
     assert "WHERE" not in sql
+
+
+def test_the_rates_are_the_governed_ones():
+    """One source of truth (13 Sep 2026): the SPA shows the true rates konsol
+    publishes, never the ERP feed, and scales or inverts nothing."""
+    assert fx.FX_TABLE == "epm_staging.group_exchange_rates"
+    sql = fx.build_fx_query({})
+    assert "silver_exchange_rates" not in sql and "exchange_rate AS" not in sql
+    assert "        rate,\n" in sql and "'konsol' AS source" in sql
+    assert "makeDate(fiscal_year, greatest(least(fiscal_period, 12), 1), 1) AS as_of" in sql
 
 
 def test_build_fx_query_from_only():

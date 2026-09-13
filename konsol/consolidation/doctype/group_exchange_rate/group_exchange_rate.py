@@ -2,8 +2,9 @@
 
 Decided by the user on 13 Sep 2026:
 
-* One governed rate table in konsol, owned by group finance. The ERP feed only
-  proposes (``konsol.group_rates.prefill_from_erp``); a person accepts.
+* One source of truth for FX rates, and it comes via konsol. Group finance
+  owns this table; the ERP feed only proposes
+  (``konsol.group_rates.prefill_from_erp``) and a person accepts.
 * Grain: group reporting currency (to), from-currency, fiscal year, fiscal
   period, rate type (Closing / Average). Only rates into a group reporting
   currency are entered; cross rates are derived. Historical equity rates stay
@@ -15,18 +16,17 @@ Decided by the user on 13 Sep 2026:
   change is a reopen of the period (Period Status keeps who and when), a
   cancel, and an amendment that must say why.
 
-A rate is "units of the group currency per 1 unit of the from-currency". A
-small one (KRW -> USD 0.00074) loses digits at MariaDB's 9 decimal places, so
-it is quoted the other way round (1350 KRW per USD) with ``inverse_quote``
-ticked, and the warehouse inverts it.
-
-Submitted rows are written through to ``epm_staging.group_exchange_rates``,
-which gold_consolidated_trial_balance translates from.
+A rate is entered as a **quote per a unit**: ``quote`` units of the group
+currency per ``quoted_per`` (1, 10, 100, 1,000 or 10,000) units of the
+from-currency, so its direction never flips: 0.6607 USD per 100 JPY. MariaDB
+keeps 9 decimal places, and the unit keeps the digits. The TRUE rate is
+quote / quoted_per. konsol computes it once, when it publishes the approved
+rows to ``epm_staging.group_exchange_rates`` (``resync_staging``), and the
+warehouse translates from it without scaling or inverting anything.
 """
 import frappe
 from frappe.model.document import Document
 
-from konsol.clickhouse import sync_doctype_after_commit
 from konsol.period_status import assert_open
 
 RATE_TYPES = ("Closing", "Average")
@@ -37,17 +37,28 @@ GRAIN = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_t
 
 
 class GroupExchangeRate(Document):
-    CH_TABLE = "epm_staging.group_exchange_rates"
-    CH_FIELD_MAP = {
-        "to_currency": "to_currency",
-        "from_currency": "from_currency",
-        "fiscal_year": "fiscal_year",
-        "fiscal_period": "fiscal_period",
-        "rate_type": "rate_type",
-        "rate": "rate",
-        "document": "name",
-        "inverse_quote": "inverse_quote",
-    }
+    #: Published by resync_staging, not a field map: the warehouse's `rate` is
+    #: the true rate, computed from quote / quoted_per.
+    CH_STAGING_TABLE = "epm_staging.group_exchange_rates"
+    CH_STAGING_COLUMNS = ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
+                          "rate", "document"]
+
+    @classmethod
+    def resync_staging(cls, force=False):
+        """Publish every approved rate as its TRUE rate: units of to per 1 from,
+        Float64. TRUNCATE + INSERT, so a cancelled rate leaves. reconcile_all
+        calls this too. Returns what sync_table wrote (None when it didn't)."""
+        from konsol import group_rates
+        from konsol.clickhouse import sync_table
+
+        docs = frappe.get_all(
+            "Group Exchange Rate", filters={"docstatus": 1}, limit_page_length=0,
+            fields=["name", "to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
+                    "quote", "quoted_per", "modified"])
+        modified = [d.modified for d in docs if d.modified]
+        return sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, group_rates.published_rows(docs),
+                          source_max_modified=max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None,
+                          force=force)
 
     def autoname(self):
         """Readable and unique: the grain, then a counter for the rare second
@@ -66,9 +77,10 @@ class GroupExchangeRate(Document):
         self._validate_grain()
         self._validate_period()
         self._guard_provenance()
-        self._validate_rate()
+        self._validate_quote()
         self._validate_group_currency()
         self._track_source()
+        self._set_label()
         self._require_reasons()
 
     def _saved_version(self):
@@ -76,6 +88,15 @@ class GroupExchangeRate(Document):
         if self.is_new():
             return None
         return self.get_doc_before_save()
+
+    def _per(self):
+        return int(self.quoted_per or 1)
+
+    def _rate(self):
+        """The true rate: units of the group currency per 1 from-currency."""
+        from konsol import group_rates
+
+        return group_rates.true_rate(self.quote, self._per())
 
     def _validate_grain(self):
         if self.rate_type not in RATE_TYPES:
@@ -97,7 +118,7 @@ class GroupExchangeRate(Document):
         """Source and ERP Quote are read-only in the form only; REST writes any
         field. "Adoption" is set by the one-time adoption alone, "ERP pre-fill"
         and the ERP Quote by prefill_from_erp alone (each sets its own flag), so
-        neither label can be forged onto a rate a person typed."""
+        neither can be forged onto a rate a person typed."""
         before = self._saved_version()
         was = before.source if before else None
         prefilling = bool(frappe.flags.get("konsol_prefilling_rates"))
@@ -106,29 +127,34 @@ class GroupExchangeRate(Document):
                          frappe.PermissionError)
         if self.source == PREFILL_SOURCE and was != PREFILL_SOURCE and not prefilling:
             frappe.throw('Source "ERP pre-fill" is set only by Pre-fill from ERP.', frappe.PermissionError)
-        erp_before = float(before.erp_rate or 0) if before else 0.0
-        if abs(float(self.erp_rate or 0) - erp_before) > 1e-12 and not (prefilling or self._adopting()):
+        erp_before = float(before.erp_quote or 0) if before else 0.0
+        if abs(float(self.erp_quote or 0) - erp_before) > 1e-12 and not (prefilling or self._adopting()):
             frappe.throw("ERP Quote is recorded by Pre-fill from ERP only.", frappe.PermissionError)
 
-    def _validate_rate(self):
-        """A positive, true rate of plausible magnitude (#138): a fat-fingered
-        93.78 for 0.9378 is refused here, not found months later."""
+    def _validate_quote(self):
+        """A positive quote per a listed unit, that keeps its digits, whose true
+        rate is of plausible magnitude (#138): a fat-fingered 93.78 for 0.9378
+        is refused here, not found months later."""
         from konsol import group_rates
 
-        rate = float(self.rate or 0)
-        if rate <= 0:
-            frappe.throw("Rate must be a positive number.", frappe.ValidationError)
-        if rate < group_rates.MIN_QUOTE:
-            flipped = f"{self.to_currency} per 1 {self.from_currency}" if self.inverse_quote else \
-                f"{self.from_currency} per 1 {self.to_currency}"
-            frappe.throw(
-                f"{rate:.9g} is below {group_rates.MIN_QUOTE:g} and loses digits at 9 decimal places. "
-                f"Quote it the other way round ({flipped}, {1 / rate:,.6f}) and "
-                f"{'untick' if self.inverse_quote else 'tick'} Inverse Quote.", frappe.ValidationError)
-        problem = group_rates.magnitude_problem(
-            self.from_currency, self.to_currency, group_rates.effective_rate(rate, self.inverse_quote))
+        quote = float(self.quote or 0)
+        if quote <= 0:
+            frappe.throw("Quote must be a positive number.", frappe.ValidationError)
+        if self._per() not in group_rates.QUOTED_PER:
+            frappe.throw(f"Quoted Per must be one of {', '.join(f'{p:,}' for p in group_rates.QUOTED_PER)}.",
+                         frappe.ValidationError)
+        rate = self._rate()
+        problem = group_rates.magnitude_problem(self.from_currency, self.to_currency, rate)
         if problem:
             frappe.throw(problem, frappe.ValidationError)
+        digits = group_rates.significant_digits(quote)
+        if digits < group_rates.MIN_SIGNIFICANT_DIGITS:
+            better, per = group_rates.choose_quoted_per(rate)
+            frappe.throw(
+                f"{group_rates.quote_label(quote, self._per(), self.from_currency, self.to_currency)} keeps "
+                f"only {digits} significant digits at 9 decimal places. Quote it per a larger unit: "
+                f"{group_rates.quote_label(better, per, self.from_currency, self.to_currency)}.",
+                frappe.ValidationError)
 
     def _validate_group_currency(self):
         """Only rates INTO a group reporting currency are entered; a rate into
@@ -146,24 +172,28 @@ class GroupExchangeRate(Document):
                 frappe.ValidationError)
 
     def _track_source(self):
-        """A pre-filled draft whose rate or direction a person changed is a
-        manual rate. The ERP Quote follows the direction, so it stays
-        comparable with the rate."""
+        """A pre-filled draft whose rate a person changed is a manual rate. The
+        ERP Quote follows the Quoted Per, so the two stay comparable, and
+        re-quoting the same rate per another unit changes nothing."""
         before = self._saved_version()
-        if before is not None and int(before.inverse_quote or 0) != int(self.inverse_quote or 0) \
-                and self.erp_rate:
-            self.erp_rate = round(1.0 / float(self.erp_rate), 9)
-            if self.source == PREFILL_SOURCE:
-                self.source = MANUAL_SOURCE
-        if self.source == PREFILL_SOURCE and self.erp_rate and \
-                abs(float(self.rate) - float(self.erp_rate)) > 1e-12:
+        old_per = int(before.quoted_per or 1) if before is not None else self._per()
+        if old_per != self._per() and self.erp_quote:
+            self.erp_quote = round(float(self.erp_quote) * self._per() / old_per, 9)
+        if self.source == PREFILL_SOURCE and self.erp_quote and \
+                abs(float(self.quote) - float(self.erp_quote)) > 1e-9 * max(float(self.erp_quote), 1e-9):
             self.source = MANUAL_SOURCE
         if not self.source:
             self.source = MANUAL_SOURCE
 
+    def _set_label(self):
+        from konsol import group_rates
+
+        self.quote_label = group_rates.quote_label(self.quote, self._per(), self.from_currency, self.to_currency)
+
     def _require_reasons(self):
         """Say why: always for an amendment, and for a move over 50% from the
-        previous approved rate for this key or from the ERP quote."""
+        previous approved rate for this key or from the ERP quote. Compared as
+        true rates, whatever unit each is quoted per."""
         from konsol import group_rates
 
         if (self.change_reason or "").strip():
@@ -175,11 +205,11 @@ class GroupExchangeRate(Document):
                 frappe.MandatoryError)
         if self._adopting():
             return  # the rate a period was already translated at; the note says so
-        rate = group_rates.effective_rate(self.rate, self.inverse_quote)
         previous = group_rates.previous_approved(
             self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period)
-        erp = group_rates.effective_rate(self.erp_rate, self.inverse_quote) if self.erp_rate else None
-        problem = group_rates.move_problem(rate, previous, erp)
+        erp = group_rates.true_rate(self.erp_quote, self._per()) if self.erp_quote else None
+        problem = group_rates.move_problem(self._rate(), previous, erp,
+                                           unit=f"{self.to_currency} per {self.from_currency}")
         if problem:
             frappe.throw(problem, frappe.MandatoryError)
 
@@ -219,10 +249,17 @@ class GroupExchangeRate(Document):
         assert_open(self.fiscal_year, self.fiscal_period, action="cancel a group exchange rate")
 
     def on_submit(self):
-        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        self._publish()
 
     def on_cancel(self):
-        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        self._publish()
+
+    def _publish(self):
+        """Republish the approved rates after the commit, once per transaction
+        (konsol#124): a rollback publishes nothing."""
+        from konsol.clickhouse import after_commit_once
+
+        after_commit_once(("resync_staging", self.doctype), type(self).resync_staging)
 
     def on_trash(self):
         """A cancelled rate is the record of what a period was once translated

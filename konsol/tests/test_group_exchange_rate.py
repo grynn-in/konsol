@@ -1,11 +1,15 @@
 """Group Exchange Rate: the group's governed translation rates (konsol#103).
 
-Decided 13 Sep 2026: one governed rate table owned by group finance; the ERP
-feed only pre-fills drafts; per fiscal period, Closing and Average, into a group
-reporting currency; submit is the approval; rates lock when their period
-closes; a period cannot close without them. The controller, the rules module
-and Period Status's gate run here against a stub frappe."""
+Decided 13 Sep 2026: one governed rate table owned by group finance, and one
+source of truth for FX rates, published by konsol as TRUE rates; the ERP feed
+only pre-fills drafts; per fiscal period, Closing and Average, into a group
+reporting currency, entered as a quote per 1 / 10 / 100 / 1,000 / 10,000 units;
+submit is the approval; rates lock when their period closes; a period cannot
+close without them. The controller, the rules module and Period Status's gate
+run here against a stub frappe."""
 import ast
+import contextlib
+import datetime
 import importlib.util
 import json
 import os
@@ -37,8 +41,8 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
         "VND": 4.40, "ARS": 3.1, "SEK": 1.02, "XAU": 0.0}
 
 
-def _frappe(record, *, period_open=True, group_currencies=("CHF", "USD"), duplicate=None,
-            user="approver@example.com", flags=None, fiscal_periods=range(0, 14), refs=None, previous=None):
+def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
+            flags=None, fiscal_periods=range(0, 14), refs=None, previous=None):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -98,8 +102,29 @@ def _rules_module(frappe, overrides=None):
     return module
 
 
+@contextlib.contextmanager
+def _konsol(rules, clickhouse=None):
+    """The controller's call-time imports (``from konsol import group_rates``,
+    ``from konsol.clickhouse import ...``) resolve to these stubs."""
+    konsol = types.ModuleType("konsol")
+    konsol.group_rates = rules
+    mods = {"konsol": konsol, "konsol.group_rates": rules}
+    if clickhouse is not None:
+        mods["konsol.clickhouse"] = clickhouse
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        yield
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
 def _controller(**kw):
-    record = {"gates": [], "syncs": []}
+    record = {"gates": [], "published": []}
     frappe = _frappe(record, **{k: v for k, v in kw.items() if k != "period_open"})
     period_open = kw.get("period_open", True)
 
@@ -128,16 +153,10 @@ def _controller(**kw):
         if not period_open:
             raise Refused(f"Cannot {action}: period closed")
 
-    konsol = types.ModuleType("konsol")
-    rules = _rules_module(frappe)
-    konsol.group_rates = rules
     mods = {n: types.ModuleType(n) for n in (
-        "frappe.model", "frappe.model.document", "frappe.model.naming", "konsol.clickhouse",
-        "konsol.period_status")}
-    mods.update({"frappe": frappe, "konsol": konsol, "konsol.group_rates": rules})
+        "frappe.model", "frappe.model.document", "konsol", "konsol.period_status")}
+    mods["frappe"] = frappe
     mods["frappe.model.document"].Document = Document
-    mods["frappe.model.naming"].make_autoname = lambda key, doc=None: key.replace(".##", "01")
-    mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a: record["syncs"].append(a)
     mods["konsol.period_status"].assert_open = assert_open
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
@@ -151,15 +170,13 @@ def _controller(**kw):
                 sys.modules.pop(n, None)
             else:
                 sys.modules[n] = old
-    # validate imports `from konsol import group_rates` at call time
-    sys.modules.setdefault("konsol", konsol)
     return module, record
 
 
 def _doc(module, **fields):
     base = dict(doctype="Group Exchange Rate", name="GER-2099-12-EUR-CHF-Closing-01", docstatus=0,
                 to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099,
-                fiscal_period=12, rate=0.9478, source="Manual")
+                fiscal_period=12, quote=0.9478, quoted_per="1", source="Manual")
     return module.GroupExchangeRate(**dict(base, **fields))
 
 
@@ -171,13 +188,6 @@ def _refused(fn, *a):
     return False
 
 
-def _with_konsol(module_record_pair, fn):
-    """Run ``fn`` with the stub konsol importable (validate's local import)."""
-    module, record = module_record_pair
-    saved_k, saved_r = sys.modules.get("konsol"), sys.modules.get("konsol.group_rates")
-    return module, record
-
-
 # -- the doctype ------------------------------------------------------------------
 
 def test_the_grain_and_the_approval_shape():
@@ -187,10 +197,17 @@ def test_the_grain_and_the_approval_shape():
         assert (f[name]["fieldtype"], f[name]["options"], f[name]["reqd"]) == ("Link", "ISO Currency", 1)
     assert f["rate_type"]["options"].split("\n") == ["Closing", "Average"], "historical rates stay in Historical Equity Rate"
     assert (f["fiscal_year"]["fieldtype"], f["fiscal_period"]["fieldtype"]) == ("Int", "Int")
-    assert f["rate"]["fieldtype"] == "Float" and f["rate"]["precision"] == "9"
+    assert f["quote"]["fieldtype"] == "Float" and f["quote"]["precision"] == "9" and f["quote"]["reqd"] == 1
+    assert f["quoted_per"]["fieldtype"] == "Select" and f["quoted_per"]["default"] == "1"
+    assert f["quoted_per"]["options"].split("\n") == ["1", "10", "100", "1000", "10000"]
+    assert f["quote_label"]["read_only"] == 1 and f["quote_label"]["in_list_view"] == 1
+    assert "rate" not in f and "inverse_quote" not in f and "erp_rate" not in f
+    assert f["erp_quote"]["read_only"] == 1
     assert f["amended_from"]["options"] == "Group Exchange Rate"
     assert f["change_reason"]["mandatory_depends_on"] == "eval:doc.amended_from"
-    assert f["source"]["read_only"] == 1 and f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
+    assert f["source"]["read_only"] == 1 and f["source"]["no_copy"] == 1
+    assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
+    assert set(_json()["field_order"]) == set(f)
 
 
 def test_group_accountants_draft_and_the_close_lead_approves():
@@ -213,64 +230,65 @@ def _validate(**fields):
     ctx = fields.pop("_ctx", {})
     module, record = _controller(**ctx)
     d = _doc(module, **fields)
-    saved = sys.modules.get("konsol.group_rates"), sys.modules.get("konsol")
     rules = _rules_module(_frappe({}, **{k: v for k, v in ctx.items() if k in ("refs", "previous")}))
-    konsol = types.ModuleType("konsol")
-    konsol.group_rates = rules
-    sys.modules["konsol"], sys.modules["konsol.group_rates"] = konsol, rules
     message = None
-    try:
-        d.validate()
-    except Refused as e:
-        message = str(e)
-    finally:
-        for name, old in zip(("konsol.group_rates", "konsol"), saved):
-            if old is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = old
+    with _konsol(rules):
+        try:
+            d.validate()
+        except Refused as e:
+            message = str(e)
     return message is not None, d, message
 
 
-def test_a_plausible_true_rate_is_accepted():
-    assert not _validate()[0]
-    assert not _validate(from_currency="USD", to_currency="CHF", rate_type="Average", rate=0.8762)[0]
-    # a small rate is quoted the other way round: 150.53 JPY per USD
-    assert not _validate(from_currency="JPY", to_currency="USD", rate=150.53, inverse_quote=1)[0]
+def test_a_plausible_rate_is_accepted_and_labelled():
+    refused, d, _ = _validate()
+    assert not refused and d.quote_label == "0.9478 CHF per EUR"
+    assert not _validate(from_currency="USD", to_currency="CHF", rate_type="Average", quote=0.8762)[0]
+    refused, d, _ = _validate(from_currency="JPY", to_currency="USD", quote=0.6607, quoted_per="100")
+    assert not refused and d.quote_label == "0.6607 USD per 100 JPY"
 
 
 def test_idr_and_vnd_into_usd_pass():
     """The #138 wide band [1e-4, 1e4] refused both, so a group holding either
-    could never close."""
-    assert not _validate(from_currency="IDR", to_currency="USD", rate=16350.5, inverse_quote=1)[0]
-    assert not _validate(from_currency="VND", to_currency="USD", rate=25380, inverse_quote=1)[0]
-    refused, _, msg = _validate(from_currency="IDR", to_currency="USD", rate=0.0000611)
-    assert refused and "below 0.1" in msg and "IDR per 1 USD" in msg, "entered the other way round"
+    could never close. Quoted per 10,000 they keep their digits."""
+    refused, d, _ = _validate(from_currency="IDR", to_currency="USD", quote=0.6116, quoted_per="10000")
+    assert not refused and d.quote_label == "0.6116 USD per 10,000 IDR"
+    assert not _validate(from_currency="VND", to_currency="USD", quote=0.394, quoted_per="10000")[0]
 
 
-def test_a_100x_error_on_jpy_is_refused():
-    """The wide band could not catch it; the reference can."""
-    refused, _, msg = _validate(from_currency="JPY", to_currency="USD", rate=15053, inverse_quote=1)
-    assert refused and "x below" in msg and "(#138)" in msg
-    assert _validate(from_currency="JPY", to_currency="USD", rate=1.5053, inverse_quote=1)[0]
-    assert _validate(from_currency="USD", to_currency="CHF", rate=87.62)[0]
+def test_a_quote_that_would_lose_its_digits_is_refused():
+    """MariaDB keeps 9 decimal places: 0.0000611 keeps 5 significant digits.
+    The direction never flips; a larger unit keeps the digits."""
+    refused, _, msg = _validate(from_currency="IDR", to_currency="USD", quote=0.0000611)
+    assert refused and "keeps only 5 significant digits" in msg
+    assert "Quote it per a larger unit: 0.611 USD per 10,000 IDR" in msg
+    assert not _validate(from_currency="JPY", to_currency="USD", quote=0.006607)[0], "7 digits is enough"
+
+
+def test_a_100x_error_on_jpy_is_refused_on_the_true_rate():
+    """The wide band could not catch it; the reference can. The check reads
+    quote / quoted_per, whatever the unit."""
+    refused, _, msg = _validate(from_currency="JPY", to_currency="USD", quote=66.07, quoted_per="100")
+    assert refused and "0.6607 USD per JPY is about 98x above" in msg and "(#138)" in msg
+    assert _validate(from_currency="JPY", to_currency="USD", quote=0.6607)[0], "per 1: 100x"
+    assert _validate(from_currency="JPY", to_currency="USD", quote=0.6607, quoted_per="10000")[0], "100x below"
+    assert _validate(from_currency="USD", to_currency="CHF", quote=87.62)[0]
 
 
 def test_a_currency_with_no_reference_is_refused():
-    refused, _, msg = _validate(from_currency="XAU", rate=2100.0)
+    refused, _, msg = _validate(from_currency="XAU", quote=2100.0)
     assert refused and "set USD Reference (log10) (usd_log10) on ISO Currency XAU" in msg
-    refs = dict(REFS, EUR=0.0)
-    assert _validate(_ctx={"refs": refs})[0], "0 is 'not set' for any currency but USD"
-    assert not _validate(from_currency="USD", to_currency="CHF", rate=0.8762,
+    assert _validate(_ctx={"refs": dict(REFS, EUR=0.0)})[0], "0 is 'not set' for any currency but USD"
+    assert not _validate(from_currency="USD", to_currency="CHF", quote=0.8762,
                          _ctx={"refs": dict(REFS, USD=0.0)})[0], "USD is the anchor"
 
 
 def test_the_guards_refuse():
-    assert _validate(rate=0)[0]
-    assert _validate(rate=-0.9)[0]
-    assert _validate(rate=94.78)[0], "#138: 94.78 for 0.9478 is a scaling error"
-    assert _validate(from_currency="JPY", to_currency="USD", rate=0.0000066)[0]
-    assert _validate(from_currency="CHF", to_currency="CHF", rate=1)[0], "no rate into itself"
+    assert _validate(quote=0)[0]
+    assert _validate(quote=-0.9)[0]
+    assert _validate(quote=94.78)[0], "#138: 94.78 for 0.9478 is a scaling error"
+    assert _validate(quoted_per="5")[0], "a unit off the list"
+    assert _validate(from_currency="CHF", to_currency="CHF", quote=1)[0], "no rate into itself"
     assert _validate(rate_type="Default")[0]
     assert _validate(to_currency="EUR")[0], "EUR is no group's reporting currency here"
     assert _validate(fiscal_period=14)[0]
@@ -278,16 +296,18 @@ def test_the_guards_refuse():
 
 
 def test_a_move_over_half_needs_a_reason():
-    """Soft: ARS fell 55% in Dec 2023, so a big move is allowed with a reason."""
-    ars = dict(from_currency="ARS", to_currency="USD", rate=808.45, inverse_quote=1)
-    previous = ("GER-2099-11-ARS-USD-Closing-01", 366.5, 1, 2099, 11)
+    """Soft: ARS fell 55% in Dec 2023, so a big move is allowed with a reason.
+    Compared as true rates, whatever unit each is quoted per."""
+    ars = dict(from_currency="ARS", to_currency="USD", quote=1.23693488, quoted_per="1000")
+    previous = ("GER-2099-11-ARS-USD-Closing-01", 0.272851296, "100", 2099, 11)
     refused, _, msg = _validate(_ctx={"previous": previous}, **ars)
     assert refused and "-55% from the previous approved rate FY2099 P11" in msg
+    assert "This rate (0.00123693488 USD per ARS)" in msg and "(0.00272851296 USD per ARS)" in msg, msg
     assert not _validate(_ctx={"previous": previous}, change_reason="Devaluation, 13 Dec", **ars)[0]
-    assert not _validate(_ctx={"previous": ("GER-P11", 800.0, 1, 2099, 11)}, **ars)[0], "a small move"
-    # from the ERP quote it was proposed from (same direction as the rate)
-    refused, _, msg = _validate(rate=1.5, erp_rate=0.9478, source="Manual",
-                                _before=dict(source="Manual", erp_rate=0.9478, inverse_quote=0))
+    assert not _validate(_ctx={"previous": ("GER-P11", 1.25, "1000", 2099, 11)}, **ars)[0], "a small move"
+    # from the ERP quote it was proposed from (per the same unit)
+    refused, _, msg = _validate(quote=1.5, erp_quote=0.9478, source="Manual",
+                                _before=dict(source="Manual", erp_quote=0.9478, quoted_per="1"))
     assert refused and "from the ERP quote" in msg
     # an amendment always needs one
     assert _validate(amended_from="GER-2099-12-EUR-CHF-Closing-01", change_reason="")[0]
@@ -299,36 +319,38 @@ def test_an_amendment_must_say_why():
 
 
 def test_a_pre_filled_rate_a_person_changed_is_manual():
-    prefilled = dict(source="ERP pre-fill", erp_rate=0.9478, inverse_quote=0)
-    _, d, _ = _validate(source="ERP pre-fill", erp_rate=0.9478, rate=0.95, _before=prefilled)
+    prefilled = dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1")
+    _, d, _ = _validate(source="ERP pre-fill", erp_quote=0.9478, quote=0.95, _before=prefilled)
     assert d.source == "Manual"
-    _, d, _ = _validate(source="ERP pre-fill", erp_rate=0.9478, rate=0.9478, _before=prefilled)
+    _, d, _ = _validate(source="ERP pre-fill", erp_quote=0.9478, quote=0.9478, _before=prefilled)
     assert d.source == "ERP pre-fill"
-    # turning the direction round is a change too, and the quote follows it
-    refused, d, _ = _validate(source="ERP pre-fill", erp_rate=1.1236, rate=1.1236, inverse_quote=0,
-                             from_currency="USD", to_currency="CHF", change_reason="flip",
-                             _before=dict(prefilled, erp_rate=1.1236, inverse_quote=1))
-    assert not refused and d.source == "Manual" and abs(d.erp_rate - 1 / 1.1236) < 1e-9
+    # re-quoting the same rate per another unit changes nothing; the ERP quote follows the unit
+    refused, d, _ = _validate(source="ERP pre-fill", erp_quote=0.9478, quote=9.478, quoted_per="10",
+                              _before=prefilled)
+    assert not refused and d.source == "ERP pre-fill" and abs(d.erp_quote - 9.478) < 1e-12
+    refused, d, _ = _validate(source="ERP pre-fill", erp_quote=0.9478, quote=9.6, quoted_per="10",
+                              _before=prefilled)
+    assert not refused and d.source == "Manual"
 
 
 def test_a_forged_source_is_refused():
-    """source and erp_rate are read-only in the form only: REST writes them."""
+    """source and erp_quote are read-only in the form only: REST writes them."""
     refused, _, msg = _validate(source="Adoption")
     assert refused and "one-time rate adoption" in msg
-    refused, _, msg = _validate(source="ERP pre-fill", erp_rate=0.9478)
+    refused, _, msg = _validate(source="ERP pre-fill", erp_quote=0.9478)
     assert refused and "Pre-fill from ERP" in msg
-    assert _validate(source="Manual", erp_rate=0.9478)[0], "an ERP quote only the pre-fill records"
-    refused, _, _ = _validate(source="Adoption", _before=dict(source="Manual", erp_rate=0))
+    assert _validate(source="Manual", erp_quote=0.9478)[0], "an ERP quote only the pre-fill records"
+    refused, _, _ = _validate(source="Adoption", _before=dict(source="Manual", erp_quote=0, quoted_per="1"))
     assert refused, "relabelling a saved rate"
     # the real writers, each under its own flag
-    assert not _validate(source="ERP pre-fill", erp_rate=0.9478,
+    assert not _validate(source="ERP pre-fill", erp_quote=0.9478,
                          _ctx={"flags": {"konsol_prefilling_rates": True}})[0]
     assert not _validate(source="Adoption", _ctx={"flags": {"konsol_adopting_rates": True},
                                                   "user": "Administrator"})[0]
     assert _validate(source="Adoption", _ctx={"flags": {"konsol_adopting_rates": True}})[0], "only the system"
     # a saved pre-filled draft keeps its label when a person (no flag) saves it again
-    assert not _validate(source="ERP pre-fill", erp_rate=0.9478,
-                         _before=dict(source="ERP pre-fill", erp_rate=0.9478, inverse_quote=0))[0]
+    assert not _validate(source="ERP pre-fill", erp_quote=0.9478,
+                         _before=dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1"))[0]
 
 
 def test_submit_is_gated_on_the_open_period():
@@ -367,53 +389,149 @@ def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
     _doc(module, docstatus=0).on_trash()
 
 
-def test_submitted_rows_write_through_after_the_commit():
+# -- publishing: the true rate, computed once, by konsol -------------------------------
+
+def test_konsol_publishes_the_true_rate_after_the_commit():
+    """One source of truth (13 Sep 2026): the warehouse's `rate` is quote /
+    quoted_per, as Float64, and it never scales or inverts. Approve and cancel
+    republish every approved row once the transaction commits."""
     module, record = _controller()
-    d = _doc(module)
-    d.on_submit()
-    d.on_cancel()
-    assert record["syncs"] == [("Group Exchange Rate", module.GroupExchangeRate.CH_TABLE,
-                                module.GroupExchangeRate.CH_FIELD_MAP)] * 2
-    assert module.GroupExchangeRate.CH_TABLE == "epm_staging.group_exchange_rates"
+    queued, written = [], []
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.after_commit_once = lambda key, fn: queued.append((key, fn))
+    ch.sync_table = lambda table, columns, rows, source_max_modified=None, force=False: \
+        written.append((table, columns, rows, source_max_modified, force)) or len(rows)
+    approved = [types.SimpleNamespace(
+        name="GER-2099-12-JPY-USD-Closing-01", to_currency="USD", from_currency="JPY", fiscal_year=2099,
+        fiscal_period=12, rate_type="Closing", quote=0.6607, quoted_per="100",
+        modified=datetime.datetime(2099, 12, 31, 9, 0, 0)),
+        types.SimpleNamespace(
+        name="GER-2099-12-VND-USD-Closing-01", to_currency="USD", from_currency="VND", fiscal_year=2099,
+        fiscal_period=12, rate_type="Closing", quote=0.394, quoted_per="10000", modified=None)]
+    module.frappe.get_all = lambda doctype, filters=None, fields=None, **k: (
+        approved if (doctype, filters) == ("Group Exchange Rate", {"docstatus": 1}) else [])
+    with _konsol(_rules_module(_frappe({})), ch):
+        d = _doc(module, docstatus=1)
+        d.on_submit()
+        d.on_cancel()
+        assert [k for k, _ in queued] == [("resync_staging", "Group Exchange Rate")] * 2
+        assert queued[0][1] == module.GroupExchangeRate.resync_staging
+        assert module.GroupExchangeRate.resync_staging(force=True) == 2
+    [(table, columns, rows, stamp, force)] = written
+    assert (table, force, stamp) == ("epm_staging.group_exchange_rates", True, "2099-12-31 09:00:00")
+    assert columns == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate", "document"]
+    assert rows == [["USD", "JPY", 2099, 12, "Closing", 0.6607 / 100, "GER-2099-12-JPY-USD-Closing-01"],
+                    ["USD", "VND", 2099, 12, "Closing", 0.394 / 10000, "GER-2099-12-VND-USD-Closing-01"]]
+    assert abs(rows[0][5] - 0.006607) < 1e-15 and abs(rows[1][5] - 0.0000394) < 1e-16
     module.on_doctype_update()
     assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"]
 
 
-def test_the_staging_ddl_matches_the_field_map():
-    """Keep in step with konsolidat's clickhouse/init-db.sql (the same body)."""
+def test_reconcile_publishes_through_the_same_path():
+    """reconcile_all calls resync_staging for a controller with a staging table
+    and no field map, so a migrate republishes the true rates too."""
+    module, _ = _controller()
+    cls = module.GroupExchangeRate
+    assert cls.CH_STAGING_TABLE == "epm_staging.group_exchange_rates" and callable(cls.resync_staging)
+    assert not getattr(cls, "CH_TABLE", None) and not getattr(cls, "CH_FIELD_MAP", None)
+    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
+        src = f.read()
+    assert 'getattr(cls, "resync_staging", None)' in src and "cls.resync_staging(force=True)" in src
+
+
+def _ddl():
     with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
         tree = ast.parse(f.read())
-    ddl = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-               and getattr(n.targets[0], "id", "") == "_REFERENCE_TABLE_DDL")
-    body = ddl["epm_staging.group_exchange_rates"]
+    return {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+            and getattr(n.targets[0], "id", "") in ("_REFERENCE_TABLE_DDL", "_ADDED_COLUMNS")}
+
+
+def test_the_staging_ddl_is_the_true_rate():
+    """Keep in step with konsolidat's clickhouse/init-db.sql, character for character."""
+    body = _ddl()["_REFERENCE_TABLE_DDL"]["epm_staging.group_exchange_rates"]
     assert body == (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String, inverse_quote UInt8 DEFAULT 0) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)")
     module, _ = _controller()
     cols = [c.strip().split()[0] for c in body[1:body.index(")")].split(",")]
-    assert cols == list(module.GroupExchangeRate.CH_FIELD_MAP)
+    assert cols == module.GroupExchangeRate.CH_STAGING_COLUMNS
+    assert "epm_staging.group_exchange_rates" not in _ddl()["_ADDED_COLUMNS"], "nothing shipped to upgrade"
 
 
-def test_a_small_rate_is_quoted_the_other_way_round():
-    """A Frappe Float is decimal(21,9): KRW -> USD 1/1350 would keep about 6
-    significant digits, IDR fewer. The quote is kept where it has its digits,
-    and the warehouse inverts it (inverse_quote)."""
-    f = _fields()
-    assert f["inverse_quote"]["fieldtype"] == "Check"
-    r = _rules()
-    assert r.as_stored(0.9478) == (0.9478, 0)
-    assert r.as_stored(1 / 150) == (150.0, 1), "the ERP's USD -> JPY 150 stays exactly 150"
-    quote, inverse = r.as_stored(1 / 16350.123456)
-    assert inverse == 1 and abs(quote - 16350.123456) < 1e-6
-    assert abs(r.effective_rate(quote, inverse) * 16350.123456 - 1) < 1e-12
-    assert r.effective_rate(0.9478, 0) == 0.9478 and r.effective_rate(0, 1) == 0.0
+def test_the_currencies_ddl_carries_the_reference():
+    consts = _ddl()
+    # identical to konsolidat's clickhouse/init-db.sql; NaN = never synced
+    assert consts["_REFERENCE_TABLE_DDL"]["epm_gold.currencies"] == (
+        "(currency_code String, currency_name String, symbol String, minor_unit UInt8, "
+        "usd_log10 Float64 DEFAULT nan) "
+        "ENGINE = MergeTree ORDER BY currency_code")
+    # a table that already shipped gets the column on the next migrate, at the
+    # end of its CREATE so a fresh table and an upgraded one agree
+    added = consts["_ADDED_COLUMNS"]
+    assert added["epm_gold.currencies"] == [("usd_log10", "Float64 DEFAULT nan")]
+    for table, cols in added.items():
+        body = consts["_REFERENCE_TABLE_DDL"][table]
+        assert body[:body.index(") ENGINE")].endswith(", ".join(f"{c} {t}" for c, t in cols)), table
+    sql = []
+    m = _clickhouse_module(lambda s, params=None: sql.append(s) or "")
+    m.ensure_reference_tables()
+    stmt = "ALTER TABLE epm_gold.currencies ADD COLUMN IF NOT EXISTS usd_log10 Float64 DEFAULT nan"
+    assert stmt in sql and sql.index(stmt) > sql.index(
+        "CREATE TABLE IF NOT EXISTS epm_gold.currencies " + consts["_REFERENCE_TABLE_DDL"]["epm_gold.currencies"])
+
+
+def _clickhouse_module(execute):
+    """konsol.clickhouse, loaded by path against stubs, with ``execute`` replaced."""
+    mods = {n: types.ModuleType(n) for n in ("frappe", "requests", "requests.exceptions")}
+    mods["frappe"].logger = lambda *a, **k: types.SimpleNamespace(warning=lambda *a, **k: None,
+                                                                  error=lambda *a, **k: None)
+    mods["frappe"].flags = types.SimpleNamespace()
+    mods["requests"].exceptions = mods["requests.exceptions"]
+    for name in ("ConnectionError", "Timeout", "HTTPError"):
+        setattr(mods["requests.exceptions"], name, type(name, (Exception,), {}))
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("ch_under_test", os.path.join(APP_DIR, "clickhouse.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    module.execute = execute
+    return module
 
 
 # -- the rules ------------------------------------------------------------------------
 
 def _rules(**overrides):
     return _rules_module(_frappe({}), overrides)
+
+
+def test_a_quote_per_a_unit():
+    """Decided 13 Sep 2026: quote per 1 / 10 / 100 / 1,000 / 10,000 units of the
+    from-currency; the direction never flips; the true rate is quote / per."""
+    r = _rules()
+    assert r.QUOTED_PER == (1, 10, 100, 1000, 10000) and r.MIN_SIGNIFICANT_DIGITS == 6
+    assert r.true_rate(0.6607, "100") == 0.6607 / 100 and r.true_rate(0.9478, "1") == 0.9478
+    assert r.true_rate(0, "100") == 0.0
+    assert [r.significant_digits(q) for q in (0.0066, 0.66, 0.0000394, 150, 0.0001)] == [7, 9, 5, 12, 6]
+    # the pre-fill and the adoption: the smallest unit that puts the quote at 0.1 or more
+    assert r.choose_quoted_per(0.9478) == (0.9478, 1)
+    assert r.choose_quoted_per(0.006607) == (0.6607, 100), "JPY -> USD per 100"
+    assert r.choose_quoted_per(0.000741) == (0.741, 1000), "KRW per 1,000"
+    assert r.choose_quoted_per(0.0000394) == (0.394, 10000), "VND per 10,000"
+    assert r.choose_quoted_per(1 / 150) == (0.666666667, 100)
+    assert r.choose_quoted_per(0.000001) == (0.01, 10000), "the largest unit when none reaches 0.1"
+    assert r.quote_label(0.6607, "100", "JPY", "USD") == "0.6607 USD per 100 JPY"
+    assert r.quote_label(0.394, 10000, "VND", "USD") == "0.394 USD per 10,000 VND"
+    assert r.quote_label(0.9478, "1", "EUR", "CHF") == "0.9478 CHF per EUR"
+    src = open(RULES).read()
+    assert "inverse" not in src.replace("inverse of", ""), "nothing is inverted to store it"
 
 
 def test_the_magnitude_guard_reads_iso_currency():
@@ -450,6 +568,13 @@ def test_the_move_rule():
     assert r.MOVE_NEEDS_REASON == 0.5
 
 
+def test_the_previous_rate_is_read_as_a_true_rate():
+    frappe = _frappe({}, previous=("GER-2099-11-JPY-USD-Closing-01", 0.6607, "100", 2099, 11))
+    r = _rules_module(frappe)
+    rate, label = r.previous_approved("USD", "JPY", "Closing", 2099, 12)
+    assert rate == 0.6607 / 100 and label == "FY2099 P11 (GER-2099-11-JPY-USD-Closing-01)"
+
+
 def test_every_iso_currency_has_a_reference():
     with open(os.path.join(APP_DIR, "fixtures", "iso_currency.json")) as f:
         rows = json.load(f)
@@ -466,60 +591,6 @@ def test_every_iso_currency_has_a_reference():
     assert field["fieldtype"] == "Float"
     with open(os.path.join(APP_DIR, "epm", "doctype", "iso_currency", "iso_currency.py")) as f:
         assert '"usd_log10": "usd_log10"' in f.read(), "written through to epm_gold.currencies"
-
-
-def test_the_currencies_ddl_carries_the_reference():
-    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
-        tree = ast.parse(f.read())
-    consts = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-              and getattr(n.targets[0], "id", "") in ("_REFERENCE_TABLE_DDL", "_ADDED_COLUMNS")}
-    # identical to konsolidat's clickhouse/init-db.sql; NaN = never synced
-    assert consts["_REFERENCE_TABLE_DDL"]["epm_gold.currencies"] == (
-        "(currency_code String, currency_name String, symbol String, minor_unit UInt8, "
-        "usd_log10 Float64 DEFAULT nan) "
-        "ENGINE = MergeTree ORDER BY currency_code")
-    # a table that already shipped gets the column on the next migrate, at the
-    # end of its CREATE so a fresh table and an upgraded one agree
-    added = consts["_ADDED_COLUMNS"]
-    assert ("usd_log10", "Float64 DEFAULT nan") in added["epm_gold.currencies"]
-    assert ("inverse_quote", "UInt8 DEFAULT 0") in added["epm_staging.group_exchange_rates"]
-    for table in ("epm_gold.currencies", "epm_staging.group_exchange_rates"):
-        body = consts["_REFERENCE_TABLE_DDL"][table]
-        columns = body[:body.index(") ENGINE")]
-        for name, typ in added[table]:
-            assert columns.endswith(f"{name} {typ}"), (table, name)
-    sql = []
-    m = _clickhouse_module(lambda s, params=None: sql.append(s) or "")
-    m.ensure_reference_tables()
-    for stmt in ("ALTER TABLE epm_gold.currencies ADD COLUMN IF NOT EXISTS usd_log10 Float64 DEFAULT nan",
-                 "ALTER TABLE epm_staging.group_exchange_rates ADD COLUMN IF NOT EXISTS inverse_quote UInt8 DEFAULT 0"):
-        assert stmt in sql and sql.index(stmt) > sql.index(
-            "CREATE TABLE IF NOT EXISTS " + stmt.split()[2] + " " + consts["_REFERENCE_TABLE_DDL"][stmt.split()[2]])
-
-
-def _clickhouse_module(execute):
-    """konsol.clickhouse, loaded by path against stubs, with ``execute`` replaced."""
-    mods = {n: types.ModuleType(n) for n in ("frappe", "requests", "requests.exceptions")}
-    mods["frappe"].logger = lambda *a, **k: types.SimpleNamespace(warning=lambda *a, **k: None,
-                                                                  error=lambda *a, **k: None)
-    mods["frappe"].flags = types.SimpleNamespace()
-    mods["requests"].exceptions = mods["requests.exceptions"]
-    for name in ("ConnectionError", "Timeout", "HTTPError"):
-        setattr(mods["requests.exceptions"], name, type(name, (Exception,), {}))
-    saved = {n: sys.modules.get(n) for n in mods}
-    sys.modules.update(mods)
-    try:
-        spec = importlib.util.spec_from_file_location("ch_under_test", os.path.join(APP_DIR, "clickhouse.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    finally:
-        for n, old in saved.items():
-            if old is None:
-                sys.modules.pop(n, None)
-            else:
-                sys.modules[n] = old
-    module.execute = execute
-    return module
 
 
 def test_the_period_date_is_the_warehouse_one():
@@ -545,9 +616,9 @@ def test_quotes_direct_inverse_and_a_derived_cross():
     [q] = [q for q in r.resolve_quotes(ROWS, "EUR", "CHF", "Closing") if q["source"] == "d365_fo"]
     assert (q["rate"], q["how"], q["erp_type"]) == (0.9478, "direct", "Closing")
     [q] = r.resolve_quotes(ROWS, "JPY", "USD", "Closing")
-    assert q["how"] == "inverse of USD→JPY" and abs(q["rate"] - 1 / 150.0) < 1e-9  # stored at 9 dp
+    assert q["how"] == "inverse of USD→JPY" and q["rate"] == 1 / 150.0, "full precision until it is stored"
     [q] = r.resolve_quotes(ROWS, "GBP", "EUR", "Closing")
-    assert q["how"] == "cross via USD" and abs(q["rate"] - 1.27 / 1.08) < 1e-9
+    assert q["how"] == "cross via USD" and abs(q["rate"] - 1.27 / 1.08) < 1e-12
 
 
 def test_average_falls_back_to_the_erp_default_type_and_says_so():
@@ -561,8 +632,8 @@ def test_two_erp_sources_are_both_shown_and_a_disagreement_is_flagged():
     r = _rules()
     quotes = r.resolve_quotes(ROWS, "EUR", "CHF", "Closing")
     assert [q["source"] for q in quotes] == ["d365_fo", "erpnext"]
-    note = r.describe_quotes(quotes, 2024, 3)
-    assert note.startswith("ERP SOURCES DISAGREE") and "0.9478" in note and "0.948" in note
+    note = r.describe_quotes(quotes, 2024, 3, "EUR", "CHF")
+    assert note.startswith("ERP SOURCES DISAGREE") and "0.9478 CHF per EUR" in note and "0.948 CHF per EUR" in note
 
 
 def test_the_pre_fill_proposes_drafts_and_never_submits():
@@ -608,11 +679,16 @@ def test_the_pre_fill_in_action():
     drafts = inserted[1:]
     assert {(d["from_currency"], d["rate_type"]) for d in drafts} == {
         ("EUR", "Closing"), ("EUR", "Average"), ("GBP", "Average"), ("JPY", "Closing")}
-    assert all(d["source"] == "ERP pre-fill" and d["erp_rate"] == d["rate"] and "docstatus" not in d for d in drafts)
+    assert all(d["source"] == "ERP pre-fill" and d["erp_quote"] == d["quote"] and "docstatus" not in d
+               for d in drafts)
     eur_avg = next(d for d in drafts if d["from_currency"] == "EUR" and d["rate_type"] == "Average")
-    assert eur_avg["rate"] == 0.945 and eur_avg["inverse_quote"] == 0 and "Default" in eur_avg["source_note"]
+    assert (eur_avg["quote"], eur_avg["quoted_per"]) == (0.945, "1") and "Default" in eur_avg["source_note"]
     jpy = next(d for d in drafts if d["from_currency"] == "JPY")
-    assert (jpy["rate"], jpy["inverse_quote"]) == (170.0, 1), "the ERP's CHF -> JPY 170, kept exact"
+    assert (jpy["quote"], jpy["quoted_per"]) == (0.588235294, "100"), "CHF per 100 JPY"
+    # the note gives every ERP quote as the true rate it means, and the unit it is entered per
+    assert "d365_fo Closing 0.00588235294 CHF per JPY" in jpy["source_note"], jpy["source_note"]
+    assert "Entered as 0.588235294 CHF per 100 JPY" in jpy["source_note"]
+    assert "0.945 CHF per EUR" in eur_avg["source_note"] and "Entered as" not in eur_avg["source_note"]
     assert out["existing"] == ["GBP → CHF Closing"]
     assert "SEK → CHF Average" in out["no_quote"]
     refused = dict(x.split(": ", 1) for x in out["refused"])
@@ -703,6 +779,71 @@ def test_the_gate_reads_existence_before_passing():
     assert r.ledgers_built() is False and sql == ["EXISTS TABLE epm_gold.gold_trial_balance"]
 
 
+def test_the_adoption_plan():
+    r = _rules()
+    used = [
+        ("EUR", "CHF", 2024, 3, [0.9478], [0.9422]),
+        ("JPY", "USD", 2024, 3, [1.0], [0.0066]),
+        ("GBP", "USD", 2024, 3, [1.27, 1.28], [1.26]),
+    ]
+    actions = r.plan_adoption(used, {("GBP", "USD", 2024, 3, "Average")}, {(2024, 3): ROWS}, "2026-09-13")
+    by_key = {a[1]: a for a in actions}
+    eur = by_key[("EUR", "CHF", 2024, 3, "Closing")]
+    assert eur[0] == "adopt" and eur[2] == 0.9478 and eur[3] == 0.9478
+    assert "d365_fo Closing quote" in eur[4] and "Authored by the system" in eur[4]
+    avg = by_key[("EUR", "CHF", 2024, 3, "Average")]
+    assert avg[0] == "adopt" and avg[3] is None and "matches no current ERP quote" in avg[4]
+    assert by_key[("JPY", "USD", 2024, 3, "Closing")][0] == "skip" and "1.0 parity" in by_key[("JPY", "USD", 2024, 3, "Closing")][2]
+    assert by_key[("GBP", "USD", 2024, 3, "Closing")][0] == "skip"
+    assert by_key[("GBP", "USD", 2024, 3, "Average")][2] == "already has an approved group rate"
+
+
+def test_the_adoption_enters_each_rate_per_the_unit_that_keeps_it():
+    """The rate a period was translated at, entered so its true rate survives
+    MariaDB: JPY -> USD 0.0066 becomes 0.66 per 100, its ERP quote with it."""
+    made = []
+    frappe = _frappe({}, user="Administrator")
+    frappe.get_all = lambda *a, **k: []
+    frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
+    frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
+    frappe.db.savepoint = lambda name: None
+
+    class Doc(dict):
+        name = "GER-X"
+
+        def insert(self, **k):
+            made.append(dict(self))
+
+        def submit(self):
+            pass
+    frappe.get_doc = Doc
+    r = _rules_module(frappe, {
+        "translated_rates": lambda: [("JPY", "USD", 2024, 3, [0.00663730291], [0.0066])],
+        "erp_quote_rows": lambda as_of: [("d365_fo", "Closing", "JPY", "USD", 0.00663730291, "2024-03-01")]})
+    out = r.adopt_erp_rates()
+    assert len(out["adopted"]) == 2 and frappe.flags.konsol_adopting_rates is False
+    closing = next(d for d in made if d["rate_type"] == "Closing")
+    assert (closing["quote"], closing["quoted_per"], closing["erp_quote"]) == (0.663730291, "100", 0.663730291)
+    assert closing["source"] == "Adoption"
+    average = next(d for d in made if d["rate_type"] == "Average")
+    assert (average["quote"], average["quoted_per"], average["erp_quote"]) == (0.66, "100", None)
+
+
+def test_the_adoption_runs_as_the_system_only_and_a_dry_run_writes_nothing():
+    frappe = _frappe({}, user="someone@example.com")
+    assert _refused(_rules_module(frappe).adopt_erp_rates)
+    frappe = _frappe({}, user="Administrator")
+    frappe.get_all = lambda *a, **k: []
+    frappe.get_doc = lambda d: (_ for _ in ()).throw(AssertionError("a dry run wrote"))
+    frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
+    frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
+    r = _rules_module(frappe, {
+        "translated_rates": lambda: [("EUR", "CHF", 2024, 3, [0.9478], [0.9422])],
+        "erp_quote_rows": lambda as_of: ROWS})
+    out = r.adopt_erp_rates(dry_run=True)
+    assert len(out["adopted"]) == 2 and frappe.flags.konsol_adopting_rates is False
+
+
 def _adoption(error):
     frappe = _frappe({}, user="Administrator")
     frappe.local = types.SimpleNamespace(site="konsolidat.local")
@@ -730,40 +871,6 @@ def test_the_adoption_before_the_warehouse_exists():
             assert e.__cause__ is error
         else:
             raise AssertionError("an unreachable warehouse must fail the migrate")
-
-
-def test_the_adoption_plan():
-    r = _rules()
-    used = [
-        ("EUR", "CHF", 2024, 3, [0.9478], [0.9422]),
-        ("JPY", "USD", 2024, 3, [1.0], [0.0066]),
-        ("GBP", "USD", 2024, 3, [1.27, 1.28], [1.26]),
-    ]
-    actions = r.plan_adoption(used, {("GBP", "USD", 2024, 3, "Average")}, {(2024, 3): ROWS}, "2026-09-13")
-    by_key = {a[1]: a for a in actions}
-    eur = by_key[("EUR", "CHF", 2024, 3, "Closing")]
-    assert eur[0] == "adopt" and eur[2] == 0.9478 and eur[3] == 0.9478
-    assert "d365_fo Closing quote" in eur[4] and "Authored by the system" in eur[4]
-    avg = by_key[("EUR", "CHF", 2024, 3, "Average")]
-    assert avg[0] == "adopt" and avg[3] is None and "matches no current ERP quote" in avg[4]
-    assert by_key[("JPY", "USD", 2024, 3, "Closing")][0] == "skip" and "1.0 parity" in by_key[("JPY", "USD", 2024, 3, "Closing")][2]
-    assert by_key[("GBP", "USD", 2024, 3, "Closing")][0] == "skip"
-    assert by_key[("GBP", "USD", 2024, 3, "Average")][2] == "already has an approved group rate"
-
-
-def test_the_adoption_runs_as_the_system_only_and_a_dry_run_writes_nothing():
-    frappe = _frappe({}, user="someone@example.com")
-    assert _refused(_rules_module(frappe).adopt_erp_rates)
-    frappe = _frappe({}, user="Administrator")
-    frappe.get_all = lambda *a, **k: []
-    frappe.get_doc = lambda d: (_ for _ in ()).throw(AssertionError("a dry run wrote"))
-    frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
-    frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
-    r = _rules_module(frappe, {
-        "translated_rates": lambda: [("EUR", "CHF", 2024, 3, [0.9478], [0.9422])],
-        "erp_quote_rows": lambda as_of: ROWS})
-    out = r.adopt_erp_rates(dry_run=True)
-    assert len(out["adopted"]) == 2 and frappe.flags.konsol_adopting_rates is False
 
 
 def test_the_upgrade_patch_loads_the_doctype_then_adopts():

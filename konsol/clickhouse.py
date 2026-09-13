@@ -617,15 +617,13 @@ _REFERENCE_TABLE_DDL = {
     # konsol#103: the governed group exchange rates, from Group Exchange Rate
     # (submitted rows only). gold_consolidated_trial_balance translates from
     # this, never from the ERP feed; `document` names the approving record.
-    # `rate` is the quote as entered: units of to per 1 from, or, when
-    # inverse_quote = 1, units of from per 1 to (a small rate keeps its digits
-    # that way; MariaDB stores 9 decimal places). Translation uses
-    # if(inverse_quote = 1, 1 / rate, rate). Added to existing tables by
-    # _ADDED_COLUMNS below.
+    # `rate` is the TRUE rate, units of to_currency per 1 from_currency, as
+    # Float64: konsol computes it once (quote / quoted_per) when it publishes,
+    # and the warehouse never scales or inverts it. One source of truth for FX
+    # rates (decided 13 Sep 2026).
     "epm_staging.group_exchange_rates": (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String, "
-        "inverse_quote UInt8 DEFAULT 0) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
 }
@@ -670,8 +668,6 @@ _ADDED_COLUMNS = {
     # konsol#103: ISO Currency's magnitude reference for the group rate guard;
     # NaN until the ISO Currency write-through fills it
     "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
-    # konsol#103: a small rate is stored the other way round
-    "epm_staging.group_exchange_rates": [("inverse_quote", "UInt8 DEFAULT 0")],
 }
 
 
