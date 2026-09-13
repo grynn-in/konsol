@@ -2,10 +2,12 @@
 
 Decided 13 Sep 2026 (decision 3): an account is intercompany because it is
 flagged in the group chart, and that one flag drives upload validation, reports
-and elimination. konsol has no chart-of-accounts master (the chart comes from
-the ERP, through epm_silver.silver_main_accounts), so the flag is its own
-governed list: one row per intercompany account, Published rows written through
-to epm_staging.intercompany_accounts like every governed reference doctype.
+and elimination. The flag is its own governed list, which predates the group
+chart master (Main Account, konsol#182): one row per intercompany account,
+Published rows written through to epm_staging.intercompany_accounts like every
+governed reference doctype. It stays the pairing table; Main Account.allow_ic
+says an account may carry partner rows at all (tied together in #182 PR5).
+Chart membership is konsol.group_chart.chart_codes.
 
 ``counterpart_account`` is the account the PARTNER books the other side on:
 an intercompany receivable's counterpart is the intercompany payable, revenue's
@@ -157,10 +159,10 @@ class IntercompanyAccount(GovernedReferenceDocument):
         # first (this doctype's tabDocType row, as _validate_one_pair does),
         # then read by equality on an indexed column with FOR UPDATE.
         frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", (DOCTYPE,))
-        from konsol.tb_bulk import _chart_accounts
+        from konsol.group_chart import chart_codes
 
         accounts = [a for a in checked if a]
-        chart = _chart_accounts()
+        chart = chart_codes()
         missing = [a for a in accounts if a not in chart]
         if missing:
             frappe.throw(f"Not in the group chart: {', '.join(missing)}")

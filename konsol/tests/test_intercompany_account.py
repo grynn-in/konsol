@@ -225,10 +225,10 @@ def test_the_publish_check_locks_before_reading_difference_accounts():
     def throw(msg, *a, **k):
         raise _Refused(msg)
 
-    tb = types.ModuleType("tb_bulk_stub")
-    tb._chart_accounts = lambda: {"4030", "5030"}
-    saved = sys.modules.get("konsol.tb_bulk")
-    sys.modules["konsol.tb_bulk"] = tb
+    chart = types.ModuleType("group_chart_stub")
+    chart.chart_codes = lambda: {"4030", "5030"}
+    saved = sys.modules.get("konsol.group_chart")
+    sys.modules["konsol.group_chart"] = chart
     M.frappe.db = types.SimpleNamespace(sql=sql)
     M.frappe.throw = throw
     try:
@@ -239,9 +239,9 @@ def test_the_publish_check_locks_before_reading_difference_accounts():
         assert "CG-ZZGRP- books intercompany differences" in str(e)
     finally:
         if saved is None:
-            sys.modules.pop("konsol.tb_bulk", None)
+            sys.modules.pop("konsol.group_chart", None)
         else:
-            sys.modules["konsol.tb_bulk"] = saved
+            sys.modules["konsol.group_chart"] = saved
     assert sent[0] == ("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", ("Intercompany Account",))
     reads = sent[1:]
     assert [v for _q, v in reads] == [("4030",), ("5030",)]

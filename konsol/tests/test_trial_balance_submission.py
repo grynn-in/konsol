@@ -240,3 +240,52 @@ def test_the_partner_lands_in_the_raw_table():
     assert len(sent) == 1
     assert "submitted_at, partner_data_area_id) VALUES" in sent[0]
     assert "now(), 'ZZB')" in sent[0] and "now(), '')" in sent[0]
+
+
+# -- konsol#182: what the group chart says about a trial balance's accounts -----------------------
+
+def _chart_rows(*codes):
+    return [{"main_account": c, "debit": 1.0 if i == 0 else 0.0, "credit": 0.0 if i == 0 else 1.0}
+            for i, c in enumerate(codes)][:2] + [{"main_account": c, "debit": 0.0, "credit": 0.0} for c in codes[2:]]
+
+
+def _account(is_group=0, is_posting=1):
+    return {"is_group": is_group, "is_posting": is_posting}
+
+
+def test_no_published_chart_is_one_refusal_not_every_account():
+    errors = _m.validate_tb_rows(_chart_rows("ZZ1000", "ZZ4000"), chart={})
+    assert errors == ["No group chart is published yet: upload and publish one (Main Account) "
+                      "before submitting trial balances"]
+
+
+def test_posting_to_a_heading_is_refused_with_its_reason():
+    chart = {"ZZ1000": _account(), "ZZ9000": _account(is_group=1, is_posting=0)}
+    errors = _m.validate_tb_rows(_chart_rows("ZZ1000", "ZZ9000"), chart=chart)
+    assert errors == ["ZZ9000 is a heading in the group chart; post to the accounts under it."]
+
+
+def test_posting_to_a_closed_account_is_refused_with_its_reason():
+    chart = {"ZZ1000": _account(), "ZZ2000": _account(is_posting=0)}
+    errors = _m.validate_tb_rows(_chart_rows("ZZ1000", "ZZ2000"), chart=chart)
+    assert len(errors) == 1 and "ZZ2000" in errors[0] and "is_posting is off" in errors[0]
+
+
+def test_an_account_outside_the_chart_is_listed():
+    errors = _m.validate_tb_rows(_chart_rows("ZZ1000", "ZZ7777"), chart={"ZZ1000": _account()})
+    assert errors == ["Account(s) not in the group chart: ZZ7777"]
+    assert _m.validate_tb_rows(_chart_rows("ZZ1000", "ZZ4000"), chart={"ZZ1000": _account(), "ZZ4000": _account()}) == []
+    # known_accounts still works on its own (the bulk model's tests call it so)
+    assert _m.validate_tb_rows(_chart_rows("ZZ1000", "ZZ7777"), known_accounts={"ZZ1000"}) == [
+        "Account(s) not in the group chart: ZZ7777"]
+
+
+def test_single_and_bulk_uploads_pass_the_chart():
+    import ast as _ast
+    with open(_SRC) as f:
+        src = f.read()
+    assert "validate_tb_rows(rows, chart=chart_accounts()," in src
+    with open(os.path.join(_HERE, "..", "tb_bulk.py")) as f:
+        bulk = f.read()
+    assert "functools.partial(validate_tb_rows, chart=chart)" in bulk and "validate_rows=validate_rows," in bulk
+    _ast.parse(bulk)

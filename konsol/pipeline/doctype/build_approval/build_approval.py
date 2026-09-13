@@ -13,6 +13,8 @@ SCOPE_RISK = {
     "actuals": "high",
     "scenarios": "high",
     "consolidation": "high",
+    # konsol#182: a chart publish reclassifies every statement
+    "chart": "high",
     "full": "high",
 }
 

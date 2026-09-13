@@ -39,6 +39,7 @@ _LABELS = {
     "Reporting Hierarchy": "Reporting Hierarchies",
     "Reporting Hierarchy Member": "Reporting Hierarchy Members",
     "Scenario": "Scenarios",
+    "Main Account": "Group Chart of Accounts",
     "Main Account Category": "Main Account Categories",
     "Cash Flow Category": "Cash Flow Categories",
     "Entity": "Entities",
@@ -96,7 +97,7 @@ _CARDS = [
         "Reporting Hierarchy", "Reporting Hierarchy Member", "Scenario",
     ]),
     ("Reference Data", [
-        "Entity",
+        "Main Account", "Entity",
         "Main Account Category", "Cash Flow Category", "Fiscal Period",
         "Period Status",
     ]),
@@ -139,6 +140,9 @@ def _workspace_needs_refresh():
         return True
     # New-layout signature card absent (but doctypes exist) → rebuild.
     if _dt("Dataset") and "Model & Metadata" not in card_labels:
+        return True
+    # konsol#182: the group chart joined Reference Data; rebuild once to show it.
+    if _dt("Main Account") and "Main Account" not in {l.link_to for l in (ws.links or []) if l.type == "Link"}:
         return True
     if ws.number_cards or ws.charts:
         return True
