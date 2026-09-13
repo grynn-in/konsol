@@ -21,7 +21,9 @@ import sys
 import traceback
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# realpath, not abspath: os.getcwd() resolves symlinks (/tmp -> /private/tmp on
+# macOS), so an unresolved ROOT makes relpath() of a named file walk out and back.
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 TESTS = os.path.join(ROOT, "konsol", "tests")
 #: Test files that must load and run in full wherever these tests run, CI
 #: included. They hold the entity-access tests for ClickHouse reads
@@ -111,12 +113,26 @@ def _isolate(before):
             sys.modules[key] = mod
 
 
+def _must_run_key(path):
+    """The MUST_RUN entry ``path`` is, or None. Matched by file identity, so a
+    symlinked, absolute or differently-cased spelling of the file still counts."""
+    if not os.path.exists(path):
+        return None
+    for m in MUST_RUN:
+        full = os.path.join(ROOT, m)
+        if os.path.exists(full) and os.path.samefile(path, full):
+            return m
+    return None
+
+
 def _must_run_failures(named, skipped, needs_pytest):
     """Failures for MUST_RUN files that are missing, skipped, or had a test
-    skipped. ``named`` is the files given on the command line, if any."""
+    skipped. ``named`` is the files given on the command line, if any.
+    ``skipped`` and ``needs_pytest`` name a MUST_RUN file by its MUST_RUN key
+    (main() reports it that way)."""
     must = set(MUST_RUN)
     if named:
-        must &= {os.path.relpath(p, ROOT) for p in named}
+        must = {k for k in map(_must_run_key, named) if k}
     out = []
     for rel in sorted(must):
         if not named and not os.path.exists(os.path.join(ROOT, rel)):
@@ -141,7 +157,9 @@ def main(argv):
     missing_deps = set()
 
     for path in paths:
-        rel = os.path.relpath(path, ROOT)
+        # A MUST_RUN file is reported under its MUST_RUN key, however it was
+        # spelled, so _must_run_failures can match its skips.
+        rel = _must_run_key(path) or os.path.relpath(path, ROOT)
         before = dict(sys.modules)
         try:
             try:

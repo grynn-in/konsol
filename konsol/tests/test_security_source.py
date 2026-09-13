@@ -279,7 +279,9 @@ def _patch_routes(tree):
               and any(a.name in ("entity_permissions", "*") for a in n.names)):
             what = f"`{ast.unparse(n)}` (a handle on the module)"
         elif (isinstance(n, ast.ImportFrom) and n.level >= 1
-              and any(a.name in ("entity_permissions", "*") for a in n.names)):
+              and any(a.name == "entity_permissions"
+                      or (a.name == "*" and n.module in (None, "entity_permissions"))
+                      for a in n.names)):
             what = f"`{ast.unparse(n)}` (a relative handle on the module)"
         elif isinstance(n, ast.Attribute) and n.attr == "entity_permissions":
             what = f"`{ast.unparse(n)}` (the module reached as an attribute)"
@@ -301,6 +303,22 @@ def test_api_has_no_route_to_patch_the_entity_rules():
         "api.py has a route to replace an entity-access function: " + "; ".join(found)
         + ". api.py imports the functions it calls by name "
         f"(`from {_EP_MODULE} import ...`); get a security review.")
+
+
+def test_patch_routes_flag_handles_on_entity_permissions_only():
+    def flags(src):
+        return bool(_patch_routes(ast.parse(src)))
+
+    for src in ("from . import entity_permissions as ep", "from . import *",
+                "from .entity_permissions import *", "import konsol.entity_permissions as ep",
+                "from konsol import entity_permissions", "konsol.entity_permissions.x = 1",
+                "vars(m).update(_allowed_entities=None)"):
+        assert flags(src), f"not flagged: {src}"
+    # A star import of another module is not a handle on entity_permissions,
+    # relative or absolute; the plain by-name import is what api.py uses.
+    for src in ("from .hierarchy_query import *", "from konsol.hierarchy_query import *",
+                "from konsol.entity_permissions import entity_read_scope"):
+        assert not flags(src), f"flagged: {src}"
 
 
 def _loads_without_frappe(path):
@@ -334,3 +352,53 @@ def test_entity_access_host_loads_without_frappe():
     assert err is None, (
         f"test_entity_access_host.py cannot load without frappe ({err}); CI would skip it "
         "and none of its entity-access tests would run")
+
+
+# ── the runner holds these files to MUST_RUN however they are spelled ───────
+
+def _runner():
+    """scripts/run-host-tests.py under a private name (stdlib only)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_host_runner", os.path.join(os.path.dirname(APP_DIR), "scripts", "run-host-tests.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # main() is behind __name__ == "__main__"
+    return mod
+
+
+def test_runner_finds_must_run_files_by_identity():
+    import tempfile
+
+    r = _runner()
+    host, source = r.MUST_RUN
+    real = os.path.join(r.ROOT, source)
+    assert r._must_run_key(real) == source
+    assert r._must_run_key(os.path.relpath(real)) == source
+    upper = os.path.join(os.path.dirname(real), os.path.basename(real).upper())
+    if os.path.exists(upper):  # a case-insensitive disk (the macOS default)
+        assert r._must_run_key(upper) == source
+    with tempfile.TemporaryDirectory() as tmp:
+        link = os.path.join(tmp, "repo")
+        os.symlink(r.ROOT, link)
+        assert r._must_run_key(os.path.join(link, host)) == host
+    assert r._must_run_key(os.path.join(r.ROOT, "konsol", "tests", "test_period_status.py")) is None
+    assert r._must_run_key(os.path.join(r.ROOT, "no_such_test.py")) is None
+
+
+def test_runner_fails_a_skipped_must_run_file_named_by_any_spelling():
+    import tempfile
+
+    r = _runner()
+    host, source = r.MUST_RUN
+    with tempfile.TemporaryDirectory() as tmp:
+        link = os.path.join(tmp, "repo")
+        os.symlink(r.ROOT, link)
+        named = [os.path.join(link, source)]
+        out = r._must_run_failures(named, [(source, "needs frappe")], [])
+        assert [(rel, name) for rel, name, *_ in out] == [(source, "<must-run>")]
+        out = r._must_run_failures(named, [], [f"{source}::test_x"])
+        assert [(rel, name) for rel, name, *_ in out] == [(source, "test_x")]
+    # A must-run file that was not named is not held to it.
+    other = [os.path.join(r.ROOT, "konsol", "tests", "test_period_status.py")]
+    assert r._must_run_failures(other, [(source, "needs frappe")], []) == []
