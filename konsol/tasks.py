@@ -256,7 +256,8 @@ def check_raw_data_available():
     # still Running just because a trial balance was also submitted — this
     # runs BEFORE the trial-balance pass below.
     if sync_status in ("Failed", "Running"):
-        return False, f"Airbyte sync status is '{sync_status}' — cannot build from raw"
+        return False, (f"Airbyte sync status is '{sync_status}' — cannot build from raw. If this site no "
+                       "longer uses Airbyte, turn on Skip Airbyte Sync in EPM Settings.")
 
     # Trial balances uploaded to konsol and landed in the warehouse are this
     # site's raw data (konsol#182).

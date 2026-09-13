@@ -76,7 +76,10 @@ def _refuse_leaves_in_use(report):
     if not codes:
         return report
     from konsol.epm.doctype.main_account.main_account import (
-        _difference_groups, _intercompany_rows, _submitted_postings)
+        _difference_groups,
+        _intercompany_rows,
+        _submitted_postings,
+    )
 
     problems = []
     for code in codes:
