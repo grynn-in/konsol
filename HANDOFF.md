@@ -218,6 +218,43 @@ functions `K.EPM`, `K.EPM_BUDGET`, `K.EPM_VARIANCE`, `K.EPM_DEBIT`,
   and CLS, named errors instead of silent zeros) is in the reporting-bases
   proposal artifact, not built yet.
 
+## Group 1: controls and integrity (13 Sep)
+
+The user ranked the open issues and asked for group 1 one PR per issue, merged
+as each clears review ("keep going, merge them as they clear"). Every PR went
+through several review → fix → re-review rounds and a live A/B on
+konsolidat.local.
+
+| PR | issue | what | state |
+|---|---|---|---|
+| konsol **#160** | #149 | Consolidation Adjustment, IC Balance and Allocation Run refuse a submit into a closed period (`assert_open` first in `before_submit`). The home disables only what the server refuses and annotates the rest ("Can't approve: Dec 2099 is closed."); a TB draft's note depends on whether the viewer may delete it | merged `41747cc` |
+| konsol **#161** | #142 | A fresh site fills its warehouse staging: `after_sync` queues `install.reconcile_warehouse` (long queue, 1500 s) after the install commits; `setup_epm_settings` queues it again when the ClickHouse target changes. Runs are serialised by a per-database Redis lock (wait 600 s); one `SELECT 1` probe first; the install-time run on the untouched default target only warns | merged `b84634e` |
+| konsol **#162** | #135 | A budget-dimension publish no longer commits mid-transaction: the Budget Line Custom Field sync runs as a job after the commit, as Administrator, under a per-database MariaDB named lock (commit after `GET_LOCK`, rollback before `RELEASE_LOCK`, lock retried inside the job). Standalone `apply_schema` is POST-only and syncs as Administrator; `run_dbt` goes through `cint` (`"0"` no longer triggers dbt) | merged `55fd23b` |
+| konsol **#163** | #158 | One entity-access rule for every ClickHouse read (`entity_permissions.entity_read_scope`). **Deliberate tightening:** a restricted user reading a blank entity on flat `epm_value` is refused (it used to read blank-entity variance rows). Source-only security checks moved to `test_security_source.py` so CI runs them | merged `abc1e30` |
+| konsol **#164** | #140 | A build that fails to start keeps the changes it absorbed: every pending state is flagged, a start failure (or a lost job) gets a flagged follow-up, capped at 3 in a row, then an Error Log; a failed start marks its Pipeline Run Failed; a reset of a started row clears its timing (and the flag only if it came from Completed/Failed). **A Running build can no longer be moved by hand**: only the build job (`build_lock.build_writer()`) and the reaper may; `Pipeline Run.build_approval` is indexed | merged `da2f40f` |
+| konsolidat **#165** | #152 | `deploy.sh` builds the Frappe image once (`<project>-frappe:latest`, only `frappe_backend` has `build:`, `pull_policy: never`) instead of six parallel builds that OOM-killed ClickHouse. `./deploy.sh backup` never builds: it fails loudly if the image is missing | merged `e2e996e` |
+| konsolidat **#166** | (part of #158) | `scripts/generate_demo_data.py` deleted; docs say there is no demo data (single TB: Trial Balance Submission in Desk; bulk: `/konsol-exec/uploads`, Close Lead or System Manager) | merged `b1f1414` |
+
+**⚠ Before any `./deploy.sh backup`, run `./deploy.sh` once.** Since #165 the
+backup needs `repo-frappe:latest`, which only the next full deploy builds; until
+then a backup exits 1 with "Frappe image repo-frappe:latest not found". The old
+per-service `repo-*` images can be removed after that deploy.
+
+**Filed from group 1 reviews:** konsol **#170** (dbt can still run twice: cancel during dbt, the legacy schema-apply build and close assertions skip the single-flight gate), **#165** (Assertion Run failure samples
+expose entity rows to every role), **#166** (`trigger_close_run` and
+`launch_options` have no role check), **#167** (a publish or `apply_schema`
+rewrites tracked dbt files in the deploy checkout; `_staging__sources.yml` loses
+its comments), **#168** (Build Approval state is freely editable in Desk; no
+Workflow), **#169** (a budget field whose column ALTER failed is never repaired).
+
+**Host test runner (`scripts/run-host-tests.py`), since #155/#163:** it imports
+konsol; skips a file only when it needs frappe, pytest or a third-party module
+(each listed with its reason); fails on any other load error; resets konsol and
+stub-frappe modules per file (never real frappe: re-importing it overflows
+frappe's gc threshold); and has a **must-run set**
+(`test_entity_access_host.py`, `test_security_source.py`) that fails the run if
+either is skipped. CI runs it on every PR.
+
 ## State on 13 Sep — merged, open, next
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
@@ -248,23 +285,25 @@ containers and run scripts or dbt from a copy.
 3. **Workflows are installed once** (create if missing, never overwrite), from `after_install` and `after_migrate` via `konsol/workflows.py`, because patches never run on a fresh install. Only doctypes in `INSTALLED` get theirs.
 4. Never `self.save()` in `on_submit` / `on_cancel`; set fields in `before_submit` / `before_cancel`; sync after the commit; walk every transition live.
 
-`test_workflow_convention.py` and `test_cancel_period_gate.py` enforce what they can; every submittable doctype now follows them (#143). Pre-existing, unrelated: `test_budget_cycle_reshape.py::test_dashboard_workflow_card_order` fails, in a file the host runner skips.
+`test_workflow_convention.py` and `test_cancel_period_gate.py` enforce what they can; every submittable doctype now follows them (#143). Submit into a closed period is refused too (#149, PR #160).
 
-**Next bugs:**
-- konsol **#135** (a budget-dimension publish commits mid-transaction: Custom Field → `updatedb` commits)
-- konsol **#140** (a build that fails to start loses the changes absorbed while Approved; don't re-request blindly, it can loop)
-- konsol **#142** (a fresh site's staging stays empty until the first `bench migrate`)
-- konsolidat **#161** (the report's entity columns ignore the ownership window)
-- konsol **#149** (Consolidation Adjustment, IC Balance and Allocation Run can be submitted into a closed period; only cancel is gated)
+**Next (the user's priority order of 13 Sep, group 2 onwards):**
+- Ecolab critical path: konsolidat **#148** + konsol **#159** (IC counterparty, together, before any IC rules load); konsolidat **#161** (the report's entity columns ignore the ownership window); konsol **#103** + konsolidat **#93** (governed rates and where the presentation currency lives: a decision first); konsolidat **#158** (sign-convention follow-ups).
+- Excel correctness: konsol **#105** (decision) → **#104** → **#106**; then **#108**, **#107**.
+- Waiting on the four reporting-bases decisions: konsol **#113**, **#111**, **#114**, **#117**.
+- Security follow-ups from group 1: konsol **#165**, **#166**; integrity: **#167**, **#168**, **#169**.
 
 **Open questions for the user:**
-- Delete `scripts/generate_demo_data.py`?
 - Move the repos off iCloud-synced `~/Documents`?
 - The wipe scope.
+- (Decided 13 Sep: `generate_demo_data.py` deleted, konsolidat #166.)
 
 **Lessons:**
 - Live-verify every hook and model change. 814 static tests missed an enqueue TypeError, and `dbt parse` missed a SYNTAX_ERROR.
-- The host runner **silently skips** a test file whose imports fail, and any `from konsol… import` needs frappe. Load the module by path, or exec the controller against a stub frappe (`test_consolidation_adjustment_lifecycle.py`). Check that a new test file is counted.
+- A test file that needs frappe is skipped by the host runner (and listed). Load the module by path, or exec the controller against a stub frappe (`test_consolidation_adjustment_lifecycle.py`). Check that a new test file is counted; add it to the runner's must-run set if it guards security.
+- Hot-copied request-path code is not live until gunicorn reloads: `docker exec konsolidat_backend` then send HUP to the master (PID 19; confirm via `/proc/<pid>/status`). Restart `konsolidat_worker` for job code.
+- Frappe v15's `RetryBackgroundJobError` path ends every retried job in `AttributeError: job`; retry inside the job instead.
+- A security source test that blocks bad shapes one at a time is an arms race; pin the exact shape, count every binding, check the loaded function, and test the rule by behaviour.
 - `validate_workflow` never checks a state's docstatus, and a direct `submit()` under a workflow isn't a transition. Guard both in the controller.
 - A `docker cp`'d dir must be `chown`ed to frappe, or dbt exits 2 silently. Grep for `OK created`, not just PASS/FAIL.
 - `frappe.db.after_commit` callbacks run after the last commit: one that raises breaks a committed request, and anything they write is never committed. Log with `log_error(..., defer_insert=True)`, and check the install/migrate flags when queuing, not when running.
