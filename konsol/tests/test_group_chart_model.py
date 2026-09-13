@@ -390,3 +390,41 @@ def test_in_use_problems():
     assert len(p) == 3 and all(x.startswith("ZZ9000 (a heading: the accounts under it)") for x in p)
     many = [("ZZ1000", "ZZOP", 2026, n) for n in range(1, 13)]
     assert "P10, …" in M.in_use_problems("ZZ1000", postings=many)[0]
+
+
+# -- guardrails: legitimate charts must keep loading (coordinator, 13 Sep 2026) ----------------------
+
+def test_a_child_is_compared_to_its_heading_by_statement_not_by_type():
+    """A real chart has an Asset account under an EQUITY heading, and Revenue
+    accounts under an OTHER / INTEREST heading: same statement, different type."""
+    equity = group(main_account="ZZ3900", account_type="Equity", statement_section=BS)
+    other = group(main_account="ZZ7900", account_type="Expense", statement_section=PL)
+    assert M.declaration_problems(leaf(parent_account="ZZ3900"), equity) == []
+    assert M.declaration_problems(leaf(main_account="ZZ7100", account_type="Revenue", statement_section=PL,
+                                       time_balance="flow", fx_method="average", parent_account="ZZ7900"), other) == []
+    head = HEAD + ["is_group"]
+    rows = parse(line("ZZ3900", "EQUITY", kind="Equity", section="BS") + ["yes"],
+                 line("ZZ3100", "Receivable held in equity", kind="Asset", section="BS", parent="ZZ3900") + [""],
+                 line("ZZ7900", "OTHER / INTEREST", kind="Expense", section="P&L") + ["yes"],
+                 line("ZZ7100", "Interest income", kind="Revenue", section="P&L", parent="ZZ7900") + [""],
+                 line("ZZ7200", "Other income", kind="Income", section="P&L", parent="ZZ7900") + [""], head=head)
+    report = M.plan_chart_load(rows, {})
+    assert report["ok"] and report["errors"] == [] and report["not_ready"] == [], report
+
+
+def test_every_leaf_allowed_intercompany_loads_with_no_error_or_warning():
+    """A real chart has allow_ic=1 on every postable account. Only a heading may not allow it."""
+    rows = parse(line("ZZ9000", "Heading"),
+                 *[line(f"ZZ1{n}00", f"Asset {n}", kind="Asset", section="BS", parent="ZZ9000", allow_ic="yes")
+                   for n in range(5)],
+                 line("ZZ4000", "Sales", kind="Revenue", section="P&L", parent="ZZ9000", allow_ic="yes"),
+                 line("ZZ2000", "Payable", kind="Liability", section="BS", parent="ZZ9000", allow_ic="1"))
+    assert all(r["allow_ic"] == 1 for r in rows if r["main_account"] != "ZZ9000")
+    assert next(r for r in rows if r["main_account"] == "ZZ9000")["allow_ic"] == 0   # the default
+    report = M.plan_chart_load(rows, {})
+    assert report["ok"] and report["errors"] == [] and report["not_ready"] == [], report
+    assert set(report) <= {"chart_of_accounts", "rows", "insert", "update", "published_changes", "inactive",
+                           "unchanged", "not_ready", "not_in_file", "errors", "ok", "writes"}   # no warnings key
+    for r in rows:
+        assert M.declaration_problems(M.apply_defaults(r), None if not r.get("parent_account") else group()) == []
+

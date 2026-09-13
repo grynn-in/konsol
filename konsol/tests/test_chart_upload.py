@@ -321,3 +321,15 @@ def test_a_load_that_requests_a_rebuild_on_an_unbuilt_warehouse_says_so():
     site = Site(built=False, tables={"/f.csv": GOOD})   # Drafts only: no rebuild, no note
     assert call(site, "load_chart", "/f.csv").get("note") is None
 
+
+def test_a_chart_with_allow_ic_on_every_leaf_loads_and_publishes_cleanly():
+    """Guardrail: the real chart has allow_ic=1 on every postable account."""
+    head = HEAD + ["allow_ic"]
+    table = [head, ["ZZ9000", "Heading", "", "", "", "ZZCOA", ""]] + [
+        [f"ZZ1{n}00", f"Asset {n}", "Asset", "BS", "ZZ9000", "ZZCOA", "yes"] for n in range(4)]
+    site = Site(tables={"/ic.csv": table})
+    out = call(site, "load_chart", "/ic.csv")
+    assert out["loaded"] and out["errors"] == [] and out["not_ready"] == [], out
+    assert all(site.rows[f"ZZ1{n}00"]["allow_ic"] == 1 for n in range(4))
+    assert len(call(site, "publish_chart", "ZZCOA")["published"]) == 5
+
