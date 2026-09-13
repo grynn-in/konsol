@@ -159,7 +159,7 @@ def main(argv):
     for path in paths:
         # A MUST_RUN file is reported under its MUST_RUN key, however it was
         # spelled, so _must_run_failures can match its skips.
-        rel = _must_run_key(path) or os.path.relpath(path, ROOT)
+        rel = _must_run_key(path) or os.path.relpath(os.path.realpath(path), ROOT)
         before = dict(sys.modules)
         try:
             try:

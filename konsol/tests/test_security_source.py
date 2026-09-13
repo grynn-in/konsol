@@ -359,11 +359,16 @@ def test_entity_access_host_loads_without_frappe():
 def _runner():
     """scripts/run-host-tests.py under a private name (stdlib only)."""
     import importlib.util
+    import sys
 
     spec = importlib.util.spec_from_file_location(
         "_host_runner", os.path.join(os.path.dirname(APP_DIR), "scripts", "run-host-tests.py"))
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # main() is behind __name__ == "__main__"
+    saved_path = sys.path[:]
+    try:
+        spec.loader.exec_module(mod)  # main() is behind __name__ == "__main__"
+    finally:
+        sys.path[:] = saved_path  # its top level puts ROOT on sys.path
     return mod
 
 
