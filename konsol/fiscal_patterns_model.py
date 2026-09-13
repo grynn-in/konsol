@@ -21,6 +21,15 @@ THIRTEEN_PERIOD_YEAR_LENGTHS = {
     371: [28] * (THIRTEEN_PERIOD_COUNT - 1) + [35],
 }
 
+#: Day counts a "4-4-5" fiscal year may run: four repeats of 4, 4, 5 weeks
+#: (28, 28, 35 days) make a 364-day year; a 371-day (53-week) leap week year
+#: keeps every period the same except the last (P12), which absorbs the
+#: extra week and runs 6 weeks (42 days) instead of 5.
+FOUR_FOUR_FIVE_YEAR_LENGTHS = {
+    364: [28, 28, 35] * 4,
+    371: [28, 28, 35] * 3 + [28, 28, 42],
+}
+
 
 def _add_months(base, n):
     """base plus n calendar months, clipping the day to the target month's length."""
@@ -113,6 +122,45 @@ def thirteen_periods(start_date, end_date):
             "start_date": p_start,
             "end_date": p_end,
             "quarter": "",
+        })
+        p_start = p_end + datetime.timedelta(days=1)
+    return rows
+
+
+def four_four_five_periods(start_date, end_date):
+    """The 12 period rows of a "4-4-5" fiscal year running from start_date
+    to end_date (inclusive), both datetime.date.
+
+    Periods are contiguous week-aligned spans of 4, 4, then 5 weeks (28, 28,
+    35 days), repeated four times, starting at start_date; a 364-day year
+    (the common case) gives 12 such periods. A 371-day year (53 weeks)
+    keeps every period the same except the last (P12), which stretches from
+    5 weeks to 6 (42 days) to absorb the extra week. Quarters group periods
+    by threes (Q1 = P01-P03, ... Q4 = P10-P12), same as Monthly (12).
+    Refuses (ValueError) any other span length, naming the number of days
+    found.
+    """
+    total_days = (end_date - start_date).days + 1
+    period_lengths = FOUR_FOUR_FIVE_YEAR_LENGTHS.get(total_days)
+    if period_lengths is None:
+        raise ValueError(
+            "4-4-5 needs a fiscal year of 364 or 371 days; "
+            "found %s days (%s to %s)" % (total_days, start_date, end_date)
+        )
+
+    rows = []
+    p_start = start_date
+    for period, length in enumerate(period_lengths, start=1):
+        p_end = p_start + datetime.timedelta(days=length - 1)
+        code = "P%02d" % period
+        rows.append({
+            "period": period,
+            "code": code,
+            "label": "%s %d" % (code, start_date.year),
+            "type": "Regular",
+            "start_date": p_start,
+            "end_date": p_end,
+            "quarter": "Q%d" % (((period - 1) // 3) + 1),
         })
         p_start = p_end + datetime.timedelta(days=1)
     return rows
