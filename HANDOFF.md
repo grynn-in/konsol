@@ -6,7 +6,7 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 **The user's instruction, verbatim:** *"First empty the site completely.
 Re-set up with a correct set of data.
-/Users/deepakpai/Downloads/Ecolab_Konsolidat_CoA_TB_2010_2025.xlsx"*
+<the customer workbook, kept outside the repo>"*
 
 It came straight after we found that **every number in the current system is
 wrong**. Every GL credit is booked as a debit (konsolidat **#155**, below). The
@@ -14,7 +14,7 @@ Contoso/Alpine demo data is being replaced, not repaired.
 
 ### Before wiping anything
 
-1. **#110 is done** (konsol #123, konsolidat #151). Connector-less Ecolab
+1. **#110 is done** (konsol #123, konsolidat #151). Connector-less customer
    entities get their currency from konsol's Entity, so their Trial Balance
    Submissions consolidate.
 2. **Confirm the wipe's scope with the user, and back up first**
@@ -29,7 +29,7 @@ Contoso/Alpine demo data is being replaced, not repaired.
 
 | sheet | what | rows |
 |---|---|---|
-| 00_Cover | design notes. Entity roster from Ecolab's FY2025 10-K Ex. 21.1; amounts are **synthetic** allocations of the published consolidated figures | — |
+| 00_Cover | design notes. Entity roster from the customer's published annual report; amounts are **synthetic** allocations of the published consolidated figures | — |
 | 01_CoA | group chart `ECL_GROUP_GAAP`: posting accounts 1000–9000 plus parents; account_type, normal_balance D/C, time_balance, **fx_method closing/average/historical**, cf_category, allow_ic | 87 |
 | 02_LegalEntities | data_area_id (`US_ECL`, `US_USA`, …), accounting_currency, parent_data_area, ownership_pct, is_tb_entity, region/division/platform | 83 |
 | 03_DivisionHierarchy | management dimension (GW, GIS, Pest, LS …); keep it **off** the legal tree | 27 |
@@ -138,7 +138,7 @@ same for any new machine.
 
 ## Bulk trial balance upload (konsol #151)
 
-Asked for by the user: the Ecolab trial balance covers hundreds of entities,
+Asked for by the user: the customer's trial balance covers hundreds of entities,
 and one file per entity is not workable. **This is the path for loading
 Grok's corrected workbook** (sheet 09, local currency) once it balances.
 
@@ -255,7 +255,7 @@ frappe's gc threshold); and has a **must-run set**
 (`test_entity_access_host.py`, `test_security_source.py`) that fails the run if
 either is skipped. CI runs it on every PR.
 
-## Group 2: Ecolab critical path (13 Sep)
+## Group 2: customer-load critical path (13 Sep)
 
 Same loop as group 1: one PR per issue, reviewed and re-reviewed until clean,
 live A/B on konsolidat.local, merged as each cleared. The user approved
@@ -367,7 +367,7 @@ TB), **#180** (a disposed entity's balances are not derecognised), **#181**
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
 
-**User rules (12 Sep):** remove the demo; fill with Ecolab data when Grok's
+**User rules (12 Sep):** remove the demo; fill with the customer's data when Grok's
 corrected workbook is ready; until then keep fixing bugs and merging. **Test
 live, but DON'T DEPLOY**: no `deploy.sh`, it wastes time. Hot-copy into the
 containers and run scripts or dbt from a copy.
@@ -396,7 +396,7 @@ containers and run scripts or dbt from a copy.
 `test_workflow_convention.py` and `test_cancel_period_gate.py` enforce what they can; every submittable doctype now follows them (#143). Submit into a closed period is refused too (#149, PR #160).
 
 **Next (the user's priority order of 13 Sep, group 2 onwards):**
-- Group 2 (Ecolab critical path) is **done**; see "Group 2" above.
+- Group 2 (customer-load critical path) is **done**; see "Group 2" above.
 - Excel correctness: konsol **#105** (decision) → **#104** → **#106**; then **#108**, **#107**.
 - Waiting on the four reporting-bases decisions: konsol **#113**, **#111**, **#114**, **#117**.
 - Security follow-ups from group 1: konsol **#165**, **#166**; integrity: **#167**, **#168**, **#169**.
