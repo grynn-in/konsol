@@ -6,11 +6,20 @@
 // DocType's __tree_js (frappe/desk/form/meta.py).
 frappe.treeview_settings["Consolidation Group"] = {
 	fields: [
+		// The node's own fields first; Frappe would otherwise append the reqd
+		// ones after everything listed here.
+		{ fieldtype: "Data", fieldname: "consolidation_group", label: __("Consolidation Group"), reqd: 1 },
+		{ fieldtype: "Data", fieldname: "entity_name", label: __("Entity Name"), reqd: 1 },
 		{
 			fieldtype: "Check",
 			fieldname: "is_group",
 			label: __("Is Group"),
 			description: __("Further sub-groups can only be created under records marked as 'Group'"),
+			// A hidden field still submits its value: clear the entity when the
+			// node becomes a group, so a group is never saved with an entity.
+			onchange() {
+				if (this.get_value() && this.layout) this.layout.set_value("data_area_id", "");
+			},
 		},
 		{
 			fieldtype: "Link",
@@ -28,7 +37,7 @@ frappe.treeview_settings["Consolidation Group"] = {
 			depends_on: "eval:doc.is_group || !doc.data_area_id",
 			mandatory_depends_on: "eval:doc.is_group || !doc.data_area_id",
 			description: __(
-				"The currency this group presents its consolidated statements in. Every entity below it is translated directly into it."
+				"The currency this group presents its consolidated statements in. Every entity below it is translated directly into it. Not needed once an Entity is chosen for a leaf."
 			),
 		},
 	],
