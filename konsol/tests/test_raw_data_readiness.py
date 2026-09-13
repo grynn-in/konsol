@@ -55,7 +55,7 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
                                                             count=lambda *a, **k: mariadb_tbs))
     with open(TASKS) as f:
         tree = ast.parse(f.read())
-    wanted = {"check_raw_data_available", "_trial_balance_rows"}
+    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
     ch = types.ModuleType("konsol.clickhouse")

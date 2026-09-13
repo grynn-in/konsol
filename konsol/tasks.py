@@ -67,8 +67,11 @@ SCOPE_SELECTOR = {
     # balance sheet, P&L and variance models downstream of silver_main_accounts
     # stale; not silver_main_accounts+ alone, which fails on a site that has
     # never built (its models read bronze, the period and reporting
-    # hierarchies). Needs no epm_raw (a TB-only site's chart comes from
-    # konsol), so it is not in RAW_DEPENDENT_SCOPES.
+    # hierarchies). @ reaches ERP staging/bronze models fed by epm_raw, so an
+    # enabled connector that never synced or is Failed/Running still blocks
+    # it (see _check_chart_build_allowed). It is not in RAW_DEPENDENT_SCOPES
+    # because it carries no trial-balance-rows requirement — a TB-only site
+    # must be able to build its chart before any TB exists.
     "chart": "@silver_main_accounts",
     "full": None,  # no selector = full build
 }
@@ -134,6 +137,12 @@ def _preflight_check(build_scope):
     if build_scope == "staging":
         return True, "Staging scope — no raw data dependency"
 
+    # chart builds ERP staging/bronze models from epm_raw (konsol#182) but
+    # carries no trial-balance-rows requirement — gate on connector sync
+    # status only, not the full check_raw_data_available fallback chain.
+    if build_scope == "chart":
+        return _check_chart_build_allowed()
+
     # Raw-dependent scopes check Airbyte sync status
     if build_scope in _raw_dependent_scopes():
         return check_raw_data_available()
@@ -158,6 +167,57 @@ def _trial_balance_rows():
         return 0
 
 
+def _connector_sync_gate():
+    """Enabled-connector sync-status gate shared by every raw-dependent scope
+    and by chart (@silver_main_accounts reaches ERP staging/bronze models fed
+    by epm_raw even though chart carries no trial-balance-rows requirement).
+
+    Returns (ok, message) when at least one enabled Connector exists to gate
+    on: False if any has never synced or its last sync is Failed/Running,
+    naming that connector; True once all are synced OK. Returns None when
+    there is no Connector table or no enabled connector, leaving the caller
+    to decide what "no connector" means for its scope.
+    """
+    if not frappe.db.table_exists("Connector"):
+        return None
+
+    connectors = frappe.get_all(
+        "Connector",
+        filters={"enabled": 1},
+        fields=["name", "connector_name", "last_sync_status", "last_sync_at"],
+        limit_page_length=0,
+    )
+    if not connectors:
+        return None
+
+    for c in connectors:
+        if not c.last_sync_at:
+            return False, f"Connector '{c.connector_name}' has never synced — epm_raw may be empty"
+        if c.last_sync_status in ("Failed", "Running"):
+            return False, f"Connector '{c.connector_name}' sync status is '{c.last_sync_status}' — cannot build from raw"
+    return True, f"All {len(connectors)} enabled connectors synced OK"
+
+
+def _check_chart_build_allowed():
+    """Preflight for the chart scope (konsol#182): @silver_main_accounts
+    builds ERP staging/bronze models from epm_raw, so an enabled connector
+    that never synced or is Failed/Running still blocks it — same gate, same
+    messages as the raw-dependent scopes. Unlike them, chart carries no
+    trial-balance-rows requirement: a TB-only site must be able to build its
+    chart before any TB exists, so no enabled connector means pass.
+
+    Returns (ok: bool, message: str).
+    """
+    if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
+        return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
+
+    gate = _connector_sync_gate()
+    if gate is not None:
+        return gate
+
+    return True, "No enabled connector — chart build has no trial-balance-rows dependency"
+
+
 def check_raw_data_available():
     """Check if epm_raw has valid data.
 
@@ -180,20 +240,9 @@ def check_raw_data_available():
     if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
         return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
 
-    if frappe.db.table_exists("Connector"):
-        connectors = frappe.get_all(
-            "Connector",
-            filters={"enabled": 1},
-            fields=["name", "connector_name", "last_sync_status", "last_sync_at"],
-            limit_page_length=0,
-        )
-        if connectors:
-            for c in connectors:
-                if not c.last_sync_at:
-                    return False, f"Connector '{c.connector_name}' has never synced — epm_raw may be empty"
-                if c.last_sync_status in ("Failed", "Running"):
-                    return False, f"Connector '{c.connector_name}' sync status is '{c.last_sync_status}' — cannot build from raw"
-            return True, f"All {len(connectors)} enabled connectors synced OK"
+    gate = _connector_sync_gate()
+    if gate is not None:
+        return gate
 
     # No enabled connector gates this site: trial balances uploaded to konsol
     # and landed in the warehouse are its raw data (konsol#182).
