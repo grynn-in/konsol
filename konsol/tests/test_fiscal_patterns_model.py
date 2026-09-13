@@ -79,3 +79,65 @@ def test_monthly_refuses_wrong_length():
         assert "13" in str(e), str(e)
     else:
         raise AssertionError("expected ValueError for a 13-month span")
+
+
+def test_thirteen_periods_364_and_371():
+    start = d(2025, 1, 1)
+
+    # 364-day year: 13 periods of 28 days each.
+    end_364 = start + datetime.timedelta(days=363)
+    rows = M.thirteen_periods(start, end_364)
+    assert len(rows) == 13
+
+    p1 = rows[0]
+    assert p1["period"] == 1
+    assert p1["code"] == "P01"
+    assert p1["label"] == "P01 2025"
+    assert p1["type"] == "Regular"
+    assert p1["start_date"] == start
+    assert p1["end_date"] == start + datetime.timedelta(days=27)
+    assert p1["quarter"] == ""
+
+    for i, row in enumerate(rows, start=1):
+        assert row["period"] == i
+        assert row["code"] == "P%02d" % i
+        assert row["label"] == "P%02d 2025" % i
+        assert row["quarter"] == ""
+        length = (row["end_date"] - row["start_date"]).days + 1
+        assert length == 28, (i, length)
+
+    assert rows[12]["code"] == "P13"
+    assert rows[12]["end_date"] == end_364
+
+    for prev, nxt in zip(rows, rows[1:]):
+        assert prev["end_date"] + datetime.timedelta(days=1) == nxt["start_date"]
+
+    # 371-day year (53 weeks): P01..P12 stay 28 days, P13 stretches to 35.
+    end_371 = start + datetime.timedelta(days=370)
+    rows = M.thirteen_periods(start, end_371)
+    assert len(rows) == 13
+
+    for row in rows[:12]:
+        length = (row["end_date"] - row["start_date"]).days + 1
+        assert length == 28, row
+
+    p13 = rows[12]
+    assert p13["code"] == "P13"
+    assert p13["label"] == "P13 2025"
+    assert p13["quarter"] == ""
+    assert p13["end_date"] == end_371
+    assert (p13["end_date"] - p13["start_date"]).days + 1 == 35
+
+    for prev, nxt in zip(rows, rows[1:]):
+        assert prev["end_date"] + datetime.timedelta(days=1) == nxt["start_date"]
+
+
+def test_thirteen_refuses_365():
+    start = d(2025, 1, 1)
+    end = start + datetime.timedelta(days=364)  # 365 days total
+    try:
+        M.thirteen_periods(start, end)
+    except ValueError as e:
+        assert "365" in str(e), str(e)
+    else:
+        raise AssertionError("expected ValueError for a 365-day span")
