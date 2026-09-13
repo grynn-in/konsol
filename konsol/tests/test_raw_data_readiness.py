@@ -145,6 +145,14 @@ def test_a_running_global_sync_blocks_even_with_submitted_trial_balances():
     assert ok is False and "Running" in message, message
 
 
+def test_a_stuck_global_sync_status_names_the_way_out():
+    """A site that stopped using Airbyte can be left at Failed or Running for
+    good (no final webhook); the refusal says how to get past it."""
+    for status in ("Failed", "Running"):
+        (ok, message), _ = check(rows=12, sync_status=status, sync_at="2026-09-01 00:00:00")
+        assert ok is False and "Skip Airbyte Sync" in message, message
+
+
 def test_an_empty_global_sync_status_with_trial_balances_still_passes():
     """TB-only site: status never set (no connector, no Airbyte sync ever) —
     submitted trial balances alone are enough to build."""
