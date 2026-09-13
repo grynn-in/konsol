@@ -14,8 +14,8 @@ The references are rough by design, about +/-0.05 from typical 2024-25 market
 levels, never quotes. The guard refuses only a rate more than 10x from what
 they imply.
 
-Unset means what the warehouse's rule says (konsolidat macros/fx_magnitude.sql):
-NULL, NaN, or 0 for any currency but USD. USD is the anchor and really is 0.
+Unset means what the warehouse's rule says (konsolidat macros/fx_magnitude.sql),
+defined once in konsol.fx_reference: NULL, NaN, or 0 for any currency but USD. USD is the anchor and really is 0.
 A currency pegged 1:1 to the dollar (PAB, BSD, BMD) really is 0 too, so it
 ships as 0.001: a thousandth of a decade (0.2%) is negligible to a 10x check,
 and it keeps the value "set".
@@ -25,12 +25,12 @@ more than 10x over the ledgers' history (ARS, LBP) needs a person to update it
 as it goes; see the PR notes.
 """
 import json
-import math
 import os
 
 import frappe
 
-REFERENCE_CURRENCY = "USD"
+from konsol.fx_reference import REFERENCE_CURRENCY, is_unset  # noqa: F401 — the one rule
+
 REFERENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_data", "iso_currencies.json")
 FIELDS = ("currency_code", "currency_name", "symbol", "minor_unit", "usd_log10")
 
@@ -43,14 +43,6 @@ def reference_rows():
 
 def usd_log10_defaults():
     return {r["currency_code"]: r["usd_log10"] for r in reference_rows()}
-
-
-def is_unset(code, value):
-    """The warehouse's "no reference" rule: NULL, NaN, or 0 for any currency but USD."""
-    if value in (None, ""):
-        return True
-    value = float(value)
-    return math.isnan(value) or (value == 0 and code != REFERENCE_CURRENCY)
 
 
 def seed_iso_currencies(rows=None):

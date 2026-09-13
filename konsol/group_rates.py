@@ -40,6 +40,8 @@ import re
 
 import frappe
 
+from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
+
 DOCTYPE = "Group Exchange Rate"
 RATE_TYPES = ("Closing", "Average")
 PREFILL_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
@@ -56,7 +58,6 @@ ERP_RATE_TYPES = {"Closing": ("Closing", "Default"), "Average": ("Average", "Def
 #: the currency's units per 1 USD (seeded by konsol.currency_references). USD is
 #: the anchor at 0. A Frappe Float cannot be NULL (unset reads as 0), so for
 #: every other currency 0 means "not set"; so does NaN in the warehouse.
-REFERENCE_CURRENCY = "USD"
 REFERENCE_FIELD = "usd_log10"
 #: A rate more than this many powers of ten from the references is refused.
 MAGNITUDE_TOLERANCE_DECADES = 1.0
@@ -117,18 +118,6 @@ def published_rows(docs):
     decimal places can't."""
     return [[d.to_currency, d.from_currency, int(d.fiscal_year), int(d.fiscal_period), d.rate_type,
              true_rate(d.quote, d.quoted_per), d.name] for d in docs]
-
-
-def usd_reference(code, value):
-    """A currency's usd_log10, or None when it has none. The warehouse's rule
-    (konsolidat macros/fx_magnitude.sql), exactly: NULL, NaN, or 0 for any
-    currency but USD is "no reference"; USD's own 0 is the anchor."""
-    if value in (None, ""):
-        return None
-    value = float(value)
-    if math.isnan(value) or (value == 0 and code != REFERENCE_CURRENCY):
-        return None
-    return value
 
 
 def usd_references(codes):
@@ -277,6 +266,34 @@ def describe_quotes(quotes, fiscal_year, fiscal_period, from_currency=None, to_c
         note = (f"ERP SOURCES DISAGREE: the proposal takes {quotes[0]['source']}'s quote. Check "
                 "before approving. " + note)
     return note
+
+
+def check_references(actions, refs):
+    """(actions, unset): the currencies the adoption would ENTER with no
+    magnitude reference (``unset``, sorted), and the actions with every skip
+    of a currency that has none saying so. Pure.
+
+    Only an "adopt" action enters a rate, so only its two currencies need a
+    reference (joint re-review of #174): a currency translated at the 1.0
+    parity fallback, at two rates, or already governed is skipped whatever
+    its reference, and must not stop the upgrade."""
+    missing = {c for c, v in refs.items() if v is None}
+    unset = sorted({c for a in actions if a[0] == "adopt" for c in a[1][:2]} & missing)
+    out = []
+    for action in actions:
+        lacking = [c for c in action[1][:2] if c in missing]
+        if action[0] == "skip" and lacking:
+            action = ("skip", action[1], f"{action[2]}; no magnitude reference for {' and '.join(lacking)} either")
+        out.append(action)
+    return out, unset
+
+
+def no_reference_message(unset, site="<site>"):
+    """What to do about currencies the adoption would enter with no reference."""
+    return (f"konsol#103 adoption: no magnitude reference (ISO Currency usd_log10) for {', '.join(unset)}, "
+            "which the adoption would enter; every such rate would be refused. "
+            + " ".join(f"Create or edit ISO Currency {c}, set USD Reference (log10)." for c in unset)
+            + " Then rerun `bench migrate` (or, once upgraded: " + RECOVERY_COMMAND.format(site=site) + ").")
 
 
 def plan_adoption(used, governed, quote_rows_by_period, today):
@@ -457,6 +474,35 @@ def _ch_literal(value):
     return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
+_APPROVED_SQL = ("SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, "
+                 "quoted_per, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
+
+
+def _fresh_db():
+    """A second connection to the site's database, built exactly as
+    frappe.connect builds frappe.db (Frappe reads the site config)."""
+    from frappe.database import get_db
+
+    conf = frappe.local.conf
+    db = get_db(socket=conf.db_socket, host=conf.db_host, port=conf.db_port, user=conf.db_name,
+                password=conf.db_password, cur_db_name=conf.db_name)
+    db.connect()
+    return db
+
+
+def _read_approved():
+    """The approved rates as committed right now. Read on a connection of its
+    own and closed at once: the snapshot starts at this read (nothing ran on
+    that connection before it), and no lock outlives it. The caller's
+    transaction is untouched, so a snapshot it already took cannot hide a
+    rate, and a lock it would have held cannot block an approval."""
+    db = _fresh_db()
+    try:
+        return db.sql(_APPROVED_SQL, as_dict=True)
+    finally:
+        db.close()
+
+
 def publish_rates(force=False):
     """Publish every approved rate as its TRUE rate, all at once and one publish
     at a time (review of #174: TRUNCATE + batched INSERTs could interleave, so
@@ -465,8 +511,15 @@ def publish_rates(force=False):
     * Serialised by a MariaDB named lock (GET_LOCK, per site): the approval's
       after-commit publish, a second approval's, and the reconcile after a
       migrate take turns.
-    * The rows are read with a locking read, so each publish sees every rate
-      committed before it, whatever its transaction's snapshot.
+    * The rows are read AFTER the lock is held, on a connection of their own
+      (``_read_approved``): a plain consistent read whose snapshot starts
+      there, so each publish sees every rate committed before it. It takes no
+      row or gap lock, and leaves none behind in the caller's transaction,
+      whether that is an approval's after-commit hook, reconcile_all's job or
+      after_migrate: an approval or a cancel during a reconcile never waits on
+      it (joint re-review of #174: a LOCK IN SHARE MODE scan there held its
+      next-key locks until the job committed). The only lock is the named
+      one, held for the length of the publish.
     * The full set is built in a shadow table and swapped in with EXCHANGE
       TABLES (epm_staging is an Atomic database): a reader sees the old set or
       the new one, never part of either.
@@ -485,14 +538,13 @@ def publish_rates(force=False):
     lock = f"konsol_group_rates_publish:{frappe.conf.db_name}"
     got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock, PUBLISH_LOCK_WAIT))
     if not got or got[0][0] != 1:
-        frappe.logger().error(f"group exchange rates NOT published: GET_LOCK('{lock}') returned {got!r}")
+        message = f"GET_LOCK('{lock}') returned {got!r} after {PUBLISH_LOCK_WAIT}s: another publish holds it"
+        _record_sync_failure(PUBLISH_TABLE, "publish_lock_timeout", message)
+        frappe.logger().error(f"group exchange rates NOT published: {message}")
         return None
     shadow = PUBLISH_TABLE + "__publishing"
     try:
-        docs = frappe.db.sql(
-            "SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, quoted_per, "
-            "modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name LOCK IN SHARE MODE",
-            as_dict=True)
+        docs = _read_approved()
         rows = published_rows(docs)
         execute(f"DROP TABLE IF EXISTS {shadow}")
         execute(f"CREATE TABLE {shadow} AS {PUBLISH_TABLE}")
@@ -721,22 +773,18 @@ def adopt_erp_rates(dry_run=False):
             "Nothing was adopted, and the governed translation will refuse every period it translated "
             "until this runs. Once ClickHouse is up, run: " + RECOVERY_COMMAND.format(site=site)
             + " (add --kwargs \"{'dry_run': 1}\" to preview).") from e
-    # Every currency the adoption would enter needs a magnitude reference, or
-    # every row is refused and the upgrade looks done. Stop instead, before
-    # anything is written: a patch that raises is retried at the next migrate.
-    refs = usd_references({c for r in used for c in (r[0], r[1])})
-    unset = sorted(c for c, v in refs.items() if v is None)
-    if unset and not dry_run:
-        site = getattr(getattr(frappe, "local", None), "site", None) or "<site>"
-        raise RuntimeError(
-            f"konsol#103 adoption: no magnitude reference (ISO Currency usd_log10) for {', '.join(unset)}, "
-            "so every rate in those currencies would be refused. Nothing was adopted. Set USD Reference "
-            "(log10) on those ISO Currencies, then run: " + RECOVERY_COMMAND.format(site=site))
     governed = {(r.from_currency, r.to_currency, int(r.fiscal_year), int(r.fiscal_period), r.rate_type)
                 for r in frappe.get_all(DOCTYPE, filters={"docstatus": 1}, limit_page_length=0,
                                         fields=["from_currency", "to_currency", "fiscal_year",
                                                 "fiscal_period", "rate_type"])}
     actions = plan_adoption(used, governed, quotes, str(frappe.utils.today()))
+    actions, unset = check_references(actions, usd_references({c for a in actions for c in a[1][:2]}))
+    if unset:
+        message = no_reference_message(unset, getattr(getattr(frappe, "local", None), "site", None) or "<site>")
+        if not dry_run:
+            # Nothing is written, and the patch runs again at the next migrate.
+            raise RuntimeError(message + " Nothing was adopted.")
+        print(f"konsol#103 adoption (dry run): {message}")
 
     summary = {"adopted": [], "skipped": [], "refused": []}
     frappe.flags.konsol_adopting_rates = True

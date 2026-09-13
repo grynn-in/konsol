@@ -18,8 +18,12 @@ column but no values, every row was refused and the patch still looked done):
 2. the Group Exchange Rate doctype;
 3. the ISO currencies' magnitude references, filled only where unset
    (konsol.currency_references.seed_iso_currencies);
-4. the adoption, which refuses to start, and so leaves the patch to run again,
-   if a currency it would enter still has no reference.
+4. the adoption. It plans first, and only a currency it would ENTER needs a
+   reference: one translated at the 1.0 parity fallback or at two rates is
+   skipped, reference or not, and its skip says it has none. If a currency it
+   would enter still has no reference, it writes nothing and raises, naming
+   each one ("Create or edit ISO Currency X, set USD Reference (log10)"), so
+   the migrate stops and the patch runs again once they are set.
 
 A fresh install marks this done without running it, which is right: it has
 nothing translated. The warehouse must be reachable: a migrate that cannot

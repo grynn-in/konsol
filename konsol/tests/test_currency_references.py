@@ -66,19 +66,28 @@ def test_the_shipped_list():
 
 
 def test_unset_is_the_warehouse_rule():
-    """NULL, NaN, or 0 for any currency but USD (konsolidat fx_has_reference)."""
+    """One rule (konsol.fx_reference), checked against the shared case table's
+    expectations: a case with a valid rate is "no_reference" exactly when one
+    of its currencies' references is unset. NULL, NaN, or 0 for any currency
+    but USD."""
+    from konsol import fx_reference as rule
+
     m, _ = _module()
-    assert m.is_unset("EUR", None) and m.is_unset("EUR", "") and m.is_unset("EUR", float("nan"))
-    assert m.is_unset("EUR", 0) and m.is_unset("EUR", 0.0)
-    assert not m.is_unset("USD", 0.0), "USD's 0 is the anchor"
-    assert m.is_unset("USD", float("nan"))
-    assert not m.is_unset("PAB", 0.001) and not m.is_unset("EUR", -0.03)
-    # the same verdict as the shared case table's references
+    assert m.is_unset is rule.is_unset and m.REFERENCE_CURRENCY == rule.REFERENCE_CURRENCY == "USD"
     with open(CASES) as f:
-        for case in json.load(f)["cases"]:
-            for code, value in ((case["from"], case["from_log10"]), (case["to"], case["to_log10"])):
-                value = float(value)
-                assert m.is_unset(code, value) == (math.isnan(value) or (value == 0 and code != "USD"))
+        cases = json.load(f)["cases"]
+    checked = 0
+    for case in cases:
+        refs = ((case["from"], float(case["from_log10"])), (case["to"], float(case["to_log10"])))
+        for code, value in refs:
+            assert rule.is_unset(code, value) == (rule.usd_reference(code, value) is None), (code, value)
+        rate = float(case["rate"])
+        if math.isfinite(rate) and rate > 0:   # invalid is checked before references
+            assert any(rule.is_unset(c, v) for c, v in refs) == (case["expected"] == "no_reference"), case["note"]
+            checked += 1
+    assert checked == 10
+    assert rule.is_unset("EUR", None) and rule.is_unset("EUR", "") and not rule.is_unset("USD", 0.0)
+    assert not rule.is_unset("PAB", 0.001) and rule.usd_reference("EUR", "-0.03") == -0.03
 
 
 def test_a_value_that_is_set_is_never_overwritten():

@@ -417,11 +417,18 @@ def _publisher(lock=1, fail_at=None, flags=None):
         if "RELEASE_LOCK" in query:
             record["db"].append(("release", params))
             return [(1,)]
-        if "LOCK IN SHARE MODE" in query and "docstatus = 1" in query:
-            record["db"].append(("read", None))
-            return APPROVED
-        raise AssertionError(query)
+        raise AssertionError(f"read on the caller's connection: {query}")
     frappe.db.sql = sql
+
+    class FreshDB:
+        """The publish's own connection."""
+        def sql(self, query, as_dict=False):
+            record["db"].append(("fresh read", query))
+            assert as_dict and "docstatus = 1" in query
+            return APPROVED
+
+        def close(self):
+            record["db"].append(("fresh close", None))
     ch = types.ModuleType("konsol.clickhouse")
 
     def execute(query, params=None):
@@ -432,7 +439,9 @@ def _publisher(lock=1, fail_at=None, flags=None):
     ch.execute = execute
     ch._stamp_watermark = lambda table, n, modified=None: record["stamped"].append((table, n, modified))
     ch._record_sync_failure = lambda table, kind, message: record["failed"].append((table, kind))
-    return _rules_module(frappe), ch, record
+    rules = _rules_module(frappe)
+    rules._fresh_db = FreshDB
+    return rules, ch, record
 
 
 def test_a_publish_swaps_the_whole_set_in_one_at_a_time():
@@ -442,8 +451,12 @@ def test_a_publish_swaps_the_whole_set_in_one_at_a_time():
     with _konsol(rules, ch):
         assert rules.publish_rates(force=True) == 2
     lock = ("konsol_group_rates_publish:zzdb", 120)
-    assert record["db"] == [("lock", lock), ("read", None), ("release", ("konsol_group_rates_publish:zzdb",))], \
-        "the rows are read inside the lock, with a locking read"
+    kinds = [k for k, _ in record["db"]]
+    assert kinds == ["lock", "fresh read", "fresh close", "release"], \
+        "the rows are read after the lock is held, on a connection of their own, closed at once"
+    read = record["db"][1][1]
+    assert "LOCK IN SHARE MODE" not in read and "FOR UPDATE" not in read, "a plain read: it takes no row lock"
+    assert record["db"][0] == ("lock", lock) and record["db"][-1] == ("release", (lock[0],))
     main, shadow = "epm_staging.group_exchange_rates", "epm_staging.group_exchange_rates__publishing"
     kinds = [q.split(" (")[0] if q.startswith("INSERT") else q for q in record["ch"]]
     assert kinds == [f"DROP TABLE IF EXISTS {shadow}", f"CREATE TABLE {shadow} AS {main}", f"INSERT INTO {shadow}",
@@ -460,6 +473,8 @@ def test_a_publish_that_cannot_get_in_or_fails_changes_nothing_and_says_so():
     with _konsol(rules, ch):
         assert rules.publish_rates(force=True) is None
     assert record["ch"] == [] and [k for k, _ in record["db"]] == ["lock"]
+    assert record["failed"] == [("epm_staging.group_exchange_rates", "publish_lock_timeout")], \
+        "a publish that could not get in leaves a health record"
     rules, ch, record = _publisher(fail_at="EXCHANGE")
     with _konsol(rules, ch):
         assert rules.publish_rates(force=True) is None
@@ -473,6 +488,32 @@ def test_a_publish_that_cannot_get_in_or_fails_changes_nothing_and_says_so():
     rules, ch, record = _publisher(flags={"in_migrate": True})
     with _konsol(rules, ch):
         assert rules.publish_rates(force=True) == 2, "the reconcile after a migrate forces it"
+
+
+def test_the_publish_connects_as_frappe_connect_does():
+    """The fresh connection is Frappe's own class, given what frappe.connect
+    gives it (the site config), and connected before it is returned."""
+    made = []
+
+    class DB:
+        def connect(self):
+            made.append("connected")
+    frappe = _frappe({})
+    frappe.local = types.SimpleNamespace(conf=types.SimpleNamespace(
+        db_socket=None, db_host="mariadb", db_port=3306, db_name="zzdb", db_password="zz-not-a-secret"))
+    database = types.ModuleType("frappe.database")
+    database.get_db = lambda **k: made.append(k) or DB()
+    saved = sys.modules.get("frappe.database")
+    sys.modules["frappe.database"] = database
+    try:
+        _rules_module(frappe)._fresh_db()
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe.database", None)
+        else:
+            sys.modules["frappe.database"] = saved
+    assert made == [dict(socket=None, host="mariadb", port=3306, user="zzdb", password="zz-not-a-secret",
+                         cur_db_name="zzdb"), "connected"]
 
 
 def test_approve_and_cancel_republish_after_the_commit():
@@ -615,7 +656,7 @@ def test_the_shared_case_table():
     r = _rules()
     with open(CASES) as f:
         cases = json.load(f)["cases"]
-    assert len(cases) == 12
+    assert len(cases) == 13
     got = []
     for c in cases:
         refs = {c["from"]: r.usd_reference(c["from"], float(c["from_log10"])),
@@ -623,6 +664,20 @@ def test_the_shared_case_table():
         got.append(r.magnitude_verdict(c["from"], c["to"], float(c["rate"]), refs)[0])
     assert got == [c["expected"] for c in cases], [
         (c["note"], c["expected"], g) for c, g in zip(cases, got) if g != c["expected"]]
+
+
+def test_one_definition_of_the_no_reference_rule():
+    """konsol.fx_reference holds it; group_rates and currency_references use it."""
+    import importlib as _importlib
+
+    rule = _importlib.import_module("konsol.fx_reference")
+    r = _rules()
+    assert r.usd_reference is rule.usd_reference and r.REFERENCE_CURRENCY == rule.REFERENCE_CURRENCY
+    for path in (RULES, os.path.join(APP_DIR, "currency_references.py")):
+        tree = ast.parse(open(path).read())
+        defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)} | {
+            t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+        assert not defined & {"usd_reference", "is_unset", "REFERENCE_CURRENCY"}, (path, defined)
 
 
 def test_the_magnitude_guard_reads_iso_currency():
@@ -943,24 +998,76 @@ def test_the_adoption_enters_each_rate_per_the_unit_that_keeps_it():
     assert (average["quote"], average["quoted_per"], average["erp_quote"]) == (0.66, "100", None)
 
 
-def test_the_adoption_will_not_start_without_every_reference():
-    """Joint review of #174: with no usd_log10 every row was refused and the
-    patch still looked done. Now nothing is written, and the patch runs again."""
-    frappe = _frappe({}, user="Administrator", refs=dict(REFS, JPY=0.0))
+def _adopter(refs, used, made=None):
+    frappe = _frappe({}, user="Administrator", refs=refs)
     frappe.local = types.SimpleNamespace(site="konsolidat.local")
     frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
     frappe.db.savepoint = lambda name: None
-    frappe.get_doc = lambda d: (_ for _ in ()).throw(AssertionError("wrote a row"))
-    r = _rules_module(frappe, {"translated_rates": lambda: [("JPY", "USD", 2024, 3, [0.0066], [0.0066])],
-                               "erp_quote_rows": lambda as_of: []})
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "ISO Currency" else []
+
+    class Doc(dict):
+        name = "GER-X"
+
+        def insert(self, **k):
+            if made is None:
+                raise AssertionError("wrote a row")
+            made.append(dict(self))
+
+        def submit(self):
+            pass
+    frappe.get_doc = Doc
+    return _rules_module(frappe, {"translated_rates": lambda: used, "erp_quote_rows": lambda as_of: []})
+
+
+def test_the_adoption_will_not_start_without_every_reference():
+    """Joint review of #174: with no usd_log10 every row was refused and the
+    patch still looked done. Now nothing is written, the patch runs again, and
+    the message names every currency and what to do."""
+    used = [("JPY", "USD", 2024, 3, [0.0066], [0.0066]), ("XBB", "USD", 2024, 3, [0.5], [0.5])]
+    r = _adopter(dict(REFS, JPY=0.0), used)
     try:
         r.adopt_erp_rates()
     except RuntimeError as e:
-        assert "no magnitude reference (ISO Currency usd_log10) for JPY" in str(e)
-        assert "bench --site konsolidat.local execute konsol.group_rates.adopt_erp_rates" in str(e)
+        msg = str(e)
+        assert "no magnitude reference (ISO Currency usd_log10) for JPY, XBB" in msg
+        assert "Create or edit ISO Currency JPY, set USD Reference (log10)." in msg
+        assert "Create or edit ISO Currency XBB, set USD Reference (log10)." in msg
+        assert "Then rerun `bench migrate`" in msg and msg.endswith("Nothing was adopted.")
+        assert "bench --site konsolidat.local execute konsol.group_rates.adopt_erp_rates" in msg
     else:
         raise AssertionError("an adoption without references must stop")
+
+
+def test_a_currency_the_adoption_skips_needs_no_reference():
+    """Joint re-review of #174: a currency translated at the 1.0 parity
+    fallback (or at two rates) is skipped, so its missing reference must not
+    stop the upgrade before model sync. The adoption proceeds; the skip says it
+    has no reference."""
+    made = []
+    used = [("EUR", "CHF", 2024, 3, [0.9478], [0.9422]),
+            ("XAA", "USD", 2024, 3, [1.0], [1.0]),              # the parity fallback
+            ("XAB", "USD", 2024, 3, [0.5, 0.6], [0.5, 0.7])]   # two rates
+    out = _adopter(REFS, used, made).adopt_erp_rates()
+    assert sorted((d["from_currency"], d["rate_type"]) for d in made) == [("EUR", "Average"), ("EUR", "Closing")]
+    assert len(out["skipped"]) == 4 and out["refused"] == []
+    assert all("no magnitude reference for XAA either" in s for s in out["skipped"] if s.startswith("XAA"))
+    assert all("1.0 parity" in s for s in out["skipped"] if s.startswith("XAA"))
+    assert all("no magnitude reference for XAB either" in s for s in out["skipped"] if s.startswith("XAB"))
+
+
+def test_a_dry_run_names_the_currencies_with_no_reference():
+    import contextlib as _contextlib
+    import io
+
+    used = [("XBB", "USD", 2024, 3, [0.5], [0.5])]
+    printed = io.StringIO()
+    with _contextlib.redirect_stdout(printed):
+        out = _adopter(REFS, used).adopt_erp_rates(dry_run=True)
+    assert len(out["adopted"]) == 2, "a dry run plans, and writes nothing"
+    assert "konsol#103 adoption (dry run): konsol#103 adoption: no magnitude reference (ISO Currency usd_log10) for XBB" \
+        in printed.getvalue()
 
 
 def test_the_adoption_runs_as_the_system_only_and_a_dry_run_writes_nothing():
