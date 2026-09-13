@@ -27,7 +27,8 @@ _CH_TYPE_MAP = {
 
 
 _BUDGET_FIELD_SYNC_JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
-# MariaDB named lock serialising every Budget Line Custom Field sync.
+# MariaDB named lock serialising every Budget Line Custom Field sync
+# (_budget_field_sync_lock adds the database name).
 _BUDGET_FIELD_SYNC_LOCK = "konsol_budget_field_sync"
 _BUDGET_FIELD_SYNC_LOCK_WAIT = 30  # seconds
 
@@ -40,9 +41,9 @@ def apply_schema(run_dbt=False):
     """Read all config doctypes, regenerate everything in one shot.
 
     The standalone action (Apply Schema, `konsol apply-schema`). It syncs the
-    Budget Line Custom Fields inline, and that commits (see
-    queue_budget_custom_field_sync); nothing else is pending in its
-    transaction. A publish calls apply_schema_for_publish instead.
+    Budget Line Custom Fields inline, as Administrator, and that commits (see
+    _sync_budget_custom_fields); nothing else is pending in its transaction.
+    A publish calls apply_schema_for_publish instead.
 
     Args:
         run_dbt: If True, enqueue a background dbt build after schema changes.
@@ -54,17 +55,25 @@ def apply_schema(run_dbt=False):
         frappe.PermissionError: If caller lacks EPM Admin role.
     """
     _check_schema_role()
+    # Read now: the switch to Administrator below clears form_dict.
+    run_dbt = run_dbt or frappe.form_dict.get("run_dbt")
     summary = _apply_schema_steps()
 
-    # 4. Sync Budget Line custom fields (in_budget dimension columns)
+    # 4. Sync Budget Line custom fields (in_budget dimension columns), as
+    # Administrator for the same reason as the publish's job (see
+    # sync_budget_custom_fields_job): the role is checked above, and the sync
+    # takes no input.
+    restore_user = _switch_to_administrator()
     try:
         summary["budget_fields_synced"] = _sync_budget_custom_fields()
     except Exception as e:
         summary["errors"].append(f"Budget fields: {str(e)}")
         frappe.log_error("schema_apply: budget fields failed", frappe.get_traceback())
+    finally:
+        restore_user()
 
-    # 5. Optional dbt build
-    if run_dbt or frappe.form_dict.get("run_dbt"):
+    # 5. Optional dbt build, queued as the caller
+    if run_dbt:
         try:
             frappe.enqueue(
                 "konsol.tasks.run_dbt_build_async",
@@ -130,10 +139,30 @@ def sync_budget_custom_fields_job():
     # role (_check_schema_role), and the job takes no arguments: it only
     # brings Budget Line in line with the committed dimensions.
     frappe.set_user("Administrator")
-    actions = _sync_budget_custom_fields()
+    actions = _sync_budget_custom_fields(retry_on_busy=True)
     if actions:
         frappe.logger().info(f"Budget Line custom fields synced: {actions}")
     return actions
+
+
+def _switch_to_administrator():
+    """Become Administrator inside a request; returns the function that switches back.
+
+    frappe.set_user mutates the request's session in place (user, and sid and
+    data too) and clears form_dict, so switching back with set_user alone
+    would leave the session's sid and data wrong for the rest of the request.
+    """
+    session = frappe.local.session
+    saved = {"user": session.user, "sid": session.sid, "data": session.data}
+    form_dict = frappe.local.form_dict
+    frappe.set_user("Administrator")
+
+    def restore():
+        frappe.set_user(saved["user"])   # also resets the permission caches
+        session.update(saved)
+        frappe.local.form_dict = form_dict
+
+    return restore
 
 
 def _check_schema_role():
@@ -363,55 +392,99 @@ def _upsert_dbt_source(fact):
     return False
 
 
-def _sync_budget_custom_fields():
+def _sync_budget_custom_fields(retry_on_busy=False):
     """Ensure Budget Line has Custom Fields for all in_budget Published dimensions.
 
     The wide budget lines carry the dimension columns (account + dims + 12
     months); the dims are provisioned here as Custom Fields. Adds missing fields,
     removes orphaned ones. Returns list of field actions taken.
 
-    Commits whenever it adds a field (CustomField.on_update -> updatedb), so
-    never call it inside a transaction with other work in it (#135).
+    Commits: once it holds the lock, when it is done, and whenever it adds a
+    field (CustomField.on_update -> updatedb). So never call it inside a
+    transaction with other work in it (#135). Its callers: the publish's job
+    (a fresh job), apply_schema (only its steps' error logs are pending), and
+    after_migrate and the reshape patch (migrate commits around them anyway).
 
     Serialised by a MariaDB named lock: a publish's job and an inline sync
     (apply_schema, after_migrate) could otherwise both find a field missing
     and both insert it. The lock belongs to the session, so updatedb's commit
-    does not release it. A sync that cannot get it within the wait is logged
-    and skipped; the holder, or the next publish or migrate, does the work.
+    does not release it, and it is released only after the sync's last
+    commit, so the next holder sees all of its work (a delete does not commit
+    on its own).
+
+    A sync that cannot get the lock in time: with retry_on_busy (the job) it
+    raises RetryBackgroundJobError, which the job runner retries (5 times,
+    with backoff); an inline caller logs and skips, and Budget Line waits for
+    the next publish, apply_schema or migrate.
     """
-    got = frappe.db.sql(
-        "SELECT GET_LOCK(%s, %s)", (_BUDGET_FIELD_SYNC_LOCK, _BUDGET_FIELD_SYNC_LOCK_WAIT))
+    lock = _budget_field_sync_lock()
+    got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock, _BUDGET_FIELD_SYNC_LOCK_WAIT))
     if not got or got[0][0] != 1:  # 0: timed out; NULL: error
-        frappe.log_error(
-            "schema_apply: budget field sync skipped",
-            f"GET_LOCK('{_BUDGET_FIELD_SYNC_LOCK}') returned {got!r}: another sync held it.")
+        msg = f"GET_LOCK('{lock}') returned {got!r}: another Budget Line field sync holds it."
+        if retry_on_busy:
+            raise frappe.RetryBackgroundJobError(msg)
+        frappe.log_error("schema_apply: budget field sync skipped", msg)
         return []
     try:
-        return _sync_budget_custom_fields_locked()
+        # A fresh snapshot, taken after the lock: every read below, Frappe's
+        # own included (CustomField.validate's get_meta, delete_doc's
+        # get_doc), must see what the previous holder committed.
+        frappe.db.commit()
+        actions = _sync_budget_custom_fields_locked()
+        # Before the release: the deletes are still pending, and the next
+        # holder must see them.
+        frappe.db.commit()
+        return actions
     finally:
-        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (_BUDGET_FIELD_SYNC_LOCK,))
+        try:
+            frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock,))
+        except Exception:
+            # A dropped connection took the lock with it. Never hide the
+            # sync's own error behind this one.
+            frappe.logger().exception(f"schema_apply: RELEASE_LOCK('{lock}') failed")
+
+
+def _budget_field_sync_lock():
+    """The named lock, per database: GET_LOCK names are global to the server."""
+    return f"{_BUDGET_FIELD_SYNC_LOCK}:{frappe.conf.db_name}"[:64]
+
+
+def _created_elsewhere(cf):
+    """Whether a failed insert of ``cf`` met a field committed outside this sync.
+
+    That field fails CustomField.validate ("already exists", a ValidationError)
+    before db_insert could raise DuplicateEntryError, and it meets the goal.
+    A row stamped with our own creation time is ours, failing after the
+    insert (updatedb's DDL): that must not pass as success.
+    """
+    creation = getattr(cf, "creation", None)
+    if not creation:
+        return False
+    return bool(frappe.db.exists("Custom Field", {
+        "dt": cf.dt, "fieldname": cf.fieldname, "creation": ("!=", creation)}))
 
 
 def _sync_budget_custom_fields_locked():
-    # Locking reads. Under REPEATABLE READ a plain read reuses the snapshot
-    # from the transaction's first read, taken before this session waited for
-    # the lock: it would miss what the previous holder committed (a field it
-    # removed, a dimension republished since) and undo it. A locking read
-    # sees the latest committed rows.
-    budget_dims = frappe.db.sql(
-        """SELECT dimension_name, label FROM `tabDimension`
-           WHERE in_budget = 1 AND status = 'Published' LOCK IN SHARE MODE""",
-        as_dict=True,
+    # Plain reads: _sync_budget_custom_fields committed after taking the lock,
+    # so the snapshot is fresh.
+    budget_dims = frappe.get_all(
+        "Dimension",
+        filters={"in_budget": 1, "status": "Published"},
+        fields=["dimension_name", "label"],
+        limit_page_length=0,
     )
     wanted = {d.dimension_name for d in budget_dims}
     label_map = {d.dimension_name: d.label for d in budget_dims}
 
     # Existing custom fields for Budget Line that are dimension fields
-    existing = frappe.db.sql(
-        """SELECT name, fieldname FROM `tabCustom Field`
-           WHERE dt = %s AND fieldname LIKE %s LOCK IN SHARE MODE""",
-        ("Budget Line", "dim_%"),
-        as_dict=True,
+    existing = frappe.get_all(
+        "Custom Field",
+        filters={
+            "dt": "Budget Line",
+            "fieldname": ("like", "dim_%"),
+        },
+        fields=["name", "fieldname"],
+        limit_page_length=0,
     )
     existing_names = {cf.fieldname for cf in existing}
 
@@ -427,8 +500,10 @@ def _sync_budget_custom_fields_locked():
         cf.insert_after = "main_account"
         try:
             cf.insert()
-        except frappe.DuplicateEntryError:
-            continue  # created outside this sync meanwhile: the goal is met
+        except Exception:
+            if _created_elsewhere(cf):
+                continue  # the goal is met
+            raise
         actions.append(f"added {dim_name}")
 
     # Remove orphaned

@@ -268,7 +268,7 @@ def test_schema_apply_budget_fields_filter_published():
         content = f.read()
     # The reads moved behind the sync's named lock (#135 review).
     func = _extract_function(content, "_sync_budget_custom_fields_locked")
-    assert "status = 'Published'" in func, "_sync_budget_custom_fields_locked missing Published filter"
+    assert '"Published"' in func, "_sync_budget_custom_fields_locked missing Published filter"
 
 
 # ---------------------------------------------------------------------------
