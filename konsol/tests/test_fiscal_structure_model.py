@@ -80,3 +80,60 @@ def test_row_outside_year_named():
     errors = M.year_problems(year, [fy_row(date(2020, 6, 30), date(2020, 1, 1), code="P03")])
     assert errors
     assert any("Row 1" in e and "P03" in e for e in errors), errors
+
+
+def reg(period, start_date, end_date, type_="Regular"):
+    return {"period": period, "code": f"P{period:02d}", "type": type_,
+            "start_date": start_date, "end_date": end_date}
+
+
+def test_regular_periods_tile_the_year():
+    import calendar
+    year = fy(2025, date(2025, 1, 1), date(2025, 12, 31))
+
+    def months():
+        return [reg(m, date(2025, m, 1), date(2025, m, calendar.monthrange(2025, m)[1]))
+                for m in range(1, 13)]
+
+    # a valid monthly calendar year, plus ignored Opening/Closing rows, passes
+    valid = months() + [reg(0, date(2025, 1, 1), date(2025, 1, 1), "Opening"),
+                        reg(13, date(2025, 12, 31), date(2025, 12, 31), "Closing")]
+    assert M.regular_period_problems(year, valid) == []
+
+    # a gap: P03 starts 3 days late
+    rows = months()
+    rows[2]["start_date"] = date(2025, 3, 4)
+    errors = M.regular_period_problems(year, rows)
+    assert any("P03 starts 2025-03-04 but P02 ends 2025-02-28: a gap of 3 days" in e for e in errors), errors
+
+    # an overlap: P04 starts inside P03
+    rows = months()
+    rows[3]["start_date"] = date(2025, 3, 30)
+    errors = M.regular_period_problems(year, rows)
+    assert any("P04 overlaps P03" in e for e in errors), errors
+
+    # a late first start
+    rows = months()
+    rows[0]["start_date"] = date(2025, 1, 2)
+    errors = M.regular_period_problems(year, rows)
+    assert any("The first Regular period P01 starts" in e and "after the year start 2025-01-01" in e
+               for e in errors), errors
+
+    # an early last end
+    rows = months()
+    rows[11]["end_date"] = date(2025, 12, 30)
+    errors = M.regular_period_problems(year, rows)
+    assert any("The last Regular period P12 ends" in e and "before the year end 2025-12-31" in e
+               for e in errors), errors
+
+    # a numbering gap: 1, 2, 4
+    rows = [reg(1, date(2025, 1, 1), date(2025, 4, 30)),
+            reg(2, date(2025, 5, 1), date(2025, 8, 31)),
+            reg(4, date(2025, 9, 1), date(2025, 12, 31))]
+    errors = M.regular_period_problems(year, rows)
+    assert any("Regular periods are numbered 1, 2, 4: 3 is missing" in e for e in errors), errors
+
+    # no Regular rows at all (only other types)
+    errors = M.regular_period_problems(year, [reg(0, date(2025, 1, 1), date(2025, 12, 31), "Opening")])
+    assert any("No Regular periods" in e for e in errors), errors
+    assert M.regular_period_problems(year, [])
