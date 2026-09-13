@@ -1,9 +1,9 @@
 """Fiscal year period patterns (konsol#189), pure: no frappe import.
 
 Generates the period rows for a fiscal year given only its start and end
-dates. Today this covers the "Monthly (12)" and "13 Periods (4 Weeks)"
-patterns; opening/closing periods and other patterns (e.g. 4-4-5,
-quarterly) are later work.
+dates. Covers the "Monthly (12)", "13 Periods (4 Weeks)" and "4-4-5"
+patterns, plus optional Opening/Closing rows around them; "Custom" fiscal
+years are entered by hand and are not generated here.
 """
 import calendar
 import datetime
@@ -163,4 +163,63 @@ def four_four_five_periods(start_date, end_date):
             "quarter": "Q%d" % (((period - 1) // 3) + 1),
         })
         p_start = p_end + datetime.timedelta(days=1)
+    return rows
+
+
+_PATTERN_GENERATORS = {
+    "Monthly (12)": monthly_periods,
+    "13 Periods (4 Weeks)": thirteen_periods,
+    "4-4-5": four_four_five_periods,
+}
+
+
+def _opening_row(start_date):
+    return {
+        "period": 0,
+        "code": "OPN",
+        "label": "Opening %d" % start_date.year,
+        "type": "Opening",
+        "start_date": start_date,
+        "end_date": start_date,
+        "quarter": "",
+    }
+
+
+def _closing_row(period, end_date, year):
+    return {
+        "period": period,
+        "code": "CLS",
+        "label": "Closing %d" % year,
+        "type": "Closing",
+        "start_date": end_date,
+        "end_date": end_date,
+        "quarter": "",
+    }
+
+
+def generate_periods(pattern, start_date, end_date, include_opening=True, include_closing=True):
+    """The period rows of a fiscal year running from start_date to end_date
+    (inclusive, both datetime.date) under the named pattern, optionally
+    bracketed by a one-day Opening row (period 0, before the Regular rows)
+    and a one-day Closing row (one past the highest Regular period, after
+    them).
+
+    pattern is one of "Monthly (12)", "13 Periods (4 Weeks)" or "4-4-5",
+    dispatching to monthly_periods, thirteen_periods or
+    four_four_five_periods respectively. Any other pattern (notably
+    "Custom") is refused (ValueError): custom fiscal years are entered by
+    hand, not generated.
+    """
+    generator = _PATTERN_GENERATORS.get(pattern)
+    if generator is None:
+        raise ValueError(
+            "%s periods are entered by hand, not generated" % pattern
+        )
+
+    rows = generator(start_date, end_date)
+
+    if include_closing:
+        rows.append(_closing_row(rows[-1]["period"] + 1, end_date, start_date.year))
+    if include_opening:
+        rows.insert(0, _opening_row(start_date))
     return rows
