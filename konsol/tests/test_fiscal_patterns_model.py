@@ -210,3 +210,50 @@ def test_445_refuses_365():
         assert "365" in str(e), str(e)
     else:
         raise AssertionError("expected ValueError for a 365-day span")
+
+
+def test_opening_closing_flags():
+    start = d(2025, 1, 1)
+    end = d(2025, 12, 31)
+
+    rows = M.generate_periods("Monthly (12)", start, end)
+    assert rows[0]["period"] == 0
+    assert rows[0]["code"] == "OPN"
+    assert rows[0]["label"] == "Opening 2025"
+    assert rows[0]["type"] == "Opening"
+    assert rows[0]["start_date"] == start
+    assert rows[0]["end_date"] == start
+    assert rows[0]["quarter"] == ""
+
+    assert rows[-1]["period"] == 13
+    assert rows[-1]["code"] == "CLS"
+    assert rows[-1]["label"] == "Closing 2025"
+    assert rows[-1]["type"] == "Closing"
+    assert rows[-1]["start_date"] == end
+    assert rows[-1]["end_date"] == end
+    assert rows[-1]["quarter"] == ""
+
+    assert len(rows) == 14
+    assert [row["period"] for row in rows[1:-1]] == list(range(1, 13))
+
+    # 13-period pattern: closing period number is 14, one past the last Regular.
+    end_364 = start + datetime.timedelta(days=363)
+    rows13 = M.generate_periods("13 Periods (4 Weeks)", start, end_364)
+    assert rows13[0]["code"] == "OPN"
+    assert rows13[-1]["code"] == "CLS"
+    assert rows13[-1]["period"] == 14
+
+    # Flags off: only the Regular rows, untouched.
+    plain = M.generate_periods("Monthly (12)", start, end, include_opening=False, include_closing=False)
+    assert len(plain) == 12
+    assert [row["type"] for row in plain] == ["Regular"] * 12
+
+
+def test_custom_is_refused():
+    try:
+        M.generate_periods("Custom", d(2025, 1, 1), d(2025, 12, 31))
+    except ValueError as e:
+        assert "Custom" in str(e), str(e)
+        assert "by hand" in str(e), str(e)
+    else:
+        raise AssertionError("expected ValueError for Custom pattern")
