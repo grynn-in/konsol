@@ -948,6 +948,9 @@ def test_the_adoption_will_not_start_without_every_reference():
     patch still looked done. Now nothing is written, and the patch runs again."""
     frappe = _frappe({}, user="Administrator", refs=dict(REFS, JPY=0.0))
     frappe.local = types.SimpleNamespace(site="konsolidat.local")
+    frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
+    frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
+    frappe.db.savepoint = lambda name: None
     frappe.get_doc = lambda d: (_ for _ in ()).throw(AssertionError("wrote a row"))
     r = _rules_module(frappe, {"translated_rates": lambda: [("JPY", "USD", 2024, 3, [0.0066], [0.0066])],
                                "erp_quote_rows": lambda as_of: []})
