@@ -553,7 +553,7 @@ def _ddl():
     with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
         tree = ast.parse(f.read())
     return {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-            and getattr(n.targets[0], "id", "") in ("_REFERENCE_TABLE_DDL", "_ADDED_COLUMNS")}
+            and getattr(n.targets[0], "id", "") in ("_REFERENCE_TABLE_DDL", "_RAW_TABLE_DDL", "_ADDED_COLUMNS")}
 
 
 def test_the_staging_ddl_is_the_true_rate():
@@ -580,8 +580,10 @@ def test_the_currencies_ddl_carries_the_reference():
     # end of its CREATE so a fresh table and an upgraded one agree
     added = consts["_ADDED_COLUMNS"]
     assert added["epm_gold.currencies"] == [("usd_log10", "Float64 DEFAULT nan")]
+    # _ADDED_COLUMNS also carries raw tables (konsol#159), created by ensure_raw_tables
+    ddl = {**consts["_REFERENCE_TABLE_DDL"], **consts["_RAW_TABLE_DDL"]}
     for table, cols in added.items():
-        body = consts["_REFERENCE_TABLE_DDL"][table]
+        body = ddl[table]
         assert body[:body.index(") ENGINE")].endswith(", ".join(f"{c} {t}" for c, t in cols)), table
     sql = []
     m = _clickhouse_module(lambda s, params=None: sql.append(s) or "")

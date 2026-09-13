@@ -705,6 +705,9 @@ _ADDED_COLUMNS = {
         ("ic_difference_account", "String DEFAULT ''"),
         ("ic_difference_tolerance", "Float64 DEFAULT 0"),
     ],
+    # konsol#103: ISO Currency's magnitude reference for the group rate guard;
+    # NaN until the ISO Currency write-through fills it
+    "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
 }
 
 
@@ -725,23 +728,6 @@ def ensure_raw_tables():
         execute(f"CREATE TABLE IF NOT EXISTS {table} {body}")
     for sql in _added_column_ddl(_RAW_TABLE_DDL):
         execute(sql)
-
-
-# Columns a later release added to a table that already exists on older
-# stacks. CREATE TABLE IF NOT EXISTS never touches an existing table, so each
-# is added here too; ADD COLUMN IF NOT EXISTS is metadata-only and idempotent.
-# The same column must be in the CREATE above, at the end, so a fresh table
-# and an upgraded one agree.
-_ADDED_COLUMNS = {
-    # konsol#103: ISO Currency's magnitude reference for the group rate guard;
-    # NaN until the ISO Currency write-through fills it
-    "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
-}
-
-
-def _added_column_ddl(tables):
-    return [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {c} {typ}"
-            for t, cols in _ADDED_COLUMNS.items() if t in tables for c, typ in cols]
 
 
 def ensure_reference_tables():
