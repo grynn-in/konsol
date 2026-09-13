@@ -229,7 +229,10 @@ def check_raw_data_available():
     When connectors are registered, gate on per-connector sync status (an
     enabled connector that has never synced or whose last sync Failed/Running
     blocks the build, and the message names it). Otherwise fall back to the
-    global EPM Settings Airbyte sync status.
+    global EPM Settings Airbyte sync status — checked BEFORE the trial-balance
+    pass, so a feed the Airbyte webhook (api.py) marked Failed or still
+    Running blocks the build even with a claimed trial-balance row already in
+    the warehouse.
 
     Returns (ok: bool, message: str).
     """
@@ -244,23 +247,26 @@ def check_raw_data_available():
     if gate is not None:
         return gate
 
-    # No enabled connector gates this site: trial balances uploaded to konsol
-    # and landed in the warehouse are its raw data (konsol#182).
+    settings = frappe.get_single("EPM Settings")
+    sync_status = settings.last_airbyte_sync_status
+
+    # No enabled connector gates this site, but the Airbyte webhook (api.py
+    # ~1564) sets this global status without requiring a Connector doctype or
+    # an enabled connector. A build must not run on a feed it marked Failed or
+    # still Running just because a trial balance was also submitted — this
+    # runs BEFORE the trial-balance pass below.
+    if sync_status in ("Failed", "Running"):
+        return False, f"Airbyte sync status is '{sync_status}' — cannot build from raw"
+
+    # Trial balances uploaded to konsol and landed in the warehouse are this
+    # site's raw data (konsol#182).
     rows = _trial_balance_rows()
     if rows:
         return True, (f"{rows} trial balance rows in epm_raw.trial_balance_submissions "
                       "— building from them (no connector)")
 
-    settings = frappe.get_single("EPM Settings")
-
-    sync_status = settings.last_airbyte_sync_status
-    sync_at = settings.last_airbyte_sync_at
-
-    if not sync_at:
+    if not settings.last_airbyte_sync_at:
         return False, "Airbyte has never synced — epm_raw may be empty"
-
-    if sync_status in ("Failed", "Running"):
-        return False, f"Airbyte sync status is '{sync_status}' — cannot build from raw"
 
     return True, f"Airbyte sync OK (status={sync_status}, rows={settings.last_airbyte_sync_rows})"
 
