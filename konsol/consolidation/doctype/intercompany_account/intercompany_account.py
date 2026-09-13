@@ -152,6 +152,11 @@ class IntercompanyAccount(GovernedReferenceDocument):
         checked = _accounts(self)
         if self.flags.ica_publish_checked == checked:
             return
+        # #173 re-review L5: Consolidation Group's difference-account check
+        # reads these rows and this reads its rows, so both take the same lock
+        # first (this doctype's tabDocType row, as _validate_one_pair does),
+        # then read by equality on an indexed column with FOR UPDATE.
+        frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", (DOCTYPE,))
         from konsol.tb_bulk import _chart_accounts
 
         accounts = [a for a in checked if a]
@@ -159,8 +164,9 @@ class IntercompanyAccount(GovernedReferenceDocument):
         missing = [a for a in accounts if a not in chart]
         if missing:
             frappe.throw(f"Not in the group chart: {', '.join(missing)}")
-        diff = frappe.get_all("Consolidation Group",
-                              filters={"ic_difference_account": ["in", accounts]}, pluck="name")
+        diff = sorted({r.name for a in accounts for r in frappe.db.sql(
+            "SELECT `name` FROM `tabConsolidation Group` WHERE `ic_difference_account` = %s FOR UPDATE",
+            (a,), as_dict=True)})
         if diff:
             frappe.throw(
                 f"{', '.join(accounts)}: {', '.join(diff)} books intercompany differences "

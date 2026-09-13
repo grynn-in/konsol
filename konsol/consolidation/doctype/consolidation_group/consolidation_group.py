@@ -73,34 +73,61 @@ class ConsolidationGroup(NestedSet):
                              "set the account and tolerance on the group.")
             return
         # gold_ic_reconciliation reads a group's settings from the group's own
-        # row, the one with no entity (data_area_id = ''). On a group node that
-        # also carries an entity they would be ignored silently (#173
-        # re-review), so they are refused there.
+        # row, the one with no entity (data_area_id = ''), as
+        # gold_consolidated_trial_balance does its reporting currency (#172).
+        # On a group node that also carries an entity they would be ignored
+        # silently (#173 re-review), so they are refused there. #172 does not
+        # refuse such a node, so neither does this; the group needs a node
+        # without an entity to carry them (re-review L6).
         if self.data_area_id:
             if has_settings:
-                frappe.throw(f"This node carries entity {self.data_area_id}. Intercompany difference "
-                             "settings belong on the group's own node, the one without an entity: "
-                             "consolidation reads them only from there.")
+                frappe.throw(f"This node carries entity {self.data_area_id}, and consolidation reads a "
+                             "group's intercompany difference settings only from the group's node "
+                             "without an entity (the one it reads the reporting currency from). The "
+                             f"group {self.consolidation_group} needs such a node to carry them.")
             return
         if float(self.ic_difference_tolerance or 0) < 0:
             frappe.throw("The intercompany difference tolerance cannot be negative.")
-        if self.ic_difference_account:
-            from konsol.consolidation.doctype.intercompany_account.intercompany_account import (
-                intercompany_accounts,
-            )
-            if self.ic_difference_account in intercompany_accounts():
-                frappe.throw(
-                    f"{self.ic_difference_account} is an Intercompany Account. Book "
-                    "differences to an account that is not eliminated itself.")
-            # In the group chart (#173 review, A3). Only when the account
-            # changes: the chart check reads ClickHouse and refuses when it is
-            # down, which must not block every other edit of the node.
-            before = self.get_doc_before_save()
-            if not before or (before.ic_difference_account or "").strip() != self.ic_difference_account:
-                from konsol.tb_bulk import _chart_accounts
+        if not self.ic_difference_account:
+            return
+        # Only when the account changes: an unchanged one was checked when it
+        # was set, and Intercompany Account refuses to flag a difference
+        # account afterwards. The chart check reads ClickHouse and refuses when
+        # it is down, which must not block every other edit of the node.
+        before = self.get_doc_before_save()
+        if before and (before.ic_difference_account or "").strip() == self.ic_difference_account:
+            return
+        self._check_new_difference_account()
 
-                if self.ic_difference_account not in _chart_accounts():
-                    frappe.throw(f"{self.ic_difference_account} is not in the group chart.")
+    def _check_new_difference_account(self):
+        """A new difference account is not an Intercompany Account and is in
+        the group chart.
+
+        #173 re-review L5: this and Intercompany Account's publish check read
+        each other's rows, so a group setting account X and a publish flagging
+        X at once could each pass. Both take the same serialising lock first
+        (Intercompany Account's tabDocType row, the konsol.build_lock pattern),
+        then read by equality on indexed columns with FOR UPDATE, which reads
+        the latest committed rows under REPEATABLE READ.
+        """
+        account = self.ic_difference_account
+        if frappe.db.table_exists("Intercompany Account"):
+            frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
+                          ("Intercompany Account",))
+            flagged = []
+            for column in ("main_account", "counterpart_account"):
+                flagged += frappe.db.sql(
+                    f"SELECT `name` FROM `tabIntercompany Account` WHERE `{column}` = %s "
+                    "AND `status` = 'Published' FOR UPDATE", (account,), as_dict=True)
+            if flagged:
+                frappe.throw(
+                    f"{account} is an Intercompany Account ({', '.join(sorted({f.name for f in flagged}))}). "
+                    "Book differences to an account that is not eliminated itself.")
+        # In the group chart (#173 review, A3).
+        from konsol.tb_bulk import _chart_accounts
+
+        if account not in _chart_accounts():
+            frappe.throw(f"{account} is not in the group chart.")
 
     def on_update(self):
         self._warn_if_no_ownership_period()

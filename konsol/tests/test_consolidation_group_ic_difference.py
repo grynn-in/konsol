@@ -52,13 +52,30 @@ def _load():
 M = _load()
 
 
+class _Reads(list):
+    queries = ()
+
+
+class _Row(dict):
+    __getattr__ = dict.get
+
+
 @contextlib.contextmanager
 def _facts(ic=(), chart=None):
-    """The two modules the validator imports lazily. chart=None: reading the
-    chart is a failure (it must not be read)."""
-    reads = []
+    """What the validator reads: Published Intercompany Account rows (through
+    frappe.db, recorded in `queries`) and the chart (a lazily imported module).
+    chart=None: reading the chart is a failure (it must not be read)."""
+    reads = _Reads()
+    queries = []
+
+    def sql(query, values=None, as_dict=False):
+        queries.append((" ".join(query.split()), values))
+        if "FROM `tabIntercompany Account`" in query and values and values[0] in ic:
+            return [_Row(name=f"ICA-{values[0]}")] if "`main_account` = %s" in query else []
+        return []
+
+    M.frappe.db = types.SimpleNamespace(sql=sql, table_exists=lambda name: True)
     ica = types.ModuleType("ica_stub")
-    ica.intercompany_accounts = lambda: set(ic)
     tb = types.ModuleType("tb_bulk_stub")
 
     def chart_accounts():
@@ -70,6 +87,7 @@ def _facts(ic=(), chart=None):
     names = {"konsol.consolidation.doctype.intercompany_account.intercompany_account": ica, "konsol.tb_bulk": tb}
     saved = {k: sys.modules.get(k) for k in names}
     sys.modules.update(names)
+    reads.queries = queries
     try:
         yield reads
     finally:
@@ -82,6 +100,7 @@ def _facts(ic=(), chart=None):
 
 def _node(is_group, data_area_id, account="", tolerance=0, before_account=None):
     d = M.ConsolidationGroup()
+    d.consolidation_group = "ZZGRP"
     d.is_group, d.data_area_id = is_group, data_area_id
     d.ic_difference_account, d.ic_difference_tolerance = account, tolerance
     d.get_doc_before_save = lambda: (None if before_account is None
@@ -114,7 +133,7 @@ def test_settings_live_on_the_group_node_without_an_entity():
         _node(1, "", " 2100 ", tolerance=5)._validate_ic_difference()
         _node(0, "", "2100")._validate_ic_difference()
         assert len(reads) == 2
-        _refused(_node(1, "ZZX", "2100"), "carries entity ZZX")
+        _refused(_node(1, "ZZX", "2100"), "needs such a node to carry them")
         _refused(_node(1, "ZZX", "", tolerance=5), "carries entity ZZX")
         _node(1, "ZZX")._validate_ic_difference()   # nothing set: fine
 
@@ -133,3 +152,21 @@ def test_an_intercompany_account_or_a_negative_tolerance_is_refused():
     with _facts(ic={"4030", "5030"}, chart={"2100", "4030"}):
         _refused(_node(1, "", "4030"), "is an Intercompany Account")
         _refused(_node(1, "", "2100", tolerance=-1), "cannot be negative")
+
+
+def test_a_new_difference_account_is_checked_under_the_intercompany_lock():
+    """#173 re-review L5: Intercompany Account's publish check and this one
+    read each other's rows. Both take the same serialising lock first, then
+    read by equality on indexed columns with FOR UPDATE."""
+    with _facts(ic={"4030"}, chart={"2100"}) as reads:
+        _node(1, "", "2100")._validate_ic_difference()
+        q = reads.queries
+        assert q[0] == ("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", ("Intercompany Account",))
+        assert len(q) == 3 and all(x[0].endswith("FOR UPDATE") and x[1] == ("2100",) for x in q[1:])
+        assert {("`main_account` = %s" in x[0], "`counterpart_account` = %s" in x[0]) for x in q[1:]} == {
+            (True, False), (False, True)}
+        _refused(_node(1, "", "4030"), "4030 is an Intercompany Account (ICA-4030)")
+    # unchanged: no lock, no read
+    with _facts(ic={"2100"}, chart=None) as reads:
+        _node(1, "", "2100", before_account="2100")._validate_ic_difference()
+        assert reads.queries == [] and list(reads) == []

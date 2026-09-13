@@ -88,7 +88,8 @@ def test_a_group_carries_its_intercompany_difference_account_and_tolerance():
     content = _load_py("consolidation_group")
     for f in ("ic_difference_account", "ic_difference_tolerance"):
         assert f'"{f}": "{f}"' in content, f
-    assert "_validate_ic_difference" in content and "intercompany_accounts" in content
+    # a locking read of Published Intercompany Account rows (#173 re-review L5)
+    assert "_validate_ic_difference" in content and "FROM `tabIntercompany Account`" in content
     # decision 13 (13 Sep 2026): only booking differences count against the tolerance
     assert "booking difference" in fields["ic_difference_tolerance"]["description"]
     assert "never counts" in fields["ic_difference_tolerance"]["description"]

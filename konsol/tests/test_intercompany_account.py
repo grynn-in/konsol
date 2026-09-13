@@ -199,7 +199,50 @@ def test_the_staging_table_ddl_matches_the_field_map():
 
 
 def test_upload_and_consolidation_group_read_the_same_flag():
-    for rel in ("tb_bulk.py", os.path.join("consolidation", "doctype", "consolidation_group", "consolidation_group.py"),
+    """Both read the Published Intercompany Account rows: the uploads through
+    intercompany_accounts(), the group's difference-account check through a
+    locking read of the same rows (#173 re-review L5)."""
+    for rel in ("tb_bulk.py",
                 os.path.join("consolidation", "doctype", "trial_balance_submission", "trial_balance_submission.py")):
         with open(os.path.join(APP_DIR, rel)) as f:
             assert "intercompany_accounts" in f.read(), rel
+    with open(os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_group", "consolidation_group.py")) as f:
+        src = f.read()
+    assert "FROM `tabIntercompany Account`" in src and "`status` = 'Published' FOR UPDATE" in src
+
+
+def test_the_publish_check_locks_before_reading_difference_accounts():
+    """#173 re-review L5: the same serialising lock as Consolidation Group's
+    difference-account check, then a locking read by equality (indexed)."""
+    sent = []
+
+    def sql(query, values=None, as_dict=False):
+        sent.append((" ".join(query.split()), values))
+        if "`tabConsolidation Group`" in query and values == ("5030",):
+            return [_Flags(name="CG-ZZGRP-")]
+        return []
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    tb = types.ModuleType("tb_bulk_stub")
+    tb._chart_accounts = lambda: {"4030", "5030"}
+    saved = sys.modules.get("konsol.tb_bulk")
+    sys.modules["konsol.tb_bulk"] = tb
+    M.frappe.db = types.SimpleNamespace(sql=sql)
+    M.frappe.throw = throw
+    try:
+        d = _doc("Published", "Draft")
+        M.IntercompanyAccount._before_publish(d)
+        assert False, "the difference account was not refused"
+    except _Refused as e:
+        assert "CG-ZZGRP- books intercompany differences" in str(e)
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tb_bulk", None)
+        else:
+            sys.modules["konsol.tb_bulk"] = saved
+    assert sent[0] == ("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", ("Intercompany Account",))
+    reads = sent[1:]
+    assert [v for _q, v in reads] == [("4030",), ("5030",)]
+    assert all(q.endswith("FOR UPDATE") and "`ic_difference_account` = %s" in q for q, _v in reads)

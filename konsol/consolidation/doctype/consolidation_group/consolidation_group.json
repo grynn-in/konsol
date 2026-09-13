@@ -75,6 +75,7 @@
   {
    "fieldname": "ic_difference_account",
    "fieldtype": "Data",
+   "search_index": 1,
    "label": "Intercompany Difference Account",
    "depends_on": "eval:!doc.data_area_id",
    "description": "Group chart account where this group books intercompany differences: what is left when the two sides of a pair don't match. Blank: only the matched amount is eliminated, and the difference stays on the intercompany accounts."
