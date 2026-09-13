@@ -146,6 +146,16 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         frappe.msgprint(f"{self.name} is no longer in the group chart: new trial balances posting to it "
                         "are refused.", title="Withdrawn from the chart", indicator="orange")
 
+    def _request_rebuild(self, action):
+        """The chart build, requested by publish/unpublish/delete; on a site whose
+        warehouse has never built it cannot run yet, so say what comes first."""
+        from konsol.chart_upload import unbuilt_warehouse_note
+
+        note = unbuilt_warehouse_note()
+        if note:
+            frappe.msgprint(note, title="Build the warehouse first", indicator="orange")
+        return super()._request_rebuild(action)
+
     def _refuse_if_in_use(self):
         """An account leaving the chart (unpublished, Inactive, deleted) while
         something depends on it is refused: submitted trial balances post to it,

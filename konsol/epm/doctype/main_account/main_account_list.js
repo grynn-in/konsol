@@ -20,6 +20,7 @@
 				.join("; ")}`;
 		const ready = (n) => `${esc(n.main_account)}: ${esc(n.problems.join("; "))}`;
 		return [
+			r.note ? `<p class="text-warning">${esc(r.note)}</p>` : "",
 			`<p>${esc(r.file_name)}: ${esc(r.rows)} account(s), chart <b>${esc(r.chart_of_accounts)}</b></p>`,
 			list(__("Problems: nothing will be loaded"), r.errors),
 			list(__("New, as Draft"), r.insert),
@@ -83,9 +84,10 @@
 					freeze: true,
 					callback: ({ message: r }) => {
 						frappe.msgprint(
-							r.published.length
+							(r.published.length
 								? __("{0} account(s) published; build request {1}.", [r.published.length, esc(r.build)])
-								: __("No Draft accounts in chart {0}.", [esc(chart_of_accounts)])
+								: __("No Draft accounts in chart {0}.", [esc(chart_of_accounts)])) +
+								(r.note ? "<br><br>" + esc(r.note) : "")
 						);
 						listview.refresh();
 					},

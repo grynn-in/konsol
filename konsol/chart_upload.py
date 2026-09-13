@@ -22,6 +22,12 @@ Flow (the Main Account list's "Upload chart" and "Publish chart"):
   3. ``publish_chart`` publishes every Draft of one chart, parents first, and
      requests one governed ``chart`` rebuild.
 
+The ``chart`` build (silver_main_accounts and everything downstream) reads
+tables other scopes build: bronze, the period and reporting hierarchies. On a
+site whose warehouse has never built, it cannot run yet (review of #183,
+verified on a fresh schema). The request is still made, and the reply says to
+load the trial balances and approve a consolidation build first.
+
 Only the Close Lead (EPM Admin) may do any of it. This is how a site gets its
 chart (decided 13 Sep 2026: konsol defines the shape; there is no ERP
 adoption), besides entering it in Desk.
@@ -33,6 +39,20 @@ from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild
 
 DOCTYPE = "Main Account"
 BUILD_SCOPE = "chart"
+FIRST_BUILD_NOTE = ("The warehouse has not built yet, and the chart build refreshes only what the chart "
+                    "classifies: load the trial balances and approve a consolidation build first, then "
+                    "this chart build.")
+
+
+def unbuilt_warehouse_note():
+    """FIRST_BUILD_NOTE while the warehouse has never built a trial balance;
+    None once it has, or when it cannot be asked (the build reports that)."""
+    from konsol.group_rates import ledgers_built
+
+    try:
+        return None if ledgers_built() else FIRST_BUILD_NOTE
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _require_chart_admin():
@@ -97,6 +117,7 @@ def load_chart(file_url):
         if changed_live:
             # a Published account changed what the warehouse classifies: one rebuild
             out["build"] = request_governed_rebuild(changed_live, "Chart upload", scope=BUILD_SCOPE)
+            out["note"] = unbuilt_warehouse_note()
     except Exception:
         frappe.db.rollback()
         raise
@@ -138,4 +159,5 @@ def publish_chart(chart_of_accounts):
     except Exception:
         frappe.db.rollback()
         raise
-    return {"published": names, "chart_of_accounts": chart_of_accounts, "build": build}
+    return {"published": names, "chart_of_accounts": chart_of_accounts, "build": build,
+            "note": unbuilt_warehouse_note()}
