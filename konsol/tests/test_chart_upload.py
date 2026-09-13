@@ -35,6 +35,10 @@ class Site:
         self.inserted, self.saved, self.rebuilds, self.reads = [], [], [], []
         self.rollbacks = 0
         self.snapshot = copy.deepcopy(self.rows)
+        # what holds an account in the chart: submitted postings
+        # (account, entity, year, period), Published Intercompany Accounts,
+        # Consolidation Groups booking differences to it
+        self.postings, self.ic, self.diff = [], [], []
 
     def begin(self):
         """A request starts: what rollback() returns to."""
@@ -150,8 +154,14 @@ def load(site):
         return site.built
 
     rates.ledgers_built = ledgers_built
+    # the Main Account controller's usage readers (test_main_account tests the real ones)
+    ma = types.ModuleType("konsol.epm.doctype.main_account.main_account")
+    ma._submitted_postings = lambda codes: [p for p in site.postings if p[0] in codes]
+    ma._intercompany_rows = lambda codes: list(site.ic)
+    ma._difference_groups = lambda codes: list(site.diff)
     # imported at call time: keep the stubs installed for the calls
-    mod._stub_modules = {"konsol.tb_bulk": tb, "konsol.group_rates": rates}
+    mod._stub_modules = {"konsol.tb_bulk": tb, "konsol.group_rates": rates,
+                         "konsol.epm.doctype.main_account.main_account": ma}
     return mod
 
 
@@ -312,6 +322,54 @@ def test_a_load_that_changes_a_published_account_requests_one_build_with_no_note
     site = Site(built=False, tables={"/f.csv": GOOD})   # Drafts only: no rebuild, no note
     out = call(site, "load_chart", "/f.csv")
     assert "build" not in out and "note" not in out, out
+
+
+def _split_file():
+    """ZZ1000, a Published leaf, turned into a heading with a new account under it."""
+    head = HEAD + ["is_group"]
+    return [head, ["ZZ9000", "Heading", "", "", "", "ZZCOA", "yes"],
+            ["ZZ1000", "Cash", "", "", "ZZ9000", "ZZCOA", "yes"],
+            ["ZZ1100", "Cash at bank", "Asset", "BS", "ZZ1000", "ZZCOA", "no"]]
+
+
+def _split_site():
+    existing = [row("ZZ9000", status="Published", is_group=1, is_posting=0, account_type="", statement_section="",
+                    normal_balance="", time_balance="", fx_method="", account_name="Heading", lft=1),
+                row("ZZ1000", status="Published", parent_account="ZZ9000", account_name="Cash", lft=2)]
+    return Site(rows=existing, tables={"/split.csv": _split_file()})
+
+
+def test_a_load_that_turns_a_used_published_leaf_into_a_heading_writes_nothing():
+    """The warehouse drops headings (silver_main_accounts: is_group = 0): what
+    posts to ZZ1000 would leave both statements. All or nothing: the new
+    account is not inserted either."""
+    site = _split_site()
+    site.postings[:] = [("ZZ1000", "ZZOP", 2026, 1), ("ZZ4000", "ZZOP", 2026, 1)]
+    out = call(site, "load_chart", "/split.csv")
+    assert out["loaded"] is False and out["ok"] is False, out
+    msg = "\n".join(out["errors"])
+    assert "ZZ1000 cannot leave the group chart while submitted trial balances post to it" in msg, msg
+    assert "ZZOP FY2026 P01" in msg and "ZZ4000" not in msg, msg
+    assert site.inserted == [] and site.saved == [] and site.rebuilds == [] and site.rollbacks == 0
+    assert site.rows["ZZ1000"]["is_group"] == 0 and "ZZ1100" not in site.rows
+    # the check reports the same, before any load
+    report = call(site, "check_chart_file", "/split.csv")
+    assert report["ok"] is False and any("ZZ1000 cannot leave" in e for e in report["errors"])
+    # a Published Intercompany Account naming it: the same
+    site = _split_site()
+    site.ic[:] = ["ICA-ZZ1000"]
+    out = call(site, "load_chart", "/split.csv")
+    assert out["loaded"] is False and any("Published Intercompany Accounts name it (ICA-ZZ1000)" in e
+                                          for e in out["errors"]), out
+    assert site.inserted == [] and site.saved == []
+
+
+def test_a_load_that_turns_an_unused_published_leaf_into_a_heading_loads():
+    site = _split_site()
+    out = call(site, "load_chart", "/split.csv")
+    assert out["loaded"] and out["errors"] == [], out
+    assert (site.rows["ZZ1000"]["is_group"], site.rows["ZZ1000"]["is_posting"]) == (1, 0)
+    assert site.rows["ZZ1000"]["status"] == "Published" and site.inserted == ["ZZ1100"]
 
 
 def test_a_chart_with_allow_ic_on_every_leaf_loads_and_publishes_cleanly():

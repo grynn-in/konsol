@@ -555,6 +555,61 @@ def test_a_heading_answers_for_the_accounts_under_it():
         _clear()
 
 
+def _made_heading(status="Published", before_status="Published"):
+    """A leaf (Published before the save) saved as a heading. The warehouse
+    drops headings (silver_main_accounts: is_group = 0), so what posts to it
+    leaves both statements although the row stays Published."""
+    return _doc(status, {"status": before_status, "is_group": 0, "is_posting": 1}, is_group=1, is_posting=0,
+                fx_method="closing", normal_balance="Debit", time_balance="balance")
+
+
+def test_a_published_leaf_that_submitted_trial_balances_post_to_cannot_become_a_heading():
+    _clear()
+    C.frappe.postings[:] = [("ZZ1000", "ZZOP", 2026, 1)]
+    try:
+        msg = ""
+        try:
+            _made_heading().validate()
+        except Refused as e:
+            msg = str(e)
+        assert "ZZ1000 cannot leave the group chart while submitted trial balances post to it" in msg, msg
+        assert "ZZOP FY2026 P01" in msg and "(a heading" not in msg, msg
+        assert C.frappe.asked == [["ZZ1000"]]   # the leaf itself, not the (empty) subtree
+        # made a heading and unpublished in the same save: the same
+        _refused(lambda: _made_heading("Draft")._guard_publish(), "ZZ1000 cannot leave the group chart")
+    finally:
+        _clear()
+
+
+def test_a_published_leaf_an_intercompany_account_names_cannot_become_a_heading():
+    _clear()
+    try:
+        C.frappe.ic[:] = ["ICA-ZZ1000"]
+        _refused(lambda: _made_heading().validate(), "Published Intercompany Accounts name it (ICA-ZZ1000)")
+        C.frappe.ic.clear()
+        C.frappe.diff[:] = ["CG-ZZGRP-"]
+        _refused(lambda: _made_heading().validate(), "book intercompany differences to it (CG-ZZGRP-)")
+    finally:
+        _clear()
+
+
+def test_an_unused_published_leaf_or_a_draft_leaf_may_become_a_heading():
+    _clear()
+    try:
+        _made_heading().validate()   # nothing holds it
+        C.frappe.postings[:] = [("ZZ1000", "ZZOP", 2026, 1)]
+        C.frappe.ic[:] = ["ICA-ZZ1000"]
+        C.frappe.asked.clear()
+        _made_heading("Draft", "Draft").validate()   # a Draft is not in the chart
+        assert C.frappe.asked == []
+        # a Published heading staying one is not re-checked on every save
+        _doc("Published", {"status": "Published", "is_group": 1, "is_posting": 0}, is_group=1, is_posting=0,
+             account_type="", statement_section="").validate()
+        assert C.frappe.asked == []
+    finally:
+        _clear()
+
+
 def test_submitted_postings_are_the_claimed_rows_in_the_warehouse():
     sent = []
     ch = types.ModuleType("konsol.clickhouse")
