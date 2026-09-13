@@ -85,6 +85,33 @@ def test_every_period_doctype_is_classified():
         assert _has_period_fields(doctypes[name]), f"{name!r} lacks fiscal_year/fiscal_period"
 
 
+def test_assertion_runs_freeze_periods():
+    """Assertion Run records sign-off evidence against a period, so a period
+    with assertion runs must be frozen like one with postings — Pipeline Run
+    stays a build log (NOT_PERIOD_DATA)."""
+    M = _load()
+    assert "Assertion Run" in M.DOCTYPES_USING_PERIODS
+    assert "Assertion Run" not in M.NOT_PERIOD_DATA
+    assert "Pipeline Run" in M.NOT_PERIOD_DATA
+
+    db = _DB([])
+    M2 = _load(db)
+    saved = sys.modules.get("frappe")
+    frappe = types.ModuleType("frappe")
+    frappe.db = db
+    sys.modules["frappe"] = frappe
+    try:
+        M2.periods_in_use(2026)
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
+    assert len(db.calls) == 1, "must be one UNION query"
+    query, _ = db.calls[0]
+    assert "`tabAssertion Run`" in query
+
+
 def test_periods_in_use_query():
     db = _DB([(3,), (0,), (12,), (3,), (None,)])
     M = _load(db)
