@@ -1,6 +1,6 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night, on 13 September, and again for the role home (F7). Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), and for group 2 (13 Sep evening). Everything below was verified against the running stack._
 
 ## Pick up here
 
@@ -69,7 +69,7 @@ Put these to the user; don't pick one.
 - **Annual only, period 12** (A17). Is a `balance` account's period-12 figure the closing balance or the year's movement? The YTD and cash-flow models assume period movements.
 - **Ownership method `parent`** isn't an Ownership Period option; roots take no period (contract 4). The dates 1924-02-18, 1900-01-01 and 9999-12-31 will be **refused** by `OwnershipPeriod._validate_dates_representable` (ClickHouse `Date` holds 1970–2149); a blank end_date means open.
 - **The 43 entities without a TB:** give them Entity rows, and take the perimeter from 12_EntityYearFlag.
-- **FX intake:** map `AVERAGE`/`CLOSING` to `Average`/`Closing` (plus `Default`?) and give each a `valid_from`. 06 is USD per unit (from = local, to = USD). There is no governed rate path yet (konsol #103, undecided).
+- **FX intake:** map `AVERAGE`/`CLOSING` to `Average`/`Closing` (plus `Default`?) and give each a `valid_from`. 06 is USD per unit (from = local, to = USD). Load them as Group Exchange Rates (konsol #174): quote plus "quoted per", approved, published as true rates.
 - **Hyperinflation** (A10): TRY/ARS/EGP should use closing-rate P&L; the model uses average for all.
 
 ### How to load it (proposed)
@@ -255,6 +255,114 @@ frappe's gc threshold); and has a **must-run set**
 (`test_entity_access_host.py`, `test_security_source.py`) that fails the run if
 either is skipped. CI runs it on every PR.
 
+## Group 2: Ecolab critical path (13 Sep)
+
+Same loop as group 1: one PR per issue, reviewed and re-reviewed until clean,
+live A/B on konsolidat.local, merged as each cleared. The user approved
+decisions 1–14 (the decision tables in the session; recorded in
+`.claude/memory/active/current-tasks.md`).
+
+| PR | issue | what | state |
+|---|---|---|---|
+| konsolidat **#167** | #161 | The consolidation report's entity columns read only the ownership window | merged `50f9319` |
+| konsolidat **#168** | #158 | Sign-convention follow-ups: adapter contract, a balance test for every ERP, stale #64 comment | merged `1eac5f2` |
+| konsol **#172** | konsolidat #93 | The presentation currency lives on the Consolidation Group node, a validated Link to ISO Currency; EPM Settings' `consolidation_currency` is gone; a tree view for Consolidation Group | merged `11a846b` |
+| konsol **#174** | #103, #175 | **Group Exchange Rate**: the group's governed translation rates. See "FX rates" below | merged `c80b1e9` |
+| konsolidat **#176** | #93, konsol #103 | The warehouse translates only with the governed rates | merged `cb180f2` |
+| konsol **#173** | #159 | Intercompany counterparty: Intercompany Account pairs, partner on trial balances, difference settings on the group node | merged `cb58a98` |
+| konsolidat **#175** | #148 | Intercompany reconciliation and eliminations by partner. See "Intercompany" below | merged `8b2f8fe` |
+
+### FX rates: one source of truth, via konsol (user decision, 13 Sep)
+
+- A rate is entered as a quote per 1/10/100/1,000/10,000 units ("quoted per",
+  like D365's ConversionFactor). konsol publishes only approved rows, as the
+  TRUE rate (units of the group currency per 1 unit of the entity currency,
+  decimal division), to `epm_staging.group_exchange_rates`. The warehouse
+  never scales or inverts. ERP quotes are only a pre-fill input.
+- `api.fx_rates` and `orchestrator.fx.get_fx_rates` return the governed rates.
+- Magnitude rule: `ISO Currency.usd_log10`; refused when
+  `abs(log10(rate) - (usd_log10(to) - usd_log10(from))) > 1`. No reference =
+  NaN, or 0 for a code other than USD. Pegged PAB/BSD/BMD ship at 0.001. One
+  definition per repo (`konsol/fx_reference.py`, dbt `fx_is_implausible` /
+  `fx_has_reference`) and one 13-case table in each repo, kept identical by
+  hand (konsol #177 asks for a check).
+- Reference values live in `konsol/reference_data/iso_currencies.json`, not
+  fixtures (fixtures are force-reimported every migrate). A seed fills only
+  unset values, so a site's edit survives.
+- A publish takes a per-site lock, reads the approved rows on a separate
+  connection, builds a shadow table and swaps it in with `EXCHANGE TABLES`.
+- The adoption patch turns the rates the warehouse already translated with
+  into approved Group Exchange Rates on upgrade. It plans first, checks
+  references only for currencies it will enter, and refuses (migrate stops,
+  reruns next time) naming each currency that needs a USD Reference.
+- konsolidat: the guard pre-hook refuses a missing, duplicate, invalid or
+  more-than-10x-off rate BEFORE the model's DELETE, listing up to 50 keys.
+  A newly submitted foreign-currency TB blocks full builds until its Closing
+  and Average rates are approved.
+
+**Deploy consequence (said once):** the next `./deploy.sh` step 3 migrate runs
+the adoption patch. Step 5's pre-check stops the deploy only when
+`epm_staging.group_exchange_rates` does not exist; missing keys are listed as a
+warning, and step 5 then fails with the consolidated TB and what reads it
+keeping their last figures.
+
+**Limit:** one reference per currency for all periods; a currency moving more
+than 100x over its history (ARS, LBP) can't pass every period (konsol #176).
+
+### Intercompany
+
+- konsol: an **Intercompany Account** pairs a receivable/revenue account with
+  its counterpart; publish checks both sit in the group chart and never on the
+  group's IC difference account (a serialising lock, then indexed locking
+  reads). Trial balance rows carry `partner_data_area_id`. The group node
+  holds the tolerance (booking differences only) and the difference account;
+  a node that carries an entity refuses them.
+- konsolidat: `gold_trial_balance_by_partner`, `gold_ic_reconciliation`,
+  `gold_ic_eliminations`, `gold_ic_unmatched`, and the eliminations in
+  `gold_fully_consolidated_tb`.
+- Decision 12: match on the full translated amount. The group view (ownership
+  weighted) posts a `matched` entry at the share both sides hold and an `nci`
+  entry moving the rest to the NCI line (pseudo-account `NCI`, a dbt var maps
+  it); `elimination_view = 'nci'` entries let group + `nci_amount` read as a
+  full 100% consolidation. The NCI line nets to zero per group and period.
+- Decision 13: different functional currencies = `fx`; same currency =
+  `booking` when local amounts don't net, else `fx`. Only `booking` counts
+  against the tolerance. A cross-currency booking error is labelled `fx`
+  (a trial balance carries no transaction currency).
+- Decision 14: balance-sheet pairs compare the balance to date and post each
+  period's change; P&L pairs match on the period movement.
+- Membership comes from ownership windows per (group, period), not from who
+  submitted data. A quiet member counts as 0 (a visible booking difference);
+  any exit (disposal, sub-group sale, move to equity) gets a `left` row that
+  reverses everything. The cash flow drops balance-sheet pairs' NCI entries
+  only.
+- Proven: live A/B on ZZ data (80%, 70/80, EUR, quiet period, acquisition,
+  disposal, sub-group sale, move to equity) and the integration fixture with
+  pinned expectations (0 mismatches). That fixture is the only check of
+  membership-by-window, and the suite doesn't run it while `dbt build` stops
+  on the demo D365 test (konsolidat #182).
+- Not handled: pre-acquisition balances and disposal derecognition
+  (konsolidat #179, #180); the NCI pseudo-account's real chart account is a
+  customer choice.
+
+### Filed from group 2 reviews
+
+konsol **#176** (effective-dated currency references), **#177** (per-process
+sync health, publish connection settings, cross-repo case parity); konsolidat
+**#178** (five singular tests read stale models in a domain build), **#179**
+(an acquired entity's pre-acquisition balances never reach the consolidated
+TB), **#180** (a disposed entity's balances are not derecognised), **#181**
+(CI should run `dbt build` and the integration tests).
+
+**Lessons:**
+- Two PRs that meet at a table need one joint review: #174's `inverse_quote`
+  was never read by #176, so JPY would have been ~22,900x too large.
+- A clean git merge can leave a module-level name assigned twice
+  (`_ADDED_COLUMNS` after the IC rebase). Grep for it after any rebase that
+  touches registry dicts.
+- Shared containers: restoring them to main and migrating deleted another
+  branch's DocType as an orphan. Snapshot first and check whose files are in.
+
 ## State on 13 Sep — merged, open, next
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
@@ -288,7 +396,7 @@ containers and run scripts or dbt from a copy.
 `test_workflow_convention.py` and `test_cancel_period_gate.py` enforce what they can; every submittable doctype now follows them (#143). Submit into a closed period is refused too (#149, PR #160).
 
 **Next (the user's priority order of 13 Sep, group 2 onwards):**
-- Ecolab critical path: konsolidat **#148** + konsol **#159** (IC counterparty, together, before any IC rules load); konsolidat **#161** (the report's entity columns ignore the ownership window); konsol **#103** + konsolidat **#93** (governed rates and where the presentation currency lives: a decision first); konsolidat **#158** (sign-convention follow-ups).
+- Group 2 (Ecolab critical path) is **done**; see "Group 2" above.
 - Excel correctness: konsol **#105** (decision) → **#104** → **#106**; then **#108**, **#107**.
 - Waiting on the four reporting-bases decisions: konsol **#113**, **#111**, **#114**, **#117**.
 - Security follow-ups from group 1: konsol **#165**, **#166**; integrity: **#167**, **#168**, **#169**.
