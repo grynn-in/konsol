@@ -137,3 +137,91 @@ def test_regular_periods_tile_the_year():
     errors = M.regular_period_problems(year, [reg(0, date(2025, 1, 1), date(2025, 12, 31), "Opening")])
     assert any("No Regular periods" in e for e in errors), errors
     assert M.regular_period_problems(year, [])
+
+
+def opn(period, start, end, code="OPN"):
+    return {"period": period, "code": code, "type": "Opening", "start_date": start, "end_date": end}
+
+
+def cls(period, start, end, code="CLS"):
+    return {"period": period, "code": code, "type": "Closing", "start_date": start, "end_date": end}
+
+
+def adj(period, start, end, code="ADJ"):
+    return {"period": period, "code": code, "type": "Adjustment", "start_date": start, "end_date": end}
+
+
+def _monthly_year():
+    import calendar
+    year = fy(2025, date(2025, 1, 1), date(2025, 12, 31))
+    months = [reg(m, date(2025, m, 1), date(2025, m, calendar.monthrange(2025, m)[1]))
+              for m in range(1, 13)]
+    return year, months
+
+
+def test_opening_closing_adjustment_placement():
+    year, months = _monthly_year()
+
+    # OPN 0, P01..P12, CLS 13, ADJ 14 - a valid year
+    valid_rows = ([opn(0, date(2025, 1, 1), date(2025, 1, 1))] + months +
+                  [cls(13, date(2025, 12, 31), date(2025, 12, 31)),
+                   adj(14, date(2025, 6, 1), date(2025, 6, 30))])
+    assert M.placement_problems(year, valid_rows) == []
+
+    # two Opening rows
+    rows = valid_rows + [opn(15, date(2025, 1, 1), date(2025, 1, 1), code="OPN2")]
+    errors = M.placement_problems(year, rows)
+    assert any("Only one Opening" in e and "OPN" in e and "OPN2" in e for e in errors), errors
+
+    # Opening not period 0
+    rows = [opn(1, date(2025, 1, 1), date(2025, 1, 1))] + months + [cls(13, date(2025, 12, 31), date(2025, 12, 31))]
+    errors = M.placement_problems(year, rows)
+    assert any("OPN" in e and "period 0" in e for e in errors), errors
+
+    # a Regular period using period 0 (0 is reserved for Opening)
+    rows = valid_rows + [reg(0, date(2025, 1, 1), date(2025, 1, 31))]
+    errors = M.placement_problems(year, rows)
+    assert any("Period 0 is reserved for Opening" in e and "P00" in e for e in errors), errors
+
+    # Opening not on the year start day
+    rows = [opn(0, date(2025, 1, 2), date(2025, 1, 2))] + months + [cls(13, date(2025, 12, 31), date(2025, 12, 31))]
+    errors = M.placement_problems(year, rows)
+    assert any("OPN" in e and "one day" in e for e in errors), errors
+
+    # Opening longer than one day
+    rows = [opn(0, date(2025, 1, 1), date(2025, 1, 2))] + months + [cls(13, date(2025, 12, 31), date(2025, 12, 31))]
+    errors = M.placement_problems(year, rows)
+    assert any("OPN" in e and "one day" in e for e in errors), errors
+
+    # Closing below a Regular period
+    rows = [opn(0, date(2025, 1, 1), date(2025, 1, 1))] + months + [cls(5, date(2025, 12, 31), date(2025, 12, 31))]
+    errors = M.placement_problems(year, rows)
+    assert any("CLS" in e and "above every Regular period" in e for e in errors), errors
+
+    # Closing not on the year end day
+    rows = [opn(0, date(2025, 1, 1), date(2025, 1, 1))] + months + [cls(13, date(2025, 12, 30), date(2025, 12, 31))]
+    errors = M.placement_problems(year, rows)
+    assert any("CLS" in e and "one day" in e for e in errors), errors
+
+    # two Closing rows
+    rows = valid_rows + [cls(16, date(2025, 12, 31), date(2025, 12, 31), code="CLS2")]
+    errors = M.placement_problems(year, rows)
+    assert any("Only one Closing" in e and "CLS" in e and "CLS2" in e for e in errors), errors
+
+    # Adjustment numbered inside the Regular range
+    rows = [opn(0, date(2025, 1, 1), date(2025, 1, 1))] + months + [
+        cls(13, date(2025, 12, 31), date(2025, 12, 31)), adj(5, date(2025, 6, 1), date(2025, 6, 30))]
+    errors = M.placement_problems(year, rows)
+    assert any("ADJ" in e and "above every Regular period" in e for e in errors), errors
+
+    # Adjustment outside the year
+    rows = [opn(0, date(2025, 1, 1), date(2025, 1, 1))] + months + [
+        cls(13, date(2025, 12, 31), date(2025, 12, 31)), adj(14, date(2024, 12, 31), date(2025, 1, 5))]
+    errors = M.placement_problems(year, rows)
+    assert any("ADJ" in e and "before the year start" in e for e in errors), errors
+
+    # unknown type is refused, naming it
+    rows = valid_rows + [{"period": 20, "code": "XYZ", "type": "Bogus",
+                           "start_date": date(2025, 6, 1), "end_date": date(2025, 6, 1)}]
+    errors = M.placement_problems(year, rows)
+    assert any("XYZ" in e and "Bogus" in e for e in errors), errors
