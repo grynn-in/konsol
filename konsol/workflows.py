@@ -2,7 +2,7 @@
 
 Decided 12 Sep 2026: workflows are installed once so a site may customise them.
 A patch can't do that job, because a fresh install marks every patch as done
-without running it (frappe/installer.py), and the Ecolab reset is a fresh
+without running it (frappe/installer.py), and a customer reset is a fresh
 install. So this runs from after_install (fresh sites, before fixtures) and
 from after_migrate (existing sites). It is idempotent, and it skips a doctype
 that already has ANY workflow: a site's own workflow stays, and inserting ours
