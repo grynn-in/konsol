@@ -1,8 +1,14 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), and for group 2 (13 Sep evening). Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), and for the group chart (13 Sep night). Everything below was verified against the running stack._
 
 ## Pick up here
+
+**Update (13 Sep night): the group chart of accounts is live in konsol** (see
+"Group chart of accounts" below). The site no longer depends on an ERP chart:
+upload the chart, publish it, approve the build, then load trial balances. The
+remaining blocker for the load is the unbalanced trial balances (below), which
+is the user's decision.
 
 **The user's instruction, verbatim:** *"First empty the site completely.
 Re-set up with a correct set of data.
@@ -70,7 +76,8 @@ Put these to the user; don't pick one.
 - **Ownership method `parent`** isn't an Ownership Period option; roots take no period (contract 4). The dates 1924-02-18, 1900-01-01 and 9999-12-31 will be **refused** by `OwnershipPeriod._validate_dates_representable` (ClickHouse `Date` holds 1970–2149); a blank end_date means open.
 - **The 43 entities without a TB:** give them Entity rows, and take the perimeter from 12_EntityYearFlag.
 - **FX intake:** map `AVERAGE`/`CLOSING` to `Average`/`Closing` (plus `Default`?) and give each a `valid_from`. 06 is USD per unit (from = local, to = USD). Load them as Group Exchange Rates (konsol #174): quote plus "quoted per", approved, published as true rates.
-- **Hyperinflation** (A10): TRY/ARS/EGP should use closing-rate P&L; the model uses average for all.
+- **Hyperinflation** (A10): TRY/ARS/EGP should use closing-rate P&L. Since konsol#182 an account declares its `fx_method`, so a P&L account can be declared at `closing`.
+- **The chart (01_CoA)** loads through konsol's chart upload (Main Account list → Upload chart). Its columns already match the upload. It passes today's rules, including `allow_ic=1` on every postable account and accounts whose type differs from their heading's (both pinned by tests).
 
 ### How to load it (proposed)
 
@@ -363,6 +370,68 @@ TB), **#180** (a disposed entity's balances are not derecognised), **#181**
 - Shared containers: restoring them to main and migrating deleted another
   branch's DocType as an orphan. Snapshot first and check whose files are in.
 
+## Group chart of accounts (konsol#182, 13 Sep)
+
+The trial balance load stopped because a wiped site refused every trial
+balance: the only chart came from the ERP feed, and there was none. The fix is
+a group chart governed in konsol. The plan, the direction change and the
+corrections are all on konsol#182.
+
+**User decision (13 Sep), verbatim:** *"i dont want anything to do with
+erpnext or airbyte or d365. I want to freshly look at it. For now the canonical
+path is upload of the trial balance via CSV. Any source from now on has to
+follow the shape defined by konsol."* So: no ERP fallback and no ERP adoption
+in new work. The existing ERP, Airbyte and D365 code stays in the repos, unused
+by this path, until someone decides to remove it.
+
+| PR | what | state |
+|---|---|---|
+| konsol **#183** | **Main Account** (a tree; Draft/Published/Inactive; the Close Lead publishes). Written through to `epm_staging.main_accounts`. One chart reader, `group_chart.chart_accounts()` (MariaDB, Published rows only), used by single and bulk TB validation, Consolidation Group and Intercompany Account. The chart upload (`chart_upload.py`: check, load, publish; all or nothing; parents first; never deletes by omission). The `chart` build scope. Preflight changes. In-use refusals | merged `e50ed7d` |
+| konsolidat **#186** | `silver_main_accounts` reads only the published konsol chart (same 11 contract columns, new ones at the end). Translation follows each account's declared `fx_method` (historical / average / closing). A guard refuses unusable or disagreeing chart rows before anything is replaced. Warn test names TB accounts missing from the chart | merged `c51420e` |
+| konsolidat **#188** | The first build on a fresh trial-balance-only site: `alloc_results` builds with no allocation rules; the two ERP-quote tests pass when that table is absent. A CI job builds an empty site on every PR | merged `3332f57` |
+| konsolidat **#184** | ERPNext `Income` accounts count as P&L and read as `Revenue` (found while analysing the chart) | merged `a35cccf` |
+| konsol **#184**, **#185** | Removed the customer's name and identifying details from this file and a code comment (public repo; older history still has them) | merged |
+
+**Loading a chart (the canonical path).** Main Account list → **Upload chart**
+→ **Check** (every problem at once, nothing written) → **Load** → **Publish
+chart** → approve the `chart` Build Approval. Columns: `main_account,
+account_name, chart_of_accounts` (required), then `parent_account,
+account_type, statement_section, sub_section, normal_balance, time_balance,
+fx_method, cf_category, cf_line_item, is_posting, allow_ic`. Rules: balance
+sheet → `closing` or `historical` and `balance`; P&L → `average` or `closing`
+and `flow`; a code named as a parent is a heading (not postable, no IC); a
+child matches its heading on `statement_section` only; unknown columns are
+refused.
+
+**Rules to keep:**
+- **Build scope `chart` = `@silver_main_accounts`.** That's the chart, everything it classifies, and everything those read, so it works on a site that has never built. It has its own connector gate: an enabled connector that has never synced, is Failed or is Running blocks it. With no enabled connector it passes, even before any TB exists.
+- **Raw-dependent scopes:** submitted trial-balance rows count as raw data. The check runs after the connector gate and counts rows in ClickHouse joined to the control table. A global Airbyte status of Failed or Running still refuses. The refusal names **Skip Airbyte Sync** (EPM Settings) as the way out for a site that no longer uses Airbyte.
+- **In-use refusals.** A Published account can't be unpublished, set Inactive, deleted, or turned into a heading while any of these use it:
+  - submitted trial balances (the refusal names the entities and periods);
+  - a Published Intercompany Account;
+  - a Consolidation Group's IC difference account.
+- **The DDL of `epm_staging.main_accounts`** is identical in konsol `clickhouse.py` and konsolidat `init-db.sql`. Tests on both sides pin it.
+- **Deploy order:** konsol #183 with or before konsolidat #186 (which alone empties the chart), then #188 before the first chart build on a fresh site.
+
+**Verified live (konsolidat.local):**
+- On main, a trial balance was refused as "ClickHouse unreachable" and the preflight as "Airbyte never synced".
+- After #183, uploading and publishing a test chart made the trial balance accepted; a heading was refused.
+- `dbt build --select @silver_main_accounts` after the merges: PASS=268, ERROR=0. The chart table is empty until the user publishes.
+
+**Open (not started):**
+- The plan's PR4 (TB warnings: suspended account, against the normal balance, partner rows on a non-IC account).
+- PR5 (fold Cash Flow Category into the chart; Main Account Category, the budget permission key, reads the chart; `allow_ic` tied to Intercompany Account).
+- konsolidat **#187** (variance full-outer-join loses keys).
+- konsolidat **#172** (spread tests; they pass on today's data).
+- konsolidat **#185** (ERPNext expense sections in the report).
+- `map_account_type` has no caller left.
+
+**Lessons:**
+- **ClickHouse 24.8 "identical" checks can lie.** `sum(cityHash64(*))` skips rows with a NULL, and `count()` over `EXCEPT` returns 0 under the new analyzer. Compare `toString(tuple(*))` as a multiset, and prove the check fails on a deliberate change first.
+- **A clean git merge can leave a module-level dict assigned twice.** This happened with `_ADDED_COLUMNS` after a rebase; grep for it.
+- **Resuming a long-lived agent re-reads its whole transcript,** which cost 500–750K tokens per round. Fresh agents with tiny briefs did comparable fixes in 50–170K tokens (see the loop below).
+- **Squash-merging a base PR makes the stacked PR conflict.** Rebase only the stacked PR's own commits onto main (`git rebase --onto origin/main <old base head>`).
+
 ## State on 13 Sep — merged, open, next
 
 **User rule (13 Sep): no work on the D365 write-back itself** (`konsol/d365_writeback.py`): it will be dumped and redesigned. Budget Cycle may change, but its D365 push/withdraw calls stay as they are.
@@ -397,6 +466,7 @@ containers and run scripts or dbt from a copy.
 
 **Next (the user's priority order of 13 Sep, group 2 onwards):**
 - Group 2 (customer-load critical path) is **done**; see "Group 2" above.
+- Group chart (konsol#182) PRs 1–3 are **done**; see "Group chart of accounts" above. Next there: the chart upload by the user, then PR4 and PR5, plus konsolidat #187, #172 and #185.
 - Excel correctness: konsol **#105** (decision) → **#104** → **#106**; then **#108**, **#107**.
 - Waiting on the four reporting-bases decisions: konsol **#113**, **#111**, **#114**, **#117**.
 - Security follow-ups from group 1: konsol **#165**, **#166**; integrity: **#167**, **#168**, **#169**.
@@ -444,6 +514,11 @@ Build → open PR(s) → code review → fix all findings → squash-merge → v
 main CI → record in Engram. No per-PR permission needed. **Re-review the fix
 commits too.** This session the second review found three bugs introduced by
 fixes, the same shape as last month.
+
+**How the loop runs since 13 Sep (user rules):**
+- **Small tasks.** Plan first, then keep a task list file (`.claude/memory/active/tasks-<feature>.md`). Each task is tiny, with its test and a done-command. One fresh agent per task gets only that task's brief. The coordinator runs the done-command; red becomes a new tiny task. At most 3 in parallel.
+- **Test first.** For bug fixes, pure rule modules and dbt rules, the failing test is committed first, and the PR shows the red run, then the green run.
+- **Token care.** Don't resume large agents for small fixes. Run one review per PR pair. Run the full live A/B once, near-final. Say the cost before expensive work.
 
 **Don't wave a failing baseline test through as "known".** Query what it
 measures. `countIf(period_credit > 0) = 0` would have exposed #155 weeks ago.
