@@ -56,9 +56,10 @@ def execute():
                            for value, names in sorted(unmapped.items(), key=lambda kv: str(kv[0])))
         raise ValueError(
             "Consolidation Group.reporting_currency is becoming a Link to ISO Currency "
-            f"(konsolidat#93), and these values are not ISO 4217 codes: {detail}. "
-            "Set each node's Reporting Currency to the code it means, then migrate again. "
-            "Nothing was changed."
+            f"(konsolidat#93), and these values are not in ISO Currency: {detail}. "
+            "For a real ISO 4217 code missing from the list (it ships 66), add the ISO "
+            "Currency record; otherwise set the node's Reporting Currency to the code it "
+            "means. Then run the migrate again. Nothing was changed."
         )
     for name, code in sorted(updates.items()):
         frappe.db.set_value("Consolidation Group", name, "reporting_currency", code,

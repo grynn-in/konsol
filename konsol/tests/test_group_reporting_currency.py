@@ -111,6 +111,36 @@ def test_an_entity_row_may_leave_it_blank():
     assert not _refused(leaf)
 
 
+def test_the_group_node_rule():
+    m = _controller()
+    cg = lambda **kw: m.ConsolidationGroup(**dict(dict(consolidation_group="ZZG"), **kw))
+    assert cg(is_group=1, data_area_id=None)._is_group_node()
+    assert cg(is_group=1, data_area_id="ZZOP")._is_group_node()
+    assert cg(is_group=0, data_area_id=None)._is_group_node(), "no entity: a roll-up node"
+    assert not cg(is_group=0, data_area_id="ZZOP")._is_group_node()
+
+
+def test_the_tree_dialog_asks_a_group_node_for_its_currency():
+    """The Tree view's "New" dialog shows only treeview_settings.fields plus
+    the DocType's reqd fields. reporting_currency is no longer reqd, so without
+    this file the dialog had no field for what the server then demanded.
+    Frappe loads <doctype>_tree.js as the DocType's __tree_js."""
+    import re
+    with open(os.path.join(CG_DIR, "consolidation_group_tree.js")) as f:
+        src = f.read()
+    assert 'frappe.treeview_settings["Consolidation Group"]' in src
+    fields = {m.group(1): m.group(0) for m in re.finditer(r'fieldname: "(\w+)".*?\}', src, re.S)}
+    # opts.fields replaces the dialog's default list, so is_group must be in it
+    assert set(fields) == {"is_group", "data_area_id", "reporting_currency"}
+    rule = _field("reporting_currency")["mandatory_depends_on"]
+    assert rule == "eval:doc.is_group || !doc.data_area_id"
+    assert f'mandatory_depends_on: "{rule}"' in fields["reporting_currency"]
+    assert f'depends_on: "{rule}"' in fields["reporting_currency"]
+    assert 'options: "ISO Currency"' in fields["reporting_currency"]
+    entity_rule = _field("data_area_id")["mandatory_depends_on"]
+    assert f'mandatory_depends_on: "{entity_rule}"' in fields["data_area_id"]
+
+
 def test_validate_runs_the_check():
     import ast
     with open(os.path.join(CG_DIR, "consolidation_group.py")) as f:
