@@ -256,6 +256,50 @@ def placement_problems(year, rows):
     return errors
 
 
+def used_period_problems(old_year, new_year, old_rows, new_rows, used_periods):
+    """Return error strings for edits that touch what `used_periods` already uses.
+
+    `old_year`/`new_year` are fiscal year dicts (`start_date`, `end_date`);
+    `old_rows`/`new_rows` are lists of period-row dicts (`period`, `code`,
+    `start_date`, `end_date`). `used_periods` is the set of OLD period
+    numbers that documents already use.
+
+    A used period's row can't be removed (no row in `new_rows` has its
+    code), renumbered (matched old-to-new by `code`, its `period` changed)
+    or re-dated (its start_date or end_date changed). Once any period is
+    used, the year's own start_date and end_date are frozen too. Rows for
+    unused periods may be added, removed, renumbered and re-dated freely.
+    """
+    errors = []
+
+    old_by_period = {r.get("period"): r for r in old_rows}
+    new_by_code = {}
+    for r in new_rows:
+        new_by_code.setdefault(r.get("code"), r)
+
+    for period in used_periods:
+        old_row = old_by_period.get(period)
+        if old_row is None:
+            continue
+        code = old_row.get("code")
+        new_row = new_by_code.get(code)
+        if new_row is None:
+            errors.append(f"{code} can't be removed: documents use it")
+            continue
+        if new_row.get("period") != period:
+            errors.append(f"{code} can't be renumbered: documents use it")
+        if (new_row.get("start_date") != old_row.get("start_date")
+                or new_row.get("end_date") != old_row.get("end_date")):
+            errors.append(f"{code} can't be re-dated: documents use it")
+
+    if used_periods:
+        if (old_year.get("start_date") != new_year.get("start_date")
+                or old_year.get("end_date") != new_year.get("end_date")):
+            errors.append("The year's dates can't change: documents use its periods")
+
+    return errors
+
+
 def _join(row_nos):
     """Format 1-based row numbers as "2 and 5" or "2, 5 and 9"."""
     row_nos = sorted(row_nos)
