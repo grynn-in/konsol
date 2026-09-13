@@ -18,6 +18,44 @@ def effective_status(year_status, row_status):
     return year_status if _RANK[year_status] >= _RANK[row_status] else row_status
 
 
+def row_problems(year_status, rows, previous_codes):
+    """Error strings for `rows` against their fiscal year's `year_status`
+    and, unless `previous_codes` is None (a brand-new year), against the
+    codes saved for the year before this change.
+
+    A row may never be looser than its year (Open < Closed < Locked): a
+    Closed year refuses an Open row, a Locked year refuses anything but
+    Locked. And once a year is Closed or Locked, no row with a code that
+    wasn't already saved may be added.
+    """
+    if year_status not in _RANK:
+        raise ValueError(f"unknown fiscal status {year_status!r}")
+
+    problems = []
+    for row in rows:
+        code = row["code"]
+        status = row["status"]
+        if status not in _RANK:
+            raise ValueError(f"unknown fiscal status {status!r}")
+
+        if _RANK[status] < _RANK[year_status]:
+            problems.append(
+                f"Period {code} is {status} but the fiscal year is {year_status}; "
+                f"it cannot be looser than its year."
+            )
+
+        if (
+            previous_codes is not None
+            and code not in previous_codes
+            and year_status in (CLOSED, LOCKED)
+        ):
+            problems.append(
+                f"Period {code} cannot be added to a {year_status} fiscal year."
+            )
+
+    return problems
+
+
 ADMIN = "EPM Admin"
 SYSTEM_MANAGER = "System Manager"
 
