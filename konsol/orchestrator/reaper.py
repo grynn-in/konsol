@@ -359,6 +359,9 @@ def start_failure_chain_length(name, lookup):
         if not parent or not never_started(parent):
             break
         if _get(parent, "ever_built"):
+            # It built once, but its latest attempt never started, so it
+            # roots this chain as a first start failure does: count it, stop.
+            count += 1
             break
         count += 1
         seen.add(parent_name)
@@ -389,7 +392,9 @@ def _lookup_build_approval(name):
     import frappe
 
     row = frappe.db.get_value("Build Approval", name, _CHAIN_FIELDS, as_dict=True)
-    if row:
+    # Only a row that never started can hide a build behind a reset; one that
+    # started ends the chain on started_at alone, so it needs no query.
+    if row and never_started(row):
         row["ever_built"] = _ever_built(name)
     return row
 
@@ -404,6 +409,8 @@ def run_shows_a_build(run):
     build ran (Completed, Failed on preflight or dbt, reaped mid-build). A
     legacy run that a pre-#140 start failure left Queued counts as built:
     that errs toward one more retry, never toward a lost change.
+
+    :func:`_ever_built` applies this rule in SQL; keep the two in step.
     """
     return not (_get(run, "status") == "Failed"
                 and (_get(run, "error_log") or "").startswith(START_FAILURE_PREFIX))
@@ -411,11 +418,17 @@ def run_shows_a_build(run):
 
 def _ever_built(name):
     """``name`` got past its start at least once: evidence a reset to Draft
-    leaves in place (it clears started_at)."""
+    leaves in place (it clears started_at). :func:`run_shows_a_build` as one
+    indexed lookup on ``Pipeline Run.build_approval``; one row is enough."""
     import frappe
 
-    runs = frappe.get_all("Pipeline Run", filters={"build_approval": name}, fields=["status", "error_log"])
-    return any(run_shows_a_build(r) for r in runs)
+    return bool(frappe.db.sql(
+        """SELECT 1 FROM `tabPipeline Run`
+           WHERE build_approval = %s
+             AND NOT (status = 'Failed' AND IFNULL(error_log, '') LIKE %s)
+           LIMIT 1""",
+        (name, f"{START_FAILURE_PREFIX}%"),
+    ))
 
 
 def _give_up(name, scope, so_far, last_error):

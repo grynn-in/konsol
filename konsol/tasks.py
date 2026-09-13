@@ -193,12 +193,19 @@ def _create_governed_pipeline_run(build_request_doc):
     return run.name
 
 
+_TERMINAL_RUN_STATES = ("Completed", "Failed", "Cancelled")
+
+
 def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None, commit=True):
     """Persist terminal status on the governed Pipeline Run. ``commit=False``
     leaves the commit to the caller, to land with its own write."""
     if not pipeline_run:
         return
     doc = frappe.get_doc("Pipeline Run", pipeline_run)
+    if doc.status in _TERMINAL_RUN_STATES and status not in _TERMINAL_RUN_STATES:
+        # Failed by a reset of its Running build (BuildApproval), or reaped:
+        # a job still running must not make it active again (#140).
+        return
     doc.status = status
     if dbt_result is not None:
         doc.dbt_result = dbt_result

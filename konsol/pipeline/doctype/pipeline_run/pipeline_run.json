@@ -39,6 +39,7 @@
   },
   {
    "fieldname": "build_approval",
+   "search_index": 1,
    "fieldtype": "Link",
    "label": "Build Approval",
    "options": "Build Approval",

@@ -60,6 +60,11 @@ class BuildApproval(Document):
                     # yet, and a Cancelled row's was never acted on (its
                     # changes were dropped with it): both keep the flag.
                     self.rebuild_requested = 0
+            if before.workflow_state == "Running":
+                # A dead worker leaves its governed Pipeline Run active, which
+                # blocks every build until reap_stale_runs (120 min); on_update
+                # fails it in this save's transaction.
+                self.flags.reset_while_running = True
             # The old error goes, since a start-failure message left on a row
             # that runs again would make the failed-start sweep take it for a
             # new one (#140 review). A row that never started keeps its flag:
@@ -89,6 +94,9 @@ class BuildApproval(Document):
         Only fires on the save where the state actually changed — editing an
         already-Approved doc won't re-enqueue a duplicate build.
         """
+        if self.flags.get("reset_while_running"):
+            self.flags.reset_while_running = False
+            self._fail_active_runs_of_reset_build()
         if not self.has_value_changed("workflow_state"):
             return
 
@@ -99,6 +107,33 @@ class BuildApproval(Document):
                 "build_request_pending",
                 {"name": self.name, "scope": self.build_scope},
             )
+
+    def _fail_active_runs_of_reset_build(self):
+        """A Running build was reset to Draft: fail its governed Pipeline Run
+        while it is still active (#140 re-review).
+
+        If the worker is dead, nothing else would until reap_stale_runs, and
+        an active run blocks every build. If it is alive, its own finish marks
+        the run, so a run already terminal is left alone, and one it
+        finalizes first (a timestamp mismatch here) is skipped. No commit:
+        the save that reset the row carries it.
+        """
+        from konsol.orchestrator.api import ACTIVE_RUN_STATES
+        from konsol.tasks import _finalize_governed_pipeline_run
+
+        runs = frappe.get_all(
+            "Pipeline Run",
+            filters={"build_approval": self.name, "status": ["in", list(ACTIVE_RUN_STATES)]},
+            pluck="name",
+        )
+        for run in runs:
+            try:
+                _finalize_governed_pipeline_run(
+                    run, status="Failed", commit=False,
+                    error_log=f"Build Approval {self.name} reset by {frappe.session.user} while Running",
+                )
+            except frappe.TimestampMismatchError:
+                pass   # the build's own job finalized it first
 
     def _populate_sync_info(self):
         """Read Airbyte sync status from EPM Settings into display fields."""

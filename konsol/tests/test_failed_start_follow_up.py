@@ -12,6 +12,7 @@ frappe is stubbed; the live A/B is in the PR."""
 import ast
 import contextlib
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -137,7 +138,7 @@ def test_the_chain_stops_at_a_row_that_built_since():
     length = lambda n: reaper.start_failure_chain_length(n, rows.get)
     assert length("BA-C") == 2
     assert length("BA-D") == 0, "it built since: its chain starts again"
-    assert length("BA-E") == 0, "its parent built"
+    assert length("BA-E") == 1, "its parent built, but its latest start failed: it roots the chain"
 
 
 def test_which_pipeline_runs_show_a_build():
@@ -147,6 +148,34 @@ def test_which_pipeline_runs_show_a_build():
     assert shows({"status": "Failed", "error_log": "[reaper] Build Approval BA-1 reaped: running for >30m"})
     assert not shows({"status": "Failed", "error_log": FAILED_MSG}), "a start that failed after the run was created"
     assert shows({"status": "Queued"}), "a legacy run a start failure left Queued: err toward a retry"
+
+
+def _fields(*path):
+    with open(os.path.join(APP_DIR, *path)) as f:
+        return {fd["fieldname"]: fd for fd in json.load(f)["fields"]}
+
+
+BA_JSON = ("pipeline", "doctype", "build_approval", "build_approval.json")
+PR_JSON = ("pipeline", "doctype", "pipeline_run", "pipeline_run.json")
+
+
+def test_the_chain_reads_fields_that_exist():
+    """A renamed field must fail here, not silently read None live."""
+    ba, pr = _fields(*BA_JSON), _fields(*PR_JSON)
+    assert set(reaper._CHAIN_FIELDS) - {"name"} <= set(ba), set(reaper._CHAIN_FIELDS) - set(ba)
+    sql = ast.unparse(_fn(REAPER, "_ever_built"))
+    assert "`tabPipeline Run`" in sql
+    for col in ("build_approval", "status", "error_log"):
+        assert col in sql and col in pr, col
+    assert pr["build_approval"]["fieldtype"] == "Link" and pr["build_approval"]["options"] == "Build Approval"
+
+
+def test_pipeline_run_build_approval_is_indexed_on_new_and_existing_sites():
+    assert _fields(*PR_JSON)["build_approval"].get("search_index") == 1, "fresh installs"
+    with open(os.path.join(APP_DIR, "patches.txt")) as f:
+        assert "konsol.patches.add_pipeline_run_build_approval_index" in f.read().split(), "existing sites"
+    with open(os.path.join(APP_DIR, "patches", "add_pipeline_run_build_approval_index.py")) as f:
+        assert 'frappe.db.add_index("Pipeline Run", ["build_approval"])' in f.read()
 
 
 def test_the_prefix_is_the_one_run_governed_build_writes():
@@ -181,9 +210,10 @@ def test_every_state_the_debounce_absorbs_into_is_flagged():
     assert set(build_lock.FLAGGED_STATES) == {"Draft", "Pending Review", "Approved", "Running"}
 
 
-def _build_approval():
-    frappe = _frappe_stub()
-    frappe.session = types.SimpleNamespace(user="Administrator")
+def _build_approval(frappe=None):
+    frappe = frappe or _frappe_stub()
+    if not hasattr(frappe, "session"):
+        frappe.session = types.SimpleNamespace(user="Administrator")
 
     def get_single(_):
         raise RuntimeError("no settings on the host")
@@ -193,6 +223,7 @@ def _build_approval():
     class Document:
         def __init__(self, before=None, **fields):
             self._before = before
+            self.flags = _D()
             self.__dict__.update(fields)
 
         def get_doc_before_save(self):
@@ -265,6 +296,65 @@ def test_a_reset_of_a_cancelled_row_that_started_keeps_its_flag():
     assert doc.rebuild_requested == 1 and doc.started_at is None
 
 
+def _reset_running(runs, before_state="Running", finalize_raises=False):
+    """Reset a started row to Draft through before_save and on_update. ``runs``:
+    its Pipeline Runs, name -> status. Returns (doc, finalized runs, enqueued)."""
+    frappe = _frappe_stub()
+    frappe.session = types.SimpleNamespace(user="ZZ Operator")
+    frappe.TimestampMismatchError = TimestampMismatchError
+    finalized, enqueued = [], []
+
+    def get_all(doctype, filters=None, pluck=None, **k):
+        assert doctype == "Pipeline Run" and filters["build_approval"] == "BA-1" and pluck == "name"
+        return [n for n, st in runs.items() if st in filters["status"][1]]
+
+    def finalize(run, **kw):
+        if finalize_raises:
+            raise TimestampMismatchError("its job finalized it first")
+        finalized.append((run, kw))
+    frappe.get_all = get_all
+    frappe.enqueue = lambda *a, **k: enqueued.append(k.get("build_request"))
+    frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None)
+    frappe.publish_realtime = lambda *a, **k: None
+    extra = {"konsol.tasks": types.SimpleNamespace(_finalize_governed_pipeline_run=finalize),
+             "konsol.orchestrator.api": types.SimpleNamespace(ACTIVE_RUN_STATES=ACTIVE)}
+    BuildApproval = _build_approval(frappe)
+    saved = {m: sys.modules.get(m) for m in extra}
+    sys.modules.update(extra)
+    try:
+        run = dict(started_at=START, completed_at=START + timedelta(minutes=5), duration_seconds=300.0)
+        before = types.SimpleNamespace(workflow_state=before_state, rebuild_requested=1, **run)
+        doc = BuildApproval(before=before, name="BA-1", workflow_state="Draft", rebuild_requested=1,
+                            build_scope="staging", requested_by="Administrator", error_message=None, **run)
+        doc.before_save()
+        doc.on_update()
+    finally:
+        _restore(saved)
+    return doc, finalized, enqueued
+
+
+def test_a_running_reset_fails_its_still_active_run():
+    """A dead worker's run would block every build for up to 120 min (#140 re-review)."""
+    doc, finalized, enqueued = _reset_running({"PR-1": "Transforming", "PR-0": "Failed"})
+    assert finalized == [("PR-1", {"status": "Failed", "commit": False,
+                                   "error_log": "Build Approval BA-1 reset by ZZ Operator while Running"})]
+    assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved" and enqueued == ["BA-1"]
+
+
+def test_a_running_reset_leaves_a_run_the_job_already_finished():
+    assert _reset_running({"PR-1": "Completed"})[1] == []
+
+
+def test_a_running_reset_skips_a_run_the_job_finalizes_first():
+    doc, finalized, _ = _reset_running({"PR-1": "Transforming"}, finalize_raises=True)
+    assert finalized == [] and doc.workflow_state == "Approved", "the reset itself still saves"
+
+
+def test_only_a_reset_from_running_touches_runs():
+    for state in ("Completed", "Failed", "Cancelled"):
+        assert _reset_running({"PR-1": "Queued"}, before_state=state)[1] == [], state
+
+
 def test_only_a_reset_clears_a_run():
     doc = _save("Completed", 1, "Completed", 1, started_at=START)
     assert doc.started_at == START and doc.duration_seconds == 300.0 and doc.rebuild_requested == 1
@@ -334,7 +424,9 @@ def test_the_reaper_spends_the_flag_of_the_row_it_follows_up():
 # --- the reaper and the sweep -----------------------------------------------
 
 class _D(dict):
+    """frappe._dict: attribute reads and writes are item reads and writes."""
     __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
 
 
 class FakeSite:
@@ -345,6 +437,7 @@ class FakeSite:
         self.rows = {r["name"]: dict(r) for r in rows}
         self.active_runs = active_runs
         self.runs = runs or {}   # Build Approval name -> its Pipeline Runs
+        self.evidence_queries = []
         self.request_fails = request_fails
         self.now = START
         self.pending = {}
@@ -390,6 +483,13 @@ class FakeSite:
             assert like == f"{PREFIX}%"
             return tuple((n,) for n, r in self.rows.items()
                          if r["build_scope"] == scope and self._failed_start(r) and self.flag(n))
+        if q.startswith("SELECT 1 FROM `tabPipeline Run`"):   # _ever_built: run_shows_a_build, in SQL
+            for part in ("build_approval = %s", "NOT (status = 'Failed'", "IFNULL(error_log, '') LIKE %s", "LIMIT 1"):
+                assert part in q, f"evidence query is missing {part!r}: {q}"
+            name, like = params
+            assert like == f"{PREFIX}%"
+            self.evidence_queries.append(name)
+            return ((1,),) if any(reaper.run_shows_a_build(r) for r in self.runs.get(name, [])) else ()
         if q == "UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name IN %s":
             for n in params[0]:
                 self.pending[n] = 0
@@ -613,6 +713,30 @@ def test_a_capped_chain_that_built_then_was_reset_is_followed_up_again():
         "Build Approval BA-D: gave up after 3 follow-up builds failed to start"]
 
 
+def test_a_built_then_reset_chain_gives_up_after_exactly_three_more():
+    """D built, was reset and failed to start: it roots a new chain, which
+    gets three follow-ups like any other (#140 re-review: it got four)."""
+    chain = [dict(failed_start("BA-A"), rebuild_requested=0)]
+    for name, parent in (("BA-B", "BA-A"), ("BA-C", "BA-B"), ("BA-D", "BA-C")):
+        chain.append(dict(failed_start(name), trigger_doctype="Build Approval", trigger_docname=parent,
+                          rebuild_requested=int(name == "BA-D")))
+    site = FakeSite(chain, runs={"BA-D": [{"status": "Completed", "error_log": None}]})
+    assert site.sweep() == ["BA-D"]
+    for n in (1, 2):
+        site.fails_to_start(f"BA-F{n}")
+        assert site.sweep() == [f"BA-F{n}"], n
+    site.fails_to_start("BA-F3")
+    assert site.sweep() == [] and len(site.requests) == 3
+    assert site.errors == ["Build Approval BA-F3: gave up after 3 follow-up builds failed to start"]
+
+
+def test_build_evidence_is_queried_only_for_rows_that_never_started():
+    """A row that started ends the chain on started_at alone."""
+    site = FakeSite([ran("BA-1"), failed_start("BA-2")])
+    site._run(lambda: [reaper._lookup_build_approval(n) for n in ("BA-1", "BA-2")])
+    assert site.evidence_queries == ["BA-2"]
+
+
 def test_a_retry_that_builds_resets_the_chain():
     site = FakeSite([failed_start("BA-1")])
     site.sweep()
@@ -664,6 +788,10 @@ def test_the_sweep_runs_with_the_scheduled_reaper():
 ACTIVE = ("Queued", "Extracting", "Transforming", "Running")
 
 
+class TimestampMismatchError(Exception):
+    pass
+
+
 class StartSite:
     """Documents with a committed store and one open transaction."""
 
@@ -678,6 +806,8 @@ class StartSite:
         self.guard_error = guard_error
         self.cancel_meanwhile = cancel_meanwhile
         self.warnings = []
+        self.stale = set()      # docs changed since a job loaded them: their save fails
+        self.requests = []
 
     def doc(self, fields):
         site = self
@@ -694,6 +824,8 @@ class StartSite:
                 site.pending[(self.doctype, self.name)] = self._fields()
 
             def save(self, **k):
+                if (self.doctype, self.name) in site.stale:   # check_if_latest, before any write
+                    raise TimestampMismatchError("Document has been modified after you have opened it")
                 site.pending[(self.doctype, self.name)] = self._fields()
                 if self.doctype == "Build Approval" and self.workflow_state == "Running" and site.fail_running_save:
                     # The row is written, then a later step of the save fails,
@@ -721,13 +853,21 @@ class StartSite:
     def rollback(self):
         self.pending = {}
 
+    def sql(self, query, params=None, **k):
+        assert "SELECT rebuild_requested" in query and "FOR UPDATE" in query, query   # the finish's re-read
+        return ((self.committed[("Build Approval", params)]["rebuild_requested"],),)
+
     def active_runs(self):
         return [k for k, r in self.committed.items() if k[0] == "Pipeline Run" and r["status"] in ACTIVE]
 
-    def start(self, api="stub"):
+    def start(self, api="stub", call=None):
+        """Run ``call(tasks)`` (default: run_governed_build) with frappe stubbed;
+        return the exception it raised, or None."""
         frappe = types.ModuleType("frappe")
         frappe.get_doc = self.get_doc
-        frappe.db = types.SimpleNamespace(commit=self.commit, rollback=self.rollback)
+        frappe.db = types.SimpleNamespace(commit=self.commit, rollback=self.rollback, sql=self.sql)
+        frappe.publish_realtime = lambda *a, **k: None
+        frappe.TimestampMismatchError = TimestampMismatchError
         frappe.utils = types.SimpleNamespace(now_datetime=lambda: START)
         frappe.session = types.SimpleNamespace(user="Administrator")
         frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=self.warnings.append)
@@ -746,7 +886,7 @@ class StartSite:
             tasks = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(tasks)
             try:
-                tasks.run_governed_build("BA-1")
+                (call or (lambda t: t.run_governed_build("BA-1")))(tasks)
             except Exception as exc:   # it re-raises, so the job records the failure
                 return exc
             return None
@@ -787,6 +927,45 @@ def test_a_row_cancelled_while_the_job_loaded_it_stays_cancelled():
     assert ba["workflow_state"] == "Cancelled" and ba["error_message"] is None
     assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Failed" and site.active_runs() == []
     assert len(site.warnings) == 1 and "it is Cancelled now, not Approved, so it is left Cancelled" in site.warnings[0]
+
+
+def test_the_old_job_finishing_after_a_running_reset_overwrites_nothing():
+    """The worker was alive: after the reset (Approved again, never started,
+    flag kept) its job finishes. Its save fails the timestamp check, so it
+    overwrites nothing and requests nothing; the reaper then fails the row,
+    whose re-approval's enqueue was skipped, and follows it up (#140 re-review)."""
+    site = StartSite()
+    site.committed[("Build Approval", "BA-1")].update(workflow_state="Approved", rebuild_requested=1, started_at=None)
+    site.stale.add(("Build Approval", "BA-1"))   # the reset bumped modified
+    job_doc = dict(site.committed[("Build Approval", "BA-1")], workflow_state="Completed", started_at=START)
+
+    def finish(tasks):
+        tasks.request_build_for_scope = lambda *a, **k: site.requests.append(a)
+        tasks._finish_governed_build(site.doc(job_doc))
+    assert isinstance(site.start(call=finish), TimestampMismatchError)
+    ba = site.committed[("Build Approval", "BA-1")]
+    assert ba["workflow_state"] == "Approved" and ba["started_at"] is None and ba["rebuild_requested"] == 1
+    assert site.requests == [] and site.commits == []
+    reaper_site = FakeSite([lost_job("BA-1")])   # the same row, its job gone
+    assert reaper_site.tick() == ["BA-1"]
+    assert reaper_site.requests == [("staging", "Build Approval", "BA-1")]
+
+
+def test_a_terminal_run_is_never_made_active_again():
+    """A reset failed the run; the job, still going, must not revive it. Its
+    final status (the truth) still lands."""
+    site = StartSite()
+    site.committed[("Pipeline Run", "PR-1")] = dict(
+        doctype="Pipeline Run", name="PR-1", status="Failed", completed_at=START,
+        error_log="Build Approval BA-1 reset by ZZ Operator while Running")
+    seen = []
+
+    def finalize(tasks):
+        tasks._finalize_governed_pipeline_run("PR-1", status="Transforming")
+        seen.append(site.committed[("Pipeline Run", "PR-1")]["status"])
+        tasks._finalize_governed_pipeline_run("PR-1", status="Completed", dbt_result="ok")
+    assert site.start(call=finalize) is None
+    assert seen == ["Failed"] and site.committed[("Pipeline Run", "PR-1")]["status"] == "Completed"
 
 
 def test_a_refused_start_leaves_no_pipeline_run():
