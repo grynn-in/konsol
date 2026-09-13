@@ -86,30 +86,22 @@ def test_epm_settings_python_exists():
     assert os.path.exists(path), f"Missing: {path}"
 
 
-def test_consolidation_currency_field():
-    """#93 Phase 1: consolidation_currency must be a Link to Currency."""
+def test_no_consolidation_currency_setting():
+    """konsolidat#93 (decided 13 Sep 2026): the presentation currency lives on
+    each Consolidation Group node. The EPM Settings field was read by nothing,
+    so a value set there changed nothing: it is gone, with its getter and the
+    Consolidation tab that held only it."""
     path = os.path.join(
         APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json"
     )
     with open(path) as f:
         doc = json.load(f)
+    names = {f["fieldname"] for f in doc["fields"]}
+    assert not names & {"consolidation_currency", "group_reporting_section", "tab_consolidation"}
 
-    field = next(
-        (f for f in doc["fields"] if f["fieldname"] == "consolidation_currency"),
-        None,
-    )
-    assert field is not None, "consolidation_currency field missing"
-    assert field["fieldtype"] == "Link"
-    assert field["options"] == "Currency"
-
-
-def test_consolidation_currency_accessor_defined():
-    """#93 Phase 1: get_consolidation_currency() accessor + USD default exist."""
-    path = os.path.join(
+    with open(os.path.join(
         APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.py"
-    )
-    with open(path) as f:
+    )) as f:
         src = f.read()
-
-    assert "def get_consolidation_currency(" in src
-    assert 'DEFAULT_CONSOLIDATION_CURRENCY = "USD"' in src
+    assert "get_consolidation_currency" not in src
+    assert "DEFAULT_CONSOLIDATION_CURRENCY" not in src
