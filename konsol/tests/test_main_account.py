@@ -108,6 +108,10 @@ class GovernedReferenceDocument(_Doc):
     def _resync(self):
         CALLS.append("governed._resync")
 
+    def _request_rebuild(self, action):
+        CALLS.append(("governed._request_rebuild", action))
+        return "BAPR-1"
+
 
 def _load():
     frappe = types.ModuleType("frappe")
@@ -604,3 +608,27 @@ def test_intercompany_rows_look_at_both_sides():
     groups = src.split("def _difference_groups")[1]
     assert '"ic_difference_account": ["in", codes]' in groups
     assert real is not None and asked == []
+
+
+def test_a_publish_on_a_warehouse_that_has_never_built_says_what_to_build_first():
+    """review of #183, item 3: publish() and unpublish() from the form request
+    the chart build; on a new site it cannot run yet, and the Close Lead is told."""
+    note = "The warehouse has not built yet. ... approve a consolidation build first ..."
+    upload = types.ModuleType("konsol.chart_upload")
+    saved = sys.modules.get("konsol.chart_upload")
+    sys.modules["konsol.chart_upload"] = upload
+    try:
+        for answer, shown in ((note, True), (None, False)):
+            upload.unbuilt_warehouse_note = lambda: answer
+            C.frappe.messages.clear()
+            CALLS.clear()
+            assert _doc("Published")._request_rebuild("Publish") == "BAPR-1"
+            assert CALLS == [("governed._request_rebuild", "Publish")]   # still requested
+            assert (note in C.frappe.messages) is shown
+    finally:
+        C.frappe.messages.clear()
+        if saved is None:
+            sys.modules.pop("konsol.chart_upload", None)
+        else:
+            sys.modules["konsol.chart_upload"] = saved
+

@@ -27,7 +27,8 @@ class _Row(dict):
 
 
 class Site:
-    def __init__(self, rows=(), admin=True, can_create=True, fail_on=None, tables=None):
+    def __init__(self, rows=(), admin=True, can_create=True, fail_on=None, tables=None, built=True):
+        self.built = built   # the warehouse has built a trial balance (or an exception: cannot ask)
         self.rows = {r["main_account"]: dict(r) for r in rows}
         self.admin, self.can_create, self.fail_on = admin, can_create, fail_on
         self.tables = tables or {}
@@ -141,8 +142,16 @@ def load(site):
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
-    # _check imports konsol.tb_bulk at call time: keep the stub installed for the calls
-    mod._stub_modules = {"konsol.tb_bulk": tb}
+    rates = types.ModuleType("konsol.group_rates")
+
+    def ledgers_built():
+        if isinstance(site.built, Exception):
+            raise site.built
+        return site.built
+
+    rates.ledgers_built = ledgers_built
+    # imported at call time: keep the stubs installed for the calls
+    mod._stub_modules = {"konsol.tb_bulk": tb, "konsol.group_rates": rates}
     return mod
 
 
@@ -280,3 +289,35 @@ def test_a_failure_while_publishing_rolls_everything_back():
         pass
     assert site.rollbacks == 1 and site.rebuilds == []
     assert {c: r["status"] for c, r in site.rows.items()} == {"ZZ1000": "Draft", "ZZ2000": "Draft"}
+
+
+# -- review of #183, item 3: the first chart build on a site that has never built -------------------
+# silver_main_accounts+ reads tables other scopes build (bronze, the period and
+# reporting hierarchies), so on a new trial-balance-only site the chart build
+# fails. The request is still made; the Close Lead is told what to build first.
+
+def test_on_a_warehouse_that_has_never_built_publish_says_to_build_consolidation_first():
+    site = Site(rows=[row("ZZ1000", lft=1)], built=False)
+    out = call(site, "publish_chart", "ZZCOA")
+    assert "load the trial balances and approve a consolidation build first" in out["note"], out
+    assert site.rebuilds == [("ZZ1000", "Publish chart", "chart")]   # still requested
+    site = Site(rows=[row("ZZ1000", lft=1)], built=True)
+    assert call(site, "publish_chart", "ZZCOA").get("note") is None
+
+
+def test_a_warehouse_that_cannot_be_asked_adds_no_note():
+    site = Site(rows=[row("ZZ1000", lft=1)], built=ConnectionError("refused"))
+    out = call(site, "publish_chart", "ZZCOA")
+    assert out.get("note") is None and len(site.rebuilds) == 1
+
+
+def test_a_load_that_requests_a_rebuild_on_an_unbuilt_warehouse_says_so():
+    existing = [row("ZZ9000", status="Published", is_group=1, is_posting=0, account_type="", statement_section="",
+                    normal_balance="", time_balance="", fx_method="", account_name="Heading", lft=1),
+                row("ZZ1000", status="Published", parent_account="ZZ9000", account_name="Old cash", lft=2)]
+    site = Site(rows=existing, built=False, tables={"/f.csv": GOOD[:3]})
+    out = call(site, "load_chart", "/f.csv")
+    assert out["loaded"] and out["build"] and "consolidation build first" in out["note"]
+    site = Site(built=False, tables={"/f.csv": GOOD})   # Drafts only: no rebuild, no note
+    assert call(site, "load_chart", "/f.csv").get("note") is None
+
