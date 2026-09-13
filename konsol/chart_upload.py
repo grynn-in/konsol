@@ -37,6 +37,8 @@ from konsol.schema_lifecycle import check_epm_admin, request_governed_rebuild
 
 DOCTYPE = "Main Account"
 BUILD_SCOPE = "chart"
+
+
 def _require_chart_admin():
     check_epm_admin()
     if not frappe.has_permission(DOCTYPE, "create"):
