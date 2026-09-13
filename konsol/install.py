@@ -18,6 +18,7 @@ def setup_epm_settings(
         frappe.logger().warning("EPM Settings doctype not found. Skipping setup.")
         return
 
+    before = _warehouse_target()
     settings = frappe.get_single("EPM Settings")
     settings.clickhouse_host = ch_host
     settings.clickhouse_port = int(ch_port)
@@ -26,8 +27,228 @@ def setup_epm_settings(
     settings.dbt_project_path = dbt_project_path
     settings.flags.ignore_permissions = True
     settings.save()
+    # #142: the configurator sets the connection only after install-app, so a
+    # fresh site's install-time reconcile ran against the default target
+    # (localhost) and reached nothing. Fill the warehouse now that the real
+    # target is known. An unchanged target (every redeploy of an existing
+    # site) queues nothing: that deploy's bench migrate already reconciled.
+    if _warehouse_target() != before:
+        enqueue_reconcile_after_commit()
     frappe.db.commit()
     frappe.logger().info(f"EPM Settings configured: ClickHouse at {ch_host}:{ch_port}")
+
+
+def _warehouse_target():
+    """The ClickHouse connection EPM Settings points at, password included, so
+    a rotated password counts as a new target."""
+    from konsol.clickhouse import get_connection
+
+    return {key: str(value) for key, value in get_connection().items()}
+
+
+#: The worker job that fills the warehouse after an install, or after the
+#: ClickHouse target changes (#142). It is a sync, not a build, so it does not
+#: go through konsol.tasks.queue_consolidation_build.
+RECONCILE_JOB = "konsol.install.reconcile_warehouse"
+
+
+def after_sync():
+    """install-app's last hook: queue a warehouse reconcile for after the commit.
+
+    Without it a fresh site's write-through tables (Scenario, ISO Currency,
+    Spread Profile and every other fixture-loaded doctype) stay empty until the
+    first bench migrate (#142). after_migrate is the only other caller of
+    reconcile_all, and nothing syncs during an install: sync_table and
+    clickhouse.after_commit_once both stand down while frappe.flags.in_install
+    is set.
+
+    This is ``after_sync``, not ``after_install``. install-app runs
+    after_install before it imports fixtures, and every fixture file commits,
+    so a callback registered there would queue the job at the first fixture
+    commit and a worker could publish half the reference data. after_sync runs
+    after the fixtures and customizations, and Frappe calls it from install-app
+    only, never from migrate.
+
+    ``install_time=True`` marks the one run that is expected to reach nothing:
+    on a fresh Docker site the configurator sets the real ClickHouse target
+    only after install-app (see reconcile_warehouse).
+    """
+    enqueue_reconcile_after_commit(install_time=True)
+
+
+def enqueue_reconcile_after_commit(install_time=False):
+    """Queue ``reconcile_warehouse`` as a worker job once this transaction commits.
+
+    The job runs in a fresh worker context with no install or migrate flag set,
+    so sync_table writes, and it reads what the commit published.
+    ``install_time`` is passed through as a job kwarg; it is not one of
+    frappe.enqueue's own parameters.
+
+    Not ``frappe.enqueue(..., enqueue_after_commit=True)``: Frappe runs
+    after-commit callbacks unguarded, so a Redis outage there would raise out of
+    install-app's final commit and fail the install over a step the next
+    ``bench migrate`` repeats anyway.
+    """
+
+    def enqueue():
+        try:
+            frappe.enqueue(
+                RECONCILE_JOB, queue="long", timeout=RECONCILE_JOB_TIMEOUT, install_time=install_time
+            )
+        except Exception as e:  # noqa: BLE001 — never fail an install over it
+            frappe.logger().warning("warehouse reconcile not queued", exc_info=True)
+            print(
+                f"konsol: warehouse reconcile not queued ({type(e).__name__}: {e}); "
+                "the next bench migrate, or `bench execute konsol.clickhouse.reconcile_all`, fills it"
+            )
+
+    frappe.db.after_commit.add(enqueue)
+
+
+#: The reconcile job's timeouts. They must satisfy
+#:   RECONCILE_WAIT_SECONDS + a reconcile's run time <= RECONCILE_JOB_TIMEOUT <= RECONCILE_LOCK_SECONDS
+#: - The job timeout is passed to enqueue explicitly, so a job that has waited
+#:   its full RECONCILE_WAIT_SECONDS still has 900 s to run. A reachable
+#:   ClickHouse reconciles in seconds. An unreachable one that drops packets
+#:   would not: each of the ~25 bootstrap statements and ~18 syncs waits out
+#:   clickhouse.execute's 30 s request timeout (~1300 s), and RQ would kill the
+#:   job partway. So the job first probes with one ``SELECT 1`` and, if that
+#:   fails, gives up after at most one request timeout (30 s < 900 s).
+#: - The lock outlives any live holder (a job is killed at RECONCILE_JOB_TIMEOUT),
+#:   so a running reconcile never loses its lock to the next one. A hard-killed
+#:   holder's lock expires after RECONCILE_LOCK_SECONDS.
+#: - A waiter behind such an orphaned lock gives up after RECONCILE_WAIT_SECONDS
+#:   with its own Error Log, instead of being killed by RQ mid-TRUNCATE/INSERT.
+RECONCILE_JOB_TIMEOUT = 1500
+RECONCILE_LOCK_SECONDS = 1500
+RECONCILE_WAIT_SECONDS = 600
+
+#: EPM Settings' ClickHouse connection as install-app leaves it (the doctype
+#: defaults, which init_singles saves), in _warehouse_target's string form;
+#: test_install_reconcile ties it to epm_settings.json. A dev bench pointed at
+#: ClickHouse's out-of-the-box login (localhost:8123, user default, no
+#: password) has exactly this target too, so the target alone proves nothing.
+#: Only the install-time job (install_time=True, queued by after_sync) on this
+#: target is the expected miss and merely warns; every other run that reaches
+#: nothing, the setup_epm_settings one included, writes an Error Log.
+UNCONFIGURED_TARGET = {
+    "host": "localhost",
+    "port": "8123",
+    "user": "default",
+    "password": "",
+    "secure": "False",
+    "verify": "True",
+}
+
+
+def reconcile_warehouse(install_time=False):
+    """Worker job: re-sync every write-through table through ``reconcile_all``.
+
+    Reconcile jobs are serialised per database by a Redis lock that waits. A
+    fresh deploy queues two of these (after install, and after the
+    configurator sets the ClickHouse target), and sync_table's TRUNCATE and
+    INSERT are separate statements: two concurrent runs could interleave them
+    (A truncates, B truncates, A inserts, B inserts) and double every row. The
+    second job waits, then reconciles against the newest target. Not
+    ``frappe.enqueue(job_id=..., deduplicate=True)``: that also drops a job
+    whose twin has already *started*, i.e. the one carrying the real target.
+    The migrate-time reconcile does not take this lock (see
+    _reconcile_clickhouse). If the Redis cache is down, the lock cannot be
+    taken at all: the job logs a warning and reconciles without it rather than
+    failing.
+
+    Before reconciling, one ``SELECT 1`` checks that ClickHouse answers; if it
+    does not, the job skips the reconcile at once rather than waiting out a
+    request timeout per statement (see RECONCILE_JOB_TIMEOUT).
+
+    Best-effort like the migrate-time reconcile: a table that did not sync is
+    logged, not raised. When ClickHouse is unreachable or no table synced at
+    all, an Error Log says so, because the job itself still ends successfully.
+    The one exception is the install-time run on the untouched default target
+    (``install_time`` and UNCONFIGURED_TARGET), which only warns. Returns
+    reconcile_all's table -> row count map (None for a table that did not
+    sync), or None when the lock was never acquired or ClickHouse was
+    unreachable.
+    """
+    from konsol.clickhouse import execute, reconcile_all
+
+    key = f"konsol:reconcile_warehouse:{frappe.conf.db_name}"
+    lock = frappe.cache.lock(
+        key, timeout=RECONCILE_LOCK_SECONDS, blocking_timeout=RECONCILE_WAIT_SECONDS
+    )
+    try:
+        acquired = lock.acquire()
+    except Exception:  # noqa: BLE001 — Redis cache down: reconcile unlocked
+        frappe.logger().warning(
+            "reconcile job: lock unavailable (Redis cache down?); reconciling without it",
+            exc_info=True,
+        )
+        lock = None
+    else:
+        if not acquired:
+            frappe.log_error(
+                title="Warehouse reconcile skipped: another reconcile held the lock",
+                message=f"Waited {RECONCILE_WAIT_SECONDS}s for {key}. If no reconcile is "
+                f"running, the lock was orphaned and expires within {RECONCILE_LOCK_SECONDS}s. "
+                "Run `bench execute konsol.clickhouse.reconcile_all`.",
+            )
+            return None
+
+    try:
+        target = _warehouse_target()
+        try:
+            execute("SELECT 1")
+        except Exception as e:  # noqa: BLE001 — unreachable or refused: skip, never raise
+            # An HTTP error means ClickHouse answered (wrong password, server
+            # error); anything else means it could not be reached.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            _report_nothing_synced(
+                target,
+                install_time,
+                title=(f"Warehouse reconcile: ClickHouse refused the probe (HTTP {status})"
+                       if status else "Warehouse reconcile: ClickHouse unreachable"),
+                detail=f"SELECT 1 failed ({type(e).__name__}: {e}); no table was synced.",
+            )
+            return None
+        synced = reconcile_all()
+    finally:
+        if lock is not None:
+            try:
+                lock.release()
+            except Exception:  # noqa: BLE001 — an expired lock is already gone
+                frappe.logger().warning("reconcile job: lock release failed", exc_info=True)
+
+    failed = sorted(table for table, rows in synced.items() if rows is None)
+    frappe.logger().info(
+        f"reconcile job: synced {len(synced) - len(failed)} of {len(synced)} write-through tables"
+    )
+    if failed:
+        frappe.logger().warning(f"reconcile job: not synced: {', '.join(failed)}")
+    if synced and len(failed) == len(synced):
+        _report_nothing_synced(
+            target,
+            install_time,
+            title="Warehouse reconcile: no table synced",
+            detail=f"None of the {len(synced)} write-through tables reached ClickHouse.",
+        )
+    return synced
+
+
+def _report_nothing_synced(target, install_time, title, detail):
+    """An Error Log, except for the one expected miss: the install-time job on
+    a site whose EPM Settings still hold the doctype defaults. There the
+    configurator sets the real target afterwards and queues another run."""
+    if install_time and target == UNCONFIGURED_TARGET:
+        frappe.logger().warning(
+            f"reconcile job (install time, default ClickHouse target): {detail} "
+            "A run follows once EPM Settings is configured."
+        )
+        return
+    frappe.log_error(
+        title=title,
+        message=f"{detail} Check the ClickHouse connection in EPM Settings, then run "
+        "`bench execute konsol.clickhouse.reconcile_all`.",
+    )
 
 
 def after_migrate():
@@ -163,6 +384,8 @@ def _reconcile_clickhouse():
 
     Best-effort — never fail a migrate over it.
     """
+    # Runs unlocked, as the per-document syncs do: reconcile_warehouse's lock
+    # serialises reconcile *jobs* only, and a migrate must not wait on it.
     try:
         from konsol.clickhouse import reconcile_all
 
