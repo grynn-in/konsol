@@ -198,14 +198,16 @@ def _n(count, word):
 
 
 def ownership_stage(uncovered, ownership_drafts, rate_drafts, group_rate_drafts=0, missing_rates=(),
-                    rates_error=None):
+                    rates_error=None, rate_blockers=()):
     """Ownership and the period's group exchange rates (konsol#103).
 
     ``missing_rates`` is the close gate's own answer (group_rates.rate_gate):
     the translated keys with no approved rate, as labels. ``rates_error`` says
     the warehouse could not answer, and the gate then refuses to close, so the
     stage is never Complete while the gate would refuse. ``group_rate_drafts``
-    counts the period's rates waiting for the Close Lead's approval."""
+    counts the period's rates waiting for the Close Lead's approval.
+    ``rate_blockers`` are the gate's other refusals: a group the period
+    translates into that has no reporting currency."""
     uncovered = sorted(set(uncovered))
     missing_rates = list(missing_rates)
     todo = ownership_drafts + rate_drafts
@@ -214,14 +216,17 @@ def ownership_stage(uncovered, ownership_drafts, rate_drafts, group_rate_drafts=
         parts.append(f"{len(uncovered)} without ownership")
     if rates_error:
         parts.append("rates can't be checked")
-    elif missing_rates:
+    if rate_blockers:
+        parts.append(f"{_n(len(rate_blockers), 'group')} without a reporting currency")
+    if not rates_error and missing_rates:
         parts.append(f"{_n(len(missing_rates), 'rate')} missing")
     if group_rate_drafts:
         parts.append(f"{_n(group_rate_drafts, 'rate')} to approve")
     if todo:
         parts.append(f"{todo} to submit")
-    extra = {"missing": uncovered, "missing_rates": missing_rates, "rates_error": rates_error}
-    if rates_error:
+    extra = {"missing": uncovered, "missing_rates": missing_rates, "rates_error": rates_error,
+             "rate_blockers": list(rate_blockers)}
+    if rates_error or rate_blockers:
         return stage("ownership", "error", " · ".join(parts), **extra)
     if parts:
         return stage("ownership", "incomplete", " · ".join(parts), **extra)
@@ -239,7 +244,7 @@ def few(labels, limit=6):
     return ", ".join(labels[:limit]) + (f" and {len(labels) - limit} more" if len(labels) > limit else "")
 
 
-def group_rate_items(lead, group, draft_labels, missing, error, period_open, label):
+def group_rate_items(lead, group, draft_labels, missing, error, period_open, label, blockers=()):
     """Where the period's group exchange rates show in the queues (konsol#103).
 
     Approval is the Close Lead's (submit), like an adjustment or ownership
@@ -248,6 +253,8 @@ def group_rate_items(lead, group, draft_labels, missing, error, period_open, lab
     close gate still lacks is the Group Accountant's work (pre-fill or enter);
     a Close Lead who isn't one waits on them, as for missing trial balances.
     A warehouse that can't answer is an error for both: the period can't close.
+    So is a group with no reporting currency (``blockers``): nothing can be
+    translated into it, and the row opens the groups.
 
     Returns dicts with ``queue`` ("mine" / "waiting"), ``id``, ``state``,
     ``title``, ``detail``, ``who`` and ``action`` ("approve", "prefill" or
@@ -265,6 +272,10 @@ def group_rate_items(lead, group, draft_labels, missing, error, period_open, lab
                         "who": "Close Lead", "action": None})
     if not (lead or group):
         return out
+    for i, why in enumerate(blockers):
+        out.append({"queue": "mine", "id": f"gxr:blocked:{i}", "state": "error", "title": why,
+                    "detail": f"Set its Reporting Currency: {label} cannot close until then.",
+                    "who": None, "action": "groups"})
     if error:
         out.append({"queue": "mine", "id": "gxr:unknown", "state": "error",
                     "title": "Group exchange rates can't be checked",

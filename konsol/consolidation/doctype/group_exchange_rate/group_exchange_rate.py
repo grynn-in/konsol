@@ -46,19 +46,12 @@ class GroupExchangeRate(Document):
     @classmethod
     def resync_staging(cls, force=False):
         """Publish every approved rate as its TRUE rate: units of to per 1 from,
-        Float64. TRUNCATE + INSERT, so a cancelled rate leaves. reconcile_all
-        calls this too. Returns what sync_table wrote (None when it didn't)."""
+        Float64, the full set swapped in at once and one publish at a time
+        (group_rates.publish_rates). A cancelled rate leaves. reconcile_all
+        calls this too. Returns the rows published (None when it didn't)."""
         from konsol import group_rates
-        from konsol.clickhouse import sync_table
 
-        docs = frappe.get_all(
-            "Group Exchange Rate", filters={"docstatus": 1}, limit_page_length=0,
-            fields=["name", "to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
-                    "quote", "quoted_per", "modified"])
-        modified = [d.modified for d in docs if d.modified]
-        return sync_table(cls.CH_STAGING_TABLE, cls.CH_STAGING_COLUMNS, group_rates.published_rows(docs),
-                          source_max_modified=max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None,
-                          force=force)
+        return group_rates.publish_rates(force=force)
 
     def autoname(self):
         """Readable and unique: the grain, then a counter for the rare second

@@ -14,7 +14,9 @@ Antillean Guilder" instead of "ANG". It also has no ISO exponent, only Frappe's
 zero-decimal ones.
 
 So konsol keeps its own list, keyed on the code, and leaves Frappe's Currency
-records alone.
+records alone. It is seeded (konsol.currency_references), not a fixture: a
+fixture is force re-imported on every migrate, which reverted a site's own
+usd_log10 (konsol#103).
 """
 import frappe
 from frappe.model.document import Document

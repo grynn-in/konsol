@@ -31,6 +31,7 @@ Two plausibility checks guard entry (the #138 review):
   Change. Real moves that size happen (ARS fell 55% in Dec 2023), so a reason
   lets it through.
 """
+import calendar
 import datetime
 import decimal
 import json
@@ -52,9 +53,9 @@ ADOPTION_SOURCE = "Adoption"
 ERP_RATE_TYPES = {"Closing": ("Closing", "Default"), "Average": ("Average", "Default")}
 
 #: The magnitude guard's reference: ISO Currency.usd_log10, roughly log10 of
-#: the currency's units per 1 USD. USD is the anchor, so its reference is 0 by
-#: definition. A Frappe Float cannot be NULL (unset reads as 0), so for every
-#: other currency 0 means "not set".
+#: the currency's units per 1 USD (seeded by konsol.currency_references). USD is
+#: the anchor at 0. A Frappe Float cannot be NULL (unset reads as 0), so for
+#: every other currency 0 means "not set"; so does NaN in the warehouse.
 REFERENCE_CURRENCY = "USD"
 REFERENCE_FIELD = "usd_log10"
 #: A rate more than this many powers of ten from the references is refused.
@@ -119,13 +120,15 @@ def published_rows(docs):
 
 
 def usd_reference(code, value):
-    """A currency's usd_log10, or None when it has none (see REFERENCE_FIELD)."""
-    if code == REFERENCE_CURRENCY:
-        return 0.0
+    """A currency's usd_log10, or None when it has none. The warehouse's rule
+    (konsolidat macros/fx_magnitude.sql), exactly: NULL, NaN, or 0 for any
+    currency but USD is "no reference"; USD's own 0 is the anchor."""
     if value in (None, ""):
         return None
     value = float(value)
-    return None if value == 0 else value
+    if math.isnan(value) or (value == 0 and code != REFERENCE_CURRENCY):
+        return None
+    return value
 
 
 def usd_references(codes):
@@ -137,32 +140,43 @@ def usd_references(codes):
     return {c: usd_reference(c, found.get(c)) for c in codes}
 
 
-def magnitude_problem(from_currency, to_currency, rate, refs=None):
-    """None, or why ``rate`` (units of ``to_currency`` per 1 ``from_currency``)
-    is implausible (#138).
+#: What the magnitude rule says about a rate: the same four outcomes, in the
+#: same order, as the warehouse's fx_magnitude_problem (konsolidat #176).
+VERDICTS = ("ok", "invalid", "no_reference", "implausible")
 
-    Refused when abs(log10(rate) - (usd_log10(to) - usd_log10(from))) > 1: the
-    rate is more than 10x from what the ISO Currency references imply. A
-    currency with no reference is refused, naming the ISO Currency to fix."""
-    refs = usd_references((from_currency, to_currency)) if refs is None else refs
-    unset = [c for c in (from_currency, to_currency) if refs.get(c) is None]
-    if unset:
-        return (f"No magnitude reference for {' and '.join(unset)}: set USD Reference (log10) "
-                f"({REFERENCE_FIELD}) on ISO Currency {', '.join(unset)}, roughly log10 of its units "
-                "per 1 USD, so a scaling error can be told from a real rate (#138).")
+
+def magnitude_verdict(from_currency, to_currency, rate, refs=None):
+    """(verdict, why) for ``rate``, units of ``to_currency`` per 1
+    ``from_currency``: "ok" (why is None), "invalid" (not a positive, finite
+    number), "no_reference" (a currency has no usd_log10) or "implausible"
+    (more than 10x from what the references imply: abs(log10(rate) -
+    (usd_log10(to) - usd_log10(from))) > 1). Checked in that order, as dbt does."""
     rate = float(rate)
-    if rate <= 0:
-        return "Rate must be a positive number."
+    if not math.isfinite(rate) or rate <= 0:
+        return "invalid", "Rate must be a positive, finite number."
+    refs = usd_references((from_currency, to_currency)) if refs is None else refs
+    unset = [c for c in dict.fromkeys((from_currency, to_currency)) if refs.get(c) is None]
+    if unset:
+        return "no_reference", (
+            f"No magnitude reference for {' and '.join(unset)}: set USD Reference (log10) "
+            f"({REFERENCE_FIELD}) on ISO Currency {', '.join(unset)}, roughly log10 of its units "
+            "per 1 USD, so a scaling error can be told from a real rate (#138).")
     expected = refs[to_currency] - refs[from_currency]
     off = math.log10(rate) - expected
     if abs(off) <= MAGNITUDE_TOLERANCE_DECADES:
-        return None
-    return (f"{rate:.9g} {to_currency} per {from_currency} is about {10 ** abs(off):,.0f}x "
-            f"{'above' if off > 0 else 'below'} the roughly {10 ** expected:.3g} the ISO Currency "
-            f"references imply (usd_log10 {to_currency} {refs[to_currency]:g}, {from_currency} "
-            f"{refs[from_currency]:g}); more than 10x off is a scaling error, not a market move (#138). "
-            f"Enter the true rate: units of {to_currency} per 1 {from_currency}, with no multiplier, "
-            f"or quote it per 10, 100, 1,000 or 10,000 {from_currency} (Quoted Per).")
+        return "ok", None
+    return "implausible", (
+        f"{rate:.9g} {to_currency} per {from_currency} is about {10 ** abs(off):,.0f}x "
+        f"{'above' if off > 0 else 'below'} the roughly {10 ** expected:.3g} the ISO Currency "
+        f"references imply (usd_log10 {to_currency} {refs[to_currency]:g}, {from_currency} "
+        f"{refs[from_currency]:g}); more than 10x off is a scaling error, not a market move (#138). "
+        f"Enter the true rate: units of {to_currency} per 1 {from_currency}, with no multiplier, "
+        f"or quote it per 10, 100, 1,000 or 10,000 {from_currency} (Quoted Per).")
+
+
+def magnitude_problem(from_currency, to_currency, rate, refs=None):
+    """None, or why ``rate`` is refused (#138): ``magnitude_verdict``'s reason."""
+    return magnitude_verdict(from_currency, to_currency, rate, refs)[1]
 
 
 def move_problem(rate, previous=None, erp_rate=None, unit=""):
@@ -184,6 +198,13 @@ def move_problem(rate, previous=None, erp_rate=None, unit=""):
         return None
     return (f"This rate ({rate:.9g}{unit}) moves " + " and ".join(moves) + ". A move over 50% can be "
             "real, but say why (Reason for Change) before it is saved.")
+
+
+def period_end(fiscal_year, fiscal_period):
+    """The last day of the month ``period_start`` keys the period on: where a
+    Closing rate is struck."""
+    start = period_start(fiscal_year, fiscal_period)
+    return datetime.date(start.year, start.month, calendar.monthrange(start.year, start.month)[1])
 
 
 def period_start(fiscal_year, fiscal_period):
@@ -331,49 +352,73 @@ def ledgers_built():
     return bool(rows) and int(rows[0][0]) == 1
 
 
-#: The group node's currency, per group: the node with no entity.
-_GROUP_CURRENCIES = ("(SELECT consolidation_group, reporting_currency FROM epm_gold.consolidation_groups "
-                     "WHERE data_area_id = '' AND reporting_currency != '')")
+#: Every group node and its currency ('' when unset): the node with no entity.
+#: LEFT-JOINed, as the warehouse guard does, so a group with no reporting
+#: currency comes back as '' rather than vanishing (join_use_nulls=0).
+_GROUP_NODES = "(SELECT consolidation_group, reporting_currency FROM epm_gold.consolidation_groups WHERE data_area_id = '')"
+
+#: The translation's own filter on gold_entity_ownership (and the guard's).
+_TRANSLATED = "consolidation_method NOT IN ('equity', 'none') AND has_complete_chain = 1"
 
 
-def required_pairs(fiscal_year, fiscal_period):
-    """(entity currency, group reporting currency) for exactly the rows
+def translation_needs(fiscal_year, fiscal_period):
+    """(pairs, groups without a currency) for exactly the rows
     gold_consolidated_trial_balance translates in the period: an entity with
     ledger rows, into each group gold_entity_ownership places it under for the
     period, with the translation's own filter (method not 'equity' or 'none',
     a complete chain, so nothing outside the ownership window). An equity
-    associate's currency owes no rate: the equity-method model does not
-    translate through this table.
+    associate's currency owes no rate. A group node with no reporting
+    currency cannot be translated into at all; the warehouse guard refuses
+    it, so the gate names it.
 
     Read from the last build: ownership changed since then is seen at the next."""
     rows = _ch_rows(
-        "SELECT DISTINCT ec.accounting_currency, g.reporting_currency "
+        "SELECT DISTINCT ec.accounting_currency, g.reporting_currency, eo.consolidation_group "
         "FROM (SELECT DISTINCT data_area_id FROM epm_gold.gold_trial_balance "
         "      WHERE fiscal_year = {fy:UInt16} AND fiscal_period = {fp:UInt16}) AS tb "
         "INNER JOIN (SELECT data_area_id, accounting_currency FROM epm_silver.silver_entity_currencies "
         "            WHERE accounting_currency != '') AS ec ON ec.data_area_id = tb.data_area_id "
         "INNER JOIN (SELECT consolidation_group, data_area_id FROM epm_gold.gold_entity_ownership "
-        "            WHERE fiscal_year = {fy:UInt16} AND fiscal_period = {fp:UInt16} "
-        "            AND consolidation_method NOT IN ('equity', 'none') AND has_complete_chain = 1) AS eo "
+        f"            WHERE fiscal_year = {{fy:UInt16}} AND fiscal_period = {{fp:UInt16}} AND {_TRANSLATED}) AS eo "
         "    ON eo.data_area_id = tb.data_area_id "
-        f"INNER JOIN {_GROUP_CURRENCIES} AS g ON g.consolidation_group = eo.consolidation_group "
+        f"LEFT JOIN {_GROUP_NODES} AS g ON g.consolidation_group = eo.consolidation_group "
         "WHERE ec.accounting_currency != g.reporting_currency",
         {"fy": int(fiscal_year), "fp": int(fiscal_period)},
     )
-    return {(f, t) for f, t in rows}
+    return split_needs(rows)
 
 
-def tree_pairs():
-    """The same pairs for every entity in the tree, ledgers or not: what a
-    period needs before its trial balances arrive (pre-fill only; the gate
-    never reads this)."""
+def split_needs(rows):
+    """(from, to, group) rows -> ({(from, to)}, [groups with no currency]). Pure."""
+    return ({(f, t) for f, t, _ in rows if t}, sorted({g for _, t, g in rows if not t}))
+
+
+def required_pairs(fiscal_year, fiscal_period):
+    """The (entity currency, group reporting currency) pairs the period's
+    translation needs (``translation_needs``, without the blockers)."""
+    return translation_needs(fiscal_year, fiscal_period)[0]
+
+
+def tree_pairs(fiscal_year, fiscal_period):
+    """The pairs a period will need before its trial balances arrive (the
+    pre-fill's fallback; the gate never reads this). gold_entity_ownership has
+    rows only for periods with ledgers, so each (group, entity) takes its
+    latest built period at or before this one, with the translation's filter:
+    an equity-accounted or 'none' entity, or an incomplete chain, owes no rate."""
     rows = _ch_rows(
         "SELECT DISTINCT ec.accounting_currency, g.reporting_currency "
-        "FROM epm_staging.consolidation_ancestry AS a "
+        "FROM (SELECT consolidation_group, data_area_id, "
+        "             argMax(consolidation_method, (fiscal_year, fiscal_period)) AS consolidation_method, "
+        "             argMax(has_complete_chain, (fiscal_year, fiscal_period)) AS has_complete_chain "
+        "      FROM epm_gold.gold_entity_ownership "
+        "      WHERE (fiscal_year, fiscal_period) <= ({fy:UInt16}, {fp:UInt16}) "
+        "      GROUP BY consolidation_group, data_area_id) AS eo "
         "INNER JOIN (SELECT data_area_id, accounting_currency FROM epm_silver.silver_entity_currencies "
-        "            WHERE accounting_currency != '') AS ec ON ec.data_area_id = a.data_area_id "
-        f"INNER JOIN {_GROUP_CURRENCIES} AS g ON g.consolidation_group = a.consolidation_group "
-        "WHERE ec.accounting_currency != g.reporting_currency")
+        "            WHERE accounting_currency != '') AS ec ON ec.data_area_id = eo.data_area_id "
+        f"INNER JOIN {_GROUP_NODES} AS g ON g.consolidation_group = eo.consolidation_group "
+        f"WHERE eo.{_TRANSLATED.replace(' AND ', ' AND eo.')} AND g.reporting_currency != '' "
+        "AND ec.accounting_currency != g.reporting_currency",
+        {"fy": int(fiscal_year), "fp": int(fiscal_period)})
     return {(f, t) for f, t in rows}
 
 
@@ -390,6 +435,83 @@ def erp_quote_rows(as_of):
         "GROUP BY erp_source, rate_type, from_currency, to_currency",
         {"asof": str(as_of)},
     )
+
+
+# -- publishing ----------------------------------------------------------------------
+
+#: Where konsol publishes the approved rates: the frozen contract, one row per
+#: approved rate, `rate` the TRUE rate (units of to per 1 from).
+PUBLISH_TABLE = "epm_staging.group_exchange_rates"
+PUBLISH_COLUMNS = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate",
+                   "document")
+#: Seconds a publish waits for another one to finish before it gives up and
+#: logs (the next approval, or the reconcile after a migrate, republishes).
+PUBLISH_LOCK_WAIT = 120
+
+
+def _ch_literal(value):
+    if isinstance(value, bool):
+        return str(int(value))
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def publish_rates(force=False):
+    """Publish every approved rate as its TRUE rate, all at once and one publish
+    at a time (review of #174: TRUNCATE + batched INSERTs could interleave, so
+    two publishes duplicated every key and a reader mid-way saw part of the set).
+
+    * Serialised by a MariaDB named lock (GET_LOCK, per site): the approval's
+      after-commit publish, a second approval's, and the reconcile after a
+      migrate take turns.
+    * The rows are read with a locking read, so each publish sees every rate
+      committed before it, whatever its transaction's snapshot.
+    * The full set is built in a shadow table and swapped in with EXCHANGE
+      TABLES (epm_staging is an Atomic database): a reader sees the old set or
+      the new one, never part of either.
+
+    Skipped during install, import, migrate and patches unless ``force`` (the
+    reconcile), like every write-through. Best-effort: a failure is logged and
+    recorded for check_health, never raised into the save it follows.
+    Returns the row count published, or None."""
+    flags = frappe.flags
+    if flags.in_install or flags.in_import:
+        return None
+    if not force and (flags.in_migrate or flags.in_patch):
+        return None
+    from konsol.clickhouse import _record_sync_failure, _stamp_watermark, execute
+
+    lock = f"konsol_group_rates_publish:{frappe.conf.db_name}"
+    got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock, PUBLISH_LOCK_WAIT))
+    if not got or got[0][0] != 1:
+        frappe.logger().error(f"group exchange rates NOT published: GET_LOCK('{lock}') returned {got!r}")
+        return None
+    shadow = PUBLISH_TABLE + "__publishing"
+    try:
+        docs = frappe.db.sql(
+            "SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, quoted_per, "
+            "modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name LOCK IN SHARE MODE",
+            as_dict=True)
+        rows = published_rows(docs)
+        execute(f"DROP TABLE IF EXISTS {shadow}")
+        execute(f"CREATE TABLE {shadow} AS {PUBLISH_TABLE}")
+        columns = ", ".join(PUBLISH_COLUMNS)
+        for i in range(0, len(rows), 1000):
+            execute(f"INSERT INTO {shadow} ({columns}) VALUES "
+                    + ", ".join("(" + ", ".join(_ch_literal(v) for v in row) + ")" for row in rows[i:i + 1000]))
+        execute(f"EXCHANGE TABLES {PUBLISH_TABLE} AND {shadow}")
+        execute(f"DROP TABLE IF EXISTS {shadow}")
+        modified = [d.modified for d in docs if d.modified]
+        _stamp_watermark(PUBLISH_TABLE, len(rows),
+                         max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None)
+        return len(rows)
+    except Exception as e:  # noqa: BLE001 — never break the save this follows
+        _record_sync_failure(PUBLISH_TABLE, "publish_failed", str(e))
+        frappe.logger().exception(f"group exchange rates NOT published to {PUBLISH_TABLE}")
+        return None
+    finally:
+        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock,))
 
 
 # -- governed rows --------------------------------------------------------------------
@@ -427,8 +549,10 @@ def missing_rates(fiscal_year, fiscal_period, pairs=None):
 
 
 def rate_gate(fiscal_year, fiscal_period):
-    """What the close gate says: (missing keys, None), or (None, why the
-    warehouse can't answer). The role home shows the same answer.
+    """What the close gate says: (missing keys, None, blockers), or (None, why
+    the warehouse can't answer, []). ``blockers`` names each group the period
+    translates into that has no reporting currency. The role home shows the
+    same answer.
 
     Fails closed. Only a warehouse that has never built a trial balance owes
     nothing: the read fails with UNKNOWN_TABLE or UNKNOWN_DATABASE AND
@@ -436,36 +560,41 @@ def rate_gate(fiscal_year, fiscal_period):
     a missing gold_entity_ownership beside a built trial balance included,
     means the rates cannot be checked."""
     try:
-        pairs = required_pairs(fiscal_year, fiscal_period)
+        pairs, groups = translation_needs(fiscal_year, fiscal_period)
     except Exception as e:  # noqa: BLE001 — any failure to read means "can't verify"
         names = sorted(ch_error_names(e))
         if _not_built(e):
             try:
                 if not ledgers_built():
-                    return [], None
+                    return [], None, []
             except Exception:  # noqa: BLE001 — can't tell, so fail closed
                 pass
-        return None, type(e).__name__ + (f" {', '.join(names)}" if names else "")
-    return missing_rates(fiscal_year, fiscal_period, pairs), None
+        return None, type(e).__name__ + (f" {', '.join(names)}" if names else ""), []
+    return missing_rates(fiscal_year, fiscal_period, pairs), None, [
+        f"Consolidation Group {g} has no reporting currency" for g in groups]
 
 
 def assert_rates_complete(fiscal_year, fiscal_period):
-    """Refuse to close a period while a translated currency lacks an approved rate.
+    """Refuse to close a period while a translated currency lacks an approved
+    rate, or a group it translates into has no reporting currency.
 
-    The pairs come from the last build (``required_pairs``): the gate checks
+    The pairs come from the last build (``translation_needs``): the gate checks
     what that build translates, not ownership edited since."""
-    missing, error = rate_gate(fiscal_year, fiscal_period)
+    missing, error, blockers = rate_gate(fiscal_year, fiscal_period)
     if error:
         frappe.throw(
             f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: the warehouse could not "
             f"say which currencies its ledgers translate ({error}), so its group exchange "
             "rates cannot be checked.", frappe.ValidationError)
+    problems = list(blockers)
     if missing:
+        problems.append("no approved group exchange rate for "
+                        + ", ".join(f"{f} → {t} {rt}" for f, t, rt in missing))
+    if problems:
         frappe.throw(
-            f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: no approved group exchange "
-            "rate for " + ", ".join(f"{f} → {t} {rt}" for f, t, rt in missing)
-            + ". Pre-fill them from the ERP (or enter them) and approve each.",
-            frappe.ValidationError)
+            f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: " + "; ".join(problems)
+            + ". Set each group's Reporting Currency, pre-fill the rates from the ERP (or enter them) "
+            "and approve each.", frappe.ValidationError)
 
 
 # -- the pre-fill -------------------------------------------------------------------------
@@ -474,7 +603,8 @@ def assert_rates_complete(fiscal_year, fiscal_period):
 def prefill_from_erp(fiscal_year, fiscal_period):
     """Propose DRAFT rates for a period from what the ERP feed quotes.
 
-    "D365 quotes 0.9378 for March: accept?" Each proposal is a draft carrying
+    "D365 quotes 0.9378 for March: accept?" A Closing proposal is the quote in
+    force at the period's end, an Average one the quote at its start. Each proposal is a draft carrying
     the quote, its source and how it was reached; nothing is submitted, so
     nothing applies itself. A key that already has a draft or an approved rate
     is left alone. Group Accountant, Close Lead and System Manager only.
@@ -484,8 +614,11 @@ def prefill_from_erp(fiscal_year, fiscal_period):
     reason, so it is reported too: enter it by hand with the reason."""
     frappe.only_for(PREFILL_ROLES)
     fy, fp = int(fiscal_year), int(fiscal_period)
-    pairs = required_pairs(fy, fp) or tree_pairs()
-    rows = erp_quote_rows(period_start(fy, fp))
+    pairs = required_pairs(fy, fp) or tree_pairs(fy, fp)
+    # A Closing rate is struck at the period end; an Average spans the period,
+    # and the ERP keys it on the period's start.
+    rows_by_type = {"Closing": erp_quote_rows(period_end(fy, fp)),
+                    "Average": erp_quote_rows(period_start(fy, fp))}
     taken = {(r.from_currency, r.to_currency, r.rate_type) for r in frappe.get_all(
         DOCTYPE, filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["<", 2]},
         fields=["from_currency", "to_currency", "rate_type"], limit_page_length=0)}
@@ -499,7 +632,7 @@ def prefill_from_erp(fiscal_year, fiscal_period):
                 if (f, t, rate_type) in taken:
                     out["existing"].append(label)
                     continue
-                quotes = resolve_quotes(rows, f, t, rate_type)
+                quotes = resolve_quotes(rows_by_type[rate_type], f, t, rate_type)
                 if not quotes:
                     out["no_quote"].append(label)
                     continue
@@ -588,6 +721,17 @@ def adopt_erp_rates(dry_run=False):
             "Nothing was adopted, and the governed translation will refuse every period it translated "
             "until this runs. Once ClickHouse is up, run: " + RECOVERY_COMMAND.format(site=site)
             + " (add --kwargs \"{'dry_run': 1}\" to preview).") from e
+    # Every currency the adoption would enter needs a magnitude reference, or
+    # every row is refused and the upgrade looks done. Stop instead, before
+    # anything is written: a patch that raises is retried at the next migrate.
+    refs = usd_references({c for r in used for c in (r[0], r[1])})
+    unset = sorted(c for c, v in refs.items() if v is None)
+    if unset and not dry_run:
+        site = getattr(getattr(frappe, "local", None), "site", None) or "<site>"
+        raise RuntimeError(
+            f"konsol#103 adoption: no magnitude reference (ISO Currency usd_log10) for {', '.join(unset)}, "
+            "so every rate in those currencies would be refused. Nothing was adopted. Set USD Reference "
+            "(log10) on those ISO Currencies, then run: " + RECOVERY_COMMAND.format(site=site))
     governed = {(r.from_currency, r.to_currency, int(r.fiscal_year), int(r.fiscal_period), r.rate_type)
                 for r in frappe.get_all(DOCTYPE, filters={"docstatus": 1}, limit_page_length=0,
                                         fields=["from_currency", "to_currency", "fiscal_year",

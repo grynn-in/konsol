@@ -28,7 +28,9 @@ fixtures = [
     "Measure",
     "Dataset",
     "Scenario",
-    "ISO Currency",
+    # ISO Currency is NOT a fixture (konsol#103): a force re-import on every
+    # migrate reverted a site's own usd_log10. konsol.currency_references seeds
+    # it from reference_data/iso_currencies.json, filling only what is unset.
     "Spread Profile",
     "Build Scope",
     "Build Model",

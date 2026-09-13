@@ -592,5 +592,32 @@
   "symbol": "SDR",
   "minor_unit": 0,
   "usd_log10": -0.12
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "PAB",
+  "currency_code": "PAB",
+  "currency_name": "Panamanian Balboa",
+  "symbol": "B/.",
+  "minor_unit": 2,
+  "usd_log10": 0.001
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BSD",
+  "currency_code": "BSD",
+  "currency_name": "Bahamian Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.001
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BMD",
+  "currency_code": "BMD",
+  "currency_name": "Bermudian Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.001
  }
 ]

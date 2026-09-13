@@ -11,9 +11,10 @@ Currency on the next save, so existing values are mapped first:
   node. Guessing which currency someone meant would silently change what a
   group is translated into.
 
-The codes are ISO Currency's records plus konsol's fixture, which holds the
-same list: on a site where the fixture has not yet been imported (patches run
-before fixtures), the fixture is the list the Link will validate against.
+The codes are ISO Currency's records plus konsol's shipped list
+(reference_data/iso_currencies.json, seeded after migrate): on a site where
+it has not been seeded yet (patches run first), that list is what the Link
+will validate against.
 """
 import json
 
@@ -24,7 +25,7 @@ def iso_codes():
     codes = set()
     if frappe.db.table_exists("ISO Currency"):
         codes.update(frappe.get_all("ISO Currency", pluck="name"))
-    with open(frappe.get_app_path("konsol", "fixtures", "iso_currency.json")) as f:
+    with open(frappe.get_app_path("konsol", "reference_data", "iso_currencies.json")) as f:
         codes.update(row["name"] for row in json.load(f) if row.get("name"))
     return codes
 
@@ -57,7 +58,7 @@ def execute():
         raise ValueError(
             "Consolidation Group.reporting_currency is becoming a Link to ISO Currency "
             f"(konsolidat#93), and these values are not in ISO Currency: {detail}. "
-            "For a real ISO 4217 code missing from the list (it ships 66), add the ISO "
+            "For a real ISO 4217 code missing from the list (it ships 69), add the ISO "
             "Currency record; otherwise set the node's Reporting Currency to the code it "
             "means. Then run the migrate again. Nothing was changed."
         )

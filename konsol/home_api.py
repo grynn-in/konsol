@@ -229,16 +229,18 @@ def _context(fy, p, start):
 
 
 def _rate_gate(fy, p):
-    """{"missing_rates": [labels], "rates_error": None | why}, as the close gate
+    """{"missing_rates": [labels], "rates_error": None | why, "rate_blockers":
+    [why]}, as the close gate
     sees it (group_rates.rate_gate). The home never fails on it: an unexpected
     error is shown as "can't be checked", which is what the gate would do."""
     from konsol import group_rates
 
     try:
-        missing, error = group_rates.rate_gate(fy, p)
+        missing, error, blockers = group_rates.rate_gate(fy, p)
     except Exception as e:  # noqa: BLE001
-        missing, error = None, type(e).__name__
-    return {"missing_rates": [M.rate_label(k) for k in missing or ()], "rates_error": error}
+        missing, error, blockers = None, type(e).__name__, []
+    return {"missing_rates": [M.rate_label(k) for k in missing or ()], "rates_error": error,
+            "rate_blockers": list(blockers)}
 
 
 def _stages(ctx, status, tracked_build):
@@ -253,7 +255,8 @@ def _stages(ctx, status, tracked_build):
                    {t.data_area_id for t in tbs if t.docstatus == 0}, ctx["via_connector"]),
         M.ownership_stage(ctx["uncovered"], len(ctx["ownership_drafts"]), len(ctx["rate_drafts"]),
                           group_rate_drafts=len(ctx["group_rate_drafts"]),
-                          missing_rates=ctx["missing_rates"], rates_error=ctx["rates_error"]),
+                          missing_rates=ctx["missing_rates"], rates_error=ctx["rates_error"],
+                          rate_blockers=ctx["rate_blockers"]),
         M.ic_stage(sum(1 for i in ctx["ic"] if i.docstatus == 1), sum(1 for i in ctx["ic"] if i.docstatus == 0)),
         M.adjustments_stage(by_status),
         M.consolidate_stage(ctx["build"], tracked=tracked_build),
@@ -355,12 +358,15 @@ def _queue(fy, p, ctx, stages, status, user):
     for r in M.group_rate_items(
             lead, group,
             [M.rate_label((d.from_currency, d.to_currency, d.rate_type)) for d in ctx["group_rate_drafts"]],
-            rates.get("missing_rates") or [], rates.get("rates_error"), period_open, label):
+            rates.get("missing_rates") or [], rates.get("rates_error"), period_open, label,
+            blockers=rates.get("rate_blockers") or ()):
         action = None
         if r["action"] == "approve":
             action = _action("Review", "Group Exchange Rate", "submit", None,
                              **M.closed_period("Group Exchange Rate", closed, "approve"),
                              fiscal_year=fy, fiscal_period=p, docstatus=0)
+        elif r["action"] == "groups":
+            action = _action("Open groups", "Consolidation Group", "write", None)
         elif r["action"] == "prefill":
             # the list, where "Pre-fill from ERP" is; offered in an open period only
             action = _action("Pre-fill or enter", "Group Exchange Rate", "write", None,

@@ -95,6 +95,11 @@ def test_ownership_stage_counts_the_group_rates():
     s = M.ownership_stage({"AMDE"}, 1, 0, missing_rates=["X"])
     assert s["summary"] == "1 without ownership · 1 rate missing · 1 to submit" and s["missing"] == ["AMDE"]
     assert M.rate_label(("IDR", "USD", "Closing")) == "IDR → USD Closing"
+    # a group with no reporting currency: the gate refuses, so the stage is an error
+    s = M.ownership_stage(set(), 0, 0, missing_rates=["X"],
+                          rate_blockers=["Consolidation Group ZZ has no reporting currency"])
+    assert (s["state"], s["summary"]) == ("error", "1 group without a reporting currency · 1 rate missing")
+    assert s["rate_blockers"] == ["Consolidation Group ZZ has no reporting currency"]
 
 
 def test_group_rates_in_the_queues():
@@ -117,6 +122,13 @@ def test_group_rates_in_the_queues():
     [approve] = [i for i in M.group_rate_items(True, False, drafts, [], None, True, "Dec 2099")]
     assert approve["title"] == "Approve 2 group exchange rates" and approve["detail"] == ", ".join(drafts)
     assert M.few([str(i) for i in range(8)]) == "0, 1, 2, 3, 4, 5 and 2 more"
+    why = "Consolidation Group ZZ has no reporting currency"
+    for lead, group in ((True, False), (False, True)):
+        [blocked] = [i for i in M.group_rate_items(lead, group, [], [], None, True, "Dec 2099", blockers=[why])
+                     if i["id"].startswith("gxr:blocked")]
+        assert (blocked["queue"], blocked["state"], blocked["title"], blocked["action"]) == (
+            "mine", "error", why, "groups")
+    assert M.group_rate_items(False, False, [], [], None, True, "Dec 2099", blockers=[why]) == []
 
 
 def test_ownership_and_ic_stages():
