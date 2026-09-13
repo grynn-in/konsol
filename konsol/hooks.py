@@ -129,6 +129,10 @@ _dbt_trigger_doctypes = [
     # Safe since konsol#126: the trigger queues a job after the commit, so it
     # can no longer commit docstatus=1 before on_submit has claimed the rows.
     "Trial Balance Submission",
+    # konsol#103: an approved (or cancelled) group rate changes what
+    # gold_consolidated_trial_balance translates at. Submittable, so only
+    # on_submit / on_cancel request the build; a draft save requests nothing.
+    "Group Exchange Rate",
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed

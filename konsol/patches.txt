@@ -29,3 +29,4 @@ konsol.patches.ensure_entities_for_data_areas
 konsol.patches.lift_ownership_to_ownership_period
 konsol.patches.add_build_approval_scope_index
 konsol.patches.add_pipeline_run_build_approval_index
+konsol.patches.adopt_erp_rates_as_group_exchange_rates

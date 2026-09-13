@@ -17,6 +17,7 @@ GATED = {
     "HistoricalEquityRate": "assert_open_between",
     "OwnershipPeriod": "assert_open_between",
     "TrialBalanceSubmission": "assert_open",
+    "GroupExchangeRate": "assert_open",
 }
 
 

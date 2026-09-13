@@ -49,6 +49,9 @@ DOCTYPE_BUILD_MAP = {
     # (konsol#126); consolidation reaches bronze_trial_balance_submissions ->
     # silver_gl_entries -> gold_trial_balance -> the consolidated models.
     "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
+    # konsol#103: the governed translation rates. `staging` would not reach
+    # gold_consolidated_trial_balance, which is what reads them.
+    "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype

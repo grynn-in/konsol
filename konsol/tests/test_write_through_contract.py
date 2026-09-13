@@ -214,6 +214,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#110: the entity registry, so a connector-less entity has a
         # currency the consolidation can join on
         "epm_staging.entities",
+        # konsol#103: the governed group exchange rates; translation reads
+        # only these, so the table must exist before the first approval syncs
+        "epm_staging.group_exchange_rates",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

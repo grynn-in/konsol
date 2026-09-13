@@ -614,6 +614,14 @@ _REFERENCE_TABLE_DDL = {
         "country String, erp_source String) "
         "ENGINE = MergeTree ORDER BY data_area_id"
     ),
+    # konsol#103: the governed group exchange rates, from Group Exchange Rate
+    # (submitted rows only). gold_consolidated_trial_balance translates from
+    # this, never from the ERP feed; `document` names the approving record.
+    "epm_staging.group_exchange_rates": (
+        "(to_currency String, from_currency String, fiscal_year UInt16, "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a
