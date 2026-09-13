@@ -89,6 +89,42 @@ def test_transition_problem_rejects_unknown_status():
         raise AssertionError("not refused")
 
 
+def test_row_not_looser_than_year():
+    O, C, L = M.OPEN, M.CLOSED, M.LOCKED
+
+    problems = M.row_problems(C, [{"code": "P1", "status": O}], {"P1"})
+    assert len(problems) == 1
+    assert "P1" in problems[0]
+
+    problems = M.row_problems(L, [{"code": "P2", "status": C}], {"P2"})
+    assert len(problems) == 1
+    assert "P2" in problems[0]
+
+    problems = M.row_problems(O, [{"code": "P3", "status": C}], {"P3"})
+    assert problems == []
+
+
+def test_no_new_row_in_closed_year():
+    O, C, L = M.OPEN, M.CLOSED, M.LOCKED
+
+    problems = M.row_problems(C, [{"code": "NEW", "status": C}], {"P1"})
+    assert len(problems) == 1
+    assert "NEW" in problems[0]
+    assert C in problems[0]
+
+    problems = M.row_problems(L, [{"code": "NEW", "status": L}], {"P1"})
+    assert len(problems) == 1
+    assert "NEW" in problems[0]
+    assert L in problems[0]
+
+    problems = M.row_problems(O, [{"code": "NEW", "status": O}], {"P1"})
+    assert problems == []
+
+    # a brand-new fiscal year has no previously saved rows: no new-row check
+    problems = M.row_problems(C, [{"code": "NEW", "status": C}], None)
+    assert problems == []
+
+
 def test_unknown_status_raises():
     try:
         M.effective_status("Bogus", M.OPEN)
