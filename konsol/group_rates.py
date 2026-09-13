@@ -32,6 +32,7 @@ Two plausibility checks guard entry (the #138 review):
   lets it through.
 """
 import datetime
+import decimal
 import json
 import math
 import re
@@ -77,8 +78,12 @@ PREFERRED_MIN_QUOTE = 0.1
 # -- pure rules -----------------------------------------------------------------
 
 def true_rate(quote, quoted_per):
-    """Units of the group currency per 1 unit of the from-currency."""
-    return float(quote or 0) / int(quoted_per or 1)
+    """Units of the group currency per 1 unit of the from-currency.
+
+    Divided in decimal: Quoted Per is a power of ten, so the quotient is exact
+    and the Float64 published is the nearest double to it (0.6607 per 100 is
+    0.006607, where float division gives 0.006606999999999999)."""
+    return float(decimal.Decimal(str(quote or 0)) / int(quoted_per or 1))
 
 
 def significant_digits(quote):

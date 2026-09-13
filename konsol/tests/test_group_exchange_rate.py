@@ -420,9 +420,8 @@ def test_konsol_publishes_the_true_rate_after_the_commit():
     [(table, columns, rows, stamp, force)] = written
     assert (table, force, stamp) == ("epm_staging.group_exchange_rates", True, "2099-12-31 09:00:00")
     assert columns == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate", "document"]
-    assert rows == [["USD", "JPY", 2099, 12, "Closing", 0.6607 / 100, "GER-2099-12-JPY-USD-Closing-01"],
-                    ["USD", "VND", 2099, 12, "Closing", 0.394 / 10000, "GER-2099-12-VND-USD-Closing-01"]]
-    assert abs(rows[0][5] - 0.006607) < 1e-15 and abs(rows[1][5] - 0.0000394) < 1e-16
+    assert rows == [["USD", "JPY", 2099, 12, "Closing", 0.006607, "GER-2099-12-JPY-USD-Closing-01"],
+                    ["USD", "VND", 2099, 12, "Closing", 0.0000394, "GER-2099-12-VND-USD-Closing-01"]]
     module.on_doctype_update()
     assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"]
 
@@ -517,7 +516,9 @@ def test_a_quote_per_a_unit():
     from-currency; the direction never flips; the true rate is quote / per."""
     r = _rules()
     assert r.QUOTED_PER == (1, 10, 100, 1000, 10000) and r.MIN_SIGNIFICANT_DIGITS == 6
-    assert r.true_rate(0.6607, "100") == 0.6607 / 100 and r.true_rate(0.9478, "1") == 0.9478
+    # divided in decimal: the nearest double to the exact quotient, not 0.006606999999999999
+    assert r.true_rate(0.6607, "100") == 0.006607 and r.true_rate(0.394, 10000) == 0.0000394
+    assert r.true_rate(0.9478, "1") == 0.9478 and r.true_rate("0.660700000", "100") == 0.006607
     assert r.true_rate(0, "100") == 0.0
     assert [r.significant_digits(q) for q in (0.0066, 0.66, 0.0000394, 150, 0.0001)] == [7, 9, 5, 12, 6]
     # the pre-fill and the adoption: the smallest unit that puts the quote at 0.1 or more
@@ -572,7 +573,7 @@ def test_the_previous_rate_is_read_as_a_true_rate():
     frappe = _frappe({}, previous=("GER-2099-11-JPY-USD-Closing-01", 0.6607, "100", 2099, 11))
     r = _rules_module(frappe)
     rate, label = r.previous_approved("USD", "JPY", "Closing", 2099, 12)
-    assert rate == 0.6607 / 100 and label == "FY2099 P11 (GER-2099-11-JPY-USD-Closing-01)"
+    assert rate == 0.006607 and label == "FY2099 P11 (GER-2099-11-JPY-USD-Closing-01)"
 
 
 def test_every_iso_currency_has_a_reference():
