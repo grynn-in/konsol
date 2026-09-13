@@ -285,7 +285,7 @@ def run_governed_build(build_request):
             doc.error_message = message
             doc.completed_at = frappe.utils.now_datetime()
             _set_duration(doc)
-            with build_writer():
+            with build_writer():  # defensive: this save is Approved -> Failed
                 doc.save(ignore_permissions=True)
         else:
             # It moved on while the job loaded it (an operator cancelled or

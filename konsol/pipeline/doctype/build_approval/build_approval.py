@@ -5,7 +5,6 @@ Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin appro
 """
 import frappe
 from frappe.model.document import Document
-from frappe.utils import now_datetime
 
 
 # Scope → risk mapping
@@ -41,8 +40,8 @@ class BuildApproval(Document):
         # check_if_latest, so it holds the current flag.
         before = self.get_doc_before_save()
         # Only konsol's build path moves a build out of Running: the build
-        # job's finish, start-failure and stopped-before-dbt saves, marked
-        # with build_lock.build_writer(), and the reaper, which writes with
+        # job's finish and stopped-before-dbt saves, marked with
+        # build_lock.build_writer(), and the reaper, which writes with
         # SQL and so never reaches this hook. A manual move (a reset to
         # Draft, or to Pending Review) left the job, still alive, to finish
         # over it (#140 review). konsol #168 covers the other manual moves.

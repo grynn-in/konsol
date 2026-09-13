@@ -22,7 +22,8 @@ from contextlib import contextmanager
 import frappe
 
 # Set only around konsol's own saves that move a Build Approval out of Running
-# (the build job's finish and its start-failure and stopped-before-dbt paths).
+# (the build job's finish and its stopped-before-dbt path). The start-failure
+# save is marked too, defensively: it only ever moves Approved -> Failed.
 # BuildApproval.before_save refuses any other move off Running (#140). It
 # lives in frappe.flags, which is local to one request or job.
 BUILD_WRITER_FLAG = "konsol_build_writer"
