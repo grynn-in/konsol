@@ -115,11 +115,17 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
           got there through publish() or a plain save.
         - A row leaving Published: a heading with Published accounts under it is
           refused; a leaf is withdrawn with a warning.
+        - A Published leaf made a heading leaves the statements although the row
+          stays Published: the warehouse drops headings (silver_main_accounts:
+          is_group = 0). Refused while anything depends on it, as a leaf leaving
+          the chart is.
         """
         before = self.get_doc_before_save()
         was = before.status if before else None
         if was == _PUBLISHED or self.status == _PUBLISHED:
             check_epm_admin()
+        if was == _PUBLISHED and M.flag(self.is_group) and not M.flag(before.get("is_group")):
+            self._refuse_if_in_use(as_leaf=True)
         if self.status == _PUBLISHED:
             self._before_publish()
         elif was == _PUBLISHED:
@@ -146,15 +152,17 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         frappe.msgprint(f"{self.name} is no longer in the group chart: new trial balances posting to it "
                         "are refused.", title="Withdrawn from the chart", indicator="orange")
 
-    def _refuse_if_in_use(self):
+    def _refuse_if_in_use(self, as_leaf=False):
         """An account leaving the chart (unpublished, Inactive, deleted) while
         something depends on it is refused: submitted trial balances post to it,
         an Intercompany Account names it, or a group books its differences to it.
-        A heading answers for the accounts under it."""
-        codes = self._codes_in_scope()
+        A heading answers for the accounts under it; ``as_leaf`` checks the
+        account itself (a leaf being made a heading)."""
+        heading = bool(M.flag(self.is_group)) and not as_leaf
+        codes = self._codes_in_scope() if heading else [self.name]
         problems = M.in_use_problems(self.name, postings=_submitted_postings(codes),
                                      intercompany=_intercompany_rows(codes),
-                                     difference_groups=_difference_groups(codes), heading=bool(self.is_group))
+                                     difference_groups=_difference_groups(codes), heading=heading)
         if problems:
             frappe.throw("\n".join(problems), title="Account in use")
 

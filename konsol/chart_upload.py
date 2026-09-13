@@ -58,7 +58,32 @@ def _check(file_url):
         return {"ok": False, "errors": str(e).splitlines(), "writes": [], "chart_of_accounts": "", "rows": 0,
                 "insert": [], "update": [], "published_changes": [], "inactive": [], "unchanged": [],
                 "not_ready": [], "not_in_file": []}
-    return M.plan_chart_load(rows, _existing())
+    return _refuse_leaves_in_use(M.plan_chart_load(rows, _existing()))
+
+
+def _refuse_leaves_in_use(report):
+    """A Published leaf the file makes a heading leaves both statements while it
+    stays Published: the warehouse drops headings (silver_main_accounts:
+    is_group = 0). Refused before anything is written, with the form's messages
+    (main_account._guard_publish), while submitted trial balances post to it, a
+    Published Intercompany Account names it, or a Consolidation Group books
+    intercompany differences to it."""
+    # published_changes holds each field as [before, after], checks as 0/1
+    codes = [c["main_account"] for c in report.get("published_changes") or []
+             if c["fields"].get("is_group") == [0, 1]]
+    if not codes:
+        return report
+    from konsol.epm.doctype.main_account.main_account import (
+        _difference_groups, _intercompany_rows, _submitted_postings)
+
+    problems = []
+    for code in codes:
+        problems += M.in_use_problems(code, postings=_submitted_postings([code]),
+                                      intercompany=_intercompany_rows([code]),
+                                      difference_groups=_difference_groups([code]))
+    if not problems:
+        return report
+    return {**report, "errors": report["errors"] + problems, "ok": False, "writes": []}
 
 
 def _public(report, file_url):
