@@ -198,14 +198,17 @@ _TERMINAL_RUN_STATES = ("Completed", "Failed", "Cancelled")
 
 def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None, commit=True):
     """Persist terminal status on the governed Pipeline Run. ``commit=False``
-    leaves the commit to the caller, to land with its own write."""
+    leaves the commit to the caller, to land with its own write. Returns
+    whether the status was applied: False with no run, or when the run is
+    already finished and ``status`` would make it active again."""
     if not pipeline_run:
-        return
-    doc = frappe.get_doc("Pipeline Run", pipeline_run)
+        return False
+    # A locking read: the latest row, so the save can't fail its timestamp check.
+    doc = frappe.get_doc("Pipeline Run", pipeline_run, for_update=True)
     if doc.status in _TERMINAL_RUN_STATES and status not in _TERMINAL_RUN_STATES:
         # Failed by a reset of its Running build (BuildApproval), or reaped:
         # a job still running must not make it active again (#140).
-        return
+        return False
     doc.status = status
     if dbt_result is not None:
         doc.dbt_result = dbt_result
@@ -216,6 +219,7 @@ def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, er
     doc.save(ignore_permissions=True)
     if commit:
         frappe.db.commit()
+    return True
 
 
 def run_governed_build(build_request):
@@ -305,7 +309,16 @@ def run_governed_build(build_request):
                 error_log=doc.error_message,
             )
         else:
-            _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
+            if not _finalize_governed_pipeline_run(pipeline_run, status="Transforming"):
+                # The run was finished while this job started: a reset of this
+                # build failed it with no job visible to RQ, or a reaper did.
+                # Another build may already hold the dbt project (#67 fix 5),
+                # so stop before dbt, and request nothing (#140 re-review).
+                frappe.logger().warning(
+                    f"Governed build {doc.name}: its Pipeline Run {pipeline_run} was finished before dbt "
+                    "started; not building"
+                )
+                return
 
             # Build dbt command
             settings = frappe.get_single("EPM Settings")

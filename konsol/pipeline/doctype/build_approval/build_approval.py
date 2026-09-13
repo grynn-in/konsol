@@ -109,31 +109,39 @@ class BuildApproval(Document):
             )
 
     def _fail_active_runs_of_reset_build(self):
-        """A Running build was reset to Draft: fail its governed Pipeline Run
-        while it is still active (#140 re-review).
+        """A Running build was reset to Draft: if its job is dead, fail its
+        governed Pipeline Run while it is still active (#140 re-review).
 
-        If the worker is dead, nothing else would until reap_stale_runs, and
-        an active run blocks every build. If it is alive, its own finish marks
-        the run, so a run already terminal is left alone, and one it
-        finalizes first (a timestamp mismatch here) is skipped. No commit:
-        the save that reset the row carries it.
+        A dead worker's run would block every build until reap_stale_runs.
+        But the active run is also the only thing that keeps a second dbt
+        build out of the shared project (_assert_no_active_run, #67 fix 5).
+        So while the build's job is alive, or RQ can't tell (the reaper's
+        check), the run stays active and the job finalizes it itself; a job
+        RQ doesn't see finds its run finished and stops before dbt
+        (tasks.run_governed_build). Each run is locked and re-read first, so
+        one the job finished meanwhile is skipped with no timestamp error (and
+        no red message in the desk). No commit: the save that reset the row
+        carries it.
         """
         from konsol.orchestrator.api import ACTIVE_RUN_STATES
+        from konsol.orchestrator.reaper import _build_job_waiting
         from konsol.tasks import _finalize_governed_pipeline_run
 
+        if _build_job_waiting(self.name):
+            return
         runs = frappe.get_all(
             "Pipeline Run",
             filters={"build_approval": self.name, "status": ["in", list(ACTIVE_RUN_STATES)]},
             pluck="name",
         )
         for run in runs:
-            try:
-                _finalize_governed_pipeline_run(
-                    run, status="Failed", commit=False,
-                    error_log=f"Build Approval {self.name} reset by {frappe.session.user} while Running",
-                )
-            except frappe.TimestampMismatchError:
-                pass   # the build's own job finalized it first
+            current = frappe.db.sql("SELECT status FROM `tabPipeline Run` WHERE name = %s FOR UPDATE", run)
+            if not current or current[0][0] not in ACTIVE_RUN_STATES:
+                continue   # the build's own job finished it meanwhile
+            _finalize_governed_pipeline_run(
+                run, status="Failed", commit=False,
+                error_log=f"Build Approval {self.name} reset by {frappe.session.user} while Running",
+            )
 
     def _populate_sync_info(self):
         """Read Airbyte sync status from EPM Settings into display fields."""

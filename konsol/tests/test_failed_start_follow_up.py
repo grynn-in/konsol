@@ -178,6 +178,23 @@ def test_pipeline_run_build_approval_is_indexed_on_new_and_existing_sites():
         assert 'frappe.db.add_index("Pipeline Run", ["build_approval"])' in f.read()
 
 
+def _run_index_patch(has_column):
+    added = []
+    frappe = types.ModuleType("frappe")
+    frappe.db = types.SimpleNamespace(table_exists=lambda dt: True, has_column=lambda dt, col: has_column,
+                                      add_index=lambda dt, fields: added.append((dt, fields)))
+    path = os.path.join(APP_DIR, "patches", "add_pipeline_run_build_approval_index.py")
+    _load("index_patch_140", path, {"frappe": frappe}).execute()
+    return added
+
+
+def test_the_index_patch_skips_a_site_without_the_column_yet():
+    """A site last migrated before the link field existed: ADD INDEX on the
+    missing column would abort migrate; model sync adds column and index."""
+    assert _run_index_patch(has_column=False) == []
+    assert _run_index_patch(has_column=True) == [("Pipeline Run", ["build_approval"])]
+
+
 def test_the_prefix_is_the_one_run_governed_build_writes():
     assert reaper.START_FAILURE_PREFIX == PREFIX
     with open(TASKS) as f:
@@ -296,28 +313,35 @@ def test_a_reset_of_a_cancelled_row_that_started_keeps_its_flag():
     assert doc.rebuild_requested == 1 and doc.started_at is None
 
 
-def _reset_running(runs, before_state="Running", finalize_raises=False):
-    """Reset a started row to Draft through before_save and on_update. ``runs``:
-    its Pipeline Runs, name -> status. Returns (doc, finalized runs, enqueued)."""
+def _reset_running(runs, before_state="Running", job_alive=False, latest=None):
+    """Reset a started row to Draft through before_save and on_update.
+
+    ``runs``: its Pipeline Runs as listed, name -> status. ``latest``: their
+    status once the hook locks them (the job may have finished one since).
+    ``job_alive``: the reaper's RQ check. Returns (doc, finalized runs,
+    enqueued); ``_reset_running.last`` holds the runs locked."""
     frappe = _frappe_stub()
     frappe.session = types.SimpleNamespace(user="ZZ Operator")
-    frappe.TimestampMismatchError = TimestampMismatchError
-    finalized, enqueued = [], []
+    finalized, enqueued, locked = [], [], []
 
     def get_all(doctype, filters=None, pluck=None, **k):
         assert doctype == "Pipeline Run" and filters["build_approval"] == "BA-1" and pluck == "name"
         return [n for n, st in runs.items() if st in filters["status"][1]]
 
-    def finalize(run, **kw):
-        if finalize_raises:
-            raise TimestampMismatchError("its job finalized it first")
-        finalized.append((run, kw))
+    def sql(query, params=None, **k):
+        assert query == "SELECT status FROM `tabPipeline Run` WHERE name = %s FOR UPDATE", query
+        locked.append(params)
+        return (((latest or {}).get(params, runs[params]),),)
+    frappe.db.sql = sql
     frappe.get_all = get_all
     frappe.enqueue = lambda *a, **k: enqueued.append(k.get("build_request"))
     frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None)
     frappe.publish_realtime = lambda *a, **k: None
-    extra = {"konsol.tasks": types.SimpleNamespace(_finalize_governed_pipeline_run=finalize),
-             "konsol.orchestrator.api": types.SimpleNamespace(ACTIVE_RUN_STATES=ACTIVE)}
+    _reset_running.last = {"locked": locked}
+    extra = {"konsol.tasks": types.SimpleNamespace(
+                 _finalize_governed_pipeline_run=lambda run, **kw: finalized.append((run, kw))),
+             "konsol.orchestrator.api": types.SimpleNamespace(ACTIVE_RUN_STATES=ACTIVE),
+             "konsol.orchestrator.reaper": types.SimpleNamespace(_build_job_waiting=lambda name: job_alive)}
     BuildApproval = _build_approval(frappe)
     saved = {m: sys.modules.get(m) for m in extra}
     sys.modules.update(extra)
@@ -333,11 +357,20 @@ def _reset_running(runs, before_state="Running", finalize_raises=False):
     return doc, finalized, enqueued
 
 
+def test_a_running_reset_leaves_the_run_of_a_live_job_active():
+    """The active run is what keeps a second dbt build out of the shared
+    project while the job is alive, or RQ can't tell (#140 re-review, High)."""
+    doc, finalized, enqueued = _reset_running({"PR-1": "Transforming"}, job_alive=True)
+    assert finalized == [] and _reset_running.last["locked"] == []
+    assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved"
+
+
 def test_a_running_reset_fails_its_still_active_run():
-    """A dead worker's run would block every build for up to 120 min (#140 re-review)."""
+    """No job alive: a dead worker's run would block every build for up to 120 min (#140 re-review)."""
     doc, finalized, enqueued = _reset_running({"PR-1": "Transforming", "PR-0": "Failed"})
     assert finalized == [("PR-1", {"status": "Failed", "commit": False,
                                    "error_log": "Build Approval BA-1 reset by ZZ Operator while Running"})]
+    assert _reset_running.last["locked"] == ["PR-1"], "only an active run is locked, never a finished one"
     assert doc.rebuild_requested == 1 and doc.workflow_state == "Approved" and enqueued == ["BA-1"]
 
 
@@ -345,8 +378,12 @@ def test_a_running_reset_leaves_a_run_the_job_already_finished():
     assert _reset_running({"PR-1": "Completed"})[1] == []
 
 
-def test_a_running_reset_skips_a_run_the_job_finalizes_first():
-    doc, finalized, _ = _reset_running({"PR-1": "Transforming"}, finalize_raises=True)
+def test_a_run_the_job_finished_since_the_list_is_skipped_quietly():
+    """Locked and re-read before it is failed, so there is no timestamp error,
+    whose red "Document has been modified" message an operator would read as
+    a failed reset and repeat (#140 re-review)."""
+    doc, finalized, _ = _reset_running({"PR-1": "Transforming"}, latest={"PR-1": "Completed"})
+    assert _reset_running.last["locked"] == ["PR-1"]
     assert finalized == [] and doc.workflow_state == "Approved", "the reset itself still saves"
 
 
@@ -842,7 +879,7 @@ class StartSite:
 
         return Doc(fields)
 
-    def get_doc(self, arg, name=None):
+    def get_doc(self, arg, name=None, **kw):
         return self.doc(arg if isinstance(arg, dict) else dict(self.committed[(arg, name)]))
 
     def commit(self):
@@ -868,7 +905,8 @@ class StartSite:
         frappe.db = types.SimpleNamespace(commit=self.commit, rollback=self.rollback, sql=self.sql)
         frappe.publish_realtime = lambda *a, **k: None
         frappe.TimestampMismatchError = TimestampMismatchError
-        frappe.utils = types.SimpleNamespace(now_datetime=lambda: START)
+        frappe.utils = types.SimpleNamespace(now_datetime=lambda: START, get_bench_path=lambda: "/zz/bench")
+        frappe.get_single = lambda name: types.SimpleNamespace(dbt_project_path="/zz/dbt")
         frappe.session = types.SimpleNamespace(user="Administrator")
         frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=self.warnings.append)
 
@@ -961,11 +999,35 @@ def test_a_terminal_run_is_never_made_active_again():
     seen = []
 
     def finalize(tasks):
-        tasks._finalize_governed_pipeline_run("PR-1", status="Transforming")
+        seen.append(tasks._finalize_governed_pipeline_run("PR-1", status="Transforming"))
         seen.append(site.committed[("Pipeline Run", "PR-1")]["status"])
-        tasks._finalize_governed_pipeline_run("PR-1", status="Completed", dbt_result="ok")
+        seen.append(tasks._finalize_governed_pipeline_run("PR-1", status="Completed", dbt_result="ok"))
     assert site.start(call=finalize) is None
-    assert seen == ["Failed"] and site.committed[("Pipeline Run", "PR-1")]["status"] == "Completed"
+    assert seen == [False, "Failed", True], "it reports whether it applied the status"
+    assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Completed"
+
+
+def test_a_job_whose_run_was_finished_meanwhile_never_starts_dbt():
+    """A reset (with no job visible to RQ) or a reaper finished the run while
+    this job started, so another build may hold the dbt project. The job
+    stops before dbt, with a log line, and requests nothing (#140 re-review, High)."""
+    site = StartSite()
+    dbt = []
+
+    def job(tasks):
+        def preflight(scope):
+            site.committed[("Pipeline Run", "PR-1")]["status"] = "Failed"   # the reset, committed meanwhile
+            return True, "ok"
+        tasks._preflight_check = preflight
+        tasks.subprocess = types.SimpleNamespace(   # this module's only
+            run=lambda *a, **k: dbt.append(a) or types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+            TimeoutExpired=TimeoutError)
+        tasks.request_build_for_scope = lambda *a, **k: site.requests.append(a)
+        tasks.run_governed_build("BA-1")
+    assert site.start(call=job) is None
+    assert dbt == [] and site.requests == []
+    assert site.committed[("Pipeline Run", "PR-1")]["status"] == "Failed"
+    assert any("was finished before dbt started; not building" in w for w in site.warnings), site.warnings
 
 
 def test_a_refused_start_leaves_no_pipeline_run():

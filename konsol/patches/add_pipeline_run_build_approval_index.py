@@ -11,5 +11,8 @@ import frappe
 
 
 def execute():
-    if frappe.db.table_exists("Pipeline Run"):
+    # A site last migrated before the link field existed has no column yet,
+    # and ADD INDEX on it would abort the migrate. Model sync then adds the
+    # column, and its index, from search_index in the JSON.
+    if frappe.db.table_exists("Pipeline Run") and frappe.db.has_column("Pipeline Run", "build_approval"):
         frappe.db.add_index("Pipeline Run", ["build_approval"])
