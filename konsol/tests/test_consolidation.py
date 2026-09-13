@@ -89,6 +89,9 @@ def test_a_group_carries_its_intercompany_difference_account_and_tolerance():
     for f in ("ic_difference_account", "ic_difference_tolerance"):
         assert f'"{f}": "{f}"' in content, f
     assert "_validate_ic_difference" in content and "intercompany_accounts" in content
+    # decision 13 (13 Sep 2026): only booking differences count against the tolerance
+    assert "booking difference" in fields["ic_difference_tolerance"]["description"]
+    assert "never counts" in fields["ic_difference_tolerance"]["description"]
 
 
 # --- IC Elimination Rule ---

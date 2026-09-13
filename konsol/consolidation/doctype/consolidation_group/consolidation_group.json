@@ -85,7 +85,7 @@
    "label": "Intercompany Difference Tolerance",
    "default": "0",
    "depends_on": "eval:doc.is_group || !doc.data_area_id",
-   "description": "A pair's difference up to this amount (reporting currency) is shown as within tolerance."
+   "description": "A booking difference (both sides in one functional currency) up to this amount, at 100% in reporting currency, is within tolerance; above it, over tolerance. An fx difference (sides in different currencies, or translation alone) is shown but never counts against it."
   },
   {
    "fieldname": "lft",
