@@ -124,9 +124,9 @@ class ConsolidationGroup(NestedSet):
                     f"{account} is an Intercompany Account ({', '.join(sorted({f.name for f in flagged}))}). "
                     "Book differences to an account that is not eliminated itself.")
         # In the group chart (#173 review, A3).
-        from konsol.tb_bulk import _chart_accounts
+        from konsol.group_chart import chart_codes
 
-        if account not in _chart_accounts():
+        if account not in chart_codes():
             frappe.throw(f"{account} is not in the group chart.")
 
     def on_update(self):

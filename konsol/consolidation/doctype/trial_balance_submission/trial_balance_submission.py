@@ -278,7 +278,11 @@ class TrialBalanceSubmission(Document):
         self._check_no_other_submission()
 
         rows = self._parse_file()
-        errors = validate_tb_rows(rows, known_accounts=self._chart_accounts(),
+        # konsol#182: the one chart reader, the Published Main Accounts in
+        # MariaDB. No warehouse read: a site with nothing built still validates.
+        from konsol.group_chart import chart_codes
+
+        errors = validate_tb_rows(rows, known_accounts=chart_codes(),
                                   entity=self.data_area_id,
                                   known_entities=self._partner_entities(rows))
 
@@ -397,25 +401,6 @@ class TrialBalanceSubmission(Document):
             return parse_tb_csv(content)
         except ValueError as e:
             frappe.throw(f"Could not read the trial balance file: {e}")
-
-    def _chart_accounts(self):
-        """The group chart, from the warehouse (silver_main_accounts).
-
-        Deliberately NOT best-effort: if the warehouse cannot be reached, the
-        submission is rejected rather than accepted unverified — financial
-        data must never land on the strength of a connection error.
-        """
-        try:
-            text = execute(
-                "SELECT DISTINCT main_account_id FROM epm_silver.silver_main_accounts"
-            )
-        except Exception as e:
-            frappe.throw(
-                "Cannot validate accounts against the group chart — "
-                f"ClickHouse is unreachable ({e}). Try again once the "
-                "warehouse is up; submissions are never accepted unvalidated."
-            )
-        return {line.strip() for line in text.splitlines() if line.strip()}
 
     @staticmethod
     def _partner_entities(rows):

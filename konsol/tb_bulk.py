@@ -42,6 +42,7 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
     validate_tb_rows,
 )
 from konsol.entity_permissions import allowed_entity_codes
+from konsol.group_chart import chart_codes
 
 DOCTYPE = "Trial Balance Upload"
 TERMINAL = ("Loaded", "Partly Loaded", "Failed")
@@ -126,17 +127,6 @@ def _read_table(file_url):
     frappe.throw("Upload a .csv or .xlsx file.")
 
 
-def _chart_accounts():
-    """The group chart, strictly: a warehouse outage refuses the check rather
-    than passing unverified accounts (the single-upload rule)."""
-    try:
-        text = execute("SELECT DISTINCT main_account_id FROM epm_silver.silver_main_accounts")
-    except Exception as e:
-        frappe.throw(f"Cannot check accounts against the group chart: ClickHouse is unreachable ({e}). "
-                     "Try again once the warehouse is up.")
-    return {line.strip() for line in text.splitlines() if line.strip()}
-
-
 def _check(table):
     groups = M.split_table(table)
     entities = sorted({k[0] for k in groups})
@@ -151,7 +141,9 @@ def _check(table):
                             fields=["name", "data_area_id", "fiscal_year", "fiscal_period", "tb_file"],
                             limit_page_length=0):
         existing[(r.data_area_id, int(r.fiscal_year), int(r.fiscal_period))] = r
-    chart = _chart_accounts()
+    # konsol#182: the group chart is the Published Main Accounts (MariaDB); no
+    # warehouse read, so a site with nothing built still validates.
+    chart = chart_codes()
     # A partner is named, not read: every non-group Entity, whatever the
     # uploader's own entity scope (get_all, not get_list).
     partners = set(frappe.get_all("Entity", filters={"is_group": 0}, pluck="name", limit_page_length=0))

@@ -62,6 +62,12 @@ SCOPE_SELECTOR = {
     "scenarios": "tag:domain:scenarios",
     "consolidation": "+tag:domain:consolidation",
     "reporting": "+tag:domain:reporting",
+    # konsol#182: the group chart and everything it classifies. Not
+    # +tag:domain:consolidation, which selects consolidation models and their
+    # ANCESTORS: the balance sheet, P&L and variance models sit downstream of
+    # silver_main_accounts and would stay stale. Needs no epm_raw (a TB-only
+    # site's chart comes from konsol), so it is not in RAW_DEPENDENT_SCOPES.
+    "chart": "silver_main_accounts+",
     "full": None,  # no selector = full build
 }
 
@@ -133,8 +139,19 @@ def _preflight_check(build_scope):
     return True, "OK"
 
 
+def _trial_balances_submitted():
+    """A submitted Trial Balance Submission exists: its rows are in
+    epm_raw.trial_balance_submissions (on_submit lands and claims them)."""
+    return bool(frappe.db.table_exists("Trial Balance Submission")
+                and frappe.db.exists("Trial Balance Submission", {"docstatus": 1}))
+
+
 def check_raw_data_available():
     """Check if epm_raw has valid data.
+
+    konsol#182 (decided 13 Sep 2026): a submitted trial balance IS raw data.
+    The canonical path is a trial balance uploaded to konsol, so a site that
+    loads only those, with no connector and no Airbyte sync, builds.
 
     When connectors are registered, gate on per-connector sync status (an
     enabled connector that has never synced or whose last sync Failed/Running
@@ -149,6 +166,11 @@ def check_raw_data_available():
     # connector/Airbyte gating so a missing/never-synced connector can't block.
     if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
         return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
+
+    # Before the connector and Airbyte gates, which stay for the sites that
+    # still have them: the canonical path never waits on an ERP feed.
+    if _trial_balances_submitted():
+        return True, "Submitted trial balances present — building from epm_raw.trial_balance_submissions"
 
     if frappe.db.table_exists("Connector"):
         connectors = frappe.get_all(

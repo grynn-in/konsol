@@ -219,6 +219,8 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_staging.group_exchange_rates",
         # konsol#159: the intercompany flag on the group chart
         "epm_staging.intercompany_accounts",
+        # konsol#182: the group chart of accounts (Main Account)
+        "epm_staging.main_accounts",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

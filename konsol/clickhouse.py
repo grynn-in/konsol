@@ -638,6 +638,20 @@ _REFERENCE_TABLE_DDL = {
         "fiscal_period UInt8, rate_type String, rate Float64, document String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
+    # konsol#182: the group chart of accounts, from Main Account (Published
+    # rows, groups included). silver_main_accounts reads it first and falls back
+    # to the ERP's chart for an account the group has not declared. Identical
+    # to konsolidat's clickhouse/init-db.sql; keep them identical.
+    "epm_staging.main_accounts": (
+        "(main_account String, account_name String, chart_of_accounts String, "
+        "parent_account String, is_group UInt8, account_type String, "
+        "statement_section String, sub_section String, normal_balance String, "
+        "time_balance String, fx_method String, is_posting UInt8, "
+        "is_suspended UInt8, allow_ic UInt8, cf_category String, "
+        "cf_line_item String, is_cash UInt8, main_account_category String, "
+        "status String) "
+        "ENGINE = MergeTree ORDER BY main_account"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a

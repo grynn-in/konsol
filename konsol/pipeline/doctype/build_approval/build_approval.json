@@ -19,7 +19,7 @@
       "search_index": 1,
       "fieldtype": "Select",
       "label": "Build Scope",
-      "options": "staging\nactuals\nscenarios\nconsolidation\nreporting\nfull",
+      "options": "staging\nactuals\nscenarios\nconsolidation\nreporting\nchart\nfull",
       "reqd": 1,
       "in_list_view": 1
     },

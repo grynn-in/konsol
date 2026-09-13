@@ -1,0 +1,342 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:main_account",
+ "creation": "2026-09-13 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "is_tree": 1,
+ "nsm_parent_field": "parent_account",
+ "naming_rule": "By fieldname",
+ "title_field": "account_name",
+ "search_fields": "account_name,account_type",
+ "field_order": [
+  "main_account",
+  "account_name",
+  "chart_of_accounts",
+  "parent_account",
+  "is_group",
+  "col_break_1",
+  "status",
+  "declaration_section",
+  "account_type",
+  "statement_section",
+  "sub_section",
+  "col_break_2",
+  "normal_balance",
+  "time_balance",
+  "fx_method",
+  "flags_section",
+  "is_posting",
+  "is_suspended",
+  "allow_ic",
+  "col_break_3",
+  "main_account_category",
+  "cash_flow_section",
+  "cf_category",
+  "cf_line_item",
+  "is_cash",
+  "source_section",
+  "source",
+  "source_note",
+  "col_break_4",
+  "description",
+  "tree_section",
+  "lft",
+  "rgt",
+  "old_parent"
+ ],
+ "fields": [
+  {
+   "fieldname": "main_account",
+   "fieldtype": "Data",
+   "label": "Account Code",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The code trial balances post to: main_account in every upload, main_account_id in the warehouse. It is the join key, so it cannot be renamed."
+  },
+  {
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "label": "Account Name",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "chart_of_accounts",
+   "fieldtype": "Data",
+   "label": "Chart of Accounts",
+   "reqd": 1,
+   "in_standard_filter": 1,
+   "description": "The group chart this account belongs to, e.g. GROUP_GAAP. A chart file holds one chart."
+  },
+  {
+   "fieldname": "parent_account",
+   "fieldtype": "Link",
+   "label": "Parent Account",
+   "options": "Main Account",
+   "ignore_user_permissions": 1,
+   "description": "The heading this account sits under. It must be a heading (Is Group) in the same chart."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_group",
+   "fieldtype": "Check",
+   "label": "Is Group",
+   "description": "A heading: it has accounts under it and is never posted to."
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPublished\nInactive",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Only a Published account is in the group chart: trial balances may post to it, and it is written to the warehouse. Inactive withdraws it. Publishing needs the Close Lead (EPM Admin)."
+  },
+  {
+   "fieldname": "declaration_section",
+   "fieldtype": "Section Break",
+   "label": "Declaration"
+  },
+  {
+   "fieldname": "account_type",
+   "fieldtype": "Select",
+   "label": "Account Type",
+   "options": "\nAsset\nLiability\nEquity\nRevenue\nExpense\nBalance sheet\nProfit and loss",
+   "in_list_view": 1,
+   "description": "Required to publish an account that is not a heading."
+  },
+  {
+   "fieldname": "statement_section",
+   "fieldtype": "Select",
+   "label": "Statement Section",
+   "options": "\nProfit and Loss\nBalance Sheet",
+   "in_standard_filter": 1,
+   "description": "Asset, Liability, Equity and Balance sheet belong on the Balance Sheet; Revenue, Expense and Profit and loss on the Profit and Loss. An account under a heading is on the heading's statement."
+  },
+  {
+   "fieldname": "sub_section",
+   "fieldtype": "Data",
+   "label": "Sub-section",
+   "description": "Presentation only, e.g. Current assets."
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "normal_balance",
+   "fieldtype": "Select",
+   "label": "Normal Balance",
+   "options": "\nDebit\nCredit",
+   "description": "Left blank, it follows the account type."
+  },
+  {
+   "fieldname": "time_balance",
+   "fieldtype": "Select",
+   "label": "Time Balance",
+   "options": "\nflow\nbalance",
+   "description": "flow: a Profit and Loss movement over the period. balance: a Balance Sheet position at its end. Left blank, it follows the statement."
+  },
+  {
+   "fieldname": "fx_method",
+   "fieldtype": "Select",
+   "label": "Translation Method",
+   "options": "\nclosing\naverage\nhistorical",
+   "description": "The rate consolidation translates this account at (IAS 21). Left blank: historical for Equity, closing for the Balance Sheet, average for the Profit and Loss. A Profit and Loss account may be declared closing (hyperinflation, IAS 29); it can never be historical, and a Balance Sheet account never average. Changing it on a Published account re-translates every period, closed ones included, at the next full rebuild."
+  },
+  {
+   "fieldname": "flags_section",
+   "fieldtype": "Section Break",
+   "label": "Posting"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_posting",
+   "fieldtype": "Check",
+   "label": "Is Posting",
+   "description": "Trial balances may post to it. A heading never is."
+  },
+  {
+   "default": "0",
+   "fieldname": "is_suspended",
+   "fieldtype": "Check",
+   "label": "Is Suspended"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_ic",
+   "fieldtype": "Check",
+   "label": "Allow Intercompany",
+   "description": "It may carry intercompany partner rows. The pairing lives in Intercompany Account."
+  },
+  {
+   "fieldname": "col_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "main_account_category",
+   "fieldtype": "Data",
+   "label": "Main Account Category",
+   "description": "The budget permission key (Main Account Category)."
+  },
+  {
+   "fieldname": "cash_flow_section",
+   "fieldtype": "Section Break",
+   "label": "Cash Flow",
+   "collapsible": 1,
+   "description": "Not read yet: the cash flow statement still reads Cash Flow Category (konsol#182, PR5)."
+  },
+  {
+   "fieldname": "cf_category",
+   "fieldtype": "Select",
+   "label": "Cash Flow Category",
+   "options": "\nOperating\nInvesting\nFinancing"
+  },
+  {
+   "fieldname": "cf_line_item",
+   "fieldtype": "Data",
+   "label": "Cash Flow Line Item"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_cash",
+   "fieldtype": "Check",
+   "label": "Is Cash"
+  },
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source",
+   "collapsible": 1
+  },
+  {
+   "default": "Manual",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "Manual\nUpload",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_standard_filter": 1,
+   "description": "Manual: entered here. Upload: loaded from a chart file (the Main Account list's Upload chart)."
+  },
+  {
+   "fieldname": "source_note",
+   "fieldtype": "Small Text",
+   "label": "Source Note",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "col_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "tree_section",
+   "fieldtype": "Section Break",
+   "label": "Tree",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "lft",
+   "fieldtype": "Int",
+   "label": "lft",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "rgt",
+   "fieldtype": "Int",
+   "label": "rgt",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "old_parent",
+   "fieldtype": "Data",
+   "label": "old_parent",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-13 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "EPM",
+ "name": "Main Account",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1
+  },
+  {
+   "role": "Entity Accountant",
+   "read": 1
+  },
+  {
+   "role": "Budget Submitter",
+   "read": 1
+  },
+  {
+   "role": "Budget Controller",
+   "read": 1
+  },
+  {
+   "role": "Budget Manager",
+   "read": 1
+  },
+  {
+   "role": "Budget Approver",
+   "read": 1
+  }
+ ],
+ "sort_field": "lft",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

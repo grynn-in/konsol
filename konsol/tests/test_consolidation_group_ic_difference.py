@@ -76,15 +76,15 @@ def _facts(ic=(), chart=None):
 
     M.frappe.db = types.SimpleNamespace(sql=sql, table_exists=lambda name: True)
     ica = types.ModuleType("ica_stub")
-    tb = types.ModuleType("tb_bulk_stub")
+    gc = types.ModuleType("group_chart_stub")
 
-    def chart_accounts():
+    def chart_codes():
         reads.append(1)
         assert chart is not None, "the chart was read although the account did not change"
         return set(chart)
 
-    tb._chart_accounts = chart_accounts
-    names = {"konsol.consolidation.doctype.intercompany_account.intercompany_account": ica, "konsol.tb_bulk": tb}
+    gc.chart_codes = chart_codes
+    names = {"konsol.consolidation.doctype.intercompany_account.intercompany_account": ica, "konsol.group_chart": gc}
     saved = {k: sys.modules.get(k) for k in names}
     sys.modules.update(names)
     reads.queries = queries
