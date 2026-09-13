@@ -129,6 +129,35 @@ def test_the_flag_still_works():
 
 
 # ---------------------------------------------------------------------------
+# konsol#182 regression: the global EPM Settings Airbyte status (set by the
+# webhook, api.py ~1564, with no Connector doctype/enabled connector required)
+# must gate BEFORE the trial-balance pass. One claimed trial-balance row must
+# not let a consolidation build run on a feed the webhook marked failed or
+# still mid-sync.
+# ---------------------------------------------------------------------------
+def test_a_failed_global_sync_blocks_even_with_submitted_trial_balances():
+    (ok, message), _ = check(rows=12, sync_status="Failed", sync_at="2026-09-01 00:00:00")
+    assert ok is False and "Failed" in message, message
+
+
+def test_a_running_global_sync_blocks_even_with_submitted_trial_balances():
+    (ok, message), _ = check(rows=12, sync_status="Running", sync_at="2026-09-01 00:00:00")
+    assert ok is False and "Running" in message, message
+
+
+def test_an_empty_global_sync_status_with_trial_balances_still_passes():
+    """TB-only site: status never set (no connector, no Airbyte sync ever) —
+    submitted trial balances alone are enough to build."""
+    (ok, message), _ = check(rows=12, sync_status=None, sync_at=None)
+    assert ok and "12 trial balance rows" in message, message
+
+
+def test_skip_flag_bypasses_a_failed_global_sync():
+    (ok, message), sqls = check(skip=1, sync_status="Failed", rows=12)
+    assert ok and "skip_airbyte_sync" in message and sqls == [], message
+
+
+# ---------------------------------------------------------------------------
 # chart scope (konsol#182): @silver_main_accounts builds ERP staging/bronze
 # models from epm_raw, so an enabled connector that never synced or is
 # Failed/Running must still block it — same gate, same messages. But chart
