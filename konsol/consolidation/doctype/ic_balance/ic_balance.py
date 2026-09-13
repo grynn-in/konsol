@@ -20,6 +20,12 @@ class ICBalance(Document):
         "ending_inventory_from_ic": "ending_inventory_from_ic",
     }
 
+    def before_submit(self):
+        """Submit only while the period is open: a submitted balance enters
+        the warehouse, so into a closed period it would rewrite that period's
+        eliminations (#149)."""
+        assert_open(self.fiscal_year, self.fiscal_period, action="submit an IC balance")
+
     def before_cancel(self):
         """Cancel only while the period is open (decided 12 Sep 2026): a
         cancelled balance leaves the warehouse, so after close it would rewrite

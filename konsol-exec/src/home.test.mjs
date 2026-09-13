@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
 	periodCode, periodLabel, parsePeriodRoute, monthPath, currentMonthPath, isMine,
-	stageTarget, crumbsFor, defaultExpanded, openCount, firstOpenItem, shortTime,
+	stageTarget, crumbsFor, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
 } from "./home.js";
 
 test("period codes and labels match the server's vocabulary", () => {
@@ -63,6 +63,19 @@ test("counts and the default selection skip done rows", () => {
 	assert.equal(firstOpenItem(month).id, "b");
 	assert.equal(firstOpenItem({ mine: [{ id: "a", state: "done" }], waiting: [] }).id, "a");
 	assert.equal(firstOpenItem(null), null);
+});
+
+test("an action's hint, shown beside the row button: the reason when disabled, the note when allowed", () => {
+	const closed = "Dec 2099 is closed.";
+	assert.equal(actionHint({ allowed: false, reason: closed, note: null }), closed);
+	assert.equal(actionHint({ allowed: false, reason: "You don't have permission for this.", note: null }),
+		"You don't have permission for this.");
+	assert.equal(actionHint({ allowed: true, reason: null, note: `Can't submit: ${closed} Delete the draft if it isn't needed.` }),
+		"Can't submit: Dec 2099 is closed. Delete the draft if it isn't needed.");
+	assert.equal(actionHint({ allowed: true, reason: null, note: `Can't approve: ${closed}` }), `Can't approve: ${closed}`);
+	assert.equal(actionHint({ allowed: true, reason: null }), "");
+	assert.equal(actionHint({ allowed: false, reason: null, note: "ignored when disabled" }), "");
+	assert.equal(actionHint(null), "");
 });
 
 test("short times", () => {

@@ -67,6 +67,9 @@ class AllocationRun(Document):
     CH_FIELD_MAP = RUN_CH_FIELD_MAP
 
     def before_submit(self):
+        # Submit only while the period is open (#149), and before anything
+        # else: a refused run must not request a governed build.
+        assert_open(self.fiscal_year, self.fiscal_period, action="submit an allocation run")
         self.allocation_run_id = self.name
         self.run_by = frappe.session.user
         self.run_at = now_datetime()

@@ -104,6 +104,15 @@ export function firstOpenItem(month) {
 	return all.find((i) => i.state !== "done") || all[0] || null;
 }
 
+/**
+ * The line shown with a queue action: why it is disabled, or, for an allowed
+ * one, what it can't complete yet (an approval in a closed period).
+ */
+export function actionHint(action) {
+	if (!action) return "";
+	return (action.allowed ? action.note : action.reason) || "";
+}
+
 /** "2026-06-21 20:23:35.837" → "21 Jun 20:23"; anything else passes through. */
 export function shortTime(value) {
 	const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(value || ""));
