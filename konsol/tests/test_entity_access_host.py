@@ -281,7 +281,13 @@ class _Endpoints:
 
     def _run(self, fn, *a, **k):
         with _modules({"konsol.entity_permissions": self.ep, "konsol.hierarchy_query": self.hq}):
-            return fn(*a, **k)
+            try:
+                return fn(*a, **k)
+            except ImportError as e:
+                # An endpoint reaching frappe (or another missing module) must
+                # fail here: the runner would count a ModuleNotFoundError from a
+                # test body as a skip and exit 0. Same rule as _load above.
+                raise AssertionError(f"{fn.__name__} needs more than the stubs: {e}") from e
 
     def value(self, entity, **k):
         return self._run(self.api.epm_value, entity, 2024, "FY", "4010", **k)

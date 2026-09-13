@@ -23,6 +23,16 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = os.path.join(ROOT, "konsol", "tests")
+#: Test files that must load and run in full wherever these tests run, CI
+#: included. They hold the entity-access tests for ClickHouse reads
+#: (konsol#158) and need no frappe; if they fell into a "needs frappe" skip,
+#: the run would stay green with nothing checked. A skip of either file, or of
+#: any test in it, fails the run, and so does either file missing from a full
+#: run. When files are named on the command line, only the named ones count.
+MUST_RUN = (
+    os.path.join("konsol", "tests", "test_entity_access_host.py"),
+    os.path.join("konsol", "tests", "test_security_source.py"),
+)
 # Tests that `import konsol...` need the app root importable. Without this
 # sys.path[0] is scripts/, and those files were skipped as "not host tests"
 # while the run still reported green.
@@ -99,6 +109,26 @@ def _isolate(before):
     for key, mod in before.items():
         if key.split(".")[0] in ("frappe", "konsol") and sys.modules.get(key) is not mod:
             sys.modules[key] = mod
+
+
+def _must_run_failures(named, skipped, needs_pytest):
+    """Failures for MUST_RUN files that are missing, skipped, or had a test
+    skipped. ``named`` is the files given on the command line, if any."""
+    must = set(MUST_RUN)
+    if named:
+        must &= {os.path.relpath(p, ROOT) for p in named}
+    out = []
+    for rel in sorted(must):
+        if not named and not os.path.exists(os.path.join(ROOT, rel)):
+            out.append((rel, "<must-run>", "missing; this file must run on every host, CI included", ""))
+    for rel, reason in skipped:
+        if rel in must:
+            out.append((rel, "<must-run>", f"file skipped ({reason}); it must run on every host, CI included", ""))
+    for item in needs_pytest:
+        rel, _, name = item.partition("::")
+        if rel in must:
+            out.append((rel, name, "test skipped; every test in this file must run on every host, CI included", ""))
+    return out
 
 
 def main(argv):
@@ -194,6 +224,8 @@ def main(argv):
         extra = f"; missing modules: {', '.join(sorted(missing_deps))}" if missing_deps else ""
         print(f"{len(needs_pytest)} test(s) skipped (need a pytest fixture, "
               f"a skip, or a module{extra})")
+
+    failures.extend(_must_run_failures(argv[1:], skipped, needs_pytest))
 
     if failures:
         print(f"\n{len(failures)} failure(s):")

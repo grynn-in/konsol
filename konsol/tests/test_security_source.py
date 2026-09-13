@@ -249,7 +249,7 @@ def test_assert_entity_access_raises_permission_error_source():
     ], f"{_GATE} body is {body}. {_GATE_WHY}"
 
 
-_GUARDED = {_HELPER, _GATE, "assert_entity_access"}
+_GUARDED = {_HELPER, _GATE, "assert_entity_access", "_allowed_entities", "allowed_entity_codes"}
 _EP_MODULE = "konsol.entity_permissions"
 
 
@@ -257,11 +257,13 @@ def _patch_routes(tree):
     """Routes to replace an entity-access function that the two binding
     tripwires above do not see:
 
-    * a keyword argument named after a guarded function, e.g.
-      ``vars(module).update(entity_read_scope=...)``;
+    * a keyword argument named after a guarded function (the allow-list
+      readers included), e.g. ``vars(module).update(entity_read_scope=...)``;
     * a handle on the entity_permissions module itself: ``import
       konsol.entity_permissions`` (aliased or not), ``from konsol import
-      entity_permissions``, or its name as a string (importlib, sys.modules).
+      entity_permissions``, a relative ``from . import entity_permissions``,
+      the module reached as an attribute (``konsol.entity_permissions.x =``),
+      or its name as a string (importlib, sys.modules).
 
     api.py needs none of these: it imports the functions it calls by name, so
     the rule has no false positives on the current file.
@@ -276,6 +278,11 @@ def _patch_routes(tree):
         elif (isinstance(n, ast.ImportFrom) and n.level == 0 and n.module == "konsol"
               and any(a.name in ("entity_permissions", "*") for a in n.names)):
             what = f"`{ast.unparse(n)}` (a handle on the module)"
+        elif (isinstance(n, ast.ImportFrom) and n.level >= 1
+              and any(a.name in ("entity_permissions", "*") for a in n.names)):
+            what = f"`{ast.unparse(n)}` (a relative handle on the module)"
+        elif isinstance(n, ast.Attribute) and n.attr == "entity_permissions":
+            what = f"`{ast.unparse(n)}` (the module reached as an attribute)"
         elif isinstance(n, ast.Constant) and n.value == _EP_MODULE:
             what = f"string '{_EP_MODULE}' (the importlib / sys.modules route)"
         if what:
