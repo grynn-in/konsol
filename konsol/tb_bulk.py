@@ -23,6 +23,7 @@ Flow (konsol-exec's upload page, or the Trial Balance Upload form):
 Only the Close Lead (EPM Admin) or a System Manager may load. An upload is
 visible to a user only if they may see every entity in it (or uploaded it).
 """
+import functools
 import json
 import time
 from io import BytesIO
@@ -42,7 +43,7 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
     validate_tb_rows,
 )
 from konsol.entity_permissions import allowed_entity_codes
-from konsol.group_chart import chart_codes
+from konsol.group_chart import chart_accounts
 
 DOCTYPE = "Trial Balance Upload"
 TERMINAL = ("Loaded", "Partly Loaded", "Failed")
@@ -143,7 +144,9 @@ def _check(table):
         existing[(r.data_area_id, int(r.fiscal_year), int(r.fiscal_period))] = r
     # konsol#182: the group chart is the Published Main Accounts (MariaDB); no
     # warehouse read, so a site with nothing built still validates.
-    chart = chart_codes()
+    chart = chart_accounts()
+    # the single-submission validator, with the chart read once per file
+    validate_rows = functools.partial(validate_tb_rows, chart=chart)
     # A partner is named, not read: every non-group Entity, whatever the
     # uploader's own entity scope (get_all, not get_list).
     partners = set(frappe.get_all("Entity", filters={"is_group": 0}, pluck="name", limit_page_length=0))
@@ -152,9 +155,9 @@ def _check(table):
     for key, rows in groups.items():
         found = existing.get(key)
         partnerless = partnerless_ic_accounts(rows, ic)
-        item = M.check_group(key, rows, known_accounts=chart, visible=key[0] in visible, leaf=key[0] in leaf,
+        item = M.check_group(key, rows, known_accounts=None, visible=key[0] in visible, leaf=key[0] in leaf,
                              period_status=statuses.get((key[1], key[2])),
-                             existing=found.name if found else None, validate_rows=validate_tb_rows,
+                             existing=found.name if found else None, validate_rows=validate_rows,
                              known_entities=partners,
                              warnings=[partnerless_warning(partnerless)] if partnerless else [],
                              partnerless_ic_rows=len(partnerless))

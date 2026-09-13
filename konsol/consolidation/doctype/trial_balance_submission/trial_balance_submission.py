@@ -141,8 +141,34 @@ def _row_label(r):
     return f"{r['main_account']} (partner {partner})" if partner else r["main_account"]
 
 
+#: konsol#182: a site with no Published Main Account has no chart to post to.
+NO_CHART = ("No group chart is published yet: upload and publish one (Main Account) "
+            "before submitting trial balances")
+
+
+def chart_errors(rows, chart):
+    """What the group chart says about the accounts a trial balance posts to.
+    ``chart`` is konsol.group_chart.chart_accounts(). Pure; host-testable.
+
+    No chart at all is one refusal, not every account listed. A heading, and an
+    account closed for posting, are refused with the reason."""
+    if not chart:
+        return [NO_CHART]
+    codes = sorted({r["main_account"] for r in rows})
+    out = [f"{c} is a heading in the group chart; post to the accounts under it."
+           for c in codes if c in chart and chart[c].get("is_group")]
+    closed = [c for c in codes if c in chart and not chart[c].get("is_group") and not chart[c].get("is_posting")]
+    if closed:
+        out.append(f"Not open for posting in the group chart (is_posting is off): {', '.join(closed)}. "
+                   "Post to another account, or ask the Close Lead to open it.")
+    unknown = [c for c in codes if c not in chart]
+    if unknown:
+        out.append(f"Account(s) not in the group chart: {', '.join(unknown)}")
+    return out
+
+
 def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
-                     entity=None, known_entities=None):
+                     entity=None, known_entities=None, chart=None):
     """Business validation over parsed rows. Pure; host-testable.
 
     Returns a list of error strings — empty means valid. known_accounts is the
@@ -153,6 +179,10 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
     not name it as its own partner. known_entities is every entity a partner
     may be (the non-group Entities), or None to skip that check. A blank
     partner is always valid: the partner is optional (decision 2).
+
+    chart (konsol#182) is the group chart, konsol.group_chart.chart_accounts();
+    when given it decides the accounts (chart_errors) and known_accounts is
+    not read.
     """
     errors = []
 
@@ -211,7 +241,9 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
             f"{tolerance} tolerance"
         )
 
-    if known_accounts is not None:
+    if chart is not None:
+        errors.extend(chart_errors(rows, chart))
+    elif known_accounts is not None:
         known = set(known_accounts)
         unknown = sorted({r["main_account"] for r in rows
                           if r["main_account"] not in known})
@@ -280,9 +312,9 @@ class TrialBalanceSubmission(Document):
         rows = self._parse_file()
         # konsol#182: the one chart reader, the Published Main Accounts in
         # MariaDB. No warehouse read: a site with nothing built still validates.
-        from konsol.group_chart import chart_codes
+        from konsol.group_chart import chart_accounts
 
-        errors = validate_tb_rows(rows, known_accounts=chart_codes(),
+        errors = validate_tb_rows(rows, chart=chart_accounts(),
                                   entity=self.data_area_id,
                                   known_entities=self._partner_entities(rows))
 

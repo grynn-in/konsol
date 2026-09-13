@@ -15,6 +15,8 @@ headings included, are written through to epm_staging.main_accounts for the
 warehouse. Publishing needs the Close Lead (EPM Admin); a Group Accountant
 drafts.
 """
+import json
+
 import frappe
 from frappe.utils.nestedset import NestedSet
 
@@ -138,9 +140,33 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
             if live:
                 frappe.throw(f"{self.name} has Published accounts under it ({', '.join(sorted(live)[:10])}"
                              f"{', …' if len(live) > 10 else ''}): unpublish them first.")
+        self._refuse_if_in_use()
+        if self.is_group:
             return
         frappe.msgprint(f"{self.name} is no longer in the group chart: new trial balances posting to it "
                         "are refused.", title="Withdrawn from the chart", indicator="orange")
+
+    def _refuse_if_in_use(self):
+        """An account leaving the chart (unpublished, Inactive, deleted) while
+        something depends on it is refused: submitted trial balances post to it,
+        an Intercompany Account names it, or a group books its differences to it.
+        A heading answers for the accounts under it."""
+        codes = self._codes_in_scope()
+        problems = M.in_use_problems(self.name, postings=_submitted_postings(codes),
+                                     intercompany=_intercompany_rows(codes),
+                                     difference_groups=_difference_groups(codes), heading=bool(self.is_group))
+        if problems:
+            frappe.throw("\n".join(problems), title="Account in use")
+
+    def _codes_in_scope(self):
+        """This account, or for a heading every account under it."""
+        if not self.is_group:
+            return [self.name]
+        bounds = frappe.db.get_value(DOCTYPE, self.name, ["lft", "rgt"], as_dict=True)
+        if not bounds:
+            return []
+        return frappe.get_all(DOCTYPE, filters={"lft": [">", bounds.lft], "rgt": ["<", bounds.rgt]},
+                              pluck="name", limit_page_length=0)
 
     def _warn_if_reclassified(self):
         before = self.get_doc_before_save()
@@ -163,6 +189,8 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
 
     def on_trash(self):
         NestedSet.on_trash(self)   # refuses a heading that still has accounts under it
+        if self.status == _PUBLISHED:
+            self._refuse_if_in_use()   # what is posted to it would drop out of the statements
 
     def after_delete(self):
         """after_delete, not on_trash: on_trash runs before the row is gone, so the
@@ -175,3 +203,49 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         rename_doc(force=True) still arrives here (entity.py)."""
         super().after_rename(olddn, newdn, merge)
         self._resync()
+
+
+def _submitted_postings(codes):
+    """(account, entity, fiscal_year, fiscal_period) of the submitted trial
+    balances posting to ``codes``: the claimed rows in the warehouse (raw INNER
+    JOIN control, what bronze and the statements read). A warehouse with no
+    such table has nothing in any statement to unbalance. Any other failure to
+    read it refuses: an account in use must not leave the chart unverified."""
+    if not codes:
+        return []
+    from konsol.clickhouse import _sql_value, execute
+    from konsol.group_rates import _not_built
+
+    try:
+        raw = execute(
+            "SELECT DISTINCT main_account, data_area_id, fiscal_year, fiscal_period "
+            "FROM epm_raw.trial_balance_submissions "
+            f"WHERE main_account IN ({', '.join(_sql_value(c) for c in codes)}) "
+            "AND batch_id IN (SELECT batch_id FROM epm_raw.trial_balance_submission_control) "
+            "FORMAT JSONEachRow")
+    except Exception as e:  # noqa: BLE001
+        if _not_built(e):
+            return []
+        frappe.throw(f"Cannot check whether submitted trial balances post to {', '.join(codes[:5])}: the "
+                     f"warehouse could not be read ({type(e).__name__}). Try again once it is up.")
+    rows = [json.loads(line) for line in (raw or "").splitlines() if line.strip()]
+    return [(r["main_account"], r["data_area_id"], int(r["fiscal_year"]), int(r["fiscal_period"])) for r in rows]
+
+
+def _intercompany_rows(codes):
+    """Published Intercompany Accounts naming any of ``codes``, on either side."""
+    if not codes or not frappe.db.table_exists("Intercompany Account"):
+        return []
+    names = set()
+    for column in ("main_account", "counterpart_account"):
+        names.update(frappe.get_all("Intercompany Account", filters={"status": _PUBLISHED, column: ["in", codes]},
+                                    pluck="name", limit_page_length=0))
+    return sorted(names)
+
+
+def _difference_groups(codes):
+    """Consolidation Groups that book intercompany differences to any of ``codes``."""
+    if not codes:
+        return []
+    return sorted(frappe.get_all("Consolidation Group", filters={"ic_difference_account": ["in", codes]},
+                                 pluck="name", limit_page_length=0))

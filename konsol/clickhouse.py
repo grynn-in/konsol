@@ -639,9 +639,9 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
     # konsol#182: the group chart of accounts, from Main Account (Published
-    # rows, groups included). silver_main_accounts reads it first and falls back
-    # to the ERP's chart for an account the group has not declared. Identical
-    # to konsolidat's clickhouse/init-db.sql; keep them identical.
+    # rows, groups included). silver_main_accounts reads only this: there is no
+    # ERP chart fallback (decided 13 Sep 2026). Identical to konsolidat's
+    # clickhouse/init-db.sql; keep them identical.
     "epm_staging.main_accounts": (
         "(main_account String, account_name String, chart_of_accounts String, "
         "parent_account String, is_group UInt8, account_type String, "

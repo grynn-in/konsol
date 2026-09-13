@@ -36,6 +36,10 @@ class Refused(Exception):
     pass
 
 
+class _Bounds(dict):
+    __getattr__ = dict.get
+
+
 def _json():
     with open(os.path.join(DT_DIR, "main_account.json")) as f:
         return json.load(f)
@@ -115,11 +119,14 @@ def _load():
     frappe.messages = []
     frappe.msgprint = lambda msg, *a, **k: frappe.messages.append(msg)
     frappe.parents, frappe.children = {}, []
+    frappe.descendants = []
     frappe.db = types.SimpleNamespace(
-        get_value=lambda doctype, name, fields, as_dict=False: frappe.parents.get(name))
-    frappe.get_all = lambda doctype, filters=None, pluck=None, **k: [
-        c for c, parent, status in frappe.children
-        if parent == filters["parent_account"] and status == filters["status"]]
+        get_value=lambda doctype, name, fields, as_dict=False: (
+            _Bounds(lft=1, rgt=99) if fields == ["lft", "rgt"] else frappe.parents.get(name)))
+    frappe.get_all = lambda doctype, filters=None, pluck=None, **k: (
+        list(frappe.descendants) if "lft" in (filters or {}) else
+        [c for c, parent, status in frappe.children
+         if parent == filters["parent_account"] and status == filters["status"]])
     nested = types.ModuleType("frappe.utils.nestedset")
     nested.NestedSet = NestedSet
     gov = types.ModuleType("konsol.governed_reference")
@@ -150,6 +157,14 @@ def _load():
 
 
 C = _load()
+# What holds an account in the chart, read by three module helpers; stubbed
+# here from lists the tests fill (the real _submitted_postings is tested below).
+REAL_SUBMITTED_POSTINGS = C._submitted_postings
+C.frappe.postings, C.frappe.ic, C.frappe.diff, C.frappe.asked = [], [], [], []
+C._submitted_postings = lambda codes: C.frappe.asked.append(list(codes)) or [
+    p for p in C.frappe.postings if p[0] in codes]
+C._intercompany_rows = lambda codes: list(C.frappe.ic)
+C._difference_groups = lambda codes: list(C.frappe.diff)
 
 
 def _doc(status="Draft", before=None, **kw):
@@ -458,3 +473,134 @@ def test_on_the_desk_in_reference_data():
     with open(os.path.join(APP_DIR, "dashboard.py")) as f:
         refresh = f.read().split("def _workspace_needs_refresh")[1].split("\ndef ")[0]
     assert '"Main Account" not in' in refresh, "existing sites must rebuild the card once"
+
+
+# -- an account in use cannot leave the chart (review of #183) ------------------------------------
+
+def _clear():
+    for name in ("postings", "ic", "diff", "asked", "descendants", "children", "messages"):
+        getattr(C.frappe, name).clear()
+
+
+def _leaving(status="Inactive", **kw):
+    """A Published leaf leaving the chart (unpublish or a plain save)."""
+    return _doc(status, {"status": "Published"}, fx_method="closing", normal_balance="Debit",
+                time_balance="balance", **kw)
+
+
+def test_a_leaf_that_submitted_trial_balances_post_to_cannot_leave_the_chart():
+    _clear()
+    C.frappe.postings[:] = [("ZZ1000", "ZZOP", 2026, 1), ("ZZ1000", "ZZOP", 2026, 2), ("ZZ4000", "ZZOP", 2026, 1)]
+    try:
+        for status in ("Inactive", "Draft"):   # unpublish, or any save out of Published
+            msg = ""
+            try:
+                _leaving(status)._guard_publish()
+            except Refused as e:
+                msg = str(e)
+            assert "ZZ1000 cannot leave the group chart" in msg and "ZZOP FY2026 P01, ZZOP FY2026 P02" in msg, msg
+            assert "reclassify the account instead" in msg and "ZZ4000" not in msg
+        # delete of a Published leaf: the same
+        _refused(lambda: _doc("Published", fx_method="closing").on_trash(), "ZZ1000 cannot leave the group chart")
+        # a Draft is not in the chart: nothing to check
+        C.frappe.asked.clear()
+        _doc("Draft").on_trash()
+        assert C.frappe.asked == []
+        # not in use: it leaves, with the warning
+        C.frappe.postings.clear()
+        _leaving()._guard_publish()
+        assert "no longer in the group chart" in C.frappe.messages[-1]
+    finally:
+        _clear()
+
+
+def test_an_intercompany_or_difference_account_holds_it_in_the_chart():
+    _clear()
+    try:
+        C.frappe.ic[:] = ["ICA-ZZ1000"]
+        _refused(lambda: _leaving()._guard_publish(), "Published Intercompany Accounts name it (ICA-ZZ1000)")
+        C.frappe.ic.clear()
+        C.frappe.diff[:] = ["CG-ZZGRP-"]
+        _refused(lambda: _leaving()._guard_publish(), "book intercompany differences to it (CG-ZZGRP-)")
+        _refused(lambda: _doc("Published", fx_method="closing").on_trash(), "CG-ZZGRP-")
+    finally:
+        _clear()
+
+
+def test_a_heading_answers_for_the_accounts_under_it():
+    _clear()
+    heading = dict(name="ZZ9000", main_account="ZZ9000", is_group=1, is_posting=0, account_type="",
+                   statement_section="")
+    try:
+        C.frappe.descendants[:] = ["ZZ1000", "ZZ1100"]   # none of them Published any more
+        C.frappe.postings[:] = [("ZZ1100", "ZZOP", 2026, 3)]
+        msg = ""
+        try:
+            _doc("Inactive", {"status": "Published"}, **heading)._guard_publish()
+        except Refused as e:
+            msg = str(e)
+        assert "ZZ9000 (a heading: the accounts under it) cannot leave" in msg and "ZZ1100: ZZOP FY2026 P03" in msg
+        assert C.frappe.asked == [["ZZ1000", "ZZ1100"]]
+        C.frappe.postings.clear()
+        C.frappe.ic[:] = ["ICA-ZZ1000"]
+        _refused(lambda: _doc("Published", **heading).on_trash(), "ZZ9000 (a heading")
+        C.frappe.ic.clear()
+        _doc("Inactive", {"status": "Published"}, **heading)._guard_publish()   # nothing holds it
+    finally:
+        _clear()
+
+
+def test_submitted_postings_are_the_claimed_rows_in_the_warehouse():
+    sent = []
+    ch = types.ModuleType("konsol.clickhouse")
+    ch._sql_value = lambda v: "'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'"
+    rates = types.ModuleType("konsol.group_rates")
+    rates._not_built = lambda e: "UNKNOWN_TABLE" in str(e)
+    answers = []
+
+    def execute(sql, params=None):
+        sent.append(sql)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    ch.execute = execute
+    saved = {k: sys.modules.get(k) for k in ("konsol.clickhouse", "konsol.group_rates")}
+    sys.modules.update({"konsol.clickhouse": ch, "konsol.group_rates": rates})
+    try:
+        answers.append('{"main_account":"ZZ1000","data_area_id":"ZZOP","fiscal_year":2026,"fiscal_period":1}\n')
+        assert REAL_SUBMITTED_POSTINGS(["ZZ1000", "O'X"]) == [("ZZ1000", "ZZOP", 2026, 1)]
+        assert "main_account IN ('ZZ1000', 'O\\'X')" in sent[0]
+        assert "batch_id IN (SELECT batch_id FROM epm_raw.trial_balance_submission_control)" in sent[0]
+        answers.append(RuntimeError("Code: 60. Unknown table (UNKNOWN_TABLE)"))
+        assert REAL_SUBMITTED_POSTINGS(["ZZ1000"]) == []   # nothing landed: nothing to unbalance
+        answers.append(ConnectionError("refused"))
+        _refused(lambda: REAL_SUBMITTED_POSTINGS(["ZZ1000"]), "the warehouse could not be read")
+        assert REAL_SUBMITTED_POSTINGS([]) == [] and len(sent) == 3
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def test_intercompany_rows_look_at_both_sides():
+    asked = []
+    C.frappe.db.table_exists = lambda name: True
+    saved = C.frappe.get_all
+    C.frappe.get_all = lambda doctype, filters=None, pluck=None, **k: asked.append((doctype, filters)) or (
+        ["ICA-B"] if "counterpart_account" in filters else ["ICA-A"])
+    try:
+        assert C._intercompany_rows.__name__ == "<lambda>"   # the stub; read the module's own
+        real = C.__dict__["_intercompany_rows"]
+    finally:
+        C.frappe.get_all = saved
+    with open(CONTROLLER) as f:
+        src = f.read()
+    body = src.split("def _intercompany_rows")[1].split("\ndef ")[0]
+    assert '("main_account", "counterpart_account")' in body and '"status": _PUBLISHED' in body
+    groups = src.split("def _difference_groups")[1]
+    assert '"ic_difference_account": ["in", codes]' in groups
+    assert real is not None and asked == []

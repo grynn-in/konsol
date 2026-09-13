@@ -139,19 +139,30 @@ def _preflight_check(build_scope):
     return True, "OK"
 
 
-def _trial_balances_submitted():
-    """A submitted Trial Balance Submission exists: its rows are in
-    epm_raw.trial_balance_submissions (on_submit lands and claims them)."""
-    return bool(frappe.db.table_exists("Trial Balance Submission")
-                and frappe.db.exists("Trial Balance Submission", {"docstatus": 1}))
+def _trial_balance_rows():
+    """The trial balance rows bronze reads: epm_raw.trial_balance_submissions
+    whose batch is claimed in the control table (a cancelled submission's rows
+    stay behind unclaimed until reaped). Counted in the warehouse, not from
+    MariaDB's docstatus: a ClickHouse volume wiped since the submissions leaves
+    the documents and nothing to build from. 0 when it cannot be read (no table
+    yet, or unreachable), so the build is refused."""
+    from konsol.clickhouse import execute
+
+    try:
+        return int(execute(
+            "SELECT count() FROM epm_raw.trial_balance_submissions WHERE batch_id IN "
+            "(SELECT batch_id FROM epm_raw.trial_balance_submission_control)") or 0)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def check_raw_data_available():
     """Check if epm_raw has valid data.
 
-    konsol#182 (decided 13 Sep 2026): a submitted trial balance IS raw data.
-    The canonical path is a trial balance uploaded to konsol, so a site that
-    loads only those, with no connector and no Airbyte sync, builds.
+    konsol#182 (decided 13 Sep 2026): trial balance rows in the warehouse ARE
+    raw data. The canonical path is a trial balance uploaded to konsol, so a
+    site with no enabled connector and landed trial balances builds, with no
+    Airbyte sync. A connector that is mid-sync or failed still blocks.
 
     When connectors are registered, gate on per-connector sync status (an
     enabled connector that has never synced or whose last sync Failed/Running
@@ -167,11 +178,6 @@ def check_raw_data_available():
     if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
         return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
 
-    # Before the connector and Airbyte gates, which stay for the sites that
-    # still have them: the canonical path never waits on an ERP feed.
-    if _trial_balances_submitted():
-        return True, "Submitted trial balances present — building from epm_raw.trial_balance_submissions"
-
     if frappe.db.table_exists("Connector"):
         connectors = frappe.get_all(
             "Connector",
@@ -186,6 +192,13 @@ def check_raw_data_available():
                 if c.last_sync_status in ("Failed", "Running"):
                     return False, f"Connector '{c.connector_name}' sync status is '{c.last_sync_status}' — cannot build from raw"
             return True, f"All {len(connectors)} enabled connectors synced OK"
+
+    # No enabled connector gates this site: trial balances uploaded to konsol
+    # and landed in the warehouse are its raw data (konsol#182).
+    rows = _trial_balance_rows()
+    if rows:
+        return True, (f"{rows} trial balance rows in epm_raw.trial_balance_submissions "
+                      "— building from them (no connector)")
 
     settings = frappe.get_single("EPM Settings")
 

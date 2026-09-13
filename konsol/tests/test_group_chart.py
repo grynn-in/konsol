@@ -177,5 +177,12 @@ def test_no_caller_queries_silver_main_accounts_directly():
     for rel in CALLERS:   # every membership check asks the one reader
         with open(os.path.join(APP_DIR, rel)) as f:
             calls = [n for n in ast.walk(ast.parse(f.read()))
-                     if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "chart_codes"]
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", None) in ("chart_codes", "chart_accounts")]
         assert calls, rel
+
+
+def test_an_account_closed_for_posting_is_not_a_posting_member():
+    gc = load([account("ZZ1000"), account("ZZ2000", is_posting=0)])
+    assert gc.chart_codes() == {"ZZ1000"}
+    assert gc.chart_accounts()["ZZ2000"]["is_posting"] == 0   # still in the chart, closed

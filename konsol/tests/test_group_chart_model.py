@@ -337,3 +337,56 @@ def test_drafts_not_ready_are_listed_not_refused():
     assert report["ok"]
     assert report["not_ready"] == [{"main_account": "ZZ1000", "problems": [
         "ZZ1000 cannot be published without account_type, statement_section, normal_balance, time_balance, fx_method"]}]
+
+
+# -- review of #183 ----------------------------------------------------------------------------
+
+def test_moving_an_account_with_children_to_another_chart_is_refused():
+    existing = {"ZZ9000": group(), "ZZ1000": leaf(parent_account="ZZ9000", status="Published")}
+    moved = line("ZZ9000", "Heading") + ["yes"]
+    moved[13] = "OTHER"
+    report = M.plan_chart_load(parse(moved, head=HEAD + ["is_group"]), existing)
+    assert has(report["errors"], "ZZ1000: parent ZZ9000 is in chart 'OTHER', not 'ZZCOA'"), report["errors"]
+    # a childless account may move
+    existing = {"ZZ9000": group()}
+    assert M.plan_chart_load(parse(moved, head=HEAD + ["is_group"]), existing)["ok"]
+
+
+def test_a_heading_changing_statement_rechecks_accounts_not_in_the_file():
+    existing = {"ZZ9000": group(statement_section=BS), "ZZ1000": leaf(parent_account="ZZ9000", status="Published")}
+    row = line("ZZ9000", "Heading", section="P&L") + ["yes"]
+    report = M.plan_chart_load(parse(row, head=HEAD + ["is_group"]), existing)
+    assert has(report["errors"], "ZZ1000 is on the Balance Sheet but its parent ZZ9000 is on the Profit and Loss")
+    # turning the heading into a leaf would strand them too
+    row = line("ZZ9000", "Heading", kind="Asset", section="BS") + ["no"]
+    report = M.plan_chart_load(parse(row, head=HEAD + ["is_group"]), existing)
+    assert has(report["errors"], "ZZ1000: parent ZZ9000 is not a heading"), report["errors"]
+
+
+def test_a_leaf_turned_heading_without_an_is_posting_column_gets_the_heading_default():
+    head = [h for h in HEAD if h != "is_posting"]
+    cells = lambda code, name, parent="": [code, name, "", "", "", "", "", "", "", "", "", parent, "ZZCOA"]
+    existing = {"ZZ9000": leaf(main_account="ZZ9000", status="Draft")}
+    report = M.plan_chart_load(M.parse_chart_table([head, cells("ZZ9000", "Now a heading"),
+                                                    cells("ZZ1000", "Cash", parent="ZZ9000")]), existing)
+    assert report["ok"], report["errors"]
+    writes = {w[1]: w[2] for w in report["writes"]}
+    assert (writes["ZZ9000"]["is_group"], writes["ZZ9000"]["is_posting"]) == (1, 0)
+    # and back: a heading turned into a leaf is posted to again
+    existing = {"ZZ9000": group(status="Draft")}
+    report = M.plan_chart_load(M.parse_chart_table([head + ["is_group"], cells("ZZ9000", "Now a leaf") + ["no"]]),
+                               existing)
+    assert {w[1]: w[2] for w in report["writes"]}["ZZ9000"]["is_posting"] == 1
+
+
+def test_in_use_problems():
+    assert M.in_use_problems("ZZ1000") == []
+    p = M.in_use_problems("ZZ1000", postings=[("ZZ1000", "ZZOP", 2026, 2), ("ZZ1000", "ZZOP", 2026, 1),
+                                              ("ZZ1000", "ZZOP", 2026, 1)])
+    assert len(p) == 1 and "(ZZ1000: ZZOP FY2026 P01, ZZOP FY2026 P02)" in p[0]
+    assert "balance sheet would stop balancing" in p[0] and "reclassify the account instead" in p[0]
+    p = M.in_use_problems("ZZ9000", postings=[("ZZ1100", "ZZOP", 2026, 3)], intercompany=["ICA-ZZ1000"],
+                          difference_groups=["CG-ZZGRP-"], heading=True)
+    assert len(p) == 3 and all(x.startswith("ZZ9000 (a heading: the accounts under it)") for x in p)
+    many = [("ZZ1000", "ZZOP", 2026, n) for n in range(1, 13)]
+    assert "P10, …" in M.in_use_problems("ZZ1000", postings=many)[0]

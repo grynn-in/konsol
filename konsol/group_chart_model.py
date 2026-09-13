@@ -178,6 +178,40 @@ def publish_problems(row, parent=None):
     return out
 
 
+def in_use_problems(code, postings=(), intercompany=(), difference_groups=(), heading=False):
+    """Why ``code`` cannot leave the group chart (unpublished, made Inactive or
+    deleted), as sentences; empty when it may. For a heading, what holds the
+    accounts under it.
+
+    ``postings`` are (account, entity, fiscal_year, fiscal_period) of submitted
+    trial balances. Their balances would drop out of both statements while
+    translation still counts them, and the balance sheet would stop balancing.
+    ``intercompany`` names Published Intercompany Accounts (either side),
+    ``difference_groups`` the Consolidation Groups that book intercompany
+    differences to it.
+    """
+    what = f"{code} (a heading: the accounts under it)" if heading else code
+    out = []
+    if postings:
+        by_account = {}
+        for account, entity, year, period in sorted(set(postings)):
+            by_account.setdefault(account, []).append(f"{entity} FY{year} P{int(period):02d}")
+        listed = "; ".join(f"{a}: {', '.join(v[:10])}{', …' if len(v) > 10 else ''}"
+                           for a, v in by_account.items())
+        out.append(f"{what} cannot leave the group chart while submitted trial balances post to it ({listed}). "
+                   "Their balances would drop out of both statements while translation still counts them, and "
+                   "the balance sheet would stop balancing. Correct those trial balances (cancel and amend, "
+                   "while the period is open), or reclassify the account instead.")
+    if intercompany:
+        out.append(f"{what} cannot leave the group chart while Published Intercompany Accounts name it "
+                   f"({', '.join(sorted(intercompany))}): make them Inactive first.")
+    if difference_groups:
+        out.append(f"{what} cannot leave the group chart while Consolidation Groups book intercompany "
+                   f"differences to it ({', '.join(sorted(difference_groups))}): choose another difference "
+                   "account first.")
+    return out
+
+
 def reclassified(before, after):
     """The reclassifying fields that differ between two versions of a row."""
     return [f for f in RECLASSIFYING if (before.get(f) or "") != (after.get(f) or "")]
@@ -427,8 +461,10 @@ def plan_chart_load(rows, existing):
         if r.get("_is_group_inferred") and before and flag(before.get("is_group")):
             # no is_group column: a heading the file lists no accounts under stays one
             fields["is_group"] = 1
-        if before is None and "is_posting" not in fields:
-            fields["is_posting"] = 0 if fields.get("is_group") else 1
+        if "is_posting" not in fields and (before is None
+                                           or flag(before.get("is_group")) != flag(fields.get("is_group"))):
+            # new, or turned into (or out of) a heading: a heading is not posted to, a leaf is
+            fields["is_posting"] = 0 if flag(fields.get("is_group")) else 1
         given[r["main_account"]] = fields
 
     # the chart as it would be after the load
@@ -488,6 +524,15 @@ def plan_chart_load(rows, existing):
             problems = publish_problems(row, ready_parent)
             if problems:
                 report["not_ready"].append({"main_account": code, "problems": problems})
+    # Accounts konsol holds under an account the file changes, and not in the
+    # file themselves: re-checked against their parent as it would be. A
+    # heading moved to another chart, onto the other statement, or turned
+    # into a leaf would otherwise leave them in a tree they no longer fit.
+    for code, row in existing.items():
+        parent_code = text(row.get("parent_account"))
+        if code in given or parent_code not in given:
+            continue
+        errors.extend(declaration_problems(apply_defaults(after[code]), apply_defaults(after[parent_code])))
     report["errors"] = errors
     report["ok"] = not errors
     report["writes"] = writes if not errors else []

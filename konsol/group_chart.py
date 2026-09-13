@@ -43,8 +43,9 @@ def chart_accounts() -> dict:
 
 
 def posting_codes(chart):
-    """The codes a trial balance may post to: every account but the headings."""
-    return {c for c, a in chart.items() if not a["is_group"]}
+    """The codes a trial balance may post to: every account that is not a
+    heading and is open for posting."""
+    return {c for c, a in chart.items() if not a["is_group"] and a["is_posting"]}
 
 
 def chart_codes():
