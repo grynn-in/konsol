@@ -37,10 +37,10 @@ def flag_running_build(row):
 
     Draft, Pending Review, Approved: the build hasn't read anything yet, but
     it may fail to start, and then nothing reads the change (#140). A high-risk
-    scope can wait in Pending Review for hours. The build clears the flag when
-    it starts (it reads everything absorbed so far) and a reset to Draft
-    clears it, so the flag costs no extra build; a start failure keeps it,
-    and reaper.follow_up_failed_starts requests the build it owes.
+    scope can wait in Pending Review for hours. Only the build's start clears
+    the flag (it reads everything absorbed so far), so the flag costs no
+    extra build; a start failure, a lost job or a reset to Draft keeps it,
+    and the reaper requests the build it owes.
 
     ``row`` comes from the debounce's locking read: this transaction already
     holds it. It doesn't bump ``modified``: the job holds the doc and saves it

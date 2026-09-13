@@ -104,8 +104,8 @@ def test_a_save_never_clears_the_flag():
     assert "before = self.get_doc_before_save()" in src   # loaded FOR UPDATE by check_if_latest
     assert "if before and before.rebuild_requested and (not self.rebuild_requested) and (not starting):" in src
     assert "starting = before and before.workflow_state == 'Approved' and (self.workflow_state == 'Running')" in src
-    assert src.index("self.rebuild_requested = 1") < src.index("self.rebuild_requested = 0"), (
-        "keep a set flag, then clear it only on a reset to Draft")
+    assert "self.rebuild_requested = 0" not in src, (
+        "no save clears it, not even a reset to Draft: only the start spends it (#140 re-review)")
 
 
 def test_the_reaper_reads_the_flag_after_its_own_update():

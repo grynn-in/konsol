@@ -10,6 +10,8 @@ import time
 import frappe
 
 from konsol.airbyte_service import AirbyteClient
+# reaper.py imports nothing from konsol at module level, so this can't cycle.
+from konsol.orchestrator.reaper import START_FAILURE_PREFIX
 
 
 def _dbt_bin():
@@ -191,8 +193,9 @@ def _create_governed_pipeline_run(build_request_doc):
     return run.name
 
 
-def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None):
-    """Persist terminal status on the governed Pipeline Run."""
+def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None, commit=True):
+    """Persist terminal status on the governed Pipeline Run. ``commit=False``
+    leaves the commit to the caller, to land with its own write."""
     if not pipeline_run:
         return
     doc = frappe.get_doc("Pipeline Run", pipeline_run)
@@ -204,7 +207,8 @@ def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, er
     if status in ("Completed", "Failed"):
         doc.completed_at = frappe.utils.now_datetime()
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    if commit:
+        frappe.db.commit()
 
 
 def run_governed_build(build_request):
@@ -233,10 +237,12 @@ def run_governed_build(build_request):
     # (active) Pipeline Run — checking after would always see that row and
     # self-block. If blocked (or startup fails), mark this request Failed and
     # re-raise so the job records the failure.
-    from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
-    from konsol.orchestrator.reaper import START_FAILURE_PREFIX
-
+    pipeline_run = None
     try:
+        # Inside the try: an import that fails is a start failure too, not a
+        # job that dies leaving the row Approved for the reaper (#140).
+        from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
+
         with single_flight_lock():
             _assert_no_active_run()
             pipeline_run = _create_governed_pipeline_run(doc)
@@ -248,14 +254,23 @@ def run_governed_build(build_request):
             doc.save(ignore_permissions=True)
             frappe.db.commit()
     except Exception as exc:
-        # Nothing was read, so a change absorbed while Approved keeps its
+        # Drop whatever a failed save half-wrote. Only the Pipeline Run
+        # outlives it: _create_governed_pipeline_run committed it.
+        frappe.db.rollback()
+        message = f"{START_FAILURE_PREFIX}: {exc}"
+        # Nothing was read, so a change absorbed while pending keeps its
         # flag (before_save won't clear it): reaper.follow_up_failed_starts
         # requests that build once nothing else is building (#140).
         doc.reload()
         doc.workflow_state = "Failed"
-        doc.error_message = f"{START_FAILURE_PREFIX}: {exc}"
+        doc.error_message = message
         doc.completed_at = frappe.utils.now_datetime()
         _set_duration(doc)
+        if pipeline_run:
+            # Left Queued, the run would block every build, the follow-up's
+            # included, until reap_stale_runs caught it (120 min). Failed in
+            # the commit that fails the approval (#140 re-review).
+            _finalize_governed_pipeline_run(pipeline_run, status="Failed", error_log=message, commit=False)
         doc.save(ignore_permissions=True)
         frappe.db.commit()
         raise

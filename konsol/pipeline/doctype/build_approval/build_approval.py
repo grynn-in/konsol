@@ -38,12 +38,13 @@ class BuildApproval(Document):
         starting = before and before.workflow_state == "Approved" and self.workflow_state == "Running"
         if before and before.rebuild_requested and not self.rebuild_requested and not starting:
             self.rebuild_requested = 1
-        # Sent back to Draft to run again: that run builds everything, so the
-        # follow-up the flag promised would be a duplicate. The old error goes
-        # too: a start-failure message left on a row that runs again would
-        # make the failed-start sweep take it for a new one (#140 review).
+        # Sent back to Draft to run again: the old error goes, since a
+        # start-failure message left on a row that runs again would make the
+        # failed-start sweep take it for a new one (#140 review). The flag
+        # stays: the row hasn't built yet, and if its next start fails, the
+        # changes it absorbed are still owed. Only the start spends it
+        # (tasks.run_governed_build), so keeping it costs no build.
         if before and self.workflow_state == "Draft" and before.workflow_state != "Draft":
-            self.rebuild_requested = 0
             self.error_message = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
