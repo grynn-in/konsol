@@ -26,9 +26,12 @@ def test_both_debounces_flag_a_running_build():
         assert src.index("flag_running_build(existing[0])") > src.index("FOR UPDATE"), name
 
 
-def test_only_a_running_build_is_flagged_and_modified_is_not_bumped():
-    src = ast.unparse(_fn(os.path.join(APP_DIR, "build_lock.py"), "flag_running_build"))
-    assert "row.get('workflow_state') == 'Running'" in src
+def test_a_pending_or_running_build_is_flagged_and_modified_is_not_bumped():
+    path = os.path.join(APP_DIR, "build_lock.py")
+    src = ast.unparse(_fn(path, "flag_running_build"))
+    assert "row.get('workflow_state') in FLAGGED_STATES" in src
+    with open(path) as f:
+        assert 'FLAGGED_STATES = ("Draft", "Pending Review", "Approved", "Running")' in f.read()   # #140
     sql = src.split("frappe.db.sql(")[1]
     assert "rebuild_requested = 1" in sql and "modified" not in sql
 
@@ -67,7 +70,8 @@ def test_the_flag_is_a_read_only_check_on_build_approval():
 
 def test_request_build_for_scope_is_called_only_from_jobs():
     """It commits. Allowed callers all run in a job of their own."""
-    allowed_callers = {"on_consolidation_doc_update", "_finish_governed_build", "reap_stale_build_approvals"}
+    allowed_callers = {"on_consolidation_doc_update", "_finish_governed_build", "reap_stale_build_approvals",
+                       "follow_up_failed_starts"}
     offenders = []
     for root, _, files in os.walk(APP_DIR):
         if "/tests" in root:
@@ -98,9 +102,18 @@ def test_a_save_never_clears_the_flag():
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "before_save")
     src = ast.unparse(fn)
     assert "before = self.get_doc_before_save()" in src   # loaded FOR UPDATE by check_if_latest
-    assert "if before and before.rebuild_requested and (not self.rebuild_requested):" in src
-    assert src.index("self.rebuild_requested = 1") < src.index("self.rebuild_requested = 0"), (
-        "keep a set flag, then clear it only on a reset to Draft")
+    assert ("if before and before.rebuild_requested and (not self.rebuild_requested) and (not starting) "
+            "and (not rerun):") in src
+    assert "starting = before and before.workflow_state == 'Approved' and (self.workflow_state == 'Running')" in src
+    rerun = next(line for line in src.splitlines() if line.strip().startswith("rerun ="))
+    assert "resetting and before.started_at and" in rerun, rerun
+    assert "before.workflow_state in ('Completed', 'Failed')" in rerun, rerun
+    # The one clear in a save: a reset of a row that finished, whose flag its
+    # run's finish (or the reaper) already spent (#140 re-review). A Running
+    # or Cancelled row keeps it.
+    assert src.count("self.rebuild_requested = 0") == 1
+    order = [src.index(s) for s in ("if resetting:", "if before.started_at:", "if rerun:", "self.rebuild_requested = 0")]
+    assert order == sorted(order), order
 
 
 def test_the_reaper_reads_the_flag_after_its_own_update():

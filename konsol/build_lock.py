@@ -17,24 +17,57 @@ syncing a changed Build Approval JSON (it commits per file) or a developer-mode
 save of the DocType, and each holds it only until its own commit. One row can't deadlock against itself, and
 it serialises only a few milliseconds of work: build requests are rare.
 """
+from contextlib import contextmanager
+
 import frappe
+
+# Set only around konsol's own saves that move a Build Approval out of Running
+# (the build job's finish and its stopped-before-dbt path). The start-failure
+# save is marked too, defensively: it only ever moves Approved -> Failed.
+# BuildApproval.before_save refuses any other move off Running (#140). It
+# lives in frappe.flags, which is local to one request or job.
+BUILD_WRITER_FLAG = "konsol_build_writer"
+
+
+@contextmanager
+def build_writer():
+    """Mark the saves inside as konsol's build path, which may move a Build
+    Approval out of Running. Restored on exit, error or not, so it can't
+    leak past the save it wraps."""
+    previous = frappe.flags.get(BUILD_WRITER_FLAG)
+    frappe.flags[BUILD_WRITER_FLAG] = True
+    try:
+        yield
+    finally:
+        frappe.flags[BUILD_WRITER_FLAG] = previous
 
 
 def lock_build_requests():
     frappe.db.sql("SELECT name FROM `tabDocType` WHERE name = 'Build Approval' FOR UPDATE")
 
 
-def flag_running_build(row):
-    """A request absorbed by a Running build: flag the build for a follow-up (#129).
+# Every state the debounce absorbs into.
+FLAGGED_STATES = ("Draft", "Pending Review", "Approved", "Running")
 
-    A Running build may already have read its inputs, so the change that asked
-    would miss gold. The flag makes the build request one more when it
-    finishes (tasks._finish_governed_build). A Draft, Pending Review or
-    Approved build hasn't read anything yet, so it needs no flag. ``row`` comes
-    from the debounce's locking read: this transaction already holds it. It
-    doesn't bump ``modified``: the job holds the doc and saves it at the end,
-    and a newer stamp would fail that save.
+
+def flag_running_build(row):
+    """A request absorbed by a pending or Running build: flag it (#129, #140).
+
+    Running: the build may already have read its inputs, so the change that
+    asked would miss gold. The flag makes the build request one more when it
+    finishes (tasks._finish_governed_build).
+
+    Draft, Pending Review, Approved: the build hasn't read anything yet, but
+    it may fail to start, and then nothing reads the change (#140). A high-risk
+    scope can wait in Pending Review for hours. Only the build's start clears
+    the flag (it reads everything absorbed so far), so the flag costs no
+    extra build; a start failure, a lost job or a reset to Draft keeps it,
+    and the reaper requests the build it owes.
+
+    ``row`` comes from the debounce's locking read: this transaction already
+    holds it. It doesn't bump ``modified``: the job holds the doc and saves it
+    at the end, and a newer stamp would fail that save.
     """
-    if row.get("workflow_state") == "Running":
+    if row.get("workflow_state") in FLAGGED_STATES:
         frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 1 WHERE name = %s", row["name"])
 

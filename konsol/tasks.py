@@ -10,6 +10,8 @@ import time
 import frappe
 
 from konsol.airbyte_service import AirbyteClient
+# reaper.py imports nothing from konsol at module level, so this can't cycle.
+from konsol.orchestrator.reaper import START_FAILURE_PREFIX
 
 
 def _dbt_bin():
@@ -191,11 +193,22 @@ def _create_governed_pipeline_run(build_request_doc):
     return run.name
 
 
-def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None):
-    """Persist terminal status on the governed Pipeline Run."""
+_TERMINAL_RUN_STATES = ("Completed", "Failed", "Cancelled")
+
+
+def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, error_log=None, commit=True):
+    """Persist terminal status on the governed Pipeline Run. ``commit=False``
+    leaves the commit to the caller, to land with its own write. Returns
+    whether the status was applied: False with no run, or when the run is
+    already finished and ``status`` would make it active again."""
     if not pipeline_run:
-        return
-    doc = frappe.get_doc("Pipeline Run", pipeline_run)
+        return False
+    # A locking read: the latest row, so the save can't fail its timestamp check.
+    doc = frappe.get_doc("Pipeline Run", pipeline_run, for_update=True)
+    if doc.status in _TERMINAL_RUN_STATES and status not in _TERMINAL_RUN_STATES:
+        # Cancelled (orchestrator cancel_run) or reaped: a job still running
+        # must not make it active again (#140).
+        return False
     doc.status = status
     if dbt_result is not None:
         doc.dbt_result = dbt_result
@@ -204,7 +217,9 @@ def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, er
     if status in ("Completed", "Failed"):
         doc.completed_at = frappe.utils.now_datetime()
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    if commit:
+        frappe.db.commit()
+    return True
 
 
 def run_governed_build(build_request):
@@ -233,23 +248,54 @@ def run_governed_build(build_request):
     # (active) Pipeline Run — checking after would always see that row and
     # self-block. If blocked (or startup fails), mark this request Failed and
     # re-raise so the job records the failure.
-    from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
-
+    pipeline_run = None
     try:
+        # Inside the try: an import that fails is a start failure too, not a
+        # job that dies leaving the row Approved for the reaper (#140).
+        from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
+
         with single_flight_lock():
             _assert_no_active_run()
             pipeline_run = _create_governed_pipeline_run(doc)
             doc.workflow_state = "Running"
             doc.started_at = frappe.utils.now_datetime()
+            # Starting reads every change absorbed while Approved, so their
+            # flag is spent (#140); before_save allows this one clear.
+            doc.rebuild_requested = 0
             doc.save(ignore_permissions=True)
             frappe.db.commit()
     except Exception as exc:
+        # Drop whatever a failed save half-wrote. Only the Pipeline Run
+        # outlives it: _create_governed_pipeline_run committed it.
+        frappe.db.rollback()
+        message = f"{START_FAILURE_PREFIX}: {exc}"
         doc.reload()
-        doc.workflow_state = "Failed"
-        doc.error_message = f"Governed build could not start: {exc}"
-        doc.completed_at = frappe.utils.now_datetime()
-        _set_duration(doc)
-        doc.save(ignore_permissions=True)
+        if pipeline_run:
+            # Left Queued, the run would block every build, the follow-up's
+            # included, until reap_stale_runs caught it (120 min). Failed in
+            # the commit that fails the approval (#140 re-review).
+            _finalize_governed_pipeline_run(pipeline_run, status="Failed", error_log=message, commit=False)
+        if doc.workflow_state == "Approved":
+            # Nothing was read, so a change absorbed while pending keeps its
+            # flag (before_save won't clear it): reaper.follow_up_failed_starts
+            # requests that build once nothing else is building (#140).
+            from konsol.build_lock import build_writer
+
+            doc.workflow_state = "Failed"
+            doc.error_message = message
+            doc.completed_at = frappe.utils.now_datetime()
+            _set_duration(doc)
+            with build_writer():  # defensive: this save is Approved -> Failed
+                doc.save(ignore_permissions=True)
+        else:
+            # It moved on while the job loaded it (an operator cancelled or
+            # reset it, or the reaper failed it), so it isn't this job's to
+            # fail. Leave it in the state it is in: marked a start failure,
+            # a Cancelled row would be followed up (#140 re-review).
+            frappe.logger().warning(
+                f"Governed build {doc.name} could not start ({exc}); it is {doc.workflow_state} now, "
+                f"not Approved, so it is left {doc.workflow_state}"
+            )
         frappe.db.commit()
         raise
 
@@ -266,7 +312,17 @@ def run_governed_build(build_request):
                 error_log=doc.error_message,
             )
         else:
-            _finalize_governed_pipeline_run(pipeline_run, status="Transforming")
+            if not _finalize_governed_pipeline_run(pipeline_run, status="Transforming"):
+                # The run was finished while this job started: an EPM admin
+                # cancelled it (orchestrator cancel_run), or the reaper failed
+                # it. Another build may already hold the dbt project (#67 fix
+                # 5), so don't start dbt; finish this job's own row (#140 re-review).
+                frappe.logger().warning(
+                    f"Governed build {doc.name}: its Pipeline Run {pipeline_run} was finished before dbt "
+                    "started; not building"
+                )
+                _stop_before_dbt(doc, pipeline_run)
+                return
 
             # Build dbt command
             settings = frappe.get_single("EPM Settings")
@@ -333,13 +389,17 @@ def _finish_governed_build(doc):
     either the flag is seen here, or the request finds this row already
     terminal and inserts its own approval. Nothing falls between.
     """
+    from konsol.build_lock import build_writer
+
     flagged = frappe.db.sql(
         "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE", doc.name
     )[0][0]
     doc.rebuild_requested = flagged
     doc.completed_at = frappe.utils.now_datetime()
     _set_duration(doc)
-    doc.save(ignore_permissions=True)
+    # The build path's own move out of Running (BuildApproval.before_save).
+    with build_writer():
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
 
     frappe.publish_realtime(
@@ -356,10 +416,35 @@ def _finish_governed_build(doc):
         # After the commit: the request takes the build lock, and must not
         # wait for it while holding this row.
         try:
-            request_build_for_scope(doc.build_scope, "Build Approval", doc.name)
+            request_build_for_scope(doc.build_scope, "Build Approval", doc.name, carries_changes=True)
         except Exception:
             frappe.db.rollback()   # the job commits on return; don't keep half a request
             frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
+
+
+STOPPED_BEFORE_DBT = "Governed build stopped: its Pipeline Run was finished before dbt started"
+
+
+def _stop_before_dbt(doc, pipeline_run):
+    """Finish this job's own Running row as Failed: its Pipeline Run was
+    finished (cancelled, or reaped) before dbt started (#140 re-review).
+
+    Re-read under the row lock. Only a row still Running from this job's
+    start is this job's to finish; one the reaper failed meanwhile is left as
+    it is. Through the finish, so a change absorbed while it ran is still
+    followed up; without this the row stayed Running until the reaper, some
+    45 minutes on.
+    """
+    row = frappe.db.sql(
+        "SELECT workflow_state, started_at FROM `tabBuild Approval` WHERE name = %s FOR UPDATE",
+        doc.name, as_dict=True,
+    )
+    if not row or row[0].workflow_state != "Running" or row[0].started_at != doc.started_at:
+        frappe.db.rollback()
+        return
+    doc.workflow_state = "Failed"
+    doc.error_message = f"{STOPPED_BEFORE_DBT} ({pipeline_run}: cancelled, or reaped)"
+    _finish_governed_build(doc)
 
 
 def _set_duration(doc):
@@ -448,12 +533,17 @@ def on_consolidation_doc_update(doc, method):
     request_build_for_scope(mapping["scope"], doc.doctype, doc.name)
 
 
-def request_build_for_scope(scope, trigger_doctype, trigger_docname):
+def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_changes=False):
     """Request a build of ``scope``: debounced, serialised, and committed.
 
     It commits, so it runs only inside a job: request_consolidation_build's
     (via on_consolidation_doc_update), a finished build's follow-up
-    (_finish_governed_build), and the reaper's (konsol#126, #129).
+    (_finish_governed_build), and the reaper's (konsol#126, #129, #140).
+
+    ``carries_changes``: this is a follow-up, requested for changes an earlier
+    build absorbed and never read. The new approval is flagged like an
+    absorbing one, so if it too fails to start, the sweep retries it (#140
+    review). Absorbed into a pending build instead, the debounce flags that.
     """
     # Serialise every build request (konsol.build_lock). The debounce below is
     # check-then-insert: two workers running this at once both found nothing
@@ -496,6 +586,7 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname):
     pbr.trigger_doctype = trigger_doctype
     pbr.trigger_docname = trigger_docname
     pbr.requested_by = frappe.session.user
+    pbr.rebuild_requested = 1 if carries_changes else 0
     pbr.insert(ignore_permissions=True)
     frappe.db.commit()
 

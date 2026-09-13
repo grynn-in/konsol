@@ -5,7 +5,6 @@ Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin appro
 """
 import frappe
 from frappe.model.document import Document
-from frappe.utils import now_datetime
 
 
 # Scope → risk mapping
@@ -16,6 +15,15 @@ SCOPE_RISK = {
     "consolidation": "high",
     "full": "high",
 }
+
+
+# konsol.build_lock.BUILD_WRITER_FLAG, by name: set only around konsol's own
+# saves that move a build out of Running (build_lock.build_writer).
+BUILD_WRITER_FLAG = "konsol_build_writer"
+RUNNING_BUILD_MESSAGE = (
+    "This build is running. Wait for it to finish, or for the reaper to fail it "
+    "after 30 minutes, then reset it."
+)
 
 
 class BuildApproval(Document):
@@ -31,12 +39,50 @@ class BuildApproval(Document):
         # (#139 review). _doc_before_save was loaded FOR UPDATE by
         # check_if_latest, so it holds the current flag.
         before = self.get_doc_before_save()
-        if before and before.rebuild_requested and not self.rebuild_requested:
+        # Only konsol's build path moves a build out of Running: the build
+        # job's finish and stopped-before-dbt saves, marked with
+        # build_lock.build_writer(), and the reaper, which writes with
+        # SQL and so never reaches this hook. A manual move (a reset to
+        # Draft, or to Pending Review) left the job, still alive, to finish
+        # over it (#140 review). konsol #168 covers the other manual moves.
+        if (before and before.workflow_state == "Running" and self.workflow_state != "Running"
+                and not frappe.flags.get(BUILD_WRITER_FLAG)):
+            frappe.throw(RUNNING_BUILD_MESSAGE, frappe.ValidationError, title="Build is running")
+        # The one exception is the build starting (Approved -> Running): the
+        # build reads every change absorbed so far, so the flag an Approved
+        # build carried is spent (#140). A request after the start flags the
+        # Running row again.
+        starting = before and before.workflow_state == "Approved" and self.workflow_state == "Running"
+        # Sent back to Draft to run again (below). A row that finished is the
+        # other exception: its flag was spent already.
+        resetting = before and self.workflow_state == "Draft" and before.workflow_state != "Draft"
+        rerun = resetting and before.started_at and before.workflow_state in ("Completed", "Failed")
+        if before and before.rebuild_requested and not self.rebuild_requested and not starting and not rerun:
             self.rebuild_requested = 1
-        # Sent back to Draft to run again: that run builds everything, so the
-        # follow-up the flag promised would be a duplicate.
-        if before and self.workflow_state == "Draft" and before.workflow_state != "Draft":
-            self.rebuild_requested = 0
+        if resetting:
+            if before.started_at:
+                # A row that started runs again as new: its old start would
+                # hide its next start failure from the sweep, and a lost job
+                # from the reaper (#140 re-review). Version history keeps the
+                # old values.
+                self.started_at = None
+                self.completed_at = None
+                self.duration_seconds = 0
+                if rerun:
+                    # Finished (Completed, or Failed after it started): that
+                    # run's finish, or the reaper, already requested the
+                    # follow-up its flag asked for, so keeping it would
+                    # duplicate that. A Cancelled row's flag was never acted
+                    # on (its changes were dropped with it), so it keeps it.
+                    # A Running row can't be reset (above).
+                    self.rebuild_requested = 0
+            # The old error goes, since a start-failure message left on a row
+            # that runs again would make the failed-start sweep take it for a
+            # new one (#140 review). A row that never started keeps its flag:
+            # it hasn't built, and if its next start fails, the changes it
+            # absorbed are still owed. Only the start spends it
+            # (tasks.run_governed_build), so keeping it costs no build.
+            self.error_message = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
