@@ -53,6 +53,7 @@ class ConsolidationGroup(NestedSet):
 
     def validate(self):
         self._validate_entity_in_one_node()
+        self._validate_reporting_currency()
 
     def on_update(self):
         self._warn_if_no_ownership_period()
@@ -98,6 +99,28 @@ class ConsolidationGroup(NestedSet):
                 f"consolidation tree ({other}). An entity belongs to one node: "
                 f"two would make every shared ancestor consolidate it twice."
             )
+
+    def _validate_reporting_currency(self):
+        """A group node must name the currency it presents in (konsolidat#93).
+
+        gold_consolidated_trial_balance takes a group's reporting currency from
+        its node (the row with no entity) and translates every entity below it
+        directly into that currency. A group node with none translated at
+        whatever the rate lookup made of '' — the 1.0 parity fallback, a JPY
+        ledger landing as if it were USD. The field used to be free text with
+        a USD default on every row, so nothing noticed.
+
+        The value itself is a Link to ISO Currency, so Frappe checks that the
+        code exists (and corrects its case). An entity row's value is not read.
+        """
+        if self.reporting_currency or not (self.is_group or not self.data_area_id):
+            return
+        frappe.throw(
+            f"Consolidation group node '{self.consolidation_group}' needs a Reporting "
+            f"Currency: it is the currency the group presents its consolidated "
+            f"statements in, and every entity below it is translated into it.",
+            frappe.MandatoryError,
+        )
 
     def _warn_if_no_ownership_period(self):
         """Say so when a non-root node has no ownership yet.

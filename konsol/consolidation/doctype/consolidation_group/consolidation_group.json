@@ -53,10 +53,11 @@
   },
   {
    "fieldname": "reporting_currency",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
+   "options": "ISO Currency",
    "label": "Reporting Currency",
-   "reqd": 1,
-   "default": "USD"
+   "mandatory_depends_on": "eval:doc.is_group || !doc.data_area_id",
+   "description": "The currency this group presents its consolidated statements in. Every entity below it is translated directly into it. Required on a group node; on an entity row it is not read."
   },
   {
    "fieldname": "settings_section",
