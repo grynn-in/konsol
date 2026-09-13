@@ -210,12 +210,56 @@ def has_entity_doc_permission(doc, user=None, permission_type=None):
     return may_see_entity(getattr(doc, "name", None), user)
 
 
+def entity_read_scope(entity, allowed, wildcard=False):
+    """The one entity-access rule for a read that goes straight to ClickHouse.
+
+    Those reads never pass through Frappe's permission layer, so each of them
+    asks this function: K.EPM flat and hierarchy (epm_value, epm_batch), the
+    report and snapshot builders and budget write-back (through
+    :func:`assert_entity_access`), and wildcard hierarchy reads
+    (``hierarchy_query.batch_query_hierarchy``). konsol#158: before this there
+    were three separately written checks.
+
+    ``allowed`` is the reader's :func:`allowed_entity_codes`: None when
+    unrestricted, else the set of codes they may see. The caller resolves it
+    and passes it in, so a batch asks once rather than once per row; it has no
+    default, because a forgotten argument must not mean "unrestricted".
+    ``wildcard`` says the read names no entity (a hierarchy read with entity
+    '', '*' or 'ALL'); flat reads have no wildcard.
+
+    Returns ``(scope, error)``. ``error`` is None, or the message to refuse the
+    read with. ``scope`` matters for a wildcard read only: the sorted codes the
+    query must be limited to, or None for no limit. A single-entity read is
+    limited by naming its entity, so its scope is always None.
+
+    * Unrestricted reader: ``(None, None)`` for any entity and any wildcard.
+    * A single entity: allowed if it is in ``allowed``, else refused with
+      "Not permitted to access entity 'X'". A blank entity is not in
+      ``allowed``: a restricted reader cannot read the rows that carry no
+      entity (unlike :func:`may_see_entity`, where a blank ``data_area_id``
+      marks a structural Frappe row).
+    * A wildcard: limited to ``allowed``; refused when ``allowed`` is empty,
+      so it reads nothing.
+    """
+    if allowed is None:
+        return None, None
+    if wildcard:
+        if not allowed:
+            return None, "Not permitted to access any entity"
+        return sorted(allowed), None
+    if entity in allowed:
+        return None, None
+    return None, f"Not permitted to access entity '{entity}'"
+
+
 def assert_entity_access(code, user=None):
-    """Raise if the user may not touch this entity.
+    """Raise PermissionError if the user may not read or write this entity's
+    warehouse rows. :func:`entity_read_scope` for one named entity.
 
     Still needed alongside permission_query_conditions: those only constrain
     Frappe queries, and konsol's warehouse reads go straight to ClickHouse
     where Frappe's permission layer never runs.
     """
-    if not may_see_entity(code, user):
-        raise frappe.PermissionError(f"Not permitted to access entity '{code}'")
+    _, error = entity_read_scope(code, allowed_entity_codes(user))
+    if error:
+        raise frappe.PermissionError(error)

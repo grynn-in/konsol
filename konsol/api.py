@@ -713,6 +713,7 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     one published hierarchy holds the node; a node in several is an error
     that names them.
     """
+    from konsol.entity_permissions import entity_read_scope
     from konsol.hierarchy_query import batch_query_hierarchy, entity_is_wildcard
     from konsol.hierarchy_query import validate_hierarchy_read
 
@@ -733,10 +734,12 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
         if err:
             frappe.throw(err, frappe.ValidationError)
         allowed_entities = _allowed_entities()
+        # A named entity is refused here; a wildcard is limited to the allowed
+        # set inside batch_query_hierarchy. Both ask entity_read_scope.
         if not entity_is_wildcard(entity):
-            if allowed_entities is not None and entity not in allowed_entities:
-                raise frappe.PermissionError(
-                    f"Not permitted to access entity '{entity}'")
+            _, denied = entity_read_scope(entity, allowed_entities)
+            if denied:
+                raise frappe.PermissionError(denied)
         result = batch_query_hierarchy([{
             "entity": entity,
             "year": int(year),
@@ -944,6 +947,7 @@ def epm_batch():
             frappe.ValidationError,
         )
 
+    from konsol.entity_permissions import entity_read_scope
     from konsol.hierarchy_query import batch_query_hierarchy, entity_is_wildcard
     from konsol.hierarchy_query import validate_hierarchy_read
 
@@ -983,8 +987,9 @@ def epm_batch():
                 errors_list[i] = err
                 continue
             if not entity_is_wildcard(entity):
-                if allowed_entities is not None and entity not in allowed_entities:
-                    errors_list[i] = f"Not permitted to access entity '{entity}'"
+                _, denied = entity_read_scope(entity, allowed_entities)
+                if denied:
+                    errors_list[i] = denied
                     continue
             normalized[i] = {
                 "entity": entity,
@@ -1008,8 +1013,9 @@ def epm_batch():
         if err:
             errors_list[i] = err
             continue
-        if allowed_entities is not None and entity not in allowed_entities:
-            errors_list[i] = f"Not permitted to access entity '{entity}'"
+        _, denied = entity_read_scope(entity, allowed_entities)
+        if denied:
+            errors_list[i] = denied
             continue
 
         normalized[i] = {

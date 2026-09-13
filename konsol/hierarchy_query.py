@@ -208,9 +208,16 @@ def validate_hierarchy_write(hierarchy_name, node_code):
     return info, None
 
 
-def batch_query_hierarchy(requests_list, allowed_entities=None):
-    """Execute hierarchy-mode batch queries. Returns {values, errors}."""
+def batch_query_hierarchy(requests_list, *, allowed_entities):
+    """Execute hierarchy-mode batch queries. Returns {values, errors}.
+
+    ``allowed_entities`` is the reader's allowed_entity_codes() (None when
+    unrestricted) and is required: a forgotten argument must not read every
+    entity. Callers refuse named entities outside it before calling; here a
+    wildcard read is limited to it (entity_permissions.entity_read_scope).
+    """
     from konsol.clickhouse import get_connection as _get_ch_connection
+    from konsol.entity_permissions import entity_read_scope
 
     ch_settings = _get_ch_connection()
     n = len(requests_list)
@@ -300,14 +307,15 @@ def batch_query_hierarchy(requests_list, allowed_entities=None):
             params[f"param_{pkey}"] = str(p)
 
         entity_clause = ""
-        if wildcard and allowed_entities is not None:
-            if not allowed_entities:
-                for idx, _ in group_items:
-                    errors[idx] = "Not permitted to access any entity"
-                continue
-            ent_list = sorted(allowed_entities)
+        scope, denied = (entity_read_scope(None, allowed_entities, wildcard=True)
+                         if wildcard else (None, None))
+        if denied:
+            for idx, _ in group_items:
+                errors[idx] = denied
+            continue
+        if scope is not None:
             ent_ph = []
-            for ei, e in enumerate(ent_list):
+            for ei, e in enumerate(scope):
                 ek = f"ent{ei}"
                 ent_ph.append(f"{{{ek}:String}}")
                 params[f"param_{ek}"] = e
