@@ -66,7 +66,10 @@ class ConsolidationGroup(NestedSet):
         itself intercompany (its postings would be eliminated in turn), and
         the tolerance is not negative."""
         self.ic_difference_account = (self.ic_difference_account or "").strip()
-        if not self.is_group:
+        # A group node is one flagged is_group or one with no entity, as
+        # konsol#172 defines it.
+        # TODO: use _is_group_node() after #172
+        if not (self.is_group or not self.data_area_id):
             if self.ic_difference_account or float(self.ic_difference_tolerance or 0):
                 frappe.throw("Only a group node books intercompany differences; "
                              "set the account and tolerance on the group.")
@@ -81,6 +84,15 @@ class ConsolidationGroup(NestedSet):
                 frappe.throw(
                     f"{self.ic_difference_account} is an Intercompany Account. Book "
                     "differences to an account that is not eliminated itself.")
+            # In the group chart (#173 review, A3). Only when the account
+            # changes: the chart check reads ClickHouse and refuses when it is
+            # down, which must not block every other edit of the node.
+            before = self.get_doc_before_save()
+            if not before or (before.ic_difference_account or "").strip() != self.ic_difference_account:
+                from konsol.tb_bulk import _chart_accounts
+
+                if self.ic_difference_account not in _chart_accounts():
+                    frappe.throw(f"{self.ic_difference_account} is not in the group chart.")
 
     def on_update(self):
         self._warn_if_no_ownership_period()

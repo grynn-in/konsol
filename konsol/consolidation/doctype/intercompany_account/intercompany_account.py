@@ -78,18 +78,33 @@ class IntercompanyAccount(GovernedReferenceDocument):
             self._validate_one_pair()
 
     def _guard_publish(self):
-        """Publishing is the Close Lead's. publish() checks it, but a plain
-        save with status=Published would write through too (on_update syncs
-        Published rows), so the save checks it as well."""
+        """A Published row is the Close Lead's (#173 review, A1 and A2).
+
+        - Any save of a row that WAS Published needs EPM Admin: editing its
+          accounts changes what consolidation eliminates, and moving it out of
+          Published (to Draft or Inactive) stops eliminating it. Checking only
+          the move into Published let an EPM Analyst do both.
+        - A move INTO Published needs EPM Admin and passes the publish checks,
+          through publish() or a plain save alike: on_update writes a
+          Published row through either way.
+        """
         before = self.get_doc_before_save()
-        if self.status == _PUBLISHED and (not before or before.status != _PUBLISHED):
+        was = before.status if before else None
+        if was == _PUBLISHED or self.status == _PUBLISHED:
             check_epm_admin()
+        if self.status == _PUBLISHED and was != _PUBLISHED:
+            self._before_publish()
 
     def _validate_one_pair(self):
-        others = frappe.get_all(
-            DOCTYPE,
-            filters={"name": ["!=", self.name or ""], "status": ["!=", "Inactive"]},
-            fields=["name", "main_account", "counterpart_account"], limit_page_length=0)
+        # A locking read (CLAUDE.md, MariaDB REPEATABLE READ). A plain read can
+        # miss a row another transaction committed after this one's first
+        # read, so two saves at once could each pass and pair one account
+        # twice. FOR UPDATE reads the latest committed rows and holds what it
+        # scanned until the commit.
+        others = frappe.db.sql(
+            "SELECT `name`, `main_account`, `counterpart_account` FROM `tabIntercompany Account` "
+            "WHERE `name` != %s AND `status` != 'Inactive' FOR UPDATE",
+            (self.name or "",), as_dict=True)
         clash = pair_conflicts(self.main_account, self.counterpart_account,
                                [(o.name, o.main_account, o.counterpart_account) for o in others])
         if clash:
@@ -101,10 +116,13 @@ class IntercompanyAccount(GovernedReferenceDocument):
     def _before_publish(self):
         """Both accounts must be in the group chart, and neither may be a
         group's intercompany-difference account (its postings would be
-        eliminated in turn)."""
+        eliminated in turn). Once per save: publish() runs it, and the save
+        it makes would run it again from _guard_publish."""
+        if self.flags.ica_publish_checked:
+            return
         from konsol.tb_bulk import _chart_accounts
 
-        accounts = [a for a in (self.main_account, self.counterpart_account) if a]
+        accounts = [a for a in ((self.main_account or "").strip(), (self.counterpart_account or "").strip()) if a]
         chart = _chart_accounts()
         missing = [a for a in accounts if a not in chart]
         if missing:
@@ -115,3 +133,4 @@ class IntercompanyAccount(GovernedReferenceDocument):
             frappe.throw(
                 f"{', '.join(accounts)}: {', '.join(diff)} books intercompany differences "
                 "to this account, so it cannot also be an intercompany account.")
+        self.flags.ica_publish_checked = True

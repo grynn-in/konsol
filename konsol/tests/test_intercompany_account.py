@@ -54,6 +54,87 @@ def test_each_account_belongs_to_one_pair():
     assert M.pair_conflicts("7000", "7100", others) == []
 
 
+class _Flags(dict):
+    """frappe._dict: a missing attribute reads as None."""
+    __getattr__ = dict.get
+
+    def __setattr__(self, k, v):
+        self[k] = v
+
+
+class _Refused(Exception):
+    pass
+
+
+def _doc(status, before_status, name="ICA-4030"):
+    d = M.IntercompanyAccount()
+    d.name, d.main_account, d.counterpart_account, d.status = name, "4030", "5030", status
+    d.flags = _Flags()
+    d.get_doc_before_save = lambda: types.SimpleNamespace(status=before_status) if before_status else None
+    return d
+
+
+def test_every_save_of_a_published_row_needs_the_close_lead():
+    """#173 review A1: only the move INTO Published was guarded, so an EPM
+    Analyst could edit a live flag's accounts or unpublish it by a plain save.
+    A2: a plain save into Published skipped the publish checks."""
+    admin, checks = [], []
+    saved = M.check_epm_admin
+    M.check_epm_admin = lambda: admin.append(1)
+    try:
+        for status, before, want_admin, want_checks in [
+            ("Published", "Published", True, False),   # editing a live flag
+            ("Draft", "Published", True, False),       # pulling it back to Draft
+            ("Inactive", "Published", True, False),   # unpublishing by a plain save
+            ("Published", "Draft", True, True),        # publishing by a plain save
+            ("Published", None, True, True),           # inserted as Published
+            ("Draft", "Draft", False, False),          # an Analyst's draft
+            ("Draft", None, False, False),
+            ("Inactive", "Draft", False, False),
+        ]:
+            admin.clear(), checks.clear()
+            d = _doc(status, before)
+            d._before_publish = lambda: checks.append(1)
+            d._guard_publish()
+            assert bool(admin) == want_admin, (status, before)
+            assert bool(checks) == want_checks, (status, before)
+    finally:
+        M.check_epm_admin = saved
+
+
+def test_the_publish_checks_run_once_per_save():
+    """publish() runs _before_publish, then saves, and the save would run it
+    again from _guard_publish; the second call must not re-read the chart."""
+    d = _doc("Published", "Draft")
+    d.flags.ica_publish_checked = True
+    assert M.IntercompanyAccount._before_publish(d) is None   # returns before touching frappe
+
+
+def test_the_one_pair_check_is_a_locking_read():
+    """#173 review A4: under REPEATABLE READ a plain read can miss a row
+    another transaction committed, so two saves could both pass."""
+    sent = []
+
+    def sql(query, values=None, as_dict=False):
+        sent.append((query, values))
+        return [_Flags(name="ICA-5030", main_account="5030", counterpart_account="")]
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    M.frappe.db = types.SimpleNamespace(sql=sql)
+    M.frappe.throw = throw
+    d = _doc("Draft", None)
+    try:
+        d._validate_one_pair()
+        assert False, "the conflicting pair was not refused"
+    except _Refused as e:
+        assert "ICA-5030 already pairs" in str(e)
+    query, values = sent[0]
+    assert query.rstrip().endswith("FOR UPDATE") and "`status` != 'Inactive'" in query
+    assert values == ("ICA-4030",)
+
+
 def test_doctype_contract():
     with open(os.path.join(DT_DIR, "intercompany_account.json")) as f:
         meta = json.load(f)
