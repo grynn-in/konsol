@@ -126,3 +126,64 @@ def test_with_nothing_landed_the_airbyte_gate_is_unchanged():
 def test_the_flag_still_works():
     (ok, message), sqls = check(skip=1, connectors=RUNNING)
     assert ok and "skip_airbyte_sync" in message and sqls == [], message
+
+
+# ---------------------------------------------------------------------------
+# chart scope (konsol#182): @silver_main_accounts builds ERP staging/bronze
+# models from epm_raw, so an enabled connector that never synced or is
+# Failed/Running must still block it — same gate, same messages. But chart
+# carries no trial-balance-rows requirement: a TB-only site must be able to
+# build its chart before any TB exists, so no enabled connector means pass.
+# ---------------------------------------------------------------------------
+def check_chart(connectors=(), skip=0):
+    """tasks._preflight_check("chart"), lifted with ast like ``check()``
+    above. Stubs konsol.clickhouse.check_health (chart still needs a healthy
+    warehouse) instead of konsol.clickhouse.execute, since a passing chart
+    build must never query epm_raw.trial_balance_submissions."""
+    settings = _Row(skip_airbyte_sync=skip)
+
+    def get_all(doctype, filters=None, fields=None, limit_page_length=None):
+        assert doctype == "Connector"
+        return [_Row(c) for c in connectors if c.get("enabled", 1)]
+
+    frappe = types.SimpleNamespace(get_single=lambda name: settings, get_all=get_all,
+                                   db=types.SimpleNamespace(table_exists=lambda name: True))
+    with open(TASKS) as f:
+        tree = ast.parse(f.read())
+    wanted = {"_preflight_check", "_check_chart_build_allowed", "_connector_sync_gate"}
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    assert {n.name for n in nodes} == wanted
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.check_health = lambda: {"status": "healthy"}
+    saved = sys.modules.get("konsol.clickhouse")
+    sys.modules["konsol.clickhouse"] = ch
+    try:
+        ns = {"frappe": frappe}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), TASKS, "exec"), ns)
+        return ns["_preflight_check"]("chart")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.clickhouse", None)
+        else:
+            sys.modules["konsol.clickhouse"] = saved
+
+
+def test_chart_blocks_on_a_never_synced_connector():
+    assert check_chart(connectors=NEVER_SYNCED) == (
+        False, "Connector 'ZZ ERP' has never synced — epm_raw may be empty")
+
+
+def test_chart_blocks_on_a_failed_connector():
+    assert check_chart(connectors=FAILED) == (
+        False, "Connector 'ZZ ERP' sync status is 'Failed' — cannot build from raw")
+
+
+def test_chart_blocks_on_a_running_connector():
+    assert check_chart(connectors=RUNNING) == (
+        False, "Connector 'ZZ ERP' sync status is 'Running' — cannot build from raw")
+
+
+def test_chart_passes_with_no_connector_and_zero_trial_balances():
+    """A TB-only site must be able to build its chart before any TB exists."""
+    ok, message = check_chart(connectors=())
+    assert ok, message
