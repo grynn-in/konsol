@@ -377,9 +377,10 @@ def test_not_a_hook_build_trigger():
 def test_chart_scope_selects_everything_the_chart_classifies():
     tasks = os.path.join(APP_DIR, "tasks.py")
     selector = _literal(tasks, "SCOPE_SELECTOR")
-    # silver_main_accounts and everything downstream: the statements, not only
-    # consolidation (+tag:domain:consolidation selects ancestors)
-    assert selector["chart"] == "silver_main_accounts+"
+    # @: the chart, everything it classifies (the statements, not only
+    # consolidation), and everything those read, so the first chart build on a
+    # trial-balance-only site that has never built can run
+    assert selector["chart"] == "@silver_main_accounts"
     assert "chart" not in _literal(tasks, "RAW_DEPENDENT_SCOPES")
     # without a Build Scope row, _known_domains turns the selector into a full build
     with open(os.path.join(APP_DIR, "fixtures", "build_scope.json")) as f:
@@ -610,25 +611,11 @@ def test_intercompany_rows_look_at_both_sides():
     assert real is not None and asked == []
 
 
-def test_a_publish_on_a_warehouse_that_has_never_built_says_what_to_build_first():
-    """review of #183, item 3: publish() and unpublish() from the form request
-    the chart build; on a new site it cannot run yet, and the Close Lead is told."""
-    note = "The warehouse has not built yet. ... approve a consolidation build first ..."
-    upload = types.ModuleType("konsol.chart_upload")
-    saved = sys.modules.get("konsol.chart_upload")
-    sys.modules["konsol.chart_upload"] = upload
-    try:
-        for answer, shown in ((note, True), (None, False)):
-            upload.unbuilt_warehouse_note = lambda: answer
-            C.frappe.messages.clear()
-            CALLS.clear()
-            assert _doc("Published")._request_rebuild("Publish") == "BAPR-1"
-            assert CALLS == [("governed._request_rebuild", "Publish")]   # still requested
-            assert (note in C.frappe.messages) is shown
-    finally:
-        C.frappe.messages.clear()
-        if saved is None:
-            sys.modules.pop("konsol.chart_upload", None)
-        else:
-            sys.modules["konsol.chart_upload"] = saved
+def test_a_publish_from_the_form_has_no_build_first_message():
+    """The chart scope is @silver_main_accounts: it builds everything the chart
+    build reads, so a new site needs no other build first and the form says
+    nothing about one."""
+    with open(CONTROLLER) as f:
+        src = f.read()
+    assert "unbuilt_warehouse_note" not in src and "def _request_rebuild" not in src
 

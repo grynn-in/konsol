@@ -291,35 +291,27 @@ def test_a_failure_while_publishing_rolls_everything_back():
     assert {c: r["status"] for c, r in site.rows.items()} == {"ZZ1000": "Draft", "ZZ2000": "Draft"}
 
 
-# -- review of #183, item 3: the first chart build on a site that has never built -------------------
-# silver_main_accounts+ reads tables other scopes build (bronze, the period and
-# reporting hierarchies), so on a new trial-balance-only site the chart build
-# fails. The request is still made; the Close Lead is told what to build first.
+# -- the chart build builds what it reads (@silver_main_accounts) -----------------------------------
+# So a site whose warehouse has never built needs no other build first, and the
+# reply carries no build-first note.
 
-def test_on_a_warehouse_that_has_never_built_publish_says_to_build_consolidation_first():
+def test_publish_on_a_warehouse_that_has_never_built_requests_the_build_with_no_note():
     site = Site(rows=[row("ZZ1000", lft=1)], built=False)
     out = call(site, "publish_chart", "ZZCOA")
-    assert "load the trial balances and approve a consolidation build first" in out["note"], out
-    assert site.rebuilds == [("ZZ1000", "Publish chart", "chart")]   # still requested
-    site = Site(rows=[row("ZZ1000", lft=1)], built=True)
-    assert call(site, "publish_chart", "ZZCOA").get("note") is None
+    assert "note" not in out, out
+    assert site.rebuilds == [("ZZ1000", "Publish chart", "chart")]
 
 
-def test_a_warehouse_that_cannot_be_asked_adds_no_note():
-    site = Site(rows=[row("ZZ1000", lft=1)], built=ConnectionError("refused"))
-    out = call(site, "publish_chart", "ZZCOA")
-    assert out.get("note") is None and len(site.rebuilds) == 1
-
-
-def test_a_load_that_requests_a_rebuild_on_an_unbuilt_warehouse_says_so():
+def test_a_load_that_changes_a_published_account_requests_one_build_with_no_note():
     existing = [row("ZZ9000", status="Published", is_group=1, is_posting=0, account_type="", statement_section="",
                     normal_balance="", time_balance="", fx_method="", account_name="Heading", lft=1),
                 row("ZZ1000", status="Published", parent_account="ZZ9000", account_name="Old cash", lft=2)]
     site = Site(rows=existing, built=False, tables={"/f.csv": GOOD[:3]})
     out = call(site, "load_chart", "/f.csv")
-    assert out["loaded"] and out["build"] and "consolidation build first" in out["note"]
+    assert out["loaded"] and out["build"] and "note" not in out, out
     site = Site(built=False, tables={"/f.csv": GOOD})   # Drafts only: no rebuild, no note
-    assert call(site, "load_chart", "/f.csv").get("note") is None
+    out = call(site, "load_chart", "/f.csv")
+    assert "build" not in out and "note" not in out, out
 
 
 def test_a_chart_with_allow_ic_on_every_leaf_loads_and_publishes_cleanly():
