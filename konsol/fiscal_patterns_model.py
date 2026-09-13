@@ -1,14 +1,25 @@
 """Fiscal year period patterns (konsol#189), pure: no frappe import.
 
 Generates the period rows for a fiscal year given only its start and end
-dates. Today this covers the "Monthly (12)" pattern; opening/closing
-periods and other patterns (e.g. 4-4-5, quarterly) are later work.
+dates. Today this covers the "Monthly (12)" and "13 Periods (4 Weeks)"
+patterns; opening/closing periods and other patterns (e.g. 4-4-5,
+quarterly) are later work.
 """
 import calendar
 import datetime
 
 PERIODS_PER_YEAR = 12
 MONTHS_PER_PERIOD = 1
+
+THIRTEEN_PERIOD_COUNT = 13
+#: Day counts a "13 Periods (4 Weeks)" fiscal year may run: 13 * 28 = 364
+#: days in a normal year, or 371 (53 weeks) in a leap week year, where the
+#: extra 7 days land on the last period (P13 -> 35 days) rather than being
+#: spread across all of them.
+THIRTEEN_PERIOD_YEAR_LENGTHS = {
+    364: [28] * THIRTEEN_PERIOD_COUNT,
+    371: [28] * (THIRTEEN_PERIOD_COUNT - 1) + [35],
+}
 
 
 def _add_months(base, n):
@@ -67,4 +78,41 @@ def monthly_periods(start_date, end_date):
             "end_date": p_end,
             "quarter": "Q%d" % (((period - 1) // 3) + 1),
         })
+    return rows
+
+
+def thirteen_periods(start_date, end_date):
+    """The 13 period rows of a "13 Periods (4 Weeks)" fiscal year running
+    from start_date to end_date (inclusive), both datetime.date.
+
+    Periods are contiguous 28-day (4-week) spans starting at start_date. A
+    364-day year (the common case) gives 13 periods of 28 days each; a
+    371-day year (53 weeks) gives P01..P12 of 28 days and a 35-day P13 that
+    absorbs the extra week. There is no quarter grouping for this pattern
+    (13 doesn't divide by 3), so "quarter" is blank on every row. Refuses
+    (ValueError) any other span length, naming the number of days found.
+    """
+    total_days = (end_date - start_date).days + 1
+    period_lengths = THIRTEEN_PERIOD_YEAR_LENGTHS.get(total_days)
+    if period_lengths is None:
+        raise ValueError(
+            "13 Periods (4 Weeks) needs a fiscal year of 364 or 371 days; "
+            "found %s days (%s to %s)" % (total_days, start_date, end_date)
+        )
+
+    rows = []
+    p_start = start_date
+    for period, length in enumerate(period_lengths, start=1):
+        p_end = p_start + datetime.timedelta(days=length - 1)
+        code = "P%02d" % period
+        rows.append({
+            "period": period,
+            "code": code,
+            "label": "%s %d" % (code, start_date.year),
+            "type": "Regular",
+            "start_date": p_start,
+            "end_date": p_end,
+            "quarter": "",
+        })
+        p_start = p_end + datetime.timedelta(days=1)
     return rows
