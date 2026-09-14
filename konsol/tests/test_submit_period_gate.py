@@ -180,6 +180,7 @@ def _load(path, period_open):
     mods["konsol.clickhouse"].ensure_raw_tables = lambda *a, **k: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_open_between = assert_open_between
+    mods["konsol.period_status"].assert_declared = lambda fiscal_year, fiscal_period: None
     mods["konsol.period_status"].first_period_affected = lambda d: d
     mods["konsol.schema_lifecycle"].request_governed_rebuild = request_governed_rebuild
     mods["konsol.epm.budget_grain"].digest_name = lambda *a, **k: "ZZ"

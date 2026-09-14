@@ -10,7 +10,7 @@ from frappe.model.workflow import get_workflow_name
 from frappe.utils import cint, now_datetime
 
 from konsol.clickhouse import sync_doctype
-from konsol.period_status import assert_open
+from konsol.period_status import assert_declared, assert_open
 
 
 class ConsolidationAdjustment(Document):
@@ -57,7 +57,11 @@ class ConsolidationAdjustment(Document):
     def validate(self):
         """Approved and Reversed are set only by the submit and the cancel. A
         draft saved straight into one (a REST PUT) would look approved, never
-        reach the warehouse, and have no transition out."""
+        reach the warehouse, and have no transition out.
+
+        The year and period must be declared: an undeclared one is refused
+        on every save, before any period-open check."""
+        assert_declared(self.fiscal_year, self.fiscal_period)
         if self.docstatus == 0 and self.status and self.status not in _states(0):
             frappe.throw(_("{0} is set by approving or reversing the adjustment, not by saving it.").format(self.status))
 
