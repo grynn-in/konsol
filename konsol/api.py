@@ -1655,6 +1655,14 @@ GOVERNED_FX_TABLE = "epm_staging.group_exchange_rates"
 #: start_date row in EPM Fiscal Year Period. An undeclared (year, period) has
 #: no row and is joined out — never guessed month arithmetic.
 FISCAL_PERIODS_TABLE = "epm_staging.fiscal_periods"
+#: fiscal_periods is TRUNCATE+INSERTed on every EPM Fiscal Year save (#189
+#: row 70f); two concurrent resyncs can leave a period twice, which would
+#: double every joined rate. Join a one-row-per-period subquery instead of
+#: the raw table so a duplicate row is collapsed, never multiplied.
+FISCAL_PERIODS_DEDUP_SQL = (
+    f"(SELECT fiscal_year, fiscal_period, min(start_date) AS start_date "
+    f"FROM {FISCAL_PERIODS_TABLE} GROUP BY fiscal_year, fiscal_period)"
+)
 
 
 @frappe.whitelist()
@@ -1715,7 +1723,7 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
         "SELECT from_currency, to_currency, rate_type, fiscal_year, fiscal_period, "
         "toString(fp.start_date) AS period_start, rate, document "
         f"FROM {GOVERNED_FX_TABLE} "
-        f"INNER JOIN {FISCAL_PERIODS_TABLE} AS fp USING (fiscal_year, fiscal_period)"
+        f"INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp USING (fiscal_year, fiscal_period)"
         f"{where} "
         "ORDER BY from_currency, to_currency, rate_type, fiscal_year DESC, fiscal_period DESC "
         f"LIMIT {lim} FORMAT JSON"

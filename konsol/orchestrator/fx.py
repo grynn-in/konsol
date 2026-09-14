@@ -52,6 +52,15 @@ GOVERNED_SOURCE = "konsol"
 # guessed month arithmetic.
 FISCAL_PERIODS_TABLE = "epm_staging.fiscal_periods"
 
+# fiscal_periods is TRUNCATE+INSERTed on every EPM Fiscal Year save (#189 row
+# 70f); two concurrent resyncs can leave a period twice, which would double
+# every joined rate. Join a one-row-per-period subquery instead of the raw
+# table so a duplicate row is collapsed, never multiplied.
+FISCAL_PERIODS_DEDUP_SQL = (
+    f"(SELECT fiscal_year, fiscal_period, min(start_date) AS start_date "
+    f"FROM {FISCAL_PERIODS_TABLE} GROUP BY fiscal_year, fiscal_period)"
+)
+
 # Validation patterns — every caller-supplied filter must match one of these
 # before it is interpolated, so the query is injection-safe.
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -129,7 +138,7 @@ def build_fx_query(filters: Optional[Dict] = None) -> str:
         "        rate_type,\n"
         f"        '{GOVERNED_SOURCE}' AS source\n"
         f"    FROM {FX_TABLE}\n"
-        f"    INNER JOIN {FISCAL_PERIODS_TABLE} AS fp\n"
+        f"    INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp\n"
         "        USING (fiscal_year, fiscal_period)\n"
         ") AS fx"
     )
