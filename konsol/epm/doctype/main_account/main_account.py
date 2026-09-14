@@ -194,6 +194,37 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
     def on_update(self):
         NestedSet.on_update(self)                   # update_nsm + validate_ledger
         GovernedReferenceDocument.on_update(self)   # after-commit resync when Published
+        self._mirror_cash_flow_category()
+
+    def _mirror_cash_flow_category(self):
+        # The chart is the source of the cash-flow mapping (konsol#196): dbt reads
+        # only epm_staging.cash_flow_categories, so without this a site that
+        # uploaded a complete chart still had to re-key every mapping as Cash Flow
+        # Category rows before the full build could run. A Published mapped leaf
+        # keeps a Published CFC-<code> row in step; an account that stops being
+        # mapped (unpublished, a cf field cleared, no longer Balance Sheet) makes
+        # its row Inactive. A manual Cash Flow Category edit for a chart account is
+        # overwritten on the next chart save.
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
+        name = f"CFC-{self.main_account}"
+        exists = frappe.db.exists("Cash Flow Category", name)
+        mapping = M.cash_flow_mapping(self.as_dict())
+        if self.status == _PUBLISHED and mapping:
+            row = frappe.get_doc("Cash Flow Category", name) if exists else frappe.new_doc("Cash Flow Category")
+            for field in ("main_account", "cf_category", "cf_line_item", "is_cash"):
+                row.set(field, mapping[field])
+            row.set("sign", "1")
+            row.set("status", _PUBLISHED)
+            if exists:
+                row.save(ignore_permissions=True)
+            else:
+                row.insert(ignore_permissions=True)
+        elif exists:
+            row = frappe.get_doc("Cash Flow Category", name)
+            if row.status != "Inactive":
+                row.set("status", "Inactive")
+                row.save(ignore_permissions=True)
 
     def on_trash(self):
         NestedSet.on_trash(self)   # refuses a heading that still has accounts under it
