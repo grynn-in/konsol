@@ -162,6 +162,43 @@ def _stale_reads(path):
     return out
 
 
+def test_allow_list_survives_line_shifts():
+    """The allow-list keys on (file, enclosing function), not line number: an
+    allowed offender must stay allowed after lines are inserted above it in
+    its own function, and must be flagged if it moves into a different
+    function (konsol#189)."""
+    relpath = "fiscal_calendar.py"
+    allowed_func = "period_status_rows"
+
+    def make_source(n_blank_lines, func_name):
+        return (
+            "def other():\n"
+            "    pass\n"
+            + ("\n" * n_blank_lines)
+            + f"def {func_name}(bad):\n"
+            + '    frappe.db.exists("Period Status", "x")\n'
+        )
+
+    for n in (0, 5, 20):
+        source = make_source(n, allowed_func)
+        offenders = _stale_reads(relpath, source)
+        assert offenders, "expected an offender in the constructed source"
+        for lineno, reason, func_name in offenders:
+            assert func_name == allowed_func
+            assert _allowed(relpath, func_name), (
+                f"shift of {n} blank lines broke the allow-list"
+            )
+
+    source = make_source(0, "unrelated_helper")
+    offenders = _stale_reads(relpath, source)
+    assert offenders, "expected an offender in the constructed source"
+    for lineno, reason, func_name in offenders:
+        assert func_name == "unrelated_helper"
+        assert not _allowed(relpath, func_name), (
+            "offender moved to a new function should still be flagged"
+        )
+
+
 def test_no_stale_period_readers():
     offenders = []
     for dirpath, dirnames, filenames in os.walk(APP_DIR):
