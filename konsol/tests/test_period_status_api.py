@@ -25,12 +25,21 @@ class _ValidationError(Exception):
 
 class _DB:
     """Stand-in for frappe.db. `years` maps fiscal_year -> year status;
-    `periods` maps (fiscal_year, fiscal_period) -> the period row's columns."""
+    `periods` maps (fiscal_year, fiscal_period) -> the period row's columns;
+    `settings` maps an EPM Settings fieldname -> its value (unset reads 0)."""
 
-    def __init__(self, years=None, periods=None):
+    def __init__(self, years=None, periods=None, settings=None):
         self.years = years or {}
         self.periods = periods or {}
+        self.settings = settings or {}
         self.calls = []
+        self.single_reads = []
+
+    def get_single_value(self, doctype, fieldname, *args, **kwargs):
+        self.single_reads.append((doctype, fieldname))
+        if doctype != "EPM Settings":
+            raise AssertionError(f"unexpected single doctype: {doctype}")
+        return self.settings.get(fieldname, 0)
 
     def sql(self, query, values=None, *args, **kwargs):
         self.calls.append((query, values, kwargs))
@@ -81,10 +90,10 @@ def _load(db):
                 sys.modules[k] = v
 
 
-def _period(status="Open", code="P14"):
+def _period(status="Open", code="P14", period_type="Adjustment"):
     return {
         "period_code": code,
-        "period_type": "Adjustment",
+        "period_type": period_type,
         "start_date": date(2025, 12, 31),
         "end_date": date(2025, 12, 31),
         "status": status,
@@ -160,3 +169,51 @@ def test_year_read_is_locking():
     assert year_sql, "period_row must read the fiscal year"
     assert all("LOCK IN SHARE MODE" in q for q in year_sql), year_sql
     assert all("fiscal_year" in q for q in year_sql), year_sql
+
+
+def test_regular_always_postable():
+    db = _DB(years={"2025": "Open"},
+             periods={("2025", 3): _period(code="P03", period_type="Regular")})
+    with _load(db) as ps:
+        ps.assert_postable(2025, 3)  # no settings ticked: must not raise
+        assert "Regular" in ps.postable_types()
+
+
+def test_closing_postable_only_when_ticked():
+    periods = {("2025", 13): _period(code="CLS", period_type="Closing")}
+    db = _DB(years={"2025": "Open"}, periods=periods)
+    with _load(db) as ps:
+        exc = _refusal(ps.assert_postable, 2025, 13)
+        assert isinstance(exc, _ValidationError)
+        assert not isinstance(exc, ps.PeriodNotDeclared)
+        assert str(exc) == (
+            "CLS (Closing) does not take trial balances on this site. "
+            "Tick it in EPM Settings \u2192 Close to allow it.")
+    db = _DB(years={"2025": "Open"}, periods=periods, settings={"tb_accepts_closing": 1})
+    with _load(db) as ps:
+        ps.assert_postable(2025, 13)  # ticked: must not raise
+    assert ("EPM Settings", "tb_accepts_closing") in db.single_reads
+
+
+def test_undeclared_not_postable():
+    with _load(_DB()) as ps:
+        assert isinstance(_refusal(ps.assert_postable, 2031, 1), ps.PeriodNotDeclared)
+    db = _DB(years={"2025": "Open"}, periods={("2025", 1): _period(code="P01")})
+    with _load(db) as ps:
+        assert isinstance(_refusal(ps.assert_postable, 2025, 14), ps.PeriodNotDeclared)
+
+
+def test_postable_types_reads_settings():
+    with _load(_DB()) as ps:
+        assert ps.postable_types() == {"Regular"}
+    db = _DB(settings={"tb_accepts_opening": 1, "tb_accepts_adjustment": 1})
+    with _load(db) as ps:
+        assert ps.postable_types() == {"Regular", "Opening", "Adjustment"}
+    assert set(db.single_reads) == {
+        ("EPM Settings", "tb_accepts_opening"),
+        ("EPM Settings", "tb_accepts_closing"),
+        ("EPM Settings", "tb_accepts_adjustment"),
+    }
+    db = _DB(settings={"tb_accepts_closing": 1})
+    with _load(db) as ps:
+        assert ps.postable_types() == {"Regular", "Closing"}
