@@ -6,6 +6,12 @@
  * single upload → the page lists every entity-period as Ready or Problem →
  * load all of them, or only the ready ones → watch progress. Nothing loads
  * until the load button is pressed.
+ *
+ * Amount Basis (konsolidat#199): before the check the user says what the
+ * file's amounts are, for every entity-period whose rows carry no
+ * amount_basis column. The site default (EPM Settings) is sent once, on
+ * load, and shows in the select; it is never applied silently. Changing it
+ * on a checked file re-checks, so the report matches what will load.
  */
 import { computed, inject, onMounted, ref } from "vue";
 import { useMachine } from "@xstate/vue";
@@ -39,9 +45,25 @@ const stepText = computed(() => {
 });
 
 const canUpload = computed(() => Boolean(home.me.value?.can?.approve));
+// The basis can be chosen whenever a file can be, and while a checked file
+// waits to load (the machine re-checks it then); not mid-upload or mid-load.
+const basisPickable = computed(() => !upload.value || done.value || snapshot.value.matches("checked"));
+// konsol.tb_bulk.upload_options: the site default and the exact basis strings.
+const options = ref({ default_amount_basis: "", amount_bases: [] });
+async function uploadOptions() {
+	const res = await fetch("/api/method/konsol.tb_bulk.upload_options", { credentials: "include", headers: { Accept: "application/json" } });
+	const data = await res.json().catch(() => ({}));
+	if (!res.ok || data.exc) throw new Error(`upload_options ${res.status}`);
+	return data.message;
+}
 const recent = ref([]);
 onMounted(async () => {
 	try { recent.value = await recentUploads(); } catch { recent.value = []; }
+	try { options.value = await uploadOptions(); } catch { options.value = { default_amount_basis: "", amount_bases: [] }; }
+	// The default pre-fills the select once, visibly; the user can change it.
+	if (options.value.default_amount_basis && !ctx.value.amountBasis) {
+		send({ type: "SET_BASIS", amountBasis: options.value.default_amount_basis });
+	}
 });
 
 const fileInput = ref(null);
@@ -71,6 +93,23 @@ function loadNow() {
 		</p>
 
 		<template v-else>
+			<section v-if="basisPickable" class="mb-4 rounded-lg border border-outline-gray-2 px-5 py-4">
+				<label for="amount-basis" class="block text-sm font-medium text-ink-gray-8">Amount Basis</label>
+				<select
+					id="amount-basis"
+					:value="ctx.amountBasis"
+					:disabled="busy"
+					class="mt-1 block w-full max-w-xl rounded border border-outline-gray-2 bg-surface-white px-3 py-2 text-base text-ink-gray-9"
+					@change="send({ type: 'SET_BASIS', amountBasis: $event.target.value })"
+				>
+					<option value="">Not given: each entity-period must carry its own amount_basis column</option>
+					<option v-for="b in options.amount_bases" :key="b" :value="b">{{ b }}</option>
+				</select>
+				<p class="mt-2 text-sm text-ink-gray-5">
+					A wrong basis double-counts or halves every balance in the warehouse, and the consolidation build names each batch whose basis is missing.
+				</p>
+			</section>
+
 			<section v-if="!upload || done" class="mb-6 rounded-lg border border-dashed border-outline-gray-3 px-5 py-6">
 				<div class="flex flex-wrap items-center gap-4">
 					<Button variant="solid" :loading="busy" @click="fileInput?.click()">
@@ -137,11 +176,12 @@ function loadNow() {
 				</div>
 
 				<div class="overflow-x-auto rounded-lg border border-outline-gray-2">
-					<table class="w-full min-w-[44rem] text-left text-sm">
+					<table class="w-full min-w-[52rem] text-left text-sm">
 						<thead class="bg-surface-gray-1 text-xs uppercase tracking-wider text-ink-gray-5">
 							<tr>
 								<th class="px-3 py-2 font-medium">Entity</th>
 								<th class="px-3 py-2 font-medium">Period</th>
+								<th class="px-3 py-2 font-medium">Basis</th>
 								<th class="px-3 py-2 text-right font-medium">Rows</th>
 								<th class="px-3 py-2 text-right font-medium">Debit</th>
 								<th class="px-3 py-2 text-right font-medium">Credit</th>
@@ -153,6 +193,7 @@ function loadNow() {
 							<tr v-for="r in rows" :key="`${r.entity}-${r.fiscal_year}-${r.fiscal_period}`">
 								<td class="px-3 py-2 font-medium text-ink-gray-9">{{ r.entity }}</td>
 								<td class="px-3 py-2 text-ink-gray-7 tnum">{{ periodText(r) }}</td>
+								<td class="px-3 py-2 text-ink-gray-7">{{ r.amount_basis || "—" }}</td>
 								<td class="px-3 py-2 text-right text-ink-gray-7 tnum">{{ r.rows }}</td>
 								<td class="px-3 py-2 text-right text-ink-gray-7 tnum">{{ money(r.total_debit) }}</td>
 								<td class="px-3 py-2 text-right text-ink-gray-7 tnum">{{ money(r.total_credit) }}</td>
@@ -163,7 +204,7 @@ function loadNow() {
 								</td>
 							</tr>
 							<tr v-if="!rows.length">
-								<td colspan="7" class="px-3 py-6 text-center text-ink-gray-5">No rows to show.</td>
+								<td colspan="8" class="px-3 py-6 text-center text-ink-gray-5">No rows to show.</td>
 							</tr>
 						</tbody>
 					</table>

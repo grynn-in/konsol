@@ -293,6 +293,18 @@ def load(name, skip_invalid=0, amount_basis=None):
 
 
 @frappe.whitelist(methods=["GET"])
+def upload_options():
+    """What the upload page needs before a file is chosen (konsolidat#199):
+    the site's Default Amount Basis (EPM Settings; pre-fills the page's
+    select, visibly and changeably, never applied silently) and the exact
+    basis strings, so the page never carries its own copy of them."""
+    return {
+        "default_amount_basis": frappe.db.get_single_value("EPM Settings", "default_amount_basis") or "",
+        "amount_bases": list(M.AMOUNT_BASES),
+    }
+
+
+@frappe.whitelist(methods=["GET"])
 def get_upload(name):
     doc = frappe.get_doc(DOCTYPE, name)
     doc.check_permission("read")
