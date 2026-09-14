@@ -44,6 +44,11 @@ frappe.ui.form.on("EPM Fiscal Year", {
 
         if (status === "Open") {
             frm.add_custom_button(__("Generate Periods"), function () {
+                // The server generates from the saved year, not unsaved edits.
+                if (frm.is_dirty()) {
+                    frappe.msgprint(__("Save the year before generating its periods."));
+                    return;
+                }
                 const generate = () =>
                     frm.call({ method: "generate_periods", doc: frm.doc }).then(() => frm.reload_doc());
 

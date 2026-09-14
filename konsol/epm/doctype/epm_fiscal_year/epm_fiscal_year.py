@@ -51,6 +51,12 @@ def _status_values(doc):
     )
 
 
+def _row_key(row):
+    """How the status guard matches a row to its saved version, and how an
+    action names the rows it moves."""
+    return row.period_code
+
+
 def _year_dict(doc):
     """The year fields as fiscal_structure_model reads them."""
     return {
@@ -184,7 +190,9 @@ class EPMFiscalYear(Document):
     def generate_periods(self):
         """Replace the period table with the rows the year's pattern gives,
         then save (validate runs as usual). Only EPM Admin or System Manager,
-        and only on an Open year none of whose periods documents use."""
+        and only on an Open year none of whose periods documents use. Works
+        on the saved year: unsaved edits the client sent are dropped."""
+        self._lock_and_reload()
         if not _GENERATE_ROLES.intersection(frappe.get_roles()):
             frappe.throw("Only an EPM Admin can generate periods.", frappe.PermissionError)
 
@@ -243,6 +251,7 @@ class EPMFiscalYear(Document):
         must pass the group-rate gate before anything changes. Reopening
         needs a reason and an Open year. `text` (a note, or the reason) goes
         onto the year's closing note with the period code and date."""
+        self._lock_and_reload()
         wanted = _int(fiscal_period)
         row = next((r for r in (self.periods or []) if _int(r.fiscal_period) == wanted), None)
         if row is None:
@@ -273,8 +282,7 @@ class EPMFiscalYear(Document):
         _stamp(row, new, now)
         self._append_note(row.period_code, verb, text, now)
 
-        self.flags.konsol_status_action = True
-        self.save()
+        self._save_as_status_action([row])
         return {"fiscal_period": row.fiscal_period, "period_code": row.period_code, "status": new}
 
     @frappe.whitelist(methods=["POST"])
@@ -301,6 +309,7 @@ class EPMFiscalYear(Document):
         and, if any fail, one message names them all and nothing changes.
         Reopening needs a reason and leaves the rows alone. `text` goes onto
         the closing note with the year and date."""
+        self._lock_and_reload()
         label = f"FY{self.fiscal_year}"
         current = _status(self.status)
         if current == new:
@@ -335,10 +344,33 @@ class EPMFiscalYear(Document):
         _stamp(self, new, now)
         self._append_note(label, verb, text, now)
 
-        self.flags.konsol_status_action = True
-        self.save()
+        self._save_as_status_action(moving, year=True)
         return {"fiscal_year": self.fiscal_year, "status": new,
                 "periods_moved": [r.period_code for r in moving]}
+
+    def _lock_and_reload(self):
+        """Lock the year row, then reload the year from the database. A
+        whitelisted doc method runs on the document the client sent
+        (frappe.handler.run_doc_method), so nothing it carries may reach a
+        decision or the save: every check below reads the saved year, under
+        the lock (the group-rate gate included). The reload is a plain read,
+        so a year changed since this transaction's snapshot fails save()'s
+        check_if_latest rather than writing stale rows back."""
+        frappe.db.sql("SELECT name FROM `tabEPM Fiscal Year` WHERE name=%s FOR UPDATE",
+                      (self.name,))
+        self.reload()
+        self.flags.konsol_status_action = None
+
+    def _save_as_status_action(self, rows, year=False):
+        """Save, declaring the status changes this action makes: the exact
+        (status, closed_by, closed_on) of each moved row, keyed as the status
+        guard matches rows, and of the year when it moves. The guard refuses
+        any other status difference."""
+        declared = {"rows": {_row_key(r): _status_values(r) for r in rows}}
+        if year:
+            declared["year"] = _status_values(self)
+        self.flags.konsol_status_action = declared
+        self.save()
 
     def _append_note(self, subject, verb, text, now):
         """Add "<subject> <verb> on <date> by <user>: <text>" to the closing
@@ -349,21 +381,32 @@ class EPMFiscalYear(Document):
 
     def _check_status_fields_unchanged(self, before):
         """Refuse, as a PermissionError, any change to the status fields of
-        the year or a row unless an action or the migration patch is saving.
-        A row is matched to its saved version by period code; a row with no
-        saved version (and a new year) is compared with Open, never closed."""
-        if self.flags.konsol_status_action or self.flags.konsol_fiscal_migration:
+        the year or a row, except the migration patch's and exactly the
+        changes a status action declared (flags.konsol_status_action, set by
+        _save_as_status_action; a bare True declares nothing). A row is
+        matched to its saved version by _row_key; a row with no saved version
+        (and a new year) is compared with Open, never closed."""
+        if self.flags.konsol_fiscal_migration:
             return
+        declared = self.flags.konsol_status_action
+        if not isinstance(declared, dict):
+            declared = {}
+        declared_rows = declared.get("rows") or {}
 
         problems = []
-        for label, new, old in zip(_STATUS_LABELS, _status_values(self), _status_values(before)):
-            if new != old:
-                problems.append(f"{label} {_ACTIONS_NOTE}")
+        values = _status_values(self)
+        if values != declared.get("year"):
+            for label, new, old in zip(_STATUS_LABELS, values, _status_values(before)):
+                if new != old:
+                    problems.append(f"{label} {_ACTIONS_NOTE}")
 
-        saved_rows = {r.period_code: r for r in ((before.periods or []) if before else [])}
+        saved_rows = {_row_key(r): r for r in ((before.periods or []) if before else [])}
         for r in self.periods or []:
-            old_values = _status_values(saved_rows.get(r.period_code))
-            for label, new, old in zip(_STATUS_LABELS, _status_values(r), old_values):
+            values = _status_values(r)
+            if values == declared_rows.get(_row_key(r)):
+                continue
+            old_values = _status_values(saved_rows.get(_row_key(r)))
+            for label, new, old in zip(_STATUS_LABELS, values, old_values):
                 if new != old:
                     problems.append(f"Period {r.period_code}: {label} {_ACTIONS_NOTE}")
 
