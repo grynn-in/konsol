@@ -45,7 +45,7 @@ test("LOAD with skip polls until the upload finishes", async () => {
 	await flush(); await flush();
 	actor.send({ type: "LOAD", skipInvalid: true });
 	await flush();
-	assert.deepEqual(calls.load, [{ name: "TBU-00001", skipInvalid: true }]);
+	assert.deepEqual(calls.load, [{ name: "TBU-00001", skipInvalid: true, amountBasis: "" }]);
 	assert.ok(actor.getSnapshot().matches("loading"));
 	tick(); await flush(); await flush();
 	assert.ok(actor.getSnapshot().matches("loading"));
@@ -89,5 +89,5 @@ test("a stalled load ends the polling and can be resumed", async () => {
 	actor.send({ type: "LOAD", skipInvalid: true });
 	await flush();
 	assert.equal(calls.load.length, 2, "resume sends a second load");
-	assert.deepEqual(calls.load[1], { name: "TBU-00001", skipInvalid: true });
+	assert.deepEqual(calls.load[1], { name: "TBU-00001", skipInvalid: true, amountBasis: "" });
 });
