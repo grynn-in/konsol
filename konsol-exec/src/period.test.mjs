@@ -4,8 +4,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { formatPeriod, stepPeriod, canStep, yearChoices } from "./period.js";
 
+/* The server (`orchestrator.api.launch_options`) sends `fiscal_years`
+ * newest-first — this fixture matches that real order. `years()`'s callers
+ * must find chronological order from the numeric year value, never from
+ * position in this array. */
 const OPTIONS = {
-	fiscal_years: ["2024", "2025", "2026"],
+	fiscal_years: ["2026", "2025", "2024"],
 	fiscal_periods: [
 		{ value: "7", label: "Jul" },
 		{ value: "8", label: "Aug" },
@@ -105,8 +109,10 @@ test("defaultPeriod still works when a calendar has no adjustment periods", asyn
 });
 
 /* The server (`orchestrator.api.launch_options`) sends `fiscal_years` newest
- * first. `defaultPeriod` must not assume an order — it has to find the
- * newest year by value, not by position in the list. */
+ * first (that's OPTIONS above, now). `defaultPeriod` must not assume an
+ * order either way — it has to find the newest year by value, not by
+ * position in the list — so this fixture keeps an oldest-first list around
+ * to prove that. */
 const NEWEST_FIRST_OPTIONS = {
 	fiscal_years: ["2026", "2025", "2024"],
 	fiscal_periods: [
@@ -114,6 +120,10 @@ const NEWEST_FIRST_OPTIONS = {
 		{ value: "8", label: "Aug" },
 		{ value: "9", label: "Sep" },
 	],
+};
+const OLDEST_FIRST_OPTIONS = {
+	...NEWEST_FIRST_OPTIONS,
+	fiscal_years: ["2024", "2025", "2026"],
 };
 
 test("defaultPeriod picks the newest fiscal year regardless of list order", async () => {
@@ -124,7 +134,7 @@ test("defaultPeriod picks the newest fiscal year regardless of list order", asyn
 		"fiscal_years newest-first, as the server actually sends it"
 	);
 	assert.deepEqual(
-		defaultPeriod(OPTIONS),
+		defaultPeriod(OLDEST_FIRST_OPTIONS),
 		{ year: "2026", period: "9" },
 		"fiscal_years oldest-first still resolves to the newest year"
 	);
