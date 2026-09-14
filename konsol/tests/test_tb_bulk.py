@@ -73,6 +73,20 @@ def test_the_upload_doctype_has_the_amount_basis_field():
     assert "amount_basis" in doctype["field_order"]
 
 
+def test_the_upload_page_learns_the_site_default_and_the_three_bases():
+    # konsol-exec's upload page offers the Amount Basis before the check; it
+    # takes the site default and the exact basis strings from the server so
+    # the page never carries its own copy of them. (`upload_conditions` is
+    # the permission-query hook and must stay a SQL string, so this is a
+    # separate GET endpoint.)
+    text = _function_text("upload_options")
+    assert "default_amount_basis" in text, "the EPM Settings default rides along"
+    assert "AMOUNT_BASES" in text and "amount_bases" in text, "the three bases come from tb_basis_model"
+    assert 'get_single_value("EPM Settings", "default_amount_basis")' in text
+    src = _source()
+    assert '@frappe.whitelist(methods=["GET"])\ndef upload_options(' in src, "a read-only endpoint"
+
+
 def test_the_upload_form_prefills_the_site_default_on_new_documents_only():
     # EPM Settings' Default Amount Basis promises to pre-fill Trial Balance
     # Uploads too; the form script copies it onto NEW documents, visibly.
