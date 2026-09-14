@@ -83,12 +83,17 @@ class _Site:
         row = next(r for r in self.categories if r.get("name") == name)
         doc = types.SimpleNamespace(doctype="Cash Flow Category", **row)
 
+        def update(values):
+            doc.__dict__.update(values)
+            return doc
+
         def save(ignore_permissions=False, **k):
             site.calls.append(("save", doc.doctype, doc.name, ignore_permissions))
             site.saved.append(doc)
             row.update(main_account=doc.main_account, status=doc.status)
             return doc
 
+        doc.update = update
         doc.save = save
         return doc
 
