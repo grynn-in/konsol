@@ -14,6 +14,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTROLLER = os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.py")
 PURE = os.path.join(APP_DIR, "fiscal_structure_model.py")
 STATUS = os.path.join(APP_DIR, "fiscal_status_model.py")
+PATTERNS = os.path.join(APP_DIR, "fiscal_patterns_model.py")
 
 
 class Thrown(Exception):
@@ -81,6 +82,7 @@ def _load():
     frappe._ = lambda s: s
     frappe._dict = _dict
     frappe.throw = throw
+    frappe.whitelist = lambda *a, **k: (a[0] if a and callable(a[0]) and not k else (lambda fn: fn))
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.PermissionError = PermissionRefused
     frappe.utils = mods["frappe.utils"]
@@ -90,7 +92,8 @@ def _load():
     mods["frappe.utils"].cint = lambda v: int(v or 0)
     mods["konsol"].__path__ = []
 
-    pure_names = {"konsol.fiscal_structure_model": PURE, "konsol.fiscal_status_model": STATUS}
+    pure_names = {"konsol.fiscal_structure_model": PURE, "konsol.fiscal_status_model": STATUS,
+                  "konsol.fiscal_patterns_model": PATTERNS}
     saved = {name: sys.modules.get(name) for name in (*mods, *pure_names)}
     sys.modules.update(mods)
     try:

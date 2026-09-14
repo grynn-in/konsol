@@ -1,8 +1,9 @@
 import frappe
 from frappe.model.document import Document
-from frappe.utils import get_datetime, getdate
+from frappe.utils import cint, get_datetime, getdate
 
 from konsol import fiscal_calendar
+from konsol import fiscal_patterns_model as fpm
 from konsol import fiscal_status_model as fstm
 from konsol import fiscal_structure_model as fsm
 
@@ -11,6 +12,9 @@ from konsol import fiscal_structure_model as fsm
 _STATUS_LABELS = ("Status", "Closed By", "Closed On")
 
 _ACTIONS_NOTE = "is set by Close Year, Lock Year and Reopen Year, not by editing."
+
+#: Roles that may run Generate Periods (EPM Admin is the Close Lead).
+_GENERATE_ROLES = frozenset({"EPM Admin", "System Manager"})
 
 
 def _int(value):
@@ -110,6 +114,47 @@ class EPMFiscalYear(Document):
                 f"FY{self.fiscal_year} can't be deleted: "
                 f"documents use {len(used)} of its periods."
             )
+
+    @frappe.whitelist(methods=["POST"])
+    def generate_periods(self):
+        """Replace the period table with the rows the year's pattern gives,
+        then save (validate runs as usual). Only EPM Admin or System Manager,
+        and only on an Open year none of whose periods documents use."""
+        if not _GENERATE_ROLES.intersection(frappe.get_roles()):
+            frappe.throw("Only an EPM Admin can generate periods.", frappe.PermissionError)
+
+        status = _status(self.status)
+        if status != fstm.OPEN:
+            frappe.throw(f"FY{self.fiscal_year} is {status}; periods can't be generated.")
+
+        used = fiscal_calendar.periods_in_use(self.fiscal_year)
+        if used:
+            frappe.throw(
+                f"FY{self.fiscal_year}: documents use {len(used)} of its periods; "
+                "generate only on an unused year."
+            )
+
+        try:
+            rows = fpm.generate_periods(
+                self.period_pattern, _date(self.start_date), _date(self.end_date),
+                bool(cint(self.include_opening_period)),
+                bool(cint(self.include_closing_period)))
+        except ValueError as e:
+            frappe.throw(str(e))
+
+        self.set("periods", [])
+        for r in rows:
+            self.append("periods", {
+                "fiscal_period": r["period"],
+                "period_code": r["code"],
+                "period_label": r["label"],
+                "period_type": r["type"],
+                "start_date": r["start_date"],
+                "end_date": r["end_date"],
+                "quarter": r["quarter"],
+                "status": fstm.OPEN,
+            })
+        self.save()
 
     def _check_status_fields_unchanged(self, before):
         """Refuse, as a PermissionError, any change to the status fields of
