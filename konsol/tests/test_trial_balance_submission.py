@@ -34,7 +34,9 @@ class _Doc:  # stand-in for frappe.model.document.Document
 _stub("frappe")
 _stub("frappe.model")
 _stub("frappe.model.document", Document=_Doc)
-_stub("konsol")
+# __path__ makes the stub a package, so the controller's import of the REAL
+# pure konsol.tb_basis_model resolves while the frappe-bound modules below stay stubbed.
+_stub("konsol", __path__=[os.path.join(_HERE, "..")])
 _stub("konsol.clickhouse", execute=lambda *a, **k: "", ensure_raw_tables=lambda: None)
 _stub("konsol.period_status", assert_open=lambda *a, **k: None,
       assert_postable=lambda *a, **k: None)
@@ -50,7 +52,8 @@ def test_parse_good_file():
     rows = _m.parse_tb_csv(GOOD)
     assert len(rows) == 2
     assert rows[0] == {"main_account": "1010", "debit": 100.5,
-                       "credit": 0.0, "description": "", "partner_data_area_id": ""}
+                       "credit": 0.0, "description": "", "partner_data_area_id": "",
+                       "amount_basis": ""}
 
 
 def test_parse_accepts_description_and_case_insensitive_header():
@@ -458,3 +461,62 @@ def test_form_js_pre_fills_the_basis_from_epm_settings():
     assert 'frappe.db.get_single_value("EPM Settings", "default_amount_basis")' in js
     assert "frm.is_new()" in js and "amount_basis" in js
     assert "set_value" in js
+
+
+# -- konsolidat#199 (K3): the file may repeat the basis; the claim carries it -------------------
+
+import inspect as _inspect
+
+CLOSING = "Period-end balance"
+
+
+def test_parse_reads_the_optional_amount_basis_column_and_its_aliases():
+    rows = _m.parse_tb_csv("main_account,debit,credit,amount_basis\n1010,5,0,Period-end balance\n2010,0,5,\n")
+    assert rows[0]["amount_basis"] == CLOSING
+    assert rows[1]["amount_basis"] == ""  # a blank cell is "not given", the form decides
+    for alias in ("basis", "Basis", "AMOUNT_BASIS", "amount basis"):
+        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias}\n1010,5,0, period movement \n2010,0,5,x\n")
+        assert rows[0]["amount_basis"] == "period movement", alias  # as written; canonical() judges it
+        assert rows[1]["amount_basis"] == "x", alias
+    # no column at all: every row says ""
+    assert all(r["amount_basis"] == "" for r in _m.parse_tb_csv(GOOD))
+
+
+def test_parse_refuses_two_amount_basis_columns():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit,basis,amount_basis\n1010,5,0,a,b\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "Two amount_basis columns" in str(e)
+
+
+def test_validate_checks_the_file_basis_against_the_form():
+    """The sentences from basis_problems() join the other validation errors in
+    the one 'failed validation' throw, so the uploader sees every problem at once."""
+    with open(_SRC) as f:
+        src = f.read()
+    assert "from konsol.tb_basis_model import" in src and "basis_problems" in src
+    body = _inspect.getsource(_m.TrialBalanceSubmission.validate)
+    assert "basis_problems(self.amount_basis," in body
+    # only rows that carry a value are judged; a blank cell means "not given"
+    assert 'if r["amount_basis"]' in body or "if r[BASIS]" in body
+    assert body.index("basis_problems(") < body.index("if errors:")
+    assert body.index("validate_tb_rows(") < body.index("basis_problems(")
+
+
+def test_the_claim_carries_the_amount_basis():
+    """on_submit's control-table INSERT names amount_basis last, after
+    claimed_at, and lands the form's value; bronze reads the basis off the claim."""
+    sent = []
+    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+    doc = _m.TrialBalanceSubmission()
+    doc.batch_id, doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "b1", "ZZA", 2099, 1
+    doc.name, doc.row_count, doc.amount_basis = "TBS-1", 2, CLOSING
+    doc._parse_file = lambda: []
+    doc._ensure_tables = lambda: None
+    doc._land_rows = lambda rows: None
+    doc.on_submit()
+    claim = next(s for s in sent if s.startswith(f"INSERT INTO {_m.CONTROL_TABLE} "))
+    assert "fiscal_period, row_count, claimed_at, amount_basis) VALUES" in claim
+    assert claim.endswith(f"2, now(), '{CLOSING}')")
+    assert "'b1', 'TBS-1', 'ZZA', 2099, 1, 2, now()" in claim
