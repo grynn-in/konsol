@@ -324,10 +324,12 @@ def test_generate_custom_is_refused_clearly():
 def _new_year(module, pattern="Monthly (12)"):
     """An unsaved 2025 year, built exactly as the live bench test's
     _new_year() and the desk's Generate Periods button on a new doc build
-    one: no name, no saved version, generate_periods is what creates it."""
+    one: no name, no saved version, generate_periods is what creates it.
+    status carries the field's JSON default (Open), as Frappe fills it in
+    for a new doc before validate ever runs."""
     return module.EPMFiscalYear(
         doctype="EPM Fiscal Year", fiscal_year=2025,
-        start_date="2025-01-01", end_date="2025-12-31",
+        start_date="2025-01-01", end_date="2025-12-31", status="Open",
         period_pattern=pattern, include_opening_period=1, include_closing_period=1)
 
 

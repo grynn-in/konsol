@@ -27,18 +27,31 @@ function prompt_text(frm, title, field, callback) {
     frappe.prompt([field], (values) => callback(values[field.fieldname]), title, __("Submit"));
 }
 
+// Mirrors epm_fiscal_year.py's _GENERATE_ROLES and every
+// (Open, Closed/Locked) / (Closed, Open/Locked) row in
+// fiscal_status_model._TRANSITIONS: EPM Admin or System Manager.
+// Only a Locked period/year needs System Manager alone (below).
+const ADMIN_ROLES = ["EPM Admin", "System Manager"];
+
 frappe.ui.form.on("EPM Fiscal Year", {
     refresh(frm) {
-        if (frm.is_new()) return;
+        if (frm.is_new()) {
+            // A year can't be saved without Regular periods, so Generate
+            // Periods is the only way to create one; every other action
+            // needs a saved year (a status, saved rows), so none apply yet.
+            const can_generate = frappe.user.has_role(ADMIN_ROLES);
+            if (!can_generate) return;
+            frm.add_custom_button(__("Generate Periods"), function () {
+                frm.call({ method: "generate_periods", doc: frm.doc }).then((r) => {
+                    frappe.set_route("Form", "EPM Fiscal Year", r.message);
+                });
+            }, __("Actions"));
+            return;
+        }
 
         const status = frm.doc.status;
         const periods = frm.doc.periods || [];
         const is_system_manager = frappe.user.has_role("System Manager");
-        // Mirrors epm_fiscal_year.py's _GENERATE_ROLES and every
-        // (Open, Closed/Locked) / (Closed, Open/Locked) row in
-        // fiscal_status_model._TRANSITIONS: EPM Admin or System Manager.
-        // Only a Locked period/year needs System Manager alone (below).
-        const ADMIN_ROLES = ["EPM Admin", "System Manager"];
         const is_admin = frappe.user.has_role(ADMIN_ROLES);
         const note_field = { fieldname: "note", fieldtype: "Small Text", label: __("Note") };
         const reason_field = {

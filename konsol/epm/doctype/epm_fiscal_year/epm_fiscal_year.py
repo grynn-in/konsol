@@ -199,9 +199,26 @@ class EPMFiscalYear(Document):
     @frappe.whitelist(methods=["POST"])
     def generate_periods(self):
         """Replace the period table with the rows the year's pattern gives,
-        then save (validate runs as usual). Only EPM Admin or System Manager,
-        and only on an Open year none of whose periods documents use. Works
-        on the saved year: unsaved edits the client sent are dropped."""
+        then save (validate runs as usual). Only EPM Admin or System Manager.
+
+        On a new (unsaved) doc there is nothing saved yet to protect, so the
+        lock/reload and the Open/unused-year checks (which read the saved
+        year) are skipped; the sent fields build the rows and the year is
+        inserted, full validate included. This is the only way to create a
+        year: it can't be saved without Regular periods.
+
+        On a saved year the rest still applies, and only on an Open year none
+        of whose periods documents use; the action still works on the saved
+        year, under lock, so unsaved edits the client sent are dropped.
+
+        Returns the year's name either way."""
+        if self.is_new():
+            if not _GENERATE_ROLES.intersection(frappe.get_roles()):
+                frappe.throw("Only an EPM Admin can generate periods.", frappe.PermissionError)
+            self._replace_periods()
+            self.insert()
+            return self.name
+
         self._lock_and_reload()
         if not _GENERATE_ROLES.intersection(frappe.get_roles()):
             frappe.throw("Only an EPM Admin can generate periods.", frappe.PermissionError)
@@ -217,6 +234,13 @@ class EPMFiscalYear(Document):
                 "generate only on an unused year."
             )
 
+        self._replace_periods()
+        self.save()
+        return self.name
+
+    def _replace_periods(self):
+        """Set the period table to the rows the year's pattern gives, for
+        generate_periods's new-doc and saved-doc paths alike."""
         try:
             rows = fpm.generate_periods(
                 self.period_pattern, _date(self.start_date), _date(self.end_date),
@@ -237,7 +261,6 @@ class EPMFiscalYear(Document):
                 "quarter": r["quarter"],
                 "status": fstm.OPEN,
             })
-        self.save()
 
     @frappe.whitelist(methods=["POST"])
     def close_period(self, fiscal_period, note=None):
