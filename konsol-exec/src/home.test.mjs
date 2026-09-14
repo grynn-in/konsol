@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
 	parsePeriodRoute, monthPath, currentMonthPath, isMine,
-	stageTarget, crumbsFor, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
+	stageTarget, crumbsFor, periodCrumb, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
 } from "./home.js";
 
 test("no client-side 0/13 period vocabulary: the server's code and label are used as-is", () => {
@@ -58,6 +58,30 @@ test("the path always says year, month, then view; code and label are exactly th
 	// A 13-period year's close (fiscal_period 14) is just whatever the server calls it.
 	assert.deepEqual(crumbsFor({ name: "month", year: 2099, period: 14, code: "P14", label: "Second close" }).map((c) => c.label),
 		["FY2099", "P14 · Second close", "Close"]);
+});
+
+test("periodCrumb reads the server's code/label from the tree; an undeclared period gets a 'not declared' crumb, never undefined", () => {
+	const tree = { years: [{ fiscal_year: 2026, periods: [{ fiscal_period: 9, code: "P09", label: "Sep 2026" }] }] };
+	assert.deepEqual(periodCrumb(tree, 2026, 9), { code: "P09", label: "Sep 2026" });
+	assert.deepEqual(periodCrumb(tree, 2026, 14), { code: "Period 14", label: "not declared" });
+	assert.deepEqual(periodCrumb(tree, 2099, 1), { code: "Period 1", label: "not declared" });
+	assert.deepEqual(periodCrumb(null, 2026, 9), { code: "Period 9", label: "not declared" });
+});
+
+test("App.vue's exact crumb inputs (name, year, period, stepLabel) plus the tree give the server's code/label; nothing ever says undefined", () => {
+	const tree = { years: [{ fiscal_year: 2026, periods: [{ fiscal_period: 9, code: "P09", label: "Sep 2026" }] }] };
+	const build = (name, year, period, stepLabel) =>
+		crumbsFor({ name, year, period, ...periodCrumb(tree, year, period), stepLabel });
+
+	const month = build("month", 2026, 9, null).map((c) => c.label);
+	assert.deepEqual(month, ["FY2026", "P09 · Sep 2026", "Close"]);
+	assert.equal(month.some((l) => /undefined/.test(l)), false);
+
+	// FY2099 period 14 isn't in the tree: a "not declared" crumb, never an
+	// invented month name and never "undefined".
+	const step = build("step", 2099, 14, "Sign off period").map((c) => c.label);
+	assert.deepEqual(step, ["FY2099", "Period 14 · not declared", "Sign off period"]);
+	assert.equal(step.some((l) => /undefined/.test(l)), false);
 });
 
 test("navigator opens the current and the selected year", () => {
