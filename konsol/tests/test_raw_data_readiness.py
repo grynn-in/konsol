@@ -59,7 +59,8 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
                                                             count=lambda *a, **k: mariadb_tbs))
     with open(TASKS) as f:
         tree = ast.parse(f.read())
-    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate", "_batches_without_basis"}
+    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate", "_batches_without_basis",
+              "_basis_refusal"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
     ch = types.ModuleType("konsol.clickhouse")
@@ -95,8 +96,9 @@ def test_a_running_or_failed_connector_still_blocks():
     assert check(rows=12, connectors=FAILED)[0][0] is False
     assert check(rows=12, connectors=NEVER_SYNCED)[0] == (
         False, "Connector 'ZZ ERP' has never synced — epm_raw may be empty")
-    # and the warehouse is not even asked while a connector decides
-    assert check(rows=12, connectors=RUNNING)[1] == []
+    # konsolidat#199: the warehouse is asked only about claimed trial balances
+    # (rows, undeclared bases) before the connector decides; nothing else
+    assert all("epm_raw.trial_balance_submission" in s for s in check(rows=12, connectors=RUNNING)[1])
 
 
 def test_synced_connectors_are_unchanged():
@@ -111,8 +113,10 @@ def test_a_wiped_warehouse_refuses_even_with_submitted_documents():
 
 def test_counts_the_claimed_rows_in_the_warehouse():
     _, sqls = check(rows=5)
-    assert sqls == ["SELECT count() FROM epm_raw.trial_balance_submissions WHERE batch_id IN "
-                    "(SELECT batch_id FROM epm_raw.trial_balance_submission_control)"]
+    assert sqls[0] == ("SELECT count() FROM epm_raw.trial_balance_submissions WHERE batch_id IN "
+                       "(SELECT batch_id FROM epm_raw.trial_balance_submission_control)")
+    # konsolidat#199: with claimed rows, the one other query asks which batches lack a basis
+    assert len(sqls) == 2 and "argMax(amount_basis, claimed_at)" in sqls[1]
 
 
 def test_an_unreadable_warehouse_refuses():
@@ -129,7 +133,8 @@ def test_with_nothing_landed_the_airbyte_gate_is_unchanged():
 
 def test_the_flag_still_works():
     (ok, message), sqls = check(skip=1, connectors=RUNNING)
-    assert ok and "skip_airbyte_sync" in message and sqls == [], message
+    # konsolidat#199: the skip path still asks the warehouse about claimed batches (rows, bases); no connector is consulted
+    assert ok and "skip_airbyte_sync" in message and len(sqls) <= 2 and all("epm_raw" in s for s in sqls), message
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +171,8 @@ def test_an_empty_global_sync_status_with_trial_balances_still_passes():
 
 def test_skip_flag_bypasses_a_failed_global_sync():
     (ok, message), sqls = check(skip=1, sync_status="Failed", rows=12)
-    assert ok and "skip_airbyte_sync" in message and sqls == [], message
+    # konsolidat#199: the skip path still asks the warehouse about claimed batches (rows, bases); no connector is consulted
+    assert ok and "skip_airbyte_sync" in message and len(sqls) <= 2 and all("epm_raw" in s for s in sqls), message
 
 
 # ---------------------------------------------------------------------------
@@ -232,13 +238,14 @@ def test_chart_passes_with_no_connector_and_zero_trial_balances():
 
 def test_claimed_batches_without_a_basis_are_refused_by_name():
     """konsolidat#199: rows exist, but two claimed batches never declared what
-    their amounts are; the build is refused and the message names them."""
-    ok, msg = check(skip=1, rows=500, without_basis="2\tTBS-0001,TBS-0002")
+    their amounts are; the build is refused and the message names them — even
+    with skip_airbyte_sync on, which is the trial-balance-only site."""
+    (ok, msg), _ = check(skip=1, rows=500, without_basis="2\tTBS-0001,TBS-0002")
     assert ok is False
     assert "2 claimed trial balance batch(es) have no Amount Basis" in msg
     assert "TBS-0001, TBS-0002" in msg and "Set Amount Basis" in msg
 
 
 def test_every_batch_declared_passes():
-    ok, msg = check(skip=1, rows=500, without_basis="0")
-    assert ok is True
+    (ok, msg), _ = check(skip=1, rows=500, without_basis="0")
+    assert ok is True and "skip_airbyte_sync" in msg

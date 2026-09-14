@@ -252,6 +252,25 @@ def _check_chart_build_allowed():
     return True, "No enabled connector — chart build has no trial-balance-rows dependency"
 
 
+def _basis_refusal(rows):
+    """``(False, message)`` when claimed trial balance batches exist and any
+    lacks an Amount Basis (or the control table has no such column yet), else
+    None. Nothing claimed → nothing to declare (an ERP-only site is unaffected).
+    konsolidat#199: the warehouse normalises each batch by its declared basis;
+    an undeclared batch would still be read as period movements."""
+    if not rows:
+        return None
+    without = _batches_without_basis()
+    if without is None:
+        return False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate"
+    names, n = without
+    if n:
+        return False, (f"{n} claimed trial balance batch(es) have no Amount Basis (e.g. {', '.join(names)}): "
+                       "set it on the submissions (Trial Balance Submission list → Set Amount Basis) "
+                       "before building")
+    return None
+
+
 def check_raw_data_available():
     """Check if epm_raw has valid data.
 
@@ -270,6 +289,14 @@ def check_raw_data_available():
 
     Returns (ok: bool, message: str).
     """
+    # konsolidat#199: claimed trial balance batches must declare their Amount
+    # Basis whatever else gates the build — the skip_airbyte_sync short-circuit
+    # below is exactly the trial-balance-only site, so this runs first.
+    rows = _trial_balance_rows()
+    refusal = _basis_refusal(rows)
+    if refusal is not None:
+        return refusal
+
     # When Airbyte sync is skipped (demo data / manual epm_raw load), there is
     # no connector or Airbyte status to gate on — readiness is implied by the
     # operator having loaded epm_raw out of band. Short-circuit before any
@@ -295,19 +322,7 @@ def check_raw_data_available():
 
     # Trial balances uploaded to konsol and landed in the warehouse are this
     # site's raw data (konsol#182).
-    rows = _trial_balance_rows()
     if rows:
-        # konsolidat#199: the warehouse normalises each batch by its declared
-        # Amount Basis; a claimed batch without one would still be read as
-        # period movements, so refuse until every batch says what it holds.
-        without = _batches_without_basis()
-        if without is None:
-            return False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate"
-        names, n = without
-        if n:
-            return False, (f"{n} claimed trial balance batch(es) have no Amount Basis (e.g. {', '.join(names)}): "
-                           "set it on the submissions (Trial Balance Submission list → Set Amount Basis) "
-                           "before building")
         return True, (f"{rows} trial balance rows in epm_raw.trial_balance_submissions "
                       "— building from them (no connector)")
 
