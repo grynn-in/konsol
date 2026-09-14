@@ -17,6 +17,15 @@ function years(options) {
 	return (options?.fiscal_years || []).map(String);
 }
 
+/** `fiscal_years` oldest-first, regardless of the order the server sent it
+ *  in — the server (`orchestrator.api.launch_options`) actually sends it
+ *  newest-first, and nothing here may assume a position means an age. */
+function chronologicalYears(options) {
+	return years(options)
+		.slice()
+		.sort((a, b) => Number(a) - Number(b));
+}
+
 function periods(options) {
 	return (options?.fiscal_periods || []).map((p) => ({ ...p, value: String(p.value) }));
 }
@@ -57,7 +66,7 @@ export function formatPeriod(period, options) {
  * clamping — clamping makes a dead button look alive.
  */
 export function stepPeriod(period, options, delta) {
-	const ys = years(options);
+	const ys = chronologicalYears(options);
 	const ps = periods(options);
 	if (!period?.year || !ys.length || !ps.length) return null;
 
@@ -87,7 +96,7 @@ export function canStep(period, options, delta) {
 /** The years offered by the picker, newest first — finance looks backwards far
  *  more often than forwards. */
 export function yearChoices(options) {
-	return years(options).slice().reverse();
+	return chronologicalYears(options).reverse();
 }
 
 export function periodChoices(options) {
