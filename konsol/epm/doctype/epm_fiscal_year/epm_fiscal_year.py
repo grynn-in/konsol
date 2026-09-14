@@ -207,9 +207,12 @@ class EPMFiscalYear(Document):
         inserted, full validate included. This is the only way to create a
         year: it can't be saved without Regular periods.
 
-        On a saved year the rest still applies, and only on an Open year none
-        of whose periods documents use; the action still works on the saved
-        year, under lock, so unsaved edits the client sent are dropped.
+        On a saved year the rest still applies, and only on an Open year whose
+        saved rows are all Open too (a Locked or Closed row must be reopened
+        first, since the rows it replaces have no saved name to protect
+        them), and none of whose periods documents use; the action still
+        works on the saved year, under lock, so unsaved edits the client
+        sent are dropped.
 
         Returns the year's name either way.
 
@@ -231,6 +234,19 @@ class EPMFiscalYear(Document):
         status = _status(self.status)
         if status != fstm.OPEN:
             frappe.throw(f"FY{self.fiscal_year} is {status}; periods can't be generated.")
+
+        # _replace_periods drops every saved row and appends fresh ones with
+        # no saved name, so the status guard (_check_status_fields_unchanged)
+        # can't match them to their saved version and would silently read
+        # them as Open (PR #191 re-review 1). Refuse here, against the
+        # just-reloaded saved rows, before any row is replaced.
+        non_open = [r for r in (self.periods or []) if _status(r.status) != fstm.OPEN]
+        if non_open:
+            named = ", ".join(f"{r.period_code} is {_status(r.status)}" for r in non_open)
+            pronoun = "it" if len(non_open) == 1 else "them"
+            frappe.throw(
+                f"FY{self.fiscal_year}: {named}; reopen {pronoun} before generating periods."
+            )
 
         # _lock_and_reload already took the year row FOR UPDATE; a locking
         # read here (not a second lock) sees a document committed after this
