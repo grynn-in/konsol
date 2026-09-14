@@ -136,7 +136,7 @@ def _load():
         "konsol.fiscal_calendar", "konsol.group_rates")}
     calendar = mods["konsol.fiscal_calendar"]
     calendar.used = set()
-    calendar.periods_in_use = lambda fiscal_year: set(calendar.used)
+    calendar.periods_in_use = lambda fiscal_year, lock=False: set(calendar.used)
     mods["konsol"].fiscal_calendar = calendar
 
     rates = mods["konsol.group_rates"]

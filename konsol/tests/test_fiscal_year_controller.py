@@ -15,6 +15,7 @@ CONTROLLER = os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fis
 PURE = os.path.join(APP_DIR, "fiscal_structure_model.py")
 STATUS = os.path.join(APP_DIR, "fiscal_status_model.py")
 PATTERNS = os.path.join(APP_DIR, "fiscal_patterns_model.py")
+CALENDAR = os.path.join(APP_DIR, "fiscal_calendar.py")
 
 
 class Thrown(Exception):
@@ -76,9 +77,17 @@ def _load():
     # with _in_use(). Default: nothing in use.
     calendar = mods["konsol.fiscal_calendar"]
     calendar.used = set()
-    calendar.periods_in_use = lambda fiscal_year: set(calendar.used)
+    calendar.periods_in_use = lambda fiscal_year, lock=False: set(calendar.used)
     mods["konsol"].fiscal_calendar = calendar
     frappe = mods["frappe"]
+    #: Every db.sql call, as ("sql", normalised query, values).
+    frappe.events = []
+
+    def sql(query, values=None, *args, **kwargs):
+        frappe.events.append(("sql", " ".join(query.split()), values))
+        return []
+
+    frappe.db = types.SimpleNamespace(sql=sql)
     frappe._ = lambda s: s
     frappe._dict = _dict
     frappe.throw = throw
@@ -346,6 +355,39 @@ def test_unused_year_can_be_deleted():
     with _load() as module:
         _in_use(set())
         assert _delete(_saved(module)) is None
+
+
+def test_freeze_reads_lock():
+    """The used-period freeze decides on committed rows (review #191, 6).
+    A document's gate holds a SHARE lock on the year row through its
+    transaction (period_status.period_row), so validate and on_trash first
+    take the year row FOR UPDATE, waiting out in-flight documents; then they
+    read the periods in use with a locking read, since under REPEATABLE READ
+    a plain SELECT returns the transaction's snapshot and would miss a
+    document committed after it. The real periods_in_use runs here, against
+    the recording db stub."""
+    with _load() as module:
+        frappe = sys.modules["frappe"]
+        spec = importlib.util.spec_from_file_location("fiscal_calendar_real_under_test", CALENDAR)
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        sys.modules["konsol.fiscal_calendar"].periods_in_use = real.periods_in_use
+
+        for what, run in (("validate", lambda: _validate(_edit(module, _saved(module)))),
+                          ("on_trash", lambda: _delete(_saved(module)))):
+            frappe.events.clear()
+            assert run() is None, what
+            queries = [e[1] for e in frappe.events]
+            lock = next((i for i, q in enumerate(queries)
+                         if "`tabEPM Fiscal Year`" in q and "FOR UPDATE" in q), None)
+            assert lock is not None, f"{what}: no FOR UPDATE on the year row: {queries}"
+            assert frappe.events[lock][2] in ("2025", ("2025",)), frappe.events[lock]
+            reads = [i for i, q in enumerate(queries) if "SELECT DISTINCT fiscal_period" in q]
+            assert reads, f"{what}: periods_in_use was not queried: {queries}"
+            assert all(lock < i for i in reads), f"{what}: a freeze read ran before the lock: {queries}"
+            for i in reads:
+                for part in queries[i].split("UNION"):
+                    assert "LOCK IN SHARE MODE" in part, f"{what}: a plain freeze read: {part}"
 
 
 def test_migration_flag_skips_in_use_rule():

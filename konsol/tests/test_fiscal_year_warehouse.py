@@ -233,7 +233,8 @@ def _controller(clickhouse):
         setattr(konsol, n.rsplit(".", 1)[1], mods[n])
     calendar = mods["konsol.fiscal_calendar"]
     calendar.fiscal_period_rows = lambda: [dict(_PUBLISHED)]
-    calendar.periods_in_use = lambda fiscal_year: set()
+    calendar.periods_in_use = lambda fiscal_year, lock=False: set()
+    frappe.db = types.SimpleNamespace(sql=lambda *a, **k: [])   # on_trash's year-row lock
     with _swap(mods):
         spec = importlib.util.spec_from_file_location("epm_fiscal_year_under_test_wh", CONTROLLER)
         module = importlib.util.module_from_spec(spec)

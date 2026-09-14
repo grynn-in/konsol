@@ -149,6 +149,40 @@ def test_periods_in_use_query():
             assert "docstatus" not in part, f"{name}: not submittable, every row counts"
 
 
+def test_periods_in_use_lock_flag():
+    """lock=True makes every per-doctype SELECT a locking read (LOCK IN SHARE
+    MODE). Under REPEATABLE READ a plain SELECT returns the transaction's
+    snapshot, so a freeze gate would miss a document committed after it; a
+    locking read returns the latest committed rows (review #191, 6). The
+    default stays a plain read for callers that only look."""
+    for kwargs, locked in (({}, False), ({"lock": False}, False), ({"lock": True}, True)):
+        db = _DB([(3,), (None,)])
+        M = _load(db)
+        saved = sys.modules.get("frappe")
+        frappe = types.ModuleType("frappe")
+        frappe.db = db
+        sys.modules["frappe"] = frappe
+        try:
+            result = M.periods_in_use(2026, **kwargs)
+        finally:
+            if saved is None:
+                sys.modules.pop("frappe", None)
+            else:
+                sys.modules["frappe"] = saved
+
+        assert result == {3}, kwargs
+        assert len(db.calls) == 1, "must be one UNION query"
+        query, values = db.calls[0]
+        assert "2026" not in query, "the year must be a parameter, not formatted in"
+        parts = query.split("UNION")
+        assert len(parts) == len(M.DOCTYPES_USING_PERIODS), query
+        for part in parts:
+            if locked:
+                assert part.strip().rstrip(")").rstrip().endswith("LOCK IN SHARE MODE"), part
+            else:
+                assert "LOCK" not in part and "FOR UPDATE" not in part, part
+
+
 def test_connections_cover_period_doctypes():
     """The EPM Fiscal Year Connections tab must list every period-data
     doctype exactly once: fiscal_year on a document is an Int, a year's
