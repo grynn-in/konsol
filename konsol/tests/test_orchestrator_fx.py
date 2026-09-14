@@ -50,11 +50,17 @@ def test_as_of_comes_from_declared_periods():
     sql = fx.build_fx_query({})
     assert "silver_exchange_rates" not in sql and "exchange_rate AS" not in sql
     assert "        rate,\n" in sql and "'konsol' AS source" in sql
-    assert "INNER JOIN epm_staging.fiscal_periods" in sql
     assert "fp.start_date AS as_of" in sql
     assert "makeDate" not in sql
     assert "least(" not in sql
     assert "toDate(concat" not in sql
+    # konsol#189 row 70f: a duplicated period row (two concurrent resyncs)
+    # must not duplicate the joined rate, so the join is against a
+    # one-row-per-period subquery, never the raw table directly.
+    assert "GROUP BY fiscal_year, fiscal_period" in sql
+    assert "min(start_date) AS start_date" in sql
+    assert "FROM epm_staging.fiscal_periods" in sql
+    assert ") AS fp" in sql
 
 
 def test_build_fx_query_from_only():

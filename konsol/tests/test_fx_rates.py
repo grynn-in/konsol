@@ -72,12 +72,18 @@ def test_fx_rates_period_start_from_rows():
                          '{"data": []}')
     fx_rates(as_of="2099-12-31")
     [(sql, params)] = calls
-    assert "INNER JOIN epm_staging.fiscal_periods" in sql
     assert "toString(fp.start_date) AS period_start" in sql
     assert "fp.start_date <= {asof:Date}" in sql
     assert "makeDate" not in sql
     assert "least(" not in sql
     assert "greatest(" not in sql
+    # konsol#189 row 70f: fiscal_periods is truncate+insert resynced, so two
+    # concurrent resyncs can leave a period twice; join a one-row-per-period
+    # subquery, never the raw table, so a rate is never doubled.
+    assert "GROUP BY fiscal_year, fiscal_period" in sql
+    assert "min(start_date) AS start_date" in sql
+    assert "FROM epm_staging.fiscal_periods" in sql
+    assert ") AS fp" in sql
 
 
 def test_filters_are_bound_as_param_prefixed_http_parameters():
