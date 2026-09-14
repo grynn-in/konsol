@@ -605,7 +605,8 @@ def test_close_stamps_and_notes():
         assert row.status == "Closed"
         assert row.closed_by == "closer@example.com"
         assert row.closed_on == NOW
-        assert doc.flags.konsol_status_action, "the save did not run as a status action"
+        assert doc.flags.konsol_status_action is None, \
+            "the status-action flag outlived its save"
         assert doc.closing_note.startswith("FY opened."), doc.closing_note
         last = doc.closing_note.splitlines()[-1]
         assert "P03" in last and "2026-09-14" in last and "Accruals booked" in last, last
@@ -719,7 +720,8 @@ def test_close_year_closes_rows():
 
         assert doc.status == "Closed"
         assert doc.closed_by == "closer@example.com" and doc.closed_on == NOW
-        assert doc.flags.konsol_status_action, "the save did not run as a status action"
+        assert doc.flags.konsol_status_action is None, \
+            "the status-action flag outlived its save"
         assert doc.saves == 1
         assert doc.closing_note.startswith("FY opened."), doc.closing_note
         last = doc.closing_note.splitlines()[-1]
@@ -790,7 +792,8 @@ def test_reopen_year_keeps_rows():
         assert _snapshot(doc) == before, "Reopen Year changed the period rows"
         last = doc.closing_note.splitlines()[-1]
         assert "FY2025" in last and "2026-09-14" in last and "Auditor adjustment" in last, last
-        assert doc.saves == 1 and doc.flags.konsol_status_action
+        assert doc.saves == 1 and doc.flags.konsol_status_action is None, \
+            "the status-action flag outlived its save"
         assert _rates().calls == [], "reopening checked group rates"
         assert result["status"] == "Open", result
 

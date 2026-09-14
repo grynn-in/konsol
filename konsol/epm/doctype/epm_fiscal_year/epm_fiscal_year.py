@@ -66,6 +66,19 @@ def _row_key(row):
     return row.name
 
 
+def _row_is_new(row):
+    """True for a row that hasn't been saved yet. Frappe marks a freshly
+    appended child row with `__islocal` (base_document.py:_init_child) and,
+    before that flag reaches the row, the desk gives it a temporary name
+    like "new-epm-fiscal-year-period-1"; a row appended in Python
+    (Document.append, as the migration patch and scripts do) carries
+    neither and has no name at all."""
+    if getattr(row, "__islocal", None):
+        return True
+    name = row.name
+    return not name or (isinstance(name, str) and name.startswith("new-"))
+
+
 def _year_dict(doc):
     """The year fields as fiscal_structure_model reads them."""
     return {
@@ -474,13 +487,25 @@ class EPMFiscalYear(Document):
         database right before the action ran, and every action method only
         stamps status fields on the reloaded rows. AssertionError, not
         frappe.throw: a mismatch here is a bug in this controller, not
-        something a caller can fix by resubmitting."""
+        something a caller can fix by resubmitting.
+
+        Compares the year's own dates too, and each row's period_type (plus
+        period_label and quarter, cheap alongside it): a status action never
+        touches any of these, but the row tuple alone didn't cover them
+        (PR #191 re-review 3)."""
+        def year_structure(doc):
+            return (_date(doc.start_date), _date(doc.end_date))
+
         def structure(doc):
             return [
-                (r.name, _int(r.fiscal_period), r.period_code, _date(r.start_date), _date(r.end_date))
+                (r.name, _int(r.fiscal_period), r.period_code, r.period_type,
+                 r.period_label, r.quarter, _date(r.start_date), _date(r.end_date))
                 for r in (doc.periods or [])
             ]
 
+        assert year_structure(self) == year_structure(before), (
+            f"FY{self.fiscal_year}: a status action changed the year's dates."
+        )
         assert structure(self) == structure(before), (
             f"FY{self.fiscal_year}: a status action changed period structure."
         )
@@ -489,12 +514,21 @@ class EPMFiscalYear(Document):
         """Save, declaring the status changes this action makes: the exact
         (status, closed_by, closed_on) of each moved row, keyed as the status
         guard matches rows, and of the year when it moves. The guard refuses
-        any other status difference."""
+        any other status difference.
+
+        The flag must not outlive this save: cleared in `finally` so a later
+        plain save() on the same in-memory object (a script or console
+        holding onto it after the action) re-applies the used-period freeze
+        and the foreign/displaced-row checks instead of still validating as
+        a declared status action (PR #191 re-review 3)."""
         declared = {"rows": {_row_key(r): _status_values(r) for r in rows}}
         if year:
             declared["year"] = _status_values(self)
         self.flags.konsol_status_action = declared
-        self.save()
+        try:
+            self.save()
+        finally:
+            self.flags.konsol_status_action = None
 
     def _append_note(self, subject, verb, text, now):
         """Add "<subject> <verb> on <date> by <user>: <text>" to the closing
@@ -520,7 +554,30 @@ class EPMFiscalYear(Document):
         row's name or fiscal_period, only its status fields, checked above)
         or the migration patch, every saved row that isn't Open must still be
         named, at its own fiscal_period, by the new doc; and no other row may
-        claim that fiscal_period either."""
+        claim that fiscal_period either.
+
+        A row can also carry a *foreign* name: the child name of a period
+        row saved under a different year. Such a name is never in this
+        year's saved_rows either, so without a check of its own it would be
+        compared against Open like any other unmatched row (PR #191
+        re-review 2, finding 2) — and Frappe would then update that other
+        year's row by name, moving it into this one. Refuse any row whose
+        name is set, isn't a not-yet-saved row's (_row_is_new), and isn't
+        one of this year's own saved rows, before anything below trusts a
+        row's name to look up its saved status. This runs even for the
+        migration patch and a declared status action: neither ever sends a
+        foreign name, so it costs them nothing."""
+        saved_rows = {_row_key(r): r for r in ((before.periods or []) if before else [])}
+        foreign = [r for r in (self.periods or [])
+                   if r.name and not _row_is_new(r) and r.name not in saved_rows]
+        if foreign:
+            frappe.throw(
+                "\n".join(
+                    f"Row {r.period_code} belongs to another fiscal year; "
+                    "add a new row instead."
+                    for r in foreign),
+                frappe.PermissionError)
+
         if self.flags.konsol_fiscal_migration:
             return
         status_action = self.flags.konsol_status_action
@@ -534,7 +591,6 @@ class EPMFiscalYear(Document):
                 if new != old:
                     problems.append(f"{label} {_ACTIONS_NOTE}")
 
-        saved_rows = {_row_key(r): r for r in ((before.periods or []) if before else [])}
         for r in self.periods or []:
             values = _status_values(r)
             if values == declared_rows.get(_row_key(r)):
