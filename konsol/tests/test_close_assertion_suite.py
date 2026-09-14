@@ -3,8 +3,11 @@
 Site-free AST/source + JSON-structure checks, matching the repo convention.
 """
 import ast
+import importlib.util
 import json
 import os
+import sys
+import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CR_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run")
@@ -125,3 +128,111 @@ def test_close_assertions_report_executes_shape():
     src = _src(os.path.join(RPT_DIR, "close_assertions.py"))
     # per-category board + summary + chart
     assert "_chart" in src and "_summary" in src and "Assertion Step" in src
+
+
+# --- gate: undeclared fiscal year/period (konsol#189, PR#191 review finding 8)
+# ---------------------------------------------------------------------------
+# Assertion Runs with a period count toward fiscal_calendar.periods_in_use
+# (they freeze the period), so an undeclared year or period must be refused
+# in validate(), the same as IC Balance / Allocation Run. A year-only run (no
+# fiscal_period — the field is optional) must still refuse an undeclared
+# year: it checks the year exists as an EPM Fiscal Year, it never invents one.
+#
+# assertion_run.py is loaded against a stub frappe + konsol.period_status, the
+# same technique as test_group_exchange_rate.py's _rules_module/_controller.
+
+def _load_assertion_run(declared_years=(), declared_periods=()):
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+
+    def throw(msg, exc=None, *a, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    frappe.throw = throw
+    frappe._ = lambda s: s
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    frappe.utils = types.SimpleNamespace(get_bench_path=lambda: "/bench")
+    frappe.db = types.SimpleNamespace(
+        exists=lambda dt, filters=None: (
+            dt == "EPM Fiscal Year" and int(filters["fiscal_year"]) in declared_years
+        ),
+    )
+
+    class Document:
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+
+        def __getattr__(self, name):
+            if name.startswith("__"):
+                raise AttributeError(name)
+            return None
+
+    doc_mod = types.ModuleType("frappe.model.document")
+    doc_mod.Document = Document
+
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+
+    def assert_declared(fiscal_year, fiscal_period):
+        if (int(fiscal_year), int(fiscal_period)) not in declared_periods:
+            raise period_status.PeriodNotDeclared(
+                f"FY{fiscal_year} has no period {fiscal_period}: not declared.")
+
+    period_status.assert_declared = assert_declared
+
+    mods = {
+        "frappe": frappe,
+        "frappe.model": types.ModuleType("frappe.model"),
+        "frappe.model.document": doc_mod,
+        "konsol": types.ModuleType("konsol"),
+        "konsol.period_status": period_status,
+    }
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("assertion_run_under_test", CR_PY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    return module, period_status.PeriodNotDeclared
+
+
+def test_undeclared_year_only_run_refused():
+    """No fiscal_period given, FY2099 has no EPM Fiscal Year row: refused."""
+    module, not_declared = _load_assertion_run(declared_years=set(), declared_periods=set())
+    doc = module.AssertionRun(fiscal_year=2099, fiscal_period=None)
+    try:
+        doc.validate()
+    except not_declared as e:
+        assert "2099" in str(e)
+    else:
+        raise AssertionError("undeclared FY2099 (year-only run) was accepted")
+
+
+def test_declared_year_only_run_ok():
+    """No fiscal_period given, FY2099 IS declared: validate must not raise."""
+    module, _ = _load_assertion_run(declared_years={2099}, declared_periods=set())
+    doc = module.AssertionRun(fiscal_year=2099, fiscal_period=None)
+    doc.validate()
+
+
+def test_undeclared_period_refused_even_with_declared_year():
+    module, not_declared = _load_assertion_run(declared_years={2099}, declared_periods=set())
+    doc = module.AssertionRun(fiscal_year=2099, fiscal_period=12)
+    try:
+        doc.validate()
+    except not_declared:
+        pass
+    else:
+        raise AssertionError("undeclared period 12 of a declared FY2099 was accepted")
+
+
+def test_declared_year_and_period_ok():
+    module, _ = _load_assertion_run(declared_years={2099}, declared_periods={(2099, 12)})
+    doc = module.AssertionRun(fiscal_year=2099, fiscal_period=12)
+    doc.validate()

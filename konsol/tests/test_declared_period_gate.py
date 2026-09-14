@@ -20,6 +20,7 @@ CONTROLLERS = {
     "Allocation Driver": "allocation/doctype/allocation_driver/allocation_driver.py",
     "Group Exchange Rate": "consolidation/doctype/group_exchange_rate/group_exchange_rate.py",
     "Trial Balance Submission": "consolidation/doctype/trial_balance_submission/trial_balance_submission.py",
+    "Assertion Run": "consolidation/doctype/assertion_run/assertion_run.py",
 }
 PENDING = set()
 
