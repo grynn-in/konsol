@@ -170,7 +170,17 @@ export const closeMachine = setup({
 				onError: { target: "failed", actions: "assignLoadError" },
 			},
 		},
-		failed: { on: { RETRY: "loading" } },
+		// `failed` also accepts SET_PERIOD, same as `ready` (row 70q2): a
+		// rejected period change (70q) must not trap the user on the period
+		// that just failed — picking a DIFFERENT one from the navigator goes
+		// through the same full reload `changingPeriod` gives `ready`'s
+		// SET_PERIOD, rather than being silently ignored.
+		failed: {
+			on: {
+				RETRY: "loading",
+				SET_PERIOD: { target: "changingPeriod", actions: "setPeriod" },
+			},
+		},
 		// A plain REFRESH (the button, the poll tick, and the refresh after a
 		// Start) re-reads the SAME period's close state. It never needs a new
 		// set of launch_options — only SET_PERIOD does (review finding 1, PR
