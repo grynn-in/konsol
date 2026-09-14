@@ -211,8 +211,13 @@ class EPMFiscalYear(Document):
         of whose periods documents use; the action still works on the saved
         year, under lock, so unsaved edits the client sent are dropped.
 
-        Returns the year's name either way."""
-        if self.is_new():
+        Returns the year's name either way.
+
+        "Unsaved" is is_new() OR no name: Frappe v15's is_new() returns the
+        __islocal flag, which only the desk sets, so a year built in Python
+        (frappe.get_doc({...}), as scripts and the bench test do) has no
+        name and a falsy is_new()."""
+        if self.is_new() or not self.name:
             if not _GENERATE_ROLES.intersection(frappe.get_roles()):
                 frappe.throw("Only an EPM Admin can generate periods.", frappe.PermissionError)
             self._replace_periods()
