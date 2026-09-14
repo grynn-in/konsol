@@ -465,12 +465,22 @@ class EPMFiscalYear(Document):
         changes a status action declared (flags.konsol_status_action, set by
         _save_as_status_action; a bare True declares nothing). A row is
         matched to its saved version by _row_key; a row with no saved version
-        (and a new year) is compared with Open, never closed."""
+        (and a new year) is compared with Open, never closed.
+
+        Matching by name alone lets a value-for-value comparison be dodged:
+        deleting a Locked row (optionally re-adding a same-numbered row as a
+        fresh, unnamed Open row), or a crafted save that swaps two rows'
+        names while keeping each name's own status values, both leave every
+        per-name comparison above looking unchanged (PR #191 re-review
+        finding 2). Outside a declared status action (which never touches a
+        row's name or fiscal_period, only its status fields, checked above)
+        or the migration patch, every saved row that isn't Open must still be
+        named, at its own fiscal_period, by the new doc; and no other row may
+        claim that fiscal_period either."""
         if self.flags.konsol_fiscal_migration:
             return
-        declared = self.flags.konsol_status_action
-        if not isinstance(declared, dict):
-            declared = {}
+        status_action = self.flags.konsol_status_action
+        declared = status_action if isinstance(status_action, dict) else {}
         declared_rows = declared.get("rows") or {}
 
         problems = []
@@ -489,6 +499,28 @@ class EPMFiscalYear(Document):
             for label, new, old in zip(_STATUS_LABELS, values, old_values):
                 if new != old:
                     problems.append(f"Period {r.period_code}: {label} {_ACTIONS_NOTE}")
+
+        if not isinstance(status_action, dict):
+            new_by_name = {r.name: r for r in (self.periods or []) if r.name}
+            displaced = {}
+            for key, sr in saved_rows.items():
+                if _status(sr.status) == fstm.OPEN:
+                    continue
+                nr = new_by_name.get(key)
+                if nr is None or _int(nr.fiscal_period) != _int(sr.fiscal_period):
+                    displaced[key] = sr
+            for r in self.periods or []:
+                if r.name in saved_rows:
+                    continue  # matched to its own saved row above
+                for key, sr in saved_rows.items():
+                    if (_status(sr.status) != fstm.OPEN
+                            and _int(r.fiscal_period) == _int(sr.fiscal_period)):
+                        displaced.setdefault(key, sr)
+            for sr in displaced.values():
+                problems.append(
+                    f"Period {sr.period_code} is {_status(sr.status)}; it can't be "
+                    "removed or replaced — reopen it first."
+                )
 
         if problems:
             frappe.throw("\n".join(problems), frappe.PermissionError)
