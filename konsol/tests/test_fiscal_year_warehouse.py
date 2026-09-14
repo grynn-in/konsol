@@ -15,6 +15,7 @@ import importlib.util
 import os
 import sys
 import types
+from contextlib import contextmanager
 from datetime import date
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -83,7 +84,14 @@ class _DB:
         return self.rows
 
 
+@contextmanager
 def _load(db):
+    """Install a stub frappe, load fiscal_calendar.py against it, and keep the
+    stub in place for the caller's `with` block — fiscal_period_rows() imports
+    frappe lazily at call time, so the stub must still be installed when the
+    caller invokes it, not just while this module executes. Restores
+    sys.modules on the way out so later test files aren't affected.
+    """
     saved = sys.modules.get("frappe")
     frappe = types.ModuleType("frappe")
     frappe.db = db
@@ -93,7 +101,7 @@ def _load(db):
             "fiscal_calendar_under_test_warehouse", FISCAL_CALENDAR_PATH)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod
+        yield mod
     finally:
         if saved is None:
             sys.modules.pop("frappe", None)
@@ -123,9 +131,8 @@ def _joined_row(**overrides):
 
 def test_rows_shape_matches_ddl_columns():
     db = _DB([_joined_row()])
-    M = _load(db)
-
-    rows = M.fiscal_period_rows()
+    with _load(db) as M:
+        rows = M.fiscal_period_rows()
 
     assert len(db.calls) == 1, "must be one join query"
     assert len(rows) == 1
@@ -141,9 +148,8 @@ def test_effective_status_published():
         _joined_row(fiscal_period=2, period_code="P02", period_label="",
                     quarter="", year_status="Open", row_status="Open"),
     ])
-    M = _load(db)
-
-    rows = M.fiscal_period_rows()
+    with _load(db) as M:
+        rows = M.fiscal_period_rows()
 
     assert rows[0]["status"] == "Closed"
     assert rows[1]["period_label"] == "P02"
