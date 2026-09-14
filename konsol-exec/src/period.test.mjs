@@ -60,35 +60,41 @@ test("yearChoices lists newest first — finance looks backwards", () => {
 	assert.deepEqual(yearChoices(OPTIONS), ["2026", "2025", "2024"]);
 });
 
-/* Real fiscal calendars carry an opening and a closing period around the twelve
- * you actually close. Found by deploying against seeded data, where the console
- * opened on "CLS FY2024". */
+/* Real fiscal calendars are declared, not assumed: OPN/CLS/adjustment periods
+ * sit alongside the periods you actually close, and a calendar isn't
+ * guaranteed to stop at 12 — some declare 13 Regular periods. What makes a
+ * period "accounting" is its declared type (the `type` field the backend
+ * sends, from EPM Fiscal Year Period's `period_type`), never its number.
+ * Found by deploying against seeded data, where the console opened on
+ * "CLS FY2024". */
 const REAL_OPTIONS = {
 	fiscal_years: ["2024"],
 	fiscal_periods: [
-		{ value: "0", label: "OPN" },
-		...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: `P${i + 1}` })),
-		{ value: "13", label: "CLS" },
+		{ value: "0", label: "OPN", type: "Opening" },
+		...Array.from({ length: 13 }, (_, i) => ({ value: String(i + 1), label: `P${i + 1}`, type: "Regular" })),
+		{ value: "14", label: "CLS", type: "Closing" },
+		{ value: "15", label: "ADJ1", type: "Adjustment" },
 	],
 };
 
-test("isAccountingPeriod excludes the opening and closing periods", async () => {
+test("isAccountingPeriod goes by the declared type, not the period number", async () => {
 	const { isAccountingPeriod } = await import("./period.js");
-	assert.equal(isAccountingPeriod({ value: "0" }), false, "OPN is not a close period");
-	assert.equal(isAccountingPeriod({ value: "13" }), false, "CLS is not a close period");
-	assert.equal(isAccountingPeriod({ value: "1" }), true);
-	assert.equal(isAccountingPeriod({ value: "12" }), true);
+	assert.equal(isAccountingPeriod({ value: "0", type: "Opening" }), false, "OPN is not a close period");
+	assert.equal(isAccountingPeriod({ value: "13", type: "Regular" }), true, "a 13th Regular period is still accounting");
+	assert.equal(isAccountingPeriod({ value: "14", type: "Closing" }), false, "CLS is not a close period");
+	assert.equal(isAccountingPeriod({ value: "15", type: "Adjustment" }), false, "an adjustment period is not a close period");
+	assert.equal(isAccountingPeriod({ value: "1", type: "Regular" }), true);
 });
 
-test("accountingPeriods keeps twelve, adjustmentPeriods keeps the rest", async () => {
+test("accountingPeriods keeps every declared Regular period, adjustmentPeriods keeps the rest", async () => {
 	const { accountingPeriods, adjustmentPeriods } = await import("./period.js");
-	assert.equal(accountingPeriods(REAL_OPTIONS).length, 12);
-	assert.deepEqual(adjustmentPeriods(REAL_OPTIONS).map((p) => p.label), ["OPN", "CLS"]);
+	assert.equal(accountingPeriods(REAL_OPTIONS).length, 13, "P1..P13 are all declared Regular");
+	assert.deepEqual(adjustmentPeriods(REAL_OPTIONS).map((p) => p.label), ["OPN", "CLS", "ADJ1"]);
 });
 
-test("the app opens on P12, never on CLS", async () => {
+test("the app opens on the latest Regular period, never CLS or an adjustment period", async () => {
 	const { defaultPeriod } = await import("./machines/closeMachine.js");
-	assert.deepEqual(defaultPeriod(REAL_OPTIONS), { year: "2024", period: "12" });
+	assert.deepEqual(defaultPeriod(REAL_OPTIONS), { year: "2024", period: "13" });
 });
 
 test("defaultPeriod still works when a calendar has no adjustment periods", async () => {
