@@ -149,6 +149,28 @@ def test_periods_in_use_query():
             assert "docstatus" not in part, f"{name}: not submittable, every row counts"
 
 
+def test_connections_cover_period_doctypes():
+    """The EPM Fiscal Year Connections tab must list every period-data
+    doctype exactly once: fiscal_year on a document is an Int, a year's
+    record name is its text, and MariaDB compares them equal, so the plain
+    fieldname works. Leaving a doctype out would hide it from the dashboard
+    a period-freeze conflict points people to (konsol#189)."""
+    M = _load()
+    dash_path = os.path.join(
+        APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year_dashboard.py")
+    spec = importlib.util.spec_from_file_location(
+        "epm_fiscal_year_dashboard_under_test", dash_path)
+    dash = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dash)
+    data = dash.get_data()
+
+    assert data["fieldname"] == "fiscal_year"
+    items = [item for group in data["transactions"] for item in group["items"]]
+    assert len(items) == len(set(items)), f"duplicate items across groups: {items}"
+    assert set(items) == set(M.DOCTYPES_USING_PERIODS), (
+        sorted(set(items) ^ set(M.DOCTYPES_USING_PERIODS)))
+
+
 # ---- declare_years_in_use (konsol#189) --------------------------------------
 # The one-off tool for stacks whose warehouse holds years no konsol document
 # names. A stub frappe backed by in-memory tables and a stub konsol.clickhouse
