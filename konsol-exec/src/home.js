@@ -107,6 +107,19 @@ export function crumbsFor(where) {
 	return [{ label: "Konsol" }];
 }
 
+/**
+ * The period the shell is showing: the URL's period on the month page; the
+ * close plane's period elsewhere. The no-period home ("/") never borrows the
+ * plane's period (PR #192 re-review finding 2): the page says no declared
+ * period covers today, so the navigator must not highlight one anyway.
+ */
+export function selectedFor(routeName, routeSelection, planePeriod) {
+	if (routeName === "month") return routeSelection || null;
+	if (routeName === "home") return null;
+	const p = planePeriod;
+	return p?.year && p?.period !== "" && p?.period != null ? { year: Number(p.year), period: Number(p.period) } : null;
+}
+
 /** Years open in the navigator by default: the current one and the selected one. */
 export function defaultExpanded(tree, selected) {
 	const out = new Set();

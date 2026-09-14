@@ -23,7 +23,7 @@ import { closeMachine } from "./machines/index.js";
 import { homeMachine } from "./machines/homeMachine.js";
 import { formatPeriod } from "./period.js";
 import { closeSteps } from "./domain.js";
-import { crumbsFor, periodCrumb, openCount, parsePeriodRoute } from "./home.js";
+import { crumbsFor, periodCrumb, selectedFor, openCount, parsePeriodRoute } from "./home.js";
 import { isNoAccess } from "./homeApi.js";
 
 const router = useRouter();
@@ -66,12 +66,8 @@ const isMonth = computed(() => route.name === "month");
 const standalone = computed(() => route.name === "uploads");
 const routePeriod = computed(() => (isMonth.value ? parsePeriodRoute(route.params) : null));
 
-/** The period the shell is showing: the URL on a month page, the plane's on a step. */
-const selected = computed(() => {
-	if (isMonth.value) return routePeriod.value;
-	const p = period.value;
-	return p?.year && p?.period !== "" && p?.period != null ? { year: Number(p.year), period: Number(p.period) } : null;
-});
+/** The period the shell is showing: the URL on a month page, the plane's elsewhere — never on the no-period home. */
+const selected = computed(() => selectedFor(route.name, routePeriod.value, period.value));
 
 // Route → home: once per period change.
 watch(
