@@ -3,7 +3,8 @@
 Three read-only GET endpoints for konsol-exec's workspace (F7, 12 Sep 2026):
 
   whoami        roles, job titles and entity scope of the session user
-  period_tree   fiscal years with their fourteen periods and close state
+  period_tree   declared fiscal years (EPM Fiscal Year) with their own period
+                rows and effective close state; budget-only years undeclared
   month         one period: the eight-stage lane, the viewer's work queue
                 ("mine") and what they wait on ("waiting"), and system health
 
@@ -22,6 +23,7 @@ from frappe.utils import getdate, today
 
 from konsol import home_model as M
 from konsol import period_status
+from konsol.fiscal_status_model import OPEN, effective_status
 from konsol.entity_permissions import allowed_entity_codes, assigned_entities, subtree_codes
 
 KONSOL_ROLES = {role for role, _ in M.TITLES}
@@ -122,17 +124,24 @@ def period_tree():
     _require_konsol_user()
     now = getdate(today())
     current = now.year
-    years = {current - 1, current, current + 1}
 
-    statuses = {}
-    for r in frappe.get_all("Period Status", fields=["fiscal_year", "fiscal_period", "status"],
-                            limit_page_length=0):
-        try:
-            key = (int(r.fiscal_year), int(r.fiscal_period))
-        except (TypeError, ValueError):
-            continue
-        statuses[key] = r.status
-        years.add(key[0])
+    # The declared calendar: each EPM Fiscal Year with its own period rows. A
+    # year or period nobody declared is not open; it is not listed as a period.
+    declared = {}
+    for y in frappe.db.sql("select name, fiscal_year, status from `tabEPM Fiscal Year`", as_dict=True):
+        if y.fiscal_year is not None:
+            declared[str(y.name)] = y
+    rows_by_year = {}
+    for r in frappe.db.sql(
+            """select parent, fiscal_period, period_code, period_label, period_type,
+                      start_date, end_date, status
+               from `tabEPM Fiscal Year Period`
+               where parenttype = 'EPM Fiscal Year'
+               order by parent, fiscal_period""", as_dict=True):
+        if str(r.parent) in declared and r.fiscal_period is not None:
+            rows_by_year.setdefault(int(declared[str(r.parent)].fiscal_year), []).append(r)
+    year_status = {int(y.fiscal_year): y.status or OPEN for y in declared.values()}
+    years = set(year_status)
 
     cycles = {}
     for c in frappe.get_all("Budget Cycle", filters={"docstatus": ["<", 2]},
@@ -141,22 +150,22 @@ def period_tree():
             cycles.setdefault(int(c.fiscal_year), c)
             years.add(int(c.fiscal_year))
 
-    periods = sorted(int(p) for p in frappe.get_all("Fiscal Period", pluck="fiscal_period")
-                     if p is not None and 0 <= int(p) <= 13) or list(range(14))
-
     out = []
     for fy in sorted(years, reverse=True):
         rows = []
-        for p in periods:
-            status = statuses.get((fy, p), period_status.OPEN)
-            start = M.period_start(fy, p)
-            rows.append({"fiscal_period": p, "code": M.period_code(p), "label": M.period_label(fy, p),
-                         "status": status, "state": M.period_state(status, start, now)})
+        for r in sorted(rows_by_year.get(fy, []), key=lambda r: int(r.fiscal_period)):
+            status = effective_status(year_status[fy], r.status or OPEN)
+            start = getdate(r.start_date) if r.start_date else None
+            rows.append({"fiscal_period": int(r.fiscal_period), "code": r.period_code,
+                         "label": r.period_label or r.period_code, "type": r.period_type,
+                         "start_date": str(start) if start else None, "status": status,
+                         "state": M.period_state(status, start or now, now)})
         cycle = cycles.get(fy)
         out.append({
             "fiscal_year": fy,
             "label": f"FY{fy}",
             "kind": M.year_kind(fy, current),
+            "declared": fy in year_status,
             "periods": rows,
             "budget": ({"name": cycle.name, "status": cycle.status,
                         "deadline": str(cycle.deadline) if cycle.deadline else None} if cycle else None),
