@@ -65,7 +65,21 @@ def _exists(doctype, filters=None):
 
 
 def _current_fiscal_year():
-    return frappe.utils.getdate(today()).year
+    """The fiscal_year of the declared Regular period covering today, or
+    ``None`` when no declared period covers it (konsol#189: no implied
+    calendar — a fiscal year that runs off the calendar, or a site with
+    nothing declared, must never be guessed from getdate(today()).year)."""
+    from konsol.fiscal_calendar import fiscal_period_rows
+
+    getdate = frappe.utils.getdate
+    now = getdate(today())
+    for row in fiscal_period_rows():
+        if row.get("period_type") != "Regular":
+            continue
+        start, end = row.get("start_date"), row.get("end_date")
+        if start and end and getdate(start) <= now <= getdate(end):
+            return str(row["fiscal_year"])
+    return None
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -216,7 +230,8 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
     if pid not in PROCESSES:
         frappe.throw(f"Unknown process: {process_id}")
 
-    fy = int(fiscal_year or _current_fiscal_year())
+    fy = fiscal_year or _current_fiscal_year()
+    fy = int(fy) if fy else None
     fp = int(fiscal_period) if fiscal_period else None
 
     if pid == "forecasting":
