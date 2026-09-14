@@ -148,7 +148,7 @@ test("loadPlane asks for the newest year when no period is known yet", async () 
 	assert.deepEqual(launchCall.body, {});
 });
 
-test("loadPlane keeps the previous options when the launch_options fetch itself fails", async () => {
+test("loadPlane keeps the previous options when the launch_options fetch fails for the SAME year", async () => {
 	const savedFetch = globalThis.fetch;
 	globalThis.fetch = async (url, init) => {
 		if (url.includes("launch_options")) {
@@ -158,8 +158,30 @@ test("loadPlane keeps the previous options when the launch_options fetch itself 
 	};
 	const previousOptions = { fiscal_years: ["2025"], fiscal_periods: [{ value: "7" }] };
 	try {
-		const result = await loadPlane({ year: "2025", period: "7" }, previousOptions);
-		assert.deepEqual(result.options, previousOptions, "a failed refetch keeps the previous options, not null");
+		const result = await loadPlane({ year: "2025", period: "7" }, previousOptions, "2025");
+		assert.deepEqual(result.options, previousOptions, "a failed refetch for the same year keeps the previous options, not null");
+	} finally {
+		globalThis.fetch = savedFetch;
+	}
+});
+
+// #189 PR2 row 70p (re-review 2 finding 1, from 70j): the previous-options
+// fallback must not carry a DIFFERENT fiscal year's options over onto the
+// newly requested year (e.g. showing FY2025 P7 labelled with FY2026's
+// periods) just because a fetch happened to fail. Only a same-year retry may
+// reuse what was already loaded.
+test("loadPlane discards previous options from a DIFFERENT fiscal year when the refetch fails", async () => {
+	const savedFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init) => {
+		if (url.includes("launch_options")) {
+			throw new Error("network down");
+		}
+		return savedFetch(url, init);
+	};
+	const previousOptions = { fiscal_years: ["2024"], fiscal_periods: [{ value: "7" }] };
+	try {
+		const result = await loadPlane({ year: "2025", period: "7" }, previousOptions, "2024");
+		assert.equal(result.options, null, "a failed refetch for a different year must not reuse the old year's options");
 	} finally {
 		globalThis.fetch = savedFetch;
 	}
