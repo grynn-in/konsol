@@ -100,9 +100,11 @@ def _load():
             return self.__dict__.get("_before_save")
 
         def is_new(self):
-            """As Frappe's is_new(): true until the document has a name,
-            which only insert() (or a name given up front) assigns."""
-            return not bool(self.name)
+            """As Frappe v15's is_new(): it returns the __islocal flag, which
+            the desk sets on a new form. A document built in Python with
+            frappe.get_doc({...}) doesn't have it, so is_new() is falsy for it
+            even though it has no name and no row yet (live, konsol#189)."""
+            return self.__dict__.get("__islocal")
 
         def reload(self):
             """As Frappe's reload: every field and row comes back from the
@@ -131,8 +133,9 @@ def _load():
             version, as though the row now exists."""
             self.validate()
             self.inserts += 1
-            if not self.name:
-                self.name = str(self.fiscal_year)
+            if not self.name or self.__dict__.get("__islocal"):
+                self.name = str(self.fiscal_year)   # autoname replaces a desk temp name
+            self.__dict__.pop("__islocal", None)
             self._before_save = type(self)(**_fields(self))
             return self
 
@@ -340,7 +343,9 @@ def test_generate_on_new_year_inserts():
     with _load() as module:
         events = sys.modules["frappe"].events
         doc = _new_year(module)
-        assert doc.is_new(), "the test doc is not new"
+        # Built in Python, as the bench test and scripts do: no __islocal, so
+        # Frappe's is_new() is falsy; the year has no name and no row yet.
+        assert not doc.name and not doc.is_new(), "the test doc is not a Python-built unsaved year"
 
         result = doc.generate_periods()
 
@@ -351,8 +356,24 @@ def test_generate_on_new_year_inserts():
         assert not any(e[0] == "sql" for e in events), \
             f"a new year was locked FOR UPDATE: {events}"
         assert not any(e[0] == "reload" for e in events), f"a new year was reloaded: {events}"
-        assert not doc.is_new(), "insert did not leave the year saved"
+        assert doc.name == "2025", "insert did not name the year"
         assert result == doc.name, "generate_periods did not return the year's name"
+
+
+def test_generate_on_desk_new_year_inserts():
+    """A new year from the desk carries __islocal and a temporary name; it
+    takes the same insert path and ends up named by autoname."""
+    with _load() as module:
+        events = sys.modules["frappe"].events
+        doc = _new_year(module)
+        doc.__dict__.update({"__islocal": 1, "name": "new-epm-fiscal-year-1"})
+        assert doc.is_new()
+
+        result = doc.generate_periods()
+
+        assert doc.inserts == 1 and doc.saves == 0
+        assert not any(e[0] in ("sql", "reload") for e in events), events
+        assert result == doc.name == "2025"
 
 
 def test_generate_on_new_year_refused_for_analyst():
@@ -361,7 +382,7 @@ def test_generate_on_new_year_refused_for_analyst():
         doc = _new_year(module)
         msg = _generate(doc, PermissionRefused)
         assert msg is not None, "an EPM Analyst generated periods on a new year"
-        assert doc.inserts == 0 and doc.is_new()
+        assert doc.inserts == 0 and not doc.name
 
 
 def test_generate_on_saved_year_still_locks():
