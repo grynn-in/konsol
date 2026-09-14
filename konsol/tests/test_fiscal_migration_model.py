@@ -156,6 +156,41 @@ def test_used_period_missing_from_existing_year_is_a_conflict():
     assert result["conflicts"] == []
 
 
+def test_existing_years_keep_their_status():
+    """An already-declared year is its own source of truth: its Period Status
+    rows (from before the migration) are ignored, whichever way they're stale."""
+    rows_2025 = copy.deepcopy(M.plan({(2025, 3), (2025, 4)}, [], {})["create"][0]["rows"])
+    by_period = {r["period"]: r for r in rows_2025}
+    by_period[4]["status"] = "Closed"  # an admin closed P04 after the migration
+    existing = {2025: {"rows": rows_2025}}
+    ps_rows = [
+        ps(2025, 3, "Closed", by="a@x", on=d(2025, 4, 5)),  # stale: an admin reopened P03
+        ps(2025, 4, "Open"),                                 # stale: P04 was Open at migration time
+    ]
+
+    result = M.plan(set(), ps_rows, existing)
+
+    assert result["create"] == []
+    assert result["moves"] == []
+    assert result["conflicts"] == []
+    # nothing was moved: the existing year's own statuses are untouched
+    assert by_period[3]["status"] == "Open"
+    assert by_period[4]["status"] == "Closed"
+
+
+def test_new_year_carries_status():
+    """A year the plan itself creates still carries Period Status across, as before."""
+    ps_rows = [ps(2025, 1, "Closed", d(2025, 1, 1), d(2025, 1, 31), "a@x", d(2025, 2, 5))]
+
+    result = M.plan(set(), ps_rows, {})
+
+    assert result["conflicts"] == []
+    assert [y["year"] for y in result["create"]] == [2025]
+    assert result["moves"] == [
+        {"year": 2025, "code": "P01", "status": "Closed", "closed_by": "a@x", "closed_on": d(2025, 2, 5)},
+    ]
+
+
 def test_second_plan_is_empty():
     used = {(2024, 5), (2025, 1), (2025, 14)}
     ps_rows = [
