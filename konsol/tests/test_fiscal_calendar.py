@@ -29,6 +29,7 @@ def _load(db=None):
     saved = sys.modules.get("frappe")
     frappe = types.ModuleType("frappe")
     frappe.db = db or _DB([])
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     sys.modules["frappe"] = frappe
     try:
         spec = importlib.util.spec_from_file_location("fiscal_calendar_under_test", MODULE)

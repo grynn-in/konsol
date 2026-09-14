@@ -91,6 +91,7 @@ class _Site:
         frappe.get_doc = get_doc
         frappe.get_all = get_all
         frappe.flags = types.SimpleNamespace()
+        frappe.whitelist = lambda *a, **k: (lambda fn: fn)
         return frappe
 
     def _new(self, data):
