@@ -496,7 +496,10 @@ def plan_chart_load(rows, existing):
       never deleted;
     * every account's declaration is checked as it would be after the load
       (the file over what konsol holds), parents and cycles included, and every
-      problem is reported: ``ok`` is False and nothing may be written.
+      problem is reported: ``ok`` is False and nothing may be written;
+    * the chart as it would be keeps at most one Published retained-earnings
+      account (``retained_earnings_problems``), Drafts the load can publish
+      counted as Published.
 
     ``writes`` is the load itself, parent-first: [(action, code, fields)] with
     action "insert" or "update" and only the fields the file sets.
@@ -582,6 +585,14 @@ def plan_chart_load(rows, existing):
         if code in given or parent_code not in given:
             continue
         errors.extend(declaration_problems(apply_defaults(after[code]), apply_defaults(after[parent_code])))
+    # The retained-earnings rule holds over the chart as it would be once the
+    # load is published: a Draft the load can publish counts as Published, so
+    # a file flagging two accounts (or one beside the one konsol already
+    # holds) is refused here, not half-way through the second account's save.
+    not_ready = {n["main_account"] for n in report["not_ready"]}
+    errors.extend(retained_earnings_problems([
+        dict(row, status=PUBLISHED) if row.get("status") == "Draft" and code not in not_ready else row
+        for code, row in after.items()]))
     report["errors"] = errors
     report["ok"] = not errors
     report["writes"] = writes if not errors else []
