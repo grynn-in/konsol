@@ -27,15 +27,16 @@ import { periodTree } from "./homeApi.js";
  * ever declare. Left unguarded, an unparsable period (e.g. /2026/256) reaches
  * MonthView with nothing to show: App.vue never tells the home machine to
  * load anything, and the page is stuck on "Loading…" forever (konsol#189
- * review nit 3). Route it back to the no-period home instead.
+ * review nit 3). The check lives in the global beforeEach guard below, not a
+ * per-route beforeEnter: beforeEnter doesn't re-run when only the params of
+ * an already-matched route change (e.g. an in-app push from /2026/9 to
+ * /2026/300), so that navigation would slip through unguarded (konsol#189
+ * review 2 nit 4).
  */
-function guardMonthPeriod(to) {
-	return parsePeriodRoute(to.params) ? true : "/";
-}
 
 const routes = [
 	{ path: "/", name: "home", component: NoPeriodHome },
-	{ path: "/:year(\\d{4})/:period(\\d{1,3})", name: "month", component: MonthView, props: true, beforeEnter: guardMonthPeriod },
+	{ path: "/:year(\\d{4})/:period(\\d{1,3})", name: "month", component: MonthView, props: true },
 	{ path: "/uploads", name: "uploads", component: UploadView },
 	{ path: "/close", name: "close", component: CloseChecklist },
 	{ path: "/close/:step", name: "step", component: StepDetail, props: true },
@@ -50,6 +51,9 @@ export const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
+	if (to.name === "month") {
+		return parsePeriodRoute(to.params) ? true : "/";
+	}
 	if (to.path !== "/") return true;
 	let tree;
 	try {
