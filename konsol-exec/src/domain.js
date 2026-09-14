@@ -118,20 +118,23 @@ export function closeSteps(data) {
 		}
 
 		if (step.id === "signoff") {
-			const status = data?.period?.status;
+			const period = data?.period;
+			const status = period?.status;
 			const assertionsPassed = getProcess(data, "assertions")?.machine_status === "done";
 			return {
 				...step,
 				n,
-				// A period with no Period Status record has never been closed,
-				// so it is Open — the step is available either way.
-				available: Boolean(data?.period?.fiscal_period),
+				// Only a period the server has declared on the fiscal calendar
+				// has a close state to show; an undeclared one is never Open.
+				available: period?.declared === true,
 				state: status && status !== "Open" ? "done" : "waiting",
-				detail: status && status !== "Open"
-					? `Period is ${status.toLowerCase()}`
-					: assertionsPassed
-						? "Assertions passed — ready to close"
-						: "Waiting on assertions",
+				detail: period?.declared === false
+					? "This period has not been declared on the fiscal calendar."
+					: status && status !== "Open"
+						? `Period is ${status.toLowerCase()}`
+						: assertionsPassed
+							? "Assertions passed — ready to close"
+							: "Waiting on assertions",
 				blockers: 0,
 			};
 		}
