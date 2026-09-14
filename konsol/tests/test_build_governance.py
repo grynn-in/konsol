@@ -550,7 +550,10 @@ def test_batches_without_basis_is_none_when_the_column_is_missing():
 
 
 def test_raw_data_check_refuses_batches_without_a_basis():
-    body = _func_source("check_raw_data_available")
+    # konsolidat#199 (K6b): the refusal lives in _basis_refusal(rows), which
+    # check_raw_data_available calls first
+    assert "_basis_refusal(rows)" in _func_source("check_raw_data_available")
+    body = _func_source("_basis_refusal")
     assert "_batches_without_basis()" in body
     assert NO_COLUMN in body
     assert "have no Amount Basis (e.g. " in body
@@ -560,12 +563,15 @@ def test_raw_data_check_refuses_batches_without_a_basis():
 
 def test_raw_data_check_asks_for_the_basis_only_after_the_rows_check_passes():
     """The rows check is the raw-data question; with no claimed rows there is
-    nothing whose basis could be missing, and the connector/Airbyte gates
-    before it must keep their messages."""
+    nothing whose basis could be missing. With claimed rows the basis is
+    checked before any other gate (konsolidat#199, K6b)."""
     body = _func_source("check_raw_data_available")
     rows_at = body.index("_trial_balance_rows()")
-    basis_at = body.index("_batches_without_basis()")
+    basis_at = body.index("_basis_refusal(rows)")
     assert rows_at < basis_at
-    # the refusal sits inside the `if rows:` branch: after the rows check and
-    # before the "building from them" success line
-    assert basis_at < body.index("building from them")
+    # K6b: the basis question comes BEFORE the skip_airbyte_sync short-circuit
+    # (the trial-balance-only site has that flag on) and before every gate
+    assert basis_at < body.index("skip_airbyte_sync")
+    # and _basis_refusal itself asks nothing when no rows are claimed
+    helper = _func_source("_basis_refusal")
+    assert helper.index("if not rows") < helper.index("_batches_without_basis()")
