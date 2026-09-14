@@ -681,3 +681,34 @@ def test_blank_status_not_saved():
         msg = _thrown(doc)
         assert msg is not None, "a blank year status was accepted"
         assert "status" in msg.lower(), msg
+
+
+# --- Round-3 re-review: "new-" is not Frappe's unsaved signal (review #191) ---
+
+def test_new_prefix_without_islocal_is_foreign():
+    """Frappe decides a child row is unsaved by `__islocal` alone; a row
+    that merely has a name starting "new-" is written with UPDATE ... WHERE
+    name=..., so it can carry another year's saved row (an EPM Admin can
+    plant one named "new-p05" while it's Open). Without `__islocal` such a
+    row is foreign like any other name this year never saved."""
+    with _load() as module:
+        saved = _saved(module)
+        doc = _edit(module, saved)
+        p05 = next(r for r in doc.periods if r.period_code == "P05")
+        p05.name = "new-p05"          # no __islocal
+        msg = _refused(doc)
+        assert msg is not None and "another fiscal year" in msg, \
+            f"a 'new-' named row without __islocal was accepted: {msg}"
+
+
+def test_new_year_with_named_rows_not_foreign():
+    """On insert there is nothing to take over: Frappe names every child row
+    afresh. A new year whose rows arrive with names (e.g. a JSON copy of last
+    year) must not be refused as "belongs to another fiscal year"."""
+    with _load() as module:
+        rows = _monthly_2025()
+        for r in rows:
+            r.name = "copied-" + r.period_code
+        doc = _year(module, rows)          # no saved version: a new year
+        msg = _thrown(doc)
+        assert msg is None or "another fiscal year" not in msg, msg
