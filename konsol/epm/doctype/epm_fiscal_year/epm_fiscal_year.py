@@ -156,6 +156,71 @@ class EPMFiscalYear(Document):
             })
         self.save()
 
+    @frappe.whitelist(methods=["POST"])
+    def close_period(self, fiscal_period, note=None):
+        """Close one period row; leaving Open checks its group rates first."""
+        return self._set_period_status(fiscal_period, fstm.CLOSED, "closed", note)
+
+    @frappe.whitelist(methods=["POST"])
+    def lock_period(self, fiscal_period, note=None):
+        """Lock one period row; leaving Open checks its group rates first."""
+        return self._set_period_status(fiscal_period, fstm.LOCKED, "locked", note)
+
+    @frappe.whitelist(methods=["POST"])
+    def reopen_period(self, fiscal_period, reason):
+        """Reopen one period row of an Open year, for a stated reason."""
+        return self._set_period_status(fiscal_period, fstm.OPEN, "reopened", reason)
+
+    def _set_period_status(self, fiscal_period, new, verb, text):
+        """Move the row numbered `fiscal_period` to `new`, as
+        fiscal_status_model.transition_problem allows for the user's roles,
+        then save as a status action (validate still runs). A row leaving Open
+        must pass the group-rate gate before anything changes. Reopening
+        needs a reason and an Open year. `text` (a note, or the reason) goes
+        onto the year's closing note with the period code and date."""
+        wanted = _int(fiscal_period)
+        row = next((r for r in (self.periods or []) if _int(r.fiscal_period) == wanted), None)
+        if row is None:
+            frappe.throw(f"FY{self.fiscal_year} has no fiscal period {fiscal_period}.")
+
+        current = _status(row.status)
+        if current == new:
+            frappe.throw(f"Period {row.period_code} is already {new}.")
+
+        problem = fstm.transition_problem(current, new, frappe.get_roles())
+        if problem:
+            frappe.throw(f"Period {row.period_code}: {problem}", frappe.PermissionError)
+
+        text = (text or "").strip()
+        if new == fstm.OPEN:
+            if not text:
+                frappe.throw(f"Give a reason for reopening period {row.period_code}.")
+            year_status = _status(self.status)
+            if year_status != fstm.OPEN:
+                frappe.throw(
+                    f"FY{self.fiscal_year} is {year_status}; Reopen the year first, "
+                    f"then period {row.period_code}.")
+        elif current == fstm.OPEN:
+            from konsol import group_rates
+            group_rates.assert_rates_complete(self.fiscal_year, row.fiscal_period)
+
+        now = frappe.utils.now_datetime()
+        row.status = new
+        if new == fstm.OPEN:
+            row.closed_by = None
+            row.closed_on = None
+        else:
+            row.closed_by = frappe.session.user
+            row.closed_on = now
+
+        if text:
+            line = f"{row.period_code} {verb} on {getdate(now)} by {frappe.session.user}: {text}"
+            self.closing_note = f"{self.closing_note}\n{line}" if self.closing_note else line
+
+        self.flags.konsol_status_action = True
+        self.save()
+        return {"fiscal_period": row.fiscal_period, "period_code": row.period_code, "status": new}
+
     def _check_status_fields_unchanged(self, before):
         """Refuse, as a PermissionError, any change to the status fields of
         the year or a row unless an action or the migration patch is saving.
