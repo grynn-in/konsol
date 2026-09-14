@@ -477,3 +477,73 @@ def test_cash_flow_mapping_normalises_text():
     # Excel hands back 1000.0 for a code typed 1000
     assert M.cash_flow_mapping(cf_leaf(main_account=1000.0))["main_account"] == "1000"
 
+
+
+# -- the chart declares its retained-earnings account (konsolidat#199) --------------------------
+
+def re_leaf(**kw):
+    """A flagged Equity leaf on the Balance Sheet: the shape the flag needs."""
+    row = leaf(main_account="ZZ3000", account_name="Retained earnings", account_type="Equity",
+               normal_balance="Credit", fx_method="historical", is_retained_earnings=1, status="Published")
+    row.update(kw)
+    return row
+
+
+def test_the_retained_earnings_account_is_an_equity_leaf_on_the_balance_sheet():
+    assert M.declaration_problems(re_leaf()) == []
+    assert "is_retained_earnings" in M.OPTIONAL and "is_retained_earnings" in M.CHECK_FIELDS
+    assert "is_retained_earnings" in M.DECLARED_FIELDS
+    # a heading is never posted to, so nothing can be closed into it
+    problems = M.declaration_problems(group(is_retained_earnings=1))
+    assert has(problems, "ZZ9000 is a heading (is_group), so it cannot be the retained earnings account")
+    assert len(problems) == 1
+    # a Profit and Loss account: one sentence for the statement, one for the type
+    problems = M.declaration_problems(re_leaf(account_type="Revenue", statement_section=PL, time_balance="flow",
+                                              fx_method="average"))
+    assert has(problems, "ZZ3000: the retained earnings account belongs on the Balance Sheet, not the Profit and Loss")
+    assert has(problems, "ZZ3000: the retained earnings account is Equity, not Revenue")
+    assert len(problems) == 2
+    # a Balance Sheet account that is not Equity
+    problems = M.declaration_problems(re_leaf(account_type="Asset", normal_balance="Debit", fx_method="closing"))
+    assert problems == ["ZZ3000: the retained earnings account is Equity, not Asset"]
+    # the flag off: none of this applies
+    assert M.declaration_problems(group(is_retained_earnings=0)) == []
+    assert M.declaration_problems(leaf(is_retained_earnings="0")) == []
+
+
+def test_exactly_one_published_retained_earnings_account_per_chart():
+    one = re_leaf()
+    assert M.retained_earnings_problems([one]) == []
+    assert M.retained_earnings_problems([one, leaf(status="Published")]) == []
+    two = re_leaf(main_account="ZZ3100")
+    problems = M.retained_earnings_problems([one, two, leaf(status="Published")])
+    assert len(problems) == 1 and "ZZ3000" in problems[0] and "ZZ3100" in problems[0] and "ZZCOA" in problems[0]
+    assert "exactly one" in problems[0]
+    # a Draft or Inactive flagged row is not in the chart yet
+    assert M.retained_earnings_problems([one, re_leaf(main_account="ZZ3100", status="Draft")]) == []
+    assert M.retained_earnings_problems([one, re_leaf(main_account="ZZ3100", status="Inactive")]) == []
+    # another chart may have its own
+    assert M.retained_earnings_problems([one, re_leaf(main_account="ZZ3100", chart_of_accounts="ZZCOB")]) == []
+    # the same row seen twice is one account
+    assert M.retained_earnings_problems([one, dict(one)]) == []
+    # two charts each with two: one sentence per chart
+    problems = M.retained_earnings_problems([one, two, re_leaf(main_account="ZZ3200", chart_of_accounts="ZZCOB"),
+                                             re_leaf(main_account="ZZ3300", chart_of_accounts="ZZCOB")])
+    assert len(problems) == 2
+
+
+def test_the_chart_file_carries_the_retained_earnings_flag():
+    rows = M.parse_chart_table([
+        ["code", "name", "coa", "account_type", "section", "is_retained_earnings"],
+        ["ZZ3000", "Retained earnings", "ZZCOA", "Equity", "BS", "yes"],
+        ["ZZ1000", "Cash", "ZZCOA", "Asset", "BS", ""],
+    ])
+    by = {r["main_account"]: r for r in rows}
+    assert (by["ZZ3000"]["is_retained_earnings"], by["ZZ1000"]["is_retained_earnings"]) == (1, 0)
+    # the alias, and a value that is not yes or no
+    rows = M.parse_chart_table([["code", "name", "coa", "Retained Earnings"], ["ZZ3000", "RE", "ZZCOA", "x"]])
+    assert rows[0]["is_retained_earnings"] == 1
+    assert "is_retained_earnings 'maybe' is not yes or no" in refused(
+        M.parse_chart_table, [["code", "name", "coa", "is_retained_earnings"], ["ZZ3000", "RE", "ZZCOA", "maybe"]])
+    # without the column, nothing is said about it
+    assert "is_retained_earnings" not in M.parse_chart_table([["code", "name", "coa"], ["ZZ1", "X", "ZZCOA"]])[0]
