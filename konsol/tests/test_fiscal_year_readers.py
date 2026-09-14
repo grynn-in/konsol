@@ -13,9 +13,21 @@ This installs a stub ``frappe`` — ``launch_options`` does ``import frappe``
 lazily inside its body, so the stub must stay installed in ``sys.modules``
 for the duration of the call, the same pattern test_fiscal_year_warehouse.py
 uses for ``fiscal_calendar.fiscal_period_rows()``.
+
+The control_api readers (konsol#189-39) follow the same rule: a period that is
+not a declared EPM Fiscal Year row is reported as undeclared, never assumed
+Open, and the snapshot's option list and the readiness check read the
+declared rows. control_api.py is loaded by path against stub frappe / konsol
+modules, installed for the whole `with` block and restored on the way out; a
+load error becomes an AssertionError so the host runner can't count it as a
+skip.
 """
+import importlib.util
+import os
 import sys
 import types
+from contextlib import contextmanager
+from datetime import date, datetime
 
 from konsol.orchestrator import api
 
@@ -125,3 +137,246 @@ def test_launch_options_from_fiscal_year():
     # Unrelated surfaces (definitions, scopes via Consolidation Group) still wired.
     assert out["definitions"] == ["Close"]
     assert "Consolidation Group" in fake.calls
+
+
+# ---- control_api readers (konsol#189-39) -------------------------------
+
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CA_PATH = os.path.join(APP_DIR, "control_api.py")
+
+
+class _ValidationError(Exception):
+    pass
+
+
+class _PeriodNotDeclared(_ValidationError):
+    pass
+
+
+class _Dict(dict):
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(key) from None
+
+
+def _getdate(value=None):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+class _DB:
+    def __init__(self, period_fields=None):
+        self.period_fields = period_fields
+        self.get_value_calls = []
+
+    def get_value(self, doctype, filters=None, fieldname=None, *args, **kwargs):
+        self.get_value_calls.append((doctype, filters, fieldname))
+        if doctype == "EPM Fiscal Year Period":
+            return _Dict(self.period_fields) if self.period_fields else None
+        return None
+
+
+def _row(year, period, code, ptype, start, end, label=None, status="Open"):
+    return {
+        "fiscal_year": year,
+        "fiscal_period": period,
+        "period_code": code,
+        "period_label": label or code,
+        "period_type": ptype,
+        "start_date": date.fromisoformat(start),
+        "end_date": date.fromisoformat(end),
+        "quarter": "",
+        "status": status,
+    }
+
+
+@contextmanager
+def _control_api(rows=(), period_rows=None, period_fields=None, today="2026-09-14"):
+    """`rows` is what fiscal_calendar.fiscal_period_rows() returns;
+    `period_rows` maps (str year, int period) -> period_status.period_row()."""
+    calls = {"set_status": [], "check_epm_admin": 0}
+
+    frappe = types.ModuleType("frappe")
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    frappe.ValidationError = _ValidationError
+    frappe._ = lambda s: s
+    frappe._dict = _Dict
+    frappe.db = _DB(period_fields)
+
+    def throw(msg, exc=_ValidationError, *args, **kwargs):
+        raise exc(msg)
+
+    frappe.throw = throw
+    utils = types.ModuleType("frappe.utils")
+    utils.today = lambda: today
+    utils.getdate = _getdate
+    utils.add_to_date = utils.get_datetime = utils.now_datetime = lambda *a, **k: None
+    frappe.utils = utils
+
+    ps = types.ModuleType("konsol.period_status")
+    ps.OPEN, ps.CLOSED, ps.LOCKED = "Open", "Closed", "Locked"
+    ps.PeriodNotDeclared = _PeriodNotDeclared
+
+    def period_row(fiscal_year, fiscal_period):
+        row = (period_rows or {}).get((str(fiscal_year), int(fiscal_period)))
+        if row is None:
+            raise _PeriodNotDeclared(f"FY{fiscal_year} has no period {fiscal_period}.")
+        return dict(row)
+
+    def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None,
+                   reason=None, note=None):
+        calls["set_status"].append({
+            "fiscal_year": fiscal_year, "fiscal_period": fiscal_period, "status": status,
+            "start_date": start_date, "end_date": end_date, "reason": reason, "note": note,
+        })
+        return _Dict(
+            name="row-9", fiscal_year=str(fiscal_year), fiscal_period=int(fiscal_period),
+            period_code="P9", start_date=date(2026, 9, 1), end_date=date(2026, 9, 30),
+            status=status, closed_by=None, closed_on=None,
+        )
+
+    ps.period_row = period_row
+    ps.get_status = lambda fy, fp: period_row(fy, fp)["status"]
+    ps.assert_declared = lambda fy, fp: period_row(fy, fp) and None
+    ps.set_status = set_status
+
+    fc = types.ModuleType("konsol.fiscal_calendar")
+    fc.fiscal_period_rows = lambda: [dict(r) for r in rows]
+
+    def check_epm_admin():
+        calls["check_epm_admin"] += 1
+
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = []
+    konsol.period_status = ps
+    konsol.fiscal_calendar = fc
+    budget_sheet = types.ModuleType("konsol.epm.doctype.budget_sheet.budget_sheet")
+    budget_sheet.LAYER_ROLES = {}
+    schema_lifecycle = types.ModuleType("konsol.schema_lifecycle")
+    schema_lifecycle.check_epm_admin = check_epm_admin
+
+    stubs = {
+        "frappe": frappe,
+        "frappe.utils": utils,
+        "konsol": konsol,
+        "konsol.period_status": ps,
+        "konsol.fiscal_calendar": fc,
+        "konsol.epm.doctype.budget_sheet.budget_sheet": budget_sheet,
+        "konsol.schema_lifecycle": schema_lifecycle,
+    }
+    saved = {name: sys.modules.get(name) for name in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location("_control_api_under_test", CA_PATH)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # noqa: BLE001 — never let this read as a skip
+            raise AssertionError(f"control_api.py failed to load on stubs: {exc!r}") from exc
+        module._test_calls = calls
+        yield module
+    finally:
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+
+# Declared rows: FY2026 with a thirteenth Regular period and the non-Regular
+# periods a year may carry, plus one row of FY2025.
+_ROWS = [
+    _row(2025, 1, "P1", "Regular", "2025-01-01", "2025-01-31", "Jan"),
+    _row(2026, 0, "OPN", "Opening", "2026-01-01", "2026-01-01"),
+    _row(2026, 1, "P1", "Regular", "2026-01-01", "2026-01-31", "Jan"),
+    _row(2026, 9, "P9", "Regular", "2026-09-01", "2026-09-30", "Sep"),
+    _row(2026, 13, "P13", "Regular", "2026-12-01", "2026-12-31", "Dec"),
+    _row(2026, 14, "ADJ", "Adjustment", "2026-12-31", "2026-12-31"),
+    _row(2026, 15, "CLS", "Closing", "2026-12-31", "2026-12-31"),
+]
+
+
+def test_period_block_undeclared_is_explicit():
+    with _control_api(rows=_ROWS) as ca:
+        block = ca._period_block("2026", "7")
+    assert block["declared"] is False, block
+    assert block["fiscal_year"] == "2026"
+    assert block["fiscal_period"] == "7"
+    assert block.get("status") is None, "an undeclared period has no status, not Open"
+    assert block.get("start_date") is None and block.get("end_date") is None
+
+    declared = {("2026", 9): {
+        "fiscal_year": 2026, "fiscal_period": 9, "code": "P9", "type": "Regular",
+        "start_date": date(2026, 9, 1), "end_date": date(2026, 9, 30),
+        "row_status": "Closed", "year_status": "Open", "status": "Closed",
+    }}
+    fields = {"closed_by": "fc@example.com", "closed_on": datetime(2026, 9, 3, 10, 0)}
+    with _control_api(rows=_ROWS, period_rows=declared, period_fields=fields) as ca:
+        block = ca._period_block("2026", "9")
+        doctypes = [c[0] for c in ca.frappe.db.get_value_calls]
+    assert block["declared"] is True
+    assert block["status"] == "Closed"
+    assert block["closed_by"] == "fc@example.com"
+    assert block["closed_on"].startswith("2026-09-03")
+    assert "Period Status" not in doctypes, "close stamps live on the EPM Fiscal Year row"
+
+    with _control_api() as ca:
+        empty = ca._period_block("2026", None)
+    assert empty["fiscal_period"] is None and empty["status"] is None
+
+
+def test_set_period_status_passes_reason():
+    with _control_api() as ca:
+        out = ca.set_period_status("2026", "9", "Open", reason="late accrual", note="see JE-42")
+        calls = ca._test_calls
+    assert calls["check_epm_admin"] == 1
+    (call,) = calls["set_status"]
+    assert call["reason"] == "late accrual"
+    assert call["note"] == "see JE-42"
+    assert call["status"] == "Open"
+    assert set(out) == {"name", "fiscal_year", "fiscal_period", "status", "closed_by", "closed_on"}
+    assert out["status"] == "Open"
+
+    with _control_api() as ca:
+        ca.set_period_status("2026", "9", "Closed")
+        (call,) = ca._test_calls["set_status"]
+    assert call["reason"] is None and call["note"] is None
+
+
+def _fy_check(ca, process_id):
+    rows = [r for r in ca._prerequisites(process_id, "2026", True)
+            if r["due"] == "Fiscal Year covers today"]
+    assert len(rows) == 1, f"{process_id}: expected one 'Fiscal Year covers today' check"
+    return rows[0]
+
+
+def test_readiness_needs_fiscal_year():
+    with _control_api(rows=_ROWS, today="2026-09-14") as ca:
+        for pid in ("budgeting", "forecasting", "consolidation"):
+            assert _fy_check(ca, pid)["status"] == "configured"
+
+    # Declared rows exist, but none contains today: the check fails.
+    with _control_api(rows=_ROWS, today="2027-02-10") as ca:
+        row = _fy_check(ca, "budgeting")
+    assert row["status"] == "missing"
+    assert row["doctype"] == "EPM Fiscal Year"
+    assert row["actionable"] is True
+
+    with _control_api(rows=[], today="2026-09-14") as ca:
+        assert _fy_check(ca, "consolidation")["status"] == "missing"
+
+
+def test_period_options_regular_rows():
+    with _control_api(rows=_ROWS) as ca:
+        options = ca._period_options("2026")
+    assert options == ["FY2026 · Jan", "FY2026 · Sep", "FY2026 · Dec"], options
+
+    with _control_api(rows=_ROWS) as ca:
+        assert ca._period_options("2027") == [], "no declared rows, no invented option"
