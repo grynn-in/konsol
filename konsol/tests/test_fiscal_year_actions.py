@@ -7,7 +7,11 @@ document uses yet.
 
 Close / Lock / Reopen Period each move one period row, as
 konsol.fiscal_status_model.transition_problem allows; leaving Open checks the
-period's group exchange rates first. Loaded against a stub frappe, as in
+period's group exchange rates first.
+
+Close / Lock Year move the year and every looser row, all or nothing: one
+failing rate check refuses the whole action, naming every failing period.
+Reopen Year leaves the rows as they are. Loaded against a stub frappe, as in
 test_fiscal_year_controller.py; the stubs stay installed during calls."""
 import ast
 import contextlib
@@ -112,11 +116,14 @@ def _load():
     rates = mods["konsol.group_rates"]
     rates.calls = []
     rates.fail = None
+    rates.fail_for = {}     # a period number -> the refusal for that period only
 
     def assert_rates_complete(fiscal_year, fiscal_period):
         rates.calls.append((fiscal_year, fiscal_period))
         if rates.fail:
             raise Thrown(rates.fail)
+        if fiscal_period in rates.fail_for:
+            raise Thrown(rates.fail_for[fiscal_period])
 
     rates.assert_rates_complete = assert_rates_complete
     mods["konsol"].group_rates = rates
@@ -129,7 +136,7 @@ def _load():
     frappe._dict = _dict
     frappe.throw = throw
     frappe.whitelist = whitelist
-    frappe.ValidationError = type("ValidationError", (Exception,), {})
+    frappe.ValidationError = Thrown     # what frappe.throw raises by default
     frappe.PermissionError = PermissionRefused
     frappe.utils = mods["frappe.utils"]
     mods["frappe.model.document"].Document = Document
@@ -451,5 +458,136 @@ def test_analyst_cannot_close():
 
 
 def test_actions_are_whitelisted_post():
-    for name in ("close_period", "lock_period", "reopen_period"):
+    for name in ("close_period", "lock_period", "reopen_period",
+                 "close_year", "lock_year", "reopen_year"):
         _assert_whitelisted_post(name)
+
+
+# -- Close / Lock / Reopen Year -----------------------------------------------------
+
+ALL_PERIODS = list(range(0, 14))    # OPN, P01..P12, CLS
+
+
+def _snapshot(doc):
+    """Each row's (code, status, closed_by, closed_on)."""
+    return [(r.period_code, r.status, r.closed_by, r.closed_on) for r in doc.periods]
+
+
+def test_close_year_closes_rows():
+    with _load() as module:
+        doc = _valid_year(module, row_status={3: "Closed", 4: "Locked"}, closing_note="FY opened.")
+        untouched = {3: (_row(doc, 3).closed_by, _row(doc, 3).closed_on),
+                     4: (_row(doc, 4).closed_by, _row(doc, 4).closed_on)}
+        result, err = _act(lambda: doc.close_year(note="Year-end close"))
+        assert err is None, err
+
+        moved = [p for p in ALL_PERIODS if p not in (3, 4)]
+        assert _rates().calls == [(2025, p) for p in moved], _rates().calls
+        for p in moved:
+            row = _row(doc, p)
+            assert row.status == "Closed", (p, row.status)
+            assert row.closed_by == "closer@example.com" and row.closed_on == NOW, p
+        # Rows already at least Closed keep their status and stamp.
+        assert _row(doc, 3).status == "Closed" and _row(doc, 4).status == "Locked"
+        for p, stamp in untouched.items():
+            assert (_row(doc, p).closed_by, _row(doc, p).closed_on) == stamp, p
+
+        assert doc.status == "Closed"
+        assert doc.closed_by == "closer@example.com" and doc.closed_on == NOW
+        assert doc.flags.konsol_status_action, "the save did not run as a status action"
+        assert doc.saves == 1
+        assert doc.closing_note.startswith("FY opened."), doc.closing_note
+        last = doc.closing_note.splitlines()[-1]
+        assert "FY2025" in last and "2026-09-14" in last and "Year-end close" in last, last
+        assert result["status"] == "Closed", result
+
+        # Same status: refused, like the period actions.
+        result, err = _act(lambda: doc.close_year())
+        assert err is not None and "already Closed" in err, err
+        assert doc.saves == 1
+
+
+def test_close_year_all_or_nothing_names_failures():
+    with _load() as module:
+        _rates().fail_for = {
+            5: "Cannot close fiscal period 5 of FY2025: no approved group exchange rate for EUR → USD Closing",
+            9: "Cannot close fiscal period 9 of FY2025: group EU has no reporting currency",
+        }
+        doc = _valid_year(module, closing_note="FY opened.")
+        before = _snapshot(doc)
+        result, err = _act(lambda: doc.close_year(note="Year-end close"))
+        assert err is not None, "the year closed with two periods failing the rate check"
+        for needle in ("P05", "P09", "EUR → USD Closing", "no reporting currency"):
+            assert needle in err, (needle, err)
+        # Every moving row was checked, so every failure is named at once.
+        assert _rates().calls == [(2025, p) for p in ALL_PERIODS], _rates().calls
+        assert doc.saves == 0
+        assert _snapshot(doc) == before, "rows changed although the close was refused"
+        assert doc.status == "Open" and doc.closed_by is None and doc.closed_on is None
+        assert doc.closing_note == "FY opened.", doc.closing_note
+
+
+def test_lock_year_locks_closed_rows_without_rate_check():
+    with _load() as module:
+        doc = _valid_year(module, status="Closed")
+        result, err = _act(lambda: doc.lock_year())
+        assert err is None, err
+        assert _rates().calls == [], "Closed rows were rate-checked again on Lock Year"
+        for r in doc.periods:
+            assert r.status == "Locked", (r.period_code, r.status)
+            assert r.closed_by == "closer@example.com" and r.closed_on == NOW, r.period_code
+        assert doc.status == "Locked" and doc.closed_by == "closer@example.com"
+        assert doc.closed_on == NOW and doc.saves == 1
+        assert result["status"] == "Locked", result
+
+        # From an Open year: the Open rows are checked, the Closed one is not.
+        doc = _valid_year(module, row_status={3: "Closed"})
+        _rates().calls.clear()
+        result, err = _act(lambda: doc.lock_year())
+        assert err is None, err
+        assert _rates().calls == [(2025, p) for p in ALL_PERIODS if p != 3], _rates().calls
+        assert all(r.status == "Locked" for r in doc.periods)
+
+
+def test_reopen_year_keeps_rows():
+    with _load() as module:
+        doc = _valid_year(module, status="Closed", row_status={4: "Locked"})
+        before = _snapshot(doc)
+        for blank in (None, "", "   "):
+            result, err = _act(lambda: doc.reopen_year(blank))
+            assert err is not None, f"reopened the year with reason {blank!r}"
+        assert doc.status == "Closed" and doc.saves == 0
+
+        result, err = _act(lambda: doc.reopen_year("Auditor adjustment to FY2025"))
+        assert err is None, err
+        assert doc.status == "Open"
+        assert doc.closed_by is None and doc.closed_on is None
+        assert _snapshot(doc) == before, "Reopen Year changed the period rows"
+        last = doc.closing_note.splitlines()[-1]
+        assert "FY2025" in last and "2026-09-14" in last and "Auditor adjustment" in last, last
+        assert doc.saves == 1 and doc.flags.konsol_status_action
+        assert _rates().calls == [], "reopening checked group rates"
+        assert result["status"] == "Open", result
+
+        result, err = _act(lambda: doc.reopen_year("Again"))
+        assert err is not None and "already Open" in err, err
+        assert doc.saves == 1
+
+
+def test_reopen_locked_year_sm_only():
+    with _load() as module:
+        doc = _valid_year(module, status="Locked")
+        result, err = _act(lambda: doc.reopen_year("Restatement"), PermissionRefused)
+        assert err is not None, "an EPM Admin reopened a Locked year"
+        assert "System Manager" in err, err
+        assert doc.status == "Locked" and doc.saves == 0
+
+        _roles(["EPM Analyst"])
+        result, err = _act(lambda: doc.close_year(), PermissionRefused)
+        assert err is not None, "an EPM Analyst changed the year's status"
+
+        _roles(["System Manager"])
+        result, err = _act(lambda: doc.reopen_year("Restatement"))
+        assert err is None, err
+        assert doc.status == "Open" and doc.saves == 1
+        assert all(r.status == "Locked" for r in doc.periods), "Reopen Year reopened rows"
