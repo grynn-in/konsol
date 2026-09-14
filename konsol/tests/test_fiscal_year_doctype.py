@@ -445,9 +445,12 @@ def test_postable_type_settings():
     assert tab["fieldtype"] == "Tab Break"
     assert tab["label"] == "Close"
 
+    # The Close tab's section starts with the three checks, in order; later
+    # settings may follow them in the same section (konsolidat#199 added one).
     field_order = settings["field_order"]
-    expected_tail = ["tab_close", "tb_periods_section"] + list(TB_CHECK_FIELDS)
-    assert field_order[-5:] == expected_tail
+    expected_head = ["tab_close", "tb_periods_section"] + list(TB_CHECK_FIELDS)
+    start = field_order.index("tab_close")
+    assert field_order[start:start + len(expected_head)] == expected_head
 
 
 # --- EPM Fiscal Year: list view indicator colour matches home theme --------
