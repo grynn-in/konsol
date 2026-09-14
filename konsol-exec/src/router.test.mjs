@@ -36,3 +36,23 @@ test("the no-period home route is named home", () => {
 	assert.ok(home, "no route for path \"/\"");
 	assert.ok(home.includes('name: "home"'), `path "/" is not named home: ${home}`);
 });
+
+// PR #192 review finding 6: parsePeriodRoute (home.js) accepts any period
+// 0..255, but the route pattern only matched one or two digits, so a
+// three-digit period like 140 never reached the parser at all — the
+// catch-all would redirect it to the no-period home instead.
+test("the month route's period pattern matches a three-digit period like 140", () => {
+	const lines = routeLines();
+	const month = lines.find((l) => l.includes('name: "month"'));
+	assert.ok(month, "no route named month");
+	const rawPattern = month.match(/:period\(([^)]+)\)/)?.[1];
+	assert.ok(rawPattern, `month route has no :period(...) pattern: ${month}`);
+	// The source is a JS string literal, so a regex backslash is doubled
+	// (`\\d`) in the raw text; collapse it back to build a real RegExp.
+	const paramPattern = rawPattern.replace(/\\\\/g, "\\");
+	const periodRegex = new RegExp(`^(?:${paramPattern})$`);
+	assert.ok(
+		periodRegex.test("140"),
+		`month route's period pattern ${paramPattern} does not match "140"`
+	);
+});
