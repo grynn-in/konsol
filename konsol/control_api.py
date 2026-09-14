@@ -186,7 +186,7 @@ def _period_block(fy, fiscal_period):
     return block
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None,
                       note=None, reason=None):
     """Close, lock or reopen a declared period through its EPM Fiscal Year.
@@ -215,7 +215,7 @@ def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_d
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def start_process(process_id, fiscal_year=None, fiscal_period=None):
     """Kick off the run for a close process."""
     check_epm_admin()

@@ -199,7 +199,23 @@ def test_set_period_status_is_whitelisted_and_permission_checked():
     nxt = src.index("def ", start + 10)
     body = src[start:nxt]
     assert "check_epm_admin()" in body
-    assert "@frappe.whitelist()" in src[:start].rsplit("\n\n", 1)[-1] + src[start - 60:start]
+
+    # It writes (closes/locks/reopens a period), so per the project rule a
+    # plain @frappe.whitelist() (which also accepts GET) is not enough: a GET
+    # request would run the write and then roll back at the end of the
+    # request while still reporting success. Must be POST-only.
+    tree = ast.parse(src)
+    func = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "set_period_status")
+    found = False
+    for dec in func.decorator_list:
+        if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr == "whitelist"
+                and isinstance(dec.func.value, ast.Name) and dec.func.value.id == "frappe"):
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    found = ast.literal_eval(kw.value) == ["POST"]
+    assert found, "set_period_status is not @frappe.whitelist(methods=['POST'])"
 
 
 def test_undeclared_period_is_refused():
