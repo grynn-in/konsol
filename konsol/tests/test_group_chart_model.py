@@ -432,7 +432,7 @@ def test_every_leaf_allowed_intercompany_loads_with_no_error_or_warning():
 # -- the cash-flow mapping (konsol#196): the chart is the source ----------------------------------
 
 def cf_leaf(**kw):
-    return leaf(cf_category="Operating", cf_line_item="Cash and equivalents", **kw)
+    return leaf(**{"cf_category": "Operating", "cf_line_item": "Cash and equivalents", **kw})
 
 
 def test_cash_flow_mapping_heading_is_none():

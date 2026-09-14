@@ -217,6 +217,23 @@ def reclassified(before, after):
     return [f for f in RECLASSIFYING if (before.get(f) or "") != (after.get(f) or "")]
 
 
+def cash_flow_mapping(row):
+    """The account's cash-flow mapping, or None when it has none.
+
+    The chart is the source of the cash-flow mapping: a Balance Sheet leaf that
+    declares cf_category and cf_line_item is mapped, and Cash Flow Category rows
+    mirror it (konsol#196). A heading, a Profit and Loss account, or a leaf with
+    either cf field blank is not mapped.
+    """
+    if _is_group(row) or row.get("statement_section") != BS:
+        return None
+    category, line_item = text(row.get("cf_category")), text(row.get("cf_line_item"))
+    if not category or not line_item:
+        return None
+    return {"main_account": text(row.get("main_account")), "cf_category": category,
+            "cf_line_item": line_item, "is_cash": 1 if flag(row.get("is_cash")) else 0}
+
+
 # -- the chart file -------------------------------------------------------------------
 
 #: The chart file's header, case-insensitive. Only the first three must be
