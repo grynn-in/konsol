@@ -738,6 +738,156 @@ def test_rate_gate_runs_after_lock():
             assert lock < reload_at < rates_at, events
 
 
+# -- The form buttons are role-shown, mirroring the server (PR #191 review finding 10) --------
+
+
+def _balanced(text, open_idx, open_ch, close_ch):
+    """Index of the char that closes the bracket opened at `open_idx`."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    raise ValueError(f"no matching {close_ch!r} for {open_ch!r} at {open_idx}")
+
+
+#: Every button label the form offers, in the order they appear in the file.
+BUTTON_LABELS = (
+    "Generate Periods", "Close Year", "Lock Year", "Reopen Year",
+    "Close Period", "Lock Period", "Reopen Period",
+)
+
+#: Labels whose server-side role set depends on the row/year's own current
+#: status (Reopen can leave Closed, needing EPM Admin or System Manager, or
+#: leave Locked, needing System Manager alone) rather than one fixed set.
+DUAL_BRANCH_LABELS = ("Reopen Year", "Reopen Period")
+
+_ROLE_DEF_RE = re.compile(
+    r'const\s+\w+\s*=\s*(?:frappe\.user\.has_role\([^)]*\)|\[[^\]]*\])\s*;'
+)
+
+
+def _button_guards(js):
+    """{label: guard_text} for every `if (...) { ...add_custom_button(label)... }`
+    block in `js`, in file order. `guard_text` is that if's own condition plus
+    whatever sits between it and the previous matched block (a button whose
+    role check lives in a `.filter(...)` feeding the if, not in the if itself,
+    e.g. Reopen Period). Role/has_role *definitions* are stripped out, so only
+    usages remain."""
+    guards = {}
+    prev_end = 0
+    for m in re.finditer(r'if\s*\(', js):
+        start = m.end() - 1
+        try:
+            cond_end = _balanced(js, start, "(", ")")
+            brace = js.index("{", cond_end)
+            body_end = _balanced(js, brace, "{", "}")
+        except ValueError:
+            continue
+        body = js[brace:body_end + 1]
+        label = next((l for l in BUTTON_LABELS if f'__("{l}")' in body), None)
+        if label is None:
+            continue
+        between = _ROLE_DEF_RE.sub("", js[prev_end:start])
+        cond_text = js[start + 1:cond_end]
+        guards[label] = between + " " + cond_text
+        prev_end = body_end + 1
+    return guards
+
+
+def _role_vars(js):
+    """{var_name: frozenset(roles)} for every `const X = [...]` role array and
+    `const y = frappe.user.has_role(<expr>)` boolean, resolving a reference to
+    one of those arrays as well as an inline string or array literal."""
+    arrays = {}
+    for m in re.finditer(r'const\s+(\w+)\s*=\s*\[([^\]]*)\]\s*;', js):
+        roles = frozenset(re.findall(r'"([^"]+)"', m.group(2)))
+        if roles:
+            arrays[m.group(1)] = roles
+
+    bools = {}
+    for m in re.finditer(r'const\s+(\w+)\s*=\s*frappe\.user\.has_role\(([^)]*)\)\s*;', js):
+        arg = m.group(2).strip()
+        bools[m.group(1)] = arrays.get(arg, frozenset(re.findall(r'"([^"]+)"', arg)))
+    return bools
+
+
+def _roles_used_in(text, role_vars):
+    return {name: roles for name, roles in role_vars.items()
+            if re.search(rf'\b{re.escape(name)}\b', text)}
+
+
+def test_buttons_role_gated():
+    """Every status/generate button is shown only to a role the server would
+    actually accept for that action (PR #191 review finding 10): the JS's
+    has_role checks must name the same roles as the controller's
+    _GENERATE_ROLES and fiscal_status_model's transition role matrix."""
+    with _load() as module:
+        generate_roles = frozenset(module._GENERATE_ROLES)
+        fsm = sys.modules["konsol.fiscal_status_model"]
+        transitions = fsm._TRANSITIONS
+
+        lock_from_open = frozenset(transitions[(fsm.OPEN, fsm.LOCKED)][0])
+        lock_from_closed = frozenset(transitions[(fsm.CLOSED, fsm.LOCKED)][0])
+        assert lock_from_open == lock_from_closed, (
+            "Lock Year/Period shows one button regardless of the row's current "
+            "status, so the server must require the same roles from either")
+
+        expected_single = {
+            "Generate Periods": generate_roles,
+            "Close Year": frozenset(transitions[(fsm.OPEN, fsm.CLOSED)][0]),
+            "Lock Year": lock_from_open,
+            "Close Period": frozenset(transitions[(fsm.OPEN, fsm.CLOSED)][0]),
+            "Lock Period": lock_from_open,
+        }
+        expected_dual = {
+            "Closed": frozenset(transitions[(fsm.CLOSED, fsm.OPEN)][0]),
+            "Locked": frozenset(transitions[(fsm.LOCKED, fsm.OPEN)][0]),
+        }
+
+    with open(FORM_JS) as f:
+        js = f.read()
+
+    guards = _button_guards(js)
+    missing = set(BUTTON_LABELS) - set(guards)
+    assert not missing, f"no if-guard found for: {sorted(missing)}"
+    role_vars = _role_vars(js)
+    assert role_vars, "no frappe.user.has_role(...) check found in the form script"
+
+    for label, expected in expected_single.items():
+        used = _roles_used_in(guards[label], role_vars)
+        assert used, f"{label!r} button is not guarded by any has_role check"
+        assert len(used) == 1, f"{label!r} button's guard is ambiguous: {used}"
+        (_, roles), = used.items()
+        assert roles == expected, f"{label!r} needs {sorted(expected)}, JS checks {sorted(roles)}"
+
+    for label in DUAL_BRANCH_LABELS:
+        branches = guards[label].split("||")
+        assert len(branches) == 2, (
+            f"{label!r} button's guard should have one branch per source "
+            f"status (Closed, Locked): {guards[label]!r}")
+        seen = set()
+        for branch in branches:
+            markers = [s for s in ("Closed", "Locked") if f'"{s}"' in branch]
+            assert len(markers) == 1, f"{label!r} branch names {markers}: {branch!r}"
+            status = markers[0]
+            assert status not in seen, f"{label!r} covers {status} twice"
+            seen.add(status)
+
+            used = _roles_used_in(branch, role_vars)
+            assert used, f"{label!r}'s {status} branch has no has_role check: {branch!r}"
+            assert len(used) == 1, f"{label!r}'s {status} branch is ambiguous: {used}"
+            (_, roles), = used.items()
+            expected = expected_dual[status]
+            assert roles == expected, (
+                f"{label!r}'s {status} branch needs {sorted(expected)}, "
+                f"JS checks {sorted(roles)}")
+        assert seen == {"Closed", "Locked"}, f"{label!r} guard covers {seen}, not both statuses"
+
+
 def test_status_action_flag_permits_only_declared_changes():
     """Under the action flag, validate accepts only the status changes the
     action declared; any other status difference is refused."""
