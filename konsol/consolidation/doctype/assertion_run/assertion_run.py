@@ -34,7 +34,21 @@ class AssertionRun(Document):
         """The year, and the period when one is given, must be declared: an
         undeclared one is refused before the run starts (konsol#189). Unlike
         a doctype that writes into the period, an Assertion Run only reads
-        data, so the rule is declared, not open."""
+        data, so the rule is declared, not open.
+
+        Gated to the declared scope, not every save (PR#191 review finding
+        5): a year-only run is stored with fiscal_period=0 (Frappe stores an
+        empty Int as 0). The worker and sign-off reload the run and save it
+        again; if that re-ran the check against period 0, a year with no
+        Opening period would refuse its own worker save and the run would
+        stay Queued forever, blocking every other run behind the
+        concurrency guard. So the check runs only on insert, or when
+        fiscal_year/fiscal_period actually changed from the saved version —
+        a later status/result save is not re-gated.
+        """
+        if not (self.is_new() or self.has_value_changed("fiscal_year")
+                or self.has_value_changed("fiscal_period")):
+            return
         if self.fiscal_year and self.fiscal_period not in (None, ""):
             assert_declared(self.fiscal_year, self.fiscal_period)
         elif self.fiscal_year:
