@@ -589,10 +589,19 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
 # -- the close gate -------------------------------------------------------------------
 
 def _approved_keys(fiscal_year, fiscal_period):
-    return {(r.from_currency, r.to_currency, r.rate_type) for r in frappe.get_all(
-        DOCTYPE, filters={"docstatus": 1, "fiscal_year": int(fiscal_year),
-                          "fiscal_period": int(fiscal_period)},
-        fields=["from_currency", "to_currency", "rate_type"], limit_page_length=0)}
+    """The (from, to, rate_type) of every approved rate for the period, read
+    LOCK IN SHARE MODE: a plain read (frappe.get_all) can return this
+    transaction's REPEATABLE READ snapshot, which a rate cancelled and
+    committed while a close waited on the year lock would still show as
+    approved (PR #191 re-review finding 4; mirrors period_status.period_row
+    and fiscal_calendar.periods_in_use(lock=True))."""
+    rows = frappe.db.sql(
+        "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
+        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s "
+        "LOCK IN SHARE MODE",
+        (1, int(fiscal_year), int(fiscal_period)),
+    )
+    return {(f, t, rt) for f, t, rt in rows}
 
 
 def missing_rates(fiscal_year, fiscal_period, pairs=None):

@@ -410,10 +410,18 @@ class EPMFiscalYear(Document):
         """Lock the year row, then reload the year from the database. A
         whitelisted doc method runs on the document the client sent
         (frappe.handler.run_doc_method), so nothing it carries may reach a
-        decision or the save: every check below reads the saved year, under
-        the lock (the group-rate gate included). The reload is a plain read,
-        so a year changed since this transaction's snapshot fails save()'s
-        check_if_latest rather than writing stale rows back."""
+        decision or the save: every check below reads the saved year. The
+        reload is a plain read, so a year changed since this transaction's
+        snapshot fails save()'s check_if_latest rather than writing stale
+        rows back.
+
+        Locking the year row does not make a later plain read of another
+        table see rows committed after this transaction's REPEATABLE READ
+        snapshot opened — that snapshot can predate this lock (on the SPA
+        path, period_status.set_status reads the year with a plain get_doc
+        before calling the action that takes this lock). The group-rate gate
+        takes its own locking read of Group Exchange Rate for that reason
+        (group_rates._approved_keys, PR #191 re-review finding 4)."""
         self._lock_year()
         self.reload()
         self.flags.konsol_status_action = None
