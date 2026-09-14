@@ -5,8 +5,10 @@
  * Close) and a fiscal navigator, never a period dropdown. The period lives in
  * the URL, /konsol-exec/2026/9, so a link pasted into chat carries it.
  *
- * Period vocabulary mirrors konsol/home_model.py: OPN is period 0, CLS is 13,
- * and period P of FY Y is the month starting Y-P-01.
+ * The server owns the calendar: only it knows which periods a fiscal year
+ * declares and what each is called (`code`, `label`, from
+ * konsol/home_api.py's `period_tree` and `month`). Nothing here guesses a
+ * period's code, label or meaning from its number.
  */
 
 export const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -17,24 +19,17 @@ export const STAGE_STEP = { consolidate: "consolidation", assertions: "assertion
 /** Period Status → frappe-ui Badge theme. */
 export const PERIOD_THEME = { Open: "blue", Closed: "green", Locked: "gray" };
 
-export function periodCode(p) {
-	if (p === 0) return "OPN";
-	if (p === 13) return "CLS";
-	return `P${String(p).padStart(2, "0")}`;
-}
-
-export function periodLabel(year, p) {
-	if (p === 0) return "Opening balances";
-	if (p === 13) return "Year-end close";
-	return `${MONTHS[p - 1]} ${year}`;
-}
-
-/** Route params → {year, period} as numbers, or null when not a real period. */
+/**
+ * Route params → {year, period} as numbers, or null when not shaped like a
+ * period. A period number is 0..255, as the server declares it (a
+ * 13-period year's close is 14); whether a given (year, period) actually
+ * exists is for the server to say — an undeclared one is refused there.
+ */
 export function parsePeriodRoute(params) {
 	const year = Number(params?.year);
 	const period = Number(params?.period);
 	if (!Number.isInteger(year) || !Number.isInteger(period)) return null;
-	if (year <= 1900 || year >= 3000 || period < 0 || period > 13) return null;
+	if (year <= 1900 || year >= 3000 || period < 0 || period > 255) return null;
 	return { year, period };
 }
 
@@ -68,14 +63,16 @@ export function stageTarget(stage, year, period) {
 }
 
 /**
- * The path in the title bar. `where` is {name, year, period, stepLabel}; the
- * fiscal year is not a page, so it carries no link.
+ * The path in the title bar. `where` is {name, year, period, code, label,
+ * stepLabel} — `code`/`label` are the server's for that period (e.g. "P09",
+ * "Sep 2026"), shown as-is; the fiscal year is not a page, so it carries no
+ * link.
  */
 export function crumbsFor(where) {
-	const { name, year, period, stepLabel } = where || {};
+	const { name, year, period, code, label, stepLabel } = where || {};
 	const hasPeriod = Number.isInteger(year) && Number.isInteger(period);
 	const base = hasPeriod
-		? [{ label: `FY${year}` }, { label: `${periodCode(period)} · ${periodLabel(year, period)}`, to: monthPath(year, period) }]
+		? [{ label: `FY${year}` }, { label: `${code} · ${label}`, to: monthPath(year, period) }]
 		: [];
 	if (name === "month" && hasPeriod) return [...base, { label: "Close" }];
 	if ((name === "step" || name === "step-tab") && hasPeriod) return [...base, { label: stepLabel || "Step" }];
