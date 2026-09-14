@@ -120,6 +120,23 @@ export function selectedFor(routeName, routeSelection, planePeriod) {
 	return p?.year && p?.period !== "" && p?.period != null ? { year: Number(p.year), period: Number(p.period) } : null;
 }
 
+/**
+ * Whether the route's wanted period should be sent to the close plane as
+ * SET_PERIOD. The plane accepts SET_PERIOD only from `ready` and `failed`
+ * (row 70q2 review 3 finding 1): a rejected period change lands the plane in
+ * `failed`, and a different pick from the navigator must not be silently
+ * swallowed just because the plane isn't `ready`. Every other plane state
+ * (`loading`, `changingPeriod`, `refreshing`, `starting`, `reminding`, …) is
+ * a load already in flight, so nothing is sent — the caller re-checks each
+ * time the plane's state changes, and it can't loop: once the plane settles
+ * in `ready` or `failed` its period already equals what was last sent.
+ */
+export function shouldSendPeriod(planeState, want, current) {
+	if (planeState !== "ready" && planeState !== "failed") return false;
+	if (!want) return false;
+	return String(current?.year) !== String(want.year) || String(current?.period) !== String(want.period);
+}
+
 /** Years open in the navigator by default: the current one and the selected one. */
 export function defaultExpanded(tree, selected) {
 	const out = new Set();
