@@ -13,11 +13,17 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import after_commit_once, sync_table
+from konsol.period_status import assert_declared
 
 STAGING_COLUMNS = ["driver_type", "data_area_id", "cost_center", "fiscal_year", "fiscal_period", "driver_value"]
 
 
 class AllocationDriver(Document):
+    def validate(self):
+        """The year and period must be declared: an undeclared one is refused
+        on every save (konsol#189)."""
+        assert_declared(self.fiscal_year, self.fiscal_period)
+
     # After the commit, once per transaction (konsol#124).
     def on_update(self):
         after_commit_once(("allocation_drivers",), sync_allocation_drivers)
