@@ -73,10 +73,11 @@ def _row_is_new(row):
     like "new-epm-fiscal-year-period-1"; a row appended in Python
     (Document.append, as the migration patch and scripts do) carries
     neither and has no name at all."""
-    if getattr(row, "__islocal", None):
-        return True
-    name = row.name
-    return not name or (isinstance(name, str) and name.startswith("new-"))
+    # A "new-..." name alone is not a signal: Frappe decides by __islocal
+    # and writes any other named row with UPDATE ... WHERE name=..., so a
+    # planted "new-p05" row saved under another year could be taken over
+    # (PR #191 re-review 3). The desk clears its temporary names before save.
+    return bool(getattr(row, "__islocal", None)) or not row.name
 
 
 def _year_dict(doc):
@@ -568,7 +569,9 @@ class EPMFiscalYear(Document):
         migration patch and a declared status action: neither ever sends a
         foreign name, so it costs them nothing."""
         saved_rows = {_row_key(r): r for r in ((before.periods or []) if before else [])}
-        foreign = [r for r in (self.periods or [])
+        # On insert there is nothing to take over (Frappe names every child
+        # row afresh), so only a year with a saved version is checked.
+        foreign = [] if self.get_doc_before_save() is None else [r for r in (self.periods or [])
                    if r.name and not _row_is_new(r) and r.name not in saved_rows]
         if foreign:
             frappe.throw(
