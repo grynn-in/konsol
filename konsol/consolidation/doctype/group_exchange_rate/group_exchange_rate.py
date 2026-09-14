@@ -230,6 +230,9 @@ class GroupExchangeRate(Document):
         check_if_latest never locks a row for a new one either
         (load_doc_before_save returns early for is_new()).
         """
+        # `status` is selected so the lock lands on the row itself: a query the
+        # unique fiscal_year index covers only locks that index entry, and the
+        # close's `WHERE name=%s FOR UPDATE` on the row wouldn't wait for it.
         if not self.is_new():
             try:
                 year = int(self.fiscal_year)
@@ -237,7 +240,7 @@ class GroupExchangeRate(Document):
                 year = None
             if year is not None:
                 frappe.db.sql(
-                    "SELECT name FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
+                    "SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
                     (year,),
                 )
         super().check_if_latest()

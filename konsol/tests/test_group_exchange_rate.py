@@ -462,7 +462,7 @@ def test_ger_locks_year_before_own_row():
     d = _doc(module, _before={"fiscal_year": 2099})
     d.check_if_latest()
     assert record["sql"] == [
-        "SELECT name FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
+        "SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
         "BASE_CHECK_IF_LATEST",
     ], record["sql"]
 
