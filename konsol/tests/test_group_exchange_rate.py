@@ -467,6 +467,23 @@ def test_ger_locks_year_before_own_row():
     ], record["sql"]
 
 
+def test_ger_year_lock_is_on_the_row_not_the_index():
+    """The year lock must land on the same record the close locks. `SELECT
+    name ... WHERE fiscal_year=%s LOCK IN SHARE MODE` is answered from the
+    unique fiscal_year index alone (it holds the primary key), so InnoDB
+    share-locks only that index entry, and the close's `WHERE name=%s FOR
+    UPDATE` on the row doesn't wait for it: live, the GER-cancel vs close
+    deadlock still happened 3/3 with that query. Selecting a column outside
+    the index (status, as period_row does) locks the row itself."""
+    module, record = _controller()
+    d = _doc(module, _before={"fiscal_year": 2099})
+    d.check_if_latest()
+    year_sql = [q for q in record["sql"] if "`tabEPM Fiscal Year`" in q]
+    assert year_sql and all("LOCK IN SHARE MODE" in q for q in year_sql), record["sql"]
+    assert all("status" in q.split("FROM")[0] for q in year_sql), \
+        f"the year lock selects only indexed columns, so it locks the index entry, not the row: {year_sql}"
+
+
 def test_new_ger_does_not_lock_a_year_in_check_if_latest():
     """Frappe's own check_if_latest never takes the row lock for a new
     document (load_doc_before_save returns early, document.py:1160-1161), so
