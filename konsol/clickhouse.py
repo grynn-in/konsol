@@ -710,7 +710,7 @@ _RAW_TABLE_DDL = {
     "epm_raw.trial_balance_submission_control": (
         "(batch_id String, submission_name String, data_area_id String, "
         "fiscal_year UInt16, fiscal_period UInt8, row_count UInt32, "
-        "claimed_at DateTime) "
+        "claimed_at DateTime, amount_basis String DEFAULT '') "
         "ENGINE = ReplacingMergeTree(claimed_at) ORDER BY batch_id"
     ),
 }
@@ -723,6 +723,10 @@ _RAW_TABLE_DDL = {
 _ADDED_COLUMNS = {
     # konsol#159: the intercompany partner on every trial balance row
     "epm_raw.trial_balance_submissions": [("partner_data_area_id", "String DEFAULT ''")],
+    # konsolidat#199: what a claimed batch's amounts are (period movement,
+    # year-to-date movement, period-end balance); '' = claimed before the
+    # column existed, so not declared
+    "epm_raw.trial_balance_submission_control": [("amount_basis", "String DEFAULT ''")],
     # konsol#159: where a group books intercompany differences, and their tolerance
     "epm_gold.consolidation_groups": [
         ("ic_difference_account", "String DEFAULT ''"),

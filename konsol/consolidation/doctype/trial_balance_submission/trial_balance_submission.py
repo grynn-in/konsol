@@ -18,7 +18,7 @@ transactions, so correctness comes from ordering, not atomicity:
      gives this for free), never an edit of landed rows.
 
 CSV contract (header required, case-insensitive):
-    main_account,debit,credit[,description][,partner_data_area_id]
+    main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]
 Amounts are in the entity's accounting currency. One row per account and
 partner.
 
@@ -28,6 +28,14 @@ with. It is optional on every row and every account (decision 2, 13 Sep 2026):
 a row on an intercompany account without one loads, is never eliminated, and
 consolidation lists it as unmatched. Nothing guesses it. When given, it must be
 an existing non-group Entity and never the row's own entity.
+
+amount_basis (konsolidat#199; `basis` and `amount basis` are accepted too) is
+what every debit and credit IS: this period's movement, the year-to-date
+movement, or the closing balance at period end (konsol.tb_basis_model). The
+submission declares it on the form, and the claim row carries it so the
+warehouse can normalise all three into period movements. The column is
+optional and only ever confirms the form: a row that names a different basis
+refuses the file, since one file holds one basis. A blank cell is "not given".
 """
 
 import csv
@@ -40,6 +48,7 @@ from frappe.model.document import Document
 
 from konsol.clickhouse import ensure_raw_tables, execute
 from konsol.period_status import assert_open, assert_postable
+from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, COLUMN as BASIS, basis_problems
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
@@ -58,15 +67,20 @@ PARTNER_ALIASES = ("partner", "partner_entity", "partner_id", "counterparty")
 
 def _column(header):
     name = (header or "").strip().lower()
-    return PARTNER if name in PARTNER_ALIASES else name
+    if name in PARTNER_ALIASES:
+        return PARTNER
+    if name in BASIS_ALIASES:
+        return BASIS
+    return name
 
 
 def parse_tb_csv(text):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, description,
-    partner_data_area_id}; the partner is '' when the file has no partner
-    column or the cell is blank.
+    partner_data_area_id, amount_basis}; the partner and the basis are ''
+    when the file has no such column or the cell is blank. The basis is
+    returned as written: validate() judges it (konsol.tb_basis_model).
     Raises ValueError with a human-readable message on structural problems —
     a missing header, a non-numeric amount, a blank account. Business
     validation (balance, duplicates, chart membership) is validate_tb_rows()'s
@@ -80,12 +94,16 @@ def parse_tb_csv(text):
     if missing:
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} — the header must be "
-            "main_account,debit,credit[,description][,partner_data_area_id]"
+            "main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]"
         )
     if headers.count(PARTNER) > 1:
         raise ValueError(
             "Two partner columns: keep one of partner_data_area_id, "
             + ", ".join(PARTNER_ALIASES)
+        )
+    if headers.count(BASIS) > 1:
+        raise ValueError(
+            "Two amount_basis columns: keep one of " + ", ".join(BASIS_ALIASES)
         )
 
     rows = []
@@ -130,6 +148,7 @@ def parse_tb_csv(text):
             "credit": round(credit, 2),
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
+            BASIS: item.get(BASIS, ""),
         })
     if not rows:
         raise ValueError("The file has a header but no data rows")
@@ -317,6 +336,13 @@ class TrialBalanceSubmission(Document):
         errors = validate_tb_rows(rows, chart=chart_accounts(),
                                   entity=self.data_area_id,
                                   known_entities=self._partner_entities(rows))
+        # konsolidat#199: the form's basis is required, and a file that
+        # carries its own amount_basis column may only confirm it. Rows with
+        # a blank cell are "not given" and are not judged. Data rows start on
+        # line 2, right after the header.
+        errors.extend(basis_problems(self.amount_basis, [
+            (lineno, r[BASIS]) for lineno, r in enumerate(rows, start=2) if r[BASIS]
+        ]))
 
         self.row_count = len(rows)
         self.total_debit = round(sum(r["debit"] for r in rows), 2)
@@ -350,13 +376,16 @@ class TrialBalanceSubmission(Document):
         self._land_rows(rows)
         # The claim is the commit point. Nothing before this line is visible
         # to bronze; a crash before it leaves unclaimed rows for the reaper.
+        # The claim also carries the amount basis (konsolidat#199): it is a
+        # property of the batch, not of a row, and bronze normalises on it.
         execute(
             f"INSERT INTO {CONTROL_TABLE} "
             "(batch_id, submission_name, data_area_id, fiscal_year, "
-            "fiscal_period, row_count, claimed_at) VALUES "
+            "fiscal_period, row_count, claimed_at, amount_basis) VALUES "
             f"('{_sql_str(self.batch_id)}', '{_sql_str(self.name)}', "
             f"'{_sql_str(self.data_area_id)}', {int(self.fiscal_year)}, "
-            f"{int(self.fiscal_period)}, {int(self.row_count)}, now())"
+            f"{int(self.fiscal_period)}, {int(self.row_count)}, now(), "
+            f"'{_sql_str(self.amount_basis)}')"
         )
 
     def before_cancel(self):
@@ -455,7 +484,8 @@ class TrialBalanceSubmission(Document):
     def _ensure_tables(self):
         # The DDL lives in konsol.clickhouse (KEEP IN SYNC with konsolidat's
         # clickhouse/init-db.sql); this also adds the partner column to a
-        # table created before konsol#159.
+        # table created before konsol#159, and the control table's
+        # amount_basis to one created before konsolidat#199.
         ensure_raw_tables()
 
     def _land_rows(self, rows):
