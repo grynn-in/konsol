@@ -4,6 +4,36 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (14 Sep evening): the full governed build is one deploy away from
+green.** After the data load, a full build failed on three things; all are
+fixed on main now.
+
+- Data (done on the site): the top entity of the group had no Ownership
+  Period (added, 100% full from 1990-01-01); 43 balance-sheet accounts had no
+  Cash Flow Category (created from the chart's own `cf_*` fields, cash account
+  flagged); one 2012 CAD→USD average rate was 1.0 (cancelled and amended to
+  1.0005, the Federal Reserve G.5A figure, reason recorded).
+- konsol #195 → PR #198: a scoped build ran tests of models it did not build.
+  `dbt_build_command` adds `--indirect-selection cautious` to every scoped
+  build (and the orchestrator's `build_dbt_command` does the same).
+- konsol #196 → PR #199: the group chart is the source of the cash-flow
+  mapping. Saving a Published balance-sheet account keeps its Cash Flow
+  Category row in step; the patch `fill_cash_flow_categories_from_chart`
+  backfills existing sites on migrate. #197 tracks dropping the unread `sign`.
+- konsolidat #195 → PR #196 and #194 → PR #197: two dbt singular tests fixed
+  (`assert_cta_not_zero_when_rates_differ` keyed on rows that used a
+  non-closing rate; `assert_translation_rate_resolved` no longer rejects a
+  cross-currency rate of exactly 1.0). Fixtures for singular tests live in
+  `dbt_project/test_fixtures/` (see its README).
+
+To see it on the stack: fast-forward the deploy checkout to konsolidat main
+(≥ e625a95), deploy konsol main (≥ #199) and migrate, then approve a **full**
+Build Approval. Still open for the business: Historical Equity Rates (0 rows,
+329-entity warning), account 2300's `historical` FX method, account 1000's
+`is_cash` in the chart, account 3500 under the equity heading, FY2026 not
+declared, and whether one financing entity's trial balance (debt and retained
+earnings only) is complete.
+
 **Update (14 Sep): fiscal periods are declared, not implied** (konsol#189 PR1,
 konsol **#191**; see "Fiscal Year with declared periods" below). A period
 exists only as a row of an EPM Fiscal Year and is open only when the row and

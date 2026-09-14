@@ -194,6 +194,33 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
     def on_update(self):
         NestedSet.on_update(self)                   # update_nsm + validate_ledger
         GovernedReferenceDocument.on_update(self)   # after-commit resync when Published
+        self._mirror_cash_flow_category()
+
+    def _mirror_cash_flow_category(self):
+        # The chart is the source of the cash-flow mapping (konsol#196): dbt reads
+        # only epm_staging.cash_flow_categories, so without this a site that
+        # uploaded a complete chart still had to re-key every mapping as Cash Flow
+        # Category rows before the full build could run. A Published mapped leaf
+        # keeps a Published CFC-<code> row in step; an account that stops being
+        # mapped (unpublished, a cf field cleared, no longer Balance Sheet) makes
+        # its row Inactive. A manual Cash Flow Category edit for a chart account is
+        # overwritten on the next chart save.
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
+        mapping = M.cash_flow_mapping(self.as_dict())
+        if self.status != _PUBLISHED or not mapping:
+            _inactivate_cash_flow_row(self.main_account)
+            return
+        name = _live_cash_flow_row(self.main_account)
+        row = frappe.get_doc("Cash Flow Category", name) if name else frappe.new_doc("Cash Flow Category")
+        for field in ("main_account", "cf_category", "cf_line_item", "is_cash"):
+            row.set(field, mapping[field])
+        row.set("sign", "1")
+        row.set("status", _PUBLISHED)
+        if name:
+            row.save(ignore_permissions=True)
+        else:
+            row.insert(ignore_permissions=True)   # autoname: CFC-<code>
 
     def on_trash(self):
         NestedSet.on_trash(self)   # refuses a heading that still has accounts under it
@@ -204,13 +231,51 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         """after_delete, not on_trash: on_trash runs before the row is gone, so the
         full-table re-send would put it straight back (#120)."""
         GovernedReferenceDocument.after_delete(self)
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
+        _inactivate_cash_flow_row(self.main_account)   # a deleted account leaves no live mapping behind
 
     def after_rename(self, olddn, newdn, merge=False):
         """rename_doc never calls on_update, and it rewrites the code and every
         child's parent_account by raw SQL. allow_rename is off, but
-        rename_doc(force=True) still arrives here (entity.py)."""
+        rename_doc(force=True) still arrives here (entity.py).
+
+        The old code's Cash Flow Category row is withdrawn and the new code
+        mirrored: rename_doc has already rewritten main_account to newdn
+        (update_autoname_field), so the mirror sees the new code."""
         super().after_rename(olddn, newdn, merge)
         self._resync()
+        if not (frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch):
+            _inactivate_cash_flow_row(olddn)
+        self._mirror_cash_flow_category()
+
+
+def _live_cash_flow_row(code):
+    """The name of the account's live Cash Flow Category row, whatever it is
+    called; else CFC-<code> when that (Inactive) row exists; else None.
+
+    Looked up by main_account, not by name: a manually keyed row for the
+    account may have another name and must be updated, not collided with, as
+    CashFlowCategory._validate_unique_account refuses a second live row per
+    account and would otherwise fail a plain chart save or a whole chart upload.
+    """
+    name = frappe.db.get_value("Cash Flow Category", {"main_account": code, "status": ["!=", "Inactive"]}, "name")
+    if name:
+        return name
+    fallback = f"CFC-{code}"
+    return fallback if frappe.db.exists("Cash Flow Category", fallback) else None
+
+
+def _inactivate_cash_flow_row(code):
+    """Withdraw the account's cash-flow mapping: its row, if any, is made
+    Inactive (the mirror's else-branch, delete and rename share this)."""
+    name = _live_cash_flow_row(code)
+    if not name:
+        return
+    row = frappe.get_doc("Cash Flow Category", name)
+    if row.status != "Inactive":
+        row.set("status", "Inactive")
+        row.save(ignore_permissions=True)
 
 
 def _submitted_postings(codes):
