@@ -147,3 +147,46 @@ def test_invokes_cancel_run_actor():
 def test_settles_on_terminal_status():
     js = _machine_js()
     assert "isTerminal(" in js
+
+
+# ---- bulk upload sends the amount basis (konsolidat#199) ---------------
+#
+# konsol.tb_bulk.check_file and .load take an optional amount_basis; the
+# upload page must be able to send it so a file without its own column is
+# not refused for every entity-period. Source-text tests, as above.
+
+UPLOAD_API_PATH = os.path.join(SRC_DIR, "uploadApi.js")
+UPLOAD_MACHINE_PATH = os.path.join(SRC_DIR, "machines", "uploadMachine.js")
+
+
+def _read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def _call_text(js, method):
+    """The single line that posts ``method``."""
+    lines = [line for line in js.splitlines() if f'"{method}"' in line]
+    assert len(lines) == 1, (method, lines)
+    return lines[0]
+
+
+def test_upload_api_check_file_posts_amount_basis():
+    line = _call_text(_read(UPLOAD_API_PATH), "konsol.tb_bulk.check_file")
+    assert "amount_basis" in line
+    assert "amountBasis" in line
+
+
+def test_upload_api_load_posts_amount_basis():
+    line = _call_text(_read(UPLOAD_API_PATH), "konsol.tb_bulk.load")
+    assert "amount_basis" in line
+    assert "amountBasis" in line
+    assert "skip_invalid" in line
+
+
+def test_upload_machine_carries_amount_basis_into_both_calls():
+    js = _read(UPLOAD_MACHINE_PATH)
+    assert "SET_BASIS" in js
+    assert "amountBasis:" in js  # context value
+    assert "checkFile(input.fileUrl, input.amountBasis)" in js
+    assert "loadUpload(input.name, input.skipInvalid, input.amountBasis)" in js
