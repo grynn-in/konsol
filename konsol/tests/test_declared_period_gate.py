@@ -102,17 +102,22 @@ _ALLOWED_PATHS = (
 #: (PR4, konsol#189). Keyed on the AST's innermost enclosing function name
 #: ("<module>" for module-level code) rather than line number, so an
 #: unrelated edit above an allowed offender can't silently break the gate.
+#:
+#: Each entry is ``(limit, reason)``: ``limit`` pins how many offenders the
+#: function is allowed today. A new stale read that pushes the count past
+#: ``limit`` fails the sweep instead of silently riding along with the
+#: allowed ones (konsol#189 finding 6, re-review of PR #191).
 _ALLOWED_FUNCS = {
-    ("api.py", "_resolve_period"): "budget: _resolve_period, PERIOD_RANGES (Q/H/FY) for Excel reads (plan 1.3)",
-    ("api.py", "build_snapshot"): "budget: period_from/period_to are wide monthly columns (plan 1.3)",
-    ("api.py", "budget_cell_save"): "budget: fiscal_period is a wide monthly column (plan 1.3)",
-    ("epm/budget_periods.py", "<module>"): "budget: PERIOD_FIELDS is twelve monthly columns by design (plan 1.3)",
+    ("api.py", "_resolve_period"): (0, "budget: _resolve_period, PERIOD_RANGES (Q/H/FY) for Excel reads (plan 1.3)"),
+    ("api.py", "build_snapshot"): (1, "budget: period_from/period_to are wide monthly columns (plan 1.3)"),
+    ("api.py", "budget_cell_save"): (0, "budget: fiscal_period is a wide monthly column (plan 1.3)"),
+    ("epm/budget_periods.py", "<module>"): (0, "budget: PERIOD_FIELDS is twelve monthly columns by design (plan 1.3)"),
     # TODO konsol#189: fiscal_calendar.period_status_rows() is the migration
     # planner shared by the create_fiscal_years patch and declare_years_in_use
     # (plan 3.1/3.4: "nothing reads [Period Status] any more except the
     # migration patch"). It stops reading Period Status only when Period
     # Status is actually dropped in PR4/task 90.
-    ("fiscal_calendar.py", "period_status_rows"): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
+    ("fiscal_calendar.py", "period_status_rows"): (2, "TODO konsol#189: migration planner reads Period Status until PR4 retires it"),
 }
 
 
@@ -222,8 +227,32 @@ def test_allow_list_survives_line_shifts():
         )
 
 
+def _flag_allow_list_overflow(relpath, hits_by_func):
+    """``hits_by_func`` maps an enclosing function name to the list of
+    ``(lineno, reason)`` offenders found in it for ``relpath``. A function on
+    the ``_ALLOWED_FUNCS`` list is only exempt up to its pinned count
+    (konsol#189 finding 6): once a function has *more* offenders than that,
+    the extra one(s) are reported by file, function and line, instead of
+    riding along silently with the allowed ones."""
+    messages = []
+    for func_name, hits in hits_by_func.items():
+        key = (relpath, func_name)
+        if key not in _ALLOWED_FUNCS:
+            continue
+        limit, reason = _ALLOWED_FUNCS[key]
+        if len(hits) > limit:
+            extra_lineno, extra_reason = hits[limit]
+            messages.append(
+                f"konsol/{relpath}:{extra_lineno} {func_name}(): {len(hits)} stale "
+                f"offender(s) found, allow-listed for only {limit} ({reason}); "
+                f"extra offender: {extra_reason}"
+            )
+    return messages
+
+
 def test_no_stale_period_readers():
     offenders = []
+    hits_by_file_func = {}
     for dirpath, dirnames, filenames in os.walk(APP_DIR):
         dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__")]
         for name in sorted(filenames):
@@ -236,9 +265,16 @@ def test_no_stale_period_readers():
             with open(full, encoding="utf-8") as f:
                 source = f.read()
             for lineno, reason, func_name in _stale_reads(full, source):
+                if (relpath, func_name) in _ALLOWED_FUNCS:
+                    hits_by_file_func.setdefault(relpath, {}).setdefault(func_name, []).append(
+                        (lineno, reason)
+                    )
+                    continue
                 if _allowed(relpath, func_name):
                     continue
                 offenders.append(f"konsol/{relpath}:{lineno} {reason}")
+    for relpath, hits_by_func in hits_by_file_func.items():
+        offenders.extend(_flag_allow_list_overflow(relpath, hits_by_func))
     assert not offenders, "stale Period Status / Fiscal Period / 0..13 reader(s):\n" + "\n".join(offenders)
 
 
