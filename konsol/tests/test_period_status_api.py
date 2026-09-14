@@ -56,23 +56,65 @@ class _DB:
         raise AssertionError(f"unexpected query: {query}")
 
 
-def _stub_frappe(db):
+class _DoesNotExistError(_ValidationError):
+    pass
+
+
+class _Dict(dict):
+    """Stand-in for frappe._dict: a dict whose keys read as attributes."""
+
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError:
+            raise AttributeError(key) from None
+
+
+def _getdate(value):
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def _stub_frappe(db, year_docs=None):
+    """`year_docs` maps fiscal_year (str) -> a _FakeYear that get_doc returns;
+    any other year raises DoesNotExistError, as frappe.get_doc does."""
     frappe = types.ModuleType("frappe")
     frappe.db = db
     frappe.ValidationError = _ValidationError
+    frappe.DoesNotExistError = _DoesNotExistError
     frappe._ = lambda s: s
+    frappe._dict = _Dict
+    frappe.get_doc_calls = []
 
     def throw(msg, exc=_ValidationError, *args, **kwargs):
         raise exc(msg)
 
+    def get_doc(doctype, name=None, *args, **kwargs):
+        frappe.get_doc_calls.append((doctype, name))
+        if doctype != "EPM Fiscal Year":
+            raise AssertionError(f"unexpected get_doc: {doctype}")
+        doc = (year_docs or {}).get(str(name))
+        if doc is None:
+            raise _DoesNotExistError(f"EPM Fiscal Year {name} not found")
+        return doc
+
     frappe.throw = throw
+    frappe.get_doc = get_doc
+    utils = types.ModuleType("frappe.utils")
+    utils.getdate = _getdate
+    frappe.utils = utils
     return frappe
 
 
 @contextmanager
-def _load(db):
-    saved = {k: sys.modules.get(k) for k in ("frappe",)}
-    sys.modules["frappe"] = _stub_frappe(db)
+def _load(db, year_docs=None):
+    saved = {k: sys.modules.get(k) for k in ("frappe", "frappe.utils")}
+    stub = _stub_frappe(db, year_docs)
+    sys.modules["frappe"] = stub
+    sys.modules["frappe.utils"] = stub.utils
     try:
         spec = importlib.util.spec_from_file_location("period_status_under_test", PS_PATH)
         mod = importlib.util.module_from_spec(spec)
@@ -217,3 +259,114 @@ def test_postable_types_reads_settings():
     db = _DB(settings={"tb_accepts_closing": 1})
     with _load(db) as ps:
         assert ps.postable_types() == {"Regular", "Closing"}
+
+
+# ---- set_status delegates to the EPM Fiscal Year actions --------------------
+
+USER = "closer@example.com"
+CLOSED_ON = "2025-04-02 10:00:00"
+
+
+class _FakeYear:
+    """An EPM Fiscal Year doc: its period rows, and close/lock/reopen actions
+    that record each call and move the row as the real actions do."""
+
+    def __init__(self, fiscal_year="2025", status="Open"):
+        self.name = str(fiscal_year)
+        self.fiscal_year = int(fiscal_year)
+        self.status = status
+        self.periods = [
+            types.SimpleNamespace(
+                name="row-p03", fiscal_period=3, period_code="P03",
+                period_type="Regular", start_date=date(2025, 3, 1),
+                end_date=date(2025, 3, 31), status="Open",
+                closed_by=None, closed_on=None),
+        ]
+        self.calls = []
+
+    def _row(self, fiscal_period):
+        return next(r for r in self.periods if r.fiscal_period == int(fiscal_period))
+
+    def _move(self, fiscal_period, status):
+        row = self._row(fiscal_period)
+        row.status = status
+        row.closed_by, row.closed_on = (None, None) if status == "Open" else (USER, CLOSED_ON)
+        return {"fiscal_period": row.fiscal_period, "period_code": row.period_code, "status": status}
+
+    def close_period(self, fiscal_period, note=None):
+        self.calls.append(("close_period", fiscal_period, note))
+        return self._move(fiscal_period, "Closed")
+
+    def lock_period(self, fiscal_period, note=None):
+        self.calls.append(("lock_period", fiscal_period, note))
+        return self._move(fiscal_period, "Locked")
+
+    def reopen_period(self, fiscal_period, reason):
+        self.calls.append(("reopen_period", fiscal_period, reason))
+        return self._move(fiscal_period, "Open")
+
+
+#: What callers read off set_status's result: control_api.set_period_status
+#: (name, fiscal_year, fiscal_period, status, closed_by, closed_on) and
+#: test_period_status_bench (status, closed_by, closed_on).
+CALLER_ATTRS = ("name", "fiscal_year", "fiscal_period", "status", "closed_by", "closed_on")
+
+
+def test_set_status_delegates():
+    year = _FakeYear()
+    with _load(_DB(), {"2025": year}) as ps:
+        import frappe
+
+        doc = ps.set_status(2025, "3", ps.CLOSED, note="books signed")
+        assert year.calls == [("close_period", 3, "books signed")]
+        assert frappe.get_doc_calls == [("EPM Fiscal Year", "2025")]
+        for attr in CALLER_ATTRS:
+            assert hasattr(doc, attr), attr
+        assert doc.status == "Closed"
+        assert doc.closed_by == USER
+        assert doc.closed_on == CLOSED_ON
+        assert doc.fiscal_period == 3
+        assert str(doc.fiscal_year) == "2025"
+        assert doc.name
+
+        # Reopen needs a reason; without one it is refused before any action.
+        exc = _refusal(ps.set_status, 2025, 3, ps.OPEN)
+        assert isinstance(exc, _ValidationError)
+        assert "reason" in str(exc)
+        assert year.calls == [("close_period", 3, "books signed")]
+
+        doc = ps.set_status(2025, 3, ps.OPEN, reason="late journal")
+        assert year.calls[-1] == ("reopen_period", 3, "late journal")
+        assert doc.status == "Open"
+        assert doc.closed_by is None
+        assert doc.closed_on is None
+
+        # Equal dates are fine, as strings or dates.
+        doc = ps.set_status(2025, 3, ps.LOCKED, "2025-03-01", date(2025, 3, 31))
+        assert year.calls[-1] == ("lock_period", 3, None)
+        assert doc.status == "Locked"
+        assert doc.closed_by == USER
+        assert len(year.calls) == 3
+
+
+def test_set_status_refuses_other_dates():
+    year = _FakeYear()
+    with _load(_DB(), {"2025": year}) as ps:
+        expected = ("P03 of FY2025 is declared 2025-03-01..2025-03-31; set_status "
+                    "can't change a period's dates — edit the EPM Fiscal Year")
+        exc = _refusal(ps.set_status, 2025, 3, ps.CLOSED, "2025-03-02", None)
+        assert isinstance(exc, _ValidationError)
+        assert str(exc) == expected
+        exc = _refusal(ps.set_status, 2025, 3, ps.CLOSED, None, date(2025, 4, 30))
+        assert str(exc) == expected
+        assert year.calls == []
+
+
+def test_set_status_undeclared_year_refused():
+    with _load(_DB(), {"2025": _FakeYear()}) as ps:
+        exc = _refusal(ps.set_status, 2031, 3, ps.CLOSED)
+        assert isinstance(exc, ps.PeriodNotDeclared)
+        assert "FY2031 is not declared" in str(exc)
+        exc = _refusal(ps.set_status, 2025, 14, ps.CLOSED)
+        assert isinstance(exc, ps.PeriodNotDeclared)
+        assert "FY2025 has no period 14" in str(exc)
