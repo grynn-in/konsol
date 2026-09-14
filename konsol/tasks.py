@@ -323,7 +323,8 @@ def run_governed_build(build_request):
     """Execute a governed dbt build for a Build Approval.
 
     Called via frappe.enqueue from BuildApproval.on_update.
-    Runs preflight checks, then selective dbt build with --select tag.
+    Runs preflight checks, then a selective dbt build (--select on the scope's
+    tag, with --indirect-selection cautious; see konsol.build_command).
     """
     doc = frappe.get_doc("Build Approval", build_request)
 
