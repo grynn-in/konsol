@@ -42,14 +42,19 @@ def test_build_fx_query_none_filters():
     assert "WHERE" not in sql
 
 
-def test_the_rates_are_the_governed_ones():
-    """One source of truth (13 Sep 2026): the SPA shows the true rates konsol
-    publishes, never the ERP feed, and scales or inverts nothing."""
+def test_as_of_comes_from_declared_periods():
+    """konsol#189: a period's date comes from the declared calendar row, never
+    guessed month arithmetic. One source of truth (13 Sep 2026) still holds:
+    the SPA shows the true rates konsol publishes, never the ERP feed."""
     assert fx.FX_TABLE == "epm_staging.group_exchange_rates"
     sql = fx.build_fx_query({})
     assert "silver_exchange_rates" not in sql and "exchange_rate AS" not in sql
     assert "        rate,\n" in sql and "'konsol' AS source" in sql
-    assert "makeDate(fiscal_year, greatest(least(fiscal_period, 12), 1), 1) AS as_of" in sql
+    assert "INNER JOIN epm_staging.fiscal_periods" in sql
+    assert "fp.start_date AS as_of" in sql
+    assert "makeDate" not in sql
+    assert "least(" not in sql
+    assert "toDate(concat" not in sql
 
 
 def test_build_fx_query_from_only():
