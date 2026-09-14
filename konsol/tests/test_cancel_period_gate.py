@@ -204,7 +204,7 @@ def test_first_period_affected_is_next_declared_start():
 
 
 def test_range_gate_uses_rows_not_month_arithmetic():
-    """Every declared period overlapping the range must be effectively Open
+    """Every declared period starting in the range must be effectively Open
     (the stricter of year and row): a Closed year blocks its Open rows, an
     exclusive end leaves out the period starting on it, no end means every
     later period."""
@@ -221,12 +221,36 @@ def test_range_gate_uses_rows_not_month_arithmetic():
     assert db.calls and all("STR_TO_DATE" not in q for q in db.calls), db.calls
     assert any("`tabEPM Fiscal Year`" in q and "`tabEPM Fiscal Year Period`" in q for q in db.calls), db.calls
 
-    # Overlap, not "starts after": a row settled mid-range blocks, and a
-    # Locked row is named with its own status.
+    # A Locked row starting in the range is named with its own status; a
+    # range starting after its first day leaves it alone.
     with _period_status(_declared(year_2025="Open", p12="Locked")) as ps:
-        assert _refused(ps.assert_open_between, "2024-12-15", "2024-12-20", action="cancel") == (
+        assert _refused(ps.assert_open_between, "2024-12-01", "2024-12-20", action="cancel") == (
             "Cannot cancel: it changes fiscal period P12 of FY2024, which is locked.")
+        ps.assert_open_between("2024-12-15", "2024-12-20", action="cancel")
         ps.assert_open_between("2025-01-01", None, action="cancel")
+
+
+def test_mid_period_start_is_not_blocked_by_its_own_period():
+    """A period's membership is decided by its first day: a change effective
+    15 March does not change March, so a Closed March must not block it;
+    only the periods starting on or after the date (April on) must be Open."""
+    months = [(m, datetime.date(2025, m, 1)) for m in range(1, 13)]
+    db = _SqliteDB(
+        years={2025: "Open"},
+        periods=[
+            (2025, m, f"P{m:02d}", start.isoformat(),
+             ((datetime.date(2025, m + 1, 1) if m < 12 else datetime.date(2026, 1, 1))
+              - datetime.timedelta(days=1)).isoformat(),
+             "Closed" if m <= 3 else "Open")
+            for m, start in months
+        ],
+    )
+    with _period_status(db) as ps:
+        gate = ps.assert_open_between
+        gate("2025-03-15", None, action="cancel an ownership period")
+        gate("2025-03-15", "2025-06-30", action="cancel an ownership period")
+        assert _refused(gate, "2025-03-01", None, action="cancel an ownership period") == (
+            "Cannot cancel an ownership period: it changes fiscal period P03 of FY2025, which is closed.")
 
 
 def test_budget_cycle_locks_before_the_transition_and_pushes_after_the_commit():
