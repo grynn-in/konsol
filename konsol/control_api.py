@@ -239,10 +239,19 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         name = trigger_pipeline()
         return {"ok": True, "run_kind": "pipeline", "name": name}
 
+    # Consolidation and assertions launch a run scoped to a fiscal year.
+    # Fiscal years are declared (EPM Fiscal Year) — nothing may silently
+    # default to "no year" (which downstream means implicitly all years).
+    if pid in ("consolidation", "assertions") and not fy:
+        frappe.throw(
+            "No Fiscal Year is declared for today. Declare one (EPM Fiscal "
+            "Year) or pick a year."
+        )
+
     if pid == "consolidation":
         # the consolidation BUILD = an orchestrator run (Group Close pipeline)
         from konsol.orchestrator.api import start_run
-        params = {"fiscal_year": fy} if fy else {}
+        params = {"fiscal_year": fy}
         if fp:
             params["fiscal_period"] = fp
         name = start_run(definition="Group Close", params=params)
