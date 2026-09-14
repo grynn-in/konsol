@@ -23,10 +23,6 @@ class PeriodNotDeclared(frappe.ValidationError):
     """The fiscal year, or the period within it, has not been declared."""
 
 
-def _name(fiscal_year, fiscal_period):
-    return f"PS-{fiscal_year}-{int(fiscal_period)}"
-
-
 def _not_declared(message):
     frappe.throw(message, PeriodNotDeclared)
 
@@ -154,26 +150,80 @@ def assert_open(fiscal_year, fiscal_period, action="run"):
     )
 
 
-def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None):
-    """Create or update the record for one period. Returns the saved doc."""
-    fiscal_year = str(fiscal_year)
-    fiscal_period = int(fiscal_period)
-    name = _name(fiscal_year, fiscal_period)
+#: Status -> the EPM Fiscal Year action that moves a period row there.
+_ACTIONS = {CLOSED: "close_period", LOCKED: "lock_period", OPEN: "reopen_period"}
 
-    if frappe.db.exists("Period Status", name):
-        doc = frappe.get_doc("Period Status", name)
+
+def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None,
+               reason=None, note=None):
+    """Close, lock or reopen one declared period through the EPM Fiscal Year
+    actions (close_period / lock_period / reopen_period), so their role
+    checks, group-rate gate, stamping and notes apply. Reopening needs a
+    ``reason`` (or ``note``). ``start_date`` / ``end_date``, when given, must
+    equal the declared row's dates: the period's dates are edited on the
+    EPM Fiscal Year, never here.
+
+    Returns a frappe._dict with the attributes callers read off the old
+    Period Status doc: name, fiscal_year, fiscal_period, status, closed_by,
+    closed_on (plus period_code, start_date, end_date).
+    """
+    from frappe.utils import getdate
+
+    action = _ACTIONS.get(status)
+    if action is None:
+        frappe.throw(frappe._("Unknown period status: {0}").format(status))
+    try:
+        period = int(fiscal_period)
+    except (TypeError, ValueError):
+        _not_declared(frappe._("FY{0} period {1} is not a fiscal period.").format(
+            fiscal_year, fiscal_period))
+
+    try:
+        year = frappe.get_doc("EPM Fiscal Year", str(fiscal_year))
+    except frappe.DoesNotExistError:
+        _not_declared(frappe._("FY{0} is not declared: create it in EPM Fiscal Year.").format(
+            fiscal_year))
+
+    def _row():
+        for r in year.periods or []:
+            if r.fiscal_period not in (None, "") and int(r.fiscal_period) == period:
+                return r
+        return None
+
+    row = _row()
+    if row is None:
+        _not_declared(frappe._("FY{0} has no period {1}.").format(fiscal_year, period))
+
+    declared = (getdate(row.start_date), getdate(row.end_date))
+    for given, have in ((start_date, declared[0]), (end_date, declared[1])):
+        if given not in (None, "") and getdate(given) != have:
+            frappe.throw(frappe._(
+                "{0} of FY{1} is declared {2}..{3}; set_status can't change a "
+                "period's dates — edit the EPM Fiscal Year").format(
+                row.period_code, year.fiscal_year, declared[0], declared[1]))
+
+    text = reason or note
+    if status == OPEN:
+        if not (text or "").strip():
+            frappe.throw(frappe._(
+                "Give a reason to reopen {0} of FY{1}: set_status(..., reason=...).").format(
+                row.period_code, year.fiscal_year))
+        year.reopen_period(period, text)
     else:
-        doc = frappe.new_doc("Period Status")
-        doc.fiscal_year = fiscal_year
-        doc.fiscal_period = fiscal_period
+        getattr(year, action)(period, text)
 
-    doc.status = status
-    if start_date is not None:
-        doc.start_date = start_date
-    if end_date is not None:
-        doc.end_date = end_date
-    doc.save()
-    return doc
+    row = _row() or row
+    return frappe._dict(
+        name=row.name,
+        fiscal_year=str(fiscal_year),
+        fiscal_period=period,
+        period_code=row.period_code,
+        start_date=row.start_date,
+        end_date=row.end_date,
+        status=row.status,
+        closed_by=row.closed_by,
+        closed_on=row.closed_on,
+    )
 
 
 # Declared periods: the rows of each EPM Fiscal Year, joined to their year.
