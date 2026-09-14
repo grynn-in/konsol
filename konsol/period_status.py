@@ -142,63 +142,73 @@ def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=Non
     return doc
 
 
-# The warehouse's period start (dbt build_date_from_year_period): period P of
-# year Y is the month starting Y-P-01.
-_PERIOD_START = "STR_TO_DATE(CONCAT(fiscal_year, '-', LPAD(fiscal_period, 2, '0'), '-01'), '%%Y-%%m-%%d')"
+# Declared periods: the rows of each EPM Fiscal Year, joined to their year.
+_DECLARED = (
+    "FROM `tabEPM Fiscal Year Period` p "
+    "JOIN `tabEPM Fiscal Year` y ON y.name = p.parent "
+    "WHERE p.parentfield = 'periods'"
+)
 
 
 def first_period_affected(date):
-    """The first period a date-keyed record changes, as the warehouse applies it.
+    """The first period a date-keyed record changes: the start date of the
+    first declared period starting on or after ``date``, across all years.
+    None past the last declared period, or with no date.
 
-    The warehouse applies a record to the periods whose start (the 1st of the
-    month) is on or after its date. So a record dated the 1st first affects
-    that month, and one dated later in the month first affects the next
-    (#143 review). If build_date_from_year_period ever learns a non-calendar
-    fiscal year, this must follow it.
+    The warehouse applies a record to the periods starting on or after its
+    date (#143 review); the periods are the declared rows, so a non-calendar
+    or adjustment period is followed as declared, never guessed by month.
     """
-    import datetime
-
     from frappe.utils import getdate
 
-    d = getdate(date) if date else None
-    if d is None:
+    if not date:
         return None
-    if d.day == 1:
-        return d
-    return (d.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+    rows = frappe.db.sql(
+        f"SELECT p.start_date {_DECLARED} AND p.start_date >= %(date)s "
+        "ORDER BY p.start_date LIMIT 1",
+        {"date": getdate(date)},
+        as_dict=True,
+    )
+    return getdate(rows[0]["start_date"]) if rows else None
 
 
 def assert_open_between(start_date, end_date=None, action="run", end_exclusive=False):
-    """Refuse when any Closed or Locked period falls in the range a date-keyed
-    record affects: from the first period ``start_date`` affects, up to
-    ``end_date`` (the periods starting on or before it; before it with
-    ``end_exclusive``), or open-ended when there is no end.
+    """Refuse unless every declared period overlapping the range a date-keyed
+    record affects is effectively Open (the stricter of the period's status
+    and its year's). The range runs from ``start_date`` to ``end_date``
+    (a period starting on ``end_date`` is left out with ``end_exclusive``),
+    or open-ended over every later period when there is no end.
 
-    Gating one month wasn't enough: an ownership period or an equity rate
-    changes every month it covers, so a cancel with only its first month open
-    rewrote the closed months after it (#143 review).
+    Gating one period wasn't enough: an ownership period or an equity rate
+    changes every period it covers, so a cancel with only its first period
+    open rewrote the closed ones after it (#143 review). The years are read
+    LOCK IN SHARE MODE, like period_row, so a concurrent close waits.
     """
     from frappe.utils import getdate
 
-    first = first_period_affected(start_date)
-    if first is None:
+    if not start_date:
         return
-    where = [f"status IN %(settled)s", f"{_PERIOD_START} >= %(first)s"]
-    params = {"settled": tuple(SETTLED), "first": first}
+    where = [
+        "p.end_date >= %(start)s",
+        "(y.status <> %(open)s OR p.status <> %(open)s)",
+    ]
+    params = {"start": getdate(start_date), "open": OPEN}
     if end_date:
-        where.append(f"{_PERIOD_START} {'<' if end_exclusive else '<='} %(end)s")
+        where.append(f"p.start_date {'<' if end_exclusive else '<='} %(end)s")
         params["end"] = getdate(end_date)
     rows = frappe.db.sql(
-        f"SELECT fiscal_year, fiscal_period, status FROM `tabPeriod Status` "
-        f"WHERE {' AND '.join(where)} ORDER BY {_PERIOD_START} LIMIT 1",
+        "SELECT y.fiscal_year, p.period_code, y.status AS year_status, p.status AS row_status "
+        f"{_DECLARED} AND {' AND '.join(where)} "
+        "ORDER BY p.start_date, y.fiscal_year, p.fiscal_period LIMIT 1 LOCK IN SHARE MODE",
         params,
         as_dict=True,
     )
     if rows:
         r = rows[0]
+        status = effective_status(r["year_status"], r["row_status"])
         frappe.throw(
             frappe._("Cannot {0}: it changes fiscal period {1} of FY{2}, which is {3}.").format(
-                action, r.fiscal_period, r.fiscal_year, str(r.status).lower()
+                action, r["period_code"], r["fiscal_year"], status.lower()
             ),
             frappe.ValidationError,
         )
