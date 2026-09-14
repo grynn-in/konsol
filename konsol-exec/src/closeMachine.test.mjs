@@ -186,3 +186,54 @@ test("loadPlane discards previous options from a DIFFERENT fiscal year when the 
 		globalThis.fetch = savedFetch;
 	}
 });
+
+// #189 PR2 row 70q (re-review 2 finding 2, from 70j): a rejected SET_PERIOD
+// must not land back in `ready` holding the NEW period with the OLD data and
+// options and no visible error — it must go to the machine's `failed` state
+// (like a rejected first load) so the error shows, and RETRY from there must
+// re-run the FULL plane load (options + snapshot) for the new period, not
+// just the snapshot.
+test("a rejected SET_PERIOD goes to `failed` (not `ready`) with the error, and RETRY reloads the full plane for the new period", async () => {
+	let planeCallCount = 0;
+	const calls = { plane: [] };
+	const machine = closeMachine.provide({
+		actors: {
+			fetchPlane: fromPromise(async ({ input }) => {
+				planeCallCount += 1;
+				calls.plane.push(input?.period ?? null);
+				if (planeCallCount === 2) {
+					throw new Error("boom");
+				}
+				const period = input?.period || { year: "2026", period: "9" };
+				return {
+					data: { worker_healthy: true, processes: {} },
+					options: { fiscal_years: [period.year], fiscal_periods: [] },
+					period,
+				};
+			}),
+			fetchSnapshot: fromPromise(async ({ input }) => ({
+				data: { worker_healthy: true, processes: {} },
+				period: input?.period ?? null,
+			})),
+			pollTicker: fromCallback(() => () => {}),
+		},
+	});
+	const actor = createActor(machine).start();
+	await flush(); await flush();
+	assert.ok(actor.getSnapshot().matches("ready"), "first load succeeds");
+
+	actor.send({ type: "SET_PERIOD", year: "2025", period: "7" });
+	await flush(); await flush();
+
+	const failedSnap = actor.getSnapshot();
+	assert.ok(failedSnap.matches("failed"), "a rejected period change must land in `failed`, not `ready`");
+	assert.ok(failedSnap.context.loadError, "the error must be recorded in context so it can be shown");
+
+	actor.send({ type: "RETRY" });
+	await flush(); await flush();
+
+	assert.equal(planeCallCount, 3, "RETRY must re-invoke the full plane load (options + snapshot), not just the snapshot");
+	assert.deepEqual(calls.plane[2], { year: "2025", period: "7" }, "RETRY must reload for the NEW period, not the old one");
+	assert.ok(actor.getSnapshot().matches("ready"), "RETRY succeeds this time");
+	actor.stop();
+});
