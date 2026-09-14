@@ -428,3 +428,52 @@ def test_every_leaf_allowed_intercompany_loads_with_no_error_or_warning():
     for r in rows:
         assert M.declaration_problems(M.apply_defaults(r), None if not r.get("parent_account") else group()) == []
 
+
+# -- the cash-flow mapping (konsol#196): the chart is the source ----------------------------------
+
+def cf_leaf(**kw):
+    return leaf(cf_category="Operating", cf_line_item="Cash and equivalents", **kw)
+
+
+def test_cash_flow_mapping_heading_is_none():
+    assert M.cash_flow_mapping(group(cf_category="Operating", cf_line_item="Heading line")) is None
+    assert M.cash_flow_mapping(group(is_group="1", statement_section=BS, cf_category="Operating",
+                                     cf_line_item="Heading line")) is None
+
+
+def test_cash_flow_mapping_pnl_leaf_is_none():
+    row = cf_leaf(account_type="Revenue", statement_section=PL, time_balance="flow", fx_method="average")
+    assert M.cash_flow_mapping(row) is None
+    # and a leaf that declares no statement at all
+    assert M.cash_flow_mapping(cf_leaf(statement_section="")) is None
+
+
+def test_cash_flow_mapping_blank_cf_field_is_none():
+    assert M.cash_flow_mapping(cf_leaf(cf_line_item="")) is None
+    assert M.cash_flow_mapping(cf_leaf(cf_line_item="   ")) is None
+    assert M.cash_flow_mapping(cf_leaf(cf_line_item=None)) is None
+    assert M.cash_flow_mapping(cf_leaf(cf_category="")) is None
+    assert M.cash_flow_mapping(leaf()) is None   # no cf fields at all
+
+
+def test_cash_flow_mapping_bs_leaf_maps_the_four_fields():
+    m = M.cash_flow_mapping(cf_leaf())
+    assert m == {"main_account": "ZZ1000", "cf_category": "Operating",
+                 "cf_line_item": "Cash and equivalents", "is_cash": 0}
+    assert set(m) == {"main_account", "cf_category", "cf_line_item", "is_cash"}
+
+
+def test_cash_flow_mapping_is_cash_flag():
+    assert M.cash_flow_mapping(cf_leaf())["is_cash"] == 0
+    for raw in (None, "", "0", 0, False):
+        assert M.cash_flow_mapping(cf_leaf(is_cash=raw))["is_cash"] == 0, raw
+    for raw in ("1", 1, True):
+        assert M.cash_flow_mapping(cf_leaf(is_cash=raw))["is_cash"] == 1, raw
+
+
+def test_cash_flow_mapping_normalises_text():
+    m = M.cash_flow_mapping(cf_leaf(main_account="ZZ1000 ", cf_category=" Operating", cf_line_item="Cash "))
+    assert m == {"main_account": "ZZ1000", "cf_category": "Operating", "cf_line_item": "Cash", "is_cash": 0}
+    # Excel hands back 1000.0 for a code typed 1000
+    assert M.cash_flow_mapping(cf_leaf(main_account=1000.0))["main_account"] == "1000"
+
