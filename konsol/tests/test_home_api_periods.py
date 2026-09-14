@@ -235,7 +235,7 @@ def test_no_record_is_not_open():
     assert fy["declared"] is False
     assert fy["periods"] == [], fy["periods"]
     assert fy["budget"] == {"name": "BC-2027", "status": "Draft", "deadline": "2026-11-30"}
-    assert (fy["label"], fy["kind"]) == ("FY2027", "planning")
+    assert (fy["label"], fy["kind"]) == ("FY2027", "undeclared")
     for y in years.values():
         if not y["declared"]:
             assert not y["periods"], y
@@ -247,7 +247,7 @@ def test_year_kind_from_declared_dates_not_calendar_year():
     year. FY2026 runs April 2026 - March 2027, so on 2027-02-10 it is the
     year in progress ("current"), not "past" as a calendar-year comparison
     (2026 < 2027) would call it. A year known only from a Budget Cycle (no
-    EPM Fiscal Year row, so no dates) is "planning"."""
+    EPM Fiscal Year row, so no dates) is "undeclared", never "planning"."""
     site = _Site(
         years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
                 "start_date": datetime.date(2026, 4, 1), "end_date": datetime.date(2027, 3, 31)}],
@@ -258,7 +258,24 @@ def test_year_kind_from_declared_dates_not_calendar_year():
     years = _by_year(_tree(site))
     assert years[2026]["kind"] == "current"
     assert years[2028]["declared"] is False
-    assert years[2028]["kind"] == "planning"
+    assert years[2028]["kind"] == "undeclared"
+
+
+def test_cycle_only_year_is_undeclared_not_planning():
+    """konsol#189 review nit 5 (from 70b2): a year known only from a Budget
+    Cycle has no EPM Fiscal Year row, so no dates to judge past/current/
+    planning by. That is a different fact than "planning" (a future year
+    someone HAS declared): FY2019 is long past, yet a cycle-only FY2019 must
+    still say "undeclared", never "past" and never "planning"."""
+    site = _Site(
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 1, 1), "end_date": datetime.date(2026, 12, 31)}],
+        rows=_thirteen_period_rows(2026),
+        cycles=[{"name": "BC-2019", "fiscal_year": 2019, "status": "Approved", "deadline": None}],
+    )
+    fy = _by_year(_tree(site))[2019]
+    assert fy["declared"] is False
+    assert fy["kind"] == "undeclared"
 
 
 def test_blank_row_status_shown_as_is_not_open():
