@@ -74,7 +74,13 @@ def execute(sql, params=None):
         timeout=30,
         verify=conn.get("verify", True),
     )
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        # Still an HTTPError (callers catch that type), but with ClickHouse's
+        # own text: requests' message is only "500 Server Error … for url", and
+        # callers classify failures by the body (e.g. UNKNOWN_IDENTIFIER for a
+        # column an older stack has not migrated yet; tasks._batches_without_basis).
+        raise requests.HTTPError(
+            f"{resp.status_code} from ClickHouse: {resp.text.strip()[:500]}", response=resp)
     return resp.text.strip()
 
 
@@ -641,7 +647,9 @@ _REFERENCE_TABLE_DDL = {
     # konsol#182: the group chart of accounts, from Main Account (Published
     # rows, groups included). silver_main_accounts reads only this: there is no
     # ERP chart fallback (decided 13 Sep 2026). Identical to konsolidat's
-    # clickhouse/init-db.sql; keep them identical.
+    # clickhouse/init-db.sql; keep them identical. is_retained_earnings
+    # (konsolidat#199) came after the table shipped: LAST here and in
+    # _ADDED_COLUMNS, so a fresh table and an upgraded one agree.
     "epm_staging.main_accounts": (
         "(main_account String, account_name String, chart_of_accounts String, "
         "parent_account String, is_group UInt8, account_type String, "
@@ -649,7 +657,7 @@ _REFERENCE_TABLE_DDL = {
         "time_balance String, fx_method String, is_posting UInt8, "
         "is_suspended UInt8, allow_ic UInt8, cf_category String, "
         "cf_line_item String, is_cash UInt8, main_account_category String, "
-        "status String) "
+        "status String, is_retained_earnings UInt8 DEFAULT 0) "
         "ENGINE = MergeTree ORDER BY main_account"
     ),
     # konsol#189: the declared fiscal periods, one row per Fiscal Year Period
@@ -710,7 +718,7 @@ _RAW_TABLE_DDL = {
     "epm_raw.trial_balance_submission_control": (
         "(batch_id String, submission_name String, data_area_id String, "
         "fiscal_year UInt16, fiscal_period UInt8, row_count UInt32, "
-        "claimed_at DateTime) "
+        "claimed_at DateTime, amount_basis String DEFAULT '') "
         "ENGINE = ReplacingMergeTree(claimed_at) ORDER BY batch_id"
     ),
 }
@@ -723,6 +731,13 @@ _RAW_TABLE_DDL = {
 _ADDED_COLUMNS = {
     # konsol#159: the intercompany partner on every trial balance row
     "epm_raw.trial_balance_submissions": [("partner_data_area_id", "String DEFAULT ''")],
+    # konsolidat#199: what a claimed batch's amounts are (period movement,
+    # year-to-date movement, period-end balance); '' = claimed before the
+    # column existed, so not declared
+    "epm_raw.trial_balance_submission_control": [("amount_basis", "String DEFAULT ''")],
+    # konsolidat#199: the chart's retained-earnings account, which the year-end
+    # close of a period-end-balance trial balance posts into
+    "epm_staging.main_accounts": [("is_retained_earnings", "UInt8 DEFAULT 0")],
     # konsol#159: where a group books intercompany differences, and their tolerance
     "epm_gold.consolidation_groups": [
         ("ic_difference_account", "String DEFAULT ''"),

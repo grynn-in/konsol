@@ -5,6 +5,9 @@ Flow (konsol-exec's upload page, or the Trial Balance Upload form):
   1. The file is uploaded as a private File, then `check_file` creates a
      Trial Balance Upload and reports on every entity-period in it. Nothing
      is loaded; the report says which are ready and why the others are not.
+     Each entity-period's Amount Basis (konsolidat#199) comes from the file's
+     own amount_basis column, else from the upload's; one with neither is
+     not ready.
   2. `load` re-checks (a period may have closed, or someone submitted in
      between). If new problems appeared and the user did not choose to skip
      them, it returns the fresh report with a `refused` reason instead of
@@ -137,7 +140,10 @@ def _period_fact(year, period):
         return None
 
 
-def _check(table):
+def _check(table, form_basis=""):
+    """Split the file and report on every entity-period. `form_basis` is the
+    upload's Amount Basis; an entity-period whose rows give none takes it, and
+    one with neither is refused on its own report row (konsolidat#199)."""
     groups = M.split_table(table)
     entities = sorted({k[0] for k in groups})
     # get_list applies the uploader's entity scope; get_all would not.
@@ -172,6 +178,13 @@ def _check(table):
                              warnings=[partnerless_warning(partnerless)] if partnerless else [],
                              partnerless_ic_rows=len(partnerless))
         item["existing_file"] = found.tb_file if found else None
+        # konsolidat#199: the basis this entity-period will be submitted with.
+        # A group with no basis anywhere is refused here, not the whole file.
+        basis, problem = M.resolve_basis(M.group_basis(rows), form_basis)
+        item["amount_basis"] = basis or ""
+        if problem:
+            item["errors"].append(problem)
+            item["ok"] = False
         report.append(item)
     return groups, report
 
@@ -181,7 +194,7 @@ def _record_check(doc):
     loaded before are carried forward as loaded (see merge_loaded)."""
     previous = json.loads(doc.report or "[]")
     try:
-        _, report = _check(_read_table(doc.upload_file))
+        _, report = _check(_read_table(doc.upload_file), doc.amount_basis or "")
     except ValueError as e:
         doc.status, doc.error, doc.report = "Failed", str(e), "[]"
         doc.group_count = doc.valid_count = doc.total_rows = doc.loaded_count = 0
@@ -205,6 +218,7 @@ def _payload(doc, refused=None):
         "partnerless_ic_rows": sum(r.get("partnerless_ic_rows") or 0 for r in report),
         "name": doc.name, "status": doc.status, "file_url": doc.upload_file,
         "file_name": (doc.upload_file or "").rsplit("/", 1)[-1],
+        "amount_basis": doc.amount_basis or "",
         "group_count": doc.group_count, "valid_count": doc.valid_count, "total_rows": doc.total_rows,
         "loaded_count": doc.loaded_count, "failed_count": doc.failed_count, "error": doc.error,
         "report": report, "owner": frappe.utils.get_fullname(doc.owner),
@@ -218,26 +232,36 @@ def _payload(doc, refused=None):
 # ── endpoints ──────────────────────────────────────────────────────────────
 
 @frappe.whitelist(methods=["POST"])
-def check_file(file_url):
-    """Create an upload for an uploaded file and report on it. Loads nothing."""
+def check_file(file_url, amount_basis=None):
+    """Create an upload for an uploaded file and report on it. Loads nothing.
+
+    `amount_basis` (konsolidat#199) is the upload's Amount Basis for every
+    entity-period whose rows do not give their own; without it, such
+    entity-periods are reported as not ready.
+    """
     _require_loader()
-    doc = frappe.get_doc({"doctype": DOCTYPE, "upload_file": file_url, "status": "Draft"}).insert()
+    doc = frappe.get_doc({"doctype": DOCTYPE, "upload_file": file_url, "status": "Draft",
+                          "amount_basis": amount_basis or ""}).insert()
     _record_check(doc)
     return _payload(doc)
 
 
 @frappe.whitelist(methods=["POST"])
-def load(name, skip_invalid=0):
+def load(name, skip_invalid=0, amount_basis=None):
     """Re-check, then queue the load of every ready entity-period.
 
     Also resumes an upload whose load stopped or finished partly. New
     problems found by the re-check come back as `refused` with the fresh
     report (saved), so the page can show them and offer to skip them. A
-    refused resume keeps the upload's earlier outcome.
+    refused resume keeps the upload's earlier outcome. `amount_basis`, when
+    given, becomes the upload's Amount Basis before the re-check, so a file
+    checked without one can be loaded once the user has said what it holds.
     """
     _require_loader()
     doc = frappe.get_doc(DOCTYPE, name)
     doc.check_permission("write")
+    if amount_basis:
+        doc.amount_basis = amount_basis
     resumable = doc.status in ("Partly Loaded", "Failed") or (doc.status == "Loading" and not _job_running(doc.name))
     if doc.status != "Checked" and not resumable:
         frappe.throw("This upload is still loading." if doc.status == "Loading"
@@ -266,6 +290,18 @@ def load(name, skip_invalid=0):
     frappe.enqueue("konsol.tb_bulk.run_load", queue="long", timeout=JOB_TIMEOUT, job_id=_job_id(doc.name),
                    deduplicate=True, enqueue_after_commit=True, upload=doc.name)
     return _payload(doc)
+
+
+@frappe.whitelist(methods=["GET"])
+def upload_options():
+    """What the upload page needs before a file is chosen (konsolidat#199):
+    the site's Default Amount Basis (EPM Settings; pre-fills the page's
+    select, visibly and changeably, never applied silently) and the exact
+    basis strings, so the page never carries its own copy of them."""
+    return {
+        "default_amount_basis": frappe.db.get_single_value("EPM Settings", "default_amount_basis") or "",
+        "amount_bases": list(M.AMOUNT_BASES),
+    }
 
 
 @frappe.whitelist(methods=["GET"])
@@ -353,8 +389,9 @@ def _save_progress(name, report, loaded, failed, status=None, error=None):
     frappe.db.commit()
 
 
-def _load_one(upload_name, key, rows):
-    """Insert and attach one entity-period's submission (not yet submitted)."""
+def _load_one(upload_name, key, rows, basis):
+    """Insert and attach one entity-period's submission (not yet submitted).
+    `basis` is its Amount Basis, resolved by the caller (konsolidat#199)."""
     file_doc = frappe.get_doc({
         "doctype": "File", "is_private": 1,
         "file_name": f"{upload_name}-{key[0]}-{key[1]}-P{key[2]:02d}.csv",
@@ -362,6 +399,7 @@ def _load_one(upload_name, key, rows):
     }).insert()
     tbs = frappe.get_doc({"doctype": "Trial Balance Submission", "data_area_id": key[0],
                           "fiscal_year": key[1], "fiscal_period": key[2],
+                          "amount_basis": basis,
                           "tb_file": file_doc.file_url}).insert()
     # Attach before submitting: on_submit lands and claims the rows, so
     # nothing but the commit may follow it.
@@ -401,7 +439,12 @@ def run_load(upload):
             for attempt in (1, 2):
                 in_flight = None
                 try:
-                    tbs = _load_one(doc.name, key, groups[key])
+                    # Resolved again here, from the file and the upload as they
+                    # are now, so no submission is ever created without a basis.
+                    basis, problem = M.resolve_basis(M.group_basis(groups[key]), doc.amount_basis or "")
+                    if problem:
+                        raise ValueError(problem)
+                    tbs = _load_one(doc.name, key, groups[key], basis)
                     in_flight = tbs.batch_id
                     tbs.submit()
                     frappe.db.commit()

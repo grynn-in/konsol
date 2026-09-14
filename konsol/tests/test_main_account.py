@@ -21,14 +21,16 @@ DDL = ("(main_account String, account_name String, chart_of_accounts String, "
        "time_balance String, fx_method String, is_posting UInt8, "
        "is_suspended UInt8, allow_ic UInt8, cf_category String, "
        "cf_line_item String, is_cash UInt8, main_account_category String, "
-       "status String) "
+       "status String, is_retained_earnings UInt8 DEFAULT 0) "
        "ENGINE = MergeTree ORDER BY main_account")
-#: konsolidat's clickhouse/init-db.sql line, as the plan pins it (konsol#182 section 2.3).
+#: konsolidat's clickhouse/init-db.sql line, as the plan pins it (konsol#182 section 2.3);
+#: is_retained_earnings LAST (konsolidat#199), so an upgraded table and a fresh one agree.
 INIT_DB_LINE = ("CREATE TABLE IF NOT EXISTS epm_staging.main_accounts (main_account String, account_name String, "
                 "chart_of_accounts String, parent_account String, is_group UInt8, account_type String, "
                 "statement_section String, sub_section String, normal_balance String, time_balance String, "
                 "fx_method String, is_posting UInt8, is_suspended UInt8, allow_ic UInt8, cf_category String, "
-                "cf_line_item String, is_cash UInt8, main_account_category String, status String) "
+                "cf_line_item String, is_cash UInt8, main_account_category String, status String, "
+                "is_retained_earnings UInt8 DEFAULT 0) "
                 "ENGINE = MergeTree ORDER BY main_account;")
 
 
@@ -145,6 +147,8 @@ def _load():
     frappe.descendants = []
     frappe.flags = types.SimpleNamespace(in_install=False, in_migrate=False, in_patch=False)
     frappe.cfc = {}   # name -> the Cash Flow Category rows the site has
+    frappe.retained = []   # the chart's other Published retained-earnings rows (konsolidat#199)
+    frappe.retained_asked = []
 
     def get_value(doctype, name, fields, as_dict=False):
         if doctype == "Cash Flow Category":
@@ -161,10 +165,17 @@ def _load():
         exists=lambda doctype, name=None, **k: (name if name in frappe.cfc else None))
     frappe.get_doc = lambda doctype, name: frappe.cfc[name]
     frappe.new_doc = lambda doctype: _CashFlowCategory(doctype=doctype, name=None, status="Draft")
-    frappe.get_all = lambda doctype, filters=None, pluck=None, **k: (
-        list(frappe.descendants) if "lft" in (filters or {}) else
-        [c for c, parent, status in frappe.children
-         if parent == filters["parent_account"] and status == filters["status"]])
+    def get_all(doctype, filters=None, pluck=None, **k):
+        filters = filters or {}
+        if "lft" in filters:
+            return list(frappe.descendants)
+        if "is_retained_earnings" in filters:
+            frappe.retained_asked.append(dict(filters))
+            return [dict(r) for r in frappe.retained]
+        return [c for c, parent, status in frappe.children
+                if parent == filters["parent_account"] and status == filters["status"]]
+
+    frappe.get_all = get_all
     nested = types.ModuleType("frappe.utils.nestedset")
     nested.NestedSet = NestedSet
     gov = types.ModuleType("konsol.governed_reference")
@@ -210,7 +221,7 @@ def _doc(status="Draft", before=None, **kw):
                   chart_of_accounts="ZZCOA", parent_account=None, is_group=0, account_type="Asset",
                   statement_section=BS, sub_section="", normal_balance="", time_balance="", fx_method="",
                   is_posting=1, is_suspended=0, allow_ic=0, main_account_category="", cf_category="",
-                  cf_line_item="", is_cash=0, description="", status=status)
+                  cf_line_item="", is_cash=0, is_retained_earnings=0, description="", status=status)
     fields.update(kw)
     d = C.MainAccount(**fields)
     prior = None if before is None else C.MainAccount(**{**fields, "fx_method": "closing",
@@ -269,6 +280,7 @@ FIELD_TABLE = {
     "cf_category": ("Select", "\nOperating\nInvesting\nFinancing", None, None),
     "cf_line_item": ("Data", None, None, None),
     "is_cash": ("Check", None, "0", None),
+    "is_retained_earnings": ("Check", None, "0", None),
     "source": ("Select", "Manual\nUpload", "Manual", None),
     "source_note": ("Small Text", None, None, None),
     "description": ("Small Text", None, None, None),
@@ -344,9 +356,11 @@ def test_field_map_is_the_ddl_in_order():
     assert [c[0] for c in columns] == list(C.MainAccount.CH_FIELD_MAP)
     assert all(k == v for k, v in C.MainAccount.CH_FIELD_MAP.items())
     fields = _fields()
-    for name, kind in columns:
+    for name, kind, *_default in columns:   # `is_retained_earnings UInt8 DEFAULT 0` (konsolidat#199)
         assert name in fields, name
         assert kind == ("UInt8" if fields[name]["fieldtype"] == "Check" else "String"), name
+    # the column added after the table shipped is LAST, in the map as in the DDL
+    assert list(C.MainAccount.CH_FIELD_MAP)[-1] == "is_retained_earnings"
 
 
 def test_staging_ddl_character_for_character():
@@ -358,12 +372,61 @@ def test_staging_ddl_character_for_character():
 
 def test_new_table_ships_complete_not_via_added_columns():
     consts = _ddl()
-    assert "epm_staging.main_accounts" not in consts["_ADDED_COLUMNS"]
     assert "epm_staging.main_accounts" not in consts["_RETIRED_TABLES"]
     # the cash-flow and intercompany columns ship now, so PR5 needs no ALTER
     body = consts["_REFERENCE_TABLE_DDL"]["epm_staging.main_accounts"]
     for column in ("cf_category String", "cf_line_item String", "is_cash UInt8", "allow_ic UInt8"):
         assert column in body, column
+    # the one column added after the table shipped (konsolidat#199): ADDed on an
+    # existing table, and LAST in the CREATE, so both agree
+    assert consts["_ADDED_COLUMNS"]["epm_staging.main_accounts"] == [("is_retained_earnings", "UInt8 DEFAULT 0")]
+    assert body[:body.index(") ENGINE")].endswith("status String, is_retained_earnings UInt8 DEFAULT 0")
+
+
+# -- the chart declares its retained-earnings account (konsolidat#199) ---------------------------
+
+def test_the_retained_earnings_flag_sits_after_is_cash():
+    fields = _fields()
+    f = fields["is_retained_earnings"]
+    assert (f["fieldtype"], f["default"], f["label"]) == ("Check", "0", "Retained Earnings Account")
+    assert "Exactly one Published account per chart" in f["description"]
+    assert "Closing period" in f["description"]
+    order = _json()["field_order"]
+    assert order[order.index("is_cash") + 1] == "is_retained_earnings"
+
+
+def test_publishing_checks_the_chart_has_one_retained_earnings_account():
+    with open(CONTROLLER) as f:
+        cls = f.read().split("class MainAccount")[1]
+    before_publish = cls.split("def _before_publish")[1].split("\n    def ")[0]
+    assert "retained_earnings_problems(" in before_publish
+    C.frappe.retained.clear()
+    C.frappe.retained_asked.clear()
+    try:
+        re = dict(main_account="ZZ3000", name="ZZ3000", account_name="Retained earnings", account_type="Equity",
+                  normal_balance="Credit", time_balance="balance", fx_method="historical", is_retained_earnings=1)
+        # the first one in the chart publishes
+        _doc("Published", **re).validate()
+        assert C.frappe.retained_asked and C.frappe.retained_asked[0]["chart_of_accounts"] == "ZZCOA"
+        assert C.frappe.retained_asked[0]["status"] == "Published"
+        # a second Published one in the same chart is refused, naming both
+        C.frappe.retained[:] = [{"main_account": "ZZ3100", "chart_of_accounts": "ZZCOA", "status": "Published",
+                                 "is_retained_earnings": 1}]
+        msg = ""
+        try:
+            _doc("Published", **re).validate()
+        except Refused as e:
+            msg = str(e)
+        assert "ZZ3000" in msg and "ZZ3100" in msg and "exactly one" in msg, msg
+        # a Draft may carry the flag while another is Published: it is not in the chart yet
+        _doc("Draft", **re).validate()
+        # an account without the flag never asks
+        C.frappe.retained_asked.clear()
+        _doc("Published", fx_method="closing", normal_balance="Debit", time_balance="balance").validate()
+        assert C.frappe.retained_asked == []
+    finally:
+        C.frappe.retained.clear()
+        C.frappe.retained_asked.clear()
 
 
 def test_on_update_runs_the_tree_then_the_resync_then_the_cash_flow_mirror():

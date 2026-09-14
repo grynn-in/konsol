@@ -288,6 +288,13 @@
    "fieldtype": "Check",
    "label": "Adjustment Periods Take Trial Balances",
    "default": "0"
+  },
+  {
+   "fieldname": "default_amount_basis",
+   "fieldtype": "Select",
+   "options": "Period movement\nYear-to-date movement\nPeriod-end balance",
+   "label": "Default Amount Basis",
+   "description": "Pre-fills new Trial Balance Submissions and Trial Balance Uploads. The form still shows the value and the user can change it; it is never applied silently."
   }
  ],
  "permissions": [
@@ -304,6 +311,7 @@
   "tb_periods_section",
   "tb_accepts_opening",
   "tb_accepts_closing",
-  "tb_accepts_adjustment"
+  "tb_accepts_adjustment",
+  "default_amount_basis"
  ]
 }

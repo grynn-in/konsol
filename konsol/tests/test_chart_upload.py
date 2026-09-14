@@ -290,6 +290,30 @@ def test_publish_checks_every_draft_before_publishing_any():
     assert site.saved == [] and site.rebuilds == []
 
 
+def test_publish_refuses_two_retained_earnings_accounts_before_publishing_any():
+    """konsolidat#199: exactly one Published retained-earnings account per chart.
+    The pre-check runs the rule over the chart as it would be after the batch,
+    so the refusal is the whole-batch "Nothing was published" naming both codes,
+    not the second account's _before_publish failing half-way."""
+    def flagged(code, lft, **kw):
+        return row(code, lft=lft, account_type="Equity", is_retained_earnings=1, **kw)
+
+    site = Site(rows=[flagged("ZZ3000", 1), flagged("ZZ3100", 2)])
+    msg = refused(lambda: call(site, "publish_chart", "ZZCOA"))
+    assert "Nothing was published" in msg, msg
+    assert "Chart ZZCOA: ZZ3000, ZZ3100 are all flagged as the retained earnings account" in msg, msg
+    assert site.saved == [] and site.rebuilds == []
+    assert {c: r["status"] for c, r in site.rows.items()} == {"ZZ3000": "Draft", "ZZ3100": "Draft"}
+    # one flagged Draft while the chart already holds a Published one: the same refusal
+    site = Site(rows=[flagged("ZZ3000", 1, status="Published"), flagged("ZZ3100", 2)])
+    msg = refused(lambda: call(site, "publish_chart", "ZZCOA"))
+    assert "ZZ3000, ZZ3100 are all flagged" in msg and site.saved == [], msg
+    # a flagged Published one in ANOTHER chart does not count; one per chart publishes
+    site = Site(rows=[flagged("OT3000", 1, status="Published", chart_of_accounts="OTHER"), flagged("ZZ3100", 2)])
+    assert call(site, "publish_chart", "ZZCOA")["published"] == ["ZZ3100"]
+    assert site.rows["ZZ3100"]["status"] == "Published"
+
+
 def test_a_failure_while_publishing_rolls_everything_back():
     site = Site(rows=[row("ZZ1000", lft=1), row("ZZ2000", lft=2)], fail_on="ZZ2000")
     try:

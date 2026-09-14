@@ -4,6 +4,26 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Sep): every trial balance declares its Amount Basis
+(konsolidat#199).** The warehouse read every row as a period movement; the
+site's uploads were period-end balances, so the balance sheet double-counted
+every prior year-end. Now a Trial Balance Submission (and a Trial Balance
+Upload, and the konsol-exec upload page) declares `Period movement`,
+`Year-to-date movement` or `Period-end balance`; the claim row carries it;
+konsolidat (PR #200, merged) normalises to movements and, for balance files,
+posts each year's close into the chart's **Retained Earnings Account** in the
+calendar's Closing period. Deploy order after this PR merges: migrate (adds
+`amount_basis` to the control table and `is_retained_earnings` to the chart);
+on the site, Trial Balance Submission list → **Set Amount Basis…** for the
+existing batches (this site: Period-end balance), and tick **Retained
+Earnings Account** on the retained-earnings account (3100 here); then
+fast-forward konsolidat and approve a **full** build. Until the batches are
+declared the preflight refuses the build by name — by design. Follow-ups:
+konsol#200 (retire the Airbyte/connector gating from the preflight),
+konsolidat#198 (acquisition/disposal journals; design in the bench's
+`.claude/memory/active/design-konsolidat-198.md`, Business Combination
+doctype decided).
+
 **Update (14 Sep evening): the full governed build is one deploy away from
 green.** After the data load, a full build failed on three things; all are
 fixed on main now.

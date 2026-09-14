@@ -168,6 +168,48 @@ def _trial_balance_rows():
         return 0
 
 
+def _batches_without_basis():
+    """Claimed trial balance batches whose latest claim declares no Amount
+    Basis (konsolidat#199). Returns ``(names, count)``: up to five
+    ``submission_name``s and the total, so the refusal can name them.
+
+    The control table is ReplacingMergeTree(claimed_at) and Set Amount Basis
+    re-claims rather than updates, so the LATEST claim per batch decides:
+    ``argMax(amount_basis, claimed_at)`` per ``batch_id``, never an older row
+    that ReplacingMergeTree has not merged away yet.
+
+    ``None`` when the control table has no ``amount_basis`` column yet (an
+    old stack; ClickHouse reports the missing identifier by name), which the
+    caller turns into "run bench migrate" rather than a silently passing
+    check. Any OTHER failure (connection refused, timeout, an unrelated
+    ClickHouse error) is ``("error", text)`` with the error's first 200
+    characters, so the refusal says what actually failed instead of sending
+    the operator to migrate a schema that is already current.
+    """
+    from konsol.clickhouse import execute
+
+    try:
+        text = execute(
+            "SELECT count(), arrayStringConcat(arraySlice(arraySort(groupArray(submission_name)), 1, 5), ',') "
+            "FROM (SELECT batch_id, argMax(submission_name, claimed_at) AS submission_name, "
+            "argMax(amount_basis, claimed_at) AS amount_basis "
+            "FROM epm_raw.trial_balance_submission_control GROUP BY batch_id) "
+            "WHERE amount_basis = ''")
+    except Exception as e:  # noqa: BLE001
+        message = str(e)
+        missing_column = "amount_basis" in message and any(
+            marker in message for marker in ("UNKNOWN_IDENTIFIER", "Missing columns", "Unknown identifier"))
+        if missing_column:
+            return None
+        return "error", message[:200]
+    # One TSV row: "<count>\t<name,name,…>"; execute() strips a trailing tab,
+    # so an empty result arrives as "0".
+    parts = (text or "").split("\t")
+    count = int(parts[0] or 0)
+    names = [n for n in (parts[1] if len(parts) > 1 else "").split(",") if n]
+    return names, count
+
+
 def _connector_sync_gate():
     """Enabled-connector sync-status gate shared by every raw-dependent scope
     and by chart (@silver_main_accounts reaches ERP staging/bronze models fed
@@ -219,6 +261,27 @@ def _check_chart_build_allowed():
     return True, "No enabled connector — chart build has no trial-balance-rows dependency"
 
 
+def _basis_refusal(rows):
+    """``(False, message)`` when claimed trial balance batches exist and any
+    lacks an Amount Basis (or the control table has no such column yet), else
+    None. Nothing claimed → nothing to declare (an ERP-only site is unaffected).
+    konsolidat#199: the warehouse normalises each batch by its declared basis;
+    an undeclared batch would still be read as period movements."""
+    if not rows:
+        return None
+    without = _batches_without_basis()
+    if without is None:
+        return False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate"
+    if without[0] == "error":
+        return False, f"could not read the amount bases of the claimed batches: {without[1]}"
+    names, n = without
+    if n:
+        return False, (f"{n} claimed trial balance batch(es) have no Amount Basis (e.g. {', '.join(names)}): "
+                       "set it on the submissions (Trial Balance Submission list → Set Amount Basis) "
+                       "before building")
+    return None
+
+
 def check_raw_data_available():
     """Check if epm_raw has valid data.
 
@@ -237,6 +300,14 @@ def check_raw_data_available():
 
     Returns (ok: bool, message: str).
     """
+    # konsolidat#199: claimed trial balance batches must declare their Amount
+    # Basis whatever else gates the build — the skip_airbyte_sync short-circuit
+    # below is exactly the trial-balance-only site, so this runs first.
+    rows = _trial_balance_rows()
+    refusal = _basis_refusal(rows)
+    if refusal is not None:
+        return refusal
+
     # When Airbyte sync is skipped (demo data / manual epm_raw load), there is
     # no connector or Airbyte status to gate on — readiness is implied by the
     # operator having loaded epm_raw out of band. Short-circuit before any
@@ -262,7 +333,6 @@ def check_raw_data_available():
 
     # Trial balances uploaded to konsol and landed in the warehouse are this
     # site's raw data (konsol#182).
-    rows = _trial_balance_rows()
     if rows:
         return True, (f"{rows} trial balance rows in epm_raw.trial_balance_submissions "
                       "— building from them (no connector)")

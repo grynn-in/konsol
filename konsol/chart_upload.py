@@ -139,7 +139,11 @@ def load_chart(file_url):
 def publish_chart(chart_of_accounts):
     """Publish every Draft of one chart, parents first (by lft), in one
     transaction, with one governed rebuild. Every Draft is checked before any
-    is published: one that is not ready refuses them all, naming each."""
+    is published: one that is not ready refuses them all, naming each. The
+    chart's one-retained-earnings-account rule (konsolidat#199) is checked over
+    the chart as it would be after the batch, so two flagged Drafts (or one
+    beside an already Published one) are refused here, as a batch, and not by
+    the second account's own publish check half-way through."""
     _require_chart_admin()
     existing = _existing()
     names = frappe.get_all(DOCTYPE, filters={"chart_of_accounts": chart_of_accounts, "status": "Draft"},
@@ -156,6 +160,9 @@ def publish_chart(chart_of_accounts):
             parent = {**parent, "status": M.PUBLISHED}   # published before it, in this batch
         parent = M.apply_defaults(parent) if parent else None
         problems += M.declaration_problems(row, parent) + M.publish_problems(row, parent)
+    # the chart as it would be: the batch's Drafts count as Published (as plan_chart_load does)
+    problems += M.retained_earnings_problems(
+        [dict(r, status=M.PUBLISHED) if r["name"] in batch else r for r in existing.values()])
     if problems:
         frappe.throw("Nothing was published:\n" + "\n".join(problems[:50])
                      + (f"\n(and {len(problems) - 50} more)" if len(problems) > 50 else ""))

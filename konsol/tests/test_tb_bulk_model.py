@@ -36,7 +36,7 @@ def test_splits_into_entity_periods_in_file_order():
     assert list(groups) == [("AMDE", 2025, 12), ("AMUS", 2025, 12), ("AMDE", 2024, 12)]
     assert [r["main_account"] for r in groups[("AMDE", 2025, 12)]] == ["1010", "2010"]
     assert groups[("AMUS", 2025, 12)][0] == {"main_account": "1010", "debit": 0.0, "credit": 5.0, "description": "",
-                                             "partner_data_area_id": ""}
+                                             "partner_data_area_id": "", "amount_basis": ""}
 
 
 def test_header_is_forgiving_about_case_spaces_and_aliases():
@@ -336,7 +336,7 @@ def test_bulk_check_uses_declared_period_facts():
     }
 
     mod, calls = _load_tb_bulk(entities=["AMDE"], postable={"Regular"}, period_lookup=period_lookup)
-    _, report = mod._check(table)
+    _, report = mod._check(table, PERIOD)
     by_period = {r["fiscal_period"]: r for r in report}
 
     # P14: declared, but Adjustment is not postable on this site.
@@ -352,8 +352,98 @@ def test_bulk_check_uses_declared_period_facts():
 
     # With Adjustment postable on this site, the same P14 group now passes.
     mod2, _ = _load_tb_bulk(entities=["AMDE"], postable={"Regular", "Adjustment"}, period_lookup=period_lookup)
-    _, report2 = mod2._check(table)
+    _, report2 = mod2._check(table, PERIOD)
     assert {r["fiscal_period"]: r["ok"] for r in report2}[14]
+
+
+# --- konsolidat#199: every entity-period carries its amount basis -------------
+
+PERIOD, YTD, CLOSING = "Period movement", "Year-to-date movement", "Period-end balance"
+
+
+def test_the_basis_column_and_its_aliases_are_carried_to_each_row():
+    for name in ("amount_basis", "Basis", "Amount Basis"):
+        table = [HEADER + [name],
+                 ["ZZA", "2099", "1", "1010", "100", "", "period-end balance"],
+                 ["ZZA", "2099", "1", "2010", "", "100", " PERIOD-END BALANCE "]]
+        rows = M.split_table(table)[("ZZA", 2099, 1)]
+        assert [r["amount_basis"] for r in rows] == [CLOSING, CLOSING], name
+    assert "Two amount_basis columns" in _raises(M.split_table, [HEADER + ["basis", "amount_basis"]])
+
+
+def test_without_the_column_rows_carry_no_basis():
+    rows = M.split_table([HEADER, ["ZZA", "2099", "1", "1010", "1", "0"]])[("ZZA", 2099, 1)]
+    assert rows[0]["amount_basis"] == ""
+    assert M.group_basis(rows) == ""
+
+
+def test_each_group_carries_its_own_basis_and_a_blank_cell_is_not_given():
+    table = [HEADER + ["amount_basis"],
+             ["ZZA", "2099", "1", "1010", "1", "0", YTD],
+             ["ZZA", "2099", "1", "2010", "0", "1", ""],          # blank: not given, so no conflict
+             ["ZZB", "2099", "1", "1010", "1", "0", PERIOD],
+             ["ZZC", "2099", "1", "1010", "1", "0", ""]]
+    groups = M.split_table(table)
+    assert M.group_basis(groups[("ZZA", 2099, 1)]) == YTD
+    assert M.group_basis(groups[("ZZB", 2099, 1)]) == PERIOD
+    assert M.group_basis(groups[("ZZC", 2099, 1)]) == ""
+
+
+def test_mixed_bases_in_one_entity_period_are_a_line_error_naming_both():
+    table = [HEADER + ["amount_basis"],
+             ["ZZA", "2099", "1", "1010", "1", "0", PERIOD],
+             ["ZZA", "2099", "1", "2010", "0", "1", CLOSING],
+             ["ZZB", "2099", "1", "1010", "1", "0", CLOSING]]     # another entity may differ
+    msg = _raises(M.split_table, table)
+    assert "Line 3" in msg and PERIOD in msg and CLOSING in msg
+    assert "Line 4" not in msg
+
+
+def test_an_unknown_basis_value_is_a_line_error():
+    table = [HEADER + ["amount_basis"], ["ZZA", "2099", "1", "1010", "1", "0", "balances"]]
+    msg = _raises(M.split_table, table)
+    assert "Line 2" in msg and "balances" in msg and PERIOD in msg
+
+
+def test_resolve_basis_prefers_the_file_then_the_form_and_refuses_neither():
+    assert M.resolve_basis(CLOSING, PERIOD) == (CLOSING, None)
+    assert M.resolve_basis("", " period movement ") == (PERIOD, None)
+    assert M.resolve_basis(None, YTD) == (YTD, None)
+    basis, problem = M.resolve_basis("", "")
+    assert basis is None and "Amount Basis" in problem and PERIOD in problem and CLOSING in problem
+    basis, problem = M.resolve_basis("", "balances")
+    assert basis is None and "balances" in problem
+
+
+def test_group_csv_carries_the_basis_to_the_single_upload_only_when_given():
+    rows = [{"main_account": "1010", "debit": 1.0, "credit": 0.0, "description": "", "amount_basis": CLOSING}]
+    parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows, source="TBU-1"))))
+    assert parsed[0]["amount_basis"] == CLOSING
+    bare = [{"main_account": "1010", "debit": 1.0, "credit": 0.0, "description": "", "amount_basis": ""}]
+    assert "amount_basis" not in M.group_csv(bare, source="TBU-1").splitlines()[0]
+
+
+def test_bulk_check_refuses_an_entity_period_without_a_basis_and_carries_the_resolved_one():
+    table = [HEADER_ROW + ["amount_basis"],
+             ["AMDE", "2025", "3", "1010", "5", "0", CLOSING],
+             ["AMDE", "2025", "3", "2010", "0", "5", ""],
+             ["AMUS", "2025", "3", "1010", "5", "0", ""],
+             ["AMUS", "2025", "3", "2010", "0", "5", ""]]
+    period_lookup = {(2025, 3): {"code": "P03", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["AMDE", "AMUS"], postable={"Regular"}, period_lookup=period_lookup)
+
+    # no basis on the upload: only the group without its own column is refused
+    _, report = mod._check(table, "")
+    by_entity = {r["entity"]: r for r in report}
+    assert by_entity["AMDE"]["ok"] and by_entity["AMDE"]["amount_basis"] == CLOSING
+    assert not by_entity["AMUS"]["ok"] and "Amount Basis" in by_entity["AMUS"]["errors"][0]
+    assert by_entity["AMUS"]["amount_basis"] == ""
+
+    # the upload's basis fills in; the file's own value still wins
+    _, report = mod._check(table, PERIOD)
+    by_entity = {r["entity"]: r for r in report}
+    assert by_entity["AMDE"]["ok"] and by_entity["AMDE"]["amount_basis"] == CLOSING
+    assert by_entity["AMUS"]["ok"] and by_entity["AMUS"]["amount_basis"] == PERIOD
 
 
 def test_temp_helper_is_gone():

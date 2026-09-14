@@ -43,8 +43,8 @@ RECLASSIFYING = ("account_type", "statement_section", "fx_method")
 DECLARED_FIELDS = ("account_name", "chart_of_accounts", "parent_account", "is_group", "account_type",
                    "statement_section", "sub_section", "normal_balance", "time_balance", "fx_method",
                    "is_posting", "is_suspended", "allow_ic", "main_account_category", "cf_category",
-                   "cf_line_item", "is_cash", "description")
-CHECK_FIELDS = ("is_group", "is_posting", "is_suspended", "allow_ic", "is_cash")
+                   "cf_line_item", "is_cash", "is_retained_earnings", "description")
+CHECK_FIELDS = ("is_group", "is_posting", "is_suspended", "allow_ic", "is_cash", "is_retained_earnings")
 
 
 def text(value):
@@ -146,6 +146,18 @@ def declaration_problems(row, parent=None):
             expected = "flow" if section == PL else "balance"
             if time_balance != expected:
                 out.append(f"{code}: a {section} account's time_balance is {expected}, not {time_balance}")
+    # The retained-earnings account (konsolidat#199): the year-end close posts
+    # the year's result into it, so it is an Equity leaf on the Balance Sheet.
+    if flag(row.get("is_retained_earnings")):
+        if _is_group(row):
+            out.append(f"{code} is a heading (is_group), so it cannot be the retained earnings account: "
+                       "clear is_retained_earnings")
+        else:
+            if section != BS:
+                out.append(f"{code}: the retained earnings account belongs on the Balance Sheet"
+                           + (f", not the {section}" if section else ""))
+            if kind != "Equity":
+                out.append(f"{code}: the retained earnings account is Equity, not {kind or 'blank'}")
     parent_code = text(row.get("parent_account"))
     if parent_code:
         if parent_code == code:
@@ -176,6 +188,25 @@ def publish_problems(row, parent=None):
     if parent_code and (parent is None or parent.get("status") != PUBLISHED):
         out.append(f"{code}: publish its parent {parent_code} first")
     return out
+
+
+def retained_earnings_problems(rows):
+    """One sentence per chart with more than one Published account flagged
+    is_retained_earnings, naming the codes; empty when every chart has at most
+    one.
+
+    Period-end-balance trial balances (konsolidat#199) need the year-end close:
+    the warehouse posts each year's result into this one account in the fiscal
+    calendar's Closing period, so a chart with two of them would close the
+    result twice. Draft and Inactive rows are not in the chart yet.
+    """
+    by_chart = {}
+    for row in rows:
+        if row.get("status") == PUBLISHED and flag(row.get("is_retained_earnings")):
+            by_chart.setdefault(text(row.get("chart_of_accounts")), set()).add(text(row.get("main_account")))
+    return [f"Chart {chart}: {', '.join(sorted(codes))} are all flagged as the retained earnings account; "
+            "exactly one Published account per chart may be"
+            for chart, codes in sorted(by_chart.items()) if len(codes) > 1]
 
 
 def in_use_problems(code, postings=(), intercompany=(), difference_groups=(), heading=False):
@@ -242,7 +273,7 @@ def cash_flow_mapping(row):
 HEADER = ("main_account", "account_name", "account_type", "statement_section", "sub_section",
           "normal_balance", "time_balance", "fx_method", "cf_category", "cf_line_item", "is_posting",
           "allow_ic", "parent_account", "chart_of_accounts")
-OPTIONAL = ("is_group", "is_suspended", "is_cash", "main_account_category", "description")
+OPTIONAL = ("is_group", "is_suspended", "is_cash", "is_retained_earnings", "main_account_category", "description")
 REQUIRED = ("main_account", "account_name", "chart_of_accounts")
 HEADER_ALIASES = {
     "account": "main_account", "code": "main_account",
@@ -251,6 +282,7 @@ HEADER_ALIASES = {
     "chart": "chart_of_accounts", "coa": "chart_of_accounts",
     "section": "statement_section",
     "translation_method": "fx_method",
+    "retained_earnings": "is_retained_earnings",
 }
 VALUE_ALIASES = {
     "statement_section": {"p&l": PL, "pl": PL, "pnl": PL, "income statement": PL, "bs": BS},
@@ -464,7 +496,10 @@ def plan_chart_load(rows, existing):
       never deleted;
     * every account's declaration is checked as it would be after the load
       (the file over what konsol holds), parents and cycles included, and every
-      problem is reported: ``ok`` is False and nothing may be written.
+      problem is reported: ``ok`` is False and nothing may be written;
+    * the chart as it would be keeps at most one Published retained-earnings
+      account (``retained_earnings_problems``), Drafts the load can publish
+      counted as Published.
 
     ``writes`` is the load itself, parent-first: [(action, code, fields)] with
     action "insert" or "update" and only the fields the file sets.
@@ -550,6 +585,14 @@ def plan_chart_load(rows, existing):
         if code in given or parent_code not in given:
             continue
         errors.extend(declaration_problems(apply_defaults(after[code]), apply_defaults(after[parent_code])))
+    # The retained-earnings rule holds over the chart as it would be once the
+    # load is published: a Draft the load can publish counts as Published, so
+    # a file flagging two accounts (or one beside the one konsol already
+    # holds) is refused here, not half-way through the second account's save.
+    not_ready = {n["main_account"] for n in report["not_ready"]}
+    errors.extend(retained_earnings_problems([
+        dict(row, status=PUBLISHED) if row.get("status") == "Draft" and code not in not_ready else row
+        for code, row in after.items()]))
     report["errors"] = errors
     report["ok"] = not errors
     report["writes"] = writes if not errors else []

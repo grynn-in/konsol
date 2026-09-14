@@ -29,10 +29,13 @@ class _Row(dict):
     __getattr__ = dict.get
 
 
-def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehouse_error=None, mariadb_tbs=0):
+def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehouse_error=None, mariadb_tbs=0,
+          without_basis="0", basis_error=None):
     """check_raw_data_available() against ``rows`` claimed trial balance rows in
     the warehouse. ``mariadb_tbs`` submitted documents exist in MariaDB, which
-    must not matter."""
+    must not matter. ``without_basis`` is what the konsolidat#199 basis query
+    returns ("<count>\t<names>"; "0" = every claimed batch declares one);
+    ``basis_error`` is raised by that query alone (the rows query answered)."""
     settings = _Row(skip_airbyte_sync=skip, last_airbyte_sync_status=sync_status, last_airbyte_sync_at=sync_at,
                     last_airbyte_sync_rows=7)
     sqls = []
@@ -41,6 +44,10 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
         sqls.append(sql)
         if warehouse_error is not None:
             raise warehouse_error
+        if "amount_basis" in sql:
+            if basis_error is not None:
+                raise basis_error
+            return without_basis
         return str(rows)
 
     def get_all(doctype, filters=None, fields=None, limit_page_length=None):
@@ -55,7 +62,8 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
                                                             count=lambda *a, **k: mariadb_tbs))
     with open(TASKS) as f:
         tree = ast.parse(f.read())
-    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate"}
+    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate", "_batches_without_basis",
+              "_basis_refusal"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
     ch = types.ModuleType("konsol.clickhouse")
@@ -91,8 +99,9 @@ def test_a_running_or_failed_connector_still_blocks():
     assert check(rows=12, connectors=FAILED)[0][0] is False
     assert check(rows=12, connectors=NEVER_SYNCED)[0] == (
         False, "Connector 'ZZ ERP' has never synced — epm_raw may be empty")
-    # and the warehouse is not even asked while a connector decides
-    assert check(rows=12, connectors=RUNNING)[1] == []
+    # konsolidat#199: the warehouse is asked only about claimed trial balances
+    # (rows, undeclared bases) before the connector decides; nothing else
+    assert all("epm_raw.trial_balance_submission" in s for s in check(rows=12, connectors=RUNNING)[1])
 
 
 def test_synced_connectors_are_unchanged():
@@ -107,8 +116,10 @@ def test_a_wiped_warehouse_refuses_even_with_submitted_documents():
 
 def test_counts_the_claimed_rows_in_the_warehouse():
     _, sqls = check(rows=5)
-    assert sqls == ["SELECT count() FROM epm_raw.trial_balance_submissions WHERE batch_id IN "
-                    "(SELECT batch_id FROM epm_raw.trial_balance_submission_control)"]
+    assert sqls[0] == ("SELECT count() FROM epm_raw.trial_balance_submissions WHERE batch_id IN "
+                       "(SELECT batch_id FROM epm_raw.trial_balance_submission_control)")
+    # konsolidat#199: with claimed rows, the one other query asks which batches lack a basis
+    assert len(sqls) == 2 and "argMax(amount_basis, claimed_at)" in sqls[1]
 
 
 def test_an_unreadable_warehouse_refuses():
@@ -125,7 +136,8 @@ def test_with_nothing_landed_the_airbyte_gate_is_unchanged():
 
 def test_the_flag_still_works():
     (ok, message), sqls = check(skip=1, connectors=RUNNING)
-    assert ok and "skip_airbyte_sync" in message and sqls == [], message
+    # konsolidat#199: the skip path still asks the warehouse about claimed batches (rows, bases); no connector is consulted
+    assert ok and "skip_airbyte_sync" in message and len(sqls) <= 2 and all("epm_raw" in s for s in sqls), message
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +174,8 @@ def test_an_empty_global_sync_status_with_trial_balances_still_passes():
 
 def test_skip_flag_bypasses_a_failed_global_sync():
     (ok, message), sqls = check(skip=1, sync_status="Failed", rows=12)
-    assert ok and "skip_airbyte_sync" in message and sqls == [], message
+    # konsolidat#199: the skip path still asks the warehouse about claimed batches (rows, bases); no connector is consulted
+    assert ok and "skip_airbyte_sync" in message and len(sqls) <= 2 and all("epm_raw" in s for s in sqls), message
 
 
 # ---------------------------------------------------------------------------
@@ -224,3 +237,32 @@ def test_chart_passes_with_no_connector_and_zero_trial_balances():
     """A TB-only site must be able to build its chart before any TB exists."""
     ok, message = check_chart(connectors=())
     assert ok, message
+
+
+def test_claimed_batches_without_a_basis_are_refused_by_name():
+    """konsolidat#199: rows exist, but two claimed batches never declared what
+    their amounts are; the build is refused and the message names them — even
+    with skip_airbyte_sync on, which is the trial-balance-only site."""
+    (ok, msg), _ = check(skip=1, rows=500, without_basis="2\tTBS-0001,TBS-0002")
+    assert ok is False
+    assert "2 claimed trial balance batch(es) have no Amount Basis" in msg
+    assert "TBS-0001, TBS-0002" in msg and "Set Amount Basis" in msg
+
+
+def test_every_batch_declared_passes():
+    (ok, msg), _ = check(skip=1, rows=500, without_basis="0")
+    assert ok is True and "skip_airbyte_sync" in msg
+
+
+def test_only_a_missing_column_means_run_bench_migrate():
+    """konsolidat#199 (PR #201 review, finding 4): the rows query answered, so
+    the warehouse is up; if the basis query then fails for any reason OTHER
+    than the control table lacking the column, "run bench migrate" would send
+    the operator on a wild goose chase. The refusal must carry the real error."""
+    (ok, msg), sqls = check(rows=12, basis_error=ConnectionError("refused"))
+    assert ok is False and len(sqls) == 2, (msg, sqls)
+    assert msg.startswith("could not read the amount bases"), msg
+    assert "refused" in msg and "bench migrate" not in msg, msg
+    # the column really is missing (an old stack): the way out is named
+    (ok, msg), _ = check(rows=12, basis_error=RuntimeError("Code: 47. DB::Exception: Missing columns: 'amount_basis'"))
+    assert (ok, msg) == (False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate")

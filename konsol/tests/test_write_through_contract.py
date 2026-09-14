@@ -258,6 +258,28 @@ def test_added_columns_reach_tables_that_already_exist():
     assert "CREATE DATABASE IF NOT EXISTS epm_raw" in sql
 
 
+def test_the_control_table_claim_carries_the_amount_basis():
+    """konsolidat#199. The claim row says what the batch's amounts ARE (period
+    movement, year-to-date movement, period-end balance). Added at the END of
+    the CREATE and in _ADDED_COLUMNS, so a fresh table and an upgraded one
+    agree; '' on a claim from before the column means "not declared"."""
+    m, _ = _load_clickhouse()
+    control = "epm_raw.trial_balance_submission_control"
+    body = m._RAW_TABLE_DDL[control]
+    assert body == (
+        "(batch_id String, submission_name String, data_area_id String, "
+        "fiscal_year UInt16, fiscal_period UInt8, row_count UInt32, "
+        "claimed_at DateTime, amount_basis String DEFAULT '') "
+        "ENGINE = ReplacingMergeTree(claimed_at) ORDER BY batch_id")
+    assert m._ADDED_COLUMNS[control] == [("amount_basis", "String DEFAULT ''")]
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_raw_tables()
+    alter = f"ALTER TABLE {control} ADD COLUMN IF NOT EXISTS amount_basis String DEFAULT ''"
+    assert alter in sql
+    assert sql.index(f"CREATE TABLE IF NOT EXISTS {control} {body}") < sql.index(alter)
+
+
 def test_raw_table_bootstrap_raises_for_a_submission():
     """A submission must never land rows into a table missing a column it
     writes, so ensure_raw_tables raises; the migrate path swallows it."""
