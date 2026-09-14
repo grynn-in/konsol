@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
 	parsePeriodRoute, monthPath, currentMonthPath, isMine,
 	stageTarget, crumbsFor, periodCrumb, selectedFor, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
+	shouldSendPeriod,
 } from "./home.js";
 
 test("no client-side 0/13 period vocabulary: the server's code and label are used as-is", () => {
@@ -133,6 +134,33 @@ test("selectedFor: the no-period home never borrows the plane's period (PR #192 
 	assert.deepEqual(selectedFor("step-tab", null, planePeriod), { year: 2026, period: 9 });
 	assert.equal(selectedFor("close", null, null), null);
 	assert.equal(selectedFor("close", null, { year: "", period: "" }), null);
+});
+
+test("shouldSendPeriod: SET_PERIOD only from ready or failed, only when the period actually differs (PR #192 re-review 3 finding 1)", () => {
+	const want = { year: 2026, period: 9 };
+	const same = { year: "2026", period: "9" };
+	const other = { year: "2025", period: "3" };
+
+	// ready: sends when the wanted period differs, not when it's already there.
+	assert.equal(shouldSendPeriod("ready", want, other), true);
+	assert.equal(shouldSendPeriod("ready", want, same), false);
+
+	// failed: a rejected period change must not trap the user on that period.
+	assert.equal(shouldSendPeriod("failed", want, other), true);
+	assert.equal(shouldSendPeriod("failed", want, same), false);
+
+	// Every other plane state is a load already in flight: never resend.
+	for (const state of ["loading", "changingPeriod", "refreshing", "starting", "reminding", "other"]) {
+		assert.equal(shouldSendPeriod(state, want, other), false);
+	}
+
+	// No route period yet: nothing to send.
+	assert.equal(shouldSendPeriod("ready", null, other), false);
+});
+
+test("App.vue's period watch decides through shouldSendPeriod, not an inline ready-only check", () => {
+	const source = readFileSync(fileURLToPath(new URL("./App.vue", import.meta.url)), "utf8");
+	assert.equal(source.includes("shouldSendPeriod("), true, "App.vue must call the shared helper");
 });
 
 test("navigator opens the current and the selected year", () => {
