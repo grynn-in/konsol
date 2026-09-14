@@ -411,3 +411,61 @@ def test_current_fiscal_year_is_declared():
 
     assert snapshot["fiscal_year"] is None, "no year-level part may invent a year"
     assert snapshot["period"]["declared"] is False
+
+
+# ---- start_process must not silently default a fiscal year (konsol#189-45) --
+
+def _install_start_run(launched):
+    """Stub konsol.orchestrator.api.start_run — the consolidation launcher —
+    so start_process's `from konsol.orchestrator.api import start_run` resolves
+    without touching the real orchestrator, and records whether it ran."""
+    pkg = types.ModuleType("konsol.orchestrator")
+    pkg.__path__ = []
+    mod = types.ModuleType("konsol.orchestrator.api")
+
+    def start_run(definition, params=None):
+        launched.append((definition, params))
+        return "PR-1"
+
+    mod.start_run = start_run
+    names = ("konsol.orchestrator", "konsol.orchestrator.api")
+    saved = {name: sys.modules.get(name) for name in names}
+    sys.modules["konsol.orchestrator"] = pkg
+    sys.modules["konsol.orchestrator.api"] = mod
+    return saved
+
+
+def _restore_modules(saved):
+    for name, mod in saved.items():
+        if mod is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = mod
+
+
+def test_start_process_needs_a_declared_year():
+    launched = []
+
+    # No fiscal_year argument, and no declared EPM Fiscal Year covers today:
+    # start_process must refuse rather than launch across every year.
+    with _control_api(rows=_ROWS, today="2027-02-10") as ca:
+        saved = _install_start_run(launched)
+        try:
+            try:
+                ca.start_process("consolidation")
+                raise AssertionError("expected frappe.throw for an undeclared year")
+            except _ValidationError as exc:
+                assert "No Fiscal Year is declared" in str(exc), exc
+        finally:
+            _restore_modules(saved)
+    assert launched == [], "nothing may be launched when no fiscal year is declared"
+
+    # A declared EPM Fiscal Year row covers today: start_process launches with it.
+    with _control_api(rows=_ROWS, today="2026-09-14") as ca:
+        saved = _install_start_run(launched)
+        try:
+            out = ca.start_process("consolidation")
+        finally:
+            _restore_modules(saved)
+    assert out == {"ok": True, "run_kind": "pipeline", "name": "PR-1"}
+    assert launched == [("Group Close", {"fiscal_year": 2026})]
