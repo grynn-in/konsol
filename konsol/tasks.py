@@ -178,9 +178,13 @@ def _batches_without_basis():
     ``argMax(amount_basis, claimed_at)`` per ``batch_id``, never an older row
     that ReplacingMergeTree has not merged away yet.
 
-    ``None`` when the query fails: an old stack whose control table has no
-    ``amount_basis`` column yet, which the caller turns into "run bench
-    migrate" rather than a silently passing check.
+    ``None`` when the control table has no ``amount_basis`` column yet (an
+    old stack; ClickHouse reports the missing identifier by name), which the
+    caller turns into "run bench migrate" rather than a silently passing
+    check. Any OTHER failure (connection refused, timeout, an unrelated
+    ClickHouse error) is ``("error", text)`` with the error's first 200
+    characters, so the refusal says what actually failed instead of sending
+    the operator to migrate a schema that is already current.
     """
     from konsol.clickhouse import execute
 
@@ -191,8 +195,13 @@ def _batches_without_basis():
             "argMax(amount_basis, claimed_at) AS amount_basis "
             "FROM epm_raw.trial_balance_submission_control GROUP BY batch_id) "
             "WHERE amount_basis = ''")
-    except Exception:  # noqa: BLE001
-        return None
+    except Exception as e:  # noqa: BLE001
+        message = str(e)
+        missing_column = "amount_basis" in message and any(
+            marker in message for marker in ("UNKNOWN_IDENTIFIER", "Missing columns", "Unknown identifier"))
+        if missing_column:
+            return None
+        return "error", message[:200]
     # One TSV row: "<count>\t<name,name,…>"; execute() strips a trailing tab,
     # so an empty result arrives as "0".
     parts = (text or "").split("\t")
@@ -263,6 +272,8 @@ def _basis_refusal(rows):
     without = _batches_without_basis()
     if without is None:
         return False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate"
+    if without[0] == "error":
+        return False, f"could not read the amount bases of the claimed batches: {without[1]}"
     names, n = without
     if n:
         return False, (f"{n} claimed trial balance batch(es) have no Amount Basis (e.g. {', '.join(names)}): "
