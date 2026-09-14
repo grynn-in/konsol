@@ -142,14 +142,20 @@ def _current_period(rows_by_year, now):
     """The declared Regular period whose dates contain ``now``: never a guess
     from today's calendar month/year (konsol#189 review finding 2), since a
     fiscal year need not run Jan-Dec. ``None`` when no declared Regular period
-    covers today."""
-    for fy, rows in rows_by_year.items():
-        for r in rows:
-            if r.period_type != "Regular" or not r.start_date or not r.end_date:
-                continue
-            if getdate(r.start_date) <= now <= getdate(r.end_date):
-                return {"fiscal_year": fy, "fiscal_period": int(r.fiscal_period)}
-    return None
+    covers today.
+
+    Delegates to ``fiscal_calendar.current_period`` (konsol#189 review nit 6),
+    the one place this logic lives — flattening ``rows_by_year`` (fiscal_year
+    -> its rows, from the query above) back into rows carrying their own
+    ``fiscal_year``, since that helper is fed a flat list."""
+    from konsol import fiscal_calendar
+
+    flat = (dict(r, fiscal_year=fy) for fy, rows in rows_by_year.items() for r in rows)
+    result = fiscal_calendar.current_period(flat, now)
+    if result is None:
+        return None
+    fy, fp = result
+    return {"fiscal_year": fy, "fiscal_period": fp}
 
 
 @frappe.whitelist(methods=["GET"])

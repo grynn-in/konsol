@@ -68,18 +68,15 @@ def _current_fiscal_year():
     """The fiscal_year of the declared Regular period covering today, or
     ``None`` when no declared period covers it (konsol#189: no implied
     calendar — a fiscal year that runs off the calendar, or a site with
-    nothing declared, must never be guessed from getdate(today()).year)."""
-    from konsol.fiscal_calendar import fiscal_period_rows
+    nothing declared, must never be guessed from getdate(today()).year).
 
-    getdate = frappe.utils.getdate
-    now = getdate(today())
-    for row in fiscal_period_rows():
-        if row.get("period_type") != "Regular":
-            continue
-        start, end = row.get("start_date"), row.get("end_date")
-        if start and end and getdate(start) <= now <= getdate(end):
-            return str(row["fiscal_year"])
-    return None
+    Delegates to ``fiscal_calendar.current_period`` (konsol#189 review nit 6),
+    shared with ``home_api.period_tree`` so the two readers can't drift."""
+    from konsol.fiscal_calendar import current_period, fiscal_period_rows
+
+    now = frappe.utils.getdate(today())
+    result = current_period(fiscal_period_rows(), now)
+    return str(result[0]) if result else None
 
 
 @frappe.whitelist(methods=["GET", "POST"])
