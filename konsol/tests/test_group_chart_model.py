@@ -547,3 +547,46 @@ def test_the_chart_file_carries_the_retained_earnings_flag():
         M.parse_chart_table, [["code", "name", "coa", "is_retained_earnings"], ["ZZ3000", "RE", "ZZCOA", "maybe"]])
     # without the column, nothing is said about it
     assert "is_retained_earnings" not in M.parse_chart_table([["code", "name", "coa"], ["ZZ1", "X", "ZZCOA"]])[0]
+
+
+# -- the chart upload's plan checks the retained-earnings rule over the whole file --------------
+
+RE_HEAD = HEAD + ["is_retained_earnings"]
+
+
+def re_line(code, name="Retained earnings", flagged="yes"):
+    """A file line for an Equity leaf on the Balance Sheet, flagged unless told otherwise."""
+    return line(code, name, kind="Equity", section="BS") + [flagged]
+
+
+def test_a_file_flagging_two_retained_earnings_accounts_in_one_chart_is_refused():
+    rows = parse(re_line("ZZ3000"), re_line("ZZ3100", "Reserves"), head=RE_HEAD)
+    report = M.plan_chart_load(rows, {})
+    assert not report["ok"] and report["writes"] == []
+    hits = [e for e in report["errors"] if "retained earnings account" in e]
+    assert len(hits) == 1 and "ZZ3000" in hits[0] and "ZZ3100" in hits[0] and "ZZCOA" in hits[0], report["errors"]
+
+
+def test_a_file_flagging_a_second_account_beside_a_published_one_is_refused():
+    existing = {"ZZ3000": re_leaf()}   # Published, flagged, same chart
+    report = M.plan_chart_load(parse(re_line("ZZ3100", "Reserves"), head=RE_HEAD), existing)
+    assert not report["ok"], report
+    assert has(report["errors"], "ZZ3000") and has(report["errors"], "ZZ3100"), report["errors"]
+    # in another chart it is that chart's own
+    other = {"OT3000": re_leaf(main_account="OT3000", chart_of_accounts="OTHER")}
+    report = M.plan_chart_load(parse(re_line("ZZ3100", "Reserves"), head=RE_HEAD), other)
+    assert report["ok"], report["errors"]
+
+
+def test_a_file_redeclaring_the_published_retained_earnings_account_is_fine():
+    existing = {"ZZ3000": re_leaf()}
+    report = M.plan_chart_load(parse(re_line("ZZ3000"), head=RE_HEAD), existing)
+    assert report["ok"], report["errors"]
+    assert report["unchanged"] == ["ZZ3000"]
+
+
+def test_one_flagged_account_and_none_existing_is_fine():
+    report = M.plan_chart_load(parse(re_line("ZZ3000"), line("ZZ1000", "Cash", kind="Asset", section="BS") + [""],
+                                     head=RE_HEAD), {})
+    assert report["ok"], report["errors"]
+    assert report["insert"] == ["ZZ3000", "ZZ1000"]
