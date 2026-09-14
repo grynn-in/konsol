@@ -547,6 +547,31 @@ def test_batches_without_basis_returns_names_and_count():
 def test_batches_without_basis_is_none_when_the_column_is_missing():
     err = RuntimeError("Code: 47. DB::Exception: Missing columns: 'amount_basis' (UNKNOWN_IDENTIFIER)")
     assert _batches(error=err) is None
+    # ClickHouse phrases the missing-column error differently by version
+    assert _batches(error=RuntimeError("Missing columns: 'amount_basis' while processing query")) is None
+    assert _batches(error=RuntimeError("Unknown identifier: amount_basis")) is None
+    assert _batches(error=RuntimeError("Code: 47. Unknown expression identifier `amount_basis` (UNKNOWN_IDENTIFIER)")) is None
+
+
+def test_batches_without_basis_reports_any_other_error_as_an_error():
+    """PR #201 review, finding 4: only a missing column may become "run bench
+    migrate". A refused connection, a timeout or an unrelated ClickHouse error
+    comes back as ("error", text) so the refusal can say what actually failed."""
+    assert _batches(error=ConnectionError("refused")) == ("error", "refused")
+    kind, text = _batches(error=RuntimeError("Code: 241. DB::Exception: Memory limit exceeded"))
+    assert kind == "error" and "Memory limit exceeded" in text
+    # an unknown-identifier error about some OTHER column is not "run bench migrate"
+    kind, text = _batches(error=RuntimeError("Code: 47. Missing columns: 'claimed_by' (UNKNOWN_IDENTIFIER)"))
+    assert kind == "error" and "claimed_by" in text
+    # the text is bounded: a ClickHouse stack trace must not become the preflight message
+    kind, text = _batches(error=RuntimeError("x" * 5000))
+    assert kind == "error" and len(text) == 200
+
+
+def test_basis_refusal_names_the_real_error():
+    body = _func_source("_basis_refusal")
+    assert "could not read the amount bases of the claimed batches: " in body
+    assert '"error"' in body
 
 
 def test_raw_data_check_refuses_batches_without_a_basis():

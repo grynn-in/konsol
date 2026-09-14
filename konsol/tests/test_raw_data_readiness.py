@@ -30,11 +30,12 @@ class _Row(dict):
 
 
 def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehouse_error=None, mariadb_tbs=0,
-          without_basis="0"):
+          without_basis="0", basis_error=None):
     """check_raw_data_available() against ``rows`` claimed trial balance rows in
     the warehouse. ``mariadb_tbs`` submitted documents exist in MariaDB, which
     must not matter. ``without_basis`` is what the konsolidat#199 basis query
-    returns ("<count>\t<names>"; "0" = every claimed batch declares one)."""
+    returns ("<count>\t<names>"; "0" = every claimed batch declares one);
+    ``basis_error`` is raised by that query alone (the rows query answered)."""
     settings = _Row(skip_airbyte_sync=skip, last_airbyte_sync_status=sync_status, last_airbyte_sync_at=sync_at,
                     last_airbyte_sync_rows=7)
     sqls = []
@@ -44,6 +45,8 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
         if warehouse_error is not None:
             raise warehouse_error
         if "amount_basis" in sql:
+            if basis_error is not None:
+                raise basis_error
             return without_basis
         return str(rows)
 
@@ -249,3 +252,17 @@ def test_claimed_batches_without_a_basis_are_refused_by_name():
 def test_every_batch_declared_passes():
     (ok, msg), _ = check(skip=1, rows=500, without_basis="0")
     assert ok is True and "skip_airbyte_sync" in msg
+
+
+def test_only_a_missing_column_means_run_bench_migrate():
+    """konsolidat#199 (PR #201 review, finding 4): the rows query answered, so
+    the warehouse is up; if the basis query then fails for any reason OTHER
+    than the control table lacking the column, "run bench migrate" would send
+    the operator on a wild goose chase. The refusal must carry the real error."""
+    (ok, msg), sqls = check(rows=12, basis_error=ConnectionError("refused"))
+    assert ok is False and len(sqls) == 2, (msg, sqls)
+    assert msg.startswith("could not read the amount bases"), msg
+    assert "refused" in msg and "bench migrate" not in msg, msg
+    # the column really is missing (an old stack): the way out is named
+    (ok, msg), _ = check(rows=12, basis_error=RuntimeError("Code: 47. DB::Exception: Missing columns: 'amount_basis'"))
+    assert (ok, msg) == (False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate")
