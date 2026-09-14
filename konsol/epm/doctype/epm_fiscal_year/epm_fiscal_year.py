@@ -105,6 +105,42 @@ def _rate_failure(fiscal_year, fiscal_period):
 
 
 class EPMFiscalYear(Document):
+    #: konsol#189: every period row, with its effective status, is published
+    #: here (fiscal_calendar.fiscal_period_rows). The rows are computed — a
+    #: join to the parent year — so reconcile_all calls resync_staging, not a
+    #: field map. Columns in DDL order (clickhouse._REFERENCE_TABLE_DDL).
+    CH_STAGING_TABLE = "epm_staging.fiscal_periods"
+    CH_STAGING_COLUMNS = ("fiscal_year", "fiscal_period", "period_code", "period_label",
+                          "period_type", "start_date", "end_date", "quarter", "status")
+
+    @classmethod
+    def resync_staging(cls, force=False):
+        """TRUNCATE+INSERT every declared period. reconcile_all calls this with
+        force=True. Returns the rows written (None when the write failed)."""
+        from konsol.clickhouse import sync_table
+
+        columns = list(cls.CH_STAGING_COLUMNS)
+        rows = [[r[c] for c in columns] for r in fiscal_calendar.fiscal_period_rows()]
+        return sync_table(cls.CH_STAGING_TABLE, columns, rows, force=force)
+
+    def on_update(self):
+        # Fires on insert, edit, Generate Periods and every status action.
+        self._resync()
+
+    def after_delete(self):
+        """after_delete, NOT on_trash: the sync re-reads every year, and
+        on_trash runs before the row is gone (konsol#120). on_trash only
+        refuses."""
+        self._resync()
+
+    def _resync(self):
+        """Queue the sync for after the commit, once per transaction
+        (konsol#124): ClickHouse has no transaction, so an inline sync would
+        publish a save that later rolls back. Same pattern as Entity."""
+        from konsol.clickhouse import after_commit_once
+
+        after_commit_once(("fiscal_periods", self.CH_STAGING_TABLE), type(self).resync_staging)
+
     def validate(self):
         year = _year_dict(self)
         rows = _row_dicts(self)
