@@ -31,19 +31,20 @@ def _getdate(value=None):
 
 
 class _Site:
-    def __init__(self, years=(), rows=(), cycles=(), runs=(), perms=()):
+    def __init__(self, years=(), rows=(), cycles=(), runs=(), perms=(), today=TODAY):
         self.years = [_Row(y) for y in years]
         self.rows = [_Row(r) for r in rows]
         self.cycles = [_Row(c) for c in cycles]
         self.runs = [_Row(r) for r in runs]     # Assertion Run, latest first
         self.perms = set(perms)                 # {(doctype, ptype)} the user holds
+        self.today = today                      # override for tests picking a fiscal year off-calendar
 
     def module(self):
         site = self
         frappe = types.ModuleType("frappe")
         utils = types.ModuleType("frappe.utils")
         utils.getdate = _getdate
-        utils.today = lambda: TODAY
+        utils.today = lambda: site.today
         utils.get_fullname = lambda user: user
         frappe.utils = utils
 
@@ -251,6 +252,41 @@ def test_blank_row_status_shown_as_is_not_open():
     # every other row is unaffected
     assert by_code["P04"]["status"] == "Closed"
     assert by_code["P06"]["status"] == "Closed"
+
+
+def _calendar_months(fy, start_year, start_month, count):
+    """count consecutive Regular monthly periods starting (start_year,
+    start_month) — a fiscal year that does not run Jan-Dec, so a test using
+    it proves ``current`` isn't guessed from the calendar year/month."""
+    import calendar
+
+    rows = []
+    y, m = start_year, start_month
+    for n in range(1, count + 1):
+        last_day = calendar.monthrange(y, m)[1]
+        rows.append({"parent": str(fy), "fiscal_period": n, "period_code": f"P{n:02d}",
+                     "period_label": None, "period_type": "Regular",
+                     "start_date": datetime.date(y, m, 1), "end_date": datetime.date(y, m, last_day),
+                     "status": "Open"})
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return rows
+
+
+def test_current_is_the_declared_period_containing_today():
+    """``current`` is the declared Regular period whose dates contain today —
+    never guessed from today's calendar month/year (konsol#189 review
+    finding 2). FY2026 runs April 2026 - March 2027, so today 2027-02-10
+    falls in FY2026's P11, not calendar (2027, 2)."""
+    site = _Site(years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"}],
+                 rows=_calendar_months(2026, 2026, 4, 12), today="2027-02-10")
+    assert _tree(site)["current"] == {"fiscal_year": 2026, "fiscal_period": 11}
+
+
+def test_current_is_none_when_nothing_declared_covers_today():
+    site = _Site(years=[], rows=[], today="2026-09-14")
+    assert _tree(site)["current"] is None
 
 
 # --- month() on the declared calendar ---------------------------------------
