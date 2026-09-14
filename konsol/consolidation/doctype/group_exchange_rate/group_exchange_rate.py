@@ -27,7 +27,7 @@ warehouse translates from it without scaling or inverting anything.
 import frappe
 from frappe.model.document import Document
 
-from konsol.period_status import assert_open
+from konsol.period_status import assert_declared, assert_open
 
 RATE_TYPES = ("Closing", "Average")
 ADOPTION_SOURCE = "Adoption"
@@ -104,8 +104,9 @@ class GroupExchangeRate(Document):
         # ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently.
         if not 1970 <= year <= 2148:
             frappe.throw(f"Fiscal Year {self.fiscal_year} is out of range.", frappe.ValidationError)
-        if period in (None, "") or not frappe.db.exists("Fiscal Period", {"fiscal_period": int(period)}):
+        if period in (None, ""):
             frappe.throw(f"No Fiscal Period numbered {period}.", frappe.ValidationError)
+        assert_declared(year, int(period))
 
     def _guard_provenance(self):
         """Source and ERP Quote are read-only in the form only; REST writes any
