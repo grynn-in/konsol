@@ -65,11 +65,11 @@ def execute(sql, params=None):
     conn = get_connection()
     url = connection_url(conn)
     query_params = dict(params or {})
-    query_params["query"] = sql
 
     resp = requests.post(
         url,
         params=query_params,
+        data=sql.encode("utf-8"),
         auth=(conn["user"], conn["password"]),
         timeout=30,
         verify=conn.get("verify", True),
