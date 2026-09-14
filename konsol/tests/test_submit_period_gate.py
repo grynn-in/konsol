@@ -168,6 +168,8 @@ def _load(path, period_open):
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
+    # konsolidat#199: the controller now declares a whitelisted bulk action
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.session = types.SimpleNamespace(user="approver@example.com")
     frappe.db = types.SimpleNamespace(
