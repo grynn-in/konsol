@@ -173,11 +173,13 @@ def first_period_affected(date):
 
 
 def assert_open_between(start_date, end_date=None, action="run", end_exclusive=False):
-    """Refuse unless every declared period overlapping the range a date-keyed
-    record affects is effectively Open (the stricter of the period's status
-    and its year's). The range runs from ``start_date`` to ``end_date``
-    (a period starting on ``end_date`` is left out with ``end_exclusive``),
-    or open-ended over every later period when there is no end.
+    """Refuse unless every declared period a date-keyed record affects is
+    effectively Open (the stricter of the period's status and its year's).
+    Those are the periods starting on or after ``start_date`` (as in
+    first_period_affected: a period's membership is decided by its first
+    day, so a change effective 15 March leaves March alone) and starting on
+    or before ``end_date`` (before it with ``end_exclusive``), or every
+    later period when there is no end.
 
     Gating one period wasn't enough: an ownership period or an equity rate
     changes every period it covers, so a cancel with only its first period
@@ -189,7 +191,7 @@ def assert_open_between(start_date, end_date=None, action="run", end_exclusive=F
     if not start_date:
         return
     where = [
-        "p.end_date >= %(start)s",
+        "p.start_date >= %(start)s",
         "(y.status <> %(open)s OR p.status <> %(open)s)",
     ]
     params = {"start": getdate(start_date), "open": OPEN}
