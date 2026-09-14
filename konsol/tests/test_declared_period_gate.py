@@ -25,7 +25,6 @@ PENDING = {
     "IC Balance",
     "Allocation Run",
     "Allocation Driver",
-    "Group Exchange Rate",
     "Trial Balance Submission",
 }
 
