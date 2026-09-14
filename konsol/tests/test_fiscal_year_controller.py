@@ -116,9 +116,13 @@ def _load():
                 sys.modules[name] = old
 
 
-def _row(period, code, ptype, start, end):
+def _row(period, code, ptype, start, end, name=None):
+    """A period row. `name` is the child row's own docname, stable across an
+    edit even when `period_code` changes; it defaults to `code` so a fresh
+    call still gives every row a distinct, deterministic one."""
     return types.SimpleNamespace(fiscal_period=period, period_code=code, period_type=ptype,
-                                 start_date=start, end_date=end, status="Open")
+                                 start_date=start, end_date=end, status="Open",
+                                 name=name if name is not None else code)
 
 
 def _monthly_2025():
@@ -195,8 +199,9 @@ def _edit(module, saved):
 
 def _declared(module, year, rows):
     """The action flag declaring exactly these status changes: the year's
-    (when `year` is given) and each row's current values, by period code."""
-    out = {"rows": {r.period_code: module._status_values(r) for r in rows}}
+    (when `year` is given) and each row's current values, keyed as the
+    status guard matches rows (module._row_key)."""
+    out = {"rows": {module._row_key(r): module._status_values(r) for r in rows}}
     if year is not None:
         out["year"] = module._status_values(year)
     return out
@@ -349,3 +354,53 @@ def test_migration_flag_skips_in_use_rule():
         doc = _move_p03_end(_edit(module, _saved(module)))
         doc.flags.konsol_fiscal_migration = True
         assert _validate(doc) is None
+
+
+# --- The status guard keys a row by its name, not its code (review #191, 3) -
+
+def test_renamed_row_keeps_status():
+    """Recoding a Locked row's period_code must not reset it to Open: the
+    guard matches it to its saved status by the row's own name, which a
+    rename doesn't change."""
+    with _load() as module:
+        saved = _saved(module)
+        for r in saved.periods:
+            if r.period_code == "P05":
+                r.status = "Locked"   # unused, but Locked
+        doc = _edit(module, saved)
+        renamed = next(r for r in doc.periods if r.name == "P05")
+        renamed.period_code = "P05b"  # same row, new code
+        renamed.status = "Open"       # the client's edit resets it
+        msg = _refused(doc)
+        assert msg is not None, "renaming a Locked row's code reset its status to Open"
+        assert "P05b" in msg, msg
+
+
+# --- A blank status is refused, not read as Open (review #191, 4) ----------
+
+def _thrown(doc):
+    """The message of whatever validate() throws (Thrown or PermissionRefused
+    — a blank status can trip either, depending on whether row_problems or
+    the status guard sees it first), or None when it passes."""
+    try:
+        doc.validate()
+    except (Thrown, PermissionRefused) as e:
+        return str(e)
+    return None
+
+
+def test_blank_status_not_saved():
+    with _load() as module:
+        # A blank row status.
+        doc = _year(module, _monthly_2025())
+        doc.periods[4].status = ""
+        msg = _thrown(doc)
+        assert msg is not None, "a blank row status was accepted"
+        assert "P04" in msg, msg
+
+        # A blank year status.
+        doc = _year(module, _monthly_2025())
+        doc.status = ""
+        msg = _thrown(doc)
+        assert msg is not None, "a blank year status was accepted"
+        assert "status" in msg.lower(), msg

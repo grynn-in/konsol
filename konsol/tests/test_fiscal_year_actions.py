@@ -84,7 +84,10 @@ def _load():
             self.__dict__[name] = list(value) if isinstance(value, list) else value
 
         def append(self, name, row):
-            child = types.SimpleNamespace(**row)
+            # As Frappe's init_valid_columns: a freshly appended row has a
+            # `name` attribute (read by the status guard's _row_key) that is
+            # None until the row is actually persisted.
+            child = types.SimpleNamespace(**{"name": None, **row})
             self.__dict__.setdefault(name, [])
             if self.__dict__[name] is None:
                 self.__dict__[name] = []
@@ -212,7 +215,7 @@ def _old_rows():
     """A hand-entered table the action replaces: P01 only, wrong dates."""
     return [types.SimpleNamespace(fiscal_period=1, period_code="P01", period_label="Old",
                                   period_type="Regular", start_date="2025-01-01",
-                                  end_date="2025-06-30", status="Open")]
+                                  end_date="2025-06-30", status="Open", name="P01")]
 
 
 def _year(module, status="Open", pattern="Monthly (12)", rows=None):
@@ -371,7 +374,8 @@ def _valid_year(module, status="Open", row_status=None, closing_note=None):
                 period_type=r["type"], start_date=r["start_date"], end_date=r["end_date"],
                 quarter=r["quarter"], status=row_status.get(r["period"], status),
                 closed_by="earlier@example.com" if closed else None,
-                closed_on=datetime(2026, 1, 5, 9, 0) if closed else None))
+                closed_on=datetime(2026, 1, 5, 9, 0) if closed else None,
+                name=r["code"]))
         return out
 
     def make():

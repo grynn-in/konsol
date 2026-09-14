@@ -169,6 +169,18 @@ def test_new_year_carries_status():
     ]
 
 
+def test_blank_ps_status_is_a_conflict():
+    """A blank Period Status row is bad data: a conflict naming it, not a
+    move silently read as Open (konsol#189 review finding 4)."""
+    ps_rows = [ps(2025, 1, "")]
+
+    result = M.plan(set(), ps_rows, {})
+
+    assert result["moves"] == []
+    assert len(result["conflicts"]) == 1
+    assert "2025" in result["conflicts"][0] and "1" in result["conflicts"][0]
+
+
 def test_second_plan_is_empty():
     used = {(2024, 5), (2025, 1), (2025, 14)}
     ps_rows = [

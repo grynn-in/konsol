@@ -236,6 +236,23 @@ def test_no_record_is_not_open():
             assert not y["periods"], y
 
 
+def test_blank_row_status_shown_as_is_not_open():
+    """Bad data (a blank status validate() would now refuse on save) must not
+    read as Open in the navigator, and must not crash it for every year
+    (konsol#189 review finding 4)."""
+    rows = _thirteen_period_rows(2026)
+    for r in rows:
+        if r["period_code"] == "P05":
+            r["status"] = ""
+    site = _Site(years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"}], rows=rows)
+    fy = _by_year(_tree(site))[2026]
+    by_code = {r["code"]: r for r in fy["periods"]}
+    assert by_code["P05"]["status"] == "Unknown", by_code["P05"]
+    # every other row is unaffected
+    assert by_code["P04"]["status"] == "Closed"
+    assert by_code["P06"]["status"] == "Closed"
+
+
 # --- month() on the declared calendar ---------------------------------------
 
 def _refused(site, *args):
