@@ -981,19 +981,56 @@ def test_the_close_gate():
 
 
 def test_rate_gate_reads_lock():
-    """PR #191 re-review finding 4: a plain read (frappe.get_all) of approved
-    Group Exchange Rates can return this transaction's REPEATABLE READ
-    snapshot, missing a rate cancelled and committed while a close waited on
-    the year lock (period/year close hold it, then call assert_rates_complete
-    -> rate_gate -> _approved_keys). The gate must read them LOCK IN SHARE
+    """PR #191 re-review finding 4: the close path's read of approved Group
+    Exchange Rates can return this transaction's REPEATABLE READ snapshot, a
+    plain read (frappe.get_all) missing a rate cancelled and committed while a
+    close waited on the year lock (period/year close hold it, then call
+    assert_rates_complete -> rate_gate(..., lock=True) ->
+    _approved_keys(..., lock=True)). That path must read them LOCK IN SHARE
     MODE, like period_status.period_row and
     fiscal_calendar.periods_in_use(lock=True)."""
     record = {}
     r = _rules_module(_frappe(record))
-    r._approved_keys(2024, 3)
+    r._approved_keys(2024, 3, lock=True)
     queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
     assert queries, "expected a read of Group Exchange Rate for the approved keys"
     assert all("LOCK IN SHARE MODE" in q for q in queries), queries
+
+
+def test_rate_gate_lock_only_for_close():
+    """konsol#189 62h: rate_gate is also called by home_api._rate_gate for the
+    read-only home screen, on every view - LOCK IN SHARE MODE there would take
+    share locks on Group Exchange Rate rows and can block rate saves for the
+    request's duration. Only the close gate (assert_rates_complete ->
+    rate_gate(..., lock=True)) needs the lock (PR #191 re-review finding 4);
+    rate_gate(fy, fp) with defaults, as home_api calls it, must read plain."""
+    pairs = {("EUR", "CHF")}
+    full = [(f, t, rt) for f, t in pairs for rt in ("Closing", "Average")]
+    record = {}
+    frappe = _frappe(record)
+    original_sql = frappe.db.sql
+
+    def sql(query, params=(), *a, **k):
+        if "FROM `tabGroup Exchange Rate`" in query:
+            record.setdefault("sql", []).append(query)
+            return [(f, t, rt) for f, t, rt in full]
+        return original_sql(query, params, *a, **k)
+    frappe.db.sql = sql
+
+    r = _rules_module(frappe, {"translation_needs": lambda fy, fp: (pairs, [])})
+
+    r.rate_gate(2024, 3)
+    home_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
+    assert home_queries, "expected a read of Group Exchange Rate for the approved keys"
+    assert not any("LOCK IN SHARE MODE" in q for q in home_queries), \
+        "rate_gate's default (home_api's call) must not take a row lock: " + repr(home_queries)
+
+    record["sql"] = []
+    assert not _refused(r.assert_rates_complete, 2024, 3)
+    close_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
+    assert close_queries, "expected a read of Group Exchange Rate for the approved keys"
+    assert all("LOCK IN SHARE MODE" in q for q in close_queries), \
+        "assert_rates_complete's close path must lock: " + repr(close_queries)
 
 
 def test_the_close_gate_fails_closed_when_the_warehouse_cannot_answer():
