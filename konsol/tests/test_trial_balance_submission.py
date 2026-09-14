@@ -374,3 +374,87 @@ def test_single_and_bulk_uploads_pass_the_chart():
         bulk = f.read()
     assert "functools.partial(validate_tb_rows, chart=chart)" in bulk and "validate_rows=validate_rows," in bulk
     _ast.parse(bulk)
+
+
+# -- konsolidat#199: the submission declares its amount basis ----------------------------------
+
+import json as _json
+
+_DOCTYPE_DIR = os.path.dirname(_SRC)
+_TBS_JSON = os.path.join(_DOCTYPE_DIR, "trial_balance_submission.json")
+_TBS_JS = os.path.join(_DOCTYPE_DIR, "trial_balance_submission.js")
+_SETTINGS_JSON = os.path.join(
+    _HERE, "..", "pipeline", "doctype", "epm_settings", "epm_settings.json")
+
+BASIS_OPTIONS = "Period movement\nYear-to-date movement\nPeriod-end balance"
+
+
+def _load(path):
+    with open(path) as f:
+        return _json.load(f)
+
+
+def _field(meta, fieldname):
+    return next((f for f in meta["fields"] if f["fieldname"] == fieldname), None)
+
+
+def test_submission_has_a_required_amount_basis_select():
+    meta = _load(_TBS_JSON)
+    f = _field(meta, "amount_basis")
+    assert f is not None, "Trial Balance Submission has no amount_basis field"
+    assert f["fieldtype"] == "Select"
+    assert f["options"] == BASIS_OPTIONS  # the three bases, exact strings, in order
+    assert f["label"] == "Amount Basis"
+    assert f.get("reqd") == 1
+    assert f.get("allow_on_submit") == 1  # K5 sets it on submitted batches
+    assert f.get("in_list_view") == 1
+    assert f.get("in_standard_filter") == 1
+    assert "default" not in f  # no default that guesses; EPM Settings only pre-fills
+    assert "double-counts" in f.get("description", "")
+
+
+def test_amount_basis_sits_right_after_fiscal_period():
+    meta = _load(_TBS_JSON)
+    order = meta["field_order"]
+    assert "amount_basis" in order, "amount_basis is absent from field_order"
+    assert order.index("amount_basis") == order.index("fiscal_period") + 1
+    names = [f["fieldname"] for f in meta["fields"]]
+    assert names.index("amount_basis") == names.index("fiscal_period") + 1
+    assert order == names  # field_order and fields must agree
+
+
+def test_epm_settings_default_amount_basis_pre_fills_only():
+    meta = _load(_SETTINGS_JSON)
+    f = _field(meta, "default_amount_basis")
+    assert f is not None, "EPM Settings has no default_amount_basis field"
+    assert f["fieldtype"] == "Select"
+    assert f["options"] == BASIS_OPTIONS
+    assert f["label"] == "Default Amount Basis"
+    assert not f.get("reqd")
+    assert "default" not in f
+    assert "Pre-fills" in f.get("description", "")
+    assert "never applied silently" in f.get("description", "")
+
+
+def test_default_amount_basis_lives_in_the_trial_balance_periods_section():
+    meta = _load(_SETTINGS_JSON)
+    names = [f["fieldname"] for f in meta["fields"]]
+    assert "default_amount_basis" in names, "default_amount_basis is absent from EPM Settings"
+    start = names.index("tb_periods_section")
+    breaks = {"Section Break", "Tab Break"}
+    end = next((i for i in range(start + 1, len(names))
+                if meta["fields"][i]["fieldtype"] in breaks), len(names))
+    assert start < names.index("default_amount_basis") < end
+    assert "default_amount_basis" in meta["field_order"]
+
+
+def test_form_js_pre_fills_the_basis_from_epm_settings():
+    assert os.path.exists(_TBS_JS), "trial_balance_submission.js is missing"
+    with open(_TBS_JS) as f:
+        js = f.read()
+    assert 'frappe.ui.form.on("Trial Balance Submission"' in js
+    assert "onload" in js
+    assert "default_amount_basis" in js
+    assert 'frappe.db.get_single_value("EPM Settings", "default_amount_basis")' in js
+    assert "frm.is_new()" in js and "amount_basis" in js
+    assert "set_value" in js
