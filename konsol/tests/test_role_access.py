@@ -122,6 +122,7 @@ MATRIX = {
                      "Budget Approver": "r", "Entity Accountant": "r"},
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",
                "Budget Submitter": "r", "Budget Controller": "r", "Budget Manager": "r", "Budget Approver": "r"},
+    "EPM Fiscal Year": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
 }
 
 

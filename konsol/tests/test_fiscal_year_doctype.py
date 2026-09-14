@@ -1,4 +1,5 @@
-"""TDD test for the EPM Fiscal Year Period child doctype (konsol#189).
+"""TDD test for the EPM Fiscal Year Period child doctype and the EPM Fiscal
+Year parent doctype (konsol#189).
 
 EPM Fiscal Year Period is the period row inside EPM Fiscal Year: one row per
 period in a year (opening, regular, closing, adjustment), carrying its own
@@ -10,6 +11,8 @@ import os
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCTYPE_JSON = os.path.join(
     APP_DIR, "epm", "doctype", "epm_fiscal_year_period", "epm_fiscal_year_period.json")
+YEAR_DOCTYPE_JSON = os.path.join(
+    APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.json")
 
 FIELD_ORDER = [
     "fiscal_period",
@@ -141,6 +144,11 @@ def _load():
         return json.load(f)
 
 
+def _load_year():
+    with open(YEAR_DOCTYPE_JSON) as f:
+        return json.load(f)
+
+
 def test_period_row_fields():
     meta = _load()
 
@@ -163,3 +171,232 @@ def test_period_row_fields():
                 assert got == want, f"{fieldname}.{key}: want {want!r}, got {got!r}"
             else:
                 assert not got, f"{fieldname}.{key}: want falsy, got {got!r}"
+
+
+# --- EPM Fiscal Year (parent) -----------------------------------------------
+
+YEAR_FIELD_ORDER = [
+    "details_tab",
+    "year_section",
+    "fiscal_year",
+    "start_date",
+    "year_col_break",
+    "end_date",
+    "status",
+    "calendar_section",
+    "period_pattern",
+    "calendar_col_break",
+    "include_opening_period",
+    "include_closing_period",
+    "periods_tab",
+    "periods_section",
+    "periods",
+    "closing_tab",
+    "closed_section",
+    "closed_by",
+    "closed_col_break",
+    "closed_on",
+    "notes_section",
+    "closing_note",
+]
+
+YEAR_EXPECTED_FIELDS = {
+    "details_tab": {
+        "fieldtype": "Tab Break",
+        "label": "Details",
+    },
+    "year_section": {
+        "fieldtype": "Section Break",
+        "label": "Year",
+    },
+    "fiscal_year": {
+        "fieldtype": "Int",
+        "label": "Fiscal Year",
+        "reqd": 1,
+        "bold": 1,
+        "unique": 1,
+        "set_only_once": 1,
+        "in_standard_filter": 1,
+        "in_list_view": 1,
+        "description": (
+            "The year number every document carries in Fiscal Year, e.g. "
+            "2025. It names the record and cannot change. Must be 1970 to "
+            "2148 (the warehouse's date range)."),
+    },
+    "start_date": {
+        "fieldtype": "Date",
+        "label": "Start Date",
+        "reqd": 1,
+        "in_list_view": 1,
+        "description": "First day of the fiscal year.",
+    },
+    "year_col_break": {
+        "fieldtype": "Column Break",
+    },
+    "end_date": {
+        "fieldtype": "Date",
+        "label": "End Date",
+        "reqd": 1,
+        "in_list_view": 1,
+        "description": "Last day of the fiscal year; after Start Date.",
+    },
+    "status": {
+        "fieldtype": "Select",
+        "label": "Status",
+        "options": "Open\nClosed\nLocked",
+        "default": "Open",
+        "read_only": 1,
+        "in_standard_filter": 1,
+        "in_list_view": 1,
+        "description": (
+            "Set by Close Year, Lock Year and Reopen Year. A period is open "
+            "only while it and its year are both Open."),
+    },
+    "calendar_section": {
+        "fieldtype": "Section Break",
+        "label": "Calendar",
+    },
+    "period_pattern": {
+        "fieldtype": "Select",
+        "label": "Period Pattern",
+        "options": "Monthly (12)\n13 Periods (4 Weeks)\n4-4-5\nCustom",
+        "default": "Monthly (12)",
+        "reqd": 1,
+        "description": (
+            "What Generate Periods builds. Custom: enter the periods by "
+            "hand. 13 Periods and 4-4-5 need a 364- or 371-day year."),
+    },
+    "calendar_col_break": {
+        "fieldtype": "Column Break",
+    },
+    "include_opening_period": {
+        "fieldtype": "Check",
+        "label": "Include Opening Period",
+        "default": "1",
+        "depends_on": "eval:doc.period_pattern != 'Custom'",
+        "description": (
+            "Generate Periods adds OPN (period 0) on the first day of the "
+            "year."),
+    },
+    "include_closing_period": {
+        "fieldtype": "Check",
+        "label": "Include Closing Period",
+        "default": "1",
+        "depends_on": "eval:doc.period_pattern != 'Custom'",
+        "description": (
+            "Generate Periods adds CLS after the last regular period, on "
+            "the last day of the year."),
+    },
+    "periods_tab": {
+        "fieldtype": "Tab Break",
+        "label": "Periods",
+    },
+    "periods_section": {
+        "fieldtype": "Section Break",
+        "label": "Periods",
+    },
+    "periods": {
+        "fieldtype": "Table",
+        "label": "Periods",
+        "options": "EPM Fiscal Year Period",
+        "reqd": 1,
+        "description": (
+            "Built by Generate Periods, then editable while the year is "
+            "Open. A period that documents use cannot be removed, "
+            "renumbered or re-dated."),
+    },
+    "closing_tab": {
+        "fieldtype": "Tab Break",
+        "label": "Closing",
+    },
+    "closed_section": {
+        "fieldtype": "Section Break",
+        "label": "Closed",
+        "depends_on": "eval:doc.status != 'Open'",
+    },
+    "closed_by": {
+        "fieldtype": "Link",
+        "label": "Closed By",
+        "options": "User",
+        "read_only": 1,
+        "description": "Who closed or locked the year.",
+    },
+    "closed_col_break": {
+        "fieldtype": "Column Break",
+    },
+    "closed_on": {
+        "fieldtype": "Datetime",
+        "label": "Closed On",
+        "read_only": 1,
+    },
+    "notes_section": {
+        "fieldtype": "Section Break",
+        "label": "Notes",
+    },
+    "closing_note": {
+        "fieldtype": "Small Text",
+        "label": "Closing Note",
+        "description": (
+            "Why the year was closed, locked or reopened. The reopen "
+            "actions append the reason given."),
+    },
+}
+
+# Superset of CHECKED_KEYS: the parent form also declares bold/unique/
+# set_only_once/in_standard_filter, none of which the child row uses.
+YEAR_CHECKED_KEYS = CHECKED_KEYS + ("in_standard_filter", "bold", "unique", "set_only_once")
+
+YEAR_PERMISSIONS = {
+    "System Manager": {"read": 1, "write": 1, "create": 1, "delete": 1, "report": 1, "export": 1, "print": 1},
+    "EPM Admin": {"read": 1, "write": 1, "create": 1, "report": 1, "export": 1, "print": 1},
+    "EPM Analyst": {"read": 1, "report": 1, "export": 1, "print": 1},
+    "EPM User": {"read": 1, "report": 1, "print": 1},
+    "Entity Accountant": {"read": 1, "report": 1, "print": 1},
+}
+
+PERMISSION_FLAGS = ("read", "write", "create", "delete", "submit", "cancel", "report", "export", "print")
+
+
+def test_year_form_layout():
+    meta = _load_year()
+
+    assert meta["name"] == "EPM Fiscal Year"
+    assert meta["module"] == "EPM"
+    assert meta["istable"] == 0
+
+    assert meta["field_order"] == YEAR_FIELD_ORDER
+    assert [f["fieldname"] for f in meta["fields"]] == YEAR_FIELD_ORDER
+
+    by_name = {f["fieldname"]: f for f in meta["fields"]}
+    for fieldname in YEAR_FIELD_ORDER:
+        field = by_name[fieldname]
+        expected = YEAR_EXPECTED_FIELDS[fieldname]
+        for key in YEAR_CHECKED_KEYS:
+            want = expected.get(key)
+            got = field.get(key)
+            if want:
+                assert got == want, f"{fieldname}.{key}: want {want!r}, got {got!r}"
+            else:
+                assert not got, f"{fieldname}.{key}: want falsy, got {got!r}"
+
+
+def test_year_props():
+    meta = _load_year()
+
+    assert meta["autoname"] == "format:{fiscal_year}"
+    assert meta["naming_rule"] == "Expression"
+    assert not meta.get("allow_rename")
+    assert meta["title_field"] == "fiscal_year"
+    assert meta["search_fields"] == "status,period_pattern"
+    assert meta["sort_field"] == "fiscal_year"
+    assert meta["sort_order"] == "DESC"
+    assert meta["track_changes"] == 1
+    assert not meta.get("is_submittable")
+
+    by_role = {p["role"]: p for p in meta["permissions"]}
+    assert set(by_role) == set(YEAR_PERMISSIONS)
+    for role, expected in YEAR_PERMISSIONS.items():
+        got = by_role[role]
+        for flag in PERMISSION_FLAGS:
+            want = expected.get(flag, 0)
+            assert bool(got.get(flag)) == bool(want), f"{role}.{flag}: want {want!r}, got {got.get(flag)!r}"
