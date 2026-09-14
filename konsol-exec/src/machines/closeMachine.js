@@ -35,7 +35,10 @@ const POLL_MS = 2000;
  * a cold start buys a shell that is correct the first time it renders.
  */
 export async function loadPlane(period) {
-	const options = await getLaunchOptions().catch(() => null);
+	// Ask for the shown year's declared periods, not always the newest one
+	// (review finding 4b, PR #192): with no period known yet (the very first
+	// load) there is no year to ask for, so this still gets the newest.
+	const options = await getLaunchOptions(period?.year).catch(() => null);
 	const resolved = period || defaultPeriod(options);
 	const data = await getSnapshot(resolved);
 	return { data, options, period: resolved };
@@ -45,7 +48,6 @@ export const closeMachine = setup({
 	types: { context: {}, events: {} },
 	actors: {
 		fetchPlane: fromPromise(({ input }) => loadPlane(input?.period)),
-		fetchSnapshot: fromPromise(({ input }) => getSnapshot(input?.period)),
 		startProcessActor: fromPromise(({ input }) => startProcess(input.processId)),
 		sendReminderActor: fromPromise(({ input }) => sendReminder(input.owner, input.item)),
 		pollTicker: fromCallback(({ sendBack }) => {
@@ -62,10 +64,6 @@ export const closeMachine = setup({
 			options: ({ event }) => event.output.options,
 			loadError: null,
 			period: ({ event }) => event.output.period,
-		}),
-		assignSnapshot: assign({
-			data: ({ event }) => event.output,
-			loadError: null,
 		}),
 		assignLoadError: assign({ loadError: ({ event }) => event.error }),
 		assignStartResult: assign({ lastStartResult: ({ event }) => event.output }),
@@ -130,10 +128,14 @@ export const closeMachine = setup({
 		},
 		failed: { on: { RETRY: "loading" } },
 		refreshing: {
+			// Also on SET_PERIOD (not only a plain REFRESH): re-fetch the whole
+			// plane, not just the snapshot, so a step page opened for a year
+			// other than the one first loaded gets THAT year's launch_options
+			// (review finding 4b, PR #192) instead of keeping the stale one.
 			invoke: {
-				src: "fetchSnapshot",
+				src: "fetchPlane",
 				input: ({ context }) => ({ period: context.period }),
-				onDone: { target: "ready", actions: "assignSnapshot" },
+				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "ready", actions: "assignLoadError" },
 			},
 		},

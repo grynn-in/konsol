@@ -132,8 +132,10 @@ export function setPeriodStatus(fiscalYear, fiscalPeriod, status, reason) {
 	return frappeCall("konsol.control_api.set_period_status", args);
 }
 
-export function getLaunchOptions() {
-	return frappeCall("konsol.orchestrator.api.launch_options");
+/** Pass the year being shown so the periods come from its declared rows, not the newest year's. */
+export function getLaunchOptions(fiscalYear) {
+	const args = fiscalYear ? { fiscal_year: String(fiscalYear) } : {};
+	return frappeCall("konsol.orchestrator.api.launch_options", args);
 }
 
 /**
