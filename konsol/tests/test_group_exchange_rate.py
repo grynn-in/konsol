@@ -932,9 +932,17 @@ def test_the_pre_fill_falls_back_to_the_tree_for_the_period():
 
 
 def _gate(pairs=None, approved=(), error=None, built=True, groups=()):
-    frappe = _frappe({})
-    frappe.get_all = lambda *a, **k: [types.SimpleNamespace(from_currency=f, to_currency=t, rate_type=rt)
-                                      for f, t, rt in approved]
+    record = {}
+    frappe = _frappe(record)
+    original_sql = frappe.db.sql
+
+    def sql(query, params=(), *a, **k):
+        if "FROM `tabGroup Exchange Rate`" in query:
+            record.setdefault("sql", []).append(query)
+            return [(f, t, rt) for f, t, rt in approved]
+        return original_sql(query, params, *a, **k)
+
+    frappe.db.sql = sql
 
     def needs(fy, fp):
         if error:
@@ -970,6 +978,22 @@ def test_the_close_gate():
         assert "Consolidation Group ZZ_NOCURRENCY has no reporting currency" in str(e)
     else:
         raise AssertionError("a group with no reporting currency must refuse the close")
+
+
+def test_rate_gate_reads_lock():
+    """PR #191 re-review finding 4: a plain read (frappe.get_all) of approved
+    Group Exchange Rates can return this transaction's REPEATABLE READ
+    snapshot, missing a rate cancelled and committed while a close waited on
+    the year lock (period/year close hold it, then call assert_rates_complete
+    -> rate_gate -> _approved_keys). The gate must read them LOCK IN SHARE
+    MODE, like period_status.period_row and
+    fiscal_calendar.periods_in_use(lock=True)."""
+    record = {}
+    r = _rules_module(_frappe(record))
+    r._approved_keys(2024, 3)
+    queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
+    assert queries, "expected a read of Group Exchange Rate for the approved keys"
+    assert all("LOCK IN SHARE MODE" in q for q in queries), queries
 
 
 def test_the_close_gate_fails_closed_when_the_warehouse_cannot_answer():
