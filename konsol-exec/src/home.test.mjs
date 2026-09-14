@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
 	parsePeriodRoute, monthPath, currentMonthPath, isMine,
-	stageTarget, crumbsFor, periodCrumb, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
+	stageTarget, crumbsFor, periodCrumb, selectedFor, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
 } from "./home.js";
 
 test("no client-side 0/13 period vocabulary: the server's code and label are used as-is", () => {
@@ -112,6 +112,27 @@ test("App.vue's exact crumb inputs (name, year, period, stepLabel) plus the tree
 	const step = build("step", 2099, 14, "Sign off period").map((c) => c.label);
 	assert.deepEqual(step, ["FY2099", "Period 14 · not declared", "Sign off period"]);
 	assert.equal(step.some((l) => /undefined/.test(l)), false);
+});
+
+test("selectedFor: the no-period home never borrows the plane's period (PR #192 re-review finding 2)", () => {
+	const planePeriod = { year: "2026", period: "9" };
+	// The plane has a period, but "/" says no declared period covers today:
+	// the navigator must not contradict that by highlighting one anyway.
+	assert.equal(selectedFor("home", null, planePeriod), null);
+	assert.equal(selectedFor("home", null, null), null);
+
+	// The month route always uses the URL's own period, plane or not.
+	const routeSelection = { year: 2026, period: 9 };
+	assert.deepEqual(selectedFor("month", routeSelection, null), routeSelection);
+	assert.deepEqual(selectedFor("month", routeSelection, planePeriod), routeSelection);
+	assert.equal(selectedFor("month", null, planePeriod), null);
+
+	// Close/step routes keep today's behaviour: the plane's period, if any.
+	assert.deepEqual(selectedFor("close", null, planePeriod), { year: 2026, period: 9 });
+	assert.deepEqual(selectedFor("step", null, planePeriod), { year: 2026, period: 9 });
+	assert.deepEqual(selectedFor("step-tab", null, planePeriod), { year: 2026, period: 9 });
+	assert.equal(selectedFor("close", null, null), null);
+	assert.equal(selectedFor("close", null, { year: "", period: "" }), null);
 });
 
 test("navigator opens the current and the selected year", () => {
