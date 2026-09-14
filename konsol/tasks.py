@@ -168,6 +168,39 @@ def _trial_balance_rows():
         return 0
 
 
+def _batches_without_basis():
+    """Claimed trial balance batches whose latest claim declares no Amount
+    Basis (konsolidat#199). Returns ``(names, count)``: up to five
+    ``submission_name``s and the total, so the refusal can name them.
+
+    The control table is ReplacingMergeTree(claimed_at) and Set Amount Basis
+    re-claims rather than updates, so the LATEST claim per batch decides:
+    ``argMax(amount_basis, claimed_at)`` per ``batch_id``, never an older row
+    that ReplacingMergeTree has not merged away yet.
+
+    ``None`` when the query fails: an old stack whose control table has no
+    ``amount_basis`` column yet, which the caller turns into "run bench
+    migrate" rather than a silently passing check.
+    """
+    from konsol.clickhouse import execute
+
+    try:
+        text = execute(
+            "SELECT count(), arrayStringConcat(arraySlice(arraySort(groupArray(submission_name)), 1, 5), ',') "
+            "FROM (SELECT batch_id, argMax(submission_name, claimed_at) AS submission_name, "
+            "argMax(amount_basis, claimed_at) AS amount_basis "
+            "FROM epm_raw.trial_balance_submission_control GROUP BY batch_id) "
+            "WHERE amount_basis = ''")
+    except Exception:  # noqa: BLE001
+        return None
+    # One TSV row: "<count>\t<name,name,…>"; execute() strips a trailing tab,
+    # so an empty result arrives as "0".
+    parts = (text or "").split("\t")
+    count = int(parts[0] or 0)
+    names = [n for n in (parts[1] if len(parts) > 1 else "").split(",") if n]
+    return names, count
+
+
 def _connector_sync_gate():
     """Enabled-connector sync-status gate shared by every raw-dependent scope
     and by chart (@silver_main_accounts reaches ERP staging/bronze models fed
@@ -264,6 +297,17 @@ def check_raw_data_available():
     # site's raw data (konsol#182).
     rows = _trial_balance_rows()
     if rows:
+        # konsolidat#199: the warehouse normalises each batch by its declared
+        # Amount Basis; a claimed batch without one would still be read as
+        # period movements, so refuse until every batch says what it holds.
+        without = _batches_without_basis()
+        if without is None:
+            return False, "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate"
+        names, n = without
+        if n:
+            return False, (f"{n} claimed trial balance batch(es) have no Amount Basis (e.g. {', '.join(names)}): "
+                           "set it on the submissions (Trial Balance Submission list → Set Amount Basis) "
+                           "before building")
         return True, (f"{rows} trial balance rows in epm_raw.trial_balance_submissions "
                       "— building from them (no connector)")
 
