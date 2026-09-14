@@ -160,12 +160,34 @@ def _load_assertion_run(declared_years=(), declared_periods=()):
 
     class Document:
         def __init__(self, **fields):
+            is_new = fields.pop("_is_new", False)
+            before_save = fields.pop("_before_save", None)
             self.__dict__.update(fields)
+            self.__dict__["_is_new"] = is_new
+            self.__dict__["_before_save"] = before_save
 
         def __getattr__(self, name):
             if name.startswith("__"):
                 raise AttributeError(name)
             return None
+
+        def get(self, fieldname):
+            return getattr(self, fieldname)
+
+        def is_new(self):
+            return self._is_new
+
+        def get_doc_before_save(self):
+            return self._before_save
+
+        def has_value_changed(self, fieldname):
+            """Mirrors frappe.model.document.Document.has_value_changed:
+            no saved version means "changed" (insert path); otherwise
+            compare against the saved value."""
+            previous = self.get_doc_before_save()
+            if not previous:
+                return True
+            return previous.get(fieldname) != self.get(fieldname)
 
     doc_mod = types.ModuleType("frappe.model.document")
     doc_mod.Document = Document
@@ -236,3 +258,41 @@ def test_declared_year_and_period_ok():
     module, _ = _load_assertion_run(declared_years={2099}, declared_periods={(2099, 12)})
     doc = module.AssertionRun(fiscal_year=2099, fiscal_period=12)
     doc.validate()
+
+
+# --- gate: don't re-check an unchanged scope on every save (PR#191 review
+# finding 5) --------------------------------------------------------------
+# A year-only run is stored with fiscal_period=0 (Frappe stores an empty Int
+# as 0). The worker and sign-off reload the saved run and save it again; if
+# validate re-ran assert_declared(year, 0) on that save, a year with no
+# Opening period (no declared (year, 0)) would refuse the run's own worker
+# save and it would stay Queued forever. The gate must only fire on insert,
+# or when fiscal_year/fiscal_period actually changed since the saved version.
+
+def test_resave_year_only_run_not_regated():
+    """A saved year-only run (fiscal_period stored as 0) in a year with no
+    declared period 0 (no Opening period) must re-save fine: the scope
+    didn't change, so the gate must not re-check it."""
+    module, _ = _load_assertion_run(declared_years={2099}, declared_periods=set())
+    doc = module.AssertionRun(
+        fiscal_year=2099, fiscal_period=0,
+        _is_new=False,
+        _before_save={"fiscal_year": 2099, "fiscal_period": 0},
+    )
+    doc.validate()  # must not raise, even though (2099, 0) is undeclared
+
+
+def test_changing_period_regates():
+    """Changing fiscal_period on a saved run must re-check the new scope."""
+    module, not_declared = _load_assertion_run(declared_years={2099}, declared_periods=set())
+    doc = module.AssertionRun(
+        fiscal_year=2099, fiscal_period=5,
+        _is_new=False,
+        _before_save={"fiscal_year": 2099, "fiscal_period": 3},
+    )
+    try:
+        doc.validate()
+    except not_declared:
+        pass
+    else:
+        raise AssertionError("changing fiscal_period to an undeclared one was accepted")
