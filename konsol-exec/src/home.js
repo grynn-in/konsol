@@ -37,9 +37,17 @@ export function monthPath(year, period) {
 	return `/${year}/${period}`;
 }
 
-/** Where the app opens: this calendar month, which is period M of FY Y. */
-export function currentMonthPath(date = new Date()) {
-	return monthPath(date.getFullYear(), date.getMonth() + 1);
+/**
+ * Where the app opens: the server's declared current period
+ * (`period_tree.current`, konsol/home_api.py), never a guessed calendar
+ * month — a fiscal year need not run Jan-Dec, and some days fall in no
+ * declared period at all (konsol#189 review finding 2). No tree yet, or
+ * nothing declared for today: the no-period home, "/".
+ */
+export function currentMonthPath(tree) {
+	const current = tree?.current;
+	if (!current) return "/";
+	return monthPath(current.fiscal_year, current.fiscal_period);
 }
 
 /** A stage is "yours" when one of your roles owns it. */
