@@ -4,7 +4,7 @@ import StepDetail from "./components/StepDetail.vue";
 import MonthView from "./components/MonthView.vue";
 import UploadView from "./components/UploadView.vue";
 import NoPeriodHome from "./components/NoPeriodHome.vue";
-import { currentMonthPath } from "./home.js";
+import { currentMonthPath, parsePeriodRoute } from "./home.js";
 import { periodTree } from "./homeApi.js";
 
 /**
@@ -21,9 +21,21 @@ import { periodTree } from "./homeApi.js";
  * The close steps keep their routes (/close/:step[/:tab]); the lane opens them
  * for the month the shell has selected.
  */
+/**
+ * The route pattern below matches a period up to three digits (0..999), but
+ * parsePeriodRoute (home.js) only accepts 0..255 — the range the server can
+ * ever declare. Left unguarded, an unparsable period (e.g. /2026/256) reaches
+ * MonthView with nothing to show: App.vue never tells the home machine to
+ * load anything, and the page is stuck on "Loading…" forever (konsol#189
+ * review nit 3). Route it back to the no-period home instead.
+ */
+function guardMonthPeriod(to) {
+	return parsePeriodRoute(to.params) ? true : "/";
+}
+
 const routes = [
 	{ path: "/", name: "home", component: NoPeriodHome },
-	{ path: "/:year(\\d{4})/:period(\\d{1,3})", name: "month", component: MonthView, props: true },
+	{ path: "/:year(\\d{4})/:period(\\d{1,3})", name: "month", component: MonthView, props: true, beforeEnter: guardMonthPeriod },
 	{ path: "/uploads", name: "uploads", component: UploadView },
 	{ path: "/close", name: "close", component: CloseChecklist },
 	{ path: "/close/:step", name: "step", component: StepDetail, props: true },
