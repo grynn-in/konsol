@@ -187,6 +187,28 @@ test("loadPlane discards previous options from a DIFFERENT fiscal year when the 
 	}
 });
 
+// #189 PR2 row 70w (re-review 3 nit 3, from 70p): `sameYear` compared
+// `requestedYear === previousOptionsYear` with `===`, so a number year
+// (e.g. from a numeric period argument) against the string year `loadPlane`
+// itself records in `optionsYear` never matched, and a failed refetch wrongly
+// dropped the previous options even though it was really the same year.
+test("loadPlane keeps the previous options when the requested year is a number and the previous options' year is the equal string", async () => {
+	const savedFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init) => {
+		if (url.includes("launch_options")) {
+			throw new Error("network down");
+		}
+		return savedFetch(url, init);
+	};
+	const previousOptions = { fiscal_years: ["2025"], fiscal_periods: [{ value: "7" }] };
+	try {
+		const result = await loadPlane({ year: 2025, period: "7" }, previousOptions, "2025");
+		assert.deepEqual(result.options, previousOptions, "2025 (number) and \"2025\" (string) must count as the same year");
+	} finally {
+		globalThis.fetch = savedFetch;
+	}
+});
+
 // #189 PR2 row 70q (re-review 2 finding 2, from 70j): a rejected SET_PERIOD
 // must not land back in `ready` holding the NEW period with the OLD data and
 // options and no visible error — it must go to the machine's `failed` state
