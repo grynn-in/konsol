@@ -1,9 +1,13 @@
-"""EPM Fiscal Year's Generate Periods action (konsol#189).
+"""EPM Fiscal Year's form actions (konsol#189).
 
-A whitelisted doc method the form button calls: it replaces the period table
-with the rows konsol.fiscal_patterns_model generates for the year's pattern,
-then saves. Only EPM Admin or System Manager may run it, and only on an Open
-year no document uses yet. Loaded against a stub frappe, as in
+Generate Periods replaces the period table with the rows
+konsol.fiscal_patterns_model generates for the year's pattern, then saves.
+Only EPM Admin or System Manager may run it, and only on an Open year no
+document uses yet.
+
+Close / Lock / Reopen Period each move one period row, as
+konsol.fiscal_status_model.transition_problem allows; leaving Open checks the
+period's group exchange rates first. Loaded against a stub frappe, as in
 test_fiscal_year_controller.py; the stubs stay installed during calls."""
 import ast
 import contextlib
@@ -20,6 +24,8 @@ PURE = {
     "konsol.fiscal_status_model": os.path.join(APP_DIR, "fiscal_status_model.py"),
     "konsol.fiscal_patterns_model": os.path.join(APP_DIR, "fiscal_patterns_model.py"),
 }
+#: What the stub frappe.utils.now_datetime() returns.
+NOW = datetime(2026, 9, 14, 10, 30)
 
 
 class Thrown(Exception):
@@ -97,12 +103,26 @@ def _load():
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.utils", "konsol",
-        "konsol.fiscal_calendar")}
+        "konsol.fiscal_calendar", "konsol.group_rates")}
     calendar = mods["konsol.fiscal_calendar"]
     calendar.used = set()
     calendar.periods_in_use = lambda fiscal_year: set(calendar.used)
     mods["konsol"].fiscal_calendar = calendar
+
+    rates = mods["konsol.group_rates"]
+    rates.calls = []
+    rates.fail = None
+
+    def assert_rates_complete(fiscal_year, fiscal_period):
+        rates.calls.append((fiscal_year, fiscal_period))
+        if rates.fail:
+            raise Thrown(rates.fail)
+
+    rates.assert_rates_complete = assert_rates_complete
+    mods["konsol"].group_rates = rates
+
     frappe = mods["frappe"]
+    frappe.session = _dict(user="closer@example.com")
     frappe.roles = ["EPM Admin"]
     frappe.get_roles = lambda *a, **k: list(frappe.roles)
     frappe._ = lambda s: s
@@ -116,6 +136,7 @@ def _load():
     mods["frappe.utils"].getdate = _getdate
     mods["frappe.utils"].get_datetime = _get_datetime
     mods["frappe.utils"].cint = lambda v: int(v or 0)
+    mods["frappe.utils"].now_datetime = lambda: NOW
     mods["konsol"].__path__ = []
 
     saved = {name: sys.modules.get(name) for name in (*mods, *PURE)}
@@ -240,13 +261,13 @@ def test_generate_custom_is_refused_clearly():
         assert [r.period_code for r in doc.periods] == ["P01"]
 
 
-def test_whitelisted_post_only():
+def _assert_whitelisted_post(name):
     with open(CONTROLLER) as f:
         tree = ast.parse(f.read())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "EPMFiscalYear")
     method = next((n for n in cls.body
-                   if isinstance(n, ast.FunctionDef) and n.name == "generate_periods"), None)
-    assert method is not None, "EPMFiscalYear has no generate_periods method"
+                   if isinstance(n, ast.FunctionDef) and n.name == name), None)
+    assert method is not None, f"EPMFiscalYear has no {name} method"
     found = False
     for dec in method.decorator_list:
         if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
@@ -255,4 +276,180 @@ def test_whitelisted_post_only():
             for kw in dec.keywords:
                 if kw.arg == "methods":
                     found = ast.literal_eval(kw.value) == ["POST"]
-    assert found, "generate_periods is not @frappe.whitelist(methods=['POST'])"
+    assert found, f"{name} is not @frappe.whitelist(methods=['POST'])"
+
+
+def test_whitelisted_post_only():
+    _assert_whitelisted_post("generate_periods")
+
+
+# -- Close / Lock / Reopen Period ---------------------------------------------------
+
+
+def _rates():
+    return sys.modules["konsol.group_rates"]
+
+
+def _valid_year(module, status="Open", row_status=None, closing_note=None):
+    """A saved 2025 Monthly year with a valid generated table (OPN, P01..P12,
+    CLS). `row_status` maps a period number to its status; the rest take the
+    year's status. The saved version is built separately, so changing a row
+    of the document leaves the saved row as it was."""
+    fpm = sys.modules["konsol.fiscal_patterns_model"]
+    row_status = row_status or {}
+
+    def rows():
+        out = []
+        for r in fpm.generate_periods("Monthly (12)", date(2025, 1, 1), date(2025, 12, 31)):
+            closed = row_status.get(r["period"], status) != "Open"
+            out.append(types.SimpleNamespace(
+                fiscal_period=r["period"], period_code=r["code"], period_label=r["label"],
+                period_type=r["type"], start_date=r["start_date"], end_date=r["end_date"],
+                quarter=r["quarter"], status=row_status.get(r["period"], status),
+                closed_by="earlier@example.com" if closed else None,
+                closed_on=datetime(2026, 1, 5, 9, 0) if closed else None))
+        return out
+
+    def make():
+        return module.EPMFiscalYear(
+            doctype="EPM Fiscal Year", name="2025", fiscal_year=2025,
+            start_date="2025-01-01", end_date="2025-12-31", status=status,
+            period_pattern="Monthly (12)", include_opening_period=1, include_closing_period=1,
+            closing_note=closing_note, periods=rows())
+    doc = make()
+    doc._before_save = make()
+    return doc
+
+
+def _row(doc, period):
+    return next(r for r in doc.periods if r.fiscal_period == period)
+
+
+def _act(call, exc=Thrown):
+    """(result, None) when `call` passes, else (None, the refusal's message)."""
+    try:
+        return call(), None
+    except exc as e:
+        return None, str(e)
+
+
+def test_closing_a_period_checks_its_group_rates():
+    with _load() as module:
+        doc = _valid_year(module)
+        result, err = _act(lambda: doc.close_period(3))
+        assert err is None, err
+        assert _rates().calls == [(2025, 3)], _rates().calls
+        assert _row(doc, 3).status == "Closed"
+        assert doc.saves == 1
+
+        # Closed -> Locked has already passed the gate: not checked again.
+        result, err = _act(lambda: doc.lock_period(3))
+        assert err is None, err
+        assert _rates().calls == [(2025, 3)], _rates().calls
+        assert _row(doc, 3).status == "Locked"
+        assert doc.saves == 2
+
+        # Open -> Locked leaves Open, so it is checked.
+        result, err = _act(lambda: doc.lock_period(4))
+        assert err is None, err
+        assert _rates().calls == [(2025, 3), (2025, 4)], _rates().calls
+
+        # A gate failure refuses the close: nothing changes, nothing is saved.
+        _rates().fail = "no approved group exchange rate for EUR → USD Closing"
+        doc = _valid_year(module)
+        result, err = _act(lambda: doc.close_period(5))
+        assert err is not None and "no approved group exchange rate" in err, err
+        assert _row(doc, 5).status == "Open"
+        assert _row(doc, 5).closed_by is None and _row(doc, 5).closed_on is None
+        assert doc.saves == 0
+
+
+def test_close_stamps_and_notes():
+    with _load() as module:
+        doc = _valid_year(module, closing_note="FY opened.")
+        result, err = _act(lambda: doc.close_period("3", note="Accruals booked"))
+        assert err is None, err
+        row = _row(doc, 3)
+        assert row.status == "Closed"
+        assert row.closed_by == "closer@example.com"
+        assert row.closed_on == NOW
+        assert doc.flags.konsol_status_action, "the save did not run as a status action"
+        assert doc.closing_note.startswith("FY opened."), doc.closing_note
+        last = doc.closing_note.splitlines()[-1]
+        assert "P03" in last and "2026-09-14" in last and "Accruals booked" in last, last
+        assert result["period_code"] == "P03" and result["status"] == "Closed", result
+        # The year itself is untouched.
+        assert doc.status == "Open" and doc.closed_by is None and doc.closed_on is None
+
+        # No note: nothing appended.
+        before_note = doc.closing_note
+        result, err = _act(lambda: doc.lock_period(4))
+        assert err is None, err
+        assert doc.closing_note == before_note, doc.closing_note
+        assert _row(doc, 4).closed_by == "closer@example.com"
+
+        # An unknown period is named.
+        saves = doc.saves
+        result, err = _act(lambda: doc.close_period(99))
+        assert err is not None and "99" in err, err
+        assert doc.saves == saves
+
+
+def test_reopen_needs_reason_and_open_year():
+    with _load() as module:
+        doc = _valid_year(module, row_status={3: "Closed"})
+        for blank in (None, "", "   "):
+            result, err = _act(lambda: doc.reopen_period(3, blank))
+            assert err is not None, f"reopened with reason {blank!r}"
+        assert _row(doc, 3).status == "Closed" and doc.saves == 0
+
+        result, err = _act(lambda: doc.reopen_period(3, "Late invoice from supplier"))
+        assert err is None, err
+        row = _row(doc, 3)
+        assert row.status == "Open"
+        assert row.closed_by is None and row.closed_on is None
+        last = doc.closing_note.splitlines()[-1]
+        assert "P03" in last and "2026-09-14" in last and "Late invoice from supplier" in last, last
+        assert result["period_code"] == "P03" and result["status"] == "Open", result
+        assert doc.saves == 1
+        assert _rates().calls == [], "reopening checked group rates"
+
+        # A Closed year refuses reopening any of its periods.
+        doc = _valid_year(module, status="Closed")
+        result, err = _act(lambda: doc.reopen_period(3, "Late invoice"))
+        assert err is not None and "Reopen the year first" in err, err
+        assert _row(doc, 3).status == "Closed" and doc.saves == 0
+
+
+def test_locked_reopen_needs_system_manager():
+    with _load() as module:
+        doc = _valid_year(module, row_status={3: "Locked"})
+        result, err = _act(lambda: doc.reopen_period(3, "Audit adjustment"), PermissionRefused)
+        assert err is not None, "an EPM Admin reopened a Locked period"
+        assert "System Manager" in err, err
+        assert _row(doc, 3).status == "Locked" and doc.saves == 0
+
+        _roles(["System Manager"])
+        result, err = _act(lambda: doc.reopen_period(3, "Audit adjustment"))
+        assert err is None, err
+        assert _row(doc, 3).status == "Open"
+        assert _row(doc, 3).closed_by is None and _row(doc, 3).closed_on is None
+        assert doc.saves == 1
+
+
+def test_analyst_cannot_close():
+    with _load() as module:
+        _roles(["EPM Analyst"])
+        doc = _valid_year(module, row_status={4: "Closed"})
+        for call in (lambda: doc.close_period(3), lambda: doc.lock_period(3),
+                     lambda: doc.lock_period(4), lambda: doc.reopen_period(4, "Because")):
+            result, err = _act(call, PermissionRefused)
+            assert err is not None, "an EPM Analyst changed a period's status"
+        assert _row(doc, 3).status == "Open" and _row(doc, 4).status == "Closed"
+        assert doc.saves == 0
+        assert _rates().calls == [], "the rate gate ran for a refused Analyst"
+
+
+def test_actions_are_whitelisted_post():
+    for name in ("close_period", "lock_period", "reopen_period"):
+        _assert_whitelisted_post(name)
