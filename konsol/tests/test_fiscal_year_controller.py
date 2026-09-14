@@ -418,6 +418,65 @@ def test_renamed_row_keeps_status():
         assert "P05b" in msg, msg
 
 
+# --- A saved non-Open row can't be dropped or have its identity swapped
+# --- outside a declared status action (review #191 re-review, finding 2) ---
+
+def test_non_open_row_cannot_be_removed_or_swapped():
+    with _load() as module:
+        def _lock_p05(saved):
+            for r in saved.periods:
+                if r.period_code == "P05":
+                    r.status = "Locked"
+                    r.closed_by = "sm@example.com"
+                    r.closed_on = "2025-06-05 10:00:00"
+
+        # (a) delete the Locked P05 row and add it back as a brand-new row
+        # (no saved name), same period/code/dates, status Open. Every field
+        # of the replacement matches P05's own saved values except its
+        # missing name, so only the identity check catches this.
+        saved = _saved(module)
+        _lock_p05(saved)
+        doc = _edit(module, saved)
+        i = next(i for i, r in enumerate(doc.periods) if r.name == "P05")
+        old = doc.periods.pop(i)
+        new = types.SimpleNamespace(**vars(old))
+        new.name = None
+        new.status, new.closed_by, new.closed_on = "Open", None, None
+        doc.periods.insert(i, new)
+        msg = _refused(doc)
+        assert msg is not None, "deleting a Locked row and re-adding it as Open was accepted"
+        assert "P05" in msg and "Locked" in msg, msg
+
+        # (b) swap names: P04's data (fiscal_period 4) is sent under P05's
+        # name with P05's saved Locked stamps, and P05's data (fiscal_period
+        # 5) under P04's name as Open. Each name's status fields match its
+        # own saved values exactly, so only checking fiscal_period together
+        # with name catches the swap.
+        saved = _saved(module)
+        _lock_p05(saved)
+        doc = _edit(module, saved)
+        p04 = next(r for r in doc.periods if r.name == "P04")
+        p05 = next(r for r in doc.periods if r.name == "P05")
+        p04.name, p05.name = "P05", "P04"
+        p04.status, p04.closed_by, p04.closed_on = "Locked", "sm@example.com", "2025-06-05 10:00:00"
+        p05.status, p05.closed_by, p05.closed_on = "Open", None, None
+        msg = _refused(doc)
+        assert msg is not None, "swapping a Locked row's name with an Open row's was accepted"
+        assert "P05" in msg and "Locked" in msg, msg
+
+        # (c) deleting an Open, unused row is still allowed. The usual
+        # structure rules still apply (the last Regular period must still
+        # reach the year end), but the identity guard itself must not block
+        # removing a row that was never non-Open.
+        saved = _saved(module)
+        doc = _edit(module, saved)
+        i = next(i for i, r in enumerate(doc.periods) if r.name == "P12")
+        doc.periods.pop(i)
+        p11 = next(r for r in doc.periods if r.name == "P11")
+        p11.end_date = "2025-12-31"
+        assert _validate(doc) is None
+
+
 # --- A blank status is refused, not read as Open (review #191, 4) ----------
 
 def _thrown(doc):
