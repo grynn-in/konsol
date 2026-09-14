@@ -183,8 +183,13 @@ def warehouse_period_pairs(bad):
 
 
 def period_status_rows(bad):
+    """The migration planner's own reader of the retiring doctype: it is what
+    lets create_fiscal_years / declare_years_in_use carry old Period Status
+    statuses onto the matching declared rows. Stops reading it only when
+    Period Status is actually dropped (plan 3.4 PR4, task 90)."""
     import frappe
 
+    # TODO konsol#189: drops with PR4 (task 90), when Period Status is retired.
     if not _has_period_columns("Period Status"):
         return []
     rows = frappe.db.sql(
@@ -192,6 +197,7 @@ def period_status_rows(bad):
         "closed_by, closed_on FROM `tabPeriod Status`", as_dict=True)
     out = []
     for row in rows:
+        # TODO konsol#189: drops with PR4 (task 90), when Period Status is retired.
         year = _year(row["fiscal_year"], "Period Status", bad)
         if year is None or row["fiscal_period"] is None:
             continue

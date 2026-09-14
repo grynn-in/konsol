@@ -108,8 +108,8 @@ _ALLOWED_LINES = {
     # (plan 3.1/3.4: "nothing reads [Period Status] any more except the
     # migration patch"). It stops reading Period Status only when Period
     # Status is actually dropped in PR4/task 90.
-    ("fiscal_calendar.py", 188): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
-    ("fiscal_calendar.py", 195): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
+    ("fiscal_calendar.py", 193): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
+    ("fiscal_calendar.py", 201): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
 }
 
 

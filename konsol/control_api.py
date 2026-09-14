@@ -331,7 +331,6 @@ def _prerequisites(process_id, fy, budget_locked):
     """Return prerequisite rows for Setup & readiness."""
     common = [
         _check("EPM Settings", "Setup → EPM Settings", _epm_settings_ok, owner="EPM Admin"),
-        _check("Fiscal Period", "Lists → EPM → Fiscal Period", lambda: _count("Fiscal Period") >= 12, owner="EPM Admin"),
         _check(
             "EPM Fiscal Year",
             "Lists → EPM → EPM Fiscal Year",
