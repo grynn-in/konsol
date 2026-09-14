@@ -70,6 +70,7 @@ def _load():
         def __init__(self, **kwargs):
             self.flags = _dict()
             self.saves = 0
+            self.inserts = 0
             self.__dict__.update(kwargs)
 
         def __getattr__(self, name):   # an unset field reads as None, as in Frappe
@@ -98,6 +99,11 @@ def _load():
             """The saved version, which stands for the database row."""
             return self.__dict__.get("_before_save")
 
+        def is_new(self):
+            """As Frappe's is_new(): true until the document has a name,
+            which only insert() (or a name given up front) assigns."""
+            return not bool(self.name)
+
         def reload(self):
             """As Frappe's reload: every field and row comes back from the
             saved version (the database); anything else the document held
@@ -118,7 +124,19 @@ def _load():
             self._before_save = type(self)(**_fields(self))
             return self
 
-    _NOT_FIELDS = ("flags", "saves", "_before_save")
+        def insert(self, *args, **kwargs):
+            """As Frappe's insert: runs validate(), assigns a name if none
+            was given, counts the insert (separately from save, so a test can
+            tell which path ran) and writes the document back as the saved
+            version, as though the row now exists."""
+            self.validate()
+            self.inserts += 1
+            if not self.name:
+                self.name = str(self.fiscal_year)
+            self._before_save = type(self)(**_fields(self))
+            return self
+
+    _NOT_FIELDS = ("flags", "saves", "inserts", "_before_save")
 
     def _fields(doc):
         return {k: copy.deepcopy(v) for k, v in doc.__dict__.items() if k not in _NOT_FIELDS}
@@ -301,6 +319,66 @@ def test_generate_custom_is_refused_clearly():
         assert "Custom periods are entered by hand" in msg, msg
         assert doc.saves == 0
         assert [r.period_code for r in doc.periods] == ["P01"]
+
+
+def _new_year(module, pattern="Monthly (12)"):
+    """An unsaved 2025 year, built exactly as the live bench test's
+    _new_year() and the desk's Generate Periods button on a new doc build
+    one: no name, no saved version, generate_periods is what creates it."""
+    return module.EPMFiscalYear(
+        doctype="EPM Fiscal Year", fiscal_year=2025,
+        start_date="2025-01-01", end_date="2025-12-31",
+        period_pattern=pattern, include_opening_period=1, include_closing_period=1)
+
+
+def test_generate_on_new_year_inserts():
+    """Generating on an unsaved year is the only way to create one (a year
+    can't be saved without Regular periods): it must build the rows and
+    insert, not require a saved row to lock and reload."""
+    with _load() as module:
+        events = sys.modules["frappe"].events
+        doc = _new_year(module)
+        assert doc.is_new(), "the test doc is not new"
+
+        result = doc.generate_periods()
+
+        codes = [r.period_code for r in doc.periods]
+        assert codes == ["OPN"] + [f"P{m:02d}" for m in range(1, 13)] + ["CLS"], codes
+        assert doc.inserts == 1, "generate_periods on a new year did not insert"
+        assert doc.saves == 0, "generate_periods on a new year called save, not insert"
+        assert not any(e[0] == "sql" for e in events), \
+            f"a new year was locked FOR UPDATE: {events}"
+        assert not any(e[0] == "reload" for e in events), f"a new year was reloaded: {events}"
+        assert not doc.is_new(), "insert did not leave the year saved"
+        assert result == doc.name, "generate_periods did not return the year's name"
+
+
+def test_generate_on_new_year_refused_for_analyst():
+    with _load() as module:
+        _roles(["EPM Analyst"])
+        doc = _new_year(module)
+        msg = _generate(doc, PermissionRefused)
+        assert msg is not None, "an EPM Analyst generated periods on a new year"
+        assert doc.inserts == 0 and doc.is_new()
+
+
+def test_generate_on_saved_year_still_locks():
+    """The saved-year path is unchanged: it still locks the row and reloads
+    before deciding anything, and inserts nothing."""
+    with _load() as module:
+        doc = _year(module)
+        assert not doc.is_new()
+        events = sys.modules["frappe"].events
+
+        result = doc.generate_periods()
+
+        assert doc.saves == 1 and doc.inserts == 0
+        assert result == doc.name
+        lock = next((i for i, e in enumerate(events) if e[0] == "sql"
+                     and "`tabEPM Fiscal Year`" in e[1] and "FOR UPDATE" in e[1]), None)
+        assert lock is not None, f"a saved year's Generate Periods skipped the lock: {events}"
+        reload_at = _first(events, "reload")
+        assert lock < reload_at, events
 
 
 def _assert_whitelisted_post(name):
@@ -890,6 +968,53 @@ def test_buttons_role_gated():
                 f"{label!r}'s {status} branch needs {sorted(expected)}, "
                 f"JS checks {sorted(roles)}")
         assert seen == {"Closed", "Locked"}, f"{label!r} guard covers {seen}, not both statuses"
+
+
+def test_generate_button_on_new_year():
+    """A new (unsaved) year reaches only the Generate Periods button: the
+    desk offers no other action until the year exists (konsol#189). The
+    early frm.is_new() branch must run before anything that assumes a saved
+    doc (frm.doc.status, frm.doc.periods) and must return before the rest of
+    refresh runs, and it must offer no button but Generate Periods."""
+    with open(FORM_JS) as f:
+        js = f.read()
+
+    refresh_m = re.search(r'refresh\(frm\)\s*\{', js)
+    assert refresh_m, "no refresh(frm) handler found"
+    body_start = js.index("{", refresh_m.start())
+    body_end = _balanced(js, body_start, "{", "}")
+    refresh_body = js[body_start:body_end + 1]
+
+    is_new_m = re.search(r'if\s*\(\s*frm\.is_new\(\)\s*\)\s*\{', refresh_body)
+    assert is_new_m, "refresh(frm) no longer branches on frm.is_new()"
+
+    before = refresh_body[:is_new_m.start()]
+    assert "frm.doc.status" not in before and "frm.doc.periods" not in before, (
+        "code that assumes a saved doc runs before the frm.is_new() branch")
+
+    brace = refresh_body.index("{", is_new_m.start())
+    block_end = _balanced(refresh_body, brace, "{", "}")
+    block = refresh_body[brace:block_end + 1]
+
+    assert "return" in block, "the new-doc branch doesn't return before the rest of refresh"
+    assert '__("Generate Periods")' in block, "no Generate Periods button offered for a new doc"
+    other_labels = [l for l in BUTTON_LABELS if l != "Generate Periods"]
+    assert not any(f'__("{l}")' in block for l in other_labels), (
+        "a new doc is offered a button besides Generate Periods")
+
+    # Same role gate as today's Generate Periods button: EPM Admin or System Manager.
+    role_vars = _role_vars(js)
+    used = _roles_used_in(block, role_vars)
+    assert used, "the new-doc Generate Periods button has no has_role check"
+    assert len(used) == 1, f"the new-doc Generate Periods guard is ambiguous: {used}"
+    (_, roles), = used.items()
+    with _load() as module:
+        assert roles == frozenset(module._GENERATE_ROLES), (
+            f"needs {sorted(module._GENERATE_ROLES)}, JS checks {sorted(roles)}")
+
+    # The call reaches the same whitelisted method as the saved-doc button.
+    assert re.search(r'method:\s*"generate_periods"', block), \
+        "the new-doc button does not call generate_periods"
 
 
 def test_status_action_flag_permits_only_declared_changes():
