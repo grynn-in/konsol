@@ -42,7 +42,7 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
-            flags=None, fiscal_periods=range(0, 14), refs=None, previous=None):
+            flags=None, refs=None, previous=None):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -78,7 +78,7 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
     frappe.clear_last_message = lambda: record.setdefault("cleared", []).append(1)
     frappe.db = types.SimpleNamespace(
         sql=sql,
-        exists=lambda dt, f=None: dt == "Fiscal Period" and f["fiscal_period"] in fiscal_periods,
+        exists=lambda dt, f=None: False,
         add_index=lambda *a, **k: record.setdefault("index", []).append((a, k)),
     )
     return frappe
@@ -125,8 +125,10 @@ def _konsol(rules, clickhouse=None):
 
 def _controller(**kw):
     record = {"gates": [], "published": []}
-    frappe = _frappe(record, **{k: v for k, v in kw.items() if k != "period_open"})
+    frappe = _frappe(record, **{k: v for k, v in kw.items()
+                                if k not in ("period_open", "declared_periods")})
     period_open = kw.get("period_open", True)
+    declared_periods = kw.get("declared_periods", {(2099, 12)})
 
     class Document:
         """A draft: new unless ``_before`` (the saved version) is given."""
@@ -153,11 +155,18 @@ def _controller(**kw):
         if not period_open:
             raise Refused(f"Cannot {action}: period closed")
 
+    def assert_declared(fiscal_year, fiscal_period):
+        record["gates"].append(("declared", fiscal_year, fiscal_period))
+        if (int(fiscal_year), int(fiscal_period)) not in declared_periods:
+            raise Refused(f"FY{fiscal_year} has no period {fiscal_period}: "
+                          "it has not been declared in EPM Fiscal Year.")
+
     mods = {n: types.ModuleType(n) for n in (
         "frappe.model", "frappe.model.document", "konsol", "konsol.period_status")}
     mods["frappe"] = frappe
     mods["frappe.model.document"].Document = Document
     mods["konsol.period_status"].assert_open = assert_open
+    mods["konsol.period_status"].assert_declared = assert_declared
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -291,8 +300,16 @@ def test_the_guards_refuse():
     assert _validate(from_currency="CHF", to_currency="CHF", quote=1)[0], "no rate into itself"
     assert _validate(rate_type="Default")[0]
     assert _validate(to_currency="EUR")[0], "EUR is no group's reporting currency here"
-    assert _validate(fiscal_period=14)[0]
     assert _validate(fiscal_year=2150)[0]
+
+
+def test_undeclared_period_refused():
+    """konsol#189: periods are declared, never assumed. The Fiscal Period
+    template is gone; the controller asks period_status.assert_declared, which
+    knows only EPM Fiscal Year."""
+    refused, _, msg = _validate(fiscal_period=14)
+    assert refused and "FY2099 has no period 14" in msg and "not been declared" in msg
+    assert not _validate(_ctx={"declared_periods": {(2099, 12), (2099, 14)}}, fiscal_period=14)[0]
 
 
 def test_a_move_over_half_needs_a_reason():
