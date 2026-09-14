@@ -22,6 +22,7 @@ modules, installed for the whole `with` block and restored on the way out; a
 load error becomes an AssertionError so the host runner can't count it as a
 skip.
 """
+import ast
 import importlib.util
 import os
 import sys
@@ -469,3 +470,33 @@ def test_start_process_needs_a_declared_year():
             _restore_modules(saved)
     assert out == {"ok": True, "run_kind": "pipeline", "name": "PR-1"}
     assert launched == [("Group Close", {"fiscal_year": 2026})]
+
+
+# ---- write endpoints must be POST-only (project rule: a GET rolls back at --
+# the end, so any @frappe.whitelist() method that writes must be
+# methods=["POST"], and its callers must POST) -----------------------------
+
+def _assert_control_api_post_only(name):
+    with open(CA_PATH) as f:
+        tree = ast.parse(f.read())
+    func = next((n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == name), None)
+    assert func is not None, f"control_api.py has no {name} function"
+    found = False
+    for dec in func.decorator_list:
+        if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr == "whitelist"
+                and isinstance(dec.func.value, ast.Name) and dec.func.value.id == "frappe"):
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    found = ast.literal_eval(kw.value) == ["POST"]
+    assert found, f"{name} is not @frappe.whitelist(methods=['POST'])"
+
+
+def test_write_endpoints_post_only():
+    """set_period_status and start_process both write (they close/lock/reopen
+    a period, or launch a run) — a GET call would run the write and then roll
+    back at the end of the request while still reporting success. Both must
+    be POST-only."""
+    _assert_control_api_post_only("set_period_status")
+    _assert_control_api_post_only("start_process")
