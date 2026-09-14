@@ -6,8 +6,13 @@ Trial Balance Submission's ClickHouse landing and claim stay its submit
 import ast
 import datetime
 import glob
+import importlib.util
 import os
+import re
+import sqlite3
+import sys
 import types
+from contextlib import contextmanager
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATED = {
@@ -70,36 +75,158 @@ def test_no_controller_db_sets_itself_on_submit_or_cancel():
     assert not offenders, offenders
 
 
-def _period_status_fn(name):
-    with open(os.path.join(APP_DIR, "period_status.py")) as f:
-        tree = ast.parse(f.read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    fn.body = [s for s in fn.body if not isinstance(s, (ast.Import, ast.ImportFrom))]
-    return fn
+class _ValidationError(Exception):
+    pass
 
 
-def test_the_first_period_a_date_affects_follows_the_warehouse():
-    """The warehouse applies a record from each period start (the 1st) on or
-    after its date: the 1st affects its own month, the 15th the next one."""
-    ns = {"datetime": datetime,
-          "getdate": lambda v: v if isinstance(v, datetime.date) else datetime.date.fromisoformat(str(v))}
-    exec(compile(ast.Module(body=[_period_status_fn("first_period_affected")], type_ignores=[]), "period_status.py", "exec"), ns)
-    f = ns["first_period_affected"]
-    assert f("2024-03-01") == datetime.date(2024, 3, 1)
-    assert f("2024-03-15") == datetime.date(2024, 4, 1)
-    assert f("2024-12-31") == datetime.date(2025, 1, 1)
-    assert f(None) is None
+class _SqliteDB:
+    """frappe.db over an in-memory SQLite holding the two EPM Fiscal Year
+    tables, so the date-range queries really run against declared rows.
+    MariaDB placeholders become SQLite ones; every query is recorded."""
+
+    def __init__(self, years, periods):
+        self.calls = []
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("CREATE TABLE `tabEPM Fiscal Year` (name TEXT, fiscal_year INTEGER, status TEXT)")
+        self.conn.execute(
+            "CREATE TABLE `tabEPM Fiscal Year Period` (parent TEXT, parentfield TEXT, "
+            "fiscal_period INTEGER, period_code TEXT, period_type TEXT, "
+            "start_date TEXT, end_date TEXT, status TEXT)")
+        for year, status in years.items():
+            self.conn.execute("INSERT INTO `tabEPM Fiscal Year` VALUES (?, ?, ?)", (str(year), year, status))
+        for year, period, code, start, end, status in periods:
+            self.conn.execute(
+                "INSERT INTO `tabEPM Fiscal Year Period` VALUES (?, 'periods', ?, ?, 'Posting', ?, ?, ?)",
+                (str(year), period, code, start, end, status))
+
+    @staticmethod
+    def _param(v):
+        return v.isoformat() if isinstance(v, datetime.date) else v
+
+    def sql(self, query, values=None, as_dict=False, **kwargs):
+        self.calls.append(query)
+        q = re.sub(r"%\((\w+)\)s", r":\1", query).replace("%s", "?").replace("%%", "%")
+        q = q.replace("LOCK IN SHARE MODE", "")
+        if isinstance(values, dict):
+            params = {k: self._param(v) for k, v in values.items()}
+        else:
+            params = [self._param(v) for v in (values or ())]
+        out = []
+        for row in self.conn.execute(q, params).fetchall():
+            d = {k: (datetime.date.fromisoformat(row[k]) if k.endswith("_date") and row[k] else row[k])
+                 for k in row.keys()}
+            out.append(d if as_dict else tuple(d.values()))
+        return out
 
 
-def test_the_range_gate_checks_every_period_in_the_range():
-    """One query for any Closed/Locked period from the first affected period
-    to the end (inclusive, or exclusive for the next rate), open-ended with no end."""
-    with open(os.path.join(APP_DIR, "period_status.py")) as f:
-        src = f.read()
-    assert "STR_TO_DATE(CONCAT(fiscal_year, '-', LPAD(fiscal_period, 2, '0'), '-01')" in src
-    body = ast.unparse(_period_status_fn("assert_open_between"))
-    assert "status IN %(settled)s" in body and ">= %(first)s" in body
-    assert "'<' if end_exclusive else '<='" in body
+def _getdate(v):
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    return v if isinstance(v, datetime.date) else datetime.date.fromisoformat(str(v))
+
+
+@contextmanager
+def _period_status(db):
+    """period_status.py loaded by path against a stub frappe that stays
+    installed for the whole block (the functions import frappe.utils at call
+    time); sys.modules is restored afterwards. A load error is an
+    AssertionError, never a "needs frappe" skip."""
+    frappe = types.ModuleType("frappe")
+    frappe.db = db
+    frappe.ValidationError = _ValidationError
+    frappe._ = lambda s: s
+
+    def throw(msg, exc=_ValidationError, *a, **kw):
+        raise exc(msg)
+
+    frappe.throw = throw
+    utils = types.ModuleType("frappe.utils")
+    utils.getdate = _getdate
+    frappe.utils = utils
+    saved = {k: sys.modules.get(k) for k in ("frappe", "frappe.utils")}
+    sys.modules["frappe"], sys.modules["frappe.utils"] = frappe, utils
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "period_status_under_test", os.path.join(APP_DIR, "period_status.py"))
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except ImportError as exc:
+            raise AssertionError(f"period_status.py must load against a stub frappe: {exc!r}") from exc
+        yield mod
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def _declared(year_2025="Closed", p12="Open"):
+    """FY2024 Open with November, December and a Dec-31 adjustment period;
+    FY2025 (Closed by default) whose rows are themselves Open."""
+    return _SqliteDB(
+        years={2024: "Open", 2025: year_2025},
+        periods=[
+            (2024, 11, "P11", "2024-11-01", "2024-11-30", "Open"),
+            (2024, 12, "P12", "2024-12-01", "2024-12-31", p12),
+            (2024, 13, "P13", "2024-12-31", "2024-12-31", "Open"),
+            (2025, 1, "P01", "2025-01-01", "2025-01-31", "Open"),
+            (2025, 2, "P02", "2025-02-01", "2025-02-28", "Open"),
+        ],
+    )
+
+
+def _refused(fn, *args, **kwargs):
+    try:
+        fn(*args, **kwargs)
+    except _ValidationError as exc:
+        return str(exc)
+    raise AssertionError(f"{fn.__name__}{args} {kwargs} was not refused")
+
+
+def test_first_period_affected_is_next_declared_start():
+    """The first declared period starting on or after the date, across years;
+    None past the last declared period. No month arithmetic: mid-December
+    lands on the declared Dec-31 adjustment period, not 1 January."""
+    db = _declared()
+    with _period_status(db) as ps:
+        f = ps.first_period_affected
+        assert f("2024-11-01") == datetime.date(2024, 11, 1)
+        assert f("2024-11-15") == datetime.date(2024, 12, 1)
+        assert f(datetime.date(2024, 12, 15)) == datetime.date(2024, 12, 31)
+        assert f("2025-01-01") == datetime.date(2025, 1, 1)
+        assert f("2025-02-02") is None
+        assert f(None) is None
+    assert db.calls and all("STR_TO_DATE" not in q for q in db.calls), db.calls
+    assert any("`tabEPM Fiscal Year Period`" in q for q in db.calls), db.calls
+
+
+def test_range_gate_uses_rows_not_month_arithmetic():
+    """Every declared period overlapping the range must be effectively Open
+    (the stricter of year and row): a Closed year blocks its Open rows, an
+    exclusive end leaves out the period starting on it, no end means every
+    later period."""
+    db = _declared()
+    with _period_status(db) as ps:
+        gate = ps.assert_open_between
+        gate("2024-11-01", "2024-12-31", action="cancel a rate")
+        gate("2024-11-01", "2025-01-01", action="cancel a rate", end_exclusive=True)
+        assert _refused(gate, "2024-11-01", "2025-01-01", action="cancel a rate") == (
+            "Cannot cancel a rate: it changes fiscal period P01 of FY2025, which is closed.")
+        assert _refused(gate, "2024-12-15", None, action="cancel an ownership period") == (
+            "Cannot cancel an ownership period: it changes fiscal period P01 of FY2025, which is closed.")
+        gate("2025-03-01", None, action="cancel a rate")  # past the last declared period
+    assert db.calls and all("STR_TO_DATE" not in q for q in db.calls), db.calls
+    assert any("`tabEPM Fiscal Year`" in q and "`tabEPM Fiscal Year Period`" in q for q in db.calls), db.calls
+
+    # Overlap, not "starts after": a row settled mid-range blocks, and a
+    # Locked row is named with its own status.
+    with _period_status(_declared(year_2025="Open", p12="Locked")) as ps:
+        assert _refused(ps.assert_open_between, "2024-12-15", "2024-12-20", action="cancel") == (
+            "Cannot cancel: it changes fiscal period P12 of FY2024, which is locked.")
+        ps.assert_open_between("2025-01-01", None, action="cancel")
 
 
 def test_budget_cycle_locks_before_the_transition_and_pushes_after_the_commit():
