@@ -29,10 +29,12 @@ class _Row(dict):
     __getattr__ = dict.get
 
 
-def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehouse_error=None, mariadb_tbs=0):
+def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehouse_error=None, mariadb_tbs=0,
+          without_basis="0"):
     """check_raw_data_available() against ``rows`` claimed trial balance rows in
     the warehouse. ``mariadb_tbs`` submitted documents exist in MariaDB, which
-    must not matter."""
+    must not matter. ``without_basis`` is what the konsolidat#199 basis query
+    returns ("<count>\t<names>"; "0" = every claimed batch declares one)."""
     settings = _Row(skip_airbyte_sync=skip, last_airbyte_sync_status=sync_status, last_airbyte_sync_at=sync_at,
                     last_airbyte_sync_rows=7)
     sqls = []
@@ -41,6 +43,8 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
         sqls.append(sql)
         if warehouse_error is not None:
             raise warehouse_error
+        if "amount_basis" in sql:
+            return without_basis
         return str(rows)
 
     def get_all(doctype, filters=None, fields=None, limit_page_length=None):
@@ -55,7 +59,7 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
                                                             count=lambda *a, **k: mariadb_tbs))
     with open(TASKS) as f:
         tree = ast.parse(f.read())
-    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate"}
+    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate", "_batches_without_basis"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
     ch = types.ModuleType("konsol.clickhouse")
@@ -224,3 +228,17 @@ def test_chart_passes_with_no_connector_and_zero_trial_balances():
     """A TB-only site must be able to build its chart before any TB exists."""
     ok, message = check_chart(connectors=())
     assert ok, message
+
+
+def test_claimed_batches_without_a_basis_are_refused_by_name():
+    """konsolidat#199: rows exist, but two claimed batches never declared what
+    their amounts are; the build is refused and the message names them."""
+    ok, msg = check(skip=1, rows=500, without_basis="2\tTBS-0001,TBS-0002")
+    assert ok is False
+    assert "2 claimed trial balance batch(es) have no Amount Basis" in msg
+    assert "TBS-0001, TBS-0002" in msg and "Set Amount Basis" in msg
+
+
+def test_every_batch_declared_passes():
+    ok, msg = check(skip=1, rows=500, without_basis="0")
+    assert ok is True
