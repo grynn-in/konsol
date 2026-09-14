@@ -61,6 +61,8 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         "is_cash": "is_cash",
         "main_account_category": "main_account_category",
         "status": "status",
+        # konsolidat#199: added after the table shipped, so LAST (_ADDED_COLUMNS)
+        "is_retained_earnings": "is_retained_earnings",
     }
 
     # -- naming ----------------------------------------------------------------
@@ -134,10 +136,20 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
     def _before_publish(self):
         """Publish readiness: a leaf declares its name, chart, type, statement,
         normal balance, time balance and translation method; a heading its name
-        and chart; and a parent, if any, is already Published."""
+        and chart; and a parent, if any, is already Published. A retained-earnings
+        account (konsolidat#199) is the only Published one in its chart."""
         problems = M.publish_problems(M.apply_defaults(self._row()), self._parent_row())
+        if M.flag(self.is_retained_earnings):
+            problems += M.retained_earnings_problems(self._other_retained_earnings_rows() + [self._row()])
         if problems:
             frappe.throw("\n".join(problems), title="Not ready to publish")
+
+    def _other_retained_earnings_rows(self):
+        """The chart's Published accounts flagged is_retained_earnings, this one aside."""
+        return frappe.get_all(DOCTYPE, filters={"chart_of_accounts": self.chart_of_accounts, "status": _PUBLISHED,
+                                                "is_retained_earnings": 1, "main_account": ["!=", self.main_account]},
+                              fields=["main_account", "chart_of_accounts", "status", "is_retained_earnings"],
+                              limit_page_length=0)
 
     def _before_unpublish(self):
         if self.is_group:

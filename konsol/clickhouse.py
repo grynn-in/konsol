@@ -641,7 +641,9 @@ _REFERENCE_TABLE_DDL = {
     # konsol#182: the group chart of accounts, from Main Account (Published
     # rows, groups included). silver_main_accounts reads only this: there is no
     # ERP chart fallback (decided 13 Sep 2026). Identical to konsolidat's
-    # clickhouse/init-db.sql; keep them identical.
+    # clickhouse/init-db.sql; keep them identical. is_retained_earnings
+    # (konsolidat#199) came after the table shipped: LAST here and in
+    # _ADDED_COLUMNS, so a fresh table and an upgraded one agree.
     "epm_staging.main_accounts": (
         "(main_account String, account_name String, chart_of_accounts String, "
         "parent_account String, is_group UInt8, account_type String, "
@@ -649,7 +651,7 @@ _REFERENCE_TABLE_DDL = {
         "time_balance String, fx_method String, is_posting UInt8, "
         "is_suspended UInt8, allow_ic UInt8, cf_category String, "
         "cf_line_item String, is_cash UInt8, main_account_category String, "
-        "status String) "
+        "status String, is_retained_earnings UInt8 DEFAULT 0) "
         "ENGINE = MergeTree ORDER BY main_account"
     ),
     # konsol#189: the declared fiscal periods, one row per Fiscal Year Period
@@ -727,6 +729,9 @@ _ADDED_COLUMNS = {
     # year-to-date movement, period-end balance); '' = claimed before the
     # column existed, so not declared
     "epm_raw.trial_balance_submission_control": [("amount_basis", "String DEFAULT ''")],
+    # konsolidat#199: the chart's retained-earnings account, which the year-end
+    # close of a period-end-balance trial balance posts into
+    "epm_staging.main_accounts": [("is_retained_earnings", "UInt8 DEFAULT 0")],
     # konsol#159: where a group books intercompany differences, and their tolerance
     "epm_gold.consolidation_groups": [
         ("ic_difference_account", "String DEFAULT ''"),

@@ -37,6 +37,7 @@
   "cf_category",
   "cf_line_item",
   "is_cash",
+  "is_retained_earnings",
   "source_section",
   "source",
   "source_note",
@@ -212,6 +213,13 @@
    "fieldname": "is_cash",
    "fieldtype": "Check",
    "label": "Is Cash"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_retained_earnings",
+   "fieldtype": "Check",
+   "label": "Retained Earnings Account",
+   "description": "The one equity account each year's result is closed to. Exactly one Published account per chart carries it. Period-end-balance trial balances need it: the warehouse posts the year-end close into it in the fiscal calendar's Closing period."
   },
   {
    "fieldname": "source_section",
