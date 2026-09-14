@@ -74,7 +74,13 @@ def execute(sql, params=None):
         timeout=30,
         verify=conn.get("verify", True),
     )
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        # Still an HTTPError (callers catch that type), but with ClickHouse's
+        # own text: requests' message is only "500 Server Error … for url", and
+        # callers classify failures by the body (e.g. UNKNOWN_IDENTIFIER for a
+        # column an older stack has not migrated yet; tasks._batches_without_basis).
+        raise requests.HTTPError(
+            f"{resp.status_code} from ClickHouse: {resp.text.strip()[:500]}", response=resp)
     return resp.text.strip()
 
 

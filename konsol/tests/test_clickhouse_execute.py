@@ -52,6 +52,7 @@ def _load_clickhouse():
 
 
 class _Resp:
+    status_code = 200
     text = "ok"
 
     def raise_for_status(self):
