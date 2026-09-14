@@ -171,6 +171,14 @@ def _controller(**kw):
             before = self.__dict__.get("_before")
             return types.SimpleNamespace(**before) if before is not None else None
 
+        def check_if_latest(self):
+            """Frappe's own check_if_latest: this is where document.py:1164's
+            FOR UPDATE row lock happens (via load_doc_before_save), for a
+            saved document. The overridden check_if_latest must call this
+            (recorded here, into the same list as frappe.db.sql) only after
+            its own year lock."""
+            record.setdefault("sql", []).append("BASE_CHECK_IF_LATEST")
+
     def assert_open(fiscal_year, fiscal_period, action="run"):
         record["gates"].append((fiscal_year, fiscal_period, action))
         if not period_open:
@@ -238,6 +246,17 @@ def test_the_grain_and_the_approval_shape():
     assert f["source"]["read_only"] == 1 and f["source"]["no_copy"] == 1
     assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
     assert set(_json()["field_order"]) == set(f)
+
+
+def test_fiscal_year_is_indexed_for_the_close_read():
+    """PR #191 re-review 2 finding 1: the close's locking read
+    (group_rates._approved_keys) filters WHERE fiscal_year = ... AND
+    fiscal_period = .... The only index, "grain", leads with to_currency and
+    from_currency (group_exchange_rate.py GRAIN / on_doctype_update), which
+    that WHERE can't use, so the locking read scans (and locks) the whole
+    table. A plain index on fiscal_year lets it narrow the scan to the
+    year."""
+    assert _fields()["fiscal_year"]["search_index"] == 1
 
 
 def test_group_accountants_draft_and_the_close_lead_approves():
@@ -425,6 +444,38 @@ def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
     module, _ = _controller()
     assert _refused(_doc(module, docstatus=2).on_trash)
     _doc(module, docstatus=0).on_trash()
+
+
+def test_ger_locks_year_before_own_row():
+    """PR #191 re-review 2 finding 1: closing a period locks the year FOR
+    UPDATE, then share-locks approved Group Exchange Rate rows
+    (group_rates.assert_rates_complete -> _approved_keys(lock=True)). A GER
+    save/submit/cancel locks the opposite way round: Frappe's
+    check_if_latest (document.py:1164, via load_doc_before_save) takes a FOR
+    UPDATE lock on the rate's own row first, and only reaches the year
+    afterwards, in before_submit/before_cancel -> assert_open/period_row.
+    Opposite order deadlocks with a close.
+
+    check_if_latest must be overridden to share-lock the year first, then
+    delegate to Frappe's own check_if_latest, for a saved (not new) rate."""
+    module, record = _controller()
+    d = _doc(module, _before={"fiscal_year": 2099})
+    d.check_if_latest()
+    assert record["sql"] == [
+        "SELECT name FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
+        "BASE_CHECK_IF_LATEST",
+    ], record["sql"]
+
+
+def test_new_ger_does_not_lock_a_year_in_check_if_latest():
+    """Frappe's own check_if_latest never takes the row lock for a new
+    document (load_doc_before_save returns early, document.py:1160-1161), so
+    the override must not lock a year for one either."""
+    module, record = _controller()
+    d = _doc(module)
+    assert d.is_new()
+    d.check_if_latest()
+    assert record.get("sql", []) == ["BASE_CHECK_IF_LATEST"], record.get("sql")
 
 
 # -- publishing: the true rate, computed once, by konsol -------------------------------
