@@ -34,6 +34,12 @@ frappe.ui.form.on("EPM Fiscal Year", {
         const status = frm.doc.status;
         const periods = frm.doc.periods || [];
         const is_system_manager = frappe.user.has_role("System Manager");
+        // Mirrors epm_fiscal_year.py's _GENERATE_ROLES and every
+        // (Open, Closed/Locked) / (Closed, Open/Locked) row in
+        // fiscal_status_model._TRANSITIONS: EPM Admin or System Manager.
+        // Only a Locked period/year needs System Manager alone (below).
+        const ADMIN_ROLES = ["EPM Admin", "System Manager"];
+        const is_admin = frappe.user.has_role(ADMIN_ROLES);
         const note_field = { fieldname: "note", fieldtype: "Small Text", label: __("Note") };
         const reason_field = {
             fieldname: "reason",
@@ -42,7 +48,7 @@ frappe.ui.form.on("EPM Fiscal Year", {
             reqd: 1,
         };
 
-        if (status === "Open") {
+        if (status === "Open" && is_admin) {
             frm.add_custom_button(__("Generate Periods"), function () {
                 // The server generates from the saved year, not unsaved edits.
                 if (frm.is_dirty()) {
@@ -62,7 +68,7 @@ frappe.ui.form.on("EPM Fiscal Year", {
 
         // -- Year --------------------------------------------------------
 
-        if (status === "Open") {
+        if (status === "Open" && is_admin) {
             frm.add_custom_button(__("Close Year"), function () {
                 prompt_text(frm, __("Close Year"), note_field, (note) => {
                     frm.call({ method: "close_year", doc: frm.doc, args: { note } })
@@ -71,7 +77,7 @@ frappe.ui.form.on("EPM Fiscal Year", {
             }, __("Year"));
         }
 
-        if (status === "Open" || status === "Closed") {
+        if ((status === "Open" || status === "Closed") && is_admin) {
             frm.add_custom_button(__("Lock Year"), function () {
                 prompt_text(frm, __("Lock Year"), note_field, (note) => {
                     frm.call({ method: "lock_year", doc: frm.doc, args: { note } })
@@ -80,7 +86,7 @@ frappe.ui.form.on("EPM Fiscal Year", {
             }, __("Year"));
         }
 
-        if (status === "Closed" || (status === "Locked" && is_system_manager)) {
+        if ((status === "Closed" && is_admin) || (status === "Locked" && is_system_manager)) {
             frm.add_custom_button(__("Reopen Year"), function () {
                 prompt_text(frm, __("Reopen Year"), reason_field, (reason) => {
                     frm.call({ method: "reopen_year", doc: frm.doc, args: { reason } })
@@ -92,7 +98,7 @@ frappe.ui.form.on("EPM Fiscal Year", {
         // -- Period --------------------------------------------------------
 
         const open_periods = periods.filter((r) => r.status === "Open");
-        if (open_periods.length) {
+        if (open_periods.length && is_admin) {
             frm.add_custom_button(__("Close Period"), function () {
                 prompt_period(frm, open_periods, __("Close Period"), note_field, (fiscal_period, note) => {
                     frm.call({ method: "close_period", doc: frm.doc, args: { fiscal_period, note } })
@@ -102,7 +108,7 @@ frappe.ui.form.on("EPM Fiscal Year", {
         }
 
         const lockable_periods = periods.filter((r) => r.status === "Open" || r.status === "Closed");
-        if (lockable_periods.length) {
+        if (lockable_periods.length && is_admin) {
             frm.add_custom_button(__("Lock Period"), function () {
                 prompt_period(frm, lockable_periods, __("Lock Period"), note_field, (fiscal_period, note) => {
                     frm.call({ method: "lock_period", doc: frm.doc, args: { fiscal_period, note } })
@@ -112,10 +118,11 @@ frappe.ui.form.on("EPM Fiscal Year", {
         }
 
         // Reopening a period also needs the year Open (the server reopens
-        // the year first otherwise), so only offer it then; a Locked period
-        // needs System Manager, same as Reopen Year.
+        // the year first otherwise), so only offer it then; a Closed period
+        // needs EPM Admin or System Manager, a Locked period needs System
+        // Manager alone, same as Reopen Year.
         const reopenable_periods = status === "Open"
-            ? periods.filter((r) => r.status === "Closed" || (r.status === "Locked" && is_system_manager))
+            ? periods.filter((r) => (r.status === "Closed" && is_admin) || (r.status === "Locked" && is_system_manager))
             : [];
         if (reopenable_periods.length) {
             frm.add_custom_button(__("Reopen Period"), function () {
