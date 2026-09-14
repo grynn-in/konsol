@@ -185,6 +185,8 @@ def _load(path, period_open):
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a: None
     mods["konsol.clickhouse"].execute = lambda *a, **k: None
     mods["konsol.clickhouse"].ensure_raw_tables = lambda *a, **k: None
+    mods["konsol.clickhouse"].after_commit_once = lambda key, fn: None
+    mods["konsol.clickhouse"].sync_table = lambda *a, **k: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_open_between = assert_open_between
     mods["konsol.period_status"].assert_declared = assert_declared
@@ -316,6 +318,36 @@ def test_ic_balance_refuses_an_undeclared_period_on_validate():
         pass
     else:
         raise AssertionError("IC Balance validate allowed an undeclared period")
+    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
+
+
+def test_allocation_run_refuses_an_undeclared_period_on_validate():
+    """konsol#189: validate must reach assert_declared, not just before_submit's
+    assert_open — a period that was never declared is refused before an
+    open/closed check is even meaningful."""
+    module, record = _load(PATHS["Allocation Run"], period_open=True)
+    d = module.AllocationRun(doctype="Allocation Run", name="ZZ-TEST", docstatus=0,
+                              fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
+    try:
+        d.validate()
+    except Refused:
+        pass
+    else:
+        raise AssertionError("Allocation Run validate allowed an undeclared period")
+    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
+
+
+def test_allocation_driver_refuses_an_undeclared_period_on_validate():
+    """konsol#189: validate must reach assert_declared."""
+    module, record = _load(PATHS["Allocation Driver"], period_open=True)
+    d = module.AllocationDriver(doctype="Allocation Driver", name="ZZ-TEST", docstatus=0,
+                                 fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
+    try:
+        d.validate()
+    except Refused:
+        pass
+    else:
+        raise AssertionError("Allocation Driver validate allowed an undeclared period")
     assert [c[:2] for c in record["checked"]] == [UNDECLARED]
 
 

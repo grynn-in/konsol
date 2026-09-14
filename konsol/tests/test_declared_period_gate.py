@@ -22,8 +22,6 @@ CONTROLLERS = {
     "Trial Balance Submission": "consolidation/doctype/trial_balance_submission/trial_balance_submission.py",
 }
 PENDING = {
-    "Allocation Run",
-    "Allocation Driver",
     "Trial Balance Submission",
 }
 
