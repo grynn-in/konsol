@@ -182,6 +182,12 @@ class _DB:
             return _Dict(self.period_fields) if self.period_fields else None
         return None
 
+    def exists(self, doctype, filters=None):
+        return False
+
+    def count(self, doctype, filters=None):
+        return 0
+
 
 def _row(year, period, code, ptype, start, end, label=None, status="Open"):
     return {
@@ -214,6 +220,8 @@ def _control_api(rows=(), period_rows=None, period_fields=None, today="2026-09-1
         raise exc(msg)
 
     frappe.throw = throw
+    frappe.get_meta = lambda doctype: _Dict(issingle=False)
+    frappe.get_all = lambda *a, **k: []
     utils = types.ModuleType("frappe.utils")
     utils.today = lambda: today
     utils.getdate = _getdate
@@ -380,3 +388,26 @@ def test_period_options_regular_rows():
 
     with _control_api(rows=_ROWS) as ca:
         assert ca._period_options("2027") == [], "no declared rows, no invented option"
+
+
+def test_current_fiscal_year_is_declared():
+    """konsol#189-42: _current_fiscal_year() reads the declared calendar — the
+    fiscal_year of the Regular period covering today — instead of inventing
+    the calendar year. FY2026 runs Apr 2026 -> Mar 2027, so a date in Feb 2027
+    is still "2026"."""
+    fy2026_rows = [
+        _row(2026, 1, "P01", "Regular", "2026-04-01", "2026-04-30", "Apr"),
+        _row(2026, 11, "P11", "Regular", "2027-02-01", "2027-02-28", "Feb"),
+        _row(2026, 12, "P12", "Regular", "2027-03-01", "2027-03-31", "Mar"),
+    ]
+    with _control_api(rows=fy2026_rows, today="2027-02-10") as ca:
+        assert ca._current_fiscal_year() == "2026"
+
+    # No declared row covers today (calendar year would be 2027; nothing is
+    # declared that far): None, not an invented year.
+    with _control_api(rows=_ROWS, today="2027-02-10") as ca:
+        assert ca._current_fiscal_year() is None
+        snapshot = ca.get_snapshot(fiscal_period="9")
+
+    assert snapshot["fiscal_year"] is None, "no year-level part may invent a year"
+    assert snapshot["period"]["declared"] is False
