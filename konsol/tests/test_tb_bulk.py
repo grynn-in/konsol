@@ -12,7 +12,9 @@ import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TB_BULK_PATH = os.path.join(APP_DIR, "tb_bulk.py")
-UPLOAD_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_upload", "trial_balance_upload.json")
+UPLOAD_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_upload")
+UPLOAD_JSON = os.path.join(UPLOAD_DIR, "trial_balance_upload.json")
+UPLOAD_JS = os.path.join(UPLOAD_DIR, "trial_balance_upload.js")
 
 BASES = ("Period movement", "Year-to-date movement", "Period-end balance")
 
@@ -69,3 +71,16 @@ def test_the_upload_doctype_has_the_amount_basis_field():
     assert not field.get("reqd"), "the file may carry the basis itself"
     assert "amount_basis column" in field["description"]
     assert "amount_basis" in doctype["field_order"]
+
+
+def test_the_upload_form_prefills_the_site_default_on_new_documents_only():
+    # EPM Settings' Default Amount Basis promises to pre-fill Trial Balance
+    # Uploads too; the form script copies it onto NEW documents, visibly.
+    assert os.path.exists(UPLOAD_JS), "trial_balance_upload.js is missing beside the doctype"
+    with open(UPLOAD_JS) as f:
+        text = f.read()
+    assert 'frappe.ui.form.on("Trial Balance Upload"' in text
+    assert "default_amount_basis" in text
+    assert "frappe.db.get_single_value" in text
+    assert "is_new()" in text, "existing uploads are never touched"
+    assert 'set_value("amount_basis"' in text
