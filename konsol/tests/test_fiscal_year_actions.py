@@ -302,6 +302,34 @@ def test_generate_refused_when_closed():
         assert doc.saves == 0
 
 
+def test_generate_refused_with_non_open_rows():
+    """PR #191 re-review finding 1: _replace_periods drops every saved row
+    and appends fresh ones with no saved name, so the status guard can't
+    match a dropped Locked row to its saved version and would silently read
+    it as Open. Generate Periods must refuse instead, naming the row, before
+    any row is replaced."""
+    with _load() as module:
+        rows = [
+            types.SimpleNamespace(fiscal_period=1, period_code="P01", period_label="Jan",
+                                   period_type="Regular", start_date="2025-01-01",
+                                   end_date="2025-01-31", status="Open", name="P01"),
+            types.SimpleNamespace(fiscal_period=5, period_code="P05", period_label="May",
+                                   period_type="Regular", start_date="2025-05-01",
+                                   end_date="2025-05-31", status="Locked", name="P05"),
+        ]
+        doc = _year(module, status="Open", rows=rows)
+
+        msg = _generate(doc)
+
+        assert msg is not None, "Generate Periods reset a Locked row to Open"
+        assert "FY2025: P05 is Locked" in msg, msg
+        assert "reopen it before generating periods" in msg, msg
+        assert doc.saves == 0, "a refused Generate Periods still saved"
+        assert [r.period_code for r in doc.periods] == ["P01", "P05"], \
+            "the saved rows were replaced despite the refusal"
+        assert doc.periods[1].status == "Locked", "the Locked row's status changed"
+
+
 def test_generate_refused_for_analyst():
     with _load() as module:
         _roles(["EPM Analyst"])
