@@ -240,3 +240,36 @@ def test_no_stale_period_readers():
                     continue
                 offenders.append(f"konsol/{relpath}:{lineno} {reason}")
     assert not offenders, "stale Period Status / Fiscal Period / 0..13 reader(s):\n" + "\n".join(offenders)
+
+
+def test_allow_list_flags_extra_offender_in_allowed_function():
+    """An allow-listed function is only exempt up to its pinned offender
+    count. One more stale read than that must be flagged (with the extra
+    offender's file, function and line); exactly the pinned count must stay
+    allowed (konsol#189 finding 6)."""
+    relpath = "fiscal_calendar.py"
+    func_name = "period_status_rows"
+    limit, _reason = _ALLOWED_FUNCS[(relpath, func_name)]
+
+    def make_source(n_offenders):
+        body = "\n".join('    frappe.db.exists("Period Status", "x")' for _ in range(n_offenders))
+        return f"def {func_name}():\n" + (body or "    pass") + "\n"
+
+    def hits_for(n_offenders):
+        source = make_source(n_offenders)
+        offenders = _stale_reads(relpath, source)
+        assert len(offenders) == n_offenders
+        hits_by_func = {}
+        for lineno, reason, fn in offenders:
+            assert fn == func_name
+            hits_by_func.setdefault(fn, []).append((lineno, reason))
+        return hits_by_func
+
+    # Exactly the pinned count: allowed.
+    assert _flag_allow_list_overflow(relpath, hits_for(limit)) == []
+
+    # One more than pinned: the extra offender is flagged.
+    messages = _flag_allow_list_overflow(relpath, hits_for(limit + 1))
+    assert len(messages) == 1
+    assert relpath in messages[0]
+    assert func_name in messages[0]
