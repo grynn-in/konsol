@@ -222,14 +222,21 @@ export const closeMachine = setup({
  * last period in the list": a real fiscal calendar ends with an adjustment
  * period (CLS), and opening the console on CLS would be wrong every month of
  * the year except one.
+ *
+ * "Newest" is decided by value, never by list position: the server
+ * (`orchestrator.api.launch_options`) sends `fiscal_years` newest first, so
+ * the last entry is the OLDEST year, not the newest.
  */
 export function defaultPeriod(options) {
 	const years = (options?.fiscal_years || []).map(String);
 	const real = accountingPeriods(options);
 	const all = (options?.fiscal_periods || []).map((p) => String(p.value));
 	const last = real.length ? real[real.length - 1].value : all[all.length - 1];
+	const newestYear = years.length
+		? years.reduce((newest, y) => (Number(y) > Number(newest) ? y : newest))
+		: String(new Date().getFullYear());
 	return {
-		year: years.length ? years[years.length - 1] : String(new Date().getFullYear()),
+		year: newestYear,
 		period: last ?? "",
 	};
 }
