@@ -279,7 +279,7 @@ def _clickhouse(controllers):
 def test_sync_is_after_commit_once():
     ch = _clickhouse_stub()
     with _controller(ch) as M:
-        doc = M.EPMFiscalYear(fiscal_year=2026, periods=[])
+        doc = M.EPMFiscalYear(name="2026", fiscal_year=2026, periods=[])
         doc.on_update()
         doc.after_delete()
         assert ch.synced == [], "nothing is written inside the transaction"

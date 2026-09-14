@@ -36,8 +36,15 @@ NOT_PERIOD_DATA = {
 }
 
 
-def periods_in_use(fiscal_year):
-    """The set of period numbers any period-data document uses in ``fiscal_year``."""
+def periods_in_use(fiscal_year, lock=False):
+    """The set of period numbers any period-data document uses in ``fiscal_year``.
+
+    ``lock=True`` is for a caller that gates a write on the answer (the
+    EPM Fiscal Year freeze): every SELECT becomes a locking read (LOCK IN
+    SHARE MODE). Under REPEATABLE READ a plain SELECT returns the
+    transaction's snapshot and misses a document committed after it; a
+    locking read returns the latest committed rows (PR #191 review 6).
+    The default stays a plain read."""
     import frappe
 
     selects = []
@@ -45,7 +52,10 @@ def periods_in_use(fiscal_year):
         where = "fiscal_year = %(fiscal_year)s"
         if submittable:
             where += " AND docstatus < 2"
-        selects.append(f"SELECT DISTINCT fiscal_period FROM `tab{doctype}` WHERE {where}")
+        select = f"SELECT DISTINCT fiscal_period FROM `tab{doctype}` WHERE {where}"
+        # MariaDB takes a locking clause inside a UNION only on a
+        # parenthesised SELECT.
+        selects.append(f"({select} LOCK IN SHARE MODE)" if lock else select)
     rows = frappe.db.sql("\nUNION\n".join(selects), {"fiscal_year": fiscal_year})
     return {int(row[0]) for row in rows if row[0] is not None}
 

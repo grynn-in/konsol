@@ -177,18 +177,19 @@ class EPMFiscalYear(Document):
 
         # Periods documents already use are frozen. A new year has no saved
         # version to compare with, and the migration patch creates years from
-        # data that already uses them.
+        # data that already uses them. The decision reads committed rows
+        # under the year-row lock (_used_periods).
         if before is not None and not self.flags.konsol_fiscal_migration:
             errors += fsm.used_period_problems(
                 _year_dict(before), year, _row_dicts(before), rows,
-                fiscal_calendar.periods_in_use(self.fiscal_year))
+                self._used_periods())
         if errors:
             frappe.throw("\n".join(errors))
 
     def on_trash(self):
         """Refuse deleting a year whose periods documents use. on_trash runs
         before the delete (after_delete would be too late to refuse)."""
-        used = fiscal_calendar.periods_in_use(self.fiscal_year)
+        used = self._used_periods()
         if used:
             frappe.throw(
                 f"FY{self.fiscal_year} can't be deleted: "
@@ -365,10 +366,24 @@ class EPMFiscalYear(Document):
         the lock (the group-rate gate included). The reload is a plain read,
         so a year changed since this transaction's snapshot fails save()'s
         check_if_latest rather than writing stale rows back."""
-        frappe.db.sql("SELECT name FROM `tabEPM Fiscal Year` WHERE name=%s FOR UPDATE",
-                      (self.name,))
+        self._lock_year()
         self.reload()
         self.flags.konsol_status_action = None
+
+    def _lock_year(self):
+        """Take the year row FOR UPDATE. Every document gate holds a SHARE
+        lock on it through its transaction (period_status.period_row), so
+        this waits for in-flight documents in the year to commit."""
+        frappe.db.sql("SELECT name FROM `tabEPM Fiscal Year` WHERE name=%s FOR UPDATE",
+                      (self.name,))
+
+    def _used_periods(self):
+        """The periods documents use, for the used-period freeze (validate,
+        on_trash): the year row locked first, then a locking read, so a
+        document committed after this transaction's REPEATABLE READ snapshot
+        is still seen (PR #191 review 6)."""
+        self._lock_year()
+        return fiscal_calendar.periods_in_use(self.fiscal_year, lock=True)
 
     def _save_as_status_action(self, rows, year=False):
         """Save, declaring the status changes this action makes: the exact
