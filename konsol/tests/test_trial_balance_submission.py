@@ -532,9 +532,9 @@ ALL_BASES = ("Period movement", "Year-to-date movement", "Period-end balance")
 
 
 def test_set_amount_basis_is_an_admin_post_endpoint_that_re_claims():
-    """Source contract: POST-only, EPM Admin, open period, db_set on the
-    submitted document, and a NEW claim row (ClickHouse has no UPDATE worth
-    trusting; ReplacingMergeTree keeps the newest claimed_at)."""
+    """Source contract: POST-only, EPM Admin, open period, the basis written
+    on the submitted document, and a NEW claim row (ClickHouse has no UPDATE
+    worth trusting; ReplacingMergeTree keeps the newest claimed_at)."""
     with open(_SRC) as f:
         src = f.read()
     assert "def set_amount_basis(names, amount_basis)" in src, "set_amount_basis is absent"
@@ -544,72 +544,98 @@ def test_set_amount_basis_is_an_admin_post_endpoint_that_re_claims():
     assert "check_epm_admin()" in body
     assert "canonical(" in body
     assert "assert_open(" in body and "set the amount basis of a trial balance" in body
-    assert 'db_set("amount_basis"' in body
-    # the re-claim is the SAME INSERT on_submit issues, via the shared helper
-    assert "execute(_claim_sql(doc, basis))" in body
-    claim = _inspect.getsource(_m._claim_sql)
-    assert "INSERT INTO {CONTROL_TABLE}" in claim and "now()" in claim and "amount_basis" in claim
-    assert "_claim_sql(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
+    assert '"amount_basis", basis' in body and "update_modified=False" in body
+    # the re-claim is the SAME tuple on_submit lands, via the shared helper
+    assert "_claim_values(" in body
+    claim = _inspect.getsource(_m._claim_values)
+    assert "now()" in claim and "_sql_str(basis)" in claim
+    insert = _inspect.getsource(_m._claim_insert)
+    assert "INSERT INTO {CONTROL_TABLE}" in insert and "amount_basis) VALUES" in insert
+    assert "_claim_values(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
     assert "docstatus" in body and "not submitted" in body
     # the gate runs over every document before any write: a closed period on
     # the third document must not leave the first two re-claimed
-    assert body.index("assert_open(") < body.index('db_set("amount_basis"')
+    assert body.index("assert_open(") < body.index('"amount_basis", basis')
 
 
-class _FakeDoc:
-    def __init__(self, **attrs):
-        self.__dict__.update(attrs)
-        self.sets = []
+class _Thrown(RuntimeError):
+    """What the stubbed frappe.throw raises; keeps the exception class passed."""
 
-    def db_set(self, field, value):
-        self.sets.append((field, value))
-        setattr(self, field, value)
+    def __init__(self, msg, exc=None):
+        super().__init__(msg)
+        self.exc = exc
 
 
-def _wire(docs):
-    """Point the stubbed frappe at ``docs`` and capture SQL and gates."""
-    sent, gates = [], []
-    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+def _raise(msg, exc=None, *a, **k):
+    raise _Thrown(msg, exc)
+
+
+class _PermissionError(Exception):
+    """Stand-in for frappe.PermissionError."""
+
+
+def _row(name, docstatus=1, **over):
+    row = types.SimpleNamespace(name=name, docstatus=docstatus, batch_id="b-" + name,
+                                data_area_id="ZZA", fiscal_year=2099, fiscal_period=3, row_count=7)
+    row.__dict__.update(over)
+    return row
+
+
+def _wire(rows):
+    """Point the stubbed frappe at ``rows`` (what frappe.db.get_value returns per
+    name) and record, in order, every MariaDB write and ClickHouse statement.
+    Returns (log, gates, reads): log entries are ("set", name, field, value)
+    or ("ch", sql); reads are the get_value kwargs."""
+    log, gates, reads = [], [], []
+
+    def get_value(doctype, name, fields, **kw):
+        reads.append((doctype, name, tuple(fields), kw))
+        return rows.get(name)
+
+    def set_value(doctype, name, field, value, **kw):
+        log.append(("set", name, field, value, kw))
+
+    _m.execute = lambda sql, *a, **k: log.append(("ch", sql)) or ""
     _m.assert_open = lambda fy, fp, action="run": gates.append((fy, fp, action))
-    _m.frappe.get_doc = lambda doctype, name: docs[name]
+    _m.frappe.db = types.SimpleNamespace(get_value=get_value, set_value=set_value)
+    _m.frappe.get_doc = lambda doctype, name: rows[name]  # not for the lock read; see the test
     _m.frappe.throw = _raise
+    _m.frappe.PermissionError = _PermissionError
     del _ADMIN_CHECKS[:]
-    return sent, gates
+    return log, gates, reads
 
 
-def _raise(msg, *a, **k):
-    raise RuntimeError(msg)
+def _claims(log):
+    return [e[1] for e in log if e[0] == "ch" and e[1].startswith(f"INSERT INTO {_m.CONTROL_TABLE} ")]
 
 
 def test_set_amount_basis_updates_submitted_documents_and_skips_drafts():
-    docs = {
-        "TBS-1": _FakeDoc(name="TBS-1", docstatus=1, batch_id="b1", data_area_id="ZZA",
-                          fiscal_year=2099, fiscal_period=3, row_count=7, amount_basis=""),
-        "TBS-2": _FakeDoc(name="TBS-2", docstatus=0, batch_id="b2", data_area_id="ZZB",
-                          fiscal_year=2099, fiscal_period=3, row_count=1, amount_basis=""),
-    }
-    sent, gates = _wire(docs)
-    out = _m.set_amount_basis('["TBS-1", "TBS-2"]', " period-end BALANCE ")
+    rows = {"TBS-1": _row("TBS-1", batch_id="b1"),
+            "TBS-2": _row("TBS-2", docstatus=0, batch_id="b2", data_area_id="ZZB", row_count=1),
+            "TBS-3": _row("TBS-3", docstatus=2, batch_id="b3")}
+    log, gates, reads = _wire(rows)
+    out = _m.set_amount_basis('["TBS-1", "TBS-2", "TBS-3", "TBS-9"]', " period-end BALANCE ")
     assert _ADMIN_CHECKS, "check_epm_admin() was not called"
     assert out["updated"] == 1
-    assert list(out["skipped"]) == [("TBS-2", "not submitted")] or out["skipped"] == [["TBS-2", "not submitted"]]
-    assert docs["TBS-1"].sets == [("amount_basis", CLOSING)]
-    assert docs["TBS-2"].sets == []
+    assert [tuple(s) for s in out["skipped"]] == [
+        ("TBS-2", "not submitted"), ("TBS-3", "cancelled"), ("TBS-9", "not found")]
+    sets = [e for e in log if e[0] == "set"]
+    assert [e[1:4] for e in sets] == [("TBS-1", "amount_basis", CLOSING)]
     assert gates == [(2099, 3, "set the amount basis of a trial balance")]
-    claims = [s for s in sent if s.startswith(f"INSERT INTO {_m.CONTROL_TABLE} ")]
+    claims = _claims(log)
     assert len(claims) == 1
     assert "fiscal_period, row_count, claimed_at, amount_basis) VALUES" in claims[0]
     assert "'b1', 'TBS-1', 'ZZA', 2099, 3, 7, now()" in claims[0]
     assert claims[0].endswith(f"now(), '{CLOSING}')")
+    assert "b2" not in claims[0] and "b3" not in claims[0]
     # a plain list works too
-    sent, gates = _wire(docs)
+    log, gates, reads = _wire(rows)
     assert _m.set_amount_basis(["TBS-1"], CLOSING)["updated"] == 1
 
 
 def test_set_amount_basis_refuses_an_unknown_basis_before_touching_anything():
-    docs = {"TBS-1": _FakeDoc(name="TBS-1", docstatus=1, batch_id="b1", data_area_id="ZZA",
-                              fiscal_year=2099, fiscal_period=3, row_count=7, amount_basis="")}
-    sent, gates = _wire(docs)
+    rows = {"TBS-1": _row("TBS-1")}
+    log, gates, reads = _wire(rows)
     try:
         _m.set_amount_basis(["TBS-1"], "balances")
         assert False, "expected a throw"
@@ -617,7 +643,114 @@ def test_set_amount_basis_refuses_an_unknown_basis_before_touching_anything():
         assert "balances" in str(e)
         for basis in ALL_BASES:
             assert basis in str(e)
-    assert sent == [] and gates == [] and docs["TBS-1"].sets == []
+    assert log == [] and gates == [] and reads == []
+
+
+# -- konsolidat#199 (K8): PR #201 review findings 2, 3, 5, 6 on set_amount_basis -----------------
+
+def test_set_amount_basis_reads_each_document_under_a_row_lock():
+    """Finding 2: judge docstatus on a locking read (the pattern
+    _check_no_other_submission uses), never on frappe.get_doc: a concurrent
+    cancel then waits for this request's commit, or this read sees docstatus 2
+    and skips. The lock is what makes 'submitted' true at write time."""
+    body = _inspect.getsource(_m.set_amount_basis)
+    assert "frappe.db.get_value(" in body and "for_update=True" in body and "as_dict=True" in body
+    assert "frappe.get_doc(" not in body
+    rows = {"TBS-1": _row("TBS-1")}
+    log, gates, reads = _wire(rows)
+    _m.frappe.get_doc = lambda *a, **k: (_ for _ in ()).throw(AssertionError("get_doc was called"))
+    _m.set_amount_basis(["TBS-1"], CLOSING)
+    assert len(reads) == 1
+    doctype, name, fields, kw = reads[0]
+    assert (doctype, name) == ("Trial Balance Submission", "TBS-1")
+    for f in ("docstatus", "fiscal_year", "fiscal_period", "batch_id", "data_area_id", "row_count"):
+        assert f in fields, f
+    assert kw.get("for_update") is True and kw.get("as_dict") is True
+
+
+def test_set_amount_basis_gates_each_period_once_before_any_write():
+    """Finding 3: three documents in two periods → two gate calls, both before
+    the first MariaDB write, none repeated."""
+    rows = {"TBS-1": _row("TBS-1", fiscal_period=3), "TBS-2": _row("TBS-2", fiscal_period=4),
+            "TBS-3": _row("TBS-3", fiscal_period=3)}
+    log, gates, reads = _wire(rows)
+    order = []
+    _m.assert_open = lambda fy, fp, action="run": (gates.append((fy, fp, action)), order.append("gate"))
+    real_set = _m.frappe.db.set_value
+    _m.frappe.db.set_value = lambda *a, **k: (order.append("set"), real_set(*a, **k))
+    out = _m.set_amount_basis(["TBS-1", "TBS-2", "TBS-3"], CLOSING)
+    assert out["updated"] == 3
+    assert sorted(gates) == [(2099, 3, "set the amount basis of a trial balance"),
+                             (2099, 4, "set the amount basis of a trial balance")]
+    assert order == ["gate", "gate", "set", "set", "set"]
+
+
+def test_set_amount_basis_writes_mariadb_first_then_one_claim_insert_for_all():
+    """Finding 5: every MariaDB write happens before the ClickHouse INSERT, and
+    there is ONE INSERT carrying every document's tuple — so a ClickHouse
+    failure leaves nothing declared in the warehouse while MariaDB rolls back,
+    and a success never leaves a half-declared set."""
+    rows = {"TBS-1": _row("TBS-1", batch_id="b1"), "TBS-2": _row("TBS-2", batch_id="b2", row_count=9)}
+    log, gates, reads = _wire(rows)
+    out = _m.set_amount_basis(["TBS-1", "TBS-2"], "Year-to-date movement")
+    assert out["updated"] == 2
+    kinds = [e[0] for e in log]
+    assert kinds == ["set", "set", "ch"], kinds
+    assert log[0][1:4] == ("TBS-1", "amount_basis", "Year-to-date movement")
+    assert log[0][4].get("update_modified") is False
+    claims = _claims(log)
+    assert len(claims) == 1
+    assert "('b1', 'TBS-1', 'ZZA', 2099, 3, 7, now(), 'Year-to-date movement')" in claims[0]
+    assert "('b2', 'TBS-2', 'ZZA', 2099, 3, 9, now(), 'Year-to-date movement')" in claims[0]
+    assert claims[0].count("now()") == 2
+    body = _inspect.getsource(_m.set_amount_basis)
+    assert "ClickHouse" in body and "MariaDB" in body  # the docstring says why this order
+
+
+def test_set_amount_basis_claims_in_batches_of_a_thousand():
+    rows = {f"TBS-{i}": _row(f"TBS-{i}") for i in range(1001)}
+    log, gates, reads = _wire(rows)
+    assert _m.set_amount_basis(list(rows), CLOSING)["updated"] == 1001
+    claims = _claims(log)
+    assert len(claims) == 2
+    assert claims[0].count("now()") == 1000 and claims[1].count("now()") == 1
+    assert len(gates) == 1
+
+
+def test_set_amount_basis_refuses_names_that_are_not_a_list():
+    """Finding 6: a JSON object, a bare word or invalid JSON is one clear
+    sentence, not a KeyError or a lookup of the object's keys."""
+    rows = {"TBS-1": _row("TBS-1")}
+    for bad in ('{"TBS-1": 1}', "TBS-1", "not json", "42", 42, None):
+        log, gates, reads = _wire(rows)
+        try:
+            _m.set_amount_basis(bad, CLOSING)
+            assert False, f"expected a throw for {bad!r}"
+        except RuntimeError as e:
+            assert str(e) == "names must be a JSON list of Trial Balance Submission names", bad
+        assert log == [] and gates == [] and reads == []
+
+
+def test_set_amount_basis_names_the_action_when_permission_is_refused():
+    """A scoped user sees 'EPM Admin only: Set Amount Basis', a PermissionError,
+    not a generic refusal from the admin check."""
+    lifecycle = sys.modules["konsol.schema_lifecycle"]
+    rows = {"TBS-1": _row("TBS-1")}
+    log, gates, reads = _wire(rows)
+    saved = lifecycle.check_epm_admin
+
+    def refuse():
+        raise _m.frappe.PermissionError("Not permitted")
+    lifecycle.check_epm_admin = refuse
+    try:
+        _m.set_amount_basis(["TBS-1"], CLOSING)
+        assert False, "expected a throw"
+    except _Thrown as e:
+        assert str(e) == "EPM Admin only: Set Amount Basis"
+        assert e.exc is _m.frappe.PermissionError
+    finally:
+        lifecycle.check_epm_admin = saved
+    assert log == [] and gates == [] and reads == []
 
 
 def test_list_view_offers_set_amount_basis():
