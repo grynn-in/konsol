@@ -191,6 +191,14 @@ export const closeMachine = setup({
 		// first. A failed launch_options request here keeps the previous
 		// options (`loadPlane`'s `previousOptions` fallback) instead of
 		// blanking period labels to null.
+		// A REJECTED period change goes to `failed`, not back to `ready`
+		// (re-review 2 finding 2, PR #192): `ready` with the new period but the
+		// old data/options would show the wrong period's close state with no
+		// visible error, and a plain Refresh from there would only reload the
+		// snapshot, leaving the options wrong forever. `failed` shows the
+		// error, and RETRY re-runs this same full load (options + snapshot)
+		// for the new period, since `context.period` was already updated by
+		// `setPeriod` before this state was entered.
 		changingPeriod: {
 			invoke: {
 				src: "fetchPlane",
@@ -200,7 +208,7 @@ export const closeMachine = setup({
 					previousOptionsYear: context.optionsYear,
 				}),
 				onDone: { target: "ready", actions: "assignPlane" },
-				onError: { target: "ready", actions: "assignLoadError" },
+				onError: { target: "failed", actions: "assignLoadError" },
 			},
 		},
 		starting: {
