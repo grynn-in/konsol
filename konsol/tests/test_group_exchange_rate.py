@@ -5,8 +5,8 @@ source of truth for FX rates, published by konsol as TRUE rates; the ERP feed
 only pre-fills drafts; per fiscal period, Closing and Average, into a group
 reporting currency, entered as a quote per 1 / 10 / 100 / 1,000 / 10,000 units;
 submit is the approval; rates lock when their period closes; a period cannot
-close without them. The controller, the rules module and Period Status's gate
-run here against a stub frappe."""
+close without them. The controller and the rules module run here against a
+stub frappe; the close gate itself is EPM Fiscal Year's (test_fiscal_year_actions)."""
 import ast
 import calendar
 import contextlib
@@ -1214,45 +1214,16 @@ def test_the_upgrade_patch_brings_its_own_column_and_references():
         assert "konsol.patches.adopt_erp_rates_as_group_exchange_rates" in [l.strip() for l in f]
 
 
-# -- Period Status: the close gate is wired in -----------------------------------------------
-
-def _period_status(previous, status):
-    calls = []
-    frappe = _frappe({})
-    frappe.get_roles = lambda: ["System Manager"]
-    frappe.db.exists = lambda *a, **k: True
-    frappe.db.get_value = lambda *a, **k: previous
-    mods = {n: types.ModuleType(n) for n in ("frappe.model", "frappe.model.document", "frappe.utils",
-                                             "konsol", "konsol.group_rates")}
-    mods["frappe"] = frappe
-    mods["frappe.model.document"].Document = type("Document", (), {
-        "__init__": lambda self, **kw: self.__dict__.update(kw), "is_new": lambda self: previous is None})
-    mods["frappe.utils"].now_datetime = lambda: "NOW"
-    mods["konsol.group_rates"].assert_rates_complete = lambda fy, fp: calls.append((fy, fp))
-    mods["konsol"].group_rates = mods["konsol.group_rates"]
-    saved = {n: sys.modules.get(n) for n in mods}
-    sys.modules.update(mods)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "ps_under_test", os.path.join(APP_DIR, "epm", "doctype", "period_status", "period_status.py"))
-        m = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(m)
-        m.PeriodStatus(name="PS-2024-3", fiscal_year="2024", fiscal_period=3, status=status).validate()
-    finally:
-        for n, old in saved.items():
-            if old is None:
-                sys.modules.pop(n, None)
-            else:
-                sys.modules[n] = old
-    return calls
-
+# -- the close gate is wired into EPM Fiscal Year -----------------------------------------------
 
 def test_closing_a_period_checks_its_group_rates():
-    assert _period_status("Open", "Closed") == [("2024", 3)]
-    assert _period_status(None, "Locked") == [("2024", 3)]
-    assert _period_status("Closed", "Locked") == []
-    assert _period_status("Closed", "Open") == []
-    assert _period_status("Open", "Open") == []
+    """konsol#189: periods close on EPM Fiscal Year's rows, so the gate is there
+    (behaviour in test_fiscal_year_actions.test_closing_a_period_checks_its_group_rates);
+    the retired Period Status controller no longer gates anything."""
+    with open(os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.py")) as f:
+        assert "group_rates.assert_rates_complete(" in f.read()
+    with open(os.path.join(APP_DIR, "epm", "doctype", "period_status", "period_status.py")) as f:
+        assert "assert_rates_complete" not in f.read(), "Period Status is retired; it gates nothing"
 
 
 # -- wiring -----------------------------------------------------------------------------------
