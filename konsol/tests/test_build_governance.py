@@ -474,3 +474,98 @@ def test_every_hooks_trigger_doctype_has_a_build_mapping():
                          isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
     missing = [t for t in triggers if t not in build_map]
     assert not missing, f"trigger doctypes with no build mapping: {missing}"
+
+
+# ===================================================================
+# konsolidat#199: preflight refuses claimed batches with no Amount Basis.
+# Every trial-balance row was read as a period movement; a batch that
+# never declared its basis would still be normalised wrongly downstream,
+# so a raw-dependent build must not start while one is claimed.
+# ===================================================================
+import sys  # noqa: E402
+import types  # noqa: E402
+
+NO_COLUMN = "epm_raw.trial_balance_submission_control has no amount_basis column: run bench migrate"
+
+
+def _func_source(name):
+    src = _read(TASKS_PATH)
+    tree = ast.parse(src)
+    node = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name), None)
+    assert node is not None, f"tasks.py has no {name}"
+    return ast.get_source_segment(src, node)
+
+
+def test_batches_without_basis_asks_for_the_latest_claim_per_batch():
+    """The control table is ReplacingMergeTree(claimed_at): Set Amount Basis
+    re-claims, so the LATEST claim per batch decides, never any older row."""
+    body = _func_source("_batches_without_basis")
+    assert "argMax(amount_basis, claimed_at)" in body
+    assert "GROUP BY batch_id" in body
+    assert "epm_raw.trial_balance_submission_control" in body
+    # an old stack whose control table has no amount_basis column yet
+    assert "except Exception" in body and "return None" in body
+
+
+def _batches(text=None, error=None):
+    """_batches_without_basis() lifted from tasks.py, run against a stub
+    konsol.clickhouse whose execute returns ``text`` or raises ``error``."""
+    src = _read(TASKS_PATH)
+    tree = ast.parse(src)
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_batches_without_basis"]
+    assert nodes, "tasks.py has no _batches_without_basis"
+
+    def execute(sql, params=None):
+        if error is not None:
+            raise error
+        return text
+
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.execute = execute
+    saved = sys.modules.get("konsol.clickhouse")
+    sys.modules["konsol.clickhouse"] = ch
+    try:
+        ns = {}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), TASKS_PATH, "exec"), ns)
+        return ns["_batches_without_basis"]()
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.clickhouse", None)
+        else:
+            sys.modules["konsol.clickhouse"] = saved
+
+
+def test_batches_without_basis_returns_names_and_count():
+    """ClickHouse answers one TSV row: the count, then up to five names."""
+    names, count = _batches("3\tTBS-00001,TBS-00002,TBS-00003")
+    assert count == 3 and names == ["TBS-00001", "TBS-00002", "TBS-00003"]
+    # nothing claimed: execute() strips the trailing tab of "0\t"
+    assert _batches("0") == ([], 0)
+    assert _batches("") == ([], 0)
+
+
+def test_batches_without_basis_is_none_when_the_column_is_missing():
+    err = RuntimeError("Code: 47. DB::Exception: Missing columns: 'amount_basis' (UNKNOWN_IDENTIFIER)")
+    assert _batches(error=err) is None
+
+
+def test_raw_data_check_refuses_batches_without_a_basis():
+    body = _func_source("check_raw_data_available")
+    assert "_batches_without_basis()" in body
+    assert NO_COLUMN in body
+    assert "have no Amount Basis (e.g. " in body
+    assert "Trial Balance Submission list" in body and "Set Amount Basis" in body
+    assert "before building" in body
+
+
+def test_raw_data_check_asks_for_the_basis_only_after_the_rows_check_passes():
+    """The rows check is the raw-data question; with no claimed rows there is
+    nothing whose basis could be missing, and the connector/Airbyte gates
+    before it must keep their messages."""
+    body = _func_source("check_raw_data_available")
+    rows_at = body.index("_trial_balance_rows()")
+    basis_at = body.index("_batches_without_basis()")
+    assert rows_at < basis_at
+    # the refusal sits inside the `if rows:` branch: after the rows check and
+    # before the "building from them" success line
+    assert basis_at < body.index("building from them")
