@@ -138,11 +138,25 @@ def whoami():
     }
 
 
+def _current_period(rows_by_year, now):
+    """The declared Regular period whose dates contain ``now``: never a guess
+    from today's calendar month/year (konsol#189 review finding 2), since a
+    fiscal year need not run Jan-Dec. ``None`` when no declared Regular period
+    covers today."""
+    for fy, rows in rows_by_year.items():
+        for r in rows:
+            if r.period_type != "Regular" or not r.start_date or not r.end_date:
+                continue
+            if getdate(r.start_date) <= now <= getdate(r.end_date):
+                return {"fiscal_year": fy, "fiscal_period": int(r.fiscal_period)}
+    return None
+
+
 @frappe.whitelist(methods=["GET"])
 def period_tree():
     _require_konsol_user()
     now = getdate(today())
-    current = now.year
+    current_year = now.year
 
     # The declared calendar: each EPM Fiscal Year with its own period rows. A
     # year or period nobody declared is not open; it is not listed as a period.
@@ -192,13 +206,13 @@ def period_tree():
         out.append({
             "fiscal_year": fy,
             "label": f"FY{fy}",
-            "kind": M.year_kind(fy, current),
+            "kind": M.year_kind(fy, current_year),
             "declared": fy in year_status,
             "periods": rows,
             "budget": ({"name": cycle.name, "status": cycle.status,
                         "deadline": str(cycle.deadline) if cycle.deadline else None} if cycle else None),
         })
-    return {"years": out, "current": {"fiscal_year": current, "fiscal_period": now.month}}
+    return {"years": out, "current": _current_period(rows_by_year, now)}
 
 
 def _context(fy, p, start):
