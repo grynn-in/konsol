@@ -28,7 +28,23 @@ test("route params parse to a real period or nothing; the server decides what ex
 
 test("paths", () => {
 	assert.equal(monthPath(2026, 9), "/2026/9");
-	assert.equal(currentMonthPath(new Date(2026, 8, 12)), "/2026/9");
+});
+
+test("currentMonthPath opens the server's declared current period, never a guessed calendar month", () => {
+	// The server says today falls in FY2026 P09: go straight there.
+	assert.equal(currentMonthPath({ current: { fiscal_year: 2026, fiscal_period: 9 } }), "/2026/9");
+	// Nothing declared covers today: the no-period home, not a guess.
+	assert.equal(currentMonthPath({ current: null }), "/");
+	// The tree hasn't loaded yet: still the no-period home, never a crash.
+	assert.equal(currentMonthPath(null), "/");
+	assert.equal(currentMonthPath(undefined), "/");
+});
+
+test("home.js no longer guesses a period from today's calendar month/year", () => {
+	const source = readFileSync(fileURLToPath(new URL("./home.js", import.meta.url)), "utf8");
+	assert.equal(/getMonth\s*\(/.test(source), false, "home.js must not read the calendar month");
+	assert.equal(/getFullYear\s*\(/.test(source), false, "home.js must not read the calendar year");
+	assert.equal(/new Date\s*\(/.test(source), false, "home.js must not default to today's date");
 });
 
 test("a stage is yours when you hold one of its roles", () => {
@@ -102,6 +118,10 @@ test("navigator opens the current and the selected year", () => {
 	const s = defaultExpanded({ current: { fiscal_year: 2026 } }, { year: 2024, period: 3 });
 	assert.deepEqual([...s].sort(), [2024, 2026]);
 	assert.equal(defaultExpanded(null, null).size, 0);
+	// Nothing declared for today (konsol#189 review finding 2): current is
+	// null, not a guessed year. Must not throw, and expands nothing extra.
+	assert.equal(defaultExpanded({ current: null }, null).size, 0);
+	assert.deepEqual([...defaultExpanded({ current: null }, { year: 2024, period: 3 })], [2024]);
 });
 
 test("counts and the default selection skip done rows", () => {
