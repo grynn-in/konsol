@@ -17,12 +17,14 @@ import ast
 import contextlib
 import importlib.util
 import os
+import re
 import sys
 import types
 from datetime import date, datetime
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTROLLER = os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.py")
+FORM_JS = os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.js")
 PURE = {
     "konsol.fiscal_structure_model": os.path.join(APP_DIR, "fiscal_structure_model.py"),
     "konsol.fiscal_status_model": os.path.join(APP_DIR, "fiscal_status_model.py"),
@@ -288,6 +290,31 @@ def _assert_whitelisted_post(name):
 
 def test_whitelisted_post_only():
     _assert_whitelisted_post("generate_periods")
+
+
+#: The whitelisted POST doc methods the form's buttons must all reach
+#: (konsol#189): Generate Periods plus Close/Lock/Reopen Period and Year.
+REQUIRED_FORM_METHODS = frozenset({
+    "generate_periods", "close_period", "lock_period", "reopen_period",
+    "close_year", "lock_year", "reopen_year",
+})
+
+
+def test_form_buttons_call_whitelisted_post_methods():
+    """Every `frm.call({method: "..."})` in the form script names a real
+    EPMFiscalYear method decorated @frappe.whitelist(methods=["POST"]), and
+    the 7 status/generate actions are all wired up from the JS."""
+    with open(FORM_JS) as f:
+        js = f.read()
+
+    called = set(re.findall(r'method:\s*"(\w+)"', js))
+    assert called, "no frm.call({method: \"...\"}) found in the form script"
+
+    for name in called:
+        _assert_whitelisted_post(name)
+
+    missing = REQUIRED_FORM_METHODS - called
+    assert not missing, f"form script does not call: {sorted(missing)}"
 
 
 # -- Close / Lock / Reopen Period ---------------------------------------------------
