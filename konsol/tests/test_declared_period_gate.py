@@ -21,9 +21,7 @@ CONTROLLERS = {
     "Group Exchange Rate": "consolidation/doctype/group_exchange_rate/group_exchange_rate.py",
     "Trial Balance Submission": "consolidation/doctype/trial_balance_submission/trial_balance_submission.py",
 }
-PENDING = {
-    "Trial Balance Submission",
-}
+PENDING = set()
 
 
 def _called(fn):
