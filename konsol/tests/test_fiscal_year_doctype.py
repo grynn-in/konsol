@@ -13,6 +13,8 @@ DOCTYPE_JSON = os.path.join(
     APP_DIR, "epm", "doctype", "epm_fiscal_year_period", "epm_fiscal_year_period.json")
 YEAR_DOCTYPE_JSON = os.path.join(
     APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.json")
+SETTINGS_JSON = os.path.join(
+    APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json")
 
 FIELD_ORDER = [
     "fiscal_period",
@@ -400,3 +402,42 @@ def test_year_props():
         for flag in PERMISSION_FLAGS:
             want = expected.get(flag, 0)
             assert bool(got.get(flag)) == bool(want), f"{role}.{flag}: want {want!r}, got {got.get(flag)!r}"
+
+
+# --- EPM Settings: trial balance postable period types (konsol#189) --------
+
+TB_SECTION_DESCRIPTION = (
+    "Regular periods always take trial balances. Tick a period type to let "
+    "trial balances post to it too (konsol#189).")
+
+TB_CHECK_FIELDS = (
+    "tb_accepts_opening",
+    "tb_accepts_closing",
+    "tb_accepts_adjustment",
+)
+
+
+def test_postable_type_settings():
+    with open(SETTINGS_JSON) as f:
+        settings = json.load(f)
+
+    by_name = {f["fieldname"]: f for f in settings["fields"]}
+
+    for fieldname in TB_CHECK_FIELDS:
+        assert fieldname in by_name, f"Missing field: {fieldname}"
+        field = by_name[fieldname]
+        assert field["fieldtype"] == "Check"
+        assert field["default"] == "0"
+
+    section = by_name["tb_periods_section"]
+    assert section["fieldtype"] == "Section Break"
+    assert section["label"] == "Trial Balance Periods"
+    assert section["description"] == TB_SECTION_DESCRIPTION
+
+    tab = by_name["tab_close"]
+    assert tab["fieldtype"] == "Tab Break"
+    assert tab["label"] == "Close"
+
+    field_order = settings["field_order"]
+    expected_tail = ["tab_close", "tb_periods_section"] + list(TB_CHECK_FIELDS)
+    assert field_order[-5:] == expected_tail
