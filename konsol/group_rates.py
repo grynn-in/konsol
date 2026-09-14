@@ -31,8 +31,6 @@ Two plausibility checks guard entry (the #138 review):
   Change. Real moves that size happen (ARS fell 55% in Dec 2023), so a reason
   lets it through.
 """
-import calendar
-import datetime
 import decimal
 import json
 import math
@@ -41,6 +39,7 @@ import re
 import frappe
 
 from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
+from konsol.period_status import PeriodNotDeclared, period_dates  # noqa: F401 — surfaced for callers
 
 DOCTYPE = "Group Exchange Rate"
 RATE_TYPES = ("Closing", "Average")
@@ -190,16 +189,18 @@ def move_problem(rate, previous=None, erp_rate=None, unit=""):
 
 
 def period_end(fiscal_year, fiscal_period):
-    """The last day of the month ``period_start`` keys the period on: where a
-    Closing rate is struck."""
-    start = period_start(fiscal_year, fiscal_period)
-    return datetime.date(start.year, start.month, calendar.monthrange(start.year, start.month)[1])
+    """The last day of the declared period (konsol#189: ``period_status.
+    period_dates``, never invented by month arithmetic): where a Closing
+    rate is struck. Raises PeriodNotDeclared for an undeclared period."""
+    return period_dates(fiscal_year, fiscal_period)[1]
 
 
 def period_start(fiscal_year, fiscal_period):
-    """The date the warehouse keys a period on (dbt build_date_from_year_period:
-    the 1st of month P, period 0 as January). CLS (13) takes December's."""
-    return datetime.date(max(int(fiscal_year), 1900), min(max(int(fiscal_period), 1), 12), 1)
+    """The first day of the declared period (konsol#189: ``period_status.
+    period_dates``, never invented by month arithmetic): an Average rate
+    spans it, and the ERP is asked for its quote there. Raises
+    PeriodNotDeclared for an undeclared period."""
+    return period_dates(fiscal_year, fiscal_period)[0]
 
 
 def _leg(table, a, b):
