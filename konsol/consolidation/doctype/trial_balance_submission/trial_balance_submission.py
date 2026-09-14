@@ -39,7 +39,7 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import ensure_raw_tables, execute
-from konsol.period_status import assert_open
+from konsol.period_status import assert_open, assert_postable
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
@@ -291,15 +291,15 @@ class TrialBalanceSubmission(Document):
         if not self.batch_id:
             self.batch_id = uuid.uuid4().hex
 
-        if not (1 <= int(self.fiscal_period or 0) <= 12):
-            frappe.throw("Fiscal period must be 1–12 for a trial balance submission")
+        # konsol#189 (konsol/period_status.py): a trial balance posts only to a
+        # period declared in EPM Fiscal Year, of a type this site lets trial
+        # balances post to (Regular always; Opening/Closing/Adjustment when
+        # ticked in EPM Settings), and Open. assert_postable refuses an
+        # undeclared period (PeriodNotDeclared) or a type the site does not
+        # post to; assert_open below refuses one that is Closed or Locked.
+        assert_postable(self.fiscal_year, self.fiscal_period)
 
         self._check_entity_access()
-        # App-wide convention (konsol/period_status.py): a period nobody has
-        # closed has no record, and IS Open — records are created on demand.
-        # Requiring a record here would block every submission into a normal
-        # untouched period. assert_open throws on Closed/Locked and on nothing
-        # else.
         assert_open(self.fiscal_year, self.fiscal_period,
                     action="submit a trial balance")
         # Serialize submissions for one entity: without this lock two
