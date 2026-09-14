@@ -8,15 +8,20 @@ import importlib.util
 import os
 import sys
 import types
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTROLLER = os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.py")
 PURE = os.path.join(APP_DIR, "fiscal_structure_model.py")
+STATUS = os.path.join(APP_DIR, "fiscal_status_model.py")
 
 
 class Thrown(Exception):
     """frappe.throw was called."""
+
+
+class PermissionRefused(Exception):
+    """frappe.throw was called with frappe.PermissionError."""
 
 
 def _getdate(v=None):
@@ -25,12 +30,27 @@ def _getdate(v=None):
     return date.fromisoformat(str(v))
 
 
+def _get_datetime(v=None):
+    if v is None or isinstance(v, datetime):
+        return v
+    return datetime.fromisoformat(str(v))
+
+
 @contextlib.contextmanager
 def _load():
     """Yield the controller module with frappe stubbed; the stubs stay
     installed until the block ends, so calls made inside it see them too."""
+    class _dict(dict):
+        """frappe._dict: a missing key reads as None."""
+        def __getattr__(self, name):
+            return self.get(name)
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
     class Document:
         def __init__(self, **kwargs):
+            self.flags = _dict()
             self.__dict__.update(kwargs)
 
         def __getattr__(self, name):   # an unset field reads as None, as in Frappe
@@ -41,29 +61,38 @@ def _load():
         def get(self, name, default=None):
             return self.__dict__.get(name, default)
 
-    def throw(msg, *args, **kwargs):
-        raise Thrown(msg)
+        def get_doc_before_save(self):
+            """The saved version, set by a test as `_before_save`; None when new."""
+            return self.__dict__.get("_before_save")
+
+    def throw(msg, exc=None, *args, **kwargs):
+        raise (exc or Thrown)(msg)
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.utils", "konsol")}
     frappe = mods["frappe"]
     frappe._ = lambda s: s
+    frappe._dict = _dict
     frappe.throw = throw
     frappe.ValidationError = type("ValidationError", (Exception,), {})
+    frappe.PermissionError = PermissionRefused
     frappe.utils = mods["frappe.utils"]
     mods["frappe.model.document"].Document = Document
     mods["frappe.utils"].getdate = _getdate
+    mods["frappe.utils"].get_datetime = _get_datetime
     mods["frappe.utils"].cint = lambda v: int(v or 0)
     mods["konsol"].__path__ = []
 
-    saved = {name: sys.modules.get(name) for name in (*mods, "konsol.fiscal_structure_model")}
+    pure_names = {"konsol.fiscal_structure_model": PURE, "konsol.fiscal_status_model": STATUS}
+    saved = {name: sys.modules.get(name) for name in (*mods, *pure_names)}
     sys.modules.update(mods)
     try:
-        spec = importlib.util.spec_from_file_location("konsol.fiscal_structure_model", PURE)
-        pure = importlib.util.module_from_spec(spec)
-        sys.modules["konsol.fiscal_structure_model"] = pure
-        spec.loader.exec_module(pure)
-        mods["konsol"].fiscal_structure_model = pure
+        for name, path in pure_names.items():
+            spec = importlib.util.spec_from_file_location(name, path)
+            pure = importlib.util.module_from_spec(spec)
+            sys.modules[name] = pure
+            spec.loader.exec_module(pure)
+            setattr(mods["konsol"], name.rsplit(".", 1)[1], pure)
 
         spec = importlib.util.spec_from_file_location("epm_fiscal_year_under_test", CONTROLLER)
         module = importlib.util.module_from_spec(spec)
@@ -133,3 +162,109 @@ def test_all_errors_reported_at_once():
         assert "Code 'P04' is used by rows 5 and 6" in msg, msg
         assert "Closing period 'CLS' must be one day" in msg, msg
         assert len(msg.splitlines()) >= 2, msg
+
+
+def _saved(module, year_status="Open", row_status="Open", rows=None):
+    """A saved version of the 2025 year, every row at `row_status`."""
+    rows = rows if rows is not None else _monthly_2025()
+    for r in rows:
+        r.status = row_status
+    doc = _year(module, rows)
+    doc.status = year_status
+    return doc
+
+
+def _edit(module, saved):
+    """An edit of `saved`: same values, fresh row objects."""
+    rows = [types.SimpleNamespace(**vars(r)) for r in saved.periods]
+    doc = _year(module, rows)
+    doc.status = saved.status
+    doc._before_save = saved
+    return doc
+
+
+def _refused(doc):
+    """The PermissionError message, or None when none was raised."""
+    try:
+        doc.validate()
+    except PermissionRefused as e:
+        return str(e)
+    return None
+
+
+def test_rest_cannot_set_status():
+    with _load() as module:
+        # Year status edited directly on a saved year.
+        doc = _edit(module, _saved(module))
+        doc.status = "Closed"
+        for r in doc.periods:
+            r.status = "Closed"
+        msg = _refused(doc)
+        assert msg is not None, "a direct edit of the year's status was accepted"
+        assert "Status" in msg and "Close Year" in msg, msg
+
+        # A row's status edited directly (stricter than the year, so only the
+        # action rule refuses it).
+        doc = _edit(module, _saved(module))
+        doc.periods[3].status = "Closed"
+        msg = _refused(doc)
+        assert msg is not None, "a direct edit of a row's status was accepted"
+        assert "P03" in msg, msg
+
+        # A row's closed_by edited directly.
+        doc = _edit(module, _saved(module))
+        doc.periods[2].closed_by = "someone@example.com"
+        msg = _refused(doc)
+        assert msg is not None, "a direct edit of a row's closed_by was accepted"
+        assert "P02" in msg, msg
+
+        # A new year posted already Closed.
+        rows = _monthly_2025()
+        for r in rows:
+            r.status = "Closed"
+        doc = _year(module, rows)
+        doc.status = "Closed"
+        assert _refused(doc) is not None, "a new year was created Closed"
+
+        # The same changes, made by the Close action, go through.
+        doc = _edit(module, _saved(module))
+        doc.status = "Closed"
+        doc.closed_by = "admin@example.com"
+        doc.closed_on = "2026-01-05 10:00:00"
+        for r in doc.periods:
+            r.status = "Closed"
+        doc.flags.konsol_status_action = True
+        assert _validate(doc) is None
+
+        # And by the migration patch.
+        doc = _edit(module, _saved(module))
+        doc.periods[3].status = "Closed"
+        doc.flags.konsol_fiscal_migration = True
+        assert _validate(doc) is None
+
+        # Saving an unchanged Closed year is fine.
+        doc = _edit(module, _saved(module, "Closed", "Closed"))
+        assert _validate(doc) is None
+
+
+def test_row_looser_than_year_refused():
+    with _load() as module:
+        doc = _edit(module, _saved(module, "Closed", "Closed"))
+        doc.periods[4].status = "Open"
+        doc.flags.konsol_status_action = True
+        msg = _validate(doc)
+        assert msg is not None, "an Open row in a Closed year was accepted"
+        assert "P04" in msg and "looser" in msg, msg
+
+
+def test_add_row_to_closed_year_refused():
+    with _load() as module:
+        saved = _saved(module, "Closed", "Closed", rows=_monthly_2025()[:-1])  # no CLS yet
+        doc = _edit(module, saved)
+        cls = _monthly_2025()[-1]
+        cls.status = "Closed"
+        doc.periods.append(cls)
+        doc.flags.konsol_status_action = True
+        msg = _validate(doc)
+        assert msg is not None, "a new row was added to a Closed year"
+        assert "CLS" in msg and "cannot be added" in msg, msg
