@@ -490,6 +490,80 @@ def _thrown(doc):
     return None
 
 
+# --- A status action skips the freeze's locking reads (PR #191 re-review,
+# --- finding 3): its own locks (year FOR UPDATE, then a document's) run in
+# --- the opposite order from a document save/submit/cancel's, and can
+# --- deadlock with one. --------------------------------------------------
+
+def test_status_action_skips_freeze_read():
+    """validate()'s used-period freeze takes the year row FOR UPDATE, then a
+    locking read of the period-data tables (periods_in_use). A declared
+    status action can't fail that freeze (it never touches structure), so it
+    must not take those locks at all — that's what removes the deadlock. An
+    ordinary save still takes them."""
+    with _load() as module:
+        frappe = sys.modules["frappe"]
+        calendar = sys.modules["konsol.fiscal_calendar"]
+        calls = []
+
+        def counting(fiscal_year, lock=False):
+            calls.append((fiscal_year, lock))
+            return set()
+
+        calendar.periods_in_use = counting
+
+        def has_year_lock():
+            return any(e[0] == "sql" and "`tabEPM Fiscal Year`" in e[1] and "FOR UPDATE" in e[1]
+                       for e in frappe.events)
+
+        # Ordinary save: the freeze runs.
+        frappe.events.clear()
+        calls.clear()
+        doc = _edit(module, _saved(module))
+        assert _validate(doc) is None
+        assert calls, "an ordinary save did not call periods_in_use"
+        assert has_year_lock(), "an ordinary save did not take the year row FOR UPDATE"
+
+        # Status-action save: the freeze — and both its locks — are skipped.
+        frappe.events.clear()
+        calls.clear()
+        doc = _edit(module, _saved(module))
+        doc.status = "Closed"
+        doc.closed_by = "admin@example.com"
+        doc.closed_on = "2026-01-05 10:00:00"
+        for r in doc.periods:
+            r.status = "Closed"
+        doc.flags.konsol_status_action = _declared(module, doc, doc.periods)
+        assert _validate(doc) is None
+        assert not calls, f"a status action called periods_in_use: {calls}"
+        assert not has_year_lock(), \
+            "a status action took the year row FOR UPDATE from validate's freeze path"
+
+
+def test_status_action_refuses_structural_change():
+    """Under the status-action flag, validate still refuses a structural
+    edit smuggled in alongside the declared status move — here, a changed
+    start_date that _check_status_fields_unchanged wouldn't catch on its own
+    (it only compares status fields). That assertion is what makes it safe
+    to skip the used-period freeze for a status action."""
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.status = "Closed"
+        doc.closed_by = "admin@example.com"
+        doc.closed_on = "2026-01-05 10:00:00"
+        for r in doc.periods:
+            r.status = "Closed"
+        doc.flags.konsol_status_action = _declared(module, doc, doc.periods)
+        _move_p03_end(doc)  # P03's end_date and P04's start_date both move
+        try:
+            doc.validate()
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                "a status action's structural change (start_date) was accepted")
+
+
 def test_blank_status_not_saved():
     with _load() as module:
         # A blank row status.
