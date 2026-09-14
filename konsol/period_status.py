@@ -1,46 +1,109 @@
 """Period close state — the one place that answers "is this period open?".
 
-``Period Status`` records are created on demand: a period nobody has closed has
-no record, and is Open. That keeps the fourteen-periods-times-N-years grid from
-having to be pre-populated, and means an upgrade needs no backfill.
+konsol#189: periods are declared, never assumed. A period exists only as a
+row of its ``EPM Fiscal Year``; an undeclared year or period is refused with
+PeriodNotDeclared, never treated as Open. A period's effective status is the
+stricter of its own status and its year's (fiscal_status_model).
 """
 
 import frappe
 
-from konsol.epm.doctype.period_status.period_status import (  # noqa: F401
+from konsol.fiscal_status_model import (  # noqa: F401
     CLOSED,
     LOCKED,
     OPEN,
-    SETTLED,
+    effective_status,
 )
+
+#: A period that is not Open refuses new work.
+SETTLED = (CLOSED, LOCKED)
+
+
+class PeriodNotDeclared(frappe.ValidationError):
+    """The fiscal year, or the period within it, has not been declared."""
 
 
 def _name(fiscal_year, fiscal_period):
     return f"PS-{fiscal_year}-{int(fiscal_period)}"
 
 
-def get_status(fiscal_year, fiscal_period) -> str:
-    """Status of one period. Absent record means Open — never closed, so open."""
-    if not fiscal_year or fiscal_period in (None, ""):
-        return OPEN
+def _not_declared(message):
+    frappe.throw(message, PeriodNotDeclared)
+
+
+def period_row(fiscal_year, fiscal_period) -> dict:
+    """The declared period: code, type, dates, its own status, its year's
+    status and the effective status. Raises PeriodNotDeclared when the year
+    or the period is missing.
+
+    The year is read LOCK IN SHARE MODE, so a concurrent close of the year
+    waits for (or is seen by) the work this check guards.
+    """
+    if fiscal_year in (None, "") or fiscal_period in (None, ""):
+        _not_declared(frappe._("No fiscal year and period given."))
     try:
+        year = int(fiscal_year)
         period = int(fiscal_period)
     except (TypeError, ValueError):
-        return OPEN
-    status = frappe.db.get_value(
-        "Period Status",
-        {"fiscal_year": str(fiscal_year), "fiscal_period": period},
-        "status",
+        _not_declared(frappe._("FY{0} period {1} is not a fiscal period.").format(
+            fiscal_year, fiscal_period))
+
+    years = frappe.db.sql(
+        "SELECT name, status FROM `tabEPM Fiscal Year` "
+        "WHERE fiscal_year=%s LOCK IN SHARE MODE",
+        (year,),
+        as_dict=True,
     )
-    return status or OPEN
+    if not years:
+        _not_declared(frappe._("FY{0} is not declared: create it in EPM Fiscal Year.").format(year))
+    year_doc = years[0]
+
+    rows = frappe.db.sql(
+        "SELECT period_code, period_type, start_date, end_date, status "
+        "FROM `tabEPM Fiscal Year Period` "
+        "WHERE parent=%s AND parentfield='periods' AND fiscal_period=%s",
+        (year_doc["name"], period),
+        as_dict=True,
+    )
+    if not rows:
+        _not_declared(frappe._("FY{0} has no period {1}.").format(year, period))
+    row = rows[0]
+
+    return {
+        "fiscal_year": year,
+        "fiscal_period": period,
+        "code": row["period_code"],
+        "type": row["period_type"],
+        "start_date": row["start_date"],
+        "end_date": row["end_date"],
+        "row_status": row["status"],
+        "year_status": year_doc["status"],
+        "status": effective_status(year_doc["status"], row["status"]),
+    }
+
+
+def get_status(fiscal_year, fiscal_period) -> str:
+    """Effective status of one declared period. Undeclared raises."""
+    return period_row(fiscal_year, fiscal_period)["status"]
 
 
 def is_open(fiscal_year, fiscal_period) -> bool:
     return get_status(fiscal_year, fiscal_period) == OPEN
 
 
+def assert_declared(fiscal_year, fiscal_period):
+    """Refuse a year or period that has not been declared."""
+    period_row(fiscal_year, fiscal_period)
+
+
+def period_dates(fiscal_year, fiscal_period):
+    """(start_date, end_date) of one declared period."""
+    row = period_row(fiscal_year, fiscal_period)
+    return row["start_date"], row["end_date"]
+
+
 def assert_open(fiscal_year, fiscal_period, action="run"):
-    """Refuse work against a period that has been closed off.
+    """Refuse work against an undeclared period, or one that has been closed off.
 
     Called from the run-start paths. The message names the period and the
     status so an operator can tell the difference between "I picked the wrong
