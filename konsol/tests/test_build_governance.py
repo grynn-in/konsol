@@ -571,7 +571,7 @@ def test_raw_data_check_asks_for_the_basis_only_after_the_rows_check_passes():
     assert rows_at < basis_at
     # K6b: the basis question comes BEFORE the skip_airbyte_sync short-circuit
     # (the trial-balance-only site has that flag on) and before every gate
-    assert basis_at < body.index("skip_airbyte_sync")
+    assert basis_at < body.index('.get("skip_airbyte_sync")')
     # and _basis_refusal itself asks nothing when no rows are claimed
     helper = _func_source("_basis_refusal")
     assert helper.index("if not rows") < helper.index("_batches_without_basis()")
