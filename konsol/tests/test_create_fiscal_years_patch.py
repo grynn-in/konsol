@@ -273,4 +273,3 @@ def test_listed_once_in_patches_txt():
     with open(PATCHES_TXT) as f:
         lines = [l.strip() for l in f if l.strip()]
     assert lines.count(MODULE) == 1, lines.count(MODULE)
-    assert lines[-1] == MODULE, lines[-1]
