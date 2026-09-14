@@ -101,3 +101,29 @@ test("defaultPeriod still works when a calendar has no adjustment periods", asyn
 	const { defaultPeriod } = await import("./machines/closeMachine.js");
 	assert.deepEqual(defaultPeriod(OPTIONS), { year: "2026", period: "9" });
 });
+
+/* The server (`orchestrator.api.launch_options`) sends `fiscal_years` newest
+ * first. `defaultPeriod` must not assume an order — it has to find the
+ * newest year by value, not by position in the list. */
+const NEWEST_FIRST_OPTIONS = {
+	fiscal_years: ["2026", "2025", "2024"],
+	fiscal_periods: [
+		{ value: "7", label: "Jul" },
+		{ value: "8", label: "Aug" },
+		{ value: "9", label: "Sep" },
+	],
+};
+
+test("defaultPeriod picks the newest fiscal year regardless of list order", async () => {
+	const { defaultPeriod } = await import("./machines/closeMachine.js");
+	assert.deepEqual(
+		defaultPeriod(NEWEST_FIRST_OPTIONS),
+		{ year: "2026", period: "9" },
+		"fiscal_years newest-first, as the server actually sends it"
+	);
+	assert.deepEqual(
+		defaultPeriod(OPTIONS),
+		{ year: "2026", period: "9" },
+		"fiscal_years oldest-first still resolves to the newest year"
+	);
+});
