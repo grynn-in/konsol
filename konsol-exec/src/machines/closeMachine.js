@@ -34,7 +34,7 @@ const POLL_MS = 2000;
  * is always empty, then a second request to fill it — one extra round trip on
  * a cold start buys a shell that is correct the first time it renders.
  */
-async function loadPlane(period) {
+export async function loadPlane(period) {
 	const options = await getLaunchOptions().catch(() => null);
 	const resolved = period || defaultPeriod(options);
 	const data = await getSnapshot(resolved);
