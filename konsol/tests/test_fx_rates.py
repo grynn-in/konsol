@@ -22,7 +22,7 @@ def _fx_rates(execute):
     keep = [n for n in tree.body
             if (isinstance(n, ast.FunctionDef) and n.name == "fx_rates")
             or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in
-                ("GOVERNED_FX_TABLE", "_PERIOD_START_SQL"))]
+                ("GOVERNED_FX_TABLE", "FISCAL_PERIODS_TABLE"))]
     ns = {"frappe": types.SimpleNamespace(whitelist=lambda *a, **k: (lambda fn: fn))}
     exec(compile(ast.Module(body=keep, type_ignores=[]), API, "exec"), ns)
     ch = types.ModuleType("konsol.clickhouse")
@@ -93,7 +93,9 @@ def test_filters_are_bound_as_param_prefixed_http_parameters():
                       "param_fp": 12, "param_asof": "2099-12-31"}
     for bound in ("{fc:String}", "{tc:String}", "{rt:String}", "{fy:UInt16}", "{fp:UInt8}", "{asof:Date}"):
         assert bound in sql, bound
-    assert "FROM epm_staging.group_exchange_rates WHERE" in sql and "LIMIT 5000 " in sql
+    assert ("FROM epm_staging.group_exchange_rates INNER JOIN epm_staging.fiscal_periods "
+            "AS fp USING (fiscal_year, fiscal_period) WHERE" in sql)
+    assert "LIMIT 5000 " in sql
     assert " rate, document " in sql, "the true rate, as published"
     assert "silver_exchange_rates" not in sql and "exchange_rate_type" not in sql, "never the ERP feed"
     assert out == {"rows": [{"from_currency": "JPY", "rate": 0.006607}], "count": 1}
