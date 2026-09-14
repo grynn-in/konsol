@@ -39,6 +39,15 @@ test("the site default is sent as SET_BASIS once, only while the context is blan
 	assert.match(script, /send\(\{ type: "SET_BASIS", amountBasis: [^}]*default_amount_basis \}\)/);
 });
 
+test("the options fetch lives in uploadApi.js, not in the page", () => {
+	const script = vue.slice(0, vue.indexOf("<template>"));
+	assert.match(script, /import \{[^}]*\buploadOptions\b[^}]*\} from "\.\.\/uploadApi\.js"/, "imports uploadOptions from ../uploadApi.js");
+	assert.ok(!vue.includes("fetch("), "the page has no raw fetch( of its own");
+	const api = readFileSync(path.join(here, "uploadApi.js"), "utf8");
+	assert.ok(api.includes("konsol.tb_bulk.upload_options"), "uploadApi.js knows the endpoint");
+	assert.match(api, /export const uploadOptions = \(\) => get\("konsol\.tb_bulk\.upload_options"\)/);
+});
+
 test("the report shows each entity-period's basis and the help text says what a wrong choice does", () => {
 	assert.ok(template.includes(">Basis</th>"), "a Basis column");
 	assert.ok(template.includes("r.amount_basis"), "each report row's amount_basis");
