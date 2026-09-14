@@ -47,7 +47,16 @@ export async function loadPlane(period, previousOptions = null, previousOptionsY
 	// labelled as FY2026's. When the year truly can't be told apart (no
 	// period known yet on either side), that counts as "same".
 	const requestedYear = period?.year ?? null;
-	const sameYear = requestedYear === previousOptionsYear;
+	// Compare as strings (a numeric year and its string form are the same
+	// year), and treat "both unknown" as the same year too — that is the
+	// no-period-known-yet case the comment above already relies on. Only a
+	// definite mismatch (one known, the other not, or two different years)
+	// counts as a different year.
+	const sameYear =
+		(requestedYear == null && previousOptionsYear == null) ||
+		(requestedYear != null &&
+			previousOptionsYear != null &&
+			String(requestedYear) === String(previousOptionsYear));
 	let options;
 	let optionsYear;
 	try {
