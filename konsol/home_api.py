@@ -156,12 +156,13 @@ def _current_period(rows_by_year, now):
 def period_tree():
     _require_konsol_user()
     now = getdate(today())
-    current_year = now.year
 
     # The declared calendar: each EPM Fiscal Year with its own period rows. A
     # year or period nobody declared is not open; it is not listed as a period.
     declared = {}
-    for y in frappe.db.sql("select name, fiscal_year, status from `tabEPM Fiscal Year`", as_dict=True):
+    for y in frappe.db.sql(
+            "select name, fiscal_year, status, start_date, end_date from `tabEPM Fiscal Year`",
+            as_dict=True):
         if y.fiscal_year is not None:
             declared[str(y.name)] = y
     rows_by_year = {}
@@ -174,6 +175,11 @@ def period_tree():
         if str(r.parent) in declared and r.fiscal_period is not None:
             rows_by_year.setdefault(int(declared[str(r.parent)].fiscal_year), []).append(r)
     year_status = {int(y.fiscal_year): y.status for y in declared.values()}
+    # The declared year's own dates decide its kind (past/current/planning):
+    # never today's calendar year, since a fiscal year need not run Jan-Dec
+    # (konsol#189 review finding 2b). A year known only from a Budget Cycle
+    # has no EPM Fiscal Year row, so no dates, and is "planning" below.
+    year_dates = {int(y.fiscal_year): (y.start_date, y.end_date) for y in declared.values()}
     years = set(year_status)
 
     cycles = {}
@@ -203,10 +209,13 @@ def period_tree():
                          "start_date": str(start) if start else None, "status": status,
                          "state": M.period_state(status, start or now, now)})
         cycle = cycles.get(fy)
+        dates = year_dates.get(fy)
+        kind = (M.year_kind(getdate(dates[0]), getdate(dates[1]), now)
+                if dates and dates[0] and dates[1] else "planning")
         out.append({
             "fiscal_year": fy,
             "label": f"FY{fy}",
-            "kind": M.year_kind(fy, current_year),
+            "kind": kind,
             "declared": fy in year_status,
             "periods": rows,
             "budget": ({"name": cycle.name, "status": cycle.status,

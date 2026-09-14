@@ -117,10 +117,17 @@ def period_state(status, start, today):
     return "open"
 
 
-def year_kind(fy, current):
-    if fy < current:
+def year_kind(start_date, end_date, today):
+    """Navigator year kind from the declared year's own dates (konsol#189
+    review finding 2b), never the calendar year: a fiscal year need not run
+    Jan-Dec, so comparing fiscal_year to today's calendar year mislabels a
+    year that is mid-close. ``end_date < today`` is past, ``start_date <=
+    today <= end_date`` is current, otherwise (not yet started) planning.
+    home_api calls this only for a declared year; one known solely from a
+    Budget Cycle has no dates and is "planning" without calling this."""
+    if end_date < today:
         return "past"
-    if fy == current:
+    if start_date <= today <= end_date:
         return "current"
     return "planning"
 
