@@ -179,12 +179,35 @@ class EPMFiscalYear(Document):
         # version to compare with, and the migration patch creates years from
         # data that already uses them. The decision reads committed rows
         # under the year-row lock (_used_periods).
-        if before is not None and not self.flags.konsol_fiscal_migration:
+        #
+        # A declared status action never changes structure: _lock_and_reload
+        # reloaded this doc from the database just before the action ran, and
+        # the action only moves status fields (checked above by
+        # _check_status_fields_unchanged, which already throws on any other
+        # status difference and so can already refuse a status action on a
+        # doctored flag before this point). So used_period_problems can never
+        # fire for a real status action; skip the freeze's own locking reads
+        # of the period-data tables for one. Those reads, taken in every
+        # Close/Lock/Reopen action, lock in the opposite order from a
+        # document save/submit/cancel in the same year (its own row first,
+        # then the year row via period_status.period_row) and can deadlock
+        # with one (PR #191 re-review finding 3). Ordinary saves (desk edits,
+        # Generate Periods on a saved year) keep the freeze and its locks.
+        status_action = isinstance(self.flags.konsol_status_action, dict)
+        if before is not None and not self.flags.konsol_fiscal_migration and not status_action:
             errors += fsm.used_period_problems(
                 _year_dict(before), year, _row_dicts(before), rows,
                 self._used_periods())
         if errors:
             frappe.throw("\n".join(errors))
+
+        # Assert the "never changes structure" premise above cheaply, rather
+        # than only trusting it: only reached once every ordinary structural
+        # and status check has passed, so this is a last-resort check for a
+        # status action smuggling a structural change past them (e.g. a date
+        # move that _check_status_fields_unchanged doesn't compare).
+        if status_action and before is not None:
+            self._assert_status_action_structure_unchanged(before)
 
     def on_trash(self):
         """Refuse deleting a year whose periods documents use. on_trash runs
@@ -440,6 +463,27 @@ class EPMFiscalYear(Document):
         is still seen (PR #191 review 6)."""
         self._lock_year()
         return fiscal_calendar.periods_in_use(self.fiscal_year, lock=True)
+
+    def _assert_status_action_structure_unchanged(self, before):
+        """A status action declares only status-field changes, and
+        _check_status_fields_unchanged above already refused any other status
+        difference. This asserts the rest of the doc — the rows' identity and
+        dates — is untouched too, so skipping the used-period freeze (which a
+        structural edit would otherwise have to pass) is safe. This should
+        already be impossible: _lock_and_reload reloaded the doc from the
+        database right before the action ran, and every action method only
+        stamps status fields on the reloaded rows. AssertionError, not
+        frappe.throw: a mismatch here is a bug in this controller, not
+        something a caller can fix by resubmitting."""
+        def structure(doc):
+            return [
+                (r.name, _int(r.fiscal_period), r.period_code, _date(r.start_date), _date(r.end_date))
+                for r in (doc.periods or [])
+            ]
+
+        assert structure(self) == structure(before), (
+            f"FY{self.fiscal_year}: a status action changed period structure."
+        )
 
     def _save_as_status_action(self, rows, year=False):
         """Save, declaring the status changes this action makes: the exact
