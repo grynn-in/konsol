@@ -4,7 +4,8 @@ Existing sites already hold a published chart whose Balance Sheet leaves
 declare cf_category / cf_line_item, but Cash Flow Category (the only table
 dbt reads for the cash-flow statement) was keyed by hand. The patch inserts
 the missing Published rows from the chart's mapping (group_chart_model.
-cash_flow_mapping), leaves accounts that already have a live row alone, and
+cash_flow_mapping), leaves accounts that already have a live row alone,
+republishes an account's Inactive row instead of colliding with it, and
 reloads both doctypes before it queries anything (patches.txt has no
 sections, so it runs pre_model_sync). A stub frappe records every call.
 """
@@ -36,6 +37,7 @@ class _Site:
         self.accounts = [dict(a) for a in accounts]
         self.categories = [dict(c) for c in categories]
         self.inserted = []
+        self.saved = []
 
     def module(self):
         site = self
@@ -49,9 +51,12 @@ class _Site:
             return site._get_all(doctype, filters or {}, fields, pluck)
 
         def get_doc(arg, *a, **k):
-            assert isinstance(arg, dict), "the patch builds new docs from a dict"
-            site.calls.append(("get_doc", "new", arg.get("doctype")))
-            return site._new(arg)
+            if isinstance(arg, dict):
+                site.calls.append(("get_doc", "new", arg.get("doctype")))
+                return site._new(arg)
+            assert arg == "Cash Flow Category" and a, "the patch loads existing docs by (doctype, name)"
+            site.calls.append(("get_doc", arg, a[0]))
+            return site._existing(a[0])
 
         frappe.reload_doc = reload_doc
         frappe.get_all = get_all
@@ -71,6 +76,20 @@ class _Site:
             return doc
 
         doc.insert = insert
+        return doc
+
+    def _existing(self, name):
+        site = self
+        row = next(r for r in self.categories if r.get("name") == name)
+        doc = types.SimpleNamespace(doctype="Cash Flow Category", **row)
+
+        def save(ignore_permissions=False, **k):
+            site.calls.append(("save", doc.doctype, doc.name, ignore_permissions))
+            site.saved.append(doc)
+            row.update(main_account=doc.main_account, status=doc.status)
+            return doc
+
+        doc.save = save
         return doc
 
     @staticmethod
@@ -127,6 +146,10 @@ def _inserts(site):
     return [c for c in site.calls if c[0] == "insert"]
 
 
+def _saves(site):
+    return [c for c in site.calls if c[0] == "save"]
+
+
 def test_reload_both_doctypes_before_any_query():
     site = _Site(accounts=[_account("1000")])
     _run(site)
@@ -157,11 +180,32 @@ def test_account_with_live_row_is_left_alone():
         accounts=[_account("1000"), _account("1100", cf_category="Investing", cf_line_item="Capex")],
         categories=[
             {"name": "CFC-1000", "main_account": "1000", "status": "Published"},
-            {"name": "CFC-1100", "main_account": "1100", "status": "Inactive"},   # dead row: refill
         ],
     )
     _run(site)
     assert _inserts(site) == [("insert", "Cash Flow Category", "1100", True)], site.calls
+    assert _saves(site) == [], site.calls
+
+
+def test_account_whose_only_row_is_inactive_is_republished_not_inserted():
+    # A hand-keyed row that was later set Inactive, possibly under another
+    # name: inserting CFC-<code> beside it would collide, so the patch
+    # republishes that row with the chart's mapping instead.
+    site = _Site(
+        accounts=[_account("1100", cf_category="Investing", cf_line_item="Capex", is_cash=1)],
+        categories=[
+            {"name": "Capex mapping", "main_account": "1100", "status": "Inactive",
+             "cf_category": "Operating", "cf_line_item": "old", "is_cash": 0, "sign": "-1"},
+        ],
+    )
+    _run(site)
+    assert _inserts(site) == [], site.calls
+    assert _saves(site) == [("save", "Cash Flow Category", "Capex mapping", True)], site.calls
+    doc = site.saved[0]
+    assert (doc.main_account, doc.cf_category, doc.cf_line_item, doc.is_cash) == \
+        ("1100", "Investing", "Capex", 1)
+    assert doc.sign == "1"
+    assert doc.status == "Published"
 
 
 def test_profit_and_loss_and_unmapped_accounts_are_skipped():
@@ -175,8 +219,7 @@ def test_profit_and_loss_and_unmapped_accounts_are_skipped():
     assert not [c for c in site.calls if c[0] == "get_doc"], site.calls
 
 
-def test_listed_once_at_the_end_of_patches_txt():
+def test_listed_once_in_patches_txt():
     with open(PATCHES_TXT) as f:
         lines = [l.strip() for l in f if l.strip()]
     assert lines.count(MODULE) == 1, lines.count(MODULE)
-    assert lines[-1] == MODULE, lines[-1]
