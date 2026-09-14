@@ -32,8 +32,11 @@ def period_row(fiscal_year, fiscal_period) -> dict:
     status and the effective status. Raises PeriodNotDeclared when the year
     or the period is missing.
 
-    The year is read LOCK IN SHARE MODE, so a concurrent close of the year
-    waits for (or is seen by) the work this check guards.
+    The year and the period row are both read LOCK IN SHARE MODE, so a
+    concurrent close of either waits for (or is seen by) the work this check
+    guards. A locking read returns the latest committed row; a plain read
+    returns the transaction's REPEATABLE READ snapshot, which let a submit
+    through a period closed while it waited (live race, konsol#189).
     """
     if fiscal_year in (None, "") or fiscal_period in (None, ""):
         _not_declared(frappe._("No fiscal year and period given."))
@@ -57,7 +60,8 @@ def period_row(fiscal_year, fiscal_period) -> dict:
     rows = frappe.db.sql(
         "SELECT period_code, period_type, start_date, end_date, status "
         "FROM `tabEPM Fiscal Year Period` "
-        "WHERE parent=%s AND parentfield='periods' AND fiscal_period=%s",
+        "WHERE parent=%s AND parentfield='periods' AND fiscal_period=%s "
+        "LOCK IN SHARE MODE",
         (year_doc["name"], period),
         as_dict=True,
     )
