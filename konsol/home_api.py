@@ -86,13 +86,32 @@ def _item(item_id, state, title, detail="", stage=None, who=None, action=None, e
 
 
 def _parse_period(fiscal_year, fiscal_period):
+    """The declared period (period_status.period_row). A period number is
+    0..255, as declared (a 13-period year's CLS is 14); a year nobody
+    declared, or a period its year has no row for, is refused with
+    PeriodNotDeclared, never shown as open."""
     try:
         fy, p = int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
         frappe.throw("fiscal_year and fiscal_period must be numbers", frappe.ValidationError)
-    if not (1900 < fy < 3000 and 0 <= p <= 13):
+    if not (1900 < fy < 3000 and 0 <= p <= 255):
         frappe.throw(f"No such period: FY{fy} period {p}", frappe.ValidationError)
-    return fy, p
+    return period_status.period_row(fy, p)
+
+
+def _closed_by(fy, p, row):
+    """(label, closed_by, closed_on) of a declared period. Who closed it is
+    the period row's, or the year's when the year is Closed or Locked and the
+    row itself isn't (the year's close settled it)."""
+    year = frappe.db.get_value("EPM Fiscal Year", {"fiscal_year": fy}, ["name", "closed_by", "closed_on"],
+                               as_dict=True) or {}
+    rec = frappe.db.get_value("EPM Fiscal Year Period",
+                              {"parenttype": "EPM Fiscal Year", "parentfield": "periods",
+                               "parent": year.get("name"), "fiscal_period": p},
+                              ["period_label", "closed_by", "closed_on"], as_dict=True) or {}
+    by_year = row["year_status"] in period_status.SETTLED and row["row_status"] not in period_status.SETTLED
+    closer = year if by_year else rec
+    return rec.get("period_label") or row["code"], closer.get("closed_by"), closer.get("closed_on")
 
 
 @frappe.whitelist(methods=["GET"])
@@ -278,12 +297,11 @@ def _money(a):
     return f"{max(a.debit_amount or 0, a.credit_amount or 0):,.2f}"
 
 
-def _queue(fy, p, ctx, stages, status, user):
+def _queue(fy, p, ctx, stages, status, user, label):
     roles = _roles(user)
     lead = bool(roles & CLOSE_LEAD)
     group = bool(roles & GROUP)
     system = "System Manager" in roles
-    label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
     # In a closed period, disable only what the server refuses and annotate
     # what it allows but can't complete (M.closed_period, #149). Each queue
@@ -323,7 +341,8 @@ def _queue(fy, p, ctx, stages, status, user):
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
                               action=_action("Open results", "Assertion Run", "read", a.get("run"))))
         s = by_id["signoff"]
-        may_close = _can("Period Status", "write")
+        # the Close / Lock actions live on EPM Fiscal Year (konsol#189)
+        may_close = _can("EPM Fiscal Year", "write")
         if s["state"] == "ready":
             mine.append(_item("signoff", "ready", f"Sign off {label}", "Locks the period against further change",
                               stage=8, action={"label": "Sign off", "step": "signoff", "allowed": may_close,
@@ -497,17 +516,17 @@ def _health(ctx, wide):
 def month(fiscal_year, fiscal_period):
     user = frappe.session.user
     _require_konsol_user(user)
-    fy, p = _parse_period(fiscal_year, fiscal_period)
+    row = _parse_period(fiscal_year, fiscal_period)   # refuses an undeclared period
+    fy, p = row["fiscal_year"], row["fiscal_period"]
     now = getdate(today())
-    start = M.period_start(fy, p)
-    status = period_status.get_status(fy, p)
-    closed = frappe.db.get_value("Period Status", {"fiscal_year": str(fy), "fiscal_period": p},
-                                 ["closed_by", "closed_on"], as_dict=True) or {}
+    start = getdate(row["start_date"]) if row["start_date"] else now
+    status = row["status"]
+    label, closed_by, closed_on = _closed_by(fy, p, row)
     ctx = _context(fy, p, start)
     # Builds carry no period. Every open period shows the latest one, saying
     # so; a closed period's lane does not borrow a later build.
     stages = _stages(ctx, status, tracked_build=status == period_status.OPEN)
-    queue = _queue(fy, p, ctx, stages, status, user)
+    queue = _queue(fy, p, ctx, stages, status, user, label)
 
     wide = bool(_roles(user) & WIDE)
     if not wide:
@@ -521,10 +540,10 @@ def month(fiscal_year, fiscal_period):
 
     return {
         "period": {
-            "fiscal_year": fy, "fiscal_period": p, "code": M.period_code(p), "label": M.period_label(fy, p),
+            "fiscal_year": fy, "fiscal_period": p, "code": row["code"], "label": label,
             "status": status, "state": M.period_state(status, start, now),
-            "closed_by": frappe.utils.get_fullname(closed.get("closed_by")) if closed.get("closed_by") else None,
-            "closed_on": str(closed.get("closed_on")) if closed.get("closed_on") else None,
+            "closed_by": frappe.utils.get_fullname(closed_by) if closed_by else None,
+            "closed_on": str(closed_on) if closed_on else None,
             "entities_in_close": len(ctx["in_close"]),
         },
         "stages": stages,
