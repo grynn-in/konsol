@@ -34,20 +34,35 @@ const POLL_MS = 2000;
  * is always empty, then a second request to fill it — one extra round trip on
  * a cold start buys a shell that is correct the first time it renders.
  */
-export async function loadPlane(period) {
+export async function loadPlane(period, previousOptions = null) {
 	// Ask for the shown year's declared periods, not always the newest one
 	// (review finding 4b, PR #192): with no period known yet (the very first
-	// load) there is no year to ask for, so this still gets the newest.
-	const options = await getLaunchOptions(period?.year).catch(() => null);
+	// load) there is no year to ask for, so this still gets the newest. A
+	// failed launch_options request keeps whatever options were already
+	// loaded (review finding 1, PR #192 re-review) rather than blanking the
+	// period labels to null until the next successful refresh.
+	const options = await getLaunchOptions(period?.year).catch(() => previousOptions);
 	const resolved = period || defaultPeriod(options);
 	const data = await getSnapshot(resolved);
 	return { data, options, period: resolved };
 }
 
+/**
+ * Snapshot-only refresh: the poll tick, the Refresh button, and the refresh
+ * after a Start all re-read the close state of the SAME period. None of them
+ * change which fiscal year is shown, so none of them need launch_options
+ * again — only SET_PERIOD does (see `loadPlane`).
+ */
+export async function loadSnapshot(period) {
+	const data = await getSnapshot(period);
+	return { data, period };
+}
+
 export const closeMachine = setup({
 	types: { context: {}, events: {} },
 	actors: {
-		fetchPlane: fromPromise(({ input }) => loadPlane(input?.period)),
+		fetchPlane: fromPromise(({ input }) => loadPlane(input?.period, input?.previousOptions)),
+		fetchSnapshot: fromPromise(({ input }) => loadSnapshot(input?.period)),
 		startProcessActor: fromPromise(({ input }) => startProcess(input.processId)),
 		sendReminderActor: fromPromise(({ input }) => sendReminder(input.owner, input.item)),
 		pollTicker: fromCallback(({ sendBack }) => {
@@ -64,6 +79,10 @@ export const closeMachine = setup({
 			options: ({ event }) => event.output.options,
 			loadError: null,
 			period: ({ event }) => event.output.period,
+		}),
+		assignSnapshot: assign({
+			data: ({ event }) => event.output.data,
+			loadError: null,
 		}),
 		assignLoadError: assign({ loadError: ({ event }) => event.error }),
 		assignStartResult: assign({ lastStartResult: ({ event }) => event.output }),
@@ -121,20 +140,36 @@ export const closeMachine = setup({
 		loading: {
 			invoke: {
 				src: "fetchPlane",
-				input: ({ context }) => ({ period: context.period }),
+				input: ({ context }) => ({ period: context.period, previousOptions: context.options }),
 				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "failed", actions: "assignLoadError" },
 			},
 		},
 		failed: { on: { RETRY: "loading" } },
+		// A plain REFRESH (the button, the poll tick, and the refresh after a
+		// Start) re-reads the SAME period's close state. It never needs a new
+		// set of launch_options — only SET_PERIOD does (review finding 1, PR
+		// #192 re-review: re-asking launch_options on every 2s poll tick was
+		// pointless network traffic, and a failed poll blanked the loaded
+		// options to null until the next tick).
 		refreshing: {
-			// Also on SET_PERIOD (not only a plain REFRESH): re-fetch the whole
-			// plane, not just the snapshot, so a step page opened for a year
-			// other than the one first loaded gets THAT year's launch_options
-			// (review finding 4b, PR #192) instead of keeping the stale one.
+			invoke: {
+				src: "fetchSnapshot",
+				input: ({ context }) => ({ period: context.period }),
+				onDone: { target: "ready", actions: "assignSnapshot" },
+				onError: { target: "ready", actions: "assignLoadError" },
+			},
+		},
+		// SET_PERIOD alone gets the full reload: a step page shown for a
+		// different fiscal year needs THAT year's launch_options (review
+		// finding 4b, PR #192), not the stale one from whichever year loaded
+		// first. A failed launch_options request here keeps the previous
+		// options (`loadPlane`'s `previousOptions` fallback) instead of
+		// blanking period labels to null.
+		changingPeriod: {
 			invoke: {
 				src: "fetchPlane",
-				input: ({ context }) => ({ period: context.period }),
+				input: ({ context }) => ({ period: context.period, previousOptions: context.options }),
 				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "ready", actions: "assignLoadError" },
 			},
@@ -191,7 +226,7 @@ export const closeMachine = setup({
 			type: "parallel",
 			on: {
 				REFRESH: "refreshing",
-				SET_PERIOD: { target: "refreshing", actions: "setPeriod" },
+				SET_PERIOD: { target: "changingPeriod", actions: "setPeriod" },
 				START_PROCESS: {
 					target: "starting",
 					actions: assign({ pendingProcessId: ({ event }) => event.processId }),
