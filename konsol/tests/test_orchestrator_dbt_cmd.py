@@ -24,12 +24,23 @@ def test_build_dbt_command_handles_none_params():
 
 
 def test_build_dbt_command_select():
+    # `run` executes no tests, so indirect selection does not apply to it
     assert build_dbt_command("run", {"select": "consolidation"}) == [
         "dbt",
         "run",
         "--select",
         "consolidation",
     ]
+
+
+def test_build_dbt_command_scoped_build_and_test_select_cautiously():
+    """konsol#195: a scoped build or test must not run tests whose other
+    parents it did not select (dbt's default eager indirect selection)."""
+    for verb in ("build", "test"):
+        assert build_dbt_command(verb, {"select": "consolidation"}) == [
+            "dbt", verb, "--select", "consolidation", "--indirect-selection", "cautious",
+        ]
+    assert "--indirect-selection" not in build_dbt_command("build", {})
 
 
 def test_build_dbt_command_full_refresh():
@@ -64,7 +75,7 @@ def test_build_dbt_command_all_combined_order():
         {"select": "domain:consolidation", "full_refresh": True, "vars": {"fiscal_year": 2024}},
     )
     assert argv[0:2] == ["dbt", "build"]
-    assert "--select" in argv and "domain:consolidation" in argv
+    assert argv[2:6] == ["--select", "domain:consolidation", "--indirect-selection", "cautious"]
     assert "--full-refresh" in argv
     assert "--vars" in argv
 
@@ -126,7 +137,7 @@ def test_dbt_handler_runs_injected_runner():
     ctx = StepContext(step)
     ctx.runner = runner
     result = get("dbt_build")(ctx)
-    assert captured["argv"] == ["dbt", "build", "--select", "x"]
+    assert captured["argv"] == ["dbt", "build", "--select", "x", "--indirect-selection", "cautious"]
     assert result.rows == 99
 
 

@@ -121,10 +121,14 @@ def test_run_governed_build_exists():
     assert "run_governed_build" in funcs
 
 
-def test_run_governed_build_uses_select_flag():
-    """run_governed_build must use dbt --select for tag-based builds."""
+def test_run_governed_build_uses_dbt_build_command():
+    """run_governed_build builds its argv via konsol.build_command.dbt_build_command
+    (which adds --indirect-selection cautious to scoped builds, konsol#195),
+    not an inline --select literal."""
     content = _read(TASKS_PATH)
-    assert "--select" in content
+    build = content.split("def run_governed_build")[1].split("\ndef ")[0]
+    assert "dbt_build_command(" in build
+    assert '"--select"' not in build
 
 
 def test_run_governed_build_references_domain_tags():

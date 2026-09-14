@@ -132,6 +132,11 @@ def build_dbt_command(verb: str, params: Optional[Dict]) -> List[str]:
     select = params.get("select")
     if select:
         argv += ["--select", select]
+        # konsol#195: a scoped build/test must not run tests whose other
+        # parents it did not select (same rule as konsol.build_command).
+        # `run`/`seed` execute no tests, so the flag does not apply to them.
+        if verb in ("build", "test"):
+            argv += ["--indirect-selection", "cautious"]
     if params.get("full_refresh"):
         argv += ["--full-refresh"]
     dbt_vars = params.get("vars")

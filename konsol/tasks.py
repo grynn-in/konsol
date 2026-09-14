@@ -10,6 +10,7 @@ import time
 import frappe
 
 from konsol.airbyte_service import AirbyteClient
+from konsol.build_command import dbt_build_command
 # reaper.py imports nothing from konsol at module level, so this can't cycle.
 from konsol.orchestrator.reaper import START_FAILURE_PREFIX
 
@@ -322,7 +323,8 @@ def run_governed_build(build_request):
     """Execute a governed dbt build for a Build Approval.
 
     Called via frappe.enqueue from BuildApproval.on_update.
-    Runs preflight checks, then selective dbt build with --select tag.
+    Runs preflight checks, then a selective dbt build (--select on the scope's
+    tag, with --indirect-selection cautious; see konsol.build_command).
     """
     doc = frappe.get_doc("Build Approval", build_request)
 
@@ -423,11 +425,7 @@ def run_governed_build(build_request):
             # Build dbt command
             settings = frappe.get_single("EPM Settings")
             project_path = settings.dbt_project_path
-            cmd = [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path]
-
-            selector = _scope_selector(doc.build_scope)
-            if selector:
-                cmd.extend(["--select", selector])
+            cmd = dbt_build_command(_dbt_bin(), project_path, _scope_selector(doc.build_scope))
 
             # Execute
             result = subprocess.run(
