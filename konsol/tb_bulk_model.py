@@ -9,7 +9,7 @@ live submission per entity-period, and the uploader may access the entity.
 File contract (header required, case-insensitive; CSV, or the first sheet of
 an .xlsx workbook):
 
-    data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description][, partner_data_area_id]
+    data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description][, partner_data_area_id][, amount_basis]
 
 `entity`, `year`, `period` and `account` are accepted for the first four, and
 `partner`, `partner_entity`, `partner_id` or `counterparty` for the partner.
@@ -17,10 +17,20 @@ Amounts are in each entity's own accounting currency, one row per account and
 partner, debits and credits both positive (the same contract as a single
 upload). The partner is the other group entity an intercompany row is held
 with; it is optional (konsol#159).
+
+amount_basis (konsolidat#199; `basis` and `amount basis` are accepted too)
+says what each row's debit and credit are: this period's movements, the
+year-to-date movements, or the closing balance at period end
+(konsol.tb_basis_model). Every row of one entity-period must agree; a blank
+cell is "not given". An entity-period without its own value takes the
+upload's Amount Basis (resolve_basis); one with neither is refused, because
+there is no default that does not guess.
 """
 import csv
 import io
 import math
+
+from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
 
 PARTNER = "partner_data_area_id"
 REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit")
@@ -37,9 +47,15 @@ ALIASES = {
     "partner_entity": PARTNER,
     "partner_id": PARTNER,
     "counterparty": PARTNER,
+    # konsolidat#199: the single upload accepts the same spellings for the basis
+    **{alias.replace(" ", "_"): BASIS for alias in BASIS_ALIASES},
 }
 #: Structural problems are reported together, up to this many lines.
 MAX_LINE_ERRORS = 20
+
+
+def _allowed_bases():
+    return ", ".join(f'"{basis}"' for basis in AMOUNT_BASES)
 
 
 def cell(value):
@@ -93,8 +109,11 @@ def split_table(table):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
     Keys keep the order they first appear in the file. Each row is
-    {main_account, debit, credit, description, partner_data_area_id}, the
-    shape a single submission parses. Raises ValueError listing every
+    {main_account, debit, credit, description, partner_data_area_id,
+    amount_basis}, the shape a single submission parses; amount_basis is the
+    exact basis string, or '' when the file has no such column or the cell is
+    blank. Every row of one entity-period that gives a basis must give the
+    same one (group_basis reads it). Raises ValueError listing every
     structural problem (up to MAX_LINE_ERRORS lines) so a file can be fixed
     in one pass.
     """
@@ -108,13 +127,17 @@ def split_table(table):
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be "
             "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description]"
-            "[, partner_data_area_id]"
+            "[, partner_data_area_id][, amount_basis]"
         )
     if names.count(PARTNER) > 1:
         raise ValueError(f"Two partner columns on line {head_line}: keep one")
+    if names.count(BASIS) > 1:
+        raise ValueError(f"Two amount_basis columns on line {head_line}: keep one of "
+                         + ", ".join(BASIS_ALIASES))
     col = {n: names.index(n) for n in set(names)}
 
     groups, errors = {}, []
+    first_basis = {}   # group key -> (lineno, basis) of the first row that gives one
     for lineno, row in lines[1:]:
         if len(errors) >= MAX_LINE_ERRORS:
             break
@@ -137,11 +160,23 @@ def split_table(table):
         period = _whole(get("fiscal_period"), "fiscal_period", lineno, errors)
         debit = _amount(get("debit"), "debit", lineno, errors)
         credit = _amount(get("credit"), "credit", lineno, errors)
+        basis_cell = cell(get(BASIS))
+        basis = canonical(basis_cell) if basis_cell else ""
+        if basis_cell and basis is None:
+            errors.append(f"Line {lineno}: amount_basis {basis_cell!r} is not one of {_allowed_bases()}")
+            basis = ""
         if not entity or not account or year is None or period is None:
             continue
-        groups.setdefault((entity, year, period), []).append({
+        key = (entity, year, period)
+        if basis:
+            first_line, first = first_basis.setdefault(key, (lineno, basis))
+            if basis != first:
+                errors.append(f'Line {lineno}: amount_basis "{basis}" but line {first_line} of the same '
+                              f'entity-period says "{first}"; one entity-period holds one amount basis')
+        groups.setdefault(key, []).append({
             "main_account": account, "debit": debit, "credit": credit,
             "description": cell(get("description")), PARTNER: cell(get(PARTNER)),
+            BASIS: basis,
         })
 
     if errors:
@@ -152,22 +187,62 @@ def split_table(table):
     return groups
 
 
+def group_basis(rows):
+    """The amount basis an entity-period's rows give, or '' when none does.
+
+    split_table has already refused rows of one entity-period that disagree,
+    so the first value given is the group's.
+    """
+    for r in rows:
+        if r.get(BASIS):
+            return r[BASIS]
+    return ""
+
+
+def resolve_basis(group_basis, form_basis):
+    """(basis, problem) for one entity-period: the file's own value when it
+    gives one, else the upload's Amount Basis; exactly one of the pair is None.
+
+    Neither guesses: an entity-period with no basis anywhere is a problem
+    sentence for that group's report row, and the load refuses it
+    (konsolidat#199).
+    """
+    given = canonical(group_basis)
+    if given:
+        return given, None
+    form = canonical(form_basis)
+    if form:
+        return form, None
+    if form_basis and str(form_basis).strip():
+        return None, f'Amount Basis "{str(form_basis).strip()}" is not one of {_allowed_bases()}.'
+    return None, (
+        "Amount Basis is required: the file gives none for this entity-period, so say on the upload "
+        f"whether its rows are {_allowed_bases()}, or add an amount_basis column to the file."
+    )
+
+
 def group_csv(rows, source=None):
     """One entity-period as the single-submission CSV
-    (main_account,debit,credit,description,partner_data_area_id).
+    (main_account,debit,credit,description,partner_data_area_id[,amount_basis]).
 
     `source` (the upload's name) is written as an extra column, which the
     single-upload parser ignores. It records where the file came from, and
     it makes each upload's files unique: Frappe reuses an existing File with
     the same content, which would give this submission another upload's file.
+
+    The amount_basis column is written only when the rows give one, so the
+    generated file says what the uploaded file said and the submission's
+    validate() confirms it against the form (konsolidat#199).
     """
+    basis = group_basis(rows)
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(["main_account", "debit", "credit", "description", PARTNER]
-                    + (["source_upload"] if source else []))
+                    + ([BASIS] if basis else []) + (["source_upload"] if source else []))
     for r in rows:
         writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", ""),
-                         r.get(PARTNER, "")] + ([source] if source else []))
+                         r.get(PARTNER, "")] + ([r.get(BASIS, "")] if basis else [])
+                        + ([source] if source else []))
     return out.getvalue()
 
 

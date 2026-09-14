@@ -36,7 +36,7 @@ def test_splits_into_entity_periods_in_file_order():
     assert list(groups) == [("AMDE", 2025, 12), ("AMUS", 2025, 12), ("AMDE", 2024, 12)]
     assert [r["main_account"] for r in groups[("AMDE", 2025, 12)]] == ["1010", "2010"]
     assert groups[("AMUS", 2025, 12)][0] == {"main_account": "1010", "debit": 0.0, "credit": 5.0, "description": "",
-                                             "partner_data_area_id": ""}
+                                             "partner_data_area_id": "", "amount_basis": ""}
 
 
 def test_header_is_forgiving_about_case_spaces_and_aliases():
