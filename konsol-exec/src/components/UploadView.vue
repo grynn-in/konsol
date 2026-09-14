@@ -18,7 +18,7 @@ import { useMachine } from "@xstate/vue";
 import { Button } from "frappe-ui";
 import StatusBadge from "./StatusBadge.vue";
 import { uploadMachine } from "../machines/uploadMachine.js";
-import { recentUploads } from "../uploadApi.js";
+import { recentUploads, uploadOptions } from "../uploadApi.js";
 import { isNoAccess } from "../homeApi.js";
 import { summarize, rowStatus, visibleRows, loadLabel, progress, periodText, money } from "../uploads.js";
 
@@ -50,12 +50,6 @@ const canUpload = computed(() => Boolean(home.me.value?.can?.approve));
 const basisPickable = computed(() => !upload.value || done.value || snapshot.value.matches("checked"));
 // konsol.tb_bulk.upload_options: the site default and the exact basis strings.
 const options = ref({ default_amount_basis: "", amount_bases: [] });
-async function uploadOptions() {
-	const res = await fetch("/api/method/konsol.tb_bulk.upload_options", { credentials: "include", headers: { Accept: "application/json" } });
-	const data = await res.json().catch(() => ({}));
-	if (!res.ok || data.exc) throw new Error(`upload_options ${res.status}`);
-	return data.message;
-}
 const recent = ref([]);
 onMounted(async () => {
 	try { recent.value = await recentUploads(); } catch { recent.value = []; }

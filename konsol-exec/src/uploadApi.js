@@ -49,3 +49,6 @@ export const checkFile = (fileUrl, amountBasis) => post("konsol.tb_bulk.check_fi
 export const loadUpload = (name, skipInvalid, amountBasis) => post("konsol.tb_bulk.load", { name, skip_invalid: skipInvalid ? 1 : 0, amount_basis: amountBasis || "" });
 export const getUpload = (name) => get("konsol.tb_bulk.get_upload", { name });
 export const recentUploads = () => get("konsol.tb_bulk.recent_uploads");
+// { default_amount_basis, amount_bases }: the site default (EPM Settings) and
+// the exact basis strings, so the page never carries its own copy.
+export const uploadOptions = () => get("konsol.tb_bulk.upload_options");
