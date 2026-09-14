@@ -128,19 +128,13 @@ def _read_table(file_url):
     frappe.throw("Upload a .csv or .xlsx file.")
 
 
-def _temp_period_fact(year, period):  # TEMP until konsol#189 task 20
-    """Stand-in for the real declared-period lookup. Until periods are a real
-    doctype, periods 1..12 are Regular with today's period status and
-    anything else is undeclared — the same behaviour check_group enforced
-    itself before it took a period fact instead of a status string."""
-    if not 1 <= period <= 12:
+def _period_fact(year, period):
+    """The declared period as check_group's fact, or None when (year, period)
+    is not a declared period (konsol#189)."""
+    try:
+        return period_status.period_row(year, period)
+    except period_status.PeriodNotDeclared:
         return None
-    return {"code": "P%02d" % period, "type": "Regular", "status": period_status.get_status(year, period)}
-
-
-#: TEMP until konsol#189 task 20: the only period type this stand-in ever
-#: produces is Regular, which trial balances always take.
-_TEMP_POSTABLE_TYPES = {"Regular"}
 
 
 def _check(table):
@@ -150,7 +144,8 @@ def _check(table):
     visible = set(frappe.get_list("Entity", filters={"name": ["in", entities]}, pluck="name",
                                   limit_page_length=0))
     leaf = set(frappe.get_all("Entity", filters={"name": ["in", entities], "is_group": 0}, pluck="name"))
-    periods = {(y, p): _temp_period_fact(y, p) for (_, y, p) in groups}  # TEMP until konsol#189 task 20
+    periods = {(y, p): _period_fact(y, p) for (_, y, p) in groups}
+    postable_types = period_status.postable_types()
     existing = {}
     for r in frappe.get_all("Trial Balance Submission",
                             filters={"docstatus": 1, "data_area_id": ["in", entities]},
@@ -171,7 +166,7 @@ def _check(table):
         found = existing.get(key)
         partnerless = partnerless_ic_accounts(rows, ic)
         item = M.check_group(key, rows, known_accounts=None, visible=key[0] in visible, leaf=key[0] in leaf,
-                             period=periods.get((key[1], key[2])), postable_types=_TEMP_POSTABLE_TYPES,
+                             period=periods.get((key[1], key[2])), postable_types=postable_types,
                              existing=found.name if found else None, validate_rows=validate_rows,
                              known_entities=partners,
                              warnings=[partnerless_warning(partnerless)] if partnerless else [],
