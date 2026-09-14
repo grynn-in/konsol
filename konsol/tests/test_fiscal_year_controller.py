@@ -193,6 +193,15 @@ def _edit(module, saved):
     return doc
 
 
+def _declared(module, year, rows):
+    """The action flag declaring exactly these status changes: the year's
+    (when `year` is given) and each row's current values, by period code."""
+    out = {"rows": {r.period_code: module._status_values(r) for r in rows}}
+    if year is not None:
+        out["year"] = module._status_values(year)
+    return out
+
+
 def _refused(doc):
     """The PermissionError message, or None when none was raised."""
     try:
@@ -243,7 +252,7 @@ def test_rest_cannot_set_status():
         doc.closed_on = "2026-01-05 10:00:00"
         for r in doc.periods:
             r.status = "Closed"
-        doc.flags.konsol_status_action = True
+        doc.flags.konsol_status_action = _declared(module, doc, doc.periods)
         assert _validate(doc) is None
 
         # And by the migration patch.
@@ -261,7 +270,7 @@ def test_row_looser_than_year_refused():
     with _load() as module:
         doc = _edit(module, _saved(module, "Closed", "Closed"))
         doc.periods[4].status = "Open"
-        doc.flags.konsol_status_action = True
+        doc.flags.konsol_status_action = _declared(module, None, [doc.periods[4]])
         msg = _validate(doc)
         assert msg is not None, "an Open row in a Closed year was accepted"
         assert "P04" in msg and "looser" in msg, msg
@@ -274,7 +283,7 @@ def test_add_row_to_closed_year_refused():
         cls = _monthly_2025()[-1]
         cls.status = "Closed"
         doc.periods.append(cls)
-        doc.flags.konsol_status_action = True
+        doc.flags.konsol_status_action = _declared(module, None, [cls])
         msg = _validate(doc)
         assert msg is not None, "a new row was added to a Closed year"
         assert "CLS" in msg and "cannot be added" in msg, msg

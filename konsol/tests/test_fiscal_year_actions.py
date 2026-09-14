@@ -15,6 +15,7 @@ Reopen Year leaves the rows as they are. Loaded against a stub frappe, as in
 test_fiscal_year_controller.py; the stubs stay installed during calls."""
 import ast
 import contextlib
+import copy
 import importlib.util
 import os
 import re
@@ -91,13 +92,33 @@ def _load():
             return child
 
         def get_doc_before_save(self):
+            """The saved version, which stands for the database row."""
             return self.__dict__.get("_before_save")
 
+        def reload(self):
+            """As Frappe's reload: every field and row comes back from the
+            saved version (the database); anything else the document held
+            is dropped. flags stay, as in Frappe."""
+            frappe.events.append(("reload", self.name))
+            saved = self.__dict__.get("_before_save")
+            keep = {k: self.__dict__[k] for k in _NOT_FIELDS if k in self.__dict__}
+            self.__dict__.clear()
+            self.__dict__.update(keep)
+            self.__dict__.update(_fields(saved))
+            return self
+
         def save(self, *args, **kwargs):
-            """Runs validate(), as Frappe's save does, and counts the save."""
+            """Runs validate(), as Frappe's save does, counts the save and
+            writes the document back as the saved version."""
             self.validate()
             self.saves += 1
+            self._before_save = type(self)(**_fields(self))
             return self
+
+    _NOT_FIELDS = ("flags", "saves", "_before_save")
+
+    def _fields(doc):
+        return {k: copy.deepcopy(v) for k, v in doc.__dict__.items() if k not in _NOT_FIELDS}
 
     def throw(msg, exc=None, *args, **kwargs):
         raise (exc or Thrown)(msg)
@@ -122,6 +143,7 @@ def _load():
 
     def assert_rates_complete(fiscal_year, fiscal_period):
         rates.calls.append((fiscal_year, fiscal_period))
+        frappe.events.append(("rates", fiscal_year, fiscal_period))
         if rates.fail:
             raise Thrown(rates.fail)
         if fiscal_period in rates.fail_for:
@@ -131,6 +153,14 @@ def _load():
     mods["konsol"].group_rates = rates
 
     frappe = mods["frappe"]
+    #: The order of lock queries, reloads and rate checks, as (kind, ...).
+    frappe.events = []
+
+    def sql(query, values=None, *args, **kwargs):
+        frappe.events.append(("sql", " ".join(query.split()), values))
+        return []
+
+    frappe.db = types.SimpleNamespace(sql=sql)
     frappe.session = _dict(user="closer@example.com")
     frappe.roles = ["EPM Admin"]
     frappe.get_roles = lambda *a, **k: list(frappe.roles)
@@ -618,3 +648,124 @@ def test_reopen_locked_year_sm_only():
         assert err is None, err
         assert doc.status == "Open" and doc.saves == 1
         assert all(r.status == "Locked" for r in doc.periods), "Reopen Year reopened rows"
+
+
+# -- The actions act on the saved year, not the client's copy (PR #191 review 1) --------
+
+FORGER = "forger@example.com"
+
+
+def _forge(doc, status):
+    """What a crafted run_doc_method `docs` can carry: every status field of
+    the year and its rows set to `status`, stamped by someone else."""
+    doc.status, doc.closed_by, doc.closed_on = status, FORGER, NOW
+    for r in doc.periods:
+        r.status, r.closed_by, r.closed_on = status, FORGER, NOW
+
+
+def _saved_values(doc):
+    """Every status field of the saved version (the database)."""
+    saved = doc.get_doc_before_save()
+    return [(saved.status, saved.closed_by, saved.closed_on)] + [
+        (r.status, r.closed_by, r.closed_on) for r in saved.periods]
+
+
+def test_actions_ignore_client_copy():
+    with _load() as module:
+        # The database holds a Locked year; the client says Open everywhere.
+        doc = _valid_year(module, status="Locked")
+        before = _saved_values(doc)
+        _forge(doc, "Open")
+        result, err = _act(lambda: doc.close_period(1), (Thrown, PermissionRefused))
+        # Locked -> Closed needs System Manager: refused, on the saved status.
+        assert err is not None, "close_period acted on the client's Open period"
+        assert _saved_values(doc) == before, "the client's status edits were saved"
+
+        # An Open year: the action acts on the saved rows; the client's
+        # Locked year and forged stamps are never saved.
+        doc = _valid_year(module)
+        _forge(doc, "Locked")
+        result, err = _act(lambda: doc.close_period(3))
+        assert err is None, err
+        saved = doc.get_doc_before_save()
+        assert saved.status == "Open" and saved.closed_by is None and saved.closed_on is None
+        for r in saved.periods:
+            if r.fiscal_period == 3:
+                assert (r.status, r.closed_by, r.closed_on) == ("Closed", "closer@example.com", NOW)
+            else:
+                assert (r.status, r.closed_by, r.closed_on) == ("Open", None, None), r.period_code
+        assert FORGER not in repr(_saved_values(doc))
+
+        # Year actions too: the client's Open copy of a Locked year can't be closed.
+        doc = _valid_year(module, status="Locked")
+        before = _saved_values(doc)
+        _forge(doc, "Open")
+        result, err = _act(lambda: doc.close_year(), (Thrown, PermissionRefused))
+        assert err is not None, "close_year acted on the client's Open year"
+        assert _saved_values(doc) == before
+
+
+def test_generate_uses_saved_year():
+    """Generate Periods reads the pattern and status from the saved year."""
+    with _load() as module:
+        doc = _year(module)
+        doc.period_pattern = "Custom"       # client-side edit, never saved
+        doc.status = "Locked"
+        assert _generate(doc) is None
+        assert [r.period_code for r in doc.get_doc_before_save().periods][:2] == ["OPN", "P01"]
+        assert doc.get_doc_before_save().status == "Open"
+
+
+def _first(events, kind, needle=""):
+    return next(i for i, e in enumerate(events) if e[0] == kind and needle in str(e))
+
+
+def test_rate_gate_runs_after_lock():
+    with _load() as module:
+        events = sys.modules["frappe"].events
+        for call in (lambda d: d.close_period(3), lambda d: d.lock_period(3),
+                     lambda d: d.close_year(), lambda d: d.lock_year()):
+            doc = _valid_year(module)
+            events.clear()
+            result, err = _act(lambda: call(doc))
+            assert err is None, err
+            lock = next((i for i, e in enumerate(events) if e[0] == "sql"
+                         and "`tabEPM Fiscal Year`" in e[1] and "FOR UPDATE" in e[1]), None)
+            assert lock is not None, f"no FOR UPDATE on the year row: {events}"
+            assert events[lock][2] in ("2025", ("2025",)), events[lock]
+            reload_at = _first(events, "reload")
+            rates_at = _first(events, "rates")
+            assert lock < reload_at < rates_at, events
+
+
+def test_status_action_flag_permits_only_declared_changes():
+    """Under the action flag, validate accepts only the status changes the
+    action declared; any other status difference is refused."""
+    with _load() as module:
+        doc = _valid_year(module)
+        p03 = _row(doc, 3)
+        p03.status, p03.closed_by, p03.closed_on = "Closed", "closer@example.com", NOW
+        declared = {"rows": {"P03": module._status_values(p03)}}
+
+        doc.flags.konsol_status_action = dict(declared)
+        doc.save()                           # exactly the declared change: accepted
+
+        doc = _valid_year(module)
+        for r in (_row(doc, 3), _row(doc, 5)):
+            r.status, r.closed_by, r.closed_on = "Closed", "closer@example.com", NOW
+        doc.flags.konsol_status_action = dict(declared)
+        result, err = _act(doc.save, PermissionRefused)
+        assert err is not None and "P05" in err and "P03" not in err, err
+
+        doc = _valid_year(module)
+        doc.status, doc.closed_by, doc.closed_on = "Closed", FORGER, NOW
+        doc.flags.konsol_status_action = True    # a bare flag declares nothing
+        result, err = _act(doc.save, PermissionRefused)
+        assert err is not None, "a bare action flag let a status edit through"
+
+        doc = _valid_year(module)
+        _row(doc, 3).status, _row(doc, 3).closed_by = "Closed", FORGER    # not the declared stamp
+        _row(doc, 3).closed_on = NOW
+        doc.flags.konsol_status_action = dict(declared)
+        result, err = _act(doc.save, PermissionRefused)
+        assert err is not None and "P03" in err, err
