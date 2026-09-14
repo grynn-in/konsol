@@ -237,3 +237,90 @@ test("a rejected SET_PERIOD goes to `failed` (not `ready`) with the error, and R
 	assert.ok(actor.getSnapshot().matches("ready"), "RETRY succeeds this time");
 	actor.stop();
 });
+
+// #189 PR2 row 70q2 (follow-up to 70q): `failed` accepted only RETRY, so
+// picking a DIFFERENT period from the navigator after a failed period change
+// was silently ignored (and RETRY alone would just re-fail for the same
+// rejected period, wedging the user). `failed` must also accept SET_PERIOD,
+// same as `ready` does — recording the new period and going through
+// `changingPeriod`'s full reload for it.
+test("SET_PERIOD from `failed` moves to `changingPeriod` and reloads for the newly chosen period", async () => {
+	let planeCallCount = 0;
+	const calls = { plane: [] };
+	const machine = closeMachine.provide({
+		actors: {
+			fetchPlane: fromPromise(async ({ input }) => {
+				planeCallCount += 1;
+				calls.plane.push(input?.period ?? null);
+				if (planeCallCount === 2) {
+					throw new Error("boom");
+				}
+				const period = input?.period || { year: "2026", period: "9" };
+				return {
+					data: { worker_healthy: true, processes: {} },
+					options: { fiscal_years: [period.year], fiscal_periods: [] },
+					period,
+				};
+			}),
+			fetchSnapshot: fromPromise(async ({ input }) => ({
+				data: { worker_healthy: true, processes: {} },
+				period: input?.period ?? null,
+			})),
+			pollTicker: fromCallback(() => () => {}),
+		},
+	});
+	const actor = createActor(machine).start();
+	await flush(); await flush();
+	assert.ok(actor.getSnapshot().matches("ready"), "first load succeeds");
+
+	actor.send({ type: "SET_PERIOD", year: "2025", period: "7" });
+	await flush(); await flush();
+	assert.ok(actor.getSnapshot().matches("failed"), "the rejected period change lands in `failed`");
+
+	actor.send({ type: "SET_PERIOD", year: "2024", period: "3" });
+	await flush(); await flush();
+
+	assert.equal(planeCallCount, 3, "SET_PERIOD from `failed` must invoke the full plane load, not be ignored");
+	assert.deepEqual(calls.plane[2], { year: "2024", period: "3" }, "the reload must be for the newly chosen period, not the one that failed");
+	assert.deepEqual(actor.getSnapshot().context.period, { year: "2024", period: "3" }, "context.period must reflect the new choice");
+	assert.ok(actor.getSnapshot().matches("ready"), "the new period's load succeeds");
+	actor.stop();
+});
+
+test("RETRY from `failed` still goes to `loading`, unaffected by the new SET_PERIOD transition", async () => {
+	let planeCallCount = 0;
+	const machine = closeMachine.provide({
+		actors: {
+			fetchPlane: fromPromise(async ({ input }) => {
+				planeCallCount += 1;
+				if (planeCallCount === 2) {
+					throw new Error("boom");
+				}
+				const period = input?.period || { year: "2026", period: "9" };
+				return {
+					data: { worker_healthy: true, processes: {} },
+					options: { fiscal_years: [period.year], fiscal_periods: [] },
+					period,
+				};
+			}),
+			fetchSnapshot: fromPromise(async ({ input }) => ({
+				data: { worker_healthy: true, processes: {} },
+				period: input?.period ?? null,
+			})),
+			pollTicker: fromCallback(() => () => {}),
+		},
+	});
+	const actor = createActor(machine).start();
+	await flush(); await flush();
+
+	actor.send({ type: "SET_PERIOD", year: "2025", period: "7" });
+	await flush(); await flush();
+	assert.ok(actor.getSnapshot().matches("failed"));
+
+	actor.send({ type: "RETRY" });
+	await flush(); await flush();
+
+	assert.equal(planeCallCount, 3, "RETRY must still trigger a full plane load");
+	assert.ok(actor.getSnapshot().matches("ready"), "RETRY still succeeds");
+	actor.stop();
+});
