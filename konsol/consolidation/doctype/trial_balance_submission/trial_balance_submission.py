@@ -307,21 +307,37 @@ def _sql_str(value):
     return str(value).replace("\\", "\\\\").replace("'", "\\'")
 
 
-def _claim_sql(doc, basis):
-    """The control-table INSERT that claims ``doc``'s batch with ``basis``.
+#: Claim tuples per control-table INSERT (the same size _land_rows uses).
+_CLAIM_BATCH = 1000
 
-    One text for the first claim (on_submit) and a re-claim (set_amount_basis):
+
+def _claim_values(doc, basis):
+    """One ``(...)`` tuple claiming ``doc``'s batch with ``basis``.
+
+    ``doc`` is the Document (on_submit) or the locked row set_amount_basis
+    read (``name, batch_id, data_area_id, fiscal_year, fiscal_period,
+    row_count`` by attribute). One text for the first claim and a re-claim:
     ReplacingMergeTree(claimed_at) keeps the newest row per batch_id, so a
-    later INSERT with the same batch_id and now() supersedes the earlier one."""
+    later tuple with the same batch_id and now() supersedes the earlier one."""
     return (
-        f"INSERT INTO {CONTROL_TABLE} "
-        "(batch_id, submission_name, data_area_id, fiscal_year, "
-        "fiscal_period, row_count, claimed_at, amount_basis) VALUES "
         f"('{_sql_str(doc.batch_id)}', '{_sql_str(doc.name)}', "
         f"'{_sql_str(doc.data_area_id)}', {int(doc.fiscal_year)}, "
         f"{int(doc.fiscal_period)}, {int(doc.row_count)}, now(), "
         f"'{_sql_str(basis)}')"
     )
+
+
+def _claim_insert(values):
+    """The control-table INSERT landing the ``_claim_values`` tuples ``values``."""
+    return (
+        f"INSERT INTO {CONTROL_TABLE} "
+        "(batch_id, submission_name, data_area_id, fiscal_year, "
+        "fiscal_period, row_count, claimed_at, amount_basis) VALUES "
+        + ", ".join(values)
+    )
+
+
+_NAMES_HELP = "names must be a JSON list of Trial Balance Submission names"
 
 
 @frappe.whitelist(methods=["POST"])
@@ -340,40 +356,77 @@ def set_amount_basis(names, amount_basis):
     claim per batch, the landed rows are never touched, and a cancel still
     deletes every claim of the batch.
 
+    Order of work, and why:
+
+    1. Each document is read with a row lock (``for_update=True``, the read
+       _check_no_other_submission does), so a concurrent cancel either waits
+       for this request to commit or this read already sees docstatus 2 and
+       skips it. Judging docstatus on an unlocked read could re-claim a batch
+       whose cancel is deleting the claim at the same moment.
+    2. Every distinct (fiscal_year, fiscal_period) is gated Open once, before
+       anything is written: a closed period on the last document must not
+       leave the first ones re-claimed.
+    3. MariaDB is written for every document, then ClickHouse gets ONE
+       INSERT carrying every tuple (batches of _CLAIM_BATCH). Frappe commits
+       MariaDB only after this request returns, so a ClickHouse failure rolls
+       every form value back and leaves nothing newly declared in the
+       warehouse; the two sides never disagree about which batches have a
+       basis. Per-document INSERTs would have left a half-declared set on a
+       mid-way failure.
+
     EPM Admin only. ``names`` is a list (or its JSON) of Trial Balance
     Submission names; ``amount_basis`` is matched case- and space-insensitively
-    against the three bases. Every named document's period must be Open: the
-    gate runs over all of them before anything is written, so a closed period
-    on the last one does not leave the first ones re-claimed. Drafts and
-    cancelled documents are skipped, not refused: the basis is set on their
-    form. Returns ``{"updated": n, "skipped": [(name, why), ...]}``.
+    against the three bases. Drafts, cancelled and unknown names are skipped,
+    not refused: a draft's basis is set on its form. Returns
+    ``{"updated": n, "skipped": [(name, why), ...]}``.
     """
     from konsol.schema_lifecycle import check_epm_admin
 
-    check_epm_admin()
+    try:
+        check_epm_admin()
+    except frappe.PermissionError:
+        frappe.throw("EPM Admin only: Set Amount Basis", frappe.PermissionError)
     basis = canonical(amount_basis)
     if basis is None:
         allowed = ", ".join(f'"{b}"' for b in AMOUNT_BASES)
         frappe.throw(f"{amount_basis!r} is not an amount basis: use one of {allowed}.")
     if isinstance(names, str):
-        names = json.loads(names)
+        try:
+            names = json.loads(names)
+        except ValueError:
+            frappe.throw(_NAMES_HELP)
+    if not isinstance(names, list):
+        frappe.throw(_NAMES_HELP)
 
-    docs, skipped = [], []
+    rows, skipped = [], []
     for name in names:
-        doc = frappe.get_doc("Trial Balance Submission", name)
-        if doc.docstatus != 1:
-            skipped.append((name, "cancelled" if doc.docstatus == 2 else "not submitted"))
-            continue
-        assert_open(doc.fiscal_year, doc.fiscal_period,
-                    action="set the amount basis of a trial balance")
-        docs.append(doc)
+        row = frappe.db.get_value(
+            "Trial Balance Submission", name,
+            ["name", "docstatus", "fiscal_year", "fiscal_period", "batch_id",
+             "data_area_id", "row_count"],
+            as_dict=True, for_update=True,
+        )
+        if row is None:
+            skipped.append((name, "not found"))
+        elif row.docstatus != 1:
+            skipped.append((name, "cancelled" if row.docstatus == 2 else "not submitted"))
+        else:
+            rows.append(row)
 
-    for doc in docs:
-        # db_set: the document is submitted, and amount_basis is
-        # allow_on_submit; the full save path is neither needed nor allowed.
-        doc.db_set("amount_basis", basis)
-        execute(_claim_sql(doc, basis))
-    return {"updated": len(docs), "skipped": skipped}
+    for fiscal_year, fiscal_period in sorted({(r.fiscal_year, r.fiscal_period) for r in rows}):
+        assert_open(fiscal_year, fiscal_period,
+                    action="set the amount basis of a trial balance")
+
+    for row in rows:
+        # The documents are submitted and amount_basis is allow_on_submit;
+        # the full save path is neither needed nor allowed. The form's
+        # modified stamp is left alone: nothing the user wrote changed.
+        frappe.db.set_value("Trial Balance Submission", row.name, "amount_basis", basis,
+                            update_modified=False)
+    values = [_claim_values(row, basis) for row in rows]
+    for i in range(0, len(values), _CLAIM_BATCH):
+        execute(_claim_insert(values[i:i + _CLAIM_BATCH]))
+    return {"updated": len(rows), "skipped": skipped}
 
 
 class TrialBalanceSubmission(Document):
@@ -450,7 +503,7 @@ class TrialBalanceSubmission(Document):
         # to bronze; a crash before it leaves unclaimed rows for the reaper.
         # The claim also carries the amount basis (konsolidat#199): it is a
         # property of the batch, not of a row, and bronze normalises on it.
-        execute(_claim_sql(self, self.amount_basis))
+        execute(_claim_insert([_claim_values(self, self.amount_basis)]))
 
     def before_cancel(self):
         """validate() isn't run on cancel, so its period gate never applied
