@@ -69,7 +69,14 @@ def _load():
         raise (exc or Thrown)(msg)
 
     mods = {name: types.ModuleType(name) for name in (
-        "frappe", "frappe.model", "frappe.model.document", "frappe.utils", "konsol")}
+        "frappe", "frappe.model", "frappe.model.document", "frappe.utils", "konsol",
+        "konsol.fiscal_calendar")}
+    # periods_in_use() queries the database; a test sets the periods in use
+    # with _in_use(). Default: nothing in use.
+    calendar = mods["konsol.fiscal_calendar"]
+    calendar.used = set()
+    calendar.periods_in_use = lambda fiscal_year: set(calendar.used)
+    mods["konsol"].fiscal_calendar = calendar
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe._dict = _dict
@@ -268,3 +275,65 @@ def test_add_row_to_closed_year_refused():
         msg = _validate(doc)
         assert msg is not None, "a new row was added to a Closed year"
         assert "CLS" in msg and "cannot be added" in msg, msg
+
+
+# --- Periods documents use are frozen (konsol#189) --------------------------
+
+def _in_use(periods):
+    """Make the stubbed fiscal_calendar.periods_in_use() return `periods`;
+    call inside a _load() block."""
+    sys.modules["konsol.fiscal_calendar"].used = set(periods)
+
+
+def _move_p03_end(doc):
+    """Re-date P03 and P04 around a new boundary; the year stays valid."""
+    doc.periods[3].end_date = "2025-03-30"
+    doc.periods[4].start_date = "2025-03-31"
+    return doc
+
+
+def _delete(doc):
+    """The message of the throw from on_trash, or None when it passes."""
+    try:
+        doc.on_trash()
+    except Thrown as e:
+        return str(e)
+    return None
+
+
+def test_used_period_cannot_be_redated():
+    with _load() as module:
+        _in_use({3})
+        doc = _move_p03_end(_edit(module, _saved(module)))
+        msg = _validate(doc)
+        assert msg is not None, "a used period was re-dated"
+        assert "P03 can't be re-dated" in msg, msg
+
+
+def test_unused_period_edits_freely():
+    with _load() as module:
+        _in_use({5})
+        doc = _move_p03_end(_edit(module, _saved(module)))
+        assert _validate(doc) is None
+
+
+def test_used_year_cannot_be_deleted():
+    with _load() as module:
+        _in_use(range(1, 13))
+        msg = _delete(_saved(module))
+        assert msg is not None, "a year documents use was deleted"
+        assert "FY2025 can't be deleted: documents use 12 of its periods." in msg, msg
+
+
+def test_unused_year_can_be_deleted():
+    with _load() as module:
+        _in_use(set())
+        assert _delete(_saved(module)) is None
+
+
+def test_migration_flag_skips_in_use_rule():
+    with _load() as module:
+        _in_use({3})
+        doc = _move_p03_end(_edit(module, _saved(module)))
+        doc.flags.konsol_fiscal_migration = True
+        assert _validate(doc) is None
