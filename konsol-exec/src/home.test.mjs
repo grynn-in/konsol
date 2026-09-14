@@ -1,21 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
-	periodCode, periodLabel, parsePeriodRoute, monthPath, currentMonthPath, isMine,
+	parsePeriodRoute, monthPath, currentMonthPath, isMine,
 	stageTarget, crumbsFor, defaultExpanded, openCount, firstOpenItem, shortTime, actionHint,
 } from "./home.js";
 
-test("period codes and labels match the server's vocabulary", () => {
-	assert.deepEqual([0, 1, 9, 12, 13].map(periodCode), ["OPN", "P01", "P09", "P12", "CLS"]);
-	assert.equal(periodLabel(2026, 9), "Sep 2026");
-	assert.equal(periodLabel(2026, 0), "Opening balances");
-	assert.equal(periodLabel(2026, 13), "Year-end close");
+test("no client-side 0/13 period vocabulary: the server's code and label are used as-is", () => {
+	const source = readFileSync(fileURLToPath(new URL("./home.js", import.meta.url)), "utf8");
+	assert.equal(/\bOPN\b/.test(source), false, "home.js must not hard-code the OPN code");
+	assert.equal(/\bCLS\b/.test(source), false, "home.js must not hard-code the CLS code");
+	assert.equal(source.includes("periodCode"), false, "home.js must not compute a period code");
+	assert.equal(source.includes("periodLabel"), false, "home.js must not compute a period label");
 });
 
-test("route params parse to a real period or nothing", () => {
+test("route params parse to a real period or nothing; the server decides what exists, not this parser", () => {
 	assert.deepEqual(parsePeriodRoute({ year: "2026", period: "9" }), { year: 2026, period: 9 });
 	assert.deepEqual(parsePeriodRoute({ year: "2026", period: "0" }), { year: 2026, period: 0 });
-	assert.equal(parsePeriodRoute({ year: "2026", period: "14" }), null);
+	assert.deepEqual(parsePeriodRoute({ year: "2099", period: "14" }), { year: 2099, period: 14 });
+	assert.deepEqual(parsePeriodRoute({ year: "2026", period: "255" }), { year: 2026, period: 255 });
+	assert.equal(parsePeriodRoute({ year: "2026", period: "256" }), null);
+	assert.equal(parsePeriodRoute({ year: "2026", period: "-1" }), null);
 	assert.equal(parsePeriodRoute({ year: "abc", period: "1" }), null);
 	assert.equal(parsePeriodRoute({}), null);
 });
@@ -40,15 +46,18 @@ test("lane stages open a step or the filtered desk list", () => {
 	assert.equal(stageTarget({ id: "unknown" }, 2026, 9).href, "/app");
 });
 
-test("the path always says year, month, then view", () => {
-	assert.deepEqual(crumbsFor({ name: "month", year: 2026, period: 9 }).map((c) => c.label),
+test("the path always says year, month, then view; code and label are exactly the server's", () => {
+	assert.deepEqual(crumbsFor({ name: "month", year: 2026, period: 9, code: "P09", label: "Sep 2026" }).map((c) => c.label),
 		["FY2026", "P09 · Sep 2026", "Close"]);
-	const step = crumbsFor({ name: "step", year: 2026, period: 9, stepLabel: "Sign off period" });
+	const step = crumbsFor({ name: "step", year: 2026, period: 9, code: "P09", label: "Sep 2026", stepLabel: "Sign off period" });
 	assert.equal(step[1].to, "/2026/9");
 	assert.equal(step[0].to, undefined);
 	assert.equal(step[2].label, "Sign off period");
 	assert.deepEqual(crumbsFor({ name: "month" }), [{ label: "Konsol" }]);
 	assert.deepEqual(crumbsFor({ name: "uploads" }).map((c) => c.label), ["Group", "Upload trial balances"]);
+	// A 13-period year's close (fiscal_period 14) is just whatever the server calls it.
+	assert.deepEqual(crumbsFor({ name: "month", year: 2099, period: 14, code: "P14", label: "Second close" }).map((c) => c.label),
+		["FY2099", "P14 · Second close", "Close"]);
 });
 
 test("navigator opens the current and the selected year", () => {
