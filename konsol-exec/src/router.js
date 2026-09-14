@@ -23,7 +23,7 @@ import { periodTree } from "./homeApi.js";
  */
 const routes = [
 	{ path: "/", name: "home", component: NoPeriodHome },
-	{ path: "/:year(\\d{4})/:period(\\d{1,2})", name: "month", component: MonthView, props: true },
+	{ path: "/:year(\\d{4})/:period(\\d{1,3})", name: "month", component: MonthView, props: true },
 	{ path: "/uploads", name: "uploads", component: UploadView },
 	{ path: "/close", name: "close", component: CloseChecklist },
 	{ path: "/close/:step", name: "step", component: StepDetail, props: true },

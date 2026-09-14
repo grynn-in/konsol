@@ -2,10 +2,12 @@
 /**
  * Step 6 — sign off the period.
  *
- * Closing means writing a `Period Status` record for this (fiscal year, fiscal
- * period). It is deliberately not a field on `Fiscal Period`: that DocType is a
- * template of period rows reused by every year, so a status there would make
- * closing one September close all of them.
+ * Closing calls `set_period_status`, which closes this (fiscal year, fiscal
+ * period) through its declared EPM Fiscal Year Period — today backed by a
+ * `Period Status` record (PR4 removes that plumbing). It is deliberately not
+ * a field on `Fiscal Period`: that DocType is a template of period rows
+ * reused by every year, so a status there would make closing one September
+ * close all of them.
  *
  * A period only has a close state once its year has declared it (EPM Fiscal
  * Year / EPM Fiscal Year Period). An undeclared period is shown as such, never

@@ -103,12 +103,13 @@ export function periodChoices(options) {
 	return periods(options);
 }
 
-/** The twelve you actually close. */
+/** The declared Regular periods — the ones you actually close. */
 export function accountingPeriods(options) {
 	return periods(options).filter(isAccountingPeriod);
 }
 
-/** OPN / CLS and anything else outside 1..12 — shown apart, not hidden. */
+/** Opening, Closing, Adjustment — everything the declared calendar doesn't
+ *  mark Regular — shown apart, not hidden. */
 export function adjustmentPeriods(options) {
 	return periods(options).filter((p) => !isAccountingPeriod(p));
 }
