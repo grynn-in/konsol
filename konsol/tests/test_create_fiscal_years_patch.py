@@ -220,7 +220,9 @@ def test_conflicts_throw_and_insert_nothing():
 
 def test_rerun_is_noop():
     # 2025 is new (a closed P03 moves across); 2024 already exists with an
-    # Open P01 whose Period Status row is Locked, so that row is saved.
+    # Open P01 whose Period Status row is Locked. 2024 is already declared,
+    # so it is its own source of truth: the stale Period Status row is
+    # ignored, no move, no save.
     existing_2024 = {
         "doctype": "EPM Fiscal Year", "fiscal_year": 2024,
         "start_date": datetime.date(2024, 1, 1), "end_date": datetime.date(2024, 12, 31),
@@ -248,7 +250,7 @@ def test_rerun_is_noop():
     )
     _run(site)
     writes = [c for c in site.calls if c[0] in ("insert", "save")]
-    assert writes == [("insert", 2025, True), ("save", 2024, True)], writes
+    assert writes == [("insert", 2025, True)], writes
 
     y2025 = site.years["2025"]
     rows = {r.period_code: r for r in y2025.periods}
@@ -257,8 +259,10 @@ def test_rerun_is_noop():
     assert rows["P04"].status == "Open"
     assert rows["P14"].period_type == "Adjustment"
     assert {"OPN", "CLS"} <= set(rows)
+    # 2024 already existed: its own (Open) status stands, the stale Locked
+    # Period Status row is ignored
     p01_2024 = site.years["2024"].periods[0]
-    assert (p01_2024.status, p01_2024.closed_by) == ("Locked", "b@example.com")
+    assert (p01_2024.status, p01_2024.closed_by) == ("Open", None)
 
     site.calls.clear()
     _run(site)

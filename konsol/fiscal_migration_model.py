@@ -120,15 +120,12 @@ def plan(used_pairs, ps_rows, existing_years):
     moves = []
     for row in sorted(ps_rows, key=lambda r: (r["fiscal_year"], r["fiscal_period"])):
         year = row["fiscal_year"]
+        if year not in planned:
+            continue  # already declared: its own rows are the truth, not Period Status
         period = row["fiscal_period"]
         target = next((t for t in targets[year] if t["period"] == period), None)
         if target is None:
-            if year in planned:
-                continue  # out of range: already named when the year was planned
-            conflicts.append(
-                "Fiscal year %d has no period %d for its Period Status row "
-                "(%s)." % (year, period, row["status"]))
-            continue
+            continue  # out of range: already named when the year was planned
 
         ps_start, ps_end = row.get("start_date"), row.get("end_date")
         if (ps_start is not None and ps_start != target["start_date"]) or (
