@@ -64,12 +64,15 @@ export function stageTarget(stage, year, period) {
 
 /**
  * The period's `code`/`label` from the home tree (`period_tree`'s `years`
- * array, each with a `periods` row per declared period). A period missing
- * from the tree — not yet loaded, or genuinely undeclared — gets a crumb
- * that says so, never an invented month name and never `undefined`.
+ * array, each with a `periods` row per declared period). The tree not
+ * having loaded yet (`tree` is null/undefined, or has no `years`) makes no
+ * claim about the period — an empty label, never "not declared". A loaded
+ * tree that simply doesn't have the period is genuinely "not declared".
+ * Never an invented month name and never `undefined`.
  */
 export function periodCrumb(tree, year, period) {
-	const yr = (tree?.years || []).find((y) => y.fiscal_year === year);
+	if (tree == null || tree.years == null) return { code: `Period ${period}`, label: "" };
+	const yr = tree.years.find((y) => y.fiscal_year === year);
 	const row = (yr?.periods || []).find((p) => p.fiscal_period === period);
 	if (row) return { code: row.code, label: row.label };
 	return { code: `Period ${period}`, label: "not declared" };
@@ -79,13 +82,15 @@ export function periodCrumb(tree, year, period) {
  * The path in the title bar. `where` is {name, year, period, code, label,
  * stepLabel} — `code`/`label` are the server's for that period (e.g. "P09",
  * "Sep 2026", from `periodCrumb`), shown as-is; the fiscal year is not a
- * page, so it carries no link.
+ * page, so it carries no link. An empty `label` (the home tree hasn't
+ * loaded yet) shows the bare `code`, never a dangling " · ".
  */
 export function crumbsFor(where) {
 	const { name, year, period, code, label, stepLabel } = where || {};
 	const hasPeriod = Number.isInteger(year) && Number.isInteger(period);
+	const codeAndLabel = label ? `${code} · ${label}` : code;
 	const base = hasPeriod
-		? [{ label: `FY${year}` }, { label: `${code} · ${label}`, to: monthPath(year, period) }]
+		? [{ label: `FY${year}` }, { label: codeAndLabel, to: monthPath(year, period) }]
 		: [];
 	if (name === "month" && hasPeriod) return [...base, { label: "Close" }];
 	if ((name === "step" || name === "step-tab") && hasPeriod) return [...base, { label: stepLabel || "Step" }];
