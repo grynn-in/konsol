@@ -81,6 +81,25 @@ class _Doc:
     def set(self, key, value):
         self.__dict__[key] = value
 
+    def as_dict(self):
+        return dict(self.__dict__)
+
+
+class _CashFlowCategory(_Doc):
+    """A Cash Flow Category row the controller mirrors into (konsol#196)."""
+
+    def insert(self, ignore_permissions=False):
+        self.name = f"CFC-{self.main_account}"
+        CALLS.append(("cfc.insert", self.name, ignore_permissions))
+        frappe_cfc()[self.name] = self
+
+    def save(self, ignore_permissions=False):
+        CALLS.append(("cfc.save", self.name, ignore_permissions))
+
+
+def frappe_cfc():
+    return C.frappe.cfc
+
 
 class NestedSet(_Doc):
     def on_update(self):
@@ -124,9 +143,14 @@ def _load():
     frappe.msgprint = lambda msg, *a, **k: frappe.messages.append(msg)
     frappe.parents, frappe.children = {}, []
     frappe.descendants = []
+    frappe.flags = types.SimpleNamespace(in_install=False, in_migrate=False, in_patch=False)
+    frappe.cfc = {}   # name -> the Cash Flow Category rows the site has
     frappe.db = types.SimpleNamespace(
         get_value=lambda doctype, name, fields, as_dict=False: (
-            _Bounds(lft=1, rgt=99) if fields == ["lft", "rgt"] else frappe.parents.get(name)))
+            _Bounds(lft=1, rgt=99) if fields == ["lft", "rgt"] else frappe.parents.get(name)),
+        exists=lambda doctype, name=None, **k: (name if name in frappe.cfc else None))
+    frappe.get_doc = lambda doctype, name: frappe.cfc[name]
+    frappe.new_doc = lambda doctype: _CashFlowCategory(doctype=doctype, name=None, status="Draft")
     frappe.get_all = lambda doctype, filters=None, pluck=None, **k: (
         list(frappe.descendants) if "lft" in (filters or {}) else
         [c for c, parent, status in frappe.children
@@ -332,13 +356,15 @@ def test_new_table_ships_complete_not_via_added_columns():
         assert column in body, column
 
 
-def test_on_update_runs_the_tree_then_the_resync():
-    """Neither base calls super(), so the MRO alone would drop one of them."""
+def test_on_update_runs_the_tree_then_the_resync_then_the_cash_flow_mirror():
+    """Neither base calls super(), so the MRO alone would drop one of them.
+    The cash-flow mirror (konsol#196) comes last: only a saved, synced row is
+    mirrored."""
     body = _method(_class(CONTROLLER, "MainAccount"), "on_update").body
     assert [ast.unparse(s) for s in body if not isinstance(s, ast.Expr) or not isinstance(s.value, ast.Constant)] == [
-        "NestedSet.on_update(self)", "GovernedReferenceDocument.on_update(self)"]
+        "NestedSet.on_update(self)", "GovernedReferenceDocument.on_update(self)", "self._mirror_cash_flow_category()"]
     CALLS.clear()
-    _doc().on_update()
+    _doc().on_update()   # a Draft with no mapping and no row: nothing to mirror
     assert CALLS == ["tree.on_update", "governed.on_update"]
     # the tree refuses: nothing reaches the warehouse
     CALLS.clear()
@@ -664,6 +690,106 @@ def test_intercompany_rows_look_at_both_sides():
     groups = src.split("def _difference_groups")[1]
     assert '"ic_difference_account": ["in", codes]' in groups
     assert real is not None and asked == []
+
+
+# -- the chart is the source of the cash-flow mapping (konsol#196) ---------------------------------
+
+def _mapped(status="Published", **kw):
+    fields = dict(fx_method="closing", normal_balance="Debit", time_balance="balance",
+                  cf_category="Operating", cf_line_item="Cash and equivalents", is_cash=1)
+    fields.update(kw)
+    return _doc(status, **fields)
+
+
+def _cfc(status="Published", **kw):
+    row = _CashFlowCategory(doctype="Cash Flow Category", name="CFC-ZZ1000", main_account="ZZ1000",
+                            cf_category="Investing", cf_line_item="Old line", is_cash=0, sign="1", status=status)
+    row.__dict__.update(kw)
+    C.frappe.cfc[row.name] = row
+    return row
+
+
+def _mirror_calls():
+    return [c for c in CALLS if isinstance(c, tuple) and c[0].startswith("cfc.")]
+
+
+def test_main_account_mirrors_its_cash_flow_mapping_in_source():
+    with open(CONTROLLER) as f:
+        cls = f.read().split("class MainAccount")[1]
+    assert "def _mirror_cash_flow_category" in cls
+    on_update = cls.split("def on_update")[1].split("\n    def ")[0]
+    assert "self._mirror_cash_flow_category()" in on_update
+    method = cls.split("def _mirror_cash_flow_category")[1].split("\n    def ")[0]
+    for needle in ("cash_flow_mapping(", '"Cash Flow Category"', "in_install", "in_migrate", "in_patch",
+                   '"Inactive"', "ignore_permissions=True"):
+        assert needle in method, needle
+
+
+def test_a_published_mapped_leaf_inserts_a_published_cash_flow_category():
+    C.frappe.cfc.clear()
+    CALLS.clear()
+    try:
+        _mapped().on_update()
+        assert _mirror_calls() == [("cfc.insert", "CFC-ZZ1000", True)]
+        row = C.frappe.cfc["CFC-ZZ1000"]
+        assert (row.main_account, row.cf_category, row.cf_line_item, row.is_cash, row.sign, row.status) == (
+            "ZZ1000", "Operating", "Cash and equivalents", 1, "1", "Published")
+    finally:
+        C.frappe.cfc.clear()
+
+
+def test_an_existing_row_is_overwritten_from_the_chart():
+    """A manual Cash Flow Category edit for a chart account does not survive
+    the next chart save: the chart is the source."""
+    C.frappe.cfc.clear()
+    CALLS.clear()
+    try:
+        row = _cfc("Inactive")
+        _mapped(is_cash=0).on_update()
+        assert _mirror_calls() == [("cfc.save", "CFC-ZZ1000", True)]
+        assert (row.cf_category, row.cf_line_item, row.is_cash, row.sign, row.status) == (
+            "Operating", "Cash and equivalents", 0, "1", "Published")
+    finally:
+        C.frappe.cfc.clear()
+
+
+def test_an_account_without_a_mapping_makes_its_row_inactive():
+    C.frappe.cfc.clear()
+    try:
+        for doc in (_mapped("Draft"),                        # not in the chart
+                    _mapped(cf_line_item=""),                # a cf field cleared
+                    _mapped(statement_section="Profit and Loss", account_type="Revenue", normal_balance="Credit",
+                            time_balance="flow", fx_method="average")):
+            CALLS.clear()
+            row = _cfc("Published")
+            doc.on_update()
+            assert _mirror_calls() == [("cfc.save", "CFC-ZZ1000", True)], doc.status
+            assert row.status == "Inactive"
+        # already Inactive, or no row at all: nothing is written
+        CALLS.clear()
+        _cfc("Inactive")
+        _mapped("Draft").on_update()
+        C.frappe.cfc.clear()
+        _mapped("Draft").on_update()
+        assert _mirror_calls() == []
+    finally:
+        C.frappe.cfc.clear()
+
+
+def test_the_mirror_is_skipped_during_install_migrate_and_patch():
+    C.frappe.cfc.clear()
+    try:
+        for flag in ("in_install", "in_migrate", "in_patch"):
+            CALLS.clear()
+            setattr(C.frappe.flags, flag, True)
+            try:
+                _mapped().on_update()
+            finally:
+                setattr(C.frappe.flags, flag, False)
+            assert _mirror_calls() == [], flag
+            assert C.frappe.cfc == {}
+    finally:
+        C.frappe.cfc.clear()
 
 
 def test_a_publish_from_the_form_has_no_build_first_message():
