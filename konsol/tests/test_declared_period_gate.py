@@ -309,3 +309,11 @@ def test_allow_list_flags_extra_offender_in_allowed_function():
     assert len(messages) == 1
     assert relpath in messages[0]
     assert func_name in messages[0]
+
+
+def test_no_zero_count_allow_entries():
+    """An allow-list entry pinned at 0 exempts nothing: it only makes a
+    function look reviewed (PR #191 re-review 2, nit 4). Every entry must
+    allow at least the offenders it was added for."""
+    zero = [key for key, (limit, _reason) in _ALLOWED_FUNCS.items() if limit < 1]
+    assert not zero, f"allow-list entries that exempt nothing: {zero}"
