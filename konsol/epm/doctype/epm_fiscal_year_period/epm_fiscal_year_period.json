@@ -97,6 +97,7 @@
       "label": "Status",
       "options": "Open\nClosed\nLocked",
       "default": "Open",
+      "reqd": 1,
       "read_only": 1,
       "in_list_view": 1,
       "columns": 2,

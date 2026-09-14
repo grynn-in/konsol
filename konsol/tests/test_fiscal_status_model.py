@@ -144,7 +144,7 @@ def test_blank_status_refused():
     # case matters: "open" (lowercase) is not one of Open/Closed/Locked
     problems = M.row_problems("open", [{"code": "P04", "status": "open"}], {"P04"})
     assert problems
-    assert "P04" in problems[0]
+    assert any("P04" in p for p in problems)
 
 
 def test_unknown_status_raises():

@@ -27,16 +27,32 @@ def row_problems(year_status, rows, previous_codes):
     Closed year refuses an Open row, a Locked year refuses anything but
     Locked. And once a year is Closed or Locked, no row with a code that
     wasn't already saved may be added.
-    """
-    if year_status not in _RANK:
-        raise ValueError(f"unknown fiscal status {year_status!r}")
 
+    A year or row status that isn't exactly one of Open/Closed/Locked
+    (blank included: Frappe keeps a "" a REST save sends, rather than
+    filling in the field default) is reported as an ordinary problem
+    naming the row's code, not raised — the caller collects every
+    problem and refuses the save with one clear message.
+    """
     problems = []
+
+    year_valid = year_status in _RANK
+    if not year_valid:
+        problems.append(
+            f"Fiscal year status {year_status!r} is not Open, Closed or Locked."
+        )
+
     for row in rows:
         code = row["code"]
         status = row["status"]
         if status not in _RANK:
-            raise ValueError(f"unknown fiscal status {status!r}")
+            problems.append(
+                f"Period {code} has status {status!r}; it must be Open, Closed or Locked."
+            )
+            continue
+
+        if not year_valid:
+            continue
 
         if _RANK[status] < _RANK[year_status]:
             problems.append(
