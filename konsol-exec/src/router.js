@@ -3,6 +3,7 @@ import CloseChecklist from "./components/CloseChecklist.vue";
 import StepDetail from "./components/StepDetail.vue";
 import MonthView from "./components/MonthView.vue";
 import UploadView from "./components/UploadView.vue";
+import NoPeriodHome from "./components/NoPeriodHome.vue";
 import { currentMonthPath } from "./home.js";
 import { periodTree } from "./homeApi.js";
 
@@ -21,7 +22,7 @@ import { periodTree } from "./homeApi.js";
  * for the month the shell has selected.
  */
 const routes = [
-	{ path: "/", name: "home" },
+	{ path: "/", name: "home", component: NoPeriodHome },
 	{ path: "/:year(\\d{4})/:period(\\d{1,2})", name: "month", component: MonthView, props: true },
 	{ path: "/uploads", name: "uploads", component: UploadView },
 	{ path: "/close", name: "close", component: CloseChecklist },
