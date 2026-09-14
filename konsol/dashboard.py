@@ -45,6 +45,7 @@ _LABELS = {
     "Entity": "Entities",
     "Fiscal Period": "Fiscal Periods",
     "Period Status": "Period Statuses",
+    "EPM Fiscal Year": "Fiscal Year",
     "Budget Cycle": "Budget Cycles",
     "Budget Sheet": "Budget Sheets",
     "Budget Cost Center": "Budget Cost Centers",
@@ -97,7 +98,7 @@ _CARDS = [
         "Reporting Hierarchy", "Reporting Hierarchy Member", "Scenario",
     ]),
     ("Reference Data", [
-        "Main Account", "Entity",
+        "Main Account", "EPM Fiscal Year", "Entity",
         "Main Account Category", "Cash Flow Category", "Fiscal Period",
         "Period Status",
     ]),
@@ -143,6 +144,9 @@ def _workspace_needs_refresh():
         return True
     # konsol#182: the group chart joined Reference Data; rebuild once to show it.
     if _dt("Main Account") and "Main Account" not in {l.link_to for l in (ws.links or []) if l.type == "Link"}:
+        return True
+    # konsol#189: EPM Fiscal Year joined Reference Data; rebuild once to show it.
+    if _dt("EPM Fiscal Year") and "EPM Fiscal Year" not in {l.link_to for l in (ws.links or []) if l.type == "Link"}:
         return True
     if ws.number_cards or ws.charts:
         return True
