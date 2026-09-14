@@ -8,6 +8,7 @@ submit is the approval; rates lock when their period closes; a period cannot
 close without them. The controller, the rules module and Period Status's gate
 run here against a stub frappe."""
 import ast
+import calendar
 import contextlib
 import datetime
 import importlib.util
@@ -84,19 +85,39 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
     return frappe
 
 
+def _default_period_dates(fiscal_year, fiscal_period):
+    """The test double's default period_status.period_dates: the old month
+    arithmetic (dbt build_date_from_year_period), so a test that doesn't care
+    about konsol#189's declared calendar needs no changes. Override
+    ``period_dates`` (it is imported by name into konsol.group_rates) for a
+    test that does."""
+    start = datetime.date(max(int(fiscal_year), 1900), min(max(int(fiscal_period), 1), 12), 1)
+    end = datetime.date(start.year, start.month, calendar.monthrange(start.year, start.month)[1])
+    return start, end
+
+
 def _rules_module(frappe, overrides=None):
-    """konsol.group_rates, loaded by path against ``frappe``."""
-    saved = sys.modules.get("frappe")
+    """konsol.group_rates, loaded by path against ``frappe``. konsol.period_status
+    is stubbed too, so the module's ``from konsol.period_status import
+    period_dates, PeriodNotDeclared`` resolves; override ``period_dates`` in
+    ``overrides`` for a konsol#189 test (it becomes the module's own global,
+    so period_start/period_end read the override on every call)."""
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.period_dates = _default_period_dates
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    saved = {n: sys.modules.get(n) for n in ("frappe", "konsol.period_status")}
     sys.modules["frappe"] = frappe
+    sys.modules["konsol.period_status"] = period_status
     try:
         spec = importlib.util.spec_from_file_location("konsol.group_rates", RULES)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
-        if saved is None:
-            sys.modules.pop("frappe", None)
-        else:
-            sys.modules["frappe"] = saved
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
     for k, v in (overrides or {}).items():
         setattr(module, k, v)
     return module
@@ -754,6 +775,32 @@ def test_the_period_date_is_the_warehouse_one():
     assert str(r.period_start(2024, 3)) == "2024-03-01"
     assert str(r.period_start(2024, 0)) == "2024-01-01"
     assert str(r.period_start(2024, 13)) == "2024-12-01"
+
+
+def test_period_dates_come_from_the_declared_calendar():
+    """konsol#189: a 13-period year's P02 is a declared 28-day window, not
+    the calendar month of February. period_start/period_end read exactly
+    what period_status.period_dates says, never invent one."""
+    declared = {(2024, 2): (datetime.date(2024, 1, 29), datetime.date(2024, 2, 25))}
+    r = _rules_module(_frappe({}), {"period_dates": lambda fy, fp: declared[(fy, fp)]})
+    assert (str(r.period_start(2024, 2)), str(r.period_end(2024, 2))) == ("2024-01-29", "2024-02-25")
+    assert r.period_end(2024, 2) != datetime.date(2024, 2, 29), "not Feb's calendar month"
+
+
+def test_undeclared_period_has_no_dates():
+    """An undeclared period raises PeriodNotDeclared; no date is invented."""
+    r = _rules_module(_frappe({}))
+
+    def undeclared(fy, fp):
+        raise r.PeriodNotDeclared(f"FY{fy} has no period {fp}: it has not been declared.")
+    r.period_dates = undeclared
+    for fn in (r.period_start, r.period_end):
+        try:
+            fn(2099, 14)
+        except r.PeriodNotDeclared as e:
+            assert "FY2099 has no period 14" in str(e)
+        else:
+            raise AssertionError("an undeclared period must raise PeriodNotDeclared")
 
 
 ROWS = [
