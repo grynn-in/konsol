@@ -34,18 +34,63 @@ const POLL_MS = 2000;
  * is always empty, then a second request to fill it — one extra round trip on
  * a cold start buys a shell that is correct the first time it renders.
  */
-async function loadPlane(period) {
-	const options = await getLaunchOptions().catch(() => null);
+export async function loadPlane(period, previousOptions = null, previousOptionsYear = null) {
+	// Ask for the shown year's declared periods, not always the newest one
+	// (review finding 4b, PR #192): with no period known yet (the very first
+	// load) there is no year to ask for, so this still gets the newest. A
+	// failed launch_options request keeps whatever options were already
+	// loaded (review finding 1, PR #192 re-review) rather than blanking the
+	// period labels to null until the next successful refresh — but ONLY when
+	// those previous options were fetched for the SAME fiscal year as the one
+	// now being requested (re-review 2 finding 1): otherwise a failed refetch
+	// while moving from FY2025 to FY2026 would keep showing FY2025's periods
+	// labelled as FY2026's. When the year truly can't be told apart (no
+	// period known yet on either side), that counts as "same".
+	const requestedYear = period?.year ?? null;
+	// Compare as strings (a numeric year and its string form are the same
+	// year), and treat "both unknown" as the same year too — that is the
+	// no-period-known-yet case the comment above already relies on. Only a
+	// definite mismatch (one known, the other not, or two different years)
+	// counts as a different year.
+	const sameYear =
+		(requestedYear == null && previousOptionsYear == null) ||
+		(requestedYear != null &&
+			previousOptionsYear != null &&
+			String(requestedYear) === String(previousOptionsYear));
+	let options;
+	let optionsYear;
+	try {
+		options = await getLaunchOptions(requestedYear);
+		// No year was requested (the very first load): the server picked its
+		// newest declared year, so that's whose periods these are.
+		optionsYear = requestedYear ?? options?.fiscal_years?.[0] ?? null;
+	} catch {
+		options = sameYear ? previousOptions : null;
+		optionsYear = sameYear ? previousOptionsYear : null;
+	}
 	const resolved = period || defaultPeriod(options);
 	const data = await getSnapshot(resolved);
-	return { data, options, period: resolved };
+	return { data, options, optionsYear, period: resolved };
+}
+
+/**
+ * Snapshot-only refresh: the poll tick, the Refresh button, and the refresh
+ * after a Start all re-read the close state of the SAME period. None of them
+ * change which fiscal year is shown, so none of them need launch_options
+ * again — only SET_PERIOD does (see `loadPlane`).
+ */
+export async function loadSnapshot(period) {
+	const data = await getSnapshot(period);
+	return { data, period };
 }
 
 export const closeMachine = setup({
 	types: { context: {}, events: {} },
 	actors: {
-		fetchPlane: fromPromise(({ input }) => loadPlane(input?.period)),
-		fetchSnapshot: fromPromise(({ input }) => getSnapshot(input?.period)),
+		fetchPlane: fromPromise(({ input }) =>
+			loadPlane(input?.period, input?.previousOptions, input?.previousOptionsYear)
+		),
+		fetchSnapshot: fromPromise(({ input }) => loadSnapshot(input?.period)),
 		startProcessActor: fromPromise(({ input }) => startProcess(input.processId)),
 		sendReminderActor: fromPromise(({ input }) => sendReminder(input.owner, input.item)),
 		pollTicker: fromCallback(({ sendBack }) => {
@@ -60,11 +105,12 @@ export const closeMachine = setup({
 		assignPlane: assign({
 			data: ({ event }) => event.output.data,
 			options: ({ event }) => event.output.options,
+			optionsYear: ({ event }) => event.output.optionsYear,
 			loadError: null,
 			period: ({ event }) => event.output.period,
 		}),
 		assignSnapshot: assign({
-			data: ({ event }) => event.output,
+			data: ({ event }) => event.output.data,
 			loadError: null,
 		}),
 		assignLoadError: assign({ loadError: ({ event }) => event.error }),
@@ -80,6 +126,7 @@ export const closeMachine = setup({
 	context: {
 		data: null,
 		options: null,
+		optionsYear: null,
 		period: null,
 		loadError: null,
 		toast: null,
@@ -123,18 +170,64 @@ export const closeMachine = setup({
 		loading: {
 			invoke: {
 				src: "fetchPlane",
-				input: ({ context }) => ({ period: context.period }),
+				input: ({ context }) => ({
+					period: context.period,
+					previousOptions: context.options,
+					previousOptionsYear: context.optionsYear,
+				}),
 				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "failed", actions: "assignLoadError" },
 			},
 		},
-		failed: { on: { RETRY: "loading" } },
+		// `failed` also accepts SET_PERIOD, same as `ready` (row 70q2): a
+		// rejected period change (70q) must not trap the user on the period
+		// that just failed — picking a DIFFERENT one from the navigator goes
+		// through the same full reload `changingPeriod` gives `ready`'s
+		// SET_PERIOD, rather than being silently ignored.
+		failed: {
+			on: {
+				RETRY: "loading",
+				SET_PERIOD: { target: "changingPeriod", actions: "setPeriod" },
+			},
+		},
+		// A plain REFRESH (the button, the poll tick, and the refresh after a
+		// Start) re-reads the SAME period's close state. It never needs a new
+		// set of launch_options — only SET_PERIOD does (review finding 1, PR
+		// #192 re-review: re-asking launch_options on every 2s poll tick was
+		// pointless network traffic, and a failed poll blanked the loaded
+		// options to null until the next tick).
 		refreshing: {
 			invoke: {
 				src: "fetchSnapshot",
 				input: ({ context }) => ({ period: context.period }),
 				onDone: { target: "ready", actions: "assignSnapshot" },
 				onError: { target: "ready", actions: "assignLoadError" },
+			},
+		},
+		// SET_PERIOD alone gets the full reload: a step page shown for a
+		// different fiscal year needs THAT year's launch_options (review
+		// finding 4b, PR #192), not the stale one from whichever year loaded
+		// first. A failed launch_options request here keeps the previous
+		// options (`loadPlane`'s `previousOptions` fallback) instead of
+		// blanking period labels to null.
+		// A REJECTED period change goes to `failed`, not back to `ready`
+		// (re-review 2 finding 2, PR #192): `ready` with the new period but the
+		// old data/options would show the wrong period's close state with no
+		// visible error, and a plain Refresh from there would only reload the
+		// snapshot, leaving the options wrong forever. `failed` shows the
+		// error, and RETRY re-runs this same full load (options + snapshot)
+		// for the new period, since `context.period` was already updated by
+		// `setPeriod` before this state was entered.
+		changingPeriod: {
+			invoke: {
+				src: "fetchPlane",
+				input: ({ context }) => ({
+					period: context.period,
+					previousOptions: context.options,
+					previousOptionsYear: context.optionsYear,
+				}),
+				onDone: { target: "ready", actions: "assignPlane" },
+				onError: { target: "failed", actions: "assignLoadError" },
 			},
 		},
 		starting: {
@@ -189,7 +282,7 @@ export const closeMachine = setup({
 			type: "parallel",
 			on: {
 				REFRESH: "refreshing",
-				SET_PERIOD: { target: "refreshing", actions: "setPeriod" },
+				SET_PERIOD: { target: "changingPeriod", actions: "setPeriod" },
 				START_PROCESS: {
 					target: "starting",
 					actions: assign({ pendingProcessId: ({ event }) => event.processId }),
@@ -222,14 +315,24 @@ export const closeMachine = setup({
  * last period in the list": a real fiscal calendar ends with an adjustment
  * period (CLS), and opening the console on CLS would be wrong every month of
  * the year except one.
+ *
+ * "Newest" is decided by value, never by list position: the server
+ * (`orchestrator.api.launch_options`) sends `fiscal_years` newest first, so
+ * the last entry is the OLDEST year, not the newest.
+ *
+ * When no fiscal year is declared at all, there is nothing to default to —
+ * not even today's calendar year (konsol#189 removes every such guess).
  */
 export function defaultPeriod(options) {
 	const years = (options?.fiscal_years || []).map(String);
+	if (!years.length) return { year: null, period: null };
+
 	const real = accountingPeriods(options);
 	const all = (options?.fiscal_periods || []).map((p) => String(p.value));
 	const last = real.length ? real[real.length - 1].value : all[all.length - 1];
+	const newestYear = years.reduce((newest, y) => (Number(y) > Number(newest) ? y : newest));
 	return {
-		year: years.length ? years[years.length - 1] : String(new Date().getFullYear()),
+		year: newestYear,
 		period: last ?? "",
 	};
 }

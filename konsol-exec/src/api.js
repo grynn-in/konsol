@@ -116,11 +116,6 @@ export function cancelRun(name) {
 	return frappeCall("konsol.orchestrator.api.cancel_run", { run_name: name });
 }
 
-/**
- * Option lists for the launch form's dropdowns:
- * `{definitions:[name], fiscal_years:[yr], fiscal_periods:[{value,label}],
- * scopes:[{value,label}]}`. Lets the 4 launch fields be selects, not free text.
- */
 export function setPeriodStatus(fiscalYear, fiscalPeriod, status, reason) {
 	const args = {
 		fiscal_year: String(fiscalYear),
@@ -132,8 +127,17 @@ export function setPeriodStatus(fiscalYear, fiscalPeriod, status, reason) {
 	return frappeCall("konsol.control_api.set_period_status", args);
 }
 
-export function getLaunchOptions() {
-	return frappeCall("konsol.orchestrator.api.launch_options");
+/**
+ * Option lists for the launch form's dropdowns:
+ * `{definitions:[name], fiscal_years:[yr], fiscal_periods:[{value,label,type}],
+ * scopes:[{value,label}]}`. Lets the 4 launch fields be selects, not free
+ * text. `type` (Opening/Regular/Closing/Adjustment, from the declared
+ * calendar) is what `isAccountingPeriod` filters on — pass the year being
+ * shown so the periods come from its declared rows, not the newest year's.
+ */
+export function getLaunchOptions(fiscalYear) {
+	const args = fiscalYear ? { fiscal_year: String(fiscalYear) } : {};
+	return frappeCall("konsol.orchestrator.api.launch_options", args);
 }
 
 /**

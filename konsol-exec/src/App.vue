@@ -23,7 +23,7 @@ import { closeMachine } from "./machines/index.js";
 import { homeMachine } from "./machines/homeMachine.js";
 import { formatPeriod } from "./period.js";
 import { closeSteps } from "./domain.js";
-import { crumbsFor, openCount, parsePeriodRoute } from "./home.js";
+import { crumbsFor, periodCrumb, selectedFor, openCount, parsePeriodRoute, shouldSendPeriod } from "./home.js";
 import { isNoAccess } from "./homeApi.js";
 
 const router = useRouter();
@@ -49,8 +49,16 @@ watch(
 
 const planeLoading = computed(() => snapshot.value.matches("loading"));
 const planeFailed = computed(() => snapshot.value.matches("failed"));
-// The plane only takes SET_PERIOD in `ready`; anywhere else it is dropped.
-const planeReady = computed(() => snapshot.value.matches("ready"));
+// The plane's current top-level state, for shouldSendPeriod: it accepts
+// SET_PERIOD from `ready` and `failed` (row 70q2 review 3 finding 1) — after
+// a rejected period change, picking a different one must still go through,
+// not be dropped because the plane isn't `ready`.
+const planeStateName = computed(() => {
+	for (const s of ["ready", "failed", "loading", "changingPeriod", "refreshing", "starting", "reminding"]) {
+		if (snapshot.value.matches(s)) return s;
+	}
+	return "other";
+});
 
 // ── workspace ──
 const { snapshot: homeSnap, send: homeSend } = useMachine(homeMachine);
@@ -66,12 +74,8 @@ const isMonth = computed(() => route.name === "month");
 const standalone = computed(() => route.name === "uploads");
 const routePeriod = computed(() => (isMonth.value ? parsePeriodRoute(route.params) : null));
 
-/** The period the shell is showing: the URL on a month page, the plane's on a step. */
-const selected = computed(() => {
-	if (isMonth.value) return routePeriod.value;
-	const p = period.value;
-	return p?.year && p?.period !== "" && p?.period != null ? { year: Number(p.year), period: Number(p.period) } : null;
-});
+/** The period the shell is showing: the URL on a month page, the plane's elsewhere — never on the no-period home. */
+const selected = computed(() => selectedFor(route.name, routePeriod.value, period.value));
 
 // Route → home: once per period change.
 watch(
@@ -83,16 +87,16 @@ watch(
 	{ immediate: true }
 );
 
-// Route → plane: whenever the plane is ready and on a different period. It
-// re-checks each time the plane returns to ready, so a SET_PERIOD dropped
-// while it was refreshing or starting a run is sent again.
+// Route → plane: whenever the plane can take it (`ready` or `failed`,
+// row 70u) and on a different period. It re-checks each time the plane's
+// state changes, so a SET_PERIOD dropped while it was loading, refreshing or
+// starting a run is sent again once the plane settles — and a rejected
+// period change no longer traps the user on the period that just failed.
 watch(
-	() => [routePeriod.value?.year, routePeriod.value?.period, planeReady.value],
+	() => [routePeriod.value?.year, routePeriod.value?.period, planeStateName.value],
 	() => {
 		const want = routePeriod.value;
-		if (!want || !planeReady.value) return;
-		const cur = period.value;
-		if (String(cur?.year) !== String(want.year) || String(cur?.period) !== String(want.period)) {
+		if (shouldSendPeriod(planeStateName.value, want, period.value)) {
 			send({ type: "SET_PERIOD", year: String(want.year), period: String(want.period) });
 		}
 	},
@@ -103,9 +107,11 @@ const stepLabel = computed(() => {
 	const id = route.params.step;
 	return id ? closeSteps(data.value).find((s) => s.id === id)?.label : null;
 });
-const crumbs = computed(() =>
-	crumbsFor({ name: route.name, year: selected.value?.year, period: selected.value?.period, stepLabel: stepLabel.value })
-);
+const crumbs = computed(() => {
+	const s = selected.value;
+	const codeLabel = s ? periodCrumb(tree.value, s.year, s.period) : {};
+	return crumbsFor({ name: route.name, year: s?.year, period: s?.period, ...codeLabel, stepLabel: stepLabel.value });
+});
 
 const mineCount = computed(() => {
 	const s = selected.value;

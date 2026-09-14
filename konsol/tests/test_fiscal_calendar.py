@@ -4,10 +4,12 @@ every doctype with fiscal_year + fiscal_period must be classified — a new one
 that is left out would let a period be removed from under its documents.
 
 The module is loaded by path against a stub frappe; sys.modules is restored."""
+import datetime
 import glob
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 
@@ -421,3 +423,95 @@ def test_declare_sm_only_post():
         raise AssertionError("a non-System Manager must be refused")
     assert site.calls == [("only_for", ("System Manager",))], site.calls
     assert wh.calls == []
+
+
+# ---- current_period (konsol#189 review nit 6) -------------------------------
+# home_api.period_tree and control_api's snapshot each used to work out "the
+# declared Regular period covering today" themselves, which could drift. One
+# pure helper here, fed the rows each caller already has: never a guess from
+# today's calendar month/year, since a fiscal year need not run Jan-Dec.
+
+def _cp_row(fiscal_year, fiscal_period, period_type, start, end):
+    return {
+        "fiscal_year": fiscal_year,
+        "fiscal_period": fiscal_period,
+        "period_type": period_type,
+        "start_date": datetime.date.fromisoformat(start),
+        "end_date": datetime.date.fromisoformat(end),
+    }
+
+
+def _getdate(value):
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.date.fromisoformat(str(value)[:10])
+
+
+def _call_current_period(M, rows, today):
+    """``current_period`` does ``import frappe`` lazily, like every other
+    function in this module — the stub must be installed for the call, not
+    just the load."""
+    saved = sys.modules.get("frappe")
+    frappe = types.ModuleType("frappe")
+    utils = types.ModuleType("frappe.utils")
+    utils.getdate = _getdate
+    frappe.utils = utils
+    sys.modules["frappe"] = frappe
+    try:
+        return M.current_period(rows, today)
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
+
+
+def test_current_period_is_the_declared_regular_period_containing_today():
+    """FY2026 runs April 2026 -> March 2027 (a fiscal year need not run
+    Jan-Dec), so today 2027-02-10 is FY2026's P11, not calendar (2027, 2)."""
+    M = _load()
+    today = datetime.date(2027, 2, 10)
+
+    # covered: a Regular row whose dates contain today.
+    rows = [
+        _cp_row(2026, 1, "Regular", "2026-04-01", "2026-04-30"),
+        _cp_row(2026, 11, "Regular", "2027-02-01", "2027-02-28"),
+        _cp_row(2026, 12, "Regular", "2027-03-01", "2027-03-31"),
+    ]
+    assert _call_current_period(M, rows, today) == (2026, 11)
+
+    # uncovered: nothing declared for today.
+    rows_uncovered = [_cp_row(2025, 1, "Regular", "2025-01-01", "2025-01-31")]
+    assert _call_current_period(M, rows_uncovered, today) is None
+
+    # a non-Regular row covering today is ignored (OPN/CLS/Adjustment rows
+    # are never "the current period", even when their dates span it).
+    rows_non_regular = [_cp_row(2026, 0, "Opening", "2027-02-01", "2027-02-28")]
+    assert _call_current_period(M, rows_non_regular, today) is None
+
+
+def test_home_api_and_control_api_call_current_period():
+    """The one helper, not two readers that can drift (konsol#189 review
+    nit 6): both callers must actually call fiscal_calendar.current_period,
+    not just import the module.
+
+    A bare ``"current_period(" in src`` check (the original version of this
+    test, review 2 nit 3) also matches home_api's own ``_current_period(``
+    definition, so it would pass even if that function never called the
+    shared helper. Require the qualified attribute call in home_api.py, and
+    require control_api.py to both import the name from konsol.fiscal_calendar
+    and call it."""
+    with open(os.path.join(APP_DIR, "home_api.py")) as f:
+        home_src = f.read()
+    assert "fiscal_calendar.current_period(" in home_src, (
+        "home_api.py must call fiscal_calendar.current_period(...)"
+    )
+
+    with open(os.path.join(APP_DIR, "control_api.py")) as f:
+        control_src = f.read()
+    assert re.search(
+        r"from konsol\.fiscal_calendar import[^\n]*\bcurrent_period\b", control_src
+    ), "control_api.py must import current_period from konsol.fiscal_calendar"
+    assert "current_period(" in control_src, (
+        "control_api.py must call current_period(...)"
+    )

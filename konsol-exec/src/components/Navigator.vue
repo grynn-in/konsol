@@ -1,10 +1,12 @@
 <script setup>
 /**
- * The fiscal navigator: years as folders holding their fourteen periods
- * (OPN, P01-P12, CLS), each with its close state. It is how people know which
- * year and month they are in (the user's request), so the selected period is
- * always visible and highlighted, and state never depends on colour alone:
- * locked, closed, open and not-started each have their own glyph.
+ * The fiscal navigator: years as folders holding their declared periods,
+ * each with its close state. A year's periods (their codes, labels and how
+ * many there are) come entirely from what it declared — never assumed. It is
+ * how people know which year and period they are in (the user's request), so
+ * the selected period is always visible and highlighted, and state never
+ * depends on colour alone: locked, closed, open and not-started each have
+ * their own glyph.
  */
 import { computed, ref, watch } from "vue";
 import { FeatherIcon } from "frappe-ui";
@@ -37,7 +39,7 @@ function toggle(year) {
 
 const GLYPH = { locked: "lock", closed: "check-circle", open: "disc", future: "circle" };
 const TONE = { locked: "text-ink-gray-4", closed: "text-ink-green-3", open: "text-ink-blue-3", future: "text-ink-gray-3" };
-const KIND = { current: "current", planning: "planning", past: "" };
+const KIND = { current: "current", planning: "planning", past: "", undeclared: "" };
 
 function isSelected(y, p) {
 	return props.selected?.year === y && props.selected?.period === p;

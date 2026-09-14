@@ -17,6 +17,15 @@ function years(options) {
 	return (options?.fiscal_years || []).map(String);
 }
 
+/** `fiscal_years` oldest-first, regardless of the order the server sent it
+ *  in — the server (`orchestrator.api.launch_options`) actually sends it
+ *  newest-first, and nothing here may assume a position means an age. */
+function chronologicalYears(options) {
+	return years(options)
+		.slice()
+		.sort((a, b) => Number(a) - Number(b));
+}
+
 function periods(options) {
 	return (options?.fiscal_periods || []).map((p) => ({ ...p, value: String(p.value) }));
 }
@@ -24,18 +33,22 @@ function periods(options) {
 /**
  * A real accounting period, as opposed to an adjustment period.
  *
- * A fiscal calendar carries more than the twelve months you close: there is an
- * opening period (OPN, 0) and a closing/adjustment period (CLS, 13) that exist
- * to hold brought-forward balances and year-end journals. They are selectable —
- * a controller does sometimes need to run against CLS — but they are never what
- * "close September" means, so they must not be the default.
+ * A fiscal calendar carries more than the periods you close: there is an
+ * opening period (type Opening) and closing/adjustment periods (type Closing
+ * or Adjustment) that exist to hold brought-forward balances and year-end
+ * journals. They are selectable — a controller does sometimes need to run
+ * against CLS — but they are never what "close September" means, so they
+ * must not be the default.
  *
- * 1..12 is the convention the backend already uses: control_api._period_options
- * filters the same range when it builds the period list for the snapshot.
+ * The declared `period_type` decides this, never the period number: a
+ * calendar isn't guaranteed to stop at 12, and a period numbered 13 can be a
+ * real Regular period on some calendars. `type` is the field name the
+ * backend sends for each period (`orchestrator.api.launch_options`,
+ * `home_api.period_tree`), sourced from EPM Fiscal Year Period's
+ * `period_type`.
  */
 export function isAccountingPeriod(p) {
-	const n = Number(p?.value);
-	return Number.isFinite(n) && n >= 1 && n <= 12;
+	return p?.type === "Regular";
 }
 
 /** Display label, e.g. "Sep FY2026". Falls back to the year alone when a whole
@@ -53,7 +66,7 @@ export function formatPeriod(period, options) {
  * clamping — clamping makes a dead button look alive.
  */
 export function stepPeriod(period, options, delta) {
-	const ys = years(options);
+	const ys = chronologicalYears(options);
 	const ps = periods(options);
 	if (!period?.year || !ys.length || !ps.length) return null;
 
@@ -83,19 +96,20 @@ export function canStep(period, options, delta) {
 /** The years offered by the picker, newest first — finance looks backwards far
  *  more often than forwards. */
 export function yearChoices(options) {
-	return years(options).slice().reverse();
+	return chronologicalYears(options).reverse();
 }
 
 export function periodChoices(options) {
 	return periods(options);
 }
 
-/** The twelve you actually close. */
+/** The declared Regular periods — the ones you actually close. */
 export function accountingPeriods(options) {
 	return periods(options).filter(isAccountingPeriod);
 }
 
-/** OPN / CLS and anything else outside 1..12 — shown apart, not hidden. */
+/** Opening, Closing, Adjustment — everything the declared calendar doesn't
+ *  mark Regular — shown apart, not hidden. */
 export function adjustmentPeriods(options) {
 	return periods(options).filter((p) => !isAccountingPeriod(p));
 }

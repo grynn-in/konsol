@@ -451,7 +451,7 @@ field tables) are on konsol#189.
 | PR | what | state |
 |---|---|---|
 | konsol **#191** (PR1) | **EPM Fiscal Year** (parent) + **EPM Fiscal Year Period** (child): Details / Periods / Closing / Connections tabs; Generate Periods (Monthly, 13 × 4 weeks, 4-4-5, optional Opening/Closing); Close / Lock / Reopen for a period or the whole year (role-gated, a reason to reopen, the group-rate gate before closing, all-or-nothing for a year). Every period doctype refuses an undeclared period (a contract test keeps it that way). Readers use the declared calendar. Written through to `epm_staging.fiscal_periods`. Migration patch declares the years documents use. Period Status is read-only history. Four review rounds, every finding fixed test-first and the exploits proven live before and after | merged 14 Sep |
-| PR2 | `orchestrator/fx.py` and `api.fx_rates` join `fiscal_periods`; konsol-exec period vocabulary; SPA rebuild | not started |
+| konsol **#192** (PR2) | The readers use the declared calendar: both fx readers take a rate's date from the declared period's `start_date` (one row per period from `epm_staging.fiscal_periods`), never month arithmetic; the home view's current period is the declared Regular period containing today (or none) and each year's past/current/planning comes from its declared dates; the SPA opens on that period (or a "No declared period covers today" page), shows the server's period codes and labels, treats only Regular periods as accounting periods, picks the newest year by value, and shows "Not declared" instead of Open. Built as a Ralph loop (fixed prompt, one self-contained row per iteration) | merged 14 Sep |
 | PR3 (konsolidat) | `fiscal_periods` source, `silver_group_periods`, replace `build_date_from_year_period`, guard in the TB-only first build | not started |
 | PR4 | Remove Period Status, the Fiscal Period template and `_build_fiscal_vars` | not started |
 
@@ -462,6 +462,8 @@ field tables) are on konsol#189.
 - **Every read a gate decides on is a locking read.** `period_row` locks the year and the period row; the used-period freeze locks the year, then reads documents `LOCK IN SHARE MODE`.
 - **Used periods are frozen:** a row a document uses can't be renumbered, re-dated or deleted, and a used year can't be deleted.
 
+**This site has no FY2026 declared.** After deploying #192 the SPA opens on "No declared period covers today" until someone declares FY2026 in EPM Fiscal Year (a data step, not a code change).
+
 **Verified live (konsolidat.local):** migrate declared 16 years (2010–2025), 224 rows, equal to `epm_staging.fiscal_periods`; a 38-step walkthrough on FY 2099; the two-process race (submit vs close) refused after the fix; the review's three exploits reproduced on the old code and refused on the new; the bench test 19/19. All test data rolled back or deleted (0 left).
 
 **Lessons:**
@@ -469,6 +471,9 @@ field tables) are on konsol#189.
 - **Frappe `is_new()` is falsy for a document built in Python** (it returns `__islocal`). Host stubs must mirror that.
 - **A test gate can pass on 0/0** (zsh doesn't word-split `$VAR`); gates fail on `0/0` and skip lines, one file per argument.
 - **A share lock read through a covering index doesn't block a lock on the row.** `SELECT name … WHERE fiscal_year=… LOCK IN SHARE MODE` locks only the unique-index entry; the close's `WHERE name=… FOR UPDATE` didn't wait, so the first deadlock fix still deadlocked live. Lock the same record the other side locks (select a non-indexed column, or lock by primary key).
+- **A Ralph loop needs the coordinator's gate to be a real review.** PR2 ran one fixed prompt over self-contained rows; the gates (re-running each row's check and reading its diff) found five follow-ups the rows hadn't asked for — a loading-state breadcrumb, year kinds still by calendar year, an empty home route, a calendar-year fallback, and year order — and one loop agent correctly wrote its out-of-scope find up as a new row instead of fixing it.
+- **konsol-exec's Vite build isn't byte-reproducible**: a rebuild can swap the two font files' numbered names and the CSS line pointing at them. Commit the JS a change needs; ignore that churn.
+- **An agent must never change the shared environment.** A loop iteration installed pytest into `.venv` unasked (it now runs 25 more test files; kept). The fixed prompt now says: stop and report instead.
 - **Verify a hot-copy by a symbol it adds.** A checksum check that compared two empty hashes passed while nothing had been copied, and a live B arm then ran the old code.
 
 ## State on 13 Sep — merged, open, next

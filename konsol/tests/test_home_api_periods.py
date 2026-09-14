@@ -31,19 +31,20 @@ def _getdate(value=None):
 
 
 class _Site:
-    def __init__(self, years=(), rows=(), cycles=(), runs=(), perms=()):
+    def __init__(self, years=(), rows=(), cycles=(), runs=(), perms=(), today=TODAY):
         self.years = [_Row(y) for y in years]
         self.rows = [_Row(r) for r in rows]
         self.cycles = [_Row(c) for c in cycles]
         self.runs = [_Row(r) for r in runs]     # Assertion Run, latest first
         self.perms = set(perms)                 # {(doctype, ptype)} the user holds
+        self.today = today                      # override for tests picking a fiscal year off-calendar
 
     def module(self):
         site = self
         frappe = types.ModuleType("frappe")
         utils = types.ModuleType("frappe.utils")
         utils.getdate = _getdate
-        utils.today = lambda: TODAY
+        utils.today = lambda: site.today
         utils.get_fullname = lambda user: user
         frappe.utils = utils
 
@@ -184,8 +185,10 @@ def test_tree_uses_declared_rows():
          "end_date": datetime.date(2025, 2, 28), "status": "Locked"},
     ]
     site = _Site(
-        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"},
-               {"name": "2025", "fiscal_year": 2025, "status": "Closed"}],
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 1, 1), "end_date": datetime.date(2026, 12, 31)},
+               {"name": "2025", "fiscal_year": 2025, "status": "Closed",
+                "start_date": datetime.date(2025, 1, 1), "end_date": datetime.date(2025, 12, 31)}],
         rows=_thirteen_period_rows(2026) + y2025,
         cycles=[{"name": "BC-2026", "fiscal_year": 2026, "status": "Approved", "deadline": None}],
     )
@@ -212,6 +215,7 @@ def test_tree_uses_declared_rows():
 
     closed = years[2025]
     assert closed["declared"] is True
+    assert closed["kind"] == "past"
     assert [r["code"] for r in closed["periods"]] == ["P01", "P02", "CLS"]
     # A Closed year closes its Open rows; a Locked row stays Locked.
     assert [r["status"] for r in closed["periods"]] == ["Closed", "Locked", "Closed"]
@@ -221,7 +225,8 @@ def test_tree_uses_declared_rows():
 
 def test_no_record_is_not_open():
     site = _Site(
-        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"}],
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 1, 1), "end_date": datetime.date(2026, 12, 31)}],
         rows=_thirteen_period_rows(2026),
         cycles=[{"name": "BC-2027", "fiscal_year": 2027, "status": "Draft", "deadline": datetime.date(2026, 11, 30)}],
     )
@@ -230,10 +235,47 @@ def test_no_record_is_not_open():
     assert fy["declared"] is False
     assert fy["periods"] == [], fy["periods"]
     assert fy["budget"] == {"name": "BC-2027", "status": "Draft", "deadline": "2026-11-30"}
-    assert (fy["label"], fy["kind"]) == ("FY2027", "planning")
+    assert (fy["label"], fy["kind"]) == ("FY2027", "undeclared")
     for y in years.values():
         if not y["declared"]:
             assert not y["periods"], y
+
+
+def test_year_kind_from_declared_dates_not_calendar_year():
+    """konsol#189 review finding 2b: the year's kind comes from its own
+    start_date/end_date, never from comparing fiscal_year to today's calendar
+    year. FY2026 runs April 2026 - March 2027, so on 2027-02-10 it is the
+    year in progress ("current"), not "past" as a calendar-year comparison
+    (2026 < 2027) would call it. A year known only from a Budget Cycle (no
+    EPM Fiscal Year row, so no dates) is "undeclared", never "planning"."""
+    site = _Site(
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 4, 1), "end_date": datetime.date(2027, 3, 31)}],
+        rows=_calendar_months(2026, 2026, 4, 12),
+        cycles=[{"name": "BC-2028", "fiscal_year": 2028, "status": "Draft", "deadline": None}],
+        today="2027-02-10",
+    )
+    years = _by_year(_tree(site))
+    assert years[2026]["kind"] == "current"
+    assert years[2028]["declared"] is False
+    assert years[2028]["kind"] == "undeclared"
+
+
+def test_cycle_only_year_is_undeclared_not_planning():
+    """konsol#189 review nit 5 (from 70b2): a year known only from a Budget
+    Cycle has no EPM Fiscal Year row, so no dates to judge past/current/
+    planning by. That is a different fact than "planning" (a future year
+    someone HAS declared): FY2019 is long past, yet a cycle-only FY2019 must
+    still say "undeclared", never "past" and never "planning"."""
+    site = _Site(
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 1, 1), "end_date": datetime.date(2026, 12, 31)}],
+        rows=_thirteen_period_rows(2026),
+        cycles=[{"name": "BC-2019", "fiscal_year": 2019, "status": "Approved", "deadline": None}],
+    )
+    fy = _by_year(_tree(site))[2019]
+    assert fy["declared"] is False
+    assert fy["kind"] == "undeclared"
 
 
 def test_blank_row_status_shown_as_is_not_open():
@@ -251,6 +293,41 @@ def test_blank_row_status_shown_as_is_not_open():
     # every other row is unaffected
     assert by_code["P04"]["status"] == "Closed"
     assert by_code["P06"]["status"] == "Closed"
+
+
+def _calendar_months(fy, start_year, start_month, count):
+    """count consecutive Regular monthly periods starting (start_year,
+    start_month) — a fiscal year that does not run Jan-Dec, so a test using
+    it proves ``current`` isn't guessed from the calendar year/month."""
+    import calendar
+
+    rows = []
+    y, m = start_year, start_month
+    for n in range(1, count + 1):
+        last_day = calendar.monthrange(y, m)[1]
+        rows.append({"parent": str(fy), "fiscal_period": n, "period_code": f"P{n:02d}",
+                     "period_label": None, "period_type": "Regular",
+                     "start_date": datetime.date(y, m, 1), "end_date": datetime.date(y, m, last_day),
+                     "status": "Open"})
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return rows
+
+
+def test_current_is_the_declared_period_containing_today():
+    """``current`` is the declared Regular period whose dates contain today —
+    never guessed from today's calendar month/year (konsol#189 review
+    finding 2). FY2026 runs April 2026 - March 2027, so today 2027-02-10
+    falls in FY2026's P11, not calendar (2027, 2)."""
+    site = _Site(years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"}],
+                 rows=_calendar_months(2026, 2026, 4, 12), today="2027-02-10")
+    assert _tree(site)["current"] == {"fiscal_year": 2026, "fiscal_period": 11}
+
+
+def test_current_is_none_when_nothing_declared_covers_today():
+    site = _Site(years=[], rows=[], today="2026-09-14")
+    assert _tree(site)["current"] is None
 
 
 # --- month() on the declared calendar ---------------------------------------

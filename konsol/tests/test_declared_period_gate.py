@@ -314,3 +314,42 @@ def test_no_zero_count_allow_entries():
     allow at least the offenders it was added for."""
     zero = [key for key, (limit, _reason) in _ALLOWED_FUNCS.items() if limit < 1]
     assert not zero, f"allow-list entries that exempt nothing: {zero}"
+
+
+# ---------------------------------------------------------------------------
+# test_no_absent_means_open_copy (konsol#189 PR2 row 67)
+# ---------------------------------------------------------------------------
+# The SPA still had copy describing the old implied calendar (a template of
+# "fourteen" periods, "1 to 12") or treating an absent close state as Open.
+# The declared calendar means a period only has a state when the server says
+# it is declared; the UI's words must say that, not guess it.
+_KONSOL_EXEC_SRC = os.path.join(os.path.dirname(APP_DIR), "konsol-exec", "src")
+_STALE_COPY_FILES = {
+    "domain.js": os.path.join(_KONSOL_EXEC_SRC, "domain.js"),
+    "SignoffPanel.vue": os.path.join(_KONSOL_EXEC_SRC, "components", "SignoffPanel.vue"),
+    "Navigator.vue": os.path.join(_KONSOL_EXEC_SRC, "components", "Navigator.vue"),
+    "UploadView.vue": os.path.join(_KONSOL_EXEC_SRC, "components", "UploadView.vue"),
+}
+_STALE_COPY_PHRASES = (
+    "no period status record",
+    "fourteen",
+    "1 to 12",
+)
+
+
+def test_no_absent_means_open_copy():
+    """None of the four SPA files may describe the old implied calendar, or
+    fall back an absent/undeclared period status to Open."""
+    offenders = []
+    texts = {}
+    for label, path in _STALE_COPY_FILES.items():
+        assert os.path.exists(path), f"{label}: not found at {path}"
+        with open(path, encoding="utf-8") as f:
+            texts[label] = f.read()
+        lower = texts[label].lower()
+        for phrase in _STALE_COPY_PHRASES:
+            if phrase in lower:
+                offenders.append(f"{label}: contains {phrase!r}")
+    if '|| "Open"' in texts["SignoffPanel.vue"] or "|| 'Open'" in texts["SignoffPanel.vue"]:
+        offenders.append('SignoffPanel.vue: status falls back to || "Open"')
+    assert not offenders, "stale absent-means-open copy:\n" + "\n".join(offenders)

@@ -54,8 +54,18 @@ def test_navigator_state():
     assert M.period_state("Closed", datetime.date(2026, 12, 31), TODAY) == "closed"
 
 
-def test_year_kind():
-    assert [M.year_kind(y, 2026) for y in (2025, 2026, 2027)] == ["past", "current", "planning"]
+def test_year_kind_from_declared_dates():
+    """konsol#189 review finding 2b: year_kind takes the declared year's own
+    start_date/end_date, never the calendar year, so a fiscal year that
+    doesn't run Jan-Dec is labelled by the year in progress, not by matching
+    fiscal_year against today's calendar year."""
+    assert M.year_kind(datetime.date(2025, 1, 1), datetime.date(2025, 12, 31), TODAY) == "past"
+    assert M.year_kind(datetime.date(2026, 1, 1), datetime.date(2026, 12, 31), TODAY) == "current"
+    assert M.year_kind(datetime.date(2027, 1, 1), datetime.date(2027, 12, 31), TODAY) == "planning"
+    # FY2026 runs April 2026 - March 2027: on 2027-02-10 it is the year in
+    # progress, though calendar-year comparison would call it "past".
+    assert M.year_kind(datetime.date(2026, 4, 1), datetime.date(2027, 3, 31),
+                        datetime.date(2027, 2, 10)) == "current"
 
 
 def test_job_titles_follow_priority_and_merge_aliases():

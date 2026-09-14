@@ -1,9 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { formatPeriod, stepPeriod, canStep, yearChoices } from "./period.js";
 
+/* The server (`orchestrator.api.launch_options`) sends `fiscal_years`
+ * newest-first — this fixture matches that real order. `years()`'s callers
+ * must find chronological order from the numeric year value, never from
+ * position in this array. */
 const OPTIONS = {
-	fiscal_years: ["2024", "2025", "2026"],
+	fiscal_years: ["2026", "2025", "2024"],
 	fiscal_periods: [
 		{ value: "7", label: "Jul" },
 		{ value: "8", label: "Aug" },
@@ -60,38 +66,92 @@ test("yearChoices lists newest first — finance looks backwards", () => {
 	assert.deepEqual(yearChoices(OPTIONS), ["2026", "2025", "2024"]);
 });
 
-/* Real fiscal calendars carry an opening and a closing period around the twelve
- * you actually close. Found by deploying against seeded data, where the console
- * opened on "CLS FY2024". */
+/* Real fiscal calendars are declared, not assumed: OPN/CLS/adjustment periods
+ * sit alongside the periods you actually close, and a calendar isn't
+ * guaranteed to stop at 12 — some declare 13 Regular periods. What makes a
+ * period "accounting" is its declared type (the `type` field the backend
+ * sends, from EPM Fiscal Year Period's `period_type`), never its number.
+ * Found by deploying against seeded data, where the console opened on
+ * "CLS FY2024". */
 const REAL_OPTIONS = {
 	fiscal_years: ["2024"],
 	fiscal_periods: [
-		{ value: "0", label: "OPN" },
-		...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: `P${i + 1}` })),
-		{ value: "13", label: "CLS" },
+		{ value: "0", label: "OPN", type: "Opening" },
+		...Array.from({ length: 13 }, (_, i) => ({ value: String(i + 1), label: `P${i + 1}`, type: "Regular" })),
+		{ value: "14", label: "CLS", type: "Closing" },
+		{ value: "15", label: "ADJ1", type: "Adjustment" },
 	],
 };
 
-test("isAccountingPeriod excludes the opening and closing periods", async () => {
+test("isAccountingPeriod goes by the declared type, not the period number", async () => {
 	const { isAccountingPeriod } = await import("./period.js");
-	assert.equal(isAccountingPeriod({ value: "0" }), false, "OPN is not a close period");
-	assert.equal(isAccountingPeriod({ value: "13" }), false, "CLS is not a close period");
-	assert.equal(isAccountingPeriod({ value: "1" }), true);
-	assert.equal(isAccountingPeriod({ value: "12" }), true);
+	assert.equal(isAccountingPeriod({ value: "0", type: "Opening" }), false, "OPN is not a close period");
+	assert.equal(isAccountingPeriod({ value: "13", type: "Regular" }), true, "a 13th Regular period is still accounting");
+	assert.equal(isAccountingPeriod({ value: "14", type: "Closing" }), false, "CLS is not a close period");
+	assert.equal(isAccountingPeriod({ value: "15", type: "Adjustment" }), false, "an adjustment period is not a close period");
+	assert.equal(isAccountingPeriod({ value: "1", type: "Regular" }), true);
 });
 
-test("accountingPeriods keeps twelve, adjustmentPeriods keeps the rest", async () => {
+test("accountingPeriods keeps every declared Regular period, adjustmentPeriods keeps the rest", async () => {
 	const { accountingPeriods, adjustmentPeriods } = await import("./period.js");
-	assert.equal(accountingPeriods(REAL_OPTIONS).length, 12);
-	assert.deepEqual(adjustmentPeriods(REAL_OPTIONS).map((p) => p.label), ["OPN", "CLS"]);
+	assert.equal(accountingPeriods(REAL_OPTIONS).length, 13, "P1..P13 are all declared Regular");
+	assert.deepEqual(adjustmentPeriods(REAL_OPTIONS).map((p) => p.label), ["OPN", "CLS", "ADJ1"]);
 });
 
-test("the app opens on P12, never on CLS", async () => {
+test("the app opens on the latest Regular period, never CLS or an adjustment period", async () => {
 	const { defaultPeriod } = await import("./machines/closeMachine.js");
-	assert.deepEqual(defaultPeriod(REAL_OPTIONS), { year: "2024", period: "12" });
+	assert.deepEqual(defaultPeriod(REAL_OPTIONS), { year: "2024", period: "13" });
 });
 
 test("defaultPeriod still works when a calendar has no adjustment periods", async () => {
 	const { defaultPeriod } = await import("./machines/closeMachine.js");
 	assert.deepEqual(defaultPeriod(OPTIONS), { year: "2026", period: "9" });
+});
+
+/* The server (`orchestrator.api.launch_options`) sends `fiscal_years` newest
+ * first (that's OPTIONS above, now). `defaultPeriod` must not assume an
+ * order either way — it has to find the newest year by value, not by
+ * position in the list — so this fixture keeps an oldest-first list around
+ * to prove that. */
+const NEWEST_FIRST_OPTIONS = {
+	fiscal_years: ["2026", "2025", "2024"],
+	fiscal_periods: [
+		{ value: "7", label: "Jul" },
+		{ value: "8", label: "Aug" },
+		{ value: "9", label: "Sep" },
+	],
+};
+const OLDEST_FIRST_OPTIONS = {
+	...NEWEST_FIRST_OPTIONS,
+	fiscal_years: ["2024", "2025", "2026"],
+};
+
+test("defaultPeriod picks the newest fiscal year regardless of list order", async () => {
+	const { defaultPeriod } = await import("./machines/closeMachine.js");
+	assert.deepEqual(
+		defaultPeriod(NEWEST_FIRST_OPTIONS),
+		{ year: "2026", period: "9" },
+		"fiscal_years newest-first, as the server actually sends it"
+	);
+	assert.deepEqual(
+		defaultPeriod(OLDEST_FIRST_OPTIONS),
+		{ year: "2026", period: "9" },
+		"fiscal_years oldest-first still resolves to the newest year"
+	);
+});
+
+/* With no fiscal year declared at all, there is nothing to default to — not
+ * even today's calendar year (konsol#189 removes every such guess). */
+test("defaultPeriod returns no year when nothing is declared, never the calendar year", async () => {
+	const { defaultPeriod } = await import("./machines/closeMachine.js");
+	assert.deepEqual(
+		defaultPeriod({ fiscal_years: [], fiscal_periods: [] }),
+		{ year: null, period: null },
+		"no declared fiscal year means no default — never today's calendar year"
+	);
+});
+
+test("defaultPeriod never falls back to today's date", () => {
+	const source = readFileSync(fileURLToPath(new URL("./machines/closeMachine.js", import.meta.url)), "utf8");
+	assert.equal(/new Date\s*\(/.test(source), false, "closeMachine.js must not guess the calendar year");
 });

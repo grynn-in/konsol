@@ -60,6 +60,28 @@ def periods_in_use(fiscal_year, lock=False):
     return {int(row[0]) for row in rows if row[0] is not None}
 
 
+def current_period(rows, today):
+    """(fiscal_year, fiscal_period) of the declared Regular row in ``rows``
+    whose ``start_date``..``end_date`` contains ``today``, or ``None`` when
+    none does. ``rows`` is any iterable of dict-likes exposing ``fiscal_year``,
+    ``fiscal_period``, ``period_type``, ``start_date`` and ``end_date`` — what
+    ``fiscal_period_rows()`` returns, or the equivalent a caller already read.
+
+    Shared by ``home_api.period_tree`` and ``control_api``'s snapshot so the
+    two can't drift (konsol#189 review nit 6): never a guess from today's
+    calendar month/year, since a fiscal year need not run Jan-Dec."""
+    import frappe
+
+    getdate = frappe.utils.getdate
+    for row in rows:
+        if row.get("period_type") != "Regular":
+            continue
+        start, end = row.get("start_date"), row.get("end_date")
+        if start and end and getdate(start) <= today <= getdate(end):
+            return (row.get("fiscal_year"), int(row.get("fiscal_period")))
+    return None
+
+
 def _load_sibling(name):
     """Load a sibling konsol module by path (as fiscal_migration_model does),
     so this module keeps loading without frappe or a package-relative import."""

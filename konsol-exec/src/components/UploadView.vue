@@ -86,7 +86,8 @@ function loadNow() {
 					</code>
 				</div>
 				<p class="mt-2 text-sm text-ink-gray-5">
-					Amounts in each entity's own currency, debits and credits both positive. Period 1 to 12.
+					Amounts in each entity's own currency, debits and credits both positive.
+					fiscal_period must match a period declared on that entity's fiscal calendar.
 					The first sheet of an Excel workbook is read.
 				</p>
 			</section>

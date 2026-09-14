@@ -138,16 +138,37 @@ def whoami():
     }
 
 
+def _current_period(rows_by_year, now):
+    """The declared Regular period whose dates contain ``now``: never a guess
+    from today's calendar month/year (konsol#189 review finding 2), since a
+    fiscal year need not run Jan-Dec. ``None`` when no declared Regular period
+    covers today.
+
+    Delegates to ``fiscal_calendar.current_period`` (konsol#189 review nit 6),
+    the one place this logic lives — flattening ``rows_by_year`` (fiscal_year
+    -> its rows, from the query above) back into rows carrying their own
+    ``fiscal_year``, since that helper is fed a flat list."""
+    from konsol import fiscal_calendar
+
+    flat = (dict(r, fiscal_year=fy) for fy, rows in rows_by_year.items() for r in rows)
+    result = fiscal_calendar.current_period(flat, now)
+    if result is None:
+        return None
+    fy, fp = result
+    return {"fiscal_year": fy, "fiscal_period": fp}
+
+
 @frappe.whitelist(methods=["GET"])
 def period_tree():
     _require_konsol_user()
     now = getdate(today())
-    current = now.year
 
     # The declared calendar: each EPM Fiscal Year with its own period rows. A
     # year or period nobody declared is not open; it is not listed as a period.
     declared = {}
-    for y in frappe.db.sql("select name, fiscal_year, status from `tabEPM Fiscal Year`", as_dict=True):
+    for y in frappe.db.sql(
+            "select name, fiscal_year, status, start_date, end_date from `tabEPM Fiscal Year`",
+            as_dict=True):
         if y.fiscal_year is not None:
             declared[str(y.name)] = y
     rows_by_year = {}
@@ -160,6 +181,13 @@ def period_tree():
         if str(r.parent) in declared and r.fiscal_period is not None:
             rows_by_year.setdefault(int(declared[str(r.parent)].fiscal_year), []).append(r)
     year_status = {int(y.fiscal_year): y.status for y in declared.values()}
+    # The declared year's own dates decide its kind (past/current/planning):
+    # never today's calendar year, since a fiscal year need not run Jan-Dec
+    # (konsol#189 review finding 2b). A year known only from a Budget Cycle
+    # has no EPM Fiscal Year row, so no dates, and is "undeclared" below
+    # (konsol#189 review nit 5) — not "planning", which means a future year
+    # someone HAS declared.
+    year_dates = {int(y.fiscal_year): (y.start_date, y.end_date) for y in declared.values()}
     years = set(year_status)
 
     cycles = {}
@@ -189,16 +217,26 @@ def period_tree():
                          "start_date": str(start) if start else None, "status": status,
                          "state": M.period_state(status, start or now, now)})
         cycle = cycles.get(fy)
+        dates = year_dates.get(fy)
+        if fy not in year_status:
+            # Known only from a Budget Cycle: no EPM Fiscal Year row, so no
+            # dates to judge past/current/planning by. That's a different
+            # fact than "planning" (a future year someone HAS declared) —
+            # even a long-past cycle-only year is "undeclared", never "past".
+            kind = "undeclared"
+        else:
+            kind = (M.year_kind(getdate(dates[0]), getdate(dates[1]), now)
+                    if dates and dates[0] and dates[1] else "planning")
         out.append({
             "fiscal_year": fy,
             "label": f"FY{fy}",
-            "kind": M.year_kind(fy, current),
+            "kind": kind,
             "declared": fy in year_status,
             "periods": rows,
             "budget": ({"name": cycle.name, "status": cycle.status,
                         "deadline": str(cycle.deadline) if cycle.deadline else None} if cycle else None),
         })
-    return {"years": out, "current": {"fiscal_year": current, "fiscal_period": now.month}}
+    return {"years": out, "current": _current_period(rows_by_year, now)}
 
 
 def _context(fy, p, start):

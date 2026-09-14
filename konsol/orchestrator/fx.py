@@ -46,9 +46,20 @@ FX_TABLE = "epm_staging.group_exchange_rates"
 # The `source` every row carries: governed by konsol (Group Exchange Rate).
 GOVERNED_SOURCE = "konsol"
 
-# The date a fiscal period's rate applies from (dbt build_date_from_year_period:
-# the 1st of month P; OPN takes January's, CLS December's).
-PERIOD_START_SQL = "makeDate(fiscal_year, greatest(least(fiscal_period, 12), 1), 1)"
+# The date a fiscal period's rate applies from: the declared calendar row's
+# start_date (konsol#189) — a period exists only if EPM Fiscal Year declared
+# it, so this is an INNER JOIN against epm_staging.fiscal_periods, never
+# guessed month arithmetic.
+FISCAL_PERIODS_TABLE = "epm_staging.fiscal_periods"
+
+# fiscal_periods is TRUNCATE+INSERTed on every EPM Fiscal Year save (#189 row
+# 70f); two concurrent resyncs can leave a period twice, which would double
+# every joined rate. Join a one-row-per-period subquery instead of the raw
+# table so a duplicate row is collapsed, never multiplied.
+FISCAL_PERIODS_DEDUP_SQL = (
+    f"(SELECT fiscal_year, fiscal_period, min(start_date) AS start_date "
+    f"FROM {FISCAL_PERIODS_TABLE} GROUP BY fiscal_year, fiscal_period)"
+)
 
 # Validation patterns — every caller-supplied filter must match one of these
 # before it is interpolated, so the query is injection-safe.
@@ -123,10 +134,12 @@ def build_fx_query(filters: Optional[Dict] = None) -> str:
         "        from_currency,\n"
         "        to_currency,\n"
         "        rate,\n"
-        f"        {PERIOD_START_SQL} AS as_of,\n"
+        "        fp.start_date AS as_of,\n"
         "        rate_type,\n"
         f"        '{GOVERNED_SOURCE}' AS source\n"
         f"    FROM {FX_TABLE}\n"
+        f"    INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp\n"
+        "        USING (fiscal_year, fiscal_period)\n"
         ") AS fx"
     )
     if where:

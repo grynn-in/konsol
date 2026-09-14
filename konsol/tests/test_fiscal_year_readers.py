@@ -256,8 +256,20 @@ def _control_api(rows=(), period_rows=None, period_fields=None, today="2026-09-1
     ps.assert_declared = lambda fy, fp: period_row(fy, fp) and None
     ps.set_status = set_status
 
+    def _current_period(rows_arg, now):
+        """Same rule as the real fiscal_calendar.current_period (konsol#189
+        review nit 6): the declared Regular row covering ``now``, or None."""
+        for row in rows_arg:
+            if row.get("period_type") != "Regular":
+                continue
+            start, end = row.get("start_date"), row.get("end_date")
+            if start and end and start <= now <= end:
+                return (row.get("fiscal_year"), row.get("fiscal_period"))
+        return None
+
     fc = types.ModuleType("konsol.fiscal_calendar")
     fc.fiscal_period_rows = lambda: [dict(r) for r in rows]
+    fc.current_period = _current_period
 
     def check_epm_admin():
         calls["check_epm_admin"] += 1
