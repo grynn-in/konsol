@@ -75,6 +75,35 @@ def _row_dicts(doc):
     ]
 
 
+def _stamp(target, new, now):
+    """Set the year's or a row's status to `new`: closed_by/closed_on name the
+    user and time, or are cleared when `new` is Open."""
+    target.status = new
+    if new == fstm.OPEN:
+        target.closed_by = None
+        target.closed_on = None
+    else:
+        target.closed_by = frappe.session.user
+        target.closed_on = now
+
+
+def _rate_failure(fiscal_year, fiscal_period):
+    """The group-rate gate's refusal for one period, or None if it passes.
+    frappe.throw logs its message before raising; the caught refusal's message
+    is taken back off the log, since the caller throws one message naming
+    every failure instead."""
+    from konsol import group_rates
+    log = getattr(getattr(frappe, "local", None), "message_log", None)
+    logged = len(log) if log is not None else 0
+    try:
+        group_rates.assert_rates_complete(fiscal_year, fiscal_period)
+    except frappe.ValidationError as e:
+        if log is not None:
+            del log[logged:]
+        return str(e)
+    return None
+
+
 class EPMFiscalYear(Document):
     def validate(self):
         year = _year_dict(self)
@@ -205,21 +234,82 @@ class EPMFiscalYear(Document):
             group_rates.assert_rates_complete(self.fiscal_year, row.fiscal_period)
 
         now = frappe.utils.now_datetime()
-        row.status = new
-        if new == fstm.OPEN:
-            row.closed_by = None
-            row.closed_on = None
-        else:
-            row.closed_by = frappe.session.user
-            row.closed_on = now
-
-        if text:
-            line = f"{row.period_code} {verb} on {getdate(now)} by {frappe.session.user}: {text}"
-            self.closing_note = f"{self.closing_note}\n{line}" if self.closing_note else line
+        _stamp(row, new, now)
+        self._append_note(row.period_code, verb, text, now)
 
         self.flags.konsol_status_action = True
         self.save()
         return {"fiscal_period": row.fiscal_period, "period_code": row.period_code, "status": new}
+
+    @frappe.whitelist(methods=["POST"])
+    def close_year(self, note=None):
+        """Close the year and every Open row; all or nothing on group rates."""
+        return self._set_year_status(fstm.CLOSED, "closed", note)
+
+    @frappe.whitelist(methods=["POST"])
+    def lock_year(self, note=None):
+        """Lock the year and every Open or Closed row; all or nothing on
+        group rates (only the rows leaving Open are checked)."""
+        return self._set_year_status(fstm.LOCKED, "locked", note)
+
+    @frappe.whitelist(methods=["POST"])
+    def reopen_year(self, reason):
+        """Reopen the year, for a stated reason; its rows stay as they are
+        (each period is reopened on its own)."""
+        return self._set_year_status(fstm.OPEN, "reopened", reason)
+
+    def _set_year_status(self, new, verb, text):
+        """Move the year to `new`, as fiscal_status_model.transition_problem
+        allows for the user's roles. Closing or locking also moves every row
+        looser than `new` to it; every row leaving Open is rate-checked first
+        and, if any fail, one message names them all and nothing changes.
+        Reopening needs a reason and leaves the rows alone. `text` goes onto
+        the closing note with the year and date."""
+        label = f"FY{self.fiscal_year}"
+        current = _status(self.status)
+        if current == new:
+            frappe.throw(f"{label} is already {new}.")
+
+        problem = fstm.transition_problem(current, new, frappe.get_roles())
+        if problem:
+            frappe.throw(f"{label}: {problem}", frappe.PermissionError)
+
+        text = (text or "").strip()
+        moving = []
+        if new == fstm.OPEN:
+            if not text:
+                frappe.throw(f"Give a reason for reopening {label}.")
+        else:
+            moving = [r for r in (self.periods or [])
+                      if fstm.effective_status(new, _status(r.status)) != _status(r.status)]
+            failures = []
+            for r in moving:
+                if _status(r.status) == fstm.OPEN:
+                    failure = _rate_failure(self.fiscal_year, r.fiscal_period)
+                    if failure:
+                        failures.append(f"{r.period_code}: {failure}")
+            if failures:
+                frappe.throw(
+                    f"{label} can't be {verb}: {len(failures)} of its periods fail the "
+                    "group-rate check; nothing was changed.\n" + "\n".join(failures))
+
+        now = frappe.utils.now_datetime()
+        for r in moving:
+            _stamp(r, new, now)
+        _stamp(self, new, now)
+        self._append_note(label, verb, text, now)
+
+        self.flags.konsol_status_action = True
+        self.save()
+        return {"fiscal_year": self.fiscal_year, "status": new,
+                "periods_moved": [r.period_code for r in moving]}
+
+    def _append_note(self, subject, verb, text, now):
+        """Add "<subject> <verb> on <date> by <user>: <text>" to the closing
+        note; nothing when `text` is blank."""
+        if text:
+            line = f"{subject} {verb} on {getdate(now)} by {frappe.session.user}: {text}"
+            self.closing_note = f"{self.closing_note}\n{line}" if self.closing_note else line
 
     def _check_status_fields_unchanged(self, before):
         """Refuse, as a PermissionError, any change to the status fields of
