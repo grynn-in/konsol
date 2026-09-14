@@ -48,9 +48,12 @@ class PeriodStatusBenchTest(unittest.TestCase):
 
     # ---- default ---------------------------------------------------------
 
-    def test_period_with_no_record_is_open(self):
-        self.assertEqual(ps.get_status(YEAR, self.period), ps.OPEN)
-        self.assertTrue(ps.is_open(YEAR, self.period))
+    def test_undeclared_year_is_refused(self):
+        # konsol#189: nothing defaults to Open; an undeclared year is refused.
+        with self.assertRaises(ps.PeriodNotDeclared):
+            ps.get_status("2999", self.period)
+        with self.assertRaises(ps.PeriodNotDeclared):
+            ps.is_open("2999", self.period)
 
     def test_assert_open_passes_while_open(self):
         ps.assert_open(YEAR, self.period)  # must not raise

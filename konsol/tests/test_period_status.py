@@ -140,8 +140,10 @@ def test_set_period_status_is_whitelisted_and_permission_checked():
     assert "@frappe.whitelist()" in src[:start].rsplit("\n\n", 1)[-1] + src[start - 60:start]
 
 
-def test_absent_record_means_open():
-    """No pre-population of the fourteen-by-N grid, and no backfill on upgrade."""
+def test_undeclared_period_is_refused():
+    """konsol#189: only declared periods exist; nothing defaults to Open. The
+    behaviour is exercised in test_period_status_api.py."""
     with open(os.path.join(APP_DIR, "period_status.py")) as f:
         src = f.read()
-    assert "return status or OPEN" in src
+    assert "return status or OPEN" not in src
+    assert "class PeriodNotDeclared" in src
