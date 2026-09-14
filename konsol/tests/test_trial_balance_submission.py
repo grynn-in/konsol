@@ -31,7 +31,8 @@ class _Doc:  # stand-in for frappe.model.document.Document
     pass
 
 
-_stub("frappe")
+# whitelist: the controller's module-level endpoints decorate at import time.
+_stub("frappe", whitelist=lambda *a, **k: (lambda fn: fn))
 _stub("frappe.model")
 _stub("frappe.model.document", Document=_Doc)
 # __path__ makes the stub a package, so the controller's import of the REAL
@@ -40,6 +41,8 @@ _stub("konsol", __path__=[os.path.join(_HERE, "..")])
 _stub("konsol.clickhouse", execute=lambda *a, **k: "", ensure_raw_tables=lambda: None)
 _stub("konsol.period_status", assert_open=lambda *a, **k: None,
       assert_postable=lambda *a, **k: None)
+_ADMIN_CHECKS = []
+_stub("konsol.schema_lifecycle", check_epm_admin=lambda: _ADMIN_CHECKS.append(True))
 
 _spec = importlib.util.spec_from_file_location("tbs_under_test", _SRC)
 _m = importlib.util.module_from_spec(_spec)
@@ -520,3 +523,108 @@ def test_the_claim_carries_the_amount_basis():
     assert "fiscal_period, row_count, claimed_at, amount_basis) VALUES" in claim
     assert claim.endswith(f"2, now(), '{CLOSING}')")
     assert "'b1', 'TBS-1', 'ZZA', 2099, 1, 2, now()" in claim
+
+
+# -- konsolidat#199 (K5): set the basis on batches claimed before it existed ----------------------
+
+_TBS_LIST_JS = os.path.join(_DOCTYPE_DIR, "trial_balance_submission_list.js")
+ALL_BASES = ("Period movement", "Year-to-date movement", "Period-end balance")
+
+
+def test_set_amount_basis_is_an_admin_post_endpoint_that_re_claims():
+    """Source contract: POST-only, EPM Admin, open period, db_set on the
+    submitted document, and a NEW claim row (ClickHouse has no UPDATE worth
+    trusting; ReplacingMergeTree keeps the newest claimed_at)."""
+    with open(_SRC) as f:
+        src = f.read()
+    assert "def set_amount_basis(names, amount_basis)" in src, "set_amount_basis is absent"
+    deco_and_def = src[src.index("def set_amount_basis(") - 60:src.index("def set_amount_basis(")]
+    assert 'whitelist(methods=["POST"])' in deco_and_def
+    body = _inspect.getsource(_m.set_amount_basis)
+    assert "check_epm_admin()" in body
+    assert "canonical(" in body
+    assert "assert_open(" in body and "set the amount basis of a trial balance" in body
+    assert 'db_set("amount_basis"' in body
+    assert "INSERT INTO {CONTROL_TABLE}" in body and "now()" in body
+    assert "docstatus" in body and "not submitted" in body
+    # the gate runs over every document before any write: a closed period on
+    # the third document must not leave the first two re-claimed
+    assert body.index("assert_open(") < body.index('db_set("amount_basis"')
+
+
+class _FakeDoc:
+    def __init__(self, **attrs):
+        self.__dict__.update(attrs)
+        self.sets = []
+
+    def db_set(self, field, value):
+        self.sets.append((field, value))
+        setattr(self, field, value)
+
+
+def _wire(docs):
+    """Point the stubbed frappe at ``docs`` and capture SQL and gates."""
+    sent, gates = [], []
+    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+    _m.assert_open = lambda fy, fp, action="run": gates.append((fy, fp, action))
+    _m.frappe.get_doc = lambda doctype, name: docs[name]
+    _m.frappe.throw = _raise
+    del _ADMIN_CHECKS[:]
+    return sent, gates
+
+
+def _raise(msg, *a, **k):
+    raise RuntimeError(msg)
+
+
+def test_set_amount_basis_updates_submitted_documents_and_skips_drafts():
+    docs = {
+        "TBS-1": _FakeDoc(name="TBS-1", docstatus=1, batch_id="b1", data_area_id="ZZA",
+                          fiscal_year=2099, fiscal_period=3, row_count=7, amount_basis=""),
+        "TBS-2": _FakeDoc(name="TBS-2", docstatus=0, batch_id="b2", data_area_id="ZZB",
+                          fiscal_year=2099, fiscal_period=3, row_count=1, amount_basis=""),
+    }
+    sent, gates = _wire(docs)
+    out = _m.set_amount_basis('["TBS-1", "TBS-2"]', " period-end BALANCE ")
+    assert _ADMIN_CHECKS, "check_epm_admin() was not called"
+    assert out["updated"] == 1
+    assert list(out["skipped"]) == [("TBS-2", "not submitted")] or out["skipped"] == [["TBS-2", "not submitted"]]
+    assert docs["TBS-1"].sets == [("amount_basis", CLOSING)]
+    assert docs["TBS-2"].sets == []
+    assert gates == [(2099, 3, "set the amount basis of a trial balance")]
+    claims = [s for s in sent if s.startswith(f"INSERT INTO {_m.CONTROL_TABLE} ")]
+    assert len(claims) == 1
+    assert "fiscal_period, row_count, claimed_at, amount_basis) VALUES" in claims[0]
+    assert "'b1', 'TBS-1', 'ZZA', 2099, 3, 7, now()" in claims[0]
+    assert claims[0].endswith(f"now(), '{CLOSING}')")
+    # a plain list works too
+    sent, gates = _wire(docs)
+    assert _m.set_amount_basis(["TBS-1"], CLOSING)["updated"] == 1
+
+
+def test_set_amount_basis_refuses_an_unknown_basis_before_touching_anything():
+    docs = {"TBS-1": _FakeDoc(name="TBS-1", docstatus=1, batch_id="b1", data_area_id="ZZA",
+                              fiscal_year=2099, fiscal_period=3, row_count=7, amount_basis="")}
+    sent, gates = _wire(docs)
+    try:
+        _m.set_amount_basis(["TBS-1"], "balances")
+        assert False, "expected a throw"
+    except RuntimeError as e:
+        assert "balances" in str(e)
+        for basis in ALL_BASES:
+            assert basis in str(e)
+    assert sent == [] and gates == [] and docs["TBS-1"].sets == []
+
+
+def test_list_view_offers_set_amount_basis():
+    assert os.path.exists(_TBS_LIST_JS), "trial_balance_submission_list.js is missing"
+    with open(_TBS_LIST_JS) as f:
+        js = f.read()
+    assert 'frappe.listview_settings["Trial Balance Submission"]' in js
+    assert "add_actions_menu_item" in js
+    assert "get_checked_items(true)" in js
+    assert "frappe.prompt" in js
+    assert ".set_amount_basis" in js
+    for basis in ALL_BASES:
+        assert basis in js, basis
+    assert "show_alert" in js and "refresh" in js
