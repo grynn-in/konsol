@@ -185,8 +185,10 @@ def test_tree_uses_declared_rows():
          "end_date": datetime.date(2025, 2, 28), "status": "Locked"},
     ]
     site = _Site(
-        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"},
-               {"name": "2025", "fiscal_year": 2025, "status": "Closed"}],
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 1, 1), "end_date": datetime.date(2026, 12, 31)},
+               {"name": "2025", "fiscal_year": 2025, "status": "Closed",
+                "start_date": datetime.date(2025, 1, 1), "end_date": datetime.date(2025, 12, 31)}],
         rows=_thirteen_period_rows(2026) + y2025,
         cycles=[{"name": "BC-2026", "fiscal_year": 2026, "status": "Approved", "deadline": None}],
     )
@@ -213,6 +215,7 @@ def test_tree_uses_declared_rows():
 
     closed = years[2025]
     assert closed["declared"] is True
+    assert closed["kind"] == "past"
     assert [r["code"] for r in closed["periods"]] == ["P01", "P02", "CLS"]
     # A Closed year closes its Open rows; a Locked row stays Locked.
     assert [r["status"] for r in closed["periods"]] == ["Closed", "Locked", "Closed"]
@@ -222,7 +225,8 @@ def test_tree_uses_declared_rows():
 
 def test_no_record_is_not_open():
     site = _Site(
-        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open"}],
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 1, 1), "end_date": datetime.date(2026, 12, 31)}],
         rows=_thirteen_period_rows(2026),
         cycles=[{"name": "BC-2027", "fiscal_year": 2027, "status": "Draft", "deadline": datetime.date(2026, 11, 30)}],
     )
@@ -235,6 +239,26 @@ def test_no_record_is_not_open():
     for y in years.values():
         if not y["declared"]:
             assert not y["periods"], y
+
+
+def test_year_kind_from_declared_dates_not_calendar_year():
+    """konsol#189 review finding 2b: the year's kind comes from its own
+    start_date/end_date, never from comparing fiscal_year to today's calendar
+    year. FY2026 runs April 2026 - March 2027, so on 2027-02-10 it is the
+    year in progress ("current"), not "past" as a calendar-year comparison
+    (2026 < 2027) would call it. A year known only from a Budget Cycle (no
+    EPM Fiscal Year row, so no dates) is "planning"."""
+    site = _Site(
+        years=[{"name": "2026", "fiscal_year": 2026, "status": "Open",
+                "start_date": datetime.date(2026, 4, 1), "end_date": datetime.date(2027, 3, 31)}],
+        rows=_calendar_months(2026, 2026, 4, 12),
+        cycles=[{"name": "BC-2028", "fiscal_year": 2028, "status": "Draft", "deadline": None}],
+        today="2027-02-10",
+    )
+    years = _by_year(_tree(site))
+    assert years[2026]["kind"] == "current"
+    assert years[2028]["declared"] is False
+    assert years[2028]["kind"] == "planning"
 
 
 def test_blank_row_status_shown_as_is_not_open():
