@@ -34,17 +34,34 @@ const POLL_MS = 2000;
  * is always empty, then a second request to fill it — one extra round trip on
  * a cold start buys a shell that is correct the first time it renders.
  */
-export async function loadPlane(period, previousOptions = null) {
+export async function loadPlane(period, previousOptions = null, previousOptionsYear = null) {
 	// Ask for the shown year's declared periods, not always the newest one
 	// (review finding 4b, PR #192): with no period known yet (the very first
 	// load) there is no year to ask for, so this still gets the newest. A
 	// failed launch_options request keeps whatever options were already
 	// loaded (review finding 1, PR #192 re-review) rather than blanking the
-	// period labels to null until the next successful refresh.
-	const options = await getLaunchOptions(period?.year).catch(() => previousOptions);
+	// period labels to null until the next successful refresh — but ONLY when
+	// those previous options were fetched for the SAME fiscal year as the one
+	// now being requested (re-review 2 finding 1): otherwise a failed refetch
+	// while moving from FY2025 to FY2026 would keep showing FY2025's periods
+	// labelled as FY2026's. When the year truly can't be told apart (no
+	// period known yet on either side), that counts as "same".
+	const requestedYear = period?.year ?? null;
+	const sameYear = requestedYear === previousOptionsYear;
+	let options;
+	let optionsYear;
+	try {
+		options = await getLaunchOptions(requestedYear);
+		// No year was requested (the very first load): the server picked its
+		// newest declared year, so that's whose periods these are.
+		optionsYear = requestedYear ?? options?.fiscal_years?.[0] ?? null;
+	} catch {
+		options = sameYear ? previousOptions : null;
+		optionsYear = sameYear ? previousOptionsYear : null;
+	}
 	const resolved = period || defaultPeriod(options);
 	const data = await getSnapshot(resolved);
-	return { data, options, period: resolved };
+	return { data, options, optionsYear, period: resolved };
 }
 
 /**
@@ -61,7 +78,9 @@ export async function loadSnapshot(period) {
 export const closeMachine = setup({
 	types: { context: {}, events: {} },
 	actors: {
-		fetchPlane: fromPromise(({ input }) => loadPlane(input?.period, input?.previousOptions)),
+		fetchPlane: fromPromise(({ input }) =>
+			loadPlane(input?.period, input?.previousOptions, input?.previousOptionsYear)
+		),
 		fetchSnapshot: fromPromise(({ input }) => loadSnapshot(input?.period)),
 		startProcessActor: fromPromise(({ input }) => startProcess(input.processId)),
 		sendReminderActor: fromPromise(({ input }) => sendReminder(input.owner, input.item)),
@@ -77,6 +96,7 @@ export const closeMachine = setup({
 		assignPlane: assign({
 			data: ({ event }) => event.output.data,
 			options: ({ event }) => event.output.options,
+			optionsYear: ({ event }) => event.output.optionsYear,
 			loadError: null,
 			period: ({ event }) => event.output.period,
 		}),
@@ -97,6 +117,7 @@ export const closeMachine = setup({
 	context: {
 		data: null,
 		options: null,
+		optionsYear: null,
 		period: null,
 		loadError: null,
 		toast: null,
@@ -140,7 +161,11 @@ export const closeMachine = setup({
 		loading: {
 			invoke: {
 				src: "fetchPlane",
-				input: ({ context }) => ({ period: context.period, previousOptions: context.options }),
+				input: ({ context }) => ({
+					period: context.period,
+					previousOptions: context.options,
+					previousOptionsYear: context.optionsYear,
+				}),
 				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "failed", actions: "assignLoadError" },
 			},
@@ -169,7 +194,11 @@ export const closeMachine = setup({
 		changingPeriod: {
 			invoke: {
 				src: "fetchPlane",
-				input: ({ context }) => ({ period: context.period, previousOptions: context.options }),
+				input: ({ context }) => ({
+					period: context.period,
+					previousOptions: context.options,
+					previousOptionsYear: context.optionsYear,
+				}),
 				onDone: { target: "ready", actions: "assignPlane" },
 				onError: { target: "ready", actions: "assignLoadError" },
 			},
