@@ -16,10 +16,14 @@ class Refused(Exception):
     pass
 
 
-def _load(states=None, period_open=True):
+def _load(states=None, period_open=True, declared=True):
     """Import the controller with frappe stubbed. ``states`` is the active
     workflow's [(state, doc_status)], or None for no workflow."""
     checked = []
+
+    def assert_declared(fiscal_year, fiscal_period):
+        if not declared:
+            raise Refused(f"FY{fiscal_year} P{fiscal_period} not declared")
     wf = types.SimpleNamespace(states=[types.SimpleNamespace(state=s, doc_status=str(d)) for s, d in states]) if states else None
 
     def throw(msg, *args, **kwargs):
@@ -49,6 +53,7 @@ def _load(states=None, period_open=True):
     mods["frappe.utils"].now_datetime = lambda: "NOW"
     mods["konsol.clickhouse"].sync_doctype = lambda *a: None
     mods["konsol.period_status"].assert_open = assert_open
+    mods["konsol.period_status"].assert_declared = assert_declared
 
     saved = {name: sys.modules.get(name) for name in mods}
     sys.modules.update(mods)
@@ -123,6 +128,12 @@ def test_a_draft_cannot_be_saved_into_a_submitted_state():
         for status in ("Draft", "Pending Approval"):
             _doc(module, status=status, docstatus=0).validate()
         _doc(module, status="Approved", docstatus=1).validate()
+
+
+def test_an_undeclared_period_is_refused_on_save():
+    for states in (None, WF):
+        module, _ = _load(states, declared=False)
+        assert _refused(_doc(module, status="Draft", docstatus=0).validate), states
 
 
 def test_every_new_adjustment_starts_in_the_first_state_with_no_approver():
