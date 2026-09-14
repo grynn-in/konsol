@@ -125,6 +125,28 @@ def test_no_new_row_in_closed_year():
     assert problems == []
 
 
+def test_blank_status_refused():
+    """konsol#189 PR #191 review, finding 4: Frappe keeps a blank "" status
+    on a REST save (update_if_missing only fills None); row_problems must
+    report it as a normal problem naming the row code, not let it through
+    or raise an uncaught ValueError."""
+    O = M.OPEN
+
+    # a blank status on a row is refused, naming the row's code
+    problems = M.row_problems(O, [{"code": "P04", "status": ""}], {"P04"})
+    assert problems
+    assert "P04" in problems[0]
+
+    # a blank status on the year is refused too
+    problems = M.row_problems("", [{"code": "P04", "status": O}], {"P04"})
+    assert problems
+
+    # case matters: "open" (lowercase) is not one of Open/Closed/Locked
+    problems = M.row_problems("open", [{"code": "P04", "status": "open"}], {"P04"})
+    assert problems
+    assert "P04" in problems[0]
+
+
 def test_unknown_status_raises():
     try:
         M.effective_status("Bogus", M.OPEN)
