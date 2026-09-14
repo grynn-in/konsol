@@ -213,6 +213,18 @@ def test_year_read_is_locking():
     assert all("fiscal_year" in q for q in year_sql), year_sql
 
 
+def test_period_row_read_is_locking():
+    # Live race (konsol#189 task 58): close_period changes only the period row,
+    # so a plain read of it returns the submit's REPEATABLE READ snapshot
+    # (Open) even after the close commits. The row read must lock too.
+    db = _DB(years={"2025": "Open"}, periods={("2025", 14): _period("Open")})
+    with _load(db) as ps:
+        ps.period_row(2025, 14)
+    row_sql = [q for q, _, _ in db.calls if "`tabEPM Fiscal Year Period`" in q]
+    assert row_sql, "period_row must read the period row"
+    assert all("LOCK IN SHARE MODE" in q for q in row_sql), row_sql
+
+
 def test_regular_always_postable():
     db = _DB(years={"2025": "Open"},
              periods={("2025", 3): _period(code="P03", period_type="Regular")})
