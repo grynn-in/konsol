@@ -226,15 +226,18 @@ export const closeMachine = setup({
  * "Newest" is decided by value, never by list position: the server
  * (`orchestrator.api.launch_options`) sends `fiscal_years` newest first, so
  * the last entry is the OLDEST year, not the newest.
+ *
+ * When no fiscal year is declared at all, there is nothing to default to —
+ * not even today's calendar year (konsol#189 removes every such guess).
  */
 export function defaultPeriod(options) {
 	const years = (options?.fiscal_years || []).map(String);
+	if (!years.length) return { year: null, period: null };
+
 	const real = accountingPeriods(options);
 	const all = (options?.fiscal_periods || []).map((p) => String(p.value));
 	const last = real.length ? real[real.length - 1].value : all[all.length - 1];
-	const newestYear = years.length
-		? years.reduce((newest, y) => (Number(y) > Number(newest) ? y : newest))
-		: String(new Date().getFullYear());
+	const newestYear = years.reduce((newest, y) => (Number(y) > Number(newest) ? y : newest));
 	return {
 		year: newestYear,
 		period: last ?? "",
