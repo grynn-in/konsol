@@ -1,8 +1,15 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), and for the group chart (13 Sep night). Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), for the group chart (13 Sep night), and for the declared fiscal calendar (14 Sep). Everything below was verified against the running stack._
 
 ## Pick up here
+
+**Update (14 Sep): fiscal periods are declared, not implied** (konsol#189 PR1,
+konsol **#191**; see "Fiscal Year with declared periods" below). A period
+exists only as a row of an EPM Fiscal Year and is open only when the row and
+its year are both Open. After deploying #191 and migrating, run
+`fiscal_calendar.declare_years_in_use(include_warehouse=True, dry_run=True)`
+and review its list before applying it.
 
 **Update (13 Sep night): the group chart of accounts is live in konsol** (see
 "Group chart of accounts" below). The site no longer depends on an ERP chart:
@@ -431,6 +438,36 @@ refused.
 - **A clean git merge can leave a module-level dict assigned twice.** This happened with `_ADDED_COLUMNS` after a rebase; grep for it.
 - **Resuming a long-lived agent re-reads its whole transcript,** which cost 500–750K tokens per round. Fresh agents with tiny briefs did comparable fixes in 50–170K tokens (see the loop below).
 - **Squash-merging a base PR makes the stacked PR conflict.** Rebase only the stacked PR's own commits onto main (`git rebase --onto origin/main <old base head>`).
+
+## Fiscal Year with declared periods (konsol#189, 14 Sep)
+
+The question that started it: if P14 is opened after 25 months, does it show as
+open in every earlier year? It did. Status lived in standalone Period Status
+records keyed on (year, period), and a missing record meant Open, so any
+period number was "open" everywhere. Now a period exists only if it is
+declared, and nothing defaults to Open. The plan and the design (with the
+field tables) are on konsol#189.
+
+| PR | what | state |
+|---|---|---|
+| konsol **#191** (PR1) | **EPM Fiscal Year** (parent) + **EPM Fiscal Year Period** (child): Details / Periods / Closing / Connections tabs; Generate Periods (Monthly, 13 × 4 weeks, 4-4-5, optional Opening/Closing); Close / Lock / Reopen for a period or the whole year (role-gated, a reason to reopen, the group-rate gate before closing, all-or-nothing for a year). Every period doctype refuses an undeclared period (a contract test keeps it that way). Readers use the declared calendar. Written through to `epm_staging.fiscal_periods`. Migration patch declares the years documents use. Period Status is read-only history | open |
+| PR2 | `orchestrator/fx.py` and `api.fx_rates` join `fiscal_periods`; konsol-exec period vocabulary; SPA rebuild | not started |
+| PR3 (konsolidat) | `fiscal_periods` source, `silver_group_periods`, replace `build_date_from_year_period`, guard in the TB-only first build | not started |
+| PR4 | Remove Period Status, the Fiscal Period template and `_build_fiscal_vars` | not started |
+
+**Rules to keep:**
+- **A period is declared or it doesn't exist.** `period_status.period_row` raises `PeriodNotDeclared`; never add an "Open if missing" fallback, a calendar-year guess or a month-number range. `test_no_stale_period_readers` sweeps for them (its allow-list names functions, not lines).
+- **Effective status = the stricter of the row and its year.** Status fields change only through the actions; the guard permits exactly the changes an action declares.
+- **Actions act on the database copy.** Each whitelisted action locks the year row `FOR UPDATE`, reloads, decides, and saves; nothing the client sent reaches a decision. A year with no name (built in Python) or `__islocal` (desk) is new: Generate Periods inserts it.
+- **Every read a gate decides on is a locking read.** `period_row` locks the year and the period row; the used-period freeze locks the year, then reads documents `LOCK IN SHARE MODE`.
+- **Used periods are frozen:** a row a document uses can't be renumbered, re-dated or deleted, and a used year can't be deleted.
+
+**Verified live (konsolidat.local):** migrate declared 16 years (2010–2025), 224 rows, equal to `epm_staging.fiscal_periods`; a 38-step walkthrough on FY 2099; the two-process race (submit vs close) refused after the fix; the review's three exploits reproduced on the old code and refused on the new; the bench test 19/19. All test data rolled back or deleted (0 left).
+
+**Lessons:**
+- **Locking the parent row doesn't refresh a child-table read.** Under REPEATABLE READ the plain read of the period row returned the old snapshot after a concurrent close committed; only the live race showed it.
+- **Frappe `is_new()` is falsy for a document built in Python** (it returns `__islocal`). Host stubs must mirror that.
+- **A test gate can pass on 0/0** (zsh doesn't word-split `$VAR`); gates fail on `0/0` and skip lines, one file per argument.
 
 ## State on 13 Sep — merged, open, next
 
