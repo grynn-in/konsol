@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parsePeriodRoute } from "./home.js";
 
 // router.js imports Vue single-file components, which plain `node --test`
 // can't load (no .vue transform outside the Vite build), so this checks the
@@ -55,4 +56,36 @@ test("the month route's period pattern matches a three-digit period like 140", (
 		periodRegex.test("140"),
 		`month route's period pattern ${paramPattern} does not match "140"`
 	);
+});
+
+// Re-review nit 3 (from 70g): the route pattern matches /2026/256..999 (up to
+// three digits), but parsePeriodRoute rejects anything above 255 — with no
+// guard, the params reach MonthView unparsable and it shows "Loading…"
+// forever (App.vue's routePeriod stays null, so home is never told to load
+// anything). The month route needs a beforeEnter that sends an unparsable
+// period back to "/" instead of leaving the page stuck.
+test("the month route redirects to / when parsePeriodRoute rejects the params", () => {
+	const lines = routeLines();
+	const month = lines.find((l) => l.includes('name: "month"'));
+	assert.ok(month, "no route named month");
+	assert.ok(month.includes("beforeEnter"), `month route has no beforeEnter guard: ${month}`);
+
+	const source = readFileSync(fileURLToPath(new URL("./router.js", import.meta.url)), "utf8");
+	const guardName = month.match(/beforeEnter:\s*(\w+)/)?.[1];
+	assert.ok(guardName, `could not find the guard function's name: ${month}`);
+	const guardSource = source.match(
+		new RegExp(`function ${guardName}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`)
+	)?.[0];
+	assert.ok(guardSource, `could not find ${guardName}'s body in router.js`);
+
+	// router.js can't be imported directly (it pulls in Vue SFCs), so rebuild
+	// the guard as a real function from its source text, with the real
+	// parsePeriodRoute injected — same approach as the regex tests above.
+	// eslint-disable-next-line no-new-func
+	const guard = new Function("parsePeriodRoute", `${guardSource}\nreturn ${guardName};`)(
+		parsePeriodRoute
+	);
+
+	assert.equal(guard({ params: { year: "2026", period: "256" } }), "/");
+	assert.equal(guard({ params: { year: "2026", period: "9" } }), true);
 });
