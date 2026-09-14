@@ -23,7 +23,7 @@ import { closeMachine } from "./machines/index.js";
 import { homeMachine } from "./machines/homeMachine.js";
 import { formatPeriod } from "./period.js";
 import { closeSteps } from "./domain.js";
-import { crumbsFor, openCount, parsePeriodRoute } from "./home.js";
+import { crumbsFor, periodCrumb, openCount, parsePeriodRoute } from "./home.js";
 import { isNoAccess } from "./homeApi.js";
 
 const router = useRouter();
@@ -103,9 +103,11 @@ const stepLabel = computed(() => {
 	const id = route.params.step;
 	return id ? closeSteps(data.value).find((s) => s.id === id)?.label : null;
 });
-const crumbs = computed(() =>
-	crumbsFor({ name: route.name, year: selected.value?.year, period: selected.value?.period, stepLabel: stepLabel.value })
-);
+const crumbs = computed(() => {
+	const s = selected.value;
+	const codeLabel = s ? periodCrumb(tree.value, s.year, s.period) : {};
+	return crumbsFor({ name: route.name, year: s?.year, period: s?.period, ...codeLabel, stepLabel: stepLabel.value });
+});
 
 const mineCount = computed(() => {
 	const s = selected.value;

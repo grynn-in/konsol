@@ -63,10 +63,23 @@ export function stageTarget(stage, year, period) {
 }
 
 /**
+ * The period's `code`/`label` from the home tree (`period_tree`'s `years`
+ * array, each with a `periods` row per declared period). A period missing
+ * from the tree — not yet loaded, or genuinely undeclared — gets a crumb
+ * that says so, never an invented month name and never `undefined`.
+ */
+export function periodCrumb(tree, year, period) {
+	const yr = (tree?.years || []).find((y) => y.fiscal_year === year);
+	const row = (yr?.periods || []).find((p) => p.fiscal_period === period);
+	if (row) return { code: row.code, label: row.label };
+	return { code: `Period ${period}`, label: "not declared" };
+}
+
+/**
  * The path in the title bar. `where` is {name, year, period, code, label,
  * stepLabel} — `code`/`label` are the server's for that period (e.g. "P09",
- * "Sep 2026"), shown as-is; the fiscal year is not a page, so it carries no
- * link.
+ * "Sep 2026", from `periodCrumb`), shown as-is; the fiscal year is not a
+ * page, so it carries no link.
  */
 export function crumbsFor(where) {
 	const { name, year, period, code, label, stepLabel } = where || {};
