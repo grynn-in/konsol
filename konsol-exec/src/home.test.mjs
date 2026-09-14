@@ -65,7 +65,21 @@ test("periodCrumb reads the server's code/label from the tree; an undeclared per
 	assert.deepEqual(periodCrumb(tree, 2026, 9), { code: "P09", label: "Sep 2026" });
 	assert.deepEqual(periodCrumb(tree, 2026, 14), { code: "Period 14", label: "not declared" });
 	assert.deepEqual(periodCrumb(tree, 2099, 1), { code: "Period 1", label: "not declared" });
-	assert.deepEqual(periodCrumb(null, 2026, 9), { code: "Period 9", label: "not declared" });
+});
+
+test("periodCrumb makes no 'not declared' claim while the home tree hasn't loaded yet", () => {
+	// No tree at all (still loading): no claim, just the bare period number.
+	assert.deepEqual(periodCrumb(null, 2026, 9), { code: "Period 9", label: "" });
+	assert.deepEqual(periodCrumb(undefined, 2026, 9), { code: "Period 9", label: "" });
+	assert.deepEqual(periodCrumb({}, 2026, 9), { code: "Period 9", label: "" });
+
+	// A loaded tree that simply doesn't have the period is still "not declared".
+	const tree = { years: [{ fiscal_year: 2026, periods: [{ fiscal_period: 9, code: "P09", label: "Sep 2026" }] }] };
+	assert.deepEqual(periodCrumb(tree, 2026, 14), { code: "Period 14", label: "not declared" });
+
+	// crumbsFor must not render a dangling " · " when the label is empty.
+	const crumbs = crumbsFor({ name: "month", year: 2026, period: 9, ...periodCrumb(null, 2026, 9) });
+	assert.deepEqual(crumbs.map((c) => c.label), ["FY2026", "Period 9", "Close"]);
 });
 
 test("App.vue's exact crumb inputs (name, year, period, stepLabel) plus the tree give the server's code/label; nothing ever says undefined", () => {
