@@ -253,6 +253,90 @@ def test_mid_period_start_is_not_blocked_by_its_own_period():
             "Cannot cancel an ownership period: it changes fiscal period P03 of FY2025, which is closed.")
 
 
+def _ownership_period_module(period_status, next_start=None):
+    """konsol.consolidation.doctype.ownership_period.ownership_period, loaded
+    by path against a minimal frappe (only frappe.db.get_value, for the next
+    ownership period's effective_date) and the already-loaded (sqlite-backed)
+    ``period_status`` module, so before_cancel's own combination of
+    ``next_start`` and ``first_period_affected`` runs against real declared
+    rows, not a mock of period_status."""
+    frappe = types.ModuleType("frappe")
+    frappe.db = types.SimpleNamespace(get_value=lambda *a, **k: next_start)
+    document_mod = types.ModuleType("frappe.model.document")
+
+    class Document:
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+
+    document_mod.Document = Document
+    clickhouse = types.ModuleType("konsol.clickhouse")
+    clickhouse.sync_doctype_after_commit = lambda *a, **k: None
+    mods = {
+        "frappe": frappe,
+        "frappe.model": types.ModuleType("frappe.model"),
+        "frappe.model.document": document_mod,
+        "konsol": types.ModuleType("konsol"),
+        "konsol.clickhouse": clickhouse,
+        "konsol.period_status": period_status,
+    }
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "ownership_period", "ownership_period.py")
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("ownership_period_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    return module
+
+
+def test_cancel_past_last_declared_period():
+    """konsol#191 review finding 5: first_period_affected returns None past
+    the last declared period (on main it always returned a date). Cancelling
+    an Ownership Period whose next sibling starts after the last declared
+    period must not raise TypeError from comparing a date with that None:
+    with no later declared period, the ownership's own end stays the bound,
+    and the gate still runs on whichever declared periods are in range."""
+    db = _SqliteDB(
+        years={2024: "Open", 2025: "Open"},
+        periods=[
+            (2024, 11, "P11", "2024-11-01", "2024-11-30", "Open"),
+            (2024, 12, "P12", "2024-12-01", "2024-12-31", "Open"),
+            (2025, 1, "P01", "2025-01-01", "2025-01-31", "Closed"),
+            (2025, 2, "P02", "2025-02-01", "2025-02-28", "Open"),
+        ],
+    )
+    with _period_status(db) as ps:
+        # The next Ownership Period for the same group/entity starts after
+        # FY2025 P02, the last declared period: first_period_affected(next_start)
+        # is None.
+        next_start = datetime.date(2026, 1, 1)
+
+        # No declared period between effective_date and end_date is closed:
+        # accepted, with no TypeError even though end_date is past the last
+        # declared period.
+        module = _ownership_period_module(ps, next_start=next_start)
+        module.OwnershipPeriod(
+            consolidation_group="CG1", data_area_id="E1", name="OP-1",
+            effective_date=datetime.date(2025, 2, 1),
+            end_date=datetime.date(2026, 6, 30)).before_cancel()
+
+        # FY2025 P01 is Closed and in range: the gate still refuses, rather
+        # than crashing.
+        module = _ownership_period_module(ps, next_start=next_start)
+        doc = module.OwnershipPeriod(
+            consolidation_group="CG1", data_area_id="E1", name="OP-2",
+            effective_date=datetime.date(2024, 11, 1),
+            end_date=datetime.date(2026, 6, 30))
+        assert _refused(doc.before_cancel) == (
+            "Cannot cancel an ownership period: it changes fiscal period P01 of FY2025, which is closed.")
+
+
 def test_budget_cycle_locks_before_the_transition_and_pushes_after_the_commit():
     """The D365 push/withdraw calls are untouched (the write-back is being
     redesigned); they only run after the commit now, with the sheet sync."""
