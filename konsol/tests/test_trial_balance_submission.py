@@ -545,7 +545,11 @@ def test_set_amount_basis_is_an_admin_post_endpoint_that_re_claims():
     assert "canonical(" in body
     assert "assert_open(" in body and "set the amount basis of a trial balance" in body
     assert 'db_set("amount_basis"' in body
-    assert "INSERT INTO {CONTROL_TABLE}" in body and "now()" in body
+    # the re-claim is the SAME INSERT on_submit issues, via the shared helper
+    assert "execute(_claim_sql(doc, basis))" in body
+    claim = _inspect.getsource(_m._claim_sql)
+    assert "INSERT INTO {CONTROL_TABLE}" in claim and "now()" in claim and "amount_basis" in claim
+    assert "_claim_sql(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
     assert "docstatus" in body and "not submitted" in body
     # the gate runs over every document before any write: a closed period on
     # the third document must not leave the first two re-claimed

@@ -40,6 +40,7 @@ refuses the file, since one file holds one basis. A blank cell is "not given".
 
 import csv
 import io
+import json
 import math
 import uuid
 
@@ -48,7 +49,9 @@ from frappe.model.document import Document
 
 from konsol.clickhouse import ensure_raw_tables, execute
 from konsol.period_status import assert_open, assert_postable
-from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, COLUMN as BASIS, basis_problems
+from konsol.tb_basis_model import (
+    ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
+)
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
@@ -304,6 +307,75 @@ def _sql_str(value):
     return str(value).replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _claim_sql(doc, basis):
+    """The control-table INSERT that claims ``doc``'s batch with ``basis``.
+
+    One text for the first claim (on_submit) and a re-claim (set_amount_basis):
+    ReplacingMergeTree(claimed_at) keeps the newest row per batch_id, so a
+    later INSERT with the same batch_id and now() supersedes the earlier one."""
+    return (
+        f"INSERT INTO {CONTROL_TABLE} "
+        "(batch_id, submission_name, data_area_id, fiscal_year, "
+        "fiscal_period, row_count, claimed_at, amount_basis) VALUES "
+        f"('{_sql_str(doc.batch_id)}', '{_sql_str(doc.name)}', "
+        f"'{_sql_str(doc.data_area_id)}', {int(doc.fiscal_year)}, "
+        f"{int(doc.fiscal_period)}, {int(doc.row_count)}, now(), "
+        f"'{_sql_str(basis)}')"
+    )
+
+
+@frappe.whitelist(methods=["POST"])
+def set_amount_basis(names, amount_basis):
+    """Declare the Amount Basis of already-submitted trial balances (konsolidat#199).
+
+    Batches claimed before the basis existed carry ``''`` and the build
+    preflight refuses them; this is the way to say what they hold without
+    cancel-amend-resubmit, which would give every one a new batch_id.
+
+    Why a NEW claim row rather than an UPDATE: ClickHouse has no transactions
+    and ALTER ... UPDATE is an asynchronous mutation, while the claim is the
+    batch's commit point (module docstring). The control table is a
+    ReplacingMergeTree(claimed_at), so inserting the same batch_id with now()
+    and the basis is exactly "the latest claim wins": bronze takes the newest
+    claim per batch, the landed rows are never touched, and a cancel still
+    deletes every claim of the batch.
+
+    EPM Admin only. ``names`` is a list (or its JSON) of Trial Balance
+    Submission names; ``amount_basis`` is matched case- and space-insensitively
+    against the three bases. Every named document's period must be Open: the
+    gate runs over all of them before anything is written, so a closed period
+    on the last one does not leave the first ones re-claimed. Drafts and
+    cancelled documents are skipped, not refused: the basis is set on their
+    form. Returns ``{"updated": n, "skipped": [(name, why), ...]}``.
+    """
+    from konsol.schema_lifecycle import check_epm_admin
+
+    check_epm_admin()
+    basis = canonical(amount_basis)
+    if basis is None:
+        allowed = ", ".join(f'"{b}"' for b in AMOUNT_BASES)
+        frappe.throw(f"{amount_basis!r} is not an amount basis: use one of {allowed}.")
+    if isinstance(names, str):
+        names = json.loads(names)
+
+    docs, skipped = [], []
+    for name in names:
+        doc = frappe.get_doc("Trial Balance Submission", name)
+        if doc.docstatus != 1:
+            skipped.append((name, "cancelled" if doc.docstatus == 2 else "not submitted"))
+            continue
+        assert_open(doc.fiscal_year, doc.fiscal_period,
+                    action="set the amount basis of a trial balance")
+        docs.append(doc)
+
+    for doc in docs:
+        # db_set: the document is submitted, and amount_basis is
+        # allow_on_submit; the full save path is neither needed nor allowed.
+        doc.db_set("amount_basis", basis)
+        execute(_claim_sql(doc, basis))
+    return {"updated": len(docs), "skipped": skipped}
+
+
 class TrialBalanceSubmission(Document):
 
     def validate(self):
@@ -378,15 +450,7 @@ class TrialBalanceSubmission(Document):
         # to bronze; a crash before it leaves unclaimed rows for the reaper.
         # The claim also carries the amount basis (konsolidat#199): it is a
         # property of the batch, not of a row, and bronze normalises on it.
-        execute(
-            f"INSERT INTO {CONTROL_TABLE} "
-            "(batch_id, submission_name, data_area_id, fiscal_year, "
-            "fiscal_period, row_count, claimed_at, amount_basis) VALUES "
-            f"('{_sql_str(self.batch_id)}', '{_sql_str(self.name)}', "
-            f"'{_sql_str(self.data_area_id)}', {int(self.fiscal_year)}, "
-            f"{int(self.fiscal_period)}, {int(self.row_count)}, now(), "
-            f"'{_sql_str(self.amount_basis)}')"
-        )
+        execute(_claim_sql(self, self.amount_basis))
 
     def before_cancel(self):
         """validate() isn't run on cancel, so its period gate never applied
