@@ -588,33 +588,47 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
 
 # -- the close gate -------------------------------------------------------------------
 
-def _approved_keys(fiscal_year, fiscal_period):
-    """The (from, to, rate_type) of every approved rate for the period, read
-    LOCK IN SHARE MODE: a plain read (frappe.get_all) can return this
-    transaction's REPEATABLE READ snapshot, which a rate cancelled and
-    committed while a close waited on the year lock would still show as
-    approved (PR #191 re-review finding 4; mirrors period_status.period_row
-    and fiscal_calendar.periods_in_use(lock=True))."""
+def _approved_keys(fiscal_year, fiscal_period, lock=False):
+    """The (from, to, rate_type) of every approved rate for the period.
+
+    Plain read by default: this is also called on every view of the
+    read-only home screen (home_api._rate_gate), where LOCK IN SHARE MODE
+    would take share locks on Group Exchange Rate rows and can block rate
+    saves for the request's duration.
+
+    ``lock=True`` reads LOCK IN SHARE MODE instead: a plain read
+    (frappe.get_all) can return this transaction's REPEATABLE READ snapshot,
+    which a rate cancelled and committed while a close waited on the year
+    lock would still show as approved (PR #191 re-review finding 4; mirrors
+    period_status.period_row and fiscal_calendar.periods_in_use(lock=True)).
+    Only the close gate (assert_rates_complete) passes it."""
     rows = frappe.db.sql(
         "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s "
-        "LOCK IN SHARE MODE",
+        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s"
+        + (" LOCK IN SHARE MODE" if lock else ""),
         (1, int(fiscal_year), int(fiscal_period)),
     )
     return {(f, t, rt) for f, t, rt in rows}
 
 
-def missing_rates(fiscal_year, fiscal_period, pairs=None):
+def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False):
     pairs = required_pairs(fiscal_year, fiscal_period) if pairs is None else pairs
-    have = _approved_keys(fiscal_year, fiscal_period)
+    have = _approved_keys(fiscal_year, fiscal_period, lock=lock)
     return sorted((f, t, rt) for f, t in pairs for rt in RATE_TYPES if (f, t, rt) not in have)
 
 
-def rate_gate(fiscal_year, fiscal_period):
+def rate_gate(fiscal_year, fiscal_period, lock=False):
     """What the close gate says: (missing keys, None, blockers), or (None, why
     the warehouse can't answer, []). ``blockers`` names each group the period
     translates into that has no reporting currency. The role home shows the
     same answer.
+
+    ``lock`` is opt-in and passed through to ``_approved_keys``: plain by
+    default, which is how home_api._rate_gate calls this on every view of the
+    read-only home screen. Only assert_rates_complete passes ``lock=True``,
+    to see a rate committed while the close waited on the year lock (PR #191
+    re-review finding 4) — a share lock there is fine, since a close is rare
+    and already holds the year lock.
 
     Fails closed. Only a warehouse that has never built a trial balance owes
     nothing: the read fails with UNKNOWN_TABLE or UNKNOWN_DATABASE AND
@@ -632,7 +646,7 @@ def rate_gate(fiscal_year, fiscal_period):
             except Exception:  # noqa: BLE001 — can't tell, so fail closed
                 pass
         return None, type(e).__name__ + (f" {', '.join(names)}" if names else ""), []
-    return missing_rates(fiscal_year, fiscal_period, pairs), None, [
+    return missing_rates(fiscal_year, fiscal_period, pairs, lock=lock), None, [
         f"Consolidation Group {g} has no reporting currency" for g in groups]
 
 
@@ -642,7 +656,7 @@ def assert_rates_complete(fiscal_year, fiscal_period):
 
     The pairs come from the last build (``translation_needs``): the gate checks
     what that build translates, not ownership edited since."""
-    missing, error, blockers = rate_gate(fiscal_year, fiscal_period)
+    missing, error, blockers = rate_gate(fiscal_year, fiscal_period, lock=True)
     if error:
         frappe.throw(
             f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: the warehouse could not "
