@@ -64,6 +64,22 @@ def test_fx_rates_is_read_only_and_reads_the_governed_rates():
     assert "int(limit)" in src and "min(" in src
 
 
+def test_fx_rates_period_start_from_rows():
+    """konsol#189: period_start/as_of come from the declared calendar row
+    (epm_staging.fiscal_periods.start_date), never guessed month arithmetic."""
+    calls = []
+    fx_rates = _fx_rates(lambda sql, params=None: calls.append((sql, params)) or
+                         '{"data": []}')
+    fx_rates(as_of="2099-12-31")
+    [(sql, params)] = calls
+    assert "INNER JOIN epm_staging.fiscal_periods" in sql
+    assert "toString(fp.start_date) AS period_start" in sql
+    assert "fp.start_date <= {asof:Date}" in sql
+    assert "makeDate" not in sql
+    assert "least(" not in sql
+    assert "greatest(" not in sql
+
+
 def test_filters_are_bound_as_param_prefixed_http_parameters():
     """#175: ClickHouse reads a bare query-string name as a SETTING, so every
     filtered call failed with UNKNOWN_SETTING. Values go as param_<name>."""
