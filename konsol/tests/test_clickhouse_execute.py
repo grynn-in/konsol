@@ -91,3 +91,31 @@ def test_execute_sends_sql_in_body():
     url_params = kwargs.get("params") or {}
     assert "query" not in url_params, "SQL must not be duplicated into the URL params"
     assert url_params.get("param_x") == "1"
+
+
+class _FailingResp:
+    """A ClickHouse HTTP error: the status is generic, the body says why."""
+    status_code = 500
+    text = "Code: 47. DB::Exception: Unknown expression identifier 'amount_basis' in scope ... (UNKNOWN_IDENTIFIER)"
+
+    def raise_for_status(self):
+        raise requests.HTTPError("500 Server Error: Internal Server Error for url: http://ch:8123/")
+
+
+def test_execute_error_carries_clickhouse_body():
+    """konsolidat#199 (PR #201 review): callers classify ClickHouse errors by
+    their text (tasks._batches_without_basis looks for UNKNOWN_IDENTIFIER /
+    Missing columns). requests' HTTPError message is only "500 Server Error
+    ... for url", so the body must be put into the raised error."""
+    module, _ = _load_clickhouse()
+    module.get_connection = lambda: {"user": "u", "password": "p", "verify": False}
+    module.connection_url = lambda conn: "http://ch:8123/"
+    with patch.object(module.requests, "post", return_value=_FailingResp()):
+        try:
+            module.execute("SELECT argMax(amount_basis, claimed_at) FROM t")
+        except Exception as e:  # noqa: BLE001
+            message = str(e)
+        else:
+            raise AssertionError("execute() did not raise on HTTP 500")
+    assert "UNKNOWN_IDENTIFIER" in message and "amount_basis" in message, message
+    assert "500" in message
