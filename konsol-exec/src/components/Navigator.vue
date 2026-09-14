@@ -39,7 +39,7 @@ function toggle(year) {
 
 const GLYPH = { locked: "lock", closed: "check-circle", open: "disc", future: "circle" };
 const TONE = { locked: "text-ink-gray-4", closed: "text-ink-green-3", open: "text-ink-blue-3", future: "text-ink-gray-3" };
-const KIND = { current: "current", planning: "planning", past: "" };
+const KIND = { current: "current", planning: "planning", past: "", undeclared: "" };
 
 function isSelected(y, p) {
 	return props.selected?.year === y && props.selected?.period === p;

@@ -178,7 +178,9 @@ def period_tree():
     # The declared year's own dates decide its kind (past/current/planning):
     # never today's calendar year, since a fiscal year need not run Jan-Dec
     # (konsol#189 review finding 2b). A year known only from a Budget Cycle
-    # has no EPM Fiscal Year row, so no dates, and is "planning" below.
+    # has no EPM Fiscal Year row, so no dates, and is "undeclared" below
+    # (konsol#189 review nit 5) — not "planning", which means a future year
+    # someone HAS declared.
     year_dates = {int(y.fiscal_year): (y.start_date, y.end_date) for y in declared.values()}
     years = set(year_status)
 
@@ -210,8 +212,15 @@ def period_tree():
                          "state": M.period_state(status, start or now, now)})
         cycle = cycles.get(fy)
         dates = year_dates.get(fy)
-        kind = (M.year_kind(getdate(dates[0]), getdate(dates[1]), now)
-                if dates and dates[0] and dates[1] else "planning")
+        if fy not in year_status:
+            # Known only from a Budget Cycle: no EPM Fiscal Year row, so no
+            # dates to judge past/current/planning by. That's a different
+            # fact than "planning" (a future year someone HAS declared) —
+            # even a long-past cycle-only year is "undeclared", never "past".
+            kind = "undeclared"
+        else:
+            kind = (M.year_kind(getdate(dates[0]), getdate(dates[1]), now)
+                    if dates and dates[0] and dates[1] else "planning")
         out.append({
             "fiscal_year": fy,
             "label": f"FY{fy}",
