@@ -2,6 +2,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import get_datetime, getdate
 
+from konsol import fiscal_calendar
 from konsol import fiscal_status_model as fstm
 from konsol import fiscal_structure_model as fsm
 
@@ -46,24 +47,34 @@ def _status_values(doc):
     )
 
 
+def _year_dict(doc):
+    """The year fields as fiscal_structure_model reads them."""
+    return {
+        "year": _int(doc.fiscal_year),
+        "start_date": _date(doc.start_date),
+        "end_date": _date(doc.end_date),
+    }
+
+
+def _row_dicts(doc):
+    """The period rows as fiscal_structure_model reads them."""
+    return [
+        {
+            "period": _int(r.fiscal_period),
+            "code": r.period_code,
+            "type": r.period_type,
+            "start_date": _date(r.start_date),
+            "end_date": _date(r.end_date),
+            "status": _status(r.status),
+        }
+        for r in (doc.periods or [])
+    ]
+
+
 class EPMFiscalYear(Document):
     def validate(self):
-        year = {
-            "year": _int(self.fiscal_year),
-            "start_date": _date(self.start_date),
-            "end_date": _date(self.end_date),
-        }
-        rows = [
-            {
-                "period": _int(r.fiscal_period),
-                "code": r.period_code,
-                "type": r.period_type,
-                "start_date": _date(r.start_date),
-                "end_date": _date(r.end_date),
-                "status": _status(r.status),
-            }
-            for r in (self.periods or [])
-        ]
+        year = _year_dict(self)
+        rows = _row_dicts(self)
 
         errors = (
             fsm.period_problems(rows)
@@ -79,8 +90,26 @@ class EPMFiscalYear(Document):
             None if before is None else {r.period_code for r in (before.periods or [])}
         )
         errors += fstm.row_problems(_status(self.status), rows, previous_codes)
+
+        # Periods documents already use are frozen. A new year has no saved
+        # version to compare with, and the migration patch creates years from
+        # data that already uses them.
+        if before is not None and not self.flags.konsol_fiscal_migration:
+            errors += fsm.used_period_problems(
+                _year_dict(before), year, _row_dicts(before), rows,
+                fiscal_calendar.periods_in_use(self.fiscal_year))
         if errors:
             frappe.throw("\n".join(errors))
+
+    def on_trash(self):
+        """Refuse deleting a year whose periods documents use. on_trash runs
+        before the delete (after_delete would be too late to refuse)."""
+        used = fiscal_calendar.periods_in_use(self.fiscal_year)
+        if used:
+            frappe.throw(
+                f"FY{self.fiscal_year} can't be deleted: "
+                f"documents use {len(used)} of its periods."
+            )
 
     def _check_status_fields_unchanged(self, before):
         """Refuse, as a PermissionError, any change to the status fields of
