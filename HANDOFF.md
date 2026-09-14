@@ -450,7 +450,7 @@ field tables) are on konsol#189.
 
 | PR | what | state |
 |---|---|---|
-| konsol **#191** (PR1) | **EPM Fiscal Year** (parent) + **EPM Fiscal Year Period** (child): Details / Periods / Closing / Connections tabs; Generate Periods (Monthly, 13 × 4 weeks, 4-4-5, optional Opening/Closing); Close / Lock / Reopen for a period or the whole year (role-gated, a reason to reopen, the group-rate gate before closing, all-or-nothing for a year). Every period doctype refuses an undeclared period (a contract test keeps it that way). Readers use the declared calendar. Written through to `epm_staging.fiscal_periods`. Migration patch declares the years documents use. Period Status is read-only history | open |
+| konsol **#191** (PR1) | **EPM Fiscal Year** (parent) + **EPM Fiscal Year Period** (child): Details / Periods / Closing / Connections tabs; Generate Periods (Monthly, 13 × 4 weeks, 4-4-5, optional Opening/Closing); Close / Lock / Reopen for a period or the whole year (role-gated, a reason to reopen, the group-rate gate before closing, all-or-nothing for a year). Every period doctype refuses an undeclared period (a contract test keeps it that way). Readers use the declared calendar. Written through to `epm_staging.fiscal_periods`. Migration patch declares the years documents use. Period Status is read-only history. Four review rounds, every finding fixed test-first and the exploits proven live before and after | merged 14 Sep |
 | PR2 | `orchestrator/fx.py` and `api.fx_rates` join `fiscal_periods`; konsol-exec period vocabulary; SPA rebuild | not started |
 | PR3 (konsolidat) | `fiscal_periods` source, `silver_group_periods`, replace `build_date_from_year_period`, guard in the TB-only first build | not started |
 | PR4 | Remove Period Status, the Fiscal Period template and `_build_fiscal_vars` | not started |
@@ -468,6 +468,8 @@ field tables) are on konsol#189.
 - **Locking the parent row doesn't refresh a child-table read.** Under REPEATABLE READ the plain read of the period row returned the old snapshot after a concurrent close committed; only the live race showed it.
 - **Frappe `is_new()` is falsy for a document built in Python** (it returns `__islocal`). Host stubs must mirror that.
 - **A test gate can pass on 0/0** (zsh doesn't word-split `$VAR`); gates fail on `0/0` and skip lines, one file per argument.
+- **A share lock read through a covering index doesn't block a lock on the row.** `SELECT name … WHERE fiscal_year=… LOCK IN SHARE MODE` locks only the unique-index entry; the close's `WHERE name=… FOR UPDATE` didn't wait, so the first deadlock fix still deadlocked live. Lock the same record the other side locks (select a non-indexed column, or lock by primary key).
+- **Verify a hot-copy by a symbol it adds.** A checksum check that compared two empty hashes passed while nothing had been copied, and a live B arm then ran the old code.
 
 ## State on 13 Sep — merged, open, next
 
