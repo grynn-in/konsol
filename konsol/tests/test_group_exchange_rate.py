@@ -5,9 +5,10 @@ source of truth for FX rates, published by konsol as TRUE rates; the ERP feed
 only pre-fills drafts; per fiscal period, Closing and Average, into a group
 reporting currency, entered as a quote per 1 / 10 / 100 / 1,000 / 10,000 units;
 submit is the approval; rates lock when their period closes; a period cannot
-close without them. The controller, the rules module and Period Status's gate
-run here against a stub frappe."""
+close without them. The controller and the rules module run here against a
+stub frappe; the close gate itself is EPM Fiscal Year's (test_fiscal_year_actions)."""
 import ast
+import calendar
 import contextlib
 import datetime
 import importlib.util
@@ -42,7 +43,7 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
-            flags=None, fiscal_periods=range(0, 14), refs=None, previous=None):
+            flags=None, refs=None, previous=None):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -78,25 +79,45 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
     frappe.clear_last_message = lambda: record.setdefault("cleared", []).append(1)
     frappe.db = types.SimpleNamespace(
         sql=sql,
-        exists=lambda dt, f=None: dt == "Fiscal Period" and f["fiscal_period"] in fiscal_periods,
+        exists=lambda dt, f=None: False,
         add_index=lambda *a, **k: record.setdefault("index", []).append((a, k)),
     )
     return frappe
 
 
+def _default_period_dates(fiscal_year, fiscal_period):
+    """The test double's default period_status.period_dates: the old month
+    arithmetic (dbt build_date_from_year_period), so a test that doesn't care
+    about konsol#189's declared calendar needs no changes. Override
+    ``period_dates`` (it is imported by name into konsol.group_rates) for a
+    test that does."""
+    start = datetime.date(max(int(fiscal_year), 1900), min(max(int(fiscal_period), 1), 12), 1)
+    end = datetime.date(start.year, start.month, calendar.monthrange(start.year, start.month)[1])
+    return start, end
+
+
 def _rules_module(frappe, overrides=None):
-    """konsol.group_rates, loaded by path against ``frappe``."""
-    saved = sys.modules.get("frappe")
+    """konsol.group_rates, loaded by path against ``frappe``. konsol.period_status
+    is stubbed too, so the module's ``from konsol.period_status import
+    period_dates, PeriodNotDeclared`` resolves; override ``period_dates`` in
+    ``overrides`` for a konsol#189 test (it becomes the module's own global,
+    so period_start/period_end read the override on every call)."""
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.period_dates = _default_period_dates
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    saved = {n: sys.modules.get(n) for n in ("frappe", "konsol.period_status")}
     sys.modules["frappe"] = frappe
+    sys.modules["konsol.period_status"] = period_status
     try:
         spec = importlib.util.spec_from_file_location("konsol.group_rates", RULES)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
-        if saved is None:
-            sys.modules.pop("frappe", None)
-        else:
-            sys.modules["frappe"] = saved
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
     for k, v in (overrides or {}).items():
         setattr(module, k, v)
     return module
@@ -125,8 +146,10 @@ def _konsol(rules, clickhouse=None):
 
 def _controller(**kw):
     record = {"gates": [], "published": []}
-    frappe = _frappe(record, **{k: v for k, v in kw.items() if k != "period_open"})
+    frappe = _frappe(record, **{k: v for k, v in kw.items()
+                                if k not in ("period_open", "declared_periods")})
     period_open = kw.get("period_open", True)
+    declared_periods = kw.get("declared_periods", {(2099, 12)})
 
     class Document:
         """A draft: new unless ``_before`` (the saved version) is given."""
@@ -148,16 +171,31 @@ def _controller(**kw):
             before = self.__dict__.get("_before")
             return types.SimpleNamespace(**before) if before is not None else None
 
+        def check_if_latest(self):
+            """Frappe's own check_if_latest: this is where document.py:1164's
+            FOR UPDATE row lock happens (via load_doc_before_save), for a
+            saved document. The overridden check_if_latest must call this
+            (recorded here, into the same list as frappe.db.sql) only after
+            its own year lock."""
+            record.setdefault("sql", []).append("BASE_CHECK_IF_LATEST")
+
     def assert_open(fiscal_year, fiscal_period, action="run"):
         record["gates"].append((fiscal_year, fiscal_period, action))
         if not period_open:
             raise Refused(f"Cannot {action}: period closed")
+
+    def assert_declared(fiscal_year, fiscal_period):
+        record["gates"].append(("declared", fiscal_year, fiscal_period))
+        if (int(fiscal_year), int(fiscal_period)) not in declared_periods:
+            raise Refused(f"FY{fiscal_year} has no period {fiscal_period}: "
+                          "it has not been declared in EPM Fiscal Year.")
 
     mods = {n: types.ModuleType(n) for n in (
         "frappe.model", "frappe.model.document", "konsol", "konsol.period_status")}
     mods["frappe"] = frappe
     mods["frappe.model.document"].Document = Document
     mods["konsol.period_status"].assert_open = assert_open
+    mods["konsol.period_status"].assert_declared = assert_declared
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -208,6 +246,17 @@ def test_the_grain_and_the_approval_shape():
     assert f["source"]["read_only"] == 1 and f["source"]["no_copy"] == 1
     assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
     assert set(_json()["field_order"]) == set(f)
+
+
+def test_fiscal_year_is_indexed_for_the_close_read():
+    """PR #191 re-review 2 finding 1: the close's locking read
+    (group_rates._approved_keys) filters WHERE fiscal_year = ... AND
+    fiscal_period = .... The only index, "grain", leads with to_currency and
+    from_currency (group_exchange_rate.py GRAIN / on_doctype_update), which
+    that WHERE can't use, so the locking read scans (and locks) the whole
+    table. A plain index on fiscal_year lets it narrow the scan to the
+    year."""
+    assert _fields()["fiscal_year"]["search_index"] == 1
 
 
 def test_group_accountants_draft_and_the_close_lead_approves():
@@ -291,8 +340,16 @@ def test_the_guards_refuse():
     assert _validate(from_currency="CHF", to_currency="CHF", quote=1)[0], "no rate into itself"
     assert _validate(rate_type="Default")[0]
     assert _validate(to_currency="EUR")[0], "EUR is no group's reporting currency here"
-    assert _validate(fiscal_period=14)[0]
     assert _validate(fiscal_year=2150)[0]
+
+
+def test_undeclared_period_refused():
+    """konsol#189: periods are declared, never assumed. The Fiscal Period
+    template is gone; the controller asks period_status.assert_declared, which
+    knows only EPM Fiscal Year."""
+    refused, _, msg = _validate(fiscal_period=14)
+    assert refused and "FY2099 has no period 14" in msg and "not been declared" in msg
+    assert not _validate(_ctx={"declared_periods": {(2099, 12), (2099, 14)}}, fiscal_period=14)[0]
 
 
 def test_a_move_over_half_needs_a_reason():
@@ -387,6 +444,55 @@ def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
     module, _ = _controller()
     assert _refused(_doc(module, docstatus=2).on_trash)
     _doc(module, docstatus=0).on_trash()
+
+
+def test_ger_locks_year_before_own_row():
+    """PR #191 re-review 2 finding 1: closing a period locks the year FOR
+    UPDATE, then share-locks approved Group Exchange Rate rows
+    (group_rates.assert_rates_complete -> _approved_keys(lock=True)). A GER
+    save/submit/cancel locks the opposite way round: Frappe's
+    check_if_latest (document.py:1164, via load_doc_before_save) takes a FOR
+    UPDATE lock on the rate's own row first, and only reaches the year
+    afterwards, in before_submit/before_cancel -> assert_open/period_row.
+    Opposite order deadlocks with a close.
+
+    check_if_latest must be overridden to share-lock the year first, then
+    delegate to Frappe's own check_if_latest, for a saved (not new) rate."""
+    module, record = _controller()
+    d = _doc(module, _before={"fiscal_year": 2099})
+    d.check_if_latest()
+    assert record["sql"] == [
+        "SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
+        "BASE_CHECK_IF_LATEST",
+    ], record["sql"]
+
+
+def test_ger_year_lock_is_on_the_row_not_the_index():
+    """The year lock must land on the same record the close locks. `SELECT
+    name ... WHERE fiscal_year=%s LOCK IN SHARE MODE` is answered from the
+    unique fiscal_year index alone (it holds the primary key), so InnoDB
+    share-locks only that index entry, and the close's `WHERE name=%s FOR
+    UPDATE` on the row doesn't wait for it: live, the GER-cancel vs close
+    deadlock still happened 3/3 with that query. Selecting a column outside
+    the index (status, as period_row does) locks the row itself."""
+    module, record = _controller()
+    d = _doc(module, _before={"fiscal_year": 2099})
+    d.check_if_latest()
+    year_sql = [q for q in record["sql"] if "`tabEPM Fiscal Year`" in q]
+    assert year_sql and all("LOCK IN SHARE MODE" in q for q in year_sql), record["sql"]
+    assert all("status" in q.split("FROM")[0] for q in year_sql), \
+        f"the year lock selects only indexed columns, so it locks the index entry, not the row: {year_sql}"
+
+
+def test_new_ger_does_not_lock_a_year_in_check_if_latest():
+    """Frappe's own check_if_latest never takes the row lock for a new
+    document (load_doc_before_save returns early, document.py:1160-1161), so
+    the override must not lock a year for one either."""
+    module, record = _controller()
+    d = _doc(module)
+    assert d.is_new()
+    d.check_if_latest()
+    assert record.get("sql", []) == ["BASE_CHECK_IF_LATEST"], record.get("sql")
 
 
 # -- publishing: the true rate, computed once, by konsol -------------------------------
@@ -739,6 +845,32 @@ def test_the_period_date_is_the_warehouse_one():
     assert str(r.period_start(2024, 13)) == "2024-12-01"
 
 
+def test_period_dates_come_from_the_declared_calendar():
+    """konsol#189: a 13-period year's P02 is a declared 28-day window, not
+    the calendar month of February. period_start/period_end read exactly
+    what period_status.period_dates says, never invent one."""
+    declared = {(2024, 2): (datetime.date(2024, 1, 29), datetime.date(2024, 2, 25))}
+    r = _rules_module(_frappe({}), {"period_dates": lambda fy, fp: declared[(fy, fp)]})
+    assert (str(r.period_start(2024, 2)), str(r.period_end(2024, 2))) == ("2024-01-29", "2024-02-25")
+    assert r.period_end(2024, 2) != datetime.date(2024, 2, 29), "not Feb's calendar month"
+
+
+def test_undeclared_period_has_no_dates():
+    """An undeclared period raises PeriodNotDeclared; no date is invented."""
+    r = _rules_module(_frappe({}))
+
+    def undeclared(fy, fp):
+        raise r.PeriodNotDeclared(f"FY{fy} has no period {fp}: it has not been declared.")
+    r.period_dates = undeclared
+    for fn in (r.period_start, r.period_end):
+        try:
+            fn(2099, 14)
+        except r.PeriodNotDeclared as e:
+            assert "FY2099 has no period 14" in str(e)
+        else:
+            raise AssertionError("an undeclared period must raise PeriodNotDeclared")
+
+
 ROWS = [
     ("d365_fo", "Closing", "EUR", "CHF", 0.9478, "2024-03-01"),
     ("d365_fo", "Default", "EUR", "CHF", 0.945, "2024-03-01"),
@@ -868,9 +1000,17 @@ def test_the_pre_fill_falls_back_to_the_tree_for_the_period():
 
 
 def _gate(pairs=None, approved=(), error=None, built=True, groups=()):
-    frappe = _frappe({})
-    frappe.get_all = lambda *a, **k: [types.SimpleNamespace(from_currency=f, to_currency=t, rate_type=rt)
-                                      for f, t, rt in approved]
+    record = {}
+    frappe = _frappe(record)
+    original_sql = frappe.db.sql
+
+    def sql(query, params=(), *a, **k):
+        if "FROM `tabGroup Exchange Rate`" in query:
+            record.setdefault("sql", []).append(query)
+            return [(f, t, rt) for f, t, rt in approved]
+        return original_sql(query, params, *a, **k)
+
+    frappe.db.sql = sql
 
     def needs(fy, fp):
         if error:
@@ -906,6 +1046,59 @@ def test_the_close_gate():
         assert "Consolidation Group ZZ_NOCURRENCY has no reporting currency" in str(e)
     else:
         raise AssertionError("a group with no reporting currency must refuse the close")
+
+
+def test_rate_gate_reads_lock():
+    """PR #191 re-review finding 4: the close path's read of approved Group
+    Exchange Rates can return this transaction's REPEATABLE READ snapshot, a
+    plain read (frappe.get_all) missing a rate cancelled and committed while a
+    close waited on the year lock (period/year close hold it, then call
+    assert_rates_complete -> rate_gate(..., lock=True) ->
+    _approved_keys(..., lock=True)). That path must read them LOCK IN SHARE
+    MODE, like period_status.period_row and
+    fiscal_calendar.periods_in_use(lock=True)."""
+    record = {}
+    r = _rules_module(_frappe(record))
+    r._approved_keys(2024, 3, lock=True)
+    queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
+    assert queries, "expected a read of Group Exchange Rate for the approved keys"
+    assert all("LOCK IN SHARE MODE" in q for q in queries), queries
+
+
+def test_rate_gate_lock_only_for_close():
+    """konsol#189 62h: rate_gate is also called by home_api._rate_gate for the
+    read-only home screen, on every view - LOCK IN SHARE MODE there would take
+    share locks on Group Exchange Rate rows and can block rate saves for the
+    request's duration. Only the close gate (assert_rates_complete ->
+    rate_gate(..., lock=True)) needs the lock (PR #191 re-review finding 4);
+    rate_gate(fy, fp) with defaults, as home_api calls it, must read plain."""
+    pairs = {("EUR", "CHF")}
+    full = [(f, t, rt) for f, t in pairs for rt in ("Closing", "Average")]
+    record = {}
+    frappe = _frappe(record)
+    original_sql = frappe.db.sql
+
+    def sql(query, params=(), *a, **k):
+        if "FROM `tabGroup Exchange Rate`" in query:
+            record.setdefault("sql", []).append(query)
+            return [(f, t, rt) for f, t, rt in full]
+        return original_sql(query, params, *a, **k)
+    frappe.db.sql = sql
+
+    r = _rules_module(frappe, {"translation_needs": lambda fy, fp: (pairs, [])})
+
+    r.rate_gate(2024, 3)
+    home_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
+    assert home_queries, "expected a read of Group Exchange Rate for the approved keys"
+    assert not any("LOCK IN SHARE MODE" in q for q in home_queries), \
+        "rate_gate's default (home_api's call) must not take a row lock: " + repr(home_queries)
+
+    record["sql"] = []
+    assert not _refused(r.assert_rates_complete, 2024, 3)
+    close_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
+    assert close_queries, "expected a read of Group Exchange Rate for the approved keys"
+    assert all("LOCK IN SHARE MODE" in q for q in close_queries), \
+        "assert_rates_complete's close path must lock: " + repr(close_queries)
 
 
 def test_the_close_gate_fails_closed_when_the_warehouse_cannot_answer():
@@ -1150,45 +1343,16 @@ def test_the_upgrade_patch_brings_its_own_column_and_references():
         assert "konsol.patches.adopt_erp_rates_as_group_exchange_rates" in [l.strip() for l in f]
 
 
-# -- Period Status: the close gate is wired in -----------------------------------------------
-
-def _period_status(previous, status):
-    calls = []
-    frappe = _frappe({})
-    frappe.get_roles = lambda: ["System Manager"]
-    frappe.db.exists = lambda *a, **k: True
-    frappe.db.get_value = lambda *a, **k: previous
-    mods = {n: types.ModuleType(n) for n in ("frappe.model", "frappe.model.document", "frappe.utils",
-                                             "konsol", "konsol.group_rates")}
-    mods["frappe"] = frappe
-    mods["frappe.model.document"].Document = type("Document", (), {
-        "__init__": lambda self, **kw: self.__dict__.update(kw), "is_new": lambda self: previous is None})
-    mods["frappe.utils"].now_datetime = lambda: "NOW"
-    mods["konsol.group_rates"].assert_rates_complete = lambda fy, fp: calls.append((fy, fp))
-    mods["konsol"].group_rates = mods["konsol.group_rates"]
-    saved = {n: sys.modules.get(n) for n in mods}
-    sys.modules.update(mods)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "ps_under_test", os.path.join(APP_DIR, "epm", "doctype", "period_status", "period_status.py"))
-        m = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(m)
-        m.PeriodStatus(name="PS-2024-3", fiscal_year="2024", fiscal_period=3, status=status).validate()
-    finally:
-        for n, old in saved.items():
-            if old is None:
-                sys.modules.pop(n, None)
-            else:
-                sys.modules[n] = old
-    return calls
-
+# -- the close gate is wired into EPM Fiscal Year -----------------------------------------------
 
 def test_closing_a_period_checks_its_group_rates():
-    assert _period_status("Open", "Closed") == [("2024", 3)]
-    assert _period_status(None, "Locked") == [("2024", 3)]
-    assert _period_status("Closed", "Locked") == []
-    assert _period_status("Closed", "Open") == []
-    assert _period_status("Open", "Open") == []
+    """konsol#189: periods close on EPM Fiscal Year's rows, so the gate is there
+    (behaviour in test_fiscal_year_actions.test_closing_a_period_checks_its_group_rates);
+    the retired Period Status controller no longer gates anything."""
+    with open(os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.py")) as f:
+        assert "group_rates.assert_rates_complete(" in f.read()
+    with open(os.path.join(APP_DIR, "epm", "doctype", "period_status", "period_status.py")) as f:
+        assert "assert_rates_complete" not in f.read(), "Period Status is retired; it gates nothing"
 
 
 # -- wiring -----------------------------------------------------------------------------------

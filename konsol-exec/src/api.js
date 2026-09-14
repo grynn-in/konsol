@@ -121,12 +121,15 @@ export function cancelRun(name) {
  * `{definitions:[name], fiscal_years:[yr], fiscal_periods:[{value,label}],
  * scopes:[{value,label}]}`. Lets the 4 launch fields be selects, not free text.
  */
-export function setPeriodStatus(fiscalYear, fiscalPeriod, status) {
-	return frappeCall("konsol.control_api.set_period_status", {
+export function setPeriodStatus(fiscalYear, fiscalPeriod, status, reason) {
+	const args = {
 		fiscal_year: String(fiscalYear),
 		fiscal_period: String(fiscalPeriod),
 		status,
-	});
+	};
+	// Reopening needs a reason; the server refuses a reopen without one.
+	if (reason) args.reason = reason;
+	return frappeCall("konsol.control_api.set_period_status", args);
 }
 
 export function getLaunchOptions() {

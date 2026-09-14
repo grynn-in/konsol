@@ -6,7 +6,7 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
-from konsol.period_status import assert_open
+from konsol.period_status import assert_declared, assert_open
 
 
 class ICBalance(Document):
@@ -19,6 +19,11 @@ class ICBalance(Document):
         "ic_sales_amount": "ic_sales_amount",
         "ending_inventory_from_ic": "ending_inventory_from_ic",
     }
+
+    def validate(self):
+        """The year and period must be declared: an undeclared one is refused
+        on every save, before any period-open check (konsol#189)."""
+        assert_declared(self.fiscal_year, self.fiscal_period)
 
     def before_submit(self):
         """Submit only while the period is open: a submitted balance enters

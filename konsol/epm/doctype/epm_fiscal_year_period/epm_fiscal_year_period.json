@@ -1,0 +1,127 @@
+{
+  "name": "EPM Fiscal Year Period",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 1,
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "fiscal_period",
+    "period_code",
+    "period_label",
+    "period_type",
+    "quarter",
+    "dates_col_break",
+    "start_date",
+    "end_date",
+    "close_section",
+    "status",
+    "close_col_break",
+    "closed_by",
+    "closed_on"
+  ],
+  "fields": [
+    {
+      "fieldname": "fiscal_period",
+      "fieldtype": "Int",
+      "label": "Period",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 1,
+      "description": "The period number documents carry. 0 = OPN; 1..n regular; then closing and adjustment periods. Unique in the year; 0 to 255."
+    },
+    {
+      "fieldname": "period_code",
+      "fieldtype": "Data",
+      "label": "Code",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 1,
+      "description": "Short name, e.g. OPN, P01, CLS, P14. Unique in the year."
+    },
+    {
+      "fieldname": "period_label",
+      "fieldtype": "Data",
+      "label": "Label",
+      "description": "Display name, e.g. Jan 2025. Blank shows the code."
+    },
+    {
+      "fieldname": "period_type",
+      "fieldtype": "Select",
+      "label": "Type",
+      "options": "Opening\nRegular\nClosing\nAdjustment",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 2,
+      "description": "Regular periods tile the year. Opening is period 0 on the first day; Closing and Adjustment come after the last regular period. Which types take trial balances is set in EPM Settings."
+    },
+    {
+      "fieldname": "quarter",
+      "fieldtype": "Select",
+      "label": "Quarter",
+      "options": "\nQ1\nQ2\nQ3\nQ4",
+      "depends_on": "eval:doc.period_type == 'Regular'",
+      "description": "Quarter for quarterly and half-year reporting (Q1-Q2 = H1). Generate Periods fills it for Monthly and 4-4-5; 13-period years leave it blank."
+    },
+    {
+      "fieldname": "dates_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "start_date",
+      "fieldtype": "Date",
+      "label": "Start Date",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 2,
+      "description": "Inside the year."
+    },
+    {
+      "fieldname": "end_date",
+      "fieldtype": "Date",
+      "label": "End Date",
+      "reqd": 1,
+      "in_list_view": 1,
+      "columns": 2,
+      "description": "On or after Start Date. Opening and Closing periods are one day: the year's first or last."
+    },
+    {
+      "fieldname": "close_section",
+      "fieldtype": "Section Break",
+      "label": "Close"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Open\nClosed\nLocked",
+      "default": "Open",
+      "reqd": 1,
+      "read_only": 1,
+      "in_list_view": 1,
+      "columns": 2,
+      "description": "Set by Close Period, Lock Period and Reopen Period, or by the year's actions. Never looser than the year's."
+    },
+    {
+      "fieldname": "close_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "closed_by",
+      "fieldtype": "Link",
+      "label": "Closed By",
+      "options": "User",
+      "read_only": 1,
+      "depends_on": "eval:doc.status != 'Open'"
+    },
+    {
+      "fieldname": "closed_on",
+      "fieldtype": "Datetime",
+      "label": "Closed On",
+      "read_only": 1,
+      "depends_on": "eval:doc.status != 'Open'"
+    }
+  ],
+  "permissions": []
+}

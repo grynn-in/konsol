@@ -36,7 +36,8 @@ _stub("frappe.model")
 _stub("frappe.model.document", Document=_Doc)
 _stub("konsol")
 _stub("konsol.clickhouse", execute=lambda *a, **k: "", ensure_raw_tables=lambda: None)
-_stub("konsol.period_status", assert_open=lambda *a, **k: None)
+_stub("konsol.period_status", assert_open=lambda *a, **k: None,
+      assert_postable=lambda *a, **k: None)
 
 _spec = importlib.util.spec_from_file_location("tbs_under_test", _SRC)
 _m = importlib.util.module_from_spec(_spec)
@@ -240,6 +241,90 @@ def test_the_partner_lands_in_the_raw_table():
     assert len(sent) == 1
     assert "submitted_at, partner_data_area_id) VALUES" in sent[0]
     assert "now(), 'ZZB')" in sent[0] and "now(), '')" in sent[0]
+
+
+# -- konsol#189: validate refuses a period that is undeclared, or not postable ------------------
+
+class _Refused(Exception):
+    """frappe.throw, or a period_status gate, refused."""
+
+
+class _PeriodNotDeclared(_Refused):
+    """Stand-in for konsol.period_status.PeriodNotDeclared."""
+
+
+class _ReachedOpenCheck(Exception):
+    """validate got past the postable check to assert_open."""
+
+
+def _validate_period(fiscal_period, assert_postable):
+    """Run validate() on a draft in FY2099 ``fiscal_period`` with
+    ``assert_postable`` standing in for the real gate. Stops at assert_open.
+    Returns the gates reached, in order."""
+    reached = []
+
+    def postable(fy, fp):
+        reached.append(("postable", fy, fp))
+        assert_postable(fy, fp)
+
+    def open_(fy, fp, action="run"):
+        reached.append(("open", fy, fp))
+        raise _ReachedOpenCheck
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    names = ("assert_postable", "assert_open", "frappe")
+    saved = {n: getattr(_m, n) for n in names if hasattr(_m, n)}
+    _m.assert_postable, _m.assert_open = postable, open_
+    _m.frappe = types.SimpleNamespace(throw=throw)
+    try:
+        doc = _m.TrialBalanceSubmission()
+        doc.batch_id, doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "b1", "ZZA", 2099, fiscal_period
+        doc._check_entity_access = lambda: None
+        try:
+            doc.validate()
+        except _ReachedOpenCheck:
+            pass
+    finally:
+        for n in names:
+            if n in saved:
+                setattr(_m, n, saved[n])
+            else:
+                delattr(_m, n)
+    return reached
+
+
+def test_undeclared_period_refused():
+    def undeclared(fy, fp):
+        raise _PeriodNotDeclared(f"FY{fy} has no period {fp}.")
+    try:
+        _validate_period(5, undeclared)
+        assert False, "validate allowed an undeclared period"
+    except _PeriodNotDeclared as e:
+        assert str(e) == "FY2099 has no period 5."
+
+
+def test_closing_period_refused_unless_ticked():
+    def gate(ticked):
+        def postable(fy, fp):
+            if not ticked:
+                raise _Refused("P13 (Closing) does not take trial balances on this site. "
+                               "Tick it in EPM Settings → Close to allow it.")
+        return postable
+    try:
+        _validate_period(13, gate(ticked=False))
+        assert False, "validate allowed a Closing period the site does not post to"
+    except _Refused as e:
+        assert "P13 (Closing) does not take trial balances" in str(e)
+    assert _validate_period(13, gate(ticked=True)) == [("postable", 2099, 13), ("open", 2099, 13)]
+
+
+def test_period_13_no_longer_refused_by_range_when_declared_postable():
+    """The period check is the declared calendar, not a hard-coded 1..12:
+    a declared, postable P13 goes on to the open check."""
+    reached = _validate_period(13, lambda fy, fp: None)
+    assert reached == [("postable", 2099, 13), ("open", 2099, 13)]
 
 
 # -- konsol#182: what the group chart says about a trial balance's accounts -----------------------

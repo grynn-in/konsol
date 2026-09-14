@@ -652,6 +652,15 @@ _REFERENCE_TABLE_DDL = {
         "status String) "
         "ENGINE = MergeTree ORDER BY main_account"
     ),
+    # konsol#189: the declared fiscal periods, one row per Fiscal Year Period
+    # (with the effective status); konsolidat reads it for period dates.
+    # Identical to konsolidat's clickhouse/init-db.sql, keep them identical.
+    "epm_staging.fiscal_periods": (
+        "(fiscal_year UInt16, fiscal_period UInt8, period_code String, "
+        "period_label String, period_type String, start_date Date, end_date Date, "
+        "quarter String, status String) "
+        "ENGINE = MergeTree ORDER BY (fiscal_year, fiscal_period)"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a

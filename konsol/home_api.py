@@ -3,7 +3,8 @@
 Three read-only GET endpoints for konsol-exec's workspace (F7, 12 Sep 2026):
 
   whoami        roles, job titles and entity scope of the session user
-  period_tree   fiscal years with their fourteen periods and close state
+  period_tree   declared fiscal years (EPM Fiscal Year) with their own period
+                rows and effective close state; budget-only years undeclared
   month         one period: the eight-stage lane, the viewer's work queue
                 ("mine") and what they wait on ("waiting"), and system health
 
@@ -22,6 +23,7 @@ from frappe.utils import getdate, today
 
 from konsol import home_model as M
 from konsol import period_status
+from konsol.fiscal_status_model import effective_status
 from konsol.entity_permissions import allowed_entity_codes, assigned_entities, subtree_codes
 
 KONSOL_ROLES = {role for role, _ in M.TITLES}
@@ -84,13 +86,32 @@ def _item(item_id, state, title, detail="", stage=None, who=None, action=None, e
 
 
 def _parse_period(fiscal_year, fiscal_period):
+    """The declared period (period_status.period_row). A period number is
+    0..255, as declared (a 13-period year's CLS is 14); a year nobody
+    declared, or a period its year has no row for, is refused with
+    PeriodNotDeclared, never shown as open."""
     try:
         fy, p = int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
         frappe.throw("fiscal_year and fiscal_period must be numbers", frappe.ValidationError)
-    if not (1900 < fy < 3000 and 0 <= p <= 13):
+    if not (1900 < fy < 3000 and 0 <= p <= 255):
         frappe.throw(f"No such period: FY{fy} period {p}", frappe.ValidationError)
-    return fy, p
+    return period_status.period_row(fy, p)
+
+
+def _closed_by(fy, p, row):
+    """(label, closed_by, closed_on) of a declared period. Who closed it is
+    the period row's, or the year's when the year is Closed or Locked and the
+    row itself isn't (the year's close settled it)."""
+    year = frappe.db.get_value("EPM Fiscal Year", {"fiscal_year": fy}, ["name", "closed_by", "closed_on"],
+                               as_dict=True) or {}
+    rec = frappe.db.get_value("EPM Fiscal Year Period",
+                              {"parenttype": "EPM Fiscal Year", "parentfield": "periods",
+                               "parent": year.get("name"), "fiscal_period": p},
+                              ["period_label", "closed_by", "closed_on"], as_dict=True) or {}
+    by_year = row["year_status"] in period_status.SETTLED and row["row_status"] not in period_status.SETTLED
+    closer = year if by_year else rec
+    return rec.get("period_label") or row["code"], closer.get("closed_by"), closer.get("closed_on")
 
 
 @frappe.whitelist(methods=["GET"])
@@ -122,17 +143,24 @@ def period_tree():
     _require_konsol_user()
     now = getdate(today())
     current = now.year
-    years = {current - 1, current, current + 1}
 
-    statuses = {}
-    for r in frappe.get_all("Period Status", fields=["fiscal_year", "fiscal_period", "status"],
-                            limit_page_length=0):
-        try:
-            key = (int(r.fiscal_year), int(r.fiscal_period))
-        except (TypeError, ValueError):
-            continue
-        statuses[key] = r.status
-        years.add(key[0])
+    # The declared calendar: each EPM Fiscal Year with its own period rows. A
+    # year or period nobody declared is not open; it is not listed as a period.
+    declared = {}
+    for y in frappe.db.sql("select name, fiscal_year, status from `tabEPM Fiscal Year`", as_dict=True):
+        if y.fiscal_year is not None:
+            declared[str(y.name)] = y
+    rows_by_year = {}
+    for r in frappe.db.sql(
+            """select parent, fiscal_period, period_code, period_label, period_type,
+                      start_date, end_date, status
+               from `tabEPM Fiscal Year Period`
+               where parenttype = 'EPM Fiscal Year'
+               order by parent, fiscal_period""", as_dict=True):
+        if str(r.parent) in declared and r.fiscal_period is not None:
+            rows_by_year.setdefault(int(declared[str(r.parent)].fiscal_year), []).append(r)
+    year_status = {int(y.fiscal_year): y.status for y in declared.values()}
+    years = set(year_status)
 
     cycles = {}
     for c in frappe.get_all("Budget Cycle", filters={"docstatus": ["<", 2]},
@@ -141,22 +169,31 @@ def period_tree():
             cycles.setdefault(int(c.fiscal_year), c)
             years.add(int(c.fiscal_year))
 
-    periods = sorted(int(p) for p in frappe.get_all("Fiscal Period", pluck="fiscal_period")
-                     if p is not None and 0 <= int(p) <= 13) or list(range(14))
-
     out = []
     for fy in sorted(years, reverse=True):
         rows = []
-        for p in periods:
-            status = statuses.get((fy, p), period_status.OPEN)
-            start = M.period_start(fy, p)
-            rows.append({"fiscal_period": p, "code": M.period_code(p), "label": M.period_label(fy, p),
-                         "status": status, "state": M.period_state(status, start, now)})
+        for r in sorted(rows_by_year.get(fy, []), key=lambda r: int(r.fiscal_period)):
+            try:
+                status = effective_status(year_status[fy], r.status)
+            except ValueError:
+                # Bad data: validate() refuses a blank/invalid status before
+                # it's saved, so this is stale or hand-edited data, not a
+                # live save. Show it as-is instead of crashing the whole
+                # navigator for every year — home_model.period_state is
+                # just as lenient toward a status it doesn't recognise. A
+                # blank is labelled openly, never silently read as Open.
+                status = r.status or "Unknown"
+            start = getdate(r.start_date) if r.start_date else None
+            rows.append({"fiscal_period": int(r.fiscal_period), "code": r.period_code,
+                         "label": r.period_label or r.period_code, "type": r.period_type,
+                         "start_date": str(start) if start else None, "status": status,
+                         "state": M.period_state(status, start or now, now)})
         cycle = cycles.get(fy)
         out.append({
             "fiscal_year": fy,
             "label": f"FY{fy}",
             "kind": M.year_kind(fy, current),
+            "declared": fy in year_status,
             "periods": rows,
             "budget": ({"name": cycle.name, "status": cycle.status,
                         "deadline": str(cycle.deadline) if cycle.deadline else None} if cycle else None),
@@ -269,12 +306,11 @@ def _money(a):
     return f"{max(a.debit_amount or 0, a.credit_amount or 0):,.2f}"
 
 
-def _queue(fy, p, ctx, stages, status, user):
+def _queue(fy, p, ctx, stages, status, user, label):
     roles = _roles(user)
     lead = bool(roles & CLOSE_LEAD)
     group = bool(roles & GROUP)
     system = "System Manager" in roles
-    label = M.period_label(fy, p)
     period_open = status == period_status.OPEN
     # In a closed period, disable only what the server refuses and annotate
     # what it allows but can't complete (M.closed_period, #149). Each queue
@@ -314,7 +350,8 @@ def _queue(fy, p, ctx, stages, status, user):
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
                               action=_action("Open results", "Assertion Run", "read", a.get("run"))))
         s = by_id["signoff"]
-        may_close = _can("Period Status", "write")
+        # the Close / Lock actions live on EPM Fiscal Year (konsol#189)
+        may_close = _can("EPM Fiscal Year", "write")
         if s["state"] == "ready":
             mine.append(_item("signoff", "ready", f"Sign off {label}", "Locks the period against further change",
                               stage=8, action={"label": "Sign off", "step": "signoff", "allowed": may_close,
@@ -488,17 +525,17 @@ def _health(ctx, wide):
 def month(fiscal_year, fiscal_period):
     user = frappe.session.user
     _require_konsol_user(user)
-    fy, p = _parse_period(fiscal_year, fiscal_period)
+    row = _parse_period(fiscal_year, fiscal_period)   # refuses an undeclared period
+    fy, p = row["fiscal_year"], row["fiscal_period"]
     now = getdate(today())
-    start = M.period_start(fy, p)
-    status = period_status.get_status(fy, p)
-    closed = frappe.db.get_value("Period Status", {"fiscal_year": str(fy), "fiscal_period": p},
-                                 ["closed_by", "closed_on"], as_dict=True) or {}
+    start = getdate(row["start_date"]) if row["start_date"] else now
+    status = row["status"]
+    label, closed_by, closed_on = _closed_by(fy, p, row)
     ctx = _context(fy, p, start)
     # Builds carry no period. Every open period shows the latest one, saying
     # so; a closed period's lane does not borrow a later build.
     stages = _stages(ctx, status, tracked_build=status == period_status.OPEN)
-    queue = _queue(fy, p, ctx, stages, status, user)
+    queue = _queue(fy, p, ctx, stages, status, user, label)
 
     wide = bool(_roles(user) & WIDE)
     if not wide:
@@ -512,10 +549,10 @@ def month(fiscal_year, fiscal_period):
 
     return {
         "period": {
-            "fiscal_year": fy, "fiscal_period": p, "code": M.period_code(p), "label": M.period_label(fy, p),
+            "fiscal_year": fy, "fiscal_period": p, "code": row["code"], "label": label,
             "status": status, "state": M.period_state(status, start, now),
-            "closed_by": frappe.utils.get_fullname(closed.get("closed_by")) if closed.get("closed_by") else None,
-            "closed_on": str(closed.get("closed_on")) if closed.get("closed_on") else None,
+            "closed_by": frappe.utils.get_fullname(closed_by) if closed_by else None,
+            "closed_on": str(closed_on) if closed_on else None,
             "entities_in_close": len(ctx["in_close"]),
         },
         "stages": stages,

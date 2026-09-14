@@ -1,0 +1,230 @@
+{
+  "name": "EPM Fiscal Year",
+  "doctype": "DocType",
+  "module": "EPM",
+  "issingle": 0,
+  "istable": 0,
+  "is_submittable": 0,
+  "editable_grid": 0,
+  "engine": "InnoDB",
+  "track_changes": 1,
+  "autoname": "format:{fiscal_year}",
+  "naming_rule": "Expression",
+  "allow_rename": 0,
+  "title_field": "fiscal_year",
+  "search_fields": "status,period_pattern",
+  "sort_field": "fiscal_year",
+  "sort_order": "DESC",
+  "field_order": [
+    "details_tab",
+    "year_section",
+    "fiscal_year",
+    "start_date",
+    "year_col_break",
+    "end_date",
+    "status",
+    "calendar_section",
+    "period_pattern",
+    "calendar_col_break",
+    "include_opening_period",
+    "include_closing_period",
+    "periods_tab",
+    "periods_section",
+    "periods",
+    "closing_tab",
+    "closed_section",
+    "closed_by",
+    "closed_col_break",
+    "closed_on",
+    "notes_section",
+    "closing_note"
+  ],
+  "fields": [
+    {
+      "fieldname": "details_tab",
+      "fieldtype": "Tab Break",
+      "label": "Details"
+    },
+    {
+      "fieldname": "year_section",
+      "fieldtype": "Section Break",
+      "label": "Year"
+    },
+    {
+      "fieldname": "fiscal_year",
+      "fieldtype": "Int",
+      "label": "Fiscal Year",
+      "reqd": 1,
+      "bold": 1,
+      "unique": 1,
+      "set_only_once": 1,
+      "in_standard_filter": 1,
+      "in_list_view": 1,
+      "description": "The year number every document carries in Fiscal Year, e.g. 2025. It names the record and cannot change. Must be 1970 to 2148 (the warehouse's date range)."
+    },
+    {
+      "fieldname": "start_date",
+      "fieldtype": "Date",
+      "label": "Start Date",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "First day of the fiscal year."
+    },
+    {
+      "fieldname": "year_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "end_date",
+      "fieldtype": "Date",
+      "label": "End Date",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Last day of the fiscal year; after Start Date."
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Open\nClosed\nLocked",
+      "default": "Open",
+      "reqd": 1,
+      "read_only": 1,
+      "in_standard_filter": 1,
+      "in_list_view": 1,
+      "description": "Set by Close Year, Lock Year and Reopen Year. A period is open only while it and its year are both Open."
+    },
+    {
+      "fieldname": "calendar_section",
+      "fieldtype": "Section Break",
+      "label": "Calendar"
+    },
+    {
+      "fieldname": "period_pattern",
+      "fieldtype": "Select",
+      "label": "Period Pattern",
+      "options": "Monthly (12)\n13 Periods (4 Weeks)\n4-4-5\nCustom",
+      "default": "Monthly (12)",
+      "reqd": 1,
+      "description": "What Generate Periods builds. Custom: enter the periods by hand. 13 Periods and 4-4-5 need a 364- or 371-day year."
+    },
+    {
+      "fieldname": "calendar_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "include_opening_period",
+      "fieldtype": "Check",
+      "label": "Include Opening Period",
+      "default": "1",
+      "depends_on": "eval:doc.period_pattern != 'Custom'",
+      "description": "Generate Periods adds OPN (period 0) on the first day of the year."
+    },
+    {
+      "fieldname": "include_closing_period",
+      "fieldtype": "Check",
+      "label": "Include Closing Period",
+      "default": "1",
+      "depends_on": "eval:doc.period_pattern != 'Custom'",
+      "description": "Generate Periods adds CLS after the last regular period, on the last day of the year."
+    },
+    {
+      "fieldname": "periods_tab",
+      "fieldtype": "Tab Break",
+      "label": "Periods"
+    },
+    {
+      "fieldname": "periods_section",
+      "fieldtype": "Section Break",
+      "label": "Periods"
+    },
+    {
+      "fieldname": "periods",
+      "fieldtype": "Table",
+      "label": "Periods",
+      "options": "EPM Fiscal Year Period",
+      "reqd": 1,
+      "description": "Built by Generate Periods, then editable while the year is Open. A period that documents use cannot be removed, renumbered or re-dated."
+    },
+    {
+      "fieldname": "closing_tab",
+      "fieldtype": "Tab Break",
+      "label": "Closing"
+    },
+    {
+      "fieldname": "closed_section",
+      "fieldtype": "Section Break",
+      "label": "Closed",
+      "depends_on": "eval:doc.status != 'Open'"
+    },
+    {
+      "fieldname": "closed_by",
+      "fieldtype": "Link",
+      "label": "Closed By",
+      "options": "User",
+      "read_only": 1,
+      "description": "Who closed or locked the year."
+    },
+    {
+      "fieldname": "closed_col_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "closed_on",
+      "fieldtype": "Datetime",
+      "label": "Closed On",
+      "read_only": 1
+    },
+    {
+      "fieldname": "notes_section",
+      "fieldtype": "Section Break",
+      "label": "Notes"
+    },
+    {
+      "fieldname": "closing_note",
+      "fieldtype": "Small Text",
+      "label": "Closing Note",
+      "description": "Why the year was closed, locked or reopened. The reopen actions append the reason given."
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1,
+      "report": 1,
+      "export": 1,
+      "print": 1
+    },
+    {
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "report": 1,
+      "export": 1,
+      "print": 1
+    },
+    {
+      "role": "EPM Analyst",
+      "read": 1,
+      "report": 1,
+      "export": 1,
+      "print": 1
+    },
+    {
+      "role": "EPM User",
+      "read": 1,
+      "report": 1,
+      "print": 1
+    },
+    {
+      "role": "Entity Accountant",
+      "read": 1,
+      "report": 1,
+      "print": 1
+    }
+  ]
+}

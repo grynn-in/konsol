@@ -1,16 +1,16 @@
 """The rules behind the Konsol home, kept free of Frappe so they test on a host.
 
 The home (F7, decided 12 Sep 2026) is one workspace for the whole close: a
-fiscal navigator (years holding OPN, P01-P12 and CLS), one month's close as
-eight ordered stages, and a work queue shaped by the viewer's roles. This
-module decides states and order; `konsol.home_api` gathers the rows.
+fiscal navigator, one month's close as eight ordered stages, and a work
+queue shaped by the viewer's roles. Periods are never implied by this
+module: their codes, labels, dates and statuses come from the declared
+EPM Fiscal Year rows (konsol#189, konsol.period_status.period_row);
+`konsol.home_api` gathers those rows and this module decides states and
+order from them.
 
 State words are the ones konsol-exec already renders (constants.js STATUS):
 done, running, paused, error, incomplete, ready, waiting, idle.
 """
-import datetime
-
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 #: (role, job title) in display priority. The screen shows titles; the code
 #: checks roles. Budget Submitter is the old name for the base-layer owner.
@@ -104,33 +104,6 @@ def job_titles(roles):
 def initials(name):
     parts = [p for p in str(name or "").replace("@", " ").replace(".", " ").split() if p]
     return "".join(p[0] for p in parts[:2]).upper() or "?"
-
-
-def period_code(p):
-    if p == 0:
-        return "OPN"
-    if p == 13:
-        return "CLS"
-    return f"P{p:02d}"
-
-
-def period_label(fy, p):
-    if p == 0:
-        return "Opening balances"
-    if p == 13:
-        return "Year-end close"
-    return f"{MONTHS[p - 1]} {fy}"
-
-
-def period_start(fy, p):
-    """First day a period covers. Period P of FY Y is the month starting Y-P-01
-    (the warehouse's build_date_from_year_period); OPN sits at the start of the
-    year and CLS at its last day."""
-    if p == 0:
-        return datetime.date(fy, 1, 1)
-    if p == 13:
-        return datetime.date(fy, 12, 31)
-    return datetime.date(fy, p, 1)
 
 
 def period_state(status, start, today):

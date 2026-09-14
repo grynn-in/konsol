@@ -65,7 +65,21 @@ def _exists(doctype, filters=None):
 
 
 def _current_fiscal_year():
-    return frappe.utils.getdate(today()).year
+    """The fiscal_year of the declared Regular period covering today, or
+    ``None`` when no declared period covers it (konsol#189: no implied
+    calendar — a fiscal year that runs off the calendar, or a site with
+    nothing declared, must never be guessed from getdate(today()).year)."""
+    from konsol.fiscal_calendar import fiscal_period_rows
+
+    getdate = frappe.utils.getdate
+    now = getdate(today())
+    for row in fiscal_period_rows():
+        if row.get("period_type") != "Regular":
+            continue
+        start, end = row.get("start_date"), row.get("end_date")
+        if start and end and getdate(start) <= now <= getdate(end):
+            return str(row["fiscal_year"])
+    return None
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -114,44 +128,73 @@ def get_snapshot(fiscal_year=None, fiscal_period=None):
 
 
 def _period_block(fy, fiscal_period):
-    """Close state of the period the console is showing.
+    """Close state of the period the console is showing (konsol#189).
 
-    A period nobody has closed has no Period Status record and is Open, so this
-    never depends on the fourteen-by-N grid being pre-populated.
+    Only a declared EPM Fiscal Year period has a state. An undeclared one comes
+    back ``declared: False`` with no status or dates — never assumed Open.
     """
     from konsol import period_status
 
     if fiscal_period in (None, ""):
-        return {"fiscal_year": fy, "fiscal_period": None, "status": None}
+        return {"fiscal_year": fy, "fiscal_period": None, "declared": None, "status": None}
 
     block = {
         "fiscal_year": fy,
         "fiscal_period": str(fiscal_period),
-        "status": period_status.get_status(fy, fiscal_period),
+        "declared": False,
+        "status": None,
+        "period_code": None,
+        "period_type": None,
+        "start_date": None,
+        "end_date": None,
         "closed_by": None,
         "closed_on": None,
     }
+    try:
+        row = period_status.period_row(fy, fiscal_period)
+    except period_status.PeriodNotDeclared:
+        # frappe.throw also queued the message; this is an answer, not an error.
+        clear = getattr(frappe, "clear_last_message", None)
+        if clear:
+            clear()
+        return block
+
+    block.update(
+        declared=True,
+        status=row["status"],
+        period_code=row["code"],
+        period_type=row["type"],
+        start_date=str(row["start_date"]) if row["start_date"] else None,
+        end_date=str(row["end_date"]) if row["end_date"] else None,
+    )
 
     # Who signed it off, so the console can say so rather than "someone".
-    row = frappe.db.get_value(
-        "Period Status",
-        {"fiscal_year": str(fy), "fiscal_period": int(fiscal_period)},
+    stamp = frappe.db.get_value(
+        "EPM Fiscal Year Period",
+        {
+            "parenttype": "EPM Fiscal Year",
+            "parent": str(row["fiscal_year"]),
+            "parentfield": "periods",
+            "fiscal_period": row["fiscal_period"],
+        },
         ["closed_by", "closed_on"],
         as_dict=True,
     )
-    if row:
-        block["closed_by"] = row.closed_by
-        block["closed_on"] = str(row.closed_on) if row.closed_on else None
+    if stamp:
+        block["closed_by"] = stamp.closed_by
+        block["closed_on"] = str(stamp.closed_on) if stamp.closed_on else None
     return block
 
 
-@frappe.whitelist()
-def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None):
-    """Close, lock or reopen a period.
+@frappe.whitelist(methods=["POST"])
+def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None,
+                      note=None, reason=None):
+    """Close, lock or reopen a declared period through its EPM Fiscal Year.
 
-    Reopening a *locked* period is refused for anyone below System Manager —
-    the controller enforces that, so it holds for desk edits too, not just this
-    endpoint.
+    Reopening needs a ``reason`` — period_status.set_status refuses one
+    without. Reopening a *locked* period is refused for anyone below System
+    Manager; the EPM Fiscal Year enforces that, so it holds for desk edits
+    too, not just this endpoint.
     """
     check_epm_admin()
 
@@ -160,7 +203,8 @@ def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_d
     if status not in (ps.OPEN, ps.CLOSED, ps.LOCKED):
         frappe.throw(frappe._("Unknown period status: {0}").format(status))
 
-    doc = ps.set_status(fiscal_year, fiscal_period, status, start_date, end_date)
+    doc = ps.set_status(fiscal_year, fiscal_period, status, start_date=start_date,
+                        end_date=end_date, note=note, reason=reason)
     return {
         "name": doc.name,
         "fiscal_year": doc.fiscal_year,
@@ -171,7 +215,7 @@ def set_period_status(fiscal_year, fiscal_period, status, start_date=None, end_d
     }
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def start_process(process_id, fiscal_year=None, fiscal_period=None):
     """Kick off the run for a close process."""
     check_epm_admin()
@@ -186,7 +230,8 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
     if pid not in PROCESSES:
         frappe.throw(f"Unknown process: {process_id}")
 
-    fy = int(fiscal_year or _current_fiscal_year())
+    fy = fiscal_year or _current_fiscal_year()
+    fy = int(fy) if fy else None
     fp = int(fiscal_period) if fiscal_period else None
 
     if pid == "forecasting":
@@ -194,10 +239,19 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         name = trigger_pipeline()
         return {"ok": True, "run_kind": "pipeline", "name": name}
 
+    # Consolidation and assertions launch a run scoped to a fiscal year.
+    # Fiscal years are declared (EPM Fiscal Year) — nothing may silently
+    # default to "no year" (which downstream means implicitly all years).
+    if pid in ("consolidation", "assertions") and not fy:
+        frappe.throw(
+            "No Fiscal Year is declared for today. Declare one (EPM Fiscal "
+            "Year) or pick a year."
+        )
+
     if pid == "consolidation":
         # the consolidation BUILD = an orchestrator run (Group Close pipeline)
         from konsol.orchestrator.api import start_run
-        params = {"fiscal_year": fy} if fy else {}
+        params = {"fiscal_year": fy}
         if fp:
             params["fiscal_period"] = fp
         name = start_run(definition="Group Close", params=params)
@@ -286,7 +340,13 @@ def _prerequisites(process_id, fy, budget_locked):
     """Return prerequisite rows for Setup & readiness."""
     common = [
         _check("EPM Settings", "Setup → EPM Settings", _epm_settings_ok, owner="EPM Admin"),
-        _check("Fiscal Period", "Lists → EPM → Fiscal Period", lambda: _count("Fiscal Period") >= 12, owner="EPM Admin"),
+        _check(
+            "EPM Fiscal Year",
+            "Lists → EPM → EPM Fiscal Year",
+            _fiscal_year_covers_today,
+            owner="EPM Admin",
+            note="Fiscal Year covers today",
+        ),
         _check("Dimension", "Lists → EPM → Dimension", lambda: _count("Dimension", {"in_budget": 1}) >= 1, owner="EPM Admin"),
         _check("Measure", "Lists → EPM → Measure", lambda: _count("Measure") >= 1, owner="EPM Admin"),
         _check(
@@ -395,6 +455,20 @@ def _check(doctype, location, predicate, owner="EPM Admin", stale_hours=None, no
         "actionable": status in ("missing", "stale", "blocked"),
 
     }
+
+
+def _fiscal_year_covers_today():
+    """True when a declared EPM Fiscal Year period contains today's date
+    (konsol#189: no implied calendar, so a site with no such period fails)."""
+    from konsol.fiscal_calendar import fiscal_period_rows
+
+    getdate = frappe.utils.getdate
+    now = getdate(today())
+    return any(
+        getdate(r["start_date"]) <= now <= getdate(r["end_date"])
+        for r in fiscal_period_rows()
+        if r.get("start_date") and r.get("end_date")
+    )
 
 
 def _epm_settings_ok():
@@ -1214,12 +1288,15 @@ def _scenario_options():
 
 
 def _period_options(fy):
-    periods = frappe.get_all(
-        "Fiscal Period",
-        fields=["fiscal_period", "label"],
-        order_by="fiscal_period",
-        limit=14,
-    )
-    if periods:
-        return [f"FY{fy} · {p.label or ('P' + str(p.fiscal_period))}" for p in periods if 1 <= (p.fiscal_period or 0) <= 12]
-    return [f"FY{fy}"]
+    """The declared Regular periods of ``fy``, e.g. "FY2026 · Sep" (konsol#189).
+
+    Opening, Closing and Adjustment rows are left out; a year with no declared
+    rows has no options — none are invented.
+    """
+    from konsol.fiscal_calendar import fiscal_period_rows
+
+    return [
+        f"FY{fy} · {r['period_label'] or r['period_code']}"
+        for r in fiscal_period_rows()
+        if str(r["fiscal_year"]) == str(fy) and r["period_type"] == "Regular"
+    ]

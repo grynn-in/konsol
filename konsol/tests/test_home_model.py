@@ -1,29 +1,48 @@
 """The rules behind the Konsol home (F7, 12 Sep 2026): navigator states, the
 eight-stage lane, job titles and queue order. home_model imports nothing from
 Frappe, so these run on a host."""
+import ast
 import datetime
 import importlib.util
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_spec = importlib.util.spec_from_file_location("home_model", os.path.join(APP_DIR, "home_model.py"))
+HOME_MODEL_PATH = os.path.join(APP_DIR, "home_model.py")
+_spec = importlib.util.spec_from_file_location("home_model", HOME_MODEL_PATH)
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
 
 TODAY = datetime.date(2026, 9, 12)
 
+#: Vocabulary that implies a calendar home_model must not hard-code any more
+#: (konsol#189): periods, their codes, labels and dates come from the
+#: declared EPM Fiscal Year rows via konsol.period_status.period_row.
+_REMOVED_HELPERS = {"period_code", "period_label", "period_start"}
+_HARD_CODED_LITERALS = {"OPN", "CLS"}
 
-def test_fourteen_periods_have_codes_and_labels():
-    assert [M.period_code(p) for p in (0, 1, 9, 12, 13)] == ["OPN", "P01", "P09", "P12", "CLS"]
-    assert M.period_label(2026, 9) == "Sep 2026"
-    assert M.period_label(2026, 0) == "Opening balances"
-    assert M.period_label(2026, 13) == "Year-end close"
 
+def test_no_hard_coded_period_vocabulary():
+    """konsol#189: home_model must not define period_code/period_label/
+    period_start, nor spell out "OPN"/"CLS"/13 (the old implied 0=OPN,
+    13=CLS, month-arithmetic calendar). Periods now come from the declared
+    EPM Fiscal Year rows (konsol.period_status.period_row)."""
+    with open(HOME_MODEL_PATH) as f:
+        tree = ast.parse(f.read(), filename=HOME_MODEL_PATH)
 
-def test_period_start_matches_the_warehouse_calendar():
-    assert M.period_start(2026, 9) == datetime.date(2026, 9, 1)
-    assert M.period_start(2026, 0) == datetime.date(2026, 1, 1)
-    assert M.period_start(2026, 13) == datetime.date(2026, 12, 31)
+    defined = {
+        node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    hard_coded = defined & _REMOVED_HELPERS
+    assert not hard_coded, f"home_model.py still defines removed helper(s): {sorted(hard_coded)}"
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant):
+            continue
+        if isinstance(node.value, str) and node.value in _HARD_CODED_LITERALS:
+            assert False, f"home_model.py still has the string literal {node.value!r}"
+        if isinstance(node.value, int) and not isinstance(node.value, bool) and node.value == 13:
+            assert False, "home_model.py still has the integer literal 13 (the old CLS period number)"
 
 
 def test_navigator_state():

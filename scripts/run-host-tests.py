@@ -12,7 +12,7 @@ on their host. This runs them with nothing but the standard library.
 Only covers tests that read source files. Anything importing `frappe` needs a
 live site:
 
-    bench --site <site> run-tests --module konsol.tests.test_period_status_bench
+    bench --site <site> run-tests --module konsol.tests.test_fiscal_year_bench
 """
 import importlib.util
 import inspect

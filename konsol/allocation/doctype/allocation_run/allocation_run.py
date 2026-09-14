@@ -8,7 +8,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import now_datetime
 
-from konsol.period_status import assert_open
+from konsol.period_status import assert_declared, assert_open
 from konsol.schema_lifecycle import request_governed_rebuild
 
 # The gold_allocation_* models carry build_domain "consolidation" in
@@ -65,6 +65,11 @@ def sync_allocation_runs_to_clickhouse():
 class AllocationRun(Document):
     CH_TABLE = RUN_CH_TABLE
     CH_FIELD_MAP = RUN_CH_FIELD_MAP
+
+    def validate(self):
+        """The year and period must be declared: an undeclared one is refused
+        on every save, before any period-open check (konsol#189)."""
+        assert_declared(self.fiscal_year, self.fiscal_period)
 
     def before_submit(self):
         # Submit only while the period is open (#149), and before anything

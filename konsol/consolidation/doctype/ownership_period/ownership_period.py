@@ -77,7 +77,7 @@ class OwnershipPeriod(Document):
         end, exclusive = self.end_date, False
         if next_start:
             next_first = first_period_affected(next_start)
-            if not end or getdate(end) >= next_first:
+            if next_first is not None and (not end or getdate(end) >= next_first):
                 end, exclusive = next_first, True
         assert_open_between(self.effective_date, end, action="cancel an ownership period", end_exclusive=exclusive)
 

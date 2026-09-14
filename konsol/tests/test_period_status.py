@@ -1,7 +1,7 @@
 """Period Status — Open / Closed / Locked per (fiscal year, fiscal period).
 
 Structural tests (no site needed), following the repo's convention for doctype
-guards. The behavioural counterpart is test_period_status_bench.py, which needs
+guards. The behavioural counterpart is test_fiscal_year_bench.py, which needs
 a live site.
 
 The design point these tests exist to protect: status is NOT a field on
@@ -80,7 +80,15 @@ def test_fiscal_period_doctype_did_not_grow_a_status():
     assert "fiscal_year" not in f, "Fiscal Period is year-agnostic by design"
 
 
-# ---- the controller's guards --------------------------------------------
+# ---- retired: read-only history (konsol#189) ------------------------------
+#
+# Period status now lives on EPM Fiscal Year's period rows; its close / lock /
+# reopen rules (and the group-rate gate) are tested in test_fiscal_year_actions.
+# Period Status stays only as history until a later PR deletes it.
+
+RETIRED = "Period Status is retired; set period status on the EPM Fiscal Year"
+WRITE_FLAGS = ("write", "create", "submit", "cancel", "amend", "delete")
+
 
 def _controller_src():
     with open(_doctype_file("period_status", "py")) as f:
@@ -91,23 +99,77 @@ def test_controller_parses():
     ast.parse(_controller_src())
 
 
-def test_locked_periods_are_guarded_against_reopen():
-    src = _controller_src()
-    assert "_guard_reopen" in src
-    assert "System Manager" in src
-    assert "PermissionError" in src
+def _controller(in_patch):
+    """period_status.py loaded by path against a stub frappe."""
+    import importlib.util
+    import sys
+    import types
+
+    class Thrown(Exception):
+        pass
+
+    def throw(msg, exc=None, *a, **k):
+        raise (exc or Thrown)(msg)
+
+    mods = {n: types.ModuleType(n) for n in ("frappe", "frappe.model", "frappe.model.document")}
+    frappe = mods["frappe"]
+    frappe._ = lambda s: s
+    frappe.throw = throw
+    frappe.ValidationError = Thrown
+    frappe.flags = types.SimpleNamespace(in_patch=in_patch)
+    mods["frappe.model.document"].Document = type("Document", (), {
+        "__init__": lambda self, **kw: self.__dict__.update(kw)})
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "period_status_controller_under_test", _doctype_file("period_status", "py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    return m, Thrown
 
 
-def test_closure_is_stamped_and_cleared():
-    src = _controller_src()
-    assert "closed_by" in src
-    assert "closed_on" in src
+def test_period_status_is_retired_read_only():
+    rows = _load_json("period_status")["permissions"]
+    assert rows, "the history stays readable"
+    for p in rows:
+        assert p.get("read") == 1, f"{p['role']} must still read the history"
+        granted = [f for f in WRITE_FLAGS if p.get(f)]
+        want = ["delete"] if p["role"] == "System Manager" else []
+        assert granted == want, f"{p['role']} on retired Period Status: {granted}, want {want}"
+    assert any(p["role"] == "System Manager" and p.get("delete") for p in rows), \
+        "System Manager keeps delete to clear the history"
 
+    m, Thrown = _controller(in_patch=False)
+    doc = m.PeriodStatus(name="PS-2024-3", fiscal_year="2024", fiscal_period=3, status="Closed")
+    try:
+        doc.validate()
+    except Thrown as e:
+        assert str(e) == RETIRED
+    else:
+        raise AssertionError("saving a Period Status must be refused")
+    before_insert = getattr(doc, "before_insert", None)
+    if before_insert is not None:
+        try:
+            before_insert()
+        except Thrown as e:
+            assert str(e) == RETIRED
+        else:
+            raise AssertionError("inserting a Period Status must be refused")
 
-def test_period_number_is_validated():
-    src = _controller_src()
-    assert "_validate_period_exists" in src
-    assert "Fiscal Period" in src
+    m, _ = _controller(in_patch=True)
+    doc = m.PeriodStatus(name="PS-2024-3", fiscal_year="2024", fiscal_period=3, status="Closed")
+    doc.validate()  # a migration patch may still write the history
+    for hook in ("before_insert",):
+        if hasattr(doc, hook):
+            getattr(doc, hook)()
+    assert "assert_rates_complete" not in _controller_src(), "the rate gate is EPM Fiscal Year's"
 
 
 # ---- the run guard -------------------------------------------------------
@@ -137,11 +199,29 @@ def test_set_period_status_is_whitelisted_and_permission_checked():
     nxt = src.index("def ", start + 10)
     body = src[start:nxt]
     assert "check_epm_admin()" in body
-    assert "@frappe.whitelist()" in src[:start].rsplit("\n\n", 1)[-1] + src[start - 60:start]
+
+    # It writes (closes/locks/reopens a period), so per the project rule a
+    # plain @frappe.whitelist() (which also accepts GET) is not enough: a GET
+    # request would run the write and then roll back at the end of the
+    # request while still reporting success. Must be POST-only.
+    tree = ast.parse(src)
+    func = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "set_period_status")
+    found = False
+    for dec in func.decorator_list:
+        if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr == "whitelist"
+                and isinstance(dec.func.value, ast.Name) and dec.func.value.id == "frappe"):
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    found = ast.literal_eval(kw.value) == ["POST"]
+    assert found, "set_period_status is not @frappe.whitelist(methods=['POST'])"
 
 
-def test_absent_record_means_open():
-    """No pre-population of the fourteen-by-N grid, and no backfill on upgrade."""
+def test_undeclared_period_is_refused():
+    """konsol#189: only declared periods exist; nothing defaults to Open. The
+    behaviour is exercised in test_period_status_api.py."""
     with open(os.path.join(APP_DIR, "period_status.py")) as f:
         src = f.read()
-    assert "return status or OPEN" in src
+    assert "return status or OPEN" not in src
+    assert "class PeriodNotDeclared" in src

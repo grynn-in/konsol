@@ -22,6 +22,8 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "IC Balance", "Allocation Run")
 PERIOD_GATES = {"assert_open", "assert_open_between"}
 CLOSED = "Dec 2099 is closed."
+#: a fiscal year/period never declared, for the assert_declared stub to refuse
+UNDECLARED = (2001, 1)
 
 _spec = importlib.util.spec_from_file_location("home_model", os.path.join(APP_DIR, "home_model.py"))
 M = importlib.util.module_from_spec(_spec)
@@ -137,6 +139,11 @@ def _load(path, period_open):
         record["builds"].append(scope)
         return "BA-TEST"
 
+    def assert_declared(fiscal_year, fiscal_period):
+        record["checked"].append((fiscal_year, fiscal_period, "declared"))
+        if (fiscal_year, fiscal_period) == UNDECLARED:
+            raise Refused(f"FY{fiscal_year} period {fiscal_period} is not declared")
+
     def database(name):
         def reached(*args, **kwargs):
             raise ReachedDatabase(f"frappe.{name}")
@@ -178,8 +185,12 @@ def _load(path, period_open):
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a: None
     mods["konsol.clickhouse"].execute = lambda *a, **k: None
     mods["konsol.clickhouse"].ensure_raw_tables = lambda *a, **k: None
+    mods["konsol.clickhouse"].after_commit_once = lambda key, fn: None
+    mods["konsol.clickhouse"].sync_table = lambda *a, **k: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_open_between = assert_open_between
+    mods["konsol.period_status"].assert_declared = assert_declared
+    mods["konsol.period_status"].assert_postable = assert_declared
     mods["konsol.period_status"].first_period_affected = lambda d: d
     mods["konsol.schema_lifecycle"].request_governed_rebuild = request_governed_rebuild
     mods["konsol.epm.budget_grain"].digest_name = lambda *a, **k: "ZZ"
@@ -293,6 +304,52 @@ def test_submit_into_a_closed_period_is_refused_and_changes_nothing():
         assert d.__dict__ == before, doctype
         assert [c[:2] for c in record["checked"]] == [(2099, 12)], doctype
         assert record["builds"] == [], f"{doctype}: a refused submit requested a build"
+
+
+def test_ic_balance_refuses_an_undeclared_period_on_validate():
+    """konsol#189: validate must reach assert_declared, not just before_submit/
+    before_cancel's assert_open — a period that was never declared is refused
+    before an open/closed check is even meaningful."""
+    module, record = _load(PATHS["IC Balance"], period_open=True)
+    d = module.ICBalance(doctype="IC Balance", name="ZZ-TEST", docstatus=0,
+                          fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
+    try:
+        d.validate()
+    except Refused:
+        pass
+    else:
+        raise AssertionError("IC Balance validate allowed an undeclared period")
+    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
+
+
+def test_allocation_run_refuses_an_undeclared_period_on_validate():
+    """konsol#189: validate must reach assert_declared, not just before_submit's
+    assert_open — a period that was never declared is refused before an
+    open/closed check is even meaningful."""
+    module, record = _load(PATHS["Allocation Run"], period_open=True)
+    d = module.AllocationRun(doctype="Allocation Run", name="ZZ-TEST", docstatus=0,
+                              fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
+    try:
+        d.validate()
+    except Refused:
+        pass
+    else:
+        raise AssertionError("Allocation Run validate allowed an undeclared period")
+    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
+
+
+def test_allocation_driver_refuses_an_undeclared_period_on_validate():
+    """konsol#189: validate must reach assert_declared."""
+    module, record = _load(PATHS["Allocation Driver"], period_open=True)
+    d = module.AllocationDriver(doctype="Allocation Driver", name="ZZ-TEST", docstatus=0,
+                                 fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
+    try:
+        d.validate()
+    except Refused:
+        pass
+    else:
+        raise AssertionError("Allocation Driver validate allowed an undeclared period")
+    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
 
 
 def test_submit_into_an_open_period_still_works():

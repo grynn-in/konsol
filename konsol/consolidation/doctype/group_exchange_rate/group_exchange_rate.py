@@ -27,7 +27,7 @@ warehouse translates from it without scaling or inverting anything.
 import frappe
 from frappe.model.document import Document
 
-from konsol.period_status import assert_open
+from konsol.period_status import assert_declared, assert_open
 
 RATE_TYPES = ("Closing", "Average")
 ADOPTION_SOURCE = "Adoption"
@@ -104,8 +104,9 @@ class GroupExchangeRate(Document):
         # ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently.
         if not 1970 <= year <= 2148:
             frappe.throw(f"Fiscal Year {self.fiscal_year} is out of range.", frappe.ValidationError)
-        if period in (None, "") or not frappe.db.exists("Fiscal Period", {"fiscal_period": int(period)}):
+        if period in (None, ""):
             frappe.throw(f"No Fiscal Period numbered {period}.", frappe.ValidationError)
+        assert_declared(year, int(period))
 
     def _guard_provenance(self):
         """Source and ERP Quote are read-only in the form only; REST writes any
@@ -207,6 +208,42 @@ class GroupExchangeRate(Document):
             frappe.throw(problem, frappe.MandatoryError)
 
     # -- lifecycle ----------------------------------------------------------
+
+    def check_if_latest(self):
+        """Lock this rate's fiscal year before Frappe's own check_if_latest
+        takes its FOR UPDATE lock on the rate's own row (load_doc_before_save,
+        frappe/model/document.py:1164, called from :859).
+
+        A period close locks the year first, then share-locks approved rates
+        (group_rates.assert_rates_complete -> _approved_keys(lock=True)). A
+        rate save/submit/cancel locked its own row first and only reached the
+        year afterwards, in before_submit/before_cancel ->
+        assert_open/period_row — the opposite order, so the two could
+        deadlock (PR #191 re-review 2 finding 1). Locking the year here
+        first keeps every path in the same order: year, then rate row.
+
+        A bare lock, not period_status.period_row: a rate whose period is
+        undeclared must still reach validate()'s own PeriodNotDeclared
+        message, not fail here first with a different one. Tolerates a
+        missing or non-numeric fiscal_year; _validate_period is the real
+        check for that. Only for a saved (not new) rate: Frappe's own
+        check_if_latest never locks a row for a new one either
+        (load_doc_before_save returns early for is_new()).
+        """
+        # `status` is selected so the lock lands on the row itself: a query the
+        # unique fiscal_year index covers only locks that index entry, and the
+        # close's `WHERE name=%s FOR UPDATE` on the row wouldn't wait for it.
+        if not self.is_new():
+            try:
+                year = int(self.fiscal_year)
+            except (TypeError, ValueError):
+                year = None
+            if year is not None:
+                frappe.db.sql(
+                    "SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
+                    (year,),
+                )
+        super().check_if_latest()
 
     def _adopting(self):
         """The one-time adoption (konsol#103 upgrade) may submit into a closed

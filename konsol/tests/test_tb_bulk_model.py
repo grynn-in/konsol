@@ -1,14 +1,19 @@
 """Bulk trial balance files (konsol/tb_bulk_model.py): split one file into
 entity-periods, and never accept what a single upload would refuse."""
+import ast
 import csv
 import importlib.util
 import io
 import os
+import sys
+import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location("tb_bulk_model", os.path.join(APP_DIR, "tb_bulk_model.py"))
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
+
+TB_BULK_PATH = os.path.join(APP_DIR, "tb_bulk.py")
 
 HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit"]
 
@@ -78,8 +83,9 @@ def test_group_csv_is_the_single_upload_contract():
 
 
 def _check(**over):
-    facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True, period_status="Open", existing=None,
-                 validate_rows=lambda rows, **kw: [])
+    facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True,
+                 period={"code": "P12", "type": "Regular", "status": "Open"}, postable_types={"Regular"},
+                 existing=None, validate_rows=lambda rows, **kw: [])
     facts.update(over)
     rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0}, {"main_account": "2010", "debit": 0.0, "credit": 5.0}]
     return M.check_group(("AMDE", 2025, 12), rows, **facts)
@@ -93,17 +99,26 @@ def test_a_clean_group_is_ready():
 def test_every_single_upload_rule_applies():
     assert "no access" in _check(visible=False)["errors"][0]
     assert "is a group" in _check(leaf=False)["errors"][0]
-    assert "is closed" in _check(period_status="Closed")["errors"][0]
     assert "already submitted" in _check(existing="TBS-00001")["errors"][0]
     # the single-submission validator's verdict is carried through as-is
     r = _check(validate_rows=lambda rows, **kw: ["Debits (5.00) do not equal credits"])
     assert not r["ok"] and r["errors"] == ["Debits (5.00) do not equal credits"]
 
 
-def test_period_outside_1_to_12_is_refused():
-    r = M.check_group(("AMDE", 2025, 13), [], known_accounts=set(), visible=True, leaf=True, period_status=None,
-                      existing=None, validate_rows=lambda rows, **kw: [])
-    assert "must be 1 to 12" in r["errors"][0]
+def test_closed_period_refused():
+    r = _check(period={"code": "P12", "type": "Regular", "status": "Closed"})
+    assert "is closed" in r["errors"][0]
+
+
+def test_undeclared_period_refused():
+    r = M.check_group(("AMDE", 2025, 14), [], known_accounts=set(), visible=True, leaf=True, period=None,
+                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [])
+    assert r["errors"][0] == "FY2025 P14 is not declared"
+
+
+def test_unpostable_type_refused():
+    r = _check(period={"code": "CLS", "type": "Closing", "status": "Open"}, postable_types={"Regular"})
+    assert "does not take trial balances on this site" in r["errors"][0]
 
 
 def test_outcome():
@@ -196,3 +211,161 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
     # a warning never stops the load
     assert r["ok"] and r["warnings"] == ["1 intercompany row without a partner"] and r["partnerless_ic_rows"] == 1
     assert _check()["warnings"] == [] and _check()["partnerless_ic_rows"] == 0
+
+
+# --- konsol#189 task 20: tb_bulk._check uses the real declared-period lookup ---
+# tb_bulk.py imports frappe and several konsol modules at the top level; every
+# one of them is stubbed here (the pattern test_chart_upload.py established),
+# so _check can be exercised without a live site. The stubs are installed only
+# around the module load and the call to _check, then restored, so they never
+# leak into other test files sharing this process (scripts/run-host-tests.py).
+
+HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit"]
+
+
+def _load_tb_bulk(*, entities, postable, period_lookup):
+    """Load konsol/tb_bulk.py with every non-model import stubbed.
+
+    `period_lookup` maps (year, period) -> a period fact dict; a pair absent
+    from it is undeclared, so the stand-in period_status.period_row raises
+    PeriodNotDeclared for it, exactly as the real one does. `postable` is
+    what postable_types() returns. Returns (module, calls), where calls
+    counts how many times postable_types() was called.
+    """
+    frappe = types.ModuleType("frappe")
+    frappe_utils = types.ModuleType("frappe.utils")
+    frappe_utils.cint = lambda v: int(v or 0)
+    frappe_utils.strip_html = lambda v: v
+    frappe.utils = frappe_utils
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    frappe.has_permission = lambda *a, **k: True
+    frappe.PermissionError = type("PermissionError", (Exception,), {})
+
+    def get_list(doctype, filters=None, pluck=None, limit_page_length=None):
+        assert doctype == "Entity"
+        return list(entities)
+
+    def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None):
+        if doctype == "Entity":
+            return list(entities)
+        if doctype == "Trial Balance Submission":
+            return []
+        raise AssertionError(doctype)
+
+    frappe.get_list, frappe.get_all = get_list, get_all
+
+    period_status = types.ModuleType("konsol.period_status")
+
+    class PeriodNotDeclared(Exception):
+        pass
+
+    def period_row(fiscal_year, fiscal_period):
+        fact = period_lookup.get((int(fiscal_year), int(fiscal_period)))
+        if fact is None:
+            raise PeriodNotDeclared(f"FY{fiscal_year} P{fiscal_period} is not declared")
+        return fact
+
+    calls = {"postable_types": 0}
+
+    def postable_types_fn():
+        calls["postable_types"] += 1
+        return set(postable)
+
+    period_status.PeriodNotDeclared = PeriodNotDeclared
+    period_status.period_row = period_row
+    period_status.postable_types = postable_types_fn
+
+    clickhouse = types.ModuleType("konsol.clickhouse")
+    clickhouse.execute = lambda *a, **k: ""
+
+    tbs_mod = types.ModuleType("konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission")
+    tbs_mod.CONTROL_TABLE = "tb_control"
+    tbs_mod._sql_str = lambda s: s
+    tbs_mod.partnerless_ic_accounts = lambda rows, ic: []
+    tbs_mod.partnerless_warning = lambda n: f"{n} without a partner"
+    tbs_mod.validate_tb_rows = lambda rows, **kw: []
+
+    entity_permissions = types.ModuleType("konsol.entity_permissions")
+    entity_permissions.allowed_entity_codes = lambda user=None: None
+
+    group_chart = types.ModuleType("konsol.group_chart")
+    group_chart.chart_accounts = lambda: {}
+
+    ica_mod = types.ModuleType("konsol.consolidation.doctype.intercompany_account.intercompany_account")
+    ica_mod.intercompany_accounts = lambda: []
+
+    konsol_pkg = types.ModuleType("konsol")
+    konsol_pkg.tb_bulk_model = M
+    konsol_pkg.period_status = period_status
+
+    stubs = {
+        "frappe": frappe, "frappe.utils": frappe_utils,
+        "konsol": konsol_pkg, "konsol.tb_bulk_model": M,
+        "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
+        "konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission": tbs_mod,
+        "konsol.entity_permissions": entity_permissions, "konsol.group_chart": group_chart,
+        "konsol.consolidation.doctype.intercompany_account.intercompany_account": ica_mod,
+    }
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location("tb_bulk_under_test", TB_BULK_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return mod, calls
+
+
+def test_bulk_check_uses_declared_period_facts():
+    table = [HEADER_ROW,
+             ["AMDE", "2025", "14", "1010", "5", "0"],
+             ["AMDE", "2025", "14", "2010", "0", "5"],
+             ["AMDE", "2025", "13", "1010", "5", "0"],
+             ["AMDE", "2025", "13", "2010", "0", "5"],
+             ["AMDE", "2025", "3", "1010", "5", "0"],
+             ["AMDE", "2025", "3", "2010", "0", "5"]]
+    # P14 declared as Adjustment; P13 absent (undeclared); P03 declared Regular.
+    period_lookup = {
+        (2025, 14): {"code": "P14", "type": "Adjustment", "status": "Open"},
+        (2025, 3): {"code": "P03", "type": "Regular", "status": "Open"},
+    }
+
+    mod, calls = _load_tb_bulk(entities=["AMDE"], postable={"Regular"}, period_lookup=period_lookup)
+    _, report = mod._check(table)
+    by_period = {r["fiscal_period"]: r for r in report}
+
+    # P14: declared, but Adjustment is not postable on this site.
+    assert not by_period[14]["ok"]
+    assert "does not take trial balances on this site" in by_period[14]["errors"][0]
+    # P13: not declared at all.
+    assert not by_period[13]["ok"]
+    assert by_period[13]["errors"][0] == "FY2025 P13 is not declared"
+    # P03: declared Regular and open.
+    assert by_period[3]["ok"]
+    # postable_types() is read once per file, not once per group.
+    assert calls["postable_types"] == 1
+
+    # With Adjustment postable on this site, the same P14 group now passes.
+    mod2, _ = _load_tb_bulk(entities=["AMDE"], postable={"Regular", "Adjustment"}, period_lookup=period_lookup)
+    _, report2 = mod2._check(table)
+    assert {r["fiscal_period"]: r["ok"] for r in report2}[14]
+
+
+def test_temp_helper_is_gone():
+    tree = ast.parse(open(TB_BULK_PATH).read(), TB_BULK_PATH)
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    assert "_temp_period_fact" not in names
+    assert "_TEMP_POSTABLE_TYPES" not in names
+    assert "TEMP until konsol#189 task 20" not in open(TB_BULK_PATH).read()

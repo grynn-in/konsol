@@ -284,29 +284,50 @@ def resume_run(run_name: str, step_id: str) -> str:
 
 
 @whitelist()
-def launch_options() -> Dict:
+def launch_options(fiscal_year: Optional[str] = None) -> Dict:
     """Option lists for the konsol-exec launch form (so the 4 fields are
     dropdowns, not free text).
 
-    Returns ``{definitions, fiscal_years, fiscal_periods, scopes}``. Pipeline
-    definitions, fiscal periods, and scopes come from doctypes; fiscal years are
-    the distinct years present in ``epm_gold.gold_trial_balance`` (best-effort —
-    an empty list when ClickHouse is unreachable, and the SPA falls back to a
-    generated recent-year range). Each scope/period option is ``{value, label}``;
-    an empty selection means "all / default" (the params builder omits blanks).
+    Returns ``{definitions, fiscal_years, fiscal_periods, scopes}``. Fiscal
+    years and periods come from the declared calendar (konsol#189), never
+    ClickHouse: ``fiscal_years`` is every ``EPM Fiscal Year``, newest first,
+    and ``fiscal_periods`` is the *rows of one year* — ``fiscal_year`` if
+    given, else the newest declared year — read from its ``EPM Fiscal Year
+    Period`` child table in ``fiscal_period`` order. A site with no declared
+    year returns both lists empty rather than inventing one. Each scope/period
+    option is ``{value, label}`` (periods also carry ``type``); an empty
+    selection means "all / default" (the params builder omits blanks).
     """
     import frappe
 
     definitions = [d.name for d in frappe.get_all("Pipeline", order_by="name")]
 
+    fiscal_years = [
+        str(y.fiscal_year)
+        for y in frappe.get_all(
+            "EPM Fiscal Year", fields=["fiscal_year"], order_by="fiscal_year desc"
+        )
+    ]
+
+    year = str(fiscal_year) if fiscal_year not in (None, "") else (
+        fiscal_years[0] if fiscal_years else None
+    )
+
     fiscal_periods = []
-    for f in frappe.get_all(
-        "Fiscal Period", fields=["fiscal_period", "label", "quarter"], order_by="fiscal_period"
-    ):
-        label = f.get("label") or f"Period {f.fiscal_period}"
-        if f.get("quarter") and f.quarter != label:
-            label = f"{label} · {f.quarter}"
-        fiscal_periods.append({"value": str(f.fiscal_period), "label": label})
+    if year:
+        for p in frappe.get_all(
+            "EPM Fiscal Year Period",
+            filters={"parent": year, "parenttype": "EPM Fiscal Year", "parentfield": "periods"},
+            fields=["fiscal_period", "period_code", "period_label", "period_type"],
+            order_by="fiscal_period asc",
+        ):
+            fiscal_periods.append(
+                {
+                    "value": str(p.fiscal_period),
+                    "label": p.get("period_label") or p.get("period_code"),
+                    "type": p.get("period_type"),
+                }
+            )
 
     scopes = []
     for g in frappe.get_all(
@@ -321,18 +342,6 @@ def launch_options() -> Dict:
         elif g.get("data_area_id"):
             label = g.data_area_id + (f" — {g.entity_name}" if g.get("entity_name") else "")
             scopes.append({"value": g.data_area_id, "label": label})
-
-    fiscal_years = []
-    try:
-        from konsol import clickhouse
-
-        text = clickhouse.execute(
-            "SELECT DISTINCT fiscal_year FROM epm_gold.gold_trial_balance "
-            "WHERE fiscal_year > 0 ORDER BY fiscal_year DESC"
-        )
-        fiscal_years = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    except Exception:  # pragma: no cover - ClickHouse optional
-        fiscal_years = []
 
     return {
         "definitions": definitions,

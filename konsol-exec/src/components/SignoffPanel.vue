@@ -33,10 +33,16 @@ const failure = ref("");
 async function move(to) {
 	const p = plane.period.value;
 	if (!p?.period) return;
+	// Reopening needs a reason (recorded on the EPM Fiscal Year); no reason, no reopen.
+	let reason;
+	if (to === "Open") {
+		reason = (window.prompt(`Why reopen ${label.value}? The reason is recorded.`) || "").trim();
+		if (!reason) return;
+	}
 	busy.value = to;
 	failure.value = "";
 	try {
-		await setPeriodStatus(p.year, p.period, to);
+		await setPeriodStatus(p.year, p.period, to, reason);
 		plane.send({ type: "REFRESH" });
 	} catch (e) {
 		failure.value = e?.message || String(e);

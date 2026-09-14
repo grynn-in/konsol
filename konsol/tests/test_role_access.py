@@ -112,7 +112,8 @@ MATRIX = {
     "Allocation Driver": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
     "Pipeline Run": {"EPM Admin": "rw", "EPM Analyst": "r", "EPM User": "r"},
     "Assertion Run": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r"},
-    "Period Status": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
+    # konsol#189: retired, read-only history; status lives on EPM Fiscal Year
+    "Period Status": {"EPM Admin": "r", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
     # bulk trial balance upload: only the role that submits trial balances loads
     # it holds every entity's figures, so not even read for the Analyst
     "Trial Balance Upload": {"EPM Admin": "rwcd", "EPM Analyst": ""},
@@ -122,6 +123,7 @@ MATRIX = {
                      "Budget Approver": "r", "Entity Accountant": "r"},
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",
                "Budget Submitter": "r", "Budget Controller": "r", "Budget Manager": "r", "Budget Approver": "r"},
+    "EPM Fiscal Year": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
 }
 
 
