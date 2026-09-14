@@ -1,7 +1,7 @@
 """Period Status — Open / Closed / Locked per (fiscal year, fiscal period).
 
 Structural tests (no site needed), following the repo's convention for doctype
-guards. The behavioural counterpart is test_period_status_bench.py, which needs
+guards. The behavioural counterpart is test_fiscal_year_bench.py, which needs
 a live site.
 
 The design point these tests exist to protect: status is NOT a field on

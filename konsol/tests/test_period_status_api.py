@@ -308,7 +308,7 @@ class _FakeYear:
 
 #: What callers read off set_status's result: control_api.set_period_status
 #: (name, fiscal_year, fiscal_period, status, closed_by, closed_on) and
-#: test_period_status_bench (status, closed_by, closed_on).
+#: test_fiscal_year_bench (period_code, status, closed_by, closed_on).
 CALLER_ATTRS = ("name", "fiscal_year", "fiscal_period", "status", "closed_by", "closed_on")
 
 
