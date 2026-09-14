@@ -138,8 +138,19 @@ def plan(used_pairs, ps_rows, existing_years):
                     _date_str(target["start_date"]), _date_str(target["end_date"])))
             continue
 
-        ps_status = row["status"] or _status.OPEN
-        target_status = target.get("status") or _status.OPEN
+        ps_status = row["status"]
+        # _planned_year always sets a row's status to Open (line 65 above),
+        # so target_status is never blank here; ps_status is a Period Status
+        # row's raw value and can be ("" is kept, not defaulted): reported
+        # as a conflict, like every other bad-data case this loop finds,
+        # rather than silently read as Open.
+        target_status = target.get("status")
+        if ps_status not in (_status.OPEN, _status.CLOSED, _status.LOCKED):
+            conflicts.append(
+                "Fiscal year %d period %d (%s): Period Status has status %r; "
+                "it must be Open, Closed or Locked." % (
+                    year, period, target["code"], ps_status))
+            continue
         if target_status == ps_status:
             continue
         if target_status == _status.OPEN:

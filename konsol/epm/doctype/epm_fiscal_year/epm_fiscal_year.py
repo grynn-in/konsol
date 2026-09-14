@@ -34,8 +34,13 @@ def _date(value):
 
 
 def _status(value):
-    """A Select status; blank reads as the field default, Open."""
-    return value or fstm.OPEN
+    """A Select status, exactly as saved: no default filled in for blank.
+    Frappe keeps a "" a REST save sends rather than filling in the field's
+    JSON default (that default only fills a missing value on insert), so a
+    blank must reach fiscal_status_model as blank: row_problems and
+    transition_problem then refuse it by name instead of it being silently
+    read as Open."""
+    return value
 
 
 def _status_values(doc):
@@ -53,8 +58,12 @@ def _status_values(doc):
 
 def _row_key(row):
     """How the status guard matches a row to its saved version, and how an
-    action names the rows it moves."""
-    return row.period_code
+    action names the rows it moves. Frappe keeps a child row's `name`
+    across edits (including a period_code rename), so a recoded row is
+    still matched to its saved status rather than read as new. A brand-new
+    row (appended, not yet saved) has no name: it is compared against Open,
+    which fiscal_status_model.row_problems already requires of it."""
+    return row.name
 
 
 def _year_dict(doc):

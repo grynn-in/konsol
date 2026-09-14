@@ -23,7 +23,7 @@ from frappe.utils import getdate, today
 
 from konsol import home_model as M
 from konsol import period_status
-from konsol.fiscal_status_model import OPEN, effective_status
+from konsol.fiscal_status_model import effective_status
 from konsol.entity_permissions import allowed_entity_codes, assigned_entities, subtree_codes
 
 KONSOL_ROLES = {role for role, _ in M.TITLES}
@@ -159,7 +159,7 @@ def period_tree():
                order by parent, fiscal_period""", as_dict=True):
         if str(r.parent) in declared and r.fiscal_period is not None:
             rows_by_year.setdefault(int(declared[str(r.parent)].fiscal_year), []).append(r)
-    year_status = {int(y.fiscal_year): y.status or OPEN for y in declared.values()}
+    year_status = {int(y.fiscal_year): y.status for y in declared.values()}
     years = set(year_status)
 
     cycles = {}
@@ -173,7 +173,16 @@ def period_tree():
     for fy in sorted(years, reverse=True):
         rows = []
         for r in sorted(rows_by_year.get(fy, []), key=lambda r: int(r.fiscal_period)):
-            status = effective_status(year_status[fy], r.status or OPEN)
+            try:
+                status = effective_status(year_status[fy], r.status)
+            except ValueError:
+                # Bad data: validate() refuses a blank/invalid status before
+                # it's saved, so this is stale or hand-edited data, not a
+                # live save. Show it as-is instead of crashing the whole
+                # navigator for every year — home_model.period_state is
+                # just as lenient toward a status it doesn't recognise. A
+                # blank is labelled openly, never silently read as Open.
+                status = r.status or "Unknown"
             start = getdate(r.start_date) if r.start_date else None
             rows.append({"fiscal_period": int(r.fiscal_period), "code": r.period_code,
                          "label": r.period_label or r.period_code, "type": r.period_type,
