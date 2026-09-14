@@ -108,10 +108,7 @@ _ALLOWED_PATHS = (
 #: ``limit`` fails the sweep instead of silently riding along with the
 #: allowed ones (konsol#189 finding 6, re-review of PR #191).
 _ALLOWED_FUNCS = {
-    ("api.py", "_resolve_period"): (0, "budget: _resolve_period, PERIOD_RANGES (Q/H/FY) for Excel reads (plan 1.3)"),
     ("api.py", "build_snapshot"): (1, "budget: period_from/period_to are wide monthly columns (plan 1.3)"),
-    ("api.py", "budget_cell_save"): (0, "budget: fiscal_period is a wide monthly column (plan 1.3)"),
-    ("epm/budget_periods.py", "<module>"): (0, "budget: PERIOD_FIELDS is twelve monthly columns by design (plan 1.3)"),
     # TODO konsol#189: fiscal_calendar.period_status_rows() is the migration
     # planner shared by the create_fiscal_years patch and declare_years_in_use
     # (plan 3.1/3.4: "nothing reads [Period Status] any more except the
