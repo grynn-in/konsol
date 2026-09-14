@@ -227,7 +227,11 @@ class EPMFiscalYear(Document):
         if status != fstm.OPEN:
             frappe.throw(f"FY{self.fiscal_year} is {status}; periods can't be generated.")
 
-        used = fiscal_calendar.periods_in_use(self.fiscal_year)
+        # _lock_and_reload already took the year row FOR UPDATE; a locking
+        # read here (not a second lock) sees a document committed after this
+        # transaction's REPEATABLE READ snapshot, so Generate can't replace a
+        # row a just-committed document uses (PR #191 review 6).
+        used = fiscal_calendar.periods_in_use(self.fiscal_year, lock=True)
         if used:
             frappe.throw(
                 f"FY{self.fiscal_year}: documents use {len(used)} of its periods; "
