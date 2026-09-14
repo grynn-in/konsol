@@ -5,6 +5,7 @@ EPM Fiscal Year Period is the period row inside EPM Fiscal Year: one row per
 period in a year (opening, regular, closing, adjustment), carrying its own
 dates and its own close/lock status.
 """
+import ast
 import json
 import os
 import re
@@ -483,3 +484,22 @@ def test_list_indicator_matches_period_theme():
         assert list_colors[status] == theme_colors[status], (
             f"{status}: list view uses {list_colors[status]!r}, "
             f"PERIOD_THEME uses {theme_colors[status]!r}")
+
+
+# --- on the desk (konsol#189, modelled on test_main_account.py) -------------
+
+def _literal(path, name):
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == name)
+
+
+def test_fiscal_year_on_the_desk():
+    labels = _literal(os.path.join(APP_DIR, "dashboard.py"), "_LABELS")
+    assert labels["EPM Fiscal Year"] == "Fiscal Year"
+    cards = dict(_literal(os.path.join(APP_DIR, "dashboard.py"), "_CARDS"))
+    assert "EPM Fiscal Year" in cards["Reference Data"]
+    with open(os.path.join(APP_DIR, "dashboard.py")) as f:
+        refresh = f.read().split("def _workspace_needs_refresh")[1].split("\ndef ")[0]
+    assert '"EPM Fiscal Year" not in' in refresh, "existing sites must rebuild the card once"
