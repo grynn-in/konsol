@@ -195,6 +195,15 @@ def _load(path, period_open):
     mods["konsol.schema_lifecycle"].request_governed_rebuild = request_governed_rebuild
     mods["konsol.epm.budget_grain"].digest_name = lambda *a, **k: "ZZ"
 
+    # konsolidat#199: the controller imports the real, frappe-free rule module
+    # konsol.tb_basis_model; the stub package has no __path__, so load it from
+    # the repo and register it beside the stubs.
+    basis_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tb_basis_model.py")
+    basis_spec = importlib.util.spec_from_file_location("konsol.tb_basis_model", basis_path)
+    basis_mod = importlib.util.module_from_spec(basis_spec)
+    basis_spec.loader.exec_module(basis_mod)
+    mods["konsol.tb_basis_model"] = basis_mod
+
     saved = {name: sys.modules.get(name) for name in mods}
     sys.modules.update(mods)
     try:
