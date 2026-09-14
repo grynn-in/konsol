@@ -4,6 +4,7 @@ The controller builds the year and row dicts from the doc and hands them to
 konsol.fiscal_structure_model; every error comes back in one throw. Loaded
 against a stub frappe, as in test_submit_period_gate.py."""
 import contextlib
+import copy
 import importlib.util
 import os
 import sys
@@ -67,6 +68,16 @@ def _load():
             """The saved version, set by a test as `_before_save`; None when new."""
             return self.__dict__.get("_before_save")
 
+        def save(self, *args, **kwargs):
+            """As Frappe's save: runs validate(), then writes the document
+            back as its own saved version (deep-copied, so a later edit to
+            this doc doesn't retroactively change what "before" was)."""
+            self.validate()
+            fields = {k: copy.deepcopy(v) for k, v in self.__dict__.items()
+                      if k not in ("flags", "_before_save")}
+            self._before_save = type(self)(**fields)
+            return self
+
     def throw(msg, exc=None, *args, **kwargs):
         raise (exc or Thrown)(msg)
 
@@ -127,11 +138,13 @@ def _load():
 
 def _row(period, code, ptype, start, end, name=None):
     """A period row. `name` is the child row's own docname, stable across an
-    edit even when `period_code` changes; it defaults to `code` so a fresh
-    call still gives every row a distinct, deterministic one."""
+    edit even when `period_code` changes. It defaults to None — as a row
+    appended in Python and not yet saved has no name (mirrors Frappe:
+    Document.append leaves `name` unset until insert); `_saved()` assigns a
+    real one once a test treats the row as already in the database."""
     return types.SimpleNamespace(fiscal_period=period, period_code=code, period_type=ptype,
                                  start_date=start, end_date=end, status="Open",
-                                 name=name if name is not None else code)
+                                 period_label=f"Period {code}", quarter=None, name=name)
 
 
 def _monthly_2025():
@@ -188,10 +201,14 @@ def test_all_errors_reported_at_once():
 
 
 def _saved(module, year_status="Open", row_status="Open", rows=None):
-    """A saved version of the 2025 year, every row at `row_status`."""
+    """A saved version of the 2025 year, every row at `row_status`. A row
+    with no name yet (fresh out of _monthly_2025()) is given one — its own
+    period_code, distinct and deterministic — as Frappe would on insert."""
     rows = rows if rows is not None else _monthly_2025()
     for r in rows:
         r.status = row_status
+        if r.name is None:
+            r.name = r.period_code
     doc = _year(module, rows)
     doc.status = year_status
     return doc
@@ -477,6 +494,34 @@ def test_non_open_row_cannot_be_removed_or_swapped():
         assert _validate(doc) is None
 
 
+# --- A row can't carry another year's saved child name (PR #191 re-review 2,
+# --- finding 2): unmatched to *this* year's saved rows, it would otherwise
+# --- be silently compared against Open and then written by name, moving the
+# --- other year's row (and its status) into this one. --------------------
+
+def test_foreign_row_name_refused():
+    with _load() as module:
+        saved = _saved(module)
+        doc = _edit(module, saved)
+        # A row carrying the child name of a period row saved under some
+        # other fiscal year (this year's own saved names are the period
+        # codes OPN..CLS; a name none of them is, by construction, foreign).
+        p05 = next(r for r in doc.periods if r.period_code == "P05")
+        p05.name = "FY2025-P05-actual-row-name"
+        msg = _refused(doc)
+        assert msg is not None, "a row with another year's saved child name was accepted"
+        assert "P05" in msg and "another fiscal year" in msg, msg
+
+        # A desk-new row (carries __islocal, Frappe's own not-yet-saved
+        # signal) isn't foreign, even though it isn't among this year's
+        # saved rows either — it hasn't been saved to compare against.
+        doc = _edit(module, saved)
+        p05 = next(r for r in doc.periods if r.period_code == "P05")
+        p05.name = "new-epm-fiscal-year-period-1"
+        p05.__dict__["__islocal"] = 1
+        assert _thrown(doc) is None, "a desk-new row (__islocal) was refused as foreign"
+
+
 # --- A blank status is refused, not read as Open (review #191, 4) ----------
 
 def _thrown(doc):
@@ -562,6 +607,63 @@ def test_status_action_refuses_structural_change():
         else:
             raise AssertionError(
                 "a status action's structural change (start_date) was accepted")
+
+
+def test_status_action_refuses_year_date_change():
+    """_assert_status_action_structure_unchanged must also compare the
+    year's own start_date/end_date, not just each row (PR #191 re-review,
+    nit 3): a status action never moves the year's dates, but the row-only
+    tuple didn't cover them.
+
+    Exercises the assert directly rather than through a full validate():
+    fsm.year_problems and regular_period_problems always require the last
+    Regular period to reach the year end, so a bare end_date move with no
+    matching row edit is already refused, for an unrelated reason, before
+    validate() would ever reach this assert."""
+    with _load() as module:
+        saved = _saved(module)
+        doc = _edit(module, saved)
+        doc.end_date = "2025-12-30"
+        try:
+            doc._assert_status_action_structure_unchanged(saved)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                "a status action's year date change (end_date) was accepted")
+
+
+def test_status_action_flag_cleared():
+    """_save_as_status_action's flag must not outlive the save it declares:
+    a later plain save() on the same object must re-apply the used-period
+    freeze rather than still validate as a declared status action
+    (PR #191 re-review, nit 3)."""
+    with _load() as module:
+        calendar = sys.modules["konsol.fiscal_calendar"]
+        calls = []
+
+        def counting(fiscal_year, lock=False):
+            calls.append((fiscal_year, lock))
+            return set()
+
+        calendar.periods_in_use = counting
+
+        doc = _edit(module, _saved(module))
+        row = next(r for r in doc.periods if r.period_code == "P05")
+        row.status = "Closed"
+        row.closed_by = "admin@example.com"
+        row.closed_on = "2026-01-05 10:00:00"
+        doc._save_as_status_action([row])
+
+        assert doc.flags.konsol_status_action is None, \
+            "_save_as_status_action left its flag set after the save"
+
+        # A following plain save (here, a direct validate() — as save()
+        # would run) re-applies the freeze: the flag no longer reads as a
+        # declared status action.
+        calls.clear()
+        assert _validate(doc) is None, "a following plain save was refused"
+        assert calls, "a following plain save did not re-run the used-period freeze"
 
 
 def test_blank_status_not_saved():
