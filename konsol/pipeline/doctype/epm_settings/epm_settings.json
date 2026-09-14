@@ -259,6 +259,35 @@
    "options": "DocType",
    "label": "Account Permission DocType",
    "description": "DocType (typically a Virtual DocType proxying main account categories) whose User Permissions restrict which account categories a user may write budgets for. Leave blank to allow all authenticated users to write any account."
+  },
+  {
+   "fieldname": "tab_close",
+   "fieldtype": "Tab Break",
+   "label": "Close"
+  },
+  {
+   "fieldname": "tb_periods_section",
+   "fieldtype": "Section Break",
+   "label": "Trial Balance Periods",
+   "description": "Regular periods always take trial balances. Tick a period type to let trial balances post to it too (konsol#189)."
+  },
+  {
+   "fieldname": "tb_accepts_opening",
+   "fieldtype": "Check",
+   "label": "Opening Periods Take Trial Balances",
+   "default": "0"
+  },
+  {
+   "fieldname": "tb_accepts_closing",
+   "fieldtype": "Check",
+   "label": "Closing Periods Take Trial Balances",
+   "default": "0"
+  },
+  {
+   "fieldname": "tb_accepts_adjustment",
+   "fieldtype": "Check",
+   "label": "Adjustment Periods Take Trial Balances",
+   "default": "0"
   }
  ],
  "permissions": [
@@ -270,6 +299,11 @@
   }
  ],
  "field_order": [
-  "restrict_entities_by_default"
+  "restrict_entities_by_default",
+  "tab_close",
+  "tb_periods_section",
+  "tb_accepts_opening",
+  "tb_accepts_closing",
+  "tb_accepts_adjustment"
  ]
 }
