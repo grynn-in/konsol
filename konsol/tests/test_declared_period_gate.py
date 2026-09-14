@@ -95,31 +95,33 @@ _ALLOWED_PATHS = (
     "dbt_config.py",  # feeds gold_period_hierarchy from the template; retired in a later task
 )
 
-#: Specific (path, lineno) exceptions that plan section 1.3 names as staying
-#: on a fixed 12-month calendar by design (budget is monthly columns, not
-#: declared periods), plus migration-only readers that must keep reading the
-#: retiring doctypes until they are actually retired (PR4, konsol#189).
-_ALLOWED_LINES = {
-    ("api.py", 386): "budget: _resolve_period, PERIOD_RANGES (Q/H/FY) for Excel reads (plan 1.3)",
-    ("api.py", 927): "budget: period_from/period_to are wide monthly columns (plan 1.3)",
-    ("api.py", 1184): "budget: fiscal_period is a wide monthly column (plan 1.3)",
-    ("epm/budget_periods.py", 10): "budget: PERIOD_FIELDS is twelve monthly columns by design (plan 1.3)",
+#: Specific (path, enclosing function name) exceptions that plan section 1.3
+#: names as staying on a fixed 12-month calendar by design (budget is
+#: monthly columns, not declared periods), plus migration-only readers that
+#: must keep reading the retiring doctypes until they are actually retired
+#: (PR4, konsol#189). Keyed on the AST's innermost enclosing function name
+#: ("<module>" for module-level code) rather than line number, so an
+#: unrelated edit above an allowed offender can't silently break the gate.
+_ALLOWED_FUNCS = {
+    ("api.py", "_resolve_period"): "budget: _resolve_period, PERIOD_RANGES (Q/H/FY) for Excel reads (plan 1.3)",
+    ("api.py", "build_snapshot"): "budget: period_from/period_to are wide monthly columns (plan 1.3)",
+    ("api.py", "budget_cell_save"): "budget: fiscal_period is a wide monthly column (plan 1.3)",
+    ("epm/budget_periods.py", "<module>"): "budget: PERIOD_FIELDS is twelve monthly columns by design (plan 1.3)",
     # TODO konsol#189: fiscal_calendar.period_status_rows() is the migration
     # planner shared by the create_fiscal_years patch and declare_years_in_use
     # (plan 3.1/3.4: "nothing reads [Period Status] any more except the
     # migration patch"). It stops reading Period Status only when Period
     # Status is actually dropped in PR4/task 90.
-    ("fiscal_calendar.py", 203): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
-    ("fiscal_calendar.py", 211): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
+    ("fiscal_calendar.py", "period_status_rows"): "TODO konsol#189: migration planner reads Period Status until PR4 retires it",
 }
 
 
-def _allowed(relpath, lineno):
+def _allowed(relpath, func_name):
     if relpath.startswith("tests" + os.sep):
         return True
     if any(relpath == p or relpath.startswith(p) for p in _ALLOWED_PATHS):
         return True
-    return (relpath, lineno) in _ALLOWED_LINES
+    return (relpath, func_name) in _ALLOWED_FUNCS
 
 
 def _period_named(node):
@@ -133,21 +135,41 @@ def _period_named(node):
         return False
 
 
-def _stale_reads(path):
-    """Every stale-reader offense in one file, as (lineno, reason)."""
-    with open(path, encoding="utf-8") as f:
-        tree = ast.parse(f.read(), filename=path)
+def _enclosing_functions(tree):
+    """Map each node's id to the name of its innermost enclosing function
+    def, walking FunctionDef/AsyncFunctionDef nodes; ``"<module>"`` for
+    anything at module level (or inside a class body, outside any def)."""
+    owner = {}
+
+    def visit(node, current):
+        owner[id(node)] = current
+        for child in ast.iter_child_nodes(node):
+            child_scope = (
+                child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else current
+            )
+            visit(child, child_scope)
+
+    visit(tree, "<module>")
+    return owner
+
+
+def _stale_reads(path, source):
+    """Every stale-reader offense in one source string, as
+    (lineno, reason, enclosing_function_name)."""
+    tree = ast.parse(source, filename=path)
+    owner = _enclosing_functions(tree)
     out = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             for arg in list(node.args) + [kw.value for kw in node.keywords]:
                 if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                         and arg.value in _STALE_DOCTYPES):
-                    out.append((node.lineno, f'reads doctype "{arg.value}"'))
+                    out.append((node.lineno, f'reads doctype "{arg.value}"', owner[id(node)]))
             if isinstance(node.func, ast.Name) and node.func.id == "range":
                 for arg in node.args:
                     if isinstance(arg, ast.Constant) and arg.value == 14:
-                        out.append((node.lineno, "range(14): a fixed 0..13 calendar"))
+                        out.append((node.lineno, "range(14): a fixed 0..13 calendar", owner[id(node)]))
         elif isinstance(node, ast.Compare):
             chain = [node.left] + node.comparators
             for i, op in enumerate(node.ops):
@@ -158,7 +180,8 @@ def _stale_reads(path):
                     if (isinstance(rhs, ast.Constant) and rhs.value in (12, 13)
                             and _period_named(lhs)):
                         out.append((node.lineno,
-                                    f"compares a period against {rhs.value}: {ast.unparse(node)}"))
+                                    f"compares a period against {rhs.value}: {ast.unparse(node)}",
+                                    owner[id(node)]))
     return out
 
 
@@ -210,8 +233,10 @@ def test_no_stale_period_readers():
             relpath = os.path.relpath(full, APP_DIR)
             if relpath.startswith("tests" + os.sep):
                 continue
-            for lineno, reason in _stale_reads(full):
-                if _allowed(relpath, lineno):
+            with open(full, encoding="utf-8") as f:
+                source = f.read()
+            for lineno, reason, func_name in _stale_reads(full, source):
+                if _allowed(relpath, func_name):
                     continue
                 offenders.append(f"konsol/{relpath}:{lineno} {reason}")
     assert not offenders, "stale Period Status / Fiscal Period / 0..13 reader(s):\n" + "\n".join(offenders)
