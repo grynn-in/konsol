@@ -383,6 +383,41 @@ def test_generate_on_saved_year_still_locks():
         assert lock < reload_at, events
 
 
+def test_generate_freeze_reads_lock():
+    """Generate Periods' used-period check must survive a document committed
+    after this transaction's REPEATABLE READ snapshot, same as validate and
+    on_trash (PR #191 review 6): periods_in_use is called with lock=True,
+    after the year's FOR UPDATE lock, not a plain read that could miss a
+    just-committed document and let Generate replace its period."""
+    with _load() as module:
+        calendar = sys.modules["konsol.fiscal_calendar"]
+        events = sys.modules["frappe"].events
+        calls = []
+
+        def periods_in_use(fiscal_year, lock=False):
+            calls.append((fiscal_year, lock))
+            events.append(("periods_in_use", fiscal_year, lock))
+            return set()
+
+        calendar.periods_in_use = periods_in_use
+
+        doc = _year(module)
+        result = doc.generate_periods()
+
+        assert result == doc.name
+        # validate()'s own used-period freeze also calls periods_in_use
+        # (always locked); every call generate_periods triggers, including
+        # its own used-period check, must be locked, none plain.
+        assert calls and all(lock for _fy, lock in calls), \
+            f"generate_periods' used-period check did not read under lock: {calls}"
+
+        lock_at = next((i for i, e in enumerate(events) if e[0] == "sql"
+                         and "`tabEPM Fiscal Year`" in e[1] and "FOR UPDATE" in e[1]), None)
+        assert lock_at is not None, f"a saved year's Generate Periods skipped the lock: {events}"
+        use_at = _first(events, "periods_in_use")
+        assert lock_at < use_at, events
+
+
 def _assert_whitelisted_post(name):
     with open(CONTROLLER) as f:
         tree = ast.parse(f.read())
