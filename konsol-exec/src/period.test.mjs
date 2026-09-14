@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { formatPeriod, stepPeriod, canStep, yearChoices } from "./period.js";
 
 const OPTIONS = {
@@ -126,4 +128,20 @@ test("defaultPeriod picks the newest fiscal year regardless of list order", asyn
 		{ year: "2026", period: "9" },
 		"fiscal_years oldest-first still resolves to the newest year"
 	);
+});
+
+/* With no fiscal year declared at all, there is nothing to default to — not
+ * even today's calendar year (konsol#189 removes every such guess). */
+test("defaultPeriod returns no year when nothing is declared, never the calendar year", async () => {
+	const { defaultPeriod } = await import("./machines/closeMachine.js");
+	assert.deepEqual(
+		defaultPeriod({ fiscal_years: [], fiscal_periods: [] }),
+		{ year: null, period: null },
+		"no declared fiscal year means no default — never today's calendar year"
+	);
+});
+
+test("defaultPeriod never falls back to today's date", () => {
+	const source = readFileSync(fileURLToPath(new URL("./machines/closeMachine.js", import.meta.url)), "utf8");
+	assert.equal(/new Date\s*\(/.test(source), false, "closeMachine.js must not guess the calendar year");
 });
