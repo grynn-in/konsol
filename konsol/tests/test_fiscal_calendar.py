@@ -9,6 +9,7 @@ import glob
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 
@@ -492,8 +493,25 @@ def test_current_period_is_the_declared_regular_period_containing_today():
 def test_home_api_and_control_api_call_current_period():
     """The one helper, not two readers that can drift (konsol#189 review
     nit 6): both callers must actually call fiscal_calendar.current_period,
-    not just import the module."""
-    for fname in ("home_api.py", "control_api.py"):
-        with open(os.path.join(APP_DIR, fname)) as f:
-            src = f.read()
-        assert "current_period(" in src, f"{fname} must call fiscal_calendar.current_period"
+    not just import the module.
+
+    A bare ``"current_period(" in src`` check (the original version of this
+    test, review 2 nit 3) also matches home_api's own ``_current_period(``
+    definition, so it would pass even if that function never called the
+    shared helper. Require the qualified attribute call in home_api.py, and
+    require control_api.py to both import the name from konsol.fiscal_calendar
+    and call it."""
+    with open(os.path.join(APP_DIR, "home_api.py")) as f:
+        home_src = f.read()
+    assert "fiscal_calendar.current_period(" in home_src, (
+        "home_api.py must call fiscal_calendar.current_period(...)"
+    )
+
+    with open(os.path.join(APP_DIR, "control_api.py")) as f:
+        control_src = f.read()
+    assert re.search(
+        r"from konsol\.fiscal_calendar import[^\n]*\bcurrent_period\b", control_src
+    ), "control_api.py must import current_period from konsol.fiscal_calendar"
+    assert "current_period(" in control_src, (
+        "control_api.py must call current_period(...)"
+    )
