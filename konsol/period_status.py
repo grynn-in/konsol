@@ -96,6 +96,40 @@ def assert_declared(fiscal_year, fiscal_period):
     period_row(fiscal_year, fiscal_period)
 
 
+#: Period type -> the EPM Settings check that lets it take trial balances.
+#: "Regular" is not listed: it always takes them.
+_TB_SETTING = {
+    "Opening": "tb_accepts_opening",
+    "Closing": "tb_accepts_closing",
+    "Adjustment": "tb_accepts_adjustment",
+}
+
+
+def postable_types() -> set:
+    """Period types that take trial balances on this site: Regular, plus each
+    type whose EPM Settings check is ticked."""
+    types = {"Regular"}
+    for period_type, fieldname in _TB_SETTING.items():
+        if frappe.db.get_single_value("EPM Settings", fieldname):
+            types.add(period_type)
+    return types
+
+
+def assert_postable(fiscal_year, fiscal_period):
+    """Refuse an undeclared period (PeriodNotDeclared), or one whose type does
+    not take trial balances on this site. Does not check open/closed: callers
+    call assert_open for that."""
+    row = period_row(fiscal_year, fiscal_period)
+    if row["type"] in postable_types():
+        return
+    frappe.throw(
+        frappe._("{0} ({1}) does not take trial balances on this site. "
+                 "Tick it in EPM Settings → Close to allow it.").format(
+            row["code"], row["type"]),
+        frappe.ValidationError,
+    )
+
+
 def period_dates(fiscal_year, fiscal_period):
     """(start_date, end_date) of one declared period."""
     row = period_row(fiscal_year, fiscal_period)
