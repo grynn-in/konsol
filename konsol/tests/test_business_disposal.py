@@ -580,6 +580,34 @@ def test_on_submit_closes_the_ownership_period_under_the_flag_and_links_it():
     assert ("Ownership Period", "epm_staging.ownership_periods") in [s[:2] for s in site.synced]
 
 
+def test_on_submit_closes_the_linked_period_rather_than_the_one_matched_by_date():
+    """A migrated disposal (P9) links its source Ownership Period; the approval
+    closes that one, not whichever period ``_current_holding`` finds by date
+    (P9b). A link to a period deleted since falls back to the current holding."""
+    linked = {"name": "OP-ZZG-ZZE-2019-06-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "effective_date": "2019-06-01", "end_date": "2025-12-31", "ownership_pct": 80,
+              "consolidation_method": "full", "docstatus": 1}
+    site = _Site(ownership=[HOLDING_80, linked])
+    deal = _deal(ownership_period="OP-ZZG-ZZE-2019-06-01")
+    deal.validate()
+    deal.on_submit()
+    assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2019-06-01"]
+    written = dict(site.loaded[0].db_sets)
+    assert str(written["end_date"]) == "2025-12-31"
+    assert written["is_disposal"] == 1
+    assert written["disposal_price"] == 9000.0
+    assert site.flag_at_write and all(site.flag_at_write)
+    assert M.frappe.flags.from_business_combination is False
+    assert ("ownership_period", "OP-ZZG-ZZE-2019-06-01") in deal.db_sets
+
+    site = _Site()
+    deal = _deal(ownership_period="OP-ZZG-ZZE-1999-01-01")  # deleted since
+    deal.validate()
+    deal.on_submit()
+    assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2020-01-01"]
+    assert ("ownership_period", "OP-ZZG-ZZE-2020-01-01") in deal.db_sets
+
+
 def test_on_cancel_reopens_the_ownership_period_it_closed():
     """Cancelling an approved disposal undoes what its approval did: the period
     it ended is open again and the entity is no longer disposed of (P7b)."""

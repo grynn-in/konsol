@@ -522,6 +522,66 @@ def test_on_submit_links_an_existing_period_on_the_acquisition_date():
     assert M.frappe.flags.from_business_combination is False
 
 
+def test_on_submit_updates_the_linked_period_even_when_its_date_differs():
+    """A migrated deal (P9) links its source Ownership Period and is dated by
+    that period's own acquisition_date, which may differ from its
+    effective_date. The linked period is the one the approval updates — not
+    one matched by date, which would insert a second period overlapping the
+    linked one (P9b)."""
+    linked = {"name": "OP-ZZG-ZZE-2025-12-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "effective_date": "2025-12-01", "end_date": None, "ownership_pct": 80,
+              "consolidation_method": "full", "acquisition_date": "2025-12-31", "docstatus": 1}
+    site = _Site(ownership=[linked])
+    deal = _deal(share_acquired_pct=80, ownership_period="OP-ZZG-ZZE-2025-12-01")
+    deal.validate()
+    deal.on_submit()
+    assert site.inserted == [], "no second period overlapping the linked one"
+    assert site.loaded.name == "OP-ZZG-ZZE-2025-12-01"
+    written = dict(site.loaded.db_sets)
+    assert written["acquisition_price"] == 8300.0
+    assert written["fair_value_adjustment"] == 930.0
+    assert str(written["acquisition_date"]) == "2025-12-31"
+    # The linked period is this acquisition's own period, not an earlier one.
+    assert written["is_first_acquisition"] == 1
+    assert ("ownership_period", "OP-ZZG-ZZE-2025-12-01") in deal.db_sets
+    assert ("Ownership Period", "epm_staging.ownership_periods") in [s[:2] for s in site.synced]
+    assert M.frappe.flags.from_business_combination is False
+
+
+def test_on_submit_submits_a_linked_draft_period_with_a_different_date():
+    linked = {"name": "OP-ZZG-ZZE-2025-12-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "effective_date": "2025-12-01", "end_date": None, "ownership_pct": 80,
+              "consolidation_method": "full", "docstatus": 0}
+    site = _Site(ownership=[linked])
+    deal = _deal(share_acquired_pct=80, ownership_period="OP-ZZG-ZZE-2025-12-01")
+    deal.validate()
+    deal.on_submit()
+    assert site.inserted == []
+    assert site.loaded.name == "OP-ZZG-ZZE-2025-12-01"
+    assert site.loaded.submitted is True
+    assert site.loaded.acquisition_price == 8300.0
+    assert ("ownership_period", "OP-ZZG-ZZE-2025-12-01") in deal.db_sets
+
+
+def test_on_submit_falls_back_to_the_date_lookup_when_the_link_is_blank_or_stale():
+    # A link to a period deleted since: today's behaviour, a new period on the date.
+    site = _Site()
+    deal = _deal(share_acquired_pct=80, ownership_period="OP-ZZG-ZZE-1999-01-01")
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1
+    assert str(site.inserted[0].effective_date) == "2025-12-31"
+    # A cancelled linked period is not updated either.
+    cancelled = {"name": "OP-ZZG-ZZE-2025-12-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                 "effective_date": "2025-12-01", "end_date": None, "ownership_pct": 80, "docstatus": 2}
+    site = _Site(ownership=[cancelled])
+    deal = _deal(share_acquired_pct=80, ownership_period="OP-ZZG-ZZE-2025-12-01")
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1
+    assert not hasattr(site, "loaded")
+
+
 def test_submit_cancel_and_delete_sync_the_header_and_the_three_children():
     expected = {("Business Combination", HEADER_TABLE)} | {(dt, t) for dt, t in CHILD_TABLES.items()}
     for hook in ("on_submit", "on_cancel", "after_delete"):
