@@ -296,3 +296,90 @@ def problems(header, consideration, balances, costs, policy, facts):
     is_published_leaf = _get(facts, "is_published_leaf") or (lambda account: True)
     found += account_problems(policy, required_accounts(policy, deal), is_published_leaf)
     return found
+
+
+def derive_acquired_balances(tb_rows, retained_earnings_account, fva_lines, period_label):
+    """The Acquired Balance Sheet from trial-balance amounts (konsol#207).
+
+    ``tb_rows``: dicts ``main_account``, ``amount`` (Dr+/Cr−, entity currency,
+    cumulative through the acquisition period) and ``is_pnl`` (0/1). Amounts
+    are summed per account; the P&L accounts' total (the result not yet closed
+    into retained earnings; closed years net to zero) is folded into
+    ``retained_earnings_account``'s line and the P&L lines are dropped. Lines
+    that round to 0.00 are dropped and the rest sorted by account; then each
+    ``(main_account, amount)`` of ``fva_lines`` is added to that account's
+    ``fair_value_adjustment``, on a new line with book amount 0 when absent.
+
+    Returns ``(lines, problems)``: lines are dicts ``main_account,
+    book_amount, fair_value_adjustment, note`` (money as Decimal to 0.01);
+    problems are sentences, empty when the lines can be used.
+    """
+    rows = list(tb_rows or ())
+    if not rows:
+        return [], [f"{_PREFIX}no trial balance amounts at or before {period_label}."]
+
+    found = []
+    book = {}
+    pnl_total = Decimal(0)
+    for row in rows:
+        amount = _decimal(_get(row, "amount"))
+        if int(_decimal(_get(row, "is_pnl"))):
+            pnl_total += amount
+        else:
+            account = _text(_get(row, "main_account"))
+            book[account] = book.get(account, Decimal(0)) + amount
+
+    total = sum(book.values(), Decimal(0)) + pnl_total
+    if _money(pnl_total) != ZERO:
+        if retained_earnings_account:
+            book[retained_earnings_account] = book.get(retained_earnings_account, Decimal(0)) + pnl_total
+        else:
+            found.append(
+                f"{_PREFIX}the chart declares no Retained Earnings Account: tick it on the "
+                f"retained-earnings Main Account so the result of {period_label} can be folded in."
+            )
+    if abs(total) > Decimal("0.005"):
+        found.append(
+            f"{_PREFIX}the trial balance through {period_label} does not balance: "
+            f"it is off by {_money(total):.2f}."
+        )
+
+    lines = [
+        {"main_account": account, "book_amount": _money(amount),
+         "fair_value_adjustment": ZERO, "note": "From the trial balance"}
+        for account, amount in sorted(book.items())
+        if _money(amount) != ZERO
+    ]
+    by_account = {line["main_account"]: line for line in lines}
+    for account, amount in fva_lines or ():
+        amount = _money(amount)
+        if amount == ZERO:
+            continue
+        line = by_account.get(account)
+        if line is None:
+            line = {"main_account": account, "book_amount": ZERO,
+                    "fair_value_adjustment": ZERO, "note": "Fair value adjustment"}
+            lines.append(line)
+            by_account[account] = line
+        line["fair_value_adjustment"] = _money(line["fair_value_adjustment"] + amount)
+    return lines, found
+
+
+def split_by_weights(total, weights):
+    """``total`` spread over ``weights`` (``(main_account, weight)``, percentages
+    summing to 100) as ``[(main_account, amount)]``, amounts Decimal to 0.01.
+    The rounding remainder goes to the line with the largest weight (the first
+    on ties), so the amounts add up to ``total`` exactly. Weights not summing
+    to 100 raise ``ValueError``.
+    """
+    pairs = [(account, _decimal(weight)) for account, weight in weights or ()]
+    weight_sum = sum((weight for _, weight in pairs), Decimal(0))
+    if abs(weight_sum - HUNDRED) > Decimal("0.0001"):
+        raise ValueError(
+            f"{_PREFIX}the allocation weights add up to {weight_sum}; they must add up to 100."
+        )
+    target = _money(total)
+    amounts = [_money(target * weight / HUNDRED) for _, weight in pairs]
+    largest = max(range(len(pairs)), key=lambda i: (pairs[i][1], -i))
+    amounts[largest] += target - sum(amounts, Decimal(0))
+    return [(account, amount) for (account, _), amount in zip(pairs, amounts)]
