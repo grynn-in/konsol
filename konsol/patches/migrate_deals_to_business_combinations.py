@@ -24,18 +24,26 @@ already links (any docstatus) is skipped, so a second run inserts nothing.
 The controller's ``validate`` may refuse a migrated Draft — no Consolidation
 Policy on the root yet, no Closing rate, no declared period; the migration
 can supply none of these — so a refused Draft is inserted without validate
-and carries the refusal in its description for the reviewer. A period with no
-root node, no entity, or (for a disposal) no date cannot become a document
-and is listed in the output instead.
+and carries the refusal in its description for the reviewer. Only a
+``frappe.ValidationError`` (the controller's judgement) takes that route:
+any other error on the insert — a duplicate name, a database error — is not
+a refusal, retrying would raise it again, so the period is listed as not
+migrated and the migrate goes on. A period with no root node, no entity, or
+(for a disposal) no date cannot become a document and is listed the same way.
 
 patches.txt has no sections, so this runs pre_model_sync: the doctypes are
-reloaded (children first) before anything reads them. Counts are printed.
+reloaded before anything reads them — Consolidation Group first, because the
+deal controllers' ``validate`` selects the root's policy columns (design 1a),
+which exist only once that doctype is reloaded; then the deal doctypes,
+children first; Ownership Period last. Counts are printed.
 """
 import frappe
 
-#: (module, doctype folder) in reload order: children before their parents,
+#: (module, doctype folder) in reload order: Consolidation Group first (its
+#: policy columns are what validate reads), children before their parents,
 #: Ownership Period last (its deal fields are what this reads).
 RELOAD = (
+    ("consolidation", "consolidation_group"),
     ("consolidation", "business_combination_consideration"),
     ("consolidation", "business_combination_acquired_balance"),
     ("consolidation", "business_combination_cost"),
@@ -95,23 +103,38 @@ def _migrate(period, doctype, build, counts, unconvertible):
     if why:
         unconvertible.append((period.name, why))
         return
-    if _insert(data):
+    try:
+        kept = _insert(data)
+    except _NotMigrated as e:
+        unconvertible.append((period.name, str(e)))
+        return
+    if kept:
         counts["kept_with_reason"] += 1
     counts[doctype] += 1
 
 
+class _NotMigrated(Exception):
+    """The insert failed for a reason that is not the controller's refusal
+    (a duplicate name, a database error): the period is listed, not retried."""
+
+
 def _insert(data):
-    """Insert the Draft; when the controller refuses it, insert it anyway
-    without validate, the refusal appended to the description. Returns True
-    when the refusal route was taken. A refused ``insert()`` writes nothing
-    (validate runs before the row), so the retry is a fresh document."""
+    """Insert the Draft; when the controller refuses it (a ValidationError),
+    insert it anyway without validate, the refusal appended to the
+    description. Returns True when the refusal route was taken. A refused
+    ``insert()`` writes nothing (validate runs before the row), so the retry
+    is a fresh document. Any other error — on the first insert or on the
+    retry — raises ``_NotMigrated`` so the migrate goes on with the next
+    period instead of aborting."""
     doc = frappe.get_doc(data)
     doc.flags.ignore_permissions = True
     try:
         doc.insert()
         return False
-    except Exception as e:  # noqa: BLE001 — the reason is kept, the migrate goes on
+    except frappe.ValidationError as e:  # the controller's judgement: keep with the reason
         reason = _plain(e)
+    except Exception as e:  # noqa: BLE001 — not a refusal; retrying would raise it again
+        raise _NotMigrated(_plain(e)) from e
     if hasattr(frappe, "clear_last_message"):
         frappe.clear_last_message()
     data = dict(data)
@@ -119,7 +142,10 @@ def _insert(data):
     doc = frappe.get_doc(data)
     doc.flags.ignore_permissions = True
     doc.flags.ignore_validate = True
-    doc.insert()
+    try:
+        doc.insert()
+    except Exception as e:  # noqa: BLE001 — listed with both reasons, the migrate goes on
+        raise _NotMigrated("%s (after the controller refused: %s)" % (_plain(e), reason)) from e
     return True
 
 
