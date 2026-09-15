@@ -69,7 +69,7 @@
    "fieldtype": "Select",
    "label": "NCI Measurement",
    "options": "partial\nfull",
-   "description": "Partial: NCI at its share of fair-value net assets. Full: NCI at fair value, goodwill includes its share. US GAAP requires Full."
+   "description": "Partial: NCI at its share of fair-value net assets. Full: NCI at fair value, goodwill includes its share. Under US GAAP set NCI Measurement to full."
   },
   {
    "fieldname": "ic_difference_account",

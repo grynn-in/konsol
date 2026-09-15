@@ -126,14 +126,14 @@
    "label": "Is Disposal",
    "default": "0",
    "read_only": 1,
-   "description": "Set by the Business Combination / Business Disposal that created this period."
+   "description": "Set by the Business Disposal that closed this period."
   },
   {
    "fieldname": "disposal_date",
    "fieldtype": "Date",
    "label": "Disposal Date",
    "read_only": 1,
-   "description": "Set by the Business Combination / Business Disposal that created this period."
+   "description": "Set by the Business Disposal that closed this period."
   },
   {
    "fieldname": "disposal_price",
@@ -141,7 +141,7 @@
    "label": "Disposal Price",
    "default": "0",
    "read_only": 1,
-   "description": "Set by the Business Combination / Business Disposal that created this period."
+   "description": "Set by the Business Disposal that closed this period."
   }
  ],
  "permissions": [

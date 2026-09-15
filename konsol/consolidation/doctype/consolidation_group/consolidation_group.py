@@ -101,15 +101,17 @@ class ConsolidationGroup(NestedSet):
             ACCOUNT_FIELDS, account_problems, policy_problems,
         )
 
-        # P3 creates Business Combination after this shipped, and a migrate
-        # runs validate before every table exists: read the deals only when
-        # the table is there. A cancelled deal (docstatus 2) is not a deal.
+        # The deal doctypes shipped after this did, and a migrate runs
+        # validate before every table exists: read each only when its table
+        # is there. A Business Disposal is a deal too — it posts to the
+        # declared accounts (PR #202 review, finding 8). A cancelled deal
+        # (docstatus 2) is not a deal.
+        live = {"consolidation_group": self.consolidation_group, "docstatus": ["<", 2]}
         has_deals = bool(
-            frappe.db.table_exists("Business Combination")
-            and frappe.db.exists("Business Combination", {
-                "consolidation_group": self.consolidation_group,
-                "docstatus": ["<", 2],
-            })
+            (frappe.db.table_exists("Business Combination")
+             and frappe.db.exists("Business Combination", live))
+            or (frappe.db.table_exists("Business Disposal")
+                and frappe.db.exists("Business Disposal", live))
         )
         problems = policy_problems(self, has_deals)
         # Every account that IS set must be a Published leaf of the chart;
