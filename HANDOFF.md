@@ -1,6 +1,6 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), for the group chart (13 Sep night), and for the declared fiscal calendar (14 Sep). Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), for the group chart (13 Sep night), and for the declared fiscal calendar (14 Sep), and for the deal layer and the one-customer-or-many audit (15 Sep). Everything below was verified against the running stack._
 
 ## Pick up here
 
@@ -13,6 +13,47 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 - Write-through: `epm_staging.business_combinations` gains `nci_measurement` and `nci_fair_value`, added on migrate. konsolidat's acquisition journal reads both (paired konsolidat PR).
 
 On the site: the migrated Drafts need a Fair Value Adjustment Total (each description states the old figure) before Get Balances from Trial Balance. Five of the eight have no warehouse trial balance at or before their acquisition period, so those need hand-entered balances.
+
+
+**What is left on the deal layer (verified live, 15 Sep night):**
+
+- The **Consolidation Policy is set** on the group root and is correct: IFRS,
+  partial NCI, Impairment only, Expense, 12 months, Recognise gain, and all
+  nine accounts. Every field was blank beforehand, so nothing was overwritten.
+  **One correction outstanding:** `fair_value_adjustment_account` was set to
+  *Other noncurrent assets* before the chart's purpose-built *Fair value
+  adjustment on acquisition* account was noticed. One field, reversible,
+  presentation only.
+- **All 9 drafts still need their Acquired Balance Sheet.** After the fix all
+  8 Business Combinations refuse — confirmed by running validate against each.
+  Before it, three validated silently with goodwill equal to the whole
+  consideration: **13.6bn across them**. The disposal validates today and is
+  the first real test of whether the deal layer moves the year whose
+  published-figure gap was never explained.
+- **Five** of the eight need more than the button: they have no trial balance
+  at or before their acquisition date. Count them from the validation
+  messages, not from the migration note, which said two.
+- **Historical Equity Rates: zero records exist.** 21 chart accounts declare
+  `fx_method = historical`; 5,481 rows in the consolidated trial balance sit on
+  those accounts translated at a rate other than 1, across **194 distinct
+  rates** — i.e. every one is taking its period's closing rate. The fallback is
+  deliberate and documented in `gold_consolidated_trial_balance`, but with
+  equity at closing the CTA never arises (`3300` holds 21 rows). **Two
+  decisions before anyone enters rates:** 14 assets and 1 liability are
+  declared `historical`, which is the temporal/remeasurement treatment rather
+  than IAS 21.39 current-rate — deliberate or a workbook artefact? And NCI is
+  the only equity leaf *not* declared historical. The answers change the job
+  from ~6 rates per entity to ~21.
+
+**Two traps that cost time reading trial balances back out:**
+- **Latest, not earliest.** `derive_acquired_balances` gets this right; a
+  hand-written query may not. An entity with monthly files has several
+  submissions, and taking the first silently uses a mid-year balance sheet.
+  Entities with one annual P12 file hide the bug, because earliest and latest
+  are the same file. This produced a wrong goodwill figure that a peer caught.
+- **`epm_raw.trial_balance_submission_control` is a ReplacingMergeTree.**
+  Joining it to `trial_balance_submissions` without `FINAL` returns duplicated
+  claim rows and doubles every sum. Filtering on `batch_id` alone is safe.
 
 **Update (15 Sep, later): deals are documents (konsol PR #202, konsolidat#198).**
 An acquisition is a **Business Combination** and a sale a **Business
@@ -638,6 +679,74 @@ containers and run scripts or dbt from a copy.
 | konsolidat **#152** | deploy.sh OOM: six services build the same image in parallel, and ClickHouse is OOM-killed with them (`RestartCount=3`). |
 | konsolidat **#153** | `build_consolidation_report.py` has been broken since F2 (reads retired columns). |
 | konsolidat **#154** | `gold_consolidated_trial_balance` delete+insert never deletes a key that left the SELECT, so stale slices stay until `--full-refresh`. |
+
+## One customer or many: the product-level audit (15 Sep)
+
+**Decision (user, 15 Sep): for multi-tenant, the dbt project moves into the
+Frappe app — it is the right home for it — and the ELT/ETL layer stays out.**
+
+Today the stack is **single-tenant by construction**: ClickHouse creates fixed
+`epm_*` databases with no tenant, site or customer column anywhere in
+`init-db.sql`; konsol rewrites the vars block of `dbt_project.yml` in place;
+Cube carries no security context. A second Frappe site clobbers the warehouse.
+So "many customers" currently means many deployments, and any per-customer
+setting that lives in `dbt_project.yml` is a deployment artefact rather than
+product configuration. Moving dbt into the app sharpens that: the project
+becomes one file shipped identically to every tenant, so a dbt var can only
+ever hold a product-wide default — never a customer's chart account.
+
+### What is already right (do not spend effort here)
+
+- **Zero customer identifiers in code** — 0 hits across every `.sql`, `.py`,
+  `.yml`, `.js` and `.json` in konsolidat.
+- **Account roles are declared, not hardcoded.** konsolidat#198 removed the
+  one-sided debits to literal `'1800'`/`'1900'`; the deal journals and IC
+  eliminations read `goodwill_account`, `nci_account`, `investment_account`
+  and `ic_difference_account` from the group root.
+- **Statement classification comes from the chart** (`statement_section`), not
+  from account-number ranges. No prefix or `between` logic on account codes
+  anywhere in 106 models.
+- **No hardcoded currency** in the warehouse at all.
+- **EPM Fiscal Year already supports** Monthly (12), 13 Periods (4 Weeks),
+  4-4-5 and Custom, with arbitrary start and end dates.
+
+### Filed (15 Sep)
+
+| issue | what |
+|---|---|
+| konsolidat **#206** | Variance analysis filters `scenario_id = 'BUDGET'`, but `gold_spread_budget` emits `BUDGET_2024`/`FORECAST_*` — the model's own comment says they are disjoint. So variance works for a D365-sourced budget and **silently returns nothing for the product's own budgeting module**. Fix: filter `data_source`, or join `scenario_definitions` on `scenario_type`. |
+| konsolidat **#207** | D365 cannot be switched off: 11 bronze models `ref()` `stg_d365_fo__*` directly, so `erp_sources` is asymmetric by accident. With ELT out of scope for multi-tenant this is a blocker, not an inefficiency. |
+| konsolidat **#208** | The NCI account is declared twice: `var('ic_nci_account', 'NCI')` in dbt and `consolidation_groups.nci_account` from konsol#202. `ic_difference_account` is the pattern to copy. |
+| konsolidat **#209** | Materiality is the literal `0.005` in 33 places across 8 models; `ic_difference_tolerance` on the group root is the precedent for declaring it. |
+| konsol **#210** | The declared fiscal calendar is not honoured below EPM Fiscal Year: `build_date_from_year_period` forces FY = calendar year and clamps periods to 1–12; `budget_periods.PERIOD_FIELDS` is `period_01..12`, a **doctype column shape**, so a 13-period customer cannot budget at all; `report_compiler` hardcodes Jan–Dec. konsol#189 PR3 covers only the dbt third. |
+| konsol **#211** | ~~Product report templates hardcode account codes `4010`/`5010`~~ — **shipped `d37e6b0`**: templates now take their P&L lines from the chart. |
+
+**Sequencing:** konsolidat#207 and #209 touch the same model tree the
+dbt-into-the-app move will touch, so they are cheaper done as part of it.
+konsolidat#206 and konsol#211 are independent and can go any time; #206 is the
+one where a shipped feature returns nothing for any customer not on D365.
+
+### Also filed this session, from the deal layer — all shipped in `31d6a5f`
+
+| issue | what |
+|---|---|
+| konsol **#203** | `Capitalise` accepted under IFRS and US GAAP; both require expensing. Found by running all 96 policy combinations: 64 accepted, refused only by the two framework rules. |
+| konsol **#204** | Full-method NCI is grossed up from the consideration (`consideration ÷ share × (1 − share)`); IFRS 3 wants NCI at its own fair value, which is lower because of the control premium. **Name clash: konsolidat#204 is a different issue** on the adjacent PRD-4 partial-share seam. Always say which repo. |
+| konsol **#205** | NCI measurement is group-wide; IFRS 3.19 makes it a per-combination election. |
+| konsol **#206** | A waived Acquired Balance Sheet gives net assets of zero, so goodwill absorbs the whole consideration. The waiver was written; the derivation it promises was not. |
+| konsol **#207** | Derive the Acquired Balance Sheet from the trial balance, as `_has_tb_at_or_before`'s own docstring already promises. |
+| konsol **#208** | Fair Value Allocation Profile — reusable weights for placing a deal's step-up, modelled on Spread Profile. |
+
+### The doctype map
+
+`docs/design/doctype-planes.md` sorts all 60 doctypes into three planes —
+**configuration (27), control (6), operating (13)** — with the build order each
+one enforces and nowhere states, the operations that actually exist as buttons,
+and eight verified findings. Written from `main` at `fb58daa`. The sharpest of
+them: **Build Approval, which can rebuild every gold table, has no role check
+and no buttons** — `workflow_state` is a plain Select, nothing checks a role on
+`Pending Review → Approved`, there is no `has_permission` hook, and DocPerms
+grant EPM Analyst write. Approving a `full` rebuild is a dropdown edit.
 
 ## The standing delivery loop (user rule, pre-authorized)
 
