@@ -1313,7 +1313,8 @@ def test_field_maps_follow_the_ddl_column_order():
     assert tuple(M.BusinessCombination.CH_FIELD_MAP) == (
         "name", "consolidation_group", "acquired_entity", "acquisition_date", "share_acquired_pct",
         "consideration_currency", "total_consideration", "net_assets_acquired", "fair_value_adjustments",
-        "goodwill", "bargain_purchase_gain", "nci_at_acquisition", "ownership_period")
+        "goodwill", "bargain_purchase_gain", "nci_at_acquisition", "ownership_period",
+        "nci_measurement", "nci_fair_value")
     children = M.BusinessCombination.CHILD_CONTROLLERS
     assert set(children) == set(CHILD_TABLES)
     maps = {

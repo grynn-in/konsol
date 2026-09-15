@@ -99,6 +99,9 @@ class BusinessCombination(Document):
         "bargain_purchase_gain": "bargain_purchase_gain",
         "nci_at_acquisition": "nci_at_acquisition",
         "ownership_period": "ownership_period",
+        # konsol#204: the measurement in force and the minority's declared fair value
+        "nci_measurement": "nci_measurement",
+        "nci_fair_value": "nci_fair_value",
     }
     #: child doctype -> its controller (CH_TABLE / CH_FIELD_MAP); each child
     #: table is its own doctype in the warehouse, keyed (parent, idx).

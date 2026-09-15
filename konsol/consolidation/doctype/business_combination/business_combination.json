@@ -80,6 +80,13 @@
    "description": "Leave blank to use the group's NCI Measurement. IFRS 3.19 lets each business combination elect; US GAAP requires full."
   },
   {
+   "fieldname": "nci_fair_value",
+   "fieldtype": "Currency",
+   "label": "NCI Fair Value",
+   "depends_on": "eval:doc.nci_measurement=='full' && doc.share_acquired_pct < 100",
+   "description": "The non-controlling interest's own acquisition-date fair value, in the consideration currency (IFRS 3.19). Required when NCI is measured at full and less than 100% is acquired; konsol does not infer it from the price paid for control."
+  },
+  {
    "fieldname": "ownership_period",
    "fieldtype": "Link",
    "label": "Ownership Period",

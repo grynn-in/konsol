@@ -23,9 +23,13 @@ prescribes once both are given:
   net assets is **goodwill** when positive and a **bargain** purchase gain when
   negative (the policy says whether a bargain is recognised or refused);
 * **NCI** at acquisition is the policy's choice: *partial* is the NCI's share
-  of the net assets at fair value, *full* is the fair value the price implies
-  (consideration ÷ share × the NCI's share). No measurement chosen → no NCI
-  computed, and the policy sentences say why;
+  of the net assets at fair value, *full* is the minority's own
+  acquisition-date fair value, declared on the deal (``nci_fair_value``, in
+  the consideration currency; konsol#204, IFRS 3.19). It is never grossed up
+  from the price paid for control, which carries a control premium the
+  minority does not have: undeclared under full with less than 100% acquired
+  → refused by name. No measurement chosen → no NCI computed, and the policy
+  sentences say why;
 * acquisition costs are expensed (outside goodwill) or capitalised (they
   join the consideration, and so the goodwill), per the policy.
 
@@ -122,6 +126,29 @@ def _book_amounts(balances, is_equity):
     return net_assets, equity, fva
 
 
+def _nci_fair_value(header, rate_to_group):
+    """The declared ``nci_fair_value`` in the group currency (it is in the
+    consideration currency); zero or below counts as not declared."""
+    value = _decimal(_get(header, "nci_fair_value"))
+    if value <= 0:
+        return Decimal(0)
+    return value * _rate(rate_to_group, _text(_get(header, "consideration_currency")))
+
+
+def _nci_fair_value_problems(header, policy, share):
+    """Full method with a minority left: its own fair value must be declared."""
+    if _text(_get(policy, "goodwill_method")) != "full":
+        return []
+    if share is None or not (0 < share < HUNDRED):
+        return []
+    if _decimal(_get(header, "nci_fair_value")) > 0:
+        return []
+    return [
+        f"{_PREFIX}NCI Fair Value is required: NCI is measured at full and {share.normalize():f}% "
+        "is acquired. The price paid for control is not the minority's value."
+    ]
+
+
 def totals(header, consideration, balances, costs, policy, rate_to_group, is_equity):
     """The Result fields of a Business Combination, every value a Decimal
     quantised to 0.01.
@@ -155,8 +182,10 @@ def totals(header, consideration, balances, costs, policy, rate_to_group, is_equ
     nci_fraction = Decimal(1) - share_fraction
     if nci_measurement == "partial":
         nci = nafv * nci_fraction
-    elif nci_measurement == "full" and share_fraction > 0:
-        nci = consideration_basis / share_fraction * nci_fraction
+    elif nci_measurement == "full" and 0 < share_fraction < 1:
+        # konsol#204: the minority's own declared fair value, translated like
+        # the consideration; blank is no NCI (problems() refuses it by name).
+        nci = _nci_fair_value(header, rate_to_group)
     else:
         nci = Decimal(0)
 
@@ -270,6 +299,7 @@ def problems(header, consideration, balances, costs, policy, facts):
 
     found += _line_problems(consideration, "Consideration", "component")
     found += _line_problems(costs, "Cost", "kind")
+    found += _nci_fair_value_problems(header, policy, share)
 
     if not balances:
         found.append(BALANCE_SHEET_REQUIRED)
