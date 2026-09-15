@@ -156,23 +156,24 @@ class BusinessCombination(Document):
 
     def _assert_holding_span_open(self):
         """Undoing the approval cancels or clears the Ownership Period it
-        started, and that changes every period from the acquisition date to
-        the period's end — today, while it is open-ended. Gating the
-        acquisition period alone let the cancel run into the period's own
-        ``before_cancel``, whose refusal speaks of "an ownership period" and
-        never of the deal the person is cancelling (PR #202 second review
-        B5); the same span check runs here first, in this deal's name. Only
-        a submitted linked period is undone, so only then is there a span."""
+        started, and that changes every declared period the period covers.
+        Gating the acquisition period alone let the cancel run into the
+        period's own ``before_cancel``, whose refusal speaks of "an ownership
+        period" and never of the deal the person is cancelling (PR #202
+        second review B5); the same span check runs here first, in this
+        deal's name. The span is the period's own ``cancel_span()`` — to its
+        end date, to the next period's first declared period (exclusive), or
+        open-ended — not a second rule kept here (third review, finding 2: a
+        span of "acquisition date to today" passed where the period's then
+        refused, or refused where the period's would allow). Only a submitted
+        linked period is undone, so only then is there a span."""
         name = self.get("ownership_period")
-        if not name:
+        if not name or not frappe.db.exists("Ownership Period", {"name": name, "docstatus": 1}):
             return
-        linked = frappe.db.get_value(
-            "Ownership Period", {"name": name, "docstatus": 1}, ["name", "end_date"], as_dict=True
-        )
-        if not linked:
-            return
-        assert_open_between(self.acquisition_date, linked.get("end_date") or nowdate(),
-                            action=f"cancel Business Combination {self.name}")
+        period = frappe.get_doc("Ownership Period", name)
+        start, end, exclusive = period.cancel_span()
+        assert_open_between(start, end, action=f"cancel Business Combination {self.name}",
+                            end_exclusive=exclusive)
 
     def _assert_not_sold(self):
         """An approved Business Disposal that links this deal's Ownership

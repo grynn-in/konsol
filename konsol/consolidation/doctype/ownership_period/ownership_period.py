@@ -86,21 +86,39 @@ class OwnershipPeriod(Document):
 
     def before_cancel(self):
         """Cancel only while every period this ownership covers is open (#136):
-        from the first period its effective date affects until its end date or
-        the next period for the same group and entity, whichever comes first
-        (the warehouse takes the latest effective_date <= the period), and
-        open-ended with neither."""
+        the span is ``cancel_span()``, one rule shared with the deal documents
+        that undo a period in their own name."""
+        start, end, exclusive = self.cancel_span()
+        assert_open_between(start, end, action="cancel an ownership period", end_exclusive=exclusive)
+
+    def cancel_span(self):
+        """The declared periods a cancel of this period changes, as
+        ``(start, end_or_None, end_exclusive)`` for ``assert_open_between``:
+        from the first period its effective date affects until its end date
+        or the next submitted period for the same group and entity, whichever
+        comes first (the warehouse takes the latest effective_date <= the
+        period, so from the first declared period on or after the next
+        period's start this one is no longer read — that bound is exclusive),
+        and open-ended with neither.
+
+        One rule, computed here: a Business Combination cancelling or
+        clearing the period it started gates the same span with its own
+        sentence (PR #202 third review, finding 2). Two spans disagreed
+        before — the deal's ran to "today" for an open-ended period, so a
+        closed period after today passed its gate and was refused by this
+        one, in the wrong document's words.
+        """
         next_start = frappe.db.get_value(
             "Ownership Period",
             {"consolidation_group": self.consolidation_group, "data_area_id": self.data_area_id,
              "docstatus": 1, "effective_date": [">", self.effective_date], "name": ["!=", self.name]},
             "effective_date", order_by="effective_date asc")
-        end, exclusive = self.end_date, False
+        end, exclusive = getdate(self.end_date) if self.end_date else None, False
         if next_start:
             next_first = first_period_affected(next_start)
-            if next_first is not None and (not end or getdate(end) >= next_first):
+            if next_first is not None and (end is None or end >= next_first):
                 end, exclusive = next_first, True
-        assert_open_between(self.effective_date, end, action="cancel an ownership period", end_exclusive=exclusive)
+        return getdate(self.effective_date), end, exclusive
 
     def on_submit(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
