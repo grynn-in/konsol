@@ -599,6 +599,37 @@ def _read_tb_through(entity, fiscal_year, fiscal_period):
     return rows, latest
 
 
+def _retained_earnings_of_chart(rows, entity, label):
+    """The Published Retained Earnings Account of the chart the trial-balance
+    rows' accounts belong to (one per chart, konsolidat#199), or None when that
+    chart ticks none (the model then names what is missing). A site may carry
+    several Published charts, so the account is never taken site-wide (PR #209
+    review 3); rows spanning more than one chart are refused naming them."""
+    accounts = sorted({row["main_account"] for row in rows})
+    if not accounts:
+        return None
+    charts = sorted({row.chart_of_accounts for row in frappe.get_all(
+        "Main Account", filters={"name": ["in", accounts]}, fields=["name", "chart_of_accounts"],
+        limit_page_length=0) if row.chart_of_accounts})
+    if len(charts) > 1:
+        frappe.throw(
+            f"{_PREFIX}the trial balance of {entity} through {label} uses accounts of more than one "
+            f"Chart of Accounts ({', '.join(charts)}); one trial balance belongs to one chart, whose "
+            f"Retained Earnings Account takes the period's result."
+        )
+    if not charts:
+        return None
+    retained = frappe.get_all("Main Account", filters={"status": "Published", "is_retained_earnings": 1,
+                                                       "chart_of_accounts": charts[0]},
+                              pluck="name", limit_page_length=0)
+    if len(retained) > 1:
+        frappe.throw(
+            f"{_PREFIX}more than one Published Main Account of Chart of Accounts {charts[0]} is ticked "
+            f"Retained Earnings Account ({', '.join(sorted(retained))}); tick exactly one."
+        )
+    return retained[0] if retained else None
+
+
 @frappe.whitelist(methods=["POST"])
 def get_balances_from_trial_balance(name):
     """Replace a Draft deal's Acquired Balance Sheet with the acquired
@@ -608,9 +639,10 @@ def get_balances_from_trial_balance(name):
     the deal's Fair Value Allocation Profile when one is set (konsol#208),
     else on the group's Fair Value Adjustment Account; record where the lines
     came from and save. Returns the number of lines. Nothing is guessed: a
-    missing trial balance, two retained-earnings accounts, a total with no
-    account to put it on, profile weights not adding up to 100, or rows that
-    do not balance are refused by name."""
+    missing trial balance, a total with no account to put it on, profile
+    weights not adding up to 100, rows from more than one Chart of Accounts,
+    two retained-earnings accounts in the rows' chart, or rows that do not
+    balance are refused by name."""
     doc = frappe.get_doc("Business Combination", name)
     doc.check_permission("write")
     if int(doc.get("docstatus") or 0) != 0:
@@ -627,15 +659,6 @@ def get_balances_from_trial_balance(name):
     entity = doc.acquired_entity
     if not doc._has_tb_at_or_before(period):
         frappe.throw(f"{_PREFIX}{entity} has no submitted trial balance at or before {label}.")
-
-    retained = frappe.get_all("Main Account", filters={"status": "Published", "is_retained_earnings": 1},
-                              pluck="name")
-    if len(retained) > 1:
-        frappe.throw(
-            f"{_PREFIX}more than one Published Main Account is ticked Retained Earnings Account "
-            f"({', '.join(sorted(retained))}); tick exactly one."
-        )
-    retained_account = retained[0] if retained else None
 
     fva_total = Decimal(str(doc.get("fair_value_adjustment_total") or 0)).quantize(_CENT)
     fva_lines, placement = [], ""
@@ -661,6 +684,7 @@ def get_balances_from_trial_balance(name):
         placement = f"placed on {fva_account}"
 
     rows, latest = _read_tb_through(entity, year, number)
+    retained_account = _retained_earnings_of_chart(rows, entity, label)
     lines, found = derive_acquired_balances(rows, retained_account, fva_lines, label)
     if found:
         frappe.throw("<br>".join(found))
