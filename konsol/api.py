@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 from collections import defaultdict
+from datetime import date
 
 import frappe
 import requests
@@ -1325,6 +1326,8 @@ def budget_cell_save():
         info, err = validate_hierarchy_write(
             _hierarchy_name_from_req(data),
             node_code,
+            fiscal_year=int(data["fiscal_year"]),
+            fiscal_period=fp,
         )
         if err:
             frappe.throw(err, frappe.ValidationError)
@@ -1533,14 +1536,28 @@ def _ownership_as_of(as_of=None):
 # ---------------------------------------------------------------------------
 
 @frappe.whitelist()
-def get_reporting_hierarchy_tree(hierarchy_name=None):
-    """Return a management reporting hierarchy as nested JSON.
+def get_reporting_hierarchy_tree(hierarchy_name=None, as_of=None):
+    """Return a management reporting hierarchy as nested JSON, as of a date.
 
-    Uses parent_member links within Reporting Hierarchy Member rows.
+    Each Reporting Hierarchy Member row is one dated tranche of its code
+    (konsol#220). ``as_of`` (ISO date, default today) keeps the rows whose
+    window covers it. A node's children are the kept rows whose parent_member
+    has the node's CODE, so a child linked to an older tranche of its parent
+    still sits under the tranche of the date. Each node shows its tranche's
+    label and effective_from / effective_to (None while open).
     Legal-entity trees use get_hierarchy_tree (Consolidation Group).
     """
     if not hierarchy_name:
         frappe.throw("hierarchy_name is required")
+    if as_of in (None, ""):
+        as_of = frappe.utils.today()
+    as_of = str(as_of)
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of):
+            raise ValueError(as_of)
+        date.fromisoformat(as_of)
+    except ValueError:
+        frappe.throw("as_of must be a date (YYYY-MM-DD).")
 
     header = frappe.db.get_value(
         "Reporting Hierarchy",
@@ -1556,29 +1573,49 @@ def get_reporting_hierarchy_tree(hierarchy_name=None):
         filters={"reporting_hierarchy": header.name},
         fields=[
             "name", "parent_member", "member_code", "member_label", "is_group",
+            "effective_from", "effective_to",
         ],
         order_by="member_code asc",
         limit_page_length=0,
     )
-    by_name = {m.name: m for m in members}
+    code_of = {m.name: m.member_code for m in members}
 
-    def build_node(doc):
+    def iso(value):
+        return str(value)[:10] if value else None
+
+    # An undated row means "always" (the konsol#220 migrate patch's reading).
+    covering = [
+        m for m in members
+        if (iso(m.effective_from) or "1900-01-01") <= as_of
+        and (not m.effective_to or as_of <= iso(m.effective_to))
+    ]
+    covered_codes = {m.member_code for m in covering}
+
+    def parent_code(doc):
+        return code_of.get(doc.parent_member) if doc.parent_member else None
+
+    def build_node(doc, path):
+        path = path | {doc.member_code}
         return {
             "name": doc.name,
             "member_code": doc.member_code,
             "member_label": doc.member_label,
             "is_group": bool(doc.is_group),
+            "effective_from": iso(doc.effective_from),
+            "effective_to": iso(doc.effective_to),
             "children": [
-                build_node(child)
-                for child in members
-                if child.parent_member == doc.name
+                build_node(child, path)
+                for child in covering
+                if parent_code(child) == doc.member_code
+                and child.member_code not in path
             ],
         }
 
+    # A row whose parent code has no tranche on the date stays visible as a root.
     roots = [
-        build_node(m)
-        for m in members
-        if not m.parent_member or m.parent_member not in by_name
+        build_node(m, frozenset())
+        for m in covering
+        if parent_code(m) not in covered_codes
     ]
 
     return {
@@ -1586,6 +1623,7 @@ def get_reporting_hierarchy_tree(hierarchy_name=None):
         "dimension": header.dimension,
         "label": header.label,
         "status": header.status,
+        "as_of": as_of,
         "tree": roots,
     }
 

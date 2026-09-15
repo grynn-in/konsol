@@ -39,6 +39,30 @@ def test_reporting_hierarchy_member_doctype():
         assert f in fields
 
 
+def test_reporting_hierarchy_member_carries_its_dates():
+    """konsol#220: a member row is one dated tranche of its code."""
+    meta = _doctype_json("reporting_hierarchy_member")
+    by_name = {f["fieldname"]: f for f in meta["fields"]}
+    assert "effective_from" in by_name
+    assert "effective_to" in by_name
+    frm, to = by_name["effective_from"], by_name["effective_to"]
+    assert frm["fieldtype"] == "Date"
+    assert to["fieldtype"] == "Date"
+    assert frm["label"] == "Effective From"
+    assert to["label"] == "Effective To"
+    assert frm.get("reqd") == 1
+    assert not to.get("reqd")
+    assert frm.get("in_list_view") == 1
+    assert to.get("in_list_view") == 1
+    assert frm["description"] == (
+        "First day this node, with this parent and label, applies."
+    )
+    assert to["description"] == (
+        "Last day it applies; leave blank while it still applies. A rename, "
+        "a move to another parent or an end is a new row with the same Member Code."
+    )
+
+
 def test_header_publish_resyncs_staging_and_reporting_rebuild():
     src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
     # F3: publish re-syncs epm_staging via the computed resync_staging()
@@ -119,3 +143,472 @@ def test_reporting_hierarchy_seed_unit():
     }
     chain = _ancestor_chain(members["child"], members)
     assert chain == ["root"]
+
+# --- konsol#220 row R3: dated tranches of a member code -------------------
+
+class _Refused(Exception):
+    pass
+
+
+class _StubDocument:
+    """Frappe's Document, as far as the member controller uses it: a row
+    with a saved version before this save is not new."""
+    _before = None
+
+    def is_new(self):
+        return self._before is None
+
+    def get_doc_before_save(self):
+        return self._before
+
+
+def _dated_controller(rows):
+    """Load the member controller against a stub frappe whose table is
+    ``rows`` (dicts with name, reporting_hierarchy, member_code,
+    parent_member, effective_from, effective_to). Loaded under a private
+    module name so the real module in sys.modules is never replaced."""
+    import importlib.util
+    import sys
+    import types
+
+    table = {r["name"]: r for r in rows}
+
+    def _match(row, filters):
+        for key, want in (filters or {}).items():
+            if isinstance(want, list) and want[0] == "!=":
+                if row.get(key) == want[1]:
+                    return False
+            elif row.get(key) != want:
+                return False
+        return True
+
+    def get_all(doctype, filters=None, fields=None, pluck=None, **_kw):
+        hits = [r for r in table.values() if _match(r, filters)]
+        if pluck:
+            return [r.get(pluck) for r in hits]
+        names = fields or ["name"]
+        return [types.SimpleNamespace(**{f: r.get(f) for f in names}) for r in hits]
+
+    def exists(doctype, filters):
+        hits = [r["name"] for r in table.values() if _match(r, filters)]
+        return hits[0] if hits else None
+
+    def get_value(doctype, name, field):
+        row = table.get(name)
+        return row.get(field) if row else None
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    document = types.ModuleType("frappe.model.document")
+    document.Document = _StubDocument
+    fake = types.ModuleType("frappe")
+    fake.db = types.SimpleNamespace(exists=exists, get_value=get_value)
+    fake.get_all = get_all
+    fake.throw = throw
+    fake.scrub = lambda s: s.strip().lower().replace(" ", "_")
+    mods = {"frappe": fake, "frappe.model": types.ModuleType("frappe.model"),
+            "frappe.model.document": document}
+    path = os.path.join(APP_DIR, "epm", "doctype", "reporting_hierarchy_member",
+                        "reporting_hierarchy_member.py")
+    spec = importlib.util.spec_from_file_location("_stub_rh_member_dated", path)
+    mod = importlib.util.module_from_spec(spec)
+    saved = {k: sys.modules.get(k) for k in mods}
+    sys.modules.update(mods)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    mod.frappe = fake
+    return mod
+
+
+def _row(name, code, frm, to=None, parent=None, is_group=1):
+    return {"name": name, "reporting_hierarchy": "ZZ_MGMT", "member_code": code,
+            "member_label": code, "is_group": is_group, "parent_member": parent,
+            "effective_from": frm, "effective_to": to}
+
+
+def _save(existing, new):
+    """Run validate() on ``new`` against ``existing`` rows; the refusal
+    message, or None when it is accepted."""
+    mod = _dated_controller(existing)
+    doc = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
+    doc.__dict__.update(new)
+    try:
+        doc.validate()
+    except _Refused as e:
+        return str(e)
+    return None
+
+
+def test_member_to_before_from_is_refused():
+    err = _save([], _row("n1", "ZZ_A", "2025-01-01", "2024-12-31"))
+    assert err == "Effective To is before Effective From."
+
+
+def test_member_same_day_window_is_accepted():
+    assert _save([], _row("n1", "ZZ_A", "2025-01-01", "2025-01-01")) is None
+
+
+def test_overlapping_tranches_of_one_code_are_refused():
+    old = _row("old1", "ZZ_A", "2017-01-01", "2025-06-30")
+    err = _save([old], _row("n1", "ZZ_A", "2025-01-01"))
+    assert err is not None
+    assert "Member code 'ZZ_A' already has a row covering" in err
+    assert "2017-01-01" in err and "2025-06-30" in err
+    assert "(old1)" in err
+    assert "end the old row the day before the new one starts" in err
+
+
+def test_open_tranche_overlaps_any_later_one():
+    old = _row("old1", "ZZ_A", "2017-01-01")  # open end
+    err = _save([old], _row("n1", "ZZ_A", "2030-01-01", "2030-12-31"))
+    assert err is not None and "(old1)" in err
+
+
+def test_adjacent_tranches_of_one_code_are_accepted():
+    """A rename: ZZ_A ends 2024-12-31, a new row of ZZ_A starts 2025-01-01."""
+    old = _row("old1", "ZZ_A", "2017-01-01", "2024-12-31")
+    assert _save([old], _row("n1", "ZZ_A", "2025-01-01")) is None
+
+
+def test_resaving_a_tranche_does_not_overlap_itself():
+    row = _row("old1", "ZZ_A", "2017-01-01")
+    assert _save([row], dict(row, member_label="ZZ A renamed")) is None
+
+
+def test_same_code_in_another_hierarchy_is_not_an_overlap():
+    other = dict(_row("x1", "ZZ_A", "2017-01-01"), reporting_hierarchy="ZZ_OTHER")
+    assert _save([other], _row("n1", "ZZ_A", "2017-01-01")) is None
+
+
+def test_child_inside_its_parent_window_is_accepted():
+    parent = _row("p1", "ZZ_E", "2017-01-01", "2024-12-31")
+    child = _row("c1", "ZZ_EX", "2017-01-01", "2024-12-31", parent="p1", is_group=0)
+    assert _save([parent], child) is None
+
+
+def test_child_outliving_its_parent_is_refused_naming_the_gap():
+    parent = _row("p1", "ZZ_E", "2017-01-01", "2024-12-31")
+    child = _row("c1", "ZZ_EX", "2017-01-01", None, parent="p1", is_group=0)
+    err = _save([parent], child)
+    assert err is not None
+    assert err.startswith("ZZ_EX applies from 2017-01-01 to ")
+    assert "but its parent ZZ_E does not cover 2025-01-01" in err
+
+
+def test_child_starting_before_its_parent_is_refused_naming_the_gap():
+    parent = _row("p1", "ZZ_E", "2018-01-01")
+    child = _row("c1", "ZZ_EX", "2017-01-01", "2019-12-31", parent="p1", is_group=0)
+    err = _save([parent], child)
+    assert err is not None
+    assert "but its parent ZZ_E does not cover 2017-01-01 to 2017-12-31" in err
+
+
+def test_parent_covered_by_two_adjacent_tranches_is_accepted():
+    """The parent was renamed in 2025: two rows of ZZ_E together cover the
+    child's window, whichever of them the child links."""
+    p_old = _row("p1", "ZZ_E", "2017-01-01", "2024-12-31")
+    p_new = _row("p2", "ZZ_E", "2025-01-01")
+    child = _row("c1", "ZZ_EX", "2017-01-01", None, parent="p1", is_group=0)
+    assert _save([p_old, p_new], child) is None
+
+
+def test_parent_tranches_with_a_hole_are_refused():
+    p_old = _row("p1", "ZZ_E", "2017-01-01", "2020-12-31")
+    p_new = _row("p2", "ZZ_E", "2022-01-01")
+    child = _row("c1", "ZZ_EX", "2017-01-01", None, parent="p2", is_group=0)
+    err = _save([p_old, p_new], child)
+    assert err is not None
+    assert "does not cover 2021-01-01 to 2021-12-31" in err
+
+
+# --- konsol#220 row R3b: open end matches the warehouse (Date32) -----------
+
+def test_open_end_is_the_warehouse_date32_max():
+    mod = _dated_controller([])
+    assert mod.OPEN_END == "2299-12-31"
+
+
+def test_overlap_message_shows_an_open_row_as_open_not_a_date():
+    old = _row("old1", "ZZ_A", "2017-01-01")
+    err = _save([old], _row("n1", "ZZ_A", "2030-01-01", "2030-12-31"))
+    assert err is not None
+    assert "covering 2017-01-01 to open (old1)" in err
+    assert "2999-12-31" not in err and "2299-12-31" not in err
+
+
+def test_parent_gap_message_shows_an_open_end_as_open():
+    parent = _row("p1", "ZZ_E", "2017-01-01", "2024-12-31")
+    child = _row("c1", "ZZ_EX", "2017-01-01", None, parent="p1", is_group=0)
+    err = _save([parent], child)
+    assert err == (
+        "ZZ_EX applies from 2017-01-01 to open, but its parent ZZ_E "
+        "does not cover 2025-01-01 to open."
+    )
+
+
+def test_effective_to_after_the_warehouse_range_is_refused():
+    err = _save([], _row("n1", "ZZ_A", "2017-01-01", "2300-01-01"))
+    assert err == "Effective To must be between 1900-01-01 and 2299-12-31."
+
+
+def test_effective_from_before_the_warehouse_range_is_refused():
+    err = _save([], _row("n1", "ZZ_A", "1899-12-31"))
+    assert err == "Effective From must be between 1900-01-01 and 2299-12-31."
+
+
+def test_window_on_the_range_bounds_is_accepted():
+    assert _save([], _row("n1", "ZZ_A", "1900-01-01", "2299-12-31")) is None
+
+
+# --- konsol#220 row R4: flattened rows carry each tranche's dates ----------
+
+def _flatten(members, header_from="2017-01-01", header_to=None):
+    """Run flatten_reporting_hierarchies against a stub frappe holding one
+    Published header ZZ_MGMT and ``members`` (dicts)."""
+    import types
+    from konsol.reporting_hierarchy_seed import flatten_reporting_hierarchies
+
+    header = types.SimpleNamespace(
+        name="ZZ_MGMT", hierarchy_name="ZZ_MGMT", dimension="ZZ_DIM",
+        effective_from=header_from, effective_to=header_to, is_default=1)
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        if doctype == "Reporting Hierarchy":
+            return [header]
+        rows = [m for m in members
+                if m["reporting_hierarchy"] == (filters or {}).get("reporting_hierarchy")]
+        return [types.SimpleNamespace(**{f: m.get(f) for f in fields}) for m in rows]
+
+    return flatten_reporting_hierarchies(types.SimpleNamespace(get_all=get_all))
+
+
+def test_flatten_emits_one_row_per_tranche_with_its_own_label_and_window():
+    import datetime
+    old = dict(_row("a1", "ZZ_A", datetime.date(2017, 1, 1), datetime.date(2024, 12, 31)),
+               member_label="ZZ Old Name")
+    new = dict(_row("a2", "ZZ_A", datetime.date(2025, 1, 1), datetime.date(2030, 6, 30)),
+               member_label="ZZ New Name")
+    rows = sorted(_flatten([old, new]), key=lambda r: r["member_effective_from"])
+    assert [(r["member_code"], r["member_label"], r["member_effective_from"],
+             r["member_effective_to"]) for r in rows] == [
+        ("ZZ_A", "ZZ Old Name", "2017-01-01", "2024-12-31"),
+        ("ZZ_A", "ZZ New Name", "2025-01-01", "2030-06-30"),
+    ]
+
+
+def test_flatten_open_tranche_ends_on_the_warehouse_open_end():
+    import datetime
+    parent = _row("p1", "ZZ_E", datetime.date(2017, 1, 1))
+    child = _row("c1", "ZZ_EX", datetime.date(2018, 3, 1), None, parent="p1", is_group=0)
+    rows = {r["member_code"]: r for r in _flatten([parent, child])}
+    assert rows["ZZ_E"]["member_effective_to"] == "2299-12-31"
+    assert rows["ZZ_EX"]["member_effective_from"] == "2018-03-01"
+    assert rows["ZZ_EX"]["member_effective_to"] == "2299-12-31"
+    assert rows["ZZ_EX"]["parent_member_code"] == "ZZ_E"
+    assert rows["ZZ_EX"]["path"] == "ZZ_E/ZZ_EX"
+
+
+def test_staging_columns_end_with_the_member_window():
+    src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
+    node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "CH_STAGING_COLUMNS" for t in n.targets))
+    cols = ast.literal_eval(node.value)
+    assert cols[:len(SEED_COLUMNS)] == SEED_COLUMNS
+    assert cols[-2:] == ["member_effective_from", "member_effective_to"]
+
+
+# --- konsol#220 row R8: no cycle through tranches of a code ----------------
+
+def test_cycle_through_tranches_of_a_code_is_refused():
+    """B1 is a root to 2022; A2 (2023-open) links B1, which is allowed since
+    only the code matters; B2 (2023-open) linking A2 makes A the parent of B
+    and B the parent of A from 2023."""
+    b1 = _row("b1", "ZZ_B", "2020-01-01", "2022-12-31")
+    a2 = _row("a2", "ZZ_A", "2023-01-01", None, parent="b1")
+    err = _save([b1, a2], _row("b2", "ZZ_B", "2023-01-01", None, parent="a2"))
+    assert err is not None
+    assert err.startswith("Parent chain forms a cycle (ZZ_B → ZZ_A → ZZ_B)")
+    assert "during 2023-01-01 to open" in err
+
+
+def test_tranche_links_whose_windows_never_meet_are_not_a_cycle():
+    """B2 links A2, and A2 links B1, but A2 ended 2022-12-31 and B2 starts
+    2023-01-01: from 2023 A is the root tranche A3, so no period loops."""
+    b1 = _row("b1", "ZZ_B", "2020-01-01", "2022-12-31")
+    a2 = _row("a2", "ZZ_A", "2020-01-01", "2022-12-31", parent="b1")
+    a3 = _row("a3", "ZZ_A", "2023-01-01")
+    assert _save([b1, a2, a3], _row("b2", "ZZ_B", "2023-01-01", None, parent="a2")) is None
+
+
+def test_a_row_under_a_row_of_its_own_code_is_refused():
+    a1 = _row("a1", "ZZ_A", "2020-01-01", "2022-12-31")
+    err = _save([a1], _row("a2", "ZZ_A", "2023-01-01", None, parent="a1"))
+    assert err == "ZZ_A cannot be its own parent."
+
+
+def test_row_cycle_is_still_refused():
+    x = _row("x1", "ZZ_X", "2020-01-01")
+    y = _row("y1", "ZZ_Y", "2020-01-01", None, parent="x1")
+    err = _save([x, y], dict(x, parent_member="y1"))
+    assert err is not None and err.startswith("Parent chain forms a cycle")
+
+
+def test_a_plain_chain_is_not_a_cycle():
+    root = _row("r1", "ZZ_R", "2020-01-01")
+    mid = _row("m1", "ZZ_M", "2020-01-01", None, parent="r1")
+    assert _save([root, mid], _row("l1", "ZZ_L", "2021-01-01", None, parent="m1", is_group=0)) is None
+
+
+# --- konsol#220 row R9: editing or deleting a parent re-checks its children -
+
+def _edit(existing, name, **changes):
+    """Save the existing row ``name`` with ``changes``; the table still holds
+    its old values, as the database does during validate(). The refusal
+    message, or None when it is accepted."""
+    import types
+    mod = _dated_controller(existing)
+    old = next(r for r in existing if r["name"] == name)
+    doc = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
+    doc.__dict__.update(dict(old, **changes))
+    doc._before = types.SimpleNamespace(**old)
+    try:
+        doc.validate()
+    except _Refused as e:
+        return str(e)
+    return None
+
+
+def _trash(existing, name):
+    """Delete the existing row ``name``: Frappe runs on_trash when the
+    controller has one (the row is still in the table then)."""
+    import types
+    mod = _dated_controller(existing)
+    old = next(r for r in existing if r["name"] == name)
+    doc = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
+    doc.__dict__.update(old)
+    doc._before = types.SimpleNamespace(**old)
+    try:
+        getattr(doc, "on_trash", lambda: None)()
+    except _Refused as e:
+        return str(e)
+    return None
+
+
+def _parent_tranches(child_to=None):
+    """P1 ZZ_P 2020-2024 and P2 ZZ_P 2025-open; child ZZ_C from 2020 linked to P1."""
+    return [
+        _row("p1", "ZZ_P", "2020-01-01", "2024-12-31"),
+        _row("p2", "ZZ_P", "2025-01-01"),
+        _row("c1", "ZZ_C", "2020-01-01", child_to, parent="p1", is_group=0),
+    ]
+
+
+def test_shortening_a_parent_tranche_a_child_needs_is_refused():
+    err = _edit(_parent_tranches(), "p1", effective_to="2023-12-31")
+    assert err == (
+        "ZZ_C (c1) would lose its parent ZZ_P for 2024-01-01 to 2024-12-31. "
+        "Change or end that row first."
+    )
+
+
+def test_deleting_a_parent_tranche_a_child_needs_is_refused():
+    err = _trash(_parent_tranches(), "p2")
+    assert err is not None
+    assert err.startswith("ZZ_C (c1) would lose its parent ZZ_P for 2025-01-01 to open.")
+
+
+def test_renaming_the_code_of_a_parent_tranche_a_child_needs_is_refused():
+    err = _edit(_parent_tranches(), "p2", member_code="ZZ_Q", member_label="ZZ_Q")
+    assert err is not None
+    assert "ZZ_C (c1) would lose its parent ZZ_P for 2025-01-01 to open." in err
+
+
+def test_shortening_a_parent_tranche_no_child_needs_is_accepted():
+    assert _edit(_parent_tranches(child_to="2024-12-31"), "p2",
+                 effective_to="2026-12-31") is None
+
+
+def test_deleting_a_parent_tranche_no_child_needs_is_accepted():
+    assert _trash(_parent_tranches(child_to="2024-12-31"), "p2") is None
+
+
+def test_relabelling_a_parent_tranche_keeps_its_children():
+    assert _edit(_parent_tranches(), "p2", member_label="ZZ P renamed") is None
+
+
+# --- konsol#220 row R10: level and path follow the tree of each tranche ----
+
+def test_flatten_path_and_level_follow_the_parent_code_as_of_each_tranche():
+    import datetime
+    d = datetime.date
+    members = [
+        _row("x", "ZZ_X", d(1900, 1, 1)),
+        _row("y", "ZZ_Y", d(1900, 1, 1)),
+        _row("p1", "ZZ_P", d(2020, 1, 1), d(2024, 12, 31), parent="x"),
+        _row("p2", "ZZ_P", d(2025, 1, 1), None, parent="y"),
+        _row("c1", "ZZ_C", d(2020, 1, 1), d(2024, 12, 31), parent="p1", is_group=0),
+        _row("c2", "ZZ_C", d(2025, 1, 1), None, parent="p1", is_group=0),
+    ]
+    rows = {(r["member_code"], r["member_effective_from"]): r for r in _flatten(members)}
+    c1 = rows[("ZZ_C", "2020-01-01")]
+    c2 = rows[("ZZ_C", "2025-01-01")]
+    assert (c1["path"], c1["hierarchy_level"]) == ("ZZ_X/ZZ_P/ZZ_C", 3)
+    assert (c2["path"], c2["hierarchy_level"]) == ("ZZ_Y/ZZ_P/ZZ_C", 3)
+    assert c2["parent_member_code"] == "ZZ_P"
+    assert (rows[("ZZ_P", "2025-01-01")]["path"], rows[("ZZ_P", "2025-01-01")]["hierarchy_level"]) == ("ZZ_Y/ZZ_P", 2)
+    assert (rows[("ZZ_X", "1900-01-01")]["path"], rows[("ZZ_X", "1900-01-01")]["hierarchy_level"]) == ("ZZ_X", 1)
+
+
+# --- konsol#220 row R12: changing a parent row's code keeps its own children -
+
+def _code_change_tranches(*extra):
+    """P1 ZZ_P 2020-2024, P2 ZZ_P 2025-open; C2 ZZ_C 2025-open linked to P2."""
+    return [
+        _row("p1", "ZZ_P", "2020-01-01", "2024-12-31"),
+        _row("p2", "ZZ_P", "2025-01-01"),
+        _row("c2", "ZZ_C", "2025-01-01", None, parent="p2", is_group=0),
+        *extra,
+    ]
+
+
+def test_changing_a_parent_code_takes_its_own_children_along():
+    assert _edit(_code_change_tranches(), "p2",
+                 member_code="ZZ_Q", member_label="ZZ_Q") is None
+
+
+def test_changing_a_parent_code_keeps_children_of_the_old_codes_other_tranches():
+    c1 = _row("c1", "ZZ_C", "2020-01-01", "2024-12-31", parent="p1", is_group=0)
+    assert _edit(_code_change_tranches(c1), "p2",
+                 member_code="ZZ_Q", member_label="ZZ_Q") is None
+
+
+def test_changing_a_parent_code_refuses_a_child_of_the_old_code_it_covered():
+    c3 = _row("c3", "ZZ_D", "2025-01-01", None, parent="p1", is_group=0)
+    err = _edit(_code_change_tranches(c3), "p2", member_code="ZZ_Q", member_label="ZZ_Q")
+    assert err == (
+        "ZZ_D (c3) would lose its parent ZZ_P for 2025-01-01 to open. "
+        "Change or end that row first."
+    )
+
+
+def test_changing_a_parent_code_joins_the_new_codes_tranches():
+    q1 = _row("q1", "ZZ_Q", "2027-01-01")
+    assert _edit(_code_change_tranches(q1), "p2", member_code="ZZ_Q",
+                 member_label="ZZ_Q", effective_to="2026-12-31") is None
+
+
+def test_changing_a_parent_code_refuses_when_the_new_code_leaves_a_gap():
+    q1 = _row("q1", "ZZ_Q", "2028-01-01")
+    err = _edit(_code_change_tranches(q1), "p2", member_code="ZZ_Q",
+                member_label="ZZ_Q", effective_to="2026-12-31")
+    assert err == (
+        "ZZ_C (c2) would lose its parent ZZ_Q for 2027-01-01 to 2027-12-31. "
+        "Change or end that row first."
+    )

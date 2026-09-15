@@ -100,6 +100,37 @@ def choose_member(node_code, hierarchy_name, members):
     return members[0], None
 
 
+def _tranche_start(m):
+    return str(m.get("effective_from") or "1900-01-01")
+
+
+def covering_tranche(members, day):
+    """The row of ONE code whose window covers ``day``, else None (konsol#220).
+
+    A blank ``effective_from`` means 1900-01-01, a blank ``effective_to``
+    means still open; both bounds are inclusive.
+    """
+    day = str(day)
+    for m in members or []:
+        end = m.get("effective_to")
+        if _tranche_start(m) <= day and (not end or day <= str(end)):
+            return m
+    return None
+
+
+def current_tranche(members, today):
+    """The tranche of ONE code that applies on ``today`` (konsol#220).
+
+    A renamed or moved node is several dated rows of one code. The row whose
+    window covers ``today`` is the answer (a blank ``effective_from`` means
+    1900-01-01, a blank ``effective_to`` means still open); when none does,
+    the row with the latest ``effective_from``. None for no rows.
+    """
+    if not members:
+        return None
+    return covering_tranche(members, today) or max(members, key=_tranche_start)
+
+
 def resolve_hierarchy_name(hierarchy_name, node_code):
     """The tree to read: the one named, else the only published tree holding
     the node. A node in several published trees is an error that names them."""
@@ -136,8 +167,13 @@ def resolve_hierarchy_name(hierarchy_name, node_code):
     return choose_hierarchy(node_code, trees)
 
 
-def get_hierarchy_member(hierarchy_name, node_code):
-    """Return member info dict or error string."""
+def get_hierarchy_member(hierarchy_name, node_code, on=None, on_label=None):
+    """Return member info dict or error string.
+
+    Without ``on`` (reads) the tranche of today, or the latest one. With
+    ``on`` (an ISO date) only the tranche covering that day; none covering it
+    is an error naming the day and ``on_label``.
+    """
     import frappe
 
     header = frappe.db.get_value(
@@ -151,12 +187,22 @@ def get_hierarchy_member(hierarchy_name, node_code):
     if header.status != "Published":
         return None, f"Reporting Hierarchy '{hierarchy_name}' is not published"
 
-    member, err = choose_member(node_code, hierarchy_name, frappe.get_all(
+    # Every row here shares the code; the dated tranches of one node are not
+    # duplicates, so only the one of today goes on (konsol#220).
+    rows = frappe.get_all(
         "Reporting Hierarchy Member",
         filters={"reporting_hierarchy": header.name, "member_code": node_code},
-        fields=["member_code", "member_label", "is_group"],
+        fields=["member_code", "member_label", "is_group", "effective_from", "effective_to"],
         order_by="name asc",
-    ))
+    )
+    if on is None:
+        tranche = current_tranche(rows, frappe.utils.today())
+    else:
+        tranche = covering_tranche(rows, on)
+        if rows and tranche is None:
+            when = f"{on} ({on_label})" if on_label else str(on)
+            return None, f"Node '{node_code}' is not in hierarchy '{hierarchy_name}' on {when}."
+    member, err = choose_member(node_code, hierarchy_name, [tranche] if tranche else [])
     if err:
         return None, err
     return {
@@ -168,12 +214,13 @@ def get_hierarchy_member(hierarchy_name, node_code):
     }, None
 
 
-def validate_hierarchy_read(hierarchy_name, node_code, scenario):
-    """Validate hierarchy + node for a read (group nodes allowed)."""
+def validate_hierarchy_read(hierarchy_name, node_code, scenario, on=None, on_label=None):
+    """Validate hierarchy + node for a read (group nodes allowed). ``on`` /
+    ``on_label`` pick the tranche of one day (see get_hierarchy_member)."""
     hname, err = resolve_hierarchy_name(hierarchy_name, node_code)
     if err:
         return None, err
-    info, err = get_hierarchy_member(hname, node_code)
+    info, err = get_hierarchy_member(hname, node_code, on=on, on_label=on_label)
     if err:
         return None, err
 
@@ -194,9 +241,18 @@ def validate_hierarchy_read(hierarchy_name, node_code, scenario):
     return {**info, "hierarchy_name": hname}, None
 
 
-def validate_hierarchy_write(hierarchy_name, node_code):
-    """Budget write-back only at leaf nodes."""
-    info, err = validate_hierarchy_read(hierarchy_name, node_code, "budget")
+def validate_hierarchy_write(hierarchy_name, node_code, *, fiscal_year, fiscal_period):
+    """Budget write-back only at leaf nodes, as the node is in the period
+    written (konsol#220): the tranche covering the period's end date in the
+    declared calendar. An undeclared period raises from period_dates."""
+    from konsol.period_status import period_dates
+
+    end = period_dates(fiscal_year, fiscal_period)[1]
+    on = end.isoformat() if hasattr(end, "isoformat") else str(end)
+    info, err = validate_hierarchy_read(
+        hierarchy_name, node_code, "budget",
+        on=on, on_label=f"FY{fiscal_year} P{fiscal_period}",
+    )
     if err:
         return None, err
     if info["is_group"]:

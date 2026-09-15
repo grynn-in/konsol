@@ -111,17 +111,27 @@ class _Thrown(Exception):
 def _member_controller(existing):
     """Load the member controller against a stub frappe, under a private
     module name so the real one in sys.modules is never replaced by a
-    stub-bound copy. ``existing`` maps (tree, code) to the name of a member
-    already holding that code."""
+    stub-bound copy. ``existing`` is a list of member rows already saved
+    (name, reporting_hierarchy, member_code, effective_from, effective_to)."""
     import importlib.util
     import os
 
     calls = []
 
-    def exists(doctype, filters):
+    def _hits(filters):
         calls.append(filters)
-        hit = existing.get((filters["reporting_hierarchy"], filters["member_code"]))
-        return hit if hit and hit != filters["name"][1] else None
+        return [r for r in existing
+                if r["reporting_hierarchy"] == filters["reporting_hierarchy"]
+                and r["member_code"] == filters["member_code"]
+                and r["name"] != filters["name"][1]]
+
+    def exists(doctype, filters):
+        hits = _hits(filters)
+        return hits[0]["name"] if hits else None
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        return [types.SimpleNamespace(**{f: r.get(f) for f in fields or ["name"]})
+                for r in _hits(filters)]
 
     def throw(msg, *a, **k):
         raise _Thrown(msg)
@@ -130,6 +140,7 @@ def _member_controller(existing):
     document.Document = object
     fake = types.ModuleType("frappe")
     fake.db = types.SimpleNamespace(exists=exists)
+    fake.get_all = get_all
     fake.throw = throw
     fake.scrub = lambda s: s.strip().lower().replace(" ", "_").replace("-", "_")
     mods = {"frappe": fake, "frappe.model": types.ModuleType("frappe.model"),
@@ -155,7 +166,8 @@ def _member_controller(existing):
 def _member(mod, **fields):
     m = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
     base = {"name": "new1", "reporting_hierarchy": "MGMT_2026", "member_code": "",
-            "member_label": "", "is_group": 0}
+            "member_label": "", "is_group": 0, "effective_from": "2017-01-01",
+            "effective_to": None}
     base.update(fields)
     m.__dict__.update(base)
     return m
@@ -175,20 +187,30 @@ def _validate(mod, fake, member):
 
 
 def test_group_code_must_be_unique_in_its_tree():
-    mod, fake, calls = _member_controller({("MGMT_2026", "DACH"): "abc123"})
+    """A code identifies one node per period (konsol#220): K.EPM's node
+    argument and the warehouse rollup find a node by code and date, so two
+    rows of one code may not overlap. Adjacent rows (a rename) are fine."""
+    held = {"name": "abc123", "reporting_hierarchy": "MGMT_2026", "member_code": "DACH",
+            "effective_from": "2017-01-01", "effective_to": "2024-12-31"}
+    mod, fake, calls = _member_controller([held])
     try:
-        _validate(mod, fake, _member(mod, is_group=1, member_code="DACH", member_label="DACH"))
-        raise AssertionError("duplicate group code saved")
+        _validate(mod, fake, _member(mod, is_group=1, member_code="DACH",
+                                     member_label="DACH", effective_from="2024-06-01"))
+        raise AssertionError("overlapping group code saved")
     except _Thrown as e:
-        assert "already exists" in str(e) and "abc123" in str(e)
+        assert "already has a row covering" in str(e) and "(abc123)" in str(e)
+    # the next tranche of the code starts the day after the old one ends
+    _validate(mod, fake, _member(mod, is_group=1, member_code="DACH",
+                                 member_label="DACH renamed", effective_from="2025-01-01"))
     # the check excludes the member itself, so re-saving it is fine
     _validate(mod, fake, _member(mod, name="abc123", is_group=1, member_code="DACH",
-                                 member_label="DACH renamed"))
+                                 member_label="DACH renamed", effective_from="2017-01-01",
+                                 effective_to="2024-12-31"))
     assert calls[-1]["name"] == ["!=", "abc123"]
 
 
 def test_group_auto_code_and_blank_label():
-    mod, fake, _ = _member_controller({})
+    mod, fake, _ = _member_controller([])
     m = _member(mod, is_group=1, member_label="Other regions")
     _validate(mod, fake, m)
     assert m.member_code == "OTHER_REGIONS"
@@ -199,9 +221,154 @@ def test_group_auto_code_and_blank_label():
 
 
 def test_leaf_needs_a_code():
-    mod, fake, _ = _member_controller({})
+    mod, fake, _ = _member_controller([])
     try:
         _validate(mod, fake, _member(mod, member_label="BU 1"))
         raise AssertionError("leaf without code saved")
     except _Thrown as e:
         assert "required for leaf nodes" in str(e)
+
+
+# konsol#220 row R7: a renamed node is two dated tranches of one code. A
+# formula or a budget write names the code, so it reads the tranche of today.
+
+_OLD = {"name": "m1", "member_code": "ZZ_A", "member_label": "ZZ A old", "is_group": 1,
+        "effective_from": "2017-01-01", "effective_to": "2024-12-31"}
+_NEW = {"name": "m2", "member_code": "ZZ_A", "member_label": "ZZ A new", "is_group": 1,
+        "effective_from": "2025-01-01", "effective_to": None}
+
+
+def test_current_tranche_covers_today():
+    from konsol.hierarchy_query import current_tranche
+    assert current_tranche([_OLD, _NEW], "2025-06-30") is _NEW
+    assert current_tranche([_OLD, _NEW], "2024-06-30") is _OLD
+    # bounds are inclusive
+    assert current_tranche([_OLD, _NEW], "2024-12-31") is _OLD
+    assert current_tranche([_OLD, _NEW], "2025-01-01") is _NEW
+
+
+def test_current_tranche_blank_dates_and_all_ended():
+    from konsol.hierarchy_query import current_tranche
+    undated = {"member_label": "undated", "effective_from": None, "effective_to": None}
+    assert current_tranche([undated], "2025-06-30") is undated
+    early = {"member_label": "early", "effective_from": "2010-01-01", "effective_to": "2015-12-31"}
+    late = {"member_label": "late", "effective_from": "2016-01-01", "effective_to": "2020-12-31"}
+    # every tranche ended: the latest one
+    assert current_tranche([late, early], "2024-06-30") is late
+    assert current_tranche([], "2024-06-30") is None
+
+
+def _member_frappe(rows, today):
+    class _D(dict):
+        __getattr__ = dict.get
+
+    def get_value(doctype, filters, fields, as_dict=False):
+        return _D(name="ZZ_H", dimension="business_unit", status="Published")
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        return [_D({f: r.get(f) for f in fields}) for r in rows
+                if r["member_code"] == filters["member_code"]]
+
+    utils = types.ModuleType("frappe.utils")
+    utils.today = lambda: today
+    return types.SimpleNamespace(get_all=get_all, utils=utils,
+                                 db=types.SimpleNamespace(get_value=get_value))
+
+
+def test_get_hierarchy_member_reads_the_tranche_of_today():
+    from konsol.hierarchy_query import get_hierarchy_member
+    info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2025-06-30"),
+                             lambda: get_hierarchy_member("ZZ_H", "ZZ_A"))
+    assert err is None, err
+    assert info["member_label"] == "ZZ A new" and info["member_code"] == "ZZ_A"
+    info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2024-06-30"),
+                             lambda: get_hierarchy_member("ZZ_H", "ZZ_A"))
+    assert err is None and info["member_label"] == "ZZ A old"
+    info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2025-06-30"),
+                             lambda: get_hierarchy_member("ZZ_H", "ZZ_NONE"))
+    assert info is None and "not found" in err
+
+
+# konsol#220 row R11: a budget write lands in one fiscal period, so the node
+# is checked as it is on that period's end date, not as it is today.
+
+_PERIOD_ENDS = {(2026, 3): "2026-03-31", (2024, 6): "2024-06-30",
+                (2023, 6): "2023-06-30", (2025, 6): "2025-06-30"}
+
+_EX = {"name": "e1", "member_code": "ZZ_EX", "member_label": "ZZ EX", "is_group": 0,
+       "effective_from": "2017-01-01", "effective_to": "2024-12-31"}
+_Y_LEAF = {"name": "y1", "member_code": "ZZ_Y", "member_label": "ZZ Y", "is_group": 0,
+           "effective_from": "2020-01-01", "effective_to": "2023-12-31"}
+_Y_GROUP = {"name": "y2", "member_code": "ZZ_Y", "member_label": "ZZ Y", "is_group": 1,
+            "effective_from": "2024-01-01", "effective_to": None}
+
+
+def _write_frappe(rows, today="2025-06-30"):
+    """frappe for validate_hierarchy_write: the named tree ZZ_H is published."""
+    class _D(dict):
+        __getattr__ = dict.get
+
+    def get_value(doctype, filters, fields, as_dict=False):
+        if fields == "hierarchy_name":
+            return "ZZ_H"
+        return _D(name="ZZ_H", dimension="business_unit", status="Published")
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        return [_D({f: r.get(f) for f in fields}) for r in rows
+                if r["member_code"] == filters["member_code"]]
+
+    utils = types.ModuleType("frappe.utils")
+    utils.today = lambda: today
+    return types.SimpleNamespace(get_all=get_all, utils=utils,
+                                 db=types.SimpleNamespace(get_value=get_value))
+
+
+def _write(rows, node, fy, fp):
+    from konsol.hierarchy_query import validate_hierarchy_write
+
+    status = types.ModuleType("konsol.period_status")
+    status.period_dates = lambda y, p: ("start", _PERIOD_ENDS[(y, p)])
+    grain = types.ModuleType("konsol.epm.budget_grain")
+    grain.budget_dimension_names = lambda: ["business_unit"]
+    stubs = {"konsol.period_status": status, "konsol.epm.budget_grain": grain}
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        return _with_frappe(_write_frappe(rows), lambda: validate_hierarchy_write(
+            "ZZ_H", node, fiscal_year=fy, fiscal_period=fp))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def test_write_to_a_period_after_the_leaf_ended_is_refused():
+    info, err = _write([_EX], "ZZ_EX", 2026, 3)
+    assert info is None
+    assert err == "Node 'ZZ_EX' is not in hierarchy 'ZZ_H' on 2026-03-31 (FY2026 P3)."
+
+
+def test_write_to_a_period_the_leaf_covers_is_accepted():
+    info, err = _write([_EX], "ZZ_EX", 2024, 6)
+    assert err is None, err
+    assert info["member_code"] == "ZZ_EX" and info["dimension"] == "business_unit"
+
+
+def test_write_checks_leaf_or_group_in_that_period():
+    # ZZ_Y was a leaf to 2023 and is a group from 2024 (today it is a group)
+    info, err = _write([_Y_LEAF, _Y_GROUP], "ZZ_Y", 2023, 6)
+    assert err is None, err
+    assert info["is_group"] is False
+    info, err = _write([_Y_LEAF, _Y_GROUP], "ZZ_Y", 2025, 6)
+    assert info is None and "is a group" in err
+
+
+def test_budget_write_passes_its_period():
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api.py")
+    block = open(path).read().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    call = block.split("validate_hierarchy_write(")[1].split(")\n")[0]
+    assert 'fiscal_year=int(data["fiscal_year"])' in call
+    assert "fiscal_period=fp" in call

@@ -4,6 +4,8 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (16 Sep): management trees are dated (konsol#220).** A Reporting Hierarchy Member has Effective From (required) and Effective To (blank = open). When a division is renamed, moves to another parent or ends, add a second row with the same Member Code; don't edit the old one. End the old row the day before the new one starts. konsol refuses overlapping rows of one code, a child whose dates its parent code does not cover, a parent cycle through dated rows, and a parent edit or delete that would leave a child without a parent. With the konsolidat change that ships alongside it, the warehouse rolls every trial-balance, budget and variance period up the tree as it stood in that period, with that period's labels. Without that change the warehouse ignores the dates, so deploy both together. The tree API takes `as_of`. Load the first customer tree with its dates; the site had no hierarchy when this landed, so nothing needed restating.
+
 **Update (15 Sep, night): variance compares actuals with every declared budget, and konsol reads one budget at a time (konsolidat#206 + konsol#214). D365 is off by default (konsolidat#207).**
 
 - **Variance (warehouse).** The warehouse variance models pick actuals and budgets by each scenario's declared `scenario_type` (active only), no longer by the codes `'ACTUAL'`/`'BUDGET'`. Budgets authored in konsol now reach variance. Each budget scenario keeps its own rows (`budget_scenario_id`), and actuals pair only with budget scenarios that budget that entity and year. Where a budget has no line, the budget amount is empty, not 0.
