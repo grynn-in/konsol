@@ -135,3 +135,363 @@ def test_api_hierarchy_requests_carry_layer():
     assert '"layer"' in pre[-400:]
     # the epm_value hierarchy call passes the layer arg through
     assert '"layer": layer' in src
+
+
+# ── variance reads one budget scenario (konsol#214) ─────────────────────────
+#
+# The warehouse variance model keeps one set of rows per active budget
+# scenario (column budget_scenario_id). A read that does not filter on it adds
+# budget scenarios together. hierarchy_query is run against a stub frappe
+# (the Scenario doctype) and a fake ClickHouse that records the SQL.
+
+import importlib.util  # noqa: E402
+import sys  # noqa: E402
+import types  # noqa: E402
+
+_NO_BUDGET = "No active budget scenario belongs to FY2026, so there is no variance to show."
+
+
+def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=None):
+    """batch_query_hierarchy over ``rows`` (dicts overriding a default request).
+
+    ``active_budgets`` is what the Scenario doctype holds as active budget
+    scenarios; ``cycles`` the (scenario_id, fiscal_year) of the Budget Cycles
+    (default: one FY2026 cycle per active budget, the default request year).
+    ``scenarios``, when given, is the Scenario records instead, as
+    (scenario_id, scenario_type, is_active), and a lookup applies its filters.
+    Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]);
+    Budget Cycle lookups are recorded as {"Budget Cycle": filters}.
+    ``api``, when given, is an api module (see ``_failing_api``) served as
+    konsol.api, and ClickHouse is queried through it instead of the fake;
+    hierarchy_query's own log_error calls then go to ``api._zz_logged`` too.
+    """
+    queries, lookups = [], []
+    if scenarios is not None:
+        active_budgets = [s for s, kind, on in scenarios if kind == "budget" and on]
+    if cycles is None:
+        cycles = [(s, 2026) for s in active_budgets]
+
+    def get_all(doctype, filters=None, pluck=None, order_by=None, fields=None, **kw):
+        filters = dict(filters or {})
+        if doctype == "Budget Cycle":
+            lookups.append({"Budget Cycle": filters})
+            wanted = set(filters["scenario_id"][1])
+            return [{"scenario_id": s, "fiscal_year": y}
+                    for s, y in cycles if s in wanted]
+        assert doctype == "Scenario", doctype
+        lookups.append(filters)
+        if scenarios is None:
+            return list(active_budgets)
+        found = []
+        for sid, kind, on in scenarios:
+            record = {"scenario_id": sid, "scenario_type": kind, "is_active": on}
+            if all(record[k] in v[1] if isinstance(v, list) else record[k] == v
+                   for k, v in filters.items()):
+                found.append(sid)
+        return sorted(found)
+
+    fake_frappe = types.ModuleType("frappe")
+    fake_frappe.get_all = get_all
+    if api is None:
+        fake_frappe.log_error = lambda *a, **k: None
+    else:
+        fake_frappe.log_error = (
+            lambda title=None, message=None, **k: api._zz_logged.append((title, message)))
+    fake_frappe.get_traceback = lambda: "Traceback: hierarchy"
+
+    spec = importlib.util.spec_from_file_location(
+        "_host_hierarchy_query_k214", os.path.join(APP_DIR, "hierarchy_query.py"))
+    hq = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hq)
+
+    def fake_query(sql, params, ch_settings):
+        queries.append((sql, dict(params)))
+        return ""
+
+    ch_settings = {} if api is None else {"user": "zz", "password": "zz"}
+    stubs = {
+        "frappe": fake_frappe,
+        "konsol.clickhouse": types.SimpleNamespace(get_connection=lambda: ch_settings),
+        "konsol.entity_permissions": types.SimpleNamespace(
+            entity_read_scope=lambda entity, allowed, wildcard=False: (None, None)),
+    }
+    if api is None:
+        hq._clickhouse_query = fake_query
+    else:
+        stubs["konsol.api"] = api
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        reqs = []
+        for i, row in enumerate(rows):
+            req = {
+                "entity": "ZZ01", "year": 2026, "periods": (1,), "account": f"ZZ{i}",
+                "scenario": "variance", "hierarchy_name": "ZZ_H", "hierarchy_node": "ZZ_N",
+            }
+            req.update(row)
+            reqs.append(req)
+        result = hq.batch_query_hierarchy(reqs, allowed_entities=None)
+    finally:
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+    return result, queries, lookups
+
+
+def test_variance_filters_the_named_budget_scenario():
+    result, queries, lookups = _run_hierarchy(
+        [{"scenario_id": "ZZ_PLAN"}], active_budgets=["ZZ_PLAN"])
+    assert not result.get("errors")
+    (sql, params), = queries
+    assert "AND budget_scenario_id = {sid:String}" in sql
+    assert params["param_sid"] == "ZZ_PLAN"
+    # a named scenario is read as named, once the doctype says it is an
+    # active budget; its year's Budget Cycles are not asked
+    assert lookups == [{"scenario_type": "budget", "is_active": 1}]
+
+
+# ── a named scenario must be a budget the warehouse holds (PR #217 review 4)
+#
+# The warehouse variance models keep only active budget scenarios, so a named
+# actuals, inactive or misspelled id would filter to nothing and read 0.0.
+
+_ZZ_SCENARIOS = [
+    ("ZZ_ACT", "actual", 1),
+    ("ZZ_OLD", "budget", 0),
+    ("ZZ_PLAN", "budget", 1),
+]
+
+
+def test_variance_with_a_named_actuals_scenario_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"scenario_id": "ZZ_ACT"}], scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "ZZ_ACT is not an active budget scenario, so there is no variance for it."]
+    assert result["values"] == [None]
+
+
+def test_variance_with_a_named_inactive_budget_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"scenario_id": "ZZ_OLD"}], scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "ZZ_OLD is not an active budget scenario, so there is no variance for it."]
+
+
+def test_variance_with_an_unknown_named_scenario_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"scenario_id": "ZZ_PLNA"}], scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "ZZ_PLNA is not an active budget scenario, so there is no variance for it."]
+
+
+def test_variance_with_a_named_active_budget_is_filtered_and_refusal_is_per_row():
+    result, queries, lookups = _run_hierarchy(
+        [{"scenario_id": "ZZ_PLAN"}, {"scenario_id": "ZZ_ACT", "account": "ZZ9"}],
+        scenarios=_ZZ_SCENARIOS)
+    (sql, params), = queries
+    assert "AND budget_scenario_id = {sid:String}" in sql
+    assert params["param_sid"] == "ZZ_PLAN"
+    assert result["errors"] == [
+        None, "ZZ_ACT is not an active budget scenario, so there is no variance for it."]
+    # one Scenario lookup, however many named rows
+    assert lookups == [{"scenario_type": "budget", "is_active": 1}]
+
+
+def test_variance_rejects_an_unsafe_scenario_id():
+    result, queries, _ = _run_hierarchy([{"scenario_id": "ZZ PLAN;"}])
+    assert queries == []
+    assert result["errors"] == ["Invalid scenario_id format"]
+
+
+def test_variance_without_scenario_reads_the_one_active_budget():
+    result, queries, lookups = _run_hierarchy([{}], active_budgets=["ZZ_B1"])
+    assert not result.get("errors")
+    (sql, params), = queries
+    assert "AND budget_scenario_id = {sid:String}" in sql
+    assert params["param_sid"] == "ZZ_B1"
+    assert lookups[0] == {"scenario_type": "budget", "is_active": 1}
+
+
+def test_variance_without_scenario_and_no_active_budget_is_refused():
+    result, queries, _ = _run_hierarchy([{}], active_budgets=[])
+    assert queries == []
+    assert result["errors"] == [_NO_BUDGET]
+    assert result["values"] == [None]
+
+
+def test_variance_without_scenario_and_several_active_budgets_is_refused():
+    result, queries, _ = _run_hierarchy([{}], active_budgets=["ZZ_B1", "ZZ_B2"])
+    assert queries == []
+    assert result["errors"] == [
+        "Several active budget scenarios belong to FY2026 (ZZ_B1, ZZ_B2); choose one."]
+
+
+def test_active_budget_scenarios_are_looked_up_once_per_call():
+    result, queries, lookups = _run_hierarchy(
+        [{}, {"account": "ZZ9", "periods": (2,)}, {"account": "ZZ8", "year": 2027}],
+        active_budgets=["ZZ_B1", "ZZ_B2"],
+        cycles=[("ZZ_B1", 2026), ("ZZ_B2", 2027)])
+    assert not result.get("errors")
+    assert len(queries) == 3
+    assert sorted(p["param_sid"] for _, p in queries) == ["ZZ_B1", "ZZ_B1", "ZZ_B2"]
+    # one Scenario and one Budget Cycle lookup, however many years are read
+    assert len(lookups) == 2
+
+
+# ── with no scenario named, the budget is the request year's (PR #217 review 3)
+#
+# Once two years' budgets are both active, "the single active budget" refuses
+# every unnamed read. A budget scenario belongs to the years of its Budget
+# Cycles; an unnamed read uses the one active budget of the request's year.
+
+def test_variance_without_scenario_reads_the_request_years_budget():
+    both = dict(active_budgets=["ZZ_B26", "ZZ_B27"],
+                cycles=[("ZZ_B26", 2026), ("ZZ_B27", 2027)])
+    result, queries, _ = _run_hierarchy([{"year": 2026}], **both)
+    assert not result.get("errors"), result
+    (sql, params), = queries
+    assert "AND budget_scenario_id = {sid:String}" in sql
+    assert params["param_sid"] == "ZZ_B26"
+    result, queries, _ = _run_hierarchy([{"year": 2027}], **both)
+    assert not result.get("errors"), result
+    (_, params), = queries
+    assert params["param_sid"] == "ZZ_B27"
+
+
+def test_variance_without_a_budget_for_the_year_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"year": 2028}], active_budgets=["ZZ_B26", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B27", 2027)])
+    assert queries == []
+    assert result["errors"] == [
+        "No active budget scenario belongs to FY2028, so there is no variance to show."]
+
+
+def test_variance_with_several_budgets_for_the_year_is_refused_by_name():
+    result, queries, _ = _run_hierarchy(
+        [{"year": 2026}], active_budgets=["ZZ_B26", "ZZ_B26X", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B26X", 2026), ("ZZ_B27", 2027)])
+    assert queries == []
+    assert result["errors"] == [
+        "Several active budget scenarios belong to FY2026 (ZZ_B26, ZZ_B26X); choose one."]
+
+
+def test_a_cancelled_budget_cycle_does_not_count():
+    _, _, lookups = _run_hierarchy([{}], active_budgets=["ZZ_B1"])
+    cycle_filters, = [lk["Budget Cycle"] for lk in lookups if "Budget Cycle" in lk]
+    assert cycle_filters["scenario_id"] == ["in", ["ZZ_B1"]]
+    assert cycle_filters["docstatus"] == ["<", 2]
+
+
+def _load_hq():
+    spec = importlib.util.spec_from_file_location(
+        "_host_hierarchy_query_k214_pure", os.path.join(APP_DIR, "hierarchy_query.py"))
+    hq = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hq)
+    return hq
+
+
+def test_budget_and_forecast_still_filter_scenario_id():
+    for sc in ("budget", "forecast"):
+        result, queries, lookups = _run_hierarchy(
+            [{"scenario": sc, "scenario_id": "ZZ_PLAN"}], active_budgets=["ZZ_B1"])
+        assert not result.get("errors")
+        (sql, params), = queries
+        assert "AND scenario_id = {sid:String}" in sql
+        assert "budget_scenario_id" not in sql
+        assert params["param_sid"] == "ZZ_PLAN"
+        assert lookups == []
+        # no scenario named: all of the table, as before
+        result, queries, lookups = _run_hierarchy([{"scenario": sc}], active_budgets=[])
+        assert not result.get("errors")
+        (sql, params), = queries
+        assert "scenario_id" not in sql
+        assert "param_sid" not in params
+        assert lookups == []
+
+
+# ── the hierarchy path reports ClickHouse failures like the flat path
+#    (PR #217 review 2, point 1)
+#
+# hierarchy_query queries ClickHouse through api._clickhouse_query, so an
+# unknown column shows ClickHouse's code and exception name (row K7) and the
+# log gets ClickHouse's reply, not a bare traceback.
+
+_CH_BODY = (
+    "Code: 47. DB::Exception: Unknown expression identifier 'budget_scenario_id' "
+    "in scope SELECT fiscal_year FROM epm_gold.gold_variance_at_hierarchy_node. "
+    "(UNKNOWN_IDENTIFIER)\n" + "\n".join(f"{i}. DB::frame_{i}" for i in range(50))
+)
+
+
+class _CHResp:
+    def __init__(self, status_code, text):
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(
+                f"{self.status_code} Client Error", response=self)
+
+
+def _failing_api(body):
+    """api.py under a private name, a stub frappe recording log_error in
+    ``api._zz_logged``, and a requests.get that answers HTTP 400 ``body``."""
+    import requests
+    logged = []
+    fake_frappe = types.ModuleType("frappe")
+    fake_frappe.get_all = lambda *a, **k: []
+    fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    fake_frappe.log_error = (
+        lambda title=None, message=None, **k: logged.append((title, message)))
+    fake_frappe.get_traceback = lambda: "Traceback: api"
+    fake_utils = types.ModuleType("frappe.utils")
+    fake_utils.now_datetime = lambda: None
+    fake_frappe.utils = fake_utils
+    stubs = {
+        "frappe": fake_frappe,
+        "frappe.utils": fake_utils,
+        "konsol.clickhouse": types.SimpleNamespace(
+            connection_url=lambda s: "http://zz-clickhouse:8123/",
+            get_connection=lambda: {}),
+    }
+    before = set(sys.modules)
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_host_api_k214_hierarchy", os.path.join(APP_DIR, "api.py"))
+        api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api)
+    finally:
+        for key in set(sys.modules) - before:
+            if key.split(".")[0] in ("frappe", "konsol"):
+                del sys.modules[key]
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+    api.requests = types.SimpleNamespace(
+        get=lambda *a, **k: _CHResp(400, body), exceptions=requests.exceptions)
+    api._zz_logged = logged
+    return api
+
+
+def test_hierarchy_clickhouse_failure_shows_code_and_exception_name():
+    api = _failing_api(_CH_BODY)
+    result, _, _ = _run_hierarchy(
+        [{"scenario_id": "ZZ_PLAN"}], active_budgets=["ZZ_PLAN"], api=api)
+    assert result["values"] == [None]
+    (err,) = result["errors"]
+    assert err == "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"
+    assert "budget_scenario_id" not in err
+    # ClickHouse's reply is logged once, not once more as a bare traceback
+    assert api._zz_logged == [("ClickHouse query failed", _CH_BODY[:1000])]

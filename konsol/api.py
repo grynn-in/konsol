@@ -222,6 +222,12 @@ _FACT_FIELDS = [
 ]
 
 
+#: Datasets the warehouse keeps one set of rows per budget scenario, and the
+#: column that says which. A read filters on it, never sums across budget
+#: scenarios (konsol#214).
+_BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
+
+
 def _get_fact_by_scenario(scenario):
     """Load Dataset doc by scenario_key. Returns dict or None."""
     facts = frappe.get_all(
@@ -480,8 +486,40 @@ def _get_or_create_sheet(cycle_name, data, layer):
 # ClickHouse query helpers
 # ---------------------------------------------------------------------------
 
+class ClickHouseQueryError(Exception):
+    """ClickHouse answered with an HTTP error; the message carries its code."""
+
+
+_CH_ERROR_CODE = re.compile(r"^Code:\s*(\d+)")
+_CH_EXCEPTION_NAME = re.compile(r"\(([A-Z][A-Z0-9_]*)\)")
+
+
+def _clickhouse_error_message(body):
+    """The message a user sees for a failed ClickHouse query.
+
+    Only ClickHouse's error code and exception name, e.g.
+    "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)": the rest of its first
+    line can carry table names, SQL, the server version or the user name, so
+    that stays in the log (konsol#214 row K7).
+    """
+    first_line = (body or "").strip().split("\n", 1)[0]
+    code = _CH_ERROR_CODE.match(first_line)
+    if not code:
+        return "ClickHouse query failed"
+    names = _CH_EXCEPTION_NAME.findall(first_line)
+    if names:
+        return f"ClickHouse query failed ({code.group(1)}: {names[-1]})"
+    return f"ClickHouse query failed ({code.group(1)})"
+
+
 def _clickhouse_query(sql, params, ch_settings):
-    """Execute a single ClickHouse HTTP query. Returns response text or raises."""
+    """Execute a single ClickHouse HTTP query. Returns response text or raises.
+
+    On an HTTP error, ClickHouse's response text is logged and the raised
+    ClickHouseQueryError carries its error code and exception name only
+    (e.g. "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"), so the caller
+    can show why without leaking the query's detail (konsol#214).
+    """
     url = _ch_url(ch_settings)
     query_params = dict(params)
     query_params["query"] = sql
@@ -493,7 +531,12 @@ def _clickhouse_query(sql, params, ch_settings):
         timeout=30,
         verify=ch_settings.get("verify", True),
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        body = resp.text or ""
+        frappe.log_error("ClickHouse query failed", body[:1000])
+        raise ClickHouseQueryError(_clickhouse_error_message(body)) from exc
     return resp.text.strip()
 
 
@@ -506,10 +549,25 @@ def _batch_query_clickhouse(requests_list):
 
     Returns {"values": [...], "errors": [...]}.
     """
+    from konsol.hierarchy_query import (
+        _active_budget_scenarios,
+        _active_budget_scenarios_by_year,
+        choose_budget_scenario,
+        named_budget_scenario_error,
+    )
+
     ch_settings = _get_ch_connection()
     n = len(requests_list)
     values = [None] * n
     errors = [None] * n
+    facts = {}  # fact_key -> Dataset (or None), resolved once per call
+    budgets_by_year = None  # looked up once per call, when first needed
+    active_budgets = None  # likewise, for named budget scenarios
+
+    def resolve_fact(fact_key):
+        if fact_key not in facts:
+            facts[fact_key] = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
+        return facts[fact_key]
 
     # Group by (fact, measure, periods_tuple, dim_names_frozenset, scenario_id).
     # `fact` (the resolved fact_name) is the table-determining element; scenario
@@ -517,18 +575,47 @@ def _batch_query_clickhouse(requests_list):
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         dims = req.get("dimensions", {})
+        fact_key = req.get("fact") or req.get("scenario")
+        scenario_id = req.get("scenario_id", "")
+        if scenario_id and _SAFE_SCENARIO_ID.match(scenario_id):
+            # A named scenario must be one the dataset keeps: an active
+            # budget. Any other id (actuals, inactive, misspelled) would
+            # filter to nothing and read 0.0. An unsafe id is refused below.
+            fact = resolve_fact(fact_key)
+            if fact and _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                if active_budgets is None:
+                    active_budgets = set(_active_budget_scenarios())
+                err = named_budget_scenario_error(scenario_id, active_budgets)
+                if err:
+                    errors[idx] = err
+                    continue
+        elif not scenario_id:
+            # A dataset kept per budget scenario reads exactly one: the named
+            # one, else the single active budget of the row's year, else a
+            # refusal that says why (konsol#214). Resolved per row, before
+            # grouping: a group's key has no year, so it can hold several.
+            fact = resolve_fact(fact_key)
+            if fact and _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                if budgets_by_year is None:
+                    budgets_by_year = _active_budget_scenarios_by_year()
+                year = int(req["year"])
+                scenario_id, err = choose_budget_scenario(
+                    budgets_by_year.get(year, []), fiscal_year=year)
+                if err:
+                    errors[idx] = err
+                    continue
         key = (
-            req.get("fact") or req.get("scenario"),
+            fact_key,
             req["measure"],
             req["periods"],
             frozenset(dims.keys()),
-            req.get("scenario_id", ""),
+            scenario_id,
             req.get("layer", ""),
         )
         groups[key].append((idx, req))
 
     for (fact_key, measure, periods, dim_names, scenario_id, layer), group_items in groups.items():
-        fact = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
+        fact = resolve_fact(fact_key)
         if not fact:
             for idx, _ in group_items:
                 errors[idx] = f"No Dataset for '{fact_key}'"
@@ -598,15 +685,20 @@ def _batch_query_clickhouse(requests_list):
             params[f"param_{pkey}"] = str(p)
         period_in = ", ".join(period_placeholders)
 
+        # A dataset kept per budget scenario filters its own column; the
+        # scenario_id was resolved per row above when none was named.
+        budget_column = _BUDGET_SCENARIO_COLUMN.get(fact.fact_name)
+
         # Optional scenario_id filter
         scenario_id_clause = ""
-        if scenario_id and fact.has_scenario_id:
+        if scenario_id and (fact.has_scenario_id or budget_column):
             if not _SAFE_SCENARIO_ID.match(scenario_id):
                 for idx, _ in group_items:
                     errors[idx] = "Invalid scenario_id format"
                 continue
             params["param_sid"] = scenario_id
-            scenario_id_clause = " AND scenario_id = {sid:String}"
+            column = budget_column or "scenario_id"
+            scenario_id_clause = f" AND {column} = {{sid:String}}"
 
         # Optional layer filter (budget facts). Omitted → sum across all layers
         # (the final budget); supplied → restrict to one layer. Mirrors the
@@ -656,6 +748,11 @@ def _batch_query_clickhouse(requests_list):
             for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse connection failed"
+        except ClickHouseQueryError as exc:
+            # already logged with ClickHouse's response text
+            for idx, _ in group_items:
+                values[idx] = None
+                errors[idx] = str(exc)
         except Exception:
             frappe.log_error("ClickHouse query failed", frappe.get_traceback())
             for idx, _ in group_items:
@@ -774,6 +871,10 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
         "scenario_id": scenario_id,
         "layer": layer,
     }])
+    # A refused read (e.g. no or several active budget scenarios) says why
+    # instead of coming back as an empty cell (konsol#214).
+    if result.get("errors") and result["errors"][0]:
+        frappe.throw(result["errors"][0], frappe.ValidationError)
     return {"value": result["values"][0]}
 
 
@@ -989,12 +1090,22 @@ def epm_batch():
             errors_list[i] = f"Invalid period '{req.get('period')}'"
             continue
 
+        # A missing, non-integer or non-positive year (e.g. JSON null from a
+        # blank Excel cell) fails only this row — not raise and 500 the whole
+        # batch, and not read as FY0.
+        raw_year = req.get("year")
+        if raw_year is None or raw_year == "":
+            errors_list[i] = "Invalid year"
+            continue
         try:
-            year = int(req.get("year", 0))
+            if isinstance(raw_year, bool) or (
+                    isinstance(raw_year, float) and not raw_year.is_integer()):
+                raise ValueError(raw_year)
+            year = int(req.get("year"))
+            if year < 1:
+                raise ValueError(year)
         except (ValueError, TypeError):
-            # A non-numeric year (e.g. JSON null from a blank Excel cell)
-            # must fail only this row — not raise and 500 the whole batch.
-            errors_list[i] = f"Invalid year '{req.get('year')}'"
+            errors_list[i] = f"Invalid year '{raw_year}'"
             continue
 
         entity = req.get("entity", "")

@@ -37,7 +37,12 @@ HIERARCHY_SCENARIO_CONFIG = {
         "table": "epm_gold.gold_variance_at_hierarchy_node",
         "default_measure": "variance_abs",
         "measures": {"variance_abs", "actual_amount", "budget_amount"},
-        "has_scenario_id": False,
+        # One set of rows per active budget scenario (konsol#214): a read that
+        # did not filter on it would add budget scenarios together, so every
+        # variance read names one (the request's, else the single active one).
+        "has_scenario_id": True,
+        "scenario_column": "budget_scenario_id",
+        "needs_budget_scenario": True,
     },
 }
 
@@ -47,20 +52,13 @@ def _normalize_scenario(scenario):
 
 
 def _clickhouse_query(sql, params, ch_settings):
-    from konsol.clickhouse import connection_url as _ch_url
+    """The flat path's api._clickhouse_query, so both paths report a failed
+    query the same way: ClickHouse's reply logged, its code and exception
+    name raised as api.ClickHouseQueryError (konsol#214 row K8). Imported
+    here, not at load: api imports this module in its functions."""
+    from konsol.api import _clickhouse_query as run
 
-    url = _ch_url(ch_settings)
-    query_params = dict(params)
-    query_params["query"] = sql
-    resp = requests.get(
-        url,
-        params=query_params,
-        auth=(ch_settings["user"], ch_settings["password"]),
-        timeout=30,
-        verify=ch_settings.get("verify", True),
-    )
-    resp.raise_for_status()
-    return resp.text.strip()
+    return run(sql, params, ch_settings)
 
 
 def entity_is_wildcard(entity):
@@ -208,6 +206,72 @@ def validate_hierarchy_write(hierarchy_name, node_code):
     return info, None
 
 
+def _active_budget_scenarios():
+    """The scenario_ids of the active budget scenarios, sorted."""
+    import frappe
+
+    return frappe.get_all(
+        "Scenario",
+        filters={"scenario_type": "budget", "is_active": 1},
+        pluck="scenario_id",
+        order_by="scenario_id asc",
+    )
+
+
+def _active_budget_scenarios_by_year():
+    """{fiscal_year: [scenario_id, ...]} of the active budget scenarios.
+
+    A budget scenario belongs to the years of its Budget Cycles. A cancelled
+    cycle (docstatus 2) has withdrawn its sheets, so it does not count. Two
+    lookups, however many years a call reads.
+    """
+    import frappe
+
+    active = _active_budget_scenarios()
+    if not active:
+        return {}
+    by_year = defaultdict(set)
+    for cycle in frappe.get_all(
+        "Budget Cycle",
+        filters={"scenario_id": ["in", active], "docstatus": ["<", 2]},
+        fields=["scenario_id", "fiscal_year"],
+    ):
+        by_year[int(cycle["fiscal_year"])].add(cycle["scenario_id"])
+    return {year: sorted(ids) for year, ids in by_year.items()}
+
+
+def choose_budget_scenario(active, fiscal_year):
+    """The budget scenario a variance read uses when none is named.
+
+    ``active`` is the active budget scenarios already narrowed to
+    ``fiscal_year``. Exactly one is the answer. None, or several, is an
+    error that says so, never a guess (konsol#214).
+    """
+    if len(active) == 1:
+        return active[0], None
+    if not active:
+        return None, (
+            f"No active budget scenario belongs to FY{fiscal_year}, "
+            "so there is no variance to show."
+        )
+    return None, (
+        f"Several active budget scenarios belong to FY{fiscal_year} "
+        f"({', '.join(active)}); choose one."
+    )
+
+
+def named_budget_scenario_error(scenario_id, active):
+    """Why a variance read cannot use the named ``scenario_id``, or None.
+
+    ``active`` is the active budget scenarios. The warehouse variance models
+    keep only those, so any other id (an actuals scenario, an inactive or a
+    misspelled one) would filter to nothing and read 0.0 (konsol#214).
+    """
+    if scenario_id in active:
+        return None
+    return f"{scenario_id} is not an active budget scenario, so there is no variance for it."
+
+
 def batch_query_hierarchy(requests_list, *, allowed_entities):
     """Execute hierarchy-mode batch queries. Returns {values, errors}.
 
@@ -225,6 +289,8 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     errors = [None] * n
 
     groups = defaultdict(list)
+    budgets_by_year = None  # looked up once per call, when first needed
+    active_budgets = None  # likewise, for named variance scenarios
     for idx, req in enumerate(requests_list):
         sc = _normalize_scenario(req.get("scenario", "actuals"))
         cfg = HIERARCHY_SCENARIO_CONFIG.get(sc)
@@ -238,6 +304,26 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                 f"Allowed: {', '.join(sorted(cfg['measures']))}"
             )
             continue
+        scenario_id = req.get("scenario_id", "")
+        if cfg.get("needs_budget_scenario") and not scenario_id:
+            # No scenario named: the one active budget of the request's year.
+            if budgets_by_year is None:
+                budgets_by_year = _active_budget_scenarios_by_year()
+            year = int(req["year"])
+            scenario_id, err = choose_budget_scenario(
+                budgets_by_year.get(year, []), fiscal_year=year)
+            if err:
+                errors[idx] = err
+                continue
+        elif cfg.get("needs_budget_scenario") and _SAFE_SCENARIO_ID.match(scenario_id):
+            # A named scenario must be one the warehouse keeps variance for.
+            # (An unsafe id is refused by its format below.)
+            if active_budgets is None:
+                active_budgets = set(_active_budget_scenarios())
+            err = named_budget_scenario_error(scenario_id, active_budgets)
+            if err:
+                errors[idx] = err
+                continue
         dims = frozenset(req.get("dimensions", {}).keys())
         wildcard = entity_is_wildcard(req.get("entity", ""))
         key = (
@@ -247,7 +333,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             req["hierarchy_node"],
             req["periods"],
             dims,
-            req.get("scenario_id", ""),
+            scenario_id,
             req.get("layer", ""),
             wildcard,
             "" if wildcard else req.get("entity", ""),
@@ -328,7 +414,8 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                     errors[idx] = "Invalid scenario_id format"
                 continue
             params["param_sid"] = scenario_id
-            scenario_id_clause = " AND scenario_id = {sid:String}"
+            column = cfg.get("scenario_column", "scenario_id")
+            scenario_id_clause = f" AND {column} = {{sid:String}}"
 
         # Optional budget layer filter — mirrors the flat path in api.py. Omitted
         # → sum across all layers (the final budget); supplied → restrict to one
@@ -388,12 +475,20 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse connection failed"
-        except Exception:
-            import frappe
-            frappe.log_error("Hierarchy ClickHouse query failed", frappe.get_traceback())
+        except Exception as exc:
+            from konsol.api import ClickHouseQueryError
+
+            if isinstance(exc, ClickHouseQueryError):
+                # already logged with ClickHouse's reply; the message is its
+                # code and exception name only (row K7)
+                message = str(exc)
+            else:
+                import frappe
+                frappe.log_error("Hierarchy ClickHouse query failed", frappe.get_traceback())
+                message = "ClickHouse query failed"
             for idx, _ in group_items:
                 values[idx] = None
-                errors[idx] = "ClickHouse query failed"
+                errors[idx] = message
 
     result = {"values": values}
     if any(e is not None for e in errors):

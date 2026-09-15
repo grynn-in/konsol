@@ -4,6 +4,19 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Sep, night): variance compares actuals with every declared budget, and konsol reads one budget at a time (konsolidat#206 + konsol#214). D365 is off by default (konsolidat#207).**
+
+- **Variance (warehouse).** The warehouse variance models pick actuals and budgets by each scenario's declared `scenario_type` (active only), no longer by the codes `'ACTUAL'`/`'BUDGET'`. Budgets authored in konsol now reach variance. Each budget scenario keeps its own rows (`budget_scenario_id`), and actuals pair only with budget scenarios that budget that entity and year. Where a budget has no line, the budget amount is empty, not 0.
+- **Variance (konsol).** konsol's variance readers (hierarchy query, `variance_analysis` Dataset, the Excel `epmVariance`) filter on one budget scenario:
+  - The named one, which must be an active budget.
+  - With none named, the active budget on the request year's Budget Cycle.
+  - None or several are refused, with the reason stated.
+- **ClickHouse errors.** A failed ClickHouse query shows only its error code and name. The full reply goes to the Error Log.
+- **Deploy order.** Merge and build konsolidat first. The `budget_scenario_id` column exists only after that build. Then deploy this konsol change.
+- **Also in konsolidat:**
+  - A `materiality_floor()` macro replaces the literal 0.005.
+  - Intercompany NCI posts to the group root's declared NCI Account. A group without one posts to the placeholder `NCI`, and a warning names it.
+  - `erp_sources` defaults to `[]`: the trial-balance upload is the canonical source. List `d365_fo` or `erpnext` to build a connector's staging.
 **Update (15 Sep, night): Build Approval is approved through a Frappe Workflow (konsol#215).** Approve and Reject are buttons for EPM Admin; the role and self-approval are set in the Workflow record ("Build Approval Workflow"), not in code. A new request goes in as Draft and takes the workflow's Request transition (low risk to Approved, high risk to Pending Review); the build job's own moves (Start, Complete, Fail) are Administrator-only transitions it takes under `build_lock.build_writer()`. Deploy: migrate (after_migrate installs the workflow once); a site that edits the workflow keeps its edits.
 
 **Update (15 Sep, late): the workbook ships TWO trial balances, and only the
