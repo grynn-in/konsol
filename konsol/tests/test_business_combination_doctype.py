@@ -109,9 +109,10 @@ def test_table_fields_point_at_the_three_children():
     assert "otherwise the trial balance is used" not in description, (
         "konsol#206: the Acquired Balance Sheet is always required")
     assert description == (
-        "The entity's balance sheet at acquisition with fair value adjustments per line. "
-        "Always required: enter the acquisition-date balances, or use Get Balances from "
-        "Trial Balance.")
+        "The entity's balance sheet at acquisition with fair value adjustments per line, "
+        "in the acquired entity's Functional Currency (translated to the group currency at "
+        "the acquisition period's closing rate). Always required: enter the acquisition-date "
+        "balances, or use Get Balances from Trial Balance.")
     assert fields["costs"].get("reqd", 0) == 0
 
 
