@@ -18,8 +18,9 @@ Lifecycle: ``validate`` computes the Result and throws the model's sentences;
 ``before_submit`` re-checks the period is open and the accounts are declared;
 ``on_submit`` closes the entity's Ownership Period on the disposal date and
 writes the approved disposal to the warehouse. Submit = approval (the
-workflow); cancel only while the disposal period is open. Nothing here saves
-the document from a hook or commits.
+workflow); cancel only while the disposal period is open, and it reopens the
+Ownership Period the approval closed. Nothing here saves the document from a
+hook or commits.
 """
 import frappe
 from frappe.model.document import Document
@@ -115,6 +116,7 @@ class BusinessDisposal(Document):
                     action="cancel a business disposal")
 
     def on_cancel(self):
+        self._reopen_ownership_period()
         self._sync()
 
     def after_delete(self):
@@ -248,6 +250,30 @@ class BusinessDisposal(Document):
         finally:
             frappe.flags.from_business_combination = False
         self.db_set("ownership_period", period.name)
+
+    def _reopen_ownership_period(self):
+        """Cancelling the approval undoes what ``_close_ownership_period`` did:
+        the linked Ownership Period is open again (no end date) and the entity
+        is no longer disposed of. Same flag, same ``db_set`` route, its own
+        re-sync. A period deleted since is nothing to reopen: skip, do not
+        throw (the cancel must still go through)."""
+        name = self.get("ownership_period")
+        if not name or not frappe.db.exists("Ownership Period", name):
+            return
+        fields = {
+            "end_date": None,
+            "is_disposal": 0,
+            "disposal_date": None,
+            "disposal_price": 0,
+        }
+        frappe.flags.from_business_combination = True
+        try:
+            period = frappe.get_doc("Ownership Period", name)
+            for field, value in fields.items():
+                period.db_set(field, value)
+            sync_doctype_after_commit("Ownership Period", period.CH_TABLE, period.CH_FIELD_MAP)
+        finally:
+            frappe.flags.from_business_combination = False
 
     # -- warehouse -----------------------------------------------------------
 
