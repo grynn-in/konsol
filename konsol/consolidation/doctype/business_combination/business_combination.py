@@ -583,7 +583,7 @@ def _read_tb_through(entity, fiscal_year, fiscal_period):
     return rows, latest
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def get_balances_from_trial_balance(name):
     """Replace a Draft deal's Acquired Balance Sheet with the acquired
     entity's warehouse trial balance through the acquisition period (the
@@ -599,6 +599,12 @@ def get_balances_from_trial_balance(name):
     doc.check_permission("write")
     if int(doc.get("docstatus") or 0) != 0:
         frappe.throw(f"{_PREFIX}Only a Draft takes its balances from the trial balance.")
+    # Pending Approval is docstatus 0 too, but only EPM Admin may edit it there
+    # and a server save would not enforce that (PR #209 review 1).
+    status = doc.get("status")
+    if status != "Draft":
+        frappe.throw(f"{_PREFIX}Only a Draft takes its balances from the trial balance; "
+                     f"this deal is {status}.")
     period = doc._acquisition_period()
     year, number = period["fiscal_year"], period["fiscal_period"]
     label = f"FY{year} P{number}"

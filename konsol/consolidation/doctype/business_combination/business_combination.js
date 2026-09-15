@@ -3,9 +3,11 @@
 // A Draft deal takes its Acquired Balance Sheet from the acquired entity's
 // warehouse trial balance through the acquisition period, on request. The
 // server replaces the lines, places the Fair Value Adjustment Total and saves.
+// Only a real Draft (Pending Approval is docstatus 0 too); unsaved edits are
+// saved first so the server uses what was typed, not what was stored.
 frappe.ui.form.on("Business Combination", {
 	refresh(frm) {
-		if (frm.doc.docstatus === 0 && !frm.is_new()) {
+		if (frm.doc.docstatus === 0 && !frm.is_new() && frm.doc.status === "Draft") {
 			frm.add_custom_button(__("Get Balances from Trial Balance"), () => {
 				const n = (frm.doc.acquired_balances || []).length;
 				const run = () =>
@@ -15,13 +17,14 @@ frappe.ui.form.on("Business Combination", {
 						freeze: true,
 						callback: () => frm.reload_doc(),
 					});
+				const go = () => (frm.is_dirty() ? frm.save().then(run) : run());
 				if (n) {
 					frappe.confirm(
 						__("This replaces the {0} lines of the Acquired Balance Sheet. Continue?", [n]),
-						run
+						go
 					);
 				} else {
-					run();
+					go();
 				}
 			});
 		}
