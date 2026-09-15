@@ -178,6 +178,20 @@ def test_result_tab_is_computed_and_read_only():
         assert "default" not in fields[fn], f"{fn}: no defaults, the result is computed"
 
 
+def test_result_descriptions_name_the_group_currency():
+    """PR #209 review 2, point 3: since Q9 net assets and fair value adjustments
+    are translated to the group currency, while the declared Fair Value
+    Adjustment Total stays in the acquired entity's currency."""
+    fields = _fields(_parent())
+    assert fields["net_assets_acquired"]["description"] == (
+        "Net assets of the Acquired Balance Sheet (non-equity lines), translated to the group "
+        "currency at the acquisition period's closing rate.")
+    assert fields["fair_value_adjustments"]["description"] == (
+        "Fair value adjustments on the Acquired Balance Sheet, translated to the group currency "
+        "at the acquisition period's closing rate. The declared Fair Value Adjustment Total is in "
+        "the acquired entity's currency.")
+
+
 def test_status_is_the_workflow_state_and_the_document_can_be_amended():
     doc = _parent()
     fields = _fields(doc)
