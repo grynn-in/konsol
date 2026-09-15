@@ -19,6 +19,55 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
   - `erp_sources` defaults to `[]`: the trial-balance upload is the canonical source. List `d365_fo` or `erpnext` to build a connector's staging.
 **Update (15 Sep, night): Build Approval is approved through a Frappe Workflow (konsol#215).** Approve and Reject are buttons for EPM Admin; the role and self-approval are set in the Workflow record ("Build Approval Workflow"), not in code. A new request goes in as Draft and takes the workflow's Request transition (low risk to Approved, high risk to Pending Review); the build job's own moves (Start, Complete, Fail) are Administrator-only transitions it takes under `build_lock.build_writer()`. Deploy: migrate (after_migrate installs the workflow once); a site that edits the workflow keeps its edits.
 
+**Update (15 Sep, night 2): the translation method is a property of the ENTITY,
+not the account — konsol#222, #224.**
+
+Historical Equity Rates are blocked on a design question, not on data entry.
+Zero rate records exist while 21 chart accounts declare `fx_method = historical`
+and **5,481** rows in the consolidated trial balance sit on those accounts
+translated at a rate other than 1, across **194 distinct rates** — every one
+falling back to its period's closing rate, so the CTA never arises.
+
+**The finding.** Of 329 leaf entities, **11** have a functional currency that
+differs from their country's dominant one (across 11 countries, several of them
+hyperinflationary). Those 11 are **remeasured** (IAS 21.23, temporal); the other
+318 are **translated** (IAS 21.39, current rate). `fx_method` is declared *per
+account, chart-wide*, so a global `historical` on 14 asset accounts applies the
+temporal method to all 329 — right for 11, wrong for 318.
+
+**The recommendation, and why it is small.** Equity is at historical under
+*both* methods; the methods differ only on **non-monetary assets and
+liabilities**. So the chart is not wrong — the gate is missing. Keep `fx_method`
+as the declaration of what an account *is*, add `Entity.translation_method`
+(`Current rate` default / `Temporal`), and apply:
+
+```
+IF   the account is equity                      -> historical (both methods)
+ELSE IF entity is Temporal AND fx_method = historical -> historical
+ELSE closing, or average for P&L
+```
+
+No account is re-tagged, and the 318 stop using historical rates for PP&E, which
+they should never have been doing. Rates are tranched by date — one row per
+account per entity per event, not per period — so the population is roughly a
+third of what the unconditional reading implies.
+
+**NCI: the chart is already right.** `3400` is the only equity leaf *not*
+declared historical, and that is correct, not an omission. NCI is a residual
+interest measured as the minority's share of net assets; those translate at
+closing, so NCI must too, or it stops equalling its share and the gap becomes a
+plug. Record the reasoning on the account so nobody "fixes" it.
+
+**konsol#224, found while deciding this:** the two methods put their differences
+in different statements — translation to OCI (the CTA), remeasurement to
+**profit or loss**. `gold_fx_revaluation` computes the CTA as an unconditional
+residual plug for every entity, so once the 11 are marked Temporal their
+differences would still land in OCI. That is a classification error in the
+primary statements. It depends on #222 landing first.
+
+**Order:** #222's entity gate, then record the NCI reasoning, then #224, then
+enter rates — for a population now a third of the size.
+
 **Update (15 Sep, late): the workbook ships TWO trial balances, and only the
 statutory one was loaded.**
 
@@ -780,6 +829,19 @@ ever hold a product-wide default — never a customer's chart account.
 | konsolidat **#209** | Materiality is the literal `0.005` in 33 places across 8 models; `ic_difference_tolerance` on the group root is the precedent for declaring it. |
 | konsol **#210** | The declared fiscal calendar is not honoured below EPM Fiscal Year: `build_date_from_year_period` forces FY = calendar year and clamps periods to 1–12; `budget_periods.PERIOD_FIELDS` is `period_01..12`, a **doctype column shape**, so a 13-period customer cannot budget at all; `report_compiler` hardcodes Jan–Dec. konsol#189 PR3 covers only the dbt third. |
 | konsol **#211** | ~~Product report templates hardcode account codes `4010`/`5010`~~ — **shipped `d37e6b0`**: templates now take their P&L lines from the chart. |
+
+**Also shipped since:** konsol#215 gave Build Approval a real Frappe Workflow —
+`Pending Review --Approve--> Approved` is **EPM Admin only** — which closes
+konsol#168, the "approving a full rebuild is a dropdown edit" finding from the
+doctype map below.
+
+**Public-repo hygiene, 15 Sep:** a sweep of every issue body and comment in both
+repos found the customer named in 8 issue bodies and 3 comments, all from
+earlier sessions. All sanitised; both repos now grep clean. Note that GitHub
+keeps edit history, so this removes the name from search and the API but is not
+full redaction. **Grep before writing a customer's name, entity codes, or its
+reporting-segment names into an issue — segment names identify a customer as
+surely as its own name does.**
 
 **Sequencing:** konsolidat#207 and #209 touch the same model tree the
 dbt-into-the-app move will touch, so they are cheaper done as part of it.
