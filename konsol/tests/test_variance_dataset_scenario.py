@@ -32,10 +32,19 @@ _FACTS = [
 ]
 
 
-def _run(rows, active_budgets=()):
+class _ValidationError(Exception):
+    pass
+
+
+def _throw(msg, exc=_ValidationError, **kw):
+    raise exc(msg)
+
+
+def _run(rows, active_budgets=(), call=None, reply=""):
     """api._batch_query_clickhouse over ``rows`` (dicts overriding a default
     variance request). ``active_budgets`` is what the Scenario doctype holds
-    as active budget scenarios.
+    as active budget scenarios. ``call(api)``, when given, replaces the batch
+    read (its return value is the result); ``reply`` is ClickHouse's answer.
 
     Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]).
     """
@@ -51,6 +60,8 @@ def _run(rows, active_budgets=()):
     fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     fake_frappe.log_error = lambda *a, **k: None
     fake_frappe.get_traceback = lambda: ""
+    fake_frappe.throw = _throw
+    fake_frappe.ValidationError = _ValidationError
     fake_utils = types.ModuleType("frappe.utils")
     fake_utils.now_datetime = lambda: None
     fake_frappe.utils = fake_utils
@@ -78,7 +89,7 @@ def _run(rows, active_budgets=()):
 
         def fake_query(sql, params, ch_settings):
             queries.append((sql, dict(params)))
-            return ""
+            return reply
 
         api._clickhouse_query = fake_query
 
@@ -91,7 +102,10 @@ def _run(rows, active_budgets=()):
             }
             req.update(row)
             reqs.append(req)
-        result = api._batch_query_clickhouse(reqs)
+        if call is not None:
+            result = call(api)
+        else:
+            result = api._batch_query_clickhouse(reqs)
     finally:
         for key in set(sys.modules) - before:
             if key.split(".")[0] in ("frappe", "konsol"):
@@ -177,3 +191,43 @@ def test_other_datasets_are_unchanged():
     assert "param_sid" not in actuals_params
     # no variance read, so the Scenario doctype is never asked
     assert lookups == []
+
+
+# -- the single-cell flat read (api.epm_value) shows a refusal (PR #217 review 2)
+
+def _epm_value(api):
+    """epm_value for one flat variance cell, with the Dataset and entity
+    checks passed; returns the value dict or the raised refusal."""
+    api._assert_entity_access = lambda entity: None
+    api._resolve_and_validate = (
+        lambda fact, scenario, measure, dims: (_FACTS[0], None))
+    try:
+        return api.epm_value(
+            "ZZ01", 2026, 1, "ZZ0", measure="variance_amount",
+            fact="variance_analysis", scenario="variance")
+    except _ValidationError as exc:
+        return exc
+
+
+def test_single_cell_variance_with_several_active_budgets_is_refused():
+    result, queries, _ = _run([], active_budgets=["ZZ_B1", "ZZ_B2"],
+                              call=_epm_value)
+    assert queries == []
+    assert isinstance(result, _ValidationError), result
+    assert str(result) == (
+        "Several budget scenarios are active (ZZ_B1, ZZ_B2); choose one.")
+
+
+def test_single_cell_variance_with_no_active_budget_is_refused():
+    result, queries, _ = _run([], active_budgets=[], call=_epm_value)
+    assert queries == []
+    assert isinstance(result, _ValidationError), result
+    assert str(result) == _NO_BUDGET
+
+
+def test_single_cell_variance_with_one_active_budget_returns_the_value():
+    result, queries, _ = _run([], active_budgets=["ZZ_B1"], call=_epm_value,
+                              reply="ZZ01\t2026\tZZ0\t123.5\n")
+    assert result == {"value": 123.5}
+    (sql, params), = queries
+    assert params["param_sid"] == "ZZ_B1"
