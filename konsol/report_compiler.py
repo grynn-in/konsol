@@ -5,10 +5,14 @@ _MONTH_LABELS = [
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
 
-_PNL_MONTHLY_ACCOUNTS = [
-    ("4010", "Product Revenue"),
-    ("5010", "COGS"),
-]
+_PNL_NO_ACCOUNTS = (
+    "The group chart has no Published Profit and Loss accounts, "
+    "so the monthly P&L has no lines."
+)
+
+# Amounts are debit-positive (period_net_amount = debit - credit).
+_PNL_SIGN = "debit positive; a negative total is a profit"
+_PNL_TOTAL_CAPTION = f"Net Profit and Loss ({_PNL_SIGN})"
 
 _MONTH_COLS = 12
 _MONTH_END_COL = "M"  # B..M
@@ -30,7 +34,10 @@ def list_templates():
         {
             "id": "pnl_monthly",
             "title": "Monthly P&L",
-            "description": "12-month income statement (demo accounts 4010, 5010)",
+            "description": (
+                "12-month income statement: every Published Profit and Loss "
+                f"account of the group chart ({_PNL_SIGN})"
+            ),
             "mode": "formulas",
         },
         {
@@ -42,10 +49,11 @@ def list_templates():
     ]
 
 
-def build_cell_map(template_id, entity, year, scenario_id="actuals"):
+def build_cell_map(template_id, entity, year, scenario_id="actuals", accounts=None):
+    """`accounts`: list of `(main_account, caption)` in display order."""
     if template_id != "pnl_monthly":
         raise ValueError(f"Unknown template_id for formulas: {template_id!r}")
-    return _build_pnl_monthly(entity, int(year), scenario_id)
+    return _build_pnl_monthly(entity, int(year), scenario_id, accounts)
 
 
 def build_trial_balance_long_map(entity, year, rows, period_from=1, period_to=12):
@@ -115,7 +123,9 @@ def _epm_formula(entity, year, period, account):
     return f'=K.EPM("{ent}", {int(year)}, {int(period)}, "{acc}")'
 
 
-def _build_pnl_monthly(entity, year, scenario_id):
+def _build_pnl_monthly(entity, year, scenario_id, accounts):
+    if not accounts:
+        raise ValueError(_PNL_NO_ACCOUNTS)
     cells = [
         {"range": "A1", "values": [["Monthly P&L"]]},
         {"range": "B1", "values": [["Entity:"]]},
@@ -128,7 +138,7 @@ def _build_pnl_monthly(entity, year, scenario_id):
 
     row = 3
     first_data_row = row
-    for account, label in _PNL_MONTHLY_ACCOUNTS:
+    for account, label in accounts:
         cells.append({"range": f"A{row}", "values": [[label]]})
         cells.append({
             "range": _month_row_range(row),
@@ -137,13 +147,14 @@ def _build_pnl_monthly(entity, year, scenario_id):
         row += 1
 
     letters = [chr(ord("B") + i) for i in range(_MONTH_COLS)]
-    gp_row = row
-    cells.append({"range": f"A{gp_row}", "values": [["Gross Profit"]]})
+    last_account_row = row - 1
+    total_row = row
+    cells.append({"range": f"A{total_row}", "values": [[_PNL_TOTAL_CAPTION]]})
     cells.append({
-        "range": _month_row_range(gp_row),
+        "range": _month_row_range(total_row),
         "formulas": [[
-            f"={letters[i]}{first_data_row}-{letters[i]}{first_data_row + 1}"
-            for i in range(_MONTH_COLS)
+            f"=SUM({col}{first_data_row}:{col}{last_account_row})"
+            for col in letters
         ]],
     })
 
