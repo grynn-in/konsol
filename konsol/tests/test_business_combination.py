@@ -253,7 +253,13 @@ class _Site:
                 return row.get("name", True)
         return None
 
-    def _get_all(self, doctype, filters=None, fields=None, **k):
+    def _get_all(self, doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
+        if doctype == "Ownership Period":
+            rows = [_Row(r) for r in self.ownership if _match(r, filters or {})]
+            if order_by:
+                field, _, direction = order_by.partition(" ")
+                rows.sort(key=lambda r: r.get(field), reverse=direction.lower() == "desc")
+            return rows[:limit_page_length] if limit_page_length else rows
         assert doctype == "Group Exchange Rate", doctype
         assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
         key = (filters["from_currency"], filters["to_currency"], filters["fiscal_year"], filters["fiscal_period"])
@@ -273,7 +279,22 @@ class _Site:
 
             def insert():
                 site.flag_at_insert.append(M.frappe.flags.from_business_combination)
-                doc.name = f"OP-{doc.consolidation_group}-{doc.data_area_id}-{doc.effective_date}"
+                # Frappe's set_new_name (_set_amended_name): an amended document
+                # is named after the one it amends — X → X-1, and X-1 → X-2 when
+                # X-1 itself amends something; only otherwise does the format:
+                # rule apply, which would collide with the cancelled row's name.
+                amended_from = doc.get("amended_from")
+                if amended_from:
+                    source = next(r for r in site.ownership if r["name"] == amended_from)
+                    if source.get("amended_from"):
+                        stem, _, counter = amended_from.rpartition("-")
+                        doc.name = f"{stem}-{int(counter) + 1}"
+                    else:
+                        doc.name = f"{amended_from}-1"
+                else:
+                    doc.name = f"OP-{doc.consolidation_group}-{doc.data_area_id}-{doc.effective_date}"
+                if any(r["name"] == doc.name for r in site.ownership):
+                    raise Refused(f"Duplicate entry '{doc.name}' for key 'PRIMARY'")
                 row.update(name=doc.name, docstatus=0)
                 site.inserted.append(doc)
                 site.ownership.append(row)
@@ -707,6 +728,103 @@ def test_json_records_whether_the_deal_created_its_ownership_period():
     assert field["read_only"] == 1
     assert field["no_copy"] == 1
     assert "cancel" in field["description"].lower()
+    # The deal that SUBMITS a Draft period owns it the same as one it created.
+    assert "created or submitted" in field["description"].lower()
+
+
+# -- the period across cancel and amend (PR #202 second review B1, B4) --------
+
+def _cancelled_period(name, amended_from=None):
+    return {"name": name, "consolidation_group": "ZZG", "data_area_id": "ZZE",
+            "effective_date": "2025-12-31", "end_date": None, "ownership_pct": 80,
+            "consolidation_method": "full", "amended_from": amended_from, "docstatus": 2}
+
+
+def test_approve_cancel_amend_approve_names_the_new_period_after_the_cancelled_one():
+    """Approve → cancel → amend → approve: the cancelled Ownership Period still
+    holds the format: name for that node and date, so a second insert with the
+    same name is a duplicate. The new period is recorded as an amendment of
+    the cancelled one (amended_from), which Frappe names …-1."""
+    site = _Site()
+    site.root["measurement_period"] = "12 months"
+    first = _deal(share_acquired_pct=80)
+    first.validate()
+    first.on_submit()
+    first.on_cancel()
+    assert site.ownership[0]["docstatus"] == 2 and site.ownership[0]["name"] == "OP-ZZG-ZZE-2025-12-31"
+
+    amendment = _deal(name="BC-ZZG-ZZE-2025-12-31-1", share_acquired_pct=80,
+                      amended_from="BC-ZZG-ZZE-2025-12-31")
+    amendment.validate()
+    amendment.on_submit()
+    assert len(site.inserted) == 2
+    period = site.inserted[1]
+    assert period.amended_from == "OP-ZZG-ZZE-2025-12-31"
+    assert period.name == "OP-ZZG-ZZE-2025-12-31-1"
+    assert period.submitted is True
+    assert str(period.effective_date) == "2025-12-31" and period.ownership_pct == 80
+    assert ("ownership_period", "OP-ZZG-ZZE-2025-12-31-1") in amendment.db_sets
+    assert ("created_ownership_period", 1) in amendment.db_sets
+    assert M.frappe.flags.from_business_combination is False
+
+
+def test_a_new_period_amends_the_latest_cancelled_one_when_there_are_several():
+    site = _Site(ownership=[_cancelled_period("OP-ZZG-ZZE-2025-12-31"),
+                            _cancelled_period("OP-ZZG-ZZE-2025-12-31-1", amended_from="OP-ZZG-ZZE-2025-12-31")])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1
+    assert site.inserted[0].amended_from == "OP-ZZG-ZZE-2025-12-31-1"
+    assert site.inserted[0].name == "OP-ZZG-ZZE-2025-12-31-2"
+
+
+def test_a_new_period_carries_no_amended_from_when_nothing_was_cancelled():
+    # Another node's or another date's cancelled period is not this one's history.
+    other = dict(_cancelled_period("OP-ZZG-ZZE-2025-12-01"), effective_date="2025-12-01")
+    site = _Site(ownership=[other])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1
+    assert not site.inserted[0].get("amended_from")
+    assert site.inserted[0].name == "OP-ZZG-ZZE-2025-12-31"
+
+
+def test_the_deal_that_submits_a_draft_period_owns_it_and_its_cancel_cancels_the_period():
+    """A Draft period the approval submits has no deal behind it but this one:
+    cancelling the deal cancels the period again, exactly as for a period the
+    deal created — not a blanking of four fields that leaves a submitted
+    period standing with no approval behind it."""
+    for linked in (True, False):
+        draft = {"name": "OP-ZZG-ZZE-2025-12-31", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                 "effective_date": "2025-12-31", "end_date": None, "ownership_pct": 80,
+                 "consolidation_method": "full", "docstatus": 0}
+        site = _Site(ownership=[draft])
+        deal = _deal(share_acquired_pct=80, ownership_period="OP-ZZG-ZZE-2025-12-31" if linked else None)
+        deal.validate()
+        deal.on_submit()
+        assert site.inserted == [], linked
+        assert site.loaded.submitted is True, linked
+        assert ("created_ownership_period", 1) in deal.db_sets, linked
+        deal.on_cancel()
+        assert site.loaded.name == "OP-ZZG-ZZE-2025-12-31", linked
+        assert site.loaded.cancelled is True and site.loaded.docstatus == 2, linked
+        assert site.loaded.db_sets == [], linked  # cancelled, not blanked
+        assert site.flag_at_cancel == [True], linked
+        assert M.frappe.flags.from_business_combination is False, linked
+
+
+def test_json_ownership_period_carries_the_standard_amended_from_link():
+    import json
+    with open(os.path.join(DOCTYPE_DIR, "ownership_period", "ownership_period.json")) as f:
+        fields = {f["fieldname"]: f for f in json.load(f)["fields"]}
+    field = fields["amended_from"]
+    assert field["fieldtype"] == "Link"
+    assert field["options"] == "Ownership Period"
+    assert field["read_only"] == 1
+    assert field["no_copy"] == 1
+    assert field["print_hide"] == 1
 
 
 def test_submit_cancel_and_delete_sync_the_header_and_the_three_children():
