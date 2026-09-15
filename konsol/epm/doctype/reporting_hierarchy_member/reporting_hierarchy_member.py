@@ -80,17 +80,24 @@ class ReportingHierarchyMember(Document):
             return
         old_code = before.member_code
         old_window = _window(before.effective_from, before.effective_to)
-        if old_code == self.member_code and old_window == self._window():
+        if old_code == self.member_code:
+            if old_window != self._window():
+                self._check_children_of(old_code, self._window())
             return
-        self._check_children_of(
-            old_code, self._window() if old_code == self.member_code else None
-        )
+        # A code change: children linked to THIS row move with it to the new
+        # code; children linked to the old code's other tranches stay behind
+        # and must be covered by those tranches alone.
+        self._check_children_of(old_code, None, moving=False)
+        self._check_children_of(self.member_code, self._window(), moving=True)
 
-    def _check_children_of(self, code, replacement):
-        """Every member whose parent row has ``code`` must stay covered by
-        that code's tranches, with this row's window swapped for
-        ``replacement`` (None: this row no longer counts). The table still
-        holds this row's saved values here, in validate() and on_trash."""
+    def _check_children_of(self, code, replacement, moving=None):
+        """Children must stay covered by ``code``'s tranches, with this row's
+        window swapped for ``replacement`` (None: this row no longer counts).
+        The table still holds this row's saved values here, in validate()
+        and on_trash. ``moving`` picks the children: None, every member whose
+        parent row has ``code`` in the table; False, those of them not linked
+        to this row; True, those linked to this row (they follow it to its
+        new code)."""
         rows = frappe.get_all(
             "Reporting Hierarchy Member",
             filters={"reporting_hierarchy": self.reporting_hierarchy},
@@ -103,7 +110,15 @@ class ReportingHierarchyMember(Document):
         if replacement:
             windows.append(replacement)
         for child in rows:
-            if child.name == self.name or code_of.get(child.parent_member) != code:
+            if child.name == self.name:
+                continue
+            linked_here = child.parent_member == self.name
+            if moving:
+                if not linked_here:
+                    continue
+            elif code_of.get(child.parent_member) != code or (
+                moving is False and linked_here
+            ):
                 continue
             gaps = _uncovered(
                 *_window(child.effective_from, child.effective_to), windows
