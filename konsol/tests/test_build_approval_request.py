@@ -35,6 +35,9 @@ def _transitions():
                        condition='doc.risk_level == "high"'))
     rows.append(_D(state="Pending Review", action="Approve", next_state="Approved", allowed="EPM Admin",
                    condition=None))
+    for state in ("Completed", "Failed", "Cancelled"):
+        for role in ("EPM Analyst", "EPM Admin", "System Manager"):
+            rows.append(_D(state=state, action="Run Again", next_state="Draft", allowed=role, condition=None))
     return rows
 
 
@@ -278,3 +281,56 @@ def test_a_save_that_does_not_change_the_state_does_not_set_an_approver():
     with site.installed():
         doc.before_save()
     assert doc.approved_by is None
+
+
+# --- Run Again under the workflow (konsol#215 row W4) ----------------------------
+
+def _run_again(state, started_at, rebuild_requested=1, scope="actuals", name="ZZ-BA-0004"):
+    """A finished row, loaded fresh, taken back to Draft by the Run Again transition."""
+    site = _Site()
+    site.rows[name] = dict(name=name, build_scope=scope, risk_level="high", workflow_state=state,
+                           approved_by="zz.old@example.com", requested_by="zz.analyst@example.com",
+                           rebuild_requested=rebuild_requested, error_message="ZZ old error",
+                           started_at=started_at, completed_at="2026-09-01 10:05:00" if started_at else None,
+                           duration_seconds=300 if started_at else 0)
+    with site.installed():
+        fresh = site.frappe.get_doc("Build Approval", name)
+        site.frappe.model.workflow.apply_workflow(fresh, "Run Again")
+        offered = [t.action for t in site.frappe.model.workflow.get_transitions(
+            site.frappe.get_doc("Build Approval", name))]
+    return site.rows[name], offered
+
+
+def test_run_again_from_completed_resets_the_run_and_spends_the_flag():
+    row, offered = _run_again("Completed", "2026-09-01 10:00:00")
+    assert row["workflow_state"] == "Draft", "before_save must not move a Run Again row on"
+    assert row["started_at"] is None and row["completed_at"] is None
+    assert row["duration_seconds"] == 0
+    assert row["error_message"] is None
+    assert row["rebuild_requested"] == 0
+    assert "Request" in offered, "the user then takes Request"
+
+
+def test_run_again_from_failed_resets_the_run_and_spends_the_flag():
+    row, offered = _run_again("Failed", "2026-09-01 10:00:00")
+    assert row["workflow_state"] == "Draft", "before_save must not move a Run Again row on"
+    assert row["started_at"] is None and row["completed_at"] is None
+    assert row["duration_seconds"] == 0
+    assert row["error_message"] is None
+    assert row["rebuild_requested"] == 0
+    assert "Request" in offered
+
+
+def test_run_again_from_cancelled_clears_the_error_and_keeps_the_flag():
+    row, offered = _run_again("Cancelled", None)
+    assert row["workflow_state"] == "Draft", "before_save must not move a Run Again row on"
+    assert row["started_at"] is None and row["completed_at"] is None
+    assert row["error_message"] is None
+    assert row["rebuild_requested"] == 1, "a Cancelled row's flag was never acted on"
+    assert "Request" in offered
+
+
+def test_run_again_of_a_low_risk_row_stays_draft_too():
+    row, offered = _run_again("Completed", "2026-09-01 10:00:00", scope="staging")
+    assert row["workflow_state"] == "Draft"
+    assert "Request" in offered
