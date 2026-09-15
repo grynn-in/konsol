@@ -160,9 +160,12 @@ def test_partial_nci_is_its_share_of_net_assets_at_fair_value():
 
 def test_full_nci_is_measured_at_the_fair_value_the_price_implies():
     t = totals(header(share_acquired_pct=80), WORKED_CONSIDERATION, WORKED_BALANCES, [], US_GAAP_FULL)
-    # 8,300 for 80% values the whole at 10,375; the 20% NCI is 2,075
+    # 8,300 for 80% values the whole at 10,375; the 20% NCI is 2,075. Under the
+    # full method goodwill is the whole business's: consideration + NCI at fair
+    # value − net assets at fair value = 8,300 + 2,075 − 1,580 = 8,795 (IFRS 3.32),
+    # against 7,036 under the partial method.
     assert t["nci_at_acquisition"] == Decimal("2075.00")
-    assert t["goodwill"] == Decimal("7036.00")
+    assert t["goodwill"] == Decimal("8795.00")
 
 
 def test_nci_is_not_guessed_when_the_policy_has_no_measurement():
