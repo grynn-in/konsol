@@ -541,3 +541,26 @@ def test_deleting_a_parent_tranche_no_child_needs_is_accepted():
 
 def test_relabelling_a_parent_tranche_keeps_its_children():
     assert _edit(_parent_tranches(), "p2", member_label="ZZ P renamed") is None
+
+
+# --- konsol#220 row R10: level and path follow the tree of each tranche ----
+
+def test_flatten_path_and_level_follow_the_parent_code_as_of_each_tranche():
+    import datetime
+    d = datetime.date
+    members = [
+        _row("x", "ZZ_X", d(1900, 1, 1)),
+        _row("y", "ZZ_Y", d(1900, 1, 1)),
+        _row("p1", "ZZ_P", d(2020, 1, 1), d(2024, 12, 31), parent="x"),
+        _row("p2", "ZZ_P", d(2025, 1, 1), None, parent="y"),
+        _row("c1", "ZZ_C", d(2020, 1, 1), d(2024, 12, 31), parent="p1", is_group=0),
+        _row("c2", "ZZ_C", d(2025, 1, 1), None, parent="p1", is_group=0),
+    ]
+    rows = {(r["member_code"], r["member_effective_from"]): r for r in _flatten(members)}
+    c1 = rows[("ZZ_C", "2020-01-01")]
+    c2 = rows[("ZZ_C", "2025-01-01")]
+    assert (c1["path"], c1["hierarchy_level"]) == ("ZZ_X/ZZ_P/ZZ_C", 3)
+    assert (c2["path"], c2["hierarchy_level"]) == ("ZZ_Y/ZZ_P/ZZ_C", 3)
+    assert c2["parent_member_code"] == "ZZ_P"
+    assert (rows[("ZZ_P", "2025-01-01")]["path"], rows[("ZZ_P", "2025-01-01")]["hierarchy_level"]) == ("ZZ_Y/ZZ_P", 2)
+    assert (rows[("ZZ_X", "1900-01-01")]["path"], rows[("ZZ_X", "1900-01-01")]["hierarchy_level"]) == ("ZZ_X", 1)
