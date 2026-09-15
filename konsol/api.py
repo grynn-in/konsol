@@ -1326,6 +1326,8 @@ def budget_cell_save():
         info, err = validate_hierarchy_write(
             _hierarchy_name_from_req(data),
             node_code,
+            fiscal_year=int(data["fiscal_year"]),
+            fiscal_period=fp,
         )
         if err:
             frappe.throw(err, frappe.ValidationError)
