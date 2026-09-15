@@ -4,6 +4,20 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Sep, night): variance compares actuals with every declared budget, and konsol reads one budget at a time (konsolidat#206 + konsol#214). D365 is off by default (konsolidat#207).**
+
+- **Variance (warehouse).** The warehouse variance models pick actuals and budgets by each scenario's declared `scenario_type` (active only), no longer by the codes `'ACTUAL'`/`'BUDGET'`. Budgets authored in konsol now reach variance. Each budget scenario keeps its own rows (`budget_scenario_id`), and actuals pair only with budget scenarios that budget that entity and year. Where a budget has no line, the budget amount is empty, not 0.
+- **Variance (konsol).** konsol's variance readers (hierarchy query, `variance_analysis` Dataset, the Excel `epmVariance`) filter on one budget scenario:
+  - The named one, which must be an active budget.
+  - With none named, the active budget on the request year's Budget Cycle.
+  - None or several are refused, with the reason stated.
+- **ClickHouse errors.** A failed ClickHouse query shows only its error code and name. The full reply goes to the Error Log.
+- **Deploy order.** Merge and build konsolidat first. The `budget_scenario_id` column exists only after that build. Then deploy this konsol change.
+- **Also in konsolidat:**
+  - A `materiality_floor()` macro replaces the literal 0.005.
+  - Intercompany NCI posts to the group root's declared NCI Account. A group without one posts to the placeholder `NCI`, and a warning names it.
+  - `erp_sources` defaults to `[]`: the trial-balance upload is the canonical source. List `d365_fo` or `erpnext` to build a connector's staging.
+
 **Update (15 Sep, night): deal inputs are declared, not inferred (konsol#206, #207, #203, #205, #204, #208).**
 - A Business Combination with an empty Acquired Balance Sheet is refused. Until now it validated whenever the entity had an earlier trial balance, with net assets of 0 and goodwill equal to the whole consideration (#206).
 - **Get Balances from Trial Balance** (Draft only) fills the Acquired Balance Sheet from the warehouse trial balance (`epm_gold.gold_trial_balance`, cumulative through the acquisition period). It folds the period's result into the chart's Retained Earnings Account and places the declared **Fair Value Adjustment Total** on the group's Fair Value Adjustment Account, or spreads it by a **Fair Value Allocation Profile** (#207, #208). The lines stay editable, and **Balance Sheet Source** records where they came from. On save, the lines' fair value adjustments must add up to the declared total.
