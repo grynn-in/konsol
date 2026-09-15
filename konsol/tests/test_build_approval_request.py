@@ -16,7 +16,10 @@ import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BA_PY = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+BUILD_LOCK = os.path.join(APP_DIR, "build_lock.py")
 WORKFLOW_QUERY = ("Workflow", {"document_type": "Build Approval", "is_active": 1})
+# frappe.get_roles("Administrator") is every role
+ALL_ROLES = {"EPM Analyst", "EPM Admin", "System Manager", "Administrator"}
 
 
 class _D(dict):
@@ -25,10 +28,11 @@ class _D(dict):
     __setattr__ = dict.__setitem__
 
 
-def _transitions():
-    """The shipped workflow's Request/Approve rows, as frappe returns them."""
+def _transitions(request=True):
+    """The shipped workflow's Request/Approve rows, as frappe returns them.
+    ``request=False``: a site that removed every Request row."""
     rows = []
-    for role in ("EPM Analyst", "EPM Admin", "System Manager", "Administrator"):
+    for role in ("EPM Analyst", "EPM Admin", "System Manager", "Administrator") if request else ():
         rows.append(_D(state="Draft", action="Request", next_state="Approved", allowed=role,
                        condition='doc.risk_level == "low"'))
         rows.append(_D(state="Draft", action="Request", next_state="Pending Review", allowed=role,
@@ -44,19 +48,39 @@ def _transitions():
 class _Site:
     """A stub frappe site: its db, session, workflow module and what they saw."""
 
-    def __init__(self, workflow=True, user="zz.analyst@example.com", roles=("EPM Analyst",)):
+    def __init__(self, workflow=True, user="zz.analyst@example.com", roles=("EPM Analyst",),
+                 can_read=True, request=True):
         self.rows = {}
         self.roles = set(roles)
         self.applied = []
+        self.applied_as = []
+        self.enqueued = []
         self.messages = []
         self.queries = []
         self.frappe = frappe = types.ModuleType("frappe")
-        frappe.session = _D(user=user)
+        # v15: frappe.session is frappe.local.session; set_user rewrites it in place
+        session = _D(user=user, sid="zz-sid", data=_D(csrf_token="zz"))
+        frappe.local = types.SimpleNamespace(session=session, form_dict=_D(cmd="zz.method"))
+        frappe.session = session
         frappe.flags = _D()
+
+        def set_user(name):
+            session.user = name
+            session.sid = name
+            session.data = _D()
+            frappe.local.form_dict = _D()
+        frappe.set_user = set_user
+
+        def session_roles():
+            return ALL_ROLES if session.user == "Administrator" else self.roles
 
         class ValidationError(Exception):
             pass
         frappe.ValidationError = ValidationError
+
+        class PermissionError(Exception):
+            pass
+        frappe.PermissionError = PermissionError
 
         def throw(msg, exc=Exception, **k):
             raise exc(msg)
@@ -74,7 +98,7 @@ class _Site:
         frappe.get_single = get_single
         frappe.msgprint = lambda msg, *a, **k: self.messages.append(msg)
         frappe.publish_realtime = lambda *a, **k: None
-        frappe.enqueue = lambda *a, **k: None
+        frappe.enqueue = lambda *a, **k: self.enqueued.append(k.get("build_request"))
         frappe.logger = lambda *a, **k: types.SimpleNamespace(info=lambda *a, **k: None)
 
         def get_doc(doctype, name):
@@ -110,20 +134,28 @@ class _Site:
                 return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and k != "flags"}
 
             def save(self):
-                """Document.save: before_save on the loaded row, then write it."""
+                """Document.save: before_save on the loaded row, write it, on_update."""
                 self._before = types.SimpleNamespace(**site.rows[self.name])
                 self.before_save()
                 site.rows[self.name] = copy.deepcopy(self.fields())
+                self.on_update()
+
+            def load_from_db(self):
+                """v15: re-reads the fields; self.flags survive it."""
+                self.__dict__.update(copy.deepcopy(site.rows[self.name]))
 
         site = self
         document.Document = Document
 
         def get_transitions(doc):
-            """v15: the session user's transitions from the row's state whose condition holds."""
+            """v15: the session user's transitions from the row's state whose condition holds.
+            It checks READ permission first (workflow.py ~52)."""
             assert not doc.is_new(), "get_transitions returns [] for a new row"
+            if not can_read and session.user != "Administrator":
+                raise PermissionError(f"{session.user} may not read Build Approval")
             found = []
-            for t in _transitions():
-                if t.state != doc.workflow_state or t.allowed not in self.roles:
+            for t in _transitions(request):
+                if t.state != doc.workflow_state or t.allowed not in session_roles():
                     continue
                 if t.condition and not eval(t.condition, {}, {"doc": types.SimpleNamespace(**doc.fields())}):
                     continue
@@ -132,6 +164,7 @@ class _Site:
 
         def apply_workflow(doc, action):
             self.applied.append((doc, action))
+            self.applied_as.append(session.user)
             transition = next((t for t in get_transitions(doc) if t.action == action), None)
             if not transition:
                 raise frappe.ValidationError("Not a valid Workflow Action")
@@ -146,6 +179,12 @@ class _Site:
         frappe.model = model
         self.mods = {"frappe": frappe, "frappe.model": model, "frappe.model.document": document,
                      "frappe.model.workflow": workflow_mod, "frappe.utils": utils}
+        with self.installed():
+            # the real build_lock, bound to this stub frappe
+            spec = importlib.util.spec_from_file_location("build_lock_w6", BUILD_LOCK)
+            build_lock = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(build_lock)
+        self.mods["konsol.build_lock"] = build_lock
         with self.installed():
             spec = importlib.util.spec_from_file_location("build_approval_w3", BA_PY)
             module = importlib.util.module_from_spec(spec)
@@ -166,10 +205,12 @@ class _Site:
                     sys.modules[m] = old
 
     def insert(self, scope, name="ZZ-BA-0001"):
-        """Document.insert: before_save, write the row, after_insert."""
+        """Document.insert: before_save, write the row, after_insert, then
+        run_post_save_methods (on_update) on the same instance."""
         doc = self.BuildApproval(before=None, new=True, name=name, build_scope=scope,
                                  workflow_state="Draft", approved_by=None, requested_by=None,
                                  rebuild_requested=0, error_message=None, started_at=None)
+        self.inserted = doc
         with self.installed():
             doc.before_save()
             self.state_after_before_save = doc.workflow_state
@@ -177,6 +218,7 @@ class _Site:
             doc._new = False
             if hasattr(doc, "after_insert"):
                 doc.after_insert()
+            doc.on_update()
         return self.rows[name]
 
 
@@ -223,8 +265,10 @@ def test_the_workflow_lookup_is_the_active_build_approval_workflow():
     assert WORKFLOW_QUERY in site.queries
 
 
-def test_a_user_without_a_request_transition_leaves_the_row_in_draft_and_is_told():
-    site = _Site(roles=("Guest",))
+def test_a_workflow_without_a_request_transition_leaves_the_row_in_draft_and_is_told():
+    """Request is konsol's step, taken as Administrator (row W6): only a site
+    whose workflow offers no Request at all leaves the row in Draft."""
+    site = _Site(request=False)
     row = site.insert("actuals")
     assert row["workflow_state"] == "Draft"
     assert site.applied == [], "no Request transition: apply_workflow must not be called"
@@ -355,3 +399,75 @@ def test_a_row_run_again_clears_its_old_approver_and_records_the_next_one():
         wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Approve")
     assert site.rows[name]["workflow_state"] == "Approved"
     assert site.rows[name]["approved_by"] == "zz.admin@example.com"
+
+
+# --- Request is konsol's step, and the inserting instance is fresh (row W6) -------
+
+def _assert_caller_session(site, user):
+    assert site.frappe.session.user == user
+    assert site.frappe.session.sid == "zz-sid"
+    assert site.frappe.session.data == {"csrf_token": "zz"}
+    assert site.frappe.local.form_dict == {"cmd": "zz.method"}
+
+
+def test_request_is_taken_as_administrator_and_the_caller_is_restored():
+    site = _Site()
+    site.insert("actuals")
+    assert site.applied_as == ["Administrator"], "Request is konsol's step, not the caller's"
+    _assert_caller_session(site, "zz.analyst@example.com")
+
+
+def test_a_user_who_may_not_read_build_approval_still_requests_the_build():
+    """An Entity Accountant's trial-balance submission queues the request as
+    that user, who has no permission on Build Approval (insert ignores it)."""
+    for scope, state in (("actuals", "Pending Review"), ("staging", "Approved")):
+        site = _Site(user="zz.accountant@example.com", roles=("Entity Accountant",), can_read=False)
+        row = site.insert(scope)
+        assert row["workflow_state"] == state, scope
+        assert site.messages == [], scope
+        _assert_caller_session(site, "zz.accountant@example.com")
+
+
+def test_the_inserting_instance_holds_the_new_state_after_insert():
+    for scope, state in (("actuals", "Pending Review"), ("staging", "Approved")):
+        site = _Site()
+        site.insert(scope)
+        assert site.inserted.workflow_state == state, "after_insert must reload the inserting instance"
+
+
+def test_the_build_is_enqueued_once_by_the_request_not_again_by_the_outer_save():
+    site = _Site()
+    site.insert("staging")
+    assert site.enqueued == ["ZZ-BA-0001"], "the inner Request save enqueues; the outer on_update must not"
+
+
+def test_the_outer_on_update_returns_early_once_and_the_flag_is_spent():
+    """frappe's load_from_db keeps flags, and control_api saves the same
+    instance again (Approve): that later save must still enqueue."""
+    site = _Site(user="zz.admin@example.com", roles=("EPM Admin",))
+    site.insert("actuals")
+    assert site.enqueued == []
+    doc = site.inserted
+    assert not doc.flags.get("request_applied"), "the outer on_update spends the flag"
+    with site.installed():
+        doc.workflow_state = "Approved"
+        doc.save()
+    assert site.enqueued == ["ZZ-BA-0001"]
+
+
+def test_as_administrator_switches_the_user_and_restores_the_session():
+    site = _Site()
+    build_lock = site.mods["konsol.build_lock"]
+    try:
+        with build_lock.as_administrator():
+            assert site.frappe.session.user == "Administrator"
+            assert not site.frappe.flags.get("konsol_build_writer"), "only build_writer sets the flag"
+            raise RuntimeError("the save failed")
+    except RuntimeError:
+        pass
+    _assert_caller_session(site, "zz.analyst@example.com")
+    with build_lock.build_writer():
+        assert site.frappe.session.user == "Administrator"
+        assert site.frappe.flags.konsol_build_writer is True
+    _assert_caller_session(site, "zz.analyst@example.com")
+    assert not site.frappe.flags.get("konsol_build_writer")
