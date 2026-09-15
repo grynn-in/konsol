@@ -843,10 +843,22 @@ def build_cell_map():
 
     _assert_entity_access(entity)
 
+    accounts = _pnl_accounts() if template_id == "pnl_monthly" else None
     try:
-        return compile_cell_map(template_id, entity, int(year), scenario_id)
+        return compile_cell_map(template_id, entity, int(year), scenario_id, accounts=accounts)
     except ValueError as exc:
         frappe.throw(str(exc), frappe.ValidationError)
+
+
+def _pnl_accounts():
+    """The group chart's Published Profit and Loss leaves as (code, caption), in code order."""
+    rows = frappe.get_all(
+        "Main Account",
+        filters={"status": "Published", "is_group": 0, "statement_section": "Profit and Loss"},
+        fields=["main_account", "account_name"],
+        order_by="main_account asc",
+    )
+    return [(r.main_account, r.account_name or r.main_account) for r in rows]
 
 
 def _fetch_trial_balance_rows(entity, year, period_from, period_to):
