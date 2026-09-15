@@ -301,7 +301,7 @@
       <p><strong>Formulas in cells</strong></p>
       <ul>
         <li>Smoke test: <code>=K.PING()</code> → <code>1</code></li>
-        <li>Sample: <code>=K.EPM("AMUS", 2024, 6, "4010")</code></li>
+        <li>Sample: <code>=K.EPM("&lt;entity&gt;", &lt;year&gt;, &lt;period&gt;, "&lt;account&gt;")</code></li>
       </ul>
       <p><strong>Reports</strong></p>
       <ol>
@@ -632,6 +632,11 @@
               sheet = sheets.add(sheetName);
             }
             sheet.activate();
+            // Clear what an earlier apply painted, so a layout with fewer
+            // rows leaves no stale account rows or old total below it.
+            sheet.getUsedRange(true).clear();
+            return ctx.sync();
+          }).then(function () {
             (spec.cells || []).forEach(function (cell) {
               var range = sheet.getRange(cell.range);
               if (cell.formulas) {
