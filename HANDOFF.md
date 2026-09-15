@@ -21,54 +21,56 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
   - `erp_sources` defaults to `[]`: the trial-balance upload is the canonical source. List `d365_fo` or `erpnext` to build a connector's staging.
 **Update (15 Sep, night): Build Approval is approved through a Frappe Workflow (konsol#215).** Approve and Reject are buttons for EPM Admin; the role and self-approval are set in the Workflow record ("Build Approval Workflow"), not in code. A new request goes in as Draft and takes the workflow's Request transition (low risk to Approved, high risk to Pending Review); the build job's own moves (Start, Complete, Fail) are Administrator-only transitions it takes under `build_lock.build_writer()`. Deploy: migrate (after_migrate installs the workflow once); a site that edits the workflow keeps its edits.
 
-**Update (15 Sep, night 2): the translation method is a property of the ENTITY,
-not the account — konsol#222, #224.**
+**Update (15 Sep, night 2): SCOPE DECISION — konsol translates, it does not
+remeasure (user, 15 Sep). konsol#222; konsol#224 closed.**
 
-Historical Equity Rates are blocked on a design question, not on data entry.
-Zero rate records exist while 21 chart accounts declare `fx_method = historical`
-and **5,481** rows in the consolidated trial balance sit on those accounts
-translated at a rate other than 1, across **194 distinct rates** — every one
-falling back to its period's closing rate, so the CTA never arises.
+IAS 21 has two steps and they belong to different parties: **remeasuring** local
+books into the entity's functional currency happens in the subsidiary's own
+ledger, before any trial balance is sent; **translating** functional into the
+presentation currency is the group's job. konsol does step 2 only, which is what
+it already assumed — one `functional_currency` per Entity, and a canonical trial
+balance with no currency column because the amounts are implicitly in it.
 
-**The finding.** Of 329 leaf entities, **11** have a functional currency that
-differs from their country's dominant one (across 11 countries, several of them
-hyperinflationary). Those 11 are **remeasured** (IAS 21.23, temporal); the other
-318 are **translated** (IAS 21.39, current rate). `fx_method` is declared *per
-account, chart-wide*, so a global `historical` on 14 asset accounts applies the
-temporal method to all 329 — right for 11, wrong for 318.
+**So an entity whose functional currency is not its country's currency is not a
+problem to model.** 18 of 329 are like this — 14 booking EUR across Latin
+America, Asia and Russia, 2 booking CNY, plus 2 with no functional currency at
+all. A limited-risk distributor buying from a European principal, priced and
+financed in EUR, genuinely is EUR-functional wherever it sits; so is an entity
+in a hyperinflationary economy holding a stable functional currency. Their books
+arrive in that currency and konsol translates.
 
-**The recommendation, and why it is small.** Equity is at historical under
-*both* methods; the methods differ only on **non-monetary assets and
-liabilities**. So the chart is not wrong — the gate is missing. Keep `fx_method`
-as the declaration of what an account *is*, add `Entity.translation_method`
-(`Current rate` default / `Temporal`), and apply:
+**What is actually wrong is the chart's tagging.** Under translation-only,
+`fx_method = historical` is right for **equity accounts only**; `average` for
+P&L; `closing` for everything else — including goodwill and fair-value
+adjustments, which IAS 21.47 makes assets of the foreign operation, translated
+at closing. **The work: re-tag 14 assets and 1 liability from `historical` to
+`closing`**, in the source workbook as well as the loaded chart, or the next
+chart upload undoes it. Six equity accounts stay historical.
 
-```
-IF   the account is equity                      -> historical (both methods)
-ELSE IF entity is Temporal AND fx_method = historical -> historical
-ELSE closing, or average for P&L
-```
+**NCI stays at closing.** `3400` being the only equity leaf not declared
+historical is correct: NCI is a residual interest measured as the minority's
+share of net assets, which translate at closing. Record the reasoning on the
+account so nobody "fixes" it.
 
-No account is re-tagged, and the 318 stop using historical rates for PP&E, which
-they should never have been doing. Rates are tranched by date — one row per
-account per entity per event, not per period — so the population is roughly a
-third of what the unconditional reading implies.
+**konsolidat#213, found while deciding this — a latent bug that goes live on the
+first deal submit.** The two repos disagree about what equity means:
+`silver_main_accounts.is_equity` is `fx_method = 'historical'` (21 accounts)
+while konsol's deal layer uses `account_type == "Equity"` (7). They diverge on
+15. `gold_business_combination_journal` splits an acquired balance sheet on the
+konsolidat definition — `-sumIf(book_amount, is_equity = 1) as net_assets` — so
+land, buildings, machinery, goodwill and the intangibles would be **eliminated
+as pre-acquisition equity**, and the journal's goodwill would disagree with the
+goodwill stored on the document. Nothing compares the two. Re-tagging makes them
+coincide, but the definitions should be separated regardless.
 
-**NCI: the chart is already right.** `3400` is the only equity leaf *not*
-declared historical, and that is correct, not an omission. NCI is a residual
-interest measured as the minority's share of net assets; those translate at
-closing, so NCI must too, or it stops equalling its share and the gap becomes a
-plug. Record the reasoning on the account so nobody "fixes" it.
+**Historical rates now shrink to equity only** — 6 accounts, tranched by date,
+one row per account per entity per event. A fraction of the ~5,500 the
+unconditional reading implied.
 
-**konsol#224, found while deciding this:** the two methods put their differences
-in different statements — translation to OCI (the CTA), remeasurement to
-**profit or loss**. `gold_fx_revaluation` computes the CTA as an unconditional
-residual plug for every entity, so once the 11 are marked Temporal their
-differences would still land in OCI. That is a classification error in the
-primary statements. It depends on #222 landing first.
-
-**Order:** #222's entity gate, then record the NCI reasoning, then #224, then
-enter rates — for a population now a third of the size.
+**Still open:** `KE_EC` and `MA_EC` have no functional currency at all, because
+the ISO seed is missing KES and MAD (konsol#190) — they cannot translate until
+it is fixed. Hyperinflation (IAS 29: restate, then translate at closing) remains
+its own question; konsol#176 covers the FX magnitude guard's side.
 
 **Update (15 Sep, late): the workbook ships TWO trial balances, and only the
 statutory one was loaded.**
