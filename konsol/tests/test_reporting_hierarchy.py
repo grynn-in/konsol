@@ -410,3 +410,45 @@ def test_staging_columns_end_with_the_member_window():
     cols = ast.literal_eval(node.value)
     assert cols[:len(SEED_COLUMNS)] == SEED_COLUMNS
     assert cols[-2:] == ["member_effective_from", "member_effective_to"]
+
+
+# --- konsol#220 row R8: no cycle through tranches of a code ----------------
+
+def test_cycle_through_tranches_of_a_code_is_refused():
+    """B1 is a root to 2022; A2 (2023-open) links B1, which is allowed since
+    only the code matters; B2 (2023-open) linking A2 makes A the parent of B
+    and B the parent of A from 2023."""
+    b1 = _row("b1", "ZZ_B", "2020-01-01", "2022-12-31")
+    a2 = _row("a2", "ZZ_A", "2023-01-01", None, parent="b1")
+    err = _save([b1, a2], _row("b2", "ZZ_B", "2023-01-01", None, parent="a2"))
+    assert err is not None
+    assert err.startswith("Parent chain forms a cycle (ZZ_B → ZZ_A → ZZ_B)")
+    assert "during 2023-01-01 to open" in err
+
+
+def test_tranche_links_whose_windows_never_meet_are_not_a_cycle():
+    """B2 links A2, and A2 links B1, but A2 ended 2022-12-31 and B2 starts
+    2023-01-01: from 2023 A is the root tranche A3, so no period loops."""
+    b1 = _row("b1", "ZZ_B", "2020-01-01", "2022-12-31")
+    a2 = _row("a2", "ZZ_A", "2020-01-01", "2022-12-31", parent="b1")
+    a3 = _row("a3", "ZZ_A", "2023-01-01")
+    assert _save([b1, a2, a3], _row("b2", "ZZ_B", "2023-01-01", None, parent="a2")) is None
+
+
+def test_a_row_under_a_row_of_its_own_code_is_refused():
+    a1 = _row("a1", "ZZ_A", "2020-01-01", "2022-12-31")
+    err = _save([a1], _row("a2", "ZZ_A", "2023-01-01", None, parent="a1"))
+    assert err == "ZZ_A cannot be its own parent."
+
+
+def test_row_cycle_is_still_refused():
+    x = _row("x1", "ZZ_X", "2020-01-01")
+    y = _row("y1", "ZZ_Y", "2020-01-01", None, parent="x1")
+    err = _save([x, y], dict(x, parent_member="y1"))
+    assert err is not None and err.startswith("Parent chain forms a cycle")
+
+
+def test_a_plain_chain_is_not_a_cycle():
+    root = _row("r1", "ZZ_R", "2020-01-01")
+    mid = _row("m1", "ZZ_M", "2020-01-01", None, parent="r1")
+    assert _save([root, mid], _row("l1", "ZZ_L", "2021-01-01", None, parent="m1", is_group=0)) is None
