@@ -39,6 +39,30 @@ def test_reporting_hierarchy_member_doctype():
         assert f in fields
 
 
+def test_reporting_hierarchy_member_carries_its_dates():
+    """konsol#220: a member row is one dated tranche of its code."""
+    meta = _doctype_json("reporting_hierarchy_member")
+    by_name = {f["fieldname"]: f for f in meta["fields"]}
+    assert "effective_from" in by_name
+    assert "effective_to" in by_name
+    frm, to = by_name["effective_from"], by_name["effective_to"]
+    assert frm["fieldtype"] == "Date"
+    assert to["fieldtype"] == "Date"
+    assert frm["label"] == "Effective From"
+    assert to["label"] == "Effective To"
+    assert frm.get("reqd") == 1
+    assert not to.get("reqd")
+    assert frm.get("in_list_view") == 1
+    assert to.get("in_list_view") == 1
+    assert frm["description"] == (
+        "First day this node, with this parent and label, applies."
+    )
+    assert to["description"] == (
+        "Last day it applies; leave blank while it still applies. A rename, "
+        "a move to another parent or an end is a new row with the same Member Code."
+    )
+
+
 def test_header_publish_resyncs_staging_and_reporting_rebuild():
     src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
     # F3: publish re-syncs epm_staging via the computed resync_staging()
