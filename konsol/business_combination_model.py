@@ -47,8 +47,9 @@ ZERO = Decimal("0").quantize(CENT)
 
 _PREFIX = "Business Combination: "
 BALANCE_SHEET_REQUIRED = (
-    "Acquired Balance Sheet is required: "
-    "the entity has no trial balance at or before the acquisition date"
+    f"{_PREFIX}the Acquired Balance Sheet is empty, so net assets would be zero "
+    "and goodwill would absorb the whole consideration. Enter the acquisition-date "
+    "balances, or use Get Balances from Trial Balance."
 )
 
 
@@ -244,12 +245,15 @@ def _balance_sheet_problems(balances, is_equity):
 def problems(header, consideration, balances, costs, policy, facts):
     """Sentences describing why this deal cannot be saved; empty when it can.
 
-    ``facts`` is a dict the controller has looked up: ``has_tb_at_or_before``
-    (the entity has a submitted trial balance at or before the acquisition
-    period), ``rate_to_group`` or ``totals`` (see ``totals()``),
-    ``is_equity(main_account)`` (required when there are balance lines) and
-    ``is_published_leaf(account)`` for the declared accounts (without it only
-    blank accounts are reported).
+    ``facts`` is a dict the controller has looked up: ``rate_to_group`` or
+    ``totals`` (see ``totals()``), ``is_equity(main_account)`` (required when
+    there are balance lines) and ``is_published_leaf(account)`` for the
+    declared accounts (without it only blank accounts are reported).
+
+    An empty Acquired Balance Sheet is always refused (konsol#206): net assets
+    are measured only from its lines, so without them goodwill would absorb the
+    whole consideration. A trial balance on file does not waive it; any
+    ``has_tb_at_or_before`` in ``facts`` is ignored here.
     """
     found = []
     is_equity = _equity_rule(facts, balances)
@@ -267,7 +271,7 @@ def problems(header, consideration, balances, costs, policy, facts):
     found += _line_problems(consideration, "Consideration", "component")
     found += _line_problems(costs, "Cost", "kind")
 
-    if not balances and not _get(facts, "has_tb_at_or_before"):
+    if not balances:
         found.append(BALANCE_SHEET_REQUIRED)
     found += _balance_sheet_problems(balances, is_equity)
 

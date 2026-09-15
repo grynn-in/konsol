@@ -316,8 +316,9 @@ def test_a_balance_sheet_without_an_equity_line_is_refused():
     assert problems == [
         "Acquired Balance Sheet has no equity line: "
         "the pre-acquisition equity is what the consolidation eliminates"]
-    # no balances at all (a trial balance exists): neither sentence applies
-    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, facts()) == []
+    # no balances at all: neither sentence applies, only the empty-sheet one (konsol#206)
+    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, facts()) == [
+        M.BALANCE_SHEET_REQUIRED]
 
 
 def test_problems_need_the_equity_rule_when_balances_are_given():
@@ -329,8 +330,9 @@ def test_problems_need_the_equity_rule_when_balances_are_given():
         assert "is_equity" in str(exc)
     else:
         raise AssertionError("without is_equity the equity lines cannot be told apart")
-    # without balances there is nothing to classify
-    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, no_rule) == []
+    # without balances there is nothing to classify (only the empty-sheet refusal, konsol#206)
+    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, no_rule) == [
+        M.BALANCE_SHEET_REQUIRED]
 
 
 def test_a_bargain_purchase_is_refused_when_the_policy_says_so():
