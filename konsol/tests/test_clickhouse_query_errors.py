@@ -3,8 +3,10 @@
 api._clickhouse_query used to raise a bare HTTP error and the batch reader
 turned it into a generic "ClickHouse query failed", so an unknown column (for
 example budget_scenario_id before the warehouse change is built) was
-invisible. Now ClickHouse's response body is logged and its first line is in
-the message the caller shows. api.py is loaded under a private name with a
+invisible. Now ClickHouse's response body is logged, and the message the
+caller shows carries only ClickHouse's error code and exception name (row K7:
+the first line can hold table names, SQL, the server version or the user
+name, so those stay in the log). api.py is loaded under a private name with a
 stub frappe and a fake requests.get that answers HTTP 400.
 """
 import importlib.util
@@ -84,18 +86,63 @@ def _load_api(logged):
 _SETTINGS = {"user": "zz", "password": "zz"}
 
 
-def test_failed_query_message_carries_clickhouse_first_line():
-    logged = []
-    api = _load_api(logged)
+def _message(api):
     try:
         api._clickhouse_query("SELECT 1", {}, _SETTINGS)
     except Exception as exc:  # noqa: BLE001 — the message is what matters
-        message = str(exc)
-    else:
-        raise AssertionError("a 400 response must raise")
-    assert _FIRST_LINE in message
-    assert "DB::frame_0" not in message  # first line only
-    assert len(message) <= 300 + len("ClickHouse query failed: ")
+        return str(exc)
+    raise AssertionError("a 400 response must raise")
+
+
+def test_failed_query_message_shows_code_and_exception_name_only():
+    # K7: the user sees ClickHouse's code and exception name, never the
+    # identifiers, SQL scope or server version from its first line.
+    logged = []
+    api = _load_api(logged)
+    message = _message(api)
+    assert message == "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"
+    assert "budget_scenario_id" not in message
+    assert "SELECT" not in message
+    assert "DB::" not in message
+
+
+def test_auth_failure_message_does_not_name_the_user():
+    logged = []
+    api = _load_api(logged)
+    body = (
+        "Code: 516. DB::Exception: zz_reader: Authentication failed: password "
+        "is incorrect, or there is no user with such name. "
+        "(AUTHENTICATION_FAILED) (version 24.3.1.1 (official build))\n")
+    api.requests.get = lambda *a, **k: _Resp(401, body)
+    message = _message(api)
+    assert message == "ClickHouse query failed (516: AUTHENTICATION_FAILED)"
+    assert "zz_reader" not in message
+    assert "24.3" not in message
+    # the log still gets the whole reply
+    assert logged == [("ClickHouse query failed", body)]
+
+
+def test_code_without_exception_name_shows_the_code():
+    logged = []
+    api = _load_api(logged)
+    api.requests.get = lambda *a, **k: _Resp(
+        400, "Code: 62. DB::Exception: Syntax error at zz_table\n")
+    assert _message(api) == "ClickHouse query failed (62)"
+
+
+def test_empty_body_gives_the_plain_message():
+    logged = []
+    api = _load_api(logged)
+    api.requests.get = lambda *a, **k: _Resp(500, "")
+    assert _message(api) == "ClickHouse query failed"
+
+
+def test_unparsable_body_gives_the_plain_message():
+    logged = []
+    api = _load_api(logged)
+    api.requests.get = lambda *a, **k: _Resp(
+        502, "<html>Bad gateway at zz-clickhouse</html>")
+    assert _message(api) == "ClickHouse query failed"
 
 
 def test_failed_query_logs_clickhouse_response_text():
@@ -109,19 +156,6 @@ def test_failed_query_logs_clickhouse_response_text():
     assert "ClickHouse query failed" in titles
     body = next(m for t, m in logged if t == "ClickHouse query failed")
     assert body == _BODY[:1000]
-
-
-def test_first_line_is_capped_at_300_chars():
-    logged = []
-    api = _load_api(logged)
-    long_line = "Code: 47. " + "x" * 600
-    api.requests.get = lambda *a, **k: _Resp(400, long_line + "\nmore")
-    try:
-        api._clickhouse_query("SELECT 1", {}, _SETTINGS)
-    except Exception as exc:  # noqa: BLE001
-        message = str(exc)
-    assert long_line[:300] in message
-    assert long_line[:301] not in message
 
 
 def test_batch_read_error_names_the_clickhouse_reason():
@@ -144,8 +178,8 @@ def test_batch_read_error_names_the_clickhouse_reason():
     }])
     assert result["values"] == [None]
     (err,) = result["errors"]
-    assert _FIRST_LINE in err
-    assert "ClickHouse query failed" in err
+    assert err == "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"
+    assert "budget_scenario_id" not in err
     # the body is logged once, not once more as a bare traceback
     assert [t for t, _ in logged].count("ClickHouse query failed") == 1
     assert logged[0][1] == _BODY[:1000]
