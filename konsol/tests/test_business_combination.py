@@ -454,19 +454,13 @@ def test_validate_translates_a_deferred_line_at_the_periods_closing_rate():
     assert deal.total_consideration == 8900.0
 
 
-def test_validate_requires_the_balance_sheet_only_without_an_earlier_trial_balance():
-    _Site()
-    message = _refused(_deal(acquired_balances=[]).validate)
-    assert "Acquired Balance Sheet is required" in message
-
-    _Site(tbs=[("ZZE", 2025, 12)])
-    _deal(acquired_balances=[]).validate()  # a trial balance in the acquisition period
-    _Site(tbs=[("ZZE", 2024, 3)])
-    _deal(acquired_balances=[]).validate()  # an earlier year
-
-    _Site(tbs=[("ZZE", 2026, 1)])
-    message = _refused(_deal(acquired_balances=[]).validate)
-    assert "Acquired Balance Sheet is required" in message  # only a later one
+def test_validate_requires_the_balance_sheet_with_or_without_a_trial_balance():
+    # konsol#206: an earlier trial balance no longer waives the Acquired Balance Sheet
+    for tbs in ([], [("ZZE", 2025, 12)], [("ZZE", 2024, 3)], [("ZZE", 2026, 1)]):
+        _Site(tbs=tbs)
+        message = _refused(_deal(acquired_balances=[]).validate)
+        assert "the Acquired Balance Sheet is empty" in message, tbs
+        assert "Get Balances from Trial Balance" in message, tbs
 
 
 def test_validate_throws_the_models_sentences():

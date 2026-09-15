@@ -264,13 +264,26 @@ def test_a_consideration_or_cost_line_needs_a_positive_amount():
     assert "Cost" in problems[0] and "Advisory" in problems[0] and "above 0" in problems[0]
 
 
-def test_the_acquired_balance_sheet_is_required_without_an_earlier_trial_balance():
+EMPTY_BALANCE_SHEET = (
+    "Business Combination: the Acquired Balance Sheet is empty, so net assets would be zero "
+    "and goodwill would absorb the whole consideration. Enter the acquisition-date balances, "
+    "or use Get Balances from Trial Balance.")
+
+
+def test_an_empty_acquired_balance_sheet_is_refused_without_an_earlier_trial_balance():
     problems = M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL,
                           facts(has_tb_at_or_before=False))
-    assert problems == [
-        "Acquired Balance Sheet is required: the entity has no trial balance at or before the acquisition date"]
-    # with a trial balance the model measures the net assets later; no lines is fine
-    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, facts(has_tb_at_or_before=True)) == []
+    assert problems == [EMPTY_BALANCE_SHEET]
+    assert M.BALANCE_SHEET_REQUIRED == EMPTY_BALANCE_SHEET
+
+
+def test_an_empty_acquired_balance_sheet_is_refused_even_with_an_earlier_trial_balance():
+    # konsol#206: a trial balance on file does not fill the lines; net assets would be
+    # measured from nothing and goodwill would be the whole consideration
+    problems = M.problems(header(), [cash(1000)], [], [], IFRS_PARTIAL,
+                          facts(has_tb_at_or_before=True))
+    assert M.BALANCE_SHEET_REQUIRED in problems
+    assert EMPTY_BALANCE_SHEET in problems
 
 
 def test_a_balance_sheet_that_does_not_sum_to_zero_is_refused():
