@@ -405,7 +405,7 @@ def test_validate_throws_the_models_sentences():
     site = _Site()
     site.root["nci_account"] = ""
     message = _refused(_deal(share_acquired_pct=80).validate)
-    assert "NCI Account" in message
+    assert "Non-controlling Interest Account is required" in message
 
 
 def test_validate_answers_is_equity_from_the_charts_account_type():
@@ -460,7 +460,7 @@ def test_before_submit_refuses_a_required_account_that_went_missing():
     deal.validate()
     site.root["nci_account"] = ""  # the root changed between save and approval
     message = _refused(deal.before_submit)
-    assert "NCI Account" in message
+    assert "Non-controlling Interest Account is required" in message
 
 
 def test_on_submit_creates_and_submits_the_ownership_period_under_the_flag():
