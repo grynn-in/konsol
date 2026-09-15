@@ -10,6 +10,7 @@ policy value and account code travels to `epm_gold.consolidation_groups`
 through CH_FIELD_MAP, in the DDL's column order (the DDL itself is pinned in
 test_write_through_contract.py).
 """
+import ast
 import contextlib
 import importlib.util
 import json
@@ -211,8 +212,8 @@ M = _load()
 
 
 def test_ch_field_map_follows_the_ddl_column_order():
-    """CH_FIELD_MAP is doctype field → column, in the DDL's order; the
-    write-through sends values positionally."""
+    """CH_FIELD_MAP is {warehouse column: doctype field}, in the DDL's order;
+    the write-through sends values positionally."""
     items = list(M.ConsolidationGroup.CH_FIELD_MAP.items())
     assert items[:6] == [
         ("consolidation_group", "consolidation_group"), ("data_area_id", "data_area_id"),
@@ -220,9 +221,43 @@ def test_ch_field_map_follows_the_ddl_column_order():
         ("ic_difference_account", "ic_difference_account"),
         ("ic_difference_tolerance", "ic_difference_tolerance"),
     ]
-    assert items[6] == ("goodwill_method", "nci_measurement")
+    # konsol#226: the column nci_measurement is read from goodwill_method.
+    assert items[6] == ("nci_measurement", "goodwill_method")
     assert items[7:] == [(c, c) for c in NEW_COLUMNS[1:]]
-    assert [c for _f, c in items[6:]] == list(NEW_COLUMNS)
+    assert [c for c, _f in items[6:]] == list(NEW_COLUMNS)
+
+
+def _ddl_columns(table):
+    """The column names of one `_REFERENCE_TABLE_DDL` table, read from
+    clickhouse.py's source (the dict is a literal; importing the module needs
+    frappe and requests)."""
+    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and getattr(node.targets[0], "id", None) == "_REFERENCE_TABLE_DDL"):
+            ddl = ast.literal_eval(node.value)[table]
+            break
+    else:
+        raise AssertionError("_REFERENCE_TABLE_DDL not found in clickhouse.py")
+    inside = ddl[ddl.index("(") + 1:ddl.rindex(") ENGINE")]
+    return [part.split()[0] for part in inside.split(",")]
+
+
+def test_field_map_reads_real_fields_into_real_columns():
+    """konsol#226: the sync SELECTs each VALUE from MariaDB and writes it to
+    its KEY in ClickHouse, so every value is a doctype field and every key a
+    warehouse column. The reversed nci_measurement pair made every sync fail
+    with "Unknown column 'nci_measurement'", and reconcile_all swallowed it."""
+    fields = set(_fields())
+    columns = _ddl_columns(M.ConsolidationGroup.CH_TABLE)
+    assert M.ConsolidationGroup.CH_TABLE == "epm_gold.consolidation_groups"
+    assert "nci_measurement" in columns and "goodwill_method" in fields
+    field_map = M.ConsolidationGroup.CH_FIELD_MAP
+    not_fields = [v for v in field_map.values() if v not in fields]
+    assert not not_fields, f"CH_FIELD_MAP values that are not doctype fields: {not_fields}"
+    not_columns = [k for k in field_map if k not in columns]
+    assert not not_columns, f"CH_FIELD_MAP keys that are not warehouse columns: {not_columns}"
 
 
 def test_validate_runs_the_policy_check_guarded_on_the_deal_table():
