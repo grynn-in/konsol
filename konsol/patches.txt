@@ -34,3 +34,4 @@ konsol.patches.drop_epm_settings_consolidation_currency
 konsol.patches.adopt_erp_rates_as_group_exchange_rates
 konsol.patches.create_fiscal_years
 konsol.patches.fill_cash_flow_categories_from_chart
+konsol.patches.migrate_deals_to_business_combinations
