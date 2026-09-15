@@ -241,7 +241,9 @@ def test_added_columns_reach_tables_that_already_exist():
     m, _ = _load_clickhouse()
     assert m._ADDED_COLUMNS["epm_raw.trial_balance_submissions"] == [
         ("partner_data_area_id", "String DEFAULT ''")]
-    assert [c for c, _t in m._ADDED_COLUMNS["epm_gold.consolidation_groups"]] == [
+    # konsol#159's two came first; konsolidat#198's policy columns follow
+    # (pinned in test_the_group_root_carries_its_policy_and_declared_accounts)
+    assert [c for c, _t in m._ADDED_COLUMNS["epm_gold.consolidation_groups"]][:2] == [
         "ic_difference_account", "ic_difference_tolerance"]
     ddl = {**m._REFERENCE_TABLE_DDL, **m._RAW_TABLE_DDL}
     for table, cols in m._ADDED_COLUMNS.items():
@@ -256,6 +258,52 @@ def test_added_columns_reach_tables_that_already_exist():
         for c, t in cols:
             assert create < sql.index(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} {t}"), (table, c)
     assert "CREATE DATABASE IF NOT EXISTS epm_raw" in sql
+
+
+def test_the_group_root_carries_its_policy_and_declared_accounts():
+    """konsolidat#198 (design 1, 1a). The group root's Consolidation Policy
+    and its declared accounts travel to the warehouse with the node, so dbt
+    reads the policy and never assumes an account code. `goodwill_method`
+    syncs as `nci_measurement`. Byte-identical to konsolidat's init-db.sql
+    (its DDL tests pin the same string); every new column is also ADDed for
+    tables that already exist, in the same order, after konsol#159's two."""
+    m, _ = _load_clickhouse()
+    table = "epm_gold.consolidation_groups"
+    assert m._REFERENCE_TABLE_DDL[table] == (
+        "(consolidation_group String, data_area_id String, entity_name String, "
+        "reporting_currency String, ic_difference_account String DEFAULT '', "
+        "ic_difference_tolerance Float64 DEFAULT 0, nci_measurement String DEFAULT '', "
+        "accounting_framework String DEFAULT '', framework_note String DEFAULT '', "
+        "goodwill_treatment String DEFAULT '', goodwill_amortisation_years UInt16 DEFAULT 0, "
+        "acquisition_costs_treatment String DEFAULT '', measurement_period String DEFAULT '', "
+        "bargain_purchase String DEFAULT '', goodwill_account String DEFAULT '', "
+        "fair_value_adjustment_account String DEFAULT '', investment_account String DEFAULT '', "
+        "nci_account String DEFAULT '', bargain_purchase_gain_account String DEFAULT '', "
+        "disposal_gain_loss_account String DEFAULT '', disposal_proceeds_account String DEFAULT '', "
+        "goodwill_amortisation_expense_account String DEFAULT '', "
+        "acquisition_costs_account String DEFAULT '') "
+        "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)")
+    assert m._ADDED_COLUMNS[table] == [
+        ("ic_difference_account", "String DEFAULT ''"),
+        ("ic_difference_tolerance", "Float64 DEFAULT 0"),
+        ("nci_measurement", "String DEFAULT ''"),
+        ("accounting_framework", "String DEFAULT ''"),
+        ("framework_note", "String DEFAULT ''"),
+        ("goodwill_treatment", "String DEFAULT ''"),
+        ("goodwill_amortisation_years", "UInt16 DEFAULT 0"),
+        ("acquisition_costs_treatment", "String DEFAULT ''"),
+        ("measurement_period", "String DEFAULT ''"),
+        ("bargain_purchase", "String DEFAULT ''"),
+        ("goodwill_account", "String DEFAULT ''"),
+        ("fair_value_adjustment_account", "String DEFAULT ''"),
+        ("investment_account", "String DEFAULT ''"),
+        ("nci_account", "String DEFAULT ''"),
+        ("bargain_purchase_gain_account", "String DEFAULT ''"),
+        ("disposal_gain_loss_account", "String DEFAULT ''"),
+        ("disposal_proceeds_account", "String DEFAULT ''"),
+        ("goodwill_amortisation_expense_account", "String DEFAULT ''"),
+        ("acquisition_costs_account", "String DEFAULT ''"),
+    ]
 
 
 def test_the_control_table_claim_carries_the_amount_basis():
