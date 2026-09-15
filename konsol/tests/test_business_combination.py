@@ -242,6 +242,8 @@ class _Site:
         self.spans = []
         #: every frappe.get_all call as {doctype, filters, order_by}
         self.get_all_calls = []
+        #: every frappe.msgprint as (message, kwargs): warnings, not refusals
+        self.msgprints = []
         self._install()
 
     # -- frappe surface ----------------------------------------------------
@@ -252,6 +254,7 @@ class _Site:
                                             table_exists=self._table_exists)
         M.frappe.get_all = self._get_all
         M.frappe.get_doc = self._get_doc
+        M.frappe.msgprint = lambda msg, *a, **k: site.msgprints.append((msg, k))
         M.execute = self._execute
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
@@ -1403,15 +1406,38 @@ def test_get_balances_throws_the_derived_problems_and_keeps_the_lines():
     assert not deal.get("saved")
 
 
-def test_validate_refuses_line_adjustments_that_miss_the_declared_total():
+FVA_MISMATCH = ("Fair value adjustments on the Acquired Balance Sheet add up to 930.00; "
+                "the declared Fair Value Adjustment Total is 1000.00.")
+
+
+def test_draft_save_warns_when_line_adjustments_miss_the_declared_total():
+    # PR #209 review 2, point 1: a new total must be savable before the button
+    # places it on the lines, so a Draft save warns instead of refusing.
+    site = _Site()
+    _deal(fair_value_adjustment_total=1000).validate()
+    assert len(site.msgprints) == 1, site.msgprints
+    message, kwargs = site.msgprints[0]
+    assert FVA_MISMATCH in message
+    assert kwargs.get("indicator") == "orange"
+    for agreeing in (dict(fair_value_adjustment_total=930),     # they agree
+                     dict(fair_value_adjustment_total=930.004),  # within half a cent
+                     dict(fair_value_adjustment_total=0),        # none declared
+                     {}):                                        # field absent
+        site = _Site()
+        _deal(**agreeing).validate()
+        assert site.msgprints == [], (agreeing, site.msgprints)
+
+
+def test_before_submit_refuses_line_adjustments_that_miss_the_declared_total():
+    # A deal cannot be approved with lines that disagree with its declared total.
     _Site()
-    message = _refused(_deal(fair_value_adjustment_total=1000).validate)
-    assert ("Fair value adjustments on the Acquired Balance Sheet add up to 930.00; "
-            "the declared Fair Value Adjustment Total is 1000.00.") in message
-    _deal(fair_value_adjustment_total=930).validate()   # they agree
-    _deal(fair_value_adjustment_total=930.004).validate()  # within half a cent
-    _deal(fair_value_adjustment_total=0).validate()     # none declared
-    _deal().validate()                                  # field absent
+    deal = _deal(fair_value_adjustment_total=1000)
+    deal.validate()
+    message = _refused(deal.before_submit)
+    assert FVA_MISMATCH in message
+    agreeing = _deal(fair_value_adjustment_total=930)
+    agreeing.validate()
+    agreeing.before_submit()
 
 
 # -- Fair Value Allocation Profile (konsol#208) ---------------------------------

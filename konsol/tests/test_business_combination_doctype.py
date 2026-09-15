@@ -160,7 +160,10 @@ def test_form_button_gets_balances_from_the_trial_balance():
     # PR #209 review 5: unsaved edits (a typed Fair Value Adjustment Total) are
     # saved first, and the method runs after the save resolves.
     assert "frm.is_dirty()" in src
-    assert "frm.save().then(run)" in src
+    # PR #209 review 2, point 1: Frappe v15's frm.save() resolves even when the
+    # save fails, so the method runs only when the form is no longer dirty.
+    assert "frm.save().then(() => { if (!frm.is_dirty()) run(); })" in src
+    assert "frm.save().then(run)" not in src
 
 
 def test_result_tab_is_computed_and_read_only():
