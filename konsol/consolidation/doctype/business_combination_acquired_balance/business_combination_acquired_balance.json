@@ -1,0 +1,46 @@
+{
+ "name": "Business Combination Acquired Balance",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "main_account",
+   "fieldtype": "Link",
+   "label": "Main Account",
+   "options": "Main Account",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 3,
+   "description": "A Published balance-sheet leaf of the group chart."
+  },
+  {
+   "fieldname": "book_amount",
+   "fieldtype": "Currency",
+   "label": "Book Amount",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "In the entity's currency. Debit positive, credit negative; the table nets to the entity's equity at acquisition."
+  },
+  {
+   "fieldname": "fair_value_adjustment",
+   "fieldtype": "Currency",
+   "label": "Fair Value Adjustment",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Step-up (+) or step-down (-) on this line."
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Data",
+   "label": "Note",
+   "in_list_view": 1,
+   "columns": 3
+  }
+ ],
+ "permissions": []
+}
