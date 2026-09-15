@@ -315,6 +315,35 @@ def test_the_group_root_carries_its_policy_and_declared_accounts():
     ]
 
 
+def test_reporting_hierarchy_rows_carry_each_tranches_dates():
+    """konsol#220. A Reporting Hierarchy member is one dated tranche of its
+    code, so the staging row carries the tranche's window as Date32
+    (1900-01-01..2299-12-31; Date clamps both ends), an open end being
+    2299-12-31. Byte-identical to konsolidat's init-db.sql; both columns sit
+    at the end of the CREATE and are ADDed, in that order, to a table that
+    already exists."""
+    m, _ = _load_clickhouse()
+    table = "epm_staging.reporting_hierarchies"
+    assert m._REFERENCE_TABLE_DDL[table] == (
+        "(hierarchy_name String, dimension String, member_code String, "
+        "member_label String, parent_member_code String, is_group UInt8, "
+        "hierarchy_level UInt16, path String, effective_from String, "
+        "effective_to String, is_default UInt8, status String, "
+        "member_effective_from Date32 DEFAULT '1900-01-01', "
+        "member_effective_to Date32 DEFAULT '2299-12-31') "
+        "ENGINE = MergeTree ORDER BY (hierarchy_name, member_code)")
+    assert m._ADDED_COLUMNS[table] == [
+        ("member_effective_from", "Date32 DEFAULT '1900-01-01'"),
+        ("member_effective_to", "Date32 DEFAULT '2299-12-31'"),
+    ]
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_reference_tables()
+    create = sql.index(f"CREATE TABLE IF NOT EXISTS {table} {m._REFERENCE_TABLE_DDL[table]}")
+    for c, t in m._ADDED_COLUMNS[table]:
+        assert create < sql.index(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} {t}"), c
+
+
 # --- konsolidat#198 (design 2a): the deal documents' warehouse tables --------
 # Business Combination / Business Disposal and their child tables write
 # through like every other governed doctype, so the tables must exist before
