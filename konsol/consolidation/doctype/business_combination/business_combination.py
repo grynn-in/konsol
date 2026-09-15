@@ -19,7 +19,9 @@ accounts are declared; ``on_submit`` creates (or links) the Ownership Period
 the acquisition starts and writes the approved deal to the warehouse; an
 amendment is allowed only inside the policy's 12-month measurement period.
 Submit = approval (the workflow); cancel only while the acquisition period is
-open. Nothing here saves the document from a hook or commits.
+open, and it undoes the approval's Ownership Period: cancelled again when this
+deal created it, its deal fields cleared when it pre-existed. Nothing here
+saves the document from a hook or commits.
 """
 import frappe
 from frappe.model.document import Document
@@ -58,6 +60,15 @@ RESULT_FIELDS = (
 
 #: A blank Link is stored as NULL: match both spellings (see Ownership Period).
 _BLANK = ["is", "not set"]
+
+#: What ``_ensure_ownership_period`` writes onto a pre-existing period, and
+#: the blanks ``_undo_ownership_period`` gives it back (in the same order).
+_DEAL_FIELD_RESET = {
+    "acquisition_date": None,
+    "is_first_acquisition": 0,
+    "acquisition_price": 0,
+    "fair_value_adjustment": 0,
+}
 
 _PREFIX = "Business Combination: "
 
@@ -140,6 +151,7 @@ class BusinessCombination(Document):
                     action="cancel a business combination")
 
     def on_cancel(self):
+        self._undo_ownership_period()
         self._sync()
 
     def after_delete(self):
@@ -293,12 +305,22 @@ class BusinessCombination(Document):
             "fair_value_adjustment": float(self.get("fair_value_adjustments") or 0),
         }
         node = {"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity}
+        created = False
         frappe.flags.from_business_combination = True
         try:
             if existing:
                 period = frappe.get_doc("Ownership Period", existing["name"])
                 if int(existing["docstatus"]) == 0:
-                    period.update(deal_fields)
+                    # A Draft period the approval submits says what the
+                    # approved deal says. The deal is the source of the share
+                    # and the date even when the Draft was declared by hand
+                    # with other values: the approval measured this deal, and
+                    # the period it starts must agree with it.
+                    period.update({
+                        **deal_fields,
+                        "ownership_pct": self.share_acquired_pct,
+                        "effective_date": self.acquisition_date,
+                    })
                     period.submit()
                 else:
                     for field, value in deal_fields.items():
@@ -315,9 +337,39 @@ class BusinessCombination(Document):
                 })
                 period.insert()
                 period.submit()
+                created = True
         finally:
             frappe.flags.from_business_combination = False
         self.db_set("ownership_period", period.name)
+        if created:
+            # Remembered so a cancel knows whether to cancel the period
+            # again or merely clear the figures it lent a pre-existing one.
+            self.db_set("created_ownership_period", 1)
+
+    def _undo_ownership_period(self):
+        """Cancelling the approval undoes what ``_ensure_ownership_period``
+        did to the linked Ownership Period. A period this deal CREATED is
+        cancelled again (its own ``before_cancel`` keeps the closed-period
+        gate, its own ``on_cancel`` re-syncs it); a period that pre-existed
+        and only received the deal's figures keeps standing and gets the four
+        deal fields cleared, with its own re-sync. Both under the flag the
+        period's guard reads. No link, or a period deleted, Draft or already
+        cancelled since: nothing to undo, skip (the cancel must still go
+        through)."""
+        name = self.get("ownership_period")
+        if not name or not frappe.db.exists("Ownership Period", {"name": name, "docstatus": 1}):
+            return
+        frappe.flags.from_business_combination = True
+        try:
+            period = frappe.get_doc("Ownership Period", name)
+            if int(self.get("created_ownership_period") or 0):
+                period.cancel()
+            else:
+                for field, value in _DEAL_FIELD_RESET.items():
+                    period.db_set(field, value)
+                sync_doctype_after_commit("Ownership Period", period.CH_TABLE, period.CH_FIELD_MAP)
+        finally:
+            frappe.flags.from_business_combination = False
 
     def _consolidation_method(self):
         """A Business Combination is an acquisition of control, and control is

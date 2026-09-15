@@ -81,6 +81,14 @@
    "description": "Created or linked on approval: effective from the acquisition date at the share acquired."
   },
   {
+   "fieldname": "created_ownership_period",
+   "fieldtype": "Check",
+   "label": "Created the Ownership Period",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set on approval when this deal created the Ownership Period rather than linking one that already existed. Cancelling the deal then cancels that period; a pre-existing period only has its deal fields cleared."
+  },
+  {
    "fieldname": "consideration_section",
    "fieldtype": "Section Break",
    "label": "Consideration Transferred"
