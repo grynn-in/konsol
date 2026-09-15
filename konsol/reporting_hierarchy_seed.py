@@ -12,9 +12,11 @@ def flatten_reporting_hierarchies(frappe):
     carries that tranche's own label and window as ``member_effective_from`` /
     ``member_effective_to`` (ISO dates; a blank end is ``OPEN_END``).
     ``parent_member_code`` is the linked parent's code. ``path`` and
-    ``hierarchy_level`` follow the chain of linked parent rows and are
-    informational only: the warehouse resolves the tree per period from codes
-    and dates, not from this path.
+    ``hierarchy_level`` are as of the tranche's ``effective_from``: walking up
+    by code, each step takes the parent code's tranche covering that date
+    (the linked parent row when none covers it). A change higher up the tree
+    during the tranche shows up in the warehouse through the parent's own
+    tranches, which the warehouse resolves per period from codes and dates.
     """
     headers = frappe.get_all(
         "Reporting Hierarchy",
@@ -51,12 +53,13 @@ def flatten_reporting_hierarchies(frappe):
             limit_page_length=0,
         )
         by_name = {m.name: m for m in members}
+        by_code = {}
+        for m in members:
+            by_code.setdefault(m.member_code, []).append(m)
         for member in members:
-            ancestors = _ancestor_chain(member, by_name)
+            ancestors = _dated_ancestor_chain(member, by_name, by_code)
             level = len(ancestors) + 1
-            path_parts = [
-                by_name[a].member_code for a in reversed(ancestors) if by_name[a].member_code
-            ]
+            path_parts = [a.member_code for a in reversed(ancestors) if a.member_code]
             if member.member_code:
                 path_parts.append(member.member_code)
             parent_code = ""
@@ -86,6 +89,38 @@ def _iso(value):
     if not value:
         return ""
     return str(value)[:10]
+
+
+_MAX_DEPTH = 50
+
+
+def _dated_ancestor_chain(member, by_name, by_code):
+    """Ancestor rows of ``member`` nearest-first, as of its effective_from.
+
+    Each step follows the linked parent's CODE and takes that code's tranche
+    covering the date, falling back to the linked parent row when none does.
+    Stops at depth ``_MAX_DEPTH`` or on a repeated row.
+    """
+    as_of = _iso(member.effective_from) or "1900-01-01"
+    ancestors = []
+    seen = {member.name}
+    current = member
+    while len(ancestors) < _MAX_DEPTH:
+        linked = by_name.get(current.parent_member) if current.parent_member else None
+        if linked is None:
+            break
+        parent = next(
+            (t for t in by_code.get(linked.member_code, [])
+             if (_iso(t.effective_from) or "1900-01-01") <= as_of
+             <= (_iso(t.effective_to) or OPEN_END)),
+            linked,
+        )
+        if parent.name in seen:
+            break
+        seen.add(parent.name)
+        ancestors.append(parent)
+        current = parent
+    return ancestors
 
 
 def _ancestor_chain(member, by_name):
