@@ -486,8 +486,17 @@ def _get_or_create_sheet(cycle_name, data, layer):
 # ClickHouse query helpers
 # ---------------------------------------------------------------------------
 
+class ClickHouseQueryError(Exception):
+    """ClickHouse answered with an HTTP error; the message carries its reason."""
+
+
 def _clickhouse_query(sql, params, ch_settings):
-    """Execute a single ClickHouse HTTP query. Returns response text or raises."""
+    """Execute a single ClickHouse HTTP query. Returns response text or raises.
+
+    On an HTTP error, ClickHouse's response text is logged and its first line
+    (e.g. "Code: 47. ... Unknown expression identifier ...") goes into the
+    raised ClickHouseQueryError, so the caller can show why (konsol#214).
+    """
     url = _ch_url(ch_settings)
     query_params = dict(params)
     query_params["query"] = sql
@@ -499,7 +508,13 @@ def _clickhouse_query(sql, params, ch_settings):
         timeout=30,
         verify=ch_settings.get("verify", True),
     )
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        body = resp.text or ""
+        frappe.log_error("ClickHouse query failed", body[:1000])
+        first_line = body.strip().split("\n", 1)[0][:300] or str(exc)[:300]
+        raise ClickHouseQueryError(f"ClickHouse query failed: {first_line}") from exc
     return resp.text.strip()
 
 
@@ -679,6 +694,11 @@ def _batch_query_clickhouse(requests_list):
             for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse connection failed"
+        except ClickHouseQueryError as exc:
+            # already logged with ClickHouse's response text
+            for idx, _ in group_items:
+                values[idx] = None
+                errors[idx] = str(exc)
         except Exception:
             frappe.log_error("ClickHouse query failed", frappe.get_traceback())
             for idx, _ in group_items:
