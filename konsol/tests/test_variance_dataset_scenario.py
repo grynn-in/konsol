@@ -14,7 +14,7 @@ import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_NO_BUDGET = "No budget scenario is active, so there is no variance to show."
+_NO_BUDGET = "No active budget scenario belongs to FY2026, so there is no variance to show."
 
 
 def _fact(fact_name, scenario_key, table, has_scenario_id):
@@ -40,19 +40,30 @@ def _throw(msg, exc=_ValidationError, **kw):
     raise exc(msg)
 
 
-def _run(rows, active_budgets=(), call=None, reply=""):
+def _run(rows, active_budgets=(), call=None, reply="", cycles=None):
     """api._batch_query_clickhouse over ``rows`` (dicts overriding a default
     variance request). ``active_budgets`` is what the Scenario doctype holds
-    as active budget scenarios. ``call(api)``, when given, replaces the batch
+    as active budget scenarios; ``cycles`` the (scenario_id, fiscal_year) of
+    the Budget Cycles (default: one FY2026 cycle per active budget, the
+    default request year). ``call(api)``, when given, replaces the batch
     read (its return value is the result); ``reply`` is ClickHouse's answer.
 
-    Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]).
+    Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]);
+    Budget Cycle lookups are recorded as {"Budget Cycle": filters}.
     """
     queries, lookups = [], []
+    if cycles is None:
+        cycles = [(s, 2026) for s in active_budgets]
 
     def get_all(doctype, filters=None, **kw):
+        filters = dict(filters or {})
+        if doctype == "Budget Cycle":
+            lookups.append({"Budget Cycle": filters})
+            wanted = set(filters["scenario_id"][1])
+            return [{"scenario_id": s, "fiscal_year": y}
+                    for s, y in cycles if s in wanted]
         assert doctype == "Scenario", doctype
-        lookups.append(dict(filters or {}))
+        lookups.append(filters)
         return list(active_budgets)
 
     fake_frappe = types.ModuleType("frappe")
@@ -141,7 +152,7 @@ def test_variance_dataset_without_scenario_reads_the_one_active_budget():
     (sql, params), = queries
     assert "AND budget_scenario_id = {sid:String}" in sql
     assert params["param_sid"] == "ZZ_B1"
-    assert lookups == [{"scenario_type": "budget", "is_active": 1}]
+    assert lookups[0] == {"scenario_type": "budget", "is_active": 1}
 
 
 def test_variance_dataset_by_scenario_key_reads_the_one_active_budget():
@@ -163,16 +174,68 @@ def test_variance_dataset_with_several_active_budgets_is_refused_by_name():
     result, queries, _ = _run([{}], active_budgets=["ZZ_B1", "ZZ_B2"])
     assert queries == []
     assert result["errors"] == [
-        "Several budget scenarios are active (ZZ_B1, ZZ_B2); choose one."]
+        "Several active budget scenarios belong to FY2026 (ZZ_B1, ZZ_B2); choose one."]
 
 
 def test_active_budgets_are_looked_up_once_per_call():
     result, queries, lookups = _run(
-        [{}, {"measure": "actual_amount"}], active_budgets=["ZZ_B1"])
-    assert not result.get("errors")
+        [{}, {"measure": "actual_amount"}, {"year": 2027}],
+        active_budgets=["ZZ_B1", "ZZ_B2"],
+        cycles=[("ZZ_B1", 2026), ("ZZ_B2", 2027)])
+    assert not result.get("errors"), result
+    assert len(queries) == 3
+    assert sorted(p["param_sid"] for _, p in queries) == ["ZZ_B1", "ZZ_B1", "ZZ_B2"]
+    # one Scenario and one Budget Cycle lookup, however many years are read
+    assert len(lookups) == 2
+
+
+# -- with no scenario named, the budget is the request year's (PR #217 review 3)
+#
+# A flat group has no year in its key, so one call can read several years;
+# each request row takes the one active budget of its own year.
+
+def test_variance_dataset_rows_of_two_years_read_each_years_budget():
+    result, queries, _ = _run(
+        [{"year": 2026}, {"year": 2027}],
+        active_budgets=["ZZ_B26", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B27", 2027)])
+    assert not result.get("errors"), result
     assert len(queries) == 2
-    assert all(p["param_sid"] == "ZZ_B1" for _, p in queries)
-    assert len(lookups) == 1
+    by_sid = {p["param_sid"]: p for _, p in queries}
+    assert set(by_sid) == {"ZZ_B26", "ZZ_B27"}
+    assert by_sid["ZZ_B26"]["param_y0"] == "2026"
+    assert by_sid["ZZ_B27"]["param_y0"] == "2027"
+    assert all("AND budget_scenario_id = {sid:String}" in sql for sql, _ in queries)
+
+
+def test_variance_dataset_without_a_budget_for_the_year_is_refused():
+    result, queries, _ = _run(
+        [{"year": 2028}], active_budgets=["ZZ_B26", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B27", 2027)])
+    assert queries == []
+    assert result["errors"] == [
+        "No active budget scenario belongs to FY2028, so there is no variance to show."]
+
+
+def test_variance_dataset_with_several_budgets_for_the_year_is_refused_by_name():
+    result, queries, _ = _run(
+        [{"year": 2026}], active_budgets=["ZZ_B26", "ZZ_B26X", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B26X", 2026), ("ZZ_B27", 2027)])
+    assert queries == []
+    assert result["errors"] == [
+        "Several active budget scenarios belong to FY2026 (ZZ_B26, ZZ_B26X); choose one."]
+
+
+def test_variance_dataset_refusal_is_per_row():
+    # FY2026 has a budget, FY2028 has none: only the FY2028 row is refused
+    result, queries, _ = _run(
+        [{"year": 2026}, {"year": 2028}], active_budgets=["ZZ_B26"],
+        cycles=[("ZZ_B26", 2026)])
+    (_, params), = queries
+    assert params["param_sid"] == "ZZ_B26"
+    assert result["errors"] == [
+        None,
+        "No active budget scenario belongs to FY2028, so there is no variance to show."]
 
 
 def test_other_datasets_are_unchanged():
@@ -215,7 +278,7 @@ def test_single_cell_variance_with_several_active_budgets_is_refused():
     assert queries == []
     assert isinstance(result, _ValidationError), result
     assert str(result) == (
-        "Several budget scenarios are active (ZZ_B1, ZZ_B2); choose one.")
+        "Several active budget scenarios belong to FY2026 (ZZ_B1, ZZ_B2); choose one.")
 
 
 def test_single_cell_variance_with_no_active_budget_is_refused():
