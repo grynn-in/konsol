@@ -353,3 +353,60 @@ def test_effective_from_before_the_warehouse_range_is_refused():
 
 def test_window_on_the_range_bounds_is_accepted():
     assert _save([], _row("n1", "ZZ_A", "1900-01-01", "2299-12-31")) is None
+
+
+# --- konsol#220 row R4: flattened rows carry each tranche's dates ----------
+
+def _flatten(members, header_from="2017-01-01", header_to=None):
+    """Run flatten_reporting_hierarchies against a stub frappe holding one
+    Published header ZZ_MGMT and ``members`` (dicts)."""
+    import types
+    from konsol.reporting_hierarchy_seed import flatten_reporting_hierarchies
+
+    header = types.SimpleNamespace(
+        name="ZZ_MGMT", hierarchy_name="ZZ_MGMT", dimension="ZZ_DIM",
+        effective_from=header_from, effective_to=header_to, is_default=1)
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        if doctype == "Reporting Hierarchy":
+            return [header]
+        rows = [m for m in members
+                if m["reporting_hierarchy"] == (filters or {}).get("reporting_hierarchy")]
+        return [types.SimpleNamespace(**{f: m.get(f) for f in fields}) for m in rows]
+
+    return flatten_reporting_hierarchies(types.SimpleNamespace(get_all=get_all))
+
+
+def test_flatten_emits_one_row_per_tranche_with_its_own_label_and_window():
+    import datetime
+    old = dict(_row("a1", "ZZ_A", datetime.date(2017, 1, 1), datetime.date(2024, 12, 31)),
+               member_label="ZZ Old Name")
+    new = dict(_row("a2", "ZZ_A", datetime.date(2025, 1, 1), datetime.date(2030, 6, 30)),
+               member_label="ZZ New Name")
+    rows = sorted(_flatten([old, new]), key=lambda r: r["member_effective_from"])
+    assert [(r["member_code"], r["member_label"], r["member_effective_from"],
+             r["member_effective_to"]) for r in rows] == [
+        ("ZZ_A", "ZZ Old Name", "2017-01-01", "2024-12-31"),
+        ("ZZ_A", "ZZ New Name", "2025-01-01", "2030-06-30"),
+    ]
+
+
+def test_flatten_open_tranche_ends_on_the_warehouse_open_end():
+    import datetime
+    parent = _row("p1", "ZZ_E", datetime.date(2017, 1, 1))
+    child = _row("c1", "ZZ_EX", datetime.date(2018, 3, 1), None, parent="p1", is_group=0)
+    rows = {r["member_code"]: r for r in _flatten([parent, child])}
+    assert rows["ZZ_E"]["member_effective_to"] == "2299-12-31"
+    assert rows["ZZ_EX"]["member_effective_from"] == "2018-03-01"
+    assert rows["ZZ_EX"]["member_effective_to"] == "2299-12-31"
+    assert rows["ZZ_EX"]["parent_member_code"] == "ZZ_E"
+    assert rows["ZZ_EX"]["path"] == "ZZ_E/ZZ_EX"
+
+
+def test_staging_columns_end_with_the_member_window():
+    src = _read(os.path.join("epm", "doctype", "reporting_hierarchy", "reporting_hierarchy.py"))
+    node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "CH_STAGING_COLUMNS" for t in n.targets))
+    cols = ast.literal_eval(node.value)
+    assert cols[:len(SEED_COLUMNS)] == SEED_COLUMNS
+    assert cols[-2:] == ["member_effective_from", "member_effective_to"]
