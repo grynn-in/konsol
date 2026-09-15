@@ -149,9 +149,6 @@ def totals(header, consideration, balances, costs, policy, rate_to_group, is_equ
 
     share = _share(header)
     share_fraction = share / HUNDRED if share is not None else Decimal(0)
-    difference = consideration_basis - nafv * share_fraction
-    goodwill = max(Decimal(0), difference)
-    bargain = max(Decimal(0), -difference)
 
     nci_measurement = _text(_get(policy, "goodwill_method"))
     nci_fraction = Decimal(1) - share_fraction
@@ -161,6 +158,17 @@ def totals(header, consideration, balances, costs, policy, rate_to_group, is_equ
         nci = consideration_basis / share_fraction * nci_fraction
     else:
         nci = Decimal(0)
+
+    # IFRS 3.32: goodwill = consideration (+ NCI) − net assets at fair value.
+    # Partial method: only the acquirer's share of net assets is compared with
+    # the consideration. Full method: the NCI is at fair value, so goodwill is
+    # the whole business's — consideration + NCI − 100% of net assets.
+    if nci_measurement == "full":
+        difference = consideration_basis + nci - nafv
+    else:
+        difference = consideration_basis - nafv * share_fraction
+    goodwill = max(Decimal(0), difference)
+    bargain = max(Decimal(0), -difference)
 
     return {
         "total_consideration": _money(consideration_total),
