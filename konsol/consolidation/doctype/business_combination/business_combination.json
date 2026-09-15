@@ -182,14 +182,14 @@
    "fieldtype": "Currency",
    "label": "Net Assets Acquired",
    "read_only": 1,
-   "description": "Sum of the acquired balance sheet book amounts."
+   "description": "Net assets of the Acquired Balance Sheet (non-equity lines), translated to the group currency at the acquisition period's closing rate."
   },
   {
    "fieldname": "fair_value_adjustments",
    "fieldtype": "Currency",
    "label": "Fair Value Adjustments",
    "read_only": 1,
-   "description": "Sum of the fair value adjustment lines."
+   "description": "Fair value adjustments on the Acquired Balance Sheet, translated to the group currency at the acquisition period's closing rate. The declared Fair Value Adjustment Total is in the acquired entity's currency."
   },
   {
    "fieldname": "costs_expensed",
