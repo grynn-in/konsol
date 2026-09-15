@@ -224,6 +224,15 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#189: the declared fiscal periods; konsolidat reads it for
         # period dates
         "epm_staging.fiscal_periods",
+        # konsolidat#198: the deal documents (Business Combination, Business
+        # Disposal) and their child tables; they must exist before the first
+        # approval syncs
+        "epm_staging.business_combinations",
+        "epm_staging.business_combination_consideration",
+        "epm_staging.business_combination_acquired_balances",
+        "epm_staging.business_combination_costs",
+        "epm_staging.business_disposals",
+        "epm_staging.business_disposal_proceeds",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

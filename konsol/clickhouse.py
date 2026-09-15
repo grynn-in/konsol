@@ -683,6 +683,50 @@ _REFERENCE_TABLE_DDL = {
         "quarter String, status String) "
         "ENGINE = MergeTree ORDER BY (fiscal_year, fiscal_period)"
     ),
+    # konsolidat#198 (design 2a): the deal documents. A Business Combination
+    # (submitted rows only) is the declared input for goodwill, the fair-value
+    # step-up and NCI at acquisition; a Business Disposal for the disposal
+    # gain or loss. Each child table is its own doctype and syncs by
+    # (parent, idx). The Result columns on the header are what konsol
+    # computed with the group's Consolidation Policy, so dbt posts them and
+    # never recomputes. Identical to konsolidat's clickhouse/init-db.sql;
+    # keep them identical.
+    "epm_staging.business_combinations": (
+        "(name String, consolidation_group String, acquired_entity String, "
+        "acquisition_date Date, share_acquired_pct Float64, "
+        "consideration_currency String, total_consideration Float64, "
+        "net_assets_acquired Float64, fair_value_adjustments Float64, "
+        "goodwill Float64, bargain_purchase_gain Float64, "
+        "nci_at_acquisition Float64, ownership_period String) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    "epm_staging.business_combination_consideration": (
+        "(parent String, idx UInt16, component String, amount Float64, "
+        "currency String, settlement_date Date, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.business_combination_acquired_balances": (
+        "(parent String, idx UInt16, main_account String, book_amount Float64, "
+        "fair_value_adjustment Float64, note String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.business_combination_costs": (
+        "(parent String, idx UInt16, kind String, amount Float64, "
+        "currency String, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.business_disposals": (
+        "(name String, consolidation_group String, disposed_entity String, "
+        "disposal_date Date, share_disposed_pct Float64, "
+        "retained_interest_pct Float64, proceeds_currency String, "
+        "total_proceeds Float64, ownership_period String) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    "epm_staging.business_disposal_proceeds": (
+        "(parent String, idx UInt16, component String, amount Float64, "
+        "currency String, settlement_date Date, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a
