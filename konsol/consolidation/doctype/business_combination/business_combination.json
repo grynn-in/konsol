@@ -70,7 +70,14 @@
    "fieldtype": "Data",
    "label": "NCI Measurement",
    "read_only": 1,
-   "description": "Copied from the group root's Consolidation Policy when the deal is saved: partial or full."
+   "description": "The NCI measurement in force for this deal: the override when set, otherwise the group's."
+  },
+  {
+   "fieldname": "nci_measurement_override",
+   "fieldtype": "Select",
+   "label": "NCI Measurement for This Deal",
+   "options": "\npartial\nfull",
+   "description": "Leave blank to use the group's NCI Measurement. IFRS 3.19 lets each business combination elect; US GAAP requires full."
   },
   {
    "fieldname": "ownership_period",

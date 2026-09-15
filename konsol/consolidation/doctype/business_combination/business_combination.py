@@ -6,8 +6,9 @@ Three layers, kept apart on purpose (design 2a):
   the balance sheet acquired, the costs of acquiring it;
 * the **policy is configured**, once, on the Consolidation Group node named
   by ``consolidation_group`` (the group root carries the Consolidation
-  Policy and the declared accounts, design 1/1a); the deal only keeps a
-  read-only copy of the NCI measurement it was measured under;
+  Policy and the declared accounts, design 1/1a); the deal may elect its
+  own NCI measurement (IFRS 3.19, konsol#205) and keeps a read-only copy of
+  the one it was measured under;
 * the **mechanics are programmed** in the pure, host-tested
   ``konsol.business_combination_model``: this controller looks the facts up
   (the declared period the acquisition date falls in, the period's Closing
@@ -77,6 +78,10 @@ _DEAL_FIELD_RESET = {
 _PREFIX = "Business Combination: "
 _CENT = Decimal("0.01")
 
+#: The body of ``policy_problems()``'s US GAAP rule, and the deal's own field.
+_US_GAAP_NCI = "US GAAP measures non-controlling interest at fair value"
+_NCI_OVERRIDE_LABEL = "NCI Measurement for This Deal"
+
 
 class BusinessCombination(Document):
     CH_TABLE = "epm_staging.business_combinations"
@@ -108,12 +113,15 @@ class BusinessCombination(Document):
     def validate(self):
         period = self._acquisition_period()
         root = self._root()
-        self.nci_measurement = root.get("goodwill_method") or ""
+        # konsol#205 (IFRS 3.19): each deal may elect its NCI measurement; blank
+        # takes the group's. The model measures with the value in force.
+        self.nci_measurement = self.get("nci_measurement_override") or root.get("goodwill_method") or ""
+        policy = dict(root, goodwill_method=self.nci_measurement)
 
         rate_to_group = self._rate_to_group(root.get("reporting_currency"), period)
         try:
             result = totals(self, self._lines("consideration"), self._lines("acquired_balances"),
-                            self._lines("costs"), root, rate_to_group, self._is_equity)
+                            self._lines("costs"), policy, rate_to_group, self._is_equity)
         except ValueError as e:  # a consideration or cost currency with no Closing rate
             frappe.throw(
                 f"{_PREFIX}{e} ({period['period_code']} of FY{period['fiscal_year']}): "
@@ -129,11 +137,26 @@ class BusinessCombination(Document):
             "is_published_leaf": self._is_published_leaf,
         }
         found = problems(self, self._lines("consideration"), self._lines("acquired_balances"),
-                         self._lines("costs"), root, facts)
+                         self._lines("costs"), policy, facts)
+        found = self._us_gaap_nci_problems(root, found)
         found += self._fva_total_problems()
         found += self._amendment_problems(root)
         if found:
             frappe.throw("<br>".join(found))
+
+    def _us_gaap_nci_problems(self, root, found):
+        """US GAAP measures NCI at fair value (konsol#205): a deal measured
+        partial under a US GAAP group is refused with the group rule's wording,
+        once, in this deal's name. The model's policy check sees the value in
+        force and reports it as the Consolidation Policy's; when this deal's
+        override is what says partial, that sentence is replaced by one that
+        names the field to change."""
+        if root.get("accounting_framework") != "US GAAP" or self.nci_measurement != "partial":
+            return found
+        if not self.get("nci_measurement_override"):
+            return found  # the group's own value: the policy sentence already speaks
+        kept = [p for p in found if _US_GAAP_NCI not in p]
+        return kept + [f"{_PREFIX}{_US_GAAP_NCI}; set {_NCI_OVERRIDE_LABEL} to Full."]
 
     def _fva_total_problems(self):
         """A declared Fair Value Adjustment Total is what the lines' fair value
