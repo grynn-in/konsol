@@ -66,6 +66,54 @@ class ReportingHierarchyMember(Document):
         # such, not as a parent that doesn't cover it.
         self._validate_no_cycles()
         self._validate_parent_window()
+        self._validate_children_keep_parent()
+
+    def on_trash(self):
+        self._check_children_of(self.member_code, None)
+
+    def _validate_children_keep_parent(self):
+        """A saved row whose code or window changes may leave a child of its
+        OLD code uncovered: shortening one tranche, or moving it to another
+        code, can open a gap no other tranche fills."""
+        before = None if self.is_new() else self.get_doc_before_save()
+        if not before:
+            return
+        old_code = before.member_code
+        old_window = _window(before.effective_from, before.effective_to)
+        if old_code == self.member_code and old_window == self._window():
+            return
+        self._check_children_of(
+            old_code, self._window() if old_code == self.member_code else None
+        )
+
+    def _check_children_of(self, code, replacement):
+        """Every member whose parent row has ``code`` must stay covered by
+        that code's tranches, with this row's window swapped for
+        ``replacement`` (None: this row no longer counts). The table still
+        holds this row's saved values here, in validate() and on_trash."""
+        rows = frappe.get_all(
+            "Reporting Hierarchy Member",
+            filters={"reporting_hierarchy": self.reporting_hierarchy},
+            fields=["name", "member_code", "parent_member",
+                    "effective_from", "effective_to"],
+        )
+        code_of = {r.name: r.member_code for r in rows}
+        windows = [_window(r.effective_from, r.effective_to)
+                   for r in rows if r.member_code == code and r.name != self.name]
+        if replacement:
+            windows.append(replacement)
+        for child in rows:
+            if child.name == self.name or code_of.get(child.parent_member) != code:
+                continue
+            gaps = _uncovered(
+                *_window(child.effective_from, child.effective_to), windows
+            )
+            if gaps:
+                frappe.throw(
+                    f"{child.member_code} ({child.name}) would lose its parent "
+                    f"{code} for {', '.join(_span(a, b) for a, b in gaps)}. "
+                    "Change or end that row first."
+                )
 
     def _validate_parent_scope(self):
         if not self.parent_member:
