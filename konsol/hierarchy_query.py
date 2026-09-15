@@ -52,20 +52,13 @@ def _normalize_scenario(scenario):
 
 
 def _clickhouse_query(sql, params, ch_settings):
-    from konsol.clickhouse import connection_url as _ch_url
+    """The flat path's api._clickhouse_query, so both paths report a failed
+    query the same way: ClickHouse's reply logged, its code and exception
+    name raised as api.ClickHouseQueryError (konsol#214 row K8). Imported
+    here, not at load: api imports this module in its functions."""
+    from konsol.api import _clickhouse_query as run
 
-    url = _ch_url(ch_settings)
-    query_params = dict(params)
-    query_params["query"] = sql
-    resp = requests.get(
-        url,
-        params=query_params,
-        auth=(ch_settings["user"], ch_settings["password"]),
-        timeout=30,
-        verify=ch_settings.get("verify", True),
-    )
-    resp.raise_for_status()
-    return resp.text.strip()
+    return run(sql, params, ch_settings)
 
 
 def entity_is_wildcard(entity):
@@ -482,12 +475,20 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             for idx, _ in group_items:
                 values[idx] = None
                 errors[idx] = "ClickHouse connection failed"
-        except Exception:
-            import frappe
-            frappe.log_error("Hierarchy ClickHouse query failed", frappe.get_traceback())
+        except Exception as exc:
+            from konsol.api import ClickHouseQueryError
+
+            if isinstance(exc, ClickHouseQueryError):
+                # already logged with ClickHouse's reply; the message is its
+                # code and exception name only (row K7)
+                message = str(exc)
+            else:
+                import frappe
+                frappe.log_error("Hierarchy ClickHouse query failed", frappe.get_traceback())
+                message = "ClickHouse query failed"
             for idx, _ in group_items:
                 values[idx] = None
-                errors[idx] = "ClickHouse query failed"
+                errors[idx] = message
 
     result = {"values": values}
     if any(e is not None for e in errors):
