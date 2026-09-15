@@ -3,8 +3,8 @@
 With the Build Approval Workflow active, before_save no longer moves a new
 Draft row on itself: after_insert loads the row fresh and takes "Request",
 so the workflow (its roles and conditions, which a site can change) decides
-where the row goes. A user with no Request transition leaves it in Draft and
-is told. A site without an active workflow keeps the old auto-transition in
+where the row goes. A workflow that offers no Request refuses the save (row
+W8). A site without an active workflow keeps the old auto-transition in
 before_save. approved_by is set when a row becomes Approved.
 """
 import contextlib
@@ -208,22 +208,51 @@ class _Site:
                 else:
                     sys.modules[m] = old
 
-    def insert(self, scope, name="ZZ-BA-0001"):
+    def insert(self, scope, name="ZZ-BA-0001", after_insert_script=None):
         """Document.insert: before_save, write the row, after_insert, then
-        run_post_save_methods (on_update) on the same instance."""
+        run_post_save_methods (on_update) on the same instance.
+
+        v15 sets flags.in_insert around before_save and on_update, and clears
+        it for after_insert (document.py ~308-335). ``after_insert_script``
+        runs after the controller's after_insert, as a server script does.
+        An exception rolls the whole insert back."""
         doc = self.BuildApproval(before=None, new=True, name=name, build_scope=scope,
                                  workflow_state="Draft", approved_by=None, requested_by=None,
                                  rebuild_requested=0, error_message=None, started_at=None)
         self.inserted = doc
-        with self.installed():
-            doc.before_save()
-            self.state_after_before_save = doc.workflow_state
-            self.rows[name] = copy.deepcopy(doc.fields())
-            doc._new = False
-            if hasattr(doc, "after_insert"):
-                doc.after_insert()
-            doc.on_update()
+        snapshot = copy.deepcopy(self.rows)
+        try:
+            with self.installed():
+                doc.flags.in_insert = True
+                doc.before_save()
+                doc.flags.in_insert = False
+                self.state_after_before_save = doc.workflow_state
+                self.rows[name] = copy.deepcopy(doc.fields())
+                doc._new = False
+                if hasattr(doc, "after_insert"):
+                    doc.after_insert()
+                if after_insert_script:
+                    after_insert_script(doc)
+                doc.flags.in_insert = True
+                doc.on_update()
+                doc.flags.in_insert = False
+        except Exception:
+            self.rows.clear()
+            self.rows.update(snapshot)
+            raise
         return self.rows[name]
+
+
+NO_REQUEST = "The Build Approval Workflow offers no Request for this {} build; check its Request transitions."
+
+
+def _raised(fn, *a, **k):
+    """The message fn raised, or None."""
+    try:
+        fn(*a, **k)
+    except Exception as e:  # noqa: BLE001 - frappe.throw's class is the stub's
+        return str(e)
+    return None
 
 
 # --- with the workflow active -----------------------------------------------
@@ -269,14 +298,15 @@ def test_the_workflow_lookup_is_the_active_build_approval_workflow():
     assert WORKFLOW_QUERY in site.queries
 
 
-def test_a_workflow_without_a_request_transition_leaves_the_row_in_draft_and_is_told():
-    """Request is konsol's step, taken as Administrator (row W6): only a site
-    whose workflow offers no Request at all leaves the row in Draft."""
+def test_a_workflow_without_a_request_transition_refuses_the_insert():
+    """Request is konsol's step, taken as Administrator (row W6), so only a
+    site whose workflow offers no Request at all gets here. A Draft row would
+    absorb every later request for its scope (row W8): the insert fails, loudly."""
     site = _Site(request=False)
-    row = site.insert("actuals")
-    assert row["workflow_state"] == "Draft"
+    assert _raised(site.insert, "actuals") == NO_REQUEST.format("actuals")
+    assert site.rows == {}, "the insert rolls back: nothing is committed in Draft"
     assert site.applied == [], "no Request transition: apply_workflow must not be called"
-    assert site.messages == ["You may not request a actuals build."]
+    assert site.messages == []
 
 
 # --- without an active workflow: the old behaviour ----------------------------
@@ -333,21 +363,32 @@ def test_a_save_that_does_not_change_the_state_does_not_set_an_approver():
 
 # --- Run Again under the workflow (konsol#215 row W4) ----------------------------
 
-def _run_again(state, started_at, rebuild_requested=1, scope="actuals", name="ZZ-BA-0004", **site_args):
+def _run_again(state, started_at, rebuild_requested=1, scope="actuals", name="ZZ-BA-0004", catch=False,
+               **site_args):
     """A finished row, loaded fresh, taken back to Draft by the Run Again transition.
 
     Since row W7 the Run Again save's on_update then takes Request, so the
     row does not rest in Draft; before_save itself still leaves it Draft
-    (site.saved_states[0])."""
+    (site.saved_states[0]). ``catch``: an exception rolls the save back and
+    its message is kept in site.error."""
     site = _Site(**site_args)
     site.rows[name] = dict(name=name, build_scope=scope, risk_level=None, workflow_state=state,
                            approved_by="zz.old@example.com", requested_by="zz.analyst@example.com",
                            rebuild_requested=rebuild_requested, error_message="ZZ old error",
                            started_at=started_at, completed_at="2026-09-01 10:05:00" if started_at else None,
                            duration_seconds=300 if started_at else 0)
+    snapshot = copy.deepcopy(site.rows)
+    site.error = None
     with site.installed():
         site.instance = site.frappe.get_doc("Build Approval", name)
-        site.frappe.model.workflow.apply_workflow(site.instance, "Run Again")
+        try:
+            site.frappe.model.workflow.apply_workflow(site.instance, "Run Again")
+        except Exception as e:  # noqa: BLE001 - frappe.throw's class is the stub's
+            if not catch:
+                raise
+            site.rows.clear()
+            site.rows.update(snapshot)
+            site.error = str(e)
     return site.rows[name], site
 
 
@@ -447,8 +488,8 @@ def test_the_build_is_enqueued_once_by_the_request_not_again_by_the_outer_save()
 
 
 def test_the_outer_on_update_returns_early_once_and_the_flag_is_spent():
-    """frappe's load_from_db keeps flags, and control_api saves the same
-    instance again (Approve): that later save must still enqueue."""
+    """control_api saves the same instance again after the insert (Approve):
+    that later save must still enqueue (row W8: in_insert is False by then)."""
     site = _Site(user="zz.admin@example.com", roles=("EPM Admin",))
     site.insert("actuals")
     assert site.enqueued == []
@@ -515,10 +556,13 @@ def test_the_run_again_instance_holds_the_new_state_and_no_spent_flag():
     assert not site.instance.flags.get("request_applied")
 
 
-def test_run_again_on_a_site_without_request_stays_draft_and_is_told():
-    row, site = _run_again("Failed", "2026-09-01 10:00:00", request=False)
-    assert row["workflow_state"] == "Draft"
-    assert site.messages == ["You may not request a actuals build."]
+def test_run_again_on_a_site_without_request_is_refused_and_rolled_back():
+    """Row W8: a Run Again that can't take Request would leave the row in
+    Draft, absorbing every later request for its scope."""
+    row, site = _run_again("Failed", "2026-09-01 10:00:00", request=False, catch=True)
+    assert site.error == NO_REQUEST.format("actuals")
+    assert row["workflow_state"] == "Failed", "the Run Again save rolls back"
+    assert site.messages == []
 
 
 def test_a_save_of_a_draft_row_that_was_already_draft_takes_no_request():
@@ -532,3 +576,36 @@ def test_a_save_of_a_draft_row_that_was_already_draft_takes_no_request():
         site.frappe.get_doc("Build Approval", name).save()
     assert site.rows[name]["workflow_state"] == "Draft"
     assert site.applied == []
+
+
+# --- a Request not offered fails loudly; the insert is known by in_insert (row W8) ---
+
+def test_a_server_script_saving_the_inserted_row_does_not_double_the_enqueue_or_notice():
+    """A second save of the same instance inside the insert (a server script
+    on after_insert) must not make the insert's own on_update act again."""
+    site = _Site()
+    site.insert("staging", after_insert_script=lambda doc: doc.save())
+    assert site.enqueued == ["ZZ-BA-0001"]
+    assert site.published == []
+    site = _Site()
+    site.insert("actuals", after_insert_script=lambda doc: doc.save())
+    assert site.enqueued == []
+    assert site.published == [("build_request_pending", {"name": "ZZ-BA-0001", "scope": "actuals"})]
+
+
+def test_the_insert_is_recognised_by_in_insert_not_a_one_shot_flag():
+    with open(BA_PY) as f:
+        source = f.read()
+    assert "request_applied" not in source, "the one-shot flag is gone"
+    assert "self.flags.in_insert" in source
+
+
+def test_without_a_workflow_the_insert_still_enqueues_or_notifies_once():
+    """The in_insert early return is the workflow's: without one, before_save
+    moved the row and the insert's own on_update does the work."""
+    site = _Site(workflow=False)
+    site.insert("staging")
+    assert site.enqueued == ["ZZ-BA-0001"]
+    site = _Site(workflow=False)
+    site.insert("actuals")
+    assert site.published == [("build_request_pending", {"name": "ZZ-BA-0001", "scope": "actuals"})]
