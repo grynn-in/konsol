@@ -100,6 +100,28 @@ def choose_member(node_code, hierarchy_name, members):
     return members[0], None
 
 
+def current_tranche(members, today):
+    """The tranche of ONE code that applies on ``today`` (konsol#220).
+
+    A renamed or moved node is several dated rows of one code. The row whose
+    window covers ``today`` is the answer (a blank ``effective_from`` means
+    1900-01-01, a blank ``effective_to`` means still open); when none does,
+    the row with the latest ``effective_from``. None for no rows.
+    """
+    if not members:
+        return None
+    today = str(today)
+
+    def start(m):
+        return str(m.get("effective_from") or "1900-01-01")
+
+    for m in members:
+        end = m.get("effective_to")
+        if start(m) <= today and (not end or today <= str(end)):
+            return m
+    return max(members, key=start)
+
+
 def resolve_hierarchy_name(hierarchy_name, node_code):
     """The tree to read: the one named, else the only published tree holding
     the node. A node in several published trees is an error that names them."""
@@ -151,12 +173,16 @@ def get_hierarchy_member(hierarchy_name, node_code):
     if header.status != "Published":
         return None, f"Reporting Hierarchy '{hierarchy_name}' is not published"
 
-    member, err = choose_member(node_code, hierarchy_name, frappe.get_all(
+    # Every row here shares the code; the dated tranches of one node are not
+    # duplicates, so only the one of today goes on (konsol#220).
+    rows = frappe.get_all(
         "Reporting Hierarchy Member",
         filters={"reporting_hierarchy": header.name, "member_code": node_code},
-        fields=["member_code", "member_label", "is_group"],
+        fields=["member_code", "member_label", "is_group", "effective_from", "effective_to"],
         order_by="name asc",
-    ))
+    )
+    tranche = current_tranche(rows, frappe.utils.today())
+    member, err = choose_member(node_code, hierarchy_name, [tranche] if tranche else [])
     if err:
         return None, err
     return {
