@@ -420,6 +420,7 @@ def run_governed_build(build_request):
     try:
         # Inside the try: an import that fails is a start failure too, not a
         # job that dies leaving the row Approved for the reaper (#140).
+        from konsol.build_lock import build_writer
         from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
 
         with single_flight_lock():
@@ -430,7 +431,9 @@ def run_governed_build(build_request):
             # Starting reads every change absorbed while Approved, so their
             # flag is spent (#140); before_save allows this one clear.
             doc.rebuild_requested = 0
-            doc.save(ignore_permissions=True)
+            # As Administrator: the workflow's Start transition (konsol#215).
+            with build_writer():
+                doc.save(ignore_permissions=True)
             frappe.db.commit()
     except Exception as exc:
         # Drop whatever a failed save half-wrote. Only the Pipeline Run

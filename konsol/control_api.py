@@ -269,12 +269,30 @@ def start_process(process_id, fiscal_year=None, fiscal_period=None):
         "workflow_state": "Draft",
     })
     pbr.insert(ignore_permissions=True)
+    # after_insert took the workflow's Request on a fresh load: pick that up.
+    pbr.reload()
+    from konsol.pipeline.doctype.build_approval.build_approval import workflow_active
+
+    if not workflow_active():
+        _approve_without_workflow(pbr)
+    elif pbr.workflow_state == "Pending Review":
+        # The workflow decides who may approve (its roles, self-approval),
+        # so approve only when it offers this user the Approve transition.
+        from frappe.model.workflow import apply_workflow, get_transitions
+
+        if any(t.get("action") == "Approve" for t in get_transitions(pbr)):
+            apply_workflow(pbr, "Approve")
+    frappe.db.commit()
+    return {"ok": True, "run_kind": "pbr", "name": pbr.name, "state": pbr.workflow_state}
+
+
+def _approve_without_workflow(pbr):
+    """A site with no active Build Approval Workflow keeps the old rule: a
+    System Manager's high-risk request is approved at once."""
     if pbr.workflow_state == "Pending Review" and "System Manager" in frappe.get_roles():
         pbr.workflow_state = "Approved"
         pbr.approved_by = frappe.session.user
         pbr.save(ignore_permissions=True)
-    frappe.db.commit()
-    return {"ok": True, "run_kind": "pbr", "name": pbr.name}
 
 
 @frappe.whitelist(methods=["GET", "POST"])

@@ -11,6 +11,7 @@ as active would deactivate it.
 Definitions live beside their doctype as `<doctype>_workflow.json`. Only the
 doctypes in INSTALLED get theirs: a workflow changes how a doctype is used, so
 each is switched on deliberately. allocation_run_workflow.json is dormant.
+Build Approval's system transitions are taken by the build job as Administrator.
 """
 import glob
 import json
@@ -18,7 +19,7 @@ import os
 
 import frappe
 
-INSTALLED = ("Consolidation Adjustment", "Business Combination", "Business Disposal")
+INSTALLED = ("Consolidation Adjustment", "Business Combination", "Business Disposal", "Build Approval")
 
 #: The roles an earlier release shipped in each workflow. A site whose
 #: workflow still carries exactly these, on exactly our states and
