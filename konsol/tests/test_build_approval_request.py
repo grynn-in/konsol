@@ -334,3 +334,24 @@ def test_run_again_of_a_low_risk_row_stays_draft_too():
     row, offered = _run_again("Completed", "2026-09-01 10:00:00", scope="staging")
     assert row["workflow_state"] == "Draft"
     assert "Request" in offered
+
+
+# --- a row run again gets a fresh approver (konsol#215 row W3b) -------------------
+
+def test_a_row_run_again_clears_its_old_approver_and_records_the_next_one():
+    site = _Site(user="zz.admin@example.com", roles=("EPM Admin",))
+    name = "ZZ-BA-0005"
+    site.rows[name] = dict(name=name, build_scope="actuals", risk_level="high", workflow_state="Completed",
+                           approved_by="zz.old@example.com", requested_by="zz.analyst@example.com",
+                           rebuild_requested=0, error_message=None, started_at="2026-09-01 10:00:00",
+                           completed_at="2026-09-01 10:05:00", duration_seconds=300)
+    wf = site.frappe.model.workflow
+    with site.installed():
+        wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Run Again")
+        assert site.rows[name]["workflow_state"] == "Draft"
+        assert site.rows[name]["approved_by"] is None, "the reset must clear the old run's approver"
+        wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Request")
+        assert site.rows[name]["workflow_state"] == "Pending Review"
+        wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Approve")
+    assert site.rows[name]["workflow_state"] == "Approved"
+    assert site.rows[name]["approved_by"] == "zz.admin@example.com"
