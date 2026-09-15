@@ -487,15 +487,38 @@ def _get_or_create_sheet(cycle_name, data, layer):
 # ---------------------------------------------------------------------------
 
 class ClickHouseQueryError(Exception):
-    """ClickHouse answered with an HTTP error; the message carries its reason."""
+    """ClickHouse answered with an HTTP error; the message carries its code."""
+
+
+_CH_ERROR_CODE = re.compile(r"^Code:\s*(\d+)")
+_CH_EXCEPTION_NAME = re.compile(r"\(([A-Z][A-Z0-9_]*)\)")
+
+
+def _clickhouse_error_message(body):
+    """The message a user sees for a failed ClickHouse query.
+
+    Only ClickHouse's error code and exception name, e.g.
+    "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)": the rest of its first
+    line can carry table names, SQL, the server version or the user name, so
+    that stays in the log (konsol#214 row K7).
+    """
+    first_line = (body or "").strip().split("\n", 1)[0]
+    code = _CH_ERROR_CODE.match(first_line)
+    if not code:
+        return "ClickHouse query failed"
+    names = _CH_EXCEPTION_NAME.findall(first_line)
+    if names:
+        return f"ClickHouse query failed ({code.group(1)}: {names[-1]})"
+    return f"ClickHouse query failed ({code.group(1)})"
 
 
 def _clickhouse_query(sql, params, ch_settings):
     """Execute a single ClickHouse HTTP query. Returns response text or raises.
 
-    On an HTTP error, ClickHouse's response text is logged and its first line
-    (e.g. "Code: 47. ... Unknown expression identifier ...") goes into the
-    raised ClickHouseQueryError, so the caller can show why (konsol#214).
+    On an HTTP error, ClickHouse's response text is logged and the raised
+    ClickHouseQueryError carries its error code and exception name only
+    (e.g. "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"), so the caller
+    can show why without leaking the query's detail (konsol#214).
     """
     url = _ch_url(ch_settings)
     query_params = dict(params)
@@ -513,8 +536,7 @@ def _clickhouse_query(sql, params, ch_settings):
     except requests.exceptions.HTTPError as exc:
         body = resp.text or ""
         frappe.log_error("ClickHouse query failed", body[:1000])
-        first_line = body.strip().split("\n", 1)[0][:300] or str(exc)[:300]
-        raise ClickHouseQueryError(f"ClickHouse query failed: {first_line}") from exc
+        raise ClickHouseQueryError(_clickhouse_error_message(body)) from exc
     return resp.text.strip()
 
 
