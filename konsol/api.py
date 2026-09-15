@@ -1090,12 +1090,22 @@ def epm_batch():
             errors_list[i] = f"Invalid period '{req.get('period')}'"
             continue
 
+        # A missing, non-integer or non-positive year (e.g. JSON null from a
+        # blank Excel cell) fails only this row — not raise and 500 the whole
+        # batch, and not read as FY0.
+        raw_year = req.get("year")
+        if raw_year is None or raw_year == "":
+            errors_list[i] = "Invalid year"
+            continue
         try:
-            year = int(req.get("year", 0))
+            if isinstance(raw_year, bool) or (
+                    isinstance(raw_year, float) and not raw_year.is_integer()):
+                raise ValueError(raw_year)
+            year = int(req.get("year"))
+            if year < 1:
+                raise ValueError(year)
         except (ValueError, TypeError):
-            # A non-numeric year (e.g. JSON null from a blank Excel cell)
-            # must fail only this row — not raise and 500 the whole batch.
-            errors_list[i] = f"Invalid year '{req.get('year')}'"
+            errors_list[i] = f"Invalid year '{raw_year}'"
             continue
 
         entity = req.get("entity", "")
