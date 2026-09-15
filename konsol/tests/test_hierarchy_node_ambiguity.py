@@ -111,17 +111,27 @@ class _Thrown(Exception):
 def _member_controller(existing):
     """Load the member controller against a stub frappe, under a private
     module name so the real one in sys.modules is never replaced by a
-    stub-bound copy. ``existing`` maps (tree, code) to the name of a member
-    already holding that code."""
+    stub-bound copy. ``existing`` is a list of member rows already saved
+    (name, reporting_hierarchy, member_code, effective_from, effective_to)."""
     import importlib.util
     import os
 
     calls = []
 
-    def exists(doctype, filters):
+    def _hits(filters):
         calls.append(filters)
-        hit = existing.get((filters["reporting_hierarchy"], filters["member_code"]))
-        return hit if hit and hit != filters["name"][1] else None
+        return [r for r in existing
+                if r["reporting_hierarchy"] == filters["reporting_hierarchy"]
+                and r["member_code"] == filters["member_code"]
+                and r["name"] != filters["name"][1]]
+
+    def exists(doctype, filters):
+        hits = _hits(filters)
+        return hits[0]["name"] if hits else None
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        return [types.SimpleNamespace(**{f: r.get(f) for f in fields or ["name"]})
+                for r in _hits(filters)]
 
     def throw(msg, *a, **k):
         raise _Thrown(msg)
@@ -130,6 +140,7 @@ def _member_controller(existing):
     document.Document = object
     fake = types.ModuleType("frappe")
     fake.db = types.SimpleNamespace(exists=exists)
+    fake.get_all = get_all
     fake.throw = throw
     fake.scrub = lambda s: s.strip().lower().replace(" ", "_").replace("-", "_")
     mods = {"frappe": fake, "frappe.model": types.ModuleType("frappe.model"),
@@ -155,7 +166,8 @@ def _member_controller(existing):
 def _member(mod, **fields):
     m = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
     base = {"name": "new1", "reporting_hierarchy": "MGMT_2026", "member_code": "",
-            "member_label": "", "is_group": 0}
+            "member_label": "", "is_group": 0, "effective_from": "2017-01-01",
+            "effective_to": None}
     base.update(fields)
     m.__dict__.update(base)
     return m
@@ -175,20 +187,30 @@ def _validate(mod, fake, member):
 
 
 def test_group_code_must_be_unique_in_its_tree():
-    mod, fake, calls = _member_controller({("MGMT_2026", "DACH"): "abc123"})
+    """A code identifies one node per period (konsol#220): K.EPM's node
+    argument and the warehouse rollup find a node by code and date, so two
+    rows of one code may not overlap. Adjacent rows (a rename) are fine."""
+    held = {"name": "abc123", "reporting_hierarchy": "MGMT_2026", "member_code": "DACH",
+            "effective_from": "2017-01-01", "effective_to": "2024-12-31"}
+    mod, fake, calls = _member_controller([held])
     try:
-        _validate(mod, fake, _member(mod, is_group=1, member_code="DACH", member_label="DACH"))
-        raise AssertionError("duplicate group code saved")
+        _validate(mod, fake, _member(mod, is_group=1, member_code="DACH",
+                                     member_label="DACH", effective_from="2024-06-01"))
+        raise AssertionError("overlapping group code saved")
     except _Thrown as e:
-        assert "already exists" in str(e) and "abc123" in str(e)
+        assert "already has a row covering" in str(e) and "(abc123)" in str(e)
+    # the next tranche of the code starts the day after the old one ends
+    _validate(mod, fake, _member(mod, is_group=1, member_code="DACH",
+                                 member_label="DACH renamed", effective_from="2025-01-01"))
     # the check excludes the member itself, so re-saving it is fine
     _validate(mod, fake, _member(mod, name="abc123", is_group=1, member_code="DACH",
-                                 member_label="DACH renamed"))
+                                 member_label="DACH renamed", effective_from="2017-01-01",
+                                 effective_to="2024-12-31"))
     assert calls[-1]["name"] == ["!=", "abc123"]
 
 
 def test_group_auto_code_and_blank_label():
-    mod, fake, _ = _member_controller({})
+    mod, fake, _ = _member_controller([])
     m = _member(mod, is_group=1, member_label="Other regions")
     _validate(mod, fake, m)
     assert m.member_code == "OTHER_REGIONS"
@@ -199,7 +221,7 @@ def test_group_auto_code_and_blank_label():
 
 
 def test_leaf_needs_a_code():
-    mod, fake, _ = _member_controller({})
+    mod, fake, _ = _member_controller([])
     try:
         _validate(mod, fake, _member(mod, member_label="BU 1"))
         raise AssertionError("leaf without code saved")
