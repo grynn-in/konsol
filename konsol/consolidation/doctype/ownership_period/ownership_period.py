@@ -38,6 +38,26 @@ _OPEN_ENDED = _CH_DATE_MAX
 # konsol #112).
 _BLANK = ["is", "not set"]
 
+#: The deal figures (konsolidat#198). They are filled by the Business
+#: Combination that opens a period or the Business Disposal that closes it,
+#: under ``frappe.flags.from_business_combination``; typed here they would be a
+#: second, unreviewed source for the same numbers.
+DEAL_DATE_FIELDS = ("acquisition_date", "disposal_date")
+DEAL_AMOUNT_FIELDS = ("is_first_acquisition", "acquisition_price", "fair_value_adjustment",
+                      "is_disposal", "disposal_price")
+DEAL_FIELDS = DEAL_DATE_FIELDS + DEAL_AMOUNT_FIELDS
+
+
+def _deal_value(field, value):
+    """Compared normalised: the saved document comes from the database (ints,
+    floats, date objects, NULL as None) while the form posts strings and "",
+    and "0" versus 0, or "" versus None, is not a change."""
+    if value in (None, ""):
+        return None if field in DEAL_DATE_FIELDS else 0.0
+    if field in DEAL_DATE_FIELDS:
+        return getdate(value)
+    return float(value)
+
 
 class OwnershipPeriod(Document):
     CH_TABLE = "epm_staging.ownership_periods"
@@ -58,6 +78,7 @@ class OwnershipPeriod(Document):
     }
 
     def validate(self):
+        self._validate_deal_fields_untouched()
         self._validate_node_exists()
         self._validate_pct_range()
         self._validate_dates_representable()
@@ -93,6 +114,32 @@ class OwnershipPeriod(Document):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     # -- validation ---------------------------------------------------------
+
+    def _validate_deal_fields_untouched(self):
+        """The deal fields belong to the deal documents (konsolidat#198 P8).
+
+        A Business Combination computes the price and the fair value
+        adjustments from declared consideration and acquired balances, under
+        approval; a Business Disposal does the same for the disposal. Those
+        documents write the figures onto this period under
+        ``frappe.flags.from_business_combination`` (create, update-and-submit,
+        or ``db_set`` on a submitted period — and the reset to blanks when a
+        disposal is cancelled). A patch (``frappe.flags.in_patch``) carries old
+        rows across. Any other change to them is refused: a new period may not
+        carry deal figures, and a saved one may not have them edited.
+        """
+        if frappe.flags.from_business_combination or frappe.flags.in_patch:
+            return
+        before = self.get_doc_before_save()
+        changed = [
+            field for field in DEAL_FIELDS
+            if _deal_value(field, self.get(field))
+            != _deal_value(field, before.get(field) if before is not None else None)
+        ]
+        if changed:
+            frappe.throw(
+                "Record the acquisition as a Business Combination (or the disposal as a Business Disposal); these fields are filled from it."
+            )
 
     def _node(self):
         """The Consolidation Group node this period describes, or None."""

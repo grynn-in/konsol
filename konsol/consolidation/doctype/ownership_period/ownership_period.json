@@ -79,14 +79,16 @@
    "fieldname": "acquisition_date",
    "fieldtype": "Date",
    "label": "Acquisition Date",
-   "description": "Date of step acquisition"
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   },
   {
    "fieldname": "is_first_acquisition",
    "fieldtype": "Check",
    "label": "First Acquisition",
    "default": "0",
-   "description": "Check if this is the initial acquisition (triggers goodwill calculation)"
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   },
   {
    "fieldname": "col_break_acq",
@@ -96,13 +98,17 @@
    "fieldname": "acquisition_price",
    "fieldtype": "Currency",
    "label": "Acquisition Price",
-   "default": "0"
+   "default": "0",
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   },
   {
    "fieldname": "fair_value_adjustment",
    "fieldtype": "Currency",
    "label": "Fair Value Adjustment",
-   "default": "0"
+   "default": "0",
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   },
   {
    "fieldname": "tab_disposal",
@@ -118,18 +124,24 @@
    "fieldname": "is_disposal",
    "fieldtype": "Check",
    "label": "Is Disposal",
-   "default": "0"
+   "default": "0",
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   },
   {
    "fieldname": "disposal_date",
    "fieldtype": "Date",
-   "label": "Disposal Date"
+   "label": "Disposal Date",
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   },
   {
    "fieldname": "disposal_price",
    "fieldtype": "Currency",
    "label": "Disposal Price",
-   "default": "0"
+   "default": "0",
+   "read_only": 1,
+   "description": "Set by the Business Combination / Business Disposal that created this period."
   }
  ],
  "permissions": [
