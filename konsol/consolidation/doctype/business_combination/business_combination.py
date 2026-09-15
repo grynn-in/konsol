@@ -296,7 +296,12 @@ class BusinessCombination(Document):
         The link wins over the date: a migrated deal is dated by its source
         period's own ``acquisition_date``, which may differ from the period's
         ``effective_date``; matching by date would insert a second period
-        overlapping the linked one."""
+        overlapping the linked one.
+
+        The deal owns the period it created OR submitted (``created``): a
+        Draft period the approval submits has no approval behind it but this
+        one, so undoing the approval cancels it again rather than leaving a
+        submitted period standing with four blanked fields."""
         existing = self._linked_period() or self._period_on_the_acquisition_date()
         deal_fields = {
             "acquisition_date": self.acquisition_date,
@@ -322,19 +327,28 @@ class BusinessCombination(Document):
                         "effective_date": self.acquisition_date,
                     })
                     period.submit()
+                    created = True
                 else:
                     for field, value in deal_fields.items():
                         period.db_set(field, value)
                     sync_doctype_after_commit("Ownership Period", period.CH_TABLE, period.CH_FIELD_MAP)
             else:
-                period = frappe.get_doc({
+                new_period = {
                     "doctype": "Ownership Period",
                     **node,
                     "effective_date": self.acquisition_date,
                     "ownership_pct": self.share_acquired_pct,
                     "consolidation_method": self._consolidation_method(),
                     **deal_fields,
-                })
+                }
+                # A period this node already had on this date and cancelled
+                # since (approve → cancel → amend → approve) still holds the
+                # format: name; recorded as its amendment, the new one is
+                # named after it (…-1) instead of colliding with it.
+                cancelled = self._cancelled_period_on_the_acquisition_date()
+                if cancelled:
+                    new_period["amended_from"] = cancelled
+                period = frappe.get_doc(new_period)
                 period.insert()
                 period.submit()
                 created = True
@@ -348,14 +362,14 @@ class BusinessCombination(Document):
 
     def _undo_ownership_period(self):
         """Cancelling the approval undoes what ``_ensure_ownership_period``
-        did to the linked Ownership Period. A period this deal CREATED is
-        cancelled again (its own ``before_cancel`` keeps the closed-period
-        gate, its own ``on_cancel`` re-syncs it); a period that pre-existed
-        and only received the deal's figures keeps standing and gets the four
-        deal fields cleared, with its own re-sync. Both under the flag the
-        period's guard reads. No link, or a period deleted, Draft or already
-        cancelled since: nothing to undo, skip (the cancel must still go
-        through)."""
+        did to the linked Ownership Period. A period this deal CREATED or
+        SUBMITTED is cancelled again (its own ``before_cancel`` keeps the
+        closed-period gate, its own ``on_cancel`` re-syncs it); a period that
+        was already submitted and only received the deal's figures keeps
+        standing and gets the four deal fields cleared, with its own re-sync.
+        Both under the flag the period's guard reads. No link, or a period
+        deleted, Draft or already cancelled since: nothing to undo, skip (the
+        cancel must still go through)."""
         name = self.get("ownership_period")
         if not name or not frappe.db.exists("Ownership Period", {"name": name, "docstatus": 1}):
             return
@@ -405,6 +419,22 @@ class BusinessCombination(Document):
             ["name", "docstatus"],
             as_dict=True,
         )
+
+    def _cancelled_period_on_the_acquisition_date(self):
+        """The name of the latest CANCELLED Ownership Period of this node on
+        the acquisition date (an earlier approval of this deal, undone), or
+        None. Latest by name: each amendment is named after the last
+        (…-1, …-2), so the newest sorts last."""
+        rows = frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group,
+                     "data_area_id": self.acquired_entity,
+                     "effective_date": self.acquisition_date, "docstatus": 2},
+            fields=["name"],
+            order_by="name desc",
+            limit_page_length=1,
+        )
+        return rows[0].name if rows else None
 
     def _is_first_acquisition(self, existing=None):
         """No earlier submitted Ownership Period for this entity in this group.

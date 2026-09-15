@@ -86,7 +86,7 @@
    "label": "Created the Ownership Period",
    "read_only": 1,
    "no_copy": 1,
-   "description": "Set on approval when this deal created the Ownership Period rather than linking one that already existed. Cancelling the deal then cancels that period; a pre-existing period only has its deal fields cleared."
+   "description": "Set on approval when this deal created or submitted the period, rather than linking one already approved. Cancelling the deal then cancels that period; an already-approved period only has its deal fields cleared."
   },
   {
    "fieldname": "consideration_section",

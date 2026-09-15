@@ -142,6 +142,16 @@
    "default": "0",
    "read_only": 1,
    "description": "Set by the Business Disposal that closed this period."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "options": "Ownership Period",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
   }
  ],
  "permissions": [
