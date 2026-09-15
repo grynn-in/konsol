@@ -127,6 +127,13 @@
    "description": "The purchase price allocation's total step-up from book to fair value, in the acquired entity's currency. Get Balances from Trial Balance places it on the lines; the lines must add up to it."
   },
   {
+   "fieldname": "fair_value_allocation_profile",
+   "fieldtype": "Link",
+   "label": "Fair Value Allocation Profile",
+   "options": "Fair Value Allocation Profile",
+   "description": "Optional. Spreads the Fair Value Adjustment Total over accounts when you Get Balances from Trial Balance; without it the total goes to the group's Fair Value Adjustment Account."
+  },
+  {
    "fieldname": "balance_sheet_source",
    "fieldtype": "Small Text",
    "label": "Balance Sheet Source",

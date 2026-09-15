@@ -32,7 +32,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import add_months, getdate, nowdate
 
-from konsol.business_combination_model import derive_acquired_balances, problems, totals
+from konsol.business_combination_model import derive_acquired_balances, problems, split_by_weights, totals
 from konsol.clickhouse import execute, sync_doctype_after_commit
 from konsol.consolidation.doctype.business_combination_acquired_balance.business_combination_acquired_balance import (  # noqa: E501
     BusinessCombinationAcquiredBalance,
@@ -588,11 +588,13 @@ def get_balances_from_trial_balance(name):
     """Replace a Draft deal's Acquired Balance Sheet with the acquired
     entity's warehouse trial balance through the acquisition period (the
     period's unclosed result folded into the chart's Retained Earnings
-    Account) and place the declared Fair Value Adjustment Total on the
-    group's Fair Value Adjustment Account; record where the lines came from
-    and save. Returns the number of lines. Nothing is guessed: a missing
-    trial balance, two retained-earnings accounts, a total with no account
-    to put it on, or rows that do not balance are refused by name."""
+    Account) and place the declared Fair Value Adjustment Total: spread by
+    the deal's Fair Value Allocation Profile when one is set (konsol#208),
+    else on the group's Fair Value Adjustment Account; record where the lines
+    came from and save. Returns the number of lines. Nothing is guessed: a
+    missing trial balance, two retained-earnings accounts, a total with no
+    account to put it on, profile weights not adding up to 100, or rows that
+    do not balance are refused by name."""
     doc = frappe.get_doc("Business Combination", name)
     doc.check_permission("write")
     if int(doc.get("docstatus") or 0) != 0:
@@ -614,8 +616,18 @@ def get_balances_from_trial_balance(name):
     retained_account = retained[0] if retained else None
 
     fva_total = Decimal(str(doc.get("fair_value_adjustment_total") or 0)).quantize(_CENT)
-    fva_lines, fva_account = [], None
-    if fva_total:
+    fva_lines, placement = [], ""
+    profile_name = doc.get("fair_value_allocation_profile")
+    if fva_total and profile_name:
+        # konsol#208: the profile's weights spread the total, to the cent.
+        profile = frappe.get_doc("Fair Value Allocation Profile", profile_name)
+        weights = [(line.main_account, line.weight) for line in (profile.lines or [])]
+        try:
+            fva_lines = split_by_weights(fva_total, weights)
+        except ValueError as e:
+            frappe.throw(f"{e} (Fair Value Allocation Profile {profile_name})")
+        placement = f"spread by profile {profile_name} over {', '.join(a for a, _ in fva_lines)}"
+    elif fva_total:
         root = doc._root()
         fva_account = root.get("fair_value_adjustment_account")
         if not fva_account:
@@ -624,6 +636,7 @@ def get_balances_from_trial_balance(name):
                 f"Policy's Fair Value Adjustment Account on the group root {root.get('name')}; it is blank."
             )
         fva_lines = [(fva_account, fva_total)]
+        placement = f"placed on {fva_account}"
 
     rows, latest = _read_tb_through(entity, year, number)
     lines, found = derive_acquired_balances(rows, retained_account, fva_lines, label)
@@ -641,7 +654,7 @@ def get_balances_from_trial_balance(name):
     if retained_account:
         source += f" The period's result is folded into {retained_account}."
     if fva_lines:
-        source += f" Fair value adjustment {fva_total:.2f} placed on {fva_account}."
+        source += f" Fair value adjustment {fva_total:.2f} {placement}."
     doc.balance_sheet_source = source
     doc.save()
     return len(lines)

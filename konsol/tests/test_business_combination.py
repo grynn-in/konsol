@@ -1357,13 +1357,16 @@ def test_get_balances_with_a_profile_spreads_the_total_over_its_accounts():
     assert "placed on ZZ1810" not in source
 
 
-def test_get_balances_with_a_profile_does_not_need_the_policy_account():
+def test_get_balances_with_a_one_account_profile_places_the_whole_total_there():
+    # The policy's Fair Value Adjustment Account is not where the profile puts
+    # the total; it stays required by validate() for a deal with adjustments.
     site = _tb_site(profiles={"ZZ-PPA": [("ZZ1100", 100)]})
-    site.root["fair_value_adjustment_account"] = ""
     deal = _deal_for_tb(site, fair_value_allocation_profile="ZZ-PPA")
     assert M.get_balances_from_trial_balance(deal.name) == 3
     by_account = {line["main_account"]: line for line in deal.acquired_balances}
+    assert set(by_account) == {"ZZ1100", "ZZ2100", "ZZ3100"}
     assert by_account["ZZ1100"]["fair_value_adjustment"] == 930.0
+    assert "spread by profile ZZ-PPA over ZZ1100." in deal.balance_sheet_source
 
 
 def test_get_balances_refuses_a_profile_whose_weights_miss_100():

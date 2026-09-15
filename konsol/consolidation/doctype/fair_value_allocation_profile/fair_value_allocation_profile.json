@@ -1,0 +1,49 @@
+{
+ "name": "Fair Value Allocation Profile",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "field:profile_name",
+ "naming_rule": "By fieldname",
+ "title_field": "profile_name",
+ "fields": [
+  {
+   "fieldname": "profile_name",
+   "fieldtype": "Data",
+   "label": "Profile Name",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "allocation_section",
+   "fieldtype": "Section Break",
+   "label": "Allocation"
+  },
+  {
+   "fieldname": "lines",
+   "fieldtype": "Table",
+   "label": "Lines",
+   "options": "Fair Value Allocation Profile Line",
+   "description": "The share of a deal's Fair Value Adjustment Total each account receives, in percent. Weights add up to 100; each account once, a Published non-group Main Account."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  }
+ ]
+}
