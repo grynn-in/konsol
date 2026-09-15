@@ -81,7 +81,15 @@ def test_table_fields_point_at_the_three_children():
         assert fields[fn]["fieldtype"] == "Table", fn
         assert fields[fn]["options"] == child_name, fn
     assert fields["consideration"]["reqd"] == 1, "a deal has at least one consideration line"
-    assert fields["acquired_balances"].get("reqd", 0) == 0, "optional when a trial balance exists"
+    assert fields["acquired_balances"].get("reqd", 0) == 0, \
+        "an empty table is refused by validate(), not by reqd"
+    description = fields["acquired_balances"]["description"]
+    assert "otherwise the trial balance is used" not in description, (
+        "konsol#206: the Acquired Balance Sheet is always required")
+    assert description == (
+        "The entity's balance sheet at acquisition with fair value adjustments per line. "
+        "Always required: enter the acquisition-date balances, or use Get Balances from "
+        "Trial Balance.")
     assert fields["costs"].get("reqd", 0) == 0
 
 
