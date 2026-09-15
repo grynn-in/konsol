@@ -16,7 +16,6 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCTYPE_DIR = os.path.join(APP_DIR, "consolidation", "doctype")
 PARENT = "fair_value_allocation_profile"
 CHILD = "fair_value_allocation_profile_line"
-SPREAD_PROFILE_JSON = os.path.join(APP_DIR, "epm", "doctype", "spread_profile", "spread_profile.json")
 
 
 class Refused(Exception):
@@ -74,12 +73,22 @@ def test_child_is_a_table_of_account_weight_note():
     assert fields["note"]["fieldtype"] == "Data"
 
 
-def test_parent_permissions_copy_spread_profile_roles():
-    with open(SPREAD_PROFILE_JSON) as f:
-        spread = json.load(f)
-    roles = lambda meta: sorted(p["role"] for p in meta.get("permissions") or [])  # noqa: E731
-    assert roles(_json(PARENT)) == roles(spread)
-    assert roles(_json(PARENT)), "the profile must be reachable by someone"
+def _rights(meta):
+    """role -> (read, write, create, delete) of a doctype's permission rows."""
+    return {
+        p["role"]: tuple(int(p.get(right) or 0) for right in ("read", "write", "create", "delete"))
+        for p in meta.get("permissions") or []
+    }
+
+
+def test_parent_permissions_equal_consolidation_group():
+    """A profile is part of the group's deal policy: EPM Admin maintains it and
+    the EPM Analyst drafting a Business Combination must be able to read it."""
+    group = _json("consolidation_group")
+    profile = _rights(_json(PARENT))
+    assert profile == _rights(group)
+    assert profile["EPM Analyst"][0] == 1, "the analyst drafting a deal links the profile"
+    assert profile["EPM Admin"] == (1, 1, 1, 1)
 
 
 def test_not_synced_to_the_warehouse():
