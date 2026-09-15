@@ -528,8 +528,10 @@ def _batch_query_clickhouse(requests_list):
     Returns {"values": [...], "errors": [...]}.
     """
     from konsol.hierarchy_query import (
+        _active_budget_scenarios,
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
+        named_budget_scenario_error,
     )
 
     ch_settings = _get_ch_connection()
@@ -538,6 +540,7 @@ def _batch_query_clickhouse(requests_list):
     errors = [None] * n
     facts = {}  # fact_key -> Dataset (or None), resolved once per call
     budgets_by_year = None  # looked up once per call, when first needed
+    active_budgets = None  # likewise, for named budget scenarios
 
     def resolve_fact(fact_key):
         if fact_key not in facts:
@@ -552,7 +555,19 @@ def _batch_query_clickhouse(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
         scenario_id = req.get("scenario_id", "")
-        if not scenario_id:
+        if scenario_id and _SAFE_SCENARIO_ID.match(scenario_id):
+            # A named scenario must be one the dataset keeps: an active
+            # budget. Any other id (actuals, inactive, misspelled) would
+            # filter to nothing and read 0.0. An unsafe id is refused below.
+            fact = resolve_fact(fact_key)
+            if fact and _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                if active_budgets is None:
+                    active_budgets = set(_active_budget_scenarios())
+                err = named_budget_scenario_error(scenario_id, active_budgets)
+                if err:
+                    errors[idx] = err
+                    continue
+        elif not scenario_id:
             # A dataset kept per budget scenario reads exactly one: the named
             # one, else the single active budget of the row's year, else a
             # refusal that says why (konsol#214). Resolved per row, before
