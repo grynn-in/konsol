@@ -67,6 +67,41 @@ def test_build_pnl_monthly_one_row_per_caller_account():
         ]
 
 
+_LETTERS = [chr(ord("B") + i) for i in range(12)]
+
+
+def test_build_pnl_monthly_total_row_sums_every_account():
+    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS)
+    by_range = {c["range"]: c for c in spec["cells"]}
+
+    assert by_range["A6"]["values"] == [["Net Profit and Loss"]]
+    assert by_range["B6:M6"]["formulas"] == [
+        [f"=SUM({col}3:{col}5)" for col in _LETTERS]
+    ]
+
+
+def test_build_pnl_monthly_total_row_with_one_account_is_not_circular():
+    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS[:1])
+    by_range = {c["range"]: c for c in spec["cells"]}
+
+    assert by_range["A4"]["values"] == [["Net Profit and Loss"]]
+    formulas = by_range["B4:M4"]["formulas"][0]
+    assert formulas == [f"=SUM({col}3:{col}3)" for col in _LETTERS]
+    assert not any(re.search(r"[A-M]4\b", f) for f in formulas), formulas
+
+
+def test_build_pnl_monthly_has_no_gross_profit_caption():
+    for accounts in (ZZ_ACCOUNTS[:1], ZZ_ACCOUNTS[:2], ZZ_ACCOUNTS):
+        spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=accounts)
+        captions = [
+            v
+            for c in spec["cells"]
+            for line in c.get("values", [])
+            for v in line
+        ]
+        assert "Gross Profit" not in captions, captions
+
+
 def test_build_pnl_monthly_without_accounts_raises():
     message = (
         "The group chart has no Published Profit and Loss accounts, "
