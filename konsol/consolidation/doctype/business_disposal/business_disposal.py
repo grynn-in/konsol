@@ -18,9 +18,10 @@ Lifecycle: ``validate`` computes the Result and throws the model's sentences;
 ``before_submit`` re-checks the period is open and the accounts are declared;
 ``on_submit`` closes the entity's Ownership Period on the disposal date and
 writes the approved disposal to the warehouse. Submit = approval (the
-workflow); cancel only while the disposal period is open, and it reopens the
-Ownership Period the approval closed. Nothing here saves the document from a
-hook or commits.
+workflow); cancel only while the disposal period is open and no later
+Ownership Period of the entity has been approved since, and it gives the
+Ownership Period the approval closed back what it held before. Nothing here
+saves the document from a hook or commits.
 """
 import frappe
 from frappe.model.document import Document
@@ -47,6 +48,26 @@ _PREFIX = "Business Disposal: "
 
 #: The disposal as ``required_accounts`` reads it: goodwill, gain/loss, proceeds.
 _DEAL = {"kind": "disposal"}
+
+#: Reopen Data field on the disposal -> the Ownership Period field it mirrors.
+#: The approval records the period's values here before closing it; the
+#: cancel writes exactly these back (PR #202 finding 4).
+_REOPEN_FIELDS = {
+    "previous_end_date": "end_date",
+    "previous_is_disposal": "is_disposal",
+    "previous_disposal_date": "disposal_date",
+    "previous_disposal_price": "disposal_price",
+}
+
+
+def _period_value(field, value):
+    """An Ownership Period deal value as ``db_set`` should write it: a blank
+    date is None (not ""), the flag an int, the price a float."""
+    if field == "is_disposal":
+        return int(value or 0)
+    if field == "disposal_price":
+        return float(value or 0)
+    return value or None
 
 
 class BusinessDisposal(Document):
@@ -114,6 +135,7 @@ class BusinessDisposal(Document):
         period = self._disposal_period()
         assert_open(period["fiscal_year"], period["fiscal_period"],
                     action="cancel a business disposal")
+        self._assert_no_later_ownership_period()
 
     def on_cancel(self):
         self._reopen_ownership_period()
@@ -248,6 +270,11 @@ class BusinessDisposal(Document):
         frappe.flags.from_business_combination = True
         try:
             period = frappe.get_doc("Ownership Period", holding["name"])
+            # Record what the period held BEFORE the close, so a cancel can
+            # give it back exactly that (it may already have carried an end
+            # date: an ownership step planned after the disposal date).
+            for mine, theirs in _REOPEN_FIELDS.items():
+                self.db_set(mine, _period_value(theirs, period.get(theirs)))
             for field, value in fields.items():
                 period.db_set(field, value)
             sync_doctype_after_commit("Ownership Period", period.CH_TABLE, period.CH_FIELD_MAP)
@@ -257,26 +284,48 @@ class BusinessDisposal(Document):
 
     def _linked_period(self):
         """The Ownership Period this disposal links (``ownership_period``), as
-        ``{name}``, when it still exists; else None."""
+        ``{name}``, when it still exists and is submitted (only a submitted
+        period is a holding, as the Business Combination reads it); a blank,
+        deleted, Draft or cancelled link → None (the current holding is used)."""
         name = self.get("ownership_period")
-        if not name or not frappe.db.exists("Ownership Period", name):
+        if not name or not frappe.db.exists("Ownership Period", {"name": name, "docstatus": 1}):
             return None
         return {"name": name}
 
+    def _assert_no_later_ownership_period(self):
+        """Reopening the closed period under a LATER submitted Ownership
+        Period of the same node would make the two overlap (the disposal
+        ended the holding; a later period is a fresh one). The later period
+        is cancelled first — by whoever decides the disposal never happened."""
+        later = frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group,
+                     "data_area_id": self.disposed_entity, "docstatus": 1,
+                     "effective_date": [">", self.disposal_date]},
+            fields=["name"],
+            order_by="effective_date asc",
+        )
+        if later:
+            frappe.throw(
+                f"{_PREFIX}Cancel the later Ownership Period(s) first: "
+                + ", ".join(row.name for row in later)
+            )
+
     def _reopen_ownership_period(self):
         """Cancelling the approval undoes what ``_close_ownership_period`` did:
-        the linked Ownership Period is open again (no end date) and the entity
-        is no longer disposed of. Same flag, same ``db_set`` route, its own
-        re-sync. A period deleted since is nothing to reopen: skip, do not
-        throw (the cancel must still go through)."""
+        the linked Ownership Period gets back exactly the values the approval
+        recorded in the Reopen Data section (its end date, disposal flag, date
+        and price as they stood before the close), so a period that already
+        ended after the disposal date ends there again rather than being left
+        open. Same flag, same ``db_set`` route, its own re-sync. A period
+        deleted since is nothing to reopen: skip, do not throw (the cancel
+        must still go through)."""
         name = self.get("ownership_period")
         if not name or not frappe.db.exists("Ownership Period", name):
             return
         fields = {
-            "end_date": None,
-            "is_disposal": 0,
-            "disposal_date": None,
-            "disposal_price": 0,
+            theirs: _period_value(theirs, self.get(mine))
+            for mine, theirs in _REOPEN_FIELDS.items()
         }
         frappe.flags.from_business_combination = True
         try:
