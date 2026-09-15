@@ -88,6 +88,7 @@ def _load():
     ch.sync_doctype_after_commit = lambda *a, **k: None
     ps = types.ModuleType("konsol.period_status")
     ps.assert_open = lambda *a, **k: None
+    ps.assert_open_between = lambda *a, **k: None
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
@@ -207,6 +208,8 @@ class _Site:
         self.disposal_table = disposal_table
         self.inserted, self.synced, self.flag_at_insert, self.opened, self.queries = [], [], [], [], []
         self.flag_at_cancel = []
+        #: (start, end, action, end_exclusive) of every assert_open_between call
+        self.spans = []
         self._install()
 
     # -- frappe surface ----------------------------------------------------
@@ -219,6 +222,8 @@ class _Site:
         M.frappe.get_doc = self._get_doc
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
+        M.assert_open_between = (lambda start, end=None, action="run", end_exclusive=False:
+                                 site.spans.append((str(start), str(end), action, end_exclusive)))
 
     def _table_exists(self, doctype):
         return self.disposal_table if doctype == "Business Disposal" else True
@@ -858,6 +863,60 @@ def test_before_cancel_asserts_the_acquisition_period_is_open():
     deal.before_cancel()
     assert site.opened and site.opened[0][:2] == (2025, 12)
     assert "cancel" in site.opened[0][2]
+
+
+# -- the refusal names the deal, not its Ownership Period (B5) -----------------
+
+#: The submitted Ownership Period this deal's approval started, still open-ended.
+HOLDING = {"name": "OP-ZZG-ZZE-2025-12-31", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+           "effective_date": "2025-12-31", "end_date": None, "ownership_pct": 80,
+           "consolidation_method": "full", "docstatus": 1}
+
+
+def test_before_cancel_gates_the_whole_span_of_the_linked_period_in_the_deals_name():
+    """Undoing the approval cancels or clears the Ownership Period it started,
+    which changes every period from the acquisition date to the period's end
+    (today, while it is open-ended). Gating the acquisition period alone let
+    the cancel fail deeper, in the period's own before_cancel, with a sentence
+    about "an ownership period"; the same span check runs here first, with
+    this deal's own action text."""
+    site = _Site(ownership=[HOLDING])
+    _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
+    assert site.spans == [("2025-12-31", "2026-09-15", "cancel Business Combination BC-ZZG-ZZE-2025-12-31", False)]
+
+    # A period already ended: the span stops there, not today.
+    site = _Site(ownership=[dict(HOLDING, end_date="2026-06-30")])
+    _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
+    assert site.spans == [("2025-12-31", "2026-06-30", "cancel Business Combination BC-ZZG-ZZE-2025-12-31", False)]
+
+
+def test_before_cancel_refusal_over_a_closed_period_in_the_span_names_the_combination():
+    site = _Site(ownership=[HOLDING])
+
+    def closed(start, end=None, action="run", end_exclusive=False):
+        raise Refused(f"Cannot {action}: it changes fiscal period P3 of FY2026, which is closed.")
+
+    M.assert_open_between = closed
+    message = _refused(_deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel)
+    assert "Cannot cancel Business Combination BC-ZZG-ZZE-2025-12-31" in message
+    assert "P3 of FY2026" in message and "closed" in message
+    assert "ownership period" not in message.lower()
+    # The acquisition period's own gate still ran first.
+    assert site.opened and site.opened[0][:2] == (2025, 12)
+
+
+def test_before_cancel_gates_no_span_without_a_submitted_linked_period():
+    cases = [
+        (None, []),                                          # never approved with a period
+        ("OP-ZZG-ZZE-1999-01-01", []),                       # the period was deleted since
+        ("OP-ZZG-ZZE-2025-12-31", [dict(HOLDING, docstatus=0)]),  # a Draft is nothing to undo
+        ("OP-ZZG-ZZE-2025-12-31", [dict(HOLDING, docstatus=2)]),  # cancelled since
+    ]
+    for link, ownership in cases:
+        site = _Site(ownership=ownership)
+        _deal(docstatus=1, ownership_period=link).before_cancel()
+        assert site.spans == [], (link, ownership)
+        assert site.opened and site.opened[0][:2] == (2025, 12), (link, ownership)
 
 
 # -- a sold holding cannot be pulled from under its disposal (B3) --------------

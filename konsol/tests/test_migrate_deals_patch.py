@@ -15,6 +15,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import sys
 import types
 
@@ -136,6 +137,9 @@ class _Site:
         frappe.flags = types.SimpleNamespace(in_patch=True)
         frappe.ValidationError = _Refused
         frappe.DuplicateEntryError = _Duplicate
+        utils = types.ModuleType("frappe.utils")
+        utils.strip_html = lambda text: re.sub(r"<[^>]*>", "", text)  # frappe.utils.data.strip_html
+        frappe.utils = utils
         return frappe
 
     def _new(self, data):
@@ -163,23 +167,34 @@ class _Site:
         return doc
 
 
-def _run(site):
-    """Install the stub, load the patch by path under a private name, run
-    execute() with the stub installed, restore sys.modules; return stdout."""
-    saved = sys.modules.get("frappe")
-    sys.modules["frappe"] = site.module()
-    out = io.StringIO()
+def _load(site):
+    """Install the stub frappe (and frappe.utils), load the patch by path
+    under a private name, restore sys.modules; return the module. The
+    patch's names are bound to the stub at load, so it runs against the stub
+    after the restore too."""
+    frappe = site.module()
+    stubs = {"frappe": frappe, "frappe.utils": frappe.utils}
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
     try:
         spec = importlib.util.spec_from_file_location("_migrate_deals_under_test", PATCH_PY)
         patch = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(patch)
-        with contextlib.redirect_stdout(out):
-            patch.execute()
+        return patch
     finally:
-        if saved is None:
-            sys.modules.pop("frappe", None)
-        else:
-            sys.modules["frappe"] = saved
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def _run(site):
+    """Load the patch against the stub and run execute(); return stdout."""
+    patch = _load(site)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        patch.execute()
     return out.getvalue()
 
 
@@ -374,6 +389,33 @@ def test_an_error_on_the_retry_lists_the_period_as_not_migrated_instead_of_abort
     assert "OP-DUP" in out and "Duplicate entry" in out, out
     assert "0 Business Combination" in out and "0 kept with" in out, out
     _nothing_approved(site)
+
+
+def test_a_database_error_is_listed_as_its_text_not_as_a_pymysql_tuple():
+    # pymysql raises with args (errno, message); str() of that is the tuple
+    # "(1062, "Duplicate entry …")". The person reading the migrate output
+    # gets the message alone (PR #202 second review B6).
+    dup = _Duplicate(1062, "Duplicate entry 'BC-ZZ-GROUP-ZZ-SUB-2024-04-01' for key 'PRIMARY'")
+    site = _Site(periods=[{"name": "OP-DUP", "acquisition_price": 8300.0}], crash={"Business Combination": dup})
+    out = _run(site)
+    line = next(l for l in out.splitlines() if "OP-DUP" in l)
+    assert line.strip() == (
+        "not migrated: Ownership Period OP-DUP: Duplicate entry 'BC-ZZ-GROUP-ZZ-SUB-2024-04-01' for key 'PRIMARY'"
+    ), line
+    assert "1062" not in out and "(" not in line, out
+
+
+def test_plain_renders_any_error_as_one_sentence_of_text():
+    plain = _load(_Site())._plain
+    # pymysql-style (errno, message): the message only.
+    assert plain(_Duplicate(1062, "Duplicate entry 'X' for key 'PRIMARY'")) == "Duplicate entry 'X' for key 'PRIMARY'"
+    # A refusal from frappe.throw: HTML gone, <br> lines joined, whitespace collapsed.
+    assert plain(_Refused("<b>Business Combination</b>: no Closing rate<br>\n  approve one for  USD")) == (
+        "Business Combination: no Closing rate; approve one for USD")
+    # Anything else: its text, or its type when it has none.
+    assert plain(ValueError("a plain message")) == "a plain message"
+    assert plain(RuntimeError()) == "RuntimeError"
+    assert plain(_Duplicate(1062, "")) == "_Duplicate"
 
 
 def test_a_period_without_a_root_or_an_entity_or_a_disposal_date_is_reported_not_inserted():
