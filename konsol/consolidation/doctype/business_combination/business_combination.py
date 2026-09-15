@@ -18,11 +18,12 @@ sentences; ``before_submit`` re-checks the period is open and the required
 accounts are declared; ``on_submit`` creates (or links) the Ownership Period
 the acquisition starts and writes the approved deal to the warehouse; an
 amendment is allowed only inside the policy's 12-month measurement period.
-Submit = approval (the workflow); cancel only while the acquisition period is
-open and no approved Business Disposal has sold the holding since, and it
-undoes the approval's Ownership Period: cancelled again when this deal created
-it, its deal fields cleared when it pre-existed. Nothing here saves the
-document from a hook or commits.
+Submit = approval (the workflow); cancel only while the acquisition period and
+every period the holding covers are open and no approved Business Disposal
+has sold the holding since, and it undoes the approval's Ownership Period:
+cancelled again when this deal created it, its deal fields cleared when it
+pre-existed. Every refusal speaks of this deal by name. Nothing here saves
+the document from a hook or commits.
 """
 import frappe
 from frappe.model.document import Document
@@ -46,7 +47,7 @@ from konsol.consolidation_policy_model import (
     required_accounts,
 )
 from konsol.group_rates import true_rate
-from konsol.period_status import PeriodNotDeclared, assert_open
+from konsol.period_status import PeriodNotDeclared, assert_open, assert_open_between
 
 #: The Result fields ``validate`` fills from the model, in the form's order.
 RESULT_FIELDS = (
@@ -151,6 +152,27 @@ class BusinessCombination(Document):
         assert_open(period["fiscal_year"], period["fiscal_period"],
                     action="cancel a business combination")
         self._assert_not_sold()
+        self._assert_holding_span_open()
+
+    def _assert_holding_span_open(self):
+        """Undoing the approval cancels or clears the Ownership Period it
+        started, and that changes every period from the acquisition date to
+        the period's end — today, while it is open-ended. Gating the
+        acquisition period alone let the cancel run into the period's own
+        ``before_cancel``, whose refusal speaks of "an ownership period" and
+        never of the deal the person is cancelling (PR #202 second review
+        B5); the same span check runs here first, in this deal's name. Only
+        a submitted linked period is undone, so only then is there a span."""
+        name = self.get("ownership_period")
+        if not name:
+            return
+        linked = frappe.db.get_value(
+            "Ownership Period", {"name": name, "docstatus": 1}, ["name", "end_date"], as_dict=True
+        )
+        if not linked:
+            return
+        assert_open_between(self.acquisition_date, linked.get("end_date") or nowdate(),
+                            action=f"cancel Business Combination {self.name}")
 
     def _assert_not_sold(self):
         """An approved Business Disposal that links this deal's Ownership

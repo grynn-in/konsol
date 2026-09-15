@@ -38,6 +38,7 @@ which exist only once that doctype is reloaded; then the deal doctypes,
 children first; Ownership Period last. Counts are printed.
 """
 import frappe
+from frappe.utils import strip_html
 
 #: (module, doctype folder) in reload order: Consolidation Group first (its
 #: policy columns are what validate reads), children before their parents,
@@ -218,9 +219,18 @@ def _disposal(period):
 
 
 def _plain(exc):
-    """The refusal as one line of text (frappe.throw's message is HTML-ish)."""
-    text = str(exc) or type(exc).__name__
-    return " ".join(text.replace("<br>", "; ").split())
+    """The error as one line of text for the migrate output. frappe.throw's
+    message is HTML-ish: ``<br>`` becomes "; ", other tags go. A database
+    error from pymysql carries ``args == (errno, message)`` and prints as
+    that tuple — ``(1062, "Duplicate entry …")`` — so the message alone is
+    taken. An error with no text is named by its type."""
+    args = exc.args
+    if len(args) == 2 and isinstance(args[0], int) and isinstance(args[1], str):
+        text = args[1]
+    else:
+        text = str(exc)
+    text = strip_html(text.replace("<br>", "; "))
+    return " ".join(text.split()) or type(exc).__name__
 
 
 class _Row(dict):
