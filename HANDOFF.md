@@ -6,6 +6,51 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 **Update (15 Sep, night): Build Approval is approved through a Frappe Workflow (konsol#215).** Approve and Reject are buttons for EPM Admin; the role and self-approval are set in the Workflow record ("Build Approval Workflow"), not in code. A new request goes in as Draft and takes the workflow's Request transition (low risk to Approved, high risk to Pending Review); the build job's own moves (Start, Complete, Fail) are Administrator-only transitions it takes under `build_lock.build_writer()`. Deploy: migrate (after_migrate installs the workflow once); a site that edits the workflow keeps its edits.
 
+**Update (15 Sep, late): the workbook ships TWO trial balances, and only the
+statutory one was loaded.**
+
+- **09_TB_STAT_Local** — entity x year x account, no dimension columns. This is
+  what the 836 submissions came from.
+- **09b_TB_MGMT_Local** — **55,321 rows, never loaded.** Its own header:
+  *"Exploded from 09_TB_STAT_Local. Country opcos split P&L + working
+  capital across the four reportable divisions using regional priors … Weights
+  sum to 1 so MGMT ties to STAT by account."* Columns include `division, subdivision, region, country, platform,
+  movement_type, accounting_currency, fx_method, fx_rate, scenario_id`.
+
+**So the source DOES split within an entity** — deliberately, as a test fixture,
+and it is **self-checking**, because the weights sum to 1. It is the test data
+konsol#113 (TB_MGMT intake) needs, sitting ready. Do not repeat the claim that
+this customer's data is dimensionless: the *statutory* TB is, the *management*
+TB is not.
+
+Measured on the stack: `gold_consolidated_trial_balance` holds 45,928 rows with
+exactly **one** distinct value for each of `dim_business_unit`,
+`dim_cost_center` and `dim_department` — and it is empty.
+`epm_raw.trial_balance_submissions` has **no dimension columns at all**, in
+either repo's DDL, so a dimension-carrying row has nowhere to land. Three
+Dimensions are declared and Published; all three are unused. `Entity` has no
+division / region / platform field, so the per-entity management attributes in
+`02_LegalEntities` have no home either.
+
+**konsol#220 — the division tree is temporal and konsol cannot store that.**
+`03_DivisionHierarchy` carries `effective_from` / `effective_to` per node, and
+its 34 rows contain four real changes: one division **renamed** on 2025-01-01;
+one **elevated** to reportable on 2025-01-01; one that ran 2017-01-01 to
+2024-12-31 and **ended**; and one **discontinued** 2013-04-01 to 2020-06-03 (the
+same split-off the deal layer carries as a Business Disposal). A subdivision
+**moves parent** in 2025 as well. `Reporting Hierarchy Member` has only `reporting_hierarchy,
+parent_member, member_code, member_label, is_group`: one parent, one label, no
+dates. Load the tree as it stands and 2010-2024 reports under the 2025
+structure.
+
+**Fix it before loading, not after.** There are currently **0 Reporting
+Hierarchies and 0 members** on the stack, so this costs a doctype change today
+and a restatement of every report later. The legal tree already solves the same
+problem — `Ownership Period` is dated and consolidation resolves it per period
+(`macros/ownership_resolution.sql` is the pattern to copy).
+
+Workbook reference sheets are in the container at `/tmp/refdata/ref/` (21 CSVs).
+
 **Update (15 Sep, night): deal inputs are declared, not inferred (konsol#206, #207, #203, #205, #204, #208).**
 - A Business Combination with an empty Acquired Balance Sheet is refused. Until now it validated whenever the entity had an earlier trial balance, with net assets of 0 and goodwill equal to the whole consideration (#206).
 - **Get Balances from Trial Balance** (Draft only) fills the Acquired Balance Sheet from the warehouse trial balance (`epm_gold.gold_trial_balance`, cumulative through the acquisition period). It folds the period's result into the chart's Retained Earnings Account and places the declared **Fair Value Adjustment Total** on the group's Fair Value Adjustment Account, or spreads it by a **Fair Value Allocation Profile** (#207, #208). The lines stay editable, and **Balance Sheet Source** records where they came from. On save, the lines' fair value adjustments must add up to the declared total.
