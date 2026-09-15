@@ -267,6 +267,18 @@ def choose_budget_scenario(active, fiscal_year):
     )
 
 
+def named_budget_scenario_error(scenario_id, active):
+    """Why a variance read cannot use the named ``scenario_id``, or None.
+
+    ``active`` is the active budget scenarios. The warehouse variance models
+    keep only those, so any other id (an actuals scenario, an inactive or a
+    misspelled one) would filter to nothing and read 0.0 (konsol#214).
+    """
+    if scenario_id in active:
+        return None
+    return f"{scenario_id} is not an active budget scenario, so there is no variance for it."
+
+
 def batch_query_hierarchy(requests_list, *, allowed_entities):
     """Execute hierarchy-mode batch queries. Returns {values, errors}.
 
@@ -285,6 +297,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
 
     groups = defaultdict(list)
     budgets_by_year = None  # looked up once per call, when first needed
+    active_budgets = None  # likewise, for named variance scenarios
     for idx, req in enumerate(requests_list):
         sc = _normalize_scenario(req.get("scenario", "actuals"))
         cfg = HIERARCHY_SCENARIO_CONFIG.get(sc)
@@ -306,6 +319,15 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             year = int(req["year"])
             scenario_id, err = choose_budget_scenario(
                 budgets_by_year.get(year, []), fiscal_year=year)
+            if err:
+                errors[idx] = err
+                continue
+        elif cfg.get("needs_budget_scenario") and _SAFE_SCENARIO_ID.match(scenario_id):
+            # A named scenario must be one the warehouse keeps variance for.
+            # (An unsafe id is refused by its format below.)
+            if active_budgets is None:
+                active_budgets = set(_active_budget_scenarios())
+            err = named_budget_scenario_error(scenario_id, active_budgets)
             if err:
                 errors[idx] = err
                 continue
