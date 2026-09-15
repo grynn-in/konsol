@@ -37,14 +37,38 @@ def test_no_workflow_changes_a_submitted_document():
                 f"{name}: {t['state']} -> {t['next_state']} is an update-after-submit")
 
 
+def _is_submittable(document_type):
+    """Read is_submittable from the doctype's own <snake>.json."""
+    snake = document_type.lower().replace(" ", "_")
+    found = glob.glob(os.path.join(APP_DIR, "*", "doctype", snake, f"{snake}.json"))
+    assert len(found) == 1, f"{document_type}: expected one doctype json, found {found}"
+    with open(found[0]) as f:
+        return bool(json.load(f).get("is_submittable"))
+
+
 def test_approval_is_the_submit_and_review_happens_in_draft():
+    checked = 0
     for name, wf in _workflows():
+        if not _is_submittable(wf["document_type"]):
+            continue
+        checked += 1
         status = {s["state"]: int(s["doc_status"]) for s in wf["states"]}
         submitted = [s for s, d in status.items() if d == 1]
         assert len(submitted) == 1, f"{name}: exactly one submitted state, got {submitted}"
         into_submit = [t for t in wf["transitions"] if status[t["next_state"]] == 1]
         assert into_submit and all(status[t["state"]] == 0 for t in into_submit), (
             f"{name}: the submit must come from a draft review state")
+    assert checked, "no workflow on a submittable doctype — the check above would be vacuous"
+
+
+def test_a_workflow_on_a_non_submittable_doctype_never_submits_or_cancels():
+    """A doctype that can't be submitted has no docstatus 1 or 2: every state
+    of its workflow must stay a draft (doc_status "0")."""
+    for name, wf in _workflows():
+        if _is_submittable(wf["document_type"]):
+            continue
+        bad = [s["state"] for s in wf["states"] if str(s["doc_status"]) != "0"]
+        assert not bad, f"{name}: non-submittable doctype, states not doc_status 0: {bad}"
 
 
 def _controllers():
