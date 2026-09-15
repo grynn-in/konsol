@@ -201,6 +201,7 @@ class _Site:
         self.tbs = [{"data_area_id": e, "fiscal_year": y, "fiscal_period": p, "docstatus": 1} for e, y, p in tbs]
         self.ownership = [dict(o) for o in ownership]
         self.inserted, self.synced, self.flag_at_insert, self.opened, self.queries = [], [], [], [], []
+        self.flag_at_cancel = []
         self._install()
 
     # -- frappe surface ----------------------------------------------------
@@ -266,15 +267,20 @@ class _Site:
         if isinstance(arg, dict):
             doc = _OwnershipPeriodDoc(**arg)
             doc.docstatus = 0
+            # The site row behind the inserted period, so a later get_doc /
+            # exists (the deal's cancel) finds what the approval created.
+            row = {k: v for k, v in arg.items() if k != "doctype"}
 
             def insert():
                 site.flag_at_insert.append(M.frappe.flags.from_business_combination)
                 doc.name = f"OP-{doc.consolidation_group}-{doc.data_area_id}-{doc.effective_date}"
+                row.update(name=doc.name, docstatus=0)
                 site.inserted.append(doc)
+                site.ownership.append(row)
                 return doc
 
             def submit():
-                doc.docstatus = 1
+                doc.docstatus = row["docstatus"] = 1
                 doc.submitted = True
                 return doc
 
@@ -284,11 +290,16 @@ class _Site:
             if row["name"] == name:
                 doc = _OwnershipPeriodDoc(**row)
 
-                def submit(doc=doc):
-                    doc.docstatus = 1
+                def submit(doc=doc, row=row):
+                    doc.docstatus = row["docstatus"] = 1
                     doc.submitted = True
 
-                doc.submit = submit
+                def cancel(doc=doc, row=row):
+                    site.flag_at_cancel.append(M.frappe.flags.from_business_combination)
+                    doc.docstatus = row["docstatus"] = 2
+                    doc.cancelled = True
+
+                doc.submit, doc.cancel = submit, cancel
                 doc.save = lambda: None
                 self.loaded = doc
                 return doc
@@ -582,6 +593,120 @@ def test_on_submit_falls_back_to_the_date_lookup_when_the_link_is_blank_or_stale
     deal.on_submit()
     assert len(site.inserted) == 1
     assert not hasattr(site, "loaded")
+
+
+# -- the deal is the source of its Ownership Period (PR #202 findings 5, 6) ----
+
+def test_on_submit_aligns_a_linked_draft_period_to_the_deal_before_submitting_it():
+    """A Draft period the approval submits must say what the approved deal
+    says: the share acquired and the acquisition date. The deal is the source
+    even when the Draft was declared by hand with other values."""
+    linked = {"name": "OP-ZZG-ZZE-2025-12-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "effective_date": "2025-12-01", "end_date": None, "ownership_pct": 80,
+              "consolidation_method": "full", "docstatus": 0}
+    site = _Site(ownership=[linked])
+    deal = _deal(share_acquired_pct=60, ownership_period="OP-ZZG-ZZE-2025-12-01")
+    deal.validate()
+    deal.on_submit()
+    assert site.inserted == []
+    assert site.loaded.name == "OP-ZZG-ZZE-2025-12-01"
+    assert site.loaded.submitted is True
+    assert site.loaded.ownership_pct == 60
+    assert str(site.loaded.effective_date) == "2025-12-31"
+    assert site.loaded.acquisition_price == 8300.0
+
+
+def test_on_submit_records_whether_the_deal_created_its_ownership_period():
+    site = _Site()
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1
+    assert ("created_ownership_period", 1) in deal.db_sets
+
+    existing = {"name": "OP-ZZG-ZZE-2025-12-31", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                "effective_date": "2025-12-31", "end_date": None, "ownership_pct": 80,
+                "consolidation_method": "full", "docstatus": 1}
+    site = _Site(ownership=[existing])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    assert site.inserted == []
+    assert ("created_ownership_period", 1) not in deal.db_sets
+
+
+def test_on_cancel_cancels_the_ownership_period_the_deal_created():
+    """The approval created the period; undoing the approval cancels it again
+    (its own before_cancel keeps the closed-period gate), under the flag."""
+    site = _Site()
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    created = site.inserted[0].name
+    site.synced.clear()
+    deal.on_cancel()
+    assert site.loaded.name == created
+    assert site.loaded.cancelled is True
+    assert site.loaded.docstatus == 2
+    assert site.flag_at_cancel == [True]
+    assert M.frappe.flags.from_business_combination is False
+    # The period was cancelled, not blanked: nothing written field by field.
+    assert site.loaded.db_sets == []
+    assert ("Business Combination", HEADER_TABLE) in [s[:2] for s in site.synced]
+
+
+def test_on_cancel_resets_the_deal_fields_on_a_period_that_pre_existed():
+    """The period was declared before the deal and only received the deal's
+    figures: undoing the approval clears those four fields and leaves the
+    period standing, under the flag, with its own re-sync."""
+    existing = {"name": "OP-ZZG-ZZE-2025-12-31", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                "effective_date": "2025-12-31", "end_date": None, "ownership_pct": 80,
+                "consolidation_method": "full", "docstatus": 1}
+    site = _Site(ownership=[existing])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    site.synced.clear()
+    deal.on_cancel()
+    assert site.loaded.name == "OP-ZZG-ZZE-2025-12-31"
+    assert not getattr(site.loaded, "cancelled", False)
+    assert site.loaded.docstatus == 1
+    assert site.loaded.db_sets[-4:] == [
+        ("acquisition_date", None),
+        ("is_first_acquisition", 0),
+        ("acquisition_price", 0),
+        ("fair_value_adjustment", 0),
+    ]
+    assert site.flag_at_cancel == []
+    assert M.frappe.flags.from_business_combination is False
+    synced = [s[:2] for s in site.synced]
+    assert synced.index(("Ownership Period", "epm_staging.ownership_periods")) \
+        < synced.index(("Business Combination", HEADER_TABLE))
+
+
+def test_on_cancel_skips_a_blank_or_gone_ownership_period_link():
+    site = _Site()
+    deal = _deal()
+    deal.on_cancel()  # never approved with a period: nothing to undo
+    assert not hasattr(site, "loaded")
+    assert ("Business Combination", HEADER_TABLE) in [s[:2] for s in site.synced]
+
+    site = _Site()
+    deal = _deal(ownership_period="OP-ZZG-ZZE-1999-01-01", created_ownership_period=1)
+    deal.on_cancel()  # the period was deleted since
+    assert not hasattr(site, "loaded")
+    assert M.frappe.flags.from_business_combination is False
+
+
+def test_json_records_whether_the_deal_created_its_ownership_period():
+    import json
+    with open(os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.json")) as f:
+        fields = {f["fieldname"]: f for f in json.load(f)["fields"]}
+    field = fields["created_ownership_period"]
+    assert field["fieldtype"] == "Check"
+    assert field["read_only"] == 1
+    assert field["no_copy"] == 1
+    assert "cancel" in field["description"].lower()
 
 
 def test_submit_cancel_and_delete_sync_the_header_and_the_three_children():
