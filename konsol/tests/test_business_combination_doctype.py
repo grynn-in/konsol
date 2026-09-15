@@ -75,6 +75,28 @@ def test_deal_tab_carries_the_declared_inputs():
     assert fields["ownership_period"]["read_only"] == 1
 
 
+def test_nci_measurement_is_elected_per_deal_with_the_group_as_default():
+    """konsol#205: IFRS 3.19 lets each business combination elect how NCI is
+    measured; blank takes the group's NCI Measurement."""
+    doc = _parent()
+    fields = _fields(doc)
+    override = fields["nci_measurement_override"]
+    assert override["fieldtype"] == "Select"
+    assert override["options"] == "\npartial\nfull"
+    assert override["label"] == "NCI Measurement for This Deal"
+    assert override["description"] == (
+        "Leave blank to use the group's NCI Measurement. IFRS 3.19 lets each business "
+        "combination elect; US GAAP requires full.")
+    assert override.get("reqd", 0) == 0 and override.get("read_only", 0) == 0
+    assert "default" not in override, "blank means the group's value, not a default"
+    in_force = fields["nci_measurement"]
+    assert in_force["read_only"] == 1
+    assert in_force["description"] == (
+        "The NCI measurement in force for this deal: the override when set, otherwise the group's.")
+    order = [f["fieldname"] for f in doc["fields"]]
+    assert abs(order.index("nci_measurement_override") - order.index("nci_measurement")) == 1
+
+
 def test_table_fields_point_at_the_three_children():
     fields = _fields(_parent())
     for fn, (_, child_name) in CHILDREN.items():

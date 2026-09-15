@@ -452,6 +452,60 @@ def test_validate_at_eighty_percent_partial_measures_the_nci():
     assert deal.nci_at_acquisition == 316.0
 
 
+# -- NCI measurement elected per deal (konsol#205, IFRS 3.19) ------------------
+
+US_GAAP_NCI = "US GAAP measures non-controlling interest at fair value"
+
+
+def test_override_full_on_a_partial_group_measures_the_nci_the_full_way():
+    _Site()  # the group root says partial
+    deal = _deal(share_acquired_pct=80, nci_measurement_override="full")
+    deal.validate()
+    assert deal.nci_measurement == "full"
+    # Full: NCI 8300 / 0.8 × 0.2 = 2075; goodwill = 8300 + 2075 − 1580 at fair value.
+    assert deal.nci_at_acquisition == 2075.0
+    assert deal.goodwill == 8795.0
+    # The partial measurement of the same deal (the group's) is a different answer.
+    assert (deal.nci_at_acquisition, deal.goodwill) != (316.0, 7036.0)
+
+
+def test_override_partial_on_a_full_group_measures_the_nci_the_partial_way():
+    site = _Site()
+    site.root["goodwill_method"] = "full"
+    deal = _deal(share_acquired_pct=80, nci_measurement_override="partial")
+    deal.validate()
+    assert deal.nci_measurement == "partial"
+    assert deal.nci_at_acquisition == 316.0
+    assert deal.goodwill == 7036.0
+
+
+def test_blank_override_uses_the_groups_nci_measurement():
+    for group in ("partial", "full"):
+        for blank in (None, ""):
+            site = _Site()
+            site.root["goodwill_method"] = group
+            deal = _deal(share_acquired_pct=80, nci_measurement_override=blank)
+            deal.validate()
+            assert deal.nci_measurement == group, (group, blank)
+            assert deal.nci_at_acquisition == (316.0 if group == "partial" else 2075.0), (group, blank)
+
+
+def test_us_gaap_refuses_a_partial_override_once_in_the_deals_name():
+    site = _Site()
+    site.root.update(accounting_framework="US GAAP", goodwill_method="full")
+    message = _refused(_deal(share_acquired_pct=80, nci_measurement_override="partial").validate)
+    assert message.count(US_GAAP_NCI) == 1, message
+    assert (f"Business Combination: {US_GAAP_NCI}; "
+            "set NCI Measurement for This Deal to Full.") in message
+    # The same US GAAP group with the override full or blank is fine.
+    for override in ("full", None):
+        site = _Site()
+        site.root.update(accounting_framework="US GAAP", goodwill_method="full")
+        deal = _deal(share_acquired_pct=80, nci_measurement_override=override)
+        deal.validate()
+        assert deal.nci_measurement == "full", override
+
+
 def test_validate_expenses_costs_under_an_expense_policy():
     _Site()
     deal = _deal(costs=[{"kind": "Legal", "amount": 120, "currency": "EUR"}])
