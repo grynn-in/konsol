@@ -143,13 +143,14 @@ def _build_pnl_monthly(entity, year, scenario_id, accounts):
         row += 1
 
     letters = [chr(ord("B") + i) for i in range(_MONTH_COLS)]
-    gp_row = row
-    cells.append({"range": f"A{gp_row}", "values": [["Gross Profit"]]})
+    last_account_row = row - 1
+    total_row = row
+    cells.append({"range": f"A{total_row}", "values": [["Net Profit and Loss"]]})
     cells.append({
-        "range": _month_row_range(gp_row),
+        "range": _month_row_range(total_row),
         "formulas": [[
-            f"={letters[i]}{first_data_row}-{letters[i]}{first_data_row + 1}"
-            for i in range(_MONTH_COLS)
+            f"=SUM({col}{first_data_row}:{col}{last_account_row})"
+            for col in letters
         ]],
     })
 
