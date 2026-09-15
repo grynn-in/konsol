@@ -121,6 +121,27 @@ def test_status_is_the_workflow_state_and_the_document_can_be_amended():
     assert roles["EPM User"].get("write", 0) == 0
 
 
+def test_reopen_data_records_what_the_period_held_before_the_close():
+    """PR #202 finding 4: cancelling the approval must give the Ownership
+    Period back what it held before the disposal closed it, not blank it. The
+    approval records those values on the disposal in a hidden, read-only
+    section; the cancel restores exactly them."""
+    doc = _json("business_disposal")
+    fields = _fields(doc)
+    assert fields["reopen_section"]["fieldtype"] == "Section Break"
+    assert fields["reopen_section"]["label"] == "Reopen Data"
+    assert fields["reopen_section"]["hidden"] == 1
+    expected = {"previous_end_date": "Date", "previous_is_disposal": "Check",
+                "previous_disposal_date": "Date", "previous_disposal_price": "Currency"}
+    order = [f["fieldname"] for f in doc["fields"]]
+    for fn, ftype in expected.items():
+        assert fields[fn]["fieldtype"] == ftype, fn
+        assert fields[fn]["read_only"] == 1, f"{fn} is set by the approval"
+        assert fields[fn]["no_copy"] == 1, f"{fn} belongs to this approval, not an amendment"
+        assert order.index(fn) > order.index("reopen_section"), fn
+        assert "before" in fields[fn]["description"].lower(), fn
+
+
 def test_proceeds_child_fields():
     doc = _json(CHILD_FOLDER)
     assert doc["name"] == CHILD_NAME
@@ -457,7 +478,8 @@ class _Site:
 
     def _exists(self, doctype, name=None, **k):
         assert doctype == "Ownership Period", doctype
-        return next((row["name"] for row in self.ownership if row["name"] == name), None)
+        filters = dict(name) if isinstance(name, dict) else {"name": name}
+        return next((row["name"] for row in self.ownership if _match(row, filters)), None)
 
     def _get_doc(self, doctype, name=None):
         assert doctype == "Ownership Period", doctype
@@ -621,6 +643,71 @@ def test_on_submit_closes_the_linked_period_rather_than_the_one_matched_by_date(
     deal.on_submit()
     assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2020-01-01"]
     assert ("ownership_period", "OP-ZZG-ZZE-2020-01-01") in deal.db_sets
+
+
+def test_on_submit_ignores_a_linked_period_that_is_not_submitted():
+    """PR #202 finding 3: only a submitted Ownership Period is a holding. A link
+    to a cancelled or Draft period falls back to the current holding, as the
+    Business Combination does."""
+    for docstatus in (2, 0):
+        stale = {"name": "OP-ZZG-ZZE-2019-06-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                 "effective_date": "2019-06-01", "end_date": None, "ownership_pct": 80,
+                 "consolidation_method": "full", "docstatus": docstatus}
+        site = _Site(ownership=[HOLDING_80, stale])
+        deal = _deal(ownership_period="OP-ZZG-ZZE-2019-06-01")
+        deal.validate()
+        deal.on_submit()
+        assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2020-01-01"], docstatus
+        assert ("ownership_period", "OP-ZZG-ZZE-2020-01-01") in deal.db_sets, docstatus
+
+
+def test_on_cancel_restores_what_the_period_held_before_the_close():
+    """PR #202 finding 4: the period the disposal closed may already have had
+    an end date (an ownership step planned after the disposal date); the
+    cancel gives it back exactly what the approval recorded, not blanks."""
+    planned = dict(HOLDING_80, end_date="2026-06-30", is_disposal=0, disposal_date=None, disposal_price=0)
+    site = _Site(ownership=[planned])
+    deal = _deal()
+    deal.validate()
+    deal.on_submit()
+    recorded = dict(deal.db_sets)
+    assert str(recorded["previous_end_date"]) == "2026-06-30"
+    assert recorded["previous_is_disposal"] == 0
+    assert recorded["previous_disposal_date"] is None
+    assert recorded["previous_disposal_price"] == 0
+    # The close itself is still written.
+    assert str(dict(site.loaded[0].db_sets)["end_date"]) == "2025-12-31"
+
+    del site.flag_at_write[:]
+    deal.on_cancel()
+    period = site.loaded[-1]
+    assert period.name == "OP-ZZG-ZZE-2020-01-01"
+    restored = period.db_sets[-4:]
+    assert str(restored[0][1]) == "2026-06-30" and restored[0][0] == "end_date"
+    assert restored[1] == ("is_disposal", 0)
+    assert restored[2] == ("disposal_date", None)
+    assert restored[3] == ("disposal_price", 0)
+    assert site.flag_at_write and all(site.flag_at_write)
+    assert M.frappe.flags.from_business_combination is False
+
+
+def test_before_cancel_refuses_when_a_later_ownership_period_exists():
+    """PR #202 finding 4: reopening a period under a later submitted period of
+    the same node would overlap it; the later one goes first."""
+    closed = dict(HOLDING_80, end_date="2025-12-31", is_disposal=1,
+                  disposal_date="2025-12-31", disposal_price=9000)
+    later = {"name": "OP-ZZG-ZZE-2026-01-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+             "effective_date": "2026-01-01", "end_date": None, "ownership_pct": 100, "docstatus": 1}
+    _Site(ownership=[closed, later])
+    message = _refused(_deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2020-01-01").before_cancel)
+    assert "Cancel the later Ownership Period(s) first" in message
+    assert "OP-ZZG-ZZE-2026-01-01" in message
+    # A later Draft or cancelled period, or another entity's period, does not block.
+    others = [dict(later, docstatus=0), dict(later, name="OP-ZZG-ZZE-2026-02-01", docstatus=2),
+              dict(later, name="OP-ZZG-ZZX-2026-01-01", data_area_id="ZZX")]
+    site = _Site(ownership=[closed, *others])
+    _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2020-01-01").before_cancel()
+    assert site.opened and site.opened[0][:2] == (2025, 12)
 
 
 def test_on_cancel_reopens_the_ownership_period_it_closed():
