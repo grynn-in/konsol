@@ -227,3 +227,63 @@ def test_leaf_needs_a_code():
         raise AssertionError("leaf without code saved")
     except _Thrown as e:
         assert "required for leaf nodes" in str(e)
+
+
+# konsol#220 row R7: a renamed node is two dated tranches of one code. A
+# formula or a budget write names the code, so it reads the tranche of today.
+
+_OLD = {"name": "m1", "member_code": "ZZ_A", "member_label": "ZZ A old", "is_group": 1,
+        "effective_from": "2017-01-01", "effective_to": "2024-12-31"}
+_NEW = {"name": "m2", "member_code": "ZZ_A", "member_label": "ZZ A new", "is_group": 1,
+        "effective_from": "2025-01-01", "effective_to": None}
+
+
+def test_current_tranche_covers_today():
+    from konsol.hierarchy_query import current_tranche
+    assert current_tranche([_OLD, _NEW], "2025-06-30") is _NEW
+    assert current_tranche([_OLD, _NEW], "2024-06-30") is _OLD
+    # bounds are inclusive
+    assert current_tranche([_OLD, _NEW], "2024-12-31") is _OLD
+    assert current_tranche([_OLD, _NEW], "2025-01-01") is _NEW
+
+
+def test_current_tranche_blank_dates_and_all_ended():
+    from konsol.hierarchy_query import current_tranche
+    undated = {"member_label": "undated", "effective_from": None, "effective_to": None}
+    assert current_tranche([undated], "2025-06-30") is undated
+    early = {"member_label": "early", "effective_from": "2010-01-01", "effective_to": "2015-12-31"}
+    late = {"member_label": "late", "effective_from": "2016-01-01", "effective_to": "2020-12-31"}
+    # every tranche ended: the latest one
+    assert current_tranche([late, early], "2024-06-30") is late
+    assert current_tranche([], "2024-06-30") is None
+
+
+def _member_frappe(rows, today):
+    class _D(dict):
+        __getattr__ = dict.get
+
+    def get_value(doctype, filters, fields, as_dict=False):
+        return _D(name="ZZ_H", dimension="business_unit", status="Published")
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        return [_D({f: r.get(f) for f in fields}) for r in rows
+                if r["member_code"] == filters["member_code"]]
+
+    utils = types.ModuleType("frappe.utils")
+    utils.today = lambda: today
+    return types.SimpleNamespace(get_all=get_all, utils=utils,
+                                 db=types.SimpleNamespace(get_value=get_value))
+
+
+def test_get_hierarchy_member_reads_the_tranche_of_today():
+    from konsol.hierarchy_query import get_hierarchy_member
+    info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2025-06-30"),
+                             lambda: get_hierarchy_member("ZZ_H", "ZZ_A"))
+    assert err is None, err
+    assert info["member_label"] == "ZZ A new" and info["member_code"] == "ZZ_A"
+    info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2024-06-30"),
+                             lambda: get_hierarchy_member("ZZ_H", "ZZ_A"))
+    assert err is None and info["member_label"] == "ZZ A old"
+    info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2025-06-30"),
+                             lambda: get_hierarchy_member("ZZ_H", "ZZ_NONE"))
+    assert info is None and "not found" in err
