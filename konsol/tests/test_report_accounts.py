@@ -19,15 +19,15 @@ COMPILER_PATH = os.path.join(APP_DIR, "report_compiler.py")
 MAIN_ACCOUNTS = [
     # deliberately out of code order
     {"main_account": "ZZ5000", "account_name": "ZZ Costs", "status": "Published",
-     "is_group": 0, "statement_section": "Profit and Loss"},
+     "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"},
     {"main_account": "ZZ4000", "account_name": "ZZ Sales", "status": "Published",
-     "is_group": 0, "statement_section": "Profit and Loss"},
+     "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"},
     {"main_account": "ZZ4999", "account_name": "ZZ Income group", "status": "Published",
-     "is_group": 1, "statement_section": "Profit and Loss"},
+     "is_group": 1, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"},
     {"main_account": "ZZ1000", "account_name": "ZZ Cash", "status": "Published",
-     "is_group": 0, "statement_section": "Balance Sheet"},
+     "is_group": 0, "statement_section": "Balance Sheet", "chart_of_accounts": "ZZ_CHART_A"},
     {"main_account": "ZZ4500", "account_name": "ZZ Draft income", "status": "Draft",
-     "is_group": 0, "statement_section": "Profit and Loss"},
+     "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"},
 ]
 
 
@@ -127,7 +127,7 @@ def test_pnl_monthly_gets_only_published_pnl_leaves_in_code_order():
 
 def test_caption_falls_back_to_the_code_when_the_name_is_blank():
     rows = [{"main_account": "ZZ4100", "account_name": "", "status": "Published",
-             "is_group": 0, "statement_section": "Profit and Loss"}]
+             "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"}]
     _, passed, _ = _run({"template_id": "pnl_monthly", "entity": "ZZE", "year": 2026}, rows=rows)
     assert [tuple(a) for a in _accounts_passed(passed)] == [("ZZ4100", "ZZ4100")]
 
@@ -151,3 +151,29 @@ def test_other_templates_do_not_read_the_chart():
     else:
         raise AssertionError("expected the endpoint to refuse an unknown template")
     assert calls == []
+
+
+def test_pnl_leaves_in_one_chart_are_passed_unchanged_and_the_chart_is_read():
+    _, passed, calls = _run({"template_id": "pnl_monthly", "entity": "ZZE", "year": 2026})
+    assert [tuple(a) for a in _accounts_passed(passed)] == [
+        ("ZZ4000", "ZZ Sales"),
+        ("ZZ5000", "ZZ Costs"),
+    ]
+    (call,) = calls
+    assert "chart_of_accounts" in call["fields"]
+
+
+def test_pnl_leaves_in_two_charts_are_refused_naming_both():
+    rows = [dict(r) for r in MAIN_ACCOUNTS]
+    rows.append({"main_account": "ZZ4200", "account_name": "ZZ Other sales", "status": "Published",
+                 "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_B"})
+    try:
+        _run({"template_id": "pnl_monthly", "entity": "ZZE", "year": 2026}, rows=rows)
+    except Refused as exc:
+        msg = str(exc)
+        assert msg == (
+            "The monthly P&L reads one chart, and Published Profit and Loss accounts exist in "
+            "charts ZZ_CHART_A, ZZ_CHART_B. Make one chart Inactive or Draft."
+        ), msg
+    else:
+        raise AssertionError("expected the endpoint to refuse P&L leaves from two charts")
