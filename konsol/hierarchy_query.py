@@ -37,7 +37,12 @@ HIERARCHY_SCENARIO_CONFIG = {
         "table": "epm_gold.gold_variance_at_hierarchy_node",
         "default_measure": "variance_abs",
         "measures": {"variance_abs", "actual_amount", "budget_amount"},
-        "has_scenario_id": False,
+        # One set of rows per active budget scenario (konsol#214): a read that
+        # did not filter on it would add budget scenarios together, so every
+        # variance read names one (the request's, else the single active one).
+        "has_scenario_id": True,
+        "scenario_column": "budget_scenario_id",
+        "needs_budget_scenario": True,
     },
 }
 
@@ -208,6 +213,31 @@ def validate_hierarchy_write(hierarchy_name, node_code):
     return info, None
 
 
+def _active_budget_scenarios():
+    """The scenario_ids of the active budget scenarios, sorted."""
+    import frappe
+
+    return frappe.get_all(
+        "Scenario",
+        filters={"scenario_type": "budget", "is_active": 1},
+        pluck="scenario_id",
+        order_by="scenario_id asc",
+    )
+
+
+def choose_budget_scenario(active):
+    """The budget scenario a variance read uses when none is named.
+
+    Exactly one active budget scenario is the answer. None, or several, is an
+    error that says so, never a guess (konsol#214).
+    """
+    if len(active) == 1:
+        return active[0], None
+    if not active:
+        return None, "No budget scenario is active, so there is no variance to show."
+    return None, f"Several budget scenarios are active ({', '.join(active)}); choose one."
+
+
 def batch_query_hierarchy(requests_list, *, allowed_entities):
     """Execute hierarchy-mode batch queries. Returns {values, errors}.
 
@@ -225,6 +255,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     errors = [None] * n
 
     groups = defaultdict(list)
+    active_budgets = None  # looked up once per call, when first needed
     for idx, req in enumerate(requests_list):
         sc = _normalize_scenario(req.get("scenario", "actuals"))
         cfg = HIERARCHY_SCENARIO_CONFIG.get(sc)
@@ -238,6 +269,14 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                 f"Allowed: {', '.join(sorted(cfg['measures']))}"
             )
             continue
+        scenario_id = req.get("scenario_id", "")
+        if cfg.get("needs_budget_scenario") and not scenario_id:
+            if active_budgets is None:
+                active_budgets = _active_budget_scenarios()
+            scenario_id, err = choose_budget_scenario(active_budgets)
+            if err:
+                errors[idx] = err
+                continue
         dims = frozenset(req.get("dimensions", {}).keys())
         wildcard = entity_is_wildcard(req.get("entity", ""))
         key = (
@@ -247,7 +286,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             req["hierarchy_node"],
             req["periods"],
             dims,
-            req.get("scenario_id", ""),
+            scenario_id,
             req.get("layer", ""),
             wildcard,
             "" if wildcard else req.get("entity", ""),
@@ -328,7 +367,8 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                     errors[idx] = "Invalid scenario_id format"
                 continue
             params["param_sid"] = scenario_id
-            scenario_id_clause = " AND scenario_id = {sid:String}"
+            column = cfg.get("scenario_column", "scenario_id")
+            scenario_id_clause = f" AND {column} = {{sid:String}}"
 
         # Optional budget layer filter — mirrors the flat path in api.py. Omitted
         # → sum across all layers (the final budget); supplied → restrict to one
