@@ -14,6 +14,8 @@ OPEN_END = "2299-12-31"
 #: What an undated row means (the migrate patch uses the same day): always.
 #: Also the first day Date32 holds.
 _ALWAYS_FROM = "1900-01-01"
+#: How far up the cycle walk goes before it stops.
+_MAX_DEPTH = 50
 
 
 def _iso(value):
@@ -60,8 +62,10 @@ class ReportingHierarchyMember(Document):
         self._validate_parent_scope()
         self._validate_window()
         self._validate_member_code()
-        self._validate_parent_window()
+        # Before the parent window: a row under its own code is refused as
+        # such, not as a parent that doesn't cover it.
         self._validate_no_cycles()
+        self._validate_parent_window()
 
     def _validate_parent_scope(self):
         if not self.parent_member:
@@ -154,16 +158,58 @@ class ReportingHierarchyMember(Document):
             )
 
     def _validate_no_cycles(self):
+        """Walk up by CODE, not by row link: only a parent's code matters, so
+        tranches can loop where the row links don't (B1 root; A2 under B1;
+        B2 under A2 makes A and B each other's parent from B2's start). From
+        the parent code with this row's window, follow every tranche whose
+        window meets the running one to its own parent code, narrowing the
+        window; getting back to this row's code with days left is a cycle
+        during those days."""
         if not self.parent_member:
             return
-        seen = {self.name}
-        current = self.parent_member
-        while current:
-            if current in seen:
-                frappe.throw("Parent chain forms a cycle — choose a different parent.")
-            seen.add(current)
-            current = frappe.db.get_value(
-                "Reporting Hierarchy Member",
-                current,
-                "parent_member",
+        me = self.member_code
+        tranches = {}
+        for r in frappe.get_all(
+            "Reporting Hierarchy Member",
+            filters={"reporting_hierarchy": self.reporting_hierarchy},
+            fields=["name", "member_code", "parent_member",
+                    "effective_from", "effective_to"],
+        ):
+            tranches[r.name] = (r.member_code, r.parent_member,
+                                *_window(r.effective_from, r.effective_to))
+        tranches[self.name] = (me, self.parent_member, *self._window())
+
+        def code_of(link):
+            if not link:
+                return None
+            if link in tranches:
+                return tranches[link][0]
+            return frappe.db.get_value(
+                "Reporting Hierarchy Member", link, "member_code"
             )
+
+        first = code_of(self.parent_member)
+        if first == me:
+            frappe.throw(f"{me} cannot be its own parent.")
+        by_code = {}
+        for code, link, a, b in tranches.values():
+            by_code.setdefault(code, []).append((link, a, b))
+        start, end = self._window()
+        stack = [(first, start, end, [me, first])]
+        while stack:
+            code, a, b, chain = stack.pop()
+            if len(chain) > _MAX_DEPTH:
+                continue
+            for link, t_start, t_end in by_code.get(code, []):
+                lo, hi = max(a, t_start), min(b, t_end)
+                if lo > hi:
+                    continue
+                up = code_of(link)
+                if not up:
+                    continue
+                if up == me:
+                    frappe.throw(
+                        f"Parent chain forms a cycle ({' → '.join(chain + [me])}) "
+                        f"during {_span(lo, hi)}."
+                    )
+                stack.append((up, lo, hi, chain + [up]))
