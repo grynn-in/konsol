@@ -87,6 +87,9 @@ class BuildApproval(Document):
             # absorbed are still owed. Only the start spends it
             # (tasks.run_governed_build), so keeping it costs no build.
             self.error_message = None
+            # The next move to Approved records who approved this run, not
+            # the last one (konsol#215).
+            self.approved_by = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
