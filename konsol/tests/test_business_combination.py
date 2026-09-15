@@ -213,6 +213,7 @@ class _Site:
                  disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv="",
                  profiles=None, entities=None, charts=None):
         #: Main Account name -> chart_of_accounts; any account not listed is in ZZCOA.
+        #: None: no such Main Account; "": a Main Account with no chart.
         self.charts = dict(charts or {})
         #: Entity name -> functional_currency (the Acquired Balance Sheet's currency).
         self.entities = {"ZZE": "EUR"} if entities is None else dict(entities)
@@ -337,7 +338,7 @@ class _Site:
             else:
                 op, wanted = filters["name"]
                 assert op == "in", filters
-                names = list(wanted)
+                names = [n for n in wanted if self._chart(n) is not None]
             if k.get("pluck"):
                 return [n if k["pluck"] == "name" else self._chart(n) for n in names]
             return [_Row(name=n, chart_of_accounts=self._chart(n)) for n in names]
@@ -1377,6 +1378,42 @@ def test_get_balances_refuses_a_trial_balance_spanning_two_charts_by_name():
     assert ("the trial balance of ZZE through FY2025 P12 uses accounts of more than one "
             "Chart of Accounts (ZZCOA-A, ZZCOA-B)") in message
     assert deal.acquired_balances == [{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}]
+    assert not deal.get("saved")
+
+
+UNKNOWN_TO_CHART = "Add them to the chart (Main Account) first."
+
+
+def test_get_balances_refuses_an_account_the_chart_does_not_have_by_name():
+    # PR #209 review 2, point 2: ZZ2100 is no Main Account, ZZ4100 has no chart.
+    site = _tb_site(charts={"ZZ2100": None, "ZZ4100": ""})
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert ("The trial balance of ZZE holds accounts the chart does not have: ZZ2100, ZZ4100. "
+            + UNKNOWN_TO_CHART) in message
+    assert "ZZ1100" not in message and "ZZ3100" not in message
+    assert deal.acquired_balances == [{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}]
+    assert not deal.get("saved")
+
+
+def test_get_balances_refuses_a_trial_balance_of_unknown_accounts_not_with_the_re_sentence():
+    site = _tb_site(charts={a: None for a in ("ZZ1100", "ZZ2100", "ZZ3100", "ZZ4100")})
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "holds accounts the chart does not have: ZZ1100, ZZ2100, ZZ3100, ZZ4100. " in message
+    assert UNKNOWN_TO_CHART in message
+    assert "Retained Earnings Account" not in message
+    assert not deal.get("saved")
+
+
+def test_get_balances_names_at_most_ten_unknown_accounts():
+    codes = [f"ZZ7{i:03d}" for i in range(12)]
+    tsv = "\n".join(f"{c}\t{100 if i % 2 else -100}\t0\t202511" for i, c in enumerate(codes))
+    site = _tb_site(tb_tsv=tsv, charts={c: None for c in codes})
+    deal = _deal_for_tb(site, fair_value_adjustment_total=0)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert f"does not have: {', '.join(codes[:10])} and 2 more. {UNKNOWN_TO_CHART}" in message
+    assert codes[10] not in message and codes[11] not in message
     assert not deal.get("saved")
 
 
