@@ -145,7 +145,7 @@
    "fieldtype": "Table",
    "label": "Acquired Balances",
    "options": "Business Combination Acquired Balance",
-   "description": "The entity's balance sheet at acquisition with fair value adjustments per line. Always required: enter the acquisition-date balances, or use Get Balances from Trial Balance."
+   "description": "The entity's balance sheet at acquisition with fair value adjustments per line, in the acquired entity's Functional Currency (translated to the group currency at the acquisition period's closing rate). Always required: enter the acquisition-date balances, or use Get Balances from Trial Balance."
   },
   {
    "fieldname": "costs_section",
