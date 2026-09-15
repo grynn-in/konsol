@@ -18,7 +18,12 @@ prescribes once both are given:
   guessed from the amounts. An incomplete sheet (does not sum to zero, or no
   equity line) is refused by name;
 * the acquired net assets are those non-equity book amounts stepped up by the
-  fair value adjustments;
+  fair value adjustments. The lines are in the acquired entity's currency
+  (``entity_currency`` on the header, which the controller reads from the
+  Entity) and are translated to the group currency at the same closing rate
+  path as the consideration (no rate → refused by name; no entity currency →
+  refused, never taken as the group's), so every figure below is in the
+  group currency (PR #209 review 2);
 * the difference between the consideration and the group's share of those
   net assets is **goodwill** when positive and a **bargain** purchase gain when
   negative (the policy says whether a bargain is recognised or refused);
@@ -113,16 +118,31 @@ def _translated_sum(lines, header, rate_to_group):
     return total
 
 
-def _book_amounts(balances, is_equity):
-    """(Σ book_amount of non-equity lines, Σ book_amount of equity lines, Σ fva)."""
+def _entity_rate(header, balances, rate_to_group):
+    """The closing rate of the acquired entity's currency, which the Acquired
+    Balance Sheet is in; 1 when there are no lines to translate."""
+    if not balances:
+        return Decimal(1)
+    currency = _text(_get(header, "entity_currency"))
+    if not currency:
+        raise ValueError(
+            "The acquired entity's currency is not given; the Acquired Balance Sheet is in it "
+            "and is translated to the group currency"
+        )
+    return _rate(rate_to_group, currency)
+
+
+def _book_amounts(balances, is_equity, rate):
+    """(Σ book_amount of non-equity lines, Σ book_amount of equity lines, Σ fva),
+    each line translated at ``rate`` to the group currency."""
     net_assets = equity = fva = Decimal(0)
     for row in balances or ():
-        book = _decimal(_get(row, "book_amount"))
+        book = _decimal(_get(row, "book_amount")) * rate
         if is_equity(_get(row, "main_account")):
             equity += book
         else:
             net_assets += book
-        fva += _decimal(_get(row, "fair_value_adjustment"))
+        fva += _decimal(_get(row, "fair_value_adjustment")) * rate
     return net_assets, equity, fva
 
 
@@ -163,11 +183,16 @@ def totals(header, consideration, balances, costs, policy, rate_to_group, is_equ
     not net assets: they are reported as ``equity_eliminated`` (sign flipped,
     so a credit balance of −650 eliminates 650) and the non-equity lines are
     ``net_assets_acquired``. Fair value adjustments count on every line.
+
+    The balance lines are in ``header['entity_currency']`` and are translated
+    with ``rate_to_group`` like the consideration; a blank entity currency
+    with lines to translate raises ``ValueError``.
     """
     consideration_total = _translated_sum(consideration, header, rate_to_group)
     costs_total = _translated_sum(costs, header, rate_to_group)
 
-    net_assets, equity_book, fva = _book_amounts(balances, is_equity)
+    rate = _entity_rate(header, balances, rate_to_group)
+    net_assets, equity_book, fva = _book_amounts(balances, is_equity, rate)
     nafv = net_assets + fva
 
     treatment = _text(_get(policy, "acquisition_costs_treatment"))

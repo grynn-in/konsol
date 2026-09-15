@@ -120,12 +120,15 @@ class BusinessCombination(Document):
         # takes the group's. The model measures with the value in force.
         self.nci_measurement = self.get("nci_measurement_override") or root.get("goodwill_method") or ""
         policy = dict(root, goodwill_method=self.nci_measurement)
+        # PR #209 review 2: the Acquired Balance Sheet is in the entity's own
+        # currency; the model translates it like the consideration.
+        self.entity_currency = self._entity_currency()
 
         rate_to_group = self._rate_to_group(root.get("reporting_currency"), period)
         try:
             result = totals(self, self._lines("consideration"), self._lines("acquired_balances"),
                             self._lines("costs"), policy, rate_to_group, self._is_equity)
-        except ValueError as e:  # a consideration or cost currency with no Closing rate
+        except ValueError as e:  # a consideration, cost or entity currency with no Closing rate
             frappe.throw(
                 f"{_PREFIX}{e} ({period['period_code']} of FY{period['fiscal_year']}): "
                 f"approve a Closing Group Exchange Rate to {root.get('reporting_currency')} for it."
@@ -295,6 +298,19 @@ class BusinessCombination(Document):
                 "entity: the group root carries the Consolidation Policy the deal is measured under."
             )
         return root
+
+    def _entity_currency(self):
+        """The acquired entity's Functional Currency: the currency of the
+        Acquired Balance Sheet (hand-entered or from the trial balance). Blank
+        is refused by name, never taken as the group's."""
+        currency = frappe.db.get_value("Entity", self.acquired_entity, "functional_currency")
+        if not currency:
+            frappe.throw(
+                f"{_PREFIX}Entity {self.acquired_entity} has no Functional Currency: the Acquired "
+                "Balance Sheet is in the entity's currency and is translated to the group's. "
+                "Set it on the Entity."
+            )
+        return currency
 
     @staticmethod
     def _rate_to_group(group_currency, period):
