@@ -851,13 +851,23 @@ def build_cell_map():
 
 
 def _pnl_accounts():
-    """The group chart's Published Profit and Loss leaves as (code, caption), in code order."""
+    """The group chart's Published Profit and Loss leaves as (code, caption), in code order.
+
+    The monthly P&L reads one chart: leaves spread over several charts are refused.
+    """
     rows = frappe.get_all(
         "Main Account",
         filters={"status": "Published", "is_group": 0, "statement_section": "Profit and Loss"},
-        fields=["main_account", "account_name"],
+        fields=["main_account", "account_name", "chart_of_accounts"],
         order_by="main_account asc",
     )
+    charts = sorted({r.chart_of_accounts for r in rows if r.chart_of_accounts})
+    if len(charts) > 1:
+        frappe.throw(
+            "The monthly P&L reads one chart, and Published Profit and Loss accounts exist in "
+            f"charts {', '.join(charts)}. Make one chart Inactive or Draft.",
+            frappe.ValidationError,
+        )
     return [(r.main_account, r.account_name or r.main_account) for r in rows]
 
 
