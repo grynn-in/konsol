@@ -26,9 +26,12 @@ MODULE = "konsol.patches.migrate_deals_to_business_combinations"
 GROUP = "ZZ-GROUP"
 ENTITY = "ZZ-SUB"
 
-# Children before their parents; Ownership Period last (its deal fields are
-# what the patch reads).
+# Consolidation Group FIRST: the deal controllers' validate selects the
+# root's 17 policy columns, which only exist once that doctype is reloaded
+# (pre_model_sync). Then children before their parents; Ownership Period
+# last (its deal fields are what the patch reads).
 EXPECTED_RELOADS = [
+    ("reload_doc", "consolidation", "doctype", "consolidation_group"),
     ("reload_doc", "consolidation", "doctype", "business_combination_consideration"),
     ("reload_doc", "consolidation", "doctype", "business_combination_acquired_balance"),
     ("reload_doc", "consolidation", "doctype", "business_combination_cost"),
@@ -50,7 +53,12 @@ class _Row(dict):
 
 
 class _Refused(Exception):
-    """What a controller's validate raises in the stub."""
+    """What a controller's validate raises in the stub (frappe.ValidationError)."""
+
+
+class _Duplicate(Exception):
+    """A database error on insert (frappe.DuplicateEntryError is a NameError,
+    not a ValidationError): the controller did not refuse, the row failed."""
 
 
 def _period(name="OP-1", **over):
@@ -69,7 +77,7 @@ class _Site:
     """Stub frappe over in-memory tables. ``calls`` records, in order, every
     frappe call the patch makes; ``inserted`` the documents it inserted."""
 
-    def __init__(self, periods=(), groups=None, linked=(), refuse=None):
+    def __init__(self, periods=(), groups=None, linked=(), refuse=None, crash=None):
         self.calls = []
         self.periods = [_period(**p) if not isinstance(p, _Row) else p for p in periods]
         # consolidation_group -> reporting currency of its root node
@@ -78,6 +86,8 @@ class _Site:
         self.linked = set(linked)
         # doctype -> sentence: the controller's validate refuses the first insert
         self.refuse = dict(refuse or {})
+        # doctype -> exception: every insert that validate lets through raises it
+        self.crash = dict(crash or {})
         self.inserted = []
         self.cleared = 0
 
@@ -125,6 +135,7 @@ class _Site:
         frappe.clear_last_message = clear_last_message
         frappe.flags = types.SimpleNamespace(in_patch=True)
         frappe.ValidationError = _Refused
+        frappe.DuplicateEntryError = _Duplicate
         return frappe
 
     def _new(self, data):
@@ -136,6 +147,8 @@ class _Site:
             site.calls.append(("insert", doc.doctype, bool(getattr(doc.flags, "ignore_validate", False))))
             if not getattr(doc.flags, "ignore_validate", False) and doc.doctype in site.refuse:
                 raise _Refused(site.refuse[doc.doctype])
+            if doc.doctype in site.crash:
+                raise site.crash[doc.doctype]
             doc.name = "%s-%s" % (doc.doctype, len(site.inserted) + 1)
             site.inserted.append(doc)
             site.linked.add((doc.doctype, doc.ownership_period))
@@ -185,12 +198,15 @@ def _nothing_approved(site):
         assert getattr(doc, "status", "Draft") == "Draft", (doc.doctype, doc.status)
 
 
-def test_reloads_deal_doctypes_children_first_then_ownership_period_before_any_query():
+def test_reloads_group_then_deal_doctypes_children_first_then_ownership_period_before_any_query():
     site = _Site(periods=[{"acquisition_price": 8300.0}])
     _run(site)
-    assert site.calls[:7] == EXPECTED_RELOADS, site.calls[:8]
+    n = len(EXPECTED_RELOADS)
+    assert site.calls[:n] == EXPECTED_RELOADS, site.calls[:n + 1]
+    assert site.calls[0] == ("reload_doc", "consolidation", "doctype", "consolidation_group"), (
+        "validate reads the root's policy columns: Consolidation Group must be reloaded first")
     first_query = next(i for i, c in enumerate(site.calls) if _is_query(c))
-    assert first_query >= 7
+    assert first_query >= n
 
 
 def test_an_acquisition_becomes_one_draft_combination_with_one_cash_line():
@@ -310,6 +326,53 @@ def test_a_draft_the_controller_refuses_is_still_inserted_with_the_reason_to_rev
     assert reason in bc[0].description, bc[0].description
     assert bc[0].consideration[0]["amount"] == 8300.0
     assert site.cleared == 1, "the refused attempt's message must not leak into the migrate output"
+    _nothing_approved(site)
+
+
+def test_a_database_error_on_insert_lists_the_period_as_not_migrated_and_the_migrate_goes_on():
+    # Only a refusal by the controller (a ValidationError) earns the retry
+    # without validate. Any other error — a duplicate name, a missing
+    # column — is not the controller's judgement; retrying would raise the
+    # same error again and abort the whole migrate. The period is listed
+    # as not migrated instead, and the next period is still processed.
+    dup = _Duplicate("Duplicate entry 'BC-ZZ-GROUP-ZZ-SUB-2024-04-01' for key 'PRIMARY'")
+    site = _Site(
+        periods=[
+            {"name": "OP-DUP", "acquisition_price": 8300.0},
+            {"name": "OP-OK", "is_disposal": 1, "disposal_date": "2022-12-31", "end_date": "2022-12-31"},
+        ],
+        crash={"Business Combination": dup},
+    )
+    out = _run(site)                                     # nothing raised
+    bc_inserts = [c for c in site.calls if c[0] == "insert" and c[1] == "Business Combination"]
+    assert bc_inserts == [("insert", "Business Combination", False)], (
+        "no retry without validate: the controller did not refuse", bc_inserts)
+    assert not _of(site, "Business Combination")
+    assert [d.ownership_period for d in site.inserted] == ["OP-OK"], "the migrate goes on"
+    assert "OP-DUP" in out and "Duplicate entry" in out, out
+    assert "0 Business Combination" in out and "0 kept with" in out, out
+    _nothing_approved(site)
+
+
+def test_an_error_on_the_retry_lists_the_period_as_not_migrated_instead_of_aborting():
+    # The controller refused (retry route), then the retry itself failed
+    # for another reason: that reason is listed, the migrate goes on.
+    reason = "Consolidation Policy: Accounting Framework is required once the group has a Business Combination"
+    dup = _Duplicate("Duplicate entry 'BC-ZZ-GROUP-ZZ-SUB-2024-04-01' for key 'PRIMARY'")
+    site = _Site(
+        periods=[
+            {"name": "OP-DUP", "acquisition_price": 8300.0},
+            {"name": "OP-OK", "is_disposal": 1, "disposal_date": "2022-12-31", "end_date": "2022-12-31"},
+        ],
+        refuse={"Business Combination": reason},
+        crash={"Business Combination": dup},
+    )
+    out = _run(site)                                     # nothing raised
+    bc_inserts = [c for c in site.calls if c[0] == "insert" and c[1] == "Business Combination"]
+    assert bc_inserts == [("insert", "Business Combination", False), ("insert", "Business Combination", True)], bc_inserts
+    assert [d.ownership_period for d in site.inserted] == ["OP-OK"]
+    assert "OP-DUP" in out and "Duplicate entry" in out, out
+    assert "0 Business Combination" in out and "0 kept with" in out, out
     _nothing_approved(site)
 
 
