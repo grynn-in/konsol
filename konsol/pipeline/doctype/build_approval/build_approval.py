@@ -2,6 +2,8 @@
 
 Manages workflow transitions for governed dbt builds.
 Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin approval.
+With the Build Approval Workflow active, a new row takes its Request transition
+(after_insert); without one, before_save moves it (konsol#215).
 """
 import frappe
 from frappe.model.document import Document
@@ -85,21 +87,74 @@ class BuildApproval(Document):
             # absorbed are still owed. Only the start spends it
             # (tasks.run_governed_build), so keeping it costs no build.
             self.error_message = None
+            # The next move to Approved records who approved this run, not
+            # the last one (konsol#215).
+            self.approved_by = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
             self.requested_by = frappe.session.user
 
-        # Workflow transitions — only on first save or explicit state reset
-        if self.workflow_state == "Draft" and (self.is_new() or self.has_value_changed("workflow_state")):
+        # With the Build Approval Workflow active, a new row leaves Draft by
+        # its Request transition (after_insert), so the workflow's roles and
+        # conditions decide (konsol#215). A site without one keeps the old
+        # auto-transition — only on first save or explicit state reset.
+        if (not workflow_active() and self.workflow_state == "Draft"
+                and (self.is_new() or self.has_value_changed("workflow_state"))):
             if self.risk_level == "low":
                 self.workflow_state = "Approved"
                 self.approved_by = "Administrator"
             else:
                 self.workflow_state = "Pending Review"
 
+        if self.workflow_state == "Approved" and not self.approved_by and self.has_value_changed("workflow_state"):
+            self.approved_by = "Administrator" if self.risk_level == "low" else frappe.session.user
+
         # Populate sync info from EPM Settings
         self._populate_sync_info()
+
+    def after_insert(self):
+        """Take the workflow's Request transition on the new row (konsol#215)."""
+        if workflow_active():
+            self._take_request()
+
+    def _take_request(self):
+        """Move a Draft row on by the workflow's Request transition.
+
+        Request is konsol's step, not the user's: creating a Build Approval
+        is already permission-checked (or deliberately ignore_permissions by
+        konsol's own code), and get_transitions/apply_workflow check READ
+        permission, which a user whose submission queued the request (an
+        Entity Accountant) may not have. So it runs as Administrator.
+
+        Applied to a fresh load, so the workflow saves it as an existing row
+        moving from Draft (a new row may only be in the first state). That
+        inner save's on_update enqueues the build or notifies the reviewers,
+        and this instance is reloaded to hold the new state.
+
+        A workflow that offers no Request even to Administrator (a site edited
+        it) refuses the save, so the insert or Run Again rolls back: a row
+        left in Draft, a debounce state the reaper does not watch, would
+        absorb every later request for its scope and never build (konsol#215
+        review 2).
+        """
+        from frappe.model.workflow import apply_workflow, get_transitions
+
+        from konsol.build_lock import as_administrator
+
+        with as_administrator():
+            fresh = frappe.get_doc("Build Approval", self.name)
+            if fresh.workflow_state != "Draft":
+                return
+            offered = any(t.get("action") == "Request" for t in get_transitions(fresh))
+            if offered:
+                apply_workflow(fresh, "Request")
+        if not offered:
+            frappe.throw(
+                f"The Build Approval Workflow offers no Request for this {self.build_scope} build; "
+                "check its Request transitions."
+            )
+        self.load_from_db()
 
     def on_update(self):
         """Post-save side effects: enqueue builds, notify on pending review.
@@ -107,7 +162,26 @@ class BuildApproval(Document):
         Only fires on the save where the state actually changed — editing an
         already-Approved doc won't re-enqueue a duplicate build.
         """
+        # The insert's own on_update, after after_insert took Request: that
+        # Request's save already enqueued or notified (_take_request). Frappe
+        # sets in_insert only around the insert's before_save and on_update,
+        # so a save of this instance inside after_insert (a server script),
+        # or after the insert (control_api's Approve), still acts. Without a
+        # workflow, before_save moved the row and this on_update acts.
+        if self.flags.in_insert and self.workflow_state != "Draft" and workflow_active():
+            return
         if not self.has_value_changed("workflow_state"):
+            return
+
+        # Run Again: Draft is a debounce state the reaper does not watch, so
+        # a row left there would absorb every later request for its scope and
+        # never build. It moves on at once by Request (konsol#215 review 2),
+        # whose save does the enqueue or notify.
+        before = self.get_doc_before_save()
+        if (self.workflow_state == "Draft" and before
+                and before.workflow_state in ("Completed", "Failed", "Cancelled")):
+            if workflow_active():
+                self._take_request()
             return
 
         if self.workflow_state == "Approved":
@@ -154,6 +228,11 @@ class BuildApproval(Document):
         frappe.logger().info(
             f"Governed build enqueued: {self.name} (scope={self.build_scope})"
         )
+
+
+def workflow_active():
+    """Whether the site has an active Workflow for Build Approval."""
+    return bool(frappe.db.get_value("Workflow", {"document_type": "Build Approval", "is_active": 1}))
 
 
 def governed_build_job_id(name):

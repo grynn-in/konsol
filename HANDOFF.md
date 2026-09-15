@@ -4,6 +4,8 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Sep, night): Build Approval is approved through a Frappe Workflow (konsol#215).** Approve and Reject are buttons for EPM Admin; the role and self-approval are set in the Workflow record ("Build Approval Workflow"), not in code. A new request goes in as Draft and takes the workflow's Request transition (low risk to Approved, high risk to Pending Review); the build job's own moves (Start, Complete, Fail) are Administrator-only transitions it takes under `build_lock.build_writer()`. Deploy: migrate (after_migrate installs the workflow once); a site that edits the workflow keeps its edits.
+
 **Update (15 Sep, night): deal inputs are declared, not inferred (konsol#206, #207, #203, #205, #204, #208).**
 - A Business Combination with an empty Acquired Balance Sheet is refused. Until now it validated whenever the entity had an earlier trial balance, with net assets of 0 and goodwill equal to the whole consideration (#206).
 - **Get Balances from Trial Balance** (Draft only) fills the Acquired Balance Sheet from the warehouse trial balance (`epm_gold.gold_trial_balance`, cumulative through the acquisition period). It folds the period's result into the chart's Retained Earnings Account and places the declared **Fair Value Adjustment Total** on the group's Fair Value Adjustment Account, or spreads it by a **Fair Value Allocation Profile** (#207, #208). The lines stay editable, and **Balance Sheet Source** records where they came from. On save, the lines' fair value adjustments must add up to the declared total.
