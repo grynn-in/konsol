@@ -222,6 +222,12 @@ _FACT_FIELDS = [
 ]
 
 
+#: Datasets the warehouse keeps one set of rows per budget scenario, and the
+#: column that says which. A read filters on it, never sums across budget
+#: scenarios (konsol#214).
+_BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
+
+
 def _get_fact_by_scenario(scenario):
     """Load Dataset doc by scenario_key. Returns dict or None."""
     facts = frappe.get_all(
@@ -506,10 +512,13 @@ def _batch_query_clickhouse(requests_list):
 
     Returns {"values": [...], "errors": [...]}.
     """
+    from konsol.hierarchy_query import _active_budget_scenarios, choose_budget_scenario
+
     ch_settings = _get_ch_connection()
     n = len(requests_list)
     values = [None] * n
     errors = [None] * n
+    active_budgets = None  # looked up once per call, when first needed
 
     # Group by (fact, measure, periods_tuple, dim_names_frozenset, scenario_id).
     # `fact` (the resolved fact_name) is the table-determining element; scenario
@@ -598,15 +607,29 @@ def _batch_query_clickhouse(requests_list):
             params[f"param_{pkey}"] = str(p)
         period_in = ", ".join(period_placeholders)
 
+        # A dataset kept per budget scenario reads exactly one: the named
+        # one, else the single active budget scenario, else a refusal that
+        # says why (konsol#214).
+        budget_column = _BUDGET_SCENARIO_COLUMN.get(fact.fact_name)
+        if budget_column and not scenario_id:
+            if active_budgets is None:
+                active_budgets = _active_budget_scenarios()
+            scenario_id, err = choose_budget_scenario(active_budgets)
+            if err:
+                for idx, _ in group_items:
+                    errors[idx] = err
+                continue
+
         # Optional scenario_id filter
         scenario_id_clause = ""
-        if scenario_id and fact.has_scenario_id:
+        if scenario_id and (fact.has_scenario_id or budget_column):
             if not _SAFE_SCENARIO_ID.match(scenario_id):
                 for idx, _ in group_items:
                     errors[idx] = "Invalid scenario_id format"
                 continue
             params["param_sid"] = scenario_id
-            scenario_id_clause = " AND scenario_id = {sid:String}"
+            column = budget_column or "scenario_id"
+            scenario_id_clause = f" AND {column} = {{sid:String}}"
 
         # Optional layer filter (budget facts). Omitted → sum across all layers
         # (the final budget); supplied → restrict to one layer. Mirrors the
