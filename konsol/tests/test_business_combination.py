@@ -210,6 +210,8 @@ class _Site:
         self.flag_at_cancel = []
         #: (start, end, action, end_exclusive) of every assert_open_between call
         self.spans = []
+        #: every frappe.get_all call as {doctype, filters, order_by}
+        self.get_all_calls = []
         self._install()
 
     # -- frappe surface ----------------------------------------------------
@@ -274,11 +276,12 @@ class _Site:
         return None
 
     def _get_all(self, doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
+        self.get_all_calls.append({"doctype": doctype, "filters": filters, "order_by": order_by})
         if doctype == "Ownership Period":
             rows = [_Row(r) for r in self.ownership if _match(r, filters or {})]
             if order_by:
                 field, _, direction = order_by.partition(" ")
-                rows.sort(key=lambda r: r.get(field), reverse=direction.lower() == "desc")
+                rows.sort(key=lambda r: str(r.get(field) or ""), reverse=direction.lower() == "desc")
             return rows[:limit_page_length] if limit_page_length else rows
         assert doctype == "Group Exchange Rate", doctype
         assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
@@ -315,7 +318,10 @@ class _Site:
                     doc.name = f"OP-{doc.consolidation_group}-{doc.data_area_id}-{doc.effective_date}"
                 if any(r["name"] == doc.name for r in site.ownership):
                     raise Refused(f"Duplicate entry '{doc.name}' for key 'PRIMARY'")
-                row.update(name=doc.name, docstatus=0)
+                # Created after every row already on the site (creation is
+                # what the controller orders the cancelled history by).
+                row.update(name=doc.name, docstatus=0,
+                           creation=f"2026-06-01 00:00:{len(site.ownership) + len(site.inserted):02d}")
                 site.inserted.append(doc)
                 site.ownership.append(row)
                 return doc
@@ -754,10 +760,11 @@ def test_json_records_whether_the_deal_created_its_ownership_period():
 
 # -- the period across cancel and amend (PR #202 second review B1, B4) --------
 
-def _cancelled_period(name, amended_from=None):
+def _cancelled_period(name, amended_from=None, creation="2026-01-01 09:00:00"):
     return {"name": name, "consolidation_group": "ZZG", "data_area_id": "ZZE",
             "effective_date": "2025-12-31", "end_date": None, "ownership_pct": 80,
-            "consolidation_method": "full", "amended_from": amended_from, "docstatus": 2}
+            "consolidation_method": "full", "amended_from": amended_from, "docstatus": 2,
+            "creation": creation}
 
 
 def test_approve_cancel_amend_approve_names_the_new_period_after_the_cancelled_one():
@@ -789,14 +796,38 @@ def test_approve_cancel_amend_approve_names_the_new_period_after_the_cancelled_o
 
 
 def test_a_new_period_amends_the_latest_cancelled_one_when_there_are_several():
-    site = _Site(ownership=[_cancelled_period("OP-ZZG-ZZE-2025-12-31"),
-                            _cancelled_period("OP-ZZG-ZZE-2025-12-31-1", amended_from="OP-ZZG-ZZE-2025-12-31")])
+    site = _Site(ownership=[_cancelled_period("OP-ZZG-ZZE-2025-12-31", creation="2026-01-01 09:00:00"),
+                            _cancelled_period("OP-ZZG-ZZE-2025-12-31-1", amended_from="OP-ZZG-ZZE-2025-12-31",
+                                              creation="2026-01-02 09:00:00")])
     deal = _deal(share_acquired_pct=80)
     deal.validate()
     deal.on_submit()
     assert len(site.inserted) == 1
     assert site.inserted[0].amended_from == "OP-ZZG-ZZE-2025-12-31-1"
     assert site.inserted[0].name == "OP-ZZG-ZZE-2025-12-31-2"
+
+
+def test_the_latest_cancelled_period_is_found_by_creation_not_by_name():
+    """PR #202 third review 3: ordered by name, ``…-9`` sorts above ``…-10``,
+    so the tenth re-approval would amend ``…-9`` and collide with ``…-10``.
+    The newest cancelled period is the last created."""
+    stem = "OP-ZZG-ZZE-2025-12-31"
+    history = [_cancelled_period(stem, creation="2026-01-01 09:00:00")]
+    for n in range(1, 11):
+        previous = stem if n == 1 else f"{stem}-{n - 1}"
+        history.append(_cancelled_period(f"{stem}-{n}", amended_from=previous,
+                                         creation=f"2026-01-{n + 1:02d} 09:00:00"))
+    site = _Site(ownership=history)
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1
+    assert site.inserted[0].amended_from == f"{stem}-10"
+    assert site.inserted[0].name == f"{stem}-11"
+    lookups = [c for c in site.get_all_calls
+               if c["doctype"] == "Ownership Period" and (c["filters"] or {}).get("docstatus") == 2]
+    assert lookups, site.get_all_calls
+    assert all(c["order_by"] == "creation desc" for c in lookups), lookups
 
 
 def test_a_new_period_carries_no_amended_from_when_nothing_was_cancelled():

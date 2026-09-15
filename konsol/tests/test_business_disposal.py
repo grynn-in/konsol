@@ -703,6 +703,60 @@ def test_on_cancel_restores_what_the_period_held_before_the_close():
     assert M.frappe.flags.from_business_combination is False
 
 
+def test_a_migrated_disposal_records_the_open_state_so_its_cancel_reopens_the_holding():
+    """PR #202 third review 1: a migrated Draft Disposal (P9) links a period the
+    legacy figures already closed (is_disposal 1, end_date = disposal_date).
+    Recording THOSE as previous_* would make its cancel write the closure back,
+    and nothing could ever reopen the holding (the period's deal fields are
+    read-only; a fresh Disposal is refused as a second sale). Cancel means the
+    sale did not happen: when this document is the one recorded against the
+    closed period, the approval records the OPEN state."""
+    site = _Site(ownership=[CLOSED_80])
+    deal = _deal(ownership_period="OP-ZZG-ZZE-2020-01-01")
+    deal.validate()
+    deal.on_submit()
+    recorded = dict(deal.db_sets)
+    assert recorded["previous_end_date"] is None
+    assert recorded["previous_is_disposal"] == 0
+    assert recorded["previous_disposal_date"] is None
+    assert recorded["previous_disposal_price"] == 0
+    # The close is (re)written from this document's figures.
+    written = dict(site.loaded[0].db_sets)
+    assert str(written["end_date"]) == "2025-12-31" and written["is_disposal"] == 1
+
+    del site.flag_at_write[:]
+    deal.on_cancel()
+    period = site.loaded[-1]
+    assert period.name == "OP-ZZG-ZZE-2020-01-01"
+    assert period.db_sets[-4:] == [("end_date", None), ("is_disposal", 0),
+                                   ("disposal_date", None), ("disposal_price", 0)]
+    assert site.flag_at_write and all(site.flag_at_write)
+    assert M.frappe.flags.from_business_combination is False
+
+
+def test_a_closure_another_disposal_recorded_is_not_this_documents_to_reopen():
+    """The open-state rule applies only to the document recorded against the
+    closed period: with no link, or when another approved Disposal links it,
+    what the period holds is what a cancel gives back (finding 4 unchanged).
+    (``validate`` refuses both cases; ``on_submit`` still records faithfully.)"""
+    site = _Site(ownership=[CLOSED_80])
+    deal = _deal()  # no link: not the record of that closure
+    deal.on_submit()
+    recorded = dict(deal.db_sets)
+    assert str(recorded["previous_end_date"]) == "2025-12-31"
+    assert recorded["previous_is_disposal"] == 1
+    assert str(recorded["previous_disposal_date"]) == "2025-12-31"
+    assert recorded["previous_disposal_price"] == 9000.0
+
+    other = dict(APPROVED_BD, name="BD-ZZG-ZZE-2025-12-31-OTHER")
+    site = _Site(ownership=[CLOSED_80], disposals=[other])
+    deal = _deal(ownership_period="OP-ZZG-ZZE-2020-01-01")
+    deal.on_submit()
+    recorded = dict(deal.db_sets)
+    assert recorded["previous_is_disposal"] == 1
+    assert str(recorded["previous_end_date"]) == "2025-12-31"
+
+
 def test_before_cancel_refuses_when_a_later_ownership_period_exists():
     """PR #202 finding 4: reopening a period under a later submitted period of
     the same node would overlap it; the later one goes first."""
