@@ -211,7 +211,9 @@ class _Site:
 
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
                  disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv="",
-                 profiles=None, entities=None):
+                 profiles=None, entities=None, charts=None):
+        #: Main Account name -> chart_of_accounts; any account not listed is in ZZCOA.
+        self.charts = dict(charts or {})
         #: Entity name -> functional_currency (the Acquired Balance Sheet's currency).
         self.entities = {"ZZE": "EUR"} if entities is None else dict(entities)
         #: Business Combination documents frappe.get_doc hands out, by name.
@@ -259,6 +261,9 @@ class _Site:
     def _execute(self, sql, params=None):
         self.ch_calls.append((" ".join(sql.split()), dict(params or {})))
         return self.tb_tsv
+
+    def _chart(self, account):
+        return self.charts.get(account, "ZZCOA")
 
     def _table_exists(self, doctype):
         return self.disposal_table if doctype == "Business Disposal" else True
@@ -320,11 +325,19 @@ class _Site:
                 rows.sort(key=lambda r: str(r.get(field) or ""), reverse=direction.lower() == "desc")
             return rows[:limit_page_length] if limit_page_length else rows
         if doctype == "Main Account":
-            assert (filters or {}).get("is_retained_earnings") == 1, filters
-            assert (filters or {}).get("status") == "Published", filters
+            filters = filters or {}
+            if "is_retained_earnings" in filters:
+                assert filters["is_retained_earnings"] == 1, filters
+                assert filters.get("status") == "Published", filters
+                names = [n for n in self.retained_earnings
+                         if "chart_of_accounts" not in filters or self._chart(n) == filters["chart_of_accounts"]]
+            else:
+                op, wanted = filters["name"]
+                assert op == "in", filters
+                names = list(wanted)
             if k.get("pluck"):
-                return list(self.retained_earnings)
-            return [_Row(name=n) for n in self.retained_earnings]
+                return [n if k["pluck"] == "name" else self._chart(n) for n in names]
+            return [_Row(name=n, chart_of_accounts=self._chart(n)) for n in names]
         assert doctype == "Group Exchange Rate", doctype
         assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
         key = (filters["from_currency"], filters["to_currency"], filters["fiscal_year"], filters["fiscal_period"])
@@ -1330,6 +1343,37 @@ def test_get_balances_refuses_two_retained_earnings_accounts_by_name():
     message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
     assert "ZZ3100" in message and "ZZ3200" in message
     assert "Retained Earnings Account" in message
+    assert not deal.get("saved")
+
+
+#: Two Published charts, each with its own Retained Earnings Account (PR #209
+#: review 3): the TB_TSV accounts are in ZZCOA-A, ZZ8100 / ZZ8200 in ZZCOA-B.
+TWO_CHARTS = {"ZZ1100": "ZZCOA-A", "ZZ2100": "ZZCOA-A", "ZZ3100": "ZZCOA-A", "ZZ4100": "ZZCOA-A",
+              "ZZ8100": "ZZCOA-B", "ZZ8200": "ZZCOA-B"}
+
+
+def test_get_balances_takes_the_retained_earnings_account_of_the_trial_balances_chart():
+    site = _tb_site(charts=TWO_CHARTS, retained_earnings=["ZZ3100", "ZZ8100"])
+    deal = _deal_for_tb(site)
+    assert M.get_balances_from_trial_balance(deal.name) == 4
+    equity = next(line for line in deal.acquired_balances if line["main_account"] == "ZZ3100")
+    assert equity["book_amount"] == -650.0
+    assert "ZZ8100" not in [line["main_account"] for line in deal.acquired_balances]
+    assert "The period's result is folded into ZZ3100." in deal.balance_sheet_source
+    re_reads = [c for c in site.get_all_calls
+                if c["doctype"] == "Main Account" and "is_retained_earnings" in (c["filters"] or {})]
+    assert [c["filters"]["chart_of_accounts"] for c in re_reads] == ["ZZCOA-A"]
+
+
+def test_get_balances_refuses_a_trial_balance_spanning_two_charts_by_name():
+    # ZZ1100's 1000 split 600 / 400 with ZZ8200 of chart B: still balanced.
+    tsv = TB_TSV.replace("ZZ1100\t1000\t0\t202511", "ZZ1100\t600\t0\t202511\nZZ8200\t400\t0\t202511")
+    site = _tb_site(charts=TWO_CHARTS, retained_earnings=["ZZ3100"], tb_tsv=tsv)
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert ("the trial balance of ZZE through FY2025 P12 uses accounts of more than one "
+            "Chart of Accounts (ZZCOA-A, ZZCOA-B)") in message
+    assert deal.acquired_balances == [{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}]
     assert not deal.get("saved")
 
 
