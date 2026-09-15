@@ -115,13 +115,11 @@ class BuildApproval(Document):
 
     def after_insert(self):
         """Take the workflow's Request transition on the new row (konsol#215)."""
-        if workflow_active() and self._take_request():
-            # Frappe runs on_update on this instance next: the Request's own
-            # save already enqueued or notified, so it skips once.
-            self.flags.request_applied = True
+        if workflow_active():
+            self._take_request()
 
     def _take_request(self):
-        """Move a Draft row on by the workflow's Request transition; True if taken.
+        """Move a Draft row on by the workflow's Request transition.
 
         Request is konsol's step, not the user's: creating a Build Approval
         is already permission-checked (or deliberately ignore_permissions by
@@ -132,8 +130,13 @@ class BuildApproval(Document):
         Applied to a fresh load, so the workflow saves it as an existing row
         moving from Draft (a new row may only be in the first state). That
         inner save's on_update enqueues the build or notifies the reviewers,
-        and this instance is reloaded to hold the new state. A workflow that
-        offers no Request leaves the row in Draft.
+        and this instance is reloaded to hold the new state.
+
+        A workflow that offers no Request even to Administrator (a site edited
+        it) refuses the save, so the insert or Run Again rolls back: a row
+        left in Draft, a debounce state the reaper does not watch, would
+        absorb every later request for its scope and never build (konsol#215
+        review 2).
         """
         from frappe.model.workflow import apply_workflow, get_transitions
 
@@ -142,15 +145,16 @@ class BuildApproval(Document):
         with as_administrator():
             fresh = frappe.get_doc("Build Approval", self.name)
             if fresh.workflow_state != "Draft":
-                return False
+                return
             offered = any(t.get("action") == "Request" for t in get_transitions(fresh))
             if offered:
                 apply_workflow(fresh, "Request")
         if not offered:
-            frappe.msgprint(f"You may not request a {self.build_scope} build.")
-            return False
+            frappe.throw(
+                f"The Build Approval Workflow offers no Request for this {self.build_scope} build; "
+                "check its Request transitions."
+            )
         self.load_from_db()
-        return True
 
     def on_update(self):
         """Post-save side effects: enqueue builds, notify on pending review.
@@ -158,10 +162,13 @@ class BuildApproval(Document):
         Only fires on the save where the state actually changed — editing an
         already-Approved doc won't re-enqueue a duplicate build.
         """
-        # The Request's own save already did this (_take_request). Spent here:
-        # frappe's load_from_db keeps flags, and a later save of this same
-        # instance (control_api's Approve) must still enqueue.
-        if self.flags.pop("request_applied", False):
+        # The insert's own on_update, after after_insert took Request: that
+        # Request's save already enqueued or notified (_take_request). Frappe
+        # sets in_insert only around the insert's before_save and on_update,
+        # so a save of this instance inside after_insert (a server script),
+        # or after the insert (control_api's Approve), still acts. Without a
+        # workflow, before_save moved the row and this on_update acts.
+        if self.flags.in_insert and self.workflow_state != "Draft" and workflow_active():
             return
         if not self.has_value_changed("workflow_state"):
             return
@@ -169,9 +176,7 @@ class BuildApproval(Document):
         # Run Again: Draft is a debounce state the reaper does not watch, so
         # a row left there would absorb every later request for its scope and
         # never build. It moves on at once by Request (konsol#215 review 2),
-        # whose save does the enqueue or notify. No request_applied here:
-        # this on_update is already past it, and a flag left set would skip
-        # a later save of this instance.
+        # whose save does the enqueue or notify.
         before = self.get_doc_before_save()
         if (self.workflow_state == "Draft" and before
                 and before.workflow_state in ("Completed", "Failed", "Cancelled")):
