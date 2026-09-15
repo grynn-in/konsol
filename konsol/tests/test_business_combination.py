@@ -1190,7 +1190,7 @@ TB_TSV = "\n".join([
 
 def _deal_for_tb(site, **over):
     fields = dict(acquired_balances=[{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}],
-                  fair_value_adjustment_total=930, balance_sheet_source=None)
+                  fair_value_adjustment_total=930, balance_sheet_source=None, status="Draft")
     fields.update(over)
     deal = _deal(**fields)
     site.deals[deal.name] = deal
@@ -1258,6 +1258,24 @@ def test_get_balances_refuses_a_submitted_deal():
     message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
     assert "Only a Draft takes its balances from the trial balance." in message
     assert site.ch_calls == [] and not deal.get("saved")
+
+
+def test_get_balances_refuses_a_deal_pending_approval():
+    # PR #209 review 1: Pending Approval is docstatus 0 too, but only EPM Admin
+    # may edit it there and a server save would not enforce that.
+    site = _tb_site()
+    deal = _deal_for_tb(site, status="Pending Approval")
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert ("Only a Draft takes its balances from the trial balance; this deal is "
+            "Pending Approval.") in message
+    assert site.ch_calls == [] and not deal.get("saved")
+
+
+def test_get_balances_is_whitelisted_for_post_only():
+    # PR #209 review 4: a GET link must not replace a deal's lines.
+    with open(PATH) as f:
+        src = f.read()
+    assert '@frappe.whitelist(methods=["POST"])\ndef get_balances_from_trial_balance(' in src
 
 
 def test_get_balances_refuses_without_a_submitted_trial_balance_at_or_before():

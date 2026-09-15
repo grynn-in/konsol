@@ -154,6 +154,12 @@ def test_form_button_gets_balances_from_the_trial_balance():
             'get_balances_from_trial_balance"') in src
     assert "name: frm.doc.name" in src
     assert "frm.reload_doc()" in src
+    # PR #209 review 1: only a real Draft (Pending Approval is docstatus 0 too).
+    assert 'frm.doc.status === "Draft"' in src
+    # PR #209 review 5: unsaved edits (a typed Fair Value Adjustment Total) are
+    # saved first, and the method runs after the save resolves.
+    assert "frm.is_dirty()" in src
+    assert "frm.save().then(run)" in src
 
 
 def test_result_tab_is_computed_and_read_only():
