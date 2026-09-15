@@ -564,3 +564,51 @@ def test_flatten_path_and_level_follow_the_parent_code_as_of_each_tranche():
     assert c2["parent_member_code"] == "ZZ_P"
     assert (rows[("ZZ_P", "2025-01-01")]["path"], rows[("ZZ_P", "2025-01-01")]["hierarchy_level"]) == ("ZZ_Y/ZZ_P", 2)
     assert (rows[("ZZ_X", "1900-01-01")]["path"], rows[("ZZ_X", "1900-01-01")]["hierarchy_level"]) == ("ZZ_X", 1)
+
+
+# --- konsol#220 row R12: changing a parent row's code keeps its own children -
+
+def _code_change_tranches(*extra):
+    """P1 ZZ_P 2020-2024, P2 ZZ_P 2025-open; C2 ZZ_C 2025-open linked to P2."""
+    return [
+        _row("p1", "ZZ_P", "2020-01-01", "2024-12-31"),
+        _row("p2", "ZZ_P", "2025-01-01"),
+        _row("c2", "ZZ_C", "2025-01-01", None, parent="p2", is_group=0),
+        *extra,
+    ]
+
+
+def test_changing_a_parent_code_takes_its_own_children_along():
+    assert _edit(_code_change_tranches(), "p2",
+                 member_code="ZZ_Q", member_label="ZZ_Q") is None
+
+
+def test_changing_a_parent_code_keeps_children_of_the_old_codes_other_tranches():
+    c1 = _row("c1", "ZZ_C", "2020-01-01", "2024-12-31", parent="p1", is_group=0)
+    assert _edit(_code_change_tranches(c1), "p2",
+                 member_code="ZZ_Q", member_label="ZZ_Q") is None
+
+
+def test_changing_a_parent_code_refuses_a_child_of_the_old_code_it_covered():
+    c3 = _row("c3", "ZZ_D", "2025-01-01", None, parent="p1", is_group=0)
+    err = _edit(_code_change_tranches(c3), "p2", member_code="ZZ_Q", member_label="ZZ_Q")
+    assert err == (
+        "ZZ_D (c3) would lose its parent ZZ_P for 2025-01-01 to open. "
+        "Change or end that row first."
+    )
+
+
+def test_changing_a_parent_code_joins_the_new_codes_tranches():
+    q1 = _row("q1", "ZZ_Q", "2027-01-01")
+    assert _edit(_code_change_tranches(q1), "p2", member_code="ZZ_Q",
+                 member_label="ZZ_Q", effective_to="2026-12-31") is None
+
+
+def test_changing_a_parent_code_refuses_when_the_new_code_leaves_a_gap():
+    q1 = _row("q1", "ZZ_Q", "2028-01-01")
+    err = _edit(_code_change_tranches(q1), "p2", member_code="ZZ_Q",
+                member_label="ZZ_Q", effective_to="2026-12-31")
+    assert err == (
+        "ZZ_C (c2) would lose its parent ZZ_Q for 2027-01-01 to 2027-12-31. "
+        "Change or end that row first."
+    )
