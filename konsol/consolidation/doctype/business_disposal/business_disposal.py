@@ -14,7 +14,9 @@ Three layers, kept apart on purpose (design 2a):
   The gain or loss itself is measured downstream by the consolidation journal
   (design 5) from the entity's balances at the disposal date.
 
-Lifecycle: ``validate`` computes the Result and throws the model's sentences;
+Lifecycle: ``validate`` computes the Result and throws the model's sentences,
+and holds to one holding, one disposal: a period an approved disposal already
+closed is not sold again until that disposal is cancelled or amended;
 ``before_submit`` re-checks the period is open and the accounts are declared;
 ``on_submit`` closes the entity's Ownership Period on the disposal date and
 writes the approved disposal to the warehouse. Submit = approval (the
@@ -105,13 +107,14 @@ class BusinessDisposal(Document):
             )
         self.total_proceeds = float(result["total_proceeds"])
 
-        holding = self._current_holding()
+        holding = self._holding()
         facts = {
             "current_holding_pct": holding["ownership_pct"] if holding else None,
             "totals": result,
             "is_published_leaf": self._is_published_leaf,
         }
         found = problems(self, self._lines(), root, facts)
+        found += self._closed_holding_problems(holding)
         if found:
             frappe.throw("<br>".join(found))
 
@@ -217,6 +220,16 @@ class BusinessDisposal(Document):
             return true_rate(rows[0].quote, rows[0].quoted_per)
         return rate
 
+    def _holding(self):
+        """The holding being disposed of, as ``{name, ownership_pct,
+        is_disposal, disposal_date}`` or None: the submitted period this
+        disposal already links (a migrated disposal links its source period;
+        an amendment carries its original's link) wins over the one found by
+        date. ``validate`` measures against it and ``on_submit`` closes it —
+        the same period, so the sentences a person reads and the period the
+        approval writes agree."""
+        return self._linked_period() or self._current_holding()
+
     def _current_holding(self):
         """The entity's submitted Ownership Period covering the disposal date
         (the latest effective_date at or before it, still open or ending on or
@@ -226,7 +239,7 @@ class BusinessDisposal(Document):
             filters={"consolidation_group": self.consolidation_group,
                      "data_area_id": self.disposed_entity, "docstatus": 1,
                      "effective_date": ["<=", self.disposal_date]},
-            fields=["name", "ownership_pct", "effective_date", "end_date"],
+            fields=["name", "ownership_pct", "effective_date", "end_date", "is_disposal", "disposal_date"],
             order_by="effective_date desc",
             limit_page_length=1,
         )
@@ -235,7 +248,42 @@ class BusinessDisposal(Document):
         row = rows[0]
         if row.end_date and getdate(row.end_date) < getdate(self.disposal_date):
             return None
-        return {"name": row.name, "ownership_pct": row.ownership_pct}
+        return {"name": row.name, "ownership_pct": row.ownership_pct,
+                "is_disposal": row.is_disposal, "disposal_date": row.disposal_date}
+
+    def _closed_holding_problems(self, holding):
+        """One holding, one disposal (PR #202 second review B2). A period an
+        APPROVED Business Disposal already closed is not sold again by another
+        document: that disposal is cancelled or amended instead. A period
+        closed with no document behind it (``is_disposal`` set before Business
+        Disposal existed) is sold only by the Draft the migration linked to it
+        — that Draft IS the record of the closure, so a link to the period
+        marks this document as its own closure's record; the same link is what
+        an approved disposal and its amendment carry. A fresh disposal of such
+        a period is refused: two documents for one sale."""
+        if not holding:
+            return []
+        other = self._other_disposal_of(holding["name"])
+        if other:
+            return [
+                f"{_PREFIX}{holding['name']} is already closed by Business Disposal {other}. "
+                "Cancel that disposal first, or amend it."
+            ]
+        if int(holding.get("is_disposal") or 0) and self.get("ownership_period") != holding["name"]:
+            return [
+                f"{_PREFIX}{holding['name']} is already closed (disposed of on "
+                f"{holding.get('disposal_date')}) and no Business Disposal records it; "
+                "submit the Business Disposal migrated for that closure instead of a new one."
+            ]
+        return []
+
+    def _other_disposal_of(self, period_name):
+        """The name of an approved Business Disposal other than this document
+        that links ``period_name``, or None."""
+        filters = {"ownership_period": period_name, "docstatus": 1}
+        if self.name:
+            filters["name"] = ["!=", self.name]
+        return frappe.db.get_value("Business Disposal", filters, "name")
 
     @staticmethod
     def _is_published_leaf(account):
@@ -253,8 +301,8 @@ class BusinessDisposal(Document):
 
         The period this disposal already links (a migrated disposal links its
         source period) wins over the one found by date; a blank or stale link
-        falls back to the current holding."""
-        holding = self._linked_period() or self._current_holding()
+        falls back to the current holding (``_holding``)."""
+        holding = self._holding()
         if not holding:
             frappe.throw(
                 f"{_PREFIX}{self.disposed_entity} has no Ownership Period in "
@@ -284,13 +332,24 @@ class BusinessDisposal(Document):
 
     def _linked_period(self):
         """The Ownership Period this disposal links (``ownership_period``), as
-        ``{name}``, when it still exists and is submitted (only a submitted
-        period is a holding, as the Business Combination reads it); a blank,
-        deleted, Draft or cancelled link → None (the current holding is used)."""
+        ``{name, ownership_pct, is_disposal, disposal_date}``, when it still
+        exists and is submitted (only a submitted period is a holding, as the
+        Business Combination reads it); a blank, deleted, Draft or cancelled
+        link → None (the current holding is used)."""
         name = self.get("ownership_period")
-        if not name or not frappe.db.exists("Ownership Period", {"name": name, "docstatus": 1}):
+        if not name:
             return None
-        return {"name": name}
+        rows = frappe.get_all(
+            "Ownership Period",
+            filters={"name": name, "docstatus": 1},
+            fields=["name", "ownership_pct", "is_disposal", "disposal_date"],
+            limit_page_length=1,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {"name": row.name, "ownership_pct": row.ownership_pct,
+                "is_disposal": row.is_disposal, "disposal_date": row.disposal_date}
 
     def _assert_no_later_ownership_period(self):
         """Reopening the closed period under a LATER submitted Ownership

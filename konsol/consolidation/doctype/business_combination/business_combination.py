@@ -19,9 +19,10 @@ accounts are declared; ``on_submit`` creates (or links) the Ownership Period
 the acquisition starts and writes the approved deal to the warehouse; an
 amendment is allowed only inside the policy's 12-month measurement period.
 Submit = approval (the workflow); cancel only while the acquisition period is
-open, and it undoes the approval's Ownership Period: cancelled again when this
-deal created it, its deal fields cleared when it pre-existed. Nothing here
-saves the document from a hook or commits.
+open and no approved Business Disposal has sold the holding since, and it
+undoes the approval's Ownership Period: cancelled again when this deal created
+it, its deal fields cleared when it pre-existed. Nothing here saves the
+document from a hook or commits.
 """
 import frappe
 from frappe.model.document import Document
@@ -149,6 +150,23 @@ class BusinessCombination(Document):
         period = self._acquisition_period()
         assert_open(period["fiscal_year"], period["fiscal_period"],
                     action="cancel a business combination")
+        self._assert_not_sold()
+
+    def _assert_not_sold(self):
+        """An approved Business Disposal that links this deal's Ownership
+        Period sold the holding this deal acquired: undoing the acquisition
+        under it would leave a disposal of nothing (PR #202 second review B3).
+        The disposal is cancelled first. Guarded by ``table_exists`` as the
+        group's ``has_deals`` is: the Disposal doctype may not be installed
+        yet on a stack cancelling an older deal mid-migrate."""
+        name = self.get("ownership_period")
+        if not name or not frappe.db.table_exists("Business Disposal"):
+            return
+        sold_by = frappe.db.get_value(
+            "Business Disposal", {"ownership_period": name, "docstatus": 1}, "name"
+        )
+        if sold_by:
+            frappe.throw(f"{_PREFIX}Business Disposal {sold_by} sold this holding. Cancel it first.")
 
     def on_cancel(self):
         self._undo_ownership_period()
