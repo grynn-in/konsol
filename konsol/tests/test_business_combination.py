@@ -11,6 +11,7 @@ these tests pin how the controller feeds it and what it does with the answer.
 import calendar
 import datetime
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -209,9 +210,13 @@ class _Site:
     """In-memory site behind the stub frappe; records what the controller writes."""
 
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
-                 disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv=""):
+                 disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv="",
+                 profiles=None):
         #: Business Combination documents frappe.get_doc hands out, by name.
         self.deals = {d.name: d for d in deals}
+        #: Fair Value Allocation Profiles by name: [(main_account, weight)] (konsol#208).
+        self.profiles = dict(profiles or {})
+        self.profiles_read = []
         #: Published Main Accounts ticked Retained Earnings Account.
         self.retained_earnings = list(retained_earnings)
         #: what konsol.clickhouse.execute answers, and every (sql, params) it was asked
@@ -327,6 +332,10 @@ class _Site:
         site = self
         if arg == "Business Combination":
             return self.deals[name]
+        if arg == "Fair Value Allocation Profile":
+            self.profiles_read.append(name)
+            return _Row(name=name, profile_name=name,
+                        lines=[_Row(main_account=a, weight=w) for a, w in self.profiles[name]])
         if isinstance(arg, dict):
             doc = _OwnershipPeriodDoc(**arg)
             doc.docstatus = 0
@@ -1304,6 +1313,76 @@ def test_validate_refuses_line_adjustments_that_miss_the_declared_total():
     _deal(fair_value_adjustment_total=930.004).validate()  # within half a cent
     _deal(fair_value_adjustment_total=0).validate()     # none declared
     _deal().validate()                                  # field absent
+
+
+# -- Fair Value Allocation Profile (konsol#208) ---------------------------------
+
+#: 930 spread 33.34 / 33.33 / 33.33: 310.06 + 309.97 + 309.97 = 930.00.
+PPA_PROFILE = {"ZZ-PPA": [("ZZ1100", 33.34), ("ZZ2100", 33.33), ("ZZ1810", 33.33)]}
+
+
+def test_json_business_combination_links_an_optional_allocation_profile_below_the_total():
+    with open(os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.json")) as f:
+        meta = json.load(f)
+    names = [f["fieldname"] for f in meta["fields"]]
+    assert names.index("fair_value_allocation_profile") == names.index("fair_value_adjustment_total") + 1
+    field = next(f for f in meta["fields"] if f["fieldname"] == "fair_value_allocation_profile")
+    assert field["fieldtype"] == "Link"
+    assert field["options"] == "Fair Value Allocation Profile"
+    assert not field.get("reqd")
+    assert field["description"] == (
+        "Optional. Spreads the Fair Value Adjustment Total over accounts when you Get Balances "
+        "from Trial Balance; without it the total goes to the group's Fair Value Adjustment Account."
+    )
+
+
+def test_get_balances_with_a_profile_spreads_the_total_over_its_accounts():
+    site = _tb_site(profiles=PPA_PROFILE)
+    deal = _deal_for_tb(site, fair_value_allocation_profile="ZZ-PPA")
+    assert M.get_balances_from_trial_balance(deal.name) == 4
+    assert site.profiles_read == ["ZZ-PPA"]
+    by_account = {line["main_account"]: line for line in deal.acquired_balances}
+    assert set(by_account) == {"ZZ1100", "ZZ2100", "ZZ3100", "ZZ1810"}
+    assert by_account["ZZ1100"]["book_amount"] == 1000.0
+    assert by_account["ZZ1100"]["fair_value_adjustment"] == 310.06
+    assert by_account["ZZ2100"]["fair_value_adjustment"] == 309.97
+    assert by_account["ZZ3100"]["fair_value_adjustment"] == 0.0
+    assert by_account["ZZ1810"] == {"main_account": "ZZ1810", "book_amount": 0.0,
+                                    "fair_value_adjustment": 309.97, "note": "Fair value adjustment"}
+    placed = sum(Decimal(str(line["fair_value_adjustment"])) for line in deal.acquired_balances)
+    assert placed == Decimal("930.00")
+    assert deal.saved == 1 and deal.fair_value_adjustments == 930.0
+    source = deal.balance_sheet_source
+    assert "Fair value adjustment 930.00 spread by profile ZZ-PPA" in source
+    assert "placed on ZZ1810" not in source
+
+
+def test_get_balances_with_a_profile_does_not_need_the_policy_account():
+    site = _tb_site(profiles={"ZZ-PPA": [("ZZ1100", 100)]})
+    site.root["fair_value_adjustment_account"] = ""
+    deal = _deal_for_tb(site, fair_value_allocation_profile="ZZ-PPA")
+    assert M.get_balances_from_trial_balance(deal.name) == 3
+    by_account = {line["main_account"]: line for line in deal.acquired_balances}
+    assert by_account["ZZ1100"]["fair_value_adjustment"] == 930.0
+
+
+def test_get_balances_refuses_a_profile_whose_weights_miss_100():
+    site = _tb_site(profiles={"ZZ-PPA": [("ZZ1100", 60), ("ZZ2100", 39)]})
+    deal = _deal_for_tb(site, fair_value_allocation_profile="ZZ-PPA")
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "must add up to 100" in message
+    assert not deal.get("saved")
+
+
+def test_get_balances_without_a_profile_keeps_the_one_policy_account_line():
+    site = _tb_site(profiles=PPA_PROFILE)
+    deal = _deal_for_tb(site, fair_value_allocation_profile="")
+    assert M.get_balances_from_trial_balance(deal.name) == 4
+    assert site.profiles_read == []
+    fva = [line for line in deal.acquired_balances if line["fair_value_adjustment"]]
+    assert fva == [{"main_account": "ZZ1810", "book_amount": 0.0, "fair_value_adjustment": 930.0,
+                    "note": "Fair value adjustment"}]
+    assert "Fair value adjustment 930.00 placed on ZZ1810." in deal.balance_sheet_source
 
 
 # -- the warehouse contract ----------------------------------------------------
