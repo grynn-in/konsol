@@ -151,7 +151,7 @@ import types  # noqa: E402
 _NO_BUDGET = "No active budget scenario belongs to FY2026, so there is no variance to show."
 
 
-def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None):
+def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=None):
     """batch_query_hierarchy over ``rows`` (dicts overriding a default request).
 
     ``active_budgets`` is what the Scenario doctype holds as active budget
@@ -161,6 +161,9 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None):
     (scenario_id, scenario_type, is_active), and a lookup applies its filters.
     Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]);
     Budget Cycle lookups are recorded as {"Budget Cycle": filters}.
+    ``api``, when given, is an api module (see ``_failing_api``) served as
+    konsol.api, and ClickHouse is queried through it instead of the fake;
+    hierarchy_query's own log_error calls then go to ``api._zz_logged`` too.
     """
     queries, lookups = [], []
     if scenarios is not None:
@@ -189,8 +192,12 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None):
 
     fake_frappe = types.ModuleType("frappe")
     fake_frappe.get_all = get_all
-    fake_frappe.log_error = lambda *a, **k: None
-    fake_frappe.get_traceback = lambda: ""
+    if api is None:
+        fake_frappe.log_error = lambda *a, **k: None
+    else:
+        fake_frappe.log_error = (
+            lambda title=None, message=None, **k: api._zz_logged.append((title, message)))
+    fake_frappe.get_traceback = lambda: "Traceback: hierarchy"
 
     spec = importlib.util.spec_from_file_location(
         "_host_hierarchy_query_k214", os.path.join(APP_DIR, "hierarchy_query.py"))
@@ -201,13 +208,17 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None):
         queries.append((sql, dict(params)))
         return ""
 
-    hq._clickhouse_query = fake_query
+    ch_settings = {} if api is None else {"user": "zz", "password": "zz"}
     stubs = {
         "frappe": fake_frappe,
-        "konsol.clickhouse": types.SimpleNamespace(get_connection=lambda: {}),
+        "konsol.clickhouse": types.SimpleNamespace(get_connection=lambda: ch_settings),
         "konsol.entity_permissions": types.SimpleNamespace(
             entity_read_scope=lambda entity, allowed, wildcard=False: (None, None)),
     }
+    if api is None:
+        hq._clickhouse_query = fake_query
+    else:
+        stubs["konsol.api"] = api
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
     try:
@@ -402,3 +413,85 @@ def test_budget_and_forecast_still_filter_scenario_id():
         assert "scenario_id" not in sql
         assert "param_sid" not in params
         assert lookups == []
+
+
+# ── the hierarchy path reports ClickHouse failures like the flat path
+#    (PR #217 review 2, point 1)
+#
+# hierarchy_query queries ClickHouse through api._clickhouse_query, so an
+# unknown column shows ClickHouse's code and exception name (row K7) and the
+# log gets ClickHouse's reply, not a bare traceback.
+
+_CH_BODY = (
+    "Code: 47. DB::Exception: Unknown expression identifier 'budget_scenario_id' "
+    "in scope SELECT fiscal_year FROM epm_gold.gold_variance_at_hierarchy_node. "
+    "(UNKNOWN_IDENTIFIER)\n" + "\n".join(f"{i}. DB::frame_{i}" for i in range(50))
+)
+
+
+class _CHResp:
+    def __init__(self, status_code, text):
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(
+                f"{self.status_code} Client Error", response=self)
+
+
+def _failing_api(body):
+    """api.py under a private name, a stub frappe recording log_error in
+    ``api._zz_logged``, and a requests.get that answers HTTP 400 ``body``."""
+    import requests
+    logged = []
+    fake_frappe = types.ModuleType("frappe")
+    fake_frappe.get_all = lambda *a, **k: []
+    fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    fake_frappe.log_error = (
+        lambda title=None, message=None, **k: logged.append((title, message)))
+    fake_frappe.get_traceback = lambda: "Traceback: api"
+    fake_utils = types.ModuleType("frappe.utils")
+    fake_utils.now_datetime = lambda: None
+    fake_frappe.utils = fake_utils
+    stubs = {
+        "frappe": fake_frappe,
+        "frappe.utils": fake_utils,
+        "konsol.clickhouse": types.SimpleNamespace(
+            connection_url=lambda s: "http://zz-clickhouse:8123/",
+            get_connection=lambda: {}),
+    }
+    before = set(sys.modules)
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_host_api_k214_hierarchy", os.path.join(APP_DIR, "api.py"))
+        api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api)
+    finally:
+        for key in set(sys.modules) - before:
+            if key.split(".")[0] in ("frappe", "konsol"):
+                del sys.modules[key]
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+    api.requests = types.SimpleNamespace(
+        get=lambda *a, **k: _CHResp(400, body), exceptions=requests.exceptions)
+    api._zz_logged = logged
+    return api
+
+
+def test_hierarchy_clickhouse_failure_shows_code_and_exception_name():
+    api = _failing_api(_CH_BODY)
+    result, _, _ = _run_hierarchy(
+        [{"scenario_id": "ZZ_PLAN"}], active_budgets=["ZZ_PLAN"], api=api)
+    assert result["values"] == [None]
+    (err,) = result["errors"]
+    assert err == "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"
+    assert "budget_scenario_id" not in err
+    # ClickHouse's reply is logged once, not once more as a bare traceback
+    assert api._zz_logged == [("ClickHouse query failed", _CH_BODY[:1000])]
