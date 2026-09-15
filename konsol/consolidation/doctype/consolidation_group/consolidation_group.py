@@ -40,8 +40,10 @@ class ConsolidationGroup(NestedSet):
         "ic_difference_account": "ic_difference_account",
         "ic_difference_tolerance": "ic_difference_tolerance",
         # konsolidat#198 (design 1a): the group root's Consolidation Policy.
-        # goodwill_method keeps its fieldname and is the NCI measurement.
-        "goodwill_method": "nci_measurement",
+        # The warehouse column nci_measurement is read from the doctype's
+        # goodwill_method, which keeps its fieldname and is the NCI
+        # measurement (konsol#226: column first, field second).
+        "nci_measurement": "goodwill_method",
         "accounting_framework": "accounting_framework",
         "framework_note": "framework_note",
         "goodwill_treatment": "goodwill_treatment",
