@@ -211,7 +211,9 @@ class _Site:
 
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
                  disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv="",
-                 profiles=None):
+                 profiles=None, entities=None):
+        #: Entity name -> functional_currency (the Acquired Balance Sheet's currency).
+        self.entities = {"ZZE": "EUR"} if entities is None else dict(entities)
         #: Business Combination documents frappe.get_doc hands out, by name.
         self.deals = {d.name: d for d in deals}
         #: Fair Value Allocation Profiles by name: [(main_account, weight)] (konsol#208).
@@ -271,6 +273,9 @@ class _Site:
         return rows[:1]
 
     def _get_value(self, doctype, filters, fieldname=None, as_dict=False, **k):
+        if doctype == "Entity":
+            assert fieldname == "functional_currency", fieldname
+            return self.entities.get(filters)
         if doctype == "Consolidation Group":
             if filters.get("consolidation_group") != self.root["consolidation_group"]:
                 return None
@@ -626,6 +631,38 @@ def test_validate_translates_a_deferred_line_at_the_periods_closing_rate():
                                 {"component": "Deferred", "amount": 1000, "currency": "USD"}])
     deal.validate()
     assert deal.total_consideration == 8900.0
+
+
+# -- net assets translated from the entity's currency (PR #209 review 2) -------
+
+ZZS_BALANCES = [
+    {"main_account": "ZZ1100", "book_amount": 10000, "fair_value_adjustment": 0},
+    {"main_account": "ZZ3100", "book_amount": -10000, "fair_value_adjustment": 0},
+]
+
+
+def test_validate_translates_the_acquired_balances_from_the_entitys_currency():
+    _Site(entities={"ZZE": "ZZS"}, rates={("ZZS", "EUR", 2025, 12): (10, 100)})  # 0.10 EUR per ZZS
+    deal = _deal(consideration=[{"component": "Cash", "amount": 800, "currency": "EUR"}],
+                 acquired_balances=[dict(r) for r in ZZS_BALANCES])
+    deal.validate()
+    assert deal.net_assets_acquired == 1000.0
+    assert deal.goodwill == 0.0
+    assert deal.bargain_purchase_gain == 200.0
+
+
+def test_validate_refuses_an_entity_currency_without_a_closing_rate():
+    _Site(entities={"ZZE": "ZZS"})
+    deal = _deal(acquired_balances=[dict(r) for r in ZZS_BALANCES])
+    message = _refused(deal.validate)
+    assert "ZZS" in message and "Closing" in message
+    assert "P12" in message and "2025" in message
+
+
+def test_validate_refuses_an_entity_without_a_functional_currency():
+    _Site(entities={"ZZE": ""})
+    message = _refused(_deal().validate)
+    assert "ZZE" in message and "Functional Currency" in message
 
 
 def test_validate_requires_the_balance_sheet_with_or_without_a_trial_balance():

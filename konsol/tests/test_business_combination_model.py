@@ -34,7 +34,7 @@ CAPITALISE = dict(IFRS_PARTIAL, acquisition_costs_treatment="Capitalise")
 
 
 def header(**over):
-    base = {"share_acquired_pct": 100, "consideration_currency": GROUP_CCY}
+    base = {"share_acquired_pct": 100, "consideration_currency": GROUP_CCY, "entity_currency": GROUP_CCY}
     base.update(over)
     return base
 
@@ -294,6 +294,68 @@ def test_a_currency_without_a_rate_is_refused_by_name():
         assert "ZZX" in str(exc)
     else:
         raise AssertionError("a missing rate must not pass as 1.0")
+
+
+# -- net assets translated from the entity's currency (PR #209 review 2) -------
+
+ENTITY_CCY = "ZZS"
+
+
+def entity_rate(currency):
+    """ZZS at 0.1 to the group currency ZZG."""
+    return {GROUP_CCY: 1.0, ENTITY_CCY: 0.1}[currency]
+
+
+def test_net_assets_are_translated_from_the_entity_currency():
+    hdr = header(entity_currency=ENTITY_CCY)
+    t = totals(hdr, [cash(800)], [line(10000), equity(-10000)], [], IFRS_PARTIAL, rate=entity_rate)
+    assert t["net_assets_acquired"] == Decimal("1000.00")  # 10,000 ZZS × 0.1
+    assert t["equity_eliminated"] == Decimal("1000.00")
+    assert t["net_assets_at_fair_value"] == Decimal("1000.00")
+    assert t["goodwill"] == Decimal("0.00")
+    assert t["bargain_purchase_gain"] == Decimal("200.00")  # 1,000 − 800, in ZZG
+
+
+def test_fair_value_adjustments_and_partial_nci_are_translated_too():
+    hdr = header(entity_currency=ENTITY_CCY, share_acquired_pct=80)
+    t = totals(hdr, [cash(2000)], [line(10000, 1000), equity(-10000)], [], IFRS_PARTIAL, rate=entity_rate)
+    assert t["fair_value_adjustments"] == Decimal("100.00")
+    assert t["net_assets_at_fair_value"] == Decimal("1100.00")
+    assert t["nci_at_acquisition"] == Decimal("220.00")  # 20% of 1,100
+    assert t["goodwill"] == Decimal("1120.00")  # 2,000 − 80% of 1,100
+
+
+def test_a_same_currency_deal_is_unchanged():
+    t = totals(header(entity_currency=GROUP_CCY), WORKED_CONSIDERATION, WORKED_BALANCES, [], IFRS_PARTIAL)
+    assert t["net_assets_acquired"] == Decimal("650.00")
+    assert t["goodwill"] == Decimal("6720.00")
+
+
+def test_an_entity_currency_without_a_rate_is_refused_by_name():
+    def rate(currency):
+        return 1.0 if currency == GROUP_CCY else None
+
+    try:
+        totals(header(entity_currency=ENTITY_CCY), [cash(800)], [line(10000), equity(-10000)], [],
+               IFRS_PARTIAL, rate=rate)
+    except ValueError as exc:
+        assert ENTITY_CCY in str(exc) and "Closing" in str(exc)
+    else:
+        raise AssertionError("a missing entity rate must not pass as 1.0")
+
+
+def test_balances_without_an_entity_currency_are_refused():
+    try:
+        totals(header(entity_currency=""), [cash(800)], [line(10000), equity(-10000)], [], IFRS_PARTIAL)
+    except ValueError as exc:
+        assert "entity" in str(exc).lower() and "currency" in str(exc).lower()
+    else:
+        raise AssertionError("balances in an unknown currency must not be taken as the group's")
+
+
+def test_the_docstring_says_the_balances_are_translated():
+    doc = " ".join(M.__doc__.split())
+    assert "acquired entity's currency" in doc
 
 
 def test_the_worked_example_has_no_problems():
