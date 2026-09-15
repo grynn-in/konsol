@@ -1,0 +1,50 @@
+{
+ "doctype": "Workflow",
+ "name": "Business Disposal Workflow",
+ "workflow_name": "Business Disposal Workflow",
+ "document_type": "Business Disposal",
+ "is_active": 1,
+ "workflow_state_field": "status",
+ "send_email_alert": 0,
+ "override_status": 0,
+ "states": [
+  {
+   "state": "Draft",
+   "doc_status": "0",
+   "allow_edit": "EPM Analyst"
+  },
+  {
+   "state": "Pending Approval",
+   "doc_status": "0",
+   "allow_edit": "EPM Admin"
+  },
+  {
+   "state": "Approved",
+   "doc_status": "1",
+   "allow_edit": "EPM Admin"
+  }
+ ],
+ "transitions": [
+  {
+   "state": "Draft",
+   "action": "Send for Approval",
+   "next_state": "Pending Approval",
+   "allowed": "EPM Analyst",
+   "allow_self_approval": 1
+  },
+  {
+   "state": "Pending Approval",
+   "action": "Reject",
+   "next_state": "Draft",
+   "allowed": "EPM Admin",
+   "allow_self_approval": 1
+  },
+  {
+   "state": "Pending Approval",
+   "action": "Approve",
+   "next_state": "Approved",
+   "allowed": "EPM Admin",
+   "allow_self_approval": 1
+  }
+ ]
+}

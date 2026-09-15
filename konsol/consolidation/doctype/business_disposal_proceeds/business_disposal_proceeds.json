@@ -1,0 +1,56 @@
+{
+ "name": "Business Disposal Proceeds",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "component",
+   "fieldtype": "Select",
+   "label": "Component",
+   "options": "Cash\nDeferred\nContingent\nOther",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "How the proceeds were received."
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "In the line's currency; translated at the disposal period's closing rate. 0 records a disposal with no proceeds."
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "ISO Currency",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 1,
+   "description": "Pre-filled from the header's proceeds currency."
+  },
+  {
+   "fieldname": "settlement_date",
+   "fieldtype": "Date",
+   "label": "Settlement Date",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "When a deferred or contingent component falls due."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Description",
+   "in_list_view": 1,
+   "columns": 3
+  }
+ ],
+ "permissions": []
+}
