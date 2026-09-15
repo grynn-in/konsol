@@ -57,6 +57,9 @@ class _Site:
         self.enqueued = []
         self.messages = []
         self.queries = []
+        self.published = []
+        # the state each save wrote, as before_save left it
+        self.saved_states = []
         self.frappe = frappe = types.ModuleType("frappe")
         # v15: frappe.session is frappe.local.session; set_user rewrites it in place
         session = _D(user=user, sid="zz-sid", data=_D(csrf_token="zz"))
@@ -97,7 +100,7 @@ class _Site:
             raise RuntimeError("no settings on the host")
         frappe.get_single = get_single
         frappe.msgprint = lambda msg, *a, **k: self.messages.append(msg)
-        frappe.publish_realtime = lambda *a, **k: None
+        frappe.publish_realtime = lambda event, data=None, *a, **k: self.published.append((event, data))
         frappe.enqueue = lambda *a, **k: self.enqueued.append(k.get("build_request"))
         frappe.logger = lambda *a, **k: types.SimpleNamespace(info=lambda *a, **k: None)
 
@@ -137,6 +140,7 @@ class _Site:
                 """Document.save: before_save on the loaded row, write it, on_update."""
                 self._before = types.SimpleNamespace(**site.rows[self.name])
                 self.before_save()
+                site.saved_states.append(self.workflow_state)
                 site.rows[self.name] = copy.deepcopy(self.fields())
                 self.on_update()
 
@@ -329,55 +333,57 @@ def test_a_save_that_does_not_change_the_state_does_not_set_an_approver():
 
 # --- Run Again under the workflow (konsol#215 row W4) ----------------------------
 
-def _run_again(state, started_at, rebuild_requested=1, scope="actuals", name="ZZ-BA-0004"):
-    """A finished row, loaded fresh, taken back to Draft by the Run Again transition."""
-    site = _Site()
-    site.rows[name] = dict(name=name, build_scope=scope, risk_level="high", workflow_state=state,
+def _run_again(state, started_at, rebuild_requested=1, scope="actuals", name="ZZ-BA-0004", **site_args):
+    """A finished row, loaded fresh, taken back to Draft by the Run Again transition.
+
+    Since row W7 the Run Again save's on_update then takes Request, so the
+    row does not rest in Draft; before_save itself still leaves it Draft
+    (site.saved_states[0])."""
+    site = _Site(**site_args)
+    site.rows[name] = dict(name=name, build_scope=scope, risk_level=None, workflow_state=state,
                            approved_by="zz.old@example.com", requested_by="zz.analyst@example.com",
                            rebuild_requested=rebuild_requested, error_message="ZZ old error",
                            started_at=started_at, completed_at="2026-09-01 10:05:00" if started_at else None,
                            duration_seconds=300 if started_at else 0)
     with site.installed():
-        fresh = site.frappe.get_doc("Build Approval", name)
-        site.frappe.model.workflow.apply_workflow(fresh, "Run Again")
-        offered = [t.action for t in site.frappe.model.workflow.get_transitions(
-            site.frappe.get_doc("Build Approval", name))]
-    return site.rows[name], offered
+        site.instance = site.frappe.get_doc("Build Approval", name)
+        site.frappe.model.workflow.apply_workflow(site.instance, "Run Again")
+    return site.rows[name], site
 
 
 def test_run_again_from_completed_resets_the_run_and_spends_the_flag():
-    row, offered = _run_again("Completed", "2026-09-01 10:00:00")
-    assert row["workflow_state"] == "Draft", "before_save must not move a Run Again row on"
+    row, site = _run_again("Completed", "2026-09-01 10:00:00")
+    assert site.saved_states[0] == "Draft", "before_save must not move a Run Again row on"
     assert row["started_at"] is None and row["completed_at"] is None
     assert row["duration_seconds"] == 0
     assert row["error_message"] is None
     assert row["rebuild_requested"] == 0
-    assert "Request" in offered, "the user then takes Request"
+    assert [a for _, a in site.applied] == ["Run Again", "Request"]
 
 
 def test_run_again_from_failed_resets_the_run_and_spends_the_flag():
-    row, offered = _run_again("Failed", "2026-09-01 10:00:00")
-    assert row["workflow_state"] == "Draft", "before_save must not move a Run Again row on"
+    row, site = _run_again("Failed", "2026-09-01 10:00:00")
+    assert site.saved_states[0] == "Draft", "before_save must not move a Run Again row on"
     assert row["started_at"] is None and row["completed_at"] is None
     assert row["duration_seconds"] == 0
     assert row["error_message"] is None
     assert row["rebuild_requested"] == 0
-    assert "Request" in offered
+    assert [a for _, a in site.applied] == ["Run Again", "Request"]
 
 
 def test_run_again_from_cancelled_clears_the_error_and_keeps_the_flag():
-    row, offered = _run_again("Cancelled", None)
-    assert row["workflow_state"] == "Draft", "before_save must not move a Run Again row on"
+    row, site = _run_again("Cancelled", None)
+    assert site.saved_states[0] == "Draft", "before_save must not move a Run Again row on"
     assert row["started_at"] is None and row["completed_at"] is None
     assert row["error_message"] is None
     assert row["rebuild_requested"] == 1, "a Cancelled row's flag was never acted on"
-    assert "Request" in offered
+    assert [a for _, a in site.applied] == ["Run Again", "Request"]
 
 
-def test_run_again_of_a_low_risk_row_stays_draft_too():
-    row, offered = _run_again("Completed", "2026-09-01 10:00:00", scope="staging")
-    assert row["workflow_state"] == "Draft"
-    assert "Request" in offered
+def test_run_again_of_a_low_risk_row_is_not_moved_by_before_save_either():
+    row, site = _run_again("Completed", "2026-09-01 10:00:00", scope="staging")
+    assert site.saved_states[0] == "Draft"
+    assert [a for _, a in site.applied] == ["Run Again", "Request"]
 
 
 # --- a row run again gets a fresh approver (konsol#215 row W3b) -------------------
@@ -391,11 +397,10 @@ def test_a_row_run_again_clears_its_old_approver_and_records_the_next_one():
                            completed_at="2026-09-01 10:05:00", duration_seconds=300)
     wf = site.frappe.model.workflow
     with site.installed():
+        # Run Again takes Request itself since row W7
         wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Run Again")
-        assert site.rows[name]["workflow_state"] == "Draft"
-        assert site.rows[name]["approved_by"] is None, "the reset must clear the old run's approver"
-        wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Request")
         assert site.rows[name]["workflow_state"] == "Pending Review"
+        assert site.rows[name]["approved_by"] is None, "the reset must clear the old run's approver"
         wf.apply_workflow(site.frappe.get_doc("Build Approval", name), "Approve")
     assert site.rows[name]["workflow_state"] == "Approved"
     assert site.rows[name]["approved_by"] == "zz.admin@example.com"
@@ -471,3 +476,59 @@ def test_as_administrator_switches_the_user_and_restores_the_session():
         assert site.frappe.flags.konsol_build_writer is True
     _assert_caller_session(site, "zz.analyst@example.com")
     assert not site.frappe.flags.get("konsol_build_writer")
+
+
+# --- no Build Approval rests in Draft under the workflow (row W7) -----------------
+
+def test_run_again_on_a_failed_high_risk_row_ends_pending_review():
+    row, site = _run_again("Failed", "2026-09-01 10:00:00")
+    assert row["workflow_state"] == "Pending Review", "a Draft row would absorb every later request"
+    assert site.enqueued == []
+    assert site.published == [("build_request_pending", {"name": "ZZ-BA-0004", "scope": "actuals"})]
+    assert row["approved_by"] is None
+
+
+def test_run_again_on_a_failed_low_risk_row_is_approved_and_enqueued_once():
+    row, site = _run_again("Failed", "2026-09-01 10:00:00", scope="staging")
+    assert row["workflow_state"] == "Approved"
+    assert row["approved_by"] == "Administrator"
+    assert site.enqueued == ["ZZ-BA-0004"], "the Request's save enqueues; the Run Again save must not again"
+
+
+def test_run_again_from_every_finished_state_takes_request():
+    for state, started_at in (("Completed", "2026-09-01 10:00:00"), ("Failed", None), ("Cancelled", None)):
+        row, _ = _run_again(state, started_at)
+        assert row["workflow_state"] == "Pending Review", state
+
+
+def test_the_request_after_run_again_is_taken_as_administrator_and_the_caller_is_restored():
+    row, site = _run_again("Failed", "2026-09-01 10:00:00")
+    assert site.applied_as == ["zz.analyst@example.com", "Administrator"]
+    _assert_caller_session(site, "zz.analyst@example.com")
+
+
+def test_the_run_again_instance_holds_the_new_state_and_no_spent_flag():
+    """The instance saved by Run Again is reloaded; no request_applied is left
+    on it (its on_update is already past), so a later save still acts."""
+    row, site = _run_again("Completed", "2026-09-01 10:00:00")
+    assert site.instance.workflow_state == "Pending Review"
+    assert not site.instance.flags.get("request_applied")
+
+
+def test_run_again_on_a_site_without_request_stays_draft_and_is_told():
+    row, site = _run_again("Failed", "2026-09-01 10:00:00", request=False)
+    assert row["workflow_state"] == "Draft"
+    assert site.messages == ["You may not request a actuals build."]
+
+
+def test_a_save_of_a_draft_row_that_was_already_draft_takes_no_request():
+    """Only the move to Draft from a finished state takes Request."""
+    site = _Site()
+    name = "ZZ-BA-0006"
+    site.rows[name] = dict(name=name, build_scope="actuals", risk_level="high", workflow_state="Draft",
+                           approved_by=None, requested_by="zz.analyst@example.com", rebuild_requested=0,
+                           error_message=None, started_at=None, completed_at=None, duration_seconds=0)
+    with site.installed():
+        site.frappe.get_doc("Build Approval", name).save()
+    assert site.rows[name]["workflow_state"] == "Draft"
+    assert site.applied == []
