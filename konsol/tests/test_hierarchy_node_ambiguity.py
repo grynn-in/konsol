@@ -287,3 +287,88 @@ def test_get_hierarchy_member_reads_the_tranche_of_today():
     info, err = _with_frappe(_member_frappe([_OLD, _NEW], "2025-06-30"),
                              lambda: get_hierarchy_member("ZZ_H", "ZZ_NONE"))
     assert info is None and "not found" in err
+
+
+# konsol#220 row R11: a budget write lands in one fiscal period, so the node
+# is checked as it is on that period's end date, not as it is today.
+
+_PERIOD_ENDS = {(2026, 3): "2026-03-31", (2024, 6): "2024-06-30",
+                (2023, 6): "2023-06-30", (2025, 6): "2025-06-30"}
+
+_EX = {"name": "e1", "member_code": "ZZ_EX", "member_label": "ZZ EX", "is_group": 0,
+       "effective_from": "2017-01-01", "effective_to": "2024-12-31"}
+_Y_LEAF = {"name": "y1", "member_code": "ZZ_Y", "member_label": "ZZ Y", "is_group": 0,
+           "effective_from": "2020-01-01", "effective_to": "2023-12-31"}
+_Y_GROUP = {"name": "y2", "member_code": "ZZ_Y", "member_label": "ZZ Y", "is_group": 1,
+            "effective_from": "2024-01-01", "effective_to": None}
+
+
+def _write_frappe(rows, today="2025-06-30"):
+    """frappe for validate_hierarchy_write: the named tree ZZ_H is published."""
+    class _D(dict):
+        __getattr__ = dict.get
+
+    def get_value(doctype, filters, fields, as_dict=False):
+        if fields == "hierarchy_name":
+            return "ZZ_H"
+        return _D(name="ZZ_H", dimension="business_unit", status="Published")
+
+    def get_all(doctype, filters=None, fields=None, **_kw):
+        return [_D({f: r.get(f) for f in fields}) for r in rows
+                if r["member_code"] == filters["member_code"]]
+
+    utils = types.ModuleType("frappe.utils")
+    utils.today = lambda: today
+    return types.SimpleNamespace(get_all=get_all, utils=utils,
+                                 db=types.SimpleNamespace(get_value=get_value))
+
+
+def _write(rows, node, fy, fp):
+    from konsol.hierarchy_query import validate_hierarchy_write
+
+    status = types.ModuleType("konsol.period_status")
+    status.period_dates = lambda y, p: ("start", _PERIOD_ENDS[(y, p)])
+    grain = types.ModuleType("konsol.epm.budget_grain")
+    grain.budget_dimension_names = lambda: ["business_unit"]
+    stubs = {"konsol.period_status": status, "konsol.epm.budget_grain": grain}
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        return _with_frappe(_write_frappe(rows), lambda: validate_hierarchy_write(
+            "ZZ_H", node, fiscal_year=fy, fiscal_period=fp))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+def test_write_to_a_period_after_the_leaf_ended_is_refused():
+    info, err = _write([_EX], "ZZ_EX", 2026, 3)
+    assert info is None
+    assert err == "Node 'ZZ_EX' is not in hierarchy 'ZZ_H' on 2026-03-31 (FY2026 P3)."
+
+
+def test_write_to_a_period_the_leaf_covers_is_accepted():
+    info, err = _write([_EX], "ZZ_EX", 2024, 6)
+    assert err is None, err
+    assert info["member_code"] == "ZZ_EX" and info["dimension"] == "business_unit"
+
+
+def test_write_checks_leaf_or_group_in_that_period():
+    # ZZ_Y was a leaf to 2023 and is a group from 2024 (today it is a group)
+    info, err = _write([_Y_LEAF, _Y_GROUP], "ZZ_Y", 2023, 6)
+    assert err is None, err
+    assert info["is_group"] is False
+    info, err = _write([_Y_LEAF, _Y_GROUP], "ZZ_Y", 2025, 6)
+    assert info is None and "is a group" in err
+
+
+def test_budget_write_passes_its_period():
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api.py")
+    block = open(path).read().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    call = block.split("validate_hierarchy_write(")[1].split(")\n")[0]
+    assert 'fiscal_year=int(data["fiscal_year"])' in call
+    assert "fiscal_period=fp" in call
