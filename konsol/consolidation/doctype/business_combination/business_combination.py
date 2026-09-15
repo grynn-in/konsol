@@ -25,12 +25,14 @@ cancelled again when this deal created it, its deal fields cleared when it
 pre-existed. Every refusal speaks of this deal by name. Nothing here saves
 the document from a hook or commits.
 """
+from decimal import Decimal
+
 import frappe
 from frappe.model.document import Document
 from frappe.utils import add_months, getdate, nowdate
 
-from konsol.business_combination_model import problems, totals
-from konsol.clickhouse import sync_doctype_after_commit
+from konsol.business_combination_model import derive_acquired_balances, problems, totals
+from konsol.clickhouse import execute, sync_doctype_after_commit
 from konsol.consolidation.doctype.business_combination_acquired_balance.business_combination_acquired_balance import (  # noqa: E501
     BusinessCombinationAcquiredBalance,
 )
@@ -73,6 +75,7 @@ _DEAL_FIELD_RESET = {
 }
 
 _PREFIX = "Business Combination: "
+_CENT = Decimal("0.01")
 
 
 class BusinessCombination(Document):
@@ -127,9 +130,26 @@ class BusinessCombination(Document):
         }
         found = problems(self, self._lines("consideration"), self._lines("acquired_balances"),
                          self._lines("costs"), root, facts)
+        found += self._fva_total_problems()
         found += self._amendment_problems(root)
         if found:
             frappe.throw("<br>".join(found))
+
+    def _fva_total_problems(self):
+        """A declared Fair Value Adjustment Total is what the lines' fair value
+        adjustments must add up to (konsol#207); blank or zero declares none."""
+        declared = Decimal(str(self.get("fair_value_adjustment_total") or 0))
+        if not declared:
+            return []
+        placed = sum((Decimal(str(row.get("fair_value_adjustment") or 0))
+                      for row in self._lines("acquired_balances")), Decimal(0))
+        if abs(placed - declared) <= Decimal("0.005"):
+            return []
+        return [
+            f"{_PREFIX}Fair value adjustments on the Acquired Balance Sheet add up to "
+            f"{placed.quantize(_CENT):.2f}; the declared Fair Value Adjustment Total is "
+            f"{declared.quantize(_CENT):.2f}."
+        ]
 
     def before_submit(self):
         """Approval: the acquisition period is still open, and the accounts
@@ -273,7 +293,7 @@ class BusinessCombination(Document):
 
     def _has_tb_at_or_before(self, period):
         """A submitted trial balance of the entity at or before the acquisition
-        period: then the acquired balance sheet may be left to the model."""
+        period: then Get Balances from Trial Balance has something to read."""
         base = {"data_area_id": self.acquired_entity, "docstatus": 1}
         return bool(
             frappe.db.exists("Trial Balance Submission",
@@ -500,3 +520,102 @@ class BusinessCombination(Document):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         for doctype, controller in self.CHILD_CONTROLLERS.items():
             sync_doctype_after_commit(doctype, controller.CH_TABLE, controller.CH_FIELD_MAP)
+
+
+# -- Get Balances from Trial Balance (konsol#207) -------------------------------
+
+#: The acquired entity's balances through the acquisition period, per account:
+#: every period at or before it (all years) summed over the dimensions. The
+#: last column is the latest period with data, for the source note.
+_TB_THROUGH_PERIOD_SQL = (
+    "SELECT main_account, toFloat64(sum(period_net_amount)), max(is_pnl), "
+    "max(fiscal_year * 100 + fiscal_period) "
+    "FROM epm_gold.gold_trial_balance "
+    "WHERE data_area_id = {entity:String} "
+    "AND (fiscal_year < {y:UInt16} OR (fiscal_year = {y:UInt16} AND fiscal_period <= {p:UInt16})) "
+    "GROUP BY main_account FORMAT TSV"
+)
+
+
+def _read_tb_through(entity, fiscal_year, fiscal_period):
+    """``(rows, latest)``: ``rows`` as ``derive_acquired_balances`` reads them
+    (amount kept as the warehouse's text, so no float rounding creeps in) and
+    ``latest`` the highest ``fiscal_year * 100 + fiscal_period`` seen (0 when
+    there are no rows)."""
+    raw = execute(_TB_THROUGH_PERIOD_SQL, params={
+        "param_entity": entity,
+        "param_y": str(int(fiscal_year)),
+        "param_p": str(int(fiscal_period)),
+    })
+    rows, latest = [], 0
+    for line in (raw or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4 or not parts[0]:
+            continue
+        rows.append({"main_account": parts[0], "amount": parts[1], "is_pnl": int(parts[2] or 0)})
+        latest = max(latest, int(parts[3] or 0))
+    return rows, latest
+
+
+@frappe.whitelist()
+def get_balances_from_trial_balance(name):
+    """Replace a Draft deal's Acquired Balance Sheet with the acquired
+    entity's warehouse trial balance through the acquisition period (the
+    period's unclosed result folded into the chart's Retained Earnings
+    Account) and place the declared Fair Value Adjustment Total on the
+    group's Fair Value Adjustment Account; record where the lines came from
+    and save. Returns the number of lines. Nothing is guessed: a missing
+    trial balance, two retained-earnings accounts, a total with no account
+    to put it on, or rows that do not balance are refused by name."""
+    doc = frappe.get_doc("Business Combination", name)
+    doc.check_permission("write")
+    if int(doc.get("docstatus") or 0) != 0:
+        frappe.throw(f"{_PREFIX}Only a Draft takes its balances from the trial balance.")
+    period = doc._acquisition_period()
+    year, number = period["fiscal_year"], period["fiscal_period"]
+    label = f"FY{year} P{number}"
+    entity = doc.acquired_entity
+    if not doc._has_tb_at_or_before(period):
+        frappe.throw(f"{_PREFIX}{entity} has no submitted trial balance at or before {label}.")
+
+    retained = frappe.get_all("Main Account", filters={"status": "Published", "is_retained_earnings": 1},
+                              pluck="name")
+    if len(retained) > 1:
+        frappe.throw(
+            f"{_PREFIX}more than one Published Main Account is ticked Retained Earnings Account "
+            f"({', '.join(sorted(retained))}); tick exactly one."
+        )
+    retained_account = retained[0] if retained else None
+
+    fva_total = Decimal(str(doc.get("fair_value_adjustment_total") or 0)).quantize(_CENT)
+    fva_lines, fva_account = [], None
+    if fva_total:
+        root = doc._root()
+        fva_account = root.get("fair_value_adjustment_account")
+        if not fva_account:
+            frappe.throw(
+                f"{_PREFIX}a Fair Value Adjustment Total of {fva_total:.2f} needs the Consolidation "
+                f"Policy's Fair Value Adjustment Account on the group root {root.get('name')}; it is blank."
+            )
+        fva_lines = [(fva_account, fva_total)]
+
+    rows, latest = _read_tb_through(entity, year, number)
+    lines, found = derive_acquired_balances(rows, retained_account, fva_lines, label)
+    if found:
+        frappe.throw("<br>".join(found))
+
+    doc.set("acquired_balances", [
+        {"main_account": line["main_account"], "book_amount": float(line["book_amount"]),
+         "fair_value_adjustment": float(line["fair_value_adjustment"]), "note": line["note"]}
+        for line in lines
+    ])
+    latest_year, latest_period = divmod(latest, 100)
+    source = (f"Derived {nowdate()} from the warehouse trial balance of {entity} through {label} "
+              f"(latest period with data: FY{latest_year} P{latest_period}).")
+    if retained_account:
+        source += f" The period's result is folded into {retained_account}."
+    if fva_lines:
+        source += f" Fair value adjustment {fva_total:.2f} placed on {fva_account}."
+    doc.balance_sheet_source = source
+    doc.save()
+    return len(lines)

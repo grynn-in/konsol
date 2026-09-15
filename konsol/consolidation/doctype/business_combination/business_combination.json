@@ -107,6 +107,19 @@
    "label": "Acquired Balance Sheet"
   },
   {
+   "fieldname": "fair_value_adjustment_total",
+   "fieldtype": "Currency",
+   "label": "Fair Value Adjustment Total",
+   "description": "The purchase price allocation's total step-up from book to fair value, in the acquired entity's currency. Get Balances from Trial Balance places it on the lines; the lines must add up to it."
+  },
+  {
+   "fieldname": "balance_sheet_source",
+   "fieldtype": "Small Text",
+   "label": "Balance Sheet Source",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
    "fieldname": "acquired_balances",
    "fieldtype": "Table",
    "label": "Acquired Balances",
