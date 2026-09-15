@@ -525,11 +525,17 @@ _REFERENCE_TABLE_DDL = {
         "is_cash UInt8, sign Int8, status String) "
         "ENGINE = MergeTree ORDER BY main_account"
     ),
+    # konsol#220: each member row is one dated tranche of its code; its window
+    # is Date32 (1900-01-01..2299-12-31; Date clamps both ends), an open end
+    # being 2299-12-31. Added to existing tables by _ADDED_COLUMNS below.
+    # Identical to konsolidat's clickhouse/init-db.sql; keep them identical.
     "epm_staging.reporting_hierarchies": (
         "(hierarchy_name String, dimension String, member_code String, "
         "member_label String, parent_member_code String, is_group UInt8, "
         "hierarchy_level UInt16, path String, effective_from String, "
-        "effective_to String, is_default UInt8, status String) "
+        "effective_to String, is_default UInt8, status String, "
+        "member_effective_from Date32 DEFAULT '1900-01-01', "
+        "member_effective_to Date32 DEFAULT '2299-12-31') "
         "ENGINE = MergeTree ORDER BY (hierarchy_name, member_code)"
     ),
     # F2: the consolidation structure. epm_gold.consolidation_groups used to be
@@ -825,6 +831,11 @@ _ADDED_COLUMNS = {
     "epm_staging.business_combinations": [
         ("nci_measurement", "String DEFAULT ''"),
         ("nci_fair_value", "Float64 DEFAULT 0"),
+    ],
+    # konsol#220: the window of each dated Reporting Hierarchy member tranche
+    "epm_staging.reporting_hierarchies": [
+        ("member_effective_from", "Date32 DEFAULT '1900-01-01'"),
+        ("member_effective_to", "Date32 DEFAULT '2299-12-31'"),
     ],
     # konsol#103: ISO Currency's magnitude reference for the group rate guard;
     # NaN until the ISO Currency write-through fills it
