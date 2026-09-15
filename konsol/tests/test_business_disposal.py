@@ -395,7 +395,7 @@ class _Site:
         self.synced, self.opened, self.flag_at_write, self.loaded = [], [], [], []
         site = self
         M.frappe.flags = types.SimpleNamespace(from_business_combination=False)
-        M.frappe.db = types.SimpleNamespace(sql=self._sql, get_value=self._get_value)
+        M.frappe.db = types.SimpleNamespace(sql=self._sql, get_value=self._get_value, exists=self._exists)
         M.frappe.get_all = self._get_all
         M.frappe.get_doc = self._get_doc
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
@@ -439,6 +439,10 @@ class _Site:
                           reverse=direction.strip().lower() == "desc")
             return rows[:limit_page_length] if limit_page_length else rows
         raise AssertionError(f"unexpected get_all on {doctype}")
+
+    def _exists(self, doctype, name=None, **k):
+        assert doctype == "Ownership Period", doctype
+        return next((row["name"] for row in self.ownership if row["name"] == name), None)
 
     def _get_doc(self, doctype, name=None):
         assert doctype == "Ownership Period", doctype
@@ -574,6 +578,44 @@ def test_on_submit_closes_the_ownership_period_under_the_flag_and_links_it():
     assert M.frappe.flags.from_business_combination is False
     assert ("ownership_period", "OP-ZZG-ZZE-2020-01-01") in deal.db_sets
     assert ("Ownership Period", "epm_staging.ownership_periods") in [s[:2] for s in site.synced]
+
+
+def test_on_cancel_reopens_the_ownership_period_it_closed():
+    """Cancelling an approved disposal undoes what its approval did: the period
+    it ended is open again and the entity is no longer disposed of (P7b)."""
+    site = _Site()
+    deal = _deal()
+    deal.validate()
+    deal.on_submit()
+    assert deal.ownership_period == "OP-ZZG-ZZE-2020-01-01"
+    del site.synced[:]
+    del site.flag_at_write[:]
+    deal.on_cancel()
+    assert len(site.loaded) == 2, "on_cancel loads the linked Ownership Period"
+    period = site.loaded[-1]
+    assert period.name == "OP-ZZG-ZZE-2020-01-01"
+    assert period.db_sets[-4:] == [("end_date", None), ("is_disposal", 0),
+                                   ("disposal_date", None), ("disposal_price", 0)]
+    assert site.flag_at_write and all(site.flag_at_write), "the reset goes through the guard"
+    assert M.frappe.flags.from_business_combination is False
+    assert ("Ownership Period", "epm_staging.ownership_periods",
+            tuple(_OwnershipPeriodDoc.CH_FIELD_MAP)) in site.synced
+    # Reopened before the disposal itself leaves the warehouse.
+    synced = [s[0] for s in site.synced]
+    assert synced.index("Ownership Period") < synced.index("Business Disposal")
+
+
+def test_on_cancel_skips_a_period_that_no_longer_exists_and_without_a_link():
+    site = _Site()
+    deal = _deal(ownership_period="OP-ZZG-ZZE-1999-01-01")  # deleted since
+    deal.on_cancel()
+    assert site.loaded == []
+    assert M.frappe.flags.from_business_combination is False
+    assert ("Business Disposal", HEADER_TABLE) in [s[:2] for s in site.synced], "still synced"
+    site = _Site()
+    _deal(ownership_period=None).on_cancel()
+    assert site.loaded == []
+    assert not any(s[0] == "Ownership Period" for s in site.synced)
 
 
 def test_submit_cancel_and_delete_sync_the_header_and_the_child():
