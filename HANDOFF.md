@@ -4,6 +4,33 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Sep, later): deals are documents (konsol PR #202, konsolidat#198).**
+An acquisition is a **Business Combination** and a sale a **Business
+Disposal** — submittable doctypes with child tables (consideration
+components, acquired balances with fair-value adjustments, acquisition
+costs / proceeds components), a Draft → Pending Approval → Approved →
+Cancelled workflow, and IFRS 3 arithmetic computed on validate from the
+group's **Consolidation Policy**. The policy lives on the group root's
+Consolidation Group (new tab): framework, NCI measurement (partial/full),
+goodwill treatment (Impairment-only/Amortise + years), acquisition-cost
+treatment, measurement period, bargain-purchase handling, and nine accounts
+by role (goodwill, fair-value adjustment, investment, NCI, bargain-purchase
+gain, disposal gain/loss, deal settlement, amortisation expense, acquisition
+costs). Nothing defaults: a deal cannot be submitted until every policy
+field and account its journal needs is declared, and the refusal names the
+field. Approval creates or closes the Ownership Period (its seven deal
+fields are now read-only, set only by the deal); cancel undoes exactly that.
+Write-through: `epm_staging.business_combinations` (+3 child tables),
+`business_disposals` (+1), policy columns on `epm_gold.consolidation_groups`.
+Deploy order: migrate (the patch `migrate_deals_to_business_combinations`
+turns each Ownership Period that carries deal figures into a **Draft**
+Business Combination / Disposal — nothing is submitted for the user), then
+on the site fill the group root's Consolidation Policy and accounts, review
+each Draft (its consideration is the old acquisition price as one component;
+acquired balances are empty and must be entered from the acquisition-date
+balance sheet), and submit. konsolidat reads only submitted deals; until a
+deal is submitted the acquisition layer posts nothing for it.
+
 **Update (15 Sep): every trial balance declares its Amount Basis
 (konsolidat#199).** The warehouse read every row as a period movement; the
 site's uploads were period-end balances, so the balance sheet double-counted
