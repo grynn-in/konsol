@@ -19,6 +19,9 @@ ZZ_ACCOUNTS = [
     ("ZZ6000", "ZZ Other"),
 ]
 
+SIGN_SENTENCE = "debit positive; a negative total is a profit"
+TOTAL_CAPTION = f"Net Profit and Loss ({SIGN_SENTENCE})"
+
 
 def test_list_templates_includes_pnl_monthly():
     ids = [t["id"] for t in list_templates()]
@@ -30,7 +33,7 @@ def test_pnl_monthly_description_names_the_role_not_codes():
     pnl = next(t for t in list_templates() if t["id"] == "pnl_monthly")
     assert pnl["description"] == (
         "12-month income statement: every Published Profit and Loss account "
-        "of the group chart"
+        f"of the group chart ({SIGN_SENTENCE})"
     )
 
 
@@ -74,7 +77,7 @@ def test_build_pnl_monthly_total_row_sums_every_account():
     spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS)
     by_range = {c["range"]: c for c in spec["cells"]}
 
-    assert by_range["A6"]["values"] == [["Net Profit and Loss"]]
+    assert by_range["A6"]["values"] == [[TOTAL_CAPTION]]
     assert by_range["B6:M6"]["formulas"] == [
         [f"=SUM({col}3:{col}5)" for col in _LETTERS]
     ]
@@ -84,7 +87,7 @@ def test_build_pnl_monthly_total_row_with_one_account_is_not_circular():
     spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS[:1])
     by_range = {c["range"]: c for c in spec["cells"]}
 
-    assert by_range["A4"]["values"] == [["Net Profit and Loss"]]
+    assert by_range["A4"]["values"] == [[TOTAL_CAPTION]]
     formulas = by_range["B4:M4"]["formulas"][0]
     assert formulas == [f"=SUM({col}3:{col}3)" for col in _LETTERS]
     assert not any(re.search(r"[A-M]4\b", f) for f in formulas), formulas
