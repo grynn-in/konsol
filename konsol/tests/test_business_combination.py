@@ -459,10 +459,10 @@ US_GAAP_NCI = "US GAAP measures non-controlling interest at fair value"
 
 def test_override_full_on_a_partial_group_measures_the_nci_the_full_way():
     _Site()  # the group root says partial
-    deal = _deal(share_acquired_pct=80, nci_measurement_override="full")
+    deal = _deal(share_acquired_pct=80, nci_measurement_override="full", nci_fair_value=2075)
     deal.validate()
     assert deal.nci_measurement == "full"
-    # Full: NCI 8300 / 0.8 × 0.2 = 2075; goodwill = 8300 + 2075 − 1580 at fair value.
+    # Full: NCI at its declared fair value 2075; goodwill = 8300 + 2075 − 1580 at fair value.
     assert deal.nci_at_acquisition == 2075.0
     assert deal.goodwill == 8795.0
     # The partial measurement of the same deal (the group's) is a different answer.
@@ -484,7 +484,7 @@ def test_blank_override_uses_the_groups_nci_measurement():
         for blank in (None, ""):
             site = _Site()
             site.root["goodwill_method"] = group
-            deal = _deal(share_acquired_pct=80, nci_measurement_override=blank)
+            deal = _deal(share_acquired_pct=80, nci_measurement_override=blank, nci_fair_value=2075)
             deal.validate()
             assert deal.nci_measurement == group, (group, blank)
             assert deal.nci_at_acquisition == (316.0 if group == "partial" else 2075.0), (group, blank)
@@ -501,9 +501,86 @@ def test_us_gaap_refuses_a_partial_override_once_in_the_deals_name():
     for override in ("full", None):
         site = _Site()
         site.root.update(accounting_framework="US GAAP", goodwill_method="full")
-        deal = _deal(share_acquired_pct=80, nci_measurement_override=override)
+        deal = _deal(share_acquired_pct=80, nci_measurement_override=override, nci_fair_value=2075)
         deal.validate()
         assert deal.nci_measurement == "full", override
+
+
+# -- NCI at its own fair value under the full method (konsol#204, IFRS 3.19) ----
+
+#: 60% acquired for 1,000; net assets at fair value 800 (book 700 + a 100 step-up).
+BALANCES_800 = [
+    {"main_account": "ZZ1100", "book_amount": 900, "fair_value_adjustment": 100},
+    {"main_account": "ZZ2100", "book_amount": -200, "fair_value_adjustment": 0},
+    {"main_account": "ZZ3100", "book_amount": -700, "fair_value_adjustment": 0},
+]
+NCI_FAIR_VALUE_REQUIRED = (
+    "Business Combination: NCI Fair Value is required: NCI is measured at full and 60% is acquired. "
+    "The price paid for control is not the minority's value."
+)
+
+
+def _deal_60(**over):
+    fields = dict(share_acquired_pct=60, consideration=[{"component": "Cash", "amount": 1000, "currency": "EUR"}],
+                  acquired_balances=[dict(r) for r in BALANCES_800], nci_measurement_override="full")
+    fields.update(over)
+    return _deal(**fields)
+
+
+def test_full_nci_is_the_declared_nci_fair_value():
+    _Site()
+    deal = _deal_60(nci_fair_value=300)
+    deal.validate()
+    assert deal.nci_measurement == "full"
+    assert deal.nci_at_acquisition == 300.0
+    assert deal.goodwill == 500.0  # 1000 + 300 − 800
+    assert deal.nci_at_acquisition != 666.67, "never grossed up from the price paid for control"
+
+
+def test_full_nci_without_a_declared_fair_value_is_refused():
+    _Site()
+    for blank in (None, 0):
+        message = _refused(_deal_60(nci_fair_value=blank).validate)
+        assert NCI_FAIR_VALUE_REQUIRED in message, (blank, message)
+    message = _refused(_deal_60().validate)  # the field never set
+    assert NCI_FAIR_VALUE_REQUIRED in message, message
+
+
+def test_partial_nci_needs_no_nci_fair_value():
+    _Site()
+    deal = _deal_60(nci_measurement_override=None)
+    deal.validate()
+    assert deal.nci_measurement == "partial"
+    assert deal.nci_at_acquisition == 320.0
+    assert deal.goodwill == 520.0
+
+
+def test_the_warehouse_row_carries_the_nci_measurement_and_fair_value_last():
+    fm = M.BusinessCombination.CH_FIELD_MAP
+    assert list(fm.items())[-2:] == [("nci_measurement", "nci_measurement"),
+                                     ("nci_fair_value", "nci_fair_value")]
+    assert list(fm.values()) == [
+        "name", "consolidation_group", "acquired_entity", "acquisition_date", "share_acquired_pct",
+        "consideration_currency", "total_consideration", "net_assets_acquired", "fair_value_adjustments",
+        "goodwill", "bargain_purchase_gain", "nci_at_acquisition", "ownership_period",
+        "nci_measurement", "nci_fair_value",
+    ], "the DDL's column order"
+
+
+def test_nci_fair_value_field_on_the_form():
+    import json
+    with open(os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.json")) as f:
+        doc = json.load(f)
+    fields = {f["fieldname"]: f for f in doc["fields"]}
+    field = fields["nci_fair_value"]
+    assert field["fieldtype"] == "Currency"
+    assert field["label"] == "NCI Fair Value"
+    assert field["depends_on"] == "eval:doc.nci_measurement=='full' && doc.share_acquired_pct < 100"
+    assert field["description"] == (
+        "The non-controlling interest's own acquisition-date fair value, in the consideration currency "
+        "(IFRS 3.19). Required when NCI is measured at full and less than 100% is acquired; konsol does "
+        "not infer it from the price paid for control.")
+    assert field.get("read_only", 0) == 0 and field.get("reqd", 0) == 0
 
 
 def test_validate_expenses_costs_under_an_expense_policy():

@@ -158,14 +158,80 @@ def test_partial_nci_is_its_share_of_net_assets_at_fair_value():
     assert t["bargain_purchase_gain"] == Decimal("0.00")
 
 
-def test_full_nci_is_measured_at_the_fair_value_the_price_implies():
-    t = totals(header(share_acquired_pct=80), WORKED_CONSIDERATION, WORKED_BALANCES, [], US_GAAP_FULL)
-    # 8,300 for 80% values the whole at 10,375; the 20% NCI is 2,075. Under the
-    # full method goodwill is the whole business's: consideration + NCI at fair
-    # value − net assets at fair value = 8,300 + 2,075 − 1,580 = 8,795 (IFRS 3.32),
-    # against 7,036 under the partial method.
+def test_full_nci_is_the_declared_nci_fair_value():
+    t = totals(header(share_acquired_pct=80, nci_fair_value=2075), WORKED_CONSIDERATION, WORKED_BALANCES,
+               [], US_GAAP_FULL)
+    # The 20% NCI's own fair value is declared at 2,075. Under the full method
+    # goodwill is the whole business's: consideration + NCI at fair value − net
+    # assets at fair value = 8,300 + 2,075 − 1,580 = 8,795 (IFRS 3.32), against
+    # 7,036 under the partial method.
     assert t["nci_at_acquisition"] == Decimal("2075.00")
     assert t["goodwill"] == Decimal("8795.00")
+
+
+# konsol#204: 60% acquired for 1,000; net assets at fair value 800 (book 700 +
+# a 100 step-up); the complete sheet sums to zero with its −700 equity line.
+BALANCES_800 = [line(900, 100), line(-200), equity(-700)]
+CASH_1000 = [cash(1000)]
+
+
+def test_full_nci_is_the_minoritys_own_fair_value_not_a_gross_up():
+    t = totals(header(share_acquired_pct=60, nci_fair_value=300), CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+    assert t["net_assets_at_fair_value"] == Decimal("800.00")
+    assert t["nci_at_acquisition"] == Decimal("300.00")
+    # 1,000 + 300 − 800
+    assert t["goodwill"] == Decimal("500.00")
+    # The price paid for control grossed up (1,000 / 60% × 40% = 666.67) is not the NCI.
+    assert t["nci_at_acquisition"] != Decimal("666.67")
+    assert M.problems(header(share_acquired_pct=60, nci_fair_value=300), CASH_1000, BALANCES_800, [],
+                      US_GAAP_FULL, facts()) == []
+
+
+NCI_FAIR_VALUE_REQUIRED = (
+    "Business Combination: NCI Fair Value is required: NCI is measured at full and 60% is acquired. "
+    "The price paid for control is not the minority's value."
+)
+
+
+def test_full_nci_without_a_declared_fair_value_is_refused_and_never_grossed_up():
+    for blank in ({}, {"nci_fair_value": None}, {"nci_fair_value": 0}, {"nci_fair_value": -5}):
+        hdr = header(share_acquired_pct=60, **blank)
+        t = totals(hdr, CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+        assert t["nci_at_acquisition"] != Decimal("666.67"), blank
+        if not blank.get("nci_fair_value"):
+            assert t["nci_at_acquisition"] == Decimal("0.00"), blank
+        problems = M.problems(hdr, CASH_1000, BALANCES_800, [], US_GAAP_FULL, facts())
+        assert NCI_FAIR_VALUE_REQUIRED in problems, (blank, problems)
+
+
+def test_partial_nci_ignores_the_nci_fair_value():
+    for over in ({}, {"nci_fair_value": 300}):
+        hdr = header(share_acquired_pct=60, **over)
+        t = totals(hdr, CASH_1000, BALANCES_800, [], IFRS_PARTIAL)
+        assert t["nci_at_acquisition"] == Decimal("320.00"), over  # 40% of 800
+        assert t["goodwill"] == Decimal("520.00"), over  # 1,000 − 60% of 800
+        assert M.problems(hdr, CASH_1000, BALANCES_800, [], IFRS_PARTIAL, facts()) == [], over
+
+
+def test_full_at_one_hundred_percent_needs_no_nci_fair_value():
+    t = totals(header(share_acquired_pct=100), CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+    assert t["nci_at_acquisition"] == Decimal("0.00")
+    assert t["goodwill"] == Decimal("200.00")
+    assert M.problems(header(share_acquired_pct=100), CASH_1000, BALANCES_800, [], US_GAAP_FULL,
+                      facts()) == []
+
+
+def test_nci_fair_value_is_translated_from_the_consideration_currency():
+    hdr = header(share_acquired_pct=60, nci_fair_value=1200, consideration_currency=OTHER_CCY)
+    t = totals(hdr, CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+    assert t["nci_at_acquisition"] == Decimal("300.00")  # 1,200 × 0.25
+    assert t["goodwill"] == Decimal("500.00")
+
+
+def test_the_docstring_no_longer_derives_nci_from_the_price():
+    doc = M.__doc__
+    assert "the price implies" not in doc
+    assert "konsol#204" in doc
 
 
 def test_nci_is_not_guessed_when_the_policy_has_no_measurement():
@@ -232,8 +298,8 @@ def test_a_currency_without_a_rate_is_refused_by_name():
 
 def test_the_worked_example_has_no_problems():
     assert M.problems(header(), WORKED_CONSIDERATION, WORKED_BALANCES, [], IFRS_PARTIAL, facts()) == []
-    assert M.problems(header(share_acquired_pct=80), WORKED_CONSIDERATION, WORKED_BALANCES, [cost(200)],
-                      US_GAAP_FULL, facts()) == []
+    assert M.problems(header(share_acquired_pct=80, nci_fair_value=2075), WORKED_CONSIDERATION,
+                      WORKED_BALANCES, [cost(200)], US_GAAP_FULL, facts()) == []
 
 
 def test_no_consideration_line_is_a_problem():

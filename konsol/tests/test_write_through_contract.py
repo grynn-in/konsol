@@ -331,8 +331,20 @@ def test_business_combinations_table_is_created_on_migrate():
         "consideration_currency String, total_consideration Float64, "
         "net_assets_acquired Float64, fair_value_adjustments Float64, "
         "goodwill Float64, bargain_purchase_gain Float64, "
-        "nci_at_acquisition Float64, ownership_period String) "
+        "nci_at_acquisition Float64, ownership_period String, "
+        "nci_measurement String DEFAULT '', nci_fair_value Float64 DEFAULT 0) "
         "ENGINE = MergeTree ORDER BY name")
+
+
+def test_business_combinations_carry_the_nci_measurement_and_fair_value():
+    """konsol#204: the NCI measurement a deal was measured under and, under
+    the full method, the minority's declared fair value travel with the deal;
+    both are ADDed to a table that already exists, in the CREATE's order."""
+    m, _ = _load_clickhouse()
+    assert m._ADDED_COLUMNS["epm_staging.business_combinations"] == [
+        ("nci_measurement", "String DEFAULT ''"),
+        ("nci_fair_value", "Float64 DEFAULT 0"),
+    ]
 
 
 def test_business_combination_consideration_table_is_created_on_migrate():
