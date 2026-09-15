@@ -15,8 +15,9 @@ Three layers, kept apart on purpose (design 2a):
   group rates, the chart, the entity's trial balances) and feeds them in.
 
 Lifecycle: ``validate`` computes the Result fields and throws the model's
-sentences; ``before_submit`` re-checks the period is open and the required
-accounts are declared; ``on_submit`` creates (or links) the Ownership Period
+sentences (a Fair Value Adjustment Total the lines miss only warns on a
+Draft); ``before_submit`` re-checks the period is open and the required
+accounts are declared, and refuses that mismatch; ``on_submit`` creates (or links) the Ownership Period
 the acquisition starts and writes the approved deal to the warehouse; an
 amendment is allowed only inside the policy's 12-month measurement period.
 Submit = approval (the workflow); cancel only while the acquisition period and
@@ -145,10 +146,15 @@ class BusinessCombination(Document):
         found = problems(self, self._lines("consideration"), self._lines("acquired_balances"),
                          self._lines("costs"), policy, facts)
         found = self._us_gaap_nci_problems(root, found)
-        found += self._fva_total_problems()
         found += self._amendment_problems(root)
         if found:
             frappe.throw("<br>".join(found))
+        # PR #209 review 2: a Draft must save a new Fair Value Adjustment Total
+        # before Get Balances from Trial Balance places it on the lines, so the
+        # mismatch only warns here; before_submit refuses it at approval.
+        if not self.get("docstatus"):
+            for warning in self._fva_total_problems():
+                frappe.msgprint(warning, title="Fair Value Adjustment Total", indicator="orange")
 
     def _us_gaap_nci_problems(self, root, found):
         """US GAAP measures NCI at fair value (konsol#205): a deal measured
@@ -181,14 +187,17 @@ class BusinessCombination(Document):
         ]
 
     def before_submit(self):
-        """Approval: the acquisition period is still open, and the accounts
-        this deal posts to are still declared on the root (it may have
-        changed since the deal was saved)."""
+        """Approval: the acquisition period is still open, the accounts this
+        deal posts to are still declared on the root (it may have changed
+        since the deal was saved), and the lines' fair value adjustments add
+        up to the declared Fair Value Adjustment Total (a Draft save only
+        warns about that)."""
         period = self._acquisition_period()
         assert_open(period["fiscal_year"], period["fiscal_period"],
                     action="approve a business combination")
         root = self._root()
         found = account_problems(root, required_accounts(root, self._deal()), self._is_published_leaf)
+        found += self._fva_total_problems()
         if found:
             frappe.throw("<br>".join(found))
 

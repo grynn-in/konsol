@@ -4,7 +4,9 @@
 // warehouse trial balance through the acquisition period, on request. The
 // server replaces the lines, places the Fair Value Adjustment Total and saves.
 // Only a real Draft (Pending Approval is docstatus 0 too); unsaved edits are
-// saved first so the server uses what was typed, not what was stored.
+// saved first so the server uses what was typed, not what was stored. Frappe
+// v15's frm.save() resolves even when the save fails, so the method runs only
+// once the form is no longer dirty (a failed save keeps the typed values).
 frappe.ui.form.on("Business Combination", {
 	refresh(frm) {
 		if (frm.doc.docstatus === 0 && !frm.is_new() && frm.doc.status === "Draft") {
@@ -17,7 +19,8 @@ frappe.ui.form.on("Business Combination", {
 						freeze: true,
 						callback: () => frm.reload_doc(),
 					});
-				const go = () => (frm.is_dirty() ? frm.save().then(run) : run());
+				const go = () =>
+					frm.is_dirty() ? frm.save().then(() => { if (!frm.is_dirty()) run(); }) : run();
 				if (n) {
 					frappe.confirm(
 						__("This replaces the {0} lines of the Acquired Balance Sheet. Continue?", [n]),
