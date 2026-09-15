@@ -208,7 +208,24 @@ def test_the_prefix_is_the_one_run_governed_build_writes():
 def _frappe_stub():
     frappe = types.ModuleType("frappe")
     frappe.db = types.SimpleNamespace(sql=lambda *a, **k: None)
+    _add_session(frappe)
     return frappe
+
+
+def _add_session(frappe, user="Administrator"):
+    """frappe.local.session and a set_user that rewrites it in place, as v15's
+    (__init__.py:641): build_lock.build_writer() switches to Administrator
+    (konsol#215)."""
+    session = _D(user=user, sid=user, data=_D())
+    frappe.session = session
+    frappe.local = types.SimpleNamespace(session=session, form_dict=_D())
+
+    def set_user(name):
+        session.user = name
+        session.sid = name
+        session.data = _D()
+        frappe.local.form_dict = _D()
+    frappe.set_user = set_user
 
 
 def test_every_state_the_debounce_absorbs_into_is_flagged():
@@ -901,7 +918,7 @@ class StartSite:
         frappe.TimestampMismatchError = TimestampMismatchError
         frappe.utils = types.SimpleNamespace(now_datetime=lambda: START, get_bench_path=lambda: "/zz/bench")
         frappe.get_single = lambda name: types.SimpleNamespace(dbt_project_path="/zz/dbt")
-        frappe.session = types.SimpleNamespace(user="Administrator")
+        _add_session(frappe)
         frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=self.warnings.append)
         frappe.flags = _D()
         frappe.log_error = lambda *a, **k: None
