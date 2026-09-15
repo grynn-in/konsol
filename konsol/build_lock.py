@@ -30,21 +30,17 @@ BUILD_WRITER_FLAG = "konsol_build_writer"
 
 
 @contextmanager
-def build_writer():
-    """Mark the saves inside as konsol's build path, which may move a Build
-    Approval out of Running, and make them as Administrator: the Build
-    Approval Workflow gives the build job's transitions (Start, Fail to
-    Start, Complete, Fail) to the Administrator role only (konsol#215).
+def as_administrator():
+    """Run the block as Administrator, for konsol's own workflow steps: the
+    build job's transitions and a Build Approval's Request (konsol#215).
 
-    Both are restored on exit, error or not, so they can't leak past the
-    save they wrap. frappe.set_user rewrites the session in place (user, sid,
-    data) and clears form_dict, so the caller's session is put back whole
-    (as schema_apply._switch_to_administrator does)."""
-    previous = frappe.flags.get(BUILD_WRITER_FLAG)
+    The caller is restored on exit, error or not. frappe.set_user rewrites
+    the session in place (user, sid, data) and clears form_dict, so the
+    caller's session is put back whole (as
+    schema_apply._switch_to_administrator does)."""
     session = frappe.local.session
     saved = {"user": session.user, "sid": session.sid, "data": session.data}
     form_dict = frappe.local.form_dict
-    frappe.flags[BUILD_WRITER_FLAG] = True
     frappe.set_user("Administrator")
     try:
         yield
@@ -52,6 +48,23 @@ def build_writer():
         frappe.set_user(saved["user"])   # also resets the permission caches
         session.update(saved)
         frappe.local.form_dict = form_dict
+
+
+@contextmanager
+def build_writer():
+    """Mark the saves inside as konsol's build path, which may move a Build
+    Approval out of Running, and make them as Administrator: the Build
+    Approval Workflow gives the build job's transitions (Start, Fail to
+    Start, Complete, Fail) to the Administrator role only (konsol#215).
+
+    Both are restored on exit, error or not, so they can't leak past the
+    save they wrap."""
+    previous = frappe.flags.get(BUILD_WRITER_FLAG)
+    frappe.flags[BUILD_WRITER_FLAG] = True
+    try:
+        with as_administrator():
+            yield
+    finally:
         frappe.flags[BUILD_WRITER_FLAG] = previous
 
 
