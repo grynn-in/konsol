@@ -150,6 +150,18 @@ class _Refused(Exception):
     pass
 
 
+class _StubDocument:
+    """Frappe's Document, as far as the member controller uses it: a row
+    with a saved version before this save is not new."""
+    _before = None
+
+    def is_new(self):
+        return self._before is None
+
+    def get_doc_before_save(self):
+        return self._before
+
+
 def _dated_controller(rows):
     """Load the member controller against a stub frappe whose table is
     ``rows`` (dicts with name, reporting_hierarchy, member_code,
@@ -189,7 +201,7 @@ def _dated_controller(rows):
         raise _Refused(msg)
 
     document = types.ModuleType("frappe.model.document")
-    document.Document = object
+    document.Document = _StubDocument
     fake = types.ModuleType("frappe")
     fake.db = types.SimpleNamespace(exists=exists, get_value=get_value)
     fake.get_all = get_all
@@ -452,3 +464,80 @@ def test_a_plain_chain_is_not_a_cycle():
     root = _row("r1", "ZZ_R", "2020-01-01")
     mid = _row("m1", "ZZ_M", "2020-01-01", None, parent="r1")
     assert _save([root, mid], _row("l1", "ZZ_L", "2021-01-01", None, parent="m1", is_group=0)) is None
+
+
+# --- konsol#220 row R9: editing or deleting a parent re-checks its children -
+
+def _edit(existing, name, **changes):
+    """Save the existing row ``name`` with ``changes``; the table still holds
+    its old values, as the database does during validate(). The refusal
+    message, or None when it is accepted."""
+    import types
+    mod = _dated_controller(existing)
+    old = next(r for r in existing if r["name"] == name)
+    doc = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
+    doc.__dict__.update(dict(old, **changes))
+    doc._before = types.SimpleNamespace(**old)
+    try:
+        doc.validate()
+    except _Refused as e:
+        return str(e)
+    return None
+
+
+def _trash(existing, name):
+    """Delete the existing row ``name``: Frappe runs on_trash when the
+    controller has one (the row is still in the table then)."""
+    import types
+    mod = _dated_controller(existing)
+    old = next(r for r in existing if r["name"] == name)
+    doc = mod.ReportingHierarchyMember.__new__(mod.ReportingHierarchyMember)
+    doc.__dict__.update(old)
+    doc._before = types.SimpleNamespace(**old)
+    try:
+        getattr(doc, "on_trash", lambda: None)()
+    except _Refused as e:
+        return str(e)
+    return None
+
+
+def _parent_tranches(child_to=None):
+    """P1 ZZ_P 2020-2024 and P2 ZZ_P 2025-open; child ZZ_C from 2020 linked to P1."""
+    return [
+        _row("p1", "ZZ_P", "2020-01-01", "2024-12-31"),
+        _row("p2", "ZZ_P", "2025-01-01"),
+        _row("c1", "ZZ_C", "2020-01-01", child_to, parent="p1", is_group=0),
+    ]
+
+
+def test_shortening_a_parent_tranche_a_child_needs_is_refused():
+    err = _edit(_parent_tranches(), "p1", effective_to="2023-12-31")
+    assert err == (
+        "ZZ_C (c1) would lose its parent ZZ_P for 2024-01-01 to 2024-12-31. "
+        "Change or end that row first."
+    )
+
+
+def test_deleting_a_parent_tranche_a_child_needs_is_refused():
+    err = _trash(_parent_tranches(), "p2")
+    assert err is not None
+    assert err.startswith("ZZ_C (c1) would lose its parent ZZ_P for 2025-01-01 to open.")
+
+
+def test_renaming_the_code_of_a_parent_tranche_a_child_needs_is_refused():
+    err = _edit(_parent_tranches(), "p2", member_code="ZZ_Q", member_label="ZZ_Q")
+    assert err is not None
+    assert "ZZ_C (c1) would lose its parent ZZ_P for 2025-01-01 to open." in err
+
+
+def test_shortening_a_parent_tranche_no_child_needs_is_accepted():
+    assert _edit(_parent_tranches(child_to="2024-12-31"), "p2",
+                 effective_to="2026-12-31") is None
+
+
+def test_deleting_a_parent_tranche_no_child_needs_is_accepted():
+    assert _trash(_parent_tranches(child_to="2024-12-31"), "p2") is None
+
+
+def test_relabelling_a_parent_tranche_keeps_its_children():
+    assert _edit(_parent_tranches(), "p2", member_label="ZZ P renamed") is None
