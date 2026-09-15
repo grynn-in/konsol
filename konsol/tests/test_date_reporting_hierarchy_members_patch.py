@@ -1,13 +1,17 @@
 """The date_reporting_hierarchy_members migration patch (konsol#220), host-run.
 
 Reporting Hierarchy Member now requires effective_from. A member saved
-before that has none; the patch gives it its hierarchy's effective_from, or
-1900-01-01 when the hierarchy has none (an undated member meant "always").
-effective_to stays blank. A second run changes nothing.
+before that has none; an undated member meant "always", so the patch gives it
+1900-01-01 whatever its hierarchy header says (the warehouse never used the
+header date). effective_to stays blank. A code with more than one member whose
+windows overlap after dating gets one WARNING line. A second run changes
+nothing.
 
 A stub frappe records every call in order over in-memory tables.
 """
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import types
@@ -57,13 +61,17 @@ class _Site:
 
 
 def _run(site):
+    """Run the patch; return what it printed."""
     saved = sys.modules.get("frappe")
     sys.modules["frappe"] = site.module()
+    out = io.StringIO()
     try:
         spec = importlib.util.spec_from_file_location("_date_rh_members_under_test", PATCH_PY)
         patch = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(patch)
-        return patch.execute()
+        with contextlib.redirect_stdout(out):
+            patch.execute()
+        return out.getvalue()
     finally:
         if saved is None:
             sys.modules.pop("frappe", None)
@@ -84,8 +92,24 @@ def _site():
              "effective_from": None, "effective_to": None},
             {"name": "RHM-3", "reporting_hierarchy": "ZZ Dated", "member_code": "ZZ_C",
              "effective_from": "2020-04-01", "effective_to": "2024-12-31"},
+            # adjacent tranche of ZZ_C: not an overlap
+            {"name": "RHM-6", "reporting_hierarchy": "ZZ Dated", "member_code": "ZZ_C",
+             "effective_from": "2025-01-01", "effective_to": None},
         ],
     )
+
+
+def _site_with_duplicate_code():
+    site = _site()
+    for name in ("RHM-4", "RHM-5"):
+        site.members[name] = {"name": name, "reporting_hierarchy": "ZZ Dated",
+                              "member_code": "ZZ_D", "effective_from": None,
+                              "effective_to": None}
+    return site
+
+
+def _warnings(printed):
+    return [l for l in printed.splitlines() if "WARNING" in l]
 
 
 def _writes(site):
@@ -100,10 +124,11 @@ def test_reload_before_any_query():
     assert "reporting_hierarchy_member" in reloaded, site.calls
 
 
-def test_undated_member_under_dated_header_takes_header_date():
+def test_undated_member_under_dated_header_takes_1900():
+    """An undated member meant "always"; the header's date is ignored."""
     site = _site()
     _run(site)
-    assert site.members["RHM-1"]["effective_from"] == "2017-01-01"
+    assert site.members["RHM-1"]["effective_from"] == "1900-01-01"
     assert site.members["RHM-1"]["effective_to"] is None
 
 
@@ -119,13 +144,33 @@ def test_dated_member_unchanged():
     _run(site)
     assert site.members["RHM-3"]["effective_from"] == "2020-04-01"
     assert site.members["RHM-3"]["effective_to"] == "2024-12-31"
-    assert not [w for w in _writes(site) if w[2] == "RHM-3"], _writes(site)
+    assert not [w for w in _writes(site) if w[2] in ("RHM-3", "RHM-6")], _writes(site)
     assert sorted(w[2] for w in _writes(site)) == ["RHM-1", "RHM-2"], _writes(site)
     assert all(w[3] == "effective_from" for w in _writes(site)), _writes(site)
 
 
-def test_second_run_changes_nothing():
+def test_no_warning_without_overlap():
     site = _site()
+    printed = _run(site)
+    assert not _warnings(printed), printed
+
+
+def test_two_undated_members_of_one_code_dated_and_warned_once():
+    site = _site_with_duplicate_code()
+    printed = _run(site)
+    assert site.members["RHM-4"]["effective_from"] == "1900-01-01"
+    assert site.members["RHM-5"]["effective_from"] == "1900-01-01"
+    warnings = _warnings(printed)
+    assert len(warnings) == 1, printed
+    line = warnings[0]
+    assert line.startswith("date_reporting_hierarchy_members: WARNING ZZ Dated code ZZ_D "
+                           "has overlapping rows "), line
+    assert "RHM-4" in line and "RHM-5" in line, line
+    assert line.endswith("; end one before the other starts"), line
+
+
+def test_second_run_changes_nothing():
+    site = _site_with_duplicate_code()
     _run(site)
     site.calls.clear()
     _run(site)
