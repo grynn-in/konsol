@@ -4,6 +4,15 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Sep, night): deal inputs are declared, not inferred (konsol#206, #207, #203, #205, #204, #208).**
+- A Business Combination with an empty Acquired Balance Sheet is refused. Until now it validated whenever the entity had an earlier trial balance, with net assets of 0 and goodwill equal to the whole consideration (#206).
+- **Get Balances from Trial Balance** (Draft only) fills the Acquired Balance Sheet from the warehouse trial balance (`epm_gold.gold_trial_balance`, cumulative through the acquisition period). It folds the period's result into the chart's Retained Earnings Account and places the declared **Fair Value Adjustment Total** on the group's Fair Value Adjustment Account, or spreads it by a **Fair Value Allocation Profile** (#207, #208). The lines stay editable, and **Balance Sheet Source** records where they came from. On save, the lines' fair value adjustments must add up to the declared total.
+- Acquisition costs can be capitalised only under a Local framework; IFRS and US GAAP expense them (#203).
+- NCI measurement can be set per deal with **NCI Measurement for This Deal**; blank uses the group's value, and US GAAP allows only full (#205). Under full with less than 100% acquired, the deal must declare **NCI Fair Value**. konsol no longer grosses the consideration up (#204).
+- Write-through: `epm_staging.business_combinations` gains `nci_measurement` and `nci_fair_value`, added on migrate. konsolidat's acquisition journal reads both (paired konsolidat PR).
+
+On the site: the migrated Drafts need a Fair Value Adjustment Total (each description states the old figure) before Get Balances from Trial Balance. Five of the eight have no warehouse trial balance at or before their acquisition period, so those need hand-entered balances.
+
 **Update (15 Sep, later): deals are documents (konsol PR #202, konsolidat#198).**
 An acquisition is a **Business Combination** and a sale a **Business
 Disposal** — submittable doctypes with child tables (consideration
