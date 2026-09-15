@@ -9,8 +9,16 @@ prescribes once both are given:
 * consideration is translated to the group currency at the acquisition
   period's closing rate, line by line, through a callback the controller
   supplies (no rate → the currency is refused by name);
-* the acquired net assets are the book amounts stepped up by the fair value
-  adjustments;
+* the acquired balance sheet is **complete**: assets, liabilities AND the
+  equity lines, Dr positive / Cr negative, so its book amounts sum to zero.
+  The equity lines are required because the pre-acquisition equity is what
+  the consolidation eliminates (it is never group reserves); the non-equity
+  lines are the net assets acquired. Which line is equity is answered by a
+  callback the controller supplies from the chart (``is_equity``), never
+  guessed from the amounts. An incomplete sheet (does not sum to zero, or no
+  equity line) is refused by name;
+* the acquired net assets are those non-equity book amounts stepped up by the
+  fair value adjustments;
 * the difference between the consideration and the group's share of those
   net assets is **goodwill** when positive and a **bargain** purchase gain when
   negative (the policy says whether a bargain is recognised or refused);
@@ -100,7 +108,20 @@ def _translated_sum(lines, header, rate_to_group):
     return total
 
 
-def totals(header, consideration, balances, costs, policy, rate_to_group):
+def _book_amounts(balances, is_equity):
+    """(Σ book_amount of non-equity lines, Σ book_amount of equity lines, Σ fva)."""
+    net_assets = equity = fva = Decimal(0)
+    for row in balances or ():
+        book = _decimal(_get(row, "book_amount"))
+        if is_equity(_get(row, "main_account")):
+            equity += book
+        else:
+            net_assets += book
+        fva += _decimal(_get(row, "fair_value_adjustment"))
+    return net_assets, equity, fva
+
+
+def totals(header, consideration, balances, costs, policy, rate_to_group, is_equity):
     """The Result fields of a Business Combination, every value a Decimal
     quantised to 0.01.
 
@@ -108,12 +129,17 @@ def totals(header, consideration, balances, costs, policy, rate_to_group):
     at the acquisition period (units of group currency per 1 unit of
     ``currency``; 1.0 for the group currency) or None when there is none,
     which raises ``ValueError`` naming the currency.
+
+    ``is_equity(main_account)`` says whether an acquired balance line is an
+    equity account (the controller answers from the chart). Equity lines are
+    not net assets: they are reported as ``equity_eliminated`` (sign flipped,
+    so a credit balance of −650 eliminates 650) and the non-equity lines are
+    ``net_assets_acquired``. Fair value adjustments count on every line.
     """
     consideration_total = _translated_sum(consideration, header, rate_to_group)
     costs_total = _translated_sum(costs, header, rate_to_group)
 
-    net_assets = sum((_decimal(_get(row, "book_amount")) for row in balances or ()), Decimal(0))
-    fva = sum((_decimal(_get(row, "fair_value_adjustment")) for row in balances or ()), Decimal(0))
+    net_assets, equity_book, fva = _book_amounts(balances, is_equity)
     nafv = net_assets + fva
 
     treatment = _text(_get(policy, "acquisition_costs_treatment"))
@@ -139,6 +165,7 @@ def totals(header, consideration, balances, costs, policy, rate_to_group):
     return {
         "total_consideration": _money(consideration_total),
         "net_assets_acquired": _money(net_assets),
+        "equity_eliminated": _money(-equity_book),
         "fair_value_adjustments": _money(fva),
         "net_assets_at_fair_value": _money(nafv),
         "goodwill": _money(goodwill),
@@ -161,7 +188,20 @@ def _line_problems(lines, table_label, kind_field):
     return problems
 
 
-def _totals_for(header, consideration, balances, costs, policy, facts):
+def _equity_rule(facts, balances):
+    """``facts['is_equity']``; required as soon as there are balance lines to classify."""
+    is_equity = _get(facts, "is_equity")
+    if is_equity is None:
+        if balances:
+            raise ValueError(
+                "problems() needs facts['is_equity'](main_account) to tell the equity lines "
+                "of the Acquired Balance Sheet from the net assets"
+            )
+        return lambda account: False
+    return is_equity
+
+
+def _totals_for(header, consideration, balances, costs, policy, facts, is_equity):
     given = _get(facts, "totals")
     if given is not None:
         return given
@@ -171,7 +211,26 @@ def _totals_for(header, consideration, balances, costs, policy, facts):
             "problems() needs facts['totals'] (from totals()) or facts['rate_to_group'] "
             "to translate the consideration"
         )
-    return totals(header, consideration, balances, costs, policy, rate_to_group)
+    return totals(header, consideration, balances, costs, policy, rate_to_group, is_equity)
+
+
+def _balance_sheet_problems(balances, is_equity):
+    """A given Acquired Balance Sheet must be complete: sum to zero and carry equity."""
+    if not balances:
+        return []
+    found = []
+    total = sum((_decimal(_get(row, "book_amount")) for row in balances), Decimal(0))
+    if abs(total) > CENT:
+        found.append(
+            "Acquired Balance Sheet does not balance "
+            f"(assets − liabilities − equity = {_money(total):.2f}); it must include the equity lines"
+        )
+    if not any(is_equity(_get(row, "main_account")) for row in balances):
+        found.append(
+            "Acquired Balance Sheet has no equity line: "
+            "the pre-acquisition equity is what the consolidation eliminates"
+        )
+    return found
 
 
 def problems(header, consideration, balances, costs, policy, facts):
@@ -179,11 +238,13 @@ def problems(header, consideration, balances, costs, policy, facts):
 
     ``facts`` is a dict the controller has looked up: ``has_tb_at_or_before``
     (the entity has a submitted trial balance at or before the acquisition
-    period), ``rate_to_group`` or ``totals`` (see ``totals()``), and
+    period), ``rate_to_group`` or ``totals`` (see ``totals()``),
+    ``is_equity(main_account)`` (required when there are balance lines) and
     ``is_published_leaf(account)`` for the declared accounts (without it only
     blank accounts are reported).
     """
     found = []
+    is_equity = _equity_rule(facts, balances)
 
     if not consideration:
         found.append(f"{_PREFIX}at least one Consideration line is required.")
@@ -200,8 +261,9 @@ def problems(header, consideration, balances, costs, policy, facts):
 
     if not balances and not _get(facts, "has_tb_at_or_before"):
         found.append(BALANCE_SHEET_REQUIRED)
+    found += _balance_sheet_problems(balances, is_equity)
 
-    result = _totals_for(header, consideration, balances, costs, policy, facts)
+    result = _totals_for(header, consideration, balances, costs, policy, facts, is_equity)
     bargain = _decimal(result.get("bargain_purchase_gain"))
     if bargain > 0 and _text(_get(policy, "bargain_purchase")) == "Refuse":
         found.append(
