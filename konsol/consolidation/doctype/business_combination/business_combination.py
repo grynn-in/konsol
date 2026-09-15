@@ -275,23 +275,24 @@ class BusinessCombination(Document):
 
     def _ensure_ownership_period(self):
         """The acquisition starts an Ownership Period for the entity on the
-        acquisition date (design 2a): create it, or link the one already
-        declared for that date, and carry the deal's figures onto it. Those
-        fields are set only from here (``frappe.flags.from_business_combination``
-        lets them through the Ownership Period's guard)."""
+        acquisition date (design 2a): update the period this deal already
+        links, else create one or link the one already declared for that date,
+        and carry the deal's figures onto it. Those fields are set only from
+        here (``frappe.flags.from_business_combination`` lets them through the
+        Ownership Period's guard).
+
+        The link wins over the date: a migrated deal is dated by its source
+        period's own ``acquisition_date``, which may differ from the period's
+        ``effective_date``; matching by date would insert a second period
+        overlapping the linked one."""
+        existing = self._linked_period() or self._period_on_the_acquisition_date()
         deal_fields = {
             "acquisition_date": self.acquisition_date,
-            "is_first_acquisition": int(self._is_first_acquisition()),
+            "is_first_acquisition": int(self._is_first_acquisition(existing)),
             "acquisition_price": float(self.get("total_consideration") or 0),
             "fair_value_adjustment": float(self.get("fair_value_adjustments") or 0),
         }
         node = {"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity}
-        existing = frappe.db.get_value(
-            "Ownership Period",
-            {**node, "effective_date": self.acquisition_date, "docstatus": ["<", 2]},
-            ["name", "docstatus"],
-            as_dict=True,
-        )
         frappe.flags.from_business_combination = True
         try:
             if existing:
@@ -328,14 +329,44 @@ class BusinessCombination(Document):
         percentage alone does not decide."""
         return "full" if float(self.share_acquired_pct or 0) > 50 else "equity"
 
-    def _is_first_acquisition(self):
-        """No earlier submitted Ownership Period for this entity in this group."""
-        return not frappe.db.exists("Ownership Period", {
+    def _linked_period(self):
+        """The Ownership Period this deal links (``ownership_period``), as
+        ``{name, docstatus}``, when it still exists and is not cancelled; else
+        None (a blank or stale link falls back to the date lookup)."""
+        linked = self.get("ownership_period")
+        if not linked or not frappe.db.exists("Ownership Period", linked):
+            return None
+        return frappe.db.get_value(
+            "Ownership Period",
+            {"name": linked, "docstatus": ["<", 2]},
+            ["name", "docstatus"],
+            as_dict=True,
+        )
+
+    def _period_on_the_acquisition_date(self):
+        """The entity's Ownership Period declared for the acquisition date, as
+        ``{name, docstatus}``, or None."""
+        return frappe.db.get_value(
+            "Ownership Period",
+            {"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity,
+             "effective_date": self.acquisition_date, "docstatus": ["<", 2]},
+            ["name", "docstatus"],
+            as_dict=True,
+        )
+
+    def _is_first_acquisition(self, existing=None):
+        """No earlier submitted Ownership Period for this entity in this group.
+        The period this deal itself updates is not an earlier one, whatever
+        its effective date."""
+        filters = {
             "consolidation_group": self.consolidation_group,
             "data_area_id": self.acquired_entity,
             "docstatus": 1,
             "effective_date": ["<", self.acquisition_date],
-        })
+        }
+        if existing:
+            filters["name"] = ["!=", existing["name"]]
+        return not frappe.db.exists("Ownership Period", filters)
 
     # -- warehouse -----------------------------------------------------------
 

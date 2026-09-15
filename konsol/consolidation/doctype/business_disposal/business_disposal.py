@@ -227,8 +227,12 @@ class BusinessDisposal(Document):
         date (design 2a) and carries the disposal's figures onto it. Those
         fields are set only from here (``frappe.flags.from_business_combination``
         lets them through the Ownership Period's guard); a submitted period is
-        written with ``db_set`` and re-synced itself."""
-        holding = self._current_holding()
+        written with ``db_set`` and re-synced itself.
+
+        The period this disposal already links (a migrated disposal links its
+        source period) wins over the one found by date; a blank or stale link
+        falls back to the current holding."""
+        holding = self._linked_period() or self._current_holding()
         if not holding:
             frappe.throw(
                 f"{_PREFIX}{self.disposed_entity} has no Ownership Period in "
@@ -250,6 +254,14 @@ class BusinessDisposal(Document):
         finally:
             frappe.flags.from_business_combination = False
         self.db_set("ownership_period", period.name)
+
+    def _linked_period(self):
+        """The Ownership Period this disposal links (``ownership_period``), as
+        ``{name}``, when it still exists; else None."""
+        name = self.get("ownership_period")
+        if not name or not frappe.db.exists("Ownership Period", name):
+            return None
+        return {"name": name}
 
     def _reopen_ownership_period(self):
         """Cancelling the approval undoes what ``_close_ownership_period`` did:

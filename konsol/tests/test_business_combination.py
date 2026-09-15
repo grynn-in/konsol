@@ -245,6 +245,8 @@ class _Site:
 
     def _exists(self, doctype, filters):
         rows = {"Trial Balance Submission": self.tbs, "Ownership Period": self.ownership}[doctype]
+        if isinstance(filters, str):  # frappe.db.exists(doctype, name)
+            filters = {"name": filters}
         for row in rows:
             if _match(row, filters):
                 return row.get("name", True)
