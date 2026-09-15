@@ -11,8 +11,8 @@ Consolidation has three layers, and this module is the middle one:
   measurement period applies, and what happens to a bargain purchase. Every
   choice is required once the group has a Business Combination. The framework
   constrains the choices (US GAAP measures NCI at fair value; IFRS does not
-  amortise goodwill; a Local framework may pick anything but must say what it
-  is).
+  amortise goodwill; IFRS and US GAAP expense acquisition-related costs; a
+  Local framework may pick anything but must say what it is).
 * **Mechanics** are programmed and tested elsewhere: double entry, the
   IFRS 3 arithmetic, IAS 21 translation. They read the policy; they never
   guess it.
@@ -160,6 +160,12 @@ def policy_problems(group, has_deals):
         problems.append(
             f"{_PREFIX}IFRS does not amortise goodwill; "
             f"set {LABELS['goodwill_treatment']} to Impairment only."
+        )
+    # IFRS 3.53, ASC 805-10-25-23 (konsol#203)
+    if framework in ("IFRS", "US GAAP") and values["acquisition_costs_treatment"] == "Capitalise":
+        problems.append(
+            f"{_PREFIX}{framework} expenses acquisition-related costs as incurred; "
+            f"set {LABELS['acquisition_costs_treatment']} to Expense."
         )
     if treatment == "Amortise" and _years(_get(group, "goodwill_amortisation_years")) < 1:
         problems.append(

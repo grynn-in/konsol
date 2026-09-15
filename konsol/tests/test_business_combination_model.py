@@ -34,7 +34,7 @@ CAPITALISE = dict(IFRS_PARTIAL, acquisition_costs_treatment="Capitalise")
 
 
 def header(**over):
-    base = {"share_acquired_pct": 100, "consideration_currency": GROUP_CCY}
+    base = {"share_acquired_pct": 100, "consideration_currency": GROUP_CCY, "entity_currency": GROUP_CCY}
     base.update(over)
     return base
 
@@ -158,14 +158,80 @@ def test_partial_nci_is_its_share_of_net_assets_at_fair_value():
     assert t["bargain_purchase_gain"] == Decimal("0.00")
 
 
-def test_full_nci_is_measured_at_the_fair_value_the_price_implies():
-    t = totals(header(share_acquired_pct=80), WORKED_CONSIDERATION, WORKED_BALANCES, [], US_GAAP_FULL)
-    # 8,300 for 80% values the whole at 10,375; the 20% NCI is 2,075. Under the
-    # full method goodwill is the whole business's: consideration + NCI at fair
-    # value − net assets at fair value = 8,300 + 2,075 − 1,580 = 8,795 (IFRS 3.32),
-    # against 7,036 under the partial method.
+def test_full_nci_is_the_declared_nci_fair_value():
+    t = totals(header(share_acquired_pct=80, nci_fair_value=2075), WORKED_CONSIDERATION, WORKED_BALANCES,
+               [], US_GAAP_FULL)
+    # The 20% NCI's own fair value is declared at 2,075. Under the full method
+    # goodwill is the whole business's: consideration + NCI at fair value − net
+    # assets at fair value = 8,300 + 2,075 − 1,580 = 8,795 (IFRS 3.32), against
+    # 7,036 under the partial method.
     assert t["nci_at_acquisition"] == Decimal("2075.00")
     assert t["goodwill"] == Decimal("8795.00")
+
+
+# konsol#204: 60% acquired for 1,000; net assets at fair value 800 (book 700 +
+# a 100 step-up); the complete sheet sums to zero with its −700 equity line.
+BALANCES_800 = [line(900, 100), line(-200), equity(-700)]
+CASH_1000 = [cash(1000)]
+
+
+def test_full_nci_is_the_minoritys_own_fair_value_not_a_gross_up():
+    t = totals(header(share_acquired_pct=60, nci_fair_value=300), CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+    assert t["net_assets_at_fair_value"] == Decimal("800.00")
+    assert t["nci_at_acquisition"] == Decimal("300.00")
+    # 1,000 + 300 − 800
+    assert t["goodwill"] == Decimal("500.00")
+    # The price paid for control grossed up (1,000 / 60% × 40% = 666.67) is not the NCI.
+    assert t["nci_at_acquisition"] != Decimal("666.67")
+    assert M.problems(header(share_acquired_pct=60, nci_fair_value=300), CASH_1000, BALANCES_800, [],
+                      US_GAAP_FULL, facts()) == []
+
+
+NCI_FAIR_VALUE_REQUIRED = (
+    "Business Combination: NCI Fair Value is required: NCI is measured at full and 60% is acquired. "
+    "The price paid for control is not the minority's value."
+)
+
+
+def test_full_nci_without_a_declared_fair_value_is_refused_and_never_grossed_up():
+    for blank in ({}, {"nci_fair_value": None}, {"nci_fair_value": 0}, {"nci_fair_value": -5}):
+        hdr = header(share_acquired_pct=60, **blank)
+        t = totals(hdr, CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+        assert t["nci_at_acquisition"] != Decimal("666.67"), blank
+        if not blank.get("nci_fair_value"):
+            assert t["nci_at_acquisition"] == Decimal("0.00"), blank
+        problems = M.problems(hdr, CASH_1000, BALANCES_800, [], US_GAAP_FULL, facts())
+        assert NCI_FAIR_VALUE_REQUIRED in problems, (blank, problems)
+
+
+def test_partial_nci_ignores_the_nci_fair_value():
+    for over in ({}, {"nci_fair_value": 300}):
+        hdr = header(share_acquired_pct=60, **over)
+        t = totals(hdr, CASH_1000, BALANCES_800, [], IFRS_PARTIAL)
+        assert t["nci_at_acquisition"] == Decimal("320.00"), over  # 40% of 800
+        assert t["goodwill"] == Decimal("520.00"), over  # 1,000 − 60% of 800
+        assert M.problems(hdr, CASH_1000, BALANCES_800, [], IFRS_PARTIAL, facts()) == [], over
+
+
+def test_full_at_one_hundred_percent_needs_no_nci_fair_value():
+    t = totals(header(share_acquired_pct=100), CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+    assert t["nci_at_acquisition"] == Decimal("0.00")
+    assert t["goodwill"] == Decimal("200.00")
+    assert M.problems(header(share_acquired_pct=100), CASH_1000, BALANCES_800, [], US_GAAP_FULL,
+                      facts()) == []
+
+
+def test_nci_fair_value_is_translated_from_the_consideration_currency():
+    hdr = header(share_acquired_pct=60, nci_fair_value=1200, consideration_currency=OTHER_CCY)
+    t = totals(hdr, CASH_1000, BALANCES_800, [], US_GAAP_FULL)
+    assert t["nci_at_acquisition"] == Decimal("300.00")  # 1,200 × 0.25
+    assert t["goodwill"] == Decimal("500.00")
+
+
+def test_the_docstring_no_longer_derives_nci_from_the_price():
+    doc = M.__doc__
+    assert "the price implies" not in doc
+    assert "konsol#204" in doc
 
 
 def test_nci_is_not_guessed_when_the_policy_has_no_measurement():
@@ -230,10 +296,72 @@ def test_a_currency_without_a_rate_is_refused_by_name():
         raise AssertionError("a missing rate must not pass as 1.0")
 
 
+# -- net assets translated from the entity's currency (PR #209 review 2) -------
+
+ENTITY_CCY = "ZZS"
+
+
+def entity_rate(currency):
+    """ZZS at 0.1 to the group currency ZZG."""
+    return {GROUP_CCY: 1.0, ENTITY_CCY: 0.1}[currency]
+
+
+def test_net_assets_are_translated_from_the_entity_currency():
+    hdr = header(entity_currency=ENTITY_CCY)
+    t = totals(hdr, [cash(800)], [line(10000), equity(-10000)], [], IFRS_PARTIAL, rate=entity_rate)
+    assert t["net_assets_acquired"] == Decimal("1000.00")  # 10,000 ZZS × 0.1
+    assert t["equity_eliminated"] == Decimal("1000.00")
+    assert t["net_assets_at_fair_value"] == Decimal("1000.00")
+    assert t["goodwill"] == Decimal("0.00")
+    assert t["bargain_purchase_gain"] == Decimal("200.00")  # 1,000 − 800, in ZZG
+
+
+def test_fair_value_adjustments_and_partial_nci_are_translated_too():
+    hdr = header(entity_currency=ENTITY_CCY, share_acquired_pct=80)
+    t = totals(hdr, [cash(2000)], [line(10000, 1000), equity(-10000)], [], IFRS_PARTIAL, rate=entity_rate)
+    assert t["fair_value_adjustments"] == Decimal("100.00")
+    assert t["net_assets_at_fair_value"] == Decimal("1100.00")
+    assert t["nci_at_acquisition"] == Decimal("220.00")  # 20% of 1,100
+    assert t["goodwill"] == Decimal("1120.00")  # 2,000 − 80% of 1,100
+
+
+def test_a_same_currency_deal_is_unchanged():
+    t = totals(header(entity_currency=GROUP_CCY), WORKED_CONSIDERATION, WORKED_BALANCES, [], IFRS_PARTIAL)
+    assert t["net_assets_acquired"] == Decimal("650.00")
+    assert t["goodwill"] == Decimal("6720.00")
+
+
+def test_an_entity_currency_without_a_rate_is_refused_by_name():
+    def rate(currency):
+        return 1.0 if currency == GROUP_CCY else None
+
+    try:
+        totals(header(entity_currency=ENTITY_CCY), [cash(800)], [line(10000), equity(-10000)], [],
+               IFRS_PARTIAL, rate=rate)
+    except ValueError as exc:
+        assert ENTITY_CCY in str(exc) and "Closing" in str(exc)
+    else:
+        raise AssertionError("a missing entity rate must not pass as 1.0")
+
+
+def test_balances_without_an_entity_currency_are_refused():
+    try:
+        totals(header(entity_currency=""), [cash(800)], [line(10000), equity(-10000)], [], IFRS_PARTIAL)
+    except ValueError as exc:
+        assert "entity" in str(exc).lower() and "currency" in str(exc).lower()
+    else:
+        raise AssertionError("balances in an unknown currency must not be taken as the group's")
+
+
+def test_the_docstring_says_the_balances_are_translated():
+    doc = " ".join(M.__doc__.split())
+    assert "acquired entity's currency" in doc
+
+
 def test_the_worked_example_has_no_problems():
     assert M.problems(header(), WORKED_CONSIDERATION, WORKED_BALANCES, [], IFRS_PARTIAL, facts()) == []
-    assert M.problems(header(share_acquired_pct=80), WORKED_CONSIDERATION, WORKED_BALANCES, [cost(200)],
-                      US_GAAP_FULL, facts()) == []
+    assert M.problems(header(share_acquired_pct=80, nci_fair_value=2075), WORKED_CONSIDERATION,
+                      WORKED_BALANCES, [cost(200)], US_GAAP_FULL, facts()) == []
 
 
 def test_no_consideration_line_is_a_problem():
@@ -264,13 +392,26 @@ def test_a_consideration_or_cost_line_needs_a_positive_amount():
     assert "Cost" in problems[0] and "Advisory" in problems[0] and "above 0" in problems[0]
 
 
-def test_the_acquired_balance_sheet_is_required_without_an_earlier_trial_balance():
+EMPTY_BALANCE_SHEET = (
+    "Business Combination: the Acquired Balance Sheet is empty, so net assets would be zero "
+    "and goodwill would absorb the whole consideration. Enter the acquisition-date balances, "
+    "or use Get Balances from Trial Balance.")
+
+
+def test_an_empty_acquired_balance_sheet_is_refused_without_an_earlier_trial_balance():
     problems = M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL,
                           facts(has_tb_at_or_before=False))
-    assert problems == [
-        "Acquired Balance Sheet is required: the entity has no trial balance at or before the acquisition date"]
-    # with a trial balance the model measures the net assets later; no lines is fine
-    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, facts(has_tb_at_or_before=True)) == []
+    assert problems == [EMPTY_BALANCE_SHEET]
+    assert M.BALANCE_SHEET_REQUIRED == EMPTY_BALANCE_SHEET
+
+
+def test_an_empty_acquired_balance_sheet_is_refused_even_with_an_earlier_trial_balance():
+    # konsol#206: a trial balance on file does not fill the lines; net assets would be
+    # measured from nothing and goodwill would be the whole consideration
+    problems = M.problems(header(), [cash(1000)], [], [], IFRS_PARTIAL,
+                          facts(has_tb_at_or_before=True))
+    assert M.BALANCE_SHEET_REQUIRED in problems
+    assert EMPTY_BALANCE_SHEET in problems
 
 
 def test_a_balance_sheet_that_does_not_sum_to_zero_is_refused():
@@ -303,8 +444,9 @@ def test_a_balance_sheet_without_an_equity_line_is_refused():
     assert problems == [
         "Acquired Balance Sheet has no equity line: "
         "the pre-acquisition equity is what the consolidation eliminates"]
-    # no balances at all (a trial balance exists): neither sentence applies
-    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, facts()) == []
+    # no balances at all: neither sentence applies, only the empty-sheet one (konsol#206)
+    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, facts()) == [
+        M.BALANCE_SHEET_REQUIRED]
 
 
 def test_problems_need_the_equity_rule_when_balances_are_given():
@@ -316,8 +458,9 @@ def test_problems_need_the_equity_rule_when_balances_are_given():
         assert "is_equity" in str(exc)
     else:
         raise AssertionError("without is_equity the equity lines cannot be told apart")
-    # without balances there is nothing to classify
-    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, no_rule) == []
+    # without balances there is nothing to classify (only the empty-sheet refusal, konsol#206)
+    assert M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL, no_rule) == [
+        M.BALANCE_SHEET_REQUIRED]
 
 
 def test_a_bargain_purchase_is_refused_when_the_policy_says_so():
@@ -377,3 +520,130 @@ def test_lines_may_be_objects_with_attributes():
     t = totals(Row(**header()), [Row(**cash(8300))], [Row(**l) for l in WORKED_BALANCES], [], IFRS_PARTIAL)
     assert t["goodwill"] == Decimal("6720.00")
     assert t["equity_eliminated"] == Decimal("650.00")
+
+
+# --- konsol#207: the acquired balance sheet derived from trial-balance amounts ---
+
+RE_ACCOUNT = "ZZ-RE"
+PERIOD = "FY2026 P3"
+
+
+def tb(main_account, amount, is_pnl=0):
+    return {"main_account": main_account, "amount": amount, "is_pnl": is_pnl}
+
+
+def by_account(lines):
+    return {l["main_account"]: l for l in lines}
+
+
+def test_derive_folds_the_current_year_result_into_retained_earnings():
+    rows = [
+        tb("ZZ-CASH", 700), tb("ZZ-CASH", 300),          # two periods of one account
+        tb("ZZ-LOAN", -400), tb(RE_ACCOUNT, -450),
+        tb("ZZ-SALES", -250, is_pnl=1), tb("ZZ-COGS", 100, is_pnl=1),
+    ]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LOAN", RE_ACCOUNT]
+    got = by_account(lines)
+    assert got["ZZ-CASH"]["book_amount"] == Decimal("1000.00")
+    assert got["ZZ-LOAN"]["book_amount"] == Decimal("-400.00")
+    assert got[RE_ACCOUNT]["book_amount"] == Decimal("-600.00")   # −450 + (−250 + 100)
+    assert all(l["fair_value_adjustment"] == Decimal("0.00") for l in lines)
+    assert all(l["note"] == "From the trial balance" for l in lines)
+
+
+def test_derive_creates_the_retained_earnings_line_when_absent():
+    rows = [tb("ZZ-CASH", 150), tb("ZZ-SALES", -150, is_pnl=1)]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert by_account(lines)[RE_ACCOUNT]["book_amount"] == Decimal("-150.00")
+
+
+def test_a_closed_year_netting_to_zero_leaves_retained_earnings_unchanged():
+    # the year-end close already reversed last year's P&L into RE: the P&L nets to 0
+    rows = [
+        tb("ZZ-CASH", 500), tb(RE_ACCOUNT, -500),
+        tb("ZZ-SALES", -200, is_pnl=1), tb("ZZ-SALES", 200, is_pnl=1),
+    ]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", RE_ACCOUNT]
+    assert by_account(lines)[RE_ACCOUNT]["book_amount"] == Decimal("-500.00")
+
+
+def test_derive_drops_lines_that_round_to_zero():
+    rows = [tb("ZZ-CASH", 100), tb("ZZ-LOAN", -100), tb("ZZ-EMPTY", 0.004), tb("ZZ-EMPTY", -0.008)]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LOAN"]
+
+
+def test_derive_merges_fair_value_adjustments_onto_existing_and_new_accounts():
+    rows = [tb("ZZ-CASH", 1000), tb("ZZ-LAND", 200), tb(RE_ACCOUNT, -1200)]
+    lines, problems = M.derive_acquired_balances(
+        rows, RE_ACCOUNT, [("ZZ-LAND", 50.005), ("ZZ-BRAND", 75)], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LAND", RE_ACCOUNT, "ZZ-BRAND"]
+    got = by_account(lines)
+    assert got["ZZ-LAND"]["book_amount"] == Decimal("200.00")
+    assert got["ZZ-LAND"]["fair_value_adjustment"] == Decimal("50.01")
+    assert got["ZZ-LAND"]["note"] == "From the trial balance"
+    assert got["ZZ-BRAND"]["book_amount"] == Decimal("0.00")
+    assert got["ZZ-BRAND"]["fair_value_adjustment"] == Decimal("75.00")
+    assert got["ZZ-BRAND"]["note"] == "Fair value adjustment"
+
+
+def test_an_unbalanced_trial_balance_is_refused_with_the_difference():
+    rows = [tb("ZZ-CASH", 1000), tb(RE_ACCOUNT, -900.5)]
+    _, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == [
+        "Business Combination: the trial balance through FY2026 P3 does not balance: "
+        "it is off by 99.50."
+    ]
+
+
+def test_a_result_without_a_retained_earnings_account_is_refused():
+    rows = [tb("ZZ-CASH", 150), tb("ZZ-SALES", -150, is_pnl=1)]
+    _, problems = M.derive_acquired_balances(rows, None, [], PERIOD)
+    assert problems == [
+        "Business Combination: the chart declares no Retained Earnings Account: tick it on "
+        "the retained-earnings Main Account so the result of FY2026 P3 can be folded in."
+    ]
+
+
+def test_no_retained_earnings_account_is_fine_when_there_is_no_open_result():
+    rows = [tb("ZZ-CASH", 150), tb("ZZ-LOAN", -150)]
+    lines, problems = M.derive_acquired_balances(rows, None, [], PERIOD)
+    assert problems == [] and len(lines) == 2
+
+
+def test_no_trial_balance_rows_is_refused():
+    lines, problems = M.derive_acquired_balances([], RE_ACCOUNT, [], PERIOD)
+    assert lines == []
+    assert problems == [
+        "Business Combination: no trial balance amounts at or before FY2026 P3."
+    ]
+
+
+def test_split_by_weights_sums_exactly_to_the_total():
+    split = M.split_by_weights(100, [("ZZ-A", 33.34), ("ZZ-B", 33.33), ("ZZ-C", 33.33)])
+    assert split == [("ZZ-A", Decimal("33.34")), ("ZZ-B", Decimal("33.33")), ("ZZ-C", Decimal("33.33"))]
+    assert sum(amount for _, amount in split) == Decimal("100.00")
+
+
+def test_split_by_weights_puts_the_remainder_on_the_largest_weight():
+    split = M.split_by_weights(10, [("ZZ-A", 33.33), ("ZZ-B", 33.34), ("ZZ-C", 33.33)])
+    assert split == [("ZZ-A", Decimal("3.33")), ("ZZ-B", Decimal("3.34")), ("ZZ-C", Decimal("3.33"))]
+    # ties: the first of the largest weights takes it
+    split = M.split_by_weights(Decimal("0.01"), [("ZZ-A", 25), ("ZZ-B", 37.5), ("ZZ-C", 37.5)])
+    assert split == [("ZZ-A", Decimal("0.00")), ("ZZ-B", Decimal("0.01")), ("ZZ-C", Decimal("0.00"))]
+
+
+def test_split_by_weights_refuses_weights_not_summing_to_100():
+    try:
+        M.split_by_weights(100, [("ZZ-A", 50), ("ZZ-B", 49)])
+    except ValueError as error:
+        assert "99" in str(error) and "100" in str(error)
+    else:
+        raise AssertionError("weights of 99 must be refused")

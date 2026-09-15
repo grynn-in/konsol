@@ -6,16 +6,18 @@ Three layers, kept apart on purpose (design 2a):
   the balance sheet acquired, the costs of acquiring it;
 * the **policy is configured**, once, on the Consolidation Group node named
   by ``consolidation_group`` (the group root carries the Consolidation
-  Policy and the declared accounts, design 1/1a); the deal only keeps a
-  read-only copy of the NCI measurement it was measured under;
+  Policy and the declared accounts, design 1/1a); the deal may elect its
+  own NCI measurement (IFRS 3.19, konsol#205) and keeps a read-only copy of
+  the one it was measured under;
 * the **mechanics are programmed** in the pure, host-tested
   ``konsol.business_combination_model``: this controller looks the facts up
   (the declared period the acquisition date falls in, the period's Closing
   group rates, the chart, the entity's trial balances) and feeds them in.
 
 Lifecycle: ``validate`` computes the Result fields and throws the model's
-sentences; ``before_submit`` re-checks the period is open and the required
-accounts are declared; ``on_submit`` creates (or links) the Ownership Period
+sentences (a Fair Value Adjustment Total the lines miss only warns on a
+Draft); ``before_submit`` re-checks the period is open and the required
+accounts are declared, and refuses that mismatch; ``on_submit`` creates (or links) the Ownership Period
 the acquisition starts and writes the approved deal to the warehouse; an
 amendment is allowed only inside the policy's 12-month measurement period.
 Submit = approval (the workflow); cancel only while the acquisition period and
@@ -25,12 +27,14 @@ cancelled again when this deal created it, its deal fields cleared when it
 pre-existed. Every refusal speaks of this deal by name. Nothing here saves
 the document from a hook or commits.
 """
+from decimal import Decimal
+
 import frappe
 from frappe.model.document import Document
 from frappe.utils import add_months, getdate, nowdate
 
-from konsol.business_combination_model import problems, totals
-from konsol.clickhouse import sync_doctype_after_commit
+from konsol.business_combination_model import derive_acquired_balances, problems, split_by_weights, totals
+from konsol.clickhouse import execute, sync_doctype_after_commit
 from konsol.consolidation.doctype.business_combination_acquired_balance.business_combination_acquired_balance import (  # noqa: E501
     BusinessCombinationAcquiredBalance,
 )
@@ -73,6 +77,11 @@ _DEAL_FIELD_RESET = {
 }
 
 _PREFIX = "Business Combination: "
+_CENT = Decimal("0.01")
+
+#: The body of ``policy_problems()``'s US GAAP rule, and the deal's own field.
+_US_GAAP_NCI = "US GAAP measures non-controlling interest at fair value"
+_NCI_OVERRIDE_LABEL = "NCI Measurement for This Deal"
 
 
 class BusinessCombination(Document):
@@ -91,6 +100,9 @@ class BusinessCombination(Document):
         "bargain_purchase_gain": "bargain_purchase_gain",
         "nci_at_acquisition": "nci_at_acquisition",
         "ownership_period": "ownership_period",
+        # konsol#204: the measurement in force and the minority's declared fair value
+        "nci_measurement": "nci_measurement",
+        "nci_fair_value": "nci_fair_value",
     }
     #: child doctype -> its controller (CH_TABLE / CH_FIELD_MAP); each child
     #: table is its own doctype in the warehouse, keyed (parent, idx).
@@ -105,13 +117,19 @@ class BusinessCombination(Document):
     def validate(self):
         period = self._acquisition_period()
         root = self._root()
-        self.nci_measurement = root.get("goodwill_method") or ""
+        # konsol#205 (IFRS 3.19): each deal may elect its NCI measurement; blank
+        # takes the group's. The model measures with the value in force.
+        self.nci_measurement = self.get("nci_measurement_override") or root.get("goodwill_method") or ""
+        policy = dict(root, goodwill_method=self.nci_measurement)
+        # PR #209 review 2: the Acquired Balance Sheet is in the entity's own
+        # currency; the model translates it like the consideration.
+        self.entity_currency = self._entity_currency()
 
         rate_to_group = self._rate_to_group(root.get("reporting_currency"), period)
         try:
             result = totals(self, self._lines("consideration"), self._lines("acquired_balances"),
-                            self._lines("costs"), root, rate_to_group, self._is_equity)
-        except ValueError as e:  # a consideration or cost currency with no Closing rate
+                            self._lines("costs"), policy, rate_to_group, self._is_equity)
+        except ValueError as e:  # a consideration, cost or entity currency with no Closing rate
             frappe.throw(
                 f"{_PREFIX}{e} ({period['period_code']} of FY{period['fiscal_year']}): "
                 f"approve a Closing Group Exchange Rate to {root.get('reporting_currency')} for it."
@@ -126,20 +144,60 @@ class BusinessCombination(Document):
             "is_published_leaf": self._is_published_leaf,
         }
         found = problems(self, self._lines("consideration"), self._lines("acquired_balances"),
-                         self._lines("costs"), root, facts)
+                         self._lines("costs"), policy, facts)
+        found = self._us_gaap_nci_problems(root, found)
         found += self._amendment_problems(root)
         if found:
             frappe.throw("<br>".join(found))
+        # PR #209 review 2: a Draft must save a new Fair Value Adjustment Total
+        # before Get Balances from Trial Balance places it on the lines, so the
+        # mismatch only warns here; before_submit refuses it at approval.
+        if not self.get("docstatus"):
+            for warning in self._fva_total_problems():
+                frappe.msgprint(warning, title="Fair Value Adjustment Total", indicator="orange")
+
+    def _us_gaap_nci_problems(self, root, found):
+        """US GAAP measures NCI at fair value (konsol#205): a deal measured
+        partial under a US GAAP group is refused with the group rule's wording,
+        once, in this deal's name. The model's policy check sees the value in
+        force and reports it as the Consolidation Policy's; when this deal's
+        override is what says partial, that sentence is replaced by one that
+        names the field to change."""
+        if root.get("accounting_framework") != "US GAAP" or self.nci_measurement != "partial":
+            return found
+        if not self.get("nci_measurement_override"):
+            return found  # the group's own value: the policy sentence already speaks
+        kept = [p for p in found if _US_GAAP_NCI not in p]
+        return kept + [f"{_PREFIX}{_US_GAAP_NCI}; set {_NCI_OVERRIDE_LABEL} to Full."]
+
+    def _fva_total_problems(self):
+        """A declared Fair Value Adjustment Total is what the lines' fair value
+        adjustments must add up to (konsol#207); blank or zero declares none."""
+        declared = Decimal(str(self.get("fair_value_adjustment_total") or 0))
+        if not declared:
+            return []
+        placed = sum((Decimal(str(row.get("fair_value_adjustment") or 0))
+                      for row in self._lines("acquired_balances")), Decimal(0))
+        if abs(placed - declared) <= Decimal("0.005"):
+            return []
+        return [
+            f"{_PREFIX}Fair value adjustments on the Acquired Balance Sheet add up to "
+            f"{placed.quantize(_CENT):.2f}; the declared Fair Value Adjustment Total is "
+            f"{declared.quantize(_CENT):.2f}."
+        ]
 
     def before_submit(self):
-        """Approval: the acquisition period is still open, and the accounts
-        this deal posts to are still declared on the root (it may have
-        changed since the deal was saved)."""
+        """Approval: the acquisition period is still open, the accounts this
+        deal posts to are still declared on the root (it may have changed
+        since the deal was saved), and the lines' fair value adjustments add
+        up to the declared Fair Value Adjustment Total (a Draft save only
+        warns about that)."""
         period = self._acquisition_period()
         assert_open(period["fiscal_year"], period["fiscal_period"],
                     action="approve a business combination")
         root = self._root()
         found = account_problems(root, required_accounts(root, self._deal()), self._is_published_leaf)
+        found += self._fva_total_problems()
         if found:
             frappe.throw("<br>".join(found))
 
@@ -250,6 +308,19 @@ class BusinessCombination(Document):
             )
         return root
 
+    def _entity_currency(self):
+        """The acquired entity's Functional Currency: the currency of the
+        Acquired Balance Sheet (hand-entered or from the trial balance). Blank
+        is refused by name, never taken as the group's."""
+        currency = frappe.db.get_value("Entity", self.acquired_entity, "functional_currency")
+        if not currency:
+            frappe.throw(
+                f"{_PREFIX}Entity {self.acquired_entity} has no Functional Currency: the Acquired "
+                "Balance Sheet is in the entity's currency and is translated to the group's. "
+                "Set it on the Entity."
+            )
+        return currency
+
     @staticmethod
     def _rate_to_group(group_currency, period):
         """Closing rate to the group currency at the acquisition period, as the
@@ -273,7 +344,7 @@ class BusinessCombination(Document):
 
     def _has_tb_at_or_before(self, period):
         """A submitted trial balance of the entity at or before the acquisition
-        period: then the acquired balance sheet may be left to the model."""
+        period: then Get Balances from Trial Balance has something to read."""
         base = {"data_area_id": self.acquired_entity, "docstatus": 1}
         return bool(
             frappe.db.exists("Trial Balance Submission",
@@ -500,3 +571,156 @@ class BusinessCombination(Document):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         for doctype, controller in self.CHILD_CONTROLLERS.items():
             sync_doctype_after_commit(doctype, controller.CH_TABLE, controller.CH_FIELD_MAP)
+
+
+# -- Get Balances from Trial Balance (konsol#207) -------------------------------
+
+#: The acquired entity's balances through the acquisition period, per account:
+#: every period at or before it (all years) summed over the dimensions. The
+#: last column is the latest period with data, for the source note.
+_TB_THROUGH_PERIOD_SQL = (
+    "SELECT main_account, toFloat64(sum(period_net_amount)), max(is_pnl), "
+    "max(fiscal_year * 100 + fiscal_period) "
+    "FROM epm_gold.gold_trial_balance "
+    "WHERE data_area_id = {entity:String} "
+    "AND (fiscal_year < {y:UInt16} OR (fiscal_year = {y:UInt16} AND fiscal_period <= {p:UInt16})) "
+    "GROUP BY main_account FORMAT TSV"
+)
+
+
+def _read_tb_through(entity, fiscal_year, fiscal_period):
+    """``(rows, latest)``: ``rows`` as ``derive_acquired_balances`` reads them
+    (amount kept as the warehouse's text, so no float rounding creeps in) and
+    ``latest`` the highest ``fiscal_year * 100 + fiscal_period`` seen (0 when
+    there are no rows)."""
+    raw = execute(_TB_THROUGH_PERIOD_SQL, params={
+        "param_entity": entity,
+        "param_y": str(int(fiscal_year)),
+        "param_p": str(int(fiscal_period)),
+    })
+    rows, latest = [], 0
+    for line in (raw or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4 or not parts[0]:
+            continue
+        rows.append({"main_account": parts[0], "amount": parts[1], "is_pnl": int(parts[2] or 0)})
+        latest = max(latest, int(parts[3] or 0))
+    return rows, latest
+
+
+def _retained_earnings_of_chart(rows, entity, label):
+    """The Published Retained Earnings Account of the chart the trial-balance
+    rows' accounts belong to (one per chart, konsolidat#199), or None when that
+    chart ticks none (the model then names what is missing). A site may carry
+    several Published charts, so the account is never taken site-wide (PR #209
+    review 3); rows spanning more than one chart are refused naming them. An
+    account that is no Main Account, or has no chart, is refused by name first
+    (PR #209 review 2, point 2): dropping it would blame a missing Retained
+    Earnings Account or fail later on a bare Link error."""
+    accounts = sorted({row["main_account"] for row in rows})
+    if not accounts:
+        return None
+    chart_of = {row.name: row.chart_of_accounts for row in frappe.get_all(
+        "Main Account", filters={"name": ["in", accounts]}, fields=["name", "chart_of_accounts"],
+        limit_page_length=0)}
+    unknown = [a for a in accounts if not chart_of.get(a)]
+    if unknown:
+        named = ", ".join(unknown[:10]) + (f" and {len(unknown) - 10} more" if len(unknown) > 10 else "")
+        frappe.throw(
+            f"{_PREFIX}The trial balance of {entity} holds accounts the chart does not have: {named}. "
+            f"Add them to the chart (Main Account) first."
+        )
+    charts = sorted(set(chart_of.values()))
+    if len(charts) > 1:
+        frappe.throw(
+            f"{_PREFIX}the trial balance of {entity} through {label} uses accounts of more than one "
+            f"Chart of Accounts ({', '.join(charts)}); one trial balance belongs to one chart, whose "
+            f"Retained Earnings Account takes the period's result."
+        )
+    if not charts:
+        return None
+    retained = frappe.get_all("Main Account", filters={"status": "Published", "is_retained_earnings": 1,
+                                                       "chart_of_accounts": charts[0]},
+                              pluck="name", limit_page_length=0)
+    if len(retained) > 1:
+        frappe.throw(
+            f"{_PREFIX}more than one Published Main Account of Chart of Accounts {charts[0]} is ticked "
+            f"Retained Earnings Account ({', '.join(sorted(retained))}); tick exactly one."
+        )
+    return retained[0] if retained else None
+
+
+@frappe.whitelist(methods=["POST"])
+def get_balances_from_trial_balance(name):
+    """Replace a Draft deal's Acquired Balance Sheet with the acquired
+    entity's warehouse trial balance through the acquisition period (the
+    period's unclosed result folded into the chart's Retained Earnings
+    Account) and place the declared Fair Value Adjustment Total: spread by
+    the deal's Fair Value Allocation Profile when one is set (konsol#208),
+    else on the group's Fair Value Adjustment Account; record where the lines
+    came from and save. Returns the number of lines. Nothing is guessed: a
+    missing trial balance, a total with no account to put it on, profile
+    weights not adding up to 100, rows naming accounts the chart does not
+    have, rows from more than one Chart of Accounts, two retained-earnings accounts in the rows' chart, or rows that do not
+    balance are refused by name."""
+    doc = frappe.get_doc("Business Combination", name)
+    doc.check_permission("write")
+    if int(doc.get("docstatus") or 0) != 0:
+        frappe.throw(f"{_PREFIX}Only a Draft takes its balances from the trial balance.")
+    # Pending Approval is docstatus 0 too, but only EPM Admin may edit it there
+    # and a server save would not enforce that (PR #209 review 1).
+    status = doc.get("status")
+    if status != "Draft":
+        frappe.throw(f"{_PREFIX}Only a Draft takes its balances from the trial balance; "
+                     f"this deal is {status}.")
+    period = doc._acquisition_period()
+    year, number = period["fiscal_year"], period["fiscal_period"]
+    label = f"FY{year} P{number}"
+    entity = doc.acquired_entity
+    if not doc._has_tb_at_or_before(period):
+        frappe.throw(f"{_PREFIX}{entity} has no submitted trial balance at or before {label}.")
+
+    fva_total = Decimal(str(doc.get("fair_value_adjustment_total") or 0)).quantize(_CENT)
+    fva_lines, placement = [], ""
+    profile_name = doc.get("fair_value_allocation_profile")
+    if fva_total and profile_name:
+        # konsol#208: the profile's weights spread the total, to the cent.
+        profile = frappe.get_doc("Fair Value Allocation Profile", profile_name)
+        weights = [(line.main_account, line.weight) for line in (profile.lines or [])]
+        try:
+            fva_lines = split_by_weights(fva_total, weights)
+        except ValueError as e:
+            frappe.throw(f"{e} (Fair Value Allocation Profile {profile_name})")
+        placement = f"spread by profile {profile_name} over {', '.join(a for a, _ in fva_lines)}"
+    elif fva_total:
+        root = doc._root()
+        fva_account = root.get("fair_value_adjustment_account")
+        if not fva_account:
+            frappe.throw(
+                f"{_PREFIX}a Fair Value Adjustment Total of {fva_total:.2f} needs the Consolidation "
+                f"Policy's Fair Value Adjustment Account on the group root {root.get('name')}; it is blank."
+            )
+        fva_lines = [(fva_account, fva_total)]
+        placement = f"placed on {fva_account}"
+
+    rows, latest = _read_tb_through(entity, year, number)
+    retained_account = _retained_earnings_of_chart(rows, entity, label)
+    lines, found = derive_acquired_balances(rows, retained_account, fva_lines, label)
+    if found:
+        frappe.throw("<br>".join(found))
+
+    doc.set("acquired_balances", [
+        {"main_account": line["main_account"], "book_amount": float(line["book_amount"]),
+         "fair_value_adjustment": float(line["fair_value_adjustment"]), "note": line["note"]}
+        for line in lines
+    ])
+    latest_year, latest_period = divmod(latest, 100)
+    source = (f"Derived {nowdate()} from the warehouse trial balance of {entity} through {label} "
+              f"(latest period with data: FY{latest_year} P{latest_period}).")
+    if retained_account:
+        source += f" The period's result is folded into {retained_account}."
+    if fva_lines:
+        source += f" Fair value adjustment {fva_total:.2f} {placement}."
+    doc.balance_sheet_source = source
+    doc.save()
+    return len(lines)

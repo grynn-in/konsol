@@ -18,14 +18,23 @@ prescribes once both are given:
   guessed from the amounts. An incomplete sheet (does not sum to zero, or no
   equity line) is refused by name;
 * the acquired net assets are those non-equity book amounts stepped up by the
-  fair value adjustments;
+  fair value adjustments. The lines are in the acquired entity's currency
+  (``entity_currency`` on the header, which the controller reads from the
+  Entity) and are translated to the group currency at the same closing rate
+  path as the consideration (no rate → refused by name; no entity currency →
+  refused, never taken as the group's), so every figure below is in the
+  group currency (PR #209 review 2);
 * the difference between the consideration and the group's share of those
   net assets is **goodwill** when positive and a **bargain** purchase gain when
   negative (the policy says whether a bargain is recognised or refused);
 * **NCI** at acquisition is the policy's choice: *partial* is the NCI's share
-  of the net assets at fair value, *full* is the fair value the price implies
-  (consideration ÷ share × the NCI's share). No measurement chosen → no NCI
-  computed, and the policy sentences say why;
+  of the net assets at fair value, *full* is the minority's own
+  acquisition-date fair value, declared on the deal (``nci_fair_value``, in
+  the consideration currency; konsol#204, IFRS 3.19). It is never grossed up
+  from the price paid for control, which carries a control premium the
+  minority does not have: undeclared under full with less than 100% acquired
+  → refused by name. No measurement chosen → no NCI computed, and the policy
+  sentences say why;
 * acquisition costs are expensed (outside goodwill) or capitalised (they
   join the consideration, and so the goodwill), per the policy.
 
@@ -47,8 +56,9 @@ ZERO = Decimal("0").quantize(CENT)
 
 _PREFIX = "Business Combination: "
 BALANCE_SHEET_REQUIRED = (
-    "Acquired Balance Sheet is required: "
-    "the entity has no trial balance at or before the acquisition date"
+    f"{_PREFIX}the Acquired Balance Sheet is empty, so net assets would be zero "
+    "and goodwill would absorb the whole consideration. Enter the acquisition-date "
+    "balances, or use Get Balances from Trial Balance."
 )
 
 
@@ -108,17 +118,55 @@ def _translated_sum(lines, header, rate_to_group):
     return total
 
 
-def _book_amounts(balances, is_equity):
-    """(Σ book_amount of non-equity lines, Σ book_amount of equity lines, Σ fva)."""
+def _entity_rate(header, balances, rate_to_group):
+    """The closing rate of the acquired entity's currency, which the Acquired
+    Balance Sheet is in; 1 when there are no lines to translate."""
+    if not balances:
+        return Decimal(1)
+    currency = _text(_get(header, "entity_currency"))
+    if not currency:
+        raise ValueError(
+            "The acquired entity's currency is not given; the Acquired Balance Sheet is in it "
+            "and is translated to the group currency"
+        )
+    return _rate(rate_to_group, currency)
+
+
+def _book_amounts(balances, is_equity, rate):
+    """(Σ book_amount of non-equity lines, Σ book_amount of equity lines, Σ fva),
+    each line translated at ``rate`` to the group currency."""
     net_assets = equity = fva = Decimal(0)
     for row in balances or ():
-        book = _decimal(_get(row, "book_amount"))
+        book = _decimal(_get(row, "book_amount")) * rate
         if is_equity(_get(row, "main_account")):
             equity += book
         else:
             net_assets += book
-        fva += _decimal(_get(row, "fair_value_adjustment"))
+        fva += _decimal(_get(row, "fair_value_adjustment")) * rate
     return net_assets, equity, fva
+
+
+def _nci_fair_value(header, rate_to_group):
+    """The declared ``nci_fair_value`` in the group currency (it is in the
+    consideration currency); zero or below counts as not declared."""
+    value = _decimal(_get(header, "nci_fair_value"))
+    if value <= 0:
+        return Decimal(0)
+    return value * _rate(rate_to_group, _text(_get(header, "consideration_currency")))
+
+
+def _nci_fair_value_problems(header, policy, share):
+    """Full method with a minority left: its own fair value must be declared."""
+    if _text(_get(policy, "goodwill_method")) != "full":
+        return []
+    if share is None or not (0 < share < HUNDRED):
+        return []
+    if _decimal(_get(header, "nci_fair_value")) > 0:
+        return []
+    return [
+        f"{_PREFIX}NCI Fair Value is required: NCI is measured at full and {share.normalize():f}% "
+        "is acquired. The price paid for control is not the minority's value."
+    ]
 
 
 def totals(header, consideration, balances, costs, policy, rate_to_group, is_equity):
@@ -135,11 +183,16 @@ def totals(header, consideration, balances, costs, policy, rate_to_group, is_equ
     not net assets: they are reported as ``equity_eliminated`` (sign flipped,
     so a credit balance of −650 eliminates 650) and the non-equity lines are
     ``net_assets_acquired``. Fair value adjustments count on every line.
+
+    The balance lines are in ``header['entity_currency']`` and are translated
+    with ``rate_to_group`` like the consideration; a blank entity currency
+    with lines to translate raises ``ValueError``.
     """
     consideration_total = _translated_sum(consideration, header, rate_to_group)
     costs_total = _translated_sum(costs, header, rate_to_group)
 
-    net_assets, equity_book, fva = _book_amounts(balances, is_equity)
+    rate = _entity_rate(header, balances, rate_to_group)
+    net_assets, equity_book, fva = _book_amounts(balances, is_equity, rate)
     nafv = net_assets + fva
 
     treatment = _text(_get(policy, "acquisition_costs_treatment"))
@@ -154,8 +207,10 @@ def totals(header, consideration, balances, costs, policy, rate_to_group, is_equ
     nci_fraction = Decimal(1) - share_fraction
     if nci_measurement == "partial":
         nci = nafv * nci_fraction
-    elif nci_measurement == "full" and share_fraction > 0:
-        nci = consideration_basis / share_fraction * nci_fraction
+    elif nci_measurement == "full" and 0 < share_fraction < 1:
+        # konsol#204: the minority's own declared fair value, translated like
+        # the consideration; blank is no NCI (problems() refuses it by name).
+        nci = _nci_fair_value(header, rate_to_group)
     else:
         nci = Decimal(0)
 
@@ -244,12 +299,15 @@ def _balance_sheet_problems(balances, is_equity):
 def problems(header, consideration, balances, costs, policy, facts):
     """Sentences describing why this deal cannot be saved; empty when it can.
 
-    ``facts`` is a dict the controller has looked up: ``has_tb_at_or_before``
-    (the entity has a submitted trial balance at or before the acquisition
-    period), ``rate_to_group`` or ``totals`` (see ``totals()``),
-    ``is_equity(main_account)`` (required when there are balance lines) and
-    ``is_published_leaf(account)`` for the declared accounts (without it only
-    blank accounts are reported).
+    ``facts`` is a dict the controller has looked up: ``rate_to_group`` or
+    ``totals`` (see ``totals()``), ``is_equity(main_account)`` (required when
+    there are balance lines) and ``is_published_leaf(account)`` for the
+    declared accounts (without it only blank accounts are reported).
+
+    An empty Acquired Balance Sheet is always refused (konsol#206): net assets
+    are measured only from its lines, so without them goodwill would absorb the
+    whole consideration. A trial balance on file does not waive it; any
+    ``has_tb_at_or_before`` in ``facts`` is ignored here.
     """
     found = []
     is_equity = _equity_rule(facts, balances)
@@ -266,8 +324,9 @@ def problems(header, consideration, balances, costs, policy, facts):
 
     found += _line_problems(consideration, "Consideration", "component")
     found += _line_problems(costs, "Cost", "kind")
+    found += _nci_fair_value_problems(header, policy, share)
 
-    if not balances and not _get(facts, "has_tb_at_or_before"):
+    if not balances:
         found.append(BALANCE_SHEET_REQUIRED)
     found += _balance_sheet_problems(balances, is_equity)
 
@@ -292,3 +351,90 @@ def problems(header, consideration, balances, costs, policy, facts):
     is_published_leaf = _get(facts, "is_published_leaf") or (lambda account: True)
     found += account_problems(policy, required_accounts(policy, deal), is_published_leaf)
     return found
+
+
+def derive_acquired_balances(tb_rows, retained_earnings_account, fva_lines, period_label):
+    """The Acquired Balance Sheet from trial-balance amounts (konsol#207).
+
+    ``tb_rows``: dicts ``main_account``, ``amount`` (Dr+/Cr−, entity currency,
+    cumulative through the acquisition period) and ``is_pnl`` (0/1). Amounts
+    are summed per account; the P&L accounts' total (the result not yet closed
+    into retained earnings; closed years net to zero) is folded into
+    ``retained_earnings_account``'s line and the P&L lines are dropped. Lines
+    that round to 0.00 are dropped and the rest sorted by account; then each
+    ``(main_account, amount)`` of ``fva_lines`` is added to that account's
+    ``fair_value_adjustment``, on a new line with book amount 0 when absent.
+
+    Returns ``(lines, problems)``: lines are dicts ``main_account,
+    book_amount, fair_value_adjustment, note`` (money as Decimal to 0.01);
+    problems are sentences, empty when the lines can be used.
+    """
+    rows = list(tb_rows or ())
+    if not rows:
+        return [], [f"{_PREFIX}no trial balance amounts at or before {period_label}."]
+
+    found = []
+    book = {}
+    pnl_total = Decimal(0)
+    for row in rows:
+        amount = _decimal(_get(row, "amount"))
+        if int(_decimal(_get(row, "is_pnl"))):
+            pnl_total += amount
+        else:
+            account = _text(_get(row, "main_account"))
+            book[account] = book.get(account, Decimal(0)) + amount
+
+    total = sum(book.values(), Decimal(0)) + pnl_total
+    if _money(pnl_total) != ZERO:
+        if retained_earnings_account:
+            book[retained_earnings_account] = book.get(retained_earnings_account, Decimal(0)) + pnl_total
+        else:
+            found.append(
+                f"{_PREFIX}the chart declares no Retained Earnings Account: tick it on the "
+                f"retained-earnings Main Account so the result of {period_label} can be folded in."
+            )
+    if abs(total) > Decimal("0.005"):
+        found.append(
+            f"{_PREFIX}the trial balance through {period_label} does not balance: "
+            f"it is off by {_money(total):.2f}."
+        )
+
+    lines = [
+        {"main_account": account, "book_amount": _money(amount),
+         "fair_value_adjustment": ZERO, "note": "From the trial balance"}
+        for account, amount in sorted(book.items())
+        if _money(amount) != ZERO
+    ]
+    by_account = {line["main_account"]: line for line in lines}
+    for account, amount in fva_lines or ():
+        amount = _money(amount)
+        if amount == ZERO:
+            continue
+        line = by_account.get(account)
+        if line is None:
+            line = {"main_account": account, "book_amount": ZERO,
+                    "fair_value_adjustment": ZERO, "note": "Fair value adjustment"}
+            lines.append(line)
+            by_account[account] = line
+        line["fair_value_adjustment"] = _money(line["fair_value_adjustment"] + amount)
+    return lines, found
+
+
+def split_by_weights(total, weights):
+    """``total`` spread over ``weights`` (``(main_account, weight)``, percentages
+    summing to 100) as ``[(main_account, amount)]``, amounts Decimal to 0.01.
+    The rounding remainder goes to the line with the largest weight (the first
+    on ties), so the amounts add up to ``total`` exactly. Weights not summing
+    to 100 raise ``ValueError``.
+    """
+    pairs = [(account, _decimal(weight)) for account, weight in weights or ()]
+    weight_sum = sum((weight for _, weight in pairs), Decimal(0))
+    if abs(weight_sum - HUNDRED) > Decimal("0.0001"):
+        raise ValueError(
+            f"{_PREFIX}the allocation weights add up to {weight_sum}; they must add up to 100."
+        )
+    target = _money(total)
+    amounts = [_money(target * weight / HUNDRED) for _, weight in pairs]
+    largest = max(range(len(pairs)), key=lambda i: (pairs[i][1], -i))
+    amounts[largest] += target - sum(amounts, Decimal(0))
+    return [(account, amount) for (account, _), amount in zip(pairs, amounts)]

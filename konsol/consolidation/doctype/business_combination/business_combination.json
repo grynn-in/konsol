@@ -70,7 +70,21 @@
    "fieldtype": "Data",
    "label": "NCI Measurement",
    "read_only": 1,
-   "description": "Copied from the group root's Consolidation Policy when the deal is saved: partial or full."
+   "description": "The NCI measurement in force for this deal: the override when set, otherwise the group's."
+  },
+  {
+   "fieldname": "nci_measurement_override",
+   "fieldtype": "Select",
+   "label": "NCI Measurement for This Deal",
+   "options": "\npartial\nfull",
+   "description": "Leave blank to use the group's NCI Measurement. IFRS 3.19 lets each business combination elect; US GAAP requires full."
+  },
+  {
+   "fieldname": "nci_fair_value",
+   "fieldtype": "Currency",
+   "label": "NCI Fair Value",
+   "depends_on": "eval:doc.nci_measurement=='full' && doc.share_acquired_pct < 100",
+   "description": "The non-controlling interest's own acquisition-date fair value, in the consideration currency (IFRS 3.19). Required when NCI is measured at full and less than 100% is acquired; konsol does not infer it from the price paid for control."
   },
   {
    "fieldname": "ownership_period",
@@ -107,11 +121,31 @@
    "label": "Acquired Balance Sheet"
   },
   {
+   "fieldname": "fair_value_adjustment_total",
+   "fieldtype": "Currency",
+   "label": "Fair Value Adjustment Total",
+   "description": "The purchase price allocation's total step-up from book to fair value, in the acquired entity's currency. Get Balances from Trial Balance places it on the lines; the lines must add up to it."
+  },
+  {
+   "fieldname": "fair_value_allocation_profile",
+   "fieldtype": "Link",
+   "label": "Fair Value Allocation Profile",
+   "options": "Fair Value Allocation Profile",
+   "description": "Optional. Spreads the Fair Value Adjustment Total over accounts when you Get Balances from Trial Balance; without it the total goes to the group's Fair Value Adjustment Account."
+  },
+  {
+   "fieldname": "balance_sheet_source",
+   "fieldtype": "Small Text",
+   "label": "Balance Sheet Source",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
    "fieldname": "acquired_balances",
    "fieldtype": "Table",
    "label": "Acquired Balances",
    "options": "Business Combination Acquired Balance",
-   "description": "The entity's balance sheet at acquisition with fair value adjustments per line. Required when no trial balance of the entity exists at or before the acquisition period; otherwise the trial balance is used."
+   "description": "The entity's balance sheet at acquisition with fair value adjustments per line, in the acquired entity's Functional Currency (translated to the group currency at the acquisition period's closing rate). Always required: enter the acquisition-date balances, or use Get Balances from Trial Balance."
   },
   {
    "fieldname": "costs_section",
@@ -148,14 +182,14 @@
    "fieldtype": "Currency",
    "label": "Net Assets Acquired",
    "read_only": 1,
-   "description": "Sum of the acquired balance sheet book amounts."
+   "description": "Net assets of the Acquired Balance Sheet (non-equity lines), translated to the group currency at the acquisition period's closing rate."
   },
   {
    "fieldname": "fair_value_adjustments",
    "fieldtype": "Currency",
    "label": "Fair Value Adjustments",
    "read_only": 1,
-   "description": "Sum of the fair value adjustment lines."
+   "description": "Fair value adjustments on the Acquired Balance Sheet, translated to the group currency at the acquisition period's closing rate. The declared Fair Value Adjustment Total is in the acquired entity's currency."
   },
   {
    "fieldname": "costs_expensed",

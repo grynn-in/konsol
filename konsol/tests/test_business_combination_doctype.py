@@ -75,14 +75,95 @@ def test_deal_tab_carries_the_declared_inputs():
     assert fields["ownership_period"]["read_only"] == 1
 
 
+def test_nci_measurement_is_elected_per_deal_with_the_group_as_default():
+    """konsol#205: IFRS 3.19 lets each business combination elect how NCI is
+    measured; blank takes the group's NCI Measurement."""
+    doc = _parent()
+    fields = _fields(doc)
+    override = fields["nci_measurement_override"]
+    assert override["fieldtype"] == "Select"
+    assert override["options"] == "\npartial\nfull"
+    assert override["label"] == "NCI Measurement for This Deal"
+    assert override["description"] == (
+        "Leave blank to use the group's NCI Measurement. IFRS 3.19 lets each business "
+        "combination elect; US GAAP requires full.")
+    assert override.get("reqd", 0) == 0 and override.get("read_only", 0) == 0
+    assert "default" not in override, "blank means the group's value, not a default"
+    in_force = fields["nci_measurement"]
+    assert in_force["read_only"] == 1
+    assert in_force["description"] == (
+        "The NCI measurement in force for this deal: the override when set, otherwise the group's.")
+    order = [f["fieldname"] for f in doc["fields"]]
+    assert abs(order.index("nci_measurement_override") - order.index("nci_measurement")) == 1
+
+
 def test_table_fields_point_at_the_three_children():
     fields = _fields(_parent())
     for fn, (_, child_name) in CHILDREN.items():
         assert fields[fn]["fieldtype"] == "Table", fn
         assert fields[fn]["options"] == child_name, fn
     assert fields["consideration"]["reqd"] == 1, "a deal has at least one consideration line"
-    assert fields["acquired_balances"].get("reqd", 0) == 0, "optional when a trial balance exists"
+    assert fields["acquired_balances"].get("reqd", 0) == 0, \
+        "an empty table is refused by validate(), not by reqd"
+    description = fields["acquired_balances"]["description"]
+    assert "otherwise the trial balance is used" not in description, (
+        "konsol#206: the Acquired Balance Sheet is always required")
+    assert description == (
+        "The entity's balance sheet at acquisition with fair value adjustments per line, "
+        "in the acquired entity's Functional Currency (translated to the group currency at "
+        "the acquisition period's closing rate). Always required: enter the acquisition-date "
+        "balances, or use Get Balances from Trial Balance.")
     assert fields["costs"].get("reqd", 0) == 0
+
+
+def test_acquired_balance_sheet_carries_the_fva_total_and_the_source_above_the_table():
+    """konsol#207: the purchase price allocation's total step-up is declared on
+    the deal; Get Balances from Trial Balance places it on the lines and
+    records where the lines came from."""
+    doc = _parent()
+    fields = _fields(doc)
+    total = fields["fair_value_adjustment_total"]
+    assert total["fieldtype"] == "Currency"
+    assert total["label"] == "Fair Value Adjustment Total"
+    assert total["description"] == (
+        "The purchase price allocation's total step-up from book to fair value, in the acquired "
+        "entity's currency. Get Balances from Trial Balance places it on the lines; the lines must "
+        "add up to it.")
+    assert total.get("reqd", 0) == 0 and total.get("read_only", 0) == 0
+    source = fields["balance_sheet_source"]
+    assert source["fieldtype"] == "Small Text"
+    assert source["label"] == "Balance Sheet Source"
+    assert source["read_only"] == 1 and source["no_copy"] == 1
+    order = [f["fieldname"] for f in doc["fields"]]
+    section, table = order.index("acquired_balances_section"), order.index("acquired_balances")
+    assert section < order.index("fair_value_adjustment_total") < table
+    assert section < order.index("balance_sheet_source") < table
+
+
+def test_form_button_gets_balances_from_the_trial_balance():
+    path = os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.js")
+    with open(path) as f:
+        src = f.read()
+    assert 'frappe.ui.form.on("Business Combination"' in src
+    assert "refresh(frm)" in src
+    assert "frm.doc.docstatus === 0 && !frm.is_new()" in src
+    assert '__("Get Balances from Trial Balance")' in src
+    assert "frm.add_custom_button(" in src
+    assert "frappe.confirm(" in src
+    assert "This replaces the {0} lines of the Acquired Balance Sheet. Continue?" in src
+    assert ('"konsol.consolidation.doctype.business_combination.business_combination.'
+            'get_balances_from_trial_balance"') in src
+    assert "name: frm.doc.name" in src
+    assert "frm.reload_doc()" in src
+    # PR #209 review 1: only a real Draft (Pending Approval is docstatus 0 too).
+    assert 'frm.doc.status === "Draft"' in src
+    # PR #209 review 5: unsaved edits (a typed Fair Value Adjustment Total) are
+    # saved first, and the method runs after the save resolves.
+    assert "frm.is_dirty()" in src
+    # PR #209 review 2, point 1: Frappe v15's frm.save() resolves even when the
+    # save fails, so the method runs only when the form is no longer dirty.
+    assert "frm.save().then(() => { if (!frm.is_dirty()) run(); })" in src
+    assert "frm.save().then(run)" not in src
 
 
 def test_result_tab_is_computed_and_read_only():
@@ -95,6 +176,20 @@ def test_result_tab_is_computed_and_read_only():
         assert fields[fn]["read_only"] == 1, f"{fn} is computed on validate"
         assert fields[fn].get("reqd", 0) == 0, fn
         assert "default" not in fields[fn], f"{fn}: no defaults, the result is computed"
+
+
+def test_result_descriptions_name_the_group_currency():
+    """PR #209 review 2, point 3: since Q9 net assets and fair value adjustments
+    are translated to the group currency, while the declared Fair Value
+    Adjustment Total stays in the acquired entity's currency."""
+    fields = _fields(_parent())
+    assert fields["net_assets_acquired"]["description"] == (
+        "Net assets of the Acquired Balance Sheet (non-equity lines), translated to the group "
+        "currency at the acquisition period's closing rate.")
+    assert fields["fair_value_adjustments"]["description"] == (
+        "Fair value adjustments on the Acquired Balance Sheet, translated to the group currency "
+        "at the acquisition period's closing rate. The declared Fair Value Adjustment Total is in "
+        "the acquired entity's currency.")
 
 
 def test_status_is_the_workflow_state_and_the_document_can_be_amended():

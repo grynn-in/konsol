@@ -129,6 +129,23 @@ def test_ifrs_does_not_amortise_goodwill():
     assert "Impairment only" in problems[0]
 
 
+def test_ifrs_and_us_gaap_expense_acquisition_costs():
+    """konsol#203: IFRS 3.53 and ASC 805-10-25-23 expense acquisition-related
+    costs as incurred; only a Local framework may capitalise them."""
+    for base in (IFRS_PARTIAL, US_GAAP_FULL):
+        framework = base["accounting_framework"]
+        problems = M.policy_problems(dict(base, acquisition_costs_treatment="Capitalise"), has_deals=True)
+        assert problems == [
+            f"Consolidation Policy: {framework} expenses acquisition-related costs as incurred; "
+            "set Acquisition Costs Treatment to Expense."], (framework, problems)
+
+
+def test_local_framework_may_capitalise_acquisition_costs():
+    assert LOCAL_AMORTISE["acquisition_costs_treatment"] == "Capitalise"
+    problems = M.policy_problems(LOCAL_AMORTISE, has_deals=True)
+    assert not any("Acquisition Costs Treatment" in p for p in problems), problems
+
+
 def test_amortise_needs_at_least_one_year():
     for years in (None, 0, -3, ""):
         problems = M.policy_problems(dict(LOCAL_AMORTISE, goodwill_amortisation_years=years), has_deals=True)
