@@ -85,6 +85,47 @@ def test_table_fields_point_at_the_three_children():
     assert fields["costs"].get("reqd", 0) == 0
 
 
+def test_acquired_balance_sheet_carries_the_fva_total_and_the_source_above_the_table():
+    """konsol#207: the purchase price allocation's total step-up is declared on
+    the deal; Get Balances from Trial Balance places it on the lines and
+    records where the lines came from."""
+    doc = _parent()
+    fields = _fields(doc)
+    total = fields["fair_value_adjustment_total"]
+    assert total["fieldtype"] == "Currency"
+    assert total["label"] == "Fair Value Adjustment Total"
+    assert total["description"] == (
+        "The purchase price allocation's total step-up from book to fair value, in the acquired "
+        "entity's currency. Get Balances from Trial Balance places it on the lines; the lines must "
+        "add up to it.")
+    assert total.get("reqd", 0) == 0 and total.get("read_only", 0) == 0
+    source = fields["balance_sheet_source"]
+    assert source["fieldtype"] == "Small Text"
+    assert source["label"] == "Balance Sheet Source"
+    assert source["read_only"] == 1 and source["no_copy"] == 1
+    order = [f["fieldname"] for f in doc["fields"]]
+    section, table = order.index("acquired_balances_section"), order.index("acquired_balances")
+    assert section < order.index("fair_value_adjustment_total") < table
+    assert section < order.index("balance_sheet_source") < table
+
+
+def test_form_button_gets_balances_from_the_trial_balance():
+    path = os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.js")
+    with open(path) as f:
+        src = f.read()
+    assert 'frappe.ui.form.on("Business Combination"' in src
+    assert "refresh(frm)" in src
+    assert "frm.doc.docstatus === 0 && !frm.is_new()" in src
+    assert '__("Get Balances from Trial Balance")' in src
+    assert "frm.add_custom_button(" in src
+    assert "frappe.confirm(" in src
+    assert "This replaces the {0} lines of the Acquired Balance Sheet. Continue?" in src
+    assert ('"konsol.consolidation.doctype.business_combination.business_combination.'
+            'get_balances_from_trial_balance"') in src
+    assert "name: frm.doc.name" in src
+    assert "frm.reload_doc()" in src
+
+
 def test_result_tab_is_computed_and_read_only():
     fields = _fields(_parent())
     assert fields["tab_result"]["fieldtype"] == "Tab Break"

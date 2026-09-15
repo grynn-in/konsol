@@ -47,6 +47,18 @@ class _Doc:
         setattr(self, field, value)
         self.db_sets.append((field, value))
 
+    def set(self, key, value):
+        setattr(self, key, value)
+
+    def check_permission(self, ptype="read"):
+        self.__dict__.setdefault("permission_checks", []).append(ptype)
+
+    def save(self, *a, **k):
+        # Frappe's save runs validate before writing.
+        self.validate()
+        self.__dict__["saved"] = self.__dict__.get("saved", 0) + 1
+        return self
+
 
 def _getdate(value):
     if isinstance(value, datetime.datetime):
@@ -74,6 +86,7 @@ def _load():
         raise Refused(msg)
 
     frappe.throw = throw
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     frappe._ = lambda s: s
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.flags = types.SimpleNamespace(from_business_combination=False)
@@ -86,7 +99,8 @@ def _load():
     utils.nowdate = lambda: TODAY[0]
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a, **k: None
-    ps = types.ModuleType("konsol.period_status")
+    ch.execute = lambda *a, **k: ""
+    ps =types.ModuleType("konsol.period_status")
     ps.assert_open = lambda *a, **k: None
     ps.assert_open_between = lambda *a, **k: None
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
@@ -195,7 +209,14 @@ class _Site:
     """In-memory site behind the stub frappe; records what the controller writes."""
 
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
-                 disposals=(), disposal_table=True):
+                 disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv=""):
+        #: Business Combination documents frappe.get_doc hands out, by name.
+        self.deals = {d.name: d for d in deals}
+        #: Published Main Accounts ticked Retained Earnings Account.
+        self.retained_earnings = list(retained_earnings)
+        #: what konsol.clickhouse.execute answers, and every (sql, params) it was asked
+        self.tb_tsv = tb_tsv
+        self.ch_calls = []
         self.periods = [dict(p) for p in (periods if periods is not None else [PERIOD_DEC_2025])]
         self.root = dict(ROOT_IFRS_PARTIAL) if root is None else root
         self.rates = dict(rates or {})  # (from, to, fy, fp) -> (quote, quoted_per)
@@ -222,10 +243,15 @@ class _Site:
                                             table_exists=self._table_exists)
         M.frappe.get_all = self._get_all
         M.frappe.get_doc = self._get_doc
+        M.execute = self._execute
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
         M.assert_open_between = (lambda start, end=None, action="run", end_exclusive=False:
                                  site.spans.append((str(start), str(end), action, end_exclusive)))
+
+    def _execute(self, sql, params=None):
+        self.ch_calls.append((" ".join(sql.split()), dict(params or {})))
+        return self.tb_tsv
 
     def _table_exists(self, doctype):
         return self.disposal_table if doctype == "Business Disposal" else True
@@ -283,6 +309,12 @@ class _Site:
                 field, _, direction = order_by.partition(" ")
                 rows.sort(key=lambda r: str(r.get(field) or ""), reverse=direction.lower() == "desc")
             return rows[:limit_page_length] if limit_page_length else rows
+        if doctype == "Main Account":
+            assert (filters or {}).get("is_retained_earnings") == 1, filters
+            assert (filters or {}).get("status") == "Published", filters
+            if k.get("pluck"):
+                return list(self.retained_earnings)
+            return [_Row(name=n) for n in self.retained_earnings]
         assert doctype == "Group Exchange Rate", doctype
         assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
         key = (filters["from_currency"], filters["to_currency"], filters["fiscal_year"], filters["fiscal_period"])
@@ -293,6 +325,8 @@ class _Site:
 
     def _get_doc(self, arg, name=None):
         site = self
+        if arg == "Business Combination":
+            return self.deals[name]
         if isinstance(arg, dict):
             doc = _OwnershipPeriodDoc(**arg)
             doc.docstatus = 0
@@ -999,6 +1033,146 @@ def test_before_cancel_passes_when_no_approved_disposal_links_the_period():
         site = _Site(disposals=disposals, disposal_table=table)
         _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
         assert site.opened and site.opened[0][:2] == (2025, 12), (disposals, table)
+
+
+# -- Get Balances from Trial Balance (konsol#207) -------------------------------
+
+#: The warehouse answer: account, cumulative net through FY2025 P12, is_pnl,
+#: latest fiscal_year*100+fiscal_period with data. The P&L line (−150) is the
+#: result not yet closed; folded into ZZ3100 it makes the equity −650.
+TB_TSV = "\n".join([
+    "ZZ1100\t1000\t0\t202511",
+    "ZZ2100\t-350\t0\t202510",
+    "ZZ3100\t-500\t0\t202412",
+    "ZZ4100\t-150\t1\t202511",
+])
+
+
+def _deal_for_tb(site, **over):
+    fields = dict(acquired_balances=[{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}],
+                  fair_value_adjustment_total=930, balance_sheet_source=None)
+    fields.update(over)
+    deal = _deal(**fields)
+    site.deals[deal.name] = deal
+    return deal
+
+
+def _tb_site(**over):
+    kw = dict(tbs=[("ZZE", 2025, 11)], retained_earnings=["ZZ3100"], tb_tsv=TB_TSV)
+    kw.update(over)
+    return _Site(**kw)
+
+
+def test_get_balances_replaces_the_lines_with_the_derived_balance_sheet():
+    site = _tb_site()
+    deal = _deal_for_tb(site)
+    assert M.get_balances_from_trial_balance(deal.name) == 4
+    assert deal.permission_checks == ["write"]
+    assert deal.saved == 1
+    assert deal.acquired_balances == [
+        {"main_account": "ZZ1100", "book_amount": 1000.0, "fair_value_adjustment": 0.0,
+         "note": "From the trial balance"},
+        {"main_account": "ZZ2100", "book_amount": -350.0, "fair_value_adjustment": 0.0,
+         "note": "From the trial balance"},
+        {"main_account": "ZZ3100", "book_amount": -650.0, "fair_value_adjustment": 0.0,
+         "note": "From the trial balance"},
+        {"main_account": "ZZ1810", "book_amount": 0.0, "fair_value_adjustment": 930.0,
+         "note": "Fair value adjustment"},
+    ]
+    assert all(type(v) is float for line in deal.acquired_balances
+               for k, v in line.items() if k in ("book_amount", "fair_value_adjustment"))
+    # Saved through validate: the worked example's result.
+    assert deal.net_assets_acquired == 650.0 and deal.fair_value_adjustments == 930.0
+    assert deal.goodwill == 6720.0
+    source = deal.balance_sheet_source
+    assert source.startswith("Derived 2026-09-15 from the warehouse trial balance of ZZE through FY2025 P12")
+    assert "(latest period with data: FY2025 P11)" in source
+    assert "The period's result is folded into ZZ3100." in source
+    assert "Fair value adjustment 930.00 placed on ZZ1810." in source
+
+
+def test_get_balances_reads_the_gold_trial_balance_through_the_acquisition_period():
+    site = _tb_site()
+    deal = _deal_for_tb(site)
+    M.get_balances_from_trial_balance(deal.name)
+    assert len(site.ch_calls) == 1
+    sql, params = site.ch_calls[0]
+    assert "FROM epm_gold.gold_trial_balance" in sql
+    assert "data_area_id = {entity:String}" in sql
+    assert "fiscal_year < {y:UInt16}" in sql and "fiscal_period <= {p:UInt16}" in sql
+    assert "GROUP BY main_account" in sql and "FORMAT TSV" in sql
+    assert params == {"param_entity": "ZZE", "param_y": "2025", "param_p": "12"}
+
+
+def test_get_balances_without_a_fair_value_total_places_no_adjustment():
+    site = _tb_site()
+    deal = _deal_for_tb(site, fair_value_adjustment_total=0)
+    assert M.get_balances_from_trial_balance(deal.name) == 3
+    assert [line["main_account"] for line in deal.acquired_balances] == ["ZZ1100", "ZZ2100", "ZZ3100"]
+    assert "Fair value adjustment" not in deal.balance_sheet_source
+
+
+def test_get_balances_refuses_a_submitted_deal():
+    site = _tb_site()
+    deal = _deal_for_tb(site, docstatus=1)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "Only a Draft takes its balances from the trial balance." in message
+    assert site.ch_calls == [] and not deal.get("saved")
+
+
+def test_get_balances_refuses_without_a_submitted_trial_balance_at_or_before():
+    for tbs in ([], [("ZZE", 2026, 1)], [("ZZX", 2025, 11)]):
+        site = _tb_site(tbs=tbs)
+        deal = _deal_for_tb(site)
+        message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+        assert "ZZE has no submitted trial balance at or before FY2025 P12." in message, tbs
+        assert site.ch_calls == [], tbs
+
+
+def test_get_balances_refuses_two_retained_earnings_accounts_by_name():
+    site = _tb_site(retained_earnings=["ZZ3100", "ZZ3200"])
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "ZZ3100" in message and "ZZ3200" in message
+    assert "Retained Earnings Account" in message
+    assert not deal.get("saved")
+
+
+def test_get_balances_refuses_a_fair_value_total_without_the_policy_account():
+    site = _tb_site()
+    site.root["fair_value_adjustment_account"] = ""
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "Fair Value Adjustment Account" in message
+    assert not deal.get("saved")
+
+
+def test_get_balances_throws_the_derived_problems_and_keeps_the_lines():
+    # Unbalanced: the rows do not net to zero.
+    site = _tb_site(tb_tsv="ZZ1100\t1000\t0\t202511\nZZ2100\t-350\t0\t202511")
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "does not balance" in message and "650.00" in message
+    assert deal.acquired_balances == [{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}]
+    assert not deal.get("saved")
+    # A P&L result and no Retained Earnings Account: the model's sentence.
+    site = _tb_site(retained_earnings=[])
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert "declares no Retained Earnings Account" in message
+    assert "FY2025 P12" in message
+    assert not deal.get("saved")
+
+
+def test_validate_refuses_line_adjustments_that_miss_the_declared_total():
+    _Site()
+    message = _refused(_deal(fair_value_adjustment_total=1000).validate)
+    assert ("Fair value adjustments on the Acquired Balance Sheet add up to 930.00; "
+            "the declared Fair Value Adjustment Total is 1000.00.") in message
+    _deal(fair_value_adjustment_total=930).validate()   # they agree
+    _deal(fair_value_adjustment_total=930.004).validate()  # within half a cent
+    _deal(fair_value_adjustment_total=0).validate()     # none declared
+    _deal().validate()                                  # field absent
 
 
 # -- the warehouse contract ----------------------------------------------------
