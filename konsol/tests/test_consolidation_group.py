@@ -72,9 +72,13 @@ def test_goodwill_method_keeps_its_name_and_is_the_nci_measurement():
     assert f["label"] == P.LABELS["goodwill_method"] == "NCI Measurement"
     assert f["options"] == "partial\nfull"
     assert "default" not in f
+    # PR #202 review, finding 9: the description names the option as the
+    # Select spells it, so "full" here is the value the user picks.
     assert f["description"] == (
         "Partial: NCI at its share of fair-value net assets. Full: NCI at fair value, "
-        "goodwill includes its share. US GAAP requires Full.")
+        "goodwill includes its share. Under US GAAP set NCI Measurement to full.")
+    assert "set NCI Measurement to full" in f["description"]
+    assert "to Full" not in f["description"]
 
 
 def test_the_policy_lives_in_its_own_tab_in_three_labelled_sections():
@@ -220,19 +224,35 @@ def test_validate_runs_the_policy_check_guarded_on_the_deal_table():
     assert '"Business Combination"' in body and '"docstatus": ["<", 2]' in body
 
 
+def test_a_disposal_is_a_deal_too_behind_the_same_guard():
+    """PR #202 review, finding 8: a group whose only deal is a Business
+    Disposal needs its policy (the disposal posts to the declared accounts)
+    just as one with a Business Combination does, and the table is read only
+    when it exists, for the same migrate reason."""
+    body = _body(_source(), "_validate_policy")
+    assert 'table_exists("Business Disposal")' in body
+    assert '"Business Disposal"' in body
+
+
 @contextlib.contextmanager
-def _facts(deal_table=True, deals=(), accounts=None):
-    """What the check reads: whether the deal table exists, which groups have
-    a live Business Combination, and the chart (`accounts`: code →
-    (status, is_group); None means the chart must not be read)."""
+def _facts(deal_table=True, deals=(), accounts=None, disposal_table=True, disposals=()):
+    """What the check reads: whether the deal tables exist, which groups have
+    a live Business Combination (`deals`) or Business Disposal (`disposals`),
+    and the chart (`accounts`: code → (status, is_group); None means the
+    chart must not be read)."""
     reads = []
+    tables = {"Business Combination": deal_table, "Business Disposal": disposal_table}
+    live = {"Business Combination": ("BC", deals), "Business Disposal": ("BD", disposals)}
 
     def table_exists(name):
-        return deal_table if name == "Business Combination" else True
+        return tables.get(name, True)
 
     def exists(doctype, filters=None):
-        assert doctype == "Business Combination"
-        return f"BC-{filters['consolidation_group']}" if filters["consolidation_group"] in deals else None
+        assert doctype in live, doctype
+        assert tables[doctype], f"{doctype} was read although its table does not exist"
+        assert filters["docstatus"] == ["<", 2], filters
+        prefix, groups = live[doctype]
+        return f"{prefix}-{filters['consolidation_group']}" if filters["consolidation_group"] in groups else None
 
     def get_value(doctype, name, fields):
         assert doctype == "Main Account" and accounts is not None, "the chart was read"
@@ -278,6 +298,24 @@ def test_an_empty_policy_is_fine_until_the_group_has_a_deal():
         _root()._validate_policy()
     with _facts(deals={"ZZGRP"}):
         _refused(_root(), "Consolidation Policy: Accounting Framework is required once the group has a Business Combination")
+
+
+def test_a_group_with_only_a_disposal_needs_its_policy_too():
+    """Finding 8: `has_deals` counts Business Disposal rows as well."""
+    with _facts(deals=(), disposals={"ZZGRP"}):
+        _refused(_root(), "Consolidation Policy: Accounting Framework is required")
+    # another group's disposal is not this group's deal
+    with _facts(deals=(), disposals={"ZZOTHER"}):
+        _root()._validate_policy()
+    # the disposal table may not exist yet (mid migrate): not read, not a deal
+    with _facts(deals=(), disposal_table=False, disposals={"ZZGRP"}):
+        _root()._validate_policy()
+    # neither table yet
+    with _facts(deal_table=False, disposal_table=False, deals={"ZZGRP"}, disposals={"ZZGRP"}):
+        _root()._validate_policy()
+    # a complete policy passes whichever kind of deal the group has
+    with _facts(deals=(), disposals={"ZZGRP"}, accounts=None):
+        _root(**IFRS_PARTIAL)._validate_policy()
 
 
 def test_the_framework_constrains_the_choices():

@@ -24,7 +24,13 @@ DEAL_FIELDS = (
     "acquisition_date", "is_first_acquisition", "acquisition_price",
     "fair_value_adjustment", "is_disposal", "disposal_date", "disposal_price",
 )
-DESCRIPTION = "Set by the Business Combination / Business Disposal that created this period."
+#: Who fills which field (PR #202 review, finding 9): a Business Combination
+#: creates the period and sets the acquisition figures; a Business Disposal
+#: closes an existing period and sets the disposal figures.
+ACQUISITION_FIELDS = ("acquisition_date", "is_first_acquisition", "acquisition_price", "fair_value_adjustment")
+DISPOSAL_FIELDS = ("is_disposal", "disposal_date", "disposal_price")
+ACQUISITION_DESCRIPTION = "Set by the Business Combination / Business Disposal that created this period."
+DISPOSAL_DESCRIPTION = "Set by the Business Disposal that closed this period."
 SENTENCE = ("Record the acquisition as a Business Combination (or the disposal as a "
             "Business Disposal); these fields are filled from it.")
 
@@ -46,11 +52,17 @@ def _method_body(src, name):
 # --- JSON -----------------------------------------------------------------
 
 def test_the_seven_deal_fields_are_read_only_and_say_who_sets_them():
+    """The description names the document that fills the field: a disposal
+    closes a period that already exists, it does not create one."""
     fields = {f["fieldname"]: f for f in _meta()["fields"]}
+    assert set(ACQUISITION_FIELDS) | set(DISPOSAL_FIELDS) == set(DEAL_FIELDS)
     for fn in DEAL_FIELDS:
         assert fn in fields, f"missing field {fn}"
         assert fields[fn].get("read_only") == 1, f"{fn} must be read_only"
-        assert fields[fn].get("description") == DESCRIPTION, f"{fn} description"
+    for fn in ACQUISITION_FIELDS:
+        assert fields[fn].get("description") == ACQUISITION_DESCRIPTION, f"{fn} description"
+    for fn in DISPOSAL_FIELDS:
+        assert fields[fn].get("description") == DISPOSAL_DESCRIPTION, f"{fn} description"
 
 
 def test_the_ownership_fields_stay_editable():
