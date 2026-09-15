@@ -1,0 +1,240 @@
+{
+ "name": "Business Disposal",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "format:BD-{consolidation_group}-{disposed_entity}-{disposal_date}",
+ "title_field": "disposed_entity",
+ "fields": [
+  {
+   "fieldname": "tab_deal",
+   "fieldtype": "Tab Break",
+   "label": "Disposal"
+  },
+  {
+   "fieldname": "deal_section",
+   "fieldtype": "Section Break",
+   "label": "Loss of Control"
+  },
+  {
+   "fieldname": "consolidation_group",
+   "fieldtype": "Data",
+   "label": "Consolidation Group",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The disposing group: the Consolidation Group root whose Consolidation Policy and declared accounts this disposal is measured under."
+  },
+  {
+   "fieldname": "disposed_entity",
+   "fieldtype": "Link",
+   "label": "Disposed Entity",
+   "options": "Entity",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "disposal_date",
+   "fieldtype": "Date",
+   "label": "Disposal Date",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The date control was lost. It must fall inside a declared fiscal period; that period's closing rate translates the proceeds, and the entity's Ownership Period ends on this date."
+  },
+  {
+   "fieldname": "col_break_deal",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "share_disposed_pct",
+   "fieldtype": "Percent",
+   "label": "Share Disposed %",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Must equal the group's current holding in the entity on the disposal date: only a full disposal is supported."
+  },
+  {
+   "fieldname": "retained_interest_pct",
+   "fieldtype": "Percent",
+   "label": "Retained Interest %",
+   "description": "Must be 0. Partial disposals that keep an interest are not supported yet; dispose of the full holding or record the change as an ownership step."
+  },
+  {
+   "fieldname": "proceeds_currency",
+   "fieldtype": "Link",
+   "label": "Proceeds Currency",
+   "options": "ISO Currency",
+   "reqd": 1,
+   "description": "Pre-filled from the group's reporting currency; proceeds lines may still be in other currencies."
+  },
+  {
+   "fieldname": "ownership_period",
+   "fieldtype": "Link",
+   "label": "Ownership Period",
+   "options": "Ownership Period",
+   "read_only": 1,
+   "description": "Closed on approval: the entity's Ownership Period covering the disposal date ends on it."
+  },
+  {
+   "fieldname": "proceeds_section",
+   "fieldtype": "Section Break",
+   "label": "Proceeds Received"
+  },
+  {
+   "fieldname": "proceeds",
+   "fieldtype": "Table",
+   "label": "Proceeds",
+   "options": "Business Disposal Proceeds",
+   "reqd": 1,
+   "description": "What was received for the holding, by component. At least one line; a line of 0 records a disposal with no proceeds."
+  },
+  {
+   "fieldname": "tab_result",
+   "fieldtype": "Tab Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "result_section",
+   "fieldtype": "Section Break",
+   "label": "Proceeds",
+   "description": "Computed when the disposal is saved, in the group's reporting currency. The gain or loss on disposal is measured by the consolidation journal from the entity's balances at the disposal date."
+  },
+  {
+   "fieldname": "total_proceeds",
+   "fieldtype": "Currency",
+   "label": "Total Proceeds",
+   "read_only": 1,
+   "description": "Sum of the proceeds lines translated at the disposal period's closing rate; posted to the group's Deal Settlement Account."
+  },
+  {
+   "fieldname": "reopen_section",
+   "fieldtype": "Section Break",
+   "label": "Reopen Data",
+   "hidden": 1,
+   "description": "What the Ownership Period held before this approval closed it; cancelling the approval restores exactly these values."
+  },
+  {
+   "fieldname": "previous_end_date",
+   "fieldtype": "Date",
+   "label": "Previous End Date",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The Ownership Period's End Date before the approval closed it on the disposal date."
+  },
+  {
+   "fieldname": "previous_is_disposal",
+   "fieldtype": "Check",
+   "label": "Previous Is Disposal",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The Ownership Period's Is Disposal flag before the approval."
+  },
+  {
+   "fieldname": "col_break_reopen",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "previous_disposal_date",
+   "fieldtype": "Date",
+   "label": "Previous Disposal Date",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The Ownership Period's Disposal Date before the approval."
+  },
+  {
+   "fieldname": "previous_disposal_price",
+   "fieldtype": "Currency",
+   "label": "Previous Disposal Price",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The Ownership Period's Disposal Price before the approval."
+  },
+  {
+   "fieldname": "tab_notes",
+   "fieldtype": "Tab Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "workflow_section",
+   "fieldtype": "Section Break",
+   "label": "Approval"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPending Approval\nApproved\nCancelled",
+   "default": "Draft",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Set by the workflow: Approved is the submitted document, Cancelled the cancelled one."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "options": "Business Disposal",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "submit": 1,
+   "cancel": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1,
+   "amend": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  }
+ ]
+}

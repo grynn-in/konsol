@@ -1,0 +1,56 @@
+{
+ "name": "Business Combination Consideration",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "component",
+   "fieldtype": "Select",
+   "label": "Component",
+   "options": "Cash\nDeferred\nContingent\nEquity instruments\nPreviously held interest\nOther",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "IFRS 3 consideration component."
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "In the line's currency; translated at the acquisition period's closing rate."
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "ISO Currency",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 1,
+   "description": "Pre-filled from the header's consideration currency."
+  },
+  {
+   "fieldname": "settlement_date",
+   "fieldtype": "Date",
+   "label": "Settlement Date",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "When a deferred or contingent component falls due."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Description",
+   "in_list_view": 1,
+   "columns": 3
+  }
+ ],
+ "permissions": []
+}

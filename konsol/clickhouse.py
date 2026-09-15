@@ -540,10 +540,24 @@ _REFERENCE_TABLE_DDL = {
     # konsol#159: a group node also carries where its intercompany differences
     # are booked, and the tolerance they are shown against (decision 4, 13 Sep
     # 2026). Added to existing tables by _ADDED_COLUMNS below.
+    # konsolidat#198: the group root's Consolidation Policy (design 1a;
+    # nci_measurement is the doctype's goodwill_method) and the declared
+    # accounts the consolidation journals post to (design 1), so dbt reads
+    # the policy and never assumes a code. Identical to konsolidat's
+    # clickhouse/init-db.sql; keep them identical.
     "epm_gold.consolidation_groups": (
         "(consolidation_group String, data_area_id String, entity_name String, "
         "reporting_currency String, ic_difference_account String DEFAULT '', "
-        "ic_difference_tolerance Float64 DEFAULT 0) "
+        "ic_difference_tolerance Float64 DEFAULT 0, nci_measurement String DEFAULT '', "
+        "accounting_framework String DEFAULT '', framework_note String DEFAULT '', "
+        "goodwill_treatment String DEFAULT '', goodwill_amortisation_years UInt16 DEFAULT 0, "
+        "acquisition_costs_treatment String DEFAULT '', measurement_period String DEFAULT '', "
+        "bargain_purchase String DEFAULT '', goodwill_account String DEFAULT '', "
+        "fair_value_adjustment_account String DEFAULT '', investment_account String DEFAULT '', "
+        "nci_account String DEFAULT '', bargain_purchase_gain_account String DEFAULT '', "
+        "disposal_gain_loss_account String DEFAULT '', disposal_proceeds_account String DEFAULT '', "
+        "goodwill_amortisation_expense_account String DEFAULT '', "
+        "acquisition_costs_account String DEFAULT '') "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)"
     ),
     # konsol#159: the intercompany flag on the group chart (decision 3). One row
@@ -669,6 +683,50 @@ _REFERENCE_TABLE_DDL = {
         "quarter String, status String) "
         "ENGINE = MergeTree ORDER BY (fiscal_year, fiscal_period)"
     ),
+    # konsolidat#198 (design 2a): the deal documents. A Business Combination
+    # (submitted rows only) is the declared input for goodwill, the fair-value
+    # step-up and NCI at acquisition; a Business Disposal for the disposal
+    # gain or loss. Each child table is its own doctype and syncs by
+    # (parent, idx). The Result columns on the header are what konsol
+    # computed with the group's Consolidation Policy, so dbt posts them and
+    # never recomputes. Identical to konsolidat's clickhouse/init-db.sql;
+    # keep them identical.
+    "epm_staging.business_combinations": (
+        "(name String, consolidation_group String, acquired_entity String, "
+        "acquisition_date Date, share_acquired_pct Float64, "
+        "consideration_currency String, total_consideration Float64, "
+        "net_assets_acquired Float64, fair_value_adjustments Float64, "
+        "goodwill Float64, bargain_purchase_gain Float64, "
+        "nci_at_acquisition Float64, ownership_period String) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    "epm_staging.business_combination_consideration": (
+        "(parent String, idx UInt16, component String, amount Float64, "
+        "currency String, settlement_date Date, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.business_combination_acquired_balances": (
+        "(parent String, idx UInt16, main_account String, book_amount Float64, "
+        "fair_value_adjustment Float64, note String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.business_combination_costs": (
+        "(parent String, idx UInt16, kind String, amount Float64, "
+        "currency String, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.business_disposals": (
+        "(name String, consolidation_group String, disposed_entity String, "
+        "disposal_date Date, share_disposed_pct Float64, "
+        "retained_interest_pct Float64, proceeds_currency String, "
+        "total_proceeds Float64, ownership_period String) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    "epm_staging.business_disposal_proceeds": (
+        "(parent String, idx UInt16, component String, amount Float64, "
+        "currency String, settlement_date Date, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a
@@ -742,6 +800,24 @@ _ADDED_COLUMNS = {
     "epm_gold.consolidation_groups": [
         ("ic_difference_account", "String DEFAULT ''"),
         ("ic_difference_tolerance", "Float64 DEFAULT 0"),
+        # konsolidat#198: the Consolidation Policy and the declared accounts
+        ("nci_measurement", "String DEFAULT ''"),
+        ("accounting_framework", "String DEFAULT ''"),
+        ("framework_note", "String DEFAULT ''"),
+        ("goodwill_treatment", "String DEFAULT ''"),
+        ("goodwill_amortisation_years", "UInt16 DEFAULT 0"),
+        ("acquisition_costs_treatment", "String DEFAULT ''"),
+        ("measurement_period", "String DEFAULT ''"),
+        ("bargain_purchase", "String DEFAULT ''"),
+        ("goodwill_account", "String DEFAULT ''"),
+        ("fair_value_adjustment_account", "String DEFAULT ''"),
+        ("investment_account", "String DEFAULT ''"),
+        ("nci_account", "String DEFAULT ''"),
+        ("bargain_purchase_gain_account", "String DEFAULT ''"),
+        ("disposal_gain_loss_account", "String DEFAULT ''"),
+        ("disposal_proceeds_account", "String DEFAULT ''"),
+        ("goodwill_amortisation_expense_account", "String DEFAULT ''"),
+        ("acquisition_costs_account", "String DEFAULT ''"),
     ],
     # konsol#103: ISO Currency's magnitude reference for the group rate guard;
     # NaN until the ISO Currency write-through fills it

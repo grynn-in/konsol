@@ -38,6 +38,26 @@ _OPEN_ENDED = _CH_DATE_MAX
 # konsol #112).
 _BLANK = ["is", "not set"]
 
+#: The deal figures (konsolidat#198). They are filled by the Business
+#: Combination that opens a period or the Business Disposal that closes it,
+#: under ``frappe.flags.from_business_combination``; typed here they would be a
+#: second, unreviewed source for the same numbers.
+DEAL_DATE_FIELDS = ("acquisition_date", "disposal_date")
+DEAL_AMOUNT_FIELDS = ("is_first_acquisition", "acquisition_price", "fair_value_adjustment",
+                      "is_disposal", "disposal_price")
+DEAL_FIELDS = DEAL_DATE_FIELDS + DEAL_AMOUNT_FIELDS
+
+
+def _deal_value(field, value):
+    """Compared normalised: the saved document comes from the database (ints,
+    floats, date objects, NULL as None) while the form posts strings and "",
+    and "0" versus 0, or "" versus None, is not a change."""
+    if value in (None, ""):
+        return None if field in DEAL_DATE_FIELDS else 0.0
+    if field in DEAL_DATE_FIELDS:
+        return getdate(value)
+    return float(value)
+
 
 class OwnershipPeriod(Document):
     CH_TABLE = "epm_staging.ownership_periods"
@@ -58,6 +78,7 @@ class OwnershipPeriod(Document):
     }
 
     def validate(self):
+        self._validate_deal_fields_untouched()
         self._validate_node_exists()
         self._validate_pct_range()
         self._validate_dates_representable()
@@ -65,21 +86,39 @@ class OwnershipPeriod(Document):
 
     def before_cancel(self):
         """Cancel only while every period this ownership covers is open (#136):
-        from the first period its effective date affects until its end date or
-        the next period for the same group and entity, whichever comes first
-        (the warehouse takes the latest effective_date <= the period), and
-        open-ended with neither."""
+        the span is ``cancel_span()``, one rule shared with the deal documents
+        that undo a period in their own name."""
+        start, end, exclusive = self.cancel_span()
+        assert_open_between(start, end, action="cancel an ownership period", end_exclusive=exclusive)
+
+    def cancel_span(self):
+        """The declared periods a cancel of this period changes, as
+        ``(start, end_or_None, end_exclusive)`` for ``assert_open_between``:
+        from the first period its effective date affects until its end date
+        or the next submitted period for the same group and entity, whichever
+        comes first (the warehouse takes the latest effective_date <= the
+        period, so from the first declared period on or after the next
+        period's start this one is no longer read — that bound is exclusive),
+        and open-ended with neither.
+
+        One rule, computed here: a Business Combination cancelling or
+        clearing the period it started gates the same span with its own
+        sentence (PR #202 third review, finding 2). Two spans disagreed
+        before — the deal's ran to "today" for an open-ended period, so a
+        closed period after today passed its gate and was refused by this
+        one, in the wrong document's words.
+        """
         next_start = frappe.db.get_value(
             "Ownership Period",
             {"consolidation_group": self.consolidation_group, "data_area_id": self.data_area_id,
              "docstatus": 1, "effective_date": [">", self.effective_date], "name": ["!=", self.name]},
             "effective_date", order_by="effective_date asc")
-        end, exclusive = self.end_date, False
+        end, exclusive = getdate(self.end_date) if self.end_date else None, False
         if next_start:
             next_first = first_period_affected(next_start)
-            if next_first is not None and (not end or getdate(end) >= next_first):
+            if next_first is not None and (end is None or end >= next_first):
                 end, exclusive = next_first, True
-        assert_open_between(self.effective_date, end, action="cancel an ownership period", end_exclusive=exclusive)
+        return getdate(self.effective_date), end, exclusive
 
     def on_submit(self):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
@@ -93,6 +132,32 @@ class OwnershipPeriod(Document):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     # -- validation ---------------------------------------------------------
+
+    def _validate_deal_fields_untouched(self):
+        """The deal fields belong to the deal documents (konsolidat#198 P8).
+
+        A Business Combination computes the price and the fair value
+        adjustments from declared consideration and acquired balances, under
+        approval; a Business Disposal does the same for the disposal. Those
+        documents write the figures onto this period under
+        ``frappe.flags.from_business_combination`` (create, update-and-submit,
+        or ``db_set`` on a submitted period — and the reset to blanks when a
+        disposal is cancelled). A patch (``frappe.flags.in_patch``) carries old
+        rows across. Any other change to them is refused: a new period may not
+        carry deal figures, and a saved one may not have them edited.
+        """
+        if frappe.flags.from_business_combination or frappe.flags.in_patch:
+            return
+        before = self.get_doc_before_save()
+        changed = [
+            field for field in DEAL_FIELDS
+            if _deal_value(field, self.get(field))
+            != _deal_value(field, before.get(field) if before is not None else None)
+        ]
+        if changed:
+            frappe.throw(
+                "Record the acquisition as a Business Combination (or the disposal as a Business Disposal); these fields are filled from it."
+            )
 
     def _node(self):
         """The Consolidation Group node this period describes, or None."""

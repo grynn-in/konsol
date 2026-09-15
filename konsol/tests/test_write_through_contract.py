@@ -224,6 +224,15 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#189: the declared fiscal periods; konsolidat reads it for
         # period dates
         "epm_staging.fiscal_periods",
+        # konsolidat#198: the deal documents (Business Combination, Business
+        # Disposal) and their child tables; they must exist before the first
+        # approval syncs
+        "epm_staging.business_combinations",
+        "epm_staging.business_combination_consideration",
+        "epm_staging.business_combination_acquired_balances",
+        "epm_staging.business_combination_costs",
+        "epm_staging.business_disposals",
+        "epm_staging.business_disposal_proceeds",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
@@ -241,7 +250,9 @@ def test_added_columns_reach_tables_that_already_exist():
     m, _ = _load_clickhouse()
     assert m._ADDED_COLUMNS["epm_raw.trial_balance_submissions"] == [
         ("partner_data_area_id", "String DEFAULT ''")]
-    assert [c for c, _t in m._ADDED_COLUMNS["epm_gold.consolidation_groups"]] == [
+    # konsol#159's two came first; konsolidat#198's policy columns follow
+    # (pinned in test_the_group_root_carries_its_policy_and_declared_accounts)
+    assert [c for c, _t in m._ADDED_COLUMNS["epm_gold.consolidation_groups"]][:2] == [
         "ic_difference_account", "ic_difference_tolerance"]
     ddl = {**m._REFERENCE_TABLE_DDL, **m._RAW_TABLE_DDL}
     for table, cols in m._ADDED_COLUMNS.items():
@@ -256,6 +267,114 @@ def test_added_columns_reach_tables_that_already_exist():
         for c, t in cols:
             assert create < sql.index(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} {t}"), (table, c)
     assert "CREATE DATABASE IF NOT EXISTS epm_raw" in sql
+
+
+def test_the_group_root_carries_its_policy_and_declared_accounts():
+    """konsolidat#198 (design 1, 1a). The group root's Consolidation Policy
+    and its declared accounts travel to the warehouse with the node, so dbt
+    reads the policy and never assumes an account code. `goodwill_method`
+    syncs as `nci_measurement`. Byte-identical to konsolidat's init-db.sql
+    (its DDL tests pin the same string); every new column is also ADDed for
+    tables that already exist, in the same order, after konsol#159's two."""
+    m, _ = _load_clickhouse()
+    table = "epm_gold.consolidation_groups"
+    assert m._REFERENCE_TABLE_DDL[table] == (
+        "(consolidation_group String, data_area_id String, entity_name String, "
+        "reporting_currency String, ic_difference_account String DEFAULT '', "
+        "ic_difference_tolerance Float64 DEFAULT 0, nci_measurement String DEFAULT '', "
+        "accounting_framework String DEFAULT '', framework_note String DEFAULT '', "
+        "goodwill_treatment String DEFAULT '', goodwill_amortisation_years UInt16 DEFAULT 0, "
+        "acquisition_costs_treatment String DEFAULT '', measurement_period String DEFAULT '', "
+        "bargain_purchase String DEFAULT '', goodwill_account String DEFAULT '', "
+        "fair_value_adjustment_account String DEFAULT '', investment_account String DEFAULT '', "
+        "nci_account String DEFAULT '', bargain_purchase_gain_account String DEFAULT '', "
+        "disposal_gain_loss_account String DEFAULT '', disposal_proceeds_account String DEFAULT '', "
+        "goodwill_amortisation_expense_account String DEFAULT '', "
+        "acquisition_costs_account String DEFAULT '') "
+        "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)")
+    assert m._ADDED_COLUMNS[table] == [
+        ("ic_difference_account", "String DEFAULT ''"),
+        ("ic_difference_tolerance", "Float64 DEFAULT 0"),
+        ("nci_measurement", "String DEFAULT ''"),
+        ("accounting_framework", "String DEFAULT ''"),
+        ("framework_note", "String DEFAULT ''"),
+        ("goodwill_treatment", "String DEFAULT ''"),
+        ("goodwill_amortisation_years", "UInt16 DEFAULT 0"),
+        ("acquisition_costs_treatment", "String DEFAULT ''"),
+        ("measurement_period", "String DEFAULT ''"),
+        ("bargain_purchase", "String DEFAULT ''"),
+        ("goodwill_account", "String DEFAULT ''"),
+        ("fair_value_adjustment_account", "String DEFAULT ''"),
+        ("investment_account", "String DEFAULT ''"),
+        ("nci_account", "String DEFAULT ''"),
+        ("bargain_purchase_gain_account", "String DEFAULT ''"),
+        ("disposal_gain_loss_account", "String DEFAULT ''"),
+        ("disposal_proceeds_account", "String DEFAULT ''"),
+        ("goodwill_amortisation_expense_account", "String DEFAULT ''"),
+        ("acquisition_costs_account", "String DEFAULT ''"),
+    ]
+
+
+# --- konsolidat#198 (design 2a): the deal documents' warehouse tables --------
+# Business Combination / Business Disposal and their child tables write
+# through like every other governed doctype, so the tables must exist before
+# the first submit: ensure_reference_tables() creates them on migrate, and
+# reconcile_all() covers them once the controllers declare CH_TABLE. Each
+# body is byte-identical to konsolidat's clickhouse/init-db.sql, whose DDL
+# tests pin the same strings; ORDER BY cannot change after the table exists.
+
+def test_business_combinations_table_is_created_on_migrate():
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL["epm_staging.business_combinations"] == (
+        "(name String, consolidation_group String, acquired_entity String, "
+        "acquisition_date Date, share_acquired_pct Float64, "
+        "consideration_currency String, total_consideration Float64, "
+        "net_assets_acquired Float64, fair_value_adjustments Float64, "
+        "goodwill Float64, bargain_purchase_gain Float64, "
+        "nci_at_acquisition Float64, ownership_period String) "
+        "ENGINE = MergeTree ORDER BY name")
+
+
+def test_business_combination_consideration_table_is_created_on_migrate():
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL["epm_staging.business_combination_consideration"] == (
+        "(parent String, idx UInt16, component String, amount Float64, "
+        "currency String, settlement_date Date, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)")
+
+
+def test_business_combination_acquired_balances_table_is_created_on_migrate():
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL["epm_staging.business_combination_acquired_balances"] == (
+        "(parent String, idx UInt16, main_account String, book_amount Float64, "
+        "fair_value_adjustment Float64, note String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)")
+
+
+def test_business_combination_costs_table_is_created_on_migrate():
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL["epm_staging.business_combination_costs"] == (
+        "(parent String, idx UInt16, kind String, amount Float64, "
+        "currency String, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)")
+
+
+def test_business_disposals_table_is_created_on_migrate():
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL["epm_staging.business_disposals"] == (
+        "(name String, consolidation_group String, disposed_entity String, "
+        "disposal_date Date, share_disposed_pct Float64, "
+        "retained_interest_pct Float64, proceeds_currency String, "
+        "total_proceeds Float64, ownership_period String) "
+        "ENGINE = MergeTree ORDER BY name")
+
+
+def test_business_disposal_proceeds_table_is_created_on_migrate():
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL["epm_staging.business_disposal_proceeds"] == (
+        "(parent String, idx UInt16, component String, amount Float64, "
+        "currency String, settlement_date Date, description String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)")
 
 
 def test_the_control_table_claim_carries_the_amount_basis():

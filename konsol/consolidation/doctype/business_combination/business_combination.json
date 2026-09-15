@@ -1,0 +1,276 @@
+{
+ "name": "Business Combination",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "format:BC-{consolidation_group}-{acquired_entity}-{acquisition_date}",
+ "title_field": "acquired_entity",
+ "fields": [
+  {
+   "fieldname": "tab_deal",
+   "fieldtype": "Tab Break",
+   "label": "Deal"
+  },
+  {
+   "fieldname": "deal_section",
+   "fieldtype": "Section Break",
+   "label": "Acquisition of Control"
+  },
+  {
+   "fieldname": "consolidation_group",
+   "fieldtype": "Data",
+   "label": "Consolidation Group",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The acquiring group: the Consolidation Group root whose policy and declared accounts this deal is measured under."
+  },
+  {
+   "fieldname": "acquired_entity",
+   "fieldtype": "Link",
+   "label": "Acquired Entity",
+   "options": "Entity",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "acquisition_date",
+   "fieldtype": "Date",
+   "label": "Acquisition Date",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The date control was obtained. It must fall inside a declared fiscal period; that period's closing rate translates the consideration."
+  },
+  {
+   "fieldname": "share_acquired_pct",
+   "fieldtype": "Percent",
+   "label": "Share Acquired %",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Share of control obtained, 0 to 100. Below 100 the rest is the non-controlling interest."
+  },
+  {
+   "fieldname": "col_break_deal",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "consideration_currency",
+   "fieldtype": "Link",
+   "label": "Consideration Currency",
+   "options": "ISO Currency",
+   "reqd": 1,
+   "description": "Pre-filled from the group's reporting currency; consideration lines may still be in other currencies."
+  },
+  {
+   "fieldname": "nci_measurement",
+   "fieldtype": "Data",
+   "label": "NCI Measurement",
+   "read_only": 1,
+   "description": "Copied from the group root's Consolidation Policy when the deal is saved: partial or full."
+  },
+  {
+   "fieldname": "ownership_period",
+   "fieldtype": "Link",
+   "label": "Ownership Period",
+   "options": "Ownership Period",
+   "read_only": 1,
+   "description": "Created or linked on approval: effective from the acquisition date at the share acquired."
+  },
+  {
+   "fieldname": "created_ownership_period",
+   "fieldtype": "Check",
+   "label": "Created the Ownership Period",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set on approval when this deal created or submitted the period, rather than linking one already approved. Cancelling the deal then cancels that period; an already-approved period only has its deal fields cleared."
+  },
+  {
+   "fieldname": "consideration_section",
+   "fieldtype": "Section Break",
+   "label": "Consideration Transferred"
+  },
+  {
+   "fieldname": "consideration",
+   "fieldtype": "Table",
+   "label": "Consideration",
+   "options": "Business Combination Consideration",
+   "reqd": 1,
+   "description": "What was given for control, by IFRS 3 component. At least one line."
+  },
+  {
+   "fieldname": "acquired_balances_section",
+   "fieldtype": "Section Break",
+   "label": "Acquired Balance Sheet"
+  },
+  {
+   "fieldname": "acquired_balances",
+   "fieldtype": "Table",
+   "label": "Acquired Balances",
+   "options": "Business Combination Acquired Balance",
+   "description": "The entity's balance sheet at acquisition with fair value adjustments per line. Required when no trial balance of the entity exists at or before the acquisition period; otherwise the trial balance is used."
+  },
+  {
+   "fieldname": "costs_section",
+   "fieldtype": "Section Break",
+   "label": "Acquisition Costs"
+  },
+  {
+   "fieldname": "costs",
+   "fieldtype": "Table",
+   "label": "Costs",
+   "options": "Business Combination Cost",
+   "description": "Legal, advisory and due diligence costs. Expensed or capitalised according to the group's Consolidation Policy."
+  },
+  {
+   "fieldname": "tab_result",
+   "fieldtype": "Tab Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "result_section",
+   "fieldtype": "Section Break",
+   "label": "Purchase Price Allocation",
+   "description": "Computed when the deal is saved, in the group's reporting currency."
+  },
+  {
+   "fieldname": "total_consideration",
+   "fieldtype": "Currency",
+   "label": "Total Consideration",
+   "read_only": 1,
+   "description": "Sum of the consideration lines translated at the acquisition period's closing rate."
+  },
+  {
+   "fieldname": "net_assets_acquired",
+   "fieldtype": "Currency",
+   "label": "Net Assets Acquired",
+   "read_only": 1,
+   "description": "Sum of the acquired balance sheet book amounts."
+  },
+  {
+   "fieldname": "fair_value_adjustments",
+   "fieldtype": "Currency",
+   "label": "Fair Value Adjustments",
+   "read_only": 1,
+   "description": "Sum of the fair value adjustment lines."
+  },
+  {
+   "fieldname": "costs_expensed",
+   "fieldtype": "Currency",
+   "label": "Costs Expensed",
+   "read_only": 1,
+   "description": "Acquisition costs taken to the Acquisition Costs account; zero when the policy capitalises them."
+  },
+  {
+   "fieldname": "col_break_result",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "goodwill",
+   "fieldtype": "Currency",
+   "label": "Goodwill",
+   "read_only": 1,
+   "description": "Consideration less the share of net assets at fair value, when positive."
+  },
+  {
+   "fieldname": "bargain_purchase_gain",
+   "fieldtype": "Currency",
+   "label": "Bargain Purchase Gain",
+   "read_only": 1,
+   "description": "The excess of the share of net assets at fair value over the consideration, when the policy recognises it."
+  },
+  {
+   "fieldname": "nci_at_acquisition",
+   "fieldtype": "Currency",
+   "label": "NCI at Acquisition",
+   "read_only": 1,
+   "description": "Partial: the NCI share of net assets at fair value. Full: the NCI at fair value."
+  },
+  {
+   "fieldname": "tab_notes",
+   "fieldtype": "Tab Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "workflow_section",
+   "fieldtype": "Section Break",
+   "label": "Approval"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPending Approval\nApproved\nCancelled",
+   "default": "Draft",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Set by the workflow: Approved is the submitted document, Cancelled the cancelled one."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "options": "Business Combination",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "submit": 1,
+   "cancel": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1,
+   "amend": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  }
+ ]
+}

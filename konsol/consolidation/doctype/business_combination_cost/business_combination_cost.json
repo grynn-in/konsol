@@ -1,0 +1,47 @@
+{
+ "name": "Business Combination Cost",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "label": "Kind",
+   "options": "Legal\nAdvisory\nDue diligence\nOther",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "In the line's currency; translated at the acquisition period's closing rate."
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "ISO Currency",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 1,
+   "description": "Pre-filled from the header's consideration currency."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Description",
+   "in_list_view": 1,
+   "columns": 3
+  }
+ ],
+ "permissions": []
+}

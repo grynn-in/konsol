@@ -18,7 +18,7 @@ import os
 
 import frappe
 
-INSTALLED = ("Consolidation Adjustment",)
+INSTALLED = ("Consolidation Adjustment", "Business Combination", "Business Disposal")
 
 #: The roles an earlier release shipped in each workflow. A site whose
 #: workflow still carries exactly these, on exactly our states and

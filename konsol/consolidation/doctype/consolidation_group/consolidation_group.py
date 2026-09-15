@@ -39,6 +39,27 @@ class ConsolidationGroup(NestedSet):
         # against. Group nodes only.
         "ic_difference_account": "ic_difference_account",
         "ic_difference_tolerance": "ic_difference_tolerance",
+        # konsolidat#198 (design 1a): the group root's Consolidation Policy.
+        # goodwill_method keeps its fieldname and is the NCI measurement.
+        "goodwill_method": "nci_measurement",
+        "accounting_framework": "accounting_framework",
+        "framework_note": "framework_note",
+        "goodwill_treatment": "goodwill_treatment",
+        "goodwill_amortisation_years": "goodwill_amortisation_years",
+        "acquisition_costs_treatment": "acquisition_costs_treatment",
+        "measurement_period": "measurement_period",
+        "bargain_purchase": "bargain_purchase",
+        # konsolidat#198 (design 1): the declared accounts the consolidation
+        # journals post to. dbt never assumes a code.
+        "goodwill_account": "goodwill_account",
+        "fair_value_adjustment_account": "fair_value_adjustment_account",
+        "investment_account": "investment_account",
+        "nci_account": "nci_account",
+        "bargain_purchase_gain_account": "bargain_purchase_gain_account",
+        "disposal_gain_loss_account": "disposal_gain_loss_account",
+        "disposal_proceeds_account": "disposal_proceeds_account",
+        "goodwill_amortisation_expense_account": "goodwill_amortisation_expense_account",
+        "acquisition_costs_account": "acquisition_costs_account",
     }
 
     # PRD-8 / F2: the link closure, computed by a tree walk.
@@ -60,6 +81,50 @@ class ConsolidationGroup(NestedSet):
         self._validate_entity_in_one_node()
         self._validate_reporting_currency()
         self._validate_ic_difference()
+        self._validate_policy()
+
+    def _validate_policy(self):
+        """The Consolidation Policy is complete once the group has a deal,
+        consistent with its framework, and its accounts are Published leaves.
+
+        konsolidat#198 (design 1a): policy is configured here with no
+        defaults, and only the mechanics are programmed — the rules live in
+        konsol.consolidation_policy_model, which returns the sentences thrown
+        here. Group nodes only: the fields are shown on them alone.
+        """
+        if not self.is_group:
+            return
+        # Imported here, like group_chart below: the rule module is pure and
+        # host-tested, and a module-level import would tie every loader of
+        # this controller to it.
+        from konsol.consolidation_policy_model import (
+            ACCOUNT_FIELDS, account_problems, policy_problems,
+        )
+
+        # The deal doctypes shipped after this did, and a migrate runs
+        # validate before every table exists: read each only when its table
+        # is there. A Business Disposal is a deal too — it posts to the
+        # declared accounts (PR #202 review, finding 8). A cancelled deal
+        # (docstatus 2) is not a deal.
+        live = {"consolidation_group": self.consolidation_group, "docstatus": ["<", 2]}
+        has_deals = bool(
+            (frappe.db.table_exists("Business Combination")
+             and frappe.db.exists("Business Combination", live))
+            or (frappe.db.table_exists("Business Disposal")
+                and frappe.db.exists("Business Disposal", live))
+        )
+        problems = policy_problems(self, has_deals)
+        # Every account that IS set must be a Published leaf of the chart;
+        # which ones are required is a per-deal question the deal answers.
+        chosen = [f for f in ACCOUNT_FIELDS if (getattr(self, f, None) or "").strip()]
+        problems += account_problems(self, chosen, self._is_published_leaf)
+        if problems:
+            frappe.throw("<br>".join(problems))
+
+    @staticmethod
+    def _is_published_leaf(account):
+        row = frappe.db.get_value("Main Account", account, ["status", "is_group"])
+        return bool(row) and row[0] == "Published" and not row[1]
 
     def _validate_ic_difference(self):
         """The intercompany-difference account belongs to a group node, is not

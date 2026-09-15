@@ -67,10 +67,9 @@
   {
    "fieldname": "goodwill_method",
    "fieldtype": "Select",
-   "label": "Goodwill Method",
+   "label": "NCI Measurement",
    "options": "partial\nfull",
-   "default": "partial",
-   "description": "PRD-13: partial = NCI at proportional net assets; full = NCI at fair value"
+   "description": "Partial: NCI at its share of fair-value net assets. Full: NCI at fair value, goodwill includes its share. Under US GAAP set NCI Measurement to full."
   },
   {
    "fieldname": "ic_difference_account",
@@ -87,6 +86,171 @@
    "default": "0",
    "depends_on": "eval:!doc.data_area_id",
    "description": "A booking difference (both sides in one functional currency) up to this amount, at 100% in reporting currency, is within tolerance; above it, over tolerance. An fx difference (sides in different currencies, or translation alone) is shown but never counts against it."
+  },
+  {
+   "fieldname": "tab_policy",
+   "fieldtype": "Tab Break",
+   "label": "Consolidation Policy",
+   "depends_on": "eval:doc.is_group"
+  },
+  {
+   "fieldname": "framework_section",
+   "fieldtype": "Section Break",
+   "label": "Framework",
+   "depends_on": "eval:doc.is_group"
+  },
+  {
+   "fieldname": "accounting_framework",
+   "fieldtype": "Select",
+   "label": "Accounting Framework",
+   "options": "IFRS\nUS GAAP\nLocal",
+   "depends_on": "eval:doc.is_group",
+   "description": "The framework the group consolidates under. It constrains the choices below (US GAAP measures NCI at fair value; IFRS does not amortise goodwill) and labels the journals. Required once the group has a Business Combination; there is no default."
+  },
+  {
+   "fieldname": "framework_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "framework_note",
+   "fieldtype": "Small Text",
+   "label": "Framework Note",
+   "depends_on": "eval:doc.is_group",
+   "mandatory_depends_on": "eval:doc.accounting_framework==\"Local\"",
+   "description": "Which local framework it is. A Local framework may pick any combination below and must say what it is."
+  },
+  {
+   "fieldname": "goodwill_costs_section",
+   "fieldtype": "Section Break",
+   "label": "Goodwill and Costs",
+   "depends_on": "eval:doc.is_group"
+  },
+  {
+   "fieldname": "goodwill_treatment",
+   "fieldtype": "Select",
+   "label": "Goodwill Treatment",
+   "options": "Impairment only\nAmortise",
+   "depends_on": "eval:doc.is_group",
+   "description": "Impairment only: goodwill stays at cost until impaired. Amortise: a monthly journal Dr Goodwill Amortisation Expense / Cr Goodwill from the acquisition period over the years below, until fully amortised or disposal."
+  },
+  {
+   "fieldname": "goodwill_amortisation_years",
+   "fieldtype": "Int",
+   "label": "Goodwill Amortisation Years",
+   "depends_on": "eval:doc.is_group",
+   "mandatory_depends_on": "eval:doc.goodwill_treatment==\"Amortise\"",
+   "description": "Years over which goodwill is amortised on a straight line, when Goodwill Treatment is Amortise."
+  },
+  {
+   "fieldname": "acquisition_costs_treatment",
+   "fieldtype": "Select",
+   "label": "Acquisition Costs Treatment",
+   "options": "Expense\nCapitalise",
+   "depends_on": "eval:doc.is_group",
+   "description": "Expense: a Business Combination's cost lines go Dr Acquisition Costs (P&L), outside goodwill. Capitalise: they join the consideration and so the goodwill."
+  },
+  {
+   "fieldname": "goodwill_costs_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "measurement_period",
+   "fieldtype": "Select",
+   "label": "Measurement Period",
+   "options": "Off\n12 months",
+   "depends_on": "eval:doc.is_group",
+   "description": "12 months: a submitted Business Combination may be amended within 12 months of the acquisition date, and the journal re-posts in the acquisition period. Off: a submitted deal is final."
+  },
+  {
+   "fieldname": "bargain_purchase",
+   "fieldtype": "Select",
+   "label": "Bargain Purchase",
+   "options": "Recognise gain\nRefuse",
+   "depends_on": "eval:doc.is_group",
+   "description": "What happens when the consideration is below the group's share of the fair-value net assets. Recognise gain: Cr Bargain Purchase Gain (P&L). Refuse: the deal is refused and named."
+  },
+  {
+   "fieldname": "acquisition_accounts_section",
+   "fieldtype": "Section Break",
+   "label": "Acquisition Accounts",
+   "depends_on": "eval:doc.is_group",
+   "description": "Published leaves of this group's chart the consolidation journals post to. Each is required only when a deal needs it; the Business Combination names the missing one."
+  },
+  {
+   "fieldname": "goodwill_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Goodwill Account",
+   "depends_on": "eval:doc.is_group",
+   "description": "Dr goodwill on acquisition; Cr amortisation or impairment afterwards; released on disposal."
+  },
+  {
+   "fieldname": "fair_value_adjustment_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Fair Value Adjustment Account",
+   "depends_on": "eval:doc.is_group",
+   "description": "Dr/Cr the fair value adjustments to the acquired balances."
+  },
+  {
+   "fieldname": "investment_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Investment in Subsidiaries Account",
+   "depends_on": "eval:doc.is_group",
+   "description": "Cr the consideration transferred; eliminated against the acquired equity."
+  },
+  {
+   "fieldname": "nci_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Non-controlling Interest Account",
+   "depends_on": "eval:doc.is_group",
+   "description": "Cr the non-controlling interest's share when less than 100% is acquired, measured per NCI Measurement."
+  },
+  {
+   "fieldname": "acquisition_accounts_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "bargain_purchase_gain_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Bargain Purchase Gain Account (P&L)",
+   "depends_on": "eval:doc.is_group",
+   "description": "Cr the gain when the consideration is below the share of fair-value net assets and Bargain Purchase is Recognise gain."
+  },
+  {
+   "fieldname": "disposal_gain_loss_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Gain or Loss on Disposal Account (P&L)",
+   "depends_on": "eval:doc.is_group",
+   "description": "The balancing line of a Business Disposal: proceeds less the net assets, goodwill and NCI released."
+  },
+  {
+   "fieldname": "disposal_proceeds_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Deal Settlement Account",
+   "depends_on": "eval:doc.is_group",
+   "description": "Where the group settles deal cash: disposal proceeds are debited here and acquisition costs credited here."
+  },
+  {
+   "fieldname": "goodwill_amortisation_expense_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Goodwill Amortisation Expense Account (P&L)",
+   "depends_on": "eval:doc.is_group",
+   "description": "Dr the monthly goodwill amortisation when Goodwill Treatment is Amortise."
+  },
+  {
+   "fieldname": "acquisition_costs_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Acquisition Costs Account (P&L)",
+   "depends_on": "eval:doc.is_group",
+   "description": "Dr a Business Combination's cost lines when Acquisition Costs Treatment is Expense."
   },
   {
    "fieldname": "lft",
