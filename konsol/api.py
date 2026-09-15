@@ -817,6 +817,10 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
         "scenario_id": scenario_id,
         "layer": layer,
     }])
+    # A refused read (e.g. no or several active budget scenarios) says why
+    # instead of coming back as an empty cell (konsol#214).
+    if result.get("errors") and result["errors"][0]:
+        frappe.throw(result["errors"][0], frappe.ValidationError)
     return {"value": result["values"][0]}
 
 
