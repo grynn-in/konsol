@@ -108,7 +108,7 @@
    "fieldtype": "Currency",
    "label": "Total Proceeds",
    "read_only": 1,
-   "description": "Sum of the proceeds lines translated at the disposal period's closing rate; posted to the Disposal Proceeds Account."
+   "description": "Sum of the proceeds lines translated at the disposal period's closing rate; posted to the group's Deal Settlement Account."
   },
   {
    "fieldname": "reopen_section",

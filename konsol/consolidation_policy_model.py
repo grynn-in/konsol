@@ -70,7 +70,9 @@ LABELS = {
     "nci_account": "Non-controlling Interest Account",
     "bargain_purchase_gain_account": "Bargain Purchase Gain Account (P&L)",
     "disposal_gain_loss_account": "Gain or Loss on Disposal Account (P&L)",
-    "disposal_proceeds_account": "Disposal Proceeds Account",
+    # The fieldname and the warehouse column keep `disposal_proceeds_account`
+    # (the DDL is pinned in both repos); the group settles ALL deal cash here.
+    "disposal_proceeds_account": "Deal Settlement Account",
     "goodwill_amortisation_expense_account": "Goodwill Amortisation Expense Account (P&L)",
     "acquisition_costs_account": "Acquisition Costs Account (P&L)",
 }

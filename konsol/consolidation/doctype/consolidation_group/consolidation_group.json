@@ -232,9 +232,9 @@
    "fieldname": "disposal_proceeds_account",
    "fieldtype": "Link",
    "options": "Main Account",
-   "label": "Disposal Proceeds Account",
+   "label": "Deal Settlement Account",
    "depends_on": "eval:doc.is_group",
-   "description": "Dr the proceeds of a Business Disposal."
+   "description": "Where the group settles deal cash: disposal proceeds are debited here and acquisition costs credited here."
   },
   {
    "fieldname": "goodwill_amortisation_expense_account",
