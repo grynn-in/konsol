@@ -1,7 +1,7 @@
 """Reporting Hierarchy Member — nodes in a management reporting tree.
 
 A member row is one dated tranche of its code (konsol#220): effective_from to
-effective_to, blank meaning open (2999-12-31 in these checks and in the
+effective_to, blank meaning open (OPEN_END in these checks, as in the
 warehouse). A rename, a move or an end is a new row with the same code.
 """
 from datetime import date, timedelta
@@ -9,8 +9,10 @@ from datetime import date, timedelta
 import frappe
 from frappe.model.document import Document
 
-_OPEN_END = "2999-12-31"
+#: The warehouse's open end: the last day ClickHouse Date32 holds.
+OPEN_END = "2299-12-31"
 #: What an undated row means (the migrate patch uses the same day): always.
+#: Also the first day Date32 holds.
 _ALWAYS_FROM = "1900-01-01"
 
 
@@ -19,11 +21,11 @@ def _iso(value):
 
 
 def _window(effective_from, effective_to):
-    return _iso(effective_from) or _ALWAYS_FROM, _iso(effective_to) or _OPEN_END
+    return _iso(effective_from) or _ALWAYS_FROM, _iso(effective_to) or OPEN_END
 
 
 def _shown(day):
-    return f"{day} (open)" if day == _OPEN_END else day
+    return "open" if day == OPEN_END else day
 
 
 def _span(start, end):
@@ -107,6 +109,15 @@ class ReportingHierarchyMember(Document):
                 )
 
     def _validate_window(self):
+        # The warehouse holds these as Date32, which can't store a day
+        # outside 1900-01-01..2299-12-31.
+        for label, value in (("Effective From", self.effective_from),
+                             ("Effective To", self.effective_to)):
+            day = _iso(value)
+            if day and not (_ALWAYS_FROM <= day <= OPEN_END):
+                frappe.throw(
+                    f"{label} must be between {_ALWAYS_FROM} and {OPEN_END}."
+                )
         start, end = self._window()
         if self.effective_to and end < start:
             frappe.throw("Effective To is before Effective From.")
