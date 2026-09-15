@@ -104,12 +104,15 @@ def _getdate(value):
     return datetime.date.fromisoformat(str(value)[:10])
 
 
-def _load(flags):
+def _load(flags, next_start=None, first_period_affected=None, gate=None):
     """The controller loaded by path against a minimal frappe: ``flags`` as
-    given, ``throw`` raising _Refused, ``getdate`` real enough for dates."""
+    given, ``throw`` raising _Refused, ``getdate`` real enough for dates.
+    ``next_start`` is what ``frappe.db.get_value`` answers (the next period's
+    effective_date), ``first_period_affected`` and ``gate`` replace the
+    period_status functions of those names (default: None / no-op)."""
     frappe = types.ModuleType("frappe")
     frappe.flags = types.SimpleNamespace(**flags)
-    frappe.db = types.SimpleNamespace(get_value=lambda *a, **k: None)
+    frappe.db = types.SimpleNamespace(get_value=lambda *a, **k: next_start)
 
     def throw(msg, *a, **k):
         raise _Refused(msg)
@@ -135,8 +138,8 @@ def _load(flags):
     clickhouse = types.ModuleType("konsol.clickhouse")
     clickhouse.sync_doctype_after_commit = lambda *a, **k: None
     period_status = types.ModuleType("konsol.period_status")
-    period_status.assert_open_between = lambda *a, **k: None
-    period_status.first_period_affected = lambda *a, **k: None
+    period_status.assert_open_between = gate or (lambda *a, **k: None)
+    period_status.first_period_affected = first_period_affected or (lambda *a, **k: None)
     mods = {
         "frappe": frappe,
         "frappe.utils": utils,
@@ -236,3 +239,86 @@ def test_a_new_period_may_not_carry_deal_figures_by_hand():
     # the deal document creates it under the flag
     module = _load({"from_business_combination": True, "in_patch": False})
     module.OwnershipPeriod(before=None, **_SAVED)._validate_deal_fields_untouched()
+
+
+# --- cancel_span: the one rule for which periods a cancel changes (P19) --------
+#
+# PR #202 third review, finding 2: the Business Combination gated its cancel
+# over ``acquisition_date -> end_date or today`` while the period's own
+# before_cancel spanned ``effective_date -> end_date | the next period's start
+# (exclusive) | open-ended``; where they disagreed the deal's refusal could
+# pass and the period's then refuse with the wrong sentence, or the deal refuse
+# where the period would allow. The span is computed once, here, and the deal
+# asks the period for it.
+
+def _period(module, **over):
+    fields = dict(_SAVED, effective_date=datetime.date(2025, 3, 15), end_date=None)
+    fields.update(over)
+    return module.OwnershipPeriod(before=None, **fields)
+
+
+def test_cancel_span_of_a_closed_period_ends_on_its_end_date():
+    module = _load(_no_flags())
+    span = _period(module, end_date=datetime.date(2025, 12, 31)).cancel_span()
+    assert span == (datetime.date(2025, 3, 15), datetime.date(2025, 12, 31), False)
+
+
+def test_cancel_span_of_an_open_ended_period_has_no_end():
+    """No end and no later period: every later declared period is affected,
+    which assert_open_between reads as ``end_date=None`` — not "today"."""
+    module = _load(_no_flags())
+    assert _period(module).cancel_span() == (datetime.date(2025, 3, 15), None, False)
+    # "" is the form's spelling of blank
+    assert _period(module, end_date="").cancel_span() == (datetime.date(2025, 3, 15), None, False)
+
+
+def test_cancel_span_stops_at_the_next_periods_first_declared_period_exclusive():
+    """A later period for the same node takes over from the first declared
+    period starting on or after its effective_date; this period's cancel
+    changes nothing from there on, so the span ends there, exclusive."""
+    calls = []
+
+    def first_period_affected(date):
+        calls.append(date)
+        return datetime.date(2026, 1, 1)
+
+    module = _load(_no_flags(), next_start=datetime.date(2025, 12, 20),
+                   first_period_affected=first_period_affected)
+    # open-ended with a successor: the successor's first period bounds it
+    assert _period(module).cancel_span() == (datetime.date(2025, 3, 15), datetime.date(2026, 1, 1), True)
+    assert calls == [datetime.date(2025, 12, 20)]
+    # an end_date on or after that start: the successor still bounds it
+    assert _period(module, end_date=datetime.date(2026, 6, 30)).cancel_span() == (
+        datetime.date(2025, 3, 15), datetime.date(2026, 1, 1), True)
+    # an end_date before it: the period's own end is the earlier bound
+    assert _period(module, end_date=datetime.date(2025, 11, 30)).cancel_span() == (
+        datetime.date(2025, 3, 15), datetime.date(2025, 11, 30), False)
+    # the successor starts past the last declared period (konsol#191 finding
+    # 5): no declared start to bound by, the period's own end stays
+    module = _load(_no_flags(), next_start=datetime.date(2027, 1, 1))
+    assert _period(module, end_date=datetime.date(2026, 6, 30)).cancel_span() == (
+        datetime.date(2025, 3, 15), datetime.date(2026, 6, 30), False)
+    assert _period(module).cancel_span() == (datetime.date(2025, 3, 15), None, False)
+
+
+def test_before_cancel_gates_exactly_the_cancel_span():
+    """The period's own before_cancel is the span rule applied with the
+    period's sentence; the Business Combination applies the same span with
+    its own (test_business_combination.py)."""
+    spans = []
+
+    def gate(start, end=None, action="run", end_exclusive=False):
+        spans.append((start, end, action, end_exclusive))
+
+    module = _load(_no_flags(), next_start=datetime.date(2025, 12, 20),
+                   first_period_affected=lambda date: datetime.date(2026, 1, 1), gate=gate)
+    doc = _period(module)
+    doc.before_cancel()
+    start, end, exclusive = doc.cancel_span()
+    assert spans == [(start, end, "cancel an ownership period", exclusive)]
+    assert spans[0][:2] == (datetime.date(2025, 3, 15), datetime.date(2026, 1, 1)) and exclusive is True
+
+    module = _load(_no_flags(), gate=gate)
+    _period(module, end_date=datetime.date(2025, 12, 31)).before_cancel()
+    assert spans[-1] == (datetime.date(2025, 3, 15), datetime.date(2025, 12, 31),
+                         "cancel an ownership period", False)

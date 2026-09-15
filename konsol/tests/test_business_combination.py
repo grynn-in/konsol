@@ -348,9 +348,20 @@ class _Site:
 
                 doc.submit, doc.cancel = submit, cancel
                 doc.save = lambda: None
+                doc.cancel_span = lambda row=row: site._cancel_span(row)
                 self.loaded = doc
                 return doc
         raise AssertionError(f"no Ownership Period {name}")
+
+    def _cancel_span(self, row):
+        """OwnershipPeriod.cancel_span() as the stub period answers it: the
+        row's own ``span`` when a test declares one (the next period's first
+        declared start, exclusive), else to its end_date or open-ended. The
+        rule itself is tested in test_ownership_period.py; here the deal must
+        use whatever the period says."""
+        if row.get("span") is not None:
+            return row["span"]
+        return row["effective_date"], row.get("end_date") or None, False
 
 
 class _OwnershipPeriodDoc(_Doc):
@@ -906,19 +917,37 @@ HOLDING = {"name": "OP-ZZG-ZZE-2025-12-31", "consolidation_group": "ZZG", "data_
 
 def test_before_cancel_gates_the_whole_span_of_the_linked_period_in_the_deals_name():
     """Undoing the approval cancels or clears the Ownership Period it started,
-    which changes every period from the acquisition date to the period's end
-    (today, while it is open-ended). Gating the acquisition period alone let
-    the cancel fail deeper, in the period's own before_cancel, with a sentence
-    about "an ownership period"; the same span check runs here first, with
-    this deal's own action text."""
+    which changes every period the period covers. Gating the acquisition
+    period alone let the cancel fail deeper, in the period's own
+    before_cancel, with a sentence about "an ownership period"; the same span
+    check runs here first, with this deal's own action text. The span is the
+    period's own ``cancel_span()`` (PR #202 third review, finding 2): an
+    open-ended period affects every later declared period, which the gate
+    reads as no end — not "today", which would leave a closed period after
+    today ungated here and refused by the period's sentence instead."""
     site = _Site(ownership=[HOLDING])
     _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
-    assert site.spans == [("2025-12-31", "2026-09-15", "cancel Business Combination BC-ZZG-ZZE-2025-12-31", False)]
+    assert site.spans == [("2025-12-31", "None", "cancel Business Combination BC-ZZG-ZZE-2025-12-31", False)]
 
-    # A period already ended: the span stops there, not today.
+    # A period already ended: the span stops there.
     site = _Site(ownership=[dict(HOLDING, end_date="2026-06-30")])
     _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
     assert site.spans == [("2025-12-31", "2026-06-30", "cancel Business Combination BC-ZZG-ZZE-2025-12-31", False)]
+
+
+def test_before_cancel_uses_exactly_the_periods_cancel_span_with_a_next_period():
+    """A later Ownership Period for the same node takes over from the first
+    declared period on or after its effective_date, so cancelling this one
+    changes nothing from there: the period's cancel_span() ends there,
+    exclusive, and the deal passes that bound through unchanged — one rule,
+    the deal's sentence."""
+    later = dict(HOLDING, name="OP-ZZG-ZZE-2026-03-20", effective_date="2026-03-20", ownership_pct=100)
+    holding = dict(HOLDING, span=("2025-12-31", "2026-04-01", True))
+    site = _Site(ownership=[holding, later])
+    _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
+    assert site.spans == [("2025-12-31", "2026-04-01", "cancel Business Combination BC-ZZG-ZZE-2025-12-31", True)]
+    # The deal asked the period itself, not a copy of its rule.
+    assert site.loaded.name == "OP-ZZG-ZZE-2025-12-31"
 
 
 def test_before_cancel_refusal_over_a_closed_period_in_the_span_names_the_combination():
