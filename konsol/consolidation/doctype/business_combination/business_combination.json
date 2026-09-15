@@ -124,7 +124,7 @@
    "fieldtype": "Table",
    "label": "Acquired Balances",
    "options": "Business Combination Acquired Balance",
-   "description": "The entity's balance sheet at acquisition with fair value adjustments per line. Required when no trial balance of the entity exists at or before the acquisition period; otherwise the trial balance is used."
+   "description": "The entity's balance sheet at acquisition with fair value adjustments per line. Always required: enter the acquisition-date balances, or use Get Balances from Trial Balance."
   },
   {
    "fieldname": "costs_section",
