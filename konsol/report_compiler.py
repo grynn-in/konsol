@@ -10,6 +10,10 @@ _PNL_NO_ACCOUNTS = (
     "so the monthly P&L has no lines."
 )
 
+# Amounts are debit-positive (period_net_amount = debit - credit).
+_PNL_SIGN = "debit positive; a negative total is a profit"
+_PNL_TOTAL_CAPTION = f"Net Profit and Loss ({_PNL_SIGN})"
+
 _MONTH_COLS = 12
 _MONTH_END_COL = "M"  # B..M
 
@@ -32,7 +36,7 @@ def list_templates():
             "title": "Monthly P&L",
             "description": (
                 "12-month income statement: every Published Profit and Loss "
-                "account of the group chart"
+                f"account of the group chart ({_PNL_SIGN})"
             ),
             "mode": "formulas",
         },
@@ -145,7 +149,7 @@ def _build_pnl_monthly(entity, year, scenario_id, accounts):
     letters = [chr(ord("B") + i) for i in range(_MONTH_COLS)]
     last_account_row = row - 1
     total_row = row
-    cells.append({"range": f"A{total_row}", "values": [["Net Profit and Loss"]]})
+    cells.append({"range": f"A{total_row}", "values": [[_PNL_TOTAL_CAPTION]]})
     cells.append({
         "range": _month_row_range(total_row),
         "formulas": [[
