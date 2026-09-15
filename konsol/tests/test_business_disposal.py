@@ -107,7 +107,7 @@ def test_status_is_the_workflow_state_and_the_document_can_be_amended():
     doc = _json("business_disposal")
     fields = _fields(doc)
     assert fields["status"]["fieldtype"] == "Select"
-    assert fields["status"]["options"] == "Draft\nPending Approval\nApproved"
+    assert fields["status"]["options"] == "Draft\nPending Approval\nApproved\nCancelled"
     assert fields["status"]["read_only"] == 1
     assert fields["description"]["fieldtype"] == "Small Text"
     assert fields["amended_from"]["fieldtype"] == "Link"
@@ -146,6 +146,7 @@ def test_workflow_copies_the_approval_shape_and_is_installed():
     assert wf["is_active"] == 1
     assert wf["workflow_state_field"] == "status"
     states = {s["state"]: s for s in wf["states"]}
+    assert set(states) == {"Draft", "Pending Approval", "Approved", "Cancelled"}
     assert states["Draft"]["doc_status"] == "0" and states["Draft"]["allow_edit"] == "EPM Analyst"
     assert states["Pending Approval"]["doc_status"] == "0" and states["Pending Approval"]["allow_edit"] == "EPM Admin"
     assert states["Approved"]["doc_status"] == "1" and states["Approved"]["allow_edit"] == "EPM Admin"
@@ -158,6 +159,20 @@ def test_workflow_copies_the_approval_shape_and_is_installed():
     installed = re.findall(r'"([^"]+)"', src.split("INSTALLED = (")[1].split(")")[0])
     assert "Business Disposal" in installed
     assert "Business Combination" in installed and "Consolidation Adjustment" in installed
+
+
+def test_a_cancelled_disposal_is_marked_cancelled():
+    """Frappe's `set_workflow_state_on_action` writes the state whose
+    `doc_status` is "2" when a document is cancelled; without one the disposal
+    keeps saying "Approved" after its cancel (PR #202 finding 2). Cancel drives
+    the state, so no transition leads into it."""
+    wf = _json("business_disposal", "business_disposal_workflow")
+    cancelled = [s for s in wf["states"] if s["doc_status"] == "2"]
+    assert len(cancelled) == 1, "exactly one cancelled state"
+    assert cancelled[0]["state"] == "Cancelled"
+    assert cancelled[0]["allow_edit"] == "EPM Admin"
+    assert not [t for t in wf["transitions"] if t["next_state"] == "Cancelled"], "cancel is not a transition"
+    assert "Cancelled" in _fields(_json("business_disposal"))["status"]["options"].split("\n")
 
 
 # -- the pure model --------------------------------------------------------------
