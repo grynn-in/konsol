@@ -321,14 +321,34 @@ class BusinessDisposal(Document):
             # Record what the period held BEFORE the close, so a cancel can
             # give it back exactly that (it may already have carried an end
             # date: an ownership step planned after the disposal date).
+            previous = {theirs: period.get(theirs) for theirs in _REOPEN_FIELDS.values()}
+            if self._records_the_closure_of(period):
+                # The period is already closed and this document IS its
+                # record (a Disposal the migration made for a closure the
+                # legacy figures wrote, PR #202 third review 1). Cancel means
+                # the sale did not happen, so what it gives back is the OPEN
+                # holding — not the closure this approval merely re-states.
+                previous = dict.fromkeys(_REOPEN_FIELDS.values())
             for mine, theirs in _REOPEN_FIELDS.items():
-                self.db_set(mine, _period_value(theirs, period.get(theirs)))
+                self.db_set(mine, _period_value(theirs, previous[theirs]))
             for field, value in fields.items():
                 period.db_set(field, value)
             sync_doctype_after_commit("Ownership Period", period.CH_TABLE, period.CH_FIELD_MAP)
         finally:
             frappe.flags.from_business_combination = False
         self.db_set("ownership_period", period.name)
+
+    def _records_the_closure_of(self, period):
+        """True when ``period`` is already closed (``is_disposal``) and this
+        document is the one recorded against that closure: it links the period
+        and no OTHER approved Business Disposal does (``validate`` refuses a
+        second one; ``_closed_holding_problems``). Its cancel then reopens the
+        holding instead of writing the closure back."""
+        if not int(period.get("is_disposal") or 0):
+            return False
+        if self.get("ownership_period") != period.name:
+            return False
+        return not self._other_disposal_of(period.name)
 
     def _linked_period(self):
         """The Ownership Period this disposal links (``ownership_period``), as

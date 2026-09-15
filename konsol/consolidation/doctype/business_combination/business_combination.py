@@ -463,15 +463,17 @@ class BusinessCombination(Document):
     def _cancelled_period_on_the_acquisition_date(self):
         """The name of the latest CANCELLED Ownership Period of this node on
         the acquisition date (an earlier approval of this deal, undone), or
-        None. Latest by name: each amendment is named after the last
-        (…-1, …-2), so the newest sorts last."""
+        None. Latest by creation, not by name: the amendments are named …-1,
+        …-2, … and as text ``…-9`` sorts above ``…-10``, so the tenth
+        re-approval would amend the wrong one and collide (PR #202 third
+        review 3). The newest is the last created."""
         rows = frappe.get_all(
             "Ownership Period",
             filters={"consolidation_group": self.consolidation_group,
                      "data_area_id": self.acquired_entity,
                      "effective_date": self.acquisition_date, "docstatus": 2},
             fields=["name"],
-            order_by="name desc",
+            order_by="creation desc",
             limit_page_length=1,
         )
         return rows[0].name if rows else None
