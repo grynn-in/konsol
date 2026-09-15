@@ -349,6 +349,79 @@ def test_single_cell_variance_with_no_active_budget_is_refused():
     assert str(result) == _NO_BUDGET
 
 
+# -- a request row without a year is refused as "Invalid year" (PR #217 review 2)
+#
+# The batch normalizer (api.epm_batch) turned a missing year into 0, and the
+# variance read then said "No active budget scenario belongs to FY0 ...".
+
+def _epm_batch(rows):
+    """A ``call`` for _run: api.epm_batch over raw request ``rows`` (dicts
+    overriding a default flat variance cell), with an unrestricted reader."""
+    def call(api):
+        body = []
+        for i, row in enumerate(rows):
+            req = {"entity": "ZZ01", "year": 2026, "period": 1, "account": f"ZZ{i}",
+                   "measure": "variance_amount", "fact": "variance_analysis",
+                   "scenario": "variance"}
+            req.update(row)
+            body.append({k: v for k, v in req.items() if v is not _MISSING})
+        by_name = {f.fact_name: f for f in _FACTS}
+        api._get_json_body = lambda: body
+        api._allowed_entities = lambda: None
+        api._resolve_and_validate = (
+            lambda fact, scenario, measure, dims: (by_name[fact], None))
+        perms = types.ModuleType("konsol.entity_permissions")
+        perms.entity_read_scope = lambda entity, allowed, wildcard=False: (None, None)
+        saved = sys.modules.get("konsol.entity_permissions")
+        sys.modules["konsol.entity_permissions"] = perms
+        try:
+            return api.epm_batch()
+        finally:
+            if saved is None:
+                sys.modules.pop("konsol.entity_permissions", None)
+            else:
+                sys.modules["konsol.entity_permissions"] = saved
+    return call
+
+
+_MISSING = object()
+
+
+def test_batch_row_without_a_year_is_refused_as_invalid_year():
+    result, queries, _ = _run(
+        [], active_budgets=["ZZ_B1"], call=_epm_batch([{"year": _MISSING}]))
+    assert queries == []
+    assert result["errors"] == ["Invalid year"]
+    assert result["values"] == [None]
+
+
+def test_batch_row_with_year_zero_is_refused_as_invalid_year():
+    result, queries, _ = _run(
+        [], active_budgets=["ZZ_B1"], call=_epm_batch([{"year": 0}]))
+    assert queries == []
+    assert result["errors"] == ["Invalid year '0'"]
+
+
+def test_batch_row_with_a_negative_or_fractional_year_is_refused():
+    result, queries, _ = _run(
+        [], active_budgets=["ZZ_B1"],
+        call=_epm_batch([{"year": -2026}, {"year": 2026.5}, {"year": None}]))
+    assert queries == []
+    assert result["errors"] == [
+        "Invalid year '-2026'", "Invalid year '2026.5'", "Invalid year"]
+
+
+def test_batch_invalid_year_row_leaves_a_valid_row_reading():
+    result, queries, _ = _run(
+        [], active_budgets=["ZZ_B1"], reply="ZZ01\t2026\tZZ1\t42.0\n",
+        call=_epm_batch([{"year": _MISSING}, {}]))
+    (sql, params), = queries
+    assert params["param_sid"] == "ZZ_B1"
+    assert params["param_y0"] == "2026"
+    assert result["errors"] == ["Invalid year", None]
+    assert result["values"] == [None, 42.0]
+
+
 def test_single_cell_variance_with_one_active_budget_returns_the_value():
     result, queries, _ = _run([], active_budgets=["ZZ_B1"], call=_epm_value,
                               reply="ZZ01\t2026\tZZ0\t123.5\n")
