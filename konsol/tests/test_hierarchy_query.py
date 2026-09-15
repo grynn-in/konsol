@@ -148,20 +148,31 @@ import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import types  # noqa: E402
 
-_NO_BUDGET = "No budget scenario is active, so there is no variance to show."
+_NO_BUDGET = "No active budget scenario belongs to FY2026, so there is no variance to show."
 
 
-def _run_hierarchy(rows, active_budgets=()):
+def _run_hierarchy(rows, active_budgets=(), cycles=None):
     """batch_query_hierarchy over ``rows`` (dicts overriding a default request).
 
     ``active_budgets`` is what the Scenario doctype holds as active budget
-    scenarios. Returns (result, [(sql, params), ...], [get_all filters, ...]).
+    scenarios; ``cycles`` the (scenario_id, fiscal_year) of the Budget Cycles
+    (default: one FY2026 cycle per active budget, the default request year).
+    Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]);
+    Budget Cycle lookups are recorded as {"Budget Cycle": filters}.
     """
     queries, lookups = [], []
+    if cycles is None:
+        cycles = [(s, 2026) for s in active_budgets]
 
-    def get_all(doctype, filters=None, pluck=None, order_by=None, **kw):
-        assert doctype == "Scenario"
-        lookups.append(dict(filters or {}))
+    def get_all(doctype, filters=None, pluck=None, order_by=None, fields=None, **kw):
+        filters = dict(filters or {})
+        if doctype == "Budget Cycle":
+            lookups.append({"Budget Cycle": filters})
+            wanted = set(filters["scenario_id"][1])
+            return [{"scenario_id": s, "fiscal_year": y}
+                    for s, y in cycles if s in wanted]
+        assert doctype == "Scenario", doctype
+        lookups.append(filters)
         return list(active_budgets)
 
     fake_frappe = types.ModuleType("frappe")
@@ -228,7 +239,7 @@ def test_variance_without_scenario_reads_the_one_active_budget():
     (sql, params), = queries
     assert "AND budget_scenario_id = {sid:String}" in sql
     assert params["param_sid"] == "ZZ_B1"
-    assert lookups == [{"scenario_type": "budget", "is_active": 1}]
+    assert lookups[0] == {"scenario_type": "budget", "is_active": 1}
 
 
 def test_variance_without_scenario_and_no_active_budget_is_refused():
@@ -242,16 +253,81 @@ def test_variance_without_scenario_and_several_active_budgets_is_refused():
     result, queries, _ = _run_hierarchy([{}], active_budgets=["ZZ_B1", "ZZ_B2"])
     assert queries == []
     assert result["errors"] == [
-        "Several budget scenarios are active (ZZ_B1, ZZ_B2); choose one."]
+        "Several active budget scenarios belong to FY2026 (ZZ_B1, ZZ_B2); choose one."]
 
 
 def test_active_budget_scenarios_are_looked_up_once_per_call():
     result, queries, lookups = _run_hierarchy(
-        [{}, {"account": "ZZ9", "periods": (2,)}], active_budgets=["ZZ_B1"])
+        [{}, {"account": "ZZ9", "periods": (2,)}, {"account": "ZZ8", "year": 2027}],
+        active_budgets=["ZZ_B1", "ZZ_B2"],
+        cycles=[("ZZ_B1", 2026), ("ZZ_B2", 2027)])
     assert not result.get("errors")
-    assert len(queries) == 2
-    assert all(p["param_sid"] == "ZZ_B1" for _, p in queries)
-    assert len(lookups) == 1
+    assert len(queries) == 3
+    assert sorted(p["param_sid"] for _, p in queries) == ["ZZ_B1", "ZZ_B1", "ZZ_B2"]
+    # one Scenario and one Budget Cycle lookup, however many years are read
+    assert len(lookups) == 2
+
+
+# ── with no scenario named, the budget is the request year's (PR #217 review 3)
+#
+# Once two years' budgets are both active, "the single active budget" refuses
+# every unnamed read. A budget scenario belongs to the years of its Budget
+# Cycles; an unnamed read uses the one active budget of the request's year.
+
+def test_variance_without_scenario_reads_the_request_years_budget():
+    both = dict(active_budgets=["ZZ_B26", "ZZ_B27"],
+                cycles=[("ZZ_B26", 2026), ("ZZ_B27", 2027)])
+    result, queries, _ = _run_hierarchy([{"year": 2026}], **both)
+    assert not result.get("errors"), result
+    (sql, params), = queries
+    assert "AND budget_scenario_id = {sid:String}" in sql
+    assert params["param_sid"] == "ZZ_B26"
+    result, queries, _ = _run_hierarchy([{"year": 2027}], **both)
+    assert not result.get("errors"), result
+    (_, params), = queries
+    assert params["param_sid"] == "ZZ_B27"
+
+
+def test_variance_without_a_budget_for_the_year_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"year": 2028}], active_budgets=["ZZ_B26", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B27", 2027)])
+    assert queries == []
+    assert result["errors"] == [
+        "No active budget scenario belongs to FY2028, so there is no variance to show."]
+
+
+def test_variance_with_several_budgets_for_the_year_is_refused_by_name():
+    result, queries, _ = _run_hierarchy(
+        [{"year": 2026}], active_budgets=["ZZ_B26", "ZZ_B26X", "ZZ_B27"],
+        cycles=[("ZZ_B26", 2026), ("ZZ_B26X", 2026), ("ZZ_B27", 2027)])
+    assert queries == []
+    assert result["errors"] == [
+        "Several active budget scenarios belong to FY2026 (ZZ_B26, ZZ_B26X); choose one."]
+
+
+def test_a_cancelled_budget_cycle_does_not_count():
+    _, _, lookups = _run_hierarchy([{}], active_budgets=["ZZ_B1"])
+    cycle_filters, = [lk["Budget Cycle"] for lk in lookups if "Budget Cycle" in lk]
+    assert cycle_filters["scenario_id"] == ["in", ["ZZ_B1"]]
+    assert cycle_filters["docstatus"] == ["<", 2]
+
+
+def test_choose_budget_scenario_without_a_year_is_unchanged():
+    # the flat Dataset path still calls it without a year (until it passes one)
+    hq_choose = _load_hq().choose_budget_scenario
+    assert hq_choose(["ZZ_B1"]) == ("ZZ_B1", None)
+    assert hq_choose([])[1] == "No budget scenario is active, so there is no variance to show."
+    assert hq_choose(["ZZ_B1", "ZZ_B2"])[1] == (
+        "Several budget scenarios are active (ZZ_B1, ZZ_B2); choose one.")
+
+
+def _load_hq():
+    spec = importlib.util.spec_from_file_location(
+        "_host_hierarchy_query_k214_pure", os.path.join(APP_DIR, "hierarchy_query.py"))
+    hq = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hq)
+    return hq
 
 
 def test_budget_and_forecast_still_filter_scenario_id():
