@@ -392,3 +392,130 @@ def test_lines_may_be_objects_with_attributes():
     t = totals(Row(**header()), [Row(**cash(8300))], [Row(**l) for l in WORKED_BALANCES], [], IFRS_PARTIAL)
     assert t["goodwill"] == Decimal("6720.00")
     assert t["equity_eliminated"] == Decimal("650.00")
+
+
+# --- konsol#207: the acquired balance sheet derived from trial-balance amounts ---
+
+RE_ACCOUNT = "ZZ-RE"
+PERIOD = "FY2026 P3"
+
+
+def tb(main_account, amount, is_pnl=0):
+    return {"main_account": main_account, "amount": amount, "is_pnl": is_pnl}
+
+
+def by_account(lines):
+    return {l["main_account"]: l for l in lines}
+
+
+def test_derive_folds_the_current_year_result_into_retained_earnings():
+    rows = [
+        tb("ZZ-CASH", 700), tb("ZZ-CASH", 300),          # two periods of one account
+        tb("ZZ-LOAN", -400), tb(RE_ACCOUNT, -450),
+        tb("ZZ-SALES", -250, is_pnl=1), tb("ZZ-COGS", 100, is_pnl=1),
+    ]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LOAN", RE_ACCOUNT]
+    got = by_account(lines)
+    assert got["ZZ-CASH"]["book_amount"] == Decimal("1000.00")
+    assert got["ZZ-LOAN"]["book_amount"] == Decimal("-400.00")
+    assert got[RE_ACCOUNT]["book_amount"] == Decimal("-600.00")   # −450 + (−250 + 100)
+    assert all(l["fair_value_adjustment"] == Decimal("0.00") for l in lines)
+    assert all(l["note"] == "From the trial balance" for l in lines)
+
+
+def test_derive_creates_the_retained_earnings_line_when_absent():
+    rows = [tb("ZZ-CASH", 150), tb("ZZ-SALES", -150, is_pnl=1)]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert by_account(lines)[RE_ACCOUNT]["book_amount"] == Decimal("-150.00")
+
+
+def test_a_closed_year_netting_to_zero_leaves_retained_earnings_unchanged():
+    # the year-end close already reversed last year's P&L into RE: the P&L nets to 0
+    rows = [
+        tb("ZZ-CASH", 500), tb(RE_ACCOUNT, -500),
+        tb("ZZ-SALES", -200, is_pnl=1), tb("ZZ-SALES", 200, is_pnl=1),
+    ]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", RE_ACCOUNT]
+    assert by_account(lines)[RE_ACCOUNT]["book_amount"] == Decimal("-500.00")
+
+
+def test_derive_drops_lines_that_round_to_zero():
+    rows = [tb("ZZ-CASH", 100), tb("ZZ-LOAN", -100), tb("ZZ-EMPTY", 0.004), tb("ZZ-EMPTY", -0.008)]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LOAN"]
+
+
+def test_derive_merges_fair_value_adjustments_onto_existing_and_new_accounts():
+    rows = [tb("ZZ-CASH", 1000), tb("ZZ-LAND", 200), tb(RE_ACCOUNT, -1200)]
+    lines, problems = M.derive_acquired_balances(
+        rows, RE_ACCOUNT, [("ZZ-LAND", 50.005), ("ZZ-BRAND", 75)], PERIOD)
+    assert problems == []
+    assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LAND", RE_ACCOUNT, "ZZ-BRAND"]
+    got = by_account(lines)
+    assert got["ZZ-LAND"]["book_amount"] == Decimal("200.00")
+    assert got["ZZ-LAND"]["fair_value_adjustment"] == Decimal("50.01")
+    assert got["ZZ-LAND"]["note"] == "From the trial balance"
+    assert got["ZZ-BRAND"]["book_amount"] == Decimal("0.00")
+    assert got["ZZ-BRAND"]["fair_value_adjustment"] == Decimal("75.00")
+    assert got["ZZ-BRAND"]["note"] == "Fair value adjustment"
+
+
+def test_an_unbalanced_trial_balance_is_refused_with_the_difference():
+    rows = [tb("ZZ-CASH", 1000), tb(RE_ACCOUNT, -900.5)]
+    _, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == [
+        "Business Combination: the trial balance through FY2026 P3 does not balance: "
+        "it is off by 99.50."
+    ]
+
+
+def test_a_result_without_a_retained_earnings_account_is_refused():
+    rows = [tb("ZZ-CASH", 150), tb("ZZ-SALES", -150, is_pnl=1)]
+    _, problems = M.derive_acquired_balances(rows, None, [], PERIOD)
+    assert problems == [
+        "Business Combination: the chart declares no Retained Earnings Account: tick it on "
+        "the retained-earnings Main Account so the result of FY2026 P3 can be folded in."
+    ]
+
+
+def test_no_retained_earnings_account_is_fine_when_there_is_no_open_result():
+    rows = [tb("ZZ-CASH", 150), tb("ZZ-LOAN", -150)]
+    lines, problems = M.derive_acquired_balances(rows, None, [], PERIOD)
+    assert problems == [] and len(lines) == 2
+
+
+def test_no_trial_balance_rows_is_refused():
+    lines, problems = M.derive_acquired_balances([], RE_ACCOUNT, [], PERIOD)
+    assert lines == []
+    assert problems == [
+        "Business Combination: no trial balance amounts at or before FY2026 P3."
+    ]
+
+
+def test_split_by_weights_sums_exactly_to_the_total():
+    split = M.split_by_weights(100, [("ZZ-A", 33.34), ("ZZ-B", 33.33), ("ZZ-C", 33.33)])
+    assert split == [("ZZ-A", Decimal("33.34")), ("ZZ-B", Decimal("33.33")), ("ZZ-C", Decimal("33.33"))]
+    assert sum(amount for _, amount in split) == Decimal("100.00")
+
+
+def test_split_by_weights_puts_the_remainder_on_the_largest_weight():
+    split = M.split_by_weights(10, [("ZZ-A", 33.33), ("ZZ-B", 33.34), ("ZZ-C", 33.33)])
+    assert split == [("ZZ-A", Decimal("3.33")), ("ZZ-B", Decimal("3.34")), ("ZZ-C", Decimal("3.33"))]
+    # ties: the first of the largest weights takes it
+    split = M.split_by_weights(Decimal("0.01"), [("ZZ-A", 25), ("ZZ-B", 37.5), ("ZZ-C", 37.5)])
+    assert split == [("ZZ-A", Decimal("0.00")), ("ZZ-B", Decimal("0.01")), ("ZZ-C", Decimal("0.00"))]
+
+
+def test_split_by_weights_refuses_weights_not_summing_to_100():
+    try:
+        M.split_by_weights(100, [("ZZ-A", 50), ("ZZ-B", 49)])
+    except ValueError as error:
+        assert "99" in str(error) and "100" in str(error)
+    else:
+        raise AssertionError("weights of 99 must be refused")
