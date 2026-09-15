@@ -527,13 +527,22 @@ def _batch_query_clickhouse(requests_list):
 
     Returns {"values": [...], "errors": [...]}.
     """
-    from konsol.hierarchy_query import _active_budget_scenarios, choose_budget_scenario
+    from konsol.hierarchy_query import (
+        _active_budget_scenarios_by_year,
+        choose_budget_scenario,
+    )
 
     ch_settings = _get_ch_connection()
     n = len(requests_list)
     values = [None] * n
     errors = [None] * n
-    active_budgets = None  # looked up once per call, when first needed
+    facts = {}  # fact_key -> Dataset (or None), resolved once per call
+    budgets_by_year = None  # looked up once per call, when first needed
+
+    def resolve_fact(fact_key):
+        if fact_key not in facts:
+            facts[fact_key] = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
+        return facts[fact_key]
 
     # Group by (fact, measure, periods_tuple, dim_names_frozenset, scenario_id).
     # `fact` (the resolved fact_name) is the table-determining element; scenario
@@ -541,18 +550,35 @@ def _batch_query_clickhouse(requests_list):
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         dims = req.get("dimensions", {})
+        fact_key = req.get("fact") or req.get("scenario")
+        scenario_id = req.get("scenario_id", "")
+        if not scenario_id:
+            # A dataset kept per budget scenario reads exactly one: the named
+            # one, else the single active budget of the row's year, else a
+            # refusal that says why (konsol#214). Resolved per row, before
+            # grouping: a group's key has no year, so it can hold several.
+            fact = resolve_fact(fact_key)
+            if fact and _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                if budgets_by_year is None:
+                    budgets_by_year = _active_budget_scenarios_by_year()
+                year = int(req["year"])
+                scenario_id, err = choose_budget_scenario(
+                    budgets_by_year.get(year, []), fiscal_year=year)
+                if err:
+                    errors[idx] = err
+                    continue
         key = (
-            req.get("fact") or req.get("scenario"),
+            fact_key,
             req["measure"],
             req["periods"],
             frozenset(dims.keys()),
-            req.get("scenario_id", ""),
+            scenario_id,
             req.get("layer", ""),
         )
         groups[key].append((idx, req))
 
     for (fact_key, measure, periods, dim_names, scenario_id, layer), group_items in groups.items():
-        fact = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
+        fact = resolve_fact(fact_key)
         if not fact:
             for idx, _ in group_items:
                 errors[idx] = f"No Dataset for '{fact_key}'"
@@ -622,18 +648,9 @@ def _batch_query_clickhouse(requests_list):
             params[f"param_{pkey}"] = str(p)
         period_in = ", ".join(period_placeholders)
 
-        # A dataset kept per budget scenario reads exactly one: the named
-        # one, else the single active budget scenario, else a refusal that
-        # says why (konsol#214).
+        # A dataset kept per budget scenario filters its own column; the
+        # scenario_id was resolved per row above when none was named.
         budget_column = _BUDGET_SCENARIO_COLUMN.get(fact.fact_name)
-        if budget_column and not scenario_id:
-            if active_budgets is None:
-                active_budgets = _active_budget_scenarios()
-            scenario_id, err = choose_budget_scenario(active_budgets)
-            if err:
-                for idx, _ in group_items:
-                    errors[idx] = err
-                continue
 
         # Optional scenario_id filter
         scenario_id_clause = ""

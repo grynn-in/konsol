@@ -313,15 +313,6 @@ def test_a_cancelled_budget_cycle_does_not_count():
     assert cycle_filters["docstatus"] == ["<", 2]
 
 
-def test_choose_budget_scenario_without_a_year_is_unchanged():
-    # the flat Dataset path still calls it without a year (until it passes one)
-    hq_choose = _load_hq().choose_budget_scenario
-    assert hq_choose(["ZZ_B1"]) == ("ZZ_B1", None)
-    assert hq_choose([])[1] == "No budget scenario is active, so there is no variance to show."
-    assert hq_choose(["ZZ_B1", "ZZ_B2"])[1] == (
-        "Several budget scenarios are active (ZZ_B1, ZZ_B2); choose one.")
-
-
 def _load_hq():
     spec = importlib.util.spec_from_file_location(
         "_host_hierarchy_query_k214_pure", os.path.join(APP_DIR, "hierarchy_query.py"))
