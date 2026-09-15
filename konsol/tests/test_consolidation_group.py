@@ -150,6 +150,18 @@ def test_the_nine_declared_accounts_link_to_the_chart():
         assert f["depends_on"] == ROOT_ONLY, fn
 
 
+def test_the_settlement_account_is_labelled_for_all_deal_cash():
+    """The group settles ALL deal cash on `disposal_proceeds_account`
+    (disposal proceeds in, acquisition costs out), so the form calls it the
+    Deal Settlement Account. The fieldname and warehouse column keep their
+    spelling: the DDL is pinned in both repos."""
+    f = _fields()["disposal_proceeds_account"]
+    assert f["label"] == "Deal Settlement Account" == P.LABELS["disposal_proceeds_account"]
+    assert f["description"] == (
+        "Where the group settles deal cash: disposal proceeds are debited here "
+        "and acquisition costs credited here.")
+
+
 def test_labels_match_the_rule_module_and_nothing_is_required_or_defaulted():
     """The sentences validate() throws name the fields by these labels. Nothing
     is `reqd`: the policy is required once the group has a deal, which the

@@ -101,6 +101,10 @@ def test_proceeds_table_and_read_only_result():
     assert fields["total_proceeds"]["fieldtype"] == "Currency"
     assert fields["total_proceeds"]["read_only"] == 1
     assert "default" not in fields["total_proceeds"]
+    # The proceeds land on the group's Deal Settlement Account (the field is
+    # still `disposal_proceeds_account`; the label moved with its meaning).
+    assert "Deal Settlement Account" in fields["total_proceeds"]["description"]
+    assert "Disposal Proceeds Account" not in fields["total_proceeds"]["description"]
 
 
 def test_status_is_the_workflow_state_and_the_document_can_be_amended():
@@ -293,7 +297,7 @@ def test_the_policy_and_the_disposal_accounts_are_checked():
                 fair_value_adjustment_account="")
     found = m.problems(HEADER, CASH_9000, root, _facts())
     assert any("Goodwill Account is required" in s for s in found), found
-    assert any("Disposal Proceeds Account is required" in s for s in found), found
+    assert any("Deal Settlement Account is required" in s for s in found), found
     assert not any("Non-controlling" in s or "Fair Value Adjustment Account" in s for s in found), found
     # An account that is not a Published leaf is named.
     found = m.problems(HEADER, CASH_9000, ROOT_IFRS, _facts(is_published_leaf=lambda a: a != "ZZ1900"))
@@ -590,7 +594,7 @@ def test_before_submit_asserts_the_disposal_period_is_open_and_the_accounts_stil
     assert "business disposal" in site.opened[0][2]
     site.root["disposal_proceeds_account"] = ""
     message = _refused(deal.before_submit)
-    assert "Disposal Proceeds Account is required" in message
+    assert "Deal Settlement Account is required" in message
 
     def closed(fy, fp, action="run"):
         raise Refused(f"Cannot {action}: fiscal period {fp} of FY{fy} is closed.")

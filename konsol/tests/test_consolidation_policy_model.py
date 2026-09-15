@@ -54,6 +54,17 @@ def test_options_and_field_lists_are_the_design_s():
     assert set(M.LABELS) == set(M.POLICY_FIELDS) | set(M.ACCOUNT_FIELDS)
 
 
+def test_the_settlement_account_is_labelled_for_all_deal_cash():
+    """`disposal_proceeds_account` (fieldname and warehouse column pinned) is
+    where the group settles every deal's cash, not only disposal proceeds, so
+    the sentences name it as the Deal Settlement Account."""
+    assert M.LABELS["disposal_proceeds_account"] == "Deal Settlement Account"
+    group = dict(ALL_ACCOUNTS, disposal_proceeds_account="")
+    found = M.account_problems(group, ["disposal_proceeds_account"], lambda a: True)
+    assert len(found) == 1 and "Deal Settlement Account is required" in found[0], found
+    assert "Disposal Proceeds Account" not in found[0], found
+
+
 def test_module_docstring_names_the_three_layers():
     doc = M.__doc__.lower()
     assert "konsolidat#198" in M.__doc__
