@@ -193,13 +193,18 @@ CASH_8300 = [{"component": "Cash", "amount": 8300, "currency": "EUR"}]
 class _Site:
     """In-memory site behind the stub frappe; records what the controller writes."""
 
-    def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=()):
+    def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
+                 disposals=(), disposal_table=True):
         self.periods = [dict(p) for p in (periods if periods is not None else [PERIOD_DEC_2025])]
         self.root = dict(ROOT_IFRS_PARTIAL) if root is None else root
         self.rates = dict(rates or {})  # (from, to, fy, fp) -> (quote, quoted_per)
         self.accounts = dict(ACCOUNTS if accounts is None else accounts)
         self.tbs = [{"data_area_id": e, "fiscal_year": y, "fiscal_period": p, "docstatus": 1} for e, y, p in tbs]
         self.ownership = [dict(o) for o in ownership]
+        #: Business Disposal rows {name, ownership_period, docstatus}; the table
+        #: itself may not exist yet (a stack mid-migrate), and is then never read.
+        self.disposals = [dict(d) for d in disposals]
+        self.disposal_table = disposal_table
         self.inserted, self.synced, self.flag_at_insert, self.opened, self.queries = [], [], [], [], []
         self.flag_at_cancel = []
         self._install()
@@ -208,11 +213,15 @@ class _Site:
     def _install(self):
         site = self
         M.frappe.flags = types.SimpleNamespace(from_business_combination=False)
-        M.frappe.db = types.SimpleNamespace(sql=self._sql, get_value=self._get_value, exists=self._exists)
+        M.frappe.db = types.SimpleNamespace(sql=self._sql, get_value=self._get_value, exists=self._exists,
+                                            table_exists=self._table_exists)
         M.frappe.get_all = self._get_all
         M.frappe.get_doc = self._get_doc
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
+
+    def _table_exists(self, doctype):
+        return self.disposal_table if doctype == "Business Disposal" else True
 
     def _sql(self, query, values=None, as_dict=False):
         self.queries.append((" ".join(query.split()), values))
@@ -239,6 +248,12 @@ class _Site:
             return values[fieldname]
         if doctype == "Ownership Period":
             for row in self.ownership:
+                if _match(row, filters):
+                    return row.get(fieldname) if isinstance(fieldname, str) else _Row(row)
+            return None
+        if doctype == "Business Disposal":
+            assert self.disposal_table, "Business Disposal read while its table does not exist"
+            for row in self.disposals:
                 if _match(row, filters):
                     return row.get(fieldname) if isinstance(fieldname, str) else _Row(row)
             return None
@@ -843,6 +858,34 @@ def test_before_cancel_asserts_the_acquisition_period_is_open():
     deal.before_cancel()
     assert site.opened and site.opened[0][:2] == (2025, 12)
     assert "cancel" in site.opened[0][2]
+
+
+# -- a sold holding cannot be pulled from under its disposal (B3) --------------
+
+#: The approved disposal that sold the holding this deal's approval started.
+SOLD = {"name": "BD-ZZG-ZZE-2026-06-30", "ownership_period": "OP-ZZG-ZZE-2025-12-31", "docstatus": 1}
+
+
+def test_before_cancel_refuses_while_a_business_disposal_sold_the_holding():
+    """Undoing the acquisition under an approved disposal of the same holding
+    would leave a disposal of nothing: the disposal goes first, by name."""
+    _Site(disposals=[SOLD])
+    message = _refused(_deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel)
+    assert "Business Disposal BD-ZZG-ZZE-2026-06-30 sold this holding. Cancel it first." in message
+
+
+def test_before_cancel_passes_when_no_approved_disposal_links_the_period():
+    cases = [
+        ([dict(SOLD, docstatus=0)], True),   # a Draft disposal is not a sale yet
+        ([dict(SOLD, docstatus=2)], True),   # a cancelled one is none any more
+        ([dict(SOLD, ownership_period="OP-ZZG-ZZX-2025-12-31")], True),  # another holding's
+        ([], True),
+        ([SOLD], False),  # the doctype is not installed yet: never read (guarded like has_deals)
+    ]
+    for disposals, table in cases:
+        site = _Site(disposals=disposals, disposal_table=table)
+        _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2025-12-31").before_cancel()
+        assert site.opened and site.opened[0][:2] == (2025, 12), (disposals, table)
 
 
 # -- the warehouse contract ----------------------------------------------------

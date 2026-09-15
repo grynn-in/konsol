@@ -426,12 +426,15 @@ class _OwnershipPeriodDoc(_Doc):
 
 
 class _Site:
-    def __init__(self, *, periods=None, root=None, rates=None, accounts=None, ownership=None):
+    def __init__(self, *, periods=None, root=None, rates=None, accounts=None, ownership=None,
+                 disposals=None):
         self.periods = [dict(p) for p in (periods if periods is not None else [PERIOD_DEC_2025])]
         self.root = dict(ROOT_IFRS) if root is None else root
         self.rates = dict(rates or {})  # (from, to, fy, fp) -> (quote, quoted_per)
         self.accounts = dict(ACCOUNTS if accounts is None else accounts)
         self.ownership = [dict(o) for o in (ownership if ownership is not None else [HOLDING_80])]
+        #: the other Business Disposal documents on the site: {name, ownership_period, docstatus}
+        self.disposals = [dict(d) for d in (disposals or [])]
         self.synced, self.opened, self.flag_at_write, self.loaded = [], [], [], []
         site = self
         M.frappe.flags = types.SimpleNamespace(from_business_combination=False)
@@ -461,6 +464,11 @@ class _Site:
             if isinstance(fieldname, (list, tuple)):
                 return tuple(values[f] for f in fieldname)
             return values[fieldname]
+        if doctype == "Business Disposal":
+            for row in self.disposals:
+                if _match(row, filters):
+                    return row.get(fieldname) if isinstance(fieldname, str) else _Row(row)
+            return None
         raise AssertionError(f"unexpected get_value on {doctype}")
 
     def _get_all(self, doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
@@ -767,6 +775,67 @@ def test_before_cancel_asserts_the_disposal_period_is_open():
     _deal().before_cancel()
     assert site.opened and site.opened[0][:2] == (2025, 12)
     assert "cancel" in site.opened[0][2]
+
+
+# -- one holding, one disposal (PR #202 second review B2) ----------------------
+
+#: HOLDING_80 as an approved disposal on 2025-12-31 leaves it.
+CLOSED_80 = dict(HOLDING_80, end_date="2025-12-31", is_disposal=1,
+                 disposal_date="2025-12-31", disposal_price=9000)
+#: The approved disposal that closed it.
+APPROVED_BD = {"name": "BD-ZZG-ZZE-2025-12-31", "ownership_period": "OP-ZZG-ZZE-2020-01-01", "docstatus": 1}
+CLOSED_BY_SENTENCE = ("OP-ZZG-ZZE-2020-01-01 is already closed by Business Disposal BD-ZZG-ZZE-2025-12-31. "
+                      "Cancel that disposal first, or amend it.")
+
+
+def test_validate_refuses_a_second_disposal_of_a_holding_another_disposal_closed():
+    """A holding is sold once. A second disposal of a period an approved
+    Business Disposal already closed is refused by name — whether the second
+    one finds the holding by date or links the same period (a migrated Draft
+    whose period a hand-made disposal closed in the meantime)."""
+    _Site(ownership=[CLOSED_80], disposals=[APPROVED_BD])
+    message = _refused(_deal(name="BD-ZZG-ZZE-2025-12-31-1").validate)
+    assert CLOSED_BY_SENTENCE in message
+    _Site(ownership=[CLOSED_80], disposals=[APPROVED_BD])
+    message = _refused(_deal(name="BD-MIGRATED-ZZE", ownership_period="OP-ZZG-ZZE-2020-01-01").validate)
+    assert CLOSED_BY_SENTENCE in message
+
+
+def test_a_disposal_is_not_blocked_by_itself_or_by_one_that_is_not_approved():
+    # A Draft or a cancelled disposal of the same holding is no disposal yet / any more.
+    for docstatus in (0, 2):
+        _Site(ownership=[HOLDING_80], disposals=[dict(APPROVED_BD, docstatus=docstatus)])
+        _deal(name="BD-ZZG-ZZE-2025-12-31-1").validate()
+    # Its own approval closed the period and linked it: the approved document still validates.
+    _Site(ownership=[CLOSED_80], disposals=[APPROVED_BD])
+    _deal(docstatus=1, ownership_period="OP-ZZG-ZZE-2020-01-01").validate()
+
+
+def test_validate_refuses_a_new_disposal_of_a_holding_closed_without_a_document():
+    """A period closed before Business Disposal existed (is_disposal set, no
+    document behind it) is not sold again by a fresh disposal; the Draft the
+    migration made for that closure links the period and IS its record, so
+    that one — and only that one — saves and approves."""
+    _Site(ownership=[CLOSED_80])
+    message = _refused(_deal().validate)
+    assert "OP-ZZG-ZZE-2020-01-01 is already closed" in message
+    assert "no Business Disposal records it" in message
+    assert "2025-12-31" in message
+    _Site(ownership=[CLOSED_80])
+    _deal(ownership_period="OP-ZZG-ZZE-2020-01-01").validate()
+
+
+def test_validate_measures_the_share_against_the_linked_period_when_it_is_submitted():
+    """The holding validate reads is the one the approval will close: the
+    linked submitted period first, the current holding by date otherwise."""
+    linked = {"name": "OP-ZZG-ZZE-2019-06-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "effective_date": "2019-06-01", "end_date": "2025-12-31", "ownership_pct": 100,
+              "consolidation_method": "full", "docstatus": 1}
+    _Site(ownership=[HOLDING_80, linked])
+    _deal(share_disposed_pct=100, ownership_period="OP-ZZG-ZZE-2019-06-01").validate()
+    _Site(ownership=[HOLDING_80, linked])
+    message = _refused(_deal(share_disposed_pct=80, ownership_period="OP-ZZG-ZZE-2019-06-01").validate)
+    assert "current holding" in message and "100" in message
 
 
 def test_field_maps_follow_the_ddl_column_order():
