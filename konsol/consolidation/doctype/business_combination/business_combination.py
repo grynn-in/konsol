@@ -613,13 +613,24 @@ def _retained_earnings_of_chart(rows, entity, label):
     rows' accounts belong to (one per chart, konsolidat#199), or None when that
     chart ticks none (the model then names what is missing). A site may carry
     several Published charts, so the account is never taken site-wide (PR #209
-    review 3); rows spanning more than one chart are refused naming them."""
+    review 3); rows spanning more than one chart are refused naming them. An
+    account that is no Main Account, or has no chart, is refused by name first
+    (PR #209 review 2, point 2): dropping it would blame a missing Retained
+    Earnings Account or fail later on a bare Link error."""
     accounts = sorted({row["main_account"] for row in rows})
     if not accounts:
         return None
-    charts = sorted({row.chart_of_accounts for row in frappe.get_all(
+    chart_of = {row.name: row.chart_of_accounts for row in frappe.get_all(
         "Main Account", filters={"name": ["in", accounts]}, fields=["name", "chart_of_accounts"],
-        limit_page_length=0) if row.chart_of_accounts})
+        limit_page_length=0)}
+    unknown = [a for a in accounts if not chart_of.get(a)]
+    if unknown:
+        named = ", ".join(unknown[:10]) + (f" and {len(unknown) - 10} more" if len(unknown) > 10 else "")
+        frappe.throw(
+            f"{_PREFIX}The trial balance of {entity} holds accounts the chart does not have: {named}. "
+            f"Add them to the chart (Main Account) first."
+        )
+    charts = sorted(set(chart_of.values()))
     if len(charts) > 1:
         frappe.throw(
             f"{_PREFIX}the trial balance of {entity} through {label} uses accounts of more than one "
@@ -649,8 +660,8 @@ def get_balances_from_trial_balance(name):
     else on the group's Fair Value Adjustment Account; record where the lines
     came from and save. Returns the number of lines. Nothing is guessed: a
     missing trial balance, a total with no account to put it on, profile
-    weights not adding up to 100, rows from more than one Chart of Accounts,
-    two retained-earnings accounts in the rows' chart, or rows that do not
+    weights not adding up to 100, rows naming accounts the chart does not
+    have, rows from more than one Chart of Accounts, two retained-earnings accounts in the rows' chart, or rows that do not
     balance are refused by name."""
     doc = frappe.get_doc("Business Combination", name)
     doc.check_permission("write")
