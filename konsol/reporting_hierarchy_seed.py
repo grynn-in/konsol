@@ -1,9 +1,21 @@
 """Flatten Reporting Hierarchy Member trees into reporting_hierarchies.csv rows."""
 from __future__ import annotations
 
+# The warehouse's open end (ClickHouse Date32 max); a blank effective_to.
+OPEN_END = "2299-12-31"
+
 
 def flatten_reporting_hierarchies(frappe):
-    """Return seed rows for all Published Reporting Hierarchy headers."""
+    """Return seed rows for all Published Reporting Hierarchy headers.
+
+    One row per member row, i.e. per dated TRANCHE of a member code: each row
+    carries that tranche's own label and window as ``member_effective_from`` /
+    ``member_effective_to`` (ISO dates; a blank end is ``OPEN_END``).
+    ``parent_member_code`` is the linked parent's code. ``path`` and
+    ``hierarchy_level`` follow the chain of linked parent rows and are
+    informational only: the warehouse resolves the tree per period from codes
+    and dates, not from this path.
+    """
     headers = frappe.get_all(
         "Reporting Hierarchy",
         filters={"status": "Published"},
@@ -26,7 +38,15 @@ def flatten_reporting_hierarchies(frappe):
         members = frappe.get_all(
             "Reporting Hierarchy Member",
             filters={"reporting_hierarchy": header.name},
-            fields=["name", "parent_member", "member_code", "member_label", "is_group"],
+            fields=[
+                "name",
+                "parent_member",
+                "member_code",
+                "member_label",
+                "is_group",
+                "effective_from",
+                "effective_to",
+            ],
             order_by="member_code asc",
             limit_page_length=0,
         )
@@ -55,8 +75,17 @@ def flatten_reporting_hierarchies(frappe):
                 "effective_to": str(header.effective_to or "9999-12-31"),
                 "is_default": 1 if header.is_default else 0,
                 "status": "Published",
+                "member_effective_from": _iso(member.effective_from) or "1900-01-01",
+                "member_effective_to": _iso(member.effective_to) or OPEN_END,
             })
     return rows
+
+
+def _iso(value):
+    """A Date field value (date or string) as YYYY-MM-DD; '' when blank."""
+    if not value:
+        return ""
+    return str(value)[:10]
 
 
 def _ancestor_chain(member, by_name):

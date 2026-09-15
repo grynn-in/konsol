@@ -26,6 +26,7 @@ class ReportingHierarchy(GovernedReferenceDocument):
         "hierarchy_name", "dimension", "member_code", "member_label",
         "parent_member_code", "is_group", "hierarchy_level", "path",
         "effective_from", "effective_to", "is_default", "status",
+        "member_effective_from", "member_effective_to",
     ]
     BUILD_SCOPE = _REPORTING_BUILD_SCOPE
 
