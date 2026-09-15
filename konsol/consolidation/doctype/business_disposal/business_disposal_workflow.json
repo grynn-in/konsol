@@ -22,6 +22,11 @@
    "state": "Approved",
    "doc_status": "1",
    "allow_edit": "EPM Admin"
+  },
+  {
+   "state": "Cancelled",
+   "doc_status": "2",
+   "allow_edit": "EPM Admin"
   }
  ],
  "transitions": [

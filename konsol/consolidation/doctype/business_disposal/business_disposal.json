@@ -134,11 +134,11 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "Draft\nPending Approval\nApproved",
+   "options": "Draft\nPending Approval\nApproved\nCancelled",
    "default": "Draft",
    "read_only": 1,
    "in_list_view": 1,
-   "description": "Set by the workflow: Approved is the submitted document."
+   "description": "Set by the workflow: Approved is the submitted document, Cancelled the cancelled one."
   },
   {
    "fieldname": "amended_from",
