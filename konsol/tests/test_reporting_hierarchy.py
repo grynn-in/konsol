@@ -254,7 +254,7 @@ def test_overlapping_tranches_of_one_code_are_refused():
 
 
 def test_open_tranche_overlaps_any_later_one():
-    old = _row("old1", "ZZ_A", "2017-01-01")  # open end = 2999-12-31
+    old = _row("old1", "ZZ_A", "2017-01-01")  # open end
     err = _save([old], _row("n1", "ZZ_A", "2030-01-01", "2030-12-31"))
     assert err is not None and "(old1)" in err
 
@@ -314,3 +314,42 @@ def test_parent_tranches_with_a_hole_are_refused():
     err = _save([p_old, p_new], child)
     assert err is not None
     assert "does not cover 2021-01-01 to 2021-12-31" in err
+
+
+# --- konsol#220 row R3b: open end matches the warehouse (Date32) -----------
+
+def test_open_end_is_the_warehouse_date32_max():
+    mod = _dated_controller([])
+    assert mod.OPEN_END == "2299-12-31"
+
+
+def test_overlap_message_shows_an_open_row_as_open_not_a_date():
+    old = _row("old1", "ZZ_A", "2017-01-01")
+    err = _save([old], _row("n1", "ZZ_A", "2030-01-01", "2030-12-31"))
+    assert err is not None
+    assert "covering 2017-01-01 to open (old1)" in err
+    assert "2999-12-31" not in err and "2299-12-31" not in err
+
+
+def test_parent_gap_message_shows_an_open_end_as_open():
+    parent = _row("p1", "ZZ_E", "2017-01-01", "2024-12-31")
+    child = _row("c1", "ZZ_EX", "2017-01-01", None, parent="p1", is_group=0)
+    err = _save([parent], child)
+    assert err == (
+        "ZZ_EX applies from 2017-01-01 to open, but its parent ZZ_E "
+        "does not cover 2025-01-01 to open."
+    )
+
+
+def test_effective_to_after_the_warehouse_range_is_refused():
+    err = _save([], _row("n1", "ZZ_A", "2017-01-01", "2300-01-01"))
+    assert err == "Effective To must be between 1900-01-01 and 2299-12-31."
+
+
+def test_effective_from_before_the_warehouse_range_is_refused():
+    err = _save([], _row("n1", "ZZ_A", "1899-12-31"))
+    assert err == "Effective From must be between 1900-01-01 and 2299-12-31."
+
+
+def test_window_on_the_range_bounds_is_accepted():
+    assert _save([], _row("n1", "ZZ_A", "1900-01-01", "2299-12-31")) is None
