@@ -40,18 +40,22 @@ def _throw(msg, exc=_ValidationError, **kw):
     raise exc(msg)
 
 
-def _run(rows, active_budgets=(), call=None, reply="", cycles=None):
+def _run(rows, active_budgets=(), call=None, reply="", cycles=None, scenarios=None):
     """api._batch_query_clickhouse over ``rows`` (dicts overriding a default
     variance request). ``active_budgets`` is what the Scenario doctype holds
     as active budget scenarios; ``cycles`` the (scenario_id, fiscal_year) of
     the Budget Cycles (default: one FY2026 cycle per active budget, the
-    default request year). ``call(api)``, when given, replaces the batch
-    read (its return value is the result); ``reply`` is ClickHouse's answer.
+    default request year). ``scenarios``, when given, is the Scenario records
+    instead, as (scenario_id, scenario_type, is_active), and a lookup applies
+    its filters. ``call(api)``, when given, replaces the batch read (its
+    return value is the result); ``reply`` is ClickHouse's answer.
 
     Returns (result, [(sql, params), ...], [Scenario get_all filters, ...]);
     Budget Cycle lookups are recorded as {"Budget Cycle": filters}.
     """
     queries, lookups = [], []
+    if scenarios is not None:
+        active_budgets = [s for s, kind, on in scenarios if kind == "budget" and on]
     if cycles is None:
         cycles = [(s, 2026) for s in active_budgets]
 
@@ -64,7 +68,15 @@ def _run(rows, active_budgets=(), call=None, reply="", cycles=None):
                     for s, y in cycles if s in wanted]
         assert doctype == "Scenario", doctype
         lookups.append(filters)
-        return list(active_budgets)
+        if scenarios is None:
+            return list(active_budgets)
+        found = []
+        for sid, kind, on in scenarios:
+            record = {"scenario_id": sid, "scenario_type": kind, "is_active": on}
+            if all(record[k] in v[1] if isinstance(v, list) else record[k] == v
+                   for k, v in filters.items()):
+                found.append(sid)
+        return sorted(found)
 
     fake_frappe = types.ModuleType("frappe")
     fake_frappe.get_all = get_all
@@ -130,20 +142,69 @@ def _run(rows, active_budgets=(), call=None, reply="", cycles=None):
 
 
 def test_variance_dataset_filters_the_named_budget_scenario():
-    result, queries, lookups = _run([{"scenario_id": "ZZ_PLAN"}])
+    result, queries, lookups = _run(
+        [{"scenario_id": "ZZ_PLAN"}], active_budgets=["ZZ_PLAN"])
     assert not result.get("errors")
     (sql, params), = queries
     assert "FROM epm_gold.gold_variance_analysis" in sql
     assert "AND budget_scenario_id = {sid:String}" in sql
     assert params["param_sid"] == "ZZ_PLAN"
-    # a named scenario is read as named; the doctype is not asked
-    assert lookups == []
+    # a named scenario is read as named, once the doctype says it is an
+    # active budget; its year's Budget Cycles are not asked
+    assert lookups == [{"scenario_type": "budget", "is_active": 1}]
 
 
 def test_variance_dataset_rejects_an_unsafe_scenario_id():
     result, queries, _ = _run([{"scenario_id": "ZZ PLAN;"}])
     assert queries == []
     assert result["errors"] == ["Invalid scenario_id format"]
+
+
+# -- a named scenario must be a budget the warehouse holds (PR #217 review 4)
+#
+# The warehouse variance model keeps only active budget scenarios, so a named
+# actuals, inactive or misspelled id would filter to nothing and read 0.0.
+
+_ZZ_SCENARIOS = [
+    ("ZZ_ACT", "actual", 1),
+    ("ZZ_OLD", "budget", 0),
+    ("ZZ_PLAN", "budget", 1),
+]
+
+
+def test_variance_dataset_with_a_named_actuals_scenario_is_refused():
+    result, queries, _ = _run([{"scenario_id": "ZZ_ACT"}], scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "ZZ_ACT is not an active budget scenario, so there is no variance for it."]
+    assert result["values"] == [None]
+
+
+def test_variance_dataset_with_a_named_inactive_budget_is_refused():
+    result, queries, _ = _run([{"scenario_id": "ZZ_OLD"}], scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "ZZ_OLD is not an active budget scenario, so there is no variance for it."]
+
+
+def test_variance_dataset_with_an_unknown_named_scenario_is_refused():
+    result, queries, _ = _run([{"scenario_id": "ZZ_PLNA"}], scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "ZZ_PLNA is not an active budget scenario, so there is no variance for it."]
+
+
+def test_variance_dataset_named_active_budget_is_filtered_and_refusal_is_per_row():
+    result, queries, lookups = _run(
+        [{"scenario_id": "ZZ_PLAN"}, {"scenario_id": "ZZ_ACT", "account": "ZZ9"}],
+        scenarios=_ZZ_SCENARIOS)
+    (sql, params), = queries
+    assert "AND budget_scenario_id = {sid:String}" in sql
+    assert params["param_sid"] == "ZZ_PLAN"
+    assert result["errors"] == [
+        None, "ZZ_ACT is not an active budget scenario, so there is no variance for it."]
+    # one Scenario lookup, however many named rows
+    assert lookups == [{"scenario_type": "budget", "is_active": 1}]
 
 
 def test_variance_dataset_without_scenario_reads_the_one_active_budget():
