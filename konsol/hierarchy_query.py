@@ -225,17 +225,50 @@ def _active_budget_scenarios():
     )
 
 
-def choose_budget_scenario(active):
+def _active_budget_scenarios_by_year():
+    """{fiscal_year: [scenario_id, ...]} of the active budget scenarios.
+
+    A budget scenario belongs to the years of its Budget Cycles. A cancelled
+    cycle (docstatus 2) has withdrawn its sheets, so it does not count. Two
+    lookups, however many years a call reads.
+    """
+    import frappe
+
+    active = _active_budget_scenarios()
+    if not active:
+        return {}
+    by_year = defaultdict(set)
+    for cycle in frappe.get_all(
+        "Budget Cycle",
+        filters={"scenario_id": ["in", active], "docstatus": ["<", 2]},
+        fields=["scenario_id", "fiscal_year"],
+    ):
+        by_year[int(cycle["fiscal_year"])].add(cycle["scenario_id"])
+    return {year: sorted(ids) for year, ids in by_year.items()}
+
+
+def choose_budget_scenario(active, fiscal_year=None):
     """The budget scenario a variance read uses when none is named.
 
-    Exactly one active budget scenario is the answer. None, or several, is an
-    error that says so, never a guess (konsol#214).
+    ``active`` is the active budget scenarios, already narrowed to
+    ``fiscal_year`` when one is given. Exactly one is the answer. None, or
+    several, is an error that says so, never a guess (konsol#214).
     """
     if len(active) == 1:
         return active[0], None
+    if fiscal_year is None:
+        if not active:
+            return None, "No budget scenario is active, so there is no variance to show."
+        return None, f"Several budget scenarios are active ({', '.join(active)}); choose one."
     if not active:
-        return None, "No budget scenario is active, so there is no variance to show."
-    return None, f"Several budget scenarios are active ({', '.join(active)}); choose one."
+        return None, (
+            f"No active budget scenario belongs to FY{fiscal_year}, "
+            "so there is no variance to show."
+        )
+    return None, (
+        f"Several active budget scenarios belong to FY{fiscal_year} "
+        f"({', '.join(active)}); choose one."
+    )
 
 
 def batch_query_hierarchy(requests_list, *, allowed_entities):
@@ -255,7 +288,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     errors = [None] * n
 
     groups = defaultdict(list)
-    active_budgets = None  # looked up once per call, when first needed
+    budgets_by_year = None  # looked up once per call, when first needed
     for idx, req in enumerate(requests_list):
         sc = _normalize_scenario(req.get("scenario", "actuals"))
         cfg = HIERARCHY_SCENARIO_CONFIG.get(sc)
@@ -271,9 +304,12 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             continue
         scenario_id = req.get("scenario_id", "")
         if cfg.get("needs_budget_scenario") and not scenario_id:
-            if active_budgets is None:
-                active_budgets = _active_budget_scenarios()
-            scenario_id, err = choose_budget_scenario(active_budgets)
+            # No scenario named: the one active budget of the request's year.
+            if budgets_by_year is None:
+                budgets_by_year = _active_budget_scenarios_by_year()
+            year = int(req["year"])
+            scenario_id, err = choose_budget_scenario(
+                budgets_by_year.get(year, []), fiscal_year=year)
             if err:
                 errors[idx] = err
                 continue
