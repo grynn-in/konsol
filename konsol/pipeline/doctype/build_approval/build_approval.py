@@ -2,6 +2,8 @@
 
 Manages workflow transitions for governed dbt builds.
 Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin approval.
+With the Build Approval Workflow active, a new row takes its Request transition
+(after_insert); without one, before_save moves it (konsol#215).
 """
 import frappe
 from frappe.model.document import Document
@@ -90,16 +92,43 @@ class BuildApproval(Document):
         if not self.requested_by:
             self.requested_by = frappe.session.user
 
-        # Workflow transitions — only on first save or explicit state reset
-        if self.workflow_state == "Draft" and (self.is_new() or self.has_value_changed("workflow_state")):
+        # With the Build Approval Workflow active, a new row leaves Draft by
+        # its Request transition (after_insert), so the workflow's roles and
+        # conditions decide (konsol#215). A site without one keeps the old
+        # auto-transition — only on first save or explicit state reset.
+        if (not workflow_active() and self.workflow_state == "Draft"
+                and (self.is_new() or self.has_value_changed("workflow_state"))):
             if self.risk_level == "low":
                 self.workflow_state = "Approved"
                 self.approved_by = "Administrator"
             else:
                 self.workflow_state = "Pending Review"
 
+        if self.workflow_state == "Approved" and not self.approved_by and self.has_value_changed("workflow_state"):
+            self.approved_by = "Administrator" if self.risk_level == "low" else frappe.session.user
+
         # Populate sync info from EPM Settings
         self._populate_sync_info()
+
+    def after_insert(self):
+        """Take the workflow's Request transition on the new row (konsol#215).
+
+        Applied to a fresh load, so the workflow saves it as an existing row
+        moving from Draft (a new row may only be in the first state). Its
+        on_update then enqueues the build or notifies the reviewers. A user
+        the workflow gives no Request leaves the row in Draft.
+        """
+        if not workflow_active():
+            return
+        from frappe.model.workflow import apply_workflow, get_transitions
+
+        fresh = frappe.get_doc("Build Approval", self.name)
+        if fresh.workflow_state != "Draft":
+            return
+        if not any(t.get("action") == "Request" for t in get_transitions(fresh)):
+            frappe.msgprint(f"You may not request a {self.build_scope} build.")
+            return
+        apply_workflow(fresh, "Request")
 
     def on_update(self):
         """Post-save side effects: enqueue builds, notify on pending review.
@@ -154,6 +183,11 @@ class BuildApproval(Document):
         frappe.logger().info(
             f"Governed build enqueued: {self.name} (scope={self.build_scope})"
         )
+
+
+def workflow_active():
+    """Whether the site has an active Workflow for Build Approval."""
+    return bool(frappe.db.get_value("Workflow", {"document_type": "Build Approval", "is_active": 1}))
 
 
 def governed_build_job_id(name):

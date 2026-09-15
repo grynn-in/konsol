@@ -207,7 +207,9 @@ def test_the_prefix_is_the_one_run_governed_build_writes():
 
 def _frappe_stub():
     frappe = types.ModuleType("frappe")
-    frappe.db = types.SimpleNamespace(sql=lambda *a, **k: None)
+    # get_value: no active Build Approval Workflow on this site, so before_save
+    # keeps its own Draft auto-transition (konsol#215 row W3).
+    frappe.db = types.SimpleNamespace(sql=lambda *a, **k: None, get_value=lambda *a, **k: None)
     _add_session(frappe)
     return frappe
 
@@ -269,6 +271,9 @@ def _build_approval(frappe=None):
         def __init__(self, before=None, **fields):
             self._before = before
             self.flags = _D()
+            # A real row always has the field; before_save reads it when a row
+            # becomes Approved (konsol#215 row W3).
+            self.approved_by = None
             self.__dict__.update(fields)
 
         def get_doc_before_save(self):
