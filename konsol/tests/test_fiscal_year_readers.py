@@ -44,7 +44,9 @@ class _Row(dict):
 
 
 class _FakeFrappe(types.ModuleType):
-    """Stand-in for frappe: only get_all, which is all launch_options needs."""
+    """Stand-in for frappe: get_all, plus the only_for gate launch_options
+    opens with (konsol#166) — recorded as ``("only_for", roles)`` in ``calls``
+    so the role check is exercised here, not stubbed away."""
 
     def __init__(self, years, periods_by_year, definitions=(), groups=()):
         super().__init__("frappe")
@@ -53,6 +55,10 @@ class _FakeFrappe(types.ModuleType):
         self._definitions = definitions
         self._groups = groups
         self.calls = []
+
+    def only_for(self, roles, message=False):
+        roles = [roles] if isinstance(roles, str) else list(roles)
+        self.calls.append(("only_for", tuple(roles)))
 
     def get_all(self, doctype, fields=None, filters=None, order_by=None, **kwargs):
         self.calls.append(doctype)
@@ -138,6 +144,13 @@ def test_launch_options_from_fiscal_year():
     # Unrelated surfaces (definitions, scopes via Consolidation Group) still wired.
     assert out["definitions"] == ["Close"]
     assert "Consolidation Group" in fake.calls
+
+    # konsol#166: it reads with get_all, which ignores permissions, so the call
+    # is gated to the launch roles — the stub records that check.
+    gates = [c for c in fake.calls if isinstance(c, tuple) and c[0] == "only_for"]
+    assert gates, f"launch_options did not call frappe.only_for: {fake.calls}"
+    assert set(gates[0][1]) == {"EPM Admin", "EPM Analyst", "System Manager"}, (
+        f"launch_options is not gated to the launch roles: {gates}")
 
 
 # ---- control_api readers (konsol#189-39) -------------------------------
