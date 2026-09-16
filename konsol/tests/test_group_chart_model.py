@@ -328,12 +328,13 @@ def test_published_changes_listed():
                 "ZZ3000": leaf(main_account="ZZ3000", account_name="Capital", account_type="Equity",
                                normal_balance="Credit", fx_method="historical", status="Published"),
                 "ZZ6000": leaf(main_account="ZZ6000", account_name="Draft one", status="Draft")}
-    rows = parse(line("ZZ1000", "Cash", kind="Asset", section="BS", fx="historical"),
+    rows = parse(line("ZZ1000", "Cash", kind="Balance sheet", section="BS"),
                  line("ZZ3000", "Capital", kind="Equity", section="BS"),
                  line("ZZ6000", "Draft one renamed", kind="Asset", section="BS"))
     report = M.plan_chart_load(rows, existing)
     assert report["ok"], report["errors"]
-    assert report["published_changes"] == [{"main_account": "ZZ1000", "fields": {"fx_method": ["closing", "historical"]}}]
+    assert report["published_changes"] == [{"main_account": "ZZ1000",
+                                            "fields": {"account_type": ["Asset", "Balance sheet"]}}]
     assert report["unchanged"] == ["ZZ3000"]   # blank fx_method still defaults to historical for Equity
     assert report["update"] == ["ZZ6000"]
     writes = {w[1]: w for w in report["writes"]}

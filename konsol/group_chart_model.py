@@ -179,11 +179,23 @@ def declaration_problems(row, parent=None):
 
 def publish_problems(row, parent=None):
     """What stops an account being published: every declaration a leaf needs
-    (a heading needs its name and chart), and a parent that is Published."""
+    (a heading needs its name and chart), that only an Equity account is
+    translated at the historical rate, and a parent that is Published.
+
+    konsol does step two of IAS 21 only: it translates a functional-currency
+    trial balance into the presentation currency, so the historical rate is for
+    equity (konsol#239). Remeasuring books kept in a non-functional currency is
+    the entity's own step one, upstream. A heading carries no translation
+    method, so the rule does not reach it.
+    """
     code = text(row.get("main_account"))
     needed = GROUP_DECLARATIONS if _is_group(row) else LEAF_DECLARATIONS
     missing = [f for f in needed if not text(row.get(f))]
     out = [f"{code} cannot be published without {', '.join(missing)}"] if missing else []
+    account_type = text(row.get("account_type"))
+    if not _is_group(row) and text(row.get("fx_method")) == "historical" and account_type != "Equity":
+        out.append(f"{code}: only an Equity account may be translated at the historical rate (konsol#239); "
+                   f"this one is {account_type or 'untyped'}. Use closing, or average for a P&L account.")
     parent_code = text(row.get("parent_account"))
     if parent_code and (parent is None or parent.get("status") != PUBLISHED):
         out.append(f"{code}: publish its parent {parent_code} first")
