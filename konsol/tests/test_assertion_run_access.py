@@ -1,8 +1,13 @@
-"""Who may start a close run (konsol#166).
+"""Who may start a close run, and who may see the launch form's options
+(konsol#166).
 
 `trigger_close_run` writes: it inserts an Assertion Run, commits, and enqueues
 the assertion suite on the long queue. So it is POST-only, and gated to the
 roles that run the close — Close Lead (`EPM Admin`) and System Manager.
+
+`launch_options` writes nothing, so it stays a GET, but it reads with
+`frappe.get_all`, which ignores permissions: it must be gated to the roles that
+launch pipelines — `EPM Admin`, `EPM Analyst` and System Manager.
 
 Source-level, in the `test_role_access.py` style: the file is parsed with
 `ast`, so no frappe and no site are needed.
@@ -12,6 +17,7 @@ import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSERTION_RUN = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+ORCHESTRATOR_API = os.path.join(APP_DIR, "orchestrator", "api.py")
 
 
 def _function(path, name):
@@ -35,10 +41,14 @@ def _whitelist_methods(fn):
 
 
 def _first_statement(fn):
-    """The first real statement of the body, the docstring not counted."""
+    """The first real statement of the body — the docstring and the lazy
+    `import frappe` some modules open with (they must import on the host, with
+    no bench) are not statements a caller can be refused by."""
     body = fn.body
     if (body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
             and isinstance(body[0].value.value, str)):
+        body = body[1:]
+    while body and isinstance(body[0], (ast.Import, ast.ImportFrom)):
         body = body[1:]
     assert body, f"{fn.name} has no body"
     return body[0]
@@ -70,3 +80,12 @@ def test_only_the_close_roles_may_start_a_close_run():
     roles = _only_for_roles(_first_statement(_function(ASSERTION_RUN, "trigger_close_run")))
     assert roles == {"EPM Admin", "System Manager"}, (
         f"trigger_close_run does not open with frappe.only_for of the close roles: {roles}")
+
+
+def test_only_the_launch_roles_may_read_the_launch_options():
+    """`launch_options` reads every Pipeline and the declared calendar with
+    `frappe.get_all`, which ignores permissions, so the gate is the function's
+    own first statement."""
+    roles = _only_for_roles(_first_statement(_function(ORCHESTRATOR_API, "launch_options")))
+    assert roles == {"EPM Admin", "EPM Analyst", "System Manager"}, (
+        f"launch_options does not open with frappe.only_for of the launch roles: {roles}")
