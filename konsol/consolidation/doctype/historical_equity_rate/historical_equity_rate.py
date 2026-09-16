@@ -66,6 +66,15 @@ class HistoricalEquityRate(Document):
         closing rate with no error. Enforce existence here instead, against the
         Consolidation Group registry (the app's source of truth for membership).
 
+        `main_account` IS a Link, to Main Account, and the difference is the
+        naming: Main Account is named `field:main_account`, so its name is the
+        bare account code itself. The stored value is byte for byte what it
+        always was and the dbt join is untouched — exactly what a Link to
+        Consolidation Group could not promise. The check below stays anyway: it
+        names the offending account and says what an unmatched key costs, and it
+        still fires on the write paths that skip Frappe's own link validation
+        (a patch, an import, `ignore_links`).
+
         Existence is checked *independently* (the group is a known group; the
         entity is a known entity). The (group, entity) *pair* is intentionally
         NOT enforced yet: the Consolidation Group doctype currently diverges from
@@ -88,6 +97,13 @@ class HistoricalEquityRate(Document):
             frappe.throw(
                 f"Unknown entity '{self.data_area_id}'. It must be a member entity "
                 "in Consolidation Group.",
+                frappe.ValidationError,
+            )
+        if self.main_account and not frappe.db.exists("Main Account", self.main_account):
+            frappe.throw(
+                f"Unknown account '{self.main_account}'. It must exist in Main "
+                "Account — an unmatched key silently drops the account to the "
+                "closing rate in gold, which is the wrong number, not an error.",
                 frappe.ValidationError,
             )
 
