@@ -241,6 +241,18 @@
       "print": 1,
       "export": 1,
       "email": 1
+    },
+    {
+      "role": "System Manager",
+      "permlevel": 1,
+      "read": 1,
+      "write": 1
+    },
+    {
+      "role": "EPM Admin",
+      "permlevel": 1,
+      "read": 1,
+      "write": 1
     }
   ]
 }
