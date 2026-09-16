@@ -562,7 +562,7 @@ _REFERENCE_TABLE_DDL = {
     ),
     "epm_staging.cash_flow_categories": (
         "(main_account String, cf_category String, cf_line_item String, "
-        "is_cash UInt8, sign Int8, status String) "
+        "is_cash UInt8, status String) "
         "ENGINE = MergeTree ORDER BY main_account"
     ),
     # konsol#220: each member row is one dated tranche of its code; its window
@@ -804,6 +804,9 @@ _RETIRED_COLUMNS = {
     # ownership is temporal and lives only in Ownership Period now
     "epm_staging.consolidation_hierarchy": ["effective_ownership_pct"],
     "epm_gold.consolidation_groups": ["ownership_pct", "consolidation_method"],
+    # konsol#197: no dbt model ever selected it — the cash-flow models read
+    # is_cash, cf_category and cf_line_item and negate the movement themselves
+    "epm_staging.cash_flow_categories": ["sign"],
 }
 
 # The trial-balance landing and control tables (F8). KEEP IN SYNC with
