@@ -109,11 +109,21 @@ parent_member, member_code, member_label, is_group`: one parent, one label, no
 dates. Load the tree as it stands and 2010-2024 reports under the 2025
 structure.
 
-**Fix it before loading, not after.** There are currently **0 Reporting
-Hierarchies and 0 members** on the stack, so this costs a doctype change today
-and a restatement of every report later. The legal tree already solves the same
-problem — `Ownership Period` is dated and consolidation resolves it per period
-(`macros/ownership_resolution.sql` is the pattern to copy).
+**The site has no Reporting Hierarchy yet, so the first tree you load should
+carry its dates from the start.** There are currently **0 Reporting Hierarchies
+and 0 members** on the stack, and that is the whole reason this is cheap:
+nothing to migrate, no report to restate, nobody reconciling a before and an
+after. It is a doctype change plus a first load that already knows about dates.
+
+Load an undated tree first and the cost inverts — every report built on it is
+computed under one structure, and adding dates later means re-deriving each of
+them and explaining why last quarter's divisional P&L moved. The dates are not
+something to invent later either: the source sheet already carries
+`effective_from` and `effective_to` per node, waiting for somewhere to go.
+
+The legal tree already solves the same problem — `Ownership Period` is dated and
+consolidation resolves it per period (`macros/ownership_resolution.sql` is the
+pattern to copy).
 
 Workbook reference sheets are in the container at `/tmp/refdata/ref/` (21 CSVs).
 
