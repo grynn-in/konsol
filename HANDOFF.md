@@ -807,6 +807,47 @@ containers and run scripts or dbt from a copy.
 | konsolidat **#153** | `build_consolidation_report.py` has been broken since F2 (reads retired columns). |
 | konsolidat **#154** | `gold_consolidated_trial_balance` delete+insert never deletes a key that left the SELECT, so stale slices stay until `--full-refresh`. |
 
+## Excel read path: measured, fixed, and why not Cube (16 Sep)
+
+**Shipped (`9347eea`, konsol#194 + #231).** The Excel read helper
+`api._clickhouse_query` was still sending its SQL in the **URL** — konsol#193
+fixed `clickhouse.execute()` but never this second, separate client. Above about
+1,500 cells in one group the URL exceeded what ClickHouse accepts and the whole
+chunk failed with `HTML Form Exception: Field value too long`. The add-in chunks
+at `MAX_BATCH_SIZE = 2000`, so **every dense sheet was guaranteed to hit it**,
+and `_batch_query_clickhouse` swallowed it into a per-cell
+`errors: ['ClickHouse query failed']` that named nothing.
+
+| cells, one group | before | after |
+|---:|---|---|
+| 300 | 18 ms | 15 ms |
+| 1,200 | 88 ms | 74 ms |
+| 2,000 | **failed** | **167 ms** |
+
+Also shipped: a forced sync now raises instead of failing silently, and a sync
+fills a sibling table and swaps it in, so a failed sync leaves the previous rows
+instead of an empty table. And konsol#231 took `periods` out of the batch
+grouping key, so a year of monthly cells is one query rather than twelve.
+
+**Cube was evaluated and declined — konsol#232, labelled `don't-fix`.** It is
+deployed, idle, has **zero pre-aggregations** defined, and **nothing in konsol
+calls it**. Its schema files are hand-written and duplicate the
+Dataset/Measure/Dimension registry. Reopen only if a measured query crosses
+about a second, a non-Excel client needs the semantic layer, or concurrency
+rather than latency becomes the limit — and even then a Redis cache inside
+`_batch_query_clickhouse` reuses infrastructure that already exists.
+
+**A measurement trap worth not repeating.** An earlier benchmark of mine varied
+group count and cell count *together* (1 group / 400 cells versus 60 groups /
+24,000 cells) and concluded cost scaled with groups at ~29 ms each. A controlled
+run held cells at 1,200 and varied only groups: **about 88 ms either way.**
+**Cells dominate; groups are close to free.** The "~29 ms per group" figure and
+everything extrapolated from it are void. Hold one variable fixed.
+
+**Nothing caches.** The same batch three times cost 280, 273, 280 ms. That
+measurement was not confounded and is the real argument if concurrency ever
+becomes the limit.
+
 ## One customer or many: the product-level audit (15 Sep)
 
 **Decision (user, 15 Sep): for multi-tenant, the dbt project moves into the
