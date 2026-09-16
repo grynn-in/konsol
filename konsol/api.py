@@ -516,18 +516,24 @@ def _clickhouse_error_message(body):
 def _clickhouse_query(sql, params, ch_settings):
     """Execute a single ClickHouse HTTP query. Returns response text or raises.
 
+    The SQL goes in the POST body, never in the URL. As a URL parameter it
+    passed ClickHouse's 128 KiB form-field limit at the add-in's chunk size,
+    and every chunk of a dense sheet failed with "Poco::Exception. Code: 1000
+    — HTML Form Exception: Field value too long" (konsol#194: 1,500 cells in
+    one group were fine, 1,800 were not). Only the param_* values stay in the
+    URL; this is the shape konsol.clickhouse.execute already uses.
+
     On an HTTP error, ClickHouse's response text is logged and the raised
     ClickHouseQueryError carries its error code and exception name only
     (e.g. "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"), so the caller
     can show why without leaking the query's detail (konsol#214).
     """
     url = _ch_url(ch_settings)
-    query_params = dict(params)
-    query_params["query"] = sql
 
-    resp = requests.get(
+    resp = requests.post(
         url,
-        params=query_params,
+        params=dict(params),
+        data=sql.encode("utf-8"),
         auth=(ch_settings["user"], ch_settings["password"]),
         timeout=30,
         verify=ch_settings.get("verify", True),

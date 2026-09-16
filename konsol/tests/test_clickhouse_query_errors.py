@@ -7,7 +7,7 @@ invisible. Now ClickHouse's response body is logged, and the message the
 caller shows carries only ClickHouse's error code and exception name (row K7:
 the first line can hold table names, SQL, the server version or the user
 name, so those stay in the log). api.py is loaded under a private name with a
-stub frappe and a fake requests.get that answers HTTP 400.
+stub frappe and a fake requests.post that answers HTTP 400.
 """
 import importlib.util
 import os
@@ -74,9 +74,9 @@ def _load_api(logged):
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = mod
-    # api.requests is the real module; give api its own copy with a fake get
+    # api.requests is the real module; give api its own copy with a fake post
     fake_requests = types.SimpleNamespace(
-        get=lambda *a, **k: _Resp(400, _BODY),
+        post=lambda *a, **k: _Resp(400, _BODY),
         exceptions=requests.exceptions,
     )
     api.requests = fake_requests
@@ -113,7 +113,7 @@ def test_auth_failure_message_does_not_name_the_user():
         "Code: 516. DB::Exception: zz_reader: Authentication failed: password "
         "is incorrect, or there is no user with such name. "
         "(AUTHENTICATION_FAILED) (version 24.3.1.1 (official build))\n")
-    api.requests.get = lambda *a, **k: _Resp(401, body)
+    api.requests.post = lambda *a, **k: _Resp(401, body)
     message = _message(api)
     assert message == "ClickHouse query failed (516: AUTHENTICATION_FAILED)"
     assert "zz_reader" not in message
@@ -125,7 +125,7 @@ def test_auth_failure_message_does_not_name_the_user():
 def test_code_without_exception_name_shows_the_code():
     logged = []
     api = _load_api(logged)
-    api.requests.get = lambda *a, **k: _Resp(
+    api.requests.post = lambda *a, **k: _Resp(
         400, "Code: 62. DB::Exception: Syntax error at zz_table\n")
     assert _message(api) == "ClickHouse query failed (62)"
 
@@ -133,14 +133,14 @@ def test_code_without_exception_name_shows_the_code():
 def test_empty_body_gives_the_plain_message():
     logged = []
     api = _load_api(logged)
-    api.requests.get = lambda *a, **k: _Resp(500, "")
+    api.requests.post = lambda *a, **k: _Resp(500, "")
     assert _message(api) == "ClickHouse query failed"
 
 
 def test_unparsable_body_gives_the_plain_message():
     logged = []
     api = _load_api(logged)
-    api.requests.get = lambda *a, **k: _Resp(
+    api.requests.post = lambda *a, **k: _Resp(
         502, "<html>Bad gateway at zz-clickhouse</html>")
     assert _message(api) == "ClickHouse query failed"
 
