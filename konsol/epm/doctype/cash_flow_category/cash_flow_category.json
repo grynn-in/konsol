@@ -50,15 +50,6 @@
       "description": "1 = the cash/cash-equivalent account itself (excluded from activity lines; defines the reconciliation target)"
     },
     {
-      "fieldname": "sign",
-      "fieldtype": "Select",
-      "label": "Sign",
-      "options": "1\n-1",
-      "default": "1",
-      "reqd": 1,
-      "description": "+1 credit-natured (liabilities/equity/contra-assets), -1 debit-natured (assets/contra-equity)"
-    },
-    {
       "fieldname": "lifecycle_section",
       "fieldtype": "Section Break",
       "label": "Lifecycle"
