@@ -443,7 +443,7 @@ class _CHResp:
 
 def _failing_api(body):
     """api.py under a private name, a stub frappe recording log_error in
-    ``api._zz_logged``, and a requests.get that answers HTTP 400 ``body``."""
+    ``api._zz_logged``, and a requests.post that answers HTTP 400 ``body``."""
     import requests
     logged = []
     fake_frappe = types.ModuleType("frappe")
@@ -480,7 +480,7 @@ def _failing_api(body):
             else:
                 sys.modules[k] = mod
     api.requests = types.SimpleNamespace(
-        get=lambda *a, **k: _CHResp(400, body), exceptions=requests.exceptions)
+        post=lambda *a, **k: _CHResp(400, body), exceptions=requests.exceptions)
     api._zz_logged = logged
     return api
 

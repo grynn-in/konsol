@@ -1,8 +1,10 @@
 """TDD tests for konsol EPM API (Frappe proxy to ClickHouse)."""
 import ast
+import importlib.util
 import json
 import os
 import sys
+import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PATH = os.path.join(APP_DIR, "api.py")
@@ -167,6 +169,153 @@ def test_period_net_amount_measure_expression_is_debit_minus_credit():
         r for r in records if r.get("measure_name") == "period_net_amount"
     )
     assert period_net["expression"] == "sum(debit_amount) - sum(credit_amount)"
+
+
+# ---------------------------------------------------------------------------
+# konsol#231: one query per group, not one per period
+#
+# _batch_query_clickhouse carried each request's `periods` tuple in its
+# grouping key, so cells that differed only in period could never share a
+# query: a five-year monthly sheet became 5 x 12 = 60 round trips of ~29 ms.
+# The SQL already emitted `fiscal_period IN (...)`; the only reason periods
+# keyed the group was that fiscal_period was missing from select_cols, so a
+# returned row could not be attributed to the cell that asked for it. With
+# fiscal_period selected and grouped, one query answers the whole row and each
+# cell takes the sum of the periods it asked for (FY sums 1-12).
+#
+# api.py is loaded under a private name with a stub frappe and a fake
+# _clickhouse_query that records every (sql, params).
+# ---------------------------------------------------------------------------
+
+def _tsv(*rows):
+    """ClickHouse TabSeparated reply: the select columns, then the value."""
+    return "".join("\t".join(str(col) for col in row) + "\n" for row in rows)
+
+
+def _run_batch(rows, reply=""):
+    """api._batch_query_clickhouse over ``rows`` (dicts overriding a default
+    zz_actuals request), against a fake ClickHouse answering ``reply``.
+
+    Returns (result, [(sql, params), ...]).
+    """
+    queries = []
+    zz_actuals = types.SimpleNamespace(
+        fact_name="zz_actuals", scenario_key="actuals",
+        clickhouse_table="epm_gold.zz_actuals", has_scenario_id=0, has_layer=0,
+        reroute_table=None, reroute_column=None, reroute_measure=None,
+    )
+
+    fake_frappe = types.ModuleType("frappe")
+    fake_frappe.get_all = lambda *a, **k: []
+    fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    fake_frappe.log_error = lambda *a, **k: None
+    fake_frappe.get_traceback = lambda: ""
+    fake_utils = types.ModuleType("frappe.utils")
+    fake_utils.now_datetime = lambda: None
+    fake_frappe.utils = fake_utils
+    stubs = {
+        "frappe": fake_frappe,
+        "frappe.utils": fake_utils,
+        "konsol.clickhouse": types.SimpleNamespace(
+            connection_url=lambda s: "", get_connection=lambda: {}),
+    }
+
+    before = set(sys.modules)
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location("_host_api_k231", API_PATH)
+        api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api)
+
+        api._get_fact = (
+            lambda fact=None, scenario=None: zz_actuals if fact == "zz_actuals" else None)
+        api._get_fact_by_scenario = lambda scenario: None
+        api._get_ch_connection = lambda: {}
+
+        def fake_query(sql, params, ch_settings):
+            queries.append((sql, dict(params)))
+            return reply
+
+        api._clickhouse_query = fake_query
+
+        reqs = []
+        for row in rows:
+            req = {
+                "entity": "ZZ01", "year": 2026, "account": "ZZ100",
+                "measure": "period_net_amount", "periods": (1,),
+                "dimensions": {}, "fact": "zz_actuals",
+            }
+            req.update(row)
+            reqs.append(req)
+        result = api._batch_query_clickhouse(reqs)
+    finally:
+        for key in set(sys.modules) - before:
+            if key.split(".")[0] in ("frappe", "konsol"):
+                del sys.modules[key]
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+    return result, queries
+
+
+def test_two_periods_of_one_cell_row_make_one_query():
+    """January and February of the same cell row share a single query."""
+    result, queries = _run_batch(
+        [{"periods": (1,)}, {"periods": (2,)}],
+        reply=_tsv(
+            ("ZZ01", "2026", "1", "ZZ100", "100.0"),
+            ("ZZ01", "2026", "2", "ZZ100", "250.0"),
+        ))
+    assert not result.get("errors"), result
+    assert len(queries) == 1, (
+        "konsol#231: cells differing only in period must share one query; "
+        f"got {len(queries)}")
+    (sql, params), = queries
+    # both periods travel in the one IN list
+    assert sorted(v for k, v in params.items() if k.startswith("param_fp")) == ["1", "2"]
+    # fiscal_period is selected and grouped, so a row can be attributed back
+    select_cols = sql.split("SELECT ")[1].split(", coalesce")[0]
+    assert "fiscal_period" in select_cols
+    assert "fiscal_period" in sql.split("GROUP BY ")[1]
+    # each cell still reads its own period, not the group's total
+    assert result["values"] == [100.0, 250.0]
+
+
+def test_a_full_year_cell_sums_its_twelve_periods():
+    """A cell asking FY (periods 1-12) gets the sum of the twelve rows."""
+    result, queries = _run_batch(
+        [{"periods": tuple(range(1, 13))}],
+        reply=_tsv(*[("ZZ01", "2026", str(p), "ZZ100", "10.0") for p in range(1, 13)]))
+    assert not result.get("errors"), result
+    assert len(queries) == 1
+    assert result["values"] == [120.0]
+
+
+def test_a_cell_whose_period_has_no_row_reads_zero():
+    """A period the warehouse has no row for contributes 0.0, not the group's."""
+    result, _ = _run_batch(
+        [{"periods": (1,)}, {"periods": (2,)}],
+        reply=_tsv(("ZZ01", "2026", "1", "ZZ100", "100.0")))
+    assert not result.get("errors"), result
+    assert result["values"] == [100.0, 0.0]
+
+
+def test_cells_that_differ_in_measure_or_dimensions_still_query_separately():
+    """Only the period left the grouping key: measure and dimension shape stay."""
+    _, by_measure = _run_batch([
+        {"measure": "period_net_amount"},
+        {"measure": "period_debit"},
+    ])
+    assert len(by_measure) == 2
+
+    _, by_dims = _run_batch([
+        {"dimensions": {}},
+        {"dimensions": {"cost_center": "ZZ-CC1"}},
+    ])
+    assert len(by_dims) == 2
 
 
 

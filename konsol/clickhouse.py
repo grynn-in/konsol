@@ -124,13 +124,21 @@ def _stamp_watermark(table, row_count, source_max_modified=None):
 def sync_table(table, columns, rows, source_max_modified=None, force=False):
     """TRUNCATE and INSERT all rows into a ClickHouse table.
 
-    Best-effort: logs warning on connection failure instead of raising,
-    so ClickHouse downtime doesn't break Frappe document saves.
+    An unforced sync is best-effort: it logs, records the failure and returns
+    None instead of raising, so ClickHouse downtime does not break the Frappe
+    document save that triggered it.
+
+    A forced sync (``force=True``) re-raises after recording, on every failure
+    branch — connection, timeout and HTTP alike. Those callers are deliberate
+    repairs, not document events: reconcile_all catches it per doctype and logs
+    that table as skipped, and a manual ``bench execute`` fails loudly instead
+    of reporting a clean repair over a table that never synced (konsol#194).
 
     Args:
         table: Fully qualified table name (e.g. 'gold.allocation_rules').
         columns: List of column names.
         rows: List of tuples/lists matching column order.
+        force: Sync during migrate/patch, and raise on failure (see above).
     """
     # Skip during app install / migrate / fixture import: fixtures must not
     # push to ClickHouse (EPM Settings — and the CH password — may not be
@@ -162,6 +170,8 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
             "clickhouse_sync_error",
             {"table": table, "error": "connection_refused", "message": str(e)},
         )
+        if force:
+            raise
     except requests.exceptions.Timeout as e:
         _record_sync_failure(table, "timeout", str(e))
         frappe.logger().error(
@@ -172,6 +182,8 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
             "clickhouse_sync_error",
             {"table": table, "error": "timeout", "message": str(e)},
         )
+        if force:
+            raise
     except requests.exceptions.HTTPError as e:
         _record_sync_failure(table, "http_error", str(e))
         frappe.logger().error(
@@ -182,6 +194,8 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
             "clickhouse_sync_error",
             {"table": table, "error": "http_error", "message": str(e)},
         )
+        if force:
+            raise
 
 
 def _sql_value(v):
@@ -194,9 +208,10 @@ def _sql_value(v):
 
     * a literal ``NULL`` into a non-Nullable column is accepted only while
       ClickHouse keeps ``input_format_null_as_default`` on, and is rejected
-      *after* _sync_table_inner has already TRUNCATEd — one publish of a
-      Dimension Mapping with a blank entity emptied the whole crosswalk
-      (konsol #112, finding 4);
+      mid-INSERT — one publish of a Dimension Mapping with a blank entity
+      emptied the whole crosswalk (konsol #112, finding 4; since konsol#194
+      that rejection is confined to the temp table and the live rows survive,
+      but the sync still loses its own rows);
     * a literal ``''`` fixes that for String columns and breaks every Date one.
       It is why epm_staging.ownership_periods stopped syncing entirely: an
       Ownership Period with no acquisition_date sent '' into a Date column.
@@ -223,20 +238,45 @@ def _sql_value(v):
 
 
 def _sync_table_inner(table, columns, rows):
-    """Internal: TRUNCATE and INSERT. Raises on failure."""
-    execute(f"TRUNCATE TABLE IF EXISTS {table}")
+    """Internal: fill a sibling temp table and swap it in. Raises on failure.
 
-    if not rows:
-        return
+    The live table is never TRUNCATEd. It used to be, as the first statement,
+    so a sync that failed part way — a rejected literal, a dropped connection,
+    a timeout — left the table EMPTY with nothing to put the rows back
+    (konsol#194). Every row now goes into ``<table>_sync_tmp``, and only a
+    complete fill is swapped in with EXCHANGE TABLES (atomic, and available
+    because the databases are Atomic on ClickHouse 24.8). Any failure before
+    the swap leaves the live table exactly as it was.
 
-    col_list = ", ".join(columns)
-    value_rows = [f"({', '.join(_sql_value(v) for v in row)})" for row in rows]
+    An empty row list still empties the live table — reconcile_all relies on
+    that — but through the same swap. The temp table is emptied afterwards
+    (the EXCHANGE leaves the previous rows in it) rather than dropped, so a
+    concurrent reader never sees it disappear mid-swap.
 
-    batch_size = 1000
-    for i in range(0, len(value_rows), batch_size):
-        batch = value_rows[i:i + batch_size]
-        values_sql = ", ".join(batch)
-        execute(f"INSERT INTO {table} ({col_list}) VALUES {values_sql}")
+    The temp table is rebuilt from the live one at the start of every sync,
+    because the EXCHANGE swaps the two NAMES: a surviving ``<table>_sync_tmp``
+    is last sync's table, not this sync's shape. ensure_reference_tables and
+    _ADDED_COLUMNS ALTER only the live name, so a tmp that was merely reused
+    when present would keep the old column set, and every later
+    ``INSERT INTO <tmp> (<new column list>)`` would fail until someone dropped
+    it by hand.
+    """
+    tmp = f"{table}_sync_tmp"
+    execute(f"DROP TABLE IF EXISTS {tmp}")
+    execute(f"CREATE TABLE {tmp} AS {table}")
+
+    if rows:
+        col_list = ", ".join(columns)
+        value_rows = [f"({', '.join(_sql_value(v) for v in row)})" for row in rows]
+
+        batch_size = 1000
+        for i in range(0, len(value_rows), batch_size):
+            batch = value_rows[i:i + batch_size]
+            values_sql = ", ".join(batch)
+            execute(f"INSERT INTO {tmp} ({col_list}) VALUES {values_sql}")
+
+    execute(f"EXCHANGE TABLES {table} AND {tmp}")
+    execute(f"TRUNCATE TABLE IF EXISTS {tmp}")
 
 
 def sync_rows(table, columns, rows, key_columns, key_values):

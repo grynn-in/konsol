@@ -516,18 +516,24 @@ def _clickhouse_error_message(body):
 def _clickhouse_query(sql, params, ch_settings):
     """Execute a single ClickHouse HTTP query. Returns response text or raises.
 
+    The SQL goes in the POST body, never in the URL. As a URL parameter it
+    passed ClickHouse's 128 KiB form-field limit at the add-in's chunk size,
+    and every chunk of a dense sheet failed with "Poco::Exception. Code: 1000
+    — HTML Form Exception: Field value too long" (konsol#194: 1,500 cells in
+    one group were fine, 1,800 were not). Only the param_* values stay in the
+    URL; this is the shape konsol.clickhouse.execute already uses.
+
     On an HTTP error, ClickHouse's response text is logged and the raised
     ClickHouseQueryError carries its error code and exception name only
     (e.g. "ClickHouse query failed (47: UNKNOWN_IDENTIFIER)"), so the caller
     can show why without leaking the query's detail (konsol#214).
     """
     url = _ch_url(ch_settings)
-    query_params = dict(params)
-    query_params["query"] = sql
 
-    resp = requests.get(
+    resp = requests.post(
         url,
-        params=query_params,
+        params=dict(params),
+        data=sql.encode("utf-8"),
         auth=(ch_settings["user"], ch_settings["password"]),
         timeout=30,
         verify=ch_settings.get("verify", True),
@@ -542,11 +548,15 @@ def _clickhouse_query(sql, params, ch_settings):
 
 
 def _batch_query_clickhouse(requests_list):
-    """Execute batched ClickHouse queries grouped by (scenario, measure, periods, dims).
+    """Execute batched ClickHouse queries grouped by (scenario, measure, dims).
 
     Supports dynamic dimensions — each request carries a `dimensions` dict
     mapping dimension names to filter values.  Requests are grouped by shared
-    table/measure/period-range/dimension-shape for efficient batching.
+    table/measure/dimension-shape for efficient batching; the period is NOT
+    part of the key (konsol#231), so a year of monthly cells is one query
+    rather than twelve.  `fiscal_period` is selected and grouped so a returned
+    row can be attributed to the cell that asked for it, and each cell reads
+    the sum of its own periods.
 
     Returns {"values": [...], "errors": [...]}.
     """
@@ -570,9 +580,11 @@ def _batch_query_clickhouse(requests_list):
             facts[fact_key] = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
         return facts[fact_key]
 
-    # Group by (fact, measure, periods_tuple, dim_names_frozenset, scenario_id).
+    # Group by (fact, measure, dim_names_frozenset, scenario_id, layer).
     # `fact` (the resolved fact_name) is the table-determining element; scenario
     # is retained per-request for backward compatibility / resolution fallback.
+    # The period is deliberately absent (konsol#231): the SQL already filters
+    # `fiscal_period IN (…)`, so cells differing only in period share a query.
     groups = defaultdict(list)
     for idx, req in enumerate(requests_list):
         dims = req.get("dimensions", {})
@@ -608,14 +620,13 @@ def _batch_query_clickhouse(requests_list):
         key = (
             fact_key,
             req["measure"],
-            req["periods"],
             frozenset(dims.keys()),
             scenario_id,
             req.get("layer", ""),
         )
         groups[key].append((idx, req))
 
-    for (fact_key, measure, periods, dim_names, scenario_id, layer), group_items in groups.items():
+    for (fact_key, measure, dim_names, scenario_id, layer), group_items in groups.items():
         fact = resolve_fact(fact_key)
         if not fact:
             for idx, _ in group_items:
@@ -657,7 +668,13 @@ def _batch_query_clickhouse(requests_list):
         if not dim_valid:
             continue
 
-        select_cols = ["data_area_id", "fiscal_year", "main_account"]
+        # Two column lists, which used to be one: the IN tuple matches the
+        # per-cell key (entity, year, account, dims) and carries no period,
+        # while SELECT/GROUP BY adds `fiscal_period` so a row can be
+        # attributed to the cell that asked for it (konsol#231).
+        in_col_names = ["data_area_id", "fiscal_year", "main_account"]
+        in_col_names.extend(dim_names_sorted)
+        select_cols = ["data_area_id", "fiscal_year", "fiscal_period", "main_account"]
         select_cols.extend(dim_names_sorted)
 
         # Build IN tuples and params (without fiscal_period)
@@ -675,12 +692,14 @@ def _batch_query_clickhouse(requests_list):
             in_tuples.append(f"({', '.join(parts)})")
 
         group_by = ", ".join(select_cols)
-        in_cols = f"({group_by})"
+        in_cols = f"({', '.join(in_col_names)})"
         in_values = ", ".join(in_tuples)
 
-        # fiscal_period IN (...) — parameterized
+        # fiscal_period IN (...) — parameterized, over the union of every
+        # period the group's cells asked for (konsol#231).
+        group_periods = sorted({p for _, r in group_items for p in r["periods"]})
         period_placeholders = []
-        for pi, p in enumerate(periods):
+        for pi, p in enumerate(group_periods):
             pkey = f"fp{pi}"
             period_placeholders.append(f"{{{pkey}:Int32}}")
             params[f"param_{pkey}"] = str(p)
@@ -734,12 +753,18 @@ def _batch_query_clickhouse(requests_list):
                 val = float(parts[-1])
                 result_lookup[key_parts] = val
 
-            for _, (idx, req) in enumerate(group_items):
+            for idx, req in group_items:
                 dims = req.get("dimensions", {})
-                lookup_key = [req["entity"], str(req["year"]), req["account"]]
-                for dn in dim_names_sorted:
-                    lookup_key.append(dims.get(dn, ""))
-                values[idx] = result_lookup.get(tuple(lookup_key), 0.0)
+                dim_values = [dims.get(dn, "") for dn in dim_names_sorted]
+                # Each cell sums the periods it asked for: a month reads one
+                # row, an FY cell sums 1–12, and a period the warehouse has no
+                # row for contributes 0.0 (konsol#231).
+                total = 0.0
+                for p in req["periods"]:
+                    lookup_key = (req["entity"], str(req["year"]), str(p),
+                                  req["account"], *dim_values)
+                    total += result_lookup.get(lookup_key, 0.0)
+                values[idx] = total
 
         except requests.exceptions.Timeout:
             for idx, _ in group_items:

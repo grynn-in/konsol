@@ -413,7 +413,7 @@ def test_batch_row_with_a_negative_or_fractional_year_is_refused():
 
 def test_batch_invalid_year_row_leaves_a_valid_row_reading():
     result, queries, _ = _run(
-        [], active_budgets=["ZZ_B1"], reply="ZZ01\t2026\tZZ1\t42.0\n",
+        [], active_budgets=["ZZ_B1"], reply="ZZ01\t2026\t1\tZZ1\t42.0\n",
         call=_epm_batch([{"year": _MISSING}, {}]))
     (sql, params), = queries
     assert params["param_sid"] == "ZZ_B1"
@@ -424,7 +424,7 @@ def test_batch_invalid_year_row_leaves_a_valid_row_reading():
 
 def test_single_cell_variance_with_one_active_budget_returns_the_value():
     result, queries, _ = _run([], active_budgets=["ZZ_B1"], call=_epm_value,
-                              reply="ZZ01\t2026\tZZ0\t123.5\n")
+                              reply="ZZ01\t2026\t1\tZZ0\t123.5\n")
     assert result == {"value": 123.5}
     (sql, params), = queries
     assert params["param_sid"] == "ZZ_B1"
