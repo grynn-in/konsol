@@ -351,6 +351,29 @@ def test_a_published_account_cannot_move_under_a_new_draft_heading():
     assert has(report["errors"], "ZZ1000: publish its parent ZZ9000 first"), report["errors"]
 
 
+def test_a_published_account_cannot_be_reloaded_as_historical():
+    """konsol#239 reaches the chart file, not just the form: the planner runs
+    publish_problems over every row that is (or becomes) Published, so a file
+    that declares a non-equity account historical is refused whole. A chart
+    re-tagged by hand would otherwise be undone by the next upload."""
+    existing = {"ZZ1000": leaf(status="Published")}
+    report = M.plan_chart_load(parse(line("ZZ1000", "Cash", kind="Asset", section="BS", fx="historical")), existing)
+    assert not report["ok"]
+    assert has(report["errors"], "ZZ1000: only an Equity account may be translated at the historical rate "
+                                 "(konsol#239)"), report["errors"]
+    assert has(report["errors"], "this one is Asset"), report["errors"]
+    assert report["writes"] == []
+    # the same account at the closing rate loads
+    fine = M.plan_chart_load(parse(line("ZZ1000", "Cash", kind="Asset", section="BS", fx="closing")), existing)
+    assert fine["ok"], fine["errors"]
+    # and equity is what the historical rate is for
+    equity = {"ZZ3000": leaf(main_account="ZZ3000", account_name="Capital", account_type="Equity",
+                             normal_balance="Credit", status="Published")}
+    report = M.plan_chart_load(parse(line("ZZ3000", "Capital", kind="Equity", section="BS", fx="historical",
+                                          normal="Credit")), equity)
+    assert report["ok"], report["errors"]
+
+
 def test_drafts_not_ready_are_listed_not_refused():
     rows = parse(line("ZZ9000", "Heading"), line("ZZ1000", "Cash", parent="ZZ9000"))
     report = M.plan_chart_load(rows, {})
