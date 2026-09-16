@@ -565,8 +565,9 @@ def test_unpublishing_a_heading_with_published_accounts_is_refused():
 
 def test_reclassifying_a_published_account_warns():
     C.frappe.messages.clear()
-    _doc("Published", {"status": "Published"}, fx_method="historical", normal_balance="Debit",
-         time_balance="balance").validate()
+    # equity: the only account the historical rate may be declared on (konsol#239)
+    _doc("Published", {"status": "Published"}, account_type="Equity", fx_method="historical",
+         normal_balance="Credit", time_balance="balance").validate()
     assert C.frappe.messages and "re-translated at the next full rebuild" in C.frappe.messages[0]
     assert "fx_method" in C.frappe.messages[0]
     C.frappe.messages.clear()

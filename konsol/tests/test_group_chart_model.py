@@ -126,6 +126,25 @@ def test_publish_needs_every_declaration():
     assert has(M.publish_problems(child, None), "publish its parent")
 
 
+def test_only_equity_may_be_published_as_historical():
+    """konsol#239: konsol does step two of IAS 21 only — it translates a
+    functional-currency trial balance into the presentation currency, and the
+    historical rate is for equity. Remeasuring books kept in a non-functional
+    currency is the entity's own step one, upstream."""
+    p = M.publish_problems(leaf(fx_method="historical"))
+    assert has(p, "ZZ1000: only an Equity account may be translated at the historical rate (konsol#239)"), p
+    assert has(p, "this one is Asset"), p
+    # equity is what the historical rate is for
+    assert M.publish_problems(leaf(account_type="Equity", normal_balance="Credit",
+                                   fx_method="historical")) == []
+    # the ordinary case is untouched: an Asset at the closing rate
+    assert M.publish_problems(leaf()) == []
+    # an untyped leaf is refused for its missing declaration too, but the type is still named
+    assert has(M.publish_problems(leaf(account_type="", fx_method="historical")), "this one is untyped")
+    # a heading carries no translation method, so the rule does not reach it
+    assert M.publish_problems(group(fx_method="historical")) == []
+
+
 def test_defaults():
     bare = leaf(normal_balance="", time_balance="", fx_method="")
     assert {k: M.apply_defaults(bare)[k] for k in ("normal_balance", "time_balance", "fx_method")} == {
@@ -309,12 +328,13 @@ def test_published_changes_listed():
                 "ZZ3000": leaf(main_account="ZZ3000", account_name="Capital", account_type="Equity",
                                normal_balance="Credit", fx_method="historical", status="Published"),
                 "ZZ6000": leaf(main_account="ZZ6000", account_name="Draft one", status="Draft")}
-    rows = parse(line("ZZ1000", "Cash", kind="Asset", section="BS", fx="historical"),
+    rows = parse(line("ZZ1000", "Cash", kind="Balance sheet", section="BS"),
                  line("ZZ3000", "Capital", kind="Equity", section="BS"),
                  line("ZZ6000", "Draft one renamed", kind="Asset", section="BS"))
     report = M.plan_chart_load(rows, existing)
     assert report["ok"], report["errors"]
-    assert report["published_changes"] == [{"main_account": "ZZ1000", "fields": {"fx_method": ["closing", "historical"]}}]
+    assert report["published_changes"] == [{"main_account": "ZZ1000",
+                                            "fields": {"account_type": ["Asset", "Balance sheet"]}}]
     assert report["unchanged"] == ["ZZ3000"]   # blank fx_method still defaults to historical for Equity
     assert report["update"] == ["ZZ6000"]
     writes = {w[1]: w for w in report["writes"]}
@@ -329,6 +349,29 @@ def test_a_published_account_cannot_move_under_a_new_draft_heading():
     rows = parse(line("ZZ9000", "New heading"), line("ZZ1000", "Cash", kind="Asset", section="BS", parent="ZZ9000"))
     report = M.plan_chart_load(rows, existing)
     assert has(report["errors"], "ZZ1000: publish its parent ZZ9000 first"), report["errors"]
+
+
+def test_a_published_account_cannot_be_reloaded_as_historical():
+    """konsol#239 reaches the chart file, not just the form: the planner runs
+    publish_problems over every row that is (or becomes) Published, so a file
+    that declares a non-equity account historical is refused whole. A chart
+    re-tagged by hand would otherwise be undone by the next upload."""
+    existing = {"ZZ1000": leaf(status="Published")}
+    report = M.plan_chart_load(parse(line("ZZ1000", "Cash", kind="Asset", section="BS", fx="historical")), existing)
+    assert not report["ok"]
+    assert has(report["errors"], "ZZ1000: only an Equity account may be translated at the historical rate "
+                                 "(konsol#239)"), report["errors"]
+    assert has(report["errors"], "this one is Asset"), report["errors"]
+    assert report["writes"] == []
+    # the same account at the closing rate loads
+    fine = M.plan_chart_load(parse(line("ZZ1000", "Cash", kind="Asset", section="BS", fx="closing")), existing)
+    assert fine["ok"], fine["errors"]
+    # and equity is what the historical rate is for
+    equity = {"ZZ3000": leaf(main_account="ZZ3000", account_name="Capital", account_type="Equity",
+                             normal_balance="Credit", status="Published")}
+    report = M.plan_chart_load(parse(line("ZZ3000", "Capital", kind="Equity", section="BS", fx="historical",
+                                          normal="Credit")), equity)
+    assert report["ok"], report["errors"]
 
 
 def test_drafts_not_ready_are_listed_not_refused():
