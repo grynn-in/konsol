@@ -126,6 +126,25 @@ def test_publish_needs_every_declaration():
     assert has(M.publish_problems(child, None), "publish its parent")
 
 
+def test_only_equity_may_be_published_as_historical():
+    """konsol#239: konsol does step two of IAS 21 only — it translates a
+    functional-currency trial balance into the presentation currency, and the
+    historical rate is for equity. Remeasuring books kept in a non-functional
+    currency is the entity's own step one, upstream."""
+    p = M.publish_problems(leaf(fx_method="historical"))
+    assert has(p, "ZZ1000: only an Equity account may be translated at the historical rate (konsol#239)"), p
+    assert has(p, "this one is Asset"), p
+    # equity is what the historical rate is for
+    assert M.publish_problems(leaf(account_type="Equity", normal_balance="Credit",
+                                   fx_method="historical")) == []
+    # the ordinary case is untouched: an Asset at the closing rate
+    assert M.publish_problems(leaf()) == []
+    # an untyped leaf is refused for its missing declaration too, but the type is still named
+    assert has(M.publish_problems(leaf(account_type="", fx_method="historical")), "this one is untyped")
+    # a heading carries no translation method, so the rule does not reach it
+    assert M.publish_problems(group(fx_method="historical")) == []
+
+
 def test_defaults():
     bare = leaf(normal_balance="", time_balance="", fx_method="")
     assert {k: M.apply_defaults(bare)[k] for k in ("normal_balance", "time_balance", "fx_method")} == {
