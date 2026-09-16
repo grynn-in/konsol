@@ -297,8 +297,16 @@ def launch_options(fiscal_year: Optional[str] = None) -> Dict:
     year returns both lists empty rather than inventing one. Each scope/period
     option is ``{value, label}`` (periods also carry ``type``); an empty
     selection means "all / default" (the params builder omits blanks).
+
+    Gated to the roles that launch pipelines — Close Lead (``EPM Admin``),
+    Group Accountant (``EPM Analyst``) and System Manager — because it reads
+    with ``frappe.get_all``, which ignores permissions: every Pipeline and the
+    declared calendar would otherwise be readable by any logged-in user
+    (konsol#166). It stays a GET; it writes nothing.
     """
     import frappe
+
+    frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
 
     definitions = [d.name for d in frappe.get_all("Pipeline", order_by="name")]
 

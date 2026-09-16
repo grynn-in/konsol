@@ -71,6 +71,7 @@
       "label": "Offending Rows (sample)",
       "options": "Text",
       "read_only": 1,
+      "permlevel": 1,
       "description": "Up to 20 of the rows that failed this assertion, fetched from the failures table"
     }
   ],
