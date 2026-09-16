@@ -619,5 +619,176 @@
   "symbol": "$",
   "minor_unit": 2,
   "usd_log10": 0.001
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "AWG",
+  "currency_code": "AWG",
+  "currency_name": "Aruban Florin",
+  "symbol": "ƒ",
+  "minor_unit": 2,
+  "usd_log10": 0.25
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BBD",
+  "currency_code": "BBD",
+  "currency_name": "Barbadian Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.3
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "BND",
+  "currency_code": "BND",
+  "currency_name": "Brunei Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.12
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "CRC",
+  "currency_code": "CRC",
+  "currency_name": "Costa Rican Colón",
+  "symbol": "₡",
+  "minor_unit": 2,
+  "usd_log10": 2.71
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "FJD",
+  "currency_code": "FJD",
+  "currency_name": "Fijian Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.35
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "GTQ",
+  "currency_code": "GTQ",
+  "currency_name": "Guatemalan Quetzal",
+  "symbol": "Q",
+  "minor_unit": 2,
+  "usd_log10": 0.89
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "HNL",
+  "currency_code": "HNL",
+  "currency_name": "Honduran Lempira",
+  "symbol": "L",
+  "minor_unit": 2,
+  "usd_log10": 1.4
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "JMD",
+  "currency_code": "JMD",
+  "currency_name": "Jamaican Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 2.2
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "KES",
+  "currency_code": "KES",
+  "currency_name": "Kenyan Shilling",
+  "symbol": "KSh",
+  "minor_unit": 2,
+  "usd_log10": 2.11
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "MAD",
+  "currency_code": "MAD",
+  "currency_name": "Moroccan Dirham",
+  "symbol": "د.م.",
+  "minor_unit": 2,
+  "usd_log10": 1.0
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "NIO",
+  "currency_code": "NIO",
+  "currency_name": "Nicaraguan Córdoba",
+  "symbol": "C$",
+  "minor_unit": 2,
+  "usd_log10": 1.57
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "PKR",
+  "currency_code": "PKR",
+  "currency_name": "Pakistani Rupee",
+  "symbol": "₨",
+  "minor_unit": 2,
+  "usd_log10": 2.44
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "PYG",
+  "currency_code": "PYG",
+  "currency_name": "Paraguayan Guaraní",
+  "symbol": "₲",
+  "minor_unit": 0,
+  "usd_log10": 3.88
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TND",
+  "currency_code": "TND",
+  "currency_name": "Tunisian Dinar",
+  "symbol": "د.ت",
+  "minor_unit": 3,
+  "usd_log10": 0.48
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TTD",
+  "currency_code": "TTD",
+  "currency_name": "Trinidad and Tobago Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.83
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "TZS",
+  "currency_code": "TZS",
+  "currency_name": "Tanzanian Shilling",
+  "symbol": "TSh",
+  "minor_unit": 2,
+  "usd_log10": 3.41
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "UGX",
+  "currency_code": "UGX",
+  "currency_name": "Ugandan Shilling",
+  "symbol": "USh",
+  "minor_unit": 0,
+  "usd_log10": 3.57
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "UYU",
+  "currency_code": "UYU",
+  "currency_name": "Uruguayan Peso",
+  "symbol": "$U",
+  "minor_unit": 2,
+  "usd_log10": 1.61
+ },
+ {
+  "doctype": "ISO Currency",
+  "name": "XCD",
+  "currency_code": "XCD",
+  "currency_name": "East Caribbean Dollar",
+  "symbol": "$",
+  "minor_unit": 2,
+  "usd_log10": 0.43
  }
 ]
