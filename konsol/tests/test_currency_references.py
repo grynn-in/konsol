@@ -52,7 +52,8 @@ def test_the_shipped_list():
     m, _ = _module()
     rows = m.reference_rows()
     by_code = {r["currency_code"]: r for r in rows}
-    assert len(rows) == len(by_code) == 69, "the seed's 66 ISO codes and three dollar pegs"
+    assert len(rows) == len(by_code) == 88, \
+        "the seed's 66 ISO codes, three dollar pegs, and konsol#190's 19"
     assert all(set(m.FIELDS) <= set(r) for r in rows)
     unset = sorted(c for c, r in by_code.items() if m.is_unset(c, r["usd_log10"]))
     assert not unset, unset
@@ -103,7 +104,7 @@ def test_a_value_that_is_set_is_never_overwritten():
     assert sorted(out["filled"]) == ["IDR", "JPY", "VND"]
     # every other shipped code is missing from this stub site, so it is inserted, whole
     inserted = {d["currency_code"]: d for d in record["inserted"]}
-    assert len(inserted) == 69 - 5 and "PAB" in inserted and "EUR" not in inserted
+    assert len(inserted) == 88 - 5 and "PAB" in inserted and "EUR" not in inserted
     assert inserted["PAB"]["usd_log10"] == 0.001 and inserted["PAB"]["doctype"] == "ISO Currency"
     # a second run changes nothing more than the first left to do
     m2, record2 = _module({"EUR": -0.04, "JPY": 2.17})
