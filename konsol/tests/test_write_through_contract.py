@@ -344,6 +344,36 @@ def test_reporting_hierarchy_rows_carry_each_tranches_dates():
         assert create < sql.index(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} {t}"), c
 
 
+def test_cash_flow_categories_no_longer_carry_a_sign():
+    """konsol#197. `Cash Flow Category.sign` was required of the user and read
+    by nothing: no dbt model selects it — the cash-flow models read `is_cash`,
+    `cf_category` and `cf_line_item` and negate the signed movement
+    themselves. The field is gone from the doctype, the chart mirror and the
+    fill patch, so the warehouse column goes too: out of the CREATE body (a
+    fresh volume never gets it; byte-identical to konsolidat's init-db.sql)
+    and into _RETIRED_COLUMNS, so an existing stack's column is ALTERed away
+    on the next migrate rather than left defaulting forever."""
+    m, _ = _load_clickhouse()
+    table = "epm_staging.cash_flow_categories"
+    assert m._REFERENCE_TABLE_DDL[table] == (
+        "(main_account String, cf_category String, cf_line_item String, "
+        "is_cash UInt8, status String) "
+        "ENGINE = MergeTree ORDER BY main_account")
+    assert m._RETIRED_COLUMNS[table] == ["sign"]
+
+    # nothing may be both created and dropped: the ALTER would undo the CREATE
+    body = m._REFERENCE_TABLE_DDL[table]
+    created = {c.split()[0] for c in body[1:body.index(") ENGINE")].split(", ")}
+    assert "sign" not in created, body
+    assert not created & set(m._RETIRED_COLUMNS[table]), (created, table)
+
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_reference_tables()
+    create = sql.index(f"CREATE TABLE IF NOT EXISTS {table} {body}")
+    assert create < sql.index(f"ALTER TABLE {table} DROP COLUMN IF EXISTS sign")
+
+
 # --- konsolidat#198 (design 2a): the deal documents' warehouse tables --------
 # Business Combination / Business Disposal and their child tables write
 # through like every other governed doctype, so the tables must exist before
