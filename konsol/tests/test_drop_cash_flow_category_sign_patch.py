@@ -133,8 +133,21 @@ def test_second_run_is_a_no_op():
     assert _ddl(site) == [], site.calls
 
 
-def test_listed_last_in_patches_txt():
+def test_listed_once_after_the_cash_flow_category_patches():
+    """Registered exactly once, and after the patches that write that table.
+
+    `rename_cash_flow_category_to_account` renames the rows and
+    `fill_cash_flow_categories_from_chart` inserts them, so the drop runs once
+    nothing else in the same migrate still touches `tabCash Flow Category`.
+    What must NOT be asserted is that this module is the last line of
+    patches.txt: the drop is guarded and idempotent, so a patch appended after
+    it is none of this test's business — and every future patch is appended
+    there.
+    """
     with open(PATCHES_TXT) as f:
         lines = [l.strip() for l in f if l.strip()]
     assert lines.count(MODULE) == 1, lines.count(MODULE)
-    assert lines[-1] == MODULE, lines[-3:]
+    mine = lines.index(MODULE)
+    for earlier in ("konsol.patches.rename_cash_flow_category_to_account",
+                    "konsol.patches.fill_cash_flow_categories_from_chart"):
+        assert lines.index(earlier) < mine, (earlier, lines.index(earlier), mine)

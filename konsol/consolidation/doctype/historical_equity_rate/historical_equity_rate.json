@@ -28,11 +28,12 @@
   },
   {
    "fieldname": "main_account",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
    "label": "Main Account",
    "reqd": 1,
    "in_list_view": 1,
-   "description": "Equity account to apply historical rate to"
+   "options": "Main Account",
+   "description": "Equity account to apply historical rate to. Main Account is named by its own code, so the stored value is the bare account code the warehouse joins on."
   },
   {
    "fieldname": "col_break_1",
