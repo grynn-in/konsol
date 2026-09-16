@@ -47,10 +47,12 @@ def test_clickhouse_has_sync_doctype():
 
 
 def test_clickhouse_sync_table_truncates():
-    """sync_table must TRUNCATE before INSERT."""
+    """sync_table must INSERT into a temp table and swap it in, never TRUNCATE
+    the live table (konsol#194)."""
     with open(CH_PATH) as f:
         content = f.read()
-    assert "TRUNCATE" in content.upper()
+    assert "_sync_tmp" in content
+    assert "EXCHANGE TABLES" in content.upper()
     assert "INSERT" in content.upper()
 
 
@@ -157,3 +159,103 @@ def test_an_unforced_sync_stays_best_effort():
         assert returned is None, error_type
         recorded = module._sync_failures.get(_TABLE)
         assert recorded and recorded["error_type"] == error_type, repr(recorded)
+
+
+# --- a failed sync leaves the old rows (konsol#194) ---
+
+_TMP = _TABLE + "_sync_tmp"
+
+
+def _statements(module, fail_on=None):
+    """Point module.execute at a recorder and return the list it fills.
+
+    ``fail_on``: the first statement containing this substring raises, as a
+    part-way ClickHouse failure would."""
+    recorded = []
+
+    def recorder(sql, params=None):
+        recorded.append(sql)
+        if fail_on and fail_on in sql:
+            raise module.requests.exceptions.HTTPError(
+                "500 from ClickHouse", response=_Resp())
+
+    module.execute = recorder
+    return recorded
+
+
+def _truncate_target(statement):
+    """The table a TRUNCATE statement names (its last token)."""
+    return statement.split()[-1]
+
+
+def test_a_failed_sync_leaves_the_old_rows():
+    """konsol#194: _sync_table_inner TRUNCATEd the live table first, so a sync
+    that failed part way left it EMPTY. It must fill a sibling temp table and
+    EXCHANGE it in, leaving the live table untouched until the swap."""
+    module = _load_clickhouse()
+    recorded = _statements(module)
+    module._sync_table_inner(_TABLE, ["a"], [("ZZ01",), ("ZZ02",)])
+
+    assert recorded[0].startswith("CREATE TABLE IF NOT EXISTS " + _TMP), recorded
+    assert recorded[0].endswith(_TABLE), recorded[0]
+    assert recorded[1].upper().startswith("TRUNCATE"), recorded
+    assert _truncate_target(recorded[1]) == _TMP, recorded[1]
+
+    inserts = [s for s in recorded if s.upper().startswith("INSERT")]
+    assert inserts, recorded
+    for statement in inserts:
+        assert statement.startswith(f"INSERT INTO {_TMP} ("), statement
+
+    exchanges = [i for i, s in enumerate(recorded) if "EXCHANGE TABLES" in s]
+    assert len(exchanges) == 1, recorded
+    swap = recorded[exchanges[0]]
+    assert _TABLE in swap and _TMP in swap, swap
+
+    for statement in recorded[:exchanges[0]]:
+        if statement.upper().startswith("TRUNCATE"):
+            assert _truncate_target(statement) == _TMP, (
+                f"the live table must not be truncated before the swap: "
+                f"{statement}")
+
+    after = recorded[exchanges[0] + 1:]
+    assert after and after[-1].upper().startswith("TRUNCATE"), recorded
+    assert _truncate_target(after[-1]) == _TMP, after[-1]
+
+
+def test_a_sync_that_fails_part_way_never_swaps():
+    """A failing INSERT must raise before the EXCHANGE, so the live table keeps
+    yesterday's rows rather than becoming empty."""
+    module = _load_clickhouse()
+    recorded = _statements(module, fail_on="INSERT INTO")
+    try:
+        module._sync_table_inner(_TABLE, ["a"], [("ZZ01",)])
+    except module.requests.exceptions.HTTPError:
+        pass
+    else:
+        raise AssertionError("_sync_table_inner must raise on a failed INSERT")
+
+    assert not any("EXCHANGE TABLES" in s for s in recorded), recorded
+    for statement in recorded:
+        if statement.upper().startswith("TRUNCATE"):
+            assert _truncate_target(statement) == _TMP, statement
+
+
+def test_zero_rows_still_empties_the_live_table_through_the_swap():
+    """reconcile relies on an empty row list emptying the table — but it must
+    go through the same swap, not a bare TRUNCATE."""
+    module = _load_clickhouse()
+    recorded = _statements(module)
+    module._sync_table_inner(_TABLE, ["a"], [])
+
+    assert any("EXCHANGE TABLES" in s for s in recorded), recorded
+    assert not any(s.upper().startswith("INSERT") for s in recorded), recorded
+
+
+def test_inserts_stay_in_batches_of_1000():
+    """The temp table is filled by the same 1000-row batches as before."""
+    module = _load_clickhouse()
+    recorded = _statements(module)
+    module._sync_table_inner(_TABLE, ["a"], [(f"ZZ{i:04d}",) for i in range(2500)])
+
+    inserts = [s for s in recorded if s.upper().startswith("INSERT")]
+    assert len(inserts) == 3, f"expected 3 batches, got {len(inserts)}"
