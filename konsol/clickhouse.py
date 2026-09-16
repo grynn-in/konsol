@@ -208,9 +208,10 @@ def _sql_value(v):
 
     * a literal ``NULL`` into a non-Nullable column is accepted only while
       ClickHouse keeps ``input_format_null_as_default`` on, and is rejected
-      *after* _sync_table_inner has already TRUNCATEd — one publish of a
-      Dimension Mapping with a blank entity emptied the whole crosswalk
-      (konsol #112, finding 4);
+      mid-INSERT — one publish of a Dimension Mapping with a blank entity
+      emptied the whole crosswalk (konsol #112, finding 4; since konsol#194
+      that rejection is confined to the temp table and the live rows survive,
+      but the sync still loses its own rows);
     * a literal ``''`` fixes that for String columns and breaks every Date one.
       It is why epm_staging.ownership_periods stopped syncing entirely: an
       Ownership Period with no acquisition_date sent '' into a Date column.
@@ -237,20 +238,37 @@ def _sql_value(v):
 
 
 def _sync_table_inner(table, columns, rows):
-    """Internal: TRUNCATE and INSERT. Raises on failure."""
-    execute(f"TRUNCATE TABLE IF EXISTS {table}")
+    """Internal: fill a sibling temp table and swap it in. Raises on failure.
 
-    if not rows:
-        return
+    The live table is never TRUNCATEd. It used to be, as the first statement,
+    so a sync that failed part way — a rejected literal, a dropped connection,
+    a timeout — left the table EMPTY with nothing to put the rows back
+    (konsol#194). Every row now goes into ``<table>_sync_tmp``, and only a
+    complete fill is swapped in with EXCHANGE TABLES (atomic, and available
+    because the databases are Atomic on ClickHouse 24.8). Any failure before
+    the swap leaves the live table exactly as it was.
 
-    col_list = ", ".join(columns)
-    value_rows = [f"({', '.join(_sql_value(v) for v in row)})" for row in rows]
+    An empty row list still empties the live table — reconcile_all relies on
+    that — but through the same swap. The temp table is emptied afterwards
+    (the EXCHANGE leaves the previous rows in it) rather than dropped, so a
+    concurrent reader never sees it disappear mid-swap.
+    """
+    tmp = f"{table}_sync_tmp"
+    execute(f"CREATE TABLE IF NOT EXISTS {tmp} AS {table}")
+    execute(f"TRUNCATE TABLE IF EXISTS {tmp}")
 
-    batch_size = 1000
-    for i in range(0, len(value_rows), batch_size):
-        batch = value_rows[i:i + batch_size]
-        values_sql = ", ".join(batch)
-        execute(f"INSERT INTO {table} ({col_list}) VALUES {values_sql}")
+    if rows:
+        col_list = ", ".join(columns)
+        value_rows = [f"({', '.join(_sql_value(v) for v in row)})" for row in rows]
+
+        batch_size = 1000
+        for i in range(0, len(value_rows), batch_size):
+            batch = value_rows[i:i + batch_size]
+            values_sql = ", ".join(batch)
+            execute(f"INSERT INTO {tmp} ({col_list}) VALUES {values_sql}")
+
+    execute(f"EXCHANGE TABLES {table} AND {tmp}")
+    execute(f"TRUNCATE TABLE IF EXISTS {tmp}")
 
 
 def sync_rows(table, columns, rows, key_columns, key_values):
