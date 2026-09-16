@@ -178,8 +178,18 @@ def test_second_run_changes_nothing():
     assert _writes(site) == [], site.calls
 
 
-def test_listed_last_in_patches_txt():
+def test_listed_once_after_the_rate_rekey_patch():
+    """Registered exactly once, and after the patch that rewrites the same keys.
+
+    `rekey_historical_equity_rate_to_group_corp` rewrites the rate table's keys,
+    so this mapping must see the rows in their final shape. What must NOT be
+    asserted is that this module is the last line of patches.txt: every future
+    patch is appended there, and this one is guarded and idempotent, so what
+    runs after it is none of this test's business.
+    """
     with open(PATCHES_TXT) as f:
         lines = [l.strip() for l in f if l.strip()]
     assert lines.count(MODULE) == 1, lines.count(MODULE)
-    assert lines[-1] == MODULE, lines[-3:]
+    mine = lines.index(MODULE)
+    earlier = "konsol.patches.rekey_historical_equity_rate_to_group_corp"
+    assert lines.index(earlier) < mine, (lines.index(earlier), mine)
