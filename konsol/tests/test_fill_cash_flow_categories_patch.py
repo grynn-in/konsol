@@ -176,7 +176,8 @@ def test_published_mapped_leaf_without_row_is_inserted():
     doc = site.inserted[0]
     assert (doc.main_account, doc.cf_category, doc.cf_line_item, doc.is_cash) == \
         ("1000", "Operating", "Cash at bank", 1)
-    assert doc.sign == "1"
+    # konsol#197: nothing reads sign, so the patch must not invent one.
+    assert not hasattr(doc, "sign") or doc.sign in (None, "")
     assert doc.status == "Published"
 
 
@@ -200,7 +201,7 @@ def test_account_whose_only_row_is_inactive_is_republished_not_inserted():
         accounts=[_account("1100", cf_category="Investing", cf_line_item="Capex", is_cash=1)],
         categories=[
             {"name": "Capex mapping", "main_account": "1100", "status": "Inactive",
-             "cf_category": "Operating", "cf_line_item": "old", "is_cash": 0, "sign": "-1"},
+             "cf_category": "Operating", "cf_line_item": "old", "is_cash": 0},
         ],
     )
     _run(site)
@@ -209,7 +210,8 @@ def test_account_whose_only_row_is_inactive_is_republished_not_inserted():
     doc = site.saved[0]
     assert (doc.main_account, doc.cf_category, doc.cf_line_item, doc.is_cash) == \
         ("1100", "Investing", "Capex", 1)
-    assert doc.sign == "1"
+    # konsol#197: republishing must not re-add the value nothing reads.
+    assert not hasattr(doc, "sign") or doc.sign in (None, "")
     assert doc.status == "Published"
 
 
