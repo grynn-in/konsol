@@ -124,13 +124,21 @@ def _stamp_watermark(table, row_count, source_max_modified=None):
 def sync_table(table, columns, rows, source_max_modified=None, force=False):
     """TRUNCATE and INSERT all rows into a ClickHouse table.
 
-    Best-effort: logs warning on connection failure instead of raising,
-    so ClickHouse downtime doesn't break Frappe document saves.
+    An unforced sync is best-effort: it logs, records the failure and returns
+    None instead of raising, so ClickHouse downtime does not break the Frappe
+    document save that triggered it.
+
+    A forced sync (``force=True``) re-raises after recording, on every failure
+    branch — connection, timeout and HTTP alike. Those callers are deliberate
+    repairs, not document events: reconcile_all catches it per doctype and logs
+    that table as skipped, and a manual ``bench execute`` fails loudly instead
+    of reporting a clean repair over a table that never synced (konsol#194).
 
     Args:
         table: Fully qualified table name (e.g. 'gold.allocation_rules').
         columns: List of column names.
         rows: List of tuples/lists matching column order.
+        force: Sync during migrate/patch, and raise on failure (see above).
     """
     # Skip during app install / migrate / fixture import: fixtures must not
     # push to ClickHouse (EPM Settings — and the CH password — may not be
@@ -162,6 +170,8 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
             "clickhouse_sync_error",
             {"table": table, "error": "connection_refused", "message": str(e)},
         )
+        if force:
+            raise
     except requests.exceptions.Timeout as e:
         _record_sync_failure(table, "timeout", str(e))
         frappe.logger().error(
@@ -172,6 +182,8 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
             "clickhouse_sync_error",
             {"table": table, "error": "timeout", "message": str(e)},
         )
+        if force:
+            raise
     except requests.exceptions.HTTPError as e:
         _record_sync_failure(table, "http_error", str(e))
         frappe.logger().error(
@@ -182,6 +194,8 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
             "clickhouse_sync_error",
             {"table": table, "error": "http_error", "message": str(e)},
         )
+        if force:
+            raise
 
 
 def _sql_value(v):
