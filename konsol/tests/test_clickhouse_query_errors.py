@@ -183,3 +183,51 @@ def test_batch_read_error_names_the_clickhouse_reason():
     # the body is logged once, not once more as a bare traceback
     assert [t for t, _ in logged].count("ClickHouse query failed") == 1
     assert logged[0][1] == _BODY[:1000]
+
+
+def _recording_api(logged, status=200, text="1\n"):
+    """api.py whose requests stub records every call as (method, url, kwargs)."""
+    api = _load_api(logged)
+    calls = []
+
+    def record(method):
+        def call(url, **kwargs):
+            calls.append((method, url, kwargs))
+            return _Resp(status, text)
+        return call
+
+    api.requests = types.SimpleNamespace(
+        get=record("get"), post=record("post"), exceptions=requests.exceptions)
+    return api, calls
+
+
+def test_query_goes_in_the_body_not_the_url():
+    """konsol#194: the SQL travels in the POST body, never in the URL.
+
+    _clickhouse_query used to put the whole statement into the query string
+    (``requests.get(url, params={**params, "query": sql})``). At the add-in's
+    chunk size a dense sheet's SQL ran past ClickHouse's 128 KiB form-field
+    limit and every chunk failed with "Poco::Exception. Code: 1000 — HTML Form
+    Exception: Field value too long" (1,500 cells in one group were fine,
+    1,800 were not). konsol.clickhouse.execute already POSTs its body; this
+    helper must have the same shape, with only the param_* values in the URL.
+    """
+    logged = []
+    api, calls = _recording_api(logged)
+
+    accounts = ", ".join(f"'ZZ{i:05d}'" for i in range(20_000))
+    sql = f"SELECT sum(x) FROM epm_gold.zz_actuals WHERE main_account IN ({accounts})"
+    assert len(sql.encode("utf-8")) > 128 * 1024, "fixture must exceed 128 KiB"
+
+    result = api._clickhouse_query(sql, {"param_entity": "ZZ01"}, _SETTINGS)
+
+    assert result == "1"
+    methods = [method for method, _, _ in calls]
+    assert methods == ["post"], (
+        "the SQL must be POSTed in the body, not fetched with it in the URL; "
+        f"calls were {methods}")
+    _, _, kwargs = calls[0]
+    assert kwargs.get("data") == sql.encode("utf-8"), "body must be the UTF-8 SQL"
+    url_params = kwargs.get("params") or {}
+    assert "query" not in url_params, "the SQL must not be duplicated into the URL"
+    assert url_params.get("param_entity") == "ZZ01", "param_* values stay in the URL"
