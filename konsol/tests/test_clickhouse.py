@@ -196,10 +196,9 @@ def test_a_failed_sync_leaves_the_old_rows():
     recorded = _statements(module)
     module._sync_table_inner(_TABLE, ["a"], [("ZZ01",), ("ZZ02",)])
 
-    assert recorded[0].startswith("CREATE TABLE IF NOT EXISTS " + _TMP), recorded
-    assert recorded[0].endswith(_TABLE), recorded[0]
-    assert recorded[1].upper().startswith("TRUNCATE"), recorded
-    assert _truncate_target(recorded[1]) == _TMP, recorded[1]
+    assert recorded[0] == f"DROP TABLE IF EXISTS {_TMP}", recorded
+    assert recorded[1].startswith(f"CREATE TABLE {_TMP}"), recorded
+    assert recorded[1].endswith(_TABLE), recorded[1]
 
     inserts = [s for s in recorded if s.upper().startswith("INSERT")]
     assert inserts, recorded
@@ -259,3 +258,22 @@ def test_inserts_stay_in_batches_of_1000():
 
     inserts = [s for s in recorded if s.upper().startswith("INSERT")]
     assert len(inserts) == 3, f"expected 3 batches, got {len(inserts)}"
+
+
+def test_temp_table_is_rebuilt_from_the_live_table_each_sync():
+    """konsol#194: the tmp must be dropped and recreated every sync, never
+    created only when missing.
+
+    EXCHANGE TABLES swaps the two NAMES, so after a sync ``<table>_sync_tmp``
+    holds the previous live table. ensure_reference_tables/_ADDED_COLUMNS ALTER
+    only the live name, so a column added after a swap would never reach a tmp
+    that is created only when missing: the next
+    ``INSERT INTO <tmp> (<new column list>)`` would fail, and keep failing for
+    every later sync of that table until someone dropped the tmp by hand."""
+    module = _load_clickhouse()
+    recorded = _statements(module)
+    module._sync_table_inner(_TABLE, ["a"], [("ZZ01",)])
+
+    assert recorded[0] == f"DROP TABLE IF EXISTS {_TMP}", recorded
+    assert recorded[1] == f"CREATE TABLE {_TMP} AS {_TABLE}", recorded
+    assert not any("IF NOT EXISTS" in s.upper() for s in recorded), recorded
