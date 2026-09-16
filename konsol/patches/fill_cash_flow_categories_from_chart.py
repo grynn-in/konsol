@@ -12,8 +12,8 @@ cash_flow_mapping): an account with a live (non-Inactive) Cash Flow Category
 row is left alone; an account whose row is Inactive has that row republished
 with the chart's mapping (Cash Flow Category refuses a second live row per
 account, and the Inactive row may carry another name, so inserting beside it
-would collide); an account with no row gets a Published row inserted. sign is
-always "1" (no dbt model reads it). A second run changes nothing.
+would collide); an account with no row gets a Published row inserted. A
+second run changes nothing.
 
 patches.txt has no sections, so this runs pre_model_sync: it reloads both
 doctypes before any query.
@@ -49,11 +49,11 @@ def execute():
             continue
         if existing is not None:
             doc = frappe.get_doc("Cash Flow Category", existing["name"])
-            doc.update(dict(mapping, sign="1", status=M.PUBLISHED))
+            doc.update(dict(mapping, status=M.PUBLISHED))
             doc.save(ignore_permissions=True)
             republished += 1
         else:
-            doc = frappe.get_doc(dict(mapping, doctype="Cash Flow Category", sign="1", status=M.PUBLISHED))
+            doc = frappe.get_doc(dict(mapping, doctype="Cash Flow Category", status=M.PUBLISHED))
             doc.insert(ignore_permissions=True)
             inserted += 1
 
