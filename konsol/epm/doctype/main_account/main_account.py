@@ -227,7 +227,6 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         row = frappe.get_doc("Cash Flow Category", name) if name else frappe.new_doc("Cash Flow Category")
         for field in ("main_account", "cf_category", "cf_line_item", "is_cash"):
             row.set(field, mapping[field])
-        row.set("sign", "1")
         row.set("status", _PUBLISHED)
         if name:
             row.save(ignore_permissions=True)
