@@ -252,10 +252,18 @@ def _sync_table_inner(table, columns, rows):
     that — but through the same swap. The temp table is emptied afterwards
     (the EXCHANGE leaves the previous rows in it) rather than dropped, so a
     concurrent reader never sees it disappear mid-swap.
+
+    The temp table is rebuilt from the live one at the start of every sync,
+    because the EXCHANGE swaps the two NAMES: a surviving ``<table>_sync_tmp``
+    is last sync's table, not this sync's shape. ensure_reference_tables and
+    _ADDED_COLUMNS ALTER only the live name, so a tmp that was merely reused
+    when present would keep the old column set, and every later
+    ``INSERT INTO <tmp> (<new column list>)`` would fail until someone dropped
+    it by hand.
     """
     tmp = f"{table}_sync_tmp"
-    execute(f"CREATE TABLE IF NOT EXISTS {tmp} AS {table}")
-    execute(f"TRUNCATE TABLE IF EXISTS {tmp}")
+    execute(f"DROP TABLE IF EXISTS {tmp}")
+    execute(f"CREATE TABLE {tmp} AS {table}")
 
     if rows:
         col_list = ", ".join(columns)
