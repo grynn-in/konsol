@@ -23,8 +23,9 @@ def test_cash_flow_category_json_valid():
     # re-import try to INSERT a duplicate and abort bench migrate.
     assert doc["autoname"] == "format:CFC-{main_account}"
     fields = {f["fieldname"]: f for f in doc["fields"]}
-    for fn in ("main_account", "cf_category", "cf_line_item", "is_cash", "sign", "status"):
+    for fn in ("main_account", "cf_category", "cf_line_item", "is_cash", "status"):
         assert fn in fields, f"missing field {fn}"
+    assert "sign" not in fields, "konsol#197: the sign nothing reads is gone"
     assert fields["cf_category"]["options"] == "Operating\nInvesting\nFinancing"
     assert fields["status"]["options"] == "Draft\nPublished\nInactive"
 

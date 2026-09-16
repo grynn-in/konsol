@@ -36,3 +36,4 @@ konsol.patches.create_fiscal_years
 konsol.patches.fill_cash_flow_categories_from_chart
 konsol.patches.migrate_deals_to_business_combinations
 konsol.patches.date_reporting_hierarchy_members
+konsol.patches.drop_cash_flow_category_sign

@@ -22,7 +22,6 @@ class CashFlowCategory(GovernedReferenceDocument):
         "cf_category": "cf_category",
         "cf_line_item": "cf_line_item",
         "is_cash": "is_cash",
-        "sign": "sign",
         "status": "status",
     }
 

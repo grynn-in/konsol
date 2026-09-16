@@ -90,6 +90,14 @@ class _Doc:
 class _CashFlowCategory(_Doc):
     """A Cash Flow Category row the controller mirrors into (konsol#196)."""
 
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._written = []   # the fields the mirror wrote, in order (konsol#197)
+
+    def set(self, key, value):
+        self._written.append(key)
+        super().set(key, value)
+
     def insert(self, ignore_permissions=False):
         self.name = f"CFC-{self.main_account}"
         CALLS.append(("cfc.insert", self.name, ignore_permissions))
@@ -776,7 +784,7 @@ def _mapped(status="Published", **kw):
 
 def _cfc(status="Published", **kw):
     row = _CashFlowCategory(doctype="Cash Flow Category", name="CFC-ZZ1000", main_account="ZZ1000",
-                            cf_category="Investing", cf_line_item="Old line", is_cash=0, sign="1", status=status)
+                            cf_category="Investing", cf_line_item="Old line", is_cash=0, status=status)
     row.__dict__.update(kw)
     C.frappe.cfc[row.name] = row
     return row
@@ -805,8 +813,22 @@ def test_a_published_mapped_leaf_inserts_a_published_cash_flow_category():
         _mapped().on_update()
         assert _mirror_calls() == [("cfc.insert", "CFC-ZZ1000", True)]
         row = C.frappe.cfc["CFC-ZZ1000"]
-        assert (row.main_account, row.cf_category, row.cf_line_item, row.is_cash, row.sign, row.status) == (
-            "ZZ1000", "Operating", "Cash and equivalents", 1, "1", "Published")
+        assert (row.main_account, row.cf_category, row.cf_line_item, row.is_cash, row.status) == (
+            "ZZ1000", "Operating", "Cash and equivalents", 1, "Published")
+    finally:
+        C.frappe.cfc.clear()
+
+
+def test_the_mirror_writes_no_sign():
+    """konsol#197: nothing reads Cash Flow Category.sign — no dbt model selects
+    it — so the mirror must not invent a value for it."""
+    C.frappe.cfc.clear()
+    CALLS.clear()
+    try:
+        _mapped().on_update()
+        written = C.frappe.cfc["CFC-ZZ1000"]._written
+        assert "sign" not in written, f"konsol#197: the mirror still writes a sign nothing reads ({written})"
+        assert written == ["main_account", "cf_category", "cf_line_item", "is_cash", "status"], written
     finally:
         C.frappe.cfc.clear()
 
@@ -820,8 +842,8 @@ def test_an_existing_row_is_overwritten_from_the_chart():
         row = _cfc("Inactive")
         _mapped(is_cash=0).on_update()
         assert _mirror_calls() == [("cfc.save", "CFC-ZZ1000", True)]
-        assert (row.cf_category, row.cf_line_item, row.is_cash, row.sign, row.status) == (
-            "Operating", "Cash and equivalents", 0, "1", "Published")
+        assert (row.cf_category, row.cf_line_item, row.is_cash, row.status) == (
+            "Operating", "Cash and equivalents", 0, "Published")
     finally:
         C.frappe.cfc.clear()
 
@@ -909,8 +931,8 @@ def test_a_manually_keyed_row_with_another_name_is_updated_not_collided_with():
         stale = _cfc("Inactive")   # CFC-ZZ1000, an earlier mirror row: the live one wins
         _mapped().on_update()
         assert _mirror_calls() == [("cfc.save", "CFC-OLD", True)]
-        assert (keyed.cf_category, keyed.cf_line_item, keyed.is_cash, keyed.sign, keyed.status) == (
-            "Operating", "Cash and equivalents", 1, "1", "Published")
+        assert (keyed.cf_category, keyed.cf_line_item, keyed.is_cash, keyed.status) == (
+            "Operating", "Cash and equivalents", 1, "Published")
         assert stale.status == "Inactive"
         # an account that stops being mapped withdraws that row, not CFC-<code>
         CALLS.clear()
