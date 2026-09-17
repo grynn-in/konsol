@@ -263,8 +263,13 @@ class _Endpoints:
         api, hq = self.api, self.hq
         # api._allowed_entities is NOT stubbed: the real one reads the private
         # entity_permissions below, whose allowed_entity_codes is fixed.
+        # The real helper returns a Dataset doc loaded with _FACT_FIELDS, which
+        # carries default_measure (konsol#105): value() below reads with no
+        # measure, and that blank is filled from the doc. The stub declares it
+        # for the same reason — passing an explicit measure here instead would
+        # delete the blank-measure read this file exists to cover.
         api._resolve_and_validate = lambda fact, scenario, measure, dims: (
-            types.SimpleNamespace(fact_name="f"), None)
+            types.SimpleNamespace(fact_name="f", default_measure="period_net_amount"), None)
 
         def flat_query(reqs):
             self.flat.extend(r["entity"] for r in reqs)
