@@ -934,6 +934,16 @@ def epm_value(entity, year, period, account, measure="",
         )
         if err:
             frappe.throw(err, frappe.ValidationError)
+        allowed_entities = _allowed_entities()
+        # Permission before the registry, in the same order as epm_batch: a
+        # caller refused this entity must not be able to tell, from which
+        # error comes back, whether a Dataset is registered for the scenario.
+        # A named entity is refused here; a wildcard is limited to the allowed
+        # set inside batch_query_hierarchy. Both ask entity_read_scope.
+        if not entity_is_wildcard(entity):
+            _, denied = entity_read_scope(entity, allowed_entities)
+            if denied:
+                raise frappe.PermissionError(denied)
         # A hierarchy read that names no measure takes the one the Dataset
         # registered for its scenario declares. The query layer requires a
         # measure, so a blank left here would be refused there instead, with
@@ -941,13 +951,6 @@ def epm_value(entity, year, period, account, measure="",
         measure, measure_err = _hierarchy_measure(scenario, measure)
         if measure_err:
             frappe.throw(measure_err, frappe.ValidationError)
-        allowed_entities = _allowed_entities()
-        # A named entity is refused here; a wildcard is limited to the allowed
-        # set inside batch_query_hierarchy. Both ask entity_read_scope.
-        if not entity_is_wildcard(entity):
-            _, denied = entity_read_scope(entity, allowed_entities)
-            if denied:
-                raise frappe.PermissionError(denied)
         result = batch_query_hierarchy([{
             "entity": entity,
             "year": int(year),
