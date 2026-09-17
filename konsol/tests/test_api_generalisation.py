@@ -334,6 +334,85 @@ def test_an_invalid_named_measure_still_errors():
     assert "Invalid measure 'zz_nonsense'" in err, err
 
 
+# -- the scenario is normalised on both sides of the call -------------------
+
+
+def _load_hq():
+    """The real hierarchy_query under a private name (it imports no frappe at
+    load), so what these tests pin is its normalising rule, not a stub's."""
+    spec = importlib.util.spec_from_file_location(
+        "_host_hq_k105", os.path.join(APP_DIR, "hierarchy_query.py"))
+    hq = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hq)  # needs requests, like test_hierarchy_query
+    return hq
+
+
+def _registry_api(keys):
+    """(api, the scenario keys the registry was asked for). The registry
+    answers for the exact strings in ``keys`` and nothing else, which is how
+    frappe filters on scenario_key."""
+    api = _load_api()
+    asked = []
+
+    def by_scenario(scenario):
+        asked.append(scenario)
+        return _ZZ_DRIVER if scenario in keys else None
+
+    api._get_fact_by_scenario = by_scenario
+    return api, asked
+
+
+def _hierarchy_measure(api, scenario, measure=""):
+    with_hq = {"konsol.hierarchy_query": _load_hq()}
+    saved = {k: sys.modules.get(k) for k in with_hq}
+    sys.modules.update(with_hq)
+    try:
+        return api._hierarchy_measure(scenario, measure)
+    except ImportError as e:
+        # The runner counts a ModuleNotFoundError from a test body as a skip
+        # and still exits 0 (konsol#248): fail here instead.
+        raise AssertionError(f"_hierarchy_measure needs more than the stubs: {e}")
+    finally:
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+
+
+def test_the_registry_lookup_normalises_the_scenario_as_hierarchy_query_does():
+    """hierarchy_query normalises on its side of the call, so a lookup on the
+    raw string refuses ' zz ' after hierarchy validation has accepted it — and
+    says "no default measure is declared", which misstates the cause."""
+    api, asked = _registry_api({"zz"})
+    for raw in ("zz", " zz ", "ZZ", " Zz\t"):
+        measure, err = _hierarchy_measure(api, raw)
+        assert err is None, (raw, err)
+        assert measure == "driver_value", (raw, measure)
+    assert asked == ["zz"] * 4, asked
+
+
+def test_a_blank_scenario_reads_the_default_the_query_layer_would():
+    """A batch row carrying an explicit "scenario": "" defeats
+    req.get("scenario", "actuals"), and a GET may send a blank too.
+    hierarchy_query reads that blank as actuals; so must the lookup."""
+    api, asked = _registry_api({"actuals"})
+    for blank in ("", None, "  "):
+        measure, err = _hierarchy_measure(api, blank)
+        assert err is None, (blank, err)
+        assert measure == "driver_value", (blank, measure)
+    assert asked == ["actuals"] * 3, asked
+
+
+def test_the_refusal_names_the_scenario_that_was_looked_up():
+    """When the registry really has nothing, the error quotes the key the
+    lookup used, not the caller's spacing."""
+    api, _ = _registry_api(set())
+    measure, err = _hierarchy_measure(api, " ZZ ")
+    assert measure == ""
+    assert "'zz'" in err, err
+
+
 # -- the fill reaches the query, on both call sites -------------------------
 
 
