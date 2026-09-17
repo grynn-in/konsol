@@ -325,3 +325,54 @@ def test_default_measure_is_checked_during_migrate_too():
             assert msg and "period_net_amount" in msg, (
                 f"default measure not checked under {flag}: {msg}"
             )
+
+
+# --- The shipped datasets declare theirs (konsol#105 Decision 1, row M2) ---
+
+SHIPPED_DEFAULT_MEASURES = {
+    "gl_journal_entries": "period_net_amount",
+    "budget_input": "period_amount",
+    "variance_analysis": "variance_abs",
+    "headcount": "driver_value",
+    "area_sqm": "driver_value",
+    "revenue_by_product": "driver_value",
+    "allocated": "period_net_amount",
+    "cashflow": "cash_flow_amount",
+    "consolidated": "consolidated_amount",
+}
+
+
+def test_every_shipped_dataset_declares_a_default_measure():
+    """Holds for datasets added later, not only today's nine: a shipped Dataset
+    that declares none turns every read naming no measure into an error, so the
+    fixture must never ship one blank."""
+    missing = [
+        fact["fact_name"] for fact in _fixture("dataset.json")
+        if not fact.get("default_measure")
+    ]
+    assert not missing, f"shipped datasets declare no default_measure: {missing}"
+
+
+def test_every_shipped_default_measure_is_one_the_dataset_has():
+    """The rule _validate_default_measure enforces at save time, checked here on
+    the fixture so an impossible default cannot reach a migrate."""
+    for fact in _fixture("dataset.json"):
+        own = [row["measure"] for row in fact.get("fact_measures", [])]
+        assert fact.get("default_measure") in own, (
+            f"{fact['fact_name']} defaults to {fact.get('default_measure')!r}, "
+            f"which is not one of its own measures {own}"
+        )
+
+
+def test_the_shipped_defaults_are_the_agreed_values():
+    """Pinned per dataset — a tenth dataset may be added freely, but silently
+    re-tagging one of these nine is caught."""
+    actual = {
+        fact["fact_name"]: fact.get("default_measure")
+        for fact in _fixture("dataset.json")
+    }
+    for name, measure in SHIPPED_DEFAULT_MEASURES.items():
+        assert name in actual, f"shipped dataset {name} is gone from the fixture"
+        assert actual[name] == measure, (
+            f"{name} defaults to {actual[name]!r}, the agreed value is {measure!r}"
+        )
