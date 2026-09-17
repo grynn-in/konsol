@@ -296,6 +296,43 @@ def _measure_for(fact_doc, measure):
     return measure or fact_doc.default_measure
 
 
+def default_measure_for_scenario(scenario):
+    """The measure a hierarchy read of ``scenario`` uses when it names none:
+    the default declared by the Dataset registered for that scenario
+    (konsol#105 Decision 1).
+
+    Blank when the registry answers nothing, which happens two ways: no
+    Dataset is registered under that scenario key, or the one that is declares
+    no default. The callers refuse a blank and say which; neither case is a
+    licence to guess. This is the hierarchy sibling of _measure_for, which
+    fills a flat read from the fact doc the read already resolved.
+    """
+    fact_doc = _get_fact_by_scenario(scenario)
+    if not fact_doc:
+        return ""
+    return _measure_for(fact_doc, "") or ""
+
+
+def _hierarchy_measure(scenario, measure):
+    """(measure, error) for a hierarchy read: the one it named, else the
+    registry's default for its scenario.
+
+    One point of resolution for both hierarchy call sites, as _measure_for is
+    for the two flat ones. The fill happens here, before the request is handed
+    to hierarchy_query: that module is a query builder which requires a
+    measure and knows nothing of the registry.
+    """
+    measure = measure or default_measure_for_scenario(scenario)
+    if not measure:
+        return "", (
+            f"No default measure is declared for scenario '{scenario}', so a "
+            f"hierarchy read of it must name one: either no Dataset is "
+            f"registered for that scenario, or the one that is declares no "
+            f"Default Measure."
+        )
+    return measure, None
+
+
 def _parse_dimensions_arg(dimensions):
     """Accept a dict or a JSON-encoded string; return a plain dict.
 
@@ -878,6 +915,13 @@ def epm_value(entity, year, period, account, measure="",
         )
         if err:
             frappe.throw(err, frappe.ValidationError)
+        # A hierarchy read that names no measure takes the one the Dataset
+        # registered for its scenario declares. The query layer requires a
+        # measure, so a blank left here would be refused there instead, with
+        # no idea which scenario's registry came up empty.
+        measure, measure_err = _hierarchy_measure(scenario, measure)
+        if measure_err:
+            frappe.throw(measure_err, frappe.ValidationError)
         allowed_entities = _allowed_entities()
         # A named entity is refused here; a wildcard is limited to the allowed
         # set inside batch_query_hierarchy. Both ask entity_read_scope.
@@ -1175,6 +1219,13 @@ def epm_batch():
                 if denied:
                     errors_list[i] = denied
                     continue
+            # As in epm_value: filled from the registry here, so the request
+            # handed over carries a measure. A row the registry cannot answer
+            # for fails on its own, not the whole batch.
+            measure, measure_err = _hierarchy_measure(scenario, measure)
+            if measure_err:
+                errors_list[i] = measure_err
+                continue
             normalized[i] = {
                 "entity": entity,
                 "year": year,

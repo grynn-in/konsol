@@ -565,9 +565,10 @@ def test_the_measure_path_reaches_for_neither_the_api_nor_the_registry():
             [{"measure": ""}], active_budgets=["ZZ_B1"])
         assert queries == []
         assert "must name a measure" in (result["errors"][0] or ""), result
-        # and a request that carries one is read as before
+        # and a request that carries one is read as before (a clean result
+        # carries no errors key at all)
         result, queries, _ = _run_hierarchy([{}], active_budgets=["ZZ_B1"])
-        assert not result["errors"][0], result
+        assert not result.get("errors"), result
         assert len(queries) == 1
     finally:
         if saved is None:
