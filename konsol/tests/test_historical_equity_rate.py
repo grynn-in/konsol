@@ -65,7 +65,17 @@ DOCTYPE_DIR = os.path.dirname(PY)
 JSON_PATH = os.path.join(DOCTYPE_DIR, "historical_equity_rate.json")
 
 #: The registries the stub knows about.
-GROUPS, ENTITIES, ACCOUNTS = ("ZZGRP",), ("ZZ01",), ("ZZ3100",)
+GROUPS, ACCOUNTS = ("ZZGRP",), ("ZZ3100",)
+
+#: Consolidation Group rows that carry a data_area_id, mapped to their is_group
+#: flag (konsol#240). ZZ01 is a leaf entity; ZZPAR is a trading parent — a node
+#: marked is_group = 1 that is nevertheless a real company with its own share
+#: capital, its own trial balance and subsidiaries beneath it. On the live site
+#: 27 of the 28 group nodes look like ZZPAR. A rollup node carries no
+#: data_area_id at all, so it is simply absent from this map and no lookup by
+#: data_area_id can ever reach it.
+ENTITIES = {"ZZ01": 0, "ZZPAR": 1}
+ENTITY = "ZZ01"
 
 
 def _json():
@@ -81,7 +91,7 @@ class Refused(Exception):
     pass
 
 
-def _frappe(groups=(), entities=(), accounts=()):
+def _frappe(groups=(), entities=None, accounts=()):
     """A stub frappe whose db.exists answers from the three registries."""
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
@@ -98,7 +108,14 @@ def _frappe(groups=(), entities=(), accounts=()):
             if "consolidation_group" in f:
                 return f["consolidation_group"] in groups
             if "data_area_id" in f:
-                return f["data_area_id"] in entities
+                rows = entities or {}
+                if f["data_area_id"] not in rows:
+                    return False
+                # honour an is_group filter the way the database would: the
+                # row exists, but the filter may still exclude it.
+                if "is_group" in f:
+                    return rows[f["data_area_id"]] == f["is_group"]
+                return True
         return False
 
     frappe.throw = throw
@@ -152,7 +169,7 @@ def _validate(**fields):
     """(refused, message) for one validate() of a rate with ``fields``."""
     module = _controller(groups=GROUPS, entities=ENTITIES, accounts=ACCOUNTS)
     base = dict(doctype="Historical Equity Rate", consolidation_group=GROUPS[0],
-                data_area_id=ENTITIES[0], main_account=ACCOUNTS[0],
+                data_area_id=ENTITY, main_account=ACCOUNTS[0],
                 rate_date="2026-01-31", historical_rate=0.92)
     doc = module.HistoricalEquityRate(**dict(base, **fields))
     try:
@@ -206,6 +223,58 @@ def test_the_docstring_says_why_this_key_is_a_link():
     doc = ast.get_docstring(fn) or ""
     assert "field:main_account" in doc, "the docstring does not say why this one IS a Link"
     assert "Main Account" in doc
+
+
+# ---- a trading parent is still an entity (konsol#240) ---------------------
+#
+# The entity check read `is_group = 0` as shorthand for "is a real company".
+# That shorthand only holds when every parent is a pure holding shell, and on
+# the live site it is false 27 times out of 28. Membership is the real test:
+# a Consolidation Group row carrying this data_area_id at all.
+
+
+def test_a_trading_parent_is_still_an_entity():
+    """A group node that carries a data_area_id IS an entity row.
+
+    `_is_group_node()` is `is_group or not data_area_id`: carrying an entity
+    code is what makes a row an entity row, whatever is_group says."""
+    refused, msg = _validate(data_area_id="ZZPAR")
+    assert not refused, f"a trading parent was refused a historical rate: {msg}"
+
+
+def test_an_entity_in_no_consolidation_group_row_is_still_refused():
+    """Membership is still enforced — only leafness stopped being the test."""
+    refused, msg = _validate(data_area_id="ZZ99")
+    assert refused, "a rate for an entity in no consolidation group was accepted"
+    assert "ZZ99" in msg, f"the message does not name the entity: {msg}"
+    assert "closing rate" in msg, f"the message does not say what goes wrong: {msg}"
+    assert "Unknown entity" not in msg, (
+        f"the message still names the wrong cause — the entity is known: {msg}")
+
+
+def test_a_rollup_node_is_still_refused():
+    """A pure rollup carries no data_area_id, so nothing matches it and it
+    cannot be given a rate of its own."""
+    refused, msg = _validate(data_area_id="ZZROLLUP")
+    assert refused, "a rollup node with no entity code was given a historical rate"
+    assert "ZZROLLUP" in msg, msg
+
+
+def test_the_entity_check_does_not_test_leafness():
+    """The `is_group: 0` clause must be gone from the controller, not merely
+    satisfied: it is what refused the 27 trading parents."""
+    assert '"is_group": 0' not in _src(), (
+        "the entity check still filters on is_group; membership is the test")
+
+
+def test_the_docstring_says_why_leafness_is_the_wrong_test():
+    fn = next(n for n in ast.walk(ast.parse(_src()))
+              if isinstance(n, ast.FunctionDef) and n.name == "_validate_references")
+    doc = ast.get_docstring(fn) or ""
+    assert "_is_group_node" in doc, "the docstring does not cite the rule it follows"
+    # and the two settled checks either side keep their reasoning (#92)
+    assert "field:main_account" in doc
+    assert "konsolidat#130" in doc
 
 
 def test_still_syncs_only_submitted_to_clickhouse():
