@@ -287,11 +287,16 @@ def _measure_for(fact_doc, measure):
     default (konsol#105 Decision 1).
 
     Both the single-value and the batch read path call this, so the measure a
-    query is built with is the same one that was validated. Plain attribute
-    access, deliberately: a Dataset loaded without the ``default_measure``
-    column is a bug in _FACT_FIELDS and must surface as one. Reading it
-    through a getattr with a blank fallback would instead turn that bug into
-    "this dataset declares no default" and hide it.
+    query is built with is the same one that was validated.
+
+    The attribute access is not a guard on _FACT_FIELDS, and does not claim to
+    be: a Dataset row arrives as frappe._dict, whose ``__getattr__`` is
+    ``dict.get``, so a column the query did not select reads as None here
+    instead of raising — behaviourally the same as a getattr with a blank
+    fallback. Were ``default_measure`` dropped from _FACT_FIELDS, every read
+    would be refused with "declares no Default Measure", which names the
+    Dataset for a bug in the field list. What stops that is the test pinning
+    _FACT_FIELDS (test_fact_fields_load_the_default_measure), not this line.
     """
     return measure or fact_doc.default_measure
 

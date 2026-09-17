@@ -114,15 +114,52 @@ def test_fact_fields_load_the_default_measure():
     assert '"default_measure"' in fields_block
 
 
+_READ_PATH_FUNCS = (
+    "epm_value", "epm_batch", "_measure_for", "_hierarchy_measure",
+    "default_measure_for_scenario", "_resolve_and_validate",
+)
+
+
+def _code_strings(fn_node):
+    """Every string literal in ``fn_node`` that is code, docstrings excluded:
+    prose naming a measure is not a measure the code substitutes."""
+    docstrings = {
+        n.value for n in ast.walk(fn_node)
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+    }
+    return [n.value for n in ast.walk(fn_node)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and n not in docstrings]
+
+
 def test_the_hardcoded_default_measure_is_gone():
-    """Neither read path substitutes a literal measure before resolving a Dataset."""
+    """No read-path function, and no module constant, substitutes a literal
+    measure before a Dataset is resolved.
+
+    Scoped to the read path and to code rather than the whole file: a
+    docstring, an error message or a TB column name may legitimately say
+    period_net_amount, and a test about a removed default must not fail on
+    the word appearing anywhere in api.py.
+    """
     content = _content()
     sig = content.split("def epm_value")[1].split("):")[0]
     assert 'measure="period_net_amount"' not in sig
     assert 'measure=""' in sig
     assert 'req.get("measure", "period_net_amount")' not in content
-    # the literal has no remaining home in the read path at all
-    assert "period_net_amount" not in content
+
+    tree = ast.parse(content)
+    fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for name in _READ_PATH_FUNCS:
+        assert name in fns, f"read-path function {name} is gone"
+        assert "period_net_amount" not in _code_strings(fns[name]), (
+            f"{name} substitutes the literal measure again")
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            assert not any(
+                isinstance(c, ast.Constant) and c.value == "period_net_amount"
+                for c in ast.walk(node)
+            ), "a module-level constant holds the old default measure"
 
 
 def test_both_read_paths_fill_the_measure_through_the_one_helper():
@@ -136,12 +173,32 @@ def test_both_read_paths_fill_the_measure_through_the_one_helper():
     assert "_measure_for(" in batch_block
 
 
-def test_the_default_measure_is_read_without_a_getattr_fallback():
-    """getattr(fact_doc, "default_measure", "") would hide a Dataset loaded
-    without the column and feed a blank measure into the query."""
-    content = _content()
-    assert 'getattr(fact_doc, "default_measure"' not in content
-    assert "fact_doc.default_measure" in content
+def test_a_dataset_row_missing_the_column_is_refused_by_name():
+    """What actually happens if default_measure were dropped from _FACT_FIELDS.
+
+    A Dataset row arrives as frappe._dict (``__getattr__ = dict.get``), so an
+    unselected column reads as None rather than raising: the read is refused
+    with "declares no Default Measure", never queried with a blank. The pin on
+    _FACT_FIELDS above is what keeps that from happening; this says what the
+    failure would look like, and that nothing guesses a measure in its place.
+    """
+    api = _load_api()
+    row = _FrappeRow(
+        fact_name="zz_headcount",
+        measures=json.dumps(["driver_value", "zz_fte"]),
+        dimensions="[]",
+    )
+    assert row.default_measure is None  # the column was never selected
+
+    assert api._measure_for(row, "") is None
+    assert api._measure_for(row, "zz_fte") == "zz_fte"
+
+    api._get_fact = lambda fact=None, scenario=None: row
+    api._published_measures = lambda: {"driver_value", "zz_fte"}
+    fact_doc, err = api._resolve_and_validate("zz_headcount", "zz", "", [])
+    assert fact_doc is None
+    assert "declares no Default Measure" in err, err
+    assert "zz_headcount" in err, err
 
 
 def test_resolve_and_validate_still_returns_a_pair():
@@ -203,6 +260,14 @@ def _load_api():
             else:
                 sys.modules[k] = mod
     return api
+
+
+class _FrappeRow(dict):
+    """A row as frappe.get_all returns it: frappe._dict, whose ``__getattr__``
+    is ``dict.get`` (frappe/types/frappedict.py), so an unselected column reads
+    as None instead of raising."""
+
+    __getattr__ = dict.get
 
 
 def _dataset(fact_name, default_measure, measures):
