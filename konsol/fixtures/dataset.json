@@ -12,6 +12,7 @@
     "status": "Published",
     "generates_source": 0,
     "grain": "One row per main_account x fiscal_period x entity x dimensions",
+    "default_measure": "period_net_amount",
     "fact_measures": [
       {"measure": "period_debit"},
       {"measure": "period_credit"},
@@ -42,6 +43,7 @@
     "status": "Published",
     "generates_source": 0,
     "grain": "One row per main_account x fiscal_period x entity x scenario cell x layer",
+    "default_measure": "period_amount",
     "fact_measures": [
       {"measure": "period_amount", "required": 1},
       {"measure": "annual_amount"}
@@ -67,6 +69,7 @@
     "status": "Published",
     "generates_source": 0,
     "grain": "One row per main_account x fiscal_period x entity (actual vs budget)",
+    "default_measure": "variance_abs",
     "fact_measures": [
       {"measure": "actual_amount"},
       {"measure": "budget_amount"},
@@ -95,6 +98,7 @@
     "status": "Published",
     "generates_source": 1,
     "grain": "One row per cost_center x fiscal_period (allocation driver)",
+    "default_measure": "driver_value",
     "fact_measures": [
       {"measure": "driver_value", "required": 1}
     ],
@@ -118,6 +122,7 @@
     "status": "Published",
     "generates_source": 1,
     "grain": "One row per cost_center x fiscal_period (facilities allocation driver)",
+    "default_measure": "driver_value",
     "fact_measures": [
       {"measure": "driver_value", "required": 1}
     ],
@@ -142,6 +147,7 @@
     "generates_source": 1,
     "grain": "One row per product x cost_center x fiscal_period (revenue allocation driver)",
     "extra_columns": "[{\"name\": \"product\", \"ch_type\": \"String\"}]",
+    "default_measure": "driver_value",
     "fact_measures": [
       {"measure": "driver_value", "required": 1}
     ],
@@ -166,6 +172,7 @@
     "status": "Published",
     "generates_source": 0,
     "grain": "One row per main_account x fiscal_period x entity x cost_center, signed (target +, source -); allocations only, separate from actuals",
+    "default_measure": "period_net_amount",
     "fact_measures": [
       {"measure": "period_net_amount", "required": 1}
     ],
@@ -189,6 +196,7 @@
     "status": "Published",
     "generates_source": 0,
     "grain": "One row per cf_line_item x fiscal_period x consolidation_group",
+    "default_measure": "cash_flow_amount",
     "fact_measures": [
       {"measure": "cash_flow_amount"}
     ]
@@ -206,6 +214,7 @@
     "status": "Published",
     "generates_source": 0,
     "grain": "One row per main_account x fiscal_period x consolidation_group (post-FX, post-elimination)",
+    "default_measure": "consolidated_amount",
     "fact_measures": [
       {"measure": "consolidated_amount"}
     ]

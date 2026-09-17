@@ -13,7 +13,6 @@ _ENTITY_WILDCARD = {"", "*", "ALL"}
 HIERARCHY_SCENARIO_CONFIG = {
     "actuals": {
         "table": "epm_gold.gold_tb_at_hierarchy_node",
-        "default_measure": "period_net_amount",
         "measures": {
             "period_net_amount", "period_debit", "period_credit", "transaction_count",
         },
@@ -21,21 +20,18 @@ HIERARCHY_SCENARIO_CONFIG = {
     },
     "budget": {
         "table": "epm_gold.gold_budget_at_hierarchy_node",
-        "default_measure": "period_amount",
         "measures": {"period_amount", "annual_amount"},
         "has_scenario_id": True,
         "has_layer": True,
     },
     "forecast": {
         "table": "epm_gold.gold_budget_at_hierarchy_node",
-        "default_measure": "period_amount",
         "measures": {"period_amount", "annual_amount"},
         "has_scenario_id": True,
         "has_layer": True,
     },
     "variance": {
         "table": "epm_gold.gold_variance_at_hierarchy_node",
-        "default_measure": "variance_abs",
         "measures": {"variance_abs", "actual_amount", "budget_amount"},
         # One set of rows per active budget scenario (konsol#214): a read that
         # did not filter on it would add budget scenarios together, so every
@@ -353,7 +349,18 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
         if not cfg:
             errors[idx] = f"Unsupported hierarchy scenario '{sc}'"
             continue
-        measure = req.get("measure") or cfg["default_measure"]
+        measure = req.get("measure")
+        if not measure:
+            # No default lives here: a fact's default measure is declared on
+            # its Dataset (konsol#105 Decision 1), which this module does not
+            # read. The API fills a blank before a request reaches us, so a
+            # blank here is a caller that skipped it — refused, never guessed.
+            errors[idx] = (
+                f"A hierarchy read of scenario '{sc}' must name a measure; the "
+                f"API fills it from the Dataset registry when a request does "
+                f"not. Allowed: {', '.join(sorted(cfg['measures']))}"
+            )
+            continue
         if measure not in cfg["measures"]:
             errors[idx] = (
                 f"Invalid measure '{measure}' for hierarchy scenario '{sc}'. "

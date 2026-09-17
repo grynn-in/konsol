@@ -21,6 +21,7 @@ class Dataset(Document):
     def validate(self):
         self._validate_table_name()
         self._validate_measures()
+        self._validate_default_measure()
         self._validate_dimensions()
         self._validate_extra_columns()
         self._sync_json_fields()
@@ -49,6 +50,27 @@ class Dataset(Document):
                     f"Measure '{row.measure}' is not Published "
                     f"(status={status or 'missing'})"
                 )
+
+    def _validate_default_measure(self):
+        """The Default Measure — what a read of this dataset gets when it names
+        no measure (konsol#105 Decision 1) — must be one of this dataset's own
+        measures. Blank is allowed: such a read is then answered with an error
+        naming this dataset, never with a guess.
+
+        NOT skipped during fixture import / migrate / install, unlike
+        _validate_measures: this reads only this document's own child rows, so
+        there is no load-order problem, and a re-import must not be able to
+        install a default that is not in the dataset it belongs to.
+        """
+        if not self.default_measure:
+            return
+        available = [row.measure for row in self.fact_measures or []]
+        if self.default_measure not in available:
+            frappe.throw(
+                f"Default Measure '{self.default_measure}' is not a measure of "
+                f"dataset '{self.name or self.fact_name}'. Its measures are: "
+                f"{', '.join(sorted(available)) or '(none)'}"
+            )
 
     def _validate_dimensions(self):
         """Every fact_dimensions row must reference a Published Dimension.

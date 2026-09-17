@@ -218,7 +218,7 @@ def _assert_budget_write_access(data):
 _FACT_FIELDS = [
     "fact_name", "scenario_key", "clickhouse_table", "has_scenario_id",
     "has_layer",
-    "measures", "dimensions",
+    "measures", "dimensions", "default_measure",
     "reroute_table", "reroute_column", "reroute_measure",
 ]
 
@@ -280,6 +280,76 @@ def _published_measures():
             fields=["measure_name"], limit_page_length=0,
         )
     }
+
+
+def _measure_for(fact_doc, measure):
+    """The measure a read uses: the one it named, else the Dataset's own
+    default (konsol#105 Decision 1).
+
+    Both the single-value and the batch read path call this, so the measure a
+    query is built with is the same one that was validated.
+
+    The attribute access is not a guard on _FACT_FIELDS, and does not claim to
+    be: a Dataset row arrives as frappe._dict, whose ``__getattr__`` is
+    ``dict.get``, so a column the query did not select reads as None here
+    instead of raising — behaviourally the same as a getattr with a blank
+    fallback. Were ``default_measure`` dropped from _FACT_FIELDS, every read
+    would be refused with "declares no Default Measure", which names the
+    Dataset for a bug in the field list. What stops that is the test pinning
+    _FACT_FIELDS (test_fact_fields_load_the_default_measure), not this line.
+    """
+    return measure or fact_doc.default_measure
+
+
+def default_measure_for_scenario(scenario):
+    """The measure a hierarchy read of ``scenario`` uses when it names none:
+    the default declared by the Dataset registered for that scenario
+    (konsol#105 Decision 1).
+
+    Blank when the registry answers nothing, which happens two ways: no
+    Dataset is registered under that scenario key, or the one that is declares
+    no default. The callers refuse a blank and say which; neither case is a
+    licence to guess. This is the hierarchy sibling of _measure_for, which
+    fills a flat read from the fact doc the read already resolved.
+    """
+    fact_doc = _get_fact_by_scenario(scenario)
+    if not fact_doc:
+        return ""
+    return _measure_for(fact_doc, "") or ""
+
+
+def _hierarchy_measure(scenario, measure):
+    """(measure, error) for a hierarchy read: the one it named, else the
+    registry's default for its scenario.
+
+    One point of resolution for both hierarchy call sites, as _measure_for is
+    for the two flat ones. The fill happens here, before the request is handed
+    to hierarchy_query: that module is a query builder which requires a
+    measure and knows nothing of the registry.
+
+    The scenario is normalised with hierarchy_query's own rule before the
+    lookup, because that module normalises on its side of the call:
+    validate_hierarchy_read and batch_query_hierarchy both do. A lookup on the
+    raw string would let " actuals " — or a batch row whose explicit
+    ``"scenario": ""`` defeated ``req.get("scenario", "actuals")`` — pass
+    hierarchy validation and then be refused here as a scenario with no
+    declared default, blaming the registry for what is a spelling. Its rule,
+    imported rather than restated, so the two sides cannot drift; in the body,
+    like this module's other hierarchy_query imports, as that module imports
+    konsol.api inside its own functions.
+    """
+    from konsol.hierarchy_query import _normalize_scenario
+
+    scenario = _normalize_scenario(scenario)
+    measure = measure or default_measure_for_scenario(scenario)
+    if not measure:
+        return "", (
+            f"No default measure is declared for scenario '{scenario}', so a "
+            f"hierarchy read of it must name one: either no Dataset is "
+            f"registered for that scenario, or the one that is declares no "
+            f"Default Measure."
+        )
+    return measure, None
 
 
 def _parse_dimensions_arg(dimensions):
@@ -353,7 +423,15 @@ def _resolve_and_validate(fact_name, scenario, measure, dim_names):
         ))
         return None, f"Invalid scenario '{scenario}'. Allowed: {', '.join(allowed)}"
 
+    # A read that names no measure takes the Dataset's declared default. The
+    # filled value is what gets validated here and what both callers query.
+    measure = _measure_for(fact, measure)
     valid_measures = _get_allowed_measures(fact) & _published_measures()
+    if not measure:
+        return None, (
+            f"Fact '{fact.fact_name}' declares no Default Measure, so a read "
+            f"must name one. Its measures are: {', '.join(sorted(valid_measures))}"
+        )
     if measure not in valid_measures:
         return None, (
             f"Invalid measure '{measure}' for fact '{fact.fact_name}'. "
@@ -817,7 +895,7 @@ def health():
 
 
 @frappe.whitelist()
-def epm_value(entity, year, period, account, measure="period_net_amount",
+def epm_value(entity, year, period, account, measure="",
               scenario="actuals", fact=None, dimensions=None, scenario_id="",
               hierarchy=None, node=None, hierarchy_node=None, layer=""):
     """Single value lookup — returns {"value": <number>}.
@@ -857,12 +935,22 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
         if err:
             frappe.throw(err, frappe.ValidationError)
         allowed_entities = _allowed_entities()
+        # Permission before the registry, in the same order as epm_batch: a
+        # caller refused this entity must not be able to tell, from which
+        # error comes back, whether a Dataset is registered for the scenario.
         # A named entity is refused here; a wildcard is limited to the allowed
         # set inside batch_query_hierarchy. Both ask entity_read_scope.
         if not entity_is_wildcard(entity):
             _, denied = entity_read_scope(entity, allowed_entities)
             if denied:
                 raise frappe.PermissionError(denied)
+        # A hierarchy read that names no measure takes the one the Dataset
+        # registered for its scenario declares. The query layer requires a
+        # measure, so a blank left here would be refused there instead, with
+        # no idea which scenario's registry came up empty.
+        measure, measure_err = _hierarchy_measure(scenario, measure)
+        if measure_err:
+            frappe.throw(measure_err, frappe.ValidationError)
         result = batch_query_hierarchy([{
             "entity": entity,
             "year": int(year),
@@ -887,6 +975,9 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     fact_doc, err = _resolve_and_validate(fact, scenario, measure, dims.keys())
     if err:
         frappe.throw(err, frappe.ValidationError)
+    # Query the measure that was validated: a blank left here would reach the
+    # identifier check in _batch_query_clickhouse and read nothing.
+    measure = _measure_for(fact_doc, measure)
 
     result = _batch_query_clickhouse([{
         "entity": entity, "year": int(year),
@@ -1107,7 +1198,7 @@ def epm_batch():
     allowed_entities = _allowed_entities()
     for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
-        measure = req.get("measure", "period_net_amount")
+        measure = req.get("measure") or ""
         dimensions = _extract_batch_dimensions(req)
 
         try:
@@ -1150,6 +1241,13 @@ def epm_batch():
                 if denied:
                     errors_list[i] = denied
                     continue
+            # As in epm_value: filled from the registry here, so the request
+            # handed over carries a measure. A row the registry cannot answer
+            # for fails on its own, not the whole batch.
+            measure, measure_err = _hierarchy_measure(scenario, measure)
+            if measure_err:
+                errors_list[i] = measure_err
+                continue
             normalized[i] = {
                 "entity": entity,
                 "year": year,
@@ -1176,6 +1274,9 @@ def epm_batch():
         if denied:
             errors_list[i] = denied
             continue
+        # As in epm_value: the row is queried with the measure that was
+        # validated, not the blank it may have arrived with.
+        measure = _measure_for(fact_doc, measure)
 
         normalized[i] = {
             "entity": entity,

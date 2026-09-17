@@ -169,6 +169,10 @@ def _hierarchy(allowed_entities, entity="ALL"):
         result = hq.batch_query_hierarchy([{
             "entity": entity, "year": 2024, "periods": (1,), "account": "4010",
             "scenario": "actuals", "hierarchy_name": "H", "hierarchy_node": "N",
+            # A direct call names its own measure (konsol#105 Decision 1): the
+            # API fills a blank one from the Dataset registry before the
+            # request reaches here, and this layer refuses a blank.
+            "measure": "period_net_amount",
         }], allowed_entities=allowed_entities)
     finally:
         for k, mod in saved.items():
@@ -263,8 +267,19 @@ class _Endpoints:
         api, hq = self.api, self.hq
         # api._allowed_entities is NOT stubbed: the real one reads the private
         # entity_permissions below, whose allowed_entity_codes is fixed.
+        # The real helper returns a Dataset doc loaded with _FACT_FIELDS, which
+        # carries default_measure (konsol#105): value() below reads with no
+        # measure, and that blank is filled from the doc. The stub declares it
+        # for the same reason — passing an explicit measure here instead would
+        # delete the blank-measure read this file exists to cover.
         api._resolve_and_validate = lambda fact, scenario, measure, dims: (
-            types.SimpleNamespace(fact_name="f"), None)
+            types.SimpleNamespace(fact_name="f", default_measure="period_net_amount"), None)
+        # The hierarchy branch never reaches _resolve_and_validate: it fills a
+        # blank measure from the Dataset registry by scenario instead, which
+        # the real helper reads through frappe. Stubbed for the same reason as
+        # above — value() and batch() below still read with NO measure, which
+        # is the entity-access coverage this file exists for.
+        api.default_measure_for_scenario = lambda scenario: "period_net_amount"
 
         def flat_query(reqs):
             self.flat.extend(r["entity"] for r in reqs)
@@ -343,6 +358,34 @@ def test_epm_batch_refuses_forbidden_rows_and_queries_only_the_rest():
     assert out["values"] == [1.0, None, 2.0, None, 2.0, None]
     assert e.flat == ["DE01"]
     assert e.hier == [("DE01", {"DE01"}), ("ALL", {"DE01"})]
+
+
+def test_a_forbidden_entity_is_refused_before_the_measure_is_filled():
+    """Permission first, at both hierarchy call sites.
+
+    epm_value filled the measure from the Dataset registry before it checked
+    the entity, while epm_batch checked the entity first. A caller with no
+    access to US01 could therefore tell, from epm_value's refusal, whether a
+    Dataset is registered for a scenario: the registry error came back for one
+    scenario and the permission error for another. Both paths must refuse the
+    entity first, so the answer never depends on the registry.
+
+    The registry here answers nothing, which is what makes the two refusals
+    distinguishable; value() and batch() still read with no measure.
+    """
+    e = _Endpoints({"DE01"})
+    e.api.default_measure_for_scenario = lambda scenario: ""
+
+    try:
+        e.value("US01", node="N")
+    except _Denied as err:
+        assert str(err) == _REFUSED_US01
+    else:
+        raise AssertionError(
+            "epm_value did not refuse US01 before filling the measure")
+
+    assert e.batch([_row("US01", "N")])["errors"] == [_REFUSED_US01]
+    assert e.flat == [] and e.hier == []
 
 
 def test_endpoints_let_an_unrestricted_reader_read_any_entity():
