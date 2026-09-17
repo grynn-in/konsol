@@ -360,6 +360,34 @@ def test_epm_batch_refuses_forbidden_rows_and_queries_only_the_rest():
     assert e.hier == [("DE01", {"DE01"}), ("ALL", {"DE01"})]
 
 
+def test_a_forbidden_entity_is_refused_before_the_measure_is_filled():
+    """Permission first, at both hierarchy call sites.
+
+    epm_value filled the measure from the Dataset registry before it checked
+    the entity, while epm_batch checked the entity first. A caller with no
+    access to US01 could therefore tell, from epm_value's refusal, whether a
+    Dataset is registered for a scenario: the registry error came back for one
+    scenario and the permission error for another. Both paths must refuse the
+    entity first, so the answer never depends on the registry.
+
+    The registry here answers nothing, which is what makes the two refusals
+    distinguishable; value() and batch() still read with no measure.
+    """
+    e = _Endpoints({"DE01"})
+    e.api.default_measure_for_scenario = lambda scenario: ""
+
+    try:
+        e.value("US01", node="N")
+    except _Denied as err:
+        assert str(err) == _REFUSED_US01
+    else:
+        raise AssertionError(
+            "epm_value did not refuse US01 before filling the measure")
+
+    assert e.batch([_row("US01", "N")])["errors"] == [_REFUSED_US01]
+    assert e.flat == [] and e.hier == []
+
+
 def test_endpoints_let_an_unrestricted_reader_read_any_entity():
     e = _Endpoints(None)
     assert e.value("US01") == {"value": 1.0}
