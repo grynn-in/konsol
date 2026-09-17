@@ -218,7 +218,7 @@ def _assert_budget_write_access(data):
 _FACT_FIELDS = [
     "fact_name", "scenario_key", "clickhouse_table", "has_scenario_id",
     "has_layer",
-    "measures", "dimensions",
+    "measures", "dimensions", "default_measure",
     "reroute_table", "reroute_column", "reroute_measure",
 ]
 
@@ -280,6 +280,20 @@ def _published_measures():
             fields=["measure_name"], limit_page_length=0,
         )
     }
+
+
+def _measure_for(fact_doc, measure):
+    """The measure a read uses: the one it named, else the Dataset's own
+    default (konsol#105 Decision 1).
+
+    Both the single-value and the batch read path call this, so the measure a
+    query is built with is the same one that was validated. Plain attribute
+    access, deliberately: a Dataset loaded without the ``default_measure``
+    column is a bug in _FACT_FIELDS and must surface as one. Reading it
+    through a getattr with a blank fallback would instead turn that bug into
+    "this dataset declares no default" and hide it.
+    """
+    return measure or fact_doc.default_measure
 
 
 def _parse_dimensions_arg(dimensions):
@@ -353,7 +367,15 @@ def _resolve_and_validate(fact_name, scenario, measure, dim_names):
         ))
         return None, f"Invalid scenario '{scenario}'. Allowed: {', '.join(allowed)}"
 
+    # A read that names no measure takes the Dataset's declared default. The
+    # filled value is what gets validated here and what both callers query.
+    measure = _measure_for(fact, measure)
     valid_measures = _get_allowed_measures(fact) & _published_measures()
+    if not measure:
+        return None, (
+            f"Fact '{fact.fact_name}' declares no Default Measure, so a read "
+            f"must name one. Its measures are: {', '.join(sorted(valid_measures))}"
+        )
     if measure not in valid_measures:
         return None, (
             f"Invalid measure '{measure}' for fact '{fact.fact_name}'. "
@@ -817,7 +839,7 @@ def health():
 
 
 @frappe.whitelist()
-def epm_value(entity, year, period, account, measure="period_net_amount",
+def epm_value(entity, year, period, account, measure="",
               scenario="actuals", fact=None, dimensions=None, scenario_id="",
               hierarchy=None, node=None, hierarchy_node=None, layer=""):
     """Single value lookup — returns {"value": <number>}.
@@ -887,6 +909,9 @@ def epm_value(entity, year, period, account, measure="period_net_amount",
     fact_doc, err = _resolve_and_validate(fact, scenario, measure, dims.keys())
     if err:
         frappe.throw(err, frappe.ValidationError)
+    # Query the measure that was validated: a blank left here would reach the
+    # identifier check in _batch_query_clickhouse and read nothing.
+    measure = _measure_for(fact_doc, measure)
 
     result = _batch_query_clickhouse([{
         "entity": entity, "year": int(year),
@@ -1107,7 +1132,7 @@ def epm_batch():
     allowed_entities = _allowed_entities()
     for i, req in enumerate(requests_list):
         scenario = req.get("scenario", "actuals")
-        measure = req.get("measure", "period_net_amount")
+        measure = req.get("measure") or ""
         dimensions = _extract_batch_dimensions(req)
 
         try:
@@ -1176,6 +1201,9 @@ def epm_batch():
         if denied:
             errors_list[i] = denied
             continue
+        # As in epm_value: the row is queried with the measure that was
+        # validated, not the blank it may have arrived with.
+        measure = _measure_for(fact_doc, measure)
 
         normalized[i] = {
             "entity": entity,
