@@ -734,3 +734,54 @@ def test_epm_batch_fills_hierarchy_rows_and_refuses_one_row_at_a_time():
     assert first is None, first
     assert "forecast" in second, second
     assert result["values"][1] is None
+
+
+# ── no add-in tooltip may name a default measure (PR #249 review) ───────────
+#
+# functions.json is the tooltip Excel shows in the formula bar: the most
+# user-visible text in the product. Since a fact's default measure lives on
+# its Dataset (konsol#105 Decision 1), no tooltip can name one — of the nine
+# shipped datasets only two declare period_net_amount, so the old wording
+# "Measure (default period_net_amount)" was wrong for the other seven. The
+# api.py tripwire only ever read api.py, which is how that line survived the
+# branch. These assert over the shipped fixtures rather than a literal, so
+# they answer for whatever set of datasets a customer ships.
+
+
+def _addin_functions():
+    with open(os.path.join(APP_DIR, "public", "excel-addin", "functions.json")) as f:
+        return json.load(f)["functions"]
+
+
+def _declared_default_measures():
+    """Every measure some shipped Dataset declares as its default."""
+    with open(os.path.join(APP_DIR, "fixtures", "dataset.json")) as f:
+        datasets = json.load(f)
+    return sorted({d["default_measure"] for d in datasets if d.get("default_measure")})
+
+
+def test_no_addin_parameter_tooltip_claims_a_hardcoded_default_measure():
+    declared = _declared_default_measures()
+    # the premise: the datasets disagree, so no one measure is "the" default
+    assert len(declared) > 1, declared
+    for fn in _addin_functions():
+        for param in fn["parameters"]:
+            desc = param["description"]
+            # the measure tooltip may not name one at all; any other tooltip
+            # may not name one as a default
+            if param["name"] != "measure" and "default" not in desc.lower():
+                continue
+            named = [m for m in declared if m in desc]
+            assert not named, (
+                f"{fn['id']} tooltip for '{param['name']}' names {named} as the "
+                f"default measure, but each Dataset declares its own "
+                f"(konsol#105 Decision 1): {desc!r}"
+            )
+
+
+def test_the_measure_tooltip_points_at_the_dataset():
+    """Not the old sentence re-pinned: a blank measure has to resolve
+    somewhere, and the tooltip has to say where."""
+    (epm,) = [f for f in _addin_functions() if f["id"] == "EPM"]
+    (measure,) = [p for p in epm["parameters"] if p["name"] == "measure"]
+    assert "dataset" in measure["description"].lower(), measure["description"]
