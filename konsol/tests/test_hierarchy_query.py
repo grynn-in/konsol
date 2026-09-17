@@ -636,6 +636,12 @@ def _hierarchy_api(registry):
     hq.entity_is_wildcard = lambda entity: entity in ("", "*", "ALL")
     hq.validate_hierarchy_read = lambda name, node, scenario: (
         {"hierarchy_name": "ZZ_H", "member_code": node}, None)
+    # The API normalises the scenario through this module before looking the
+    # Dataset registry up (konsol#105 review), so the stub has to carry the
+    # function too. The real one, imported here while the stub is not yet in
+    # sys.modules, so it cannot drift from the rule the query layer applies.
+    from konsol.hierarchy_query import _normalize_scenario
+    hq._normalize_scenario = _normalize_scenario
     perms = types.ModuleType("konsol.entity_permissions")
     perms.entity_read_scope = lambda entity, allowed, wildcard=False: (None, None)
     api._zz_stubs = {"konsol.hierarchy_query": hq, "konsol.entity_permissions": perms}

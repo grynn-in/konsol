@@ -397,11 +397,24 @@ def test_a_blank_scenario_reads_the_default_the_query_layer_would():
     req.get("scenario", "actuals"), and a GET may send a blank too.
     hierarchy_query reads that blank as actuals; so must the lookup."""
     api, asked = _registry_api({"actuals"})
-    for blank in ("", None, "  "):
+    for blank in ("", None):
         measure, err = _hierarchy_measure(api, blank)
         assert err is None, (blank, err)
         assert measure == "driver_value", (blank, measure)
-    assert asked == ["actuals"] * 3, asked
+    assert asked == ["actuals"] * 2, asked
+
+
+def test_the_lookup_key_is_exactly_hierarchy_querys_normalisation():
+    """Parity, not a restatement: whatever hierarchy_query makes of a scenario
+    is the key the registry is asked for. Includes the whitespace-only case,
+    which both sides read as '' (the rule strips after the `or`) and
+    validate_hierarchy_read refuses before the fill is ever reached — the
+    point being that neither side decides that on its own."""
+    normalize = _load_hq()._normalize_scenario
+    for raw in ("zz", " zz ", "ZZ", "", None, "  ", "\tActuals\n"):
+        api, asked = _registry_api(set())
+        _hierarchy_measure(api, raw)
+        assert asked == [normalize(raw)], (raw, asked)
 
 
 def test_the_refusal_names_the_scenario_that_was_looked_up():
@@ -425,6 +438,10 @@ def _stub_modules(fn):
     hq.entity_is_wildcard = lambda entity: False
     hq.validate_hierarchy_read = lambda name, node, scenario: (
         {"hierarchy_name": "H", "member_code": node}, None)
+    # The endpoints normalise the scenario through this module before the
+    # registry lookup: the real function, not a restatement, so the stub
+    # cannot drift from the rule the query layer applies.
+    hq._normalize_scenario = _load_hq()._normalize_scenario
     stubs = {"konsol.entity_permissions": perms, "konsol.hierarchy_query": hq}
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)

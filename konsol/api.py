@@ -326,7 +326,21 @@ def _hierarchy_measure(scenario, measure):
     for the two flat ones. The fill happens here, before the request is handed
     to hierarchy_query: that module is a query builder which requires a
     measure and knows nothing of the registry.
+
+    The scenario is normalised with hierarchy_query's own rule before the
+    lookup, because that module normalises on its side of the call:
+    validate_hierarchy_read and batch_query_hierarchy both do. A lookup on the
+    raw string would let " actuals " — or a batch row whose explicit
+    ``"scenario": ""`` defeated ``req.get("scenario", "actuals")`` — pass
+    hierarchy validation and then be refused here as a scenario with no
+    declared default, blaming the registry for what is a spelling. Its rule,
+    imported rather than restated, so the two sides cannot drift; in the body,
+    like this module's other hierarchy_query imports, as that module imports
+    konsol.api inside its own functions.
     """
+    from konsol.hierarchy_query import _normalize_scenario
+
+    scenario = _normalize_scenario(scenario)
     measure = measure or default_measure_for_scenario(scenario)
     if not measure:
         return "", (
