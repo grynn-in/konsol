@@ -17,7 +17,7 @@
         { "name": "year", "description": "Fiscal year, e.g. 2024", "type": "number" },
         { "name": "period", "description": "1-12, or Q1-Q4, H1-H2, FY", "type": "string" },
         { "name": "account", "description": "Main account code", "type": "string" },
-        { "name": "measure", "description": "Measure (default period_net_amount)", "type": "string", "optional": true },
+        { "name": "measure", "description": "Measure; blank uses the dataset's own default measure", "type": "string", "optional": true },
         { "name": "scenario", "description": "Scenario (default actuals)", "type": "string", "optional": true },
         { "name": "costCenter", "description": "Cost center dimension", "type": "string", "optional": true },
         { "name": "department", "description": "Department dimension", "type": "string", "optional": true },
