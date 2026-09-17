@@ -4,6 +4,59 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+## Decisions register
+
+Every decision the user has made, newest first, with where the full record
+lives. **This table is the index; the issue comment named in the last column is
+the record.** A decision not in this table has not been made — do not infer one
+from code, and never attribute a decision to the user that is not recorded here.
+
+The project memory under `.claude/memory/` is git-ignored and is **not** visible
+to anyone else, so nothing is considered recorded until it is in an issue
+comment and listed here.
+
+| date | decision | record |
+|---|---|---|
+| 18 Sep | **Materiality floor is group-declared, defaulting to half the currency's minor unit.** Its own field on the group root, not an overload of `ic_difference_tolerance`. A flat 0.005 default was rejected. | konsolidat#209 |
+| 18 Sep | **Partial-period treatment is declared per group** — `partial_period_treatment` = Whole period / Pro-rate by days / Stub trial balance, required once the group has a Business Combination, no default. Pro-rating for everyone was rejected: it assumes even accrual, invisibly. | konsolidat#171 |
+| 18 Sep | **Every K.EPM read names its currency.** Mandatory argument, position five, no default and no omitted case. A selector (`"local"` or the group's reporting currency), never a converter. | konsol#253 |
+| 18 Sep | **A trial balance declares its currency**; a mismatch with the Entity's `functional_currency` refuses the entity-period. | konsol#252 |
+| 18 Sep | **The semantic model is site-owned.** Measure, Dataset, Scenario and Spread Profile are seeded create-if-missing, never force-reimported. Build Scope, Build Model, Pipeline and ISO Currency stay immutable. A per-row `owner` marker was rejected — "structural" is a dependency, not an ownership property. | konsol#230 |
+| 17 Sep | **A fact's default measure lives on its Dataset** (`default_measure`), not in code or a per-scenario dict. | konsol#105 |
+| 17 Sep | **The ERP staging tree is being removed.** Do not repair defects inside it. | konsolidat#221 |
+| 17 Sep | **Principle: refuse what makes a number wrong, report what makes it unexplained, never let data create configuration.** | konsol#247 |
+| 17 Sep | **konsol ships no Dimensions**; each site declares its own. | konsol#230 |
+| 16 Sep | **Canonical intake only** — konsol does not map source codes. | konsol#218 |
+| 16 Sep | **A fixed raw contract**; a configurable Source Profile was rejected. | konsol#218 |
+| 15 Sep | **konsol translates, it does not remeasure.** IAS 21 step 2 only; step 1 happens in the subsidiary's own ledger. | konsol#222 |
+| 15 Sep | **For multi-tenant, the dbt project moves into the Frappe app**, not ClickHouse. | see "One customer or many" below |
+| 13 Sep | **FX rates have one source of truth, via konsol.** | see "Group 2" below |
+| 13 Sep | **The group chart of accounts owes nothing to the ERP chart.** | konsol#182 |
+
+### Context that changes how options are weighed
+
+**There are zero customers as of 18 September 2026** (user, 18 Sep). Breaking
+changes cost a find-and-replace inside these two repos, not a migration. Do not
+down-rank an option for breaking backward compatibility, and do not propose a
+version marker or a compatibility shim to protect callers that do not exist.
+Prefer the correct shape now; say explicitly when a decision is cheap *because*
+of this, because the cost rises with the first customer.
+
+### Open, blocking work
+
+| | question | blocks |
+|---|---|---|
+| konsol#246 | does the canonical contract need a version marker? Arguably moot at zero customers | nothing urgent |
+| unfiled | the 55 `abs(a-b) > 0.01` tie-out tolerances across the assertion suite are **not** materiality and are absolute — the same defect as konsol#180 | not filed |
+
+### Ready to build, no decision needed
+
+**konsolidat#220 is the install blocker.** 40 of 48 `dim_select()` call sites
+carry a trailing comma, so a site with zero dimensions cannot compile any model.
+It must land **before** konsol#230's deletions, or removing the shipped
+dimensions breaks every build.
+
+
 **Update (17 Sep): a fact's default measure lives on its Dataset (konsol#105 Decision 1, PR #249, `9903cbd`; closes konsol#104).** Dataset gains `default_measure`, a Link to Measure validated against that dataset's *own* `fact_measures` — and deliberately **not** skipped under the install/migrate/import flags, so a bad value in `fixtures/dataset.json` fails the migrate instead of installing quietly. The nine shipped datasets declare theirs. Both read paths now fill a blank measure *after* resolving the fact, through one helper each (`_measure_for` flat, `_hierarchy_measure` for the hierarchy branches of `epm_value` and `epm_batch`), so the measure that is validated is the measure that is queried — a fill confined to `_resolve_and_validate` validates one and queries a blank, which dies at the identifier check. Both hardcoded `period_net_amount` literals are gone (the string now occurs **0** times in `api.py`) and so is the whole per-scenario `default_measure` dict in `hierarchy_query.py`, which was unreachable dead code. `hierarchy_query` must not reach the registry on the request path: importing `konsol.api` there makes `test_hierarchy_query.py` stop importing on a host, which is how konsol#248 was found.
 
 **Forecast is the one scenario the registry cannot answer, and that is deliberate (konsol#106, still open).** A forecast hierarchy read naming no measure used to return `0` from the deleted dict; it now errors naming the scenario. Do **not** "fix" that by registering a forecast Dataset — that decides #106 by fixture. The evidence says forecast is already modelled as budget rows filtered by a scenario id (the hierarchy config points it at `gold_budget_at_hierarchy_node` with `has_scenario_id`, and the add-in's `scenarioId` tooltip says "budget/forecast"), but there are no customers and no forecast data, so the question was left open rather than answered on no evidence. Note #106's text is wrong on one fact: `fixtures/scenario.json` ships **three** Scenario rows (ACTUAL, BUDGET, FORECAST), not ten.
