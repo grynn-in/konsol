@@ -66,6 +66,16 @@ class HistoricalEquityRate(Document):
         closing rate with no error. Enforce existence here instead, against the
         Consolidation Group registry (the app's source of truth for membership).
 
+        Membership, not leafness, is the entity test (konsol#240). The check
+        matches any Consolidation Group row carrying this `data_area_id`, with
+        no is_group clause: `_is_group_node()` (consolidation_group.py) is
+        `is_group or not data_area_id`, so carrying an entity code is what
+        makes a row an entity row, whatever the flag says. A regional holding
+        company with its own share capital, its own trial balance and
+        subsidiaries beneath it is a parent AND an entity, and on the live
+        site 27 of the 28 group nodes are exactly that. Rollup nodes carry no
+        `data_area_id`, so dropping the clause still excludes them.
+
         `main_account` IS a Link, to Main Account, and the difference is the
         naming: Main Account is named `field:main_account`, so its name is the
         bare account code itself. The stored value is byte for byte what it
@@ -92,11 +102,13 @@ class HistoricalEquityRate(Document):
                 frappe.ValidationError,
             )
         if self.data_area_id and not frappe.db.exists(
-            "Consolidation Group", {"data_area_id": self.data_area_id, "is_group": 0}
+            "Consolidation Group", {"data_area_id": self.data_area_id}
         ):
             frappe.throw(
-                f"Unknown entity '{self.data_area_id}'. It must be a member entity "
-                "in Consolidation Group.",
+                f"Entity '{self.data_area_id}' is not in Consolidation Group. "
+                "It must be a node of the consolidation tree — an unmatched key "
+                "silently drops the account to the closing rate in gold, which "
+                "is the wrong number, not an error.",
                 frappe.ValidationError,
             )
         if self.main_account and not frappe.db.exists("Main Account", self.main_account):
