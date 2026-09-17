@@ -169,6 +169,10 @@ def _hierarchy(allowed_entities, entity="ALL"):
         result = hq.batch_query_hierarchy([{
             "entity": entity, "year": 2024, "periods": (1,), "account": "4010",
             "scenario": "actuals", "hierarchy_name": "H", "hierarchy_node": "N",
+            # A direct call names its own measure (konsol#105 Decision 1): the
+            # API fills a blank one from the Dataset registry before the
+            # request reaches here, and this layer refuses a blank.
+            "measure": "period_net_amount",
         }], allowed_entities=allowed_entities)
     finally:
         for k, mod in saved.items():
@@ -270,6 +274,12 @@ class _Endpoints:
         # delete the blank-measure read this file exists to cover.
         api._resolve_and_validate = lambda fact, scenario, measure, dims: (
             types.SimpleNamespace(fact_name="f", default_measure="period_net_amount"), None)
+        # The hierarchy branch never reaches _resolve_and_validate: it fills a
+        # blank measure from the Dataset registry by scenario instead, which
+        # the real helper reads through frappe. Stubbed for the same reason as
+        # above — value() and batch() below still read with NO measure, which
+        # is the entity-access coverage this file exists for.
+        api.default_measure_for_scenario = lambda scenario: "period_net_amount"
 
         def flat_query(reqs):
             self.flat.extend(r["entity"] for r in reqs)
