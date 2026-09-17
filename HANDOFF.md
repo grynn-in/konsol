@@ -1,8 +1,18 @@
 # konsol / konsolidat — status and next steps
 
-_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), for the group chart (13 Sep night), and for the declared fiscal calendar (14 Sep), and for the deal layer and the one-customer-or-many audit (15 Sep). Everything below was verified against the running stack._
+_Written 12 September 2026, refreshed that night, on 13 September, again for the role home (F7), for group 2 (13 Sep evening), for the group chart (13 Sep night), and for the declared fiscal calendar (14 Sep), for the deal layer and the one-customer-or-many audit (15 Sep), and for the default measure (17 Sep). Everything below was verified against the running stack._
 
 ## Pick up here
+
+**Update (17 Sep): a fact's default measure lives on its Dataset (konsol#105 Decision 1, PR #249, `9903cbd`; closes konsol#104).** Dataset gains `default_measure`, a Link to Measure validated against that dataset's *own* `fact_measures` — and deliberately **not** skipped under the install/migrate/import flags, so a bad value in `fixtures/dataset.json` fails the migrate instead of installing quietly. The nine shipped datasets declare theirs. Both read paths now fill a blank measure *after* resolving the fact, through one helper each (`_measure_for` flat, `_hierarchy_measure` for the hierarchy branches of `epm_value` and `epm_batch`), so the measure that is validated is the measure that is queried — a fill confined to `_resolve_and_validate` validates one and queries a blank, which dies at the identifier check. Both hardcoded `period_net_amount` literals are gone (the string now occurs **0** times in `api.py`) and so is the whole per-scenario `default_measure` dict in `hierarchy_query.py`, which was unreachable dead code. `hierarchy_query` must not reach the registry on the request path: importing `konsol.api` there makes `test_hierarchy_query.py` stop importing on a host, which is how konsol#248 was found.
+
+**Forecast is the one scenario the registry cannot answer, and that is deliberate (konsol#106, still open).** A forecast hierarchy read naming no measure used to return `0` from the deleted dict; it now errors naming the scenario. Do **not** "fix" that by registering a forecast Dataset — that decides #106 by fixture. The evidence says forecast is already modelled as budget rows filtered by a scenario id (the hierarchy config points it at `gold_budget_at_hierarchy_node` with `has_scenario_id`, and the add-in's `scenarioId` tooltip says "budget/forecast"), but there are no customers and no forecast data, so the question was left open rather than answered on no evidence. Note #106's text is wrong on one fact: `fixtures/scenario.json` ships **three** Scenario rows (ACTUAL, BUDGET, FORECAST), not ten.
+
+**Still split, filed as konsol#250:** the *default* now has one source of truth, but the *allowed set* does not. Flat reads validate against the Dataset's `fact_measures` ∩ Published Measures; hierarchy reads validate against the hand-written `HIERARCHY_SCENARIO_CONFIG[sc]["measures"]`. A customer declaring a legal default outside that hand-written set gets working flat reads and failing hierarchy reads.
+
+**Four more filed this session, two of them live-data defects.** **konsol#248** — `scripts/run-host-tests.py` counts a file that fails to import as *skipped*, so the headline still reads `N/N passed` while whole files leave the run; it printed `2328/2328` with no failures while 15 hierarchy tests had silently gone. Only two files are in `MUST_RUN`. **Check the skipped list and compare totals; `N/N passed` alone is not evidence.** **konsol#251** — `_resolve_period` accepts 1–12 and `FY` expands to `(1…12)`, so fiscal period 13 is unreachable; that is the year-end close, which is *correct* to exclude for P&L but not for the balance sheet, where retained earnings' final balance lives only at period 13 (JP_ECL FY2024 account 3100: readable `2,886,469,851`, actual closing `−2,348,774,018`). **konsol#252** — a TB upload cannot declare its currency (the contract is six columns), so a USD file against a EUR entity translates at the EUR rate and trips nothing. **konsol#253** — `gold_trial_balance` has no currency column, so `K.EPM` returns unlabelled numbers across the 15 functional currencies the 44 loaded entities use.
+
+**konsolidat#221 is a standing rule now: do not repair a defect whose only site is in the ERP staging tree — close it citing #221.** A corrective sweep already closed konsolidat#190, #173 and #206. One caveat recorded on konsol#189: two of #190's three `coalesce` sites are in `silver_gl_entries`, which #221 lists as **surviving**, and they read `entity_fiscal_calendars` — a konsol doctype synced by konsol, not ERP staging. Deleting the tree will not carry them away; PR3 is the right place to decide them.
 
 **Update (16 Sep): the Assertion Run surface is role-gated (konsol#166, #165).** Starting a close run needs Close Lead (`EPM Admin`) or System Manager and is POST-only, because it writes: it inserts a run, commits and enqueues the suite. The launch form's options need the roles that launch pipelines, because they are read with `frappe.get_all`, which ignores permissions. Each failed step stores up to 20 offending rows from the dbt failure table, and about 30 of those tables carry an entity column while Assertion Run is not entity-scoped, so that field sits at permission level 1, granted to System Manager and EPM Admin only; the other roles keep the run, its steps and their counts. This is the app's first permission level, so it takes effect on migrate, and a test that reads the role matrix must filter permlevel rows out. A new whitelisted endpoint here needs its own `frappe.only_for`, and one that writes needs `methods=["POST"]`.
 
@@ -963,16 +973,37 @@ measures. `countIf(period_credit > 0) = 0` would have exposed #155 weeks ago.
 
 Capture deploy's own exit code; a trailing `echo` reports 0 even on failure.
 
-**Local stack right now:** konsol `main` (through #148, the role home)
-hot-copied into backend and worker, including the built konsol-exec bundle.
-On konsolidat.local the Consolidation Adjustment workflow already carries the
-F7 roles (EPM Analyst drafts, EPM Admin approves); no test users are left. The dbt project is
-bind-mounted from the konsolidat checkout at `9e263a3`, so the next build uses
-#162's models. The Consolidation Adjustment workflow is
-installed on konsolidat.local. The AMIT and ZZ test data are gone. Nothing was
-redeployed.
+**Local stack right now (17 Sep):** konsol `main` @ `9903cbd` (konsol#105
+Decision 1) hot-copied into backend and worker — `api.py`,
+`hierarchy_query.py`, the Dataset doctype JSON and controller,
+`fixtures/dataset.json` and the add-in `functions.json`, each md5-verified in
+both containers. `reload_doc` ran for Dataset, so `tabDataset.default_measure`
+exists, and the nine shipped datasets carry their value. **Those nine were set
+by a targeted write, not a fixture import** — `sync_fixtures` re-imports every
+konsol fixture (chart, measures, scenarios, spread profiles) and konsol#230
+documents that it force-overwrites whatever a site holds; the next real migrate
+re-imports `fixtures/dataset.json` and should land on identical values. Cache
+cleared and both containers restarted, verified by the new code being loaded
+(`period_net_amount` occurs 0 times in the container's `api.py`). On
+konsolidat.local the Consolidation Adjustment workflow carries the F7 roles
+(EPM Analyst drafts, EPM Admin approves); no test users are left. The dbt
+project is bind-mounted from the konsolidat checkout. The AMIT and ZZ test data
+are gone. Nothing was redeployed.
 
-Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **897/897 passed across 82 files** on main after #146; `cd konsol-exec && node --test src/*.test.mjs
+**Verified on live data, not on empty result sets:** actuals blank →
+`-24,640,361,228.18`, identical to explicit `period_net_amount` and different
+from `period_debit`; consolidated blank → `-12,278,292,000.06`, matching an
+independent ClickHouse measurement; cashflow blank → `-8,532,000,000.0`.
+Variance's blank and explicit reads give the *identical* downstream refusal (no
+active budget scenario for FY2024, konsol#214 working), so the default
+resolved. The three driver datasets fail with `UNKNOWN_TABLE` —
+`epm_staging.fact_headcount`, `fact_area_sqm` and `fact_revenue_by_product` do
+not exist on this site. A first pass read `US_ECL / 4000`, which has no rows,
+and got `0.0` everywhere: **an empty result returns `0.0` for any valid
+measure, so it proves nothing. Pick keys with data and compare blank vs the
+named measure vs a different one.**
+
+Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **2359/2359 passed across 158 files** on main at `9903cbd`, with 8 files skipped (the known live-site/pytest set — check that list, see konsol#248); `cd konsol-exec && node --test src/*.test.mjs
 src/orchestrator/*.test.mjs` → 48/48 with #148.
 
 Drive the live stack without a deploy by `docker cp` into
