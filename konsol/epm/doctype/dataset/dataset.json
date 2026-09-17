@@ -100,6 +100,13 @@
       "description": "Auto-populated from Measures child table on save"
     },
     {
+      "fieldname": "default_measure",
+      "fieldtype": "Link",
+      "label": "Default Measure",
+      "options": "Measure",
+      "description": "The measure a read of this dataset uses when it names none. Must be one of this dataset's own Measures. Leave it blank and a read that names no measure is answered with an error, never with a guess."
+    },
+    {
       "fieldname": "col_break_2",
       "fieldtype": "Column Break"
     },
