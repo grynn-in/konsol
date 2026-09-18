@@ -4,7 +4,7 @@ Konsolidat desk dashboard.
 Builds a public Frappe Workspace named "Konsolidat" so the desk lands on
 konsol-related shortcuts and workflow link cards — organized so every functional
 process's doctypes/configs sit together (pipeline, model, reference, budgeting,
-allocation, consolidation, assertions, settings).
+consolidation, assertions, settings).
 
 Called best-effort from ``konsol.install.after_migrate`` so the dashboard is
 recreated on every ``bench migrate`` (and therefore survives a clean redeploy).
@@ -50,9 +50,6 @@ _LABELS = {
     "Budget Sheet": "Budget Sheets",
     "Budget Cost Center": "Budget Cost Centers",
     "Spread Profile": "Spread Profiles",
-    "Allocation Driver": "Allocation Drivers",
-    "Allocation Rule": "Allocation Rules",
-    "Allocation Run": "Allocation Runs",
     "Consolidation Group": "Consolidation Groups",
     "Ownership Period": "Ownership Periods",
     "Historical Equity Rate": "Historical Equity Rates",
@@ -79,7 +76,6 @@ _SHORTCUTS = [
     ("Pipeline Run", "Orange"),
     ("Dataset", "Blue"),
     ("Budget Cycle", "Teal"),
-    ("Allocation Run", "Yellow"),
     ("Consolidation Group", "Pink"),
     ("Assertion Run", "Purple"),
     ("EPM Settings", "Green"),
@@ -104,9 +100,6 @@ _CARDS = [
     ]),
     ("Budgeting & Planning", [
         "Budget Cycle", "Budget Sheet", "Budget Cost Center", "Spread Profile",
-    ]),
-    ("Allocations", [
-        "Allocation Driver", "Allocation Rule", "Allocation Run",
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",

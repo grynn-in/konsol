@@ -249,7 +249,7 @@ def test_dashboard_workflow_card_order():
     for old in ("Budget", "EPM Registry", "EPM Models", "Data Pipeline"):
         assert old not in titles, old
     order = ["Pipeline & Ingestion", "Model & Metadata", "Budgeting & Planning",
-             "Allocations", "Consolidation"]
+             "Consolidation"]
     assert [t for t in titles if t in order] == order
 
 

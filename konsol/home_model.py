@@ -55,7 +55,7 @@ STAGE_OWNERS = {
 #: balance). A host test runs each controller against a closed period and
 #: checks this list against what actually refuses (#149).
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
-    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance", "Allocation Run",
+    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance",
     "Group Exchange Rate"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
@@ -71,9 +71,9 @@ def closed_period(doctype, closed_reason, verb="submit", can_delete=False):
     The home disables only what the server refuses, and annotates what the
     server allows but can't complete. Each of these links still opens its desk
     form, so it stays enabled and the note says the approval or submit will be
-    refused. An adjustment, IC balance or allocation run can still be
-    rejected, edited or deleted there. A trial balance draft takes no save in
-    a closed period, so all that is left is deleting it, and only a viewer
+    refused. An adjustment or IC balance can still be rejected, edited or
+    deleted there. A trial balance draft takes no save in a closed period, so
+    all that is left is deleting it, and only a viewer
     with the delete right can (``can_delete``; an Entity Accountant has none),
     so the note says who can. A trial balance upload, which the server refuses
     outright, is not offered at all.
