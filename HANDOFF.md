@@ -17,6 +17,7 @@ comment and listed here.
 
 | date | decision | record |
 |---|---|---|
+| 18 Sep | **The DAG orchestrator is kept and layered on the governed build.** A multi-step close *requests* Build Approvals; Build Approval stays the only thing that invokes dbt. `Pipeline Run` splits into `Close Run`/`Close Step` (orchestration) and `Build Run`/`Build Step` (renamed). Deleting the DAG, making it primary, and running both in parallel were all rejected. | konsol#258 |
 | 18 Sep | **Materiality floor is group-declared, defaulting to half the currency's minor unit.** Its own field on the group root, not an overload of `ic_difference_tolerance`. A flat 0.005 default was rejected. | konsolidat#209 |
 | 18 Sep | **Partial-period treatment is declared per group** — `partial_period_treatment` = Whole period / Pro-rate by days / Stub trial balance, required once the group has a Business Combination, no default. Pro-rating for everyone was rejected: it assumes even accrual, invisibly. | konsolidat#171 |
 | 18 Sep | **Every K.EPM read names its currency.** Mandatory argument, position five, no default and no omitted case. A selector (`"local"` or the group's reporting currency), never a converter. | konsol#253 |
@@ -50,6 +51,8 @@ of this, because the cost rises with the first customer.
 | unfiled | the 55 `abs(a-b) > 0.01` tie-out tolerances across the assertion suite are **not** materiality and are absolute — the same defect as konsol#180 | not filed |
 
 ### Ready to build, no decision needed
+
+**konsol#258 must land before any orchestrator work** — `definition=None` silently falls back to `plan.DEFAULT_DEFINITION`, and the `silver` and `gold` steps are the same bare `dbt_run`, so wiring `pipeline_definition` today ships a double full build.
 
 **konsolidat#220 is the install blocker.** 40 of 48 `dim_select()` call sites
 carry a trailing comma, so a site with zero dimensions cannot compile any model.
