@@ -126,9 +126,9 @@ def test_build_approval_dashboard_links_runs_and_trigger_js():
 def test_pipeline_build_request_trigger_helper():
     from konsol.desk.connection_filters import pipeline_build_request_trigger
 
-    assert pipeline_build_request_trigger("Allocation Run", "ARUN-1") == (
-        "Allocation Run",
-        ["ARUN-1"],
+    assert pipeline_build_request_trigger("Consolidation Adjustment", "CADJ-1") == (
+        "Consolidation Adjustment",
+        ["CADJ-1"],
     )
     assert pipeline_build_request_trigger(None, None) == (None, [])
 

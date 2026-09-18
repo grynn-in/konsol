@@ -10,7 +10,11 @@ that removal. This patch is the cutover step those rows left open: delete_doc
 on a DocType removes the meta but deliberately leaves the table behind, so an
 existing site still carries the four ``tabAllocation *`` tables (and possibly
 the workflow doc, if a site ever ran ``install_workflows`` while the
-definition was briefly wired up) until this runs.
+definition was briefly wired up) until this runs. Row K11 removed the
+``Allocation`` line from ``modules.txt``, which stops a fresh install from
+creating the ``Module Def`` — but does not delete one an already-migrated
+site created before the line was removed, so this patch deletes it too,
+after the DocTypes that claimed it are gone.
 
 DEVIATION from ``retire_budget_input``'s precedent: that patch throws when it
 finds unmigrated data, because Budget Input had a migration target (Budget
@@ -65,6 +69,14 @@ def execute():
     )
     frappe.delete_doc(
         "DocType", "Allocation Run", force=True, ignore_missing=True
+    )
+
+    # Module Def last: it cannot be removed while a DocType still claims it,
+    # so this must come after all four DocType deletions above (konsol#264
+    # row K11 — the Allocation line is also gone from modules.txt, but that
+    # alone does not delete an already-migrated site's Module Def record).
+    frappe.delete_doc(
+        "Module Def", "Allocation", force=True, ignore_missing=True
     )
 
     # delete_doc leaves the data tables in place; drop them explicitly

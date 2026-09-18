@@ -60,8 +60,6 @@ def _classify(name):
     n = name.lower()
     if "ownership" in n:
         return "Ownership"
-    if any(k in n for k in ("alloc", "step", "tier", "pool", "reciprocal", "driver", "active")):
-        return "Allocation"
     if any(k in n for k in ("cta", "rate", "currency", "fx")):
         return "FX"
     if any(k in n for k in ("ic_", "consolidat", "nci", "equity", "elimination",

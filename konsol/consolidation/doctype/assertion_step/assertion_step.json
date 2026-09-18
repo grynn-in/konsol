@@ -19,7 +19,7 @@
       "fieldname": "dimension",
       "fieldtype": "Select",
       "label": "Dimension",
-      "options": "Consolidation\nAllocation\nFX\nOwnership\nData Quality\nOther",
+      "options": "Consolidation\nFX\nOwnership\nData Quality\nOther",
       "in_list_view": 1,
       "columns": 2,
       "read_only": 1

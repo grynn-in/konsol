@@ -14,6 +14,7 @@ itself, mirroring test_budget.py's role for retire_budget_input.
 
 Site-free source assertions only: the code stays gone, the retire patch is
 registered in patches.txt, it deletes the child table before its parent, it
+deletes the Module Def after (not before) the DocTypes that claim it, it
 never throws (there is no migration target to protect), and reruns are
 no-ops.
 """
@@ -89,6 +90,25 @@ def test_retire_patch_deletes_workflow_and_all_four_doctypes():
     ):
         assert target in execute, f"retire patch must delete {target}"
     assert "ignore_missing=True" in execute  # fresh installs (and reruns) no-op
+
+
+def test_retire_patch_deletes_module_def_after_doctypes():
+    # A Module Def cannot be removed while a DocType still claims it, so the
+    # Module Def delete_doc must come after all four DocType deletions
+    # (konsol#264 row K11: the Allocation line is also gone from modules.txt,
+    # but that alone does not delete an already-migrated site's Module Def).
+    execute = _func(_src(RETIRE_PY), "execute")
+    assert '"Module Def", "Allocation"' in execute
+    doctype_targets = (
+        '"DocType", "Allocation Tier"',
+        '"DocType", "Allocation Rule"',
+        '"DocType", "Allocation Driver"',
+        '"DocType", "Allocation Run"',
+    )
+    module_def_delete = execute.index('"Module Def", "Allocation"')
+    for target in doctype_targets:
+        assert execute.index(target) < module_def_delete, \
+            f"Module Def delete must come after {target}"
 
 
 def test_retire_patch_deletes_child_table_before_parent():
