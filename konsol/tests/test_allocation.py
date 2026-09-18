@@ -77,38 +77,11 @@ def test_allocation_rule_driver_type_options():
             assert "sqm" in options
 
 
-def test_after_migrate_syncs_allocation_config():
-    with open(os.path.join(APP_DIR, "install.py")) as handle:
-        src = handle.read()
-    assert "_sync_allocation_config_to_clickhouse" in src
-    after = src.split("def after_migrate")[1].split("\ndef ")[0]
-    assert "_sync_allocation_config_to_clickhouse()" in after
-    assert "from konsol.allocation.bootstrap import sync_allocation_config_to_clickhouse" in src
-
-
 def test_allocation_run_syncs_after_commit():
     content = _load_py("allocation_run")
     assert "after_commit" in content
     assert "sync_allocation_runs_to_clickhouse" in content
     assert 'filters={"docstatus": ["in", [1, 2]]}' in content
-
-
-def test_allocation_bootstrap_syncs_runs():
-    with open(os.path.join(APP_DIR, "allocation", "bootstrap.py")) as handle:
-        content = handle.read()
-    assert "_sync_allocation_runs" in content
-    after = content.split("def sync_allocation_config_to_clickhouse")[1].split("\ndef ")[0]
-    assert "_sync_allocation_runs()" in after
-
-
-def test_allocation_bootstrap_exports_sync_helper():
-    path = os.path.join(APP_DIR, "allocation", "bootstrap.py")
-    assert os.path.isfile(path)
-    with open(path) as handle:
-        content = handle.read()
-    assert "def sync_allocation_config_to_clickhouse" in content
-    assert "epm_staging.allocation_rules" in content
-    assert "epm_staging.allocation_drivers" in content
 
 
 # --- Allocation Run (PRD-10: submit requests a scoped governed build) ---

@@ -271,15 +271,14 @@ def _report_nothing_synced(target, install_time, title, detail):
 
 def after_migrate():
     """Called after bench migrate — ensures EPM roles exist, the dimension
-    crosswalk seed reflects fixture-loaded Dimension Mapping docs, allocation
-    config is synced to ClickHouse, and the Konsolidat desk workspace is present."""
+    crosswalk seed reflects fixture-loaded Dimension Mapping docs, and the
+    Konsolidat desk workspace is present."""
     _restore_asset_manifest()
     create_roles()
     # F3: the three seed regenerators are gone — Dimension Mapping, Cash Flow
     # Category and Reporting Hierarchy write through to epm_staging like every
     # other governed table, and _reconcile_clickhouse() below re-syncs them
     # after fixture import (which does not fire on_update).
-    _sync_allocation_config_to_clickhouse()
     # Anything seeded during migrate must come BEFORE the reconcile: sync_table
     # no-ops while frappe.flags.in_migrate is set, and reconcile_all
     # (force=True) is the one call that carries such rows through. Nothing is
@@ -372,23 +371,6 @@ def _setup_dashboard():
     except Exception:
         frappe.logger().warning(
             "Konsolidat workspace setup skipped after migrate",
-            exc_info=True,
-        )
-
-
-def _sync_allocation_config_to_clickhouse():
-    """Push fixture-loaded Allocation Rule/Driver docs to ClickHouse.
-
-    Fixture import does not run ``on_update``, so staging would stay empty until
-    a manual save. Best-effort — never fail migrate (e.g. CH not configured).
-    """
-    try:
-        from konsol.allocation.bootstrap import sync_allocation_config_to_clickhouse
-
-        sync_allocation_config_to_clickhouse()
-    except Exception:
-        frappe.logger().warning(
-            "allocation config ClickHouse sync skipped after migrate",
             exc_info=True,
         )
 
