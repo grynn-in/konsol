@@ -75,7 +75,7 @@ export const DOMAINS = [
 		label: "Forecast",
 		processName: "Forecasting",
 		verb: "Refresh & publish",
-		desc: "Pull the latest actuals, run allocations, and publish the forecast scenarios.",
+		desc: "Pull the latest actuals and publish the forecast scenarios.",
 		stages: [
 			{ id: "refresh", label: "Refresh actuals" },
 			{ id: "allocate", label: "Allocate" },
