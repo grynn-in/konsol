@@ -54,10 +54,18 @@ of this, because the cost rises with the first customer.
 
 **konsol#258 must land before any orchestrator work** — `definition=None` silently falls back to `plan.DEFAULT_DEFINITION`, and the `silver` and `gold` steps are the same bare `dbt_run`, so wiring `pipeline_definition` today ships a double full build.
 
-**konsolidat#220 is the install blocker.** 40 of 48 `dim_select()` call sites
-carry a trailing comma, so a site with zero dimensions cannot compile any model.
-It must land **before** konsol#230's deletions, or removing the shipped
-dimensions breaks every build.
+**konsolidat#220 is DONE — merged 18 Sep as `7a969d8` (PR #222).** It was not 40 of 48
+`dim_select()` call sites: measured, it was **53 sites across five macros in three failure
+shapes** — a comma with nothing before it, a comma with nothing after it, and an empty CTE
+(zero loop branches leaving `with x as ()`, which `dbt compile` accepts and ClickHouse rejects).
+Plus a fourth class unrelated to commas: hardcoded dimension names failing with
+`UNKNOWN_IDENTIFIER`. Three review rounds; the last two found live zero-dimension failures that
+four green builds had missed because their selectors never reached those subtrees.
+
+konsol#230's deletions are now unblocked. Filed and NOT fixed: konsol#261 (publishing or
+unpublishing a Dimension empties the gold fact tables — 47,308 rows to 0, no self-heal),
+konsol#263, konsol#265, konsolidat#223, and konsol#264 (remove the allocation feature; decided,
+plan written).
 
 
 **Update (17 Sep): a fact's default measure lives on its Dataset (konsol#105 Decision 1, PR #249, `9903cbd`; closes konsol#104).** Dataset gains `default_measure`, a Link to Measure validated against that dataset's *own* `fact_measures` — and deliberately **not** skipped under the install/migrate/import flags, so a bad value in `fixtures/dataset.json` fails the migrate instead of installing quietly. The nine shipped datasets declare theirs. Both read paths now fill a blank measure *after* resolving the fact, through one helper each (`_measure_for` flat, `_hierarchy_measure` for the hierarchy branches of `epm_value` and `epm_batch`), so the measure that is validated is the measure that is queried — a fill confined to `_resolve_and_validate` validates one and queries a blank, which dies at the identifier check. Both hardcoded `period_net_amount` literals are gone (the string now occurs **0** times in `api.py`) and so is the whole per-scenario `default_measure` dict in `hierarchy_query.py`, which was unreachable dead code. `hierarchy_query` must not reach the registry on the request path: importing `konsol.api` there makes `test_hierarchy_query.py` stop importing on a host, which is how konsol#248 was found.
