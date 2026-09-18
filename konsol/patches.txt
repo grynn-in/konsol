@@ -38,3 +38,4 @@ konsol.patches.migrate_deals_to_business_combinations
 konsol.patches.date_reporting_hierarchy_members
 konsol.patches.drop_cash_flow_category_sign
 konsol.patches.link_historical_equity_rate_account
+konsol.patches.retire_allocation
