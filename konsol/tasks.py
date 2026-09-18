@@ -37,9 +37,6 @@ DOCTYPE_BUILD_MAP = {
     "Historical Equity Rate": {"scope": "staging", "risk": "low"},
     "IC Elimination Rule": {"scope": "staging", "risk": "low"},
     "IC Balance": {"scope": "staging", "risk": "low"},
-    "Allocation Rule": {"scope": "staging", "risk": "low"},
-    "Allocation Driver": {"scope": "staging", "risk": "low"},
-    "Allocation Run": {"scope": "staging", "risk": "low"},
     # konsol#110: consolidation, not staging — `staging` selects five models,
     # none of which read the entity registry; `+tag:domain:consolidation`
     # reaches silver_entity_currencies and gold_consolidated_trial_balance.

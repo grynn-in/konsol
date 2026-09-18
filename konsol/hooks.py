@@ -121,9 +121,6 @@ _dbt_trigger_doctypes = [
     "Historical Equity Rate",
     "IC Elimination Rule",
     "IC Balance",
-    "Allocation Rule",
-    "Allocation Driver",
-    "Allocation Run",
     # F8: a submitted TB must reach gold, and a CANCELLED one must leave it.
     # Caveat: the debounce counts a Running build as pending, so a request that
     # arrives after a running build has read its inputs is absorbed; tracked
