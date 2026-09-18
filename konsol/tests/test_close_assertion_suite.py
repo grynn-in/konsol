@@ -134,7 +134,7 @@ def test_close_assertions_report_executes_shape():
 # ---------------------------------------------------------------------------
 # Assertion Runs with a period count toward fiscal_calendar.periods_in_use
 # (they freeze the period), so an undeclared year or period must be refused
-# in validate(), the same as IC Balance / Allocation Run. A year-only run (no
+# in validate(), the same as IC Balance. A year-only run (no
 # fiscal_period — the field is optional) must still refuse an undeclared
 # year: it checks the year exists as an EPM Fiscal Year, it never invents one.
 #

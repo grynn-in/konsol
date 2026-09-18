@@ -1,9 +1,9 @@
 """Submit only into an open period (#149).
 
 A closed period takes no further change (decided 12 Sep 2026): after close, a
-correction is a new document in an open period. Consolidation Adjustment, IC
-Balance and Allocation Run gated only their cancel, so a draft whose period
-closed while it waited could still be submitted into it.
+correction is a new document in an open period. Consolidation Adjustment and
+IC Balance gated only their cancel, so a draft whose period closed while it
+waited could still be submitted into it.
 
 The home disables only what the server refuses and annotates what it allows
 but can't complete, so its two lists (submit needs an open period, every save
@@ -19,7 +19,7 @@ import tempfile
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "IC Balance", "Allocation Run")
+GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "IC Balance")
 PERIOD_GATES = {"assert_open", "assert_open_between"}
 CLOSED = "Dec 2099 is closed."
 #: a fiscal year/period never declared, for the assert_declared stub to refuse
@@ -333,36 +333,6 @@ def test_ic_balance_refuses_an_undeclared_period_on_validate():
     assert [c[:2] for c in record["checked"]] == [UNDECLARED]
 
 
-def test_allocation_run_refuses_an_undeclared_period_on_validate():
-    """konsol#189: validate must reach assert_declared, not just before_submit's
-    assert_open — a period that was never declared is refused before an
-    open/closed check is even meaningful."""
-    module, record = _load(PATHS["Allocation Run"], period_open=True)
-    d = module.AllocationRun(doctype="Allocation Run", name="ZZ-TEST", docstatus=0,
-                              fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
-    try:
-        d.validate()
-    except Refused:
-        pass
-    else:
-        raise AssertionError("Allocation Run validate allowed an undeclared period")
-    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
-
-
-def test_allocation_driver_refuses_an_undeclared_period_on_validate():
-    """konsol#189: validate must reach assert_declared."""
-    module, record = _load(PATHS["Allocation Driver"], period_open=True)
-    d = module.AllocationDriver(doctype="Allocation Driver", name="ZZ-TEST", docstatus=0,
-                                 fiscal_year=UNDECLARED[0], fiscal_period=UNDECLARED[1])
-    try:
-        d.validate()
-    except Refused:
-        pass
-    else:
-        raise AssertionError("Allocation Driver validate allowed an undeclared period")
-    assert [c[:2] for c in record["checked"]] == [UNDECLARED]
-
-
 def test_submit_into_an_open_period_still_works():
     for doctype in GATED_IN_BEFORE_SUBMIT:
         module, record = _load(PATHS[doctype], period_open=True)
@@ -374,10 +344,6 @@ def test_submit_into_an_open_period_still_works():
     d = _doc(module, "Consolidation Adjustment")
     d.before_submit()
     assert (d.status, d.approved_by) == ("Approved", "approver@example.com")
-    module, record = _load(PATHS["Allocation Run"], period_open=True)
-    d = _doc(module, "Allocation Run")
-    d.before_submit()
-    assert (d.status, d.build_approval, record["builds"]) == ("Active", "BA-TEST", ["consolidation"])
 
 
 # --- what the home shows in a closed period ---------------------------------

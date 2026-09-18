@@ -99,19 +99,16 @@ def _new_year():
 
 
 def _use_period(period):
-    """Mark a period of FY2099 as used by a document: an Allocation Driver row
+    """Mark a period of FY2099 as used by a document: an Assertion Run row
     (period data, not submittable, so any row counts), written straight to
     the table so no other rule gets in the way."""
     doc = frappe.get_doc({
-        "doctype": "Allocation Driver",
-        "driver_type": "headcount",
-        "data_area_id": ENTITY,
-        "cost_center": "ZZ",
-        "driver_value": 1,
+        "doctype": "Assertion Run",
+        "status": "Queued",
         "fiscal_year": FY,
         "fiscal_period": period,
     })
-    doc.name = f"AD-headcount-{ENTITY}-ZZ-{FY}-P{period}"
+    doc.name = f"ASRT-{FY}-P{period}-ZZ"
     doc.db_insert()
 
 

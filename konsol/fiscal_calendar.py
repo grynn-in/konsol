@@ -21,8 +21,6 @@ _PERIOD_DATA = {
     "Consolidation Adjustment": True,
     "IC Balance": True,
     "Group Exchange Rate": True,
-    "Allocation Run": True,
-    "Allocation Driver": False,
     "Assertion Run": False,
 }
 
@@ -31,6 +29,14 @@ DOCTYPES_USING_PERIODS = tuple(_PERIOD_DATA)
 
 #: Doctypes with fiscal_year + fiscal_period fields that are not period data.
 NOT_PERIOD_DATA = {
+    "Allocation Run": (
+        "konsol#264: cost allocation is being removed; every creation path (desk, dashboard, "
+        "build trigger, permissions) is already unwired and the doctype itself is deleted in a "
+        "later row of that removal"),
+    "Allocation Driver": (
+        "konsol#264: cost allocation is being removed; every creation path (desk, dashboard, "
+        "build trigger, permissions) is already unwired and the doctype itself is deleted in a "
+        "later row of that removal"),
     "Period Status": "the period calendar itself: it declares open/closed periods, it does not use them",
     "Pipeline Run": "a build log: the period is a run parameter, the data it builds lives in the warehouse",
 }

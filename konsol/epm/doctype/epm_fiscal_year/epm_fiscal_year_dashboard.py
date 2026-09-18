@@ -12,9 +12,5 @@ def get_data():
                 "label": "Consolidation",
                 "items": ["Consolidation Adjustment", "IC Balance"],
             },
-            {
-                "label": "Allocation",
-                "items": ["Allocation Run", "Allocation Driver"],
-            },
         ],
     }
