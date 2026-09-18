@@ -58,13 +58,25 @@ class HistoricalEquityRate(Document):
     def _validate_references(self):
         """Referential integrity on the free-text keys (#92, finding #3).
 
-        `consolidation_group` / `data_area_id` are Data fields, not Links — a
-        clean Link target does not exist (Consolidation Group is named
-        `CG-{group}-{entity}`, and the dbt join keys on the bare code, so the
-        stored value must stay the bare code). A typo therefore silently misses
-        the exact-string dbt join and drops the equity account back to the
-        closing rate with no error. Enforce existence here instead, against the
-        Consolidation Group registry (the app's source of truth for membership).
+        `consolidation_group` is a Data field, not a Link — a clean Link target
+        does not exist (Consolidation Group is named `CG-{group}-{entity}`, and
+        the dbt join keys on the bare code, so the stored value must stay the
+        bare code). A typo therefore silently misses the exact-string dbt join
+        and drops the equity account back to the closing rate with no error.
+        Enforce existence here instead, against the Consolidation Group
+        registry (the app's source of truth for membership).
+
+        `data_area_id` IS a Link (to Entity, reqd), and is still checked here
+        anyway, because existing as an Entity is not the same as being in the
+        consolidation tree. The Link proves only that the code names an Entity
+        row; what the gold join needs is a code some Consolidation Group row
+        carries. The two sets differ by construction:
+        `patches/backfill_entities_from_consolidation_group.py` creates one
+        Entity per group node named after the *group* code (`code =
+        data_area_id if not is_group else consolidation_group`), so a group
+        code passes the Link while being an entity on no node. That is the
+        second reachable bad input, and why the refusal below says "on no node"
+        rather than "not a node" — a group code IS a node.
 
         Membership, not leafness, is the entity test (konsol#240). The check
         matches any Consolidation Group row carrying this `data_area_id`, with
@@ -105,10 +117,11 @@ class HistoricalEquityRate(Document):
             "Consolidation Group", {"data_area_id": self.data_area_id}
         ):
             frappe.throw(
-                f"Entity '{self.data_area_id}' is not in Consolidation Group. "
-                "It must be a node of the consolidation tree — an unmatched key "
-                "silently drops the account to the closing rate in gold, which "
-                "is the wrong number, not an error.",
+                f"Entity '{self.data_area_id}' is on no node of the consolidation "
+                "tree. It must be an entity assigned to a Consolidation Group "
+                "node — a group code names a node but is not an entity on one; "
+                "an unmatched key silently drops the account to the closing rate "
+                "in gold, which is the wrong number, not an error.",
                 frappe.ValidationError,
             )
         if self.main_account and not frappe.db.exists("Main Account", self.main_account):
