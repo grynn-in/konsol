@@ -352,7 +352,7 @@ def test_nothing_else_ships_transactional_data_as_a_fixture():
             rows = json.load(f)
         shipped.update(r.get("doctype") for r in rows if isinstance(r, dict))
     for doctype in ("Ownership Period", "Trial Balance Submission",
-                    "Allocation Run", "Historical Equity Rate", "IC Balance",
+                    "Historical Equity Rate", "IC Balance",
                     "Consolidation Adjustment"):
         assert doctype not in shipped, (
             f"{doctype} is submittable transactional data; a fixture would "

@@ -144,7 +144,7 @@ class Entity(NestedSet):
         Not inline: ClickHouse has no transaction, so a sync inside on_update
         would publish a save that later rolls back, and the warehouse would
         consolidate on a row MariaDB never committed (konsol#124). Same
-        after_commit pattern as Allocation Run.
+        after_commit pattern used elsewhere in the codebase.
 
         CallbackManager.add appends without deduping, so a bulk edit of N
         entities would queue N full-table syncs. The guard asks the queue

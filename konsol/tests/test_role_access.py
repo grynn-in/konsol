@@ -107,9 +107,6 @@ MATRIX = {
     # Close Lead's (check_epm_admin, also on a plain save to Published)
     "Intercompany Account": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
     "Consolidation Group": {"EPM Admin": "rwcd", "EPM Analyst": "r", "EPM User": "r"},
-    "Allocation Run": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
-    "Allocation Rule": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
-    "Allocation Driver": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
     "Pipeline Run": {"EPM Admin": "rw", "EPM Analyst": "r", "EPM User": "r"},
     "Assertion Run": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r"},
     # konsol#189: retired, read-only history; status lives on EPM Fiscal Year
@@ -169,7 +166,7 @@ def test_adjustment_workflow_analyst_drafts_admin_approves():
 
 
 def test_only_the_close_lead_approves_consolidation_work():
-    for doctype in ("Consolidation Adjustment", "Ownership Period", "Allocation Run", "Trial Balance Submission"):
+    for doctype in ("Consolidation Adjustment", "Ownership Period", "Trial Balance Submission"):
         submitters = {p["role"] for p in _meta(doctype).get("permissions", []) if p.get("submit")}
         assert submitters <= {"System Manager", "Administrator", "EPM Admin", "Entity Accountant"}, (doctype, submitters)
         assert "EPM Analyst" not in submitters, doctype

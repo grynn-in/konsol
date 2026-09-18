@@ -33,7 +33,6 @@ ENTITY_SCOPED_DOCTYPES = (
     "Budget Sheet",
     "Consolidation Adjustment",
     "Historical Equity Rate",
-    "Allocation Driver",
     "Trial Balance Submission",
 )
 
