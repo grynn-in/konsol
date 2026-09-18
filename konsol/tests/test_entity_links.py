@@ -23,7 +23,6 @@ REFERRING_DOCTYPES = {
     "Budget Sheet",
     "Consolidation Adjustment",
     "Historical Equity Rate",
-    "Allocation Driver",
     "Trial Balance Submission",
     # konsolidat#146: the top-down half of budget input, moved out of
     # seeds/budget_annual_input.csv. Its entity IS a konsol Entity, so it takes
