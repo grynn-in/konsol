@@ -71,9 +71,13 @@ GROUPS, ACCOUNTS = ("ZZGRP",), ("ZZ3100",)
 #: flag (konsol#240). ZZ01 is a leaf entity; ZZPAR is a trading parent — a node
 #: marked is_group = 1 that is nevertheless a real company with its own share
 #: capital, its own trial balance and subsidiaries beneath it. On the live site
-#: 27 of the 28 group nodes look like ZZPAR. A rollup node carries no
-#: data_area_id at all, so it is simply absent from this map and no lookup by
-#: data_area_id can ever reach it.
+#: 27 of the 28 group nodes look like ZZPAR.
+#:
+#: The map deliberately cannot represent a pure rollup — a row that exists
+#: carrying a blank data_area_id — and does not need to: no lookup keyed on
+#: data_area_id can return such a row, so the controller can never see one.
+#: What a user CAN type in the rollup's place is its *group* code, which the
+#: entity backfill made a real Entity row; that input is GROUPS[0] here.
 ENTITIES = {"ZZ01": 0, "ZZPAR": 1}
 ENTITY = "ZZ01"
 
@@ -252,12 +256,40 @@ def test_an_entity_in_no_consolidation_group_row_is_still_refused():
         f"the message still names the wrong cause — the entity is known: {msg}")
 
 
-def test_a_rollup_node_is_still_refused():
-    """A pure rollup carries no data_area_id, so nothing matches it and it
-    cannot be given a rate of its own."""
-    refused, msg = _validate(data_area_id="ZZROLLUP")
-    assert refused, "a rollup node with no entity code was given a historical rate"
-    assert "ZZROLLUP" in msg, msg
+def test_a_group_code_is_refused_without_being_called_a_non_node():
+    """The other reachable bad input: a code that names a group, not an entity.
+
+    `konsol/patches/backfill_entities_from_consolidation_group.py` creates one
+    Entity per group node, named after the *group* code
+    (`code = data_area_id if not is_group else consolidation_group`). So a
+    group code satisfies the reqd Link to Entity and reaches this check, while
+    no Consolidation Group row carries it as a `data_area_id`. Telling that
+    user the code "must be a node of the consolidation tree" is false — it is
+    one. It is not an entity *on* one, and the message has to say so.
+    """
+    refused, msg = _validate(data_area_id=GROUPS[0])
+    assert refused, "a group code was accepted as the entity of a historical rate"
+    assert GROUPS[0] in msg, f"the message does not name the code: {msg}"
+    assert "closing rate" in msg, f"the message does not say what goes wrong: {msg}"
+    assert "must be a node" not in msg, (
+        f"the message tells a group code it must be a node — it is one: {msg}")
+    assert "entity" in msg.lower(), (
+        f"the message does not say an entity on a node is what is wanted: {msg}")
+
+
+def test_a_blank_entity_is_not_this_check_s_business():
+    """A pure rollup carries no entity code — and this check never sees that.
+
+    There is deliberately no test named for a rollup node: one is unreachable
+    by construction here. It has no `data_area_id` to be found by, so no query
+    reaches it, and the Link offers the user only its group code (the case
+    above). The blank itself short-circuits — `if self.data_area_id and ...` —
+    so membership does not refuse it; the reqd Link does, as a mandatory field.
+    Asserted so that division of labour stays deliberate: this check owns
+    *wrong* codes, `reqd` owns *missing* ones.
+    """
+    assert _validate(data_area_id="") == (False, None), (
+        "a blank entity was refused by the membership check; reqd owns that case")
 
 
 def test_the_entity_check_does_not_test_leafness():
@@ -265,6 +297,22 @@ def test_the_entity_check_does_not_test_leafness():
     satisfied: it is what refused the 27 trading parents."""
     assert '"is_group": 0' not in _src(), (
         "the entity check still filters on is_group; membership is the test")
+
+
+def test_the_docstring_does_not_still_call_the_entity_key_free_text():
+    """`data_area_id` became a reqd Link to Entity; the docstring must not keep
+    arguing from "not a Link", which was the old justification for checking it
+    here. The justification that survives is the true one: existing as an
+    Entity is not the same as being in the consolidation tree."""
+    fn = next(n for n in ast.walk(ast.parse(_src()))
+              if isinstance(n, ast.FunctionDef) and n.name == "_validate_references")
+    doc = ast.get_docstring(fn) or ""
+    assert "are Data fields, not Links" not in doc, (
+        "the docstring still calls data_area_id a Data field; it is a Link to Entity")
+    assert "Entity" in doc and "consolidation tree" in doc, (
+        "the docstring does not give the real reason the Link is not enough")
+    # the reasoning that is still true is kept, not thrown out with it
+    assert "CG-{group}-{entity}" in doc, "the consolidation_group half lost its reason"
 
 
 def test_the_docstring_says_why_leafness_is_the_wrong_test():
