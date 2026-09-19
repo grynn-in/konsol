@@ -14,8 +14,10 @@ build/
 .DS_Store
 node_modules/
 
-# Engram memory — local to this machine. .claude/scripts/ are symlinks into
-# ~/.engram, so committing them would break for anyone else. Remove these two
-# lines if the team decides to share memory (engram itself expects that).
+# Engram memory and session state — local to this machine. .claude/scripts/
+# are symlinks into ~/.engram, so committing them would break for anyone else.
+# Remove this line if the team decides to share memory (engram itself expects
+# that). CLAUDE.md is deliberately NOT ignored: it is the working agreement for
+# this repo — the platform traps, the testing rules, the doctype standard and
+# the delivery loop — and it is worth nothing on one laptop.
 .claude/
-CLAUDE.md
