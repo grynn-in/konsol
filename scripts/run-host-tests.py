@@ -42,6 +42,41 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
+#: Files that may skip without failing the run. Everything else that skips is
+#: coverage that disappeared, and konsol#248 is the case it exists for: a file
+#: is most likely to stop importing exactly when someone adds a dependency to
+#: the module it covers.
+SKIP_LIST = os.path.join(ROOT, "scripts", "host-test-skips.txt")
+
+
+def expected_skips():
+    """The declared skips, as repo-relative paths. Missing file -> none, so a
+    checkout without it fails every skip rather than passing every skip."""
+    try:
+        with open(SKIP_LIST) as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return frozenset()
+    return frozenset(
+        line.strip() for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
+def _undeclared_skips(skipped, declared):
+    """One failure per skipped file that is not a declared skip."""
+    return [
+        (rel, "<skipped>",
+         f"the file did not load and is not a declared skip ({reason}). "
+         f"If this is deliberate, add it to scripts/host-test-skips.txt and say "
+         f"why in the pull request; otherwise the module it covers has gained a "
+         f"dependency that a host cannot import.",
+         "")
+        for rel, reason in skipped
+        if rel not in declared
+    ]
+
+
 def _discover():
     for name in sorted(os.listdir(TESTS)):
         if name.startswith("test_") and name.endswith(".py"):
@@ -242,6 +277,19 @@ def main(argv):
         extra = f"; missing modules: {', '.join(sorted(missing_deps))}" if missing_deps else ""
         print(f"{len(needs_pytest)} test(s) skipped (need a pytest fixture, "
               f"a skip, or a module{extra})")
+
+    declared = expected_skips()
+    failures.extend(_undeclared_skips(skipped, declared))
+
+    # A declared skip that ran is good news and a stale list. Report it, but do
+    # not fail: it makes a number unexplained, not wrong (konsol#247).
+    if not argv[1:]:
+        ran_anyway = sorted(declared - {rel for rel, _ in skipped})
+        if ran_anyway:
+            print(f"\n{len(ran_anyway)} declared skip(s) ran after all — trim "
+                  f"scripts/host-test-skips.txt:")
+            for rel in ran_anyway:
+                print(f"  {rel}")
 
     failures.extend(_must_run_failures(argv[1:], skipped, needs_pytest))
 
