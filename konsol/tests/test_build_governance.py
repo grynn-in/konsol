@@ -128,6 +128,39 @@ def test_run_governed_build_uses_dbt_build_command():
     assert '"--select"' not in build
 
 
+def test_run_governed_build_passes_full_refresh_from_the_approval():
+    """konsol#261: publish/unpublish request a full-scope governed build.
+    Its incremental gold models (append strategy, pre_hook DELETE) rebuild
+    against the OLD schema without --full-refresh and are left at 0 rows
+    (measured: 47,308 -> 0, no self-heal). Decision (Deepak Pai, 19 Sep 2026,
+    option A): a full_refresh Check field on Build Approval — explicit and
+    visible on the row an approver signs off, not inferred from scope.
+    run_governed_build must read doc.full_refresh and pass it into
+    dbt_build_command."""
+    content = _read(TASKS_PATH)
+    build = content.split("def run_governed_build")[1].split("\ndef ")[0]
+    assert "doc.full_refresh" in build, (
+        "run_governed_build must read full_refresh off the Build Approval "
+        "it is running, not infer it from scope"
+    )
+    assert "dbt_build_command(" in build
+    call_start = build.index("dbt_build_command(")
+    depth, end = 0, None
+    for i in range(call_start + len("dbt_build_command"), len(build)):
+        ch = build[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    call_args = build[call_start:end + 1]
+    assert "full_refresh" in call_args, (
+        f"dbt_build_command(...) call must pass full_refresh=doc.full_refresh: {call_args}"
+    )
+
+
 def test_run_governed_build_references_domain_tags():
     """run_governed_build must reference domain: tag prefix."""
     content = _read(TASKS_PATH)
