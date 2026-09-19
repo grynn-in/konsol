@@ -272,12 +272,15 @@ def _module(name, path):
     return mod
 
 
-def _run_publish(touched, enqueued):
+def _run_publish(touched, enqueued, created=None):
     """apply_and_rebuild with the real konsol.schema_apply / schema_lifecycle
     (and any konsol module they import), against a frappe that records, and
     refuses, everything the Custom Field sync or a commit would touch. So an
     inline sync is caught whatever name it is called under, even through a
-    helper that swallows the error (install._sync_budget_line_custom_fields)."""
+    helper that swallows the error (install._sync_budget_line_custom_fields).
+
+    ``created``, if given, collects the Build Approval doc(s) new_doc handed
+    back, so a caller can inspect what apply_and_rebuild set on it (konsol#261)."""
     def refuse(what):
         def fn(*a, **kw):
             touched.append(what)
@@ -291,7 +294,10 @@ def _run_publish(touched, enqueued):
 
     def new_doc(doctype):
         if doctype == "Build Approval":
-            return types.SimpleNamespace(insert=lambda **kw: None, name="BAPR-TEST")
+            doc = types.SimpleNamespace(insert=lambda **kw: None, name="BAPR-TEST")
+            if created is not None:
+                created.append(doc)
+            return doc
         return refuse("new_doc " + doctype)()
 
     def get_all(doctype, **kw):
@@ -345,6 +351,22 @@ def test_apply_and_rebuild_touches_no_custom_field_and_never_commits():
     assert _run_publish(touched, enqueued) == "BAPR-TEST"
     assert touched == [], f"the publish's transaction reached the sync or a commit: {touched}"
     assert [m for m, _ in enqueued] == [JOB]
+
+
+def test_apply_and_rebuild_marks_the_build_approval_full_refresh():
+    """konsol#261: a Dimension publish/unpublish is a schema change. Its
+    governed full-scope build has incremental gold models (append strategy,
+    pre_hook DELETE) that rebuild against the OLD schema without
+    --full-refresh and are left at 0 rows (measured: 47,308 -> 0, no
+    self-heal). Decision (Deepak Pai, 19 Sep 2026, option A): a full_refresh
+    Check field on Build Approval, set by apply_and_rebuild's request path —
+    explicit and visible on the row an approver signs off."""
+    touched, enqueued, created = [], [], []
+    assert _run_publish(touched, enqueued, created) == "BAPR-TEST"
+    assert len(created) == 1
+    assert created[0].full_refresh == 1, (
+        "apply_and_rebuild must set full_refresh=1 on the Build Approval it creates"
+    )
 
 
 def test_after_migrate_re_runs_the_sync_as_the_repair_path():

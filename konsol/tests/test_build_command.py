@@ -33,3 +33,40 @@ def test_result_is_a_fresh_list_each_call():
     scoped = dbt_build_command(DBT, PROJECT, "tag:x")
     scoped.clear()
     assert dbt_build_command(DBT, PROJECT, "tag:x")[:6] == BASE
+
+
+# konsol#261: a schema-changing governed build (Dimension publish/unpublish)
+# does not pass --full-refresh, so incremental gold models (append strategy,
+# with a pre_hook DELETE) rebuild against the OLD schema and are left at 0
+# rows (measured: 47,308 -> 0; only --full-refresh recovers). Decision
+# (Deepak Pai, 19 Sep 2026, option A): a full_refresh Check field on Build
+# Approval, read by run_governed_build and passed here explicitly.
+
+def test_full_refresh_true_adds_the_flag_to_a_full_build():
+    cmd = dbt_build_command(DBT, PROJECT, None, full_refresh=True)
+    assert cmd == BASE + ["--full-refresh"]
+
+
+def test_full_refresh_false_adds_no_flag():
+    assert dbt_build_command(DBT, PROJECT, None, full_refresh=False) == BASE
+
+
+def test_full_refresh_default_adds_no_flag():
+    """Existing calls (no full_refresh kwarg) must keep behaving exactly as
+    before: no --full-refresh."""
+    assert dbt_build_command(DBT, PROJECT, None) == BASE
+    assert "--full-refresh" not in dbt_build_command(DBT, PROJECT, None)
+
+
+def test_full_refresh_composes_with_a_selector():
+    cmd = dbt_build_command(DBT, PROJECT, "+tag:domain:consolidation", full_refresh=True)
+    assert cmd == BASE + [
+        "--select", "+tag:domain:consolidation", "--indirect-selection", "cautious",
+        "--full-refresh",
+    ]
+
+
+def test_full_refresh_result_is_still_a_fresh_list_each_call():
+    first = dbt_build_command(DBT, PROJECT, None, full_refresh=True)
+    first.append("--fail-fast")
+    assert dbt_build_command(DBT, PROJECT, None, full_refresh=True) == BASE + ["--full-refresh"]
