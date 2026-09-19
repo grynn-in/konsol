@@ -23,10 +23,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      # The runner itself is stdlib-only by design (the bench virtualenv has no
-      # pytest). requests + pyyaml unlock the handful of tests that need them
-      # (696 -> 704 at time of writing).
-      - run: pip install requests pyyaml
+      # The runner itself is stdlib-only by design. These three unlock the
+      # tests that need them, and konsol#248 is why pytest is among them: CI
+      # was skipping 18 files for "needs pytest" that a laptop runs, so it
+      # reported 2131/2131 across 141 files while the local suite ran 159.
+      # A skip is now a failure unless scripts/host-test-skips.txt declares it,
+      # and declaring those 18 would have used the new gate to hide the gap it
+      # exists to reveal.
+      - run: pip install requests pyyaml pytest
       - name: Run host tests
         run: python3 scripts/run-host-tests.py
 
