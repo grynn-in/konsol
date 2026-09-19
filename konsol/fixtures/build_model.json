@@ -187,18 +187,6 @@
  },
  {
   "doctype": "Build Model",
-  "name": "gold_allocation_results",
-  "model_name": "gold_allocation_results",
-  "build_domain": "consolidation"
- },
- {
-  "doctype": "Build Model",
-  "name": "gold_allocation_audit_trail",
-  "model_name": "gold_allocation_audit_trail",
-  "build_domain": "consolidation"
- },
- {
-  "doctype": "Build Model",
   "name": "gold_reporting_hierarchy",
   "model_name": "gold_reporting_hierarchy",
   "build_domain": "reporting"

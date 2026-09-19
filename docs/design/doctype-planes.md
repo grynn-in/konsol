@@ -448,7 +448,6 @@ operating doctypes plus the control gate that releases it.
                 │ SUBMITTABLE · Draft/Active/Reversed          │
                 │ workflow JSON exists but is DORMANT by       │
                 │ design (workflows.INSTALLED) → no button     │
-                │ api.run_allocation / reverse_allocation only │
                 │ → epm_staging.allocation_runs                │
                 │   reads Allocation Driver (AD-…-{FY}-P{P})   │
                 └──────────────────────────────────────────────┘
@@ -496,7 +495,6 @@ doctypes should follow.
 | Submit / Cancel | Ownership Period, Historical Equity Rate, IC Balance | submit bar |
 | **Send for Approval / Reject / Approve / Reverse** | Consolidation Adjustment | Frappe workflow bar |
 | Draft ▸ submit | Business Combination, Business Disposal | Frappe workflow bar (installed #202) |
-| Run / Reverse allocation | Allocation Run | API only (`api.run_allocation`, `reverse_allocation`) |
 | Cell + batch save | Budget Sheet | Excel add-in |
 
 ## Findings from this pass

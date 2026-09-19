@@ -28,9 +28,6 @@ TRIGGER_DOCTYPES = [
     "Historical Equity Rate",
     "IC Elimination Rule",
     "IC Balance",
-    "Allocation Rule",
-    "Allocation Driver",
-    "Allocation Run",
     # konsol#110: a functional-currency change alters what consolidation
     # translates from
     "Entity",

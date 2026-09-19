@@ -1,8 +1,12 @@
-"""Structural tests for the budget-layer dimension and the allocated fact.
+"""Structural tests for the budget-layer dimension.
 
 Site-free, mirroring test_fact_registry: parse doctype JSON / fixtures /
 api.py / the Excel add-in without a live Frappe site. Live K.EPM behaviour is
 exercised by bench run-tests against a site with data.
+
+The allocated-fact tests this file used to carry (konsol#264: allocation is
+retired, and its `allocated` Dataset row is removed in row K5) moved out;
+budget-layer coverage is unrelated to allocation and stays.
 """
 import json
 import os
@@ -62,27 +66,6 @@ def test_epm_value_get_accepts_layer():
     src = _read(os.path.join(APP_DIR, "api.py"))
     sig = src.split("def epm_value(")[1].split(")")[0]
     assert "layer" in sig
-
-
-# --- allocated fact: separate from actuals --------------------------------
-
-def test_allocated_fact_registered():
-    f = _fact("allocated")
-    assert f["clickhouse_table"] == "epm_gold.gold_allocation_tb"
-    assert f["dbt_model"] == "gold_allocation_tb"
-    assert f["has_scenario_id"] == 1
-
-
-def test_allocated_fact_measure_and_dimension():
-    f = _fact("allocated")
-    measures = [m["measure"] for m in f["fact_measures"]]
-    dims = [d["dimension"] for d in f["fact_dimensions"]]
-    assert "period_net_amount" in measures
-    assert "dim_cost_center" in dims
-
-
-def test_allocated_is_distinct_from_actuals_table():
-    assert _fact("allocated")["clickhouse_table"] != _fact("actuals")["clickhouse_table"]
 
 
 # --- Excel add-in: layer passable from a worksheet ------------------------

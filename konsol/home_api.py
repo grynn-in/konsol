@@ -291,8 +291,6 @@ def _context(fy, p, start):
                                          fields=["name", "build_scope", "risk_level", "requested_by", "creation"],
                                          order_by="creation", limit_page_length=0),
         "assertion": runs[0] if runs else None,
-        "allocation_drafts": frappe.get_all("Allocation Run", filters={**period, "docstatus": 0},
-                                            fields=["name"], limit_page_length=0),
         # konsol#103: the period's group rates waiting for approval, and the
         # close gate's own answer on which translated keys still lack one
         "group_rate_drafts": frappe.get_all("Group Exchange Rate", filters={**period, "docstatus": 0},
@@ -353,11 +351,11 @@ def _queue(fy, p, ctx, stages, status, user, label):
     # In a closed period, disable only what the server refuses and annotate
     # what it allows but can't complete (M.closed_period, #149). Each queue
     # link still opens its desk form, so it stays enabled with a note that the
-    # approval or submit will be refused: an adjustment, IC balance or
-    # allocation run can still be rejected, edited or deleted there, and a
-    # trial balance draft only deleted, by a viewer with the delete right (the
-    # note says who). The trial balance upload, which the server refuses, is
-    # not offered in a closed period.
+    # approval or submit will be refused: an adjustment or IC balance can
+    # still be rejected, edited or deleted there, and a trial balance draft
+    # only deleted, by a viewer with the delete right (the note says who).
+    # The trial balance upload, which the server refuses, is not offered in a
+    # closed period.
     closed = None if period_open else f"{label} is {status.lower()}."
     by_id = {s["id"]: s for s in stages}
     mine, waiting = [], []
@@ -379,10 +377,6 @@ def _queue(fy, p, ctx, stages, status, user, label):
             mine.append(_item(f"own:{o.name}", "incomplete", "Approve ownership change", o.data_area_id or "",
                               stage=3, entity=o.data_area_id,
                               action=_action("Review", "Ownership Period", "submit", o.name)))
-        for r in ctx["allocation_drafts"]:
-            mine.append(_item(f"alloc:{r.name}", "incomplete", "Approve allocation run", r.name, stage=5,
-                              action=_action("Review", "Allocation Run", "submit", r.name,
-                                             **M.closed_period("Allocation Run", closed, "approve"))))
         a = by_id["assertions"]
         if a["state"] == "error":
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,

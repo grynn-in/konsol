@@ -236,7 +236,7 @@ def test_rerun_is_noop():
     site = _Site(
         used={
             "Trial Balance Submission": [(2025, 3, 1), (2025, 4, 2), (2024, 1, 1)],
-            "Allocation Driver": [(2025, 14, 0)],
+            "Assertion Run": [(2025, 14, 0)],
         },
         period_status=[
             {"fiscal_year": "2025", "fiscal_period": 3, "status": "Closed",

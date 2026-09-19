@@ -693,6 +693,12 @@ def test_abandoned_relations_are_dropped_not_left_looking_live():
         "epm_gold.allocation_drivers_headcount",
         "epm_gold.allocation_drivers_revenue",
         "epm_gold.allocation_drivers_sqm",
+        # konsol#264: cost allocation is removed entirely; all four tables
+        # were empty on every live stack.
+        "epm_staging.allocation_rules",
+        "epm_staging.allocation_drivers",
+        "epm_staging.allocation_tiers",
+        "epm_staging.allocation_runs",
     }
     # nothing may be both dropped and created
     assert not set(m._RETIRED_TABLES) & set(m._REFERENCE_TABLE_DDL)

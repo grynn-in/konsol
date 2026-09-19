@@ -7,21 +7,18 @@ from frappe.desk.notifications import _get_linked_document_counts
 from konsol.desk.connection_filters import (
     CONSOLIDATION_GROUP_CHILD_DOCTYPES,
     PIPELINE_BUILD_TRIGGER_DOCTYPES,
-    allocation_driver_filters,
     consolidation_group_child_filters,
 )
 
 _CUSTOM_ONLY_ITEMS = {
     "Measure": frozenset({"Dataset"}),
     "Consolidation Group": frozenset(CONSOLIDATION_GROUP_CHILD_DOCTYPES),
-    "Allocation Rule": frozenset({"Allocation Driver"}),
     "Build Approval": frozenset(PIPELINE_BUILD_TRIGGER_DOCTYPES),
 }
 
 _CUSTOM_PATCHERS = {
     "Measure": "_patch_measure",
     "Consolidation Group": "_patch_consolidation_group",
-    "Allocation Rule": "_patch_allocation_rule",
     "Build Approval": "_patch_pipeline_build_request",
 }
 
@@ -114,13 +111,6 @@ def _patch_consolidation_group(doc, count):
         names = frappe.get_all(child_dt, filters=filters, pluck="name", limit=100, order_by=None)
         _set_internal_link(count, child_dt, names)
         _strip_external(count, child_dt)
-
-
-def _patch_allocation_rule(doc, count):
-    filters = allocation_driver_filters(doc.driver_type, doc.source_cost_center)
-    names = frappe.get_all("Allocation Driver", filters=filters, pluck="name", limit=100, order_by=None)
-    _set_internal_link(count, "Allocation Driver", names)
-    _strip_external(count, "Allocation Driver")
 
 
 def _patch_pipeline_build_request(doc, count):

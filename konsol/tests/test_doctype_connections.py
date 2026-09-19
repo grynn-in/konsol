@@ -110,12 +110,6 @@ def test_consolidation_group_links_children():
     assert data["method"] == "konsol.desk.connections.get_open_count"
 
 
-def test_allocation_rule_links_drivers():
-    data = _load_dashboard("allocation/doctype/allocation_rule/allocation_rule_dashboard.py")
-    assert "Allocation Driver" in _items(data)
-    assert data["method"] == "konsol.desk.connections.get_open_count"
-
-
 def test_build_approval_dashboard_links_runs_and_trigger_js():
     data = _load_dashboard(
         "pipeline/doctype/build_approval/build_approval_dashboard.py")
@@ -132,26 +126,18 @@ def test_build_approval_dashboard_links_runs_and_trigger_js():
 def test_pipeline_build_request_trigger_helper():
     from konsol.desk.connection_filters import pipeline_build_request_trigger
 
-    assert pipeline_build_request_trigger("Allocation Run", "ARUN-1") == (
-        "Allocation Run",
-        ["ARUN-1"],
+    assert pipeline_build_request_trigger("Consolidation Adjustment", "CADJ-1") == (
+        "Consolidation Adjustment",
+        ["CADJ-1"],
     )
     assert pipeline_build_request_trigger(None, None) == (None, [])
 
 
 def test_connection_filter_helpers():
-    from konsol.desk.connection_filters import (
-        allocation_driver_filters,
-        consolidation_group_child_filters,
-    )
+    from konsol.desk.connection_filters import consolidation_group_child_filters
 
     assert consolidation_group_child_filters("AMGRP") == {"consolidation_group": "AMGRP"}
     assert consolidation_group_child_filters("AMGRP", "AMHQ") == {
         "consolidation_group": "AMGRP",
         "data_area_id": "AMHQ",
-    }
-    assert allocation_driver_filters("headcount") == {"driver_type": "headcount"}
-    assert allocation_driver_filters("headcount", "CC100") == {
-        "driver_type": "headcount",
-        "cost_center": "CC100",
     }

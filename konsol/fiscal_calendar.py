@@ -21,8 +21,6 @@ _PERIOD_DATA = {
     "Consolidation Adjustment": True,
     "IC Balance": True,
     "Group Exchange Rate": True,
-    "Allocation Run": True,
-    "Allocation Driver": False,
     "Assertion Run": False,
 }
 

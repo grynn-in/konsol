@@ -20,7 +20,7 @@ HOOKS = {"validate", "before_save", "before_submit", "before_cancel", "on_update
 # Calls that write a write-through table right now. Passing one as an
 # argument (after_commit_once(key, self._sync_tiers)) is queuing it, not calling it.
 INLINE = {"sync_doctype", "sync_doctype_filtered", "sync_table", "resync_staging",
-          "_sync_tiers", "_sync_hierarchy", "sync_allocation_drivers"}
+          "_sync_tiers", "_sync_hierarchy"}
 
 
 def _name(call):
@@ -41,7 +41,7 @@ def _controllers():
 
 def test_there_are_write_through_controllers_to_check():
     names = {cls.name for _, cls in _controllers()}
-    assert {"Scenario", "OwnershipPeriod", "ConsolidationGroup", "AllocationRule"} <= names
+    assert {"Scenario", "OwnershipPeriod", "ConsolidationGroup", "Entity"} <= names
 
 
 def _methods(cls, classes, seen=()):

@@ -23,7 +23,7 @@ PROCESSES = {
         "name": "Forecasting",
         "num": "02",
         "accent": "#0e8f84",
-        "desc": "Refresh actuals, run allocations, publish forecast scenarios.",
+        "desc": "Refresh actuals, publish forecast scenarios.",
         "build_scope": "actuals",
     },
     "consolidation": {
@@ -397,12 +397,6 @@ def _prerequisites(process_id, fy, budget_locked):
                 _recent_pipeline_ok,
                 owner="System Manager",
                 stale_hours=24,
-            ),
-            _check(
-                "Allocation Driver",
-                "Lists → Allocation → Allocation Driver",
-                lambda: _count("Allocation Driver") >= 1,
-                owner="EPM Analyst",
             ),
         ]
         if not budget_locked:

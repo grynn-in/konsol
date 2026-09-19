@@ -1,15 +1,14 @@
 """Create an Entity for every data area still referenced without one.
 
-Runs immediately before `data_area_id` becomes a Link to Entity on six
+Runs immediately before `data_area_id` becomes a Link to Entity on seven
 doctypes. A Link is validated on every save, so any row holding a code with no
 matching Entity would become unsaveable — and the failure would surface later,
 on an unrelated edit, as "Could not find Entity: XYZ".
 
 backfill_entities_from_consolidation_group covers everything in the
 Consolidation Group tree, which on a typical site is all of them. This sweeps
-the other five for anything that tree never knew about: an allocation driver
-for a disposed entity, a budget sheet from before a restructure, an equity rate
-for a company that left the group.
+the other six for anything that tree never knew about: a budget sheet from
+before a restructure, an equity rate for a company that left the group.
 
 Entities created here are intentionally bare — code and name only, no parent,
 no functional currency. They are placeholders that make the data consistent,
@@ -26,7 +25,6 @@ REFERRING_DOCTYPES = (
     "Budget Sheet",
     "Consolidation Adjustment",
     "Historical Equity Rate",
-    "Allocation Driver",
     # F8: new doctypes carrying an entity join the sweep even when they cannot
     # have pre-Link rows — the table_exists() guard makes it free, and the
     # invariant "every referring doctype is swept" stays checkable.

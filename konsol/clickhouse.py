@@ -2,7 +2,7 @@
 
 Provides reusable functions to sync Frappe doctype data to ClickHouse
 tables via HTTP API. Supports both legacy gold.* tables (seed replacement)
-and epm_staging.* tables (PRD-8+ consolidation/allocation features).
+and epm_staging.* tables (PRD-8+ consolidation features).
 
 Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
@@ -135,7 +135,7 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
     of reporting a clean repair over a table that never synced (konsol#194).
 
     Args:
-        table: Fully qualified table name (e.g. 'gold.allocation_rules').
+        table: Fully qualified table name (e.g. 'epm_gold.consolidation_groups').
         columns: List of column names.
         rows: List of tuples/lists matching column order.
         force: Sync during migrate/patch, and raise on failure (see above).
@@ -218,12 +218,10 @@ def _sql_value(v):
 
     Datetimes are truncated to whole seconds: ClickHouse's DateTime has
     one-second resolution and rejects a microsecond timestamp outright with a
-    400. That is how epm_staging.allocation_runs silently never reconciled —
-    every run carries a ``run_at`` straight from Frappe's now_datetime(), and
-    the failure was invisible because reconcile_all reported frappe.db.count()
-    whenever a sync returned nothing. (allocation_run._format_run_cell already
-    truncated by hand for its own direct-sync path, which is why *that* path
-    worked and only the reconcile was broken.)
+    400. Frappe's now_datetime() carries microseconds, so any column fed from
+    it would otherwise fail to reconcile — invisibly, because reconcile_all
+    reported frappe.db.count() whenever a sync returned nothing instead of
+    the number it actually wrote.
     """
     if v is None:
         return "DEFAULT"
@@ -384,10 +382,10 @@ def sync_doctype(doctype, table, field_map, force=False):
     per-call-site decision.
 
     Args:
-        doctype: Frappe DocType name (e.g. 'Allocation Rule').
-        table: ClickHouse table name (e.g. 'gold.allocation_rules').
+        doctype: Frappe DocType name (e.g. 'Entity').
+        table: ClickHouse table name (e.g. 'epm_staging.entities').
         field_map: Dict mapping CH column names to Frappe field names.
-            e.g. {'allocation_rule_id': 'allocation_rule_id', 'rule_name': 'rule_name'}
+            e.g. {'entity_name': 'entity_name', 'accounting_currency': 'accounting_currency'}
     """
     return sync_doctype_filtered(
         doctype, table, field_map,
@@ -794,6 +792,15 @@ _RETIRED_TABLES = (
     "epm_gold.allocation_drivers_headcount",
     "epm_gold.allocation_drivers_revenue",
     "epm_gold.allocation_drivers_sqm",
+    # konsol#264 (Deepak Pai, 18 Sep 2026): cost allocation is removed
+    # entirely. All four tables are EMPTY on every live stack — no migration,
+    # no customer impact — so this is a plain DROP, not a data migration.
+    # dbt's allocation models, macros and sources, and their CREATE TABLE
+    # statements in konsolidat's clickhouse/init-db.sql, are already deleted.
+    "epm_staging.allocation_rules",
+    "epm_staging.allocation_drivers",
+    "epm_staging.allocation_tiers",
+    "epm_staging.allocation_runs",
 )
 
 # Columns that a previous release created and F2 retired. ClickHouse keeps a
