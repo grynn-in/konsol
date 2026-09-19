@@ -1,6 +1,6 @@
 """EPM API — Frappe proxy to ClickHouse for Excel batch retrieval.
 
-Also provides consolidation & allocation workflow APIs (PRD-8, PRD-16, PRD-21).
+Also provides consolidation workflow APIs (PRD-8, PRD-16).
 """
 import hmac
 import json
@@ -1786,54 +1786,6 @@ def reverse_adjustment(name):
 
 
 # ---------------------------------------------------------------------------
-# PRD-21: Allocation Run & Reversal API
-# ---------------------------------------------------------------------------
-
-@frappe.whitelist(methods=["POST"])
-def run_allocation(fiscal_year, fiscal_period):
-    """Create and submit an Allocation Run for a given period."""
-    doc = frappe.new_doc("Allocation Run")
-    doc.fiscal_year = int(fiscal_year)
-    doc.fiscal_period = int(fiscal_period)
-    doc.insert()
-    doc.submit()
-
-    return {
-        "name": doc.name,
-        "allocation_run_id": doc.allocation_run_id,
-        "status": doc.status,
-        "run_by": doc.run_by,
-        "run_at": str(doc.run_at),
-    }
-
-
-@frappe.whitelist(methods=["POST"])
-def reverse_allocation(name):
-    """Reverse an Active Allocation Run. Creates reversal run and cancels original."""
-    doc = frappe.get_doc("Allocation Run", name)
-    if doc.status != "Active":
-        frappe.throw(
-            f"Cannot reverse: current status is '{doc.status}', expected 'Active'",
-            frappe.ValidationError,
-        )
-
-    reversal = frappe.new_doc("Allocation Run")
-    reversal.fiscal_year = doc.fiscal_year
-    reversal.fiscal_period = doc.fiscal_period
-    reversal.reversal_of = doc.name
-    reversal.insert()
-    reversal.submit()
-
-    doc.cancel()
-
-    return {
-        "original": doc.name,
-        "reversal": reversal.name,
-        "status": "Reversed",
-    }
-
-
-# ---------------------------------------------------------------------------
 # Airbyte Sync Webhook
 # ---------------------------------------------------------------------------
 
@@ -1898,28 +1850,6 @@ def airbyte_sync_complete():
         "sync_status": settings.last_airbyte_sync_status,
         "rows": settings.last_airbyte_sync_rows,
     }
-
-
-@frappe.whitelist()
-def allocation_history(fiscal_year=None, fiscal_period=None):
-    """Return allocation run history with optional filters."""
-    filters = {}
-    if fiscal_year:
-        filters["fiscal_year"] = int(fiscal_year)
-    if fiscal_period:
-        filters["fiscal_period"] = int(fiscal_period)
-
-    runs = frappe.get_all(
-        "Allocation Run",
-        filters=filters,
-        fields=[
-            "name", "allocation_run_id", "fiscal_year", "fiscal_period",
-            "status", "run_by", "run_at", "reversal_of",
-        ],
-        order_by="run_at desc",
-        limit_page_length=0,
-    )
-    return {"runs": runs}
 
 
 @frappe.whitelist()
