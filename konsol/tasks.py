@@ -495,7 +495,10 @@ def run_governed_build(build_request):
             # Build dbt command
             settings = frappe.get_single("EPM Settings")
             project_path = settings.dbt_project_path
-            cmd = dbt_build_command(_dbt_bin(), project_path, _scope_selector(doc.build_scope))
+            cmd = dbt_build_command(
+                _dbt_bin(), project_path, _scope_selector(doc.build_scope),
+                full_refresh=doc.full_refresh,
+            )
 
             # Execute
             result = subprocess.run(

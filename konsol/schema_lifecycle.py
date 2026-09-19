@@ -45,26 +45,41 @@ def apply_and_rebuild(doc, action):
     # runs in a job enqueued after the commit. The publish, its row and its
     # build request commit or roll back together (konsol#135).
     apply_schema_for_publish()
-    return _request_governed_build(doc, action)
+    return _request_governed_build(doc, action, full_refresh=True)
 
 
 def request_governed_rebuild(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     """Request a governed dbt rebuild for an input-only change (no DDL step).
 
-    For changes that only affect dbt inputs (e.g. the dimension_mappings seed),
-    not the ClickHouse schema/vars — so there is no DDL/schema step to run, just
-    a governed build (which runs `dbt seed` + models). Same PBR machinery as the
-    full publish path (preflight + approval + audit + debounce).
+    For changes that only affect dbt inputs (e.g. the dimension_mappings seed,
+    a chart upload), not the ClickHouse schema/vars — so there is no DDL/schema
+    step to run, just a governed build (which runs `dbt seed` + models). Same
+    PBR machinery as the full publish path (preflight + approval + audit +
+    debounce).
+
+    full_refresh (konsol#261) is NOT set here: the gold incremental models'
+    pre_hook DELETE + append only breaks against a COLUMN-COUNT mismatch, which
+    only a DDL change (apply_and_rebuild's path) can cause. An input-only
+    change touches no columns, so a plain incremental build is correct and a
+    forced full rebuild would just cost time.
     """
     return _request_governed_build(doc, action, scope)
 
 
-def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
+def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE, full_refresh=False):
     """Create a (debounced) Build Approval for `scope`.
 
     Debounce: if a non-terminal build for the same scope already exists, reuse
     it so publishing several config docs in a row coalesces into one rebuild.
     The PBR's own workflow handles risk → approval → preflight → governed build.
+
+    full_refresh (konsol#261): set on a NEW approval when this request follows
+    a schema change (apply_and_rebuild). A reused (debounced) approval may have
+    been created by an earlier, schema-free request (e.g. request_governed_rebuild)
+    with full_refresh unset; if THIS request needs it, it is raised on the
+    reused row too — otherwise a plain save's approval would swallow a
+    publish's need for a refresh and the coalesced build would run without
+    --full-refresh.
     """
     # Serialise every build request (konsol.build_lock): the debounce below is
     # check-then-insert, and two requests at once both found nothing pending.
@@ -87,6 +102,10 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
         # A Running build may already have read its inputs: flag it for one
         # more build when it finishes (#129). Commits with the caller.
         flag_running_build(existing[0])
+        if full_refresh and not frappe.db.get_value("Build Approval", existing[0].name, "full_refresh"):
+            # Raise the reused approval's flag: it was created by a request
+            # that did not need a refresh, but this one does (#261).
+            frappe.db.set_value("Build Approval", existing[0].name, "full_refresh", 1)
         frappe.msgprint(
             f"A '{scope}' build is already pending ({existing[0].name}); "
             f"no duplicate build requested."
@@ -95,6 +114,7 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE):
 
     pbr = frappe.new_doc("Build Approval")
     pbr.build_scope = scope
+    pbr.full_refresh = 1 if full_refresh else 0
     pbr.trigger_source = "auto"
     pbr.trigger_doctype = doc.doctype
     pbr.trigger_docname = doc.name

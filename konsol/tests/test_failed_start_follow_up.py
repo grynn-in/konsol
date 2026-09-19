@@ -839,7 +839,7 @@ class StartSite:
         self.committed = {("Build Approval", "BA-1"): dict(
             doctype="Build Approval", name="BA-1", workflow_state="Approved", rebuild_requested=1,
             started_at=None, completed_at=None, error_message=None, build_scope="staging",
-            requested_by="Administrator")}
+            requested_by="Administrator", full_refresh=0)}
         self.pending = {}
         self.commits = []
         self.fail_running_save = fail_running_save
