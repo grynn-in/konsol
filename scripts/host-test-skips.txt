@@ -1,0 +1,25 @@
+# Test files that legitimately cannot run on a host (konsol#248).
+#
+# A skip here is expected and does not fail the run. A file that skips and is
+# NOT listed here fails it — because a file is most likely to stop importing
+# exactly when someone adds a dependency to the module it covers, which is
+# when its tests matter most. The runner used to classify that as a skip,
+# leave it out of the denominator, and still print "N/N passed".
+#
+# Adding a line here is a deliberate act: it says "this file is not expected to
+# run on a host", and it should be justified in the pull request that adds it.
+# Removing coverage should be as visible as removing a test.
+#
+# One repo-relative path per line. Blank lines and # comments are ignored.
+
+# Bench tests — need a live site, a database and a running Frappe.
+konsol/tests/test_entity_bench.py
+konsol/tests/test_entity_links_bench.py
+konsol/tests/test_entity_permissions_bench.py
+konsol/tests/test_fiscal_year_bench.py
+konsol/tests/test_group_rates_bench.py
+konsol/tests/test_single_flight_bench.py
+
+# Import frappe at module scope.
+konsol/tests/test_connector_health_logic.py
+konsol/tests/test_security_hardening.py
