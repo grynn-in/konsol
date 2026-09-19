@@ -69,9 +69,14 @@ def severity_of(unique_id, manifest_nodes, status):
     ``run_results.json`` does not carry severity, so it is read from the
     manifest. Falling back to the literal ``"error"`` is what made the Assertion
     Step's ``severity`` field useless, so the fallback reads the observed status
-    instead: a ``Warn`` can only have come from a warn-severity test. A passing
-    warn-severity test is indistinguishable without the manifest — that is why
-    the manifest is preferred rather than inferred from.
+    instead.
+
+    The fallback is a best guess, not an invariant: a test configured
+    ``severity: error`` with an ``error_if`` threshold reports ``warn`` below
+    that threshold, so a ``Warn`` status does not prove warn severity. It is
+    still the better guess — dbt exited 0 and the run is Amber either way — but
+    it is why the manifest is preferred whenever it can be read, and a passing
+    warn-severity test cannot be identified without it.
     """
     node = (manifest_nodes or {}).get(unique_id) or {}
     declared = ((node.get("config") or {}).get("severity") or "").lower()

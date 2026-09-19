@@ -216,15 +216,37 @@ def _failed_assertion_names(close_run, limit=10):
     )
 
 
-def _warned_assertion_names(close_run, limit=50):
+#: How many warned assertion names are listed verbatim on a signature. Beyond
+#: this the record says so rather than quietly stopping at the limit.
+WARNING_NAME_LIMIT = 50
+
+
+def _warned_assertion_names(close_run, limit=WARNING_NAME_LIMIT):
     """The assertions that warned — named in the acknowledgement prompt and
     recorded on the signature (konsol#265)."""
     return frappe.get_all(
         "Assertion Step",
         filters={"parent": close_run, "status": "Warn"},
         pluck="assertion",
+        order_by="assertion asc",
         limit=limit,
     )
+
+
+def _warning_summary(names, total):
+    """The warned assertions as one auditable line.
+
+    `total` is the run's own counter, not `len(names)`: the name list is capped,
+    and a record that silently stopped at the cap would understate what was
+    outstanding at the moment of signature.
+    """
+    if not total:
+        return None
+    text = ", ".join(names) or "(see the run's results)"
+    if total > len(names):
+        text += frappe._(" … and {0} more ({1} warnings in total)").format(
+            total - len(names), total)
+    return text
 
 
 @frappe.whitelist()
@@ -257,8 +279,20 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
             frappe._("Assertion Run {0} is still {1} — wait for it to finish before signing off.")
             .format(close_run, doc.status))
 
-    warned_names = []
+    # Recorded on every path, not only the Amber one: a Red close overridden
+    # with 12 warnings outstanding must say so too, or the stronger gate ends
+    # up with the weaker record.
+    warnings = _warning_summary(_warned_assertion_names(close_run) if doc.warned else [],
+                                doc.warned or 0)
+
     ack = None
+    if acknowledgement and doc.status != "Amber":
+        # Refused rather than dropped: a whitelisted call that returns success
+        # having stored nothing is exactly the silent fallback this issue is about.
+        frappe.throw(
+            frappe._("An acknowledgement applies only to an Amber close; run {0} is {1}.")
+            .format(close_run, doc.status), title=frappe._("Nothing to acknowledge"))
+
     if doc.status == "Green":
         new_state = "Signed Off"
         reason = None
@@ -267,13 +301,11 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
         # the override role — that stays for Red, which must remain the
         # stronger gate. They do need a written acknowledgement, so the close
         # record carries what was outstanding AND why it was signed anyway.
-        warned_names = _warned_assertion_names(close_run)
         ack = (acknowledgement or "").strip()
         if not ack:
             frappe.throw(
                 frappe._("This close has {0} warning(s): {1}. Acknowledge them to sign off.")
-                .format(len(warned_names) or doc.warned,
-                        ", ".join(warned_names) or "(see results)"),
+                .format(doc.warned, warnings or "(see the run's results)"),
                 title=frappe._("Acknowledgement required"))
         new_state = "Acknowledged"
         reason = None
@@ -297,7 +329,7 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     doc.signed_off_at = frappe.utils.now_datetime()
     doc.override_reason = reason
     doc.acknowledgement = ack
-    doc.warnings_at_signoff = ", ".join(warned_names) if warned_names else None
+    doc.warnings_at_signoff = warnings
     doc.save(ignore_permissions=True)
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}

@@ -595,7 +595,9 @@ def _latest_close_run():
     doc = frappe.get_doc("Assertion Run", row.name)
     steps = []
     for i, res in enumerate(doc.results or [], start=1):
-        st = "done" if res.status == "Pass" else ("error" if res.status in ("Fail", "Error") else "pending")
+        # konsol#265: a Warn is a finished assertion, not a pending one.
+        st = ("done" if res.status in ("Pass", "Warn")
+              else ("error" if res.status in ("Fail", "Error") else "pending"))
         steps.append({
             "num": f"{i:02d}",
             "name": res.assertion or res.name,
@@ -667,6 +669,7 @@ def _serialize_pipeline_run(name):
 def _step_state(status):
     return {
         "Success": "done",
+        "Warning": "done",  # konsol#265: finished, with something to read
         "Failed": "error",
         "Running": "running",
         "Pending": "pending",
@@ -701,7 +704,8 @@ def _pipeline_machine(status):
 def _close_machine(status):
     if status in _RUNNING_CLOSE:
         return "running"
-    if status == "Green":
+    if status in ("Green", "Amber"):
+        # Amber (konsol#265) is a finished close with warnings and no failures.
         return "done"
     if status in ("Red", "Error"):
         return "error"
@@ -1144,7 +1148,9 @@ def _latest_close_run_for(name):
     doc = frappe.get_doc("Assertion Run", name)
     steps = []
     for i, res in enumerate(doc.results or [], start=1):
-        st = "done" if res.status == "Pass" else ("error" if res.status in ("Fail", "Error") else "pending")
+        # konsol#265: a Warn is a finished assertion, not a pending one.
+        st = ("done" if res.status in ("Pass", "Warn")
+              else ("error" if res.status in ("Fail", "Error") else "pending"))
         steps.append({
             "num": f"{i:02d}",
             "name": res.assertion or res.name,

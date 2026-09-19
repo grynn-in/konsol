@@ -58,15 +58,18 @@ def _columns():
 
 
 def _chart(rows):
-    cats, passed, failed = [], {}, {}
+    # konsol#265: a warning is its own bar. Counting it as a failure is what
+    # made a sixth of the rules unreadable in the first place.
+    cats, passed, warned, failed = [], {}, {}, {}
     for r in rows:
         c = r.category or "Other"
         if c not in passed:
             cats.append(c)
-            passed[c] = 0
-            failed[c] = 0
+            passed[c] = warned[c] = failed[c] = 0
         if r.status == "Pass":
             passed[c] += 1
+        elif r.status == "Warn":
+            warned[c] += 1
         else:
             failed[c] += 1
     return {
@@ -74,21 +77,25 @@ def _chart(rows):
             "labels": cats,
             "datasets": [
                 {"name": frappe._("Passed"), "values": [passed[c] for c in cats]},
+                {"name": frappe._("Warned"), "values": [warned[c] for c in cats]},
                 {"name": frappe._("Failed/Errored"), "values": [failed[c] for c in cats]},
             ],
         },
         "type": "bar",
         "barOptions": {"stacked": True},
-        "colors": ["green", "red"],
+        "colors": ["green", "yellow", "red"],
     }
 
 
 def _summary(run):
+    # konsol#265: Amber is not a failure. Rendering it Red put a red banner
+    # over zero failures with the warning count shown nowhere.
     green = run.status == "Green"
+    amber = run.status == "Amber"
     signed = run.signoff_status in SIGNED_STATES
     out = [
         {"label": frappe._("Status"), "value": run.status,
-         "indicator": "Green" if green else "Red"},
+         "indicator": "Green" if green else ("Orange" if amber else "Red")},
         {"label": frappe._("Sign-off"), "value": run.signoff_status or frappe._("Not Signed Off"),
          "indicator": "Green" if signed else "Orange"},
         {"label": frappe._("Passed"), "value": run.passed or 0, "indicator": "Green"},
@@ -96,6 +103,8 @@ def _summary(run):
          "indicator": "Red" if run.failed else "Green"},
         {"label": frappe._("Errored"), "value": run.errored or 0,
          "indicator": "Red" if run.errored else "Green"},
+        {"label": frappe._("Warned"), "value": run.warned or 0,
+         "indicator": "Orange" if run.warned else "Green"},
     ]
     if run.signed_off_by:
         out.append({"label": frappe._("Signed off by"), "value": run.signed_off_by,

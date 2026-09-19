@@ -269,7 +269,8 @@ def _context(fy, p, start):
                             fields=["name", "workflow_state", "requested_by", "creation", "completed_at"],
                             order_by="creation desc", limit=1)
     runs = frappe.get_all("Assertion Run", filters=period,
-                          fields=["name", "status", "passed", "failed", "total", "signoff_status"],
+                          fields=["name", "status", "passed", "failed", "warned", "total",
+                                  "signoff_status"],
                           order_by="creation desc", limit=1)
     return {
         "leaves": leaves,
@@ -381,6 +382,13 @@ def _queue(fy, p, ctx, stages, status, user, label):
         if a["state"] == "error":
             mine.append(_item("assertions", "error", "Close assertions failed", a["summary"], stage=7,
                               action=_action("Open results", "Assertion Run", "read", a.get("run"))))
+        elif a["state"] == "ready":
+            # konsol#265: Amber — warnings outstanding. Nothing is blocked, but
+            # the close cannot be signed until they are acknowledged, so this
+            # has to appear in the queue or nobody is ever prompted.
+            mine.append(_item("assertions", "incomplete", "Acknowledge close warnings", a["summary"],
+                              stage=7,
+                              action=_action("Review warnings", "Assertion Run", "read", a.get("run"))))
         s = by_id["signoff"]
         # the Close / Lock actions live on EPM Fiscal Year (konsol#189)
         may_close = _can("EPM Fiscal Year", "write")
