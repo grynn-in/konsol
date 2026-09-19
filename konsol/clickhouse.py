@@ -803,6 +803,30 @@ _RETIRED_TABLES = (
     "epm_staging.allocation_runs",
 )
 
+# Whole databases a previous release created and this one abandoned. Separate
+# from _RETIRED_TABLES because DROP TABLE leaves the empty database standing:
+# konsolidat#226 found `epm_allocated` still in system.databases on the live
+# stack after the allocation removal and its migrate, because deleting
+# `CREATE DATABASE IF NOT EXISTS epm_allocated` from konsolidat's
+# clickhouse/init-db.sql only stops a FRESH volume creating it.
+#
+# EMPTY-ONLY RULE — do not replace this with a bare `DROP DATABASE IF EXISTS`.
+# Each name here is dropped only once system.tables reports the database holds
+# no tables; a non-empty one is left alone and logged by name. What we are
+# cleaning up is an empty leftover, and that is all we are entitled to clean
+# up. A database someone has since put data in — a customer's own schema, a
+# restored backup, a relation a later release recreates — is not ours to
+# delete, and unlike a dropped table nobody would find out until they needed
+# it. The check is enforced by
+# test_a_retired_database_is_dropped_only_when_it_is_empty.
+_RETIRED_DATABASES = (
+    # konsolidat#226 / konsol#264: cost allocation is removed entirely. dbt's
+    # allocation models were this database's only contents and are deleted, so
+    # on a stack that ran the removal it is empty and goes; on one where it is
+    # not, the rule above keeps it.
+    "epm_allocated",
+)
+
 # Columns that a previous release created and F2 retired. ClickHouse keeps a
 # column the writer stopped sending, silently filled with its default — an
 # ownership percentage that no longer updates is exactly the kind of second
@@ -920,7 +944,19 @@ def ensure_reference_tables():
     sync that follows reports its own failure. Each statement is guarded on its
     own so a server that refuses CREATE DATABASE (the database already exists
     on every real stack) still gets its tables.
+
+    Retired DATABASES (_RETIRED_DATABASES) are handled last and conditionally:
+    each is dropped only if system.tables reports it holds nothing, so a
+    migrate can clear an empty leftover without ever destroying a database
+    someone put data in. See _retired_database_cleanup().
     """
+    def _run(sql):
+        try:
+            execute(sql)
+        except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
+            frappe.logger().warning(
+                f"reference table bootstrap skipped: {sql[:60]}…", exc_info=True)
+
     for sql in [
         "CREATE DATABASE IF NOT EXISTS epm_staging",
         "CREATE DATABASE IF NOT EXISTS epm_gold",
@@ -932,11 +968,13 @@ def ensure_reference_tables():
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
         *_retired_watermark_cleanup(),
     ]:
-        try:
-            execute(sql)
-        except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
-            frappe.logger().warning(
-                f"reference table bootstrap skipped: {sql[:60]}…", exc_info=True)
+        _run(sql)
+    # konsolidat#226: the retired databases, built AFTER the loop above has
+    # run — the emptiness check must see the post-drop state, so a database
+    # whose last tables this very migrate removed is recognised as empty on
+    # that same run rather than the next one.
+    for sql in _retired_database_cleanup():
+        _run(sql)
     # konsol#159: the raw landing tables too, so a migrate adds the partner
     # column even on a stack where nobody has submitted a trial balance since
     # — bronze reads it.
@@ -972,6 +1010,52 @@ def _retired_watermark_cleanup():
         f"ALTER TABLE {_WATERMARK_TABLE} DELETE WHERE table_name = '{name}'"
         for name in (line.strip() for line in stale.splitlines()) if name
     ]
+
+
+def _retired_database_cleanup():
+    """DROP DATABASE statements for _RETIRED_DATABASES — only for EMPTY ones.
+
+    Never returns a bare `DROP DATABASE IF EXISTS`. Each retired name is asked
+    about first — `SELECT name FROM system.tables WHERE database = ...` — and
+    only a database that holds no tables is dropped. One that holds any is
+    left exactly as it is and logged, naming the tables it holds.
+
+    The reason is the asymmetry of the mistake. What konsolidat#226 is
+    cleaning up is an empty leftover: `epm_allocated` survived the allocation
+    removal because dropping its tables never drops the database, and removing
+    `CREATE DATABASE` from init-db.sql only affects a fresh volume. Deleting
+    that costs nobody anything. But this statement runs on every `bench
+    migrate` on every stack, forever, and a `DROP DATABASE` is not recoverable
+    from the warehouse — if anyone has put a table in a database that shares
+    the name, an unconditional drop destroys it silently, on a migrate they
+    ran for an unrelated reason. Emptiness is the one condition under which we
+    can be sure we are deleting only our own leftover.
+
+    Asking first also keeps the common case quiet: after the first migrate the
+    database is gone, system.tables returns nothing for it, and the DROP that
+    follows is a cheap no-op on an absent database.
+    """
+    statements = []
+    for database in _RETIRED_DATABASES:
+        try:
+            found = execute(
+                f"SELECT name FROM system.tables WHERE database = '{database}'")
+        except Exception:  # noqa: BLE001 — unreachable server: try again next migrate
+            frappe.logger().warning(
+                f"retired database {database} not checked: system.tables "
+                f"unreadable", exc_info=True)
+            continue
+        tables = sorted(line.strip() for line in found.splitlines() if line.strip())
+        if tables:
+            frappe.logger().warning(
+                f"retired database {database} kept, not dropped: it holds "
+                f"{len(tables)} table(s) — {', '.join(tables)}. Only an empty "
+                f"retired database is dropped; drop these deliberately if they "
+                f"are also abandoned."
+            )
+            continue
+        statements.append(f"DROP DATABASE IF EXISTS {database}")
+    return statements
 
 
 def reconcile_all():
