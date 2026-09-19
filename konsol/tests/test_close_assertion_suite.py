@@ -202,12 +202,23 @@ def _load_assertion_run(declared_years=(), declared_periods=()):
 
     period_status.assert_declared = assert_declared
 
+    # konsol#265: assertion_run imports the status mapping from
+    # konsol.assertion_status. That module imports no frappe, so load the REAL
+    # one by path rather than stubbing it — a stub here would let the mapping
+    # drift from what these tests exercise. Loading by path because `konsol` is
+    # itself replaced by a stub module below and is not importable as a package.
+    as_spec = importlib.util.spec_from_file_location(
+        "konsol.assertion_status", os.path.join(APP_DIR, "assertion_status.py"))
+    assertion_status = importlib.util.module_from_spec(as_spec)
+    as_spec.loader.exec_module(assertion_status)
+
     mods = {
         "frappe": frappe,
         "frappe.model": types.ModuleType("frappe.model"),
         "frappe.model.document": doc_mod,
         "konsol": types.ModuleType("konsol"),
         "konsol.period_status": period_status,
+        "konsol.assertion_status": assertion_status,
     }
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)

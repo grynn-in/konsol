@@ -35,8 +35,15 @@ def _fields(path):
 
 
 def _segment(src, start, end=None):
+    """The slice between two markers. The end marker is searched for AFTER the
+    start, otherwise an earlier occurrence slices the segment backwards into
+    nothing and every assertion on it passes vacuously."""
     i = src.index(start)
-    return src[i:src.index(end)] if end else src[i:]
+    if end is None:
+        return src[i:]
+    j = src.index(end, i)
+    assert j > i
+    return src[i:j]
 
 
 # --- the mapping itself ----------------------------------------------------
@@ -193,6 +200,26 @@ def test_report_surfaces_the_warning_count():
     src = _src(RPT_PY)
     assert '"warned"' in src
     assert "Warn" in _segment(src, "STATUS_ORDER")
+
+
+def test_desk_can_acknowledge_an_amber_close():
+    """Without this the feature is unreachable from Desk: the server would
+    throw 'Acknowledgement required' and the form offers nowhere to type one."""
+    src = _src(os.path.join(AR_DIR, "assertion_run.js"))
+    assert "Amber" in src
+    assert "acknowledgement" in src, "sign_off_close is never called with one"
+    seg = _segment(src, "function add_signoff_buttons")
+    assert "Acknowledged" in seg, "an acknowledged close still offers to sign off again"
+
+
+def test_amber_signoff_button_is_not_role_gated_in_desk():
+    """Amber is softer than Red: the acknowledgement prompt must be offered to
+    the accountant, not only to an EPM Admin."""
+    seg = _segment(_src(os.path.join(AR_DIR, "assertion_run.js")),
+                   "function add_signoff_buttons")
+    amber = seg.index("Amber")
+    role = seg.index("has_role")
+    assert amber < role, "the Amber branch must come before the EPM Admin gate"
 
 
 def test_amber_close_still_counts_as_completed_today():

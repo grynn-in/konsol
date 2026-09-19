@@ -736,7 +736,10 @@ def _stats(processes):
 def _completed_today():
     start = frappe.utils.getdate(today())
     n = frappe.db.count("Pipeline Run", {"status": "Completed", "completed_at": [">=", start]})
-    n += frappe.db.count("Assertion Run", {"status": "Green", "completed_at": [">=", start]})
+    # konsol#265: an Amber close (warnings, no failures) finished too — it
+    # must not vanish from the operator's "done today" count.
+    n += frappe.db.count("Assertion Run",
+                         {"status": ["in", ("Green", "Amber")], "completed_at": [">=", start]})
     return n
 
 

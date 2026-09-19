@@ -9,9 +9,9 @@ import frappe
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
     SIGNED_STATES, TERMINAL_STATUSES)
 
-STATUS_ORDER = {"Error": 0, "Fail": 1, "Pass": 2}  # surface problems first
+STATUS_ORDER = {"Error": 0, "Fail": 1, "Warn": 2, "Pass": 3}  # surface problems first
 _RUN_FIELDS = ["name", "status", "signoff_status", "total", "passed", "failed",
-               "errored", "fiscal_year", "fiscal_period", "signed_off_by"]
+               "errored", "warned", "fiscal_year", "fiscal_period", "signed_off_by"]
 
 
 def execute(filters=None):
