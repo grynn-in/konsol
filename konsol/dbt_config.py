@@ -175,8 +175,14 @@ def _build_dimensions_vars():
 # Fact whose measures define `base_measures` (the GL trial-balance grain).
 _TRIAL_BALANCE_DBT_MODEL = "gold_trial_balance"
 
-class TrialBalanceMeasuresNotDeclared(frappe.ValidationError):
+class TrialBalanceMeasuresNotDeclared(Exception):
     """No published trial-balance Dataset declares any measure (konsol#230).
+
+    A plain Exception, deliberately, not frappe.ValidationError: this class is
+    built at import time, and several tests load this module against a stub
+    frappe that has no ValidationError — subclassing it broke the import rather
+    than any behaviour. It never reaches a user-facing boundary either:
+    _build_measures_vars() is the only caller and always catches it.
 
     Raised instead of quietly substituting a hardcoded set. Since konsol#230
     made Datasets retirable, a site can retire the trial-balance Dataset on
