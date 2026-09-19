@@ -772,3 +772,85 @@ def test_a_write_through_controller_deletes_with_after_delete():
         f"{sorted(new)} publish to ClickHouse from on_trash — use after_delete, "
         f"which runs after the row is gone. See konsol#120.")
     assert offenders <= KNOWN_BAD
+
+
+def _drop_db_probe(tables_in_db):
+    """Run ensure_reference_tables() with system.tables answering `tables_in_db`.
+
+    Returns (statements issued, warning messages logged).
+    """
+    m, frappe = _load_clickhouse()
+    sql = []
+
+    def execute(statement, params=None):
+        sql.append(statement)
+        if statement.startswith("SELECT DISTINCT table_name"):
+            return ""   # no watermark stamps to clean up
+        if statement.startswith("SELECT name FROM system.tables"):
+            db = statement.split("database = '")[1].split("'")[0]
+            return "\n".join(tables_in_db.get(db, []))
+        return ""
+
+    m.execute = execute
+    m.ensure_reference_tables()
+    return sql, frappe._logger.messages
+
+
+def test_a_retired_database_is_dropped_only_when_it_is_empty():
+    """konsolidat#226: the allocation removal dropped the four
+    `epm_staging.allocation_*` tables but left the whole `epm_allocated`
+    database behind on every existing stack — removing `CREATE DATABASE` from
+    init-db.sql only stops a FRESH volume creating it, and DROP TABLE never
+    removes the database.
+
+    The rule this asserts is the safety one: a retired database is dropped
+    ONLY when system.tables reports it holds nothing. A bare
+    `DROP DATABASE IF EXISTS` issued every migrate would destroy, silently and
+    unrecoverably, whatever anyone had since put in a database with that name.
+    Delete the emptiness guard and the non-empty case below fails.
+    """
+    m, _ = _load_clickhouse()
+    assert "epm_allocated" in m._RETIRED_DATABASES
+    # a database may not be both retired and the home of a table we create
+    for relation in (*m._REFERENCE_TABLE_DDL, *m._RAW_TABLE_DDL):
+        assert relation.split(".")[0] not in m._RETIRED_DATABASES, relation
+
+    # empty -> dropped
+    sql, _ = _drop_db_probe({})
+    assert "DROP DATABASE IF EXISTS epm_allocated" in sql
+    # the emptiness is established by asking, not assumed
+    probe = "SELECT name FROM system.tables WHERE database = 'epm_allocated'"
+    assert probe in sql
+    assert sql.index(probe) < sql.index("DROP DATABASE IF EXISTS epm_allocated")
+    # ...and judged AFTER the retired tables are dropped, so a database whose
+    # last tables this same migrate removes is seen empty on that run
+    last_drop = max(i for i, s in enumerate(sql) if s.startswith("DROP TABLE"))
+    assert sql.index(probe) > last_drop
+
+    # non-empty -> left alone, and said so, naming what it found
+    sql, warnings = _drop_db_probe({"epm_allocated": ["scratch", "keepme"]})
+    assert not [s for s in sql if s.startswith("DROP DATABASE")], (
+        "a database holding tables is not ours to delete")
+    kept = [w for w in warnings if "epm_allocated" in w]
+    assert kept, "leaving a non-empty retired database must be logged"
+    assert "scratch" in kept[0] and "keepme" in kept[0], (
+        f"the log must name the tables it found, got: {kept[0]}")
+
+
+def test_no_unguarded_drop_database_anywhere_in_the_app():
+    """Nothing in konsol may issue DROP DATABASE except the guarded cleanup
+    above — a stray one in a patch or a script is the same unrecoverable
+    mistake with a different author."""
+    import pathlib
+
+    offenders = []
+    for path in pathlib.Path(APP_DIR).rglob("*.py"):
+        if "/tests/" in str(path):
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if "DROP DATABASE" not in line or line.lstrip().startswith("#"):
+                continue
+            if path.name == "clickhouse.py":
+                continue  # the one guarded site, asserted above
+            offenders.append(f"{path}:{lineno}: {line.strip()[:70]}")
+    assert not offenders, offenders
