@@ -23,15 +23,16 @@ fixtures = [
     # Scenarios, and demo_data/'s ownership and annual budget) was removed on
     # 12 Sep 2026. Real data arrives through connectors and Trial Balance
     # Submission.
-    "Fiscal Period",
-    "Dimension",
-    "Measure",
-    "Dataset",
-    "Scenario",
     # ISO Currency is NOT a fixture (konsol#103): a force re-import on every
     # migrate reverted a site's own usd_log10. konsol.currency_references seeds
     # it from reference_data/iso_currencies.json, filling only what is unset.
-    "Spread Profile",
+    #
+    # Measure, Dataset and Scenario are NOT fixtures either (konsol#230): the
+    # semantic model is site-owned, so konsol/defaults/ seeds it
+    # create-if-missing via konsol.defaults.install_defaults and a site can
+    # retire any of it. Dimension ships nothing (decided 17 Sep 2026), Spread
+    # Profile ships nothing, and the Fiscal Period template was retired by
+    # konsol#189 PR4.
     "Build Scope",
     "Build Model",
     "Pipeline",
@@ -40,7 +41,8 @@ fixtures = [
 # After migrate — create EPM roles
 # Fresh installs never run after_migrate, so the role and workflow installers
 # are here too. Roles first: a workflow transition links to its role.
-after_install = ["konsol.install.create_roles", "konsol.workflows.install_workflows"]
+after_install = ["konsol.install.create_roles", "konsol.workflows.install_workflows",
+                 "konsol.defaults.install_defaults"]
 # Fills a fresh site's warehouse (#142): queues reconcile_all as a job after
 # the install commits. after_sync, because after_install runs before fixtures.
 after_sync = ["konsol.install.after_sync"]

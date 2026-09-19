@@ -284,6 +284,10 @@ def after_migrate():
     # (force=True) is the one call that carries such rows through. Nothing is
     # seeded now; the demo ownership and annual budget that were are gone.
     _seed_iso_currencies()
+    # konsol#230: the site-owned semantic model, create-if-missing. Before the
+    # reconcile, which is the one call that carries rows seeded during a
+    # migrate through to ClickHouse (sync_table no-ops while in_migrate).
+    _seed_defaults()
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()
@@ -440,6 +444,21 @@ def _ensure_indexes():
         on_doctype_update()
     except Exception:
         frappe.logger().warning("index setup skipped during migrate", exc_info=True)
+
+
+def _seed_defaults():
+    """Seed the site-owned semantic model, create-if-missing (konsol#230).
+
+    Never overwrites, so a row a site has edited or retired is left alone, and
+    never fails a migrate — same contract as _install_workflows().
+    """
+    try:
+        from konsol.defaults import install_defaults
+        install_defaults()
+    except Exception as e:  # noqa: BLE001
+        frappe.logger().warning("defaults seeding skipped during migrate", exc_info=True)
+        print(f"konsol defaults: skipped ({type(e).__name__}: {e}); "
+              "the next migrate tries again")
 
 
 def _install_workflows():

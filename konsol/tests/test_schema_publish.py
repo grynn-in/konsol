@@ -317,32 +317,28 @@ def test_measure_js_has_unpublish_button():
 # Fixtures — status=Published
 # ---------------------------------------------------------------------------
 
-def test_dimension_fixture_exists():
-    path = os.path.join(APP_DIR, "fixtures", "dimension.json")
-    assert os.path.exists(path), "dimension.json fixture not found"
+def test_konsol_ships_no_dimensions():
+    """Decided 17 September 2026: konsol does not ship a starter set of
+    Dimensions — the three it shipped encoded one customer's vocabulary and
+    could not be retired, because fixtures re-published them every migrate.
+    A site declares its own. This replaces the two tests that asserted the
+    shipped dimensions existed and were Published."""
+    from konsol.tests.shipped import ships
+    assert not ships("dimension.json"), "konsol ships dimensions again"
 
 
-def test_dimension_fixture_records_published():
-    path = os.path.join(APP_DIR, "fixtures", "dimension.json")
-    with open(path) as f:
-        records = json.load(f)
-    for rec in records:
+def test_measure_file_ships():
+    from konsol.tests.shipped import ships
+    assert ships("measure.json"), "measure.json not found in fixtures/ or defaults/"
+
+
+def test_measure_records_published():
+    """Still Published — seeding create-if-missing (konsol#230) changes who owns
+    a row, not what a fresh site starts with."""
+    from konsol.tests.shipped import shipped
+    for rec in shipped("measure.json"):
         assert rec.get("status") == "Published", \
-            f"Fixture record {rec.get('name', '?')} not Published"
-
-
-def test_measure_fixture_exists():
-    path = os.path.join(APP_DIR, "fixtures", "measure.json")
-    assert os.path.exists(path), "measure.json fixture not found"
-
-
-def test_measure_fixture_records_published():
-    path = os.path.join(APP_DIR, "fixtures", "measure.json")
-    with open(path) as f:
-        records = json.load(f)
-    for rec in records:
-        assert rec.get("status") == "Published", \
-            f"Fixture record {rec.get('name', '?')} not Published"
+            f"Shipped record {rec.get('name', '?')} not Published"
 
 
 # ---------------------------------------------------------------------------

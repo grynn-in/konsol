@@ -27,8 +27,10 @@ def _read(path):
 
 
 def _fixture(name):
-    with open(os.path.join(APP_DIR, "fixtures", name)) as f:
-        return json.load(f)
+    # konsol#230: Measure/Dataset/Scenario ship from konsol/defaults/ now, so a
+    # test about what konsol ships must not hardcode the directory.
+    from konsol.tests.shipped import shipped
+    return shipped(name)
 
 
 def _field_names(meta):
@@ -120,16 +122,25 @@ def test_every_fact_measure_is_registered_published():
             )
 
 
-def test_every_fact_dimension_is_registered_published():
-    published = {
-        d["dimension_name"] for d in _fixture("dimension.json")
-        if d.get("status") == "Published"
-    }
-    for fact in _fixture("dataset.json"):
-        for row in fact.get("fact_dimensions", []):
-            assert row["dimension"] in published, (
-                f"{fact['fact_name']} references unregistered dimension {row['dimension']}"
-            )
+def test_no_shipped_dataset_declares_a_dimension():
+    """konsol ships no Dimensions (decided 17 September 2026), so a shipped
+    Dataset must declare none either.
+
+    This test used to check each `fact_dimensions` row against the shipped
+    dimension registry. When the registry went, the datasets kept declaring
+    `dim_cost_center`, `dim_department` and `dim_business_unit` — seven child
+    rows pointing at Dimensions a fresh site does not have. Fixture import sets
+    ignore_links, so they would load and then be unsaveable. They were removed
+    with konsol#230; this is what keeps them gone."""
+    from konsol.tests.shipped import ships
+    assert not ships("dimension.json"), "konsol ships dimensions again"
+    offenders = [
+        (fact["fact_name"], row["dimension"])
+        for fact in _fixture("dataset.json")
+        for row in fact.get("fact_dimensions", [])
+    ]
+    assert not offenders, (
+        f"shipped Datasets declare dimensions nothing ships: {offenders}")
 
 
 def test_fact_fixtures_use_child_table_and_published():

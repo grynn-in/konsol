@@ -124,29 +124,56 @@ def test_defaults_directory_has_the_semantic_model():
         f"defaults/ must hold exactly {sorted(SEEDED_DOCTYPES)}")
 
 
-def test_install_defaults_is_create_if_missing():
-    """Parsed, not trusted: the guard must be there, and it must guard the
-    insert. Without it this is fixtures again, by another name."""
-    src = _read(DEFAULTS_PY)
-    tree = ast.parse(src)
-    fn = next((n for n in ast.walk(tree)
+def _seeder_code():
+    """The body of install_defaults() with its docstring removed.
+
+    Asserted on the AST, not the source text: the docstring legitimately says
+    the words "insert" and "never overwrites", and matching those would pass on
+    prose while the code did the opposite.
+    """
+    fn = next((n for n in ast.walk(ast.parse(_read(DEFAULTS_PY)))
                if isinstance(n, ast.FunctionDef) and n.name == "install_defaults"), None)
     assert fn is not None, "no install_defaults()"
-    body = ast.dump(fn)
-    assert "exists" in body, "nothing checks whether the row is already there"
-    assert "insert" in body, "nothing inserts"
-    # the existence check must come before the insert, textually within the fn
-    seg = src[src.index("def install_defaults"):]
-    assert seg.index("exists") < seg.index("insert"), \
+    body = list(fn.body)
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]          # drop the docstring
+    return ast.Module(body=body, type_ignores=[])
+
+
+def _calls(tree):
+    return {getattr(n.func, "attr", getattr(n.func, "id", None))
+            for n in ast.walk(tree) if isinstance(n, ast.Call)}
+
+
+def test_install_defaults_is_create_if_missing():
+    """The guard must exist, and it must guard the insert — without it this is
+    fixtures again, by another name."""
+    code = _seeder_code()
+    calls = _calls(code)
+    assert "exists" in calls, "nothing checks whether the row is already there"
+    assert "insert" in calls, "nothing inserts"
+    # The existence check must be inside an `if` that skips the row, and that
+    # `if` must come before the insert in the function body.
+    guards = [n for n in ast.walk(code)
+              if isinstance(n, ast.If) and "exists" in _calls(ast.Module(
+                  body=[ast.Expr(value=n.test)], type_ignores=[]))]
+    assert guards, "the exists() call is not used as a guard"
+    assert any(any(isinstance(b, ast.Continue) for b in g.body) for g in guards), \
+        "the guard does not skip the row"
+    insert_line = min(n.lineno for n in ast.walk(code)
+                      if isinstance(n, ast.Call)
+                      and getattr(n.func, "attr", None) == "insert")
+    assert min(g.lineno for g in guards) < insert_line, \
         "the insert is not guarded by the existence check"
 
 
 def test_the_seeder_never_overwrites():
-    """No update/save path: the difference between seeding and fixtures."""
-    seg = _read(DEFAULTS_PY)
-    seg = seg[seg.index("def install_defaults"):]
-    for forbidden in (".save(", "db_update", "set_value", "overwrite"):
-        assert forbidden not in seg, f"install_defaults uses {forbidden}"
+    """No update path at all: the difference between seeding and fixtures."""
+    calls = _calls(_seeder_code())
+    for forbidden in ("save", "db_update", "set_value", "update", "delete_doc"):
+        assert forbidden not in calls, f"install_defaults calls {forbidden}()"
 
 
 def test_the_seeder_is_wired_into_install_and_migrate():

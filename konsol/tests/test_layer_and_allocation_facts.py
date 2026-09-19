@@ -25,8 +25,9 @@ def _doctype_json(name):
 
 
 def _fixture(name):
-    with open(os.path.join(APP_DIR, "fixtures", name)) as f:
-        return json.load(f)
+    # konsol#230: shipped from fixtures/ or defaults/ depending on mutability.
+    from konsol.tests.shipped import shipped
+    return shipped(name)
 
 
 def _fact(scenario_key):
