@@ -175,14 +175,20 @@ def _build_dimensions_vars():
 # Fact whose measures define `base_measures` (the GL trial-balance grain).
 _TRIAL_BALANCE_DBT_MODEL = "gold_trial_balance"
 
-# Last-resort GL-grain measures if the trial-balance fact is unconfigured. These
-# are the only ones computable from silver_gl_entries; keeps the dbt build valid.
-_DEFAULT_BASE_MEASURE_NAMES = (
-    "period_debit",
-    "period_credit",
-    "period_net_amount",
-    "transaction_count",
-)
+class TrialBalanceMeasuresNotDeclared(Exception):
+    """No published trial-balance Dataset declares any measure (konsol#230).
+
+    A plain Exception, deliberately, not frappe.ValidationError: this class is
+    built at import time, and several tests load this module against a stub
+    frappe that has no ValidationError — subclassing it broke the import rather
+    than any behaviour. It never reaches a user-facing boundary either:
+    _build_measures_vars() is the only caller and always catches it.
+
+    Raised instead of quietly substituting a hardcoded set. Since konsol#230
+    made Datasets retirable, a site can retire the trial-balance Dataset on
+    purpose; inventing four measures nobody declared and writing them into
+    dbt_project.yml would make that choice look like it had not been made.
+    """
 
 
 def _build_measures_vars():
@@ -197,11 +203,22 @@ def _build_measures_vars():
     emitted here. The fact registry is the single source of truth for which
     measures live at this grain.
     """
-    measure_names = _trial_balance_measure_names()
+    try:
+        measure_names = _trial_balance_measure_names()
+    except TrialBalanceMeasuresNotDeclared as e:
+        # konsol#230 condition 2: refuse loudly, write nothing. regenerate_vars
+        # omits base_measures entirely when this is empty, so the gap is visible
+        # in dbt_project.yml and at build time instead of being papered over
+        # with four measures nobody declared.
+        frappe.logger().warning(f"konsol#230: base_measures not written — {e}")
+        print(f"konsol#230: base_measures not written — {e}")
+        return []
 
-    filters = {"status": "Published"}
-    if measure_names:
-        filters["measure_name"] = ["in", measure_names]
+    # Never an empty filter: an empty measure_names used to drop the filter
+    # altogether and return EVERY published measure, which is the same silent
+    # substitution by another route. _trial_balance_measure_names now raises
+    # instead of returning empty, so this list is always non-empty here.
+    filters = {"status": "Published", "measure_name": ["in", measure_names]}
 
     docs = frappe.get_all(
         "Measure",
@@ -229,12 +246,15 @@ def _trial_balance_measure_names():
     served from elsewhere at query time (e.g. ytd_net_amount is read from
     gold_balance_sheet.cumulative_balance, a column absent from
     silver_gl_entries) and is NOT computable in gold_trial_balance, so it must
-    not enter base_measures. Falls back to the safe default set when no
-    trial-balance fact is configured (so gold_trial_balance always keeps its
-    required aggregates and the build stays valid).
+    not enter base_measures.
+
+    Raises TrialBalanceMeasuresNotDeclared rather than falling back to a
+    hardcoded set (konsol#230 condition 2). Each message names what is missing.
     """
     if not frappe.db.table_exists("Dataset"):
-        return list(_DEFAULT_BASE_MEASURE_NAMES)
+        raise TrialBalanceMeasuresNotDeclared(
+            "the Dataset doctype is not installed yet, so the trial-balance "
+            "measures cannot be read")
 
     fact = frappe.get_all(
         "Dataset",
@@ -243,7 +263,10 @@ def _trial_balance_measure_names():
         limit_page_length=1,
     )
     if not fact:
-        return list(_DEFAULT_BASE_MEASURE_NAMES)
+        raise TrialBalanceMeasuresNotDeclared(
+            f"no Published Dataset produces {_TRIAL_BALANCE_DBT_MODEL}, so nothing "
+            "declares which measures that model computes. Publish the "
+            "trial-balance Dataset, or leave base_measures unwritten on purpose.")
 
     names = frappe.get_all(
         "Dataset Measure",
@@ -254,7 +277,13 @@ def _trial_balance_measure_names():
     rerouted = fact[0].reroute_measure
     if rerouted:
         names = [n for n in names if n != rerouted]
-    return names or list(_DEFAULT_BASE_MEASURE_NAMES)
+    if not names:
+        raise TrialBalanceMeasuresNotDeclared(
+            f"Dataset {fact[0].name} produces {_TRIAL_BALANCE_DBT_MODEL} but declares "
+            "no measures at this grain"
+            + (f" (every one it had is rerouted to {rerouted})" if rerouted else "")
+            + ". Add a Dataset Measure, or retire the Dataset.")
+    return names
 
 
 def _build_fiscal_vars():

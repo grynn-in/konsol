@@ -761,8 +761,8 @@ def _addin_functions():
 
 def _declared_default_measures():
     """Every measure some shipped Dataset declares as its default."""
-    with open(os.path.join(APP_DIR, "fixtures", "dataset.json")) as f:
-        datasets = json.load(f)
+    from konsol.tests.shipped import shipped  # konsol#230: now in defaults/
+    datasets = shipped("dataset.json")
     return sorted({d["default_measure"] for d in datasets if d.get("default_measure")})
 
 

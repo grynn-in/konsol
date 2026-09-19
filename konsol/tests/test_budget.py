@@ -183,15 +183,23 @@ def test_budget_ddl_covers_every_in_budget_dimension():
     import re
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, "fixtures", "dimension.json")) as f:
-        in_budget = {d["dimension_name"] for d in json.load(f) if d.get("in_budget")}
     with open(os.path.join(root, "clickhouse.py")) as f:
         ch = f.read()
 
+    # konsol ships no Dimensions (decided 17 September 2026), so the shipped
+    # in_budget set this used to compare against no longer exists. The
+    # invariant that survives is that the two budget tables must declare the
+    # SAME dimension columns as each other: a budget written at annual grain
+    # and spread to monthly cannot carry a dimension one table lacks. Keeping
+    # them in step with a site's declared dimensions is a live-site concern,
+    # not something a shipped file can anchor any more.
+    declared = {}
     for table in ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input"):
         block = ch.split(f'"{table}": (')[1].split("),")[0]
-        declared = set(re.findall(r"(dim_\w+) String", block))
-        assert declared == in_budget, (
-            f"{table} declares {sorted(declared)} but the shipped in_budget "
-            f"dimensions are {sorted(in_budget)} — add the column to both this "
-            f"DDL and konsolidat's init-db.sql")
+        declared[table] = set(re.findall(r"(dim_\w+) String", block))
+
+    tables = list(declared)
+    assert declared[tables[0]] == declared[tables[1]], (
+        f"{tables[0]} declares {sorted(declared[tables[0]])} but {tables[1]} "
+        f"declares {sorted(declared[tables[1]])} — a budget cannot be spread "
+        "from annual to monthly across a dimension only one table has")

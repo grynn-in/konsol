@@ -22,11 +22,14 @@ ENTITY_FIELDS = {"data_area_id", "erp_data_area", "entity", "consolidation_group
 
 
 def _shipped():
-    out = {}
-    for path in sorted(glob.glob(os.path.join(FIXTURES, "*.json"))):
-        with open(path) as f:
-            out[os.path.basename(path)] = json.load(f)
-    return out
+    """Everything konsol ships, from BOTH directories (konsol#230).
+
+    These tests ask "is what konsol ships reference data, and does it resolve",
+    which is true of a seeded default as much as a fixture. Whether a row is
+    retirable is test_defaults_seeding.py's question, not this file's.
+    """
+    from konsol.tests.shipped import all_shipped
+    return all_shipped()
 
 
 def _hooks_fixtures():
@@ -56,8 +59,15 @@ def test_the_hook_and_the_directory_agree():
     """import reads the directory; export reads the hook. A name on one and not
     the other is a surprise waiting: Connector sat on the hook with no file,
     one `bench export-fixtures` away from committing site credentials."""
+    # Scoped to fixtures/ (konsol#230): the hook drives `bench export-fixtures`,
+    # and konsol/defaults/ is deliberately not exported — it is a starting
+    # point a site owns, not app data to round-trip.
+    import glob as _glob
     listed = set(_hooks_fixtures())
-    in_dir = {r.get("doctype") for rows in _shipped().values() for r in rows}
+    in_dir = set()
+    for path in _glob.glob(os.path.join(FIXTURES, "*.json")):
+        with open(path) as f:
+            in_dir |= {r.get("doctype") for r in json.load(f)}
     assert listed == in_dir, f"hook only: {sorted(listed - in_dir)}; dir only: {sorted(in_dir - listed)}"
 
 

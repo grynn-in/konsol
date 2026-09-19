@@ -162,9 +162,8 @@ def test_trial_balance_net_uses_debit_minus_credit():
 
 def test_period_net_amount_measure_expression_is_debit_minus_credit():
     """Published period_net_amount measure must derive net from debit and credit."""
-    measure_path = os.path.join(APP_DIR, "fixtures", "measure.json")
-    with open(measure_path) as f:
-        records = json.load(f)
+    from konsol.tests.shipped import shipped  # konsol#230: now in defaults/
+    records = shipped("measure.json")
     period_net = next(
         r for r in records if r.get("measure_name") == "period_net_amount"
     )
