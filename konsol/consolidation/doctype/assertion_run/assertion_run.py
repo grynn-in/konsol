@@ -11,6 +11,7 @@ import subprocess
 import frappe
 from frappe.model.document import Document
 
+from konsol.assertion_status import captures_rows, run_status, severity_of, step_status
 from konsol.period_status import PeriodNotDeclared, assert_declared
 
 
@@ -70,7 +71,17 @@ def _classify(name):
     return "Other"
 
 
-_DBT_TO_STATUS = {"pass": "Pass", "fail": "Fail", "error": "Error"}
+def _manifest_nodes(project_path):
+    """dbt's manifest nodes, or {} — used only to read each test's severity.
+
+    Never raises: a missing or unreadable manifest degrades `severity_of` to
+    reading the observed status, it must not fail a finished run.
+    """
+    try:
+        with open(os.path.join(project_path, "target", "manifest.json")) as fh:
+            return json.load(fh).get("nodes") or {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _dbt_bin():
@@ -170,8 +181,13 @@ def _emit(name, **payload):
 # cleanly; a Red/Error run is blocked unless an EPM Admin supplies a reason
 # (audited as an Overridden sign-off). Queued/Running can't be signed off.
 OVERRIDE_ROLES = {"System Manager", "EPM Admin"}
-TERMINAL_STATUSES = ("Green", "Red", "Error")
-SIGNED_STATES = ("Signed Off", "Overridden")
+# Amber is terminal (konsol#265): a run with warnings and no failures has
+# finished, and latest_close_run must be able to see it.
+TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
+# "Acknowledged" is an Amber close signed with a written acknowledgement. It
+# counts as signed off — warnings do not block a close — but it is a distinct
+# state so a list of closes shows which were signed over outstanding warnings.
+SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
 
 
 def latest_close_run(fiscal_year, fiscal_period):
@@ -200,11 +216,47 @@ def _failed_assertion_names(close_run, limit=10):
     )
 
 
+#: How many warned assertion names are listed verbatim on a signature. Beyond
+#: this the record says so rather than quietly stopping at the limit.
+WARNING_NAME_LIMIT = 50
+
+
+def _warned_assertion_names(close_run, limit=WARNING_NAME_LIMIT):
+    """The assertions that warned — named in the acknowledgement prompt and
+    recorded on the signature (konsol#265)."""
+    return frappe.get_all(
+        "Assertion Step",
+        filters={"parent": close_run, "status": "Warn"},
+        pluck="assertion",
+        order_by="assertion asc",
+        limit=limit,
+    )
+
+
+def _warning_summary(names, total):
+    """The warned assertions as one auditable line.
+
+    `total` is the run's own counter, not `len(names)`: the name list is capped,
+    and a record that silently stopped at the cap would understate what was
+    outstanding at the moment of signature.
+    """
+    if not total:
+        return None
+    text = ", ".join(names) or "(see the run's results)"
+    if total > len(names):
+        text += frappe._(" … and {0} more ({1} warnings in total)").format(
+            total - len(names), total)
+    return text
+
+
 @frappe.whitelist()
-def sign_off_close(close_run, override_reason=None):
+def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     """Sign off a Assertion Run — the reconciliation gate.
 
     Green  -> signed off (caller must have write on Assertion Run).
+    Amber  -> warnings only (konsol#265): not blocked and no override role, but
+              an `acknowledgement` is required -> "Acknowledged", recorded with
+              the list of assertions that were warning at the time.
     Red/Error -> BLOCKED, unless the caller is an EPM Admin / System Manager AND
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
@@ -227,8 +279,35 @@ def sign_off_close(close_run, override_reason=None):
             frappe._("Assertion Run {0} is still {1} — wait for it to finish before signing off.")
             .format(close_run, doc.status))
 
+    # Recorded on every path, not only the Amber one: a Red close overridden
+    # with 12 warnings outstanding must say so too, or the stronger gate ends
+    # up with the weaker record.
+    warnings = _warning_summary(_warned_assertion_names(close_run) if doc.warned else [],
+                                doc.warned or 0)
+
+    ack = None
+    if acknowledgement and doc.status != "Amber":
+        # Refused rather than dropped: a whitelisted call that returns success
+        # having stored nothing is exactly the silent fallback this issue is about.
+        frappe.throw(
+            frappe._("An acknowledgement applies only to an Amber close; run {0} is {1}.")
+            .format(close_run, doc.status), title=frappe._("Nothing to acknowledge"))
+
     if doc.status == "Green":
         new_state = "Signed Off"
+        reason = None
+    elif doc.status == "Amber":
+        # konsol#265 option C. Warnings do not block the close and do not need
+        # the override role — that stays for Red, which must remain the
+        # stronger gate. They do need a written acknowledgement, so the close
+        # record carries what was outstanding AND why it was signed anyway.
+        ack = (acknowledgement or "").strip()
+        if not ack:
+            frappe.throw(
+                frappe._("This close has {0} warning(s): {1}. Acknowledge them to sign off.")
+                .format(doc.warned, warnings or "(see the run's results)"),
+                title=frappe._("Acknowledgement required"))
+        new_state = "Acknowledged"
         reason = None
     else:
         # Red or Error — gated override: require an override role FIRST, then a reason.
@@ -249,6 +328,8 @@ def sign_off_close(close_run, override_reason=None):
     doc.signed_off_by = frappe.session.user
     doc.signed_off_at = frappe.utils.now_datetime()
     doc.override_reason = reason
+    doc.acknowledgement = ack
+    doc.warnings_at_signoff = warnings
     doc.save(ignore_permissions=True)
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
@@ -328,8 +409,8 @@ def run_close_assertions(close_run):
         doc.duration_seconds = round((doc.completed_at - doc.started_at).total_seconds(), 1)
     doc.save(ignore_permissions=True)
     frappe.db.commit()
-    _emit(close_run, done=True, status=doc.status,
-          passed=doc.passed, failed=doc.failed, errored=doc.errored)
+    _emit(close_run, done=True, status=doc.status, passed=doc.passed,
+          failed=doc.failed, errored=doc.errored, warned=doc.warned)
 
 
 def _fetch_failure_sample(relation, limit=20):
@@ -353,7 +434,7 @@ def _parse_results(doc, project_path):
     """Read target/run_results.json into the results child table."""
     rr_path = os.path.join(project_path, "target", "run_results.json")
     doc.set("results", [])
-    passed = failed = errored = 0
+    passed = failed = errored = warned = 0
 
     try:
         with open(rr_path) as fh:
@@ -362,35 +443,40 @@ def _parse_results(doc, project_path):
         doc.status = "Error"
         doc.append("results", {"assertion": "run_results.json", "status": "Error",
                                "dimension": "Other", "message": f"could not read results: {e}"})
-        doc.total, doc.passed, doc.failed, doc.errored = 1, 0, 0, 1
+        doc.total, doc.passed, doc.failed, doc.errored, doc.warned = 1, 0, 0, 1, 0
         return
+
+    manifest_nodes = _manifest_nodes(project_path)
 
     for node in rr.get("results", []):
         uid = node.get("unique_id", "")
         # unique_id looks like: test.open_epm.assert_xxx.<hash>
         name = uid.split(".")[2] if len(uid.split(".")) > 2 else uid
-        raw_status = (node.get("status") or "").lower()
-        status = _DBT_TO_STATUS.get(raw_status, "Error")
+        status = step_status(node.get("status"))
         failures = node.get("failures") or 0
         if status == "Pass":
             passed += 1
         elif status == "Fail":
             failed += 1
+        elif status == "Warn":
+            warned += 1
         else:
             errored += 1
 
-        relation = (node.get("relation_name") or "") if status == "Fail" else ""
+        # konsol#265: a warn writes a --store-failures table just as a fail
+        # does, and showing those rows is the entire point of a warning.
+        relation = (node.get("relation_name") or "") if captures_rows(status) else ""
         doc.append("results", {
             "assertion": name,
             "dimension": _classify(name),
             "status": status,
             "rows_failed": failures,
-            "severity": "error",
+            "severity": severity_of(uid, manifest_nodes, status),
             "message": (node.get("message") or "")[:280],
             "failures_table": relation.replace("`", ""),
             "sample_rows": _fetch_failure_sample(relation) if relation else "",
         })
 
-    doc.total = passed + failed + errored
-    doc.passed, doc.failed, doc.errored = passed, failed, errored
-    doc.status = "Green" if (failed == 0 and errored == 0 and doc.total > 0) else "Red"
+    doc.total = passed + failed + errored + warned
+    doc.passed, doc.failed, doc.errored, doc.warned = passed, failed, errored, warned
+    doc.status = run_status(passed, failed, errored, warned)

@@ -26,9 +26,10 @@
       "fieldname": "status",
       "fieldtype": "Select",
       "label": "Status",
-      "options": "Queued\nRunning\nGreen\nRed\nError",
+      "options": "Queued\nRunning\nGreen\nAmber\nRed\nError",
       "default": "Queued",
       "reqd": 1,
+      "read_only": 1,
       "in_list_view": 1,
       "in_standard_filter": 1
     },
@@ -95,6 +96,14 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "warned",
+      "fieldtype": "Int",
+      "label": "Warned",
+      "read_only": 1,
+      "in_list_view": 1,
+      "description": "Assertions that warned: reported, never blocking (konsol#265)"
+    },
+    {
       "fieldname": "tab_signoff",
       "fieldtype": "Tab Break",
       "label": "Sign-off"
@@ -108,7 +117,7 @@
       "fieldname": "signoff_status",
       "fieldtype": "Select",
       "label": "Sign-off Status",
-      "options": "Not Signed Off\nSigned Off\nOverridden",
+      "options": "Not Signed Off\nSigned Off\nAcknowledged\nOverridden",
       "default": "Not Signed Off",
       "read_only": 1,
       "in_list_view": 1,
@@ -137,6 +146,20 @@
       "label": "Override Reason",
       "read_only": 1,
       "description": "Required when signing off a Red/Error close; audited."
+    },
+    {
+      "fieldname": "acknowledgement",
+      "fieldtype": "Small Text",
+      "label": "Acknowledgement",
+      "read_only": 1,
+      "description": "Required when signing off an Amber close: why it was signed with warnings outstanding (konsol#265)."
+    },
+    {
+      "fieldname": "warnings_at_signoff",
+      "fieldtype": "Small Text",
+      "label": "Warnings At Sign-off",
+      "read_only": 1,
+      "description": "The assertions that were warning when this close was signed."
     },
     {
       "fieldname": "tab_timing",

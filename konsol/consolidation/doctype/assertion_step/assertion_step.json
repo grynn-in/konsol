@@ -28,7 +28,7 @@
       "fieldname": "status",
       "fieldtype": "Select",
       "label": "Status",
-      "options": "Pass\nFail\nError",
+      "options": "Pass\nFail\nWarn\nError",
       "default": "Pass",
       "in_list_view": 1,
       "columns": 1,

@@ -319,12 +319,24 @@ def assertions_stage(run):
     if signoff == "Overridden":
         # a Red run the Close Lead accepted with a reason: settled, not failing
         return stage("assertions", "done", f"{status} · overridden", run=run.get("name"))
+    if signoff == "Acknowledged":
+        # an Amber run signed with a written acknowledgement (konsol#265):
+        # settled, and the record says what was outstanding and why
+        return stage("assertions", "done", f"Acknowledged · {run.get('warned') or 0} warning(s)",
+                     run=run.get("name"))
     if signoff == "Signed Off":
         return stage("assertions", "done", "Signed off", run=run.get("name"))
     if status in ("Queued", "Running"):
         return stage("assertions", "running", "Running", run=run.get("name"))
     if status == "Green":
         return stage("assertions", "done", f"Green · {run.get('passed') or 0} of {run.get('total') or 0}",
+                     run=run.get("name"))
+    if status == "Amber":
+        # konsol#265: warnings do not block the close, so this is ready to sign
+        # off — with an acknowledgement. Reporting it as "waiting" would leave
+        # the accountant a disabled button and no route to the acknowledgement,
+        # which is the inversion #265 set out to remove.
+        return stage("assertions", "ready", f"Amber · {run.get('warned') or 0} warning(s) to acknowledge",
                      run=run.get("name"))
     if status in ("Red", "Error"):
         return stage("assertions", "error", f"{status} · {run.get('failed') or 0} failed", run=run.get("name"))
@@ -334,7 +346,9 @@ def assertions_stage(run):
 def signoff_stage(status, assertions_state):
     if status in ("Closed", "Locked"):
         return stage("signoff", "done", status)
-    if assertions_state == "done":
+    # "ready" covers an Amber run too (konsol#265): it is signable, with an
+    # acknowledgement. The Desk form is what collects the note.
+    if assertions_state in ("done", "ready"):
         return stage("signoff", "ready", "Ready to sign off")
     return stage("signoff", "waiting", "Waiting on assertions")
 

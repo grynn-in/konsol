@@ -884,8 +884,11 @@ def _populate_run_steps(doc, project_path):
     # Run Step.status vocabulary is unified on "Failed" (see #65c-i) — the
     # orchestrator (run.py) already writes "Failed", and "Failure" was dropped
     # from the doctype options, so the legacy build path maps dbt errors to it too.
+    # konsol#265: "warn" was absent, so status_map.get(..., "Pending") left a
+    # warned test's step Pending after the run finished and understated
+    # progress_pct. A warn is a finished step that is not a clean success.
     status_map = {"success": "Success", "error": "Failed", "fail": "Failed",
-                  "pass": "Success", "skipped": "Skipped"}
+                  "pass": "Success", "skipped": "Skipped", "warn": "Warning"}
     doc.set("steps", [])
     done = 0
     nodes = rr.get("results", [])
@@ -910,7 +913,7 @@ def _populate_run_steps(doc, project_path):
         else:
             stage = "Model"
         st = status_map.get((node.get("status") or "").lower(), "Pending")
-        if st in ("Success", "Skipped", "Failed"):
+        if st in ("Success", "Warning", "Skipped", "Failed"):
             done += 1
         rows = (node.get("adapter_response") or {}).get("rows_affected") or 0
         doc.append("steps", {
