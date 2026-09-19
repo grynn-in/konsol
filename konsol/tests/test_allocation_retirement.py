@@ -136,3 +136,48 @@ def test_retire_patch_is_idempotent_on_rerun():
     assert "ignore_missing=True" in execute
     assert "IF EXISTS" in execute
     assert "ignore_missing=False" not in execute
+
+
+# --- row K5: the patch also deletes the fixture-created Dataset / Build Model
+# documents, which fixtures alone never remove (force-reimport, never delete) ---
+
+def test_retire_patch_deletes_retired_dataset_rows():
+    src = _src(RETIRE_PY)
+    for name in ("headcount", "area_sqm", "revenue_by_product", "allocated"):
+        assert f'"{name}"' in src, f"retired Dataset row {name} must be named in the patch"
+    execute = _func(src, "execute")
+    assert 'frappe.db.delete("Dataset"' in execute
+    assert "frappe.db.table_exists(\"Dataset\")" in execute
+
+
+def test_retire_patch_deletes_retired_build_model_rows():
+    src = _src(RETIRE_PY)
+    for name in ("gold_allocation_results", "gold_allocation_audit_trail"):
+        assert f'"{name}"' in src, f"retired Build Model row {name} must be named in the patch"
+    execute = _func(src, "execute")
+    assert 'frappe.db.delete("Build Model"' in execute
+    assert "frappe.db.table_exists(\"Build Model\")" in execute
+
+
+def test_retire_patch_deletes_dataset_child_rows_guarded_by_table_exists():
+    # Dataset Measure / Dataset Dimension are child tables of Dataset; their
+    # rows must go before (or alongside) the parent, each guarded so a fresh
+    # install (which never created the table) no-ops cleanly.
+    execute = _func(_src(RETIRE_PY), "execute")
+    for child in ("Dataset Measure", "Dataset Dimension"):
+        assert f'frappe.db.table_exists("{child}")' in execute
+        assert f'frappe.db.delete(\n                "{child}"' in execute or \
+            f'frappe.db.delete("{child}"' in execute
+
+
+def test_retire_patch_dataset_and_build_model_deletes_use_db_delete_not_delete_doc():
+    # Dataset / Build Model rows are plain documents (not DocTypes) created by
+    # fixtures; the retirement uses frappe.db.delete (no lifecycle hooks),
+    # mirroring rekey_historical_equity_rate_to_group_corp's DB-level shape —
+    # not frappe.delete_doc, which is reserved above for DocType/Workflow/
+    # Module Def records.
+    execute = _func(_src(RETIRE_PY), "execute")
+    assert 'delete_doc(\n        "Dataset"' not in execute
+    assert 'delete_doc("Dataset"' not in execute
+    assert 'delete_doc(\n        "Build Model"' not in execute
+    assert 'delete_doc("Build Model"' not in execute

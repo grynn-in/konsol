@@ -333,17 +333,13 @@ SHIPPED_DEFAULT_MEASURES = {
     "gl_journal_entries": "period_net_amount",
     "budget_input": "period_amount",
     "variance_analysis": "variance_abs",
-    "headcount": "driver_value",
-    "area_sqm": "driver_value",
-    "revenue_by_product": "driver_value",
-    "allocated": "period_net_amount",
     "cashflow": "cash_flow_amount",
     "consolidated": "consolidated_amount",
 }
 
 
 def test_every_shipped_dataset_declares_a_default_measure():
-    """Holds for datasets added later, not only today's nine: a shipped Dataset
+    """Holds for datasets added later, not only today's five: a shipped Dataset
     that declares none turns every read naming no measure into an error, so the
     fixture must never ship one blank."""
     missing = [

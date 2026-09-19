@@ -27,10 +27,31 @@ before dropping it and logs the counts (guarded by ``table_exists`` so a
 fresh install, which never created the table, no-ops cleanly), leaving an
 audit trail without blocking anyone. It does NOT throw.
 
-Idempotent: ``ignore_missing=True`` on every ``delete_doc`` and
-``DROP TABLE IF EXISTS`` on every table make a rerun a no-op.
+Row K5 extends this patch for the same reason: fixtures
+(``konsol/fixtures/*.json``) are force-reimported on every migrate but never
+delete a row removed from the JSON. Dropping the allocation Dataset rows
+(``headcount``, ``area_sqm``, ``revenue_by_product``, the allocation drivers,
+and ``allocated``, the output dataset over ``gold_allocation_tb`` — a model
+konsolidat has already deleted) and the two allocation Build Model rows
+(``gold_allocation_results``, ``gold_allocation_audit_trail``) from the
+fixture files leaves the ``Dataset`` and ``Build Model`` documents those rows
+created behind on every site that already migrated them. This is a DB-level
+delete (``frappe.db.delete``), not ``frappe.delete_doc``, matching
+``rekey_historical_equity_rate_to_group_corp``'s shape: these are plain
+documents (not DocTypes), there is no lifecycle behaviour worth running on
+the way out, and a direct delete keeps this idempotent and side-effect-free.
+The ``Dataset Measure`` / ``Dataset Dimension`` child rows those Datasets
+owned are cleaned up the same way, guarded by ``table_exists`` so a fresh
+install (which never created the row) no-ops cleanly.
+
+Idempotent: ``ignore_missing=True`` on every ``delete_doc``,
+``DROP TABLE IF EXISTS`` on every table, and ``frappe.db.delete`` (a no-op
+when the row is already gone) make a rerun a no-op.
 """
 import frappe
+
+_RETIRED_DATASETS = ["headcount", "area_sqm", "revenue_by_product", "allocated"]
+_RETIRED_BUILD_MODELS = ["gold_allocation_results", "gold_allocation_audit_trail"]
 
 
 def execute():
@@ -85,3 +106,25 @@ def execute():
     frappe.db.sql_ddl("DROP TABLE IF EXISTS `tabAllocation Rule`")
     frappe.db.sql_ddl("DROP TABLE IF EXISTS `tabAllocation Driver`")
     frappe.db.sql_ddl("DROP TABLE IF EXISTS `tabAllocation Run`")
+
+    # Row K5: the four allocation Dataset rows and the two allocation Build
+    # Model rows were removed from the fixture files, but fixtures are
+    # force-reimported on every migrate and never delete — so a site that
+    # already migrated them still carries the documents those rows created.
+    # DB-level delete (see module docstring): plain documents, no lifecycle
+    # behaviour worth running, mirrors rekey_historical_equity_rate_to_group_corp.
+    if frappe.db.table_exists("Dataset"):
+        # Child rows first (Dataset Measure / Dataset Dimension are child
+        # tables of Dataset, keyed on `parent`).
+        if frappe.db.table_exists("Dataset Measure"):
+            frappe.db.delete(
+                "Dataset Measure", {"parent": ["in", _RETIRED_DATASETS]}
+            )
+        if frappe.db.table_exists("Dataset Dimension"):
+            frappe.db.delete(
+                "Dataset Dimension", {"parent": ["in", _RETIRED_DATASETS]}
+            )
+        frappe.db.delete("Dataset", {"name": ["in", _RETIRED_DATASETS]})
+
+    if frappe.db.table_exists("Build Model"):
+        frappe.db.delete("Build Model", {"name": ["in", _RETIRED_BUILD_MODELS]})
