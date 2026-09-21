@@ -62,7 +62,9 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
                                                             count=lambda *a, **k: mariadb_tbs))
     with open(TASKS) as f:
         tree = ast.parse(f.read())
-    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate", "_batches_without_basis",
+    # konsol#200: _connector_sync_gate is gone — the preflight no longer has a
+    # connector to consult, so it is not lifted and cannot be stubbed back in.
+    wanted = {"check_raw_data_available", "_trial_balance_rows", "_batches_without_basis",
               "_basis_refusal"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
@@ -89,29 +91,38 @@ SYNCED = [{"connector_name": "ZZ ERP", "last_sync_at": "2026-09-01 00:00:00", "l
 
 def test_a_tb_only_site_builds_without_airbyte():
     (ok, message), _ = check(rows=12)
-    assert ok and "12 trial balance rows" in message and "no connector" in message, message
+    # konsol#200: the message no longer says "(no connector)" — there is no
+    # connector in the decision to mention.
+    assert ok and "12 trial balance rows" in message, message
+    assert "connector" not in message.lower(), message
 
 
-def test_a_running_or_failed_connector_still_blocks():
-    """One submitted trial balance must not let a build run on half-synced ERP data."""
-    assert check(rows=12, connectors=RUNNING)[0] == (
-        False, "Connector 'ZZ ERP' sync status is 'Running' — cannot build from raw")
-    assert check(rows=12, connectors=FAILED)[0][0] is False
-    assert check(rows=12, connectors=NEVER_SYNCED)[0] == (
-        False, "Connector 'ZZ ERP' has never synced — epm_raw may be empty")
-    # konsolidat#199: the warehouse is asked only about claimed trial balances
-    # (rows, undeclared bases) before the connector decides; nothing else
-    assert all("epm_raw.trial_balance_submission" in s for s in check(rows=12, connectors=RUNNING)[1])
+def test_a_running_or_failed_connector_no_longer_blocks():
+    """konsolidat#235 Phase 1 / konsol#200. Connector state is no longer a
+    readiness test. Every ERP table on the live stack is empty and
+    silver_gl_entries (47,308) exactly equals silver_tb_movements (47,308) —
+    100% of the ledger already comes from the trial-balance path, so the gate
+    was guarding an empty road while refusing builds with valid rows."""
+    for connectors in (RUNNING, FAILED, NEVER_SYNCED):
+        (ok, message), _ = check(rows=12, connectors=connectors)
+        assert ok, message
+        assert "12 trial balance rows" in message, message
 
 
-def test_synced_connectors_are_unchanged():
-    (ok, message), _ = check(rows=0, connectors=SYNCED)
-    assert ok and message == "All 1 enabled connectors synced OK"
+def test_the_warehouse_is_asked_only_about_trial_balances():
+    """No connector query, no Airbyte query — the claimed rows and their bases
+    are the whole question."""
+    _, sqls = check(rows=12, connectors=RUNNING)
+    assert sqls and all("epm_raw.trial_balance_submission" in s for s in sqls), sqls
 
 
 def test_a_wiped_warehouse_refuses_even_with_submitted_documents():
-    """The ClickHouse volume was wiped; MariaDB still holds submitted trial balances."""
-    assert check(rows=0, mariadb_tbs=3)[0] == NEVER
+    """The ClickHouse volume was wiped; MariaDB still holds submitted trial
+    balances. Nothing to build from, and the refusal says so."""
+    (ok, message), _ = check(rows=0, mariadb_tbs=3)
+    assert ok is False
+    assert "trial balance" in message.lower(), message
+    assert "airbyte" not in message.lower(), message
 
 
 def test_counts_the_claimed_rows_in_the_warehouse():
@@ -123,120 +134,72 @@ def test_counts_the_claimed_rows_in_the_warehouse():
 
 
 def test_an_unreadable_warehouse_refuses():
-    assert check(warehouse_error=RuntimeError("Code: 60. Unknown table (UNKNOWN_TABLE)"))[0] == NEVER
-    assert check(warehouse_error=ConnectionError("refused"))[0] == NEVER
+    for err in (RuntimeError("Code: 60. Unknown table (UNKNOWN_TABLE)"), ConnectionError("refused")):
+        (ok, message), _ = check(warehouse_error=err)
+        assert ok is False and "trial balance" in message.lower(), message
 
 
-def test_with_nothing_landed_the_airbyte_gate_is_unchanged():
-    assert check()[0] == NEVER
-    (ok, message), _ = check(sync_at="2026-09-01 00:00:00", sync_status="Succeeded")
-    assert ok and message.startswith("Airbyte sync OK"), message
-    assert check(sync_at="2026-09-01 00:00:00", sync_status="Failed")[0][0] is False
-
-
-def test_the_flag_still_works():
-    (ok, message), sqls = check(skip=1, connectors=RUNNING)
-    # konsolidat#199: the skip path still asks the warehouse about claimed batches (rows, bases); no connector is consulted
-    assert ok and "skip_airbyte_sync" in message and len(sqls) <= 2 and all("epm_raw" in s for s in sqls), message
+def test_no_rows_refuses_by_naming_trial_balances():
+    """The old refusal was "Airbyte has never synced — epm_raw may be empty",
+    which told a trial-balance-only operator to go and look at something their
+    site does not use."""
+    (ok, message), _ = check()
+    assert ok is False
+    assert "trial balance" in message.lower(), message
+    assert "airbyte" not in message.lower() and "connector" not in message.lower(), message
 
 
 # ---------------------------------------------------------------------------
-# konsol#182 regression: the global EPM Settings Airbyte status (set by the
-# webhook, api.py ~1564, with no Connector doctype/enabled connector required)
-# must gate BEFORE the trial-balance pass. One claimed trial-balance row must
-# not let a consolidation build run on a feed the webhook marked failed or
-# still mid-sync.
+# konsol#200: the global EPM Settings Airbyte status, set by the webhook with
+# no Connector doctype required, used to gate BEFORE the trial-balance pass —
+# so one claimed row could not save a build the webhook had marked failed.
+# It is no longer consulted at all.
 # ---------------------------------------------------------------------------
-def test_a_failed_global_sync_blocks_even_with_submitted_trial_balances():
-    (ok, message), _ = check(rows=12, sync_status="Failed", sync_at="2026-09-01 00:00:00")
-    assert ok is False and "Failed" in message, message
-
-
-def test_a_running_global_sync_blocks_even_with_submitted_trial_balances():
-    (ok, message), _ = check(rows=12, sync_status="Running", sync_at="2026-09-01 00:00:00")
-    assert ok is False and "Running" in message, message
-
-
-def test_a_stuck_global_sync_status_names_the_way_out():
-    """A site that stopped using Airbyte can be left at Failed or Running for
-    good (no final webhook); the refusal says how to get past it."""
+def test_a_failed_or_running_global_sync_no_longer_blocks():
     for status in ("Failed", "Running"):
         (ok, message), _ = check(rows=12, sync_status=status, sync_at="2026-09-01 00:00:00")
-        assert ok is False and "Skip Airbyte Sync" in message, message
+        assert ok, message
+        assert "12 trial balance rows" in message, message
 
 
 def test_an_empty_global_sync_status_with_trial_balances_still_passes():
-    """TB-only site: status never set (no connector, no Airbyte sync ever) —
-    submitted trial balances alone are enough to build."""
     (ok, message), _ = check(rows=12, sync_status=None, sync_at=None)
     assert ok and "12 trial balance rows" in message, message
 
 
-def test_skip_flag_bypasses_a_failed_global_sync():
-    (ok, message), sqls = check(skip=1, sync_status="Failed", rows=12)
-    # konsolidat#199: the skip path still asks the warehouse about claimed batches (rows, bases); no connector is consulted
-    assert ok and "skip_airbyte_sync" in message and len(sqls) <= 2 and all("epm_raw" in s for s in sqls), message
+def test_a_synced_airbyte_alone_is_not_readiness():
+    """Previously an Airbyte sync with zero claimed rows passed the preflight
+    on "Airbyte sync OK". With the ERP path gone there is nothing for that
+    build to read, so it must refuse."""
+    (ok, message), _ = check(rows=0, sync_at="2026-09-01 00:00:00", sync_status="Succeeded")
+    assert ok is False and "trial balance" in message.lower(), message
 
 
-# ---------------------------------------------------------------------------
-# chart scope (konsol#182): @silver_main_accounts builds ERP staging/bronze
-# models from epm_raw, so an enabled connector that never synced or is
-# Failed/Running must still block it — same gate, same messages. But chart
-# carries no trial-balance-rows requirement: a TB-only site must be able to
-# build its chart before any TB exists, so no enabled connector means pass.
-# ---------------------------------------------------------------------------
-def check_chart(connectors=(), skip=0):
-    """tasks._preflight_check("chart"), lifted with ast like ``check()``
-    above. Stubs konsol.clickhouse.check_health (chart still needs a healthy
-    warehouse) instead of konsol.clickhouse.execute, since a passing chart
-    build must never query epm_raw.trial_balance_submissions."""
-    settings = _Row(skip_airbyte_sync=skip)
-
-    def get_all(doctype, filters=None, fields=None, limit_page_length=None):
-        assert doctype == "Connector"
-        return [_Row(c) for c in connectors if c.get("enabled", 1)]
-
-    frappe = types.SimpleNamespace(get_single=lambda name: settings, get_all=get_all,
-                                   db=types.SimpleNamespace(table_exists=lambda name: True))
-    with open(TASKS) as f:
-        tree = ast.parse(f.read())
-    wanted = {"_preflight_check", "_check_chart_build_allowed", "_connector_sync_gate"}
-    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
-    assert {n.name for n in nodes} == wanted
-    ch = types.ModuleType("konsol.clickhouse")
-    ch.check_health = lambda: {"status": "healthy"}
-    saved = sys.modules.get("konsol.clickhouse")
-    sys.modules["konsol.clickhouse"] = ch
-    try:
-        ns = {"frappe": frappe}
-        exec(compile(ast.Module(body=nodes, type_ignores=[]), TASKS, "exec"), ns)
-        return ns["_preflight_check"]("chart")
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.clickhouse", None)
-        else:
-            sys.modules["konsol.clickhouse"] = saved
+def _preflight_source():
+    """The two preflight functions only — not the whole module. run_pipeline
+    still has an Airbyte extract step, and retiring that belongs to Phase 2 of
+    konsolidat#235, not here."""
+    src = open(TASKS, encoding="utf-8").read()
+    a = src.index("def _check_chart_build_allowed():")
+    b = src.index("# ------", src.index("def check_raw_data_available():"))
+    return src[a:b]
 
 
-def test_chart_blocks_on_a_never_synced_connector():
-    assert check_chart(connectors=NEVER_SYNCED) == (
-        False, "Connector 'ZZ ERP' has never synced — epm_raw may be empty")
+def test_the_skip_flag_no_longer_decides_readiness():
+    """skip_airbyte_sync was the escape hatch from a gate that no longer
+    exists. A toggle that silently changes what readiness means is the silent
+    fallback this fix removes — so the preflight must not read it, and turning
+    it on must not wave through a build with nothing landed."""
+    assert "skip_airbyte_sync" not in _preflight_source(), "the preflight still reads the flag"
+    (ok, _message), _ = check(skip=1, rows=0)
+    assert ok is False, "the retired flag still waves a build through with nothing landed"
 
 
-def test_chart_blocks_on_a_failed_connector():
-    assert check_chart(connectors=FAILED) == (
-        False, "Connector 'ZZ ERP' sync status is 'Failed' — cannot build from raw")
-
-
-def test_chart_blocks_on_a_running_connector():
-    assert check_chart(connectors=RUNNING) == (
-        False, "Connector 'ZZ ERP' sync status is 'Running' — cannot build from raw")
-
-
-def test_chart_passes_with_no_connector_and_zero_trial_balances():
-    """A TB-only site must be able to build its chart before any TB exists."""
-    ok, message = check_chart(connectors=())
-    assert ok, message
+def test_the_connector_gate_is_gone():
+    src = open(TASKS, encoding="utf-8").read()
+    assert "_connector_sync_gate" not in src, "the gate function survives"
+    assert "last_airbyte_sync_status" not in src, "the global Airbyte status is still read"
+    assert "skip_airbyte_sync" not in _preflight_source()
 
 
 def test_claimed_batches_without_a_basis_are_refused_by_name():
@@ -250,8 +213,8 @@ def test_claimed_batches_without_a_basis_are_refused_by_name():
 
 
 def test_every_batch_declared_passes():
-    (ok, msg), _ = check(skip=1, rows=500, without_basis="0")
-    assert ok is True and "skip_airbyte_sync" in msg
+    (ok, msg), _ = check(rows=500, without_basis="0")
+    assert ok is True and "500 trial balance rows" in msg, msg
 
 
 def test_only_a_missing_column_means_run_bench_migrate():
