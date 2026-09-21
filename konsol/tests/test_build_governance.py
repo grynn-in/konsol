@@ -624,9 +624,11 @@ def test_raw_data_check_asks_for_the_basis_only_after_the_rows_check_passes():
     rows_at = body.index("_trial_balance_rows()")
     basis_at = body.index("_basis_refusal(rows)")
     assert rows_at < basis_at
-    # K6b: the basis question comes BEFORE the skip_airbyte_sync short-circuit
-    # (the trial-balance-only site has that flag on) and before every gate
-    assert basis_at < body.index('.get("skip_airbyte_sync")')
+    # K6b used to add "and before the skip_airbyte_sync short-circuit and every
+    # other gate". konsol#200 removed those, so the ordering it protected is now
+    # the whole function: rows, then basis, then the verdict. Asserted as that.
+    assert "skip_airbyte_sync" not in body and "_connector_sync_gate" not in body, body
+    assert basis_at < body.index("if rows:"), body
     # and _basis_refusal itself asks nothing when no rows are claimed
     helper = _func_source("_basis_refusal")
     assert helper.index("if not rows") < helper.index("_batches_without_basis()")

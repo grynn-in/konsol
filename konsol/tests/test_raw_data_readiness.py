@@ -62,7 +62,9 @@ def check(skip=0, rows=0, connectors=(), sync_at=None, sync_status=None, warehou
                                                             count=lambda *a, **k: mariadb_tbs))
     with open(TASKS) as f:
         tree = ast.parse(f.read())
-    wanted = {"check_raw_data_available", "_trial_balance_rows", "_connector_sync_gate", "_batches_without_basis",
+    # konsol#200: _connector_sync_gate is gone — the preflight no longer has a
+    # connector to consult, so it is not lifted and cannot be stubbed back in.
+    wanted = {"check_raw_data_available", "_trial_balance_rows", "_batches_without_basis",
               "_basis_refusal"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
@@ -89,7 +91,10 @@ SYNCED = [{"connector_name": "ZZ ERP", "last_sync_at": "2026-09-01 00:00:00", "l
 
 def test_a_tb_only_site_builds_without_airbyte():
     (ok, message), _ = check(rows=12)
-    assert ok and "12 trial balance rows" in message and "no connector" in message, message
+    # konsol#200: the message no longer says "(no connector)" — there is no
+    # connector in the decision to mention.
+    assert ok and "12 trial balance rows" in message, message
+    assert "connector" not in message.lower(), message
 
 
 def test_a_running_or_failed_connector_no_longer_blocks():
@@ -170,21 +175,31 @@ def test_a_synced_airbyte_alone_is_not_readiness():
     assert ok is False and "trial balance" in message.lower(), message
 
 
-def test_the_skip_flag_is_retired():
-    """skip_airbyte_sync was the escape hatch from a gate that no longer
-    exists; leaving a toggle that silently changes readiness is the silent
-    fallback this fix removes."""
+def _preflight_source():
+    """The two preflight functions only — not the whole module. run_pipeline
+    still has an Airbyte extract step, and retiring that belongs to Phase 2 of
+    konsolidat#235, not here."""
     src = open(TASKS, encoding="utf-8").read()
-    assert "skip_airbyte_sync" not in src, "the escape hatch outlived its gate"
-    # and it must not be reachable through the preflight either
-    (ok, message), _ = check(skip=1, rows=0)
+    a = src.index("def _check_chart_build_allowed():")
+    b = src.index("# ------", src.index("def check_raw_data_available():"))
+    return src[a:b]
+
+
+def test_the_skip_flag_no_longer_decides_readiness():
+    """skip_airbyte_sync was the escape hatch from a gate that no longer
+    exists. A toggle that silently changes what readiness means is the silent
+    fallback this fix removes — so the preflight must not read it, and turning
+    it on must not wave through a build with nothing landed."""
+    assert "skip_airbyte_sync" not in _preflight_source(), "the preflight still reads the flag"
+    (ok, _message), _ = check(skip=1, rows=0)
     assert ok is False, "the retired flag still waves a build through with nothing landed"
 
 
 def test_the_connector_gate_is_gone():
     src = open(TASKS, encoding="utf-8").read()
-    assert "_connector_sync_gate" not in src
-    assert "last_airbyte_sync_status" not in src
+    assert "_connector_sync_gate" not in src, "the gate function survives"
+    assert "last_airbyte_sync_status" not in src, "the global Airbyte status is still read"
+    assert "skip_airbyte_sync" not in _preflight_source()
 
 
 def test_claimed_batches_without_a_basis_are_refused_by_name():
@@ -198,8 +213,8 @@ def test_claimed_batches_without_a_basis_are_refused_by_name():
 
 
 def test_every_batch_declared_passes():
-    (ok, msg), _ = check(skip=1, rows=500, without_basis="0")
-    assert ok is True and "skip_airbyte_sync" in msg
+    (ok, msg), _ = check(rows=500, without_basis="0")
+    assert ok is True and "500 trial balance rows" in msg, msg
 
 
 def test_only_a_missing_column_means_run_bench_migrate():

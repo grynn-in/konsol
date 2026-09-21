@@ -207,55 +207,22 @@ def _batches_without_basis():
     return names, count
 
 
-def _connector_sync_gate():
-    """Enabled-connector sync-status gate shared by every raw-dependent scope
-    and by chart (@silver_main_accounts reaches ERP staging/bronze models fed
-    by epm_raw even though chart carries no trial-balance-rows requirement).
-
-    Returns (ok, message) when at least one enabled Connector exists to gate
-    on: False if any has never synced or its last sync is Failed/Running,
-    naming that connector; True once all are synced OK. Returns None when
-    there is no Connector table or no enabled connector, leaving the caller
-    to decide what "no connector" means for its scope.
-    """
-    if not frappe.db.table_exists("Connector"):
-        return None
-
-    connectors = frappe.get_all(
-        "Connector",
-        filters={"enabled": 1},
-        fields=["name", "connector_name", "last_sync_status", "last_sync_at"],
-        limit_page_length=0,
-    )
-    if not connectors:
-        return None
-
-    for c in connectors:
-        if not c.last_sync_at:
-            return False, f"Connector '{c.connector_name}' has never synced — epm_raw may be empty"
-        if c.last_sync_status in ("Failed", "Running"):
-            return False, f"Connector '{c.connector_name}' sync status is '{c.last_sync_status}' — cannot build from raw"
-    return True, f"All {len(connectors)} enabled connectors synced OK"
-
-
 def _check_chart_build_allowed():
-    """Preflight for the chart scope (konsol#182): @silver_main_accounts
-    builds ERP staging/bronze models from epm_raw, so an enabled connector
-    that never synced or is Failed/Running still blocks it — same gate, same
-    messages as the raw-dependent scopes. Unlike them, chart carries no
-    trial-balance-rows requirement: a TB-only site must be able to build its
-    chart before any TB exists, so no enabled connector means pass.
+    """Preflight for the chart scope (konsol#182, konsol#200).
+
+    The chart is built from the governed chart of accounts konsol holds, not
+    from an ERP feed, and it carries no trial-balance-rows requirement: a
+    TB-only site must be able to build its chart before any trial balance
+    exists. Nothing to gate on, so nothing gates it.
+
+    It used to refuse on connector sync state, because @silver_main_accounts
+    reached ERP staging/bronze models fed by epm_raw. Those models are empty on
+    every stack and the tree is being removed (konsolidat#221, #235), so that
+    refusal only ever blocked work which had nothing to do with a connector.
 
     Returns (ok: bool, message: str).
     """
-    if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
-        return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
-
-    gate = _connector_sync_gate()
-    if gate is not None:
-        return gate
-
-    return True, "No enabled connector — chart build has no trial-balance-rows dependency"
+    return True, "Chart build has no raw-data dependency"
 
 
 def _basis_refusal(rows):
@@ -280,64 +247,42 @@ def _basis_refusal(rows):
 
 
 def check_raw_data_available():
-    """Check if epm_raw has valid data.
+    """Is there anything in the warehouse to build from?
 
-    konsol#182 (decided 13 Sep 2026): trial balance rows in the warehouse ARE
-    raw data. The canonical path is a trial balance uploaded to konsol, so a
-    site with no enabled connector and landed trial balances builds, with no
-    Airbyte sync. A connector that is mid-sync or failed still blocks.
+    konsol#182 (13 Sep 2026): trial balance rows in the warehouse ARE raw data.
+    konsol#200 / konsolidat#235 Phase 1 (21 Sep 2026): they are the ONLY raw
+    data. The canonical path is a trial balance uploaded to konsol; the ERP
+    staging tree is being removed (konsolidat#221) and is empty on every stack.
 
-    When connectors are registered, gate on per-connector sync status (an
-    enabled connector that has never synced or whose last sync Failed/Running
-    blocks the build, and the message names it). Otherwise fall back to the
-    global EPM Settings Airbyte sync status — checked BEFORE the trial-balance
-    pass, so a feed the Airbyte webhook (api.py) marked Failed or still
-    Running blocks the build even with a claimed trial-balance row already in
-    the warehouse.
+    So connector sync state and the global EPM Settings Airbyte status are no
+    longer consulted, in either direction. A failed or mid-sync feed does not
+    block, because it feeds nothing. A successful sync with no claimed trial
+    balance does not pass either, because there would be nothing for the build
+    to read — that case used to return "Airbyte sync OK" over an empty
+    warehouse.
+
+    What this refused before the change: a Connector row that had never synced
+    refused a governed build on a site holding 36,483 valid trial-balance rows,
+    and the only way past was the skip-sync flag in EPM Settings, an opt-out
+    that silently changed what readiness meant. Both are gone.
 
     Returns (ok: bool, message: str).
     """
-    # konsolidat#199: claimed trial balance batches must declare their Amount
-    # Basis whatever else gates the build — the skip_airbyte_sync short-circuit
-    # below is exactly the trial-balance-only site, so this runs first.
     rows = _trial_balance_rows()
+
+    # konsolidat#199: a claimed batch must declare its Amount Basis, or the
+    # warehouse reads it as period movements whatever it actually holds.
     refusal = _basis_refusal(rows)
     if refusal is not None:
         return refusal
 
-    # When Airbyte sync is skipped (demo data / manual epm_raw load), there is
-    # no connector or Airbyte status to gate on — readiness is implied by the
-    # operator having loaded epm_raw out of band. Short-circuit before any
-    # connector/Airbyte gating so a missing/never-synced connector can't block.
-    if frappe.get_single("EPM Settings").get("skip_airbyte_sync"):
-        return True, "Airbyte sync skipped (skip_airbyte_sync enabled) — building from existing epm_raw"
-
-    gate = _connector_sync_gate()
-    if gate is not None:
-        return gate
-
-    settings = frappe.get_single("EPM Settings")
-    sync_status = settings.last_airbyte_sync_status
-
-    # No enabled connector gates this site, but the Airbyte webhook (api.py
-    # ~1564) sets this global status without requiring a Connector doctype or
-    # an enabled connector. A build must not run on a feed it marked Failed or
-    # still Running just because a trial balance was also submitted — this
-    # runs BEFORE the trial-balance pass below.
-    if sync_status in ("Failed", "Running"):
-        return False, (f"Airbyte sync status is '{sync_status}' — cannot build from raw. If this site no "
-                       "longer uses Airbyte, turn on Skip Airbyte Sync in EPM Settings.")
-
-    # Trial balances uploaded to konsol and landed in the warehouse are this
-    # site's raw data (konsol#182).
     if rows:
         return True, (f"{rows} trial balance rows in epm_raw.trial_balance_submissions "
-                      "— building from them (no connector)")
+                      "— building from them")
 
-    if not settings.last_airbyte_sync_at:
-        return False, "Airbyte has never synced — epm_raw may be empty"
-
-    return True, f"Airbyte sync OK (status={sync_status}, rows={settings.last_airbyte_sync_rows})"
+    return False, ("No claimed trial balance rows in epm_raw.trial_balance_submissions — "
+                   "upload and submit a Trial Balance Submission, or check that the "
+                   "warehouse is reachable and has not been wiped.")
 
 
 # ---------------------------------------------------------------------------
