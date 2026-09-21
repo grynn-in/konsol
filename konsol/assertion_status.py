@@ -33,6 +33,18 @@ DBT_TO_STATUS = {
 ROW_BEARING = ("Fail", "Warn")
 
 
+def is_assertion(unique_id):
+    """Whether a run_results.json row is an assertion at all.
+
+    dbt reports its own on-run-start / on-run-end hooks in the same results
+    list, as ``operation.<project>.<name>`` with status ``'success'`` — a
+    status the map does not carry, so before konsol#265's follow-up they fell
+    through to ``Error`` and turned an otherwise clean close Red. The run
+    selects ``test_type:singular``; only ``test.`` rows are assertions.
+    """
+    return (unique_id or "").startswith("test.")
+
+
 def step_status(raw_status):
     """Map a dbt result status to an Assertion Step status.
 
