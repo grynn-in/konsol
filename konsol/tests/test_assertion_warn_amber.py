@@ -280,6 +280,43 @@ def test_parse_results_counts_a_warn_and_turns_the_run_amber():
     assert doc.status == "Amber"
 
 
+def test_parse_results_ignores_dbt_operations():
+    """A real close on 21 Sep 2026 came back Red with "2 errored" and nothing
+    failed. The two were dbt's own on-run-start hooks, which appear in
+    run_results.json as `operation.…` with status 'success' — a status the map
+    does not know, so they fell through the default to Error, exactly the
+    defect konsol#265 fixed for `warn`. The run selects test_type:singular;
+    operations were never meant to be counted."""
+    module, _, _, Document = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        doc = _results_doc(module, Document, [
+            {"unique_id": "operation.open_epm.open_epm-on-run-start-0",
+             "status": "success", "message": "open_epm.on-run-start.0 passed"},
+            {"unique_id": "operation.open_epm.open_epm-on-run-start-1",
+             "status": "success", "message": "open_epm.on-run-start.1 passed"},
+            {"unique_id": "test.p.assert_ok.h", "status": "pass"},
+            {"unique_id": "test.p.assert_tb.h", "status": "warn", "failures": 3},
+        ], tmp)
+    assert doc.total == 2, f"operations were counted: total={doc.total}"
+    assert doc.errored == 0, f"a passing hook was counted as an error: {doc.errored}"
+    assert (doc.passed, doc.warned) == (1, 1)
+    assert doc.status == "Amber", "the close is Red because two hooks passed"
+    assert all(r["assertion"].startswith("assert_") for r in doc._rows), \
+        [r["assertion"] for r in doc._rows]
+
+
+def test_an_unknown_status_on_a_real_test_still_errors():
+    """Skipping operations must not weaken the rule that an unrecognised status
+    on an actual assertion is an error."""
+    module, _, _, Document = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        doc = _results_doc(module, Document, [
+            {"unique_id": "test.p.assert_x.h", "status": "teapot"},
+        ], tmp)
+    assert (doc.total, doc.errored) == (1, 1)
+    assert doc.status == "Red"
+
+
 def test_parse_results_keeps_a_failure_red_even_with_warnings():
     module, _, _, Document = _load()
     with tempfile.TemporaryDirectory() as tmp:
