@@ -11,7 +11,8 @@ import subprocess
 import frappe
 from frappe.model.document import Document
 
-from konsol.assertion_status import captures_rows, run_status, severity_of, step_status
+from konsol.assertion_status import (captures_rows, is_assertion, run_status,
+                                     severity_of, step_status)
 from konsol.period_status import PeriodNotDeclared, assert_declared
 
 
@@ -450,6 +451,10 @@ def _parse_results(doc, project_path):
 
     for node in rr.get("results", []):
         uid = node.get("unique_id", "")
+        # dbt's own hooks ride in the same results list; they are not
+        # assertions and their 'success' status has no place in the map.
+        if not is_assertion(uid):
+            continue
         # unique_id looks like: test.open_epm.assert_xxx.<hash>
         name = uid.split(".")[2] if len(uid.split(".")) > 2 else uid
         status = step_status(node.get("status"))
