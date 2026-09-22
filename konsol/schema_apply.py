@@ -2,7 +2,8 @@
 
 Reads all config doctypes (Dimension, Measure, Dataset) and applies:
   1. dbt_project.yml vars regeneration
-  2. ClickHouse ALTER TABLE for missing columns
+  2. ClickHouse ALTER TABLE for missing columns, then the raw trial-balance
+     table's dim_* columns synced to the declared set
   3. Budget Line custom field sync
   4. Optional dbt build trigger
 
@@ -189,6 +190,7 @@ def _apply_schema_steps():
     summary = {
         "vars_updated": False,
         "columns_added": [],
+        "tb_dimension_columns_synced": [],
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
@@ -210,6 +212,18 @@ def _apply_schema_steps():
     except Exception as e:
         summary["errors"].append(f"ClickHouse DDL: {str(e)}")
         frappe.log_error("schema_apply: CH DDL failed", frappe.get_traceback())
+
+    # 2b. Sync the raw trial-balance table's dim_* columns to the declared set.
+    # ClickHouse DDL, so it lives here with the other DDL and not with the
+    # Frappe Custom Field sync. After step 2 deliberately: that step is what
+    # guarantees the raw table exists before columns are altered onto it.
+    try:
+        summary["tb_dimension_columns_synced"] = _sync_tb_dimension_columns()
+    except Exception as e:
+        summary["errors"].append(f"TB dimension columns: {str(e)}")
+        frappe.log_error(
+            "schema_apply: TB dimension columns failed", frappe.get_traceback()
+        )
 
     # 3. Create ClickHouse tables + dbt sources for write-back facts
     try:

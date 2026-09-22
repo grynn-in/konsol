@@ -19,6 +19,8 @@ LIFECYCLE = os.path.join(APP_DIR, "schema_lifecycle.py")
 INSTALL = os.path.join(APP_DIR, "install.py")
 JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
 DBT_JOB = "konsol.tasks.run_dbt_build_async"
+# schema_apply._tb_table_columns reads the raw table's columns back (konsol#255).
+CH_INTROSPECTION = "SELECT name FROM system.columns"
 
 # frappe.enqueue's own parameters: none of them may be a job kwarg.
 _ENQUEUE_OWN = {"method", "queue", "timeout", "event", "is_async", "job_name", "now",
@@ -137,6 +139,9 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         "frappe": fr,
         "regenerate_vars": lambda: None,
         "_apply_clickhouse_columns": lambda: [],
+        # konsol#255: another ClickHouse DDL step of _apply_schema_steps. Only
+        # the named functions are compiled in, so its neighbours are stubbed.
+        "_sync_tb_dimension_columns": lambda: [],
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
     }
@@ -272,7 +277,7 @@ def _module(name, path):
     return mod
 
 
-def _run_publish(touched, enqueued, created=None):
+def _run_publish(touched, enqueued, created=None, ch=None):
     """apply_and_rebuild with the real konsol.schema_apply / schema_lifecycle
     (and any konsol module they import), against a frappe that records, and
     refuses, everything the Custom Field sync or a commit would touch. So an
@@ -280,12 +285,26 @@ def _run_publish(touched, enqueued, created=None):
     helper that swallows the error (install._sync_budget_line_custom_fields).
 
     ``created``, if given, collects the Build Approval doc(s) new_doc handed
-    back, so a caller can inspect what apply_and_rebuild set on it (konsol#261)."""
+    back, so a caller can inspect what apply_and_rebuild set on it (konsol#261).
+    ``ch``, if given, collects every statement handed to ClickHouse, which is
+    served rather than refused — see the stub below, and
+    test_publish_runs_only_schema_ddl_against_clickhouse (konsol#255)."""
+    ch_statements = ch if ch is not None else []
+
     def refuse(what):
         def fn(*a, **kw):
             touched.append(what)
             raise _Touched(what)
         return fn
+
+    def ch_execute(statement, params=None):
+        """Serve ClickHouse and record what was said to it.
+
+        Empty string = the raw table reports no columns, so the dim_* sync
+        finds nothing on it. With nothing declared either, it emits no ALTER.
+        """
+        ch_statements.append(statement)
+        return ""
 
     def sql(query, *a, **kw):
         if "`tabBuild Approval`" in query:   # the build request's debounce read
@@ -327,7 +346,17 @@ def _run_publish(touched, enqueued, created=None):
     stubs = {
         "frappe": frappe,
         "konsol": konsol,
-        "konsol.clickhouse": types.SimpleNamespace(execute=refuse("clickhouse"), get_connection=refuse("clickhouse")),
+        # ClickHouse DDL is one of apply_schema's steps and has always run in
+        # this path (_apply_clickhouse_columns, and konsol#255's dim_* column
+        # sync, which reads system.columns). It is neither a Custom Field
+        # write nor a MariaDB commit, which is all `touched` is about, so it
+        # is served rather than refused — it only stayed silent before because
+        # the stubbed Dataset/Dimension sets are empty. Served, but RECORDED:
+        # test_publish_runs_only_schema_ddl_against_clickhouse pins which
+        # statements are allowed, so dropping the refusal costs no signal.
+        # get_connection stays refused — nothing here may open a connection.
+        "konsol.clickhouse": types.SimpleNamespace(execute=ch_execute,
+                                                   get_connection=refuse("clickhouse")),
         "konsol.dbt_config": types.SimpleNamespace(regenerate_vars=lambda: None),
         "konsol.build_lock": types.SimpleNamespace(lock_build_requests=lambda: None,
                                                    flag_running_build=lambda row: None),
@@ -351,6 +380,37 @@ def test_apply_and_rebuild_touches_no_custom_field_and_never_commits():
     assert _run_publish(touched, enqueued) == "BAPR-TEST"
     assert touched == [], f"the publish's transaction reached the sync or a commit: {touched}"
     assert [m for m, _ in enqueued] == [JOB]
+
+
+def test_publish_runs_only_schema_ddl_against_clickhouse():
+    """What the publish path is ALLOWED to say to ClickHouse — and nothing else.
+
+    konsol#255 put the trial-balance dim_* column sync into apply_schema's
+    steps, so a publish does now reach ClickHouse. That is schema DDL and it
+    belongs here, so the stub serves it rather than refusing it outright —
+    and this test is what replaces the refusal as the guard. Serving it
+    unobserved would leave nothing watching: a change that started reading or
+    writing the warehouse from inside the publish would sail through.
+    """
+    touched, enqueued, ch = [], [], []
+    assert _run_publish(touched, enqueued, ch=ch) == "BAPR-TEST"
+
+    # Schema DDL only. No data SELECT, no INSERT, no warehouse read.
+    for statement in ch:
+        head = " ".join(statement.split())
+        assert head.startswith(CH_INTROSPECTION) or head.startswith("ALTER TABLE "), (
+            f"the publish said something other than schema DDL to ClickHouse: {head}")
+
+    # The one statement an empty declared set implies: the sync has to read
+    # back what is on the raw table before it can decide there is nothing to do.
+    selects = [s for s in ch if " ".join(s.split()).startswith(CH_INTROSPECTION)]
+    assert len(selects) == 1, ch
+    assert "trial_balance_submissions" in selects[0], selects
+
+    # Nothing is declared in this fixture, so no column may be added OR
+    # dropped. A publish that altered the table on an empty declared set
+    # would be dropping a customer's dimension columns.
+    assert [s for s in ch if " ".join(s.split()).startswith("ALTER")] == [], ch
 
 
 def test_apply_and_rebuild_marks_the_build_approval_full_refresh():

@@ -294,3 +294,112 @@ def test_the_return_shape_matches_the_budget_field_sync():
     assert all(isinstance(a, str) for a in actions)
     assert all(a.split(" ", 1)[0] in ("added", "removed", "refused")
                for a in actions), actions
+
+
+# --- the sync is actually reachable from Apply Schema ----------------------
+# A sync nothing calls is not a feature. These assert on the CALL SITE:
+# _apply_schema_steps() is the shared body of both public entry points
+# (apply_schema and apply_schema_for_publish), so the sync belongs there.
+
+def _recorded(stack, raises=None):
+    """Patch the ClickHouse DDL steps to record their order of execution.
+
+    Returns the list the calls are appended to. ``raises`` is the name of the
+    step that should blow up, to check a failure is reported and not fatal.
+    """
+    calls = []
+    module = stack.module
+
+    def step(name, result):
+        def run():
+            calls.append(name)
+            if raises == name:
+                raise RuntimeError("boom")
+            return result
+        return run
+
+    module._apply_clickhouse_columns = step(
+        "_apply_clickhouse_columns", ["epm.f.dim_x"])
+    module._sync_tb_dimension_columns = step(
+        "_sync_tb_dimension_columns", ["added dim_project"])
+    real_facts = module._apply_fact_tables
+
+    def facts():
+        calls.append("_apply_fact_tables")
+        return real_facts()
+
+    module._apply_fact_tables = facts
+    return calls
+
+
+def test_apply_schema_steps_calls_the_dimension_column_sync():
+    stack = _load()
+    calls = _recorded(stack)
+    summary = stack.module._apply_schema_steps()
+    assert "_sync_tb_dimension_columns" in calls, calls
+    assert summary["tb_dimension_columns_synced"] == ["added dim_project"]
+
+
+def test_the_dimension_column_sync_runs_after_the_clickhouse_ddl():
+    # Ordering is the point, not co-occurrence: _apply_clickhouse_columns is
+    # what guarantees the raw table exists before columns are altered onto it.
+    stack = _load()
+    calls = _recorded(stack)
+    stack.module._apply_schema_steps()
+    assert calls.index("_sync_tb_dimension_columns") > calls.index(
+        "_apply_clickhouse_columns"), calls
+
+
+def test_a_failing_dimension_column_sync_is_reported_not_fatal():
+    # One failing step must not abort Apply Schema: the error is carried in
+    # the summary and the remaining steps still run.
+    stack = _load()
+    calls = _recorded(stack, raises="_sync_tb_dimension_columns")
+    summary = stack.module._apply_schema_steps()
+    assert "TB dimension columns: boom" in summary["errors"], summary["errors"]
+    assert "_apply_fact_tables" in calls, calls
+    assert summary["vars_updated"] is True
+    assert summary["columns_added"] == ["epm.f.dim_x"]
+    assert summary["tb_dimension_columns_synced"] == []
+    assert stack.logged, "a failing step must be logged"
+
+
+def test_the_key_is_an_empty_list_when_there_is_nothing_to_sync():
+    # Unpatched, with nothing declared and no dim_* columns on the table: the
+    # key is present and empty, never missing.
+    stack = _load(declared=(), columns=LIVE_COLUMNS)
+    summary = stack.module._apply_schema_steps()
+    assert summary["tb_dimension_columns_synced"] == []
+    assert summary["errors"] == [], summary["errors"]
+
+
+def test_a_real_sync_result_reaches_the_summary_through_apply_schema_steps():
+    # End to end through the step body: a declared dimension missing from the
+    # table is added, and the action shows up under the new key.
+    stack = _load(declared=[_dim("dim_project")], columns=LIVE_COLUMNS)
+    summary = stack.module._apply_schema_steps()
+    assert summary["tb_dimension_columns_synced"] == ["added dim_project"]
+    assert stack.ddl == [
+        f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS "
+        "dim_project String DEFAULT ''"
+    ]
+
+
+def test_the_standalone_apply_schema_carries_the_key():
+    # Both public entry points go through _apply_schema_steps, so both sync.
+    stack = _load(declared=[_dim("dim_project")], columns=LIVE_COLUMNS)
+    module = stack.module
+    module._check_schema_role = lambda: None
+    module._switch_to_administrator = lambda: (lambda: None)
+    module._sync_budget_custom_fields = lambda *a, **k: []
+    summary = module.apply_schema()
+    assert summary["tb_dimension_columns_synced"] == ["added dim_project"]
+
+
+def test_the_publish_path_carries_the_key():
+    stack = _load(declared=[_dim("dim_project")], columns=LIVE_COLUMNS)
+    module = stack.module
+    module._check_schema_role = lambda: None
+    module.queue_budget_custom_field_sync = lambda: ["queued after commit"]
+    summary = module.apply_schema_for_publish()
+    assert summary["tb_dimension_columns_synced"] == ["added dim_project"]
