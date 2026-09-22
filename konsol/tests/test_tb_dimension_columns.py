@@ -314,21 +314,48 @@ def test_a_real_column_is_never_touched():
     assert "dim_retired" in _columns_after(stack, columns)
 
 
-def test_no_column_is_dropped_when_nothing_is_declared():
-    # The empty declared set is the dangerous one: a naive "drop everything
-    # not declared" would empty the table's schema.
-    stack, actions = _sync([], LIVE_COLUMNS)
-    assert stack.ddl == []
-    assert actions == []
+# test_no_column_is_dropped_when_nothing_is_declared was deleted on
+# 22 September 2026. It was a literal duplicate of
+# test_nothing_declared_and_no_dim_columns_runs_no_ddl — same fixture
+# (_sync([], LIVE_COLUMNS)), same two assertions — so it could never fail
+# independently. Its comment claimed it guarded against "a naive drop
+# everything not declared", but LIVE_COLUMNS carries no dim_* name, so
+# `existing` is empty and a drop loop has nothing to drop. MEASURED: with the
+# drop loop reinstated it PASSED, and so did its twin; the three tests that
+# went red are the ones that actually hold that ground, each with an
+# undeclared dim_* column on the table:
+#   - test_an_undeclared_dim_column_on_the_table_is_never_dropped
+#   - test_unpublishing_the_last_dimension_leaves_its_column_on_the_table
+#   - test_no_sync_ever_reports_a_removal (five declared/table combinations)
+# and the "nothing declared, nothing on the table, no DDL" case it shared
+# lives on in test_nothing_declared_and_no_dim_columns_runs_no_ddl.
 
 
 def test_a_lookalike_column_is_not_a_dim_column():
-    # "dimension_code" and "DIM_UPPER" are not dim_* columns: neither is
-    # dropped, whatever the declared set says.
-    stack, _ = _sync([], LIVE_COLUMNS + ["dimension_code", "DIM_UPPER"])
+    # "dimension_code" and "DIM_UPPER" are not dim_* columns, so the sync must
+    # not treat either as one — and being REFUSED is being treated as one.
+    # The whole outcome is asserted: no DDL, no action, no log line, and the
+    # column still on the table.
+    #
+    # This test used to read only " ".join(stack.sql), which a refused
+    # lookalike can never reach: _refuse_tb_dim_column logs the name and
+    # returns "refused <name>" without interpolating it into any statement.
+    # MEASURED, both shapes it names:
+    #   _TB_DIM_PREFIX "dim_" -> "dim"          refuses and logs dimension_code
+    #   startswith -> .lower().startswith       refuses and logs DIM_UPPER
+    # and under each the old test passed. It could only fail if a drop were
+    # reinstated AND the prefix guard loosened together.
+    columns = LIVE_COLUMNS + ["dimension_code", "DIM_UPPER"]
+    stack, actions = _sync([], columns)
+
+    assert stack.ddl == [], stack.ddl
+    assert actions == [], actions
+    assert stack.logged == [], stack.logged
+
     joined = " ".join(stack.sql)
-    assert "dimension_code" not in joined
-    assert "DIM_UPPER" not in joined
+    for column in ("dimension_code", "DIM_UPPER"):
+        assert column not in joined, column
+        assert column in _columns_after(stack, columns), column
 
 
 # --- every name is validated before it reaches SQL -------------------------
