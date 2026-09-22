@@ -6,6 +6,8 @@ from collections import defaultdict
 
 import requests
 
+from konsol.period_read_model import sql_aggregate
+
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_SCENARIO_ID = re.compile(r"^[A-Za-z0-9_]+$")
 _ENTITY_WILDCARD = {"", "*", "ALL"}
@@ -413,6 +415,21 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                 errors[idx] = "Invalid measure identifier"
             continue
 
+        # The aggregation the measure declares, honoured here as on the flat
+        # path (konsol#251). This path aggregates entirely in SQL over the
+        # period set, so `last` is argMax by fiscal_period and needs no
+        # per-cell combining below.
+        # Imported here, not at load: measure_registry binds frappe, and this
+        # module must keep importing on a host that has none (konsol#248).
+        from konsol.measure_registry import aggregation_for
+
+        try:
+            period_aggregate = sql_aggregate(aggregation_for(measure), measure)
+        except ValueError as exc:
+            for idx, _ in group_items:
+                errors[idx] = str(exc)
+            continue
+
         dim_names_sorted = sorted(dim_names)
         dim_valid = True
         for dn in dim_names_sorted:
@@ -499,7 +516,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
         period_in = ", ".join(period_placeholders)
 
         sql = (
-            f"SELECT {group_by}, coalesce(sum({measure}), 0) as val "
+            f"SELECT {group_by}, coalesce({period_aggregate}, 0) as val "
             f"FROM {table} "
             f"WHERE hierarchy_name = {{hname:String}} "
             f"AND hierarchy_member_code = {{node:String}} "

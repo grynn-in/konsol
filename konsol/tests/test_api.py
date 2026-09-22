@@ -12,6 +12,13 @@ API_PATH = os.path.join(APP_DIR, "api.py")
 # Add api module to path for direct import tests
 sys.path.insert(0, APP_DIR)
 
+_mrs_spec = importlib.util.spec_from_file_location(
+    "_read_path_stub",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "read_path_stub.py"))
+read_path_stub = importlib.util.module_from_spec(_mrs_spec)
+_mrs_spec.loader.exec_module(read_path_stub)
+
 
 def test_api_file_exists():
     """api.py must exist."""
@@ -206,6 +213,9 @@ def _run_batch(rows, reply=""):
 
     fake_frappe = types.ModuleType("frappe")
     fake_frappe.get_all = lambda *a, **k: []
+    # The read path asks the Measure registry how each measure aggregates
+    # across periods, through a TTL cache (konsol#251).
+    read_path_stub.install(fake_frappe)
     fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     fake_frappe.log_error = lambda *a, **k: None
     fake_frappe.get_traceback = lambda: ""

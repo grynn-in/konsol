@@ -11,6 +11,16 @@ import os
 import sys
 import types
 
+# The read path asks the Measure registry how each measure aggregates across
+# periods, through frappe.cache() (konsol#251).
+_mrs_spec = importlib.util.spec_from_file_location(
+    "_read_path_stub",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "read_path_stub.py"))
+read_path_stub = importlib.util.module_from_spec(_mrs_spec)
+_mrs_spec.loader.exec_module(read_path_stub)
+
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -159,7 +169,13 @@ def _hierarchy(allowed_entities, entity="ALL"):
         return ""
 
     hq._clickhouse_query = fake_query
+    # The hierarchy path asks the Measure registry how the measure aggregates
+    # across periods, so this harness needs a frappe for the duration of the
+    # call even though hierarchy_query imports none at load (konsol#251).
+    fake_frappe = types.ModuleType("frappe")
+    read_path_stub.install(fake_frappe)
     stubs = {
+        "frappe": fake_frappe,
         "konsol.clickhouse": types.SimpleNamespace(get_connection=lambda: {}),
         "konsol.entity_permissions": ep,
     }
@@ -221,6 +237,7 @@ def _load_api():
     fake = types.ModuleType("frappe")
     fake.PermissionError = _Denied
     fake.ValidationError = _Invalid
+    read_path_stub.install(fake)
 
     def throw(msg, exc=Exception, *a, **k):
         raise exc(msg)
