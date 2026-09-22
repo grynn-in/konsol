@@ -148,6 +148,16 @@ import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import types  # noqa: E402
 
+# The read path asks the Measure registry how each measure aggregates across
+# periods, through frappe.cache() (konsol#251).
+_mrs_spec = importlib.util.spec_from_file_location(
+    "_read_path_stub",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "read_path_stub.py"))
+read_path_stub = importlib.util.module_from_spec(_mrs_spec)
+_mrs_spec.loader.exec_module(read_path_stub)
+
+
 _NO_BUDGET = "No active budget scenario belongs to FY2026, so there is no variance to show."
 
 
@@ -192,6 +202,7 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=Non
 
     fake_frappe = types.ModuleType("frappe")
     fake_frappe.get_all = get_all
+    read_path_stub.install(fake_frappe)
     if api is None:
         fake_frappe.log_error = lambda *a, **k: None
     else:
@@ -459,6 +470,7 @@ def _load_api(get_all=None, log_error=None):
     records what the module logs."""
     fake_frappe = types.ModuleType("frappe")
     fake_frappe.get_all = get_all or (lambda *a, **k: [])
+    read_path_stub.install(fake_frappe)
     fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     fake_frappe.log_error = log_error or (lambda *a, **k: None)
     fake_frappe.get_traceback = lambda: "Traceback: api"

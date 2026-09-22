@@ -16,6 +16,16 @@ import types
 
 import requests
 
+# The read path asks the Measure registry how each measure aggregates across
+# periods, through frappe.cache() (konsol#251).
+_mrs_spec = importlib.util.spec_from_file_location(
+    "_read_path_stub",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "read_path_stub.py"))
+read_path_stub = importlib.util.module_from_spec(_mrs_spec)
+_mrs_spec.loader.exec_module(read_path_stub)
+
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _FIRST_LINE = (
@@ -44,6 +54,7 @@ def _load_api(logged):
 
     fake_frappe = types.ModuleType("frappe")
     fake_frappe.get_all = lambda *a, **k: []
+    read_path_stub.install(fake_frappe)
     fake_frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     fake_frappe.log_error = log_error
     fake_frappe.get_traceback = lambda: "Traceback: HTTPError"

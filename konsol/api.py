@@ -14,6 +14,8 @@ from frappe.utils import now_datetime
 
 from konsol.clickhouse import connection_url as _ch_url
 from konsol.clickhouse import get_connection as _get_ch_connection
+from konsol.measure_registry import aggregation_for
+from konsol.period_read_model import combine_periods, resolve_period, sql_aggregate
 
 MAX_BATCH_SIZE = 2000
 
@@ -22,16 +24,11 @@ MAX_BATCH_SIZE = 2000
 # indirection existed only because there was nothing real to point at, and it
 # meant the whole feature was off unless someone set it (#91).
 
-# Period ranges: Q1-Q4, H1-H2, FY → tuple of fiscal_period integers
-PERIOD_RANGES = {
-    "Q1": (1, 2, 3),
-    "Q2": (4, 5, 6),
-    "Q3": (7, 8, 9),
-    "Q4": (10, 11, 12),
-    "H1": (1, 2, 3, 4, 5, 6),
-    "H2": (7, 8, 9, 10, 11, 12),
-    "FY": (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
-}
+# Period ranges used to be a constant here: Q1-Q4 as calendar thirds, FY as
+# 1-12. They are now read from the customer's declared calendar instead
+# (`declared_calendar` / konsol/period_read_model.py, konsol#251) — the
+# constant could not express a 13-period year, and its 1-12 clamp made the
+# year-end close unreadable.
 
 VALID_LAYERS = {"base", "challenge", "management", "board"}
 
@@ -93,6 +90,11 @@ def _assert_entity_access(entity):
 _ACCOUNT_CATEGORY_TABLE = "epm_silver.silver_main_accounts"
 _ACCOUNT_CATEGORY_CACHE_KEY = "budget_account_category_map"
 _ACCOUNT_CATEGORY_TTL = 300  # seconds
+
+# The declared fiscal calendar, per year. Read once per request-ish rather
+# than once per Excel cell (konsol#251).
+_CALENDAR_CACHE_KEY = "epm_declared_calendar"
+_CALENDAR_TTL = 300  # seconds
 
 
 def _account_permission_doctype():
@@ -457,20 +459,49 @@ def _get_json_body():
     return json.loads(frappe.request.get_data(as_text=True))
 
 
-def _resolve_period(period):
-    """Resolve period to a tuple of fiscal_period integers.
+def declared_calendar(year):
+    """The periods the customer declared for ``year`` (cached, TTL).
 
-    Accepts: 1-12 (single), "Q1"-"Q4", "H1"-"H2", "FY".
-    Returns tuple of ints, e.g. (1,) or (1,2,3).
-    Raises ValueError on invalid input.
+    Read from EPM Fiscal Year Period — the same rows the Fiscal Year screen
+    shows — so a customer on a 13-period or 4-4-5 calendar is answered from
+    their own declaration and not from a constant in this app.
+
+    Cached like the account-category map and for the same reason: a read path
+    that runs per Excel cell must not issue one query per cell. A calendar
+    edited in Frappe is invisible for up to the TTL; the window is short and
+    period structure changes at most once a year.
     """
-    s = str(period).strip().upper()
-    if s in PERIOD_RANGES:
-        return PERIOD_RANGES[s]
-    p = int(period)
-    if p < 1 or p > 12:
-        raise ValueError(f"fiscal_period must be 1-12, got {p}")
-    return (p,)
+    cache = frappe.cache()
+    key = f"{_CALENDAR_CACHE_KEY}:{int(year)}"
+    rows = cache.get_value(key)
+    if rows is None:
+        rows = frappe.get_all(
+            "EPM Fiscal Year Period",
+            filters={"parent": str(int(year))},
+            fields=["fiscal_period", "period_code", "period_type", "quarter"],
+            order_by="fiscal_period asc",
+            limit_page_length=0,
+        )
+        rows = [dict(r) for r in rows]
+        cache.set_value(key, rows, expires_in_sec=_CALENDAR_TTL)
+    return rows
+
+
+def _resolve_period(period, year):
+    """Resolve a read token to a tuple of fiscal_period integers, against the
+    calendar declared for ``year``.
+
+    Accepts a declared period number or code (``7``, ``P07``, ``13``, ``CLS``,
+    ``0``, ``OPN``), a declared quarter (``Q1``-``Q4``), a half (``H1``/``H2``)
+    or ``FY`` (the Regular periods). Raises ValueError naming the declared set
+    on anything else.
+
+    konsol#251: this used to clamp to 1-12, which made the year-end close
+    unreadable — a balance-sheet account's closing figure exists only at the
+    closing period, so the only number a user could obtain was the pre-close
+    one, with no warning. The rules are in konsol/period_read_model.py.
+    """
+    return resolve_period(period, declared_calendar(year))
 
 
 def _period_field(fiscal_period):
@@ -721,6 +752,18 @@ def _batch_query_clickhouse(requests_list):
             if fact.reroute_column:
                 query_measure = fact.reroute_column
 
+        # How this measure combines across periods, as it declares it. A
+        # rerouted cumulative measure is the case that forced this: summing
+        # `cumulative_balance` over a range adds balances together
+        # (konsol#251).
+        try:
+            cube_type = aggregation_for(measure)
+            period_aggregate = sql_aggregate(cube_type, query_measure)
+        except ValueError as exc:
+            for idx, _ in group_items:
+                errors[idx] = str(exc)
+            continue
+
         # Validate identifiers before SQL interpolation. The table name comes
         # from the Dataset doctype but is interpolated directly into FROM,
         # so it must be validated too (defence against a tampered/typo'd
@@ -811,7 +854,7 @@ def _batch_query_clickhouse(requests_list):
             layer_clause = " AND layer = {layer:String}"
 
         sql = (
-            f"SELECT {group_by}, coalesce(sum({query_measure}), 0) as val "
+            f"SELECT {group_by}, coalesce({period_aggregate}, 0) as val "
             f"FROM {table} "
             f"WHERE {in_cols} IN ({in_values}) "
             f"AND fiscal_period IN ({period_in})"
@@ -834,15 +877,19 @@ def _batch_query_clickhouse(requests_list):
             for idx, req in group_items:
                 dims = req.get("dimensions", {})
                 dim_values = [dims.get(dn, "") for dn in dim_names_sorted]
-                # Each cell sums the periods it asked for: a month reads one
-                # row, an FY cell sums 1–12, and a period the warehouse has no
-                # row for contributes 0.0 (konsol#231).
-                total = 0.0
+                # Each cell combines the periods it asked for the way its
+                # measure declares (konsol#231 for the per-cell attribution,
+                # konsol#251 for honouring the declaration instead of always
+                # summing). A period the warehouse holds no row for is left
+                # out rather than counted as 0.0, so it cannot drag an average
+                # down or stand in as the `last` value.
+                present = []
                 for p in req["periods"]:
                     lookup_key = (req["entity"], str(req["year"]), str(p),
                                   req["account"], *dim_values)
-                    total += result_lookup.get(lookup_key, 0.0)
-                values[idx] = total
+                    if lookup_key in result_lookup:
+                        present.append((p, result_lookup[lookup_key]))
+                values[idx] = combine_periods(cube_type, present)
 
         except requests.exceptions.Timeout:
             for idx, _ in group_items:
@@ -926,6 +973,15 @@ def epm_value(entity, year, period, account, measure="",
         "dimensions": _parse_dimensions_arg(dimensions),
     })
 
+    # Resolved once, for both the hierarchy and the flat path below, and
+    # wrapped: this used to be called bare at each branch, so an undeclared
+    # period escaped the endpoint as a raw ValueError while the same input on
+    # epm_batch came back as a clean per-row refusal (konsol#251).
+    try:
+        periods = _resolve_period(period, year)
+    except ValueError as exc:
+        frappe.throw(str(exc), frappe.ValidationError)
+
     if node_code:
         info, err = validate_hierarchy_read(
             _hierarchy_name_from_req({"hierarchy": hierarchy}),
@@ -954,7 +1010,7 @@ def epm_value(entity, year, period, account, measure="",
         result = batch_query_hierarchy([{
             "entity": entity,
             "year": int(year),
-            "periods": _resolve_period(period),
+            "periods": periods,
             "account": account,
             "measure": measure,
             "scenario": scenario,
@@ -981,7 +1037,7 @@ def epm_value(entity, year, period, account, measure="",
 
     result = _batch_query_clickhouse([{
         "entity": entity, "year": int(year),
-        "periods": _resolve_period(period),
+        "periods": periods,
         "account": account, "measure": measure,
         "fact": fact_doc.fact_name, "scenario": scenario,
         "dimensions": dims,
@@ -1201,12 +1257,6 @@ def epm_batch():
         measure = req.get("measure") or ""
         dimensions = _extract_batch_dimensions(req)
 
-        try:
-            periods = _resolve_period(req.get("period", 0))
-        except (ValueError, TypeError):
-            errors_list[i] = f"Invalid period '{req.get('period')}'"
-            continue
-
         # A missing, non-integer or non-positive year (e.g. JSON null from a
         # blank Excel cell) fails only this row — not raise and 500 the whole
         # batch, and not read as FY0.
@@ -1223,6 +1273,15 @@ def epm_batch():
                 raise ValueError(year)
         except (ValueError, TypeError):
             errors_list[i] = f"Invalid year '{raw_year}'"
+            continue
+
+        # After the year, because the accepted periods are the ones that year
+        # declares (konsol#251). The resolver's own message names the declared
+        # set, which is more use to a reader than "Invalid period '13'".
+        try:
+            periods = _resolve_period(req.get("period", 0), year)
+        except (ValueError, TypeError) as exc:
+            errors_list[i] = str(exc) or f"Invalid period '{req.get('period')}'"
             continue
 
         entity = req.get("entity", "")
