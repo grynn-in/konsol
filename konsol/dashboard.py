@@ -141,6 +141,25 @@ def _workspace_needs_refresh():
     # konsol#189: EPM Fiscal Year joined Reference Data; rebuild once to show it.
     if _dt("EPM Fiscal Year") and "EPM Fiscal Year" not in {l.link_to for l in (ws.links or []) if l.type == "Link"}:
         return True
+    # A doctype this workspace links to has been DELETED → rebuild.
+    #
+    # Every condition above answers "has something been ADDED?", each with its
+    # own one-shot clause for one release. Removal is the other direction and
+    # gets one general condition instead, so the next removal needs no new line
+    # here. konsol#264 deleted the allocation doctypes and left the workspace
+    # pointing at them: /app/konsolidat threw "DocType Allocation Run not
+    # found" on every load and still rendered the tile, because nothing here
+    # noticed. _create_workspace already filters on _dt(), so the rebuild this
+    # triggers drops them.
+    #
+    # Card Breaks and URL shortcuts carry link_to=None and are skipped: they
+    # are headings and external links, not doctype references.
+    if any(l.link_to and not _dt(l.link_to)
+           for l in (ws.links or []) if l.type == "Link"):
+        return True
+    if any(s.link_to and not _dt(s.link_to)
+           for s in (ws.shortcuts or []) if s.type == "DocType"):
+        return True
     if ws.number_cards or ws.charts:
         return True
     content = json.loads(ws.content or "[]")
