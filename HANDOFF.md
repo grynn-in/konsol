@@ -54,19 +54,23 @@ of this, because the cost rises with the first customer.
 
 **konsol#258 must land before any orchestrator work** — `definition=None` silently falls back to `plan.DEFAULT_DEFINITION`, and the `silver` and `gold` steps are the same bare `dbt_run`, so wiring `pipeline_definition` today ships a double full build.
 
-**konsolidat#220 is DONE — merged 18 Sep as `7a969d8` (PR #222).** It was not 40 of 48
-`dim_select()` call sites: measured, it was **53 sites across five macros in three failure
-shapes** — a comma with nothing before it, a comma with nothing after it, and an empty CTE
-(zero loop branches leaving `with x as ()`, which `dbt compile` accepts and ClickHouse rejects).
-Plus a fourth class unrelated to commas: hardcoded dimension names failing with
-`UNKNOWN_IDENTIFIER`. Three review rounds; the last two found live zero-dimension failures that
-four green builds had missed because their selectors never reached those subtrees.
+**All of that is now done.** konsolidat#220 (it was 53 call sites across five macros in three
+failure shapes, not 40 of 48), konsol#230, konsol#261, konsol#263's sibling konsol#264,
+konsol#265 and konsolidat#223 have all landed. See the 21 Sep update below.
 
-konsol#230's deletions are now unblocked. Filed and NOT fixed: konsol#261 (publishing or
-unpublishing a Dimension empties the gold fact tables — 47,308 rows to 0, no self-heal),
-konsol#263, konsol#265, konsolidat#223, and konsol#264 (remove the allocation feature; decided,
-plan written).
+**The queue now starts at konsolidat#227** — the integration suite, which had never run, and
+which reported 7 failed / 3 errored / 5 skipped the first time it was given a ClickHouse.
 
+
+**Update (21 Sep): the signal phase is finished, and the install blocker with it.** Nine issues closed in three days and they were the ones everything else was waiting behind. **konsol#248** — the host runner counted a file that stopped importing as *skipped*, left it out of the denominator, and still printed `N/N passed`; its first CI run found that CI had been running **eighteen fewer test files than a laptop** (`2131/2131 across 141 files` against 159 locally), because CI had no pytest. Both now report `2360/2360 across 159`. **konsol#265** — a dbt `warn` is Amber and must be acknowledged, not reported as an error with its rows hidden; twenty of the 126 assertions are `warn`, so a sixth of the rules had been unreadable. **konsolidat#181** — CI now builds the whole warehouse on a throwaway ClickHouse. **konsolidat#178** — five singular tests had been running against stale models in a domain-selected build. **konsolidat#220** and **konsol#230** — a site with zero dimensions can build, and the semantic model is seeded create-if-missing instead of force-reimported, so a site can retire what it does not want. **konsol#261** — publishing or unpublishing a Dimension no longer empties the gold fact tables. **konsolidat#185** — the report takes its expense sub-sections from the chart's declaration rather than account-number prefixes. **konsolidat#226** and **konsol#264** — allocation and its leftover database are gone.
+
+**What Phase 0 immediately produced: konsolidat#227.** `tests/integration` had never run — its fixture skipped the suite whenever ClickHouse was unreachable, and no job had ever supplied one. Given one, it reported **7 failed, 3 errored, 5 skipped**. Partially repaired in `81b468c`; the issue is still open and it is the last thing standing between this project and a test suite whose green means something. Do it before anything in the tiers below.
+
+**Update (21 Sep): a full `dbt build` no longer skips the consolidation chain.** Measured on `main` (`435b968`), in a copy outside the bind mount, against the live ClickHouse: **PASS=319 WARN=2 ERROR=0 SKIP=0 in 19.85 seconds** (24s wall) across 5 incremental models, 64 table models, 9 view models and 241 data tests. `gold_consolidated_trial_balance` and `gold_fully_consolidated_tb` both built. The advice in `CLAUDE.md` to reach the chain with `dbt run --select +<model>+` was true when error-severity tests were failing and dbt skipped their children; it is not true now (konsol#276 corrects it). Scope a build to save time, not to reach the chain: **three deal-layer models are 53% of the run** — `gold_business_combination_journal` 5.5s, `gold_business_disposal_journal` 2.9s, `gold_ic_reconciliation` 2.1s — while the consolidated trial balance itself takes 0.21s.
+
+**The two warnings that build raised are real and unaddressed.** `assert_declared_historical_has_a_rate` returned **773 rows** and `assert_equity_rate_coverage` **329**. The chart declares four accounts `fx_method = historical`; three of them carry trial-balance data, across **42 (entity, account) pairs**. Thirteen Historical Equity Rate drafts exist, all for account `3000`, and **all thirteen now validate** — konsol#240's fix (`is_group = 0` was the wrong membership test) unblocked them on 18 Sep. None is submitted, so `epm_staging.historical_equity_rates` holds **zero rows** and every one of those 42 pairs translates equity at the wrong rate. Submitting the thirteen leaves **29 pairs with no draft at all**. That is konsol#242 (derive the anchor date from the deal or the ownership start and propose drafts), which should move out of the deferred pile: without it someone hand-enters 29 rates and repeats the exercise at every acquisition.
+
+**The ERP staging tree is half removed.** `models/staging` is down to five files from thirty; **`models/bronze` still holds sixteen models** and nothing tracks the second half. konsolidat#221 is a standing rule, not an issue with a scope. konsol#200 — build preflight still gating on Airbyte/connector status when the canonical source is the trial-balance upload — sits downstream of it.
 
 **Update (18 Sep): the eight Business Combination drafts are no longer carrying goodwill equal to the whole consideration (konsol#260).** Three of them held a consideration and an empty Acquired Balance Sheet, so net assets were zero and goodwill had absorbed the entire payment — 13,596,000,000 across the three. Each was run through the product's own **Get Balances from Trial Balance** action (`get_balances_from_trial_balance`), nothing hand-written: net assets are now 8,606,658,301 and goodwill 4,989,341,699. All three validate cleanly and each carries a `balance_sheet_source` note naming the entity, the period derived through, the latest period with data, and the retained-earnings account the period's result was folded into. **Nothing was submitted** — submit is the approval and it is the owner's.
 
