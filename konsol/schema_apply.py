@@ -19,6 +19,14 @@ from konsol.dbt_config import regenerate_vars
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 
+# The raw trial-balance landing table, and the only column names
+# _sync_tb_dimension_columns may put into its DDL: _SAFE_IDENTIFIER's shape
+# plus a mandatory dim_ prefix. The prefix is what keeps the drop path away
+# from batch_id, main_account, debit_amount and every other real column.
+_TB_RAW_TABLE = "epm_raw.trial_balance_submissions"
+_TB_DIM_PREFIX = "dim_"
+_SAFE_TB_DIM_COLUMN = re.compile(r"^dim_[a-z0-9_]+$")
+
 # ClickHouse type mapping for Cube types
 _CH_TYPE_MAP = {
     "string": "String",
@@ -265,6 +273,95 @@ def _apply_clickhouse_columns():
                 )
 
     return added
+
+
+def _tb_table_columns():
+    """Every column ClickHouse reports on the raw trial-balance table.
+
+    The table is created by static DDL (clickhouse._RAW_TABLE_DDL, and
+    init-db.sql) which runs once against an empty volume and cannot know a
+    customer's dimensions, so what is actually on the table has to be read
+    back rather than assumed.
+    """
+    database, _, table = _TB_RAW_TABLE.partition(".")
+    text = ch_execute(
+        "SELECT name FROM system.columns "
+        f"WHERE database = '{database}' AND table = '{table}' ORDER BY name"
+    )
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _refuse_tb_dim_column(name, where):
+    """Log a dimension column name that may not be interpolated into DDL."""
+    frappe.log_error(
+        "schema_apply: refused a trial-balance dimension column name",
+        f"{name!r} ({where}) is not {_SAFE_TB_DIM_COLUMN.pattern}; "
+        "it was never put into SQL.",
+    )
+    return f"refused {name}"
+
+
+def _sync_tb_dimension_columns():
+    """Make the raw trial-balance table's dim_* columns the declared set.
+
+    Which dimension columns `epm_raw.trial_balance_submissions` carries is
+    per-customer: it is the Published Dimension records with
+    in_trial_balance = 1. That set changes after the table exists, so the
+    columns are synced by ALTER — the same mechanism
+    _sync_budget_custom_fields_locked() uses for Budget Line's Custom Fields:
+    read the declared set, add what is missing, remove what is no longer
+    declared. Idempotent: a second run finds nothing to do and emits no DDL.
+
+    Every name is validated against _SAFE_TB_DIM_COLUMN before it reaches
+    SQL, on both sides — the declared name and the column read back off the
+    table — because both are interpolated. A name that fails is refused and
+    logged, never interpolated. Only dim_* columns are ever touched, so no
+    real column (batch_id, main_account, debit_amount …) can be dropped.
+
+    String DEFAULT '': a dimension is optional per row, so blank is legal.
+
+    Returns:
+        List of "added <col>" / "removed <col>" / "refused <name>" strings,
+        the shape _sync_budget_custom_fields_locked() returns, for the caller
+        to log.
+    """
+    declared = frappe.get_all(
+        "Dimension",
+        filters={"in_trial_balance": 1, "status": "Published"},
+        fields=["dimension_name"],
+        limit_page_length=0,
+    )
+
+    actions = []
+    wanted = set()
+    for dim in declared:
+        name = dim.dimension_name or ""
+        if not _SAFE_TB_DIM_COLUMN.match(name):
+            actions.append(_refuse_tb_dim_column(name, "declared on Dimension"))
+            continue
+        wanted.add(name)
+
+    existing = set()
+    for column in _tb_table_columns():
+        if not column.startswith(_TB_DIM_PREFIX):
+            continue  # a real column: never a candidate for the drop path
+        if not _SAFE_TB_DIM_COLUMN.match(column):
+            actions.append(_refuse_tb_dim_column(column, f"on {_TB_RAW_TABLE}"))
+            continue
+        existing.add(column)
+
+    for name in sorted(wanted - existing):
+        ch_execute(
+            f"ALTER TABLE {_TB_RAW_TABLE} ADD COLUMN IF NOT EXISTS "
+            f"{name} String DEFAULT ''"
+        )
+        actions.append(f"added {name}")
+
+    for name in sorted(existing - wanted):
+        ch_execute(f"ALTER TABLE {_TB_RAW_TABLE} DROP COLUMN IF EXISTS {name}")
+        actions.append(f"removed {name}")
+
+    return actions
 
 
 def _apply_fact_tables():
