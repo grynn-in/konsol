@@ -4,9 +4,24 @@
 against an empty volume, so it cannot know which dimensions a customer
 declares. Which `dim_*` columns belong on it comes from the Published
 `Dimension` records with `in_trial_balance = 1`, and that set changes after
-the table exists — so the columns are SYNCED by ALTER, the same shape
-`_sync_budget_custom_fields_locked()` uses for Budget Line's Custom Fields:
-read the declared set, add what is missing, remove what is no longer declared.
+the table exists — so a declared column missing from the table is ADDED by
+ALTER.
+
+**Never dropped.** Until 22 September 2026 this sync also removed the columns
+that were no longer declared, mirroring
+`_sync_budget_custom_fields_locked()`. A Custom Field is metadata; a column on
+`epm_raw` holds every value the customer ever uploaded, and the whole
+bronze→gold chain rebuilds from it. One Unpublish click — or a rename, a
+delete, an untick, or ANY unrelated Measure/Dataset publish, all of which
+reach the shared `apply_and_rebuild` path — therefore destroyed the data
+permanently, and re-publishing brought the column back empty. Deepak Pai chose
+option A, never drop:
+https://github.com/grynn-in/konsol/issues/255#issuecomment-5782540260
+
+So the tests below that once asserted a DROP now assert its absence. Orphan
+`dim_*` columns accumulating is the accepted consequence: they are
+`String DEFAULT ''` and they hold history that is otherwise unrecoverable.
+Un-declaring stops new values arriving; values already accepted stay.
 
 Site-free: schema_apply.py is loaded under a private name with a stub frappe,
 a stub konsol.clickhouse and a stub konsol.dbt_config, so every assertion is
@@ -129,6 +144,26 @@ def _dim(name):
     return {"dimension_name": name, "label": name, "status": "Published"}
 
 
+def _columns_after(stack, columns):
+    """The table's columns once the emitted DDL has been replayed onto them.
+
+    The fake ClickHouse only records statements, so "the column is still
+    there" has to be applied rather than assumed: ADD appends, DROP removes.
+    A test asserting survival then fails if a DROP is ever reintroduced.
+    """
+    surviving = list(columns)
+    for statement in stack.ddl:
+        words = statement.split()
+        if "ADD" in words:
+            name = words[words.index("EXISTS") + 1]
+            if name not in surviving:
+                surviving.append(name)
+        elif "DROP" in words:
+            name = words[words.index("EXISTS") + 1]
+            surviving = [c for c in surviving if c != name]
+    return surviving
+
+
 # --- the declared set is the source of truth -------------------------------
 
 def test_declared_set_is_published_dimensions_flagged_in_trial_balance():
@@ -142,7 +177,7 @@ def test_declared_set_is_published_dimensions_flagged_in_trial_balance():
     assert "dimension_name" in dimension_queries[0]["fields"]
 
 
-# --- add / drop ------------------------------------------------------------
+# --- add, and never drop ---------------------------------------------------
 
 def test_declared_dimension_missing_from_the_table_is_added():
     stack, actions = _sync([_dim("dim_cost_centre")], LIVE_COLUMNS)
@@ -160,21 +195,61 @@ def test_the_added_column_is_a_blank_defaulting_string():
     assert "String DEFAULT ''" in stack.ddl[0]
 
 
-def test_an_undeclared_dim_column_on_the_table_is_dropped():
+def test_an_undeclared_dim_column_on_the_table_is_never_dropped():
+    # It holds uploaded values. Un-declaring stops new ones arriving; it must
+    # not touch the ones already accepted, so there is no DDL at all.
     stack, actions = _sync([], LIVE_COLUMNS + ["dim_retired"])
-    assert stack.ddl == [
-        f"ALTER TABLE {TABLE} DROP COLUMN IF EXISTS dim_retired"]
-    assert actions == ["removed dim_retired"]
+    assert stack.ddl == []
+    assert actions == []
+    assert "DROP COLUMN" not in " ".join(stack.sql)
 
 
-def test_an_add_and_a_drop_at_once():
-    stack, actions = _sync([_dim("dim_project")], LIVE_COLUMNS + ["dim_retired"])
+def test_unpublishing_the_last_dimension_leaves_its_column_on_the_table():
+    # The full Unpublish shape: Dimension.unpublish() sets status =
+    # "Inactive", so the declared set goes {dim_cost_center} -> {} while
+    # dim_cost_center is on the table. That one click used to run
+    # ALTER TABLE ... DROP COLUMN dim_cost_center and destroy every uploaded
+    # value in it — epm_raw is what the whole bronze→gold chain rebuilds from.
+    columns = LIVE_COLUMNS + ["dim_cost_center"]
+    before, _ = _sync([_dim("dim_cost_center")], columns)
+    assert before.ddl == []          # published and present: nothing to do
+
+    stack, actions = _sync([], columns)     # unpublished
+    assert stack.ddl == [], stack.ddl
+    assert actions == []
+    assert "dim_cost_center" in _columns_after(stack, columns)
+
+
+def test_a_rename_adds_the_new_column_and_leaves_the_old_one():
+    # autoname is field:dimension_name, so a rename is a new name to Frappe:
+    # declared {dim_new} while dim_old is on the table. Only the ADD may run —
+    # dim_old still holds every value uploaded under the old name.
+    columns = LIVE_COLUMNS + ["dim_old"]
+    stack, actions = _sync([_dim("dim_new")], columns)
     assert stack.ddl == [
         f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS "
-        "dim_project String DEFAULT ''",
-        f"ALTER TABLE {TABLE} DROP COLUMN IF EXISTS dim_retired",
+        "dim_new String DEFAULT ''"
     ]
-    assert actions == ["added dim_project", "removed dim_retired"]
+    assert actions == ["added dim_new"]
+    assert "dim_old" in _columns_after(stack, columns)
+
+
+def test_no_sync_ever_reports_a_removal():
+    # The verb is gone from the vocabulary, whatever the declared set and
+    # whatever is on the table. A caller logging these can no longer print a
+    # removal that did not happen.
+    cases = [
+        ((), LIVE_COLUMNS),
+        ((), LIVE_COLUMNS + ["dim_retired"]),
+        ([_dim("dim_new")], LIVE_COLUMNS + ["dim_old"]),
+        ([_dim("dim_a"), _dim("dim_b")], LIVE_COLUMNS + ["dim_c", "dim_d"]),
+        ([_dim("nodim")], LIVE_COLUMNS + ["dim_retired"]),
+    ]
+    for declared, columns in cases:
+        stack, actions = _sync(declared, columns)
+        assert not [a for a in actions if a.startswith("removed")], (
+            declared, columns, actions)
+        assert "DROP COLUMN" not in " ".join(stack.sql), (declared, columns)
 
 
 def test_a_declared_column_already_on_the_table_is_left_alone():
@@ -239,6 +314,17 @@ BAD_NAMES = [
     "dim_x--",
     "dim x",
     "",
+    # Whitespace. Python's `$` matches before a trailing newline, so
+    # `re.match(r"^dim_[a-z0-9_]+$", "dim_x\n")` is True and the validator
+    # used to wave "dim_x\n" straight into DDL. The UI will not let anyone
+    # type a dimension_name like this; a patch, a fixture, the REST API and a
+    # data import all can (konsol#255).
+    "dim_x\n",
+    "dim_x\r\n",
+    "dim_x ",
+    " dim_x",
+    "dim_x\t",
+    "dim_x\nDROP TABLE y",
 ]
 
 
@@ -279,20 +365,35 @@ def test_the_validator_requires_the_dim_prefix_and_lower_snake_case():
     module = _load().module
     pattern = module._SAFE_TB_DIM_COLUMN
     for name in BAD_NAMES:
-        assert not pattern.match(name), f"{name!r} must be refused"
+        # .match too, not only .fullmatch: the pattern itself must be anchored
+        # at the end, so a caller reaching for .match cannot reopen the hole.
+        assert not pattern.fullmatch(name), f"{name!r} must be refused"
+        assert not pattern.match(name), f"{name!r} must be refused by .match"
     for name in ("dim_project", "dim_cost_centre", "dim_a1", "dim__x"):
-        assert pattern.match(name), f"{name!r} must be accepted"
+        assert pattern.fullmatch(name), f"{name!r} must be accepted"
+
+
+def test_a_trailing_newline_name_never_reaches_sql():
+    # The one BAD_NAMES entry that used to pass: `$` matches before a final
+    # newline, so "dim_cost_center\n" was interpolated and ClickHouse got a
+    # mangled column name.
+    stack, actions = _sync([_dim("dim_cost_center\n")], LIVE_COLUMNS)
+    assert stack.ddl == [], stack.ddl
+    assert actions == ["refused dim_cost_center\n"]
+    assert stack.logged
 
 
 # --- the shape the caller logs --------------------------------------------
 
-def test_the_return_shape_matches_the_budget_field_sync():
-    # _sync_budget_custom_fields_locked() returns a list of "added X" /
-    # "removed X" strings; the caller logs them the same way.
-    stack, actions = _sync([_dim("dim_project")], LIVE_COLUMNS + ["dim_retired"])
+def test_the_return_shape_is_a_list_of_added_and_refused_strings():
+    # A list of strings the caller logs, as _sync_budget_custom_fields_locked()
+    # returns — but with no "removed X" in it: this sync removes nothing.
+    stack, actions = _sync(
+        [_dim("dim_project"), _dim("nodim")], LIVE_COLUMNS + ["dim_retired"])
     assert isinstance(actions, list)
     assert all(isinstance(a, str) for a in actions)
-    assert all(a.split(" ", 1)[0] in ("added", "removed", "refused")
+    assert sorted(actions) == ["added dim_project", "refused nodim"], actions
+    assert all(a.split(" ", 1)[0] in ("added", "refused")
                for a in actions), actions
 
 
