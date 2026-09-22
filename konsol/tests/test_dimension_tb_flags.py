@@ -53,10 +53,21 @@ def test_in_trial_balance_label():
 
 
 def test_in_trial_balance_defaults_off():
-    """No dimension reaches the trial balance unless a customer declares it."""
+    """No dimension reaches the trial balance unless a customer declares it.
+
+    The key must be PRESENT and "0". `field.get("default", "0")` passed when
+    the key was deleted outright — the one mutation this test exists to catch
+    — because an absent key and an explicit "0" then look identical. An absent
+    key leaves the policy to whatever Frappe does with a Check that declares
+    nothing; declared OFF is not the same thing as undeclared.
+    """
     field = _field("in_trial_balance")
     assert field is not None, "in_trial_balance missing from Dimension"
-    assert str(field.get("default", "0")) == "0", (
+    assert "default" in field, (
+        "in_trial_balance must carry an explicit default — deleting the key "
+        "leaves the policy undeclared"
+    )
+    assert str(field["default"]) == "0", (
         "in_trial_balance must default OFF — an ON default would be a silent policy"
     )
 
@@ -83,10 +94,19 @@ def test_survives_close_label():
 
 
 def test_survives_close_defaults_off():
-    """P&L closes to a retained-earnings row outside the dimension unless declared."""
+    """P&L closes to a retained-earnings row outside the dimension unless declared.
+
+    Key present and "0", for the reason given on
+    test_in_trial_balance_defaults_off: a `.get` fallback cannot tell a
+    deleted key from a declared OFF.
+    """
     field = _field("survives_close")
     assert field is not None, "survives_close missing from Dimension"
-    assert str(field.get("default", "0")) == "0", (
+    assert "default" in field, (
+        "survives_close must carry an explicit default — deleting the key "
+        "leaves the policy undeclared"
+    )
+    assert str(field["default"]) == "0", (
         "survives_close must default OFF — an ON default would be a silent policy"
     )
 

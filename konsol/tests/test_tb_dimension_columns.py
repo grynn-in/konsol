@@ -277,13 +277,41 @@ def test_running_it_twice_is_idempotent():
 
 # --- only ever dim_* -------------------------------------------------------
 
-def test_a_real_column_is_never_dropped():
-    # The drop path may not reach batch_id, main_account, debit_amount or any
-    # other column the submission writes — whatever is declared.
-    stack, actions = _sync([_dim("dim_project")], LIVE_COLUMNS)
-    for column in LIVE_COLUMNS:
-        assert f"DROP COLUMN IF EXISTS {column}" not in " ".join(stack.sql)
-    assert not [a for a in actions if a.startswith("removed ")]
+def test_a_real_column_is_never_touched():
+    # Nothing on the table but the one declared ADD, and the prefix guard that
+    # makes that true is asserted here, not assumed.
+    #
+    # This test used to run on declared=[dim_project], columns=LIVE_COLUMNS,
+    # where `existing` is empty — the set it iterated had nothing in it, so it
+    # passed both with the drop path reinstated and with the
+    # startswith(_TB_DIM_PREFIX) guard deleted. The fixture now carries the
+    # three shapes that make the guard observable:
+    #   dim_retired    — an undeclared dim_* column: a reinstated drop names it
+    #   dimension_code — a lookalike: it is NOT dim_*, so a loosened prefix
+    #                    ("dim" instead of "dim_") would refuse and log it
+    #   DIM_UPPER      — the same, in the other direction
+    # and every real column is checked for a refusal and a log entry, not only
+    # for a DROP: with the prefix guard gone, batch_id and main_account are
+    # validated as dimension names, fail, and are refused into the caller's
+    # log. That is the defect this test names.
+    columns = LIVE_COLUMNS + ["dim_retired", "dimension_code", "DIM_UPPER"]
+    stack, actions = _sync([_dim("dim_project")], columns)
+
+    # The complete DDL, so a drop of anything cannot hide beside the add.
+    assert stack.ddl == [
+        f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS "
+        "dim_project String DEFAULT ''"
+    ], stack.ddl
+    assert actions == ["added dim_project"], actions
+    assert stack.logged == [], stack.logged
+
+    joined = " ".join(stack.sql)
+    for column in LIVE_COLUMNS + ["dimension_code", "DIM_UPPER"]:
+        assert f"DROP COLUMN IF EXISTS {column}" not in joined, column
+        assert not [a for a in actions if column in a], (column, actions)
+        assert not [m for m in stack.logged if column in str(m)], column
+        assert column in _columns_after(stack, columns), column
+    assert "dim_retired" in _columns_after(stack, columns)
 
 
 def test_no_column_is_dropped_when_nothing_is_declared():
@@ -361,16 +389,55 @@ def test_a_good_name_still_syncs_beside_a_refused_one():
     assert sorted(actions) == ["added dim_project", "refused nodim"]
 
 
-def test_the_validator_requires_the_dim_prefix_and_lower_snake_case():
-    module = _load().module
-    pattern = module._SAFE_TB_DIM_COLUMN
+#: Names a customer may legitimately give a dimension. Lower snake case with
+#: digits allowed: dim_entity2 and dim_fy2024 are ordinary names, and a sync
+#: that refuses one silently keeps that dimension out of the trial balance.
+GOOD_NAMES = ["dim_project", "dim_cost_centre", "dim_a1", "dim_entity2",
+              "dim_fy2024", "dim_a_b_c"]
+
+
+def test_every_lower_snake_case_dim_name_is_accepted_by_the_sync():
+    # Through the SYNC, not the constant. This test used to assert
+    # _SAFE_TB_DIM_COLUMN's own behaviour — a restatement of the pattern that
+    # could not fail for any change to how the sync USES it. Making the sync
+    # stricter than the constant (refusing every name carrying a digit) left
+    # the whole file green, so dim_fy2024 could be silently refused with
+    # nothing to show for it.
+    #
+    # The negative direction is covered by
+    # test_a_malformed_declared_name_never_reaches_sql over BAD_NAMES, also
+    # through the sync; this is the positive half it lacked. `dim__x`, which
+    # the old constant test blessed and nothing else in the system agrees is a
+    # name, is deliberately not here.
+    for name in GOOD_NAMES:
+        stack, actions = _sync([_dim(name)], LIVE_COLUMNS)
+        assert actions == [f"added {name}"], (name, actions)
+        assert stack.ddl == [
+            f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS "
+            f"{name} String DEFAULT ''"
+        ], (name, stack.ddl)
+        assert stack.logged == [], (name, stack.logged)
+        # And already on the table it is recognised, not re-added: the same
+        # name has to pass validation on the table side too.
+        again, again_actions = _sync([_dim(name)], LIVE_COLUMNS + [name])
+        assert again.ddl == [], (name, again.ddl)
+        assert again_actions == [], (name, again_actions)
+
+
+def test_the_validator_is_end_anchored_so_a_match_caller_cannot_reopen_it():
+    # The one claim about _SAFE_TB_DIM_COLUMN that no behaviour test can
+    # reach, kept when the rest of the old constant test went. Both call sites
+    # use .fullmatch, which makes \Z redundant TODAY — so swapping \Z for `$`
+    # re-arms the trailing-newline hole (konsol#255) for the next caller that
+    # reaches for .match, and MEASURED, every other test in this file stays
+    # green while it does: with r"^dim_[a-zA-Z0-9_]+$" the file passed 26/26.
+    # This is about the pattern's anchoring, not its alphabet; the alphabet is
+    # asserted through the sync, above and in BAD_NAMES.
+    pattern = _load().module._SAFE_TB_DIM_COLUMN
     for name in BAD_NAMES:
-        # .match too, not only .fullmatch: the pattern itself must be anchored
-        # at the end, so a caller reaching for .match cannot reopen the hole.
-        assert not pattern.fullmatch(name), f"{name!r} must be refused"
-        assert not pattern.match(name), f"{name!r} must be refused by .match"
-    for name in ("dim_project", "dim_cost_centre", "dim_a1", "dim__x"):
-        assert pattern.fullmatch(name), f"{name!r} must be accepted"
+        assert not pattern.match(name), (
+            f"{name!r} must be refused by .match too — the pattern must end "
+            "with \\Z, not $")
 
 
 def test_a_trailing_newline_name_never_reaches_sql():
@@ -384,19 +451,19 @@ def test_a_trailing_newline_name_never_reaches_sql():
 
 
 # --- the shape the caller logs --------------------------------------------
-
-def test_the_return_shape_is_a_list_of_added_and_refused_strings():
-    # A list of strings the caller logs, as _sync_budget_custom_fields_locked()
-    # returns — but with no "removed X" in it: this sync removes nothing.
-    stack, actions = _sync(
-        [_dim("dim_project"), _dim("nodim")], LIVE_COLUMNS + ["dim_retired"])
-    assert isinstance(actions, list)
-    assert all(isinstance(a, str) for a in actions)
-    assert sorted(actions) == ["added dim_project", "refused nodim"], actions
-    assert all(a.split(" ", 1)[0] in ("added", "refused")
-               for a in actions), actions
-
-
+#
+# test_the_return_shape_is_a_list_of_added_and_refused_strings was deleted on
+# 22 September 2026. It asserted that every action's first word was one of the
+# two literals the function writes three lines away, and its comment claimed
+# the shape "matches _sync_budget_custom_fields_locked()" while never looking
+# at that function — changing the budget sync's verb to "created" left it
+# green. What it actually held is held twice over and on purpose:
+#   - the exact list, for a declared name beside a refused one:
+#     test_a_good_name_still_syncs_beside_a_refused_one
+#   - no "removed X", over five declared/table combinations including the
+#     orphan it used: test_no_sync_ever_reports_a_removal
+#   - the list reaching the caller: the _apply_schema_steps tests below.
+#
 # --- the sync is actually reachable from Apply Schema ----------------------
 # A sync nothing calls is not a feature. These assert on the CALL SITE:
 # _apply_schema_steps() is the shared body of both public entry points
