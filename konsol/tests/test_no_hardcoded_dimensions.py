@@ -462,6 +462,50 @@ def test_js_data_key_is_caught():
     assert found[("konsol/thing.js", "dim_cost_center")] == 1
 
 
+# --- the hole this guard was built with: a '#' made it blind ---------------
+# Both of these are the measured defeats, run against the real tree before the
+# fix, reduced to one line each. `#` is a hex colour and an id selector, `//`
+# is in every URL, and the old scanner called all three "comment" and blanked
+# the rest of the line — 78% of the shipped unparsed text, 96.4% of the CSS.
+
+def test_hex_colour_does_not_hide_a_data_key():
+    """Defeat A, reduced: appending to any konsol_exec.js line containing a
+    '#' put two hardcoded dimensions into shipped JS with 26/26 still green."""
+    source = (
+        'var u = "https://vuejs.org/error-reference/#runtime";'
+        ';data.dim_cost_center=String(cc);data.dim_department=String(d);\n'
+    )
+    found = scan_source("konsol/public/konsol_exec/konsol_exec.js", source)
+    key = "konsol/public/konsol_exec/konsol_exec.js"
+    assert found[(key, "dim_cost_center")] == 1
+    assert found[(key, "dim_department")] == 1
+
+
+def test_hex_colour_earlier_on_the_line_does_not_hide_a_data_key():
+    """Defeat B, reduced: a whole new shipped file passed the guard."""
+    source = 'var theme = "#0b5fff"; data.dim_cost_center = String(cc);\n'
+    found = scan_source("konsol/public/probe_guard.js", source)
+    assert found[("konsol/public/probe_guard.js", "dim_cost_center")] == 1
+
+
+def test_url_does_not_hide_a_data_key():
+    source = 'fetch("https://erp.example.com/api").then(r => r.dim_department);\n'
+    found = scan_source("konsol/thing.js", source)
+    assert found[("konsol/thing.js", "dim_department")] == 1
+
+
+def test_css_id_selector_does_not_hide_a_dimension():
+    source = '#grid td[data-col="dim_cost_center"] { color: #0b5fff; }\n'
+    found = scan_source("konsol/thing.css", source)
+    assert found[("konsol/thing.css", "dim_cost_center")] == 1
+
+
+def test_html_fragment_link_does_not_hide_a_dimension():
+    source = '<a href="//cdn.example.com/help#dims">x</a><td>dim_business_unit</td>\n'
+    found = scan_source("konsol/thing.html", source)
+    assert found[("konsol/thing.html", "dim_business_unit")] == 1
+
+
 # --- and leaves prose alone (synthetic content) ---------------------------
 # A guard that eats documentation gets deleted by the first person it annoys,
 # and takes the real rule with it.
