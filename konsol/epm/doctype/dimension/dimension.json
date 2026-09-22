@@ -53,6 +53,21 @@
       "description": "Include in budget models"
     },
     {
+      "fieldname": "in_trial_balance",
+      "fieldtype": "Check",
+      "label": "Include in Trial Balance",
+      "default": "0",
+      "description": "A trial balance file may carry a dim_<name> column for this dimension. Off means the column is not recognised on upload."
+    },
+    {
+      "fieldname": "survives_close",
+      "fieldtype": "Check",
+      "label": "Survives Year-End Close",
+      "default": "0",
+      "depends_on": "eval:doc.in_trial_balance",
+      "description": "On: each (account, dimension value) P&L balance zeroes into retained earnings carrying that same value. Off: P&L closes to a retained-earnings row outside this dimension. Only meaningful when the dimension is in the trial balance."
+    },
+    {
       "fieldname": "allocation_role",
       "fieldtype": "Data",
       "label": "Allocation Role",
