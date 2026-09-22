@@ -137,6 +137,9 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         "frappe": fr,
         "regenerate_vars": lambda: None,
         "_apply_clickhouse_columns": lambda: [],
+        # konsol#255: another ClickHouse DDL step of _apply_schema_steps. Only
+        # the named functions are compiled in, so its neighbours are stubbed.
+        "_sync_tb_dimension_columns": lambda: [],
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
     }
@@ -327,7 +330,14 @@ def _run_publish(touched, enqueued, created=None):
     stubs = {
         "frappe": frappe,
         "konsol": konsol,
-        "konsol.clickhouse": types.SimpleNamespace(execute=refuse("clickhouse"), get_connection=refuse("clickhouse")),
+        # ClickHouse DDL is one of apply_schema's steps and has always run in
+        # this path (_apply_clickhouse_columns, and konsol#255's dim_* column
+        # sync, which reads system.columns). It is neither a Custom Field
+        # write nor a MariaDB commit, which is all `touched` is about, so it
+        # is served rather than refused — it only stayed silent before because
+        # the stubbed Dataset/Dimension sets are empty.
+        "konsol.clickhouse": types.SimpleNamespace(execute=lambda statement, params=None: "",
+                                                   get_connection=refuse("clickhouse")),
         "konsol.dbt_config": types.SimpleNamespace(regenerate_vars=lambda: None),
         "konsol.build_lock": types.SimpleNamespace(lock_build_requests=lambda: None,
                                                    flag_running_build=lambda row: None),
