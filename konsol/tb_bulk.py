@@ -47,6 +47,7 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
 )
 from konsol.entity_permissions import allowed_entity_codes
 from konsol.group_chart import chart_accounts
+from konsol.tb_dimension import declared_dimensions
 
 DOCTYPE = "Trial Balance Upload"
 TERMINAL = ("Loaded", "Partly Loaded", "Failed")
@@ -144,7 +145,11 @@ def _check(table, form_basis=""):
     """Split the file and report on every entity-period. `form_basis` is the
     upload's Amount Basis; an entity-period whose rows give none takes it, and
     one with neither is refused on its own report row (konsolidat#199)."""
-    groups = M.split_table(table)
+    # The site's Dimension records decide which dim_* columns the file may
+    # carry (konsol#255). split_table is pure and defaults them to none, so
+    # until this argument was passed every dim_* header was refused here with
+    # "create the Dimension ..." whatever the site had declared.
+    groups = M.split_table(table, declared_dimensions())
     entities = sorted({k[0] for k in groups})
     # get_list applies the uploader's entity scope; get_all would not.
     visible = set(frappe.get_list("Entity", filters={"name": ["in", entities]}, pluck="name",
@@ -427,7 +432,9 @@ def run_load(upload):
     in_flight = None
     try:
         _release_orphan_claims(report)
-        groups = M.split_table(_read_table(doc.upload_file))
+        # Re-read here, like the basis below: the declared set as it is now,
+        # not as it was when the file was checked (konsol#255).
+        groups = M.split_table(_read_table(doc.upload_file), declared_dimensions())
         ready = [r for r in report if r["ok"] and not r.get("loaded")]
         total = loaded + len(ready)
         stopped = False

@@ -260,7 +260,10 @@ def _load(site, with_bulk=False):
     entity_permissions.allowed_entity_codes = lambda user=None: None
 
     group_chart = types.ModuleType("konsol.group_chart")
-    group_chart.chart_accounts = lambda: {}
+    group_chart.chart_accounts = lambda: {
+        code: {"main_account": code, "is_group": 0, "is_posting": 1}
+        for code in ("1010", "2010")
+    }
 
     ica = types.ModuleType("konsol.consolidation.doctype.intercompany_account.intercompany_account")
     ica.intercompany_accounts = lambda: []

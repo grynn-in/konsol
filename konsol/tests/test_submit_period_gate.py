@@ -164,7 +164,7 @@ def _load(path, period_open):
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
         "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.schema_lifecycle",
-        "konsol.epm", "konsol.epm.budget_grain")}
+        "konsol.tb_dimension", "konsol.epm", "konsol.epm.budget_grain")}
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
@@ -196,6 +196,10 @@ def _load(path, period_open):
     mods["konsol.period_status"].first_period_affected = lambda d: d
     mods["konsol.schema_lifecycle"].request_governed_rebuild = request_governed_rebuild
     mods["konsol.epm.budget_grain"].digest_name = lambda *a, **k: "ZZ"
+    # konsol#255: the controller reads the site's Dimension records before it
+    # parses a file. That reader binds frappe, so it is stubbed here; a site
+    # that declares none is what these period tests are about.
+    mods["konsol.tb_dimension"].declared_dimensions = lambda: []
 
     # konsolidat#199: the controller imports the real, frappe-free rule module
     # konsol.tb_basis_model; konsol#255 added konsol.tb_dimension_model beside
