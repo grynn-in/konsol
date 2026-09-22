@@ -238,15 +238,78 @@ def test_the_partner_is_optional():
     assert _m.partnerless_warning([]) == ""
 
 
-def test_the_partner_lands_in_the_raw_table():
+def _land(rows, columns=()):
+    """Land `rows` and return the SQL sent. `columns` is what ClickHouse
+    reports on the raw table when _land_rows asks."""
     sent = []
-    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+
+    def execute(sql, *a, **k):
+        sent.append(sql)
+        return "\n".join(columns) if "system.columns" in sql else ""
+
+    _m.execute = execute
     doc = _m.TrialBalanceSubmission()
     doc.batch_id, doc.data_area_id, doc.fiscal_year, doc.fiscal_period, doc.name = "b1", "ZZA", 2099, 1, "TBS-1"
-    doc._land_rows([_prow("4030", 0, 10, "ZZB"), _prow("1010", 10, 0)])
+    doc._land_rows(rows)
+    return sent
+
+
+def test_the_partner_lands_in_the_raw_table():
+    """No dimension in the file: the column list is the static one, and the
+    raw table is not interrogated at all.
+
+    Until konsol#255 row 13 this asserted the static column list for EVERY
+    file, which pinned the defect it was meant to describe: a declared
+    dimension was parsed onto each row and then dropped here, because the
+    INSERT named no dimension and no test could see it. The static shape is
+    still right for a file that carries no dim_* column, which is what this
+    now says."""
+    sent = _land([_prow("4030", 0, 10, "ZZB"), _prow("1010", 10, 0)])
     assert len(sent) == 1
     assert "submitted_at, partner_data_area_id) VALUES" in sent[0]
     assert "now(), 'ZZB')" in sent[0] and "now(), '')" in sent[0]
+
+
+#: A file carrying one dimension. Named here because a test must name a
+#: dimension to be a test; shipped konsol may not (konsol#287).
+_DIM = "dim_cost_center"
+_RAW_COLUMNS = ("batch_id", "data_area_id", "fiscal_year", "fiscal_period", "main_account",
+                "debit_amount", "credit_amount", "description", "submission_name",
+                "submitted_at", "partner_data_area_id", _DIM)
+
+
+def test_a_declared_dimension_lands_in_the_raw_table():
+    """konsol#255: the value the parser carried onto the row reaches the
+    INSERT, after the partner and in a deterministic order. Blank is legal."""
+    rows = [dict(_prow("4030", 0, 10, "ZZB"), **{_DIM: "CC100"}),
+            dict(_prow("1010", 10, 0), **{_DIM: ""})]
+    sent = _land(rows, _RAW_COLUMNS)
+    insert = sent[-1]
+    assert f"submitted_at, partner_data_area_id, {_DIM}) VALUES" in insert
+    assert "now(), 'ZZB', 'CC100')" in insert and "now(), '', '')" in insert
+
+
+def test_landing_is_refused_when_the_raw_table_has_no_column_for_the_dimension():
+    """The dim_* columns arrive by ALTER at Apply Schema time, so a dimension
+    published since the last one has nowhere to land. Refused by name — never
+    landed into a table that cannot hold it, and never quietly dropped."""
+    rows = [dict(_prow("4030", 0, 10, "ZZB"), **{_DIM: "CC100"})]
+    thrown = []
+
+    def throw(msg, *a, **k):
+        thrown.append(msg)
+        raise RuntimeError(msg)
+
+    saved = _m.frappe
+    _m.frappe = types.SimpleNamespace(throw=throw)
+    try:
+        _land(rows, _RAW_COLUMNS[:-1])
+        assert False, "expected the missing column to refuse the submission"
+    except RuntimeError:
+        pass
+    finally:
+        _m.frappe = saved
+    assert _DIM in thrown[0] and "Apply Schema" in thrown[0], thrown
 
 
 # -- konsol#189: validate refuses a period that is undeclared, or not postable ------------------

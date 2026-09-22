@@ -52,6 +52,7 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
+from konsol.tb_dimension import declared_dimensions
 from konsol.tb_dimension_model import (
     accepted_dimension_columns, dimension_problems, is_dimension_column,
 )
@@ -376,6 +377,24 @@ def _sql_str(value):
 _CLAIM_BATCH = 1000
 
 
+def _raw_table_columns():
+    """Every column ClickHouse reports on the raw trial-balance table.
+
+    Read back rather than assumed. The table is created by static DDL
+    (``konsol.clickhouse._RAW_TABLE_DDL``, and konsolidat's init-db.sql) which
+    runs against an empty volume and cannot know a customer's dimensions; the
+    dim_* columns arrive later, by ALTER, when Apply Schema runs
+    (``konsol.schema_apply._sync_tb_dimension_columns``). So what the table
+    actually carries is a fact about the deployment, not about this code.
+    """
+    database, _, table = RAW_TABLE.partition(".")
+    text = execute(
+        "SELECT name FROM system.columns "
+        f"WHERE database = '{_sql_str(database)}' AND table = '{_sql_str(table)}'"
+    )
+    return {line.strip() for line in (text or "").splitlines() if line.strip()}
+
+
 def _claim_values(doc, basis):
     """One ``(...)`` tuple claiming ``doc``'s batch with ``basis``.
 
@@ -641,7 +660,13 @@ class TrialBalanceSubmission(Document):
         # may already have decoded into the string.
         content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("\ufeff")
         try:
-            return parse_tb_csv(content)
+            # The site's own Dimension records decide which dim_* columns
+            # this file may carry (konsol#255). Read here, on the frappe side,
+            # so parse_tb_csv stays pure. Until this argument was passed the
+            # accepted set was empty on every real upload and every dim_*
+            # header was refused with "create the Dimension ..." while the
+            # administrator was looking at it, Published and ticked.
+            return parse_tb_csv(content, declared_dimensions())
         except ValueError as e:
             frappe.throw(f"Could not read the trial balance file: {e}")
 
@@ -670,9 +695,51 @@ class TrialBalanceSubmission(Document):
         # amount_basis to one created before konsolidat#199.
         ensure_raw_tables()
 
+    def _assert_dimension_columns(self, dims):
+        """Refuse the submission if the raw table lacks a column it must write.
+
+        The dim_* columns are not in the static DDL: they are added by ALTER
+        when an administrator runs Apply Schema, so a Dimension published
+        since the last one is accepted by the parser and has nowhere to land.
+        Two things could happen then, and both are worse than refusing:
+        ClickHouse rejects the whole INSERT with its own message about a
+        column nobody outside the warehouse has heard of, or — if this code
+        chose its columns from the table instead of from the file — the values
+        vanish without a word, which is konsol#247 broken at the intake and
+        exactly what every refusal in tb_dimension_model exists to prevent.
+
+        So it is refused here, naming the dimension and the one action that
+        fixes it. ``ensure_raw_tables`` takes the same position for the static
+        columns: a submission must never land rows into a table that is
+        missing a column it writes.
+        """
+        missing = [d for d in dims if d not in _raw_table_columns()]
+        if not missing:
+            return
+        one = len(missing) == 1
+        frappe.throw(
+            f"The warehouse has no column for {', '.join(missing)} yet, so "
+            f"{'that dimension' if one else 'those dimensions'} would be lost. "
+            "Run Apply Schema to add "
+            f"{'it' if one else 'them'}, then submit this trial balance again."
+        )
+
     def _land_rows(self, rows):
+        # The dim_* columns THIS file carries (konsol#255), sorted so the
+        # statement is deterministic whatever order the header was in. Taken
+        # from the parsed rows — parse_tb_csv already refused every dim_*
+        # header the site has not declared, Published and ticked — and never
+        # from a name written here: which dimensions exist is the customer's
+        # data, not konsol's shape (konsol#287).
+        dims = sorted({k for r in rows for k in r if is_dimension_column(k)})
+        if dims:
+            self._assert_dimension_columns(dims)
         values = []
         for r in rows:
+            # A dimension is optional per row and the column is String
+            # DEFAULT '', so a blank cell lands as '' rather than stopping
+            # the file.
+            dim_values = "".join(f", '{_sql_str(r.get(d) or '')}'" for d in dims)
             values.append(
                 f"('{_sql_str(self.batch_id)}', "
                 f"'{_sql_str(self.data_area_id)}', "
@@ -681,15 +748,16 @@ class TrialBalanceSubmission(Document):
                 f"{float(r['debit'])}, {float(r['credit'])}, "
                 f"'{_sql_str(r['description'])}', "
                 f"'{_sql_str(self.name)}', now(), "
-                f"'{_sql_str(r.get(PARTNER) or '')}')"
+                f"'{_sql_str(r.get(PARTNER) or '')}'{dim_values})"
             )
+        dim_columns = "".join(f", {d}" for d in dims)
         batch_size = 1000
         for i in range(0, len(values), batch_size):
             execute(
                 f"INSERT INTO {RAW_TABLE} (batch_id, data_area_id, "
                 "fiscal_year, fiscal_period, main_account, debit_amount, "
                 "credit_amount, description, submission_name, submitted_at, "
-                f"{PARTNER}) "
+                f"{PARTNER}{dim_columns}) "
                 "VALUES " + ", ".join(values[i:i + batch_size])
             )
 

@@ -291,6 +291,13 @@ def _load_tb_bulk(*, entities, postable, period_lookup):
     group_chart = types.ModuleType("konsol.group_chart")
     group_chart.chart_accounts = lambda: {}
 
+    # konsol#255: _check now reads the site's declared dimensions before it
+    # splits the file. That reader binds frappe, so it is stubbed; these tests
+    # are about periods, and a site that declares no dimension is the case
+    # they describe.
+    tb_dimension = types.ModuleType("konsol.tb_dimension")
+    tb_dimension.declared_dimensions = lambda: []
+
     ica_mod = types.ModuleType("konsol.consolidation.doctype.intercompany_account.intercompany_account")
     ica_mod.intercompany_accounts = lambda: []
 
@@ -304,6 +311,7 @@ def _load_tb_bulk(*, entities, postable, period_lookup):
         "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
         "konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission": tbs_mod,
         "konsol.entity_permissions": entity_permissions, "konsol.group_chart": group_chart,
+        "konsol.tb_dimension": tb_dimension,
         "konsol.consolidation.doctype.intercompany_account.intercompany_account": ica_mod,
     }
     saved = {k: sys.modules.get(k) for k in stubs}
