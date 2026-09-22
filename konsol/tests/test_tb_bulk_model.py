@@ -459,3 +459,54 @@ def test_temp_helper_is_gone():
     assert "_temp_period_fact" not in names
     assert "_TEMP_POSTABLE_TYPES" not in names
     assert "TEMP until konsol#189 task 20" not in open(TB_BULK_PATH).read()
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: an unrecognised header is refused, not silently dropped.
+#
+# split_table checked only that the six required columns were PRESENT. Every
+# other column was never read, so a file carrying cost centres loaded cleanly
+# and arrived with the cost centres gone -- the loader dropping data without
+# saying so, which is konsol#247 broken in the intake itself.
+# ---------------------------------------------------------------------------
+
+def test_an_unrecognised_header_is_refused_by_name():
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100"]]
+    msg = _raises(M.split_table, table)
+    assert "dim_cost_center" in msg, msg
+
+
+def test_the_refusal_names_every_unrecognised_header_at_once():
+    """A file is fixed in one pass, like the line errors above."""
+    table = [HEADER + ["cost centre", "Region", "notes"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC1", "EMEA", "x"]]
+    msg = _raises(M.split_table, table)
+    for expected in ("cost_centre", "region", "notes"):
+        assert expected in msg, (expected, msg)
+
+
+def test_the_refusal_says_what_is_accepted():
+    table = [HEADER + ["nonsense"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "x"]]
+    msg = _raises(M.split_table, table)
+    assert "main_account" in msg and "debit" in msg, msg
+
+
+def test_every_documented_header_still_loads():
+    """The full accepted set, including the aliases, stays accepted."""
+    table = [["Entity", "Year", "Period", "Account", "Debit", "Credit",
+              "Description", "Counterparty", "Amount Basis"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "cash", "AMUS",
+              "Period movement"]]
+    rows = M.split_table(table)[("AMDE", 2025, 12)]
+    assert rows[0]["partner_data_area_id"] == "AMUS"
+    assert rows[0]["description"] == "cash"
+
+
+def test_a_blank_trailing_header_is_not_an_unknown_column():
+    """Excel writes a trailing comma; an empty header name is not a column."""
+    table = [HEADER + [""],
+             ["AMDE", "2025", "12", "1010", "100", "0", ""]]
+    rows = M.split_table(table)[("AMDE", 2025, 12)]
+    assert rows[0]["main_account"] == "1010"
