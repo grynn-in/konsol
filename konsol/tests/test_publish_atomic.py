@@ -285,12 +285,26 @@ def _run_publish(touched, enqueued, created=None, ch=None):
     helper that swallows the error (install._sync_budget_line_custom_fields).
 
     ``created``, if given, collects the Build Approval doc(s) new_doc handed
-    back, so a caller can inspect what apply_and_rebuild set on it (konsol#261)."""
+    back, so a caller can inspect what apply_and_rebuild set on it (konsol#261).
+    ``ch``, if given, collects every statement handed to ClickHouse, which is
+    served rather than refused — see the stub below, and
+    test_publish_runs_only_schema_ddl_against_clickhouse (konsol#255)."""
+    ch_statements = ch if ch is not None else []
+
     def refuse(what):
         def fn(*a, **kw):
             touched.append(what)
             raise _Touched(what)
         return fn
+
+    def ch_execute(statement, params=None):
+        """Serve ClickHouse and record what was said to it.
+
+        Empty string = the raw table reports no columns, so the dim_* sync
+        finds nothing on it. With nothing declared either, it emits no ALTER.
+        """
+        ch_statements.append(statement)
+        return ""
 
     def sql(query, *a, **kw):
         if "`tabBuild Approval`" in query:   # the build request's debounce read
@@ -337,8 +351,11 @@ def _run_publish(touched, enqueued, created=None, ch=None):
         # sync, which reads system.columns). It is neither a Custom Field
         # write nor a MariaDB commit, which is all `touched` is about, so it
         # is served rather than refused — it only stayed silent before because
-        # the stubbed Dataset/Dimension sets are empty.
-        "konsol.clickhouse": types.SimpleNamespace(execute=lambda statement, params=None: "",
+        # the stubbed Dataset/Dimension sets are empty. Served, but RECORDED:
+        # test_publish_runs_only_schema_ddl_against_clickhouse pins which
+        # statements are allowed, so dropping the refusal costs no signal.
+        # get_connection stays refused — nothing here may open a connection.
+        "konsol.clickhouse": types.SimpleNamespace(execute=ch_execute,
                                                    get_connection=refuse("clickhouse")),
         "konsol.dbt_config": types.SimpleNamespace(regenerate_vars=lambda: None),
         "konsol.build_lock": types.SimpleNamespace(lock_build_requests=lambda: None,
