@@ -1,7 +1,8 @@
 """Declared trial-balance dimensions (konsol/tb_dimension_model.py, konsol#255):
-a file may carry a dim_* column only for a Dimension that is Published and
-ticked in_trial_balance, and any other dim_* header is refused BY NAME so the
-reader knows whether to declare it, publish it, or tick the flag."""
+a file may carry a dim_* column only for a Dimension whose name is lower snake
+case and which is Published and ticked in_trial_balance; any other dim_* header
+is refused BY NAME so the reader knows whether to rename the Dimension, declare
+it, publish it, or tick the flag."""
 import importlib.util
 import os
 
@@ -105,11 +106,109 @@ def test_no_declared_dimensions_accepts_nothing_and_refuses_every_dim_header():
     assert "not declared" in problems[0].lower()
 
 
-def test_the_accepted_set_is_a_frozenset_of_verbatim_names():
+def test_a_mixed_case_dimension_name_is_refused_by_name_not_silently_matched():
+    """The reproduction from konsol#255 row 9.
+
+    Both parsers lowercase a header before validating it, so a Dimension named
+    ``dim_Cost_Center`` could never match one — the admin was told to "create
+    the Dimension dim_cost_center" while looking at the Published, ticked
+    Dimension on screen. schema_apply refuses the same name for the same
+    reason (it cannot make the column), so the rule now says so up front and
+    names the Dimension whose name is wrong.
+    """
     rows = [declared("dim_Cost_Center")]
+
     accepted = M.accepted_dimension_columns(rows)
     assert isinstance(accepted, frozenset)
-    assert accepted == frozenset({"dim_Cost_Center"})
+    assert accepted == frozenset()
+
+    problems = M.dimension_problems(["dim_cost_center"], rows)
+    assert len(problems) == 1
+    # It names the offender as stored, not the lower-cased header, because the
+    # thing to go and fix is the Dimension record called dim_Cost_Center.
+    assert "dim_Cost_Center" in problems[0]
+    assert "rename" in problems[0].lower()
+
+
+def test_a_lower_snake_dimension_name_is_still_accepted():
+    rows = [
+        declared("dim_cost_center"),
+        declared("dim_product_line_2"),
+        declared("dim_x"),
+    ]
+    assert M.accepted_dimension_columns(rows) == frozenset(
+        {"dim_cost_center", "dim_product_line_2", "dim_x"}
+    )
+    assert M.dimension_problems(
+        ["dim_cost_center", "dim_product_line_2", "dim_x"], rows
+    ) == []
+
+
+def test_a_padded_dimension_name_is_refused():
+    """schema_apply fullmatches the raw value, so padding is illegal there too.
+
+    Stripping it here would accept a name the column creation refuses, and the
+    value would have nowhere to land.
+    """
+    for padded in (" dim_cost_center", "dim_cost_center ", "\tdim_cost_center\n"):
+        rows = [declared(padded)]
+        assert M.accepted_dimension_columns(rows) == frozenset()
+
+        problems = M.dimension_problems(["dim_cost_center"], rows)
+        assert len(problems) == 1
+        assert "rename" in problems[0].lower()
+
+
+def test_a_dimension_name_without_the_dim_prefix_is_accepted_by_nobody():
+    for bad in ("cost_center", "dim", "dim_", "Dim_cost_center", "dim_cost-center"):
+        assert M.accepted_dimension_columns([declared(bad)]) == frozenset()
+
+
+def test_the_name_refusal_is_distinguishable_from_the_other_three():
+    """Four reasons, four different fixes: rename / declare / publish / tick."""
+    rows = [
+        declared("dim_Cost_Center"),
+        declared("dim_project", in_trial_balance=0),
+        declared("dim_product", status="Draft"),
+    ]
+    headers = ["dim_cost_center", "dim_project", "dim_product", "dim_widget"]
+    problems = M.dimension_problems(headers, rows)
+    assert len(problems) == 4
+    said = dict(zip(headers, problems))
+
+    rename = said["dim_cost_center"]
+    assert "rename" in rename.lower()
+    assert "not declared" not in rename.lower()
+    assert "not published" not in rename.lower()
+    assert "in_trial_balance" not in rename
+
+    assert "not declared" in said["dim_widget"].lower()
+    assert "rename" not in said["dim_widget"].lower()
+    assert "not published" in said["dim_product"].lower()
+    assert "rename" not in said["dim_product"].lower()
+    assert "in_trial_balance" in said["dim_project"]
+    assert "rename" not in said["dim_project"].lower()
+
+
+def test_a_legal_dimension_is_not_collapsed_onto_an_illegal_twin():
+    """Two Dimensions must never share one column.
+
+    Lowercasing dim_Cost_Center would have merged it into dim_cost_center and
+    put two dimensions' values in one place — a silent-data bug worse than the
+    one being fixed. The legal one is accepted; the illegal one stays refused.
+    """
+    rows = [declared("dim_cost_center"), declared("dim_Cost_Center")]
+    assert M.accepted_dimension_columns(rows) == frozenset({"dim_cost_center"})
+    assert M.dimension_problems(["dim_cost_center"], rows) == []
+
+
+def test_an_illegal_name_is_refused_for_its_name_before_its_status():
+    """A Draft dimension with an illegal name cannot be published out of it."""
+    rows = [declared("dim_Cost_Center", status="Draft", in_trial_balance=0)]
+    problems = M.dimension_problems(["dim_cost_center"], rows)
+    assert len(problems) == 1
+    assert "rename" in problems[0].lower()
+    assert "not published" not in problems[0].lower()
 
 
 def test_a_falsy_in_trial_balance_of_any_shape_is_off():
