@@ -510,3 +510,112 @@ def test_a_blank_trailing_header_is_not_an_unknown_column():
              ["AMDE", "2025", "12", "1010", "100", "0", ""]]
     rows = M.split_table(table)[("AMDE", 2025, 12)]
     assert rows[0]["main_account"] == "1010"
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a DECLARED dim_* column is accepted and its values are carried.
+#
+# The refusal above is the right default -- an unrecognised column is never
+# dropped in silence -- but a site that has declared dim_cost_center and ticked
+# in_trial_balance on it must be able to send that column. split_table takes
+# the declared dimensions as an argument and stays pure; the query that finds
+# them lives at the call site.
+# ---------------------------------------------------------------------------
+
+def declared(name, status="Published", in_trial_balance=1):
+    return {"dimension_name": name, "status": status,
+            "in_trial_balance": in_trial_balance}
+
+
+def test_a_declared_dimension_column_is_accepted_and_its_value_lands():
+    table = [HEADER + ["dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "D7"]]
+    rows = M.split_table(table, [declared("dim_cost_center"),
+                                 declared("dim_department")])[("AMDE", 2025, 12)]
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_a_blank_dimension_cell_is_legal_and_lands_as_empty():
+    """A dimension is optional per row: blank is a value, not a refusal."""
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", ""],
+             ["AMDE", "2025", "12", "2010", "0", "100", "CC100"]]
+    rows = M.split_table(table, [declared("dim_cost_center")])[("AMDE", 2025, 12)]
+    assert rows[0]["dim_cost_center"] == ""
+    assert rows[1]["dim_cost_center"] == "CC100"
+
+
+def test_an_undeclared_dimension_column_is_refused_as_undeclared():
+    table = [HEADER + ["dim_widget"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "W1"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_a_flag_off_dimension_column_is_refused_saying_the_flag_is_off():
+    table = [HEADER + ["dim_project"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "P1"]]
+    msg = _raises(M.split_table, table,
+                  [declared("dim_project", in_trial_balance=0)])
+    assert "dim_project" in msg, msg
+    assert "in_trial_balance" in msg, msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_a_draft_dimension_column_is_refused_as_not_published():
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC1"]]
+    msg = _raises(M.split_table, table,
+                  [declared("dim_cost_center", status="Draft")])
+    assert "dim_cost_center" in msg, msg
+    assert "not published" in msg.lower(), msg
+    assert "Draft" in msg, msg
+
+
+def test_a_bad_dimension_header_and_a_bad_ordinary_header_are_reported_together():
+    """One pass fixes the file: both kinds of problem in the one refusal."""
+    table = [HEADER + ["dim_widget", "notes"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "W1", "x"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "notes" in msg, msg
+    assert "Unrecognised column" in msg, msg
+
+
+def test_group_csv_writes_the_dimension_columns_the_rows_carry():
+    table = [HEADER + ["dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", ""]]
+    rows = M.split_table(table, [declared("dim_cost_center"),
+                                 declared("dim_department")])[("AMDE", 2025, 12)]
+    text = M.group_csv(rows)
+    header = next(csv.reader(io.StringIO(text)))
+    assert header[:5] == ["main_account", "debit", "credit", "description",
+                          "partner_data_area_id"]
+    assert header[-2:] == ["dim_cost_center", "dim_department"], header
+    out = list(csv.DictReader(io.StringIO(text)))
+    assert out[0]["dim_cost_center"] == "CC100"
+    assert out[0]["dim_department"] == ""
+
+
+def test_group_csv_writes_no_dimension_columns_when_the_rows_carry_none():
+    table = [HEADER, ["AMDE", "2025", "12", "1010", "100", "0"]]
+    rows = M.split_table(table)[("AMDE", 2025, 12)]
+    header = next(csv.reader(io.StringIO(M.group_csv(rows))))
+    assert header == ["main_account", "debit", "credit", "description",
+                      "partner_data_area_id"]
+
+
+def test_without_declared_dimensions_a_dim_column_is_still_refused():
+    """Every existing caller passes nothing: a site declaring no dimensions
+    carries no dim_* column, and the refusal still names the header."""
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100"]]
+    msg = _raises(M.split_table, table)
+    assert "dim_cost_center" in msg, msg
+    rows = M.split_table([HEADER, ["AMDE", "2025", "12", "1010", "100", "0"]])
+    assert rows[("AMDE", 2025, 12)][0] == {
+        "main_account": "1010", "debit": 100.0, "credit": 0.0,
+        "description": "", "partner_data_area_id": "", "amount_basis": ""}
