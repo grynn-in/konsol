@@ -52,6 +52,9 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
+from konsol.tb_dimension_model import (
+    accepted_dimension_columns, dimension_problems, is_dimension_column,
+)
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
@@ -87,7 +90,7 @@ def _column(header):
     return name
 
 
-def parse_tb_csv(text):
+def parse_tb_csv(text, declared_dimensions=()):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, description,
@@ -98,6 +101,15 @@ def parse_tb_csv(text):
     a missing header, a non-numeric amount, a blank account. Business
     validation (balance, duplicates, chart membership) is validate_tb_rows()'s
     job, so a file can be parsed and then reported on as a whole.
+
+    `declared_dimensions` are the site's Dimension rows (dimension_name,
+    status, in_trial_balance); the default, no dimensions, means a site that
+    declares none and keeps every existing caller working. A dim_* column the
+    site has Published and ticked in_trial_balance is accepted and lands on
+    each row under its own name, '' when the cell is blank — a dimension is
+    optional per row. Any other dim_* header is refused saying WHICH of
+    declare / publish / tick is missing (konsol.tb_dimension_model), since
+    the fix differs. This function stays pure: the caller does the looking up.
     """
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
@@ -114,13 +126,26 @@ def parse_tb_csv(text):
     # was never read and its values were dropped without a word — the same
     # silent drop the bulk loader had. Blank names are skipped: a trailing
     # comma is not a column.
-    unknown = [h for h in headers if h and h not in _ACCEPTED_COLUMNS]
+    #
+    # A dim_* header is the declared dimensions' business and gets its own
+    # sentence — declare it, publish it, or tick the flag — because the generic
+    # line does not say which of the three to do. Both kinds are raised
+    # together so one pass fixes the file (konsol#255).
+    declared = list(declared_dimensions)
+    accepted_dims = accepted_dimension_columns(declared)
+    unknown = [h for h in headers
+               if h and h not in _ACCEPTED_COLUMNS and h not in accepted_dims
+               and not is_dimension_column(h)]
+    problems = []
     if unknown:
-        raise ValueError(
+        problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} — the "
             "header may be main_account,debit,credit[,description]"
             "[,partner_data_area_id][,amount_basis]"
         )
+    problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
+    if problems:
+        raise ValueError("\n".join(problems))
     if headers.count(PARTNER) > 1:
         raise ValueError(
             "Two partner columns: keep one of partner_data_area_id, "
@@ -130,6 +155,9 @@ def parse_tb_csv(text):
         raise ValueError(
             "Two amount_basis columns: keep one of " + ", ".join(BASIS_ALIASES)
         )
+
+    #: The accepted dim_* columns this file actually carries, in header order.
+    dim_headers = [h for h in headers if h in accepted_dims]
 
     rows = []
     for lineno, raw in enumerate(reader, start=2):
@@ -174,6 +202,7 @@ def parse_tb_csv(text):
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
             BASIS: item.get(BASIS, ""),
+            **{d: item.get(d, "") for d in dim_headers},
         })
     if not rows:
         raise ValueError("The file has a header but no data rows")

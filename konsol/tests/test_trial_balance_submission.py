@@ -809,3 +809,110 @@ def test_parse_still_accepts_every_documented_column():
         "1010,5,0,Cash,AMUS,Period movement\n")
     assert rows[0]["partner_data_area_id"] == "AMUS"
     assert rows[0]["description"] == "Cash"
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a DECLARED dim_* column is accepted and its values are carried.
+#
+# Both intakes learn the same rule, and the bulk one feeds its own output back
+# in here: what group_csv writes, parse_tb_csv must read. declared_dimensions
+# is an argument, so these functions stay pure and the query that finds the
+# site's Dimensions lives at the call site.
+# ---------------------------------------------------------------------------
+
+_BULK = importlib.util.spec_from_file_location(
+    "tb_bulk_model_under_test", os.path.join(_HERE, "..", "tb_bulk_model.py"))
+_bulk = importlib.util.module_from_spec(_BULK)
+_BULK.loader.exec_module(_bulk)
+
+_BULK_HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account",
+                "debit", "credit"]
+
+
+def declared(name, status="Published", in_trial_balance=1):
+    return {"dimension_name": name, "status": status,
+            "in_trial_balance": in_trial_balance}
+
+
+def _parse_raises(text, declared_dimensions=()):
+    try:
+        _m.parse_tb_csv(text, declared_dimensions)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError("expected ValueError")
+
+
+def test_parse_accepts_a_declared_dimension_column_and_carries_its_value():
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,dim_cost_center,dim_department\n"
+        "1010,5,0,CC100,D7\n",
+        [declared("dim_cost_center"), declared("dim_department")])
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_parse_accepts_a_blank_dimension_cell():
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,dim_cost_center\n1010,5,0,\n2010,0,5,CC100\n",
+        [declared("dim_cost_center")])
+    assert rows[0]["dim_cost_center"] == ""
+    assert rows[1]["dim_cost_center"] == "CC100"
+
+
+def test_parse_refuses_an_undeclared_dimension_column_as_undeclared():
+    msg = _parse_raises("main_account,debit,credit,dim_widget\n1010,5,0,W1\n",
+                        [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_parse_refuses_a_flag_off_dimension_column_saying_the_flag_is_off():
+    msg = _parse_raises("main_account,debit,credit,dim_project\n1010,5,0,P1\n",
+                        [declared("dim_project", in_trial_balance=0)])
+    assert "dim_project" in msg, msg
+    assert "in_trial_balance" in msg, msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_parse_refuses_a_draft_dimension_column_as_not_published():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n",
+        [declared("dim_cost_center", status="Draft")])
+    assert "dim_cost_center" in msg, msg
+    assert "not published" in msg.lower(), msg
+    assert "Draft" in msg, msg
+
+
+def test_parse_reports_a_bad_dimension_header_and_a_bad_ordinary_one_together():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_widget,notes\n1010,5,0,W1,x\n",
+        [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "notes" in msg, msg
+    assert "Unrecognised column" in msg, msg
+
+
+def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser():
+    """The regression that matters: the bulk path feeds group_csv's output
+    back in as a single submission, so a dimension dropped between the two
+    parsers is a dimension lost without a word."""
+    dims = [declared("dim_cost_center"), declared("dim_department")]
+    table = [_BULK_HEADER + ["description", "dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "cash", "CC100", "D7"],
+             ["AMDE", "2025", "12", "2010", "0", "100", "", "", "D9"]]
+    rows = _bulk.split_table(table, dims)[("AMDE", 2025, 12)]
+    text = _bulk.group_csv(rows, source="ZZ-UPLOAD")
+    back = _m.parse_tb_csv(text, dims)
+    assert [(r["main_account"], r["dim_cost_center"], r["dim_department"])
+            for r in back] == [("1010", "CC100", "D7"), ("2010", "", "D9")]
+
+
+def test_parse_without_declared_dimensions_is_unchanged():
+    """Every existing caller passes nothing and gets exactly what it got."""
+    msg = _parse_raises("main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n")
+    assert "dim_cost_center" in msg, msg
+    rows = _m.parse_tb_csv(GOOD)
+    assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0,
+                       "description": "", "partner_data_area_id": "",
+                       "amount_basis": ""}
