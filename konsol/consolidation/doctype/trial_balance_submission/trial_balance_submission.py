@@ -67,6 +67,16 @@ PARTNER = "partner_data_area_id"
 #: Other header spellings accepted for PARTNER.
 PARTNER_ALIASES = ("partner", "partner_entity", "partner_id", "counterparty")
 
+#: Written by tb_bulk_model.group_csv to record which upload a generated file
+#: came from. Accepted and ignored here; refusing it would break the bulk path
+#: feeding its own output back in as single submissions.
+SOURCE_UPLOAD = "source_upload"
+
+#: Every header this contract accepts, AFTER alias resolution. A header
+#: outside this set is refused by name rather than dropped (konsol#255).
+_ACCEPTED_COLUMNS = frozenset(
+    _REQUIRED_COLUMNS + ("description", PARTNER, BASIS, SOURCE_UPLOAD))
+
 
 def _column(header):
     name = (header or "").strip().lower()
@@ -98,6 +108,18 @@ def parse_tb_csv(text):
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} — the header must be "
             "main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]"
+        )
+    # An unrecognised header is refused, not ignored (konsol#255). This used
+    # to check only that _REQUIRED_COLUMNS were present, so every other column
+    # was never read and its values were dropped without a word — the same
+    # silent drop the bulk loader had. Blank names are skipped: a trailing
+    # comma is not a column.
+    unknown = [h for h in headers if h and h not in _ACCEPTED_COLUMNS]
+    if unknown:
+        raise ValueError(
+            f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} — the "
+            "header may be main_account,debit,credit[,description]"
+            "[,partner_data_area_id][,amount_basis]"
         )
     if headers.count(PARTNER) > 1:
         raise ValueError(

@@ -765,3 +765,47 @@ def test_list_view_offers_set_amount_basis():
     for basis in ALL_BASES:
         assert basis in js, basis
     assert "show_alert" in js and "refresh" in js
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: the single upload has the same silent drop as the bulk one.
+#
+# parse_tb_csv checked only that _REQUIRED_COLUMNS were present, so any other
+# column was never read and its values vanished without a word. Both intakes
+# refuse now, or the bulk path would be stricter than the single one it feeds.
+# ---------------------------------------------------------------------------
+
+def test_parse_refuses_an_unrecognised_column_by_name():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "dim_cost_center" in str(e), str(e)
+
+
+def test_parse_names_every_unrecognised_column_at_once():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit,Region,notes\n1010,5,0,EMEA,x\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        msg = str(e)
+        assert "region" in msg and "notes" in msg, msg
+
+
+def test_parse_still_accepts_source_upload():
+    """group_csv writes source_upload into the file it generates for each
+    entity-period, so the single parser must go on accepting and ignoring it —
+    refusing it would break the bulk path feeding its own output back in."""
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,description,partner_data_area_id,source_upload\n"
+        "1010,5,0,,,ZZ-UPLOAD\n")
+    assert rows[0]["main_account"] == "1010"
+    assert "source_upload" not in rows[0]
+
+
+def test_parse_still_accepts_every_documented_column():
+    rows = _m.parse_tb_csv(
+        "Main_Account,Debit,Credit,Description,Counterparty,Amount Basis\n"
+        "1010,5,0,Cash,AMUS,Period movement\n")
+    assert rows[0]["partner_data_area_id"] == "AMUS"
+    assert rows[0]["description"] == "Cash"

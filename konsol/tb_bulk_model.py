@@ -50,6 +50,11 @@ ALIASES = {
     # konsolidat#199: the single upload accepts the same spellings for the basis
     **{alias.replace(" ", "_"): BASIS for alias in BASIS_ALIASES},
 }
+#: Optional columns a file may carry, beyond REQUIRED.
+OPTIONAL = ("description", PARTNER, BASIS)
+#: Every header this contract accepts, AFTER alias resolution. A header
+#: outside this set is refused by name rather than dropped (konsol#255).
+ACCEPTED = frozenset(REQUIRED + OPTIONAL)
 #: Structural problems are reported together, up to this many lines.
 MAX_LINE_ERRORS = 20
 
@@ -128,6 +133,21 @@ def split_table(table):
             f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be "
             "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description]"
             "[, partner_data_area_id][, amount_basis]"
+        )
+    # An unrecognised header is refused, not ignored (konsol#255). This used
+    # to check only that REQUIRED was present, so any other column was never
+    # read and its values were dropped without a word — a file of cost centres
+    # loaded clean and arrived with the cost centres gone. A loader that
+    # silently discards what it was given is konsol#247 broken at the intake.
+    # Blank names are skipped: Excel writes a trailing comma, which is not a
+    # column.
+    unknown = [n for n in names if n and n not in ACCEPTED]
+    if unknown:
+        raise ValueError(
+            f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} on line "
+            f"{head_line}. The header may be "
+            "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit"
+            "[, description][, partner_data_area_id][, amount_basis]"
         )
     if names.count(PARTNER) > 1:
         raise ValueError(f"Two partner columns on line {head_line}: keep one")
