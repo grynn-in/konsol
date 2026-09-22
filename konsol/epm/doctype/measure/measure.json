@@ -41,7 +41,7 @@
       "fieldname": "cube_type",
       "fieldtype": "Select",
       "label": "Cube Type",
-      "options": "sum\ncount\navg",
+      "options": "sum\ncount\navg\nlast",
       "default": "sum"
     },
     {
