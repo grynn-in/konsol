@@ -6,6 +6,16 @@ import os
 import sys
 import types
 
+# The read path asks the Measure registry how each measure aggregates across
+# periods, through frappe.cache() (konsol#251).
+_mrs_spec = importlib.util.spec_from_file_location(
+    "_read_path_stub",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "read_path_stub.py"))
+read_path_stub = importlib.util.module_from_spec(_mrs_spec)
+_mrs_spec.loader.exec_module(read_path_stub)
+
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PATH = os.path.join(APP_DIR, "api.py")
 
@@ -226,6 +236,7 @@ def _load_api():
     run on any host."""
     fake = types.ModuleType("frappe")
     fake.ValidationError = _Invalid
+    read_path_stub.install(fake)
 
     def throw(msg, exc=Exception, *a, **k):
         raise exc(msg)
