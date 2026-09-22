@@ -155,6 +155,20 @@ def parse_tb_csv(text, declared_dimensions=()):
         raise ValueError(
             "Two amount_basis columns: keep one of " + ", ".join(BASIS_ALIASES)
         )
+    # A dimension named twice is refused for the same reason the partner and
+    # the basis are (konsol#255): csv.DictReader maps a repeated header onto a
+    # single key, so one of the two columns never reached the row and its
+    # values were dropped without a word. Every repeated dimension is named in
+    # one refusal so one pass fixes the file. Placed AFTER the
+    # dimension_problems raise on purpose: an undeclared dim_* header has
+    # already been refused with declare / publish / tick, and adding "keep one"
+    # to that would be two answers to one question.
+    repeated_dims = [h for i, h in enumerate(headers)
+                     if h in accepted_dims and headers.index(h) == i
+                     and headers.count(h) > 1]
+    if repeated_dims:
+        raise ValueError("\n".join(
+            f"Two {h} columns: keep one" for h in repeated_dims))
 
     #: The accepted dim_* columns this file actually carries, in header order.
     dim_headers = [h for h in headers if h in accepted_dims]

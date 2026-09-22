@@ -179,6 +179,21 @@ def split_table(table, declared_dimensions=()):
     if names.count(BASIS) > 1:
         raise ValueError(f"Two amount_basis columns on line {head_line}: keep one of "
                          + ", ".join(BASIS_ALIASES))
+    # A dimension named twice is refused for the same reason the partner and
+    # the basis are (konsol#255): `col` below resolves a name to names.index(n),
+    # the FIRST occurrence, so the second column was read by nobody and its
+    # values were dropped without a word. Every repeated dimension is named in
+    # one refusal, as the header problems above are, so one pass fixes the file.
+    # This sits AFTER the dimension_problems raise deliberately: an undeclared
+    # dim_* header has already been refused with declare / publish / tick, and
+    # telling the reader to "keep one" of a column they may not carry at all
+    # would be two answers to one question.
+    repeated_dims = [n for i, n in enumerate(names)
+                     if n in accepted_dims and names.index(n) == i
+                     and names.count(n) > 1]
+    if repeated_dims:
+        raise ValueError("\n".join(
+            f"Two {n} columns on line {head_line}: keep one" for n in repeated_dims))
     col = {n: names.index(n) for n in set(names)}
     #: The accepted dim_* columns this file actually carries, in header order.
     dim_names = [n for n in names if n in accepted_dims]

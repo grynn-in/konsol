@@ -916,3 +916,60 @@ def test_parse_without_declared_dimensions_is_unchanged():
     assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0,
                        "description": "", "partner_data_area_id": "",
                        "amount_basis": ""}
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a REPEATED dim_* column is refused here too. csv.DictReader maps
+# a repeated header onto one key, so one of the two columns was dropped in
+# silence -- the same defect the bulk parser had, and the same guard
+# partner_data_area_id and amount_basis already carry on this intake.
+# ---------------------------------------------------------------------------
+
+def test_parse_refuses_a_repeated_dimension_column_naming_the_dimension():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_cost_center,dim_cost_center\n"
+        "1010,100,0,CC100,CC999\n",
+        [declared("dim_cost_center")])
+    assert "dim_cost_center" in msg, msg
+    assert "keep one" in msg, msg
+
+
+def test_parse_names_every_repeated_dimension_in_one_refusal():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_cost_center,dim_department,"
+        "dim_cost_center,dim_department\n1010,100,0,CC1,D1,CC2,D2\n",
+        [declared("dim_cost_center"), declared("dim_department")])
+    assert "dim_cost_center" in msg, msg
+    assert "dim_department" in msg, msg
+
+
+def test_parse_still_loads_two_different_dimensions_each_appearing_once():
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,dim_cost_center,dim_department\n"
+        "1010,100,0,CC100,D7\n",
+        [declared("dim_cost_center"), declared("dim_department")])
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_parse_refuses_a_repeated_undeclared_dimension_as_undeclared():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_widget,dim_widget\n1010,100,0,W1,W2\n",
+        [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "keep one" not in msg, msg
+
+
+def test_parse_partner_keep_one_refusal_is_unchanged():
+    msg = _parse_raises(
+        "main_account,debit,credit,partner_data_area_id,partner\n"
+        "1010,100,0,AMUS,AMUK\n")
+    assert "Two partner columns" in msg, msg
+
+
+def test_parse_amount_basis_keep_one_refusal_is_unchanged():
+    msg = _parse_raises(
+        "main_account,debit,credit,amount_basis,basis\n"
+        "1010,100,0,Actual,Actual\n")
+    assert "Two amount_basis columns" in msg, msg
