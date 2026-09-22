@@ -619,3 +619,70 @@ def test_without_declared_dimensions_a_dim_column_is_still_refused():
     assert rows[("AMDE", 2025, 12)][0] == {
         "main_account": "1010", "debit": 100.0, "credit": 0.0,
         "description": "", "partner_data_area_id": "", "amount_basis": ""}
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a REPEATED dim_* column is refused, not silently halved.
+#
+# Measured on this branch before the fix: a header naming dim_cost_center twice
+# was ACCEPTED and the second column's value vanished --
+#
+#   header: ...,dim_cost_center,dim_cost_center   row: ...,CC100,CC999
+#   -> {'main_account': '1010', ..., 'dim_cost_center': 'CC100'}   CC999 gone
+#
+# because the header is resolved to a column index with names.index(n), which
+# takes the first occurrence. partner_data_area_id and amount_basis already had
+# a "keep one" guard for exactly this; dimensions were added without it.
+# ---------------------------------------------------------------------------
+
+def test_a_repeated_dimension_column_is_refused_naming_the_dimension():
+    table = [HEADER + ["dim_cost_center", "dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "CC999"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_cost_center" in msg, msg
+    assert "keep one" in msg, msg
+
+
+def test_two_repeated_dimensions_are_both_named_in_one_refusal():
+    """A file is fixed in one pass: every repeated dimension is named."""
+    table = [HEADER + ["dim_cost_center", "dim_department",
+                       "dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC1", "D1", "CC2", "D2"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center"),
+                                         declared("dim_department")])
+    assert "dim_cost_center" in msg, msg
+    assert "dim_department" in msg, msg
+
+
+def test_two_different_dimensions_each_appearing_once_still_load():
+    table = [HEADER + ["dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "D7"]]
+    rows = M.split_table(table, [declared("dim_cost_center"),
+                                 declared("dim_department")])[("AMDE", 2025, 12)]
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_a_repeated_undeclared_dimension_column_is_refused_as_undeclared():
+    """The undeclared refusal comes first and stands alone: the reader is told
+    to declare the dimension, not confusingly told both things at once."""
+    table = [HEADER + ["dim_widget", "dim_widget"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "W1", "W2"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "keep one" not in msg, msg
+
+
+def test_the_partner_keep_one_refusal_is_unchanged():
+    table = [HEADER + ["partner_data_area_id", "partner"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "AMUS", "AMUK"]]
+    msg = _raises(M.split_table, table)
+    assert "Two partner columns" in msg, msg
+
+
+def test_the_amount_basis_keep_one_refusal_is_unchanged():
+    table = [HEADER + ["amount_basis", "basis"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "Actual", "Actual"]]
+    msg = _raises(M.split_table, table)
+    assert "Two amount_basis columns" in msg, msg
