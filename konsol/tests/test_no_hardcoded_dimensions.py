@@ -22,9 +22,10 @@ product's shape.
 What is not
 -----------
 **Prose.** An ``e.g. dim_cost_center`` in a field description, a docstring or a
-comment explains the convention to a human and harms nobody. A guard that bans
-those makes field help unreadable and gets deleted by the first person it
-annoys, taking the real rule with it. So prose stays.
+Python comment explains the convention to a human and harms nobody. A guard
+that bans those makes field help unreadable and gets deleted by the first
+person it annoys, taking the real rule with it. So prose stays — for free
+where the file is parsed, and with a marker that says so where it is not.
 
 The discriminator, per file type:
 
@@ -44,10 +45,56 @@ The discriminator, per file type:
     doctype: ``"fieldname": "dim_cost_center"`` builds a column,
     ``"description": "e.g. dim_cost_center"`` builds a sentence.
 
-everything else (``.js``, ``.html``, ``.css``, ``.xml``, ``.txt``)
-    No parser, so: comments are stripped and anything left is structural.
-    These files are not written in Python, so a stray ``dim_foo`` in them is a
-    data key, not a local variable.
+everything else (``.js``, ``.css``, ``.html``, ``.xml``, ``.txt``, ``.md``, …)
+    No parser, so **every** character counts. A stray ``dim_foo`` in one of
+    these is a data key, not a local variable, and there is nowhere in them it
+    can hide.
+
+    This used to strip "comments" first, with one regex for every language:
+    ``/*…*/``, ``<!--…-->``, ``//…`` and ``#…``. But ``#`` is not a comment in
+    JS, CSS, HTML or XML — it is a hex colour and an id selector — and ``//``
+    is in every URL. Over the real tree that blanked 78% of the scannable text
+    (96.4% of ``konsol_exec.css``, 80.6% of ``konsol_exec.js``), so the rule
+    was really *"a hardcoded dimension is a build failure unless you put a hex
+    colour, an id selector or a URL earlier on the line"*. Two one-line
+    payloads, both measured, walked straight through it.
+
+    A per-language comment grammar would fix that particular hole and leave
+    the same *shape* of hole behind: blanking text is how a guard goes blind,
+    and each new suffix would need a new grammar nobody would write. So
+    nothing is blanked. A comment that genuinely needs to name a dimension
+    says so out loud — see below.
+
+The escape hatch, for prose the discriminator cannot see
+--------------------------------------------------------
+The rules above keep a Python docstring, a Python comment and a JSON
+``description`` out of the scan for free. They cannot see that
+``frappe.msgprint("Add a column such as dim_cost_center")`` is a sentence, or
+that a ``.html`` help page, a shipped release note or a ``//`` comment in
+JavaScript is addressed to a human. Without a way to say so, the guard shapes
+the product: ``dimension.py`` already omits the most useful thing its error
+message could say — a concrete example name — because of this test.
+
+So: a line carrying the marker ``konsol#287-prose`` has its ``dim_<name>``
+occurrences read as prose. The marker is deliberately ugly and greppable::
+
+    grep -rn 'konsol#287-prose' konsol/
+
+and it is not enough on its own. Every escaped occurrence must also appear in
+``DECLARED_PROSE_MENTIONS`` below with a count and a reason, checked in both
+directions exactly like the debt allow-list: an undeclared escape fails the
+run, and an escape whose prose has since been deleted is reported as stale. An
+escape is visible at the site *and* counted here. It is not a way to be quiet.
+
+What this guard cannot see, and says so
+---------------------------------------
+A name assembled at runtime — ``"dim_" + name``, ``"dim_%s" % name``,
+``f"dim_{name}"``, ``"_".join(...)`` — is invisible to any text scanner, and
+those spellings are also how the *cure* is written, so they cannot simply be
+banned. Only the fully static form ``"dim_" + "cost_center"`` is decidable,
+and it is folded and caught. The rest is a declared blind spot with a test
+naming it, not an oversight: see
+``test_dynamic_name_construction_is_a_declared_blind_spot``.
 
 The allow-list is the point
 ---------------------------
@@ -80,11 +127,68 @@ SHIPPED_ROOT = "konsol"
 #: source ``r"^dim_[a-z0-9_]+$"`` — all of which are the machinery that makes
 #: dimensions configurable — are not matches. Those are the *cure*, not the
 #: disease.
-DIMENSION_LITERAL = re.compile(r"\bdim_[a-z][a-z0-9_]*\b")
+#:
+#: The character after the prefix is ``[a-z0-9]``, not ``[a-z]``: the column
+#: rule the product actually enforces is ``^dim_[a-z0-9_]+$``, so
+#: ``dim_2024_region`` is a legal dimension for a customer to declare. A guard
+#: that only looked for a letter would have been blind to every dimension
+#: whose name starts with a digit.
+DIMENSION_LITERAL = re.compile(r"\bdim_[a-z0-9][a-z0-9_]*\b")
 
-#: File suffixes that are source. Anything else (images, fonts) cannot hide a
-#: fieldname.
-SCANNED_SUFFIXES = (".py", ".json", ".js", ".html", ".css", ".xml", ".txt")
+#: File suffixes that are source. Nothing is parsed but ``.py`` and ``.json``,
+#: so a suffix costs nothing to add and a missing one is silent — which is why
+#: ``test_no_shipped_text_suffix_escapes_the_scan`` below fails the build when
+#: konsol starts shipping a text type that is in neither this tuple nor
+#: ``NON_SOURCE_SUFFIXES``. The list is wider than the tree needs today on
+#: purpose: the first shipped ``.sql`` or ``.yml`` is scanned on arrival.
+SCANNED_SUFFIXES = (
+    ".py",
+    ".json",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".vue",
+    ".html",
+    ".css",
+    ".scss",
+    ".less",
+    ".xml",
+    ".svg",
+    ".txt",
+    ".md",
+    ".rst",
+    ".sql",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".csv",
+    ".tsv",
+    ".sh",
+)
+
+#: Suffixes that are assets, not source: bytes that cannot carry a fieldname a
+#: human wrote. Declared rather than assumed, so that the completeness test can
+#: tell "binary" from "nobody thought about it".
+NON_SOURCE_SUFFIXES = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".avif",
+        ".woff", ".woff2", ".ttf", ".eot", ".otf",
+        ".pdf", ".zip", ".gz", ".xlsx", ".mp4", ".webm",
+    }
+)
+
+#: The inline marker that reads a line's dimension names as prose. Ugly and
+#: greppable on purpose — ``grep -rn 'konsol#287-prose' konsol/`` is the whole
+#: audit. Never enough on its own: see ``DECLARED_PROSE_MENTIONS``.
+PROSE_ESCAPE = "konsol#287-prose"
+
+#: What an escaped name is replaced with before scanning. Must not itself look
+#: like a dimension, and must stay a valid identifier so that redacting a line
+#: of Python or JSON leaves it parseable.
+_PROSE_PLACEHOLDER = "prose_mention"
 
 #: JSON keys whose value is prose written for a human.
 PROSE_JSON_KEYS = frozenset(
@@ -190,6 +294,21 @@ ALLOWED_DIMENSION_LITERALS = {
     ("konsol/public/excel-addin/functions.js", "dim_department"): (1, _EXCEL_ADDIN),
 }
 
+# --------------------------------------------------------------------------
+# The prose escapes, enumerated. Each entry: (path, literal) -> (count, why).
+#
+# Not debt — a sentence addressed to a human harms nobody, and banning those is
+# how a guard gets deleted. But an escape that nobody counted is a hole, so the
+# contract is the allow-list's: exact counts, a reason, checked in both
+# directions. An undeclared ``konsol#287-prose`` fails the run; a declaration
+# whose prose has since been deleted is reported as stale.
+#
+# Empty today: no shipped file has needed one yet. The mechanism exists so that
+# a message like "Add a column such as dim_cost_center" can be written at all —
+# konsol/dimension.py currently omits that example *because of this test*.
+# --------------------------------------------------------------------------
+DECLARED_PROSE_MENTIONS = {}
+
 #: Shipped paths named after a customer's dimension. Same contract.
 ALLOWED_DIMENSION_PATHS = {
     "konsol/epm/doctype/budget_cost_center": (
@@ -226,12 +345,33 @@ def shipped_files():
     return found
 
 
+def _static_concat(node):
+    """The value of `node` if it is a tree of added string literals, else None.
+
+    ``"dim_" + "cost_center"`` is the one runtime-assembled name a text scanner
+    can decide, because nothing about it is runtime. Implicit adjacent
+    concatenation (``"dim_" "cost_center"``) never reaches here: the parser
+    folds it into a single Constant, so it is caught as an ordinary literal.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_concat(node.left)
+        right = _static_concat(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
 def _python_structural_strings(source):
     """String literals in `source` that bind behaviour rather than explain it.
 
     A string that is a statement on its own is a docstring — module, class,
     function, or the attribute docstring convention — and is prose. Comments
     are not in the AST, so they never arrive here.
+
+    Statically concatenated literals are folded and reported once, as the name
+    they spell; the pieces they were spelled with are then not reported again.
     """
     tree = ast.parse(source)
     prose = {
@@ -241,17 +381,36 @@ def _python_structural_strings(source):
         and isinstance(node.value, ast.Constant)
         and isinstance(node.value.value, str)
     }
-    return [
+
+    folded = []
+    consumed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and id(node) not in consumed:
+            value = _static_concat(node)
+            if value is not None:
+                folded.append(value)
+                for part in ast.walk(node):
+                    consumed.add(id(part))
+
+    return folded + [
         node.value
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and id(node) not in prose
+        and id(node) not in consumed
     ]
 
 
 def _json_structural_strings(source):
-    """Strings in a JSON document that are not prose written for a human."""
+    """Strings in a JSON document that are not prose written for a human.
+
+    A prose key covers its own string value and nothing else. It is not
+    inherited by the members of a list or an object underneath it:
+    ``{"description": ["dim_cost_center"]}`` is a list of strings that happens
+    to sit under a prose name, and there is no reason to believe a human wrote
+    it as a sentence.
+    """
     out = []
 
     def walk(node, key):
@@ -261,7 +420,7 @@ def _json_structural_strings(source):
                 walk(v, k)
         elif isinstance(node, list):
             for item in node:
-                walk(item, key)
+                walk(item, None)
         elif isinstance(node, str) and key not in PROSE_JSON_KEYS:
             out.append(node)
 
@@ -269,20 +428,37 @@ def _json_structural_strings(source):
     return out
 
 
-#: Comment syntaxes stripped from files we have no parser for.
-_COMMENT_PATTERNS = (
-    re.compile(r"/\*.*?\*/", re.DOTALL),   # /* ... */
-    re.compile(r"<!--.*?-->", re.DOTALL),  # <!-- ... -->
-    re.compile(r"//[^\n]*"),               # // to end of line
-    re.compile(r"#[^\n]*"),                # # to end of line
-)
-
-
 def _text_structural_strings(source):
-    """Everything left in an unparsed file once its comments are gone."""
-    for pattern in _COMMENT_PATTERNS:
-        source = pattern.sub(" ", source)
+    """An unparsed file, whole.
+
+    Nothing is stripped. There is no comment syntax shared by JS, CSS, HTML,
+    XML, Markdown and plain text, and the guard that pretended there was went
+    blind on 78% of the tree — a ``#`` is a hex colour, a ``//`` is a URL. A
+    comment that genuinely needs to name a dimension carries ``PROSE_ESCAPE``.
+    """
     return [source]
+
+
+def redact_prose_escapes(source):
+    """Split `source` into (text to scan, Counter of names read as prose).
+
+    A line carrying ``PROSE_ESCAPE`` has its dimension names replaced with a
+    placeholder — a real identifier, so the line stays parseable as Python or
+    JSON — and those names are returned instead, to be declared and counted.
+
+    The marker covers its whole line, so a structural use sharing a line with
+    a marked sentence would be hidden too. That is not a loophole in the dark:
+    putting the marker there is a deliberate edit, and the occurrence it hides
+    still has to be declared in ``DECLARED_PROSE_MENTIONS`` with a reason.
+    """
+    escaped = collections.Counter()
+    lines = []
+    for line in source.split("\n"):
+        if PROSE_ESCAPE in line:
+            escaped.update(DIMENSION_LITERAL.findall(line))
+            line = DIMENSION_LITERAL.sub(_PROSE_PLACEHOLDER, line)
+        lines.append(line)
+    return "\n".join(lines), escaped
 
 
 def scan_source(relpath, source):
@@ -291,6 +467,8 @@ def scan_source(relpath, source):
     Keyed by ``(relpath, literal)`` — not by line number, which would make the
     allow-list churn on every unrelated edit above it.
     """
+    source, _escaped = redact_prose_escapes(source)
+
     if relpath.endswith(".py"):
         strings = _python_structural_strings(source)
     elif relpath.endswith(".json"):
@@ -305,6 +483,14 @@ def scan_source(relpath, source):
     return found
 
 
+def scan_escapes(relpath, source):
+    """The occurrences ``PROSE_ESCAPE`` hid in one file, as a Counter."""
+    _source, escaped = redact_prose_escapes(source)
+    return collections.Counter(
+        {(relpath, literal): count for literal, count in escaped.items()}
+    )
+
+
 def scan_tree():
     """Structural occurrences across everything konsol ships."""
     found = collections.Counter()
@@ -312,6 +498,28 @@ def scan_tree():
         with open(os.path.join(REPO_ROOT, relpath), encoding="utf-8") as fh:
             source = fh.read()
         found.update(scan_source(relpath, source))
+    return found
+
+
+def scan_escapes_tree():
+    """Every occurrence ``PROSE_ESCAPE`` hides, across everything konsol ships."""
+    found = collections.Counter()
+    for relpath in shipped_files():
+        with open(os.path.join(REPO_ROOT, relpath), encoding="utf-8") as fh:
+            source = fh.read()
+        found.update(scan_escapes(relpath, source))
+    return found
+
+
+def shipped_suffixes():
+    """Every file suffix konsol ships, excluding the declared exclusions."""
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(os.path.join(REPO_ROOT, SHIPPED_ROOT)):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_DIR_NAMES)
+        for filename in sorted(filenames):
+            relpath = os.path.relpath(os.path.join(dirpath, filename), REPO_ROOT)
+            if not _is_excluded(relpath):
+                found.add(os.path.splitext(filename)[1].lower())
     return found
 
 
@@ -407,6 +615,46 @@ def test_literal_allow_list_is_not_stale():
     )
 
 
+def test_every_prose_escape_in_the_tree_is_declared():
+    rows = unallowed_literals(scan_escapes_tree(), DECLARED_PROSE_MENTIONS)
+    assert rows == [], (
+        "konsol#287: a shipped line carries the " + PROSE_ESCAPE + " marker "
+        "for a dimension name nobody declared. The marker makes the escape "
+        "visible at the site; DECLARED_PROSE_MENTIONS is what counts it. Add "
+        "the entry with the reason the mention is a sentence and not a "
+        "fieldname — or take the marker off and fix the code:\n"
+        + _literal_report(rows)
+    )
+
+
+def test_prose_escape_declarations_are_not_stale():
+    rows = stale_literals(scan_escapes_tree(), DECLARED_PROSE_MENTIONS)
+    assert rows == [], (
+        "konsol#287: a declared prose escape no longer exists in the tree. An "
+        "escape left on the list is a licence for the next person to be quiet "
+        "with. Lower the count, or delete the entry:\n"
+        + "\n".join(
+            f"  {relpath}: {literal} declared x{was}, found x{now}"
+            for relpath, literal, was, now in rows
+        )
+    )
+
+
+def test_no_shipped_text_suffix_escapes_the_scan():
+    """The silent hole: a suffix in neither list is simply never opened. A
+    first ``.sql`` or ``.yml`` arriving should fail the build, not vanish."""
+    unclassified = sorted(
+        shipped_suffixes() - set(SCANNED_SUFFIXES) - NON_SOURCE_SUFFIXES
+    )
+    assert unclassified == [], (
+        "konsol#287: konsol now ships file types this guard neither scans nor "
+        "declares to be assets, so a hardcoded dimension in one of them would "
+        "be invisible. Add each to SCANNED_SUFFIXES, or to NON_SOURCE_SUFFIXES "
+        "if it is bytes a human never wrote a fieldname into:\n  "
+        + "\n  ".join(unclassified)
+    )
+
+
 def test_shipped_code_has_no_unallowed_dimension_paths():
     rows = sorted(scan_paths() - set(ALLOWED_DIMENSION_PATHS))
     assert rows == [], (
@@ -462,6 +710,93 @@ def test_js_data_key_is_caught():
     assert found[("konsol/thing.js", "dim_cost_center")] == 1
 
 
+def test_digit_bearing_dimension_is_caught():
+    """``^dim_[a-z0-9_]+$`` is the column rule the product enforces, so
+    ``dim_2024_region`` is a name a customer can legally declare. A pattern
+    demanding a letter after the prefix was blind to every one of them."""
+    found = scan_source("konsol/thing.py", 'DDL = "dim_2024_region String"\n')
+    assert found[("konsol/thing.py", "dim_2024_region")] == 1
+
+
+def test_python_static_concatenation_is_caught():
+    """The one assembled name that is decidable: nothing about it is runtime.
+    Folded and reported once — as the name, not as its pieces."""
+    source = 'COLUMN = "dim_" + "cost_center"\n'
+    assert scan_source("konsol/thing.py", source) == collections.Counter(
+        {("konsol/thing.py", "dim_cost_center"): 1}
+    )
+
+
+def test_python_implicit_concatenation_is_caught():
+    source = 'COLUMN = ("dim_" "department")\n'
+    assert scan_source("konsol/thing.py", source) == collections.Counter(
+        {("konsol/thing.py", "dim_department"): 1}
+    )
+
+
+def test_json_list_under_a_prose_key_is_caught():
+    """A prose key covers its own string value, not the members of a list
+    beneath it. ``{"description": ["dim_cost_center"]}`` is data wearing a
+    prose name."""
+    source = '{"description": ["dim_cost_center"]}'
+    found = scan_source("konsol/thing.json", source)
+    assert found[("konsol/thing.json", "dim_cost_center")] == 1
+
+
+# --- the hole this guard was built with: a '#' made it blind ---------------
+# Both of these are the measured defeats, run against the real tree before the
+# fix, reduced to one line each. `#` is a hex colour and an id selector, `//`
+# is in every URL, and the old scanner called all three "comment" and blanked
+# the rest of the line — 78% of the shipped unparsed text, 96.4% of the CSS.
+
+def test_hex_colour_does_not_hide_a_data_key():
+    """Defeat A, reduced: appending to any konsol_exec.js line containing a
+    '#' put two hardcoded dimensions into shipped JS with 26/26 still green."""
+    source = (
+        'var u = "https://vuejs.org/error-reference/#runtime";'
+        ';data.dim_cost_center=String(cc);data.dim_department=String(d);\n'
+    )
+    found = scan_source("konsol/public/konsol_exec/konsol_exec.js", source)
+    key = "konsol/public/konsol_exec/konsol_exec.js"
+    assert found[(key, "dim_cost_center")] == 1
+    assert found[(key, "dim_department")] == 1
+
+
+def test_hex_colour_earlier_on_the_line_does_not_hide_a_data_key():
+    """Defeat B, reduced: a whole new shipped file passed the guard."""
+    source = 'var theme = "#0b5fff"; data.dim_cost_center = String(cc);\n'
+    found = scan_source("konsol/public/probe_guard.js", source)
+    assert found[("konsol/public/probe_guard.js", "dim_cost_center")] == 1
+
+
+def test_url_does_not_hide_a_data_key():
+    source = 'fetch("https://erp.example.com/api").then(r => r.dim_department);\n'
+    found = scan_source("konsol/thing.js", source)
+    assert found[("konsol/thing.js", "dim_department")] == 1
+
+
+def test_css_id_selector_does_not_hide_a_dimension():
+    source = '#grid td[data-col="dim_cost_center"] { color: #0b5fff; }\n'
+    found = scan_source("konsol/thing.css", source)
+    assert found[("konsol/thing.css", "dim_cost_center")] == 1
+
+
+def test_html_fragment_link_does_not_hide_a_dimension():
+    source = '<a href="//cdn.example.com/help#dims">x</a><td>dim_business_unit</td>\n'
+    found = scan_source("konsol/thing.html", source)
+    assert found[("konsol/thing.html", "dim_business_unit")] == 1
+
+
+def test_js_comment_mention_is_caught_without_the_escape():
+    """The deliberate trade. No language's comment syntax is stripped any
+    more, so an unmarked mention in a JS comment now fires. The cost is one
+    greppable marker; the benefit is that nothing in an unparsed file can
+    hide behind a character that only looks like a comment."""
+    source = "// e.g. dim_cost_center is sent as a data key\nvar x = 1;\n"
+    found = scan_source("konsol/thing.js", source)
+    assert found[("konsol/thing.js", "dim_cost_center")] == 1
+
+
 # --- and leaves prose alone (synthetic content) ---------------------------
 # A guard that eats documentation gets deleted by the first person it annoys,
 # and takes the real rule with it.
@@ -495,9 +830,96 @@ def test_json_description_mention_is_not_caught():
     assert scan_source("konsol/thing.json", source) == collections.Counter()
 
 
-def test_js_comment_mention_is_not_caught():
-    source = "// e.g. dim_cost_center is sent as a data key\nvar x = 1;\n"
+def test_js_comment_mention_with_the_escape_is_not_caught():
+    source = (
+        "// e.g. dim_cost_center is sent as a data key (konsol#287-prose)\n"
+        "var x = 1;\n"
+    )
     assert scan_source("konsol/thing.js", source) == collections.Counter()
+
+
+def test_a_user_facing_message_can_name_an_example_with_the_escape():
+    """The wrong-direction failure this fixes. A msgprint argument is a
+    structural string to the AST and a sentence to the person reading it;
+    without an escape the guard makes the product's error messages vaguer.
+    konsol/dimension.py already omits a concrete example name for this reason."""
+    source = (
+        'def f():\n'
+        '    frappe.msgprint("Add a column such as dim_cost_center")'
+        '  # konsol#287-prose\n'
+    )
+    assert scan_source("konsol/thing.py", source) == collections.Counter()
+
+
+def test_shipped_help_text_can_name_an_example_with_the_escape():
+    source = '<p>Name the column dim_cost_center.</p><!-- konsol#287-prose -->\n'
+    assert scan_source("konsol/help.html", source) == collections.Counter()
+
+
+def test_the_escape_reports_what_it_hid():
+    """An escape is not silence. Whatever it covers comes back out here, to be
+    declared and counted."""
+    source = 'X = "dim_cost_center"  # konsol#287-prose\n'
+    assert scan_escapes("konsol/thing.py", source) == collections.Counter(
+        {("konsol/thing.py", "dim_cost_center"): 1}
+    )
+
+
+def test_an_unescaped_line_hides_nothing():
+    source = 'X = "dim_cost_center"\n'
+    assert scan_escapes("konsol/thing.py", source) == collections.Counter()
+
+
+def test_the_escape_only_covers_its_own_line():
+    source = (
+        'A = "dim_cost_center"  # konsol#287-prose\n'
+        'B = "dim_department"\n'
+    )
+    assert scan_source("konsol/thing.py", source) == collections.Counter(
+        {("konsol/thing.py", "dim_department"): 1}
+    )
+
+
+def test_redaction_leaves_python_parseable():
+    """The placeholder is a real identifier, so redacting a bare name — not a
+    string — cannot turn a scannable file into a syntax error."""
+    redacted, escaped = redact_prose_escapes(
+        "dim_cost_center = 1  # konsol#287-prose\n"
+    )
+    ast.parse(redacted)
+    assert "dim_cost_center" not in redacted
+    assert escaped == collections.Counter({"dim_cost_center": 1})
+
+
+def test_undeclared_escape_is_reported():
+    """The escape is checked by the same machinery as the debt: an escape
+    nobody wrote down is a hole, and fails the run."""
+    found = collections.Counter({("konsol/thing.js", "dim_cost_center"): 1})
+    assert unallowed_literals(found, {}) == [
+        ("konsol/thing.js", "dim_cost_center", 1, 0)
+    ]
+
+
+def test_declared_escape_whose_prose_is_gone_is_reported_as_stale():
+    declared = {("konsol/thing.js", "dim_cost_center"): (1, "konsol#287 prose")}
+    assert stale_literals(collections.Counter(), declared) == [
+        ("konsol/thing.js", "dim_cost_center", 1, 0)
+    ]
+
+
+def test_dynamic_name_construction_is_a_declared_blind_spot():
+    """Named, not hidden. A name assembled from a variable is invisible to any
+    text scanner — and these spellings are also how the *cure* is written, so
+    they cannot be banned either. Only the fully static form is decidable, and
+    ``test_python_static_concatenation_is_caught`` covers it. This test exists
+    so the hole has a name somebody can grep for."""
+    for source in (
+        'C = "dim_" + name\n',
+        'C = "dim_%s" % name\n',
+        'C = f"dim_{name}"\n',
+        'C = "_".join(["dim", name])\n',
+    ):
+        assert scan_source("konsol/thing.py", source) == collections.Counter(), source
 
 
 def test_machinery_identifiers_are_not_caught():
@@ -576,6 +998,12 @@ def test_every_literal_allowance_cites_an_issue():
     for key, (count, why) in sorted(ALLOWED_DIMENSION_LITERALS.items()):
         assert count > 0, f"{key}: an allowance of zero is not an allowance"
         assert "konsol#" in why, f"{key}: no issue cited for this allowance"
+
+
+def test_every_prose_declaration_gives_a_reason():
+    for key, (count, why) in sorted(DECLARED_PROSE_MENTIONS.items()):
+        assert count > 0, f"{key}: a declaration of zero declares nothing"
+        assert len(why) > 20, f"{key}: no reason given for reading this as prose"
 
 
 def test_every_path_allowance_cites_an_issue():
