@@ -47,8 +47,17 @@ copy in).
   into the container OUTSIDE the bind mount (`/home/frappe/dbt_project` IS the
   deploy checkout). `chown -R frappe:frappe` the copy, or dbt exits 2 with no
   output. Require the literal `OK created` line; CI's `dbt parse` does not
-  validate SQL. A full `dbt build` skips the consolidation chain, so use
-  `dbt run --select +<model>+ --exclude gold_spread_budget+`.
+  validate SQL. A full `dbt build` now runs the consolidation chain: measured 21 Sep 2026 on
+  `main`, **PASS=319 WARN=2 ERROR=0 SKIP=0 in 19.85s** (24s wall), with
+  `gold_consolidated_trial_balance` and `gold_fully_consolidated_tb` both
+  built. The old advice here — that a full build skips the chain, so scope it
+  with `dbt run --select +<model>+` — was true when error-severity tests were
+  failing and dbt skipped their children; it is not true now, and following it
+  costs a workaround nobody needs. Scope a build to save time, not to reach
+  the chain: three deal-layer models are 53% of the run
+  (`gold_business_combination_journal` 5.5s, `gold_business_disposal_journal`
+  2.9s, `gold_ic_reconciliation` 2.1s), while
+  `gold_consolidated_trial_balance` itself takes 0.21s.
 
 ## Frappe rules that have bitten this project
 
