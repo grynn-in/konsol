@@ -128,3 +128,25 @@ def execute():
 
     if frappe.db.table_exists("Build Model"):
         frappe.db.delete("Build Model", {"name": ["in", _RETIRED_BUILD_MODELS]})
+
+    # The desk navigation is the last thing pointing at the deleted doctypes.
+    # Deleting a DocType does not touch the Workspace rows that link to it, so
+    # /app/konsolidat threw "DocType Allocation Run not found" on every load
+    # and still rendered an "Allocation Runs" tile: measured on konsolidat.local
+    # as tabWorkspace Shortcut idx 5 and tabWorkspace Link idx 32/33/34, with
+    # 0 rows in tabDocType for all three names. Same shape as the DROP TABLEs
+    # above — delete_doc leaves something behind, so the patch clears it.
+    #
+    # dashboard.py now rebuilds on its own when a linked doctype disappears,
+    # which covers a site migrating from here on. This call is for sites that
+    # already ran this patch: patches do not rerun, so their workspace would
+    # keep the dead links until some unrelated layout change happened to
+    # trigger a rebuild.
+    #
+    # force=True because setup_workspace() only rebuilds when it decides a
+    # refresh is needed; and this runs LAST, after the four DocTypes are gone,
+    # because _create_workspace filters its entries through _dt() — rebuilding
+    # any earlier would put the allocation links straight back.
+    from konsol.dashboard import setup_workspace
+
+    setup_workspace(force=True)
