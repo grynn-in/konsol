@@ -19,6 +19,8 @@ LIFECYCLE = os.path.join(APP_DIR, "schema_lifecycle.py")
 INSTALL = os.path.join(APP_DIR, "install.py")
 JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
 DBT_JOB = "konsol.tasks.run_dbt_build_async"
+# schema_apply._tb_table_columns reads the raw table's columns back (konsol#255).
+CH_INTROSPECTION = "SELECT name FROM system.columns"
 
 # frappe.enqueue's own parameters: none of them may be a job kwarg.
 _ENQUEUE_OWN = {"method", "queue", "timeout", "event", "is_async", "job_name", "now",
@@ -275,7 +277,7 @@ def _module(name, path):
     return mod
 
 
-def _run_publish(touched, enqueued, created=None):
+def _run_publish(touched, enqueued, created=None, ch=None):
     """apply_and_rebuild with the real konsol.schema_apply / schema_lifecycle
     (and any konsol module they import), against a frappe that records, and
     refuses, everything the Custom Field sync or a commit would touch. So an
@@ -361,6 +363,37 @@ def test_apply_and_rebuild_touches_no_custom_field_and_never_commits():
     assert _run_publish(touched, enqueued) == "BAPR-TEST"
     assert touched == [], f"the publish's transaction reached the sync or a commit: {touched}"
     assert [m for m, _ in enqueued] == [JOB]
+
+
+def test_publish_runs_only_schema_ddl_against_clickhouse():
+    """What the publish path is ALLOWED to say to ClickHouse — and nothing else.
+
+    konsol#255 put the trial-balance dim_* column sync into apply_schema's
+    steps, so a publish does now reach ClickHouse. That is schema DDL and it
+    belongs here, so the stub serves it rather than refusing it outright —
+    and this test is what replaces the refusal as the guard. Serving it
+    unobserved would leave nothing watching: a change that started reading or
+    writing the warehouse from inside the publish would sail through.
+    """
+    touched, enqueued, ch = [], [], []
+    assert _run_publish(touched, enqueued, ch=ch) == "BAPR-TEST"
+
+    # Schema DDL only. No data SELECT, no INSERT, no warehouse read.
+    for statement in ch:
+        head = " ".join(statement.split())
+        assert head.startswith(CH_INTROSPECTION) or head.startswith("ALTER TABLE "), (
+            f"the publish said something other than schema DDL to ClickHouse: {head}")
+
+    # The one statement an empty declared set implies: the sync has to read
+    # back what is on the raw table before it can decide there is nothing to do.
+    selects = [s for s in ch if " ".join(s.split()).startswith(CH_INTROSPECTION)]
+    assert len(selects) == 1, ch
+    assert "trial_balance_submissions" in selects[0], selects
+
+    # Nothing is declared in this fixture, so no column may be added OR
+    # dropped. A publish that altered the table on an empty declared set
+    # would be dropping a customer's dimension columns.
+    assert [s for s in ch if " ".join(s.split()).startswith("ALTER")] == [], ch
 
 
 def test_apply_and_rebuild_marks_the_build_approval_full_refresh():
