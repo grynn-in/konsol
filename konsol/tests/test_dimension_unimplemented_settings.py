@@ -323,6 +323,16 @@ def test_the_in_trial_balance_flag_is_read_the_way_the_intake_reads_it():
 # --- the flag reading is imported, not restated -------------------------
 
 
+def _mentions_field(node):
+    """Whether `node`'s source names the field — under either spelling.
+
+    The controller reaches it through a module constant (``SURVIVES_CLOSE``)
+    rather than a bare literal, which is the right shape and is why this is
+    matched case-insensitively rather than as the fieldname verbatim.
+    """
+    return FIELD in ast.unparse(node).lower()
+
+
 def _validate_node():
     node = next(
         (n for n in ast.walk(TREE)
@@ -336,7 +346,7 @@ def test_survives_close_is_read_with_the_shared_is_on():
     reads = [
         ast.unparse(call) for call in ast.walk(_validate_node())
         if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-        and call.func.id == "_is_on" and FIELD in ast.unparse(call)
+        and call.func.id == "_is_on" and _mentions_field(call)
     ]
     assert reads, (
         f"validate must read {FIELD} with tb_dimension_model._is_on; no such "
@@ -348,13 +358,13 @@ def test_survives_close_is_not_read_with_bool_or_truthiness():
     for call in ast.walk(_validate_node()):
         if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
                 and call.func.id == "bool"):
-            assert FIELD not in ast.unparse(call), (
+            assert not _mentions_field(call), (
                 f"validate reads {FIELD} with bool(): {ast.unparse(call)}")
     for test in ast.walk(_validate_node()):
         if not isinstance(test, (ast.If, ast.IfExp)):
             continue
         cond = ast.unparse(test.test)
-        if FIELD in cond:
+        if _mentions_field(test.test):
             assert "_is_on" in cond, (
                 f"validate branches on {FIELD} without _is_on: {cond}")
 
