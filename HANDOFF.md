@@ -16,11 +16,55 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 **Filed along the way, all open:** konsolidat#241 (a restore smoke test — back up a seeded site, restore it, assert a row count), **#243** (nine shell scripts have no portability guard; do it with shellcheck, not another hand-written parser), **#244** (the Frappe image is never built in CI, so nothing can guard what it contains).
 
-**Two live findings recorded 22 Sep, not yet filed.**
+**Two live findings recorded 22 Sep. Five issues came out of them, all open.**
 
 *Budget and forecast.* Every budget table on the live site is empty — `budget_annual_input`, `budget_monthly_input`, `gold_spread_budget`, `gold_budget_at_hierarchy_node`, `silver_budget_entries`, all 0 rows. `gold_variance_analysis` holds 47,308 rows (the trial-balance count) with `budget_amount` NULL in all of them. **That is correct output, not a defect (Deepak, 22 Sep): no budget means budget zero, so unbudgetted actuals are an adverse variance.** What is undecided is the other side: konsol *refuses* such a read (`"No active budget scenario belongs to FY{year}"`) while Cube, Excel ODBC and any direct ClickHouse reader see the correct adverse variance. Same data, two answers by door. Also: **there is no budget intake** — no upload, no `budget_bulk.py`; budget arrives cell-by-cell through the Excel add-in or hand-typed in the Desk. And **forecast is not a thing to build**: no doctype, no model, no table, no Dataset with `scenario_key: "forecast"`, so a flat forecast read is refused; `HIERARCHY_SCENARIO_CONFIG["forecast"]` is byte-identical to `["budget"]`. konsol#106 is a decision, not a build.
 
 *konsol-exec.* A full task inventory was taken from the code. **What it does that the Frappe Desk cannot is three things:** set a build's stage range (`from_stage`/`to_stage` are enqueue arguments, not fields on `Pipeline Run`), the live step rail with per-step Retry/Resume, and the one-file-many-entities TB loader. Everything else has a Desk equivalent, and much of the app *is* the Desk — every month-queue action is `window.open('/app/…')`. Of ~30 xstate states across its five machines (not six), **five** reflect server state; `closeMachine` (338 lines) has none. Defects found and not yet filed: five writes reachable by GET (`send_reminder`, `start_run`, `retry_step`, `resume_run`, `cancel_run` — three of which defeat the rollback with an explicit commit); three reads with no role guard at all (`get_snapshot`, `get_run_detail`, `get_run` — any authenticated user can read run console logs and every process's blockers); a green toast saying "Reminder sent" when `send_reminder` only writes a log line; the closed-period guard is dead because the app sends neither `fiscal_year` nor `fiscal_period`; two buttons labelled "Build" that create materially different runs; `runExecMachine` and `runDetailMachine` have zero tests.
+
+**Filed 22 Sep, from reading the demo rather than the code.** Opening
+`/konsol-exec/2025/0` beside `/konsol-exec/2025/1` showed two byte-identical
+pages, and pulling that thread produced five issues, two of which outrank most
+of what is on konsol#216's triage:
+
+- **konsol#289 — a valid trial balance for an entity with no ownership period is
+  accepted, then silently dropped.** Measured on the demo: 20 submitted, Valid
+  trial balances across `CA_OVIVO` (FY2025 P07-P12), `US_OVIVO` (same) and
+  `US_CHAMP` (FY2013-FY2020 P12). The close reports `41 of 306 in` for Jul 2025
+  while two of those entities submitted for that exact month — they are in
+  **neither the numerator nor the denominator**, because every count is scoped to
+  `in_close = leaves & covered` (`home_api.py:253`). The only trace is a queue
+  row reading "Ownership missing", which looks like a setup chore. This is data
+  loss with no signal, in accounting software.
+- **konsolidat#245 — nine of `gold_fully_consolidated_tb`'s ten layers hardcode
+  blank dimensions.** One `dim_select`, nine `dim_empty_strings`: IC eliminations
+  (both legs), CTA, top-side, equity method and all four deal journals. So
+  slicing the consolidated TB by any dimension returns **entity balances only**,
+  and every adjustment falls in the `''` bucket. Separately,
+  `gold_tb_at_hierarchy_node` reads `gold_trial_balance` — the entity-level fact —
+  so a management hierarchy never meets an elimination at all. **This is a
+  decision, not a defect**: three candidate policies are on the issue, and it must
+  be settled before konsol#292's child table is built.
+- **konsol#290** — `Ownership Period.consolidation_group` is required,
+  unvalidated free text, and part of the document name. A typo creates submitted
+  ownership that covers nothing, so the queue keeps saying "ownership missing"
+  while the record plainly exists.
+- **konsol#291** — the close queue renders one configuration gap as N recurring
+  monthly tasks. All 30 items on the demo are period-invariant (23 entities with
+  no ownership period at all, 5 date-anchored rates, 2 placeholders), and every
+  fix is a `window.open` into the Desk with no refetch.
+- **konsol#292** — `Consolidation Adjustment` is a journal line, not a journal:
+  one account with both a debit and a credit, and a two-sided entry is two
+  documents sharing a free-text `journal_id`. Nothing checks the journal balances
+  until a dbt test after the build, and the demo shows `Assertions: Not run`.
+  Submit approves one leg. Zero rows exist on either site, so the restructure is
+  free today and the warehouse contract does not change.
+
+**The demo's numbers, for whoever looks next.** 329 active non-group entities,
+306 with ownership covering the month, 23 without. At most 41 of the 306 have
+ever delivered a trial balance (FY2024 P12 and FY2025 P07-P12); every other
+period reads `0 of 306 in`. So the close is permanently red for reasons that are
+mostly data, not code.
 
 
 ## Decisions register
