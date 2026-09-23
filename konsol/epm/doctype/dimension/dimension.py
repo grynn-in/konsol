@@ -12,6 +12,16 @@ from konsol.schema_lifecycle import apply_and_rebuild, check_epm_admin
 from konsol.tb_dimension_model import FLAG, _is_on, is_legal_dimension_name
 
 
+#: The setting whose ON branch konsol declares and has not built. Named here
+#: rather than spelled inline so the refusal below and its deletion are one
+#: grep apart. See ``_refuse_unimplemented_survives_close``.
+SURVIVES_CLOSE = "survives_close"
+
+#: The field's label, as the form shows it. The message quotes this, not the
+#: fieldname: the label is the only name of this setting an admin has seen.
+SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
+
+
 class Dimension(Document):
 
     def validate(self):
@@ -68,6 +78,34 @@ class Dimension(Document):
         admin's behalf would let ``dim_Cost_Center`` and ``dim_cost_center``
         collapse onto one column and put two dimensions' values in one place —
         a silent-data bug worse than the refusal it would replace.
+
+        Then refuse ``survives_close = 1``, which konsol declares and has not
+        built. TEMPORARY: DELETE this refusal, its message and its tests when
+        the year-end close learns to carry dimension values onto retained
+        earnings (konsol#255). Until then the close implements the OFF branch
+        only — the P&L collapses into one undimensioned retained-earnings row,
+        23 September 2026, Deepak Pai — and nothing in konsol reads the field,
+        so a ticked box changes no number anywhere. The field's
+        ``depends_on: eval:doc.in_trial_balance`` cannot prevent that: it is
+        form-level, and a patch, fixture, REST call or data import persists
+        the tick without passing through a form at all. konsol#247's rule
+        applies — refuse, or report; never accept and ignore — and refusing is
+        the half that belongs at the point of entry.
+
+        The message says the feature is unbuilt rather than the value invalid,
+        because the admin did not mistype: they asked for something real that
+        konsol declares and does not provide, and are owed both that fact and
+        what the close does in the meantime. The tick is refused, never
+        cleared, for the same reason the name is never corrected: a box that
+        quietly unticks itself is the silent no-op wearing a different hat.
+
+        Scoped to ``in_trial_balance`` with the early return above, which does
+        double duty here. Outside the trial balance the setting is not unbuilt
+        but meaningless — no ``dim_`` column, no close touching the dimension,
+        and the field not even shown — and refusing there would trap a site
+        that already holds a ticked one: unticking ``in_trial_balance`` is a
+        save, and so is ``unpublish()``, so the stale tick could neither be
+        walked away from nor retired.
         """
         if not _is_on(getattr(self, FLAG, 0)):
             # Not declared for the trial balance: no dim_ column is created
@@ -97,6 +135,27 @@ class Dimension(Document):
                 f"prefix is required. konsol will not lower-case or trim the "
                 f"name for you, because two dimensions differing only in case "
                 f"would end up sharing one column.",
+                frappe.ValidationError,
+            )
+
+        # The flag is read with the intake's ``_is_on``, not ``bool()``: a
+        # Check that arrived through JSON, CSV or REST carries the TEXT "0",
+        # which is truthy in Python, so a bool() reading would refuse the
+        # saves of rows whose box is plainly empty.
+        if _is_on(getattr(self, SURVIVES_CLOSE, 0)):
+            frappe.throw(
+                f"{SURVIVES_CLOSE_LABEL} is not implemented yet, so konsol "
+                f"will not store it ticked. Nothing is wrong with what you "
+                f"asked for — the option is real and the field is shipped on "
+                f"purpose — but no part of konsol reads it. The year-end "
+                f"close currently zeroes every P&L balance into a single row "
+                f"of retained earnings that carries no dimension values at "
+                f"all, whatever this box says, so saving it ticked would "
+                f"leave you with a setting that changes no number anywhere. "
+                f"Untick {SURVIVES_CLOSE_LABEL} and leave it off until the "
+                f"close is built to honour it (konsol#255); when that lands, "
+                f"this refusal is deleted and the box will mean what its "
+                f"label says.",
                 frappe.ValidationError,
             )
 
