@@ -33,10 +33,13 @@ The controller is loaded by file path with stubbed frappe/konsol modules (the
 pattern test_dimension_name_validation.py established). The stub ``Document``
 does what Frappe's ``Document.save`` does in the order Frappe does it
 (frappe/model/document.py, ``_save``/``insert``): load the stored row as the
-doc-before-save (none on insert), run ``validate`` and ``before_save``, write
-the row, then run ``on_update``. A stub that skipped ``on_update`` could not
-see a controller hook at all, and one that skipped the doc-before-save could
-not see a transition.
+doc-before-save (none on insert), run ``before_validate``, ``validate`` and
+``before_save``, reset the autoname field to the name (``_sync_autoname_field``
+in ``_validate``), write the row with Frappe's Check cast (``1 if cint(value)
+else 0``, ``get_valid_dict``), then run ``on_update``. A stub that skipped
+``on_update`` could not see a controller hook at all, one that skipped the
+doc-before-save could not see a transition, and one that skipped the cast or
+the autoname reset would pass tests about values that never land.
 """
 import copy
 import importlib.util
@@ -82,6 +85,21 @@ _FIELDS = (
     "in_trial_balance", "survives_close", "allocation_role",
     "permission_doctype", "status",
 )
+
+
+#: dimension.json's Check fields.
+_CHECK_FIELDS = ("in_budget", "in_trial_balance", "survives_close")
+
+
+def _cint(value):
+    """frappe.utils.cint: int(), then int(float()), else 0."""
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return 0
 
 
 def _check_epm_admin():
@@ -143,10 +161,18 @@ class _Doc:
             name = self.name
             before = _Row(copy.deepcopy(_STORE[name]))
         self._doc_before_save = before
+        self._run("before_validate")
         self._run("validate")
         self._run("before_save")
         self.name = name
-        _STORE[name] = {f: getattr(self, f, None) for f in _FIELDS}
+        # _validate -> _sync_autoname_field: autoname is field:dimension_name,
+        # so an edited dimension_name is put back to the name before the write.
+        self.dimension_name = name
+        row = {f: getattr(self, f, None) for f in _FIELDS}
+        for f in _CHECK_FIELDS:
+            # get_valid_dict: what db_insert / db_update actually write.
+            row[f] = 1 if _cint(row[f]) else 0
+        _STORE[name] = row
         self._run("on_update")
         return self
 
@@ -241,14 +267,14 @@ import konsol.config_service as config_service  # noqa: E402  (after the stubs)
 NAME = "dim_region"
 
 #: The fields apply_schema_for_publish reads off a Published Dimension, and a
-#: legal new value for each. Where each is read:
+#: legal new value for each. dimension_name is read too, but a save cannot
+#: change it: Frappe resets it to the name (test below). Where each is read:
 #:   dimension_name, source_column, label, cube_type, in_budget,
 #:     allocation_role -> dbt_config._build_dimensions_vars (var('dimensions'))
 #:   dimension_name, cube_type -> schema_apply._apply_clickhouse_columns
 #:   dimension_name, in_trial_balance -> schema_apply._sync_tb_dimension_columns
 #:   dimension_name, label, in_budget -> schema_apply._sync_budget_custom_fields
 SCHEMA_EDITS = {
-    "dimension_name": "dim_area",
     "source_column": "RegionCode",
     "label": "Sales Region",
     "cube_type": "number",
@@ -556,3 +582,63 @@ def test_a_bundle_with_survives_close_off_is_accepted():
     config_service.upsert_dimension(
         _tb_spec("Draft", in_trial_balance=1, survives_close="0"))
     assert _STORE[NAME]["survives_close"] == 0, _STORE[NAME]
+
+
+# --- what lands is what is compared (review of #296) ----------------------
+#
+# Frappe writes a Check as ``1 if cint(value) else 0``, so the text "true" or
+# "yes" lands as 0, while the controller's validate reads the same value with
+# the intake's _is_on, as ticked. Comparing with one reading and storing with
+# another let a Published in_budget flip 1 -> 0 with no apply, and requested
+# a rebuild for a "true" that stored 0. The controller now writes every Check
+# as its _is_on reading before anything reads it, so validate, the change
+# detector and the stored row all agree.
+
+
+def test_check_text_true_on_a_published_dimension_lands_ticked_and_applies():
+    _reset()
+    doc = _stored("Published", in_budget=0)
+    doc.in_budget = "true"
+    doc.save()
+    assert _STORE[NAME]["in_budget"] == 1, _STORE[NAME]
+    assert _REBUILDS == [(NAME, "Publish")], _REBUILDS
+
+
+def test_check_text_true_over_a_stored_one_is_no_change():
+    _reset()
+    doc = _stored("Published", in_budget=1)
+    doc.in_budget = "true"
+    doc.save()
+    assert _STORE[NAME]["in_budget"] == 1, _STORE[NAME]
+    assert _REBUILDS == [], _REBUILDS
+
+
+def test_upsert_in_budget_as_text_yes_lands_ticked():
+    _reset()
+    _stored("Published", in_budget=1)
+    spec = _spec_for("Published")
+    spec["in_budget"] = "yes"
+    config_service.upsert_dimension(spec)
+    assert _STORE[NAME]["in_budget"] == 1, _STORE[NAME]
+    assert _REBUILDS == [], _REBUILDS
+
+
+def test_in_trial_balance_as_text_yes_is_ticked_in_validate_and_in_storage():
+    """validate refuses an illegal TB name when the flag is on; the row must
+    then carry the flag on too, or validate judged a dimension that is not the
+    one stored."""
+    _reset()
+    doc = _stored("Draft", in_trial_balance=0)
+    doc.in_trial_balance = "yes"
+    doc.save()
+    assert _STORE[NAME]["in_trial_balance"] == 1, _STORE[NAME]
+
+
+def test_editing_dimension_name_is_reverted_and_applies_nothing():
+    """autoname is field:dimension_name: Frappe puts the name back."""
+    _reset()
+    doc = _stored("Published")
+    doc.dimension_name = "dim_area"
+    doc.save()
+    assert _STORE[NAME]["dimension_name"] == NAME, _STORE[NAME]
+    assert _REBUILDS == [], _REBUILDS
