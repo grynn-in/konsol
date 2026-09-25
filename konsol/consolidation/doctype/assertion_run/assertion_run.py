@@ -41,15 +41,18 @@ def _assert_year_declared(fiscal_year):
 NEW_RUN_BLANK_FIELDS = (
     "total", "passed", "failed", "errored", "warned",
     "signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
-    "warnings_at_signoff", "started_at", "completed_at", "duration_seconds", "log",
+    "warnings_at_signoff", "affected_by", "started_at", "completed_at", "duration_seconds",
+    "log",
 )
 
 
 #: Sign-off fields: only sign_off_close writes them (A48). Measured live 25 Sep
 #: 2026 (A22): frappe.client.set_value by the Close Lead stored a forged
 #: "Signed Off" / "Overridden", and every gate reads signoff_status.
+#: affected_by (A27) goes with them: it records why a run became "Re-sign
+#: Needed", so it changes only with signoff_status, through the same writer.
 SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
-                  "acknowledgement", "warnings_at_signoff")
+                  "acknowledgement", "warnings_at_signoff", "affected_by")
 #: Result fields: only the worker (run_close_assertions) writes them (A48).
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
                  "started_at", "completed_at", "duration_seconds")
@@ -351,6 +354,11 @@ TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
 # counts as signed off — warnings do not block a close — but it is a distinct
 # state so a list of closes shows which were signed over outstanding warnings.
 SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
+# "Re-sign Needed" (A27; #303 point 4) is a run whose sign-off stopped counting
+# because an earlier period was reopened after it. It is NOT a signed state, so
+# latest_close_run users and assert_close_signed_off read it as unsigned, and
+# sign_off_close refuses it: the checks must run again (Problems 9).
+RE_SIGN_NEEDED = "Re-sign Needed"
 
 
 def latest_close_run(fiscal_year, fiscal_period):
@@ -443,6 +451,12 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
         frappe.throw(
             frappe._("Assertion Run {0} is already {1}.").format(close_run, doc.signoff_status),
             title=frappe._("Already signed off"))
+
+    if doc.signoff_status == RE_SIGN_NEEDED:
+        frappe.throw(
+            frappe._("An earlier period was reopened after this run: {0}. Run the checks again, "
+                     "then sign off the new run.").format(doc.affected_by),
+            title=frappe._("Sign-off blocked"))
 
     if doc.status in ("Queued", "Running"):
         frappe.throw(
