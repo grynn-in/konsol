@@ -147,3 +147,22 @@ test("a timestamp with no zone is refused, never read in the browser's zone (B09
   const payload = { state: "fresh", as_of: "2026-09-16T17:47:49.238943", pending: 0, changed_since: [], last_failed: null };
   assert.throws(() => freshnessView(payload, new Date("2026-09-25T12:00:00Z"), "Europe/London"), /time zone/i);
 });
+
+// konsol#305 B28: "1 changes" reads wrong.
+test("B28: pending 1 → '1 change pending' (singular)", () => {
+  const view = freshnessView(
+    { state: "pending", as_of: null, pending: 1, changed_since: [], last_failed: null },
+    NOW,
+    TZ,
+  );
+  assert.equal(view.text, "1 change pending");
+});
+
+test("B28: pending 2 → '2 changes pending' (plural)", () => {
+  const view = freshnessView(
+    { state: "pending", as_of: null, pending: 2, changed_since: [], last_failed: null },
+    NOW,
+    TZ,
+  );
+  assert.equal(view.text, "2 changes pending");
+});
