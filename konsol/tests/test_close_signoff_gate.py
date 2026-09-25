@@ -22,6 +22,7 @@ PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
+SIGNED = ("Signed Off", "Acknowledged", "Overridden")
 QUARTERS = {1: "Q1", 2: "Q1", 3: "Q1", 4: "Q2", 5: "Q2", 6: "Q2",
             7: "Q3", 8: "Q3", 9: "Q3", 10: "Q4", 11: "Q4", 12: "Q4"}
 
@@ -99,6 +100,7 @@ class _Site:
         }
         self.whitelisted = set()
         self.get_all_calls = []
+        self.signed_off_calls = []
 
 
 def _match(value, cond):
@@ -180,6 +182,21 @@ def _load(site):
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     run_mod = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     run_mod.TERMINAL_STATUSES = TERMINAL
+
+    def assert_close_signed_off(fiscal_year, fiscal_period):
+        # Stands for assertion_run.assert_close_signed_off (A23 wires it): the
+        # latest terminal run must be signed. Records each call.
+        site.signed_off_calls.append((fiscal_year, fiscal_period))
+        runs = sorted((r for r in site.records["Assertion Run"]
+                       if (r["fiscal_year"], r["fiscal_period"]) == (fiscal_year, fiscal_period)
+                       and r["status"] in TERMINAL),
+                      key=lambda r: (r["completed_at"], r["creation"]), reverse=True)
+        if not runs or runs[0]["signoff_status"] not in SIGNED:
+            throw("Close %s-%s is not signed off." % (fiscal_year, fiscal_period),
+                  title="Close sign-off required")
+        return runs[0]["name"]
+
+    run_mod.assert_close_signed_off = assert_close_signed_off
     konsol.close, konsol.fiscal_calendar, konsol.period_status = close, calendar, period_status
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -425,6 +442,76 @@ def test_a_non_regular_target_is_refused():
     with pytest.raises(Exception) as info:
         _call(site, "sign_off_problems", 2025, 13)
     assert "only Regular periods are signed off" in str(info.value), str(info.value)
+
+
+# --- assert_period_closable (konsol#305 A23; story 9.3) -----------------------
+
+def _closable(site, fy, fp, period_type="Regular"):
+    """(result, None) when closable, else (None, the exception)."""
+    try:
+        return _call(site, "assert_period_closable", fy, fp, period_type), None
+    except Exception as e:  # noqa: BLE001 - the stub's ValidationError
+        return None, e
+
+
+def test_closing_an_unsigned_regular_period_is_refused():
+    site = _Site()   # P09: no run at all
+    result, err = _closable(site, 2025, 9)
+    assert err is not None and "not signed off" in str(err), err
+    assert site.signed_off_calls == [(2025, 9)], site.signed_off_calls
+
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9, signoff="Not Signed Off"))
+    result, err = _closable(site, 2025, 9)
+    assert err is not None, "an unsigned run let the period close"
+
+    # Re-sign Needed does not count (P9).
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9, signoff="Re-sign Needed"))
+    result, err = _closable(site, 2025, 9)
+    assert err is not None, "a Re-sign Needed run let the period close"
+
+
+def test_closing_a_signed_regular_period_passes():
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9))
+    result, err = _closable(site, 2025, 9)
+    assert err is None, err
+    # The first close period itself is gated, not history.
+    site = _Site()
+    result, err = _closable(site, 2025, 7)
+    assert err is None, err
+    assert site.signed_off_calls == [(2025, 7)], site.signed_off_calls
+
+
+def test_a_history_period_closes_without_a_signoff():
+    site = _Site()   # first close P07; P06 and FY2024 are history, no runs
+    for fy, fp in ((2025, 6), (2025, 1), (2024, 12)):
+        result, err = _closable(site, fy, fp)
+        assert err is None, (fy, fp, err)
+    assert site.signed_off_calls == [], site.signed_off_calls
+
+
+def test_non_regular_periods_close_without_a_signoff():
+    site = _Site()
+    for fp, kind in ((13, "Closing"), (0, "Opening"), (14, "Adjustment")):
+        result, err = _closable(site, 2025, fp, kind)
+        assert err is None, (kind, err)
+    assert site.signed_off_calls == [], site.signed_off_calls
+
+
+def test_an_undeclared_first_close_refuses_the_close():
+    for settings in ({"first_close_fiscal_year": 0, "first_close_fiscal_period": 0},
+                     {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 0},
+                     {}):
+        site = _Site()
+        site.settings = settings
+        site.records["Assertion Run"].append(_run("RUN-9", 2025, 9))
+        result, err = _closable(site, 2025, 9)
+        assert err is not None, ("closed with first close undeclared", settings)
+        assert "Declare the first close period" in str(err), str(err)
+        assert "Close Settings" in str(err), str(err)
+        assert site.signed_off_calls == [], settings
 
 
 # --- shape --------------------------------------------------------------------
