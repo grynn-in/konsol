@@ -21,6 +21,7 @@ the same fields as the real one (no `warned`), so the count must be read.
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 from datetime import date, datetime
@@ -70,7 +71,8 @@ def _tb(entity, fp=9, on_behalf="No", owner=LEAD, docstatus=1):
 
 def _exc(entity, fp=9, reason="Dormant", docstatus=1):
     return {"name": "EXC-%s-%d" % (entity, fp), "data_area_id": entity, "fiscal_year": 2025,
-            "fiscal_period": fp, "docstatus": docstatus, "reason": reason, "declared_by": LEAD}
+            "fiscal_period": fp, "docstatus": docstatus, "reason": reason, "declared_by": LEAD,
+            "creation": datetime(2025, fp + 1, 3, 10, 0)}
 
 
 def _entity(name, frequency="Monthly"):
@@ -419,7 +421,51 @@ def test_unknown_on_behalf_value_is_refused_not_guessed():
 
 def test_exceptions_of_the_period_only():
     result = _get(_Site())
-    assert result["exceptions"] == [{"entity": "ZZE", "reason": "Dormant", "declared_by": LEAD}]
+    assert result["exceptions"] == [{"entity": "ZZE", "reason": "Dormant", "declared_by": LEAD,
+                                     "declared_on": "2025-10-03T10:00:00+01:00"}]
+
+
+# --- A55: every datetime carries the site's time zone ------------------------------
+
+_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+_OFFSET = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+
+
+def _strings(value):
+    if isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _strings(v)
+    elif isinstance(value, str):
+        yield value
+
+
+def _assert_every_datetime_zoned(payload):
+    stamps = [s for s in _strings(payload) if _DATETIME.match(s)]
+    naive = [s for s in stamps if not _OFFSET.search(s)]
+    assert not naive, "datetimes sent without a time zone: %r" % naive
+    return stamps
+
+
+def test_every_datetime_in_the_open_period_summary_carries_the_site_offset():
+    stamps = _assert_every_datetime_zoned(_get(_Site()))
+    assert stamps == ["2025-10-03T10:00:00+01:00"], stamps
+
+
+def test_every_datetime_in_a_closed_period_summary_carries_the_site_offset():
+    site = _Site()
+    result = _get(site, 2025, 8)
+    stamps = _assert_every_datetime_zoned(result)
+    assert sorted(stamps) == ["2025-09-03T10:00:00+01:00", "2025-09-05T17:30:00+01:00"], stamps
+    assert result["exceptions"][0]["declared_on"] == "2025-09-03T10:00:00+01:00"
+
+
+def test_a_plain_date_stays_a_date_and_blank_stays_none():
+    module, _mods, _frappe = _load(_Site())
+    assert module._iso(date(2025, 9, 5)) == "2025-09-05"
+    assert module._iso(None) is None and module._iso("") is None
 
 
 def test_covers_notes_include_the_quarterly_entity_and_the_exception_run():

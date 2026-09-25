@@ -12,6 +12,7 @@ is the real module, loaded by path.
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 from datetime import date, datetime
@@ -22,6 +23,9 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "tb_read_api.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 VIEW_MODEL_PY = os.path.join(APP_DIR, "close", "tb_view_model.py")
+TIMEFMT_PY = os.path.join(APP_DIR, "close", "timefmt.py")
+#: The stub site's system time zone (A55): BST (+01:00) in October 2025.
+SITE_TZ = "Europe/London"
 BASIS_MODEL_PY = os.path.join(APP_DIR, "tb_basis_model.py")
 CONTROLLER_PY = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_submission",
                              "trial_balance_submission.py")
@@ -73,7 +77,8 @@ def _tb(name, entity, fy=2025, fp=9, docstatus=1, owner="zz-lead@example.com", o
 
 def _exc(name, entity, fy=2025, fp=9, docstatus=1):
     return {"name": name, "data_area_id": entity, "fiscal_year": fy, "fiscal_period": fp,
-            "docstatus": docstatus, "reason": "Dormant", "declared_by": "zz-lead@example.com"}
+            "docstatus": docstatus, "reason": "Dormant", "declared_by": "zz-lead@example.com",
+            "creation": datetime(2025, 10, 4, 11, 15)}
 
 
 class _Site:
@@ -165,6 +170,7 @@ def _load(site):
     frappe._ = lambda s: s
     frappe._dict = _D
     frappe.session = types.SimpleNamespace(user="zz-ea@example.com")
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
 
     def _by_path(name, path):
         spec = importlib.util.spec_from_file_location(name, path)
@@ -183,6 +189,7 @@ def _load(site):
 
     gate.in_scope_entities = in_scope_entities
     close.signoff_model, close.signoff_gate = signoff_model, gate
+    close.timefmt = _by_path("konsol.close.timefmt", TIMEFMT_PY)
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     perms = types.ModuleType("konsol.entity_permissions")
@@ -215,6 +222,7 @@ def _load(site):
             "frappe.model.document": doc_mod, "konsol": konsol, "konsol.close": close,
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.signoff_gate": gate,
+            "konsol.close.timefmt": close.timefmt,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
@@ -372,7 +380,63 @@ def test_the_received_tb_is_json_safe():
     tb = _by_entity(_my_tbs(_Site()))["ZZA"]["tb"]
     assert tb == {"name": "TB-A", "owner": "zz-lead@example.com", "on_behalf": False,
                   "on_behalf_label": "by zz-lead@example.com",
-                  "creation": "2025-10-03T09:30:00"}, tb
+                  "creation": "2025-10-03T09:30:00+01:00"}, tb
+
+
+# --- A55: every datetime carries the site's time zone ------------------------------
+
+_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+_OFFSET = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+
+
+def _strings(value):
+    if isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _strings(v)
+    elif isinstance(value, str):
+        yield value
+
+
+def _assert_every_datetime_zoned(payload):
+    stamps = [s for s in _strings(payload) if _DATETIME.match(s)]
+    naive = [s for s in stamps if not _OFFSET.search(s)]
+    assert not naive, "datetimes sent without a time zone: %r" % naive
+    return stamps
+
+
+def test_every_datetime_in_my_tbs_carries_the_site_offset():
+    # Measured in C1 (25 Sep): my_tbs sent "2026-09-25T20:22:31.605721" (no zone).
+    site = _Site()
+    site.in_scope = ["ZZA", "ZZB", "ZZC"]
+    site.records["TB Exception"] = [_exc("EXC-C", "ZZC")]
+    result = _my_tbs(site)
+    stamps = _assert_every_datetime_zoned(result)
+    assert sorted(stamps) == ["2025-10-03T09:30:00+01:00", "2025-10-04T11:15:00+01:00"], stamps
+
+
+def test_the_exception_carries_when_it_was_declared_with_its_zone():
+    site = _Site()
+    site.records["TB Exception"] = [_exc("EXC-C", "ZZC")]
+    exc = _by_entity(_my_tbs(site))["ZZC"]["exception"]
+    assert exc == {"name": "EXC-C", "reason": "Dormant", "declared_by": "zz-lead@example.com",
+                   "declared_on": "2025-10-04T11:15:00+01:00"}, exc
+
+
+def test_the_offset_is_the_site_zone_on_that_date_not_a_fixed_one():
+    # GMT in January: +00:00, not the +01:00 of the summer.
+    site = _Site()
+    site.records["Trial Balance Submission"][0]["creation"] = datetime(2025, 1, 10, 8, 0)
+    tb = _by_entity(_my_tbs(site))["ZZA"]["tb"]
+    assert tb["creation"] == "2025-01-10T08:00:00+00:00", tb
+
+
+def test_a_plain_date_stays_a_date_and_blank_stays_none():
+    module, _mods = _load(_Site())
+    assert module._iso(date(2025, 10, 3)) == "2025-10-03"
+    assert module._iso(None) is None and module._iso("") is None
 
 
 def test_an_on_behalf_tb_is_labelled():
