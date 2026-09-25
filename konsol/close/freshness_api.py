@@ -13,8 +13,14 @@ Reads the live site and passes it through the pure A05 model
 - scope_of: ``tasks.DOCTYPE_BUILD_MAP``. A trigger doctype missing from it
   raises ValueError, whether or not it has records.
 
-Known limit: a deleted record leaves no ``modified`` behind, so a delete is not
-seen as a change here.
+Deletes (konsol#305 A42): Frappe leaves no ``modified`` behind on delete, only
+a ``Deleted Document`` row (``deleted_doctype``, ``creation``). For every
+NON-submittable trigger doctype (Consolidation Group, IC Elimination Rule,
+Entity, ...) the latest ``Deleted Document.creation`` is taken as a change
+too, whichever is later than the live table's own ``MAX(modified)``.
+Submittable doctypes are excluded: they can only delete drafts (which never
+triggered a build) or cancelled records (whose cancel already left a
+``docstatus IN (1,2)`` row in the live table, already counted).
 """
 import frappe
 
@@ -43,14 +49,37 @@ def _scope_of(doctypes):
     return {dt: build_map[dt]["scope"] for dt in doctypes}
 
 
+def _deleted_since(doctypes):
+    """Latest ``Deleted Document.creation`` per doctype (konsol#305 A42): a
+    delete leaves no ``modified`` on the (now gone) row."""
+    if not doctypes:
+        return {}
+    rows = frappe.db.sql(
+        "SELECT deleted_doctype, MAX(creation) FROM `tabDeleted Document` "
+        "WHERE deleted_doctype IN %(doctypes)s GROUP BY deleted_doctype",
+        {"doctypes": tuple(doctypes)},
+    )
+    return {dt: at for dt, at in rows if at is not None}
+
+
 def _latest_changes(doctypes):
+    modified = {}
+    non_submittable = []
+    for dt in doctypes:
+        is_submittable = frappe.get_meta(dt).is_submittable
+        where = " WHERE docstatus IN (1,2)" if is_submittable else ""
+        rows = frappe.db.sql(f"SELECT MAX(modified) FROM `tab{dt}`{where}")
+        modified[dt] = rows[0][0] if rows else None
+        if not is_submittable:
+            non_submittable.append(dt)
+
+    deleted = _deleted_since(non_submittable)
+
     changes = []
     for dt in doctypes:
-        where = " WHERE docstatus IN (1,2)" if frappe.get_meta(dt).is_submittable else ""
-        rows = frappe.db.sql(f"SELECT MAX(modified) FROM `tab{dt}`{where}")
-        latest = rows[0][0] if rows else None
-        if latest is not None:
-            changes.append({"doctype": dt, "modified": latest})
+        candidates = [v for v in (modified.get(dt), deleted.get(dt)) if v is not None]
+        if candidates:
+            changes.append({"doctype": dt, "modified": max(candidates)})
     return changes
 
 
