@@ -64,9 +64,10 @@ class _Site:
     """Stub site: Build Approval rows for get_all, per-doctype records for db.sql."""
 
     def __init__(self, builds=(), records=None, roles=("EPM User",),
-                 triggers=None, build_map=None):
+                 triggers=None, build_map=None, deleted=None):
         self.builds = list(builds)
         self.records = records or {}  # doctype -> [(docstatus, modified)]
+        self.deleted = deleted or {}  # doctype -> [Deleted Document creation]
         self.roles = set(roles)
         self.triggers = list(TRIGGERS if triggers is None else triggers)
         self.build_map = dict(BUILD_MAP if build_map is None else build_map)
@@ -107,6 +108,10 @@ def _load(site):
 
     def sql(query, values=None, as_dict=False, **k):
         site.sql_calls.append(query)
+        if "tabDeleted Document" in query:
+            # A42: MAX(creation) per deleted_doctype, grouped.
+            return [[dt, max(creations)] for dt, creations in site.deleted.items()
+                    if creations]
         m = re.search(r"`tab([^`]+)`", query)
         assert m, query
         dt = m.group(1)
@@ -268,8 +273,33 @@ def test_entity_is_read_as_well_as_the_hook_triggers():
         records={"Entity": [(0, _dt(15))]},
     )
     assert _call(site)["changed_since"] == ["Entity"]
-    queried = {re.search(r"`tab([^`]+)`", q).group(1) for q in site.sql_calls}
+    queried = {re.search(r"`tab([^`]+)`", q).group(1) for q in site.sql_calls
+               if "Deleted Document" not in q}
     assert queried == set(TRIGGERS) | {"Entity"}
+
+
+def test_a_deleted_ic_elimination_rule_after_the_build_is_stale():
+    # A42: deleting a non-submittable trigger record leaves no `modified`
+    # behind, but Frappe writes a Deleted Document row with `creation`.
+    site = _Site(
+        builds=[_build("BA-1", "consolidation", "Completed", _dt(10))],
+        deleted={"IC Elimination Rule": [_dt(11)]},
+    )
+    out = _call(site)
+    assert out["state"] == "stale"
+    assert out["changed_since"] == ["IC Elimination Rule"]
+
+
+def test_a_deleted_draft_of_a_submittable_doctype_does_not_count():
+    # Submittable doctypes can only delete drafts or cancelled records, and
+    # a cancel already counts (docstatus IN (1,2) stays in the live table).
+    site = _Site(
+        builds=[_build("BA-1", "consolidation", "Completed", _dt(10))],
+        deleted={"Consolidation Adjustment": [_dt(11)]},
+    )
+    out = _call(site)
+    assert out["state"] == "fresh", out
+    assert out["changed_since"] == []
 
 
 def test_an_undeclared_trigger_doctype_raises_not_skipped():
