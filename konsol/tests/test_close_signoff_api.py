@@ -362,7 +362,8 @@ def test_unknown_on_behalf_value_is_refused_not_guessed():
     site = _Site()
     site.records["Trial Balance Submission"][1]["uploaded_on_behalf"] = "Maybe"
     exc, _mods = _raises(site, 2025, 9)
-    assert "Maybe" in str(exc)
+    assert type(exc).__name__ == "ValidationError"
+    assert "'Maybe'; expected Yes, No or blank" in str(exc)
 
 
 def test_exceptions_of_the_period_only():
