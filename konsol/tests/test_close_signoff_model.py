@@ -560,3 +560,13 @@ def test_empty_sections_are_empty_lists():
     assert s["on_behalf"] == {"labels": [], "unknown": []}
     assert s["exceptions"] == [] and s["covers"] == [] and s["previous"] == []
     assert s["gates"]["messages"] == []
+
+
+def test_signed_states_match_the_assertion_run_controller():
+    # One source of truth: the pure model mirrors assertion_run.SIGNED_STATES.
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", None) == "SIGNED_STATES" for t in n.targets)]
+    assert found == [M.SIGNED_STATES]
