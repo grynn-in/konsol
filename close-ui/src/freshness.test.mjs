@@ -140,3 +140,10 @@ test("failure path: no time zone is ever invented", () => {
     message: /time zone/,
   });
 });
+
+test("a timestamp with no zone is refused, never read in the browser's zone (B09b)", () => {
+  // Measured live 25 Sep 2026: A16 sent "2026-09-16T17:47:49.238943", no offset.
+  // new Date() would read it in the browser's zone and show the wrong hour.
+  const payload = { state: "fresh", as_of: "2026-09-16T17:47:49.238943", pending: 0, changed_since: [], last_failed: null };
+  assert.throws(() => freshnessView(payload, new Date("2026-09-25T12:00:00Z"), "Europe/London"), /time zone/i);
+});
