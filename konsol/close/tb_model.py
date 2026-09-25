@@ -57,12 +57,49 @@ def _problem(code, message, suggestion=""):
     return {"code": code, "message": message, "suggestion": suggestion}
 
 
+def _shared_prefix_len(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _closest_code(code, candidates, cutoff=0.6):
+    """The nearest candidate to ``code``, breaking a difflib ratio tie.
+
+    ``difflib.get_close_matches`` ranks by ``heapq.nlargest`` over
+    ``(ratio, candidate)``, so a tie goes to the candidate that sorts last —
+    measured live: 1001 -> "7100" although 1000 and 1010 are nearer codes.
+    The declared tie-break (konsol#305 A43): highest ratio, then longest
+    shared prefix, then smallest absolute numeric distance when both codes
+    are numeric, then the lowest code.
+    """
+    best = None
+    best_key = None
+    for candidate in candidates:
+        ratio = difflib.SequenceMatcher(None, code, candidate).ratio()
+        if ratio < cutoff:
+            continue
+        prefix = _shared_prefix_len(code, candidate)
+        if code.isdigit() and candidate.isdigit():
+            numeric_distance = abs(int(code) - int(candidate))
+        else:
+            numeric_distance = float("inf")
+        key = (-ratio, -prefix, numeric_distance, candidate)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = candidate
+    return best
+
+
 def _account_problems(code, chart, posting_codes):
     account = chart.get(code)
     if account is None:
-        match = difflib.get_close_matches(code, posting_codes, n=1, cutoff=0.6)
+        match = _closest_code(code, posting_codes)
         return [_problem(UNKNOWN_ACCOUNT, f"Account {code} is not in the group chart",
-                         f"Did you mean {match[0]}?" if match else "")]
+                         f"Did you mean {match}?" if match else "")]
     if account.get("is_group"):
         return [_problem(HEADING_ACCOUNT,
                          f"{code} is a heading in the group chart; post to the accounts under it.",
