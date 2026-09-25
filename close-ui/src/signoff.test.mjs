@@ -278,3 +278,37 @@ test("B28: the Sign-off screen renders the shown rows, the count and a Show all 
   assert.match(src, /\.shown\b/, "the collapsed list renders `shown`");
   assert.match(src, /Show all/, "a Show all toggle is offered");
 });
+
+// --- konsol#305 B33: "closed on" is a time in the user's zone -------------
+
+test("B33: a zoned closed_on is shown in the user's zone, like the TB list (B27)", async () => {
+  const { closedOnText } = await import("./signoff.js");
+  // C1 run 3's raw value; now is the same day in Europe/Berlin.
+  const now = new Date("2026-09-25T23:00:00+02:00");
+  assert.equal(closedOnText("2026-09-25T22:28:32.554257+02:00", now, "Europe/Berlin"), "22:28");
+  // Another day, another zone: the date is added and the hour follows the zone.
+  const later = new Date("2026-09-30T12:00:00Z");
+  assert.equal(closedOnText("2026-09-25T20:28:32Z", later, "Asia/Kolkata"), "Sep 26, 01:58");
+});
+
+test("B33: a missing closed_on reads 'unknown', never blank", async () => {
+  const { closedOnText } = await import("./signoff.js");
+  const now = new Date("2026-09-25T12:00:00Z");
+  for (const missing of [null, undefined, ""]) {
+    assert.equal(closedOnText(missing, now, "Europe/Berlin"), "unknown");
+  }
+});
+
+test("B33: failure path — a zone-less closed_on is refused, never read in the browser's zone (B09b)", async () => {
+  const { closedOnText } = await import("./signoff.js");
+  const now = new Date("2026-09-25T12:00:00Z");
+  assert.throws(() => closedOnText("2026-09-25 22:28:32.554257", now, "Europe/Berlin"), /no time zone/);
+});
+
+test("B33: failure path — no user zone is refused, never the machine's zone", async () => {
+  const { closedOnText } = await import("./signoff.js");
+  const now = new Date("2026-09-25T12:00:00Z");
+  for (const zone of [null, undefined, ""]) {
+    assert.throws(() => closedOnText("2026-09-25T20:28:32Z", now, zone), /time zone/);
+  }
+});
