@@ -39,21 +39,49 @@ SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
 #: The fields ``apply_schema_for_publish`` reads off a Published Dimension. A
 #: save that changes one of them while Published applies the schema (#295).
 #: Where each is read:
-#:   dbt_config._build_dimensions_vars: dimension_name, source_column, label,
-#:     cube_type, in_budget, allocation_role (``var('dimensions')``)
-#:   schema_apply._apply_clickhouse_columns: dimension_name, cube_type
-#:   schema_apply._sync_tb_dimension_columns: dimension_name, in_trial_balance
-#:   schema_apply._sync_budget_custom_fields: dimension_name, label, in_budget
+#:   dbt_config._build_dimensions_vars: source_column, label, cube_type,
+#:     in_budget, allocation_role (``var('dimensions')``)
+#:   schema_apply._apply_clickhouse_columns: cube_type
+#:   schema_apply._sync_tb_dimension_columns: in_trial_balance
+#:   schema_apply._sync_budget_custom_fields: label, in_budget
+#: All of them also read dimension_name, which is not listed because a save
+#: cannot change it: autoname is field:dimension_name, and Frappe's
+#: ``_sync_autoname_field`` puts it back to the name before the write.
 #: Add a field here when one of those readers starts reading it.
-SCHEMA_FIELDS = (
-    "dimension_name", "source_column", "label", "cube_type", "allocation_role",
-)
-#: The Check fields among them, compared with the intake's ``_is_on``. A Check
-#: that arrived through REST or CSV is the TEXT "0", which is the stored 0.
+SCHEMA_FIELDS = ("source_column", "label", "cube_type", "allocation_role")
+#: The Check fields among them. Compared after ``before_validate`` has written
+#: them as 0 or 1, so they compare as stored.
 SCHEMA_FLAGS = ("in_budget", FLAG)
+
+#: Every Check field on Dimension, normalised by ``before_validate``.
+CHECK_FIELDS = ("in_budget", FLAG, SURVIVES_CLOSE)
 
 
 class Dimension(Document):
+
+    def before_validate(self):
+        """Write each Check as 1 or 0, by the intake's ``_is_on`` (#295 review).
+
+        Frappe stores a Check as ``1 if cint(value) else 0``, so the text
+        "true" or "yes" from REST, CSV or a bundle lands as 0. ``validate``
+        reads the same value with ``_is_on``, as ticked, and so did the change
+        detector in ``on_update``: validate judged, and the detector compared,
+        a value that was not the one stored. A Published ``in_budget`` could
+        flip 1 -> 0 with no schema apply.
+
+        One reading, set here before anything reads it: ``_is_on``, the
+        intake's rule, which the trial-balance upload already applies to these
+        same flags. The alternative, reading them as Frappe's cint, would make
+        "true" and "yes" mean unticked, which quietly inverts what the sender
+        wrote. After this the stored row, ``validate`` and ``on_update`` all
+        see the same 0 or 1.
+
+        ``before_validate``: Frappe runs it on insert and save, before
+        ``validate``, and still runs it when ``flags.ignore_validate`` skips
+        ``validate``.
+        """
+        for field in CHECK_FIELDS:
+            setattr(self, field, 1 if _is_on(getattr(self, field, 0)) else 0)
 
     def validate(self):
         """Refuse a trial-balance dimension the warehouse cannot spell (#255).
@@ -234,7 +262,8 @@ class Dimension(Document):
             if (before.get(field) or "") != (self.get(field) or ""):
                 return True
         for field in SCHEMA_FLAGS:
-            if _is_on(before.get(field)) != _is_on(self.get(field)):
+            # Both 0 or 1: the row as stored, and this doc after before_validate.
+            if (before.get(field) or 0) != (self.get(field) or 0):
                 return True
         return False
 
