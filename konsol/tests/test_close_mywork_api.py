@@ -435,3 +435,18 @@ def test_rate_blockers_count_as_missing_rates():
     site.rates[(2025, 9)] = ([], None, ["Consolidation Group ZZG has no reporting currency"])
     item = next(i for i in _call(site)["items"] if i["id"] == "rates:2025-09")
     assert item["title"] == "Rates missing (1)"
+
+
+def test_rate_gate_error_item_goes_to_the_close_lead_only():
+    site = _Site(roles=("EPM Analyst",))
+    site.rates[(2025, 8)] = (None, "ServerException UNKNOWN_TABLE", [])
+    assert not any(i.startswith("rates") for i in _ids(_call(site)))
+
+
+def test_errored_run_is_failed_not_current():
+    site = _Site()
+    site.problems[(2025, 8)] = {"config_gaps": [], "order": None, "completeness": None}
+    site.runs[1].update(status="Error", failed=0, errored=0)
+    ids = _ids(_call(site))
+    assert "signoff:2025-08" not in ids
+    assert "checks-waiting:2025-08" in ids
