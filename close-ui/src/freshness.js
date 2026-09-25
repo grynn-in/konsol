@@ -9,6 +9,8 @@
 // `state` — one A05 never declared — renders as an explicit red warning,
 // never as "fresh".
 
+import { formatTime, parseZoned } from "./timefmt.js";
+
 const TONE_BY_STATE = {
   fresh: "neutral",
   pending: "blue",
@@ -17,48 +19,7 @@ const TONE_BY_STATE = {
   never_built: "red",
 };
 
-function sameCalendarDay(a, b, timeZone) {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return fmt.format(a) === fmt.format(b);
-}
-
-/** A Date, shown in `timeZone`, relative to `now` — "10:42" today, "Sep 20, 10:42" otherwise. */
-// B09b: a server timestamp must carry its zone ("Z" or "+hh:mm"). A zone-less
-// string would be read in the browser's zone and show the wrong hour, so it is
-// refused rather than guessed.
-const ZONED = /(Z|[+-]\d{2}:?\d{2})$/;
-function parseZoned(value) {
-  if (typeof value !== "string" || !ZONED.test(value)) {
-    throw new Error(`Timestamp has no time zone: ${value}`);
-  }
-  return new Date(value);
-}
-
-function formatTime(date, now, timeZone) {
-  const time = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
-
-  if (sameCalendarDay(date, now, timeZone)) {
-    return time;
-  }
-
-  const day = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    month: "short",
-    day: "numeric",
-  }).format(date);
-
-  return `${day}, ${time}`;
-}
+// The time formatter and the zone-less refusal (B09b) live in timefmt.js (B29).
 
 /**
  * `(payload, now, timeZone)` → `{tone, text, detail}`.

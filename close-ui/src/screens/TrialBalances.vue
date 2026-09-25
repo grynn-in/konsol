@@ -21,8 +21,8 @@
  * - No due date is shown: nothing declares one (Problems 6).
  * - B27: a missing TB shows the dash from `entityRows` (never "None"), and
  *   the upload / exception times are formatted in the user's zone like the
- *   freshness bar (B09): Frappe's boot `time_zone.user`, else the browser's
- *   zone, as AppShell reads it. With no zone the list is an error, never a
+ *   freshness bar (B09), with the zone from timefmt.js's `userTimeZone` (B29),
+ *   shared with AppShell. With no zone the list is an error, never a
  *   guessed zone; a zone-less server timestamp is refused the same way.
  */
 import { computed, reactive, ref, watch } from "vue";
@@ -33,6 +33,7 @@ import TbCompare from "../sections/TbCompare.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
 import { entityRows } from "../tbTable.js";
+import { userTimeZone } from "../timefmt.js";
 
 const MY_TBS = "konsol.close.tb_read_api.my_tbs";
 const CONTEXT = "konsol.close.period_api.get_context";
@@ -69,17 +70,6 @@ function countText(n) {
 	return n == null ? "unknown" : String(n);
 }
 
-/** The user's IANA zone: Frappe's boot, else the browser's; null if neither says (as AppShell). */
-function userTimeZone() {
-	const boot = typeof window !== "undefined" && window.frappe && window.frappe.boot;
-	const fromBoot = boot && boot.time_zone && boot.time_zone.user;
-	if (fromBoot) return fromBoot;
-	try {
-		return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
-	} catch {
-		return null;
-	}
-}
 const timeZone = userTimeZone();
 const NO_ZONE = "Your browser reported no time zone, so upload times cannot be shown.";
 
