@@ -39,6 +39,7 @@ import frappe
 
 from konsol import fiscal_calendar
 from konsol.close import signoff_gate, signoff_model, tb_view_model
+from konsol.close.timefmt import zoned_iso
 from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission import (
     parse_tb_csv,
 )
@@ -64,7 +65,11 @@ _ON_BEHALF = {"Yes": True, "No": False}
 
 
 def _iso(value):
-    if isinstance(value, (datetime.date, datetime.datetime)):
+    """A datetime with the site's UTC offset (A55: Frappe stores it naive in
+    the system time zone); a plain date stays a date."""
+    if isinstance(value, datetime.datetime):
+        return zoned_iso(value, frappe.utils.get_system_timezone())
+    if isinstance(value, datetime.date):
         return value.isoformat()
     return None if value in (None, "") else str(value)
 
@@ -126,7 +131,8 @@ def _exception(record):
     if record is None:
         return None
     return {"name": record["name"], "reason": record.get("reason"),
-            "declared_by": record.get("declared_by")}
+            "declared_by": record.get("declared_by"),
+            "declared_on": _iso(record.get("creation"))}
 
 
 @frappe.whitelist(methods=["GET"])
@@ -164,7 +170,8 @@ def my_tbs(fiscal_year, fiscal_period):
                        if g["code"] == signoff_model.QUARTER_UNDECLARED for e in g["entities"]}
     tbs = _records("Trial Balance Submission", key, visible,
                    ["name", "owner", "uploaded_on_behalf", "creation"])
-    exceptions = _records("TB Exception", key, visible, ["name", "reason", "declared_by"])
+    exceptions = _records("TB Exception", key, visible,
+                          ["name", "reason", "declared_by", "creation"])
 
     out = []
     for code in frequencies:

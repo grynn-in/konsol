@@ -222,3 +222,59 @@ test("B15b: no screen renders server text as HTML (no v-html anywhere in src)", 
 	await walk(root);
 	assert.deepEqual(bad, []);
 });
+
+// konsol#305 B28: a long section is counted, never dropped (C1: 328 TB exceptions).
+function exceptionRows(n) {
+  return Array.from({ length: n }, (_, i) => ({
+    entity: `ZZ${String(i).padStart(3, "0")}`,
+    reason: "Entity dormant this period",
+    declared_by: "bob@example.com",
+  }));
+}
+
+test("B28: 328 exceptions show the first 10 and 'and 318 more'; the full list stays available", () => {
+  const view = summaryView(summary({ exceptions: exceptionRows(328) }));
+  const s = view.exceptions;
+  assert.equal(s.rows.length, 328, "rows are never dropped from the data");
+  assert.equal(s.shown.length, 10);
+  assert.deepEqual(s.shown, s.rows.slice(0, 10));
+  assert.equal(s.hidden, 318);
+  assert.equal(s.moreText, "and 318 more");
+  assert.equal(s.empty, false);
+});
+
+test("B28: exactly 10 rows are all shown, with no 'more' line", () => {
+  const view = summaryView(summary({ exceptions: exceptionRows(10) }));
+  assert.equal(view.exceptions.shown.length, 10);
+  assert.equal(view.exceptions.hidden, 0);
+  assert.equal(view.exceptions.moreText, null);
+});
+
+test("B28: 11 rows show 10 and 'and 1 more'", () => {
+  const view = summaryView(summary({ exceptions: exceptionRows(11) }));
+  assert.equal(view.exceptions.shown.length, 10);
+  assert.equal(view.exceptions.moreText, "and 1 more");
+});
+
+test("B28: an empty section shows 'None' and no 'more' line", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.exceptions.shown, ["None"]);
+  assert.equal(view.exceptions.hidden, 0);
+  assert.equal(view.exceptions.moreText, null);
+});
+
+test("B28: every section is counted the same way, not only exceptions", () => {
+  const covers = Array.from({ length: 12 }, (_, i) => `ZZ${i}: covers P08`);
+  const view = summaryView(summary({ covers }));
+  assert.equal(view.covers.rows.length, 12);
+  assert.equal(view.covers.shown.length, 10);
+  assert.equal(view.covers.moreText, "and 2 more");
+});
+
+test("B28: the Sign-off screen renders the shown rows, the count and a Show all toggle", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("./screens/SignOff.vue", import.meta.url), "utf8");
+  assert.match(src, /moreText/, "the 'and N more' line is rendered");
+  assert.match(src, /\.shown\b/, "the collapsed list renders `shown`");
+  assert.match(src, /Show all/, "a Show all toggle is offered");
+});

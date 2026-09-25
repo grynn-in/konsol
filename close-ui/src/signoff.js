@@ -52,10 +52,30 @@ function unknownOr(value) {
 	return value === null || value === undefined ? "unknown" : value;
 }
 
-/** Every section shares this shape: real rows, or exactly `["None"]` when there is nothing to show. */
+/**
+ * B28: how many rows a section shows before "and N more" (C1 run 1: 328 TB
+ * exceptions buried the page). A display limit, not policy: `rows` always
+ * carries the full list, and the screen's Show all toggle reveals it.
+ */
+export const SECTION_LIMIT = 10;
+
+/**
+ * Every section shares this shape: `rows` is the full list, or exactly
+ * `["None"]` when there is nothing to show; `shown` is its first
+ * SECTION_LIMIT rows; `hidden` counts the rest and `moreText` says
+ * "and N more" (null when nothing is hidden).
+ */
 function section(rows) {
 	const list = rows || [];
-	return { rows: list.length ? list : [NONE], empty: list.length === 0 };
+	const all = list.length ? list : [NONE];
+	const hidden = Math.max(0, all.length - SECTION_LIMIT);
+	return {
+		rows: all,
+		empty: list.length === 0,
+		shown: all.slice(0, SECTION_LIMIT),
+		hidden,
+		moreText: hidden ? `and ${hidden} more` : null,
+	};
 }
 
 function assertKnownAction(action) {
@@ -129,7 +149,8 @@ function previousSection(previous) {
 /**
  * A21's `summary()` output → `{action, label, gates, checks, acknowledgements,
  * onBehalf, exceptions, covers, previous}`. Every section is
- * `{rows, empty}`; an empty section's `rows` is exactly `["None"]`.
+ * `{rows, empty, shown, hidden, moreText}`; an empty section's `rows` is
+ * exactly `["None"]`.
  * Throws on an unknown `action`.
  */
 export function summaryView(summary) {
