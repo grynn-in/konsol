@@ -6,7 +6,7 @@
   the first close period (Close Settings; 0 read back = undeclared), whether
   the group chart is published, in-scope entities with a blank reporting
   frequency, Active leaf entities with no submitted ownership period covering
-  the start of an open period (A56, below), and enabled Entity Accountants
+  the start of any open period (A56, below), and enabled Entity Accountants
   with no Entity user permission;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
@@ -60,10 +60,11 @@ A56: the ownership and frequency gaps are judged for the open periods, never
 for today (C1 measured an entity owned from 2099-01-01 named as "Ownership
 missing" in 2026). The judged periods are the Open Regular periods from the
 first close on, started or not; with no first close declared, every Open
-Regular period. An Active leaf is named in the ownership gap when no
-submitted Ownership Period covers the start of one of those periods (P7, the
-completeness scope), and the detail names those periods
-("ZZN: FY2025 P07, FY2025 P08"). A leaf is in scope for the frequency gap
+Regular period. An Active leaf is named in the ownership gap only when no
+submitted Ownership Period covers the start of ANY of those periods, and the
+detail names them ("ZZC: FY2025 P07, FY2025 P08"). An entity uncovered at
+some starts only (acquired mid-year) is out of scope there under P7, not
+missing ownership (coordinator, 25 Sep). A leaf is in scope for the frequency gap
 when it is covered at the start of at least one of them. No judged period
 means nothing to judge, so neither gap names anyone.
 """
@@ -170,18 +171,19 @@ def _ownership_scope(leaves, first_close):
     """``(in_scope, uncovered)`` for the Active leaves over the judged periods.
 
     ``in_scope``: leaves covered at the start of at least one judged period.
-    ``uncovered``: ``{entity: [period label, ...]}`` for every leaf with a
-    judged period whose start no submitted ownership period covers (P7).
+    ``uncovered``: ``{entity: [period label, ...]}`` for every leaf that NO
+    submitted ownership period covers at the start of ANY judged period; the
+    list is the judged periods. A leaf uncovered at some starts but covered at
+    another (acquired mid-year, disposed) is out of scope for those periods
+    under P7, not missing ownership, so it is not named.
     No judged period means nothing to judge: both are empty.
     """
-    in_scope, uncovered = set(), {}
-    for label, start in _judged_periods(first_close):
-        covered = _covered(start)
-        for e in leaves:
-            if e in covered:
-                in_scope.add(e)
-            else:
-                uncovered.setdefault(e, []).append(label)
+    judged = _judged_periods(first_close)
+    in_scope = set()
+    for _, start in judged:
+        in_scope.update(e for e in leaves if e in _covered(start))
+    labels = [label for label, _ in judged]
+    uncovered = {e: labels for e in leaves if e not in in_scope} if judged else {}
     return in_scope, uncovered
 
 
