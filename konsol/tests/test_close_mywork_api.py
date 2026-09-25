@@ -499,3 +499,28 @@ def test_period_with_no_end_date_raises_and_is_never_given_today():
     message = str(info.value)
     assert "end date" in message, message
     assert "P07" in message, message
+
+
+# --- A54: entities_assigned for the Entity Accountant ---------------------------
+
+
+def test_entity_accountant_with_no_entities_gets_entities_assigned_false():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed=set())
+    result = _call(site)
+    assert result["entities_assigned"] is False
+
+
+def test_entity_accountant_assigned_but_out_of_scope_this_period_gets_entities_assigned_true():
+    # ZZQ is assigned to the accountant but is not one of this period's
+    # in-scope entities (not in site.entities at all): entities_assigned
+    # answers "is anything assigned", not "is anything in scope this period".
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZQ"})
+    result = _call(site)
+    assert result["entities_assigned"] is True
+
+
+def test_other_personas_get_entities_assigned_null():
+    for roles in (("EPM Admin",), ("EPM Analyst",), ("EPM User",)):
+        site = _Site(roles=roles)
+        result = _call(site)
+        assert result["entities_assigned"] is None, roles
