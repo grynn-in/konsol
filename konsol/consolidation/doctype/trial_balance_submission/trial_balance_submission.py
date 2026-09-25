@@ -478,6 +478,28 @@ def set_amount_basis(names, amount_basis):
 
 class TrialBalanceSubmission(Document):
 
+    def before_insert(self):
+        # R4 (konsol#297, konsol#305 A18): record whether this TB was uploaded
+        # on the entity's behalf, from the uploader's roles and assigned
+        # entities. Always computed here; whatever the request sent is
+        # overwritten. Amending runs insert again, so an amendment is judged
+        # by its own uploader.
+        from konsol.entity_permissions import assigned_entities, subtree_codes
+
+        on_behalf = _tb_model.is_on_behalf(
+            frappe.get_roles(), self.data_area_id, subtree_codes(assigned_entities()))
+        self.uploaded_on_behalf = "Yes" if on_behalf else "No"
+
+    def before_validate(self):
+        """A saved TB keeps the flag it was inserted with: a draft edit that
+        sends another value is put back. A TB from before the field existed
+        stays blank ("unknown", Problems 16). Frappe runs this before
+        validate on every insert and save."""
+        if self.is_new():
+            return
+        self.uploaded_on_behalf = frappe.db.get_value(
+            "Trial Balance Submission", self.name, "uploaded_on_behalf") or ""
+
     def validate(self):
         if not self.batch_id:
             self.batch_id = uuid.uuid4().hex

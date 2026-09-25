@@ -20,6 +20,7 @@
   "total_debit",
   "total_credit",
   "validation_message",
+  "uploaded_on_behalf",
   "amended_from"
  ],
  "fields": [
@@ -118,6 +119,15 @@
    "fieldtype": "Small Text",
    "label": "Validation Message",
    "read_only": 1
+  },
+  {
+   "fieldname": "uploaded_on_behalf",
+   "fieldtype": "Select",
+   "options": "\nYes\nNo",
+   "label": "Uploaded on Behalf",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "description": "Yes when the uploader is not an Entity Accountant assigned to this entity (R4, konsol#297). Set by the server on upload, never from the request. Blank: uploaded before this was recorded."
   },
   {
    "fieldname": "amended_from",

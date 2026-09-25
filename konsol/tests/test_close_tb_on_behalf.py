@@ -113,6 +113,11 @@ class _Doc:  # stand-in for frappe.model.document.Document
     def get(self, key, default=None):
         return self.__dict__.get(key, default)
 
+    def __getattr__(self, key):  # a Document has every field, None when unset
+        if key.startswith("__"):
+            raise AttributeError(key)
+        return None
+
     def is_new(self):
         return bool(self.__dict__.get("__islocal"))
 
@@ -249,8 +254,8 @@ def test_forged_payload_is_overwritten():
 
 
 def _validate_until_the_period_check(world, doc):
-    """validate() up to its first external call, which is stopped: the flag
-    guard must already have run by then."""
+    """A save as Frappe runs it (before_validate, then validate) up to
+    validate's first external call, which is stopped."""
     m = _controller(world)
     doc.__class__ = m.TrialBalanceSubmission
 
@@ -260,6 +265,7 @@ def _validate_until_the_period_check(world, doc):
     m.assert_postable = stop
     with _swapped(world):
         try:
+            doc.before_validate()
             doc.validate()
         except _Stop:
             pass

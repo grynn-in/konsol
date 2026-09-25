@@ -192,3 +192,15 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
             "difference": round(total_debit - total_credit, 2),
         },
     }
+
+
+def is_on_behalf(roles, entity, assigned_subtree):
+    """R4 (konsol#297, konsol#305 A18): was this TB uploaded on the entity's behalf?
+
+    False only for an Entity Accountant uploading for an entity inside their
+    assigned subtree; anyone else (EPM Admin, System Manager, an accountant
+    outside their scope) uploads on the entity's behalf. The caller computes
+    the subtree server-side; nothing here comes from the request.
+    """
+    return not ("Entity Accountant" in set(roles or ())
+                and entity in set(assigned_subtree or ()))
