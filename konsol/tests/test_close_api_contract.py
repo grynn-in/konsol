@@ -43,12 +43,14 @@ FORBIDDEN_IMPORTS = ("home_api", "control_api", "home_model")
 
 
 def _is_whitelist_decorator(dec):
+    """`@frappe.whitelist(...)` or a bare `@frappe.whitelist` (A01b: the bare
+    form allows GET and declares no method, so it must not be skipped)."""
+    target = dec.func if isinstance(dec, ast.Call) else dec
     return (
-        isinstance(dec, ast.Call)
-        and isinstance(dec.func, ast.Attribute)
-        and dec.func.attr == "whitelist"
-        and isinstance(dec.func.value, ast.Name)
-        and dec.func.value.id == "frappe"
+        isinstance(target, ast.Attribute)
+        and target.attr == "whitelist"
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "frappe"
     )
 
 
@@ -64,7 +66,7 @@ def _whitelisted_functions(tree):
 def _whitelist_methods(fn):
     """The `methods=` of the function's frappe.whitelist decorator, or None."""
     for dec in fn.decorator_list:
-        if _is_whitelist_decorator(dec):
+        if _is_whitelist_decorator(dec) and isinstance(dec, ast.Call):
             for kw in dec.keywords:
                 if kw.arg == "methods":
                     return ast.literal_eval(kw.value)
