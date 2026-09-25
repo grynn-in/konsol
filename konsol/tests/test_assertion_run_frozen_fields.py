@@ -35,7 +35,7 @@ AR_PY = os.path.join(AR_DIR, "assertion_run.py")
 AR_JSON = os.path.join(AR_DIR, "assertion_run.json")
 
 SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
-                  "acknowledgement", "warnings_at_signoff")
+                  "acknowledgement", "warnings_at_signoff", "affected_by")
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
                  "started_at", "completed_at", "duration_seconds")
 SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by")
@@ -47,7 +47,7 @@ FORGED = {
     "signoff_status": "Signed Off", "signed_off_by": "forger@example.com",
     "signed_off_at": datetime.datetime(2026, 9, 25, 12, 0, 0),
     "override_reason": "forged", "acknowledgement": "forged",
-    "warnings_at_signoff": "forged", "status": "Green", "total": 99, "passed": 99,
+    "warnings_at_signoff": "forged", "affected_by": "forged", "status": "Green", "total": 99, "passed": 99,
     "failed": 7, "errored": 7, "warned": 7,
     "started_at": datetime.datetime(2026, 9, 25, 12, 0, 0),
     "completed_at": datetime.datetime(2026, 9, 25, 12, 5, 0),
@@ -96,7 +96,7 @@ def _saved():
         "duration_seconds": 300.0,
         "signoff_status": "Not Signed Off", "signed_off_by": None, "signed_off_at": None,
         "override_reason": None, "acknowledgement": None, "warnings_at_signoff": None,
-        "pipeline_run": None, "triggered_by": "analyst@example.com", "results": _steps(),
+        "affected_by": None, "pipeline_run": None, "triggered_by": "analyst@example.com", "results": _steps(),
     }
 
 
@@ -284,6 +284,24 @@ def test_signoff_writer_may_change_signoff_fields_only():
         assert _refused(_doc(module, status="Green").validate) is not None
     # the flag ends with the block
     assert _refused(_doc(module, **changes).validate) is not None
+
+
+def test_re_sign_needed_is_set_only_by_the_signoff_writer():
+    """A27: marking a signed run "Re-sign Needed" (and naming what reopened)
+    is a sign-off change: refused as a forge, accepted inside the writer."""
+    module, _ = _load()
+    mark = {"signoff_status": "Re-sign Needed", "affected_by": "FY2099 P01 reopened"}
+    signed = dict(signoff_status="Signed Off", signed_off_by="lead@example.com")
+    for changes in (mark, {"affected_by": "forged"}):
+        before = dict(_saved(), **signed)
+        doc = module.AssertionRun(_is_new=False, _before_save=before, **dict(before, **changes))
+        msg = _refused(doc.validate)
+        assert msg is not None, "an unflagged save changed %s" % sorted(changes)
+        assert all(f in msg for f in changes), msg
+    before = dict(_saved(), **signed)
+    with module.writing(module.SIGNOFF_WRITER, "AR-1"):
+        module.AssertionRun(_is_new=False, _before_save=before,
+                            **dict(before, **mark)).validate()
 
 
 def test_worker_may_change_result_fields_only():
