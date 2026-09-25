@@ -5,6 +5,10 @@ GET `get_signoff(fiscal_year, fiscal_period)` returns the A21 summary plus
 POST `sign(fiscal_year, fiscal_period, acknowledgement, override_reason)` signs
 the period's latest terminal run through `sign_off_close` (stubbed here: it
 records its arguments and raises `site.sign_error` when set).
+POST `close_period(fiscal_year, fiscal_period, note)` and
+`reopen_period(fiscal_year, fiscal_period, reason)` (A34) go through
+`period_status.set_status` (stubbed here: it records its arguments and raises
+`site.status_error` when set), which calls the EPM Fiscal Year actions.
 
 Loaded against a stub frappe (pattern: test_close_tb_read_api.py `_load`,
 copied, not imported). The gates are the REAL `signoff_gate` (A17) over the
@@ -120,6 +124,9 @@ class _Site:
         self.writes = []
         self.signed = []
         self.sign_error = None
+        self.status_calls = []
+        self.status_error = None
+        self.admin_checks = 0
 
 
 def _match(value, cond):
@@ -232,6 +239,35 @@ def _load(site):
         None if site.allowed is None else set(site.allowed))
     period_status = types.ModuleType("konsol.period_status")
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    period_status.OPEN, period_status.CLOSED, period_status.LOCKED = "Open", "Closed", "Locked"
+
+    def set_status(fiscal_year, fiscal_period, status, start_date=None, end_date=None,
+                   reason=None, note=None):
+        """A34: records the call; raises ``site.status_error`` (a gate refusal
+        from the EPM Fiscal Year action) when set."""
+        site.status_calls.append({"fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+                                  "status": status, "start_date": start_date,
+                                  "end_date": end_date, "reason": reason, "note": note})
+        if site.status_error is not None:
+            raise site.status_error
+        stamped = status == "Closed"
+        return _D(name="ROW-%s-%s" % (fiscal_year, fiscal_period),
+                  fiscal_year=str(fiscal_year), fiscal_period=int(fiscal_period),
+                  period_code="P%02d" % int(fiscal_period), status=status,
+                  closed_by=LEAD if stamped else None,
+                  closed_on=CLOSED_ON if stamped else None)
+
+    period_status.set_status = set_status
+    lifecycle = types.ModuleType("konsol.schema_lifecycle")
+
+    def check_epm_admin():
+        """The real guard (schema_lifecycle.py:10): EPM Admin, System Manager
+        or Administrator."""
+        site.admin_checks += 1
+        if not {"EPM Admin", "System Manager", "Administrator"} & set(site.roles):
+            raise frappe.PermissionError("You need the 'EPM Admin' role.")
+
+    lifecycle.check_epm_admin = check_epm_admin
 
     ar = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     ar.OVERRIDE_ROLES = {"System Manager", "EPM Admin"}
@@ -263,11 +299,13 @@ def _load(site):
 
     konsol.close, konsol.fiscal_calendar = close, calendar
     konsol.entity_permissions, konsol.period_status = perms, period_status
+    konsol.schema_lifecycle = lifecycle
     konsol.consolidation = consolidation
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,
+            "konsol.schema_lifecycle": lifecycle,
             "konsol.consolidation": consolidation,
             "konsol.consolidation.doctype": doctype_pkg,
             "konsol.consolidation.doctype.assertion_run": ar_pkg,
@@ -754,3 +792,109 @@ def test_declare_refuses_a_period_that_is_not_a_number():
     _result, exc = _call_declare(site, "ZZB", "2025", "P9", "Dormant")
     assert "whole numbers" in str(exc)
     assert site.tbx_steps == []
+
+
+# --- A34: close_period and reopen_period ---------------------------------------------
+
+def _call_status(site, fn, *args, **kwargs):
+    """Call close_period / reopen_period with the stubs installed. Returns
+    (result, exception)."""
+    module, mods, _frappe = _load(site)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        try:
+            result = getattr(module, fn)(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - the type is asserted by the caller
+            return None, exc
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    json.dumps(result)
+    return result, None
+
+
+def test_close_and_reopen_are_post_only_and_gated_on_the_close_lead():
+    for fn, args in (("close_period", (2025, 9)), ("reopen_period", (2025, 8, "Late TB"))):
+        site = _Site()
+        _call_status(site, fn, *args)
+        assert site.whitelisted[fn] == ["POST"], fn
+        assert site.only_for[0] == ("EPM Admin", "System Manager"), fn
+        assert site.admin_checks == 1, fn
+
+
+def test_close_passes_the_note_through_set_status():
+    site = _Site()
+    result, exc = _call_status(site, "close_period", "2025", "9", note="All TBs in")
+    assert exc is None, exc
+    assert site.status_calls == [{"fiscal_year": 2025, "fiscal_period": 9, "status": "Closed",
+                                  "start_date": None, "end_date": None,
+                                  "reason": None, "note": "All TBs in"}]
+    assert result == {"status": "Closed", "closed_by": LEAD,
+                      "closed_on": "2025-09-05T17:30:00+01:00"}
+
+
+def test_close_without_a_note_sends_none():
+    site = _Site()
+    _result, exc = _call_status(site, "close_period", 2025, 9)
+    assert exc is None, exc
+    assert site.status_calls[0]["note"] is None
+    assert site.status_calls[0]["status"] == "Closed"
+
+
+def test_reopen_passes_the_reason_through_set_status():
+    site = _Site()
+    result, exc = _call_status(site, "reopen_period", 2025, 8, "ZZB restated its TB")
+    assert exc is None, exc
+    assert site.status_calls == [{"fiscal_year": 2025, "fiscal_period": 8, "status": "Open",
+                                  "start_date": None, "end_date": None,
+                                  "reason": "ZZB restated its TB", "note": None}]
+    assert result == {"status": "Open", "closed_by": None, "closed_on": None}
+
+
+def test_a_blank_reopen_reason_is_refused_before_set_status():
+    for reason in ("", "   \n\t", None):
+        site = _Site()
+        _result, exc = _call_status(site, "reopen_period", 2025, 8, reason)
+        assert type(exc).__name__ == "ValidationError", (reason, exc)
+        assert "reason" in str(exc).lower(), exc
+        assert "P08" in str(exc), exc
+        assert site.status_calls == [], reason
+
+
+def test_an_analyst_cannot_close_or_reopen():
+    for fn, args in (("close_period", (2025, 9)), ("reopen_period", (2025, 8, "Late TB"))):
+        site = _Site(roles=("EPM Analyst",))
+        _result, exc = _call_status(site, fn, *args)
+        assert type(exc).__name__ == "PermissionError", (fn, exc)
+        assert site.status_calls == [], fn
+
+
+def test_other_close_roles_cannot_close_or_reopen():
+    for role in ("Entity Accountant", "EPM User", "Guest"):
+        for fn, args in (("close_period", (2025, 9)), ("reopen_period", (2025, 8, "Late"))):
+            site = _Site(roles=(role,))
+            _result, exc = _call_status(site, fn, *args)
+            assert type(exc).__name__ == "PermissionError", (role, fn, exc)
+            assert site.status_calls == [], (role, fn)
+
+
+def test_a_gate_refusal_from_set_status_propagates_unchanged():
+    for fn, args in (("close_period", (2025, 9)), ("reopen_period", (2025, 8, "Late TB"))):
+        site = _Site()
+        refusal = RuntimeError("P09 can't close: sign off the checks first.")
+        site.status_error = refusal
+        _result, exc = _call_status(site, fn, *args)
+        assert exc is refusal, (fn, exc)
+        assert len(site.status_calls) == 1, fn
+
+
+def test_close_and_reopen_refuse_a_period_that_is_not_a_number():
+    for fn, args in (("close_period", ("2025", "P9")), ("reopen_period", ("2025", "P8", "x"))):
+        site = _Site()
+        _result, exc = _call_status(site, fn, *args)
+        assert "whole numbers" in str(exc), (fn, exc)
+        assert site.status_calls == [], fn
