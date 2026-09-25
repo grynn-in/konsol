@@ -54,7 +54,19 @@
 // against a new one. Only the server saying "signed" reaches `signed` or
 // `closed`, so Close (9.3) is offered only after a sign-off that went
 // through, and never re-offered once the period reports Closed or Locked.
-import { setup, assign, fromPromise } from "xstate";
+//
+// konsol#305 B32: the machine emits PERIOD_CHANGED ({action: "sign" | "close"
+// | "reopen"}) exactly once when the server accepts a sign, close or reopen
+// (the service resolves). A refused request, a cancel, a load or a refresh
+// emits nothing. The screen answers it with the shell's quiet context reload,
+// so the header's period status follows (C1 run 3). A sign whose summary
+// reload then fails still emitted: the period did change on the server.
+import { setup, assign, emit, fromPromise } from "xstate";
+
+/** The emitted event's type: the period's state changed on the server. */
+export const PERIOD_CHANGED = "periodChanged";
+
+const periodChanged = (action) => emit({ type: PERIOD_CHANGED, action });
 
 export const ACTIONS = Object.freeze([
 	"signed",
@@ -191,7 +203,7 @@ export const signoffMachine = setup({
 					acknowledgement: event.type === "CONFIRM_ACK" ? typed(event.text) : null,
 					override_reason: event.type === "CONFIRM_OVERRIDE" ? typed(event.text) : null,
 				}),
-				onDone: "confirming",
+				onDone: { target: "confirming", actions: periodChanged("sign") },
 				onError: {
 					target: "review",
 					actions: assign({ error: ({ event }) => messageOf(event.error) }),
@@ -238,7 +250,7 @@ export const signoffMachine = setup({
 				input: ({ event }) => ({ note: typed(event.note) }),
 				onDone: {
 					target: "closed",
-					actions: assign({ closed: ({ event }) => event.output }),
+					actions: [assign({ closed: ({ event }) => event.output }), periodChanged("close")],
 				},
 				onError: {
 					target: "signed",
@@ -257,7 +269,7 @@ export const signoffMachine = setup({
 				input: ({ event }) => ({ reason: typed(event.reason) }),
 				onDone: {
 					target: "loading",
-					actions: assign({ closed: null }),
+					actions: [assign({ closed: null }), periodChanged("reopen")],
 				},
 				onError: {
 					target: "closed",

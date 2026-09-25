@@ -822,3 +822,113 @@ test("the default services refuse loudly when the screen did not provide them", 
 	assert.equal(JSON.stringify(actor.getSnapshot().value), '"loadFailed"');
 	assert.match(actor.getSnapshot().context.error, /load.*not provided/);
 });
+
+// ---- konsol#305 B32: the shell's context is reloaded after sign, close, reopen ----
+//
+// C1 run 3: the header kept "Open · Not Signed Off" after sign + close, and
+// "Closed · Acknowledged" after reopen, until a navigation. The machine emits
+// PERIOD_CHANGED exactly once when a SIGN, CLOSE or REOPEN request succeeds on
+// the server; the screen answers it with the shell's quiet context reload.
+// A failed or cancelled step emits nothing.
+
+async function withEmits(run) {
+	const { PERIOD_CHANGED } = await import("./signoffMachine.js");
+	assert.equal(typeof PERIOD_CHANGED, "string", "signoffMachine exports PERIOD_CHANGED");
+	const h = start();
+	const emitted = [];
+	h.actor.on(PERIOD_CHANGED, (e) => emitted.push(e));
+	await run(h);
+	return emitted;
+}
+
+test("B32: a successful sign emits PERIOD_CHANGED once (action sign)", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toConfirming(h);
+		await toLoaded(h, SIGNED_S);
+		assert.equal(value(h.actor), '"signed"');
+	});
+	assert.equal(emitted.length, 1);
+	assert.equal(emitted[0].action, "sign");
+});
+
+test("B32: an acknowledged or overridden sign also emits once", async () => {
+	for (const [drive, confirm] of [[toAcknowledging, CONFIRM_ACK], [toOverriding, CONFIRM_OVERRIDE]]) {
+		const emitted = await withEmits(async (h) => {
+			await drive(h);
+			h.actor.send(confirm);
+			await flush();
+			h.last("sign").resolve({ signoff_status: "Signed Off" });
+			await flush();
+			await toLoaded(h, SIGNED_S);
+		});
+		assert.deepEqual(emitted.map((e) => e.action), ["sign"], confirm.type);
+	}
+});
+
+test("B32: a sign accepted by the server but whose reload fails still emits once (the period did change)", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toConfirming(h);
+		await toLoadFailed(h);
+	});
+	assert.deepEqual(emitted.map((e) => e.action), ["sign"]);
+});
+
+test("B32: a successful close emits once (action close)", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toClosed(h);
+	});
+	assert.deepEqual(emitted.map((e) => e.action), ["close"]);
+});
+
+test("B32: a successful reopen emits once (action reopen), and the reload that follows emits nothing more", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toReopening(h);
+		h.last("reopen").resolve({ status: "Open" });
+		await flush();
+		await toLoaded(h, SIGNED_S);
+		assert.equal(value(h.actor), '"signed"');
+	});
+	assert.deepEqual(emitted.map((e) => e.action), ["close", "reopen"]);
+});
+
+test("B32 failure path: a refused sign, close or reopen emits nothing", async () => {
+	const signFail = await withEmits(async (h) => {
+		await toSigning(h);
+		h.last("sign").reject(new Error("Sign off P07 first"));
+		await flush();
+		assert.equal(value(h.actor), '"review"');
+	});
+	assert.deepEqual(signFail, []);
+	const closeFail = await withEmits(async (h) => {
+		await toClosing(h);
+		h.last("close").reject(new Error("Rates missing for P07"));
+		await flush();
+		assert.equal(value(h.actor), '"signed"');
+	});
+	assert.deepEqual(closeFail, []);
+	const reopenFail = await withEmits(async (h) => {
+		await toReopening(h);
+		h.last("reopen").reject(new Error("Only the Close Lead can reopen"));
+		await flush();
+		assert.equal(value(h.actor), '"closed"');
+	});
+	assert.deepEqual(reopenFail.map((e) => e.action), ["close"], "only the earlier close, not the refused reopen");
+});
+
+test("B32 failure path: cancel, loads and refreshes emit nothing", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toAcknowledging(h);
+		h.actor.send(CANCEL);
+		h.actor.send(OVERRIDE);
+		h.actor.send(REFRESH);
+		await toLoaded(h, OVR_S);
+		h.actor.send(OVERRIDE);
+		h.actor.send(CANCEL);
+		h.actor.send(REFRESH);
+		await toLoaded(h, SIGNED_S);
+		h.actor.send(REFRESH);
+		await toLoaded(h, SIGNED_CLOSED_S);
+		assert.equal(value(h.actor), '"closed"');
+	});
+	assert.deepEqual(emitted, []);
+});

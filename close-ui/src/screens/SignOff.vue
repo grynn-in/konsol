@@ -21,11 +21,19 @@
  *   shown verbatim (split on <br> into lines). "Signed" appears only in the
  *   signed/closed region, which only a server reload saying "signed" reaches.
  *
+ * konsol#305 B32: the header's period state comes from the period context,
+ * loaded by AppShell. When the machine emits PERIOD_CHANGED (a sign, close or
+ * reopen the server accepted), this screen calls the shell's quiet context
+ * reload (injected under CONTEXT_RELOAD), once per action. The machine itself
+ * reloads the summary after a sign or reopen; after a close it keeps the close
+ * endpoint's answer, which is newer. A failed context reload shows through the
+ * header's "may be out of date" path (B31).
+ *
  * One actor per period: the router reuses this component when only the period
  * in the URL changes, and the machine's `closed` state takes no REFRESH, so a
  * new period gets a fresh actor instead of an event.
  */
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, inject, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 import { createActor, fromPromise } from "xstate";
 import { Button, FeatherIcon } from "frappe-ui";
@@ -34,12 +42,16 @@ import SignOffPeriodActions, { periodActors } from "../sections/SignOffPeriodAct
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { summaryView, messageLines } from "../signoff.js";
-import { signoffMachine } from "../machines/signoffMachine.js";
+import { signoffMachine, PERIOD_CHANGED } from "../machines/signoffMachine.js";
+import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
 const GET_SIGNOFF = "konsol.close.signoff_api.get_signoff";
 const SIGN = "konsol.close.signoff_api.sign";
 
 const route = useRoute();
+// No default: a screen outside the shell is a wiring bug, and Vue warns about it.
+// B30: declared before the immediate period watcher, which subscribes to it.
+const reloadContext = inject(CONTEXT_RELOAD);
 const period = computed(() => {
 	const p = parse(`/close${route.path}`);
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
@@ -98,6 +110,7 @@ watch(
 		actor.subscribe((s) => {
 			snap.value = s;
 		});
+		actor.on(PERIOD_CHANGED, () => reloadContext());
 		actor.start();
 		snap.value = actor.getSnapshot();
 	},
