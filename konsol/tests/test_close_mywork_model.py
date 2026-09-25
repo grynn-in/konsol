@@ -389,3 +389,17 @@ def test_rank_keeps_setup_gap_items_first_among_blocking():
     period = M.period_items("entity_accountant", _two_open(), FIRST)
     ranked = M.rank(period + [gap])
     assert ranked[0]["id"] == "gap:ownership"
+
+
+def test_signed_states_match_the_assertion_run_controller():
+    # One source of truth: the pure model mirrors assertion_run.SIGNED_STATES.
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", None) == "SIGNED_STATES" for t in n.targets)]
+    assert found == [M.SIGNED_STATES + ("ZZ mutated",)]
+
+
+def test_re_sign_needed_is_not_a_signed_state():
+    assert "Re-sign Needed" not in M.SIGNED_STATES
