@@ -24,6 +24,7 @@ import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import LoadState from "../components/LoadState.vue";
 import TbUpload from "../sections/TbUpload.vue";
+import TbCompare from "../sections/TbCompare.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
 import { entityRows } from "../tbTable.js";
@@ -282,7 +283,13 @@ function select(code) {
 					:fiscal-period="period.period"
 					@submitted="refreshAfterSubmit"
 				/>
-				<!-- B21 mounts the compare section here. -->
+				<TbCompare
+					v-if="selected.status === 'Received'"
+					:key="`${selected.entity}-${period.year}-${period.period}-compare`"
+					:entity="selected.entity"
+					:fiscal-year="period.year"
+					:fiscal-period="period.period"
+				/>
 			</section>
 		</LoadState>
 	</div>
