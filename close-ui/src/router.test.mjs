@@ -19,15 +19,33 @@ import { landingPath } from "./router.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTER_JS = path.join(__dirname, "router.js");
 
-test("landingPath for a normal landing lands on My work", () => {
+test("landingPath for the Close Lead lands on the persona's first screen (My work)", () => {
   const context = {
+    me: { user: "lead@example.com", full_name: "Lead", roles: ["EPM Admin"], persona: "close_lead" },
     landing: { period: [2025, 9], rule: "current", reason: null },
   };
   assert.equal(landingPath(context), "/close/2025/9/my-work");
 });
 
-test("landingPath for a Viewer's latest signed period", () => {
+test("landingPath for the Group Accountant lands on My work", () => {
   const context = {
+    me: { user: "ga@example.com", full_name: "GA", roles: ["EPM Analyst"], persona: "group_accountant" },
+    landing: { period: [2025, 9], rule: "current", reason: null },
+  };
+  assert.equal(landingPath(context), "/close/2025/9/my-work");
+});
+
+test("landingPath for the Entity Accountant lands on My work", () => {
+  const context = {
+    me: { user: "ea@example.com", full_name: "EA", roles: ["Entity Accountant"], persona: "entity_accountant" },
+    landing: { period: [2025, 9], rule: "current", reason: null },
+  };
+  assert.equal(landingPath(context), "/close/2025/9/my-work");
+});
+
+test("landingPath for a Viewer's latest signed period lands on Trial balances, not My work (B16c)", () => {
+  const context = {
+    me: { user: "viewer@example.com", full_name: "Viewer", roles: ["EPM User"], persona: "viewer" },
     landing: {
       period: [2025, 6],
       rule: "latest_signed",
@@ -35,7 +53,7 @@ test("landingPath for a Viewer's latest signed period", () => {
       provisional: { period: [2025, 9], rule: "current", reason: null },
     },
   };
-  assert.equal(landingPath(context), "/close/2025/6/my-work");
+  assert.equal(landingPath(context), "/close/2025/6/trial-balances");
 });
 
 test("failure path: an undeclared first close names the reason, never a guessed period", () => {
@@ -57,6 +75,14 @@ test("failure path: a Viewer who has signed nothing names the reason (stays on /
     },
   };
   // B16b: no period → stay on /close; the shell shows the reason and the provisional switch.
+  assert.equal(landingPath(context), null);
+});
+
+test("failure path: an unknown persona (no close role) never lands on a screen — no /close/y/p/null", () => {
+  const context = {
+    me: { user: "nobody@example.com", full_name: "Nobody", roles: [], persona: null },
+    landing: { period: [2025, 9], rule: "current", reason: null },
+  };
   assert.equal(landingPath(context), null);
 });
 
