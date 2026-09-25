@@ -115,3 +115,25 @@ test("B13b: a warning looks different from a failure — the cause's label rende
   const tpl = template(read());
   assert.match(tpl, /cause\.label\b/, "the Fail/Error/Warn label from checksView renders");
 });
+
+// --- konsol#305 B31: the header's Checks status follows the run -----------
+
+test("Checks.vue asks the shell to reload the context with contextReloadNeeded (B31)", () => {
+  const source = read();
+  const js = script(source);
+  assert.match(
+    source,
+    /import\s*\{[^}]*\bcontextReloadNeeded\b[^}]*\bCONTEXT_RELOAD\b[^}]*\}\s*from\s*["']\.\.\/contextRefresh\.js["']|import\s*\{[^}]*\bCONTEXT_RELOAD\b[^}]*\bcontextReloadNeeded\b[^}]*\}\s*from\s*["']\.\.\/contextRefresh\.js["']/,
+  );
+  assert.match(js, /\binject\(\s*CONTEXT_RELOAD\s*\)/, "the reload comes from the shell, with no silent default");
+  assert.match(js, /if\s*\(\s*contextReloadNeeded\([^)]*\)\s*\)\s*reloadContext\(\)/, "the rule decides; the screen calls");
+});
+
+test("Checks.vue forgets the last run it saw when the period changes, and adds no polling of its own", () => {
+  const js = script(read());
+  const watchAt = js.indexOf("watch(");
+  assert.ok(watchAt >= 0);
+  assert.match(js.slice(watchAt), /lastLatest\s*=\s*undefined/, "a new period is a first observation");
+  assert.equal((js.match(/setTimeout\(/g) || []).length, 1, "only the existing running poll");
+  assert.doesNotMatch(js, /setInterval\(/);
+});

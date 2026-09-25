@@ -26,8 +26,12 @@
  * `landingState.reason` (first close undeclared, or a Viewer with nothing
  * signed) or `landingState.error` (get_context failed). This shell renders
  * both; a Viewer with nothing signed gets the switch to the provisional period.
+ *
+ * konsol#305 B31: screens reload the context through CONTEXT_RELOAD (the
+ * Checks screen does when a run finishes). That reload is quiet: the screen
+ * stays mounted, and a failure is shown in the header as `refreshError`.
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { Button, FeatherIcon } from "frappe-ui";
 import HeaderBar from "./HeaderBar.vue";
@@ -39,6 +43,7 @@ import { userTimeZone } from "../timefmt.js";
 import { format, parse } from "../route.js";
 import { landingPath, landingState } from "../router.js";
 import { messageLines } from "../signoff.js";
+import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
 const CONTEXT = "konsol.close.period_api.get_context";
 const FRESHNESS = "konsol.close.freshness_api.get_freshness";
@@ -84,23 +89,31 @@ const current = computed(() =>
 
 // --- A15 context -----------------------------------------------------------
 
-const context = reactive({ status: "loading", data: null, error: null });
+const context = reactive({ status: "loading", data: null, error: null, refreshError: null });
 let contextSeq = 0;
 
-async function loadContext() {
+/**
+ * `quiet` (B31): a screen asked for fresh data while showing the period. The
+ * status stays "ready" so the screen is not unmounted; a failure keeps the
+ * old data and is shown in the header as `refreshError`. A quiet request
+ * when the context is not ready is an ordinary load.
+ */
+async function loadContext({ quiet = false } = {}) {
+	if (quiet && context.status !== "ready") quiet = false;
 	// A malformed address still loads who I am (no period), so the nav and
 	// header are known; only the main area names the bad address.
 	const p = parsed.value.error ? { year: null, bad: true } : parsed.value;
 	const seq = ++contextSeq;
-	context.status = "loading";
+	if (!quiet) context.status = "loading";
 	context.error = null;
+	context.refreshError = null;
 	try {
 		const params = p.year == null ? null : { fiscal_year: p.year, fiscal_period: p.period };
 		const data = await get(CONTEXT, params);
 		if (seq !== contextSeq) return;
 		context.data = data;
 		context.status = "ready";
-		if (p.year == null && !p.bad) {
+		if (p.year == null && !p.bad && !quiet) {
 			// On /close: land if there is somewhere to land, else show why not.
 			landingState.error = null;
 			const target = landingPath(data);
@@ -112,10 +125,16 @@ async function loadContext() {
 		}
 	} catch (e) {
 		if (seq !== contextSeq) return;
+		if (quiet) {
+			context.refreshError = e.message;
+			return;
+		}
 		context.error = e.message;
 		context.status = "error";
 	}
 }
+
+provide(CONTEXT_RELOAD, () => loadContext({ quiet: true }));
 
 const landingBusy = ref(false);
 async function retryLanding() {
@@ -299,6 +318,7 @@ function goProvisional() {
 			:screen="screen || firstScreen"
 			:freshness="freshnessDisplay"
 			:freshness-busy="freshness.busy"
+			:refresh-error="context.refreshError"
 		/>
 
 		<div class="flex flex-1 flex-col md:flex-row">

@@ -21,8 +21,13 @@
  * konsol#305 B13b: each cause shows checksView's `label` ("Failed", "Error"
  * or "Warning") as text next to its title, never colour alone, and each
  * domain heading shows its fail count and warn count apart.
+ *
+ * konsol#305 B31: the header's "Checks: <status>" comes from the period
+ * context, loaded once by AppShell. When a poll shows the latest run reach a
+ * terminal state or a new run appear (contextReloadNeeded), this screen calls
+ * the shell's quiet context reload (injected under CONTEXT_RELOAD), once.
  */
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
@@ -30,12 +35,15 @@ import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { checksView } from "../checks.js";
 import { messageLines } from "../signoff.js";
+import { CONTEXT_RELOAD, contextReloadNeeded } from "../contextRefresh.js";
 
 const GET_CHECKS = "konsol.close.checks_api.get_checks";
 const RUN_CHECKS = "konsol.close.checks_api.run_checks";
 const POLL_MS = 5_000;
 
 const route = useRoute();
+// No default: a screen outside the shell is a wiring bug, and Vue warns about it.
+const reloadContext = inject(CONTEXT_RELOAD);
 const period = computed(() => {
 	const p = parse(`/close${route.path}`);
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
@@ -47,6 +55,8 @@ const periodName = computed(() =>
 const checks = reactive({ status: "loading", payload: null, view: null, error: null, busy: false });
 let seq = 0;
 let pollTimer = null;
+/** The latest run the previous poll saw; undefined until the first poll of a period. */
+let lastLatest = undefined;
 
 function stopPolling() {
 	if (pollTimer) {
@@ -73,6 +83,9 @@ async function loadChecks({ quiet = false } = {}) {
 		if (mine !== seq) return;
 		// checksView throws on a state it does not know: shown as an error, never as current.
 		checks.view = checksView(payload);
+		const nextLatest = payload.latest || null;
+		if (contextReloadNeeded(lastLatest, nextLatest)) reloadContext();
+		lastLatest = nextLatest;
 		checks.payload = payload;
 		checks.error = null;
 		checks.status = "ready";
@@ -118,6 +131,7 @@ watch(
 	() => (period.value ? `${period.value.year}/${period.value.period}` : null),
 	() => {
 		runError.value = null;
+		lastLatest = undefined;
 		checks.payload = null;
 		checks.view = null;
 		loadChecks();

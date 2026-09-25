@@ -222,3 +222,24 @@ test("live: a refused call (no close role) tells the user whom to ask", () => {
   assert.match(source, /PermissionError/);
   assert.match(template(source), /Ask the System Manager/);
 });
+
+// --- konsol#305 B31: a screen can reload the context without a flash ------
+
+test("AppShell provides a quiet context reload under CONTEXT_RELOAD (B31)", () => {
+  const source = read(APP_SHELL);
+  assert.match(source, /import\s*\{[^}]*\bCONTEXT_RELOAD\b[^}]*\}\s*from\s*["']\.\.\/contextRefresh\.js["']/);
+  assert.match(source, /provide\(\s*CONTEXT_RELOAD\s*,/);
+  // A quiet reload keeps the screen mounted: it must not set status "loading".
+  const fn = source.slice(source.indexOf("async function loadContext"));
+  assert.match(fn, /quiet/, "loadContext takes a quiet option");
+  assert.match(fn, /if\s*\(\s*!quiet\s*\)\s*context\.status\s*=\s*["']loading["']/);
+});
+
+test("failure path: a failed quiet reload is shown in the header, not swallowed (B31)", () => {
+  const shell = read(APP_SHELL);
+  assert.match(shell, /refreshError/);
+  assert.match(template(shell), /:refresh-error=/);
+  const header = read(HEADER_BAR);
+  assert.match(header, /refreshError:\s*\{/);
+  assert.match(template(header), /refreshError/);
+});
