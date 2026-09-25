@@ -11,6 +11,8 @@
  * - Other open periods (A04 `other_open`), each a link to the same screen.
  * - Configuration gaps A15 names (e.g. `first_close_undeclared`), verbatim.
  * - Freshness: the text B09's `freshnessView` produced, passed in by AppShell.
+ * - B31: when a screen's quiet context reload fails, `refreshError` says the
+ *   period state shown may be out of date, rather than showing it as current.
  *
  * Every piece has a visible state when its data is missing: nothing is blank.
  */
@@ -29,6 +31,8 @@ const props = defineProps({
 	/** `{tone, text, detail}` from freshnessView, or null before the first answer. */
 	freshness: { type: Object, default: null },
 	freshnessBusy: { type: Boolean, default: false },
+	/** B31: a screen's quiet context reload failed; the period state shown may be old. */
+	refreshError: { type: String, default: null },
 });
 
 const router = useRouter();
@@ -132,6 +136,12 @@ const FRESHNESS_TONE = {
 				<span :class="SIGNOFF_TONE[selected.signoff] || 'text-ink-gray-6'">{{ selected.signoff }}</span>
 				<span class="text-ink-gray-5">·</span>
 				<span class="text-ink-gray-6">Checks: {{ selected.checks }}</span>
+				<span
+					v-if="refreshError"
+					role="status"
+					class="rounded bg-surface-amber-1 px-2 py-0.5 text-xs text-ink-amber-3"
+					:title="refreshError"
+				>This period state may be out of date: {{ refreshError }}</span>
 				<span v-if="selected.catch_up" class="rounded bg-surface-blue-1 px-2 py-0.5 text-xs text-ink-blue-3">{{ selected.catch_up }}</span>
 				<span
 					v-if="selected.is_history"
