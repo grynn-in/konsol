@@ -252,23 +252,56 @@ def completeness_problem(expected, submitted, excepted):
     }
 
 
-def covers_notes(target, rows, submitted, excepted):
-    """Notes like "ZZA: covers P08–P09", one per entity whose TB in ``target``
-    follows a run of exceptions.
+def _quarter_bounds(target_row, rows):
+    """``(first_code, last_code)`` of the target row's declared quarter, or
+    None when the year's quarters are not fully declared (mirrors
+    ``_is_quarter_end``: a quarter's span cannot be named while some of its
+    periods are unassigned, so nothing is guessed)."""
+    fy = int(target_row["fiscal_year"])
+    year = [r for r in _regular(rows) if int(r["fiscal_year"]) == fy]
+    if any(not r.get("quarter") for r in year):
+        return None
+    quarter = target_row["quarter"]
+    members = [r for r in year if r["quarter"] == quarter]
+    first = min(members, key=lambda r: int(r["fiscal_period"]))
+    last = max(members, key=lambda r: int(r["fiscal_period"]))
+    return (
+        first.get("period_code") or "P%02d" % int(first["fiscal_period"]),
+        last.get("period_code") or "P%02d" % int(last["fiscal_period"]),
+    )
+
+
+def covers_notes(target, rows, submitted, excepted, frequencies=None):
+    """Notes like "ZZA: covers P08\u2013P09", one per entity whose TB in
+    ``target`` follows a run of exceptions, plus (A41) "ZZQ: quarterly
+    \u2014 covers P01\u2013P03" for a Quarterly entity's TB at the
+    quarter-end period, so the sign-off summary and the TB view never present
+    a quarter as one month.
 
     Walks back over the Regular rows of the target's fiscal year: each earlier
     period with a submitted exception and no submitted TB joins the run; the
     run stops at the first period without one. It never crosses a fiscal year
     (the year-end needs its own trial balance). Records carry
     ``data_area_id``, ``fiscal_year``, ``fiscal_period`` and ``docstatus``;
-    only ``docstatus == 1`` counts. Sorted by entity.
+    only ``docstatus == 1`` counts.
+
+    ``frequencies`` (optional) maps each in-scope entity to its
+    ``reporting_frequency``. Omit it (or pass a falsy value) to skip the
+    quarterly note entirely -- existing callers keep working unchanged. A
+    Quarterly entity's TB outside the quarter-end period gets no quarterly
+    note, and an undeclared quarter for the target's year gets no note either
+    (the gap is A10's ``quarter_undeclared``, reported by
+    ``expected_entities``/``config_gaps``, never guessed here). Sorted.
     """
     target = _key(target)
     codes = {}
     earlier = []
+    target_row = None
     for r in _regular(rows):
         key = _row_key(r)
         codes[key] = r.get("period_code") or "P%02d" % key[1]
+        if key == target:
+            target_row = r
         if key[0] == target[0] and key < target:
             earlier.append(key)
     earlier.sort(reverse=True)
@@ -286,7 +319,17 @@ def covers_notes(target, rows, submitted, excepted):
                 break
         if first is not None:
             notes.append("%s: covers %s\u2013%s" % (entity, codes[first], codes.get(target, "P%02d" % target[1])))
-    return notes
+
+    if frequencies and target_row is not None and _is_quarter_end(target_row, rows):
+        bounds = _quarter_bounds(target_row, rows)
+        if bounds is not None:
+            first_code, last_code = bounds
+            for entity in sorted({e for e, k in tbs if k == target}):
+                if frequencies.get(entity) == "Quarterly":
+                    notes.append(
+                        "%s: quarterly \u2014 covers %s\u2013%s" % (entity, first_code, last_code)
+                    )
+    return sorted(notes)
 
 
 # --- A21: the sign-off summary (story 9.1) -----------------------------------
