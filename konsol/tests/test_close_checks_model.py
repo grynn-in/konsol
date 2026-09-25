@@ -127,12 +127,12 @@ def test_a_missing_description_is_none_and_flagged_never_invented():
     assert cause["description_missing"] is True
 
 
-@pytest.mark.parametrize("blank", ["", "   ", None])
-def test_a_blank_description_counts_as_missing(blank):
-    out = M.by_cause([_step("assert_ic_balances", "Consolidation", "Fail", 1)], {"assert_ic_balances": blank})
-    cause = out["domains"][0]["failures"][0]
-    assert cause["description"] is None
-    assert cause["description_missing"] is True
+def test_a_blank_description_counts_as_missing():
+    for blank in ("", "   ", None):
+        out = M.by_cause([_step("assert_ic_balances", "Consolidation", "Fail", 1)], {"assert_ic_balances": blank})
+        cause = out["domains"][0]["failures"][0]
+        assert cause["description"] is None, blank
+        assert cause["description_missing"] is True, blank
 
 
 def test_the_same_assertion_twice_is_refused():
@@ -165,10 +165,10 @@ def test_no_run_is_not_run_even_when_never_built():
     assert M.staleness(None, None)["state"] == "not_run"
 
 
-@pytest.mark.parametrize("status", ["Queued", "Running"])
-def test_a_queued_or_running_run_is_running(status):
-    run = {"name": "AR-1", "status": status, "completed_at": None}
-    assert M.staleness(run, _t(20))["state"] == "running"
+def test_a_queued_or_running_run_is_running():
+    for status in ("Queued", "Running"):
+        run = {"name": "AR-1", "status": status, "completed_at": None}
+        assert M.staleness(run, _t(20))["state"] == "running", status
 
 
 def test_a_run_completed_before_the_numbers_is_stale():
