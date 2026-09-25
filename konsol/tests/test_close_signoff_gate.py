@@ -101,6 +101,8 @@ class _Site:
         self.whitelisted = set()
         self.get_all_calls = []
         self.signed_off_calls = []
+        #: (run name, writer in force, fields changed) per Assertion Run save (A31).
+        self.saves = []
 
 
 def _match(value, cond):
@@ -197,6 +199,51 @@ def _load(site):
         return runs[0]["name"]
 
     run_mod.assert_close_signed_off = assert_close_signed_off
+
+    # A31: the sign-off writer (assertion_run.writing, A48). The stub run's
+    # save is refused unless the sign-off writer is in force for that run, as
+    # _refuse_unflagged_changes refuses a signoff_status change.
+    run_mod.SIGNED_STATES = SIGNED
+    run_mod.SIGNOFF_WRITER = "sign-off"
+    run_mod.RE_SIGN_NEEDED = "Re-sign Needed"
+    writer = []
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def writing(name_of_writer, run_name):
+        writer.append((name_of_writer, run_name))
+        try:
+            yield
+        finally:
+            writer.pop()
+
+    run_mod.writing = writing
+
+    class _RunDoc:
+        def __init__(self, record):
+            self._record = record
+            self.__dict__.update(record)
+
+        def save(self, ignore_permissions=False):
+            changed = {f: getattr(self, f) for f in ("signoff_status", "affected_by")
+                       if getattr(self, f, None) != self._record.get(f)}
+            active = writer[-1] if writer else None
+            if changed and active != ("sign-off", self.name):
+                throw("Assertion Run %s: signoff_status can only be changed by Sign off."
+                      % self.name)
+            site.saves.append((self.name, active, changed, ignore_permissions))
+            self._record.update(changed)
+
+    def get_doc(doctype, name):
+        assert doctype == "Assertion Run", doctype
+        for r in site.records["Assertion Run"]:
+            if r["name"] == name:
+                return _RunDoc(r)
+        raise AssertionError("stub: no Assertion Run %s" % name)
+
+    frappe.get_doc = get_doc
+    frappe.utils = types.SimpleNamespace(nowdate=lambda: "2026-09-25")
     konsol.close, konsol.fiscal_calendar, konsol.period_status = close, calendar, period_status
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -527,3 +574,114 @@ def test_module_has_no_whitelisted_functions():
     site = _Site()
     _call(site, "sign_off_problems", 2025, 9)
     assert site.whitelisted == set()
+
+
+# --- A31: reopening marks later signed periods "Re-sign Needed" ---------------
+
+def _reopen_site():
+    """FY2025 first close P07; P07-P09 signed, P10 run unsigned, P11 no run."""
+    site = _Site()
+    site.records["Assertion Run"] = [
+        _run("RUN-5", 2025, 5),          # history (before the first close)
+        _run("RUN-7", 2025, 7),
+        _run("RUN-8", 2025, 8, signoff="Acknowledged", status="Amber"),
+        _run("RUN-9", 2025, 9, signoff="Overridden", status="Red"),
+        _run("RUN-10", 2025, 10, signoff="Not Signed Off"),
+    ]
+    return site
+
+
+def _mark(site, fy, fp, code, reason="Late supplier invoice", user="zz-lead@example.com"):
+    return _call(site, "mark_later_resign_needed", fy, fp, code, reason, user)
+
+
+def _run_rec(site, name):
+    return next(r for r in site.records["Assertion Run"] if r["name"] == name)
+
+
+def test_reopening_marks_every_later_signed_regular_period():
+    site = _reopen_site()
+    marked = _mark(site, 2025, 7, "P07")
+    assert sorted(marked) == ["RUN-8", "RUN-9"], marked
+    for name in ("RUN-8", "RUN-9"):
+        rec = _run_rec(site, name)
+        assert rec["signoff_status"] == "Re-sign Needed", rec
+        text = rec["affected_by"]
+        assert text == ("FY2025 P07 reopened on 2026-09-25 by zz-lead@example.com: "
+                        "Late supplier invoice"), text
+    # The unsigned P10, the reopened P07 itself and the history P05 are untouched.
+    assert _run_rec(site, "RUN-10")["signoff_status"] == "Not Signed Off"
+    assert _run_rec(site, "RUN-7")["signoff_status"] == "Signed Off"
+    assert _run_rec(site, "RUN-5")["signoff_status"] == "Signed Off"
+
+
+def test_the_mark_is_saved_through_the_signoff_writer():
+    site = _reopen_site()
+    _mark(site, 2025, 7, "P07")
+    assert sorted(s[0] for s in site.saves) == ["RUN-8", "RUN-9"], site.saves
+    for name, active, changed, ignore in site.saves:
+        assert active == ("sign-off", name), (name, active)
+        assert set(changed) == {"signoff_status", "affected_by"}, changed
+        assert ignore is True, "the Close Lead reopening may not own the run"
+
+
+def test_only_the_latest_signed_run_of_a_period_is_marked():
+    site = _reopen_site()
+    site.records["Assertion Run"].append(_run("RUN-8-OLD", 2025, 8, day=1))
+    _run_rec(site, "RUN-8")["completed_at"] = datetime(2026, 1, 5)
+    marked = _mark(site, 2025, 7, "P07")
+    assert sorted(marked) == ["RUN-8", "RUN-9"], marked
+    assert _run_rec(site, "RUN-8-OLD")["signoff_status"] == "Signed Off"
+
+
+def test_a_run_already_needing_re_sign_is_left_alone():
+    site = _reopen_site()
+    _run_rec(site, "RUN-8")["signoff_status"] = "Re-sign Needed"
+    _run_rec(site, "RUN-8")["affected_by"] = "FY2025 P07 reopened earlier"
+    marked = _mark(site, 2025, 7, "P07")
+    assert marked == ["RUN-9"], marked
+    assert _run_rec(site, "RUN-8")["affected_by"] == "FY2025 P07 reopened earlier"
+
+
+def test_reopening_across_the_year_boundary_marks_the_next_year():
+    site = _reopen_site()
+    site.rows = _year(2025, status="Closed") + _year(2026, status="Open")
+    site.records["Assertion Run"].append(_run("RUN-26-1", 2026, 1))
+    marked = _mark(site, 2025, 12, "P12")
+    assert marked == ["RUN-26-1"], marked
+    assert _run_rec(site, "RUN-26-1")["signoff_status"] == "Re-sign Needed"
+    assert "FY2025 P12 reopened" in _run_rec(site, "RUN-26-1")["affected_by"]
+
+
+def test_history_periods_before_the_first_close_are_never_marked():
+    site = _reopen_site()
+    site.records["Assertion Run"].append(_run("RUN-6", 2025, 6))
+    marked = _mark(site, 2025, 3, "P03")
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
+    for name in ("RUN-5", "RUN-6"):
+        assert _run_rec(site, name)["signoff_status"] == "Signed Off", name
+
+
+def test_non_regular_later_periods_are_not_marked():
+    site = _reopen_site()
+    site.rows = _year(2025, closing="Closed")
+    site.records["Assertion Run"].append(_run("RUN-13", 2025, 13))
+    marked = _mark(site, 2025, 7, "P07")
+    assert "RUN-13" not in marked, marked
+    assert _run_rec(site, "RUN-13")["signoff_status"] == "Signed Off"
+
+
+def test_an_undeclared_first_close_marks_every_later_signed_period():
+    # No history can be told apart without a declared first close, so the
+    # mark errs toward re-signing: every later signed Regular run is marked.
+    site = _reopen_site()
+    site.settings = {}
+    marked = _mark(site, 2025, 3, "P03")
+    assert sorted(marked) == ["RUN-5", "RUN-7", "RUN-8", "RUN-9"], marked
+
+
+def test_nothing_later_signed_marks_nothing_and_saves_nothing():
+    site = _reopen_site()
+    marked = _mark(site, 2025, 11, "P11")
+    assert marked == [] and site.saves == [], (marked, site.saves)
+

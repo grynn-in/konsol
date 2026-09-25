@@ -190,6 +190,17 @@ def _load():
             raise Thrown(gate.fail_for[fiscal_period])
 
     gate.assert_period_closable = assert_period_closable
+
+    # konsol#305 A31: reopening marks later signed periods; recorded here, the
+    # rule itself is tested in test_close_signoff_gate.py.
+    gate.marks = []
+
+    def mark_later_resign_needed(fiscal_year, fiscal_period, period_code, reason, user):
+        gate.marks.append((fiscal_year, fiscal_period, period_code, reason, user))
+        frappe.events.append(("mark", fiscal_year, fiscal_period))
+        return []
+
+    gate.mark_later_resign_needed = mark_later_resign_needed
     mods["konsol.close"].signoff_gate = gate
     mods["konsol.close"].__path__ = []
     mods["konsol"].close = mods["konsol.close"]
@@ -1267,3 +1278,58 @@ def test_status_action_flag_permits_only_declared_changes():
         doc.flags.konsol_status_action = dict(declared)
         result, err = _act(doc.save, PermissionRefused)
         assert err is not None and "P03" in err, err
+
+
+# -- konsol#305 A31: reopening marks later signed periods ------------------------
+
+def test_reopening_a_period_marks_later_signed_periods():
+    with _load() as module:
+        events = sys.modules["frappe"].events
+        doc = _valid_year(module, row_status={7: "Closed"})
+        events.clear()
+        result, err = _act(lambda: doc.reopen_period(7, "  Late supplier invoice "))
+        assert err is None, err
+        assert _gate().marks == [(2025, 7, "P07", "Late supplier invoice",
+                                  "closer@example.com")], _gate().marks
+        assert _row(doc, 7).status == "Open" and doc.saves == 1
+        # The mark comes after the year lock and reload, so it reads the saved year.
+        assert _first(events, "sql") < _first(events, "mark"), events
+
+
+def test_closing_and_locking_do_not_mark():
+    with _load() as module:
+        doc = _valid_year(module, row_status={4: "Closed"})
+        for call in (lambda: doc.close_period(3), lambda: doc.lock_period(4),
+                     lambda: doc.close_year()):
+            result, err = _act(call)
+            assert err is None, err
+        assert _gate().marks == [], _gate().marks
+
+
+def test_a_refused_reopen_marks_nothing():
+    with _load() as module:
+        # No reason.
+        doc = _valid_year(module, row_status={7: "Closed"})
+        for blank in (None, "", "   "):
+            result, err = _act(lambda: doc.reopen_period(7, blank))
+            assert err is not None, blank
+        # A Closed year.
+        doc = _valid_year(module, status="Closed")
+        result, err = _act(lambda: doc.reopen_period(7, "Late invoice"))
+        assert err is not None and "Reopen the year first" in err, err
+        # A Locked period reopened by an EPM Admin.
+        doc = _valid_year(module, row_status={7: "Locked"})
+        result, err = _act(lambda: doc.reopen_period(7, "Audit"), PermissionRefused)
+        assert err is not None, "an EPM Admin reopened a Locked period"
+        assert _gate().marks == [], _gate().marks
+        assert doc.saves == 0
+
+
+def test_reopening_the_year_does_not_mark():
+    # Reopen Year leaves every row as it is, so no period reopens.
+    with _load() as module:
+        doc = _valid_year(module, status="Closed")
+        result, err = _act(lambda: doc.reopen_year("Audit adjustment"))
+        assert err is None, err
+        assert _gate().marks == [], _gate().marks
+
