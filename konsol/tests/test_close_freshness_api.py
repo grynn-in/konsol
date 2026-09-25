@@ -109,9 +109,11 @@ def _load(site):
     def sql(query, values=None, as_dict=False, **k):
         site.sql_calls.append(query)
         if "tabDeleted Document" in query:
-            # A42: MAX(creation) per deleted_doctype, grouped.
+            # A42: MAX(creation) per deleted_doctype, grouped, filtered to
+            # the doctypes actually asked for (mirrors the real WHERE ... IN).
+            wanted = set((values or {}).get("doctypes", ()))
             return [[dt, max(creations)] for dt, creations in site.deleted.items()
-                    if creations]
+                    if dt in wanted and creations]
         m = re.search(r"`tab([^`]+)`", query)
         assert m, query
         dt = m.group(1)
