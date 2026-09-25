@@ -227,11 +227,21 @@ def test_imbalance_is_a_file_problem_with_totals():
 
 
 def test_imbalance_within_tolerance_is_ok():
-    # 100.01 - 100 is 0.010000000000005 in floats, just over 0.01, and the
-    # controller refuses it too; so the tolerance is passed in here.
-    r = _check(_rows("main_account,debit,credit\n1010,100.01,0\n2010,0,100\n"), tolerance=0.02)
+    # 100.01 - 100 is 0.010000000000005 in raw floats, just over 0.01 (A37):
+    # the comparison must round to cents first, since parse_tb_csv already
+    # rounds every amount to cents. Default tolerance (0.01), no dodge.
+    rows = _rows("main_account,debit,credit\n1010,100.01,0\n2010,0,100\n")
+    r = _check(rows)
     assert r["ok"] is True
     assert r["totals"]["difference"] == 0.01
+    assert C.validate_tb_rows(rows, chart=CHART, entity=ENTITY, known_entities=KNOWN) == []
+
+
+def test_imbalance_just_over_tolerance_is_still_refused():
+    """Failure path: 0.02 is not the tolerance; it must still be refused."""
+    r = _check(_rows("main_account,debit,credit\n1010,100.02,0\n2010,0,100\n"))
+    assert r["ok"] is False
+    assert r["totals"]["difference"] == 0.02
 
 
 def test_no_chart_is_the_no_chart_file_problem():
