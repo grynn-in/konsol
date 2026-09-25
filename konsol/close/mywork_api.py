@@ -181,7 +181,8 @@ def _ownership_scope(leaves, first_close):
     judged = _judged_periods(first_close)
     in_scope = set()
     for _, start in judged:
-        in_scope.update(e for e in leaves if e in _covered(start))
+        covered = _covered(start)  # once per period, not once per leaf (A61)
+        in_scope.update(e for e in leaves if e in covered)
     labels = [label for label, _ in judged]
     uncovered = {e: labels for e in leaves if e not in in_scope} if judged else {}
     return in_scope, uncovered
