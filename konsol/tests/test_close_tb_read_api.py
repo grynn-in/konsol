@@ -243,6 +243,12 @@ def test_an_entity_accountant_sees_only_their_entities():
     text = json.dumps(result)
     for other in ("ZZB", "ZZC", "TB-B", "EXC-C", "ZZNOTINSCOPE"):
         assert other not in text, (other, text)
+    # and no other entity's records are even read
+    reads = [f for d, f in site.get_all_calls
+             if d in ("Trial Balance Submission", "TB Exception")]
+    assert len(reads) == 2, site.get_all_calls
+    for filters in reads:
+        assert filters["data_area_id"] == ["in", ["ZZA"]], filters
 
 
 def test_an_empty_allowed_set_means_no_entities_not_all():
