@@ -101,17 +101,20 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     """Create an Assertion Run and enqueue the assertion suite.
 
     This writes — it inserts an Assertion Run, commits, and enqueues
-    `run_close_assertions` on the long queue — so it is POST-only, and it is
-    the close that it starts, so only the Close Lead (`EPM Admin`) and System
-    Manager may call it (konsol#166). The gate comes before the "already in
-    progress" check, so a user without the role is refused whatever the run
-    state, rather than learning from the error which runs are live.
+    `run_close_assertions` on the long queue — so it is POST-only. Starting a
+    run is not the sign-off: the Close Lead (`EPM Admin`), the Group
+    Accountant (`EPM Analyst`) and System Manager may all trigger it (R3,
+    konsol#297); only the Close Lead and System Manager may sign it off
+    (`sign_off_close`, which enforces write on Assertion Run). The gate comes
+    before the "already in progress" check, so a user without the role is
+    refused whatever the run state, rather than learning from the error which
+    runs are live.
 
     Refuses to start if another run is already Queued/Running — only one
     assertion suite may run at a time (concurrent `dbt test` would contend on
     the warehouse and produce confusing interleaved state).
     """
-    frappe.only_for(("EPM Admin", "System Manager"))
+    frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
     active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
     if active:
         frappe.throw(
