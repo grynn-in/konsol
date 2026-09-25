@@ -46,13 +46,25 @@ test("main.js creates the app from App.vue and mounts FrappeUIProvider", () => {
 });
 
 test("App.vue uses FrappeUIProvider", () => {
-  // The router lands in B16; until then App.vue is the literal placeholder
-  // named in the row's facts, not a real <router-view/> (there is no router
-  // instance yet to feed one).
   const source = read(APP_VUE);
   assert.match(source, /<FrappeUIProvider>/);
   assert.match(source, /<\/FrappeUIProvider>/);
-  assert.match(source, /konsol close/);
+});
+
+test("B17: App.vue mounts the router through AppShell, not a static placeholder", () => {
+  // B16 installed the router (main.js); B17 renders it. App.vue wraps
+  // AppShell, and AppShell holds the <router-view/>.
+  const source = read(APP_VUE);
+  assert.match(source, /import\s+AppShell\s+from\s+["']\.\/components\/AppShell\.vue["']/);
+  assert.match(source, /<AppShell\s*\/>/);
+  assert.doesNotMatch(source, /konsol close/, "the B03 placeholder is gone");
+  const shell = read(path.join(__dirname, "components", "AppShell.vue"));
+  assert.match(shell, /<router-view|<RouterView/);
+});
+
+test("B17: main.js installs the router that App.vue renders", () => {
+  const source = read(MAIN_JS);
+  assert.match(source, /app\.use\(\s*createCloseRouter\(\)\s*\)/);
 });
 
 test("index.css declares the tailwind directives and bundles IBM Plex Sans", () => {
