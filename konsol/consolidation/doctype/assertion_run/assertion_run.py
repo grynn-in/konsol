@@ -4,6 +4,8 @@ Mirrors the frappe/press build-state pattern: a parent doc with a child table
 (`Assertion Step`) of per-check rows, a status Select rendered as a colored
 indicator, and a streamed log via frappe.publish_realtime.
 """
+import contextlib
+import contextvars
 import json
 import os
 import subprocess
@@ -43,6 +45,57 @@ NEW_RUN_BLANK_FIELDS = (
 )
 
 
+#: Sign-off fields: only sign_off_close writes them (A48). Measured live 25 Sep
+#: 2026 (A22): frappe.client.set_value by the Close Lead stored a forged
+#: "Signed Off" / "Overridden", and every gate reads signoff_status.
+SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
+                  "acknowledgement", "warnings_at_signoff")
+#: Result fields: only the worker (run_close_assertions) writes them (A48).
+RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
+                 "started_at", "completed_at", "duration_seconds")
+
+SIGNOFF_WRITER = "sign-off"
+WORKER_WRITER = "worker"
+#: What each writer may change. A writer changing the other's fields is refused.
+_WRITER_FIELDS = {SIGNOFF_WRITER: SIGNOFF_FIELDS, WORKER_WRITER: RESULT_FIELDS}
+
+# The writer is held in a context variable, not in doc.flags: it is set only by
+# server code in this module, a request cannot carry it, and it names one run.
+# reap_stale_close_runs and the log checkpoint write with frappe.db.set_value,
+# which does not call validate, so they need no writer.
+_writer = contextvars.ContextVar("assertion_run_writer", default=None)
+
+
+@contextlib.contextmanager
+def writing(writer, run_name):
+    """Mark saves of ``run_name`` inside the block as made by ``writer``."""
+    if writer not in _WRITER_FIELDS:
+        raise ValueError("Unknown Assertion Run writer %r" % (writer,))
+    token = _writer.set((writer, run_name))
+    try:
+        yield
+    finally:
+        _writer.reset(token)
+
+
+def active_writer():
+    """The (writer, run name) in force, or None."""
+    return _writer.get()
+
+
+def _norm(value):
+    """A value as the database holds it, so a Desk save that sends a datetime
+    as a string or a whole Float as an int is not a change."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 class AssertionRun(Document):
     def before_insert(self):
         """A new run starts Queued, unsigned, with no results, triggered by
@@ -76,7 +129,10 @@ class AssertionRun(Document):
         concurrency guard. So the check runs only on insert, or when
         fiscal_year/fiscal_period actually changed from the saved version —
         a later status/result save is not re-gated.
+
+        The frozen fields are checked on every save of a stored run (A48).
         """
+        self._refuse_unflagged_changes()
         if not (self.is_new() or self.has_value_changed("fiscal_year")
                 or self.has_value_changed("fiscal_period")):
             return
@@ -84,6 +140,31 @@ class AssertionRun(Document):
             assert_declared(self.fiscal_year, self.fiscal_period)
         elif self.fiscal_year:
             _assert_year_declared(self.fiscal_year)
+
+    def _refuse_unflagged_changes(self):
+        """Refuse a change to a sign-off or result field made by anyone but
+        its writer (A48). frappe.client.set_value and save both come here."""
+        if self.is_new():
+            return
+        before = self.get_doc_before_save()
+        if before is None:
+            # Frappe loads the saved version on every save of a stored row; it
+            # is None only when the row no longer exists, so there is nothing
+            # to forge. has_value_changed treats this case the same way.
+            return
+        changed = [f for f in SIGNOFF_FIELDS + RESULT_FIELDS
+                   if _norm(before.get(f)) != _norm(self.get(f))]
+        if not changed:
+            return
+        active = _writer.get()
+        allowed = ()
+        if active and active[1] == self.name:
+            allowed = _WRITER_FIELDS[active[0]]
+        refused = [f for f in changed if f not in allowed]
+        if refused:
+            frappe.throw(frappe._(
+                "Assertion Run {0}: {1} can only be changed by running the checks or by Sign off "
+                "(sign_off_close). Nothing was saved.").format(self.name, ", ".join(refused)))
 
 
 # --- dimension classification (filename/keyword -> bucket) ---------------
@@ -379,7 +460,8 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     doc.override_reason = reason
     doc.acknowledgement = ack
     doc.warnings_at_signoff = warnings
-    doc.save(ignore_permissions=True)
+    with writing(SIGNOFF_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
 
@@ -416,7 +498,8 @@ def run_close_assertions(close_run):
     doc.status = "Running"
     doc.started_at = frappe.utils.now_datetime()
     doc.log = ""
-    doc.save(ignore_permissions=True)
+    with writing(WORKER_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
 
     project_path = frappe.get_single("EPM Settings").dbt_project_path or "/home/frappe/dbt_project"
@@ -456,7 +539,8 @@ def run_close_assertions(close_run):
     doc.completed_at = frappe.utils.now_datetime()
     if doc.started_at and doc.completed_at:
         doc.duration_seconds = round((doc.completed_at - doc.started_at).total_seconds(), 1)
-    doc.save(ignore_permissions=True)
+    with writing(WORKER_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
     _emit(close_run, done=True, status=doc.status, passed=doc.passed,
           failed=doc.failed, errored=doc.errored, warned=doc.warned)
