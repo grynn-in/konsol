@@ -384,3 +384,189 @@ def test_covers_notes_are_sorted_by_entity():
     exc = [_doc("ZZB", 8), _doc("ZZA", 8)]
     assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == [
         "ZZA: covers P08–P09", "ZZB: covers P08–P09"]
+
+
+# --- A21: the sign-off summary (story 9.1) -----------------------------------
+
+NO_PROBLEMS = {"config_gaps": [], "order": None, "completeness": None}
+ORDER_P07 = {"config_gaps": [], "completeness": None, "order": {
+    "blocking": "P07", "periods": ["P07", "P08"], "message": "Sign off and close P07 first"}}
+
+
+def _run(status="Green", signoff="Not Signed Off", **extra):
+    run = {"name": "ZZRUN-1", "status": status, "signoff_status": signoff, "failed": 0, "errored": 0}
+    run.update(extra)
+    return run
+
+
+def _summary(run=None, warned=(), on_behalf=(), exceptions=(), covers=(), previous=(),
+             problems=None, can_override=False):
+    return M.summary(run, list(warned), list(on_behalf), list(exceptions), list(covers),
+                     list(previous), problems if problems is not None else NO_PROBLEMS, can_override)
+
+
+def test_an_open_earlier_period_blocks_with_the_button_text():
+    s = _summary(run=_run("Green"), problems=ORDER_P07)
+    assert s["action"] == "blocked"
+    assert s["label"] == "Sign off P07 first"
+    assert s["gates"]["order"] == ORDER_P07["order"]
+    assert s["gates"]["messages"] == ["Sign off and close P07 first"]
+
+
+def test_the_order_gate_blocks_whatever_the_run_status():
+    for status in ("Green", "Amber", "Red", "Error", "Queued", "Running"):
+        s = _summary(run=_run(status), problems=ORDER_P07, can_override=True)
+        assert (status, s["action"], s["label"]) == (status, "blocked", "Sign off P07 first")
+    assert _summary(run=None, problems=ORDER_P07)["action"] == "blocked"
+
+
+def test_configuration_gaps_block_first_and_are_listed_first():
+    gap = {"code": "first_close_undeclared", "message": UNDECLARED["message"]}
+    problems = {"config_gaps": [gap], "order": ORDER_P07["order"],
+                "completeness": {"missing": ["ZZA"], "message": "No trial balance from ZZA. Upload it or declare an exception."}}
+    s = _summary(run=_run("Green"), problems=problems)
+    assert s["action"] == "blocked"
+    assert s["label"] == UNDECLARED["message"]
+    assert s["gates"]["messages"] == [
+        UNDECLARED["message"], "Sign off and close P07 first",
+        "No trial balance from ZZA. Upload it or declare an exception."]
+
+
+def test_a_missing_trial_balance_blocks():
+    msg = "No trial balance from ZZA, ZZB. Upload them or declare an exception."
+    s = _summary(run=_run("Green"), problems={"config_gaps": [], "order": None,
+                                               "completeness": {"missing": ["ZZA", "ZZB"], "message": msg}})
+    assert (s["action"], s["label"]) == ("blocked", msg)
+
+
+def test_no_run_means_run_the_checks():
+    s = _summary(run=None)
+    assert s["action"] == "run_checks"
+    assert s["label"] == "Run the checks"
+    assert s["checks"] == {"run": None, "status": None, "signoff_status": None, "failed": None, "errored": None}
+
+
+def test_queued_or_running_means_wait():
+    for status in ("Queued", "Running"):
+        s = _summary(run=_run(status))
+        assert (status, s["action"]) == (status, "wait")
+        assert status.lower() in s["label"].lower()
+
+
+def test_green_means_sign():
+    s = _summary(run=_run("Green"))
+    assert (s["action"], s["label"]) == ("sign", "Sign off")
+    assert s["checks"]["run"] == "ZZRUN-1" and s["checks"]["status"] == "Green"
+
+
+def test_amber_means_acknowledge_with_the_warned_names():
+    s = _summary(run=_run("Amber", warned=2), warned=["assert_a", "assert_b"])
+    assert s["action"] == "acknowledge"
+    assert s["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 2, "unlisted": 0}
+
+
+def test_a_capped_name_list_says_how_many_more():
+    names = ["assert_%02d" % i for i in range(50)]
+    s = _summary(run=_run("Amber", warned=57), warned=names)
+    assert s["acknowledgements"]["total"] == 57
+    assert s["acknowledgements"]["unlisted"] == 7
+
+
+def test_an_unknown_warning_count_is_unknown_not_zero():
+    # latest_close_run does not return `warned`; the summary must not claim 0.
+    run = _run("Amber")
+    s = _summary(run=run, warned=["assert_a"])
+    assert s["acknowledgements"] == {"names": ["assert_a"], "total": None, "unlisted": None}
+    assert _summary(run=None)["acknowledgements"] == {"names": [], "total": None, "unlisted": None}
+
+
+def test_red_or_error_means_override_for_the_close_lead():
+    for status in ("Red", "Error"):
+        s = _summary(run=_run(status, failed=3), can_override=True)
+        assert (status, s["action"]) == (status, "override")
+        assert s["checks"]["failed"] == 3
+
+
+def test_red_without_the_override_role_is_blocked():
+    for status in ("Red", "Error"):
+        s = _summary(run=_run(status), can_override=False)
+        assert (status, s["action"]) == (status, "blocked")
+        assert "Close Lead" in s["label"]
+
+
+def test_an_already_signed_run_is_signed():
+    for state in ("Signed Off", "Acknowledged", "Overridden"):
+        s = _summary(run=_run("Green", state))
+        assert (state, s["action"], s["label"]) == (state, "signed", state)
+
+
+def test_re_sign_needed_means_run_the_checks_again():
+    s = _summary(run=_run("Green", "Re-sign Needed"))
+    assert s["action"] == "rerun"
+    assert s["label"] == "Run the checks again"
+
+
+def test_an_unknown_run_status_is_refused_not_guessed():
+    for bad in (_run("Purple"), _run("Green", "Maybe")):
+        try:
+            _summary(run=bad)
+        except ValueError:
+            continue
+        raise AssertionError("summary accepted %r" % bad)
+
+
+def test_on_behalf_uploads_are_labelled_and_unknowns_are_shown_as_unknown():
+    tbs = [
+        {"data_area_id": "ZZB", "owner": "zz-admin@example.com", "uploaded_on_behalf": 1},
+        {"data_area_id": "ZZA", "owner": "zz-lead@example.com", "uploaded_on_behalf": 1},
+        {"data_area_id": "ZZC", "owner": "zz-ea@example.com", "uploaded_on_behalf": 0},
+        {"data_area_id": "ZZD", "owner": "zz-old@example.com", "uploaded_on_behalf": None},
+    ]
+    s = _summary(run=_run(), on_behalf=tbs)
+    assert s["on_behalf"]["labels"] == [
+        "by zz-lead@example.com for ZZA", "by zz-admin@example.com for ZZB"]
+    assert s["on_behalf"]["unknown"] == [
+        "ZZD: by zz-old@example.com; on-behalf not recorded (uploaded before it was tracked)"]
+
+
+def test_an_on_behalf_row_without_the_flag_is_refused():
+    try:
+        _summary(run=_run(), on_behalf=[{"data_area_id": "ZZA", "owner": "zz@example.com"}])
+    except KeyError:
+        return
+    raise AssertionError("a row with no uploaded_on_behalf key was read as not on behalf")
+
+
+def test_exceptions_covers_and_previous_periods_are_listed():
+    exceptions = [
+        {"data_area_id": "ZZB", "reason": "Dormant", "declared_by": "zz-lead@example.com", "docstatus": 1},
+        {"data_area_id": "ZZA", "reason": "Quarterly", "declared_by": "zz-lead@example.com", "docstatus": 1},
+    ]
+    previous = [_state(2025, 8, "Closed", "Signed Off"), _state(2025, 7, "Closed", "Acknowledged")]
+    s = _summary(run=_run(), exceptions=exceptions, covers=["ZZA: covers P08–P09"], previous=previous)
+    assert s["exceptions"] == [
+        {"entity": "ZZA", "reason": "Quarterly", "declared_by": "zz-lead@example.com"},
+        {"entity": "ZZB", "reason": "Dormant", "declared_by": "zz-lead@example.com"},
+    ]
+    assert s["covers"] == ["ZZA: covers P08–P09"]
+    assert s["previous"] == [
+        {"code": "P07", "status": "Closed", "signoff": "Acknowledged"},
+        {"code": "P08", "status": "Closed", "signoff": "Signed Off"},
+    ]
+
+
+def test_empty_sections_are_empty_lists():
+    s = _summary(run=_run())
+    assert s["on_behalf"] == {"labels": [], "unknown": []}
+    assert s["exceptions"] == [] and s["covers"] == [] and s["previous"] == []
+    assert s["gates"]["messages"] == []
+
+
+def test_signed_states_match_the_assertion_run_controller():
+    # One source of truth: the pure model mirrors assertion_run.SIGNED_STATES.
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", None) == "SIGNED_STATES" for t in n.targets)]
+    assert found == [M.SIGNED_STATES]

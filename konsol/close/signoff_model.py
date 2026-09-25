@@ -287,3 +287,147 @@ def covers_notes(target, rows, submitted, excepted):
         if first is not None:
             notes.append("%s: covers %s\u2013%s" % (entity, codes[first], codes.get(target, "P%02d" % target[1])))
     return notes
+
+
+# --- A21: the sign-off summary (story 9.1) -----------------------------------
+
+RUN_STATUSES = ("Queued", "Running", "Green", "Amber", "Red", "Error")
+SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")  # assertion_run.SIGNED_STATES
+SIGNOFF_STATES = ("Not Signed Off",) + SIGNED_STATES + (RE_SIGN_NEEDED,)
+
+_LABELS = {
+    "run_checks": "Run the checks",
+    "rerun": "Run the checks again",
+    "sign": "Sign off",
+    "acknowledge": "Acknowledge the warnings and sign off",
+    "override": "Override the failed checks and sign off",
+}
+_RED_LABEL = "Checks failed: only the Close Lead can override them with a reason"
+
+
+def _gate_messages(problems):
+    messages = [g["message"] for g in problems["config_gaps"]]
+    for part in ("order", "completeness"):
+        if problems[part]:
+            messages.append(problems[part]["message"])
+    return messages
+
+
+def _blocked_label(problems):
+    """The button text for the first gate that blocks, or None."""
+    if problems["config_gaps"]:
+        return problems["config_gaps"][0]["message"]
+    if problems["order"]:
+        return "Sign off %s first" % problems["order"]["blocking"]
+    if problems["completeness"]:
+        return problems["completeness"]["message"]
+    return None
+
+
+def _checks(run):
+    if run is None:
+        return {"run": None, "status": None, "signoff_status": None, "failed": None, "errored": None}
+    return {
+        "run": run["name"],
+        "status": run["status"],
+        "signoff_status": run["signoff_status"],
+        # Absent means the caller did not read it: unknown, never 0.
+        "failed": run.get("failed"),
+        "errored": run.get("errored"),
+    }
+
+
+def _acknowledgements(run, warned_names):
+    names = list(warned_names or ())
+    total = None if run is None else run.get("warned")
+    unlisted = None if total is None else max(int(total) - len(names), 0)
+    return {"names": names, "total": None if total is None else int(total), "unlisted": unlisted}
+
+
+def _on_behalf(rows):
+    """Labels for submitted TBs uploaded on behalf (R4). ``uploaded_on_behalf``
+    must be present: 1 labelled, 0 omitted, None unknown (uploaded before the
+    flag existed, Problems 16) and shown as unknown."""
+    labels, unknown = [], []
+    for r in sorted(rows or (), key=lambda r: (r["data_area_id"], r["owner"])):
+        flag = r["uploaded_on_behalf"]
+        if flag is None:
+            unknown.append("%s: by %s; on-behalf not recorded (uploaded before it was tracked)"
+                           % (r["data_area_id"], r["owner"]))
+        elif int(flag):
+            labels.append("by %s for %s" % (r["owner"], r["data_area_id"]))
+    return {"labels": labels, "unknown": unknown}
+
+
+def _action(run, problems, can_override):
+    if run is not None:
+        if run["status"] not in RUN_STATUSES:
+            raise ValueError("Unknown Assertion Run status %r; expected one of %s."
+                             % (run["status"], ", ".join(RUN_STATUSES)))
+        if run["signoff_status"] not in SIGNOFF_STATES:
+            raise ValueError("Unknown sign-off status %r; expected one of %s."
+                             % (run["signoff_status"], ", ".join(SIGNOFF_STATES)))
+        if run["signoff_status"] in SIGNED_STATES:
+            return "signed", run["signoff_status"]
+    blocked = _blocked_label(problems)
+    if blocked:
+        return "blocked", blocked
+    if run is None:
+        return "run_checks", _LABELS["run_checks"]
+    if run["signoff_status"] == RE_SIGN_NEEDED:
+        return "rerun", _LABELS["rerun"]
+    status = run["status"]
+    if status in ("Queued", "Running"):
+        return "wait", "The checks are %s; wait for them to finish" % status.lower()
+    if status == "Green":
+        return "sign", _LABELS["sign"]
+    if status == "Amber":
+        return "acknowledge", _LABELS["acknowledge"]
+    if can_override:
+        return "override", _LABELS["override"]
+    return "blocked", _RED_LABEL
+
+
+def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override):
+    """The sign-off summary of story 9.1 and the next action.
+
+    - ``run``: the latest terminal Assertion Run (``name``, ``status``,
+      ``signoff_status``; optional ``failed``, ``errored``, ``warned``) or None.
+      An absent count is reported as None (unknown), never 0.
+    - ``warned_names``: the warned assertions (capped by the reader).
+    - ``on_behalf``: submitted TBs (``data_area_id``, ``owner``,
+      ``uploaded_on_behalf`` of 1, 0 or None for unknown).
+    - ``exceptions``: submitted TB Exceptions (``data_area_id``, ``reason``,
+      ``declared_by``).
+    - ``covers``: ``covers_notes`` output. ``previous``: period states
+      (``key``, ``code``, ``status``, ``signoff``).
+    - ``problems``: ``signoff_gate.sign_off_problems`` output.
+
+    ``action`` is one of signed, blocked, run_checks, rerun, wait, sign,
+    acknowledge, override. A signed run stays signed; otherwise any gate blocks
+    (configuration first, then order, then completeness). An unknown run or
+    sign-off status raises ValueError.
+    """
+    action, label = _action(run, problems, can_override)
+    return {
+        "action": action,
+        "label": label,
+        "gates": {
+            "config_gaps": list(problems["config_gaps"]),
+            "order": problems["order"],
+            "completeness": problems["completeness"],
+            "messages": _gate_messages(problems),
+        },
+        "checks": _checks(run),
+        "acknowledgements": _acknowledgements(run, warned_names),
+        "on_behalf": _on_behalf(on_behalf),
+        "exceptions": [
+            {"entity": e["data_area_id"], "reason": e["reason"], "declared_by": e["declared_by"]}
+            for e in sorted(exceptions or (), key=lambda e: e["data_area_id"])
+        ],
+        "covers": list(covers or ()),
+        "previous": [
+            {"code": p["code"], "status": p["status"], "signoff": p["signoff"]}
+            for p in sorted(previous or (), key=lambda p: _key(p["key"]))
+        ],
+    }
