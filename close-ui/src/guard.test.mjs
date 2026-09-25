@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = __dirname; // close-ui/src
 const PACKAGE_JSON = path.resolve(__dirname, "..", "package.json");
+const THIS_FILE = fileURLToPath(import.meta.url);
 
 // Matches the specifier string of `import ... from "spec"`, `import("spec")`
 // and `require("spec")`, with either quote style.
@@ -46,8 +47,11 @@ function walk(dir) {
 }
 
 test("no file under close-ui/src imports from konsol-exec", () => {
-  const files = walk(SRC_DIR);
-  assert.ok(files.length > 0, "expected at least one file under close-ui/src");
+  const allFiles = walk(SRC_DIR);
+  assert.ok(allFiles.length > 0, "expected at least one file under close-ui/src");
+  // Excludes this file itself: its own failure-path test below deliberately
+  // contains the forbidden substring as fixture data, not as a real import.
+  const files = allFiles.filter((f) => f !== THIS_FILE);
   const offenders = [];
   for (const file of files) {
     const source = fs.readFileSync(file, "utf8");
