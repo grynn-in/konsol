@@ -20,6 +20,15 @@ Reads the site and passes it through the pure models:
   a signed run (``assertion_run.assert_close_signed_off``). History periods
   and non-Regular periods are exempt (P5); an undeclared first close refuses.
 
+- ``mark_later_resign_needed(fy, fp, code, reason, user)`` (A31; #303
+  point 4): reopening a period marks the latest signed run of every later
+  Regular period "Re-sign Needed", with ``affected_by`` naming the reopen.
+  Periods before the first close (history) are never marked; with no first
+  close declared, history cannot be told apart, so every later signed Regular
+  run is marked (the mark errs toward re-signing). The mark is saved through
+  ``assertion_run.writing(SIGNOFF_WRITER, run)``, so the frozen-field guard
+  (A48) still applies to everything else; it never uses ``db.set_value``.
+
 The first close period is read from Close Settings; its Int fields read back
 as 0 when unset, which ``signoff_model.first_close_key`` maps to undeclared.
 No default is guessed. Nothing here is whitelisted.
@@ -186,3 +195,52 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
         assert_close_signed_off)
     return assert_close_signed_off(*key)
+
+
+def mark_later_resign_needed(fiscal_year, fiscal_period, period_code, reason, user):
+    """Mark the latest signed run of every Regular period after
+    (``fiscal_year``, ``fiscal_period``) "Re-sign Needed"; return the marked
+    run names. No commit: the reopen's request commits or rolls back."""
+    # Imported here: assertion_run imports this module's callers (A22).
+    from konsol.consolidation.doctype.assertion_run.assertion_run import (
+        RE_SIGN_NEEDED, SIGNED_STATES, SIGNOFF_WRITER, TERMINAL_STATUSES, writing)
+
+    target = _key(fiscal_year, fiscal_period)
+    first = _first_close()
+    later = {
+        _key(r["fiscal_year"], r["fiscal_period"])
+        for r in fiscal_calendar.fiscal_period_rows()
+        if r.get("period_type") == REGULAR
+        and _key(r["fiscal_year"], r["fiscal_period"]) > target
+        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
+    }
+    if not later:
+        return []
+
+    latest = {}
+    for r in frappe.get_all(
+        "Assertion Run",
+        filters={"status": ["in", list(TERMINAL_STATUSES)],
+                 "signoff_status": ["in", list(SIGNED_STATES)]},
+        fields=["name", "fiscal_year", "fiscal_period"],
+        order_by="completed_at desc, creation desc", limit_page_length=0,
+    ):
+        key = _key(r["fiscal_year"], r["fiscal_period"])
+        if key in later:
+            latest.setdefault(key, r["name"])
+
+    affected_by = "FY%d %s reopened on %s by %s: %s" % (
+        target[0], period_code, frappe.utils.nowdate(), user, reason)
+    marked = []
+    for key in sorted(latest):
+        name = latest[key]
+        run = frappe.get_doc("Assertion Run", name)
+        run.signoff_status = RE_SIGN_NEEDED
+        run.affected_by = affected_by
+        with writing(SIGNOFF_WRITER, name):
+            # The reopener (Close Lead) need not own the run; the mark is a
+            # consequence of the reopen, not an edit of the run.
+            run.save(ignore_permissions=True)
+        marked.append(name)
+    return marked
+

@@ -385,6 +385,12 @@ class EPMFiscalYear(Document):
                 frappe.throw(
                     f"FY{self.fiscal_year} is {year_status}; Reopen the year first, "
                     f"then period {row.period_code}.")
+            # konsol#305 A31 (#303 point 4): later signed periods stop counting
+            # as signed; they are marked Re-sign Needed through the sign-off writer.
+            from konsol.close import signoff_gate
+            signoff_gate.mark_later_resign_needed(
+                self.fiscal_year, row.fiscal_period, row.period_code, text,
+                frappe.session.user)
         elif current == fstm.OPEN:
             from konsol import group_rates
             group_rates.assert_rates_complete(self.fiscal_year, row.fiscal_period)
