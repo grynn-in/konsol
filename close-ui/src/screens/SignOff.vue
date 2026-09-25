@@ -6,9 +6,10 @@
  * - `load` is A30 GET `signoff_api.get_signoff`, `sign` is A32 POST
  *   `signoff_api.sign`; both are injected with machine.provide({actors}) and
  *   close over the period in the URL (route.js, D5).
- * - Close and reopen are B24's (SignOffPeriodActions); this screen only
- *   renders the signed and closed states. Their services stay the machine's
- *   defaults, which refuse by name.
+ * - Close and reopen are B24's: SignOffPeriodActions exports `periodActors`,
+ *   the machine's `close` / `reopen` services (A34), which this screen spreads
+ *   into provide({actors}), and it renders the Close / Reopen / declare TB
+ *   exception controls against this screen's actor.
  * - What the summary says is rendered through B15's summaryView as plain-text
  *   lines ("unknown" for a count the server did not read, "None" for an empty
  *   section); the gate text ("Sign off P07 first") is the server's `label`.
@@ -29,6 +30,7 @@ import { useRoute } from "vue-router";
 import { createActor, fromPromise } from "xstate";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
+import SignOffPeriodActions, { periodActors } from "../sections/SignOffPeriodActions.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { summaryView, messageLines } from "../signoff.js";
@@ -63,6 +65,7 @@ function machineFor(p) {
 					override_reason: input.override_reason,
 				}),
 			),
+			...periodActors(key),
 		},
 	});
 }
@@ -137,6 +140,12 @@ const signedOrClosed = computed(() =>
 		snap.value.matches("closing") || snap.value.matches("reopening")),
 );
 const isClosed = computed(() => is("closed") || is("reopening"));
+// After a close in this session the summary still reads Open; the close
+// endpoint's own answer (context.closed) is the newer one.
+const closedInfo = computed(() => context.value.closed || context.value.summary || {});
+const periodKey = computed(() =>
+	period.value ? { fiscal_year: period.value.year, fiscal_period: period.value.period } : null,
+);
 
 // The event the summary's action asks for; the machine decides whether it is taken.
 const ACTION_EVENTS = { sign: "SIGN", acknowledge: "ACKNOWLEDGE", override: "OVERRIDE" };
@@ -233,9 +242,9 @@ const unknownOr = (value) => (value === null || value === undefined || value ===
 				</p>
 				<p class="mt-1 text-sm text-ink-gray-7">{{ view.label }}</p>
 				<p v-if="isClosed" class="mt-1 text-sm text-ink-gray-7">
-					Period {{ unknownOr(context.summary.period_status) }}
-					· closed by {{ unknownOr(context.summary.closed_by) }}
-					on {{ unknownOr(context.summary.closed_on) }}
+					Period {{ unknownOr(closedInfo.status || closedInfo.period_status) }}
+					· closed by {{ unknownOr(closedInfo.closed_by) }}
+					on {{ unknownOr(closedInfo.closed_on) }}
 				</p>
 			</div>
 			<!-- end signed region -->
@@ -324,6 +333,14 @@ const unknownOr = (value) => (value === null || value === undefined || value ===
 					</div>
 				</div>
 			</div>
+
+			<SignOffPeriodActions
+				v-if="periodKey"
+				:snapshot="snap"
+				:period-key="periodKey"
+				:period-name="periodName"
+				@send="send"
+			/>
 
 			<section v-for="s in sections" :key="s.key" class="mt-6">
 				<h2 class="text-base font-semibold text-ink-gray-9">{{ s.title }}</h2>
