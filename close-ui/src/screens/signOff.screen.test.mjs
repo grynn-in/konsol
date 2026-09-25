@@ -185,3 +185,25 @@ test("B32: reloadContext is declared before the immediate period watcher (B30)",
   const watcher = js.indexOf("{ immediate: true }");
   assert.ok(decl >= 0 && watcher > decl, "declared before the watcher that subscribes to it");
 });
+
+// --- konsol#305 B33: "closed on" is a time, not a raw ISO string ------------
+
+test("B33: the template never renders closed_on directly", () => {
+  const tpl = template(read());
+  assert.doesNotMatch(tpl, /closed_on/, "closed_on goes through closedOnText, not the template");
+});
+
+test("B33: SignOff.vue formats closed_on with signoff.js's closedOnText in the user's zone (B29)", () => {
+  const js = script(read());
+  assert.match(js, /import\s*\{[^}]*\bclosedOnText\b[^}]*\}\s*from\s*["']\.\.\/signoff\.js["']/);
+  assert.match(js, /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/);
+  assert.doesNotMatch(js, /function\s+userTimeZone\b|\buserTimeZone\s*=/, "no local copy");
+  assert.match(js, /closedOnText\(\s*closedInfo\.value\.closed_on\b/);
+});
+
+test("B33: failure path — a refused closed_on is shown, not swallowed", () => {
+  const source = read();
+  const js = script(source);
+  assert.match(js, /catch\s*\(/, "the refusal is caught so the page still renders");
+  assert.match(template(source), /closedOn\.error/, "and its message is shown");
+});

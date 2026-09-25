@@ -41,7 +41,8 @@ import LoadState from "../components/LoadState.vue";
 import SignOffPeriodActions, { periodActors } from "../sections/SignOffPeriodActions.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { summaryView, messageLines } from "../signoff.js";
+import { summaryView, messageLines, closedOnText } from "../signoff.js";
+import { userTimeZone } from "../timefmt.js";
 import { signoffMachine, PERIOD_CHANGED } from "../machines/signoffMachine.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
@@ -165,6 +166,17 @@ const isClosed = computed(() => is("closed") || is("reopening"));
 // After a close in this session the summary still reads Open; the close
 // endpoint's own answer (context.closed) is the newer one.
 const closedInfo = computed(() => context.value.closed || context.value.summary || {});
+// B33: closed_on is shown as a time in the user's zone (B27, B29). A
+// zone-less timestamp or a missing user zone is refused, and the refusal is
+// shown beside "unknown" rather than guessed.
+const timeZone = userTimeZone();
+const closedOn = computed(() => {
+	try {
+		return { text: closedOnText(closedInfo.value.closed_on, new Date(), timeZone), error: null };
+	} catch (e) {
+		return { text: "unknown", error: e.message };
+	}
+});
 const periodKey = computed(() =>
 	period.value ? { fiscal_year: period.value.year, fiscal_period: period.value.period } : null,
 );
@@ -247,7 +259,10 @@ const unknownOr = (value) => (value === null || value === undefined || value ===
 				<p v-if="isClosed" class="mt-1 text-sm text-ink-gray-7">
 					Period {{ unknownOr(closedInfo.status || closedInfo.period_status) }}
 					· closed by {{ unknownOr(closedInfo.closed_by) }}
-					on {{ unknownOr(closedInfo.closed_on) }}
+					on {{ closedOn.text }}
+				</p>
+				<p v-if="isClosed && closedOn.error" class="mt-1 text-sm text-ink-red-3" role="alert">
+					{{ closedOn.error }}
 				</p>
 			</div>
 			<!-- end signed region -->

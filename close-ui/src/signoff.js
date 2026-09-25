@@ -26,6 +26,8 @@ const KNOWN_ACTIONS = [
 	"override",
 ];
 
+import { formatTime, parseZoned } from "./timefmt.js";
+
 const NONE = "None";
 
 
@@ -166,4 +168,20 @@ export function summaryView(summary) {
 		covers: coversSection(summary.covers),
 		previous: previousSection(summary.previous),
 	};
+}
+
+/**
+ * B33: the close's `closed_on` as a time in the user's zone, read like the TB
+ * list (B27) through timefmt.js (B29). Missing (null/undefined/"") is
+ * "unknown", never blank. A zone-less timestamp is refused (B09b), and so is
+ * a missing user zone: neither is guessed from the machine's zone.
+ */
+export function closedOnText(value, now, timeZone) {
+	if (value === null || value === undefined || value === "") {
+		return "unknown";
+	}
+	if (!timeZone) {
+		throw new Error("No time zone to show the close time in.");
+	}
+	return formatTime(parseZoned(value), now, timeZone);
 }
