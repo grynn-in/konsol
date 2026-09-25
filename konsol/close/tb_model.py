@@ -35,6 +35,10 @@ _basis = _load_sibling("konsol_close_tb_basis_model", "tb_basis_model.py")
 #: test asserts the two are equal.
 BALANCE_TOLERANCE = 0.01
 
+#: Float noise only, far below a cent: the balance comparison ignores differences
+#: from the tolerance smaller than this (konsol#305 A60).
+_FLOAT_EPSILON = 1e-9
+
 #: konsol#182: a site with no Published Main Account has no chart to post to.
 #: The same text as trial_balance_submission.NO_CHART (a test asserts it).
 NO_CHART = ("No group chart is published yet: upload and publish one (Main Account) "
@@ -207,10 +211,11 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
 
     total_debit = sum(r["debit"] for r in rows)
     total_credit = sum(r["credit"] for r in rows)
-    # parse_tb_csv rounds every amount to cents, so the difference does too:
-    # comparing raw floats can put an exact multiple of a cent (e.g. 0.01)
-    # a hair over the tolerance (100.01 - 100 == 0.010000000000005).
-    if abs(round(total_debit - total_credit, 2)) > tolerance:
+    # Compare exactly, allowing only float noise: 100.01 - 100 is
+    # 0.010000000000005, which is still one cent and within 0.01. Rounding to
+    # cents first would loosen the rule (0.014 would pass 0.01), so it is not
+    # done (konsol#305 A60).
+    if abs(total_debit - total_credit) - tolerance > _FLOAT_EPSILON:
         file_problems.append(
             f"Debits ({total_debit:,.2f}) do not equal credits "
             f"({total_credit:,.2f}); difference "
