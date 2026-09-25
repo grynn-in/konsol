@@ -19,6 +19,11 @@
  *   trial balance). After a submit the list is re-read in place, so the
  *   server's own label is shown; the detail area stays open.
  * - No due date is shown: nothing declares one (Problems 6).
+ * - B27: a missing TB shows the dash from `entityRows` (never "None"), and
+ *   the upload / exception times are formatted in the user's zone like the
+ *   freshness bar (B09): Frappe's boot `time_zone.user`, else the browser's
+ *   zone, as AppShell reads it. With no zone the list is an error, never a
+ *   guessed zone; a zone-less server timestamp is refused the same way.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -64,7 +69,21 @@ function countText(n) {
 	return n == null ? "unknown" : String(n);
 }
 
-const load = reactive({ status: "loading", data: null, persona: null, error: null });
+/** The user's IANA zone: Frappe's boot, else the browser's; null if neither says (as AppShell). */
+function userTimeZone() {
+	const boot = typeof window !== "undefined" && window.frappe && window.frappe.boot;
+	const fromBoot = boot && boot.time_zone && boot.time_zone.user;
+	if (fromBoot) return fromBoot;
+	try {
+		return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+	} catch {
+		return null;
+	}
+}
+const timeZone = userTimeZone();
+const NO_ZONE = "Your browser reported no time zone, so upload times cannot be shown.";
+
+const load = reactive({ status: "loading", data: null, persona: null, error: null, now: null });
 const busy = ref(false);
 const selectedCode = ref(null);
 let seq = 0;
@@ -85,6 +104,7 @@ async function fetchAll() {
 		const [tbs, context] = await Promise.all([get(MY_TBS, params), get(CONTEXT, params)]);
 		if (mine !== seq) return;
 		load.data = tbs;
+		load.now = new Date();
 		load.persona = context && context.me ? context.me.persona : null;
 		load.status = "ready";
 	} catch (e) {
@@ -116,6 +136,7 @@ async function refreshAfterSubmit() {
 		const tbs = await get(MY_TBS, { fiscal_year: p.year, fiscal_period: p.period });
 		if (mine !== seq) return;
 		load.data = tbs;
+		load.now = new Date();
 	} catch (e) {
 		if (mine !== seq) return;
 		refreshError.value = `The trial balance was received, but the list could not be re-read: ${e.message}`;
@@ -125,8 +146,9 @@ async function refreshAfterSubmit() {
 /** `entityRows` refuses an unknown status; that refusal is shown, not hidden. */
 const table = computed(() => {
 	if (load.status !== "ready") return { rows: null, error: null };
+	if (!timeZone) return { rows: null, error: NO_ZONE };
 	try {
-		return { rows: entityRows(load.data), error: null };
+		return { rows: entityRows(load.data, load.now, timeZone), error: null };
 	} catch (e) {
 		return { rows: null, error: e.message };
 	}
@@ -258,13 +280,13 @@ watch(
 							</td>
 							<td class="px-4 py-2 text-ink-gray-7">
 								<template v-if="row.tb">
-									<div class="font-mono text-xs">{{ row.tb.name }}</div>
+									<div class="font-mono text-xs">{{ row.tbText }}</div>
 									<div>{{ row.tb.on_behalf_label || NOT_RECORDED }}</div>
 								</template>
 								<template v-else-if="row.exception">Exception: {{ row.exception.reason || "no reason given" }}</template>
-								<span v-else class="text-ink-gray-5">None</span>
+								<span v-else class="text-ink-gray-5">{{ row.tbText }}</span>
 							</td>
-							<td class="px-4 py-2 text-ink-gray-7">{{ row.tb ? row.tb.creation || NOT_RECORDED : "—" }}</td>
+							<td class="px-4 py-2 text-ink-gray-7">{{ row.uploaded }}</td>
 						</tr>
 					</tbody>
 				</table>
@@ -288,17 +310,19 @@ watch(
 				<dl class="mt-3 grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-sm">
 					<template v-if="selected.tb">
 						<dt class="text-ink-gray-5">Trial balance</dt>
-						<dd class="font-mono text-ink-gray-8">{{ selected.tb.name }}</dd>
+						<dd class="font-mono text-ink-gray-8">{{ selected.tbText }}</dd>
 						<dt class="text-ink-gray-5">Uploaded</dt>
 						<dd class="text-ink-gray-8">{{ selected.tb.on_behalf_label || NOT_RECORDED }}</dd>
 						<dt class="text-ink-gray-5">On</dt>
-						<dd class="text-ink-gray-8">{{ selected.tb.creation || NOT_RECORDED }}</dd>
+						<dd class="text-ink-gray-8">{{ selected.uploaded }}</dd>
 					</template>
 					<template v-if="selected.exception">
 						<dt class="text-ink-gray-5">Exception</dt>
 						<dd class="text-ink-gray-8">{{ selected.exception.reason || "no reason given" }}</dd>
 						<dt class="text-ink-gray-5">Declared by</dt>
 						<dd class="text-ink-gray-8">{{ selected.exception.declared_by || NOT_RECORDED }}</dd>
+						<dt class="text-ink-gray-5">Declared on</dt>
+						<dd class="text-ink-gray-8">{{ selected.exception.declaredOnText }}</dd>
 					</template>
 					<template v-if="!selected.tb && !selected.exception">
 						<dt class="text-ink-gray-5">Trial balance</dt>
