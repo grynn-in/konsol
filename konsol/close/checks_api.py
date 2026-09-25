@@ -45,7 +45,19 @@ def _period(fiscal_year, fiscal_period):
 
 
 def _iso(value):
+    """A datetime with the site's UTC offset (A16b/A47); anything else as is."""
+    if hasattr(value, "hour"):
+        from konsol.close.timefmt import zoned_iso
+        return zoned_iso(value, frappe.utils.get_system_timezone())
     return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _aware(value):
+    """A naive database datetime placed in the site's zone, so it compares
+    with A16b's zoned ``as_of`` (A47: naive vs aware raised TypeError)."""
+    if value is None or not hasattr(value, "hour") or value.tzinfo is not None:
+        return value
+    return datetime.fromisoformat(_iso(value))
 
 
 def _latest(year, period):
@@ -92,7 +104,8 @@ def get_checks(fiscal_year, fiscal_period):
 
     latest = _latest(year, period)
     as_of = current_freshness()["as_of"]
-    stale = staleness(latest, datetime.fromisoformat(as_of) if as_of else None)
+    run_for_staleness = dict(latest, completed_at=_aware(latest.get("completed_at"))) if latest else None
+    stale = staleness(run_for_staleness, _aware(datetime.fromisoformat(as_of)) if as_of else None)
 
     terminal = latest_close_run(year, period)
     results_run = terminal["name"] if terminal else None

@@ -1,10 +1,15 @@
-"""Freshness API: konsol/close/freshness_api.py (konsol#305 A16; story 0.2).
+"""Freshness API: konsol/close/freshness_api.py (konsol#305 A16, A16b; stories 0.2, 9.1).
 
 `get_freshness()` reads Build Approval rows and the latest change per build
 trigger doctype, and passes them through the A05 model. Loaded against a stub
 frappe (pattern: test_assertion_warn_amber.py `_load`); the stub site answers
 `db.sql` from per-doctype rows and honours the `docstatus IN (1,2)` filter, so
 a draft-only change is really excluded by the query, not by the stub.
+
+A16b: every datetime the endpoint returns (`as_of`, `last_failed.at`) carries
+the site's UTC offset via `konsol.close.timefmt.zoned_iso`, not a zone-less
+`isoformat()`. The stub's `frappe.utils.get_system_timezone()` answers
+"Europe/London" so the expected offset is visible in the assertions below.
 """
 import ast
 import importlib.util
@@ -19,6 +24,17 @@ import pytest
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "freshness_api.py")
 MODEL_PY = os.path.join(APP_DIR, "close", "freshness_model.py")
+TIMEFMT_PY = os.path.join(APP_DIR, "close", "timefmt.py")
+
+_spec = importlib.util.spec_from_file_location("close_timefmt_for_freshness_api_test", TIMEFMT_PY)
+_timefmt = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_timefmt)
+
+SITE_TZ = "Europe/London"
+
+
+def _zoned(day, hour=0):
+    return _timefmt.zoned_iso(datetime(2026, 9, day, hour, 0, 0), SITE_TZ)
 
 ALL_CLOSE_ROLES = {"EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager"}
 
@@ -107,6 +123,7 @@ def _load(site):
     frappe.db = types.SimpleNamespace(sql=sql)
     frappe.get_meta = lambda dt: types.SimpleNamespace(is_submittable=int(dt in SUBMITTABLE))
     frappe.session = types.SimpleNamespace(user="zz@example.com")
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
 
     konsol = types.ModuleType("konsol")
     close = types.ModuleType("konsol.close")
@@ -121,10 +138,11 @@ def _load(site):
     build_lock.FLAGGED_STATES = FLAGGED
     konsol.hooks, konsol.tasks, konsol.build_lock, konsol.close = hooks, tasks, build_lock, close
     close.freshness_model = model
+    close.timefmt = _timefmt
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
-            "konsol.close.freshness_model": model, "konsol.hooks": hooks,
-            "konsol.tasks": tasks, "konsol.build_lock": build_lock}
+            "konsol.close.freshness_model": model, "konsol.close.timefmt": _timefmt,
+            "konsol.hooks": hooks, "konsol.tasks": tasks, "konsol.build_lock": build_lock}
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -172,7 +190,7 @@ def test_a_tb_submitted_after_the_last_consolidation_build_is_stale():
     out = _call(site)
     assert out["state"] == "stale"
     assert out["changed_since"] == ["Trial Balance Submission"]
-    assert out["as_of"] == _dt(10).isoformat()
+    assert out["as_of"] == _zoned(10)
     assert out["pending"] == 0
     assert out["last_failed"] is None
 
@@ -183,7 +201,7 @@ def test_every_change_covered_is_fresh():
         records={"Trial Balance Submission": [(1, _dt(11))], "Entity": [(0, _dt(3))]},
     )
     out = _call(site)
-    assert out == {"state": "fresh", "as_of": _dt(12).isoformat(), "pending": 0,
+    assert out == {"state": "fresh", "as_of": _zoned(12), "pending": 0,
                    "changed_since": [], "last_failed": None}
 
 
@@ -205,7 +223,7 @@ def test_a_failed_build_is_reported_with_its_reason_as_json_safe_values():
     ])
     out = _call(site)
     assert out["state"] == "failed"
-    assert out["last_failed"] == {"name": "BA-2", "at": _dt(11).isoformat(),
+    assert out["last_failed"] == {"name": "BA-2", "at": _zoned(11),
                                   "reason": "dbt exit 2"}
 
 

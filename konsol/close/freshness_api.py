@@ -20,6 +20,7 @@ import frappe
 
 from konsol import build_lock, hooks, tasks
 from konsol.close.freshness_model import COMPLETED, FAILED, freshness
+from konsol.close.timefmt import zoned_iso
 
 #: Requested from Entity's controller, not from doc_events (hooks.py).
 CONTROLLER_TRIGGERS = ("Entity",)
@@ -63,7 +64,11 @@ def _builds():
 
 
 def _iso(value):
-    return value.isoformat() if hasattr(value, "isoformat") else value
+    """A naive datetime as ISO 8601 with the site's own offset attached
+    (konsol#305 A16b): a zone-less time cannot be placed on a timeline."""
+    if not hasattr(value, "isoformat"):
+        return value
+    return zoned_iso(value, frappe.utils.get_system_timezone())
 
 
 def current_freshness():
