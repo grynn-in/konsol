@@ -259,7 +259,7 @@ def test_failures_are_grouped_by_domain_and_cause():
                  roles=("EPM Analyst",), as_of=_dt(9).isoformat(), project_path=path)
     out, _ = _call(site, "get_checks", 2026, 9)
     assert out["latest"] == {"name": "RUN-1", "status": "Red",
-                             "completed_at": _dt(10, 1).isoformat()}
+                             "completed_at": _dt(10, 1).isoformat() + "+01:00"}
     assert out["staleness"] == "current"
     assert out["results_run"] == "RUN-1"
     assert [d["domain"] for d in out["domains"]] == ["FX", "Consolidation", "Data Quality"]
