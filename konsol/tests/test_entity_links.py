@@ -29,6 +29,7 @@ REFERRING_DOCTYPES = {
     # the Link — unlike Entity Fiscal Calendar, whose key is a raw ERP data area
     # konsol has no Entity for and is deliberately named erp_data_area.
     "Budget Annual Input",
+    "TB Exception",
 }
 
 
