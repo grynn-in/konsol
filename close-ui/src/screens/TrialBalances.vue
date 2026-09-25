@@ -164,6 +164,34 @@ const canUpload = computed(() => Boolean(load.data && load.data.can_upload) && (
 function select(code) {
 	selectedCode.value = selectedCode.value === code ? null : code;
 }
+
+/**
+ * B18b: a `?entity=` in the URL (from MyWork.vue's itemRoute, B10) opens
+ * that entity's detail area directly. An entity named in the query that is
+ * not one of this period's rows gets a visible note instead of a guess —
+ * it is never silently swapped for the first row or any other row.
+ */
+const entityNote = ref(null);
+
+watch(
+	() => [table.value.rows, route.query.entity],
+	() => {
+		const rows = table.value.rows;
+		const wanted = typeof route.query.entity === "string" ? route.query.entity : null;
+		if (!rows || !wanted) {
+			entityNote.value = null;
+			return;
+		}
+		const match = rows.find((r) => r.entity === wanted);
+		if (match) {
+			selectedCode.value = match.entity;
+			entityNote.value = null;
+		} else {
+			entityNote.value = `The entity "${wanted}" from the link is not in this period's list.`;
+		}
+	},
+	{ immediate: true },
+);
 </script>
 
 <template>
@@ -186,6 +214,10 @@ function select(code) {
 		>
 			<p v-if="!load.data.period_open" class="mb-4 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7">
 				This period is not open. Trial balances are shown read only.
+			</p>
+
+			<p v-if="entityNote" role="alert" class="mb-4 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-3 text-sm text-ink-amber-3">
+				{{ entityNote }}
 			</p>
 
 			<p class="mb-3 text-sm text-ink-gray-7">

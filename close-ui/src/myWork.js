@@ -65,6 +65,11 @@ export function sections(items) {
  * `{external: "/app/..."}` for a setup-gap item (story 0.4). A period
  * item's route never depends on client-side "last viewed" state (D5): the
  * period comes from the item itself.
+ *
+ * B18b: when the item's action names an entity (an Entity Accountant's
+ * "Upload TB for <entity>" item), the route carries it as `?entity=<code>`,
+ * so TrialBalances.vue can open that entity's detail area directly. An
+ * action with no entity carries no query string — never an invented one.
  */
 export function itemRoute(item) {
 	const action = item.action || {};
@@ -72,5 +77,33 @@ export function itemRoute(item) {
 		return { external: action.desk };
 	}
 	const period = item.period;
-	return format({ year: period.fiscal_year, period: period.fiscal_period, screen: action.screen });
+	const path = format({ year: period.fiscal_year, period: period.fiscal_period, screen: action.screen });
+	return action.entity ? `${path}?entity=${encodeURIComponent(action.entity)}` : path;
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * `since` (an ISO date, e.g. "2026-09-13", or null) and `today` (a `Date`,
+ * always supplied by the caller) → an age string such as "12 days" or
+ * "1 day" for B18's My work screen (A53, story 1.1).
+ *
+ * This module never reads the clock: `today` is always an injected
+ * parameter, the same rule the pure Python models follow — the age is
+ * computed from `since` and a `today` that is injected, never read inside
+ * a pure module.
+ *
+ * `since === null` (a setup-gap item, A53's `since_reason:
+ * "configuration gap"`) renders nothing: `null`. A `since` that is still in
+ * the future (the period has not ended yet) also renders nothing — there
+ * is no elapsed age to show, and a negative day count would be a lie.
+ */
+export function ageText(since, today) {
+	if (!since) return null;
+	const [year, month, day] = since.split("-").map(Number);
+	const sinceUTC = Date.UTC(year, month - 1, day);
+	const todayUTC = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+	const days = Math.floor((todayUTC - sinceUTC) / MS_PER_DAY);
+	if (days < 0) return null;
+	return days === 1 ? "1 day" : `${days} days`;
 }

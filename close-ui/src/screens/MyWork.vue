@@ -16,24 +16,27 @@
  * period (not the one in the URL). Only a configuration gap opens the Desk,
  * in a new tab, marked as Desk.
  *
- * An Entity Accountant with no entity assigned (A25 note): `my_tbs` for the
- * URL period returns `entities: []`, and the screen says so rather than
- * showing three empty groups that read as "all done".
+ * B18b: `get_my_work` (A54) carries a top-level `entities_assigned` for the
+ * Entity Accountant persona — true/false, independent of the URL period —
+ * so this screen no longer calls `my_tbs` to guess it. `entities_assigned
+ * === false` shows "No entities are assigned to you"; `=== true` with no
+ * items shows a distinct "assigned, but none in scope" message, instead of
+ * three empty groups that read as "all done".
  *
- * Age: A29's items carry no date, so no age is shown; guessing one from the
- * period would be a number the server did not send.
+ * Age (B18b, A53): each period item carries `since` (blocking/todo/waiting)
+ * or the item itself carries it (a setup gap, always null). `ageText`
+ * (myWork.js) turns it into "N days"; `today` is captured once here and
+ * passed in, since the pure module never reads the clock itself.
  */
 import { computed, reactive, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { Badge, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get } from "../api.js";
-import { itemRoute, sections } from "../myWork.js";
+import { ageText, itemRoute, sections } from "../myWork.js";
 import { parse } from "../route.js";
 
 const MY_WORK = "konsol.close.mywork_api.get_my_work";
-const CONTEXT = "konsol.close.period_api.get_context";
-const MY_TBS = "konsol.close.tb_read_api.my_tbs";
 
 /** Owner roles (A20 `OWNERS`, plus System Manager for the accountants gap). */
 const OWNER_LABELS = {
@@ -63,47 +66,24 @@ const current = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 
-function periodName(c) {
-	return `FY${c.year} P${String(c.period).padStart(2, "0")}`;
-}
-
 // --- data -------------------------------------------------------------------
 
-const work = reactive({ status: "loading", items: [], error: null, busy: false });
-/** Only for an Entity Accountant: are any entities assigned? (A25 note) */
-const scope = reactive({ status: "idle", persona: null, noEntities: false, error: null });
-let seq = 0;
+/** `today`, captured once: the pure `ageText` never reads the clock itself. */
+const today = new Date();
 
-async function loadScope(n, c) {
-	scope.status = "loading";
-	scope.error = null;
-	scope.noEntities = false;
-	try {
-		const params = c ? { fiscal_year: c.year, fiscal_period: c.period } : null;
-		const ctx = await get(CONTEXT, params);
-		if (n !== seq) return;
-		scope.persona = (ctx && ctx.me && ctx.me.persona) || null;
-		if (scope.persona !== "entity_accountant" || !c) {
-			scope.status = "ready";
-			return;
-		}
-		const tbs = await get(MY_TBS, params);
-		if (n !== seq) return;
-		scope.noEntities = Array.isArray(tbs && tbs.entities) && tbs.entities.length === 0;
-		scope.status = "ready";
-	} catch (e) {
-		if (n !== seq) return;
-		scope.error = e.message;
-		scope.status = "error";
-	}
-}
+const NO_ENTITIES_TITLE = "No entities are assigned to you. Ask the System Manager.";
+const NO_ENTITIES_DETAIL = "Until an entity is assigned there is nothing for you to upload, so the groups below stay empty.";
+const OUT_OF_SCOPE_TITLE = "Your entities are assigned, but none are in scope this period.";
+const OUT_OF_SCOPE_DETAIL = "Nothing is due from your entities in the currently open periods, so the groups below stay empty.";
+
+const work = reactive({ status: "loading", items: [], entitiesAssigned: null, error: null, busy: false });
+let seq = 0;
 
 async function load() {
 	const n = ++seq;
 	work.busy = work.status === "error";
 	work.status = "loading";
 	work.error = null;
-	loadScope(n, current.value);
 	try {
 		const data = await get(MY_WORK);
 		if (n !== seq) return;
@@ -111,10 +91,17 @@ async function load() {
 			throw new Error("get_my_work sent no item list.");
 		}
 		work.items = data.items;
+		// A54: entities_assigned is true/false for the Entity Accountant
+		// persona, null for everyone else. Anything else is treated as
+		// "unknown" (null), never guessed.
+		work.entitiesAssigned = data.entities_assigned === true || data.entities_assigned === false
+			? data.entities_assigned
+			: null;
 		work.status = "ready";
 	} catch (e) {
 		if (n !== seq) return;
 		work.items = [];
+		work.entitiesAssigned = null;
 		work.error = e.message;
 		work.status = "error";
 	} finally {
@@ -163,6 +150,29 @@ function ownerLabel(owner) {
 }
 
 const total = computed(() => work.items.length);
+
+/**
+ * B18b: `entitiesAssigned === false` is a hard "you have nothing assigned";
+ * `=== true` with zero items means the assignment is real but nothing of
+ * theirs falls in an open period right now — a different message, so it is
+ * never read as "you have no entities" when they do.
+ */
+const entityBanner = computed(() => {
+	if (work.status !== "ready") return null;
+	if (work.entitiesAssigned === false) {
+		return { title: NO_ENTITIES_TITLE, detail: NO_ENTITIES_DETAIL };
+	}
+	if (work.entitiesAssigned === true && total.value === 0) {
+		return { title: OUT_OF_SCOPE_TITLE, detail: OUT_OF_SCOPE_DETAIL };
+	}
+	return null;
+});
+
+/** A53: a period item's age lives at `item.period.since`; a gap item's at `item.since` (always null). */
+function ageOf(item) {
+	const since = item.period ? item.period.since : item.since;
+	return ageText(since, today);
+}
 </script>
 
 <template>
@@ -180,27 +190,16 @@ const total = computed(() => work.items.length);
 		</header>
 
 		<div
-			v-if="scope.status === 'ready' && scope.noEntities"
+			v-if="entityBanner"
 			role="alert"
 			class="mb-5 flex items-start gap-3 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-4 text-ink-amber-3"
 		>
 			<FeatherIcon name="user-x" class="mt-0.5 h-4 w-4 shrink-0" />
 			<div>
-				<p class="text-base font-medium">No entities are assigned to you. Ask the System Manager.</p>
-				<p class="mt-1 text-sm">
-					Until an entity is assigned there is nothing for you to upload, so the groups below stay empty.
-				</p>
+				<p class="text-base font-medium">{{ entityBanner.title }}</p>
+				<p class="mt-1 text-sm">{{ entityBanner.detail }}</p>
 			</div>
 		</div>
-		<LoadState
-			v-else-if="scope.status === 'error'"
-			compact
-			state="error"
-			:what="current ? `your entities for ${periodName(current)}` : 'your entities'"
-			:source="MY_TBS"
-			:error="scope.error"
-			@retry="load"
-		/>
 
 		<LoadState
 			:state="loadState"
@@ -245,6 +244,7 @@ const total = computed(() => work.items.length);
 									/>
 									<Badge v-else theme="orange" variant="subtle" label="Setup" />
 									<span class="text-base font-medium text-ink-gray-9">{{ item.title }}</span>
+									<span v-if="ageOf(item)" class="text-xs text-ink-gray-5">{{ ageOf(item) }}</span>
 								</div>
 								<p v-if="item.detail" class="mt-1 break-words text-sm text-ink-gray-7">{{ item.detail }}</p>
 								<p class="mt-1 text-xs text-ink-gray-5">Owner: {{ ownerLabel(item.owner) }}</p>
