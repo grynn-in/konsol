@@ -109,16 +109,61 @@ test("cause text is the declared-missing text when none is declared (Problems 4)
   assert.equal(view.domains[0].causes[0].text, "No description declared for assert_fx_balances");
 });
 
-test("a domain's causes hold its failures and warnings together, under the domain's name and count", () => {
+test("a domain's causes hold its failures and warnings together, under the domain's name, fail count and warn count (B13b)", () => {
   const d = domain({
     domain: "FX",
+    count: 1,
+    warn_count: 1,
     failures: [cause({ assertion: "assert_a", title: "A", status: "Fail" })],
     warnings: [cause({ assertion: "assert_b", title: "B", status: "Warn" })],
   });
   const view = checksView(payload({ domains: [d] }));
   assert.equal(view.domains[0].name, "FX");
-  assert.equal(view.domains[0].count, 2);
+  assert.equal(view.domains[0].count, 1, "count is how many fail (A13's domain.count)");
+  assert.equal(view.domains[0].warnCount, 1, "warnCount is how many warn (A13's domain.warn_count)");
   assert.deepEqual(view.domains[0].causes.map((c) => c.title), ["A", "B"]);
+});
+
+test("B13b: a Warn cause keeps its status and gets the label Warning", () => {
+  const d = domain({
+    count: 0,
+    warn_count: 1,
+    warnings: [cause({ assertion: "assert_b", title: "B", status: "Warn" })],
+  });
+  const view = checksView(payload({ domains: [d] }));
+  assert.equal(view.domains[0].causes[0].status, "Warn");
+  assert.equal(view.domains[0].causes[0].label, "Warning");
+});
+
+test("B13b: a Fail cause keeps its status and gets the label Failed", () => {
+  const d = domain({
+    count: 1,
+    failures: [cause({ assertion: "assert_a", title: "A", status: "Fail" })],
+  });
+  const view = checksView(payload({ domains: [d] }));
+  assert.equal(view.domains[0].causes[0].status, "Fail");
+  assert.equal(view.domains[0].causes[0].label, "Failed");
+});
+
+test("B13b: an Error cause keeps its status and gets the label Error, distinct from Failed", () => {
+  const d = domain({
+    count: 1,
+    failures: [cause({ assertion: "assert_a", title: "A", status: "Error" })],
+  });
+  const view = checksView(payload({ domains: [d] }));
+  assert.equal(view.domains[0].causes[0].status, "Error");
+  assert.equal(view.domains[0].causes[0].label, "Error");
+});
+
+test("B13b: failure path — an unknown cause status throws, never shown as a pass", () => {
+  const d = domain({
+    count: 1,
+    failures: [cause({ assertion: "assert_a", title: "A", status: "Weird" })],
+  });
+  assert.throws(
+    () => checksView(payload({ domains: [d] })),
+    /Unknown cause status: Weird/,
+  );
 });
 
 test("a cause's rows comes from rows_failed", () => {
