@@ -73,6 +73,31 @@ def test_blank_frequencies_are_one_gap_listing_every_entity():
     assert "Reporting Frequency" in gaps[0]["message"]
 
 
+def test_more_than_five_blank_frequencies_are_counted_not_named():
+    entities = ["ZZ%d" % i for i in range(1, 7)]  # 6 entities
+    frequencies = {e: "" for e in entities}
+    gaps = M.config_gaps(FIRST, (2025, 9), frequencies)
+    assert _codes(gaps) == ["frequency_undeclared"]
+    gap = gaps[0]
+    assert gap["entities"] == sorted(entities)
+    assert gap["message"] == (
+        "6 entities have no reporting frequency. Declare it on each Entity (Monthly or Quarterly)."
+    )
+
+
+def test_exactly_five_blank_frequencies_are_still_named():
+    entities = ["ZZ%d" % i for i in range(1, 6)]  # 5 entities
+    frequencies = {e: "" for e in entities}
+    gaps = M.config_gaps(FIRST, (2025, 9), frequencies)
+    gap = gaps[0]
+    assert gap["entities"] == sorted(entities)
+    assert gap["message"] == (
+        "Set the Reporting Frequency (Monthly or Quarterly) on ZZ1, ZZ2, ZZ3, ZZ4, ZZ5 "
+        "before signing off."
+    )
+    assert "entities have no reporting frequency" not in gap["message"]
+
+
 def test_every_gap_is_reported_together():
     gaps = M.config_gaps(None, (2025, 9), {"ZZA": ""})
     assert _codes(gaps) == ["first_close_undeclared", "frequency_undeclared"]

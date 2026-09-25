@@ -83,13 +83,20 @@ def config_gaps(first_close, target, frequencies):
                 % (frequency, entity, ", ".join(FREQUENCIES))
             )
     if blank:
+        if len(blank) > 5:
+            message = (
+                "%d entities have no reporting frequency. Declare it on each Entity "
+                "(Monthly or Quarterly)." % len(blank)
+            )
+        else:
+            message = (
+                "Set the Reporting Frequency (Monthly or Quarterly) on %s before signing off."
+                % ", ".join(blank)
+            )
         gaps.append({
             "code": FREQUENCY_UNDECLARED,
             "entities": blank,
-            "message": (
-                "Set the Reporting Frequency (Monthly or Quarterly) on %s before signing off."
-                % ", ".join(blank)
-            ),
+            "message": message,
         })
     return gaps
 
