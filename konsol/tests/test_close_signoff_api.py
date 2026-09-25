@@ -393,13 +393,18 @@ def test_viewer_reads_the_summary_but_cannot_sign_or_override():
     assert result["can_override"] is False
 
 
-def test_analyst_can_sign_but_not_override():
+def test_can_sign_is_the_write_permission_and_can_override_the_role():
+    # Live (25 Sep): the EPM Analyst has no write on Assertion Run (R3), so
+    # can_sign is False; it is the permission that decides, not the role name.
     site = _Site(roles=("EPM Analyst",))
+    site.can_write = False
     site.records["Assertion Run"][-1].update(status="Red", warned=0)
     result = _get(site)
-    assert result["can_sign"] is True
+    assert result["can_sign"] is False
     assert result["can_override"] is False
     assert result["action"] == "blocked"
+    site = _Site(roles=("EPM Analyst",))
+    assert _get(site)["can_sign"] is True
 
 
 # --- A49: the period's own status ----------------------------------------------
