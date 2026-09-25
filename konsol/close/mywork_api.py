@@ -2,11 +2,12 @@
 
 ``get_my_work`` (GET) reads the site and passes it through the pure models:
 
-- setup gaps (A14 ``mywork_model.setup_gap_items``), read as of today:
+- setup gaps (A14 ``mywork_model.setup_gap_items``):
   the first close period (Close Settings; 0 read back = undeclared), whether
   the group chart is published, in-scope entities with a blank reporting
   frequency, Active leaf entities with no submitted ownership period covering
-  today, and enabled Entity Accountants with no Entity user permission;
+  the start of an open period (A56, below), and enabled Entity Accountants
+  with no Entity user permission;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -54,6 +55,17 @@ in-scope-only list, whose ``[]`` cannot tell "nothing assigned" from
 "assigned, but none in scope this period". The screen uses this to avoid
 telling an Entity Accountant with real assignments "No entities are assigned
 to you" just because none of theirs falls in the current period.
+
+A56: the ownership and frequency gaps are judged for the open periods, never
+for today (C1 measured an entity owned from 2099-01-01 named as "Ownership
+missing" in 2026). The judged periods are the Open Regular periods from the
+first close on, started or not; with no first close declared, every Open
+Regular period. An Active leaf is named in the ownership gap when no
+submitted Ownership Period covers the start of one of those periods (P7, the
+completeness scope), and the detail names those periods
+("ZZN: FY2025 P07, FY2025 P08"). A leaf is in scope for the frequency gap
+when it is covered at the start of at least one of them. No judged period
+means nothing to judge, so neither gap names anyone.
 """
 from datetime import date, datetime
 
@@ -140,11 +152,44 @@ def _mine(entities, allowed):
     return sorted(e for e in entities if allowed is None or e in allowed)
 
 
-def _gap_facts(first_close, persona, allowed, today):
+def _judged_periods(first_close):
+    """``[(label, start)]`` of the Open Regular periods the ownership gap is
+    judged for (A56): from the first close on, started or not. With no first
+    close declared there is no history, so every Open Regular period counts."""
+    out = []
+    for row in fiscal_calendar.fiscal_period_rows():
+        key = (int(row["fiscal_year"]), int(row["fiscal_period"]))
+        start = _date(row.get("start_date"))
+        if (row.get("period_type") == REGULAR and row.get("status") == "Open"
+                and start is not None and (first_close is None or key >= first_close)):
+            out.append((key, "FY%d P%02d" % key, start))
+    return [(label, start) for _, label, start in sorted(out)]
+
+
+def _ownership_scope(leaves, first_close):
+    """``(in_scope, uncovered)`` for the Active leaves over the judged periods.
+
+    ``in_scope``: leaves covered at the start of at least one judged period.
+    ``uncovered``: ``{entity: [period label, ...]}`` for every leaf with a
+    judged period whose start no submitted ownership period covers (P7).
+    No judged period means nothing to judge: both are empty.
+    """
+    in_scope, uncovered = set(), {}
+    for label, start in _judged_periods(first_close):
+        covered = _covered(start)
+        for e in leaves:
+            if e in covered:
+                in_scope.add(e)
+            else:
+                uncovered.setdefault(e, []).append(label)
+    return in_scope, uncovered
+
+
+def _gap_facts(first_close, persona, allowed):
     leaves = _leaves()
-    covered = _covered(today)
-    frequency_missing = [e for e, f in leaves.items() if e in covered and not f]
-    ownership_missing = [e for e in leaves if e not in covered]
+    in_scope, uncovered = _ownership_scope(leaves, first_close)
+    frequency_missing = [e for e, f in leaves.items() if e in in_scope and not f]
+    ownership_missing = list(uncovered)
     group = persona != period_model.ENTITY_ACCOUNTANT
     return {
         "first_close": first_close,
@@ -152,7 +197,16 @@ def _gap_facts(first_close, persona, allowed, today):
         "frequency_missing": sorted(frequency_missing) if group else _mine(frequency_missing, allowed),
         "ownership_missing": sorted(ownership_missing) if group else _mine(ownership_missing, allowed),
         "accountants_without_entities": _accountants_without_entities() if group else [],
-    }
+    }, uncovered
+
+
+def _name_ownership_periods(items, uncovered):
+    """A56: the ownership gap's detail names each entity's uncovered periods."""
+    for item in items:
+        if item["id"] == "gap:ownership":
+            item["detail"] = "; ".join(
+                "%s: %s" % (e, ", ".join(uncovered[e])) for e in item["entities"])
+    return items
 
 
 # --- per-period facts -----------------------------------------------------------
@@ -281,7 +335,8 @@ def get_my_work():
     # never asked of anyone else.
     entities_assigned = ((allowed is None or bool(allowed))
                          if persona == period_model.ENTITY_ACCOUNTANT else None)
-    items = mywork_model.setup_gap_items(_gap_facts(first_close, persona, allowed, today))
+    facts, uncovered = _gap_facts(first_close, persona, allowed)
+    items = _name_ownership_periods(mywork_model.setup_gap_items(facts), uncovered)
     if first_close is not None:
         per_period, extra = _period_facts(first_close, allowed, today)
         items.extend(mywork_model.period_items(persona, per_period, first_close))
