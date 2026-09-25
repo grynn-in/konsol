@@ -201,3 +201,8 @@ test("failure path: an unknown action throws", () => {
     /Unknown sign-off action: teleport/,
   );
 });
+
+test("B15b: lines stay plain text; the screen's text binding does the escaping", () => {
+	// Escaping here AND in Vue's {{ }} would show "&amp;" to the user.
+	assert.deepEqual(messageLines("R&D costs<br>P&L <check>"), ["R&D costs", "P&L <check>"]);
+});
