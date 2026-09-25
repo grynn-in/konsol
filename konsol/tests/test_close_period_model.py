@@ -246,3 +246,177 @@ def test_first_close_is_required():
     except TypeError:
         return
     raise AssertionError("landing() must require first_close: no default decides where closing starts")
+
+
+# --- A04: period states, other open periods, the catch-up label -------------
+# Measured live 25 Sep 2026: submitted TBs exist for 2024 P12 and 2025 P07-P12;
+# 2025 P01-P06 were never loaded. With the first close period at 2025 P07, its
+# catch-up TB covers 2025 P01 onwards: the period after the previous loaded one.
+
+def _state(result, key):
+    matches = [s for s in result["states"] if s["key"] == key]
+    assert len(matches) == 1, (key, matches)
+    return matches[0]
+
+
+def _live_rows():
+    return _years(2024, 2025, 2026)
+
+
+LIVE_LOADED = {(2024, 12), (2025, 7), (2025, 8), (2025, 9), (2025, 10), (2025, 11), (2025, 12)}
+
+
+def test_each_regular_row_gets_a_state_with_every_field():
+    rows = _fy2026()
+    rows.append(_row(2026, 13, D(2026, 12, 31), D(2026, 12, 31), period_type="Adjustment"))
+    res = M.period_states(rows, {}, (2026, 1), set())
+    assert [s["key"] for s in res["states"]] == [(2026, m) for m in range(1, 13)]
+    for s in res["states"]:
+        assert set(s) >= {"key", "code", "label", "status", "checks", "signoff",
+                          "is_signed", "is_history", "catch_up"}, s
+    p9 = _state(res, (2026, 9))
+    assert p9["code"] == "FY2026-P09"
+    assert p9["label"] == "P09"
+    assert p9["status"] == "Open"
+    assert _state(res, (2026, 1))["status"] == "Closed"
+
+
+def test_states_are_ordered_oldest_first_whatever_the_input_order():
+    rows = list(reversed(_fy2026()))
+    res = M.period_states(rows, {}, (2026, 1), set())
+    assert [s["key"] for s in res["states"]] == [(2026, m) for m in range(1, 13)]
+
+
+def test_a_period_with_no_run_is_not_run_and_not_signed_off():
+    res = M.period_states(_fy2026(), {}, (2026, 1), set())
+    p9 = _state(res, (2026, 9))
+    assert p9["checks"] == "Not run"
+    assert p9["signoff"] == "Not signed off"
+    assert p9["is_signed"] is False
+    assert p9["run"] is None
+
+
+def test_a_run_supplies_checks_and_signoff():
+    runs = {(2026, 8): {"name": "AR-1", "status": "Amber", "signoff_status": "Acknowledged"},
+            (2026, 7): {"name": "AR-2", "status": "Green", "signoff_status": "Not Signed Off"}}
+    res = M.period_states(_fy2026(), runs, (2026, 1), set())
+    p8, p7 = _state(res, (2026, 8)), _state(res, (2026, 7))
+    assert (p8["checks"], p8["signoff"], p8["is_signed"], p8["run"]) == ("Amber", "Acknowledged", True, "AR-1")
+    assert (p7["checks"], p7["signoff"], p7["is_signed"]) == ("Green", "Not Signed Off", False)
+
+
+def test_every_signed_state_counts_as_signed():
+    for signoff in ("Signed Off", "Acknowledged", "Overridden"):
+        runs = {(2026, 8): {"name": "AR-1", "status": "Green", "signoff_status": signoff}}
+        assert _state(M.period_states(_fy2026(), runs, (2026, 1), set()), (2026, 8))["is_signed"] is True, signoff
+
+
+def test_re_sign_needed_passes_through_and_is_not_signed():
+    runs = {(2026, 8): {"name": "AR-1", "status": "Green", "signoff_status": "Re-sign Needed"}}
+    p8 = _state(M.period_states(_fy2026(), runs, (2026, 1), set()), (2026, 8))
+    assert p8["signoff"] == "Re-sign Needed"
+    assert p8["is_signed"] is False
+
+
+def test_a_run_with_a_blank_signoff_is_not_signed_off():
+    runs = {(2026, 8): {"name": "AR-1", "status": "Error", "signoff_status": None}}
+    p8 = _state(M.period_states(_fy2026(), runs, (2026, 1), set()), (2026, 8))
+    assert (p8["checks"], p8["signoff"], p8["is_signed"]) == ("Error", "Not signed off", False)
+
+
+def test_periods_before_the_first_close_period_are_history():
+    res = M.period_states(_live_rows(), {}, (2025, 7), LIVE_LOADED)
+    assert _state(res, (2025, 6))["is_history"] is True
+    assert _state(res, (2024, 12))["is_history"] is True
+    assert _state(res, (2025, 7))["is_history"] is False
+    assert _state(res, (2026, 1))["is_history"] is False
+    assert res["config_gaps"] == []
+
+
+def test_an_undeclared_first_close_period_assumes_nothing_and_is_a_named_gap():
+    res = M.period_states(_live_rows(), {}, None, LIVE_LOADED)
+    assert all(s["is_history"] is None for s in res["states"])
+    assert all(s["catch_up"] is None for s in res["states"])
+    assert [g["code"] for g in res["config_gaps"]] == ["first_close_undeclared"]
+    assert "Close Settings" in res["config_gaps"][0]["message"]
+
+
+def test_first_close_is_required():
+    try:
+        M.period_states(_live_rows(), {}, loaded_keys=set())
+    except TypeError:
+        return
+    raise AssertionError("period_states() must require first_close: no default decides history")
+
+
+def test_live_shape_catch_up_covers_from_the_period_after_the_previous_loaded_one():
+    res = M.period_states(_live_rows(), {}, (2025, 7), LIVE_LOADED)
+    assert _state(res, (2025, 7))["catch_up"] == "Catch-up: covers from FY2025 P01"
+    others = [s for s in res["states"] if s["key"] != (2025, 7)]
+    assert all(s["catch_up"] is None for s in others)
+
+
+def test_catch_up_starts_mid_year_after_a_mid_year_load():
+    loaded = {(2025, 3), (2025, 7)}
+    res = M.period_states(_live_rows(), {}, (2025, 7), loaded)
+    assert _state(res, (2025, 7))["catch_up"] == "Catch-up: covers from FY2025 P04"
+
+
+def test_no_catch_up_when_every_earlier_period_of_its_year_was_loaded():
+    loaded = {(2025, p) for p in range(1, 8)}
+    res = M.period_states(_live_rows(), {}, (2025, 7), loaded)
+    assert _state(res, (2025, 7))["catch_up"] is None
+
+
+def test_no_catch_up_when_the_first_close_period_opens_its_year():
+    # 2024 P12 loaded, first close 2025 P01: no earlier Regular period of its year exists.
+    res = M.period_states(_live_rows(), {}, (2025, 1), {(2024, 12)})
+    assert _state(res, (2025, 1))["catch_up"] is None
+    # ... even when earlier years were never loaded at all.
+    res = M.period_states(_live_rows(), {}, (2025, 1), set())
+    assert _state(res, (2025, 1))["catch_up"] is None
+
+
+def test_catch_up_with_nothing_loaded_before_covers_from_the_start_of_its_year():
+    res = M.period_states(_live_rows(), {}, (2025, 7), {(2025, 7)})
+    assert _state(res, (2025, 7))["catch_up"] == "Catch-up: covers from FY2025 P01"
+
+
+def test_catch_up_ignores_non_regular_rows():
+    rows = _live_rows()
+    rows.append(_row(2025, 0, D(2025, 1, 1), D(2025, 1, 1), period_type="Opening"))
+    res = M.period_states(rows, {}, (2025, 7), LIVE_LOADED | {(2025, 0)})
+    assert _state(res, (2025, 7))["catch_up"] == "Catch-up: covers from FY2025 P01"
+    assert all(s["key"] != (2025, 0) for s in res["states"])
+
+
+def test_other_open_lists_open_non_history_periods_oldest_first():
+    rows = _live_rows()
+    for r in rows:
+        if (r["fiscal_year"], r["fiscal_period"]) in {(2025, 8), (2026, 2)}:
+            r["status"] = "Closed"
+    states = M.period_states(rows, {}, (2025, 7), LIVE_LOADED)["states"]
+    keys = [s["key"] for s in M.other_open(states, (2025, 9), (2025, 7))]
+    expected = [(2025, p) for p in (7, 10, 11, 12)] + [(2026, p) for p in range(1, 13) if p != 2]
+    assert keys == expected
+    assert (2025, 6) not in keys and (2010, 1) not in keys
+
+
+def test_other_open_never_reports_history_even_if_states_are_unflagged():
+    # States built without a first close period carry is_history None; other_open
+    # still applies the first close period it is given.
+    states = M.period_states(_live_rows(), {}, None, set())["states"]
+    keys = [s["key"] for s in M.other_open(states, (2026, 1), (2025, 7))]
+    assert keys[0] == (2025, 7)
+    assert all(k >= (2025, 7) for k in keys)
+
+
+def test_other_open_with_no_first_close_period_reports_nothing():
+    states = M.period_states(_live_rows(), {}, None, set())["states"]
+    assert M.other_open(states, (2026, 1), None) == []
+
+
+def test_other_open_excludes_the_selected_period():
+    states = M.period_states(_live_rows(), {}, (2025, 7), set())["states"]
+    keys = [s["key"] for s in M.other_open(states, (2025, 7), (2025, 7))]
+    assert (2025, 7) not in keys and keys[0] == (2025, 8)
