@@ -100,7 +100,7 @@ export function freshnessView(payload, now, timeZone) {
     case "pending":
       return {
         tone,
-        text: `${pending} changes pending`,
+        text: `${pending} ${pending === 1 ? "change" : "changes"} pending`,
         detail: null,
       };
 

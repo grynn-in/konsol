@@ -84,6 +84,7 @@ watch(
 		snap.value = null;
 		ackText.value = "";
 		overrideText.value = "";
+		expanded.value = {};
 		if (!period.value) return;
 		actor = createActor(machineFor(period.value));
 		actor.subscribe((s) => {
@@ -152,39 +153,26 @@ const ACTION_EVENTS = { sign: "SIGN", acknowledge: "ACKNOWLEDGE", override: "OVE
 const actionEvent = computed(() => (view.value && ACTION_EVENTS[view.value.action]) || null);
 const errorLines = computed(() => messageLines(context.value.error));
 
+const SECTION_TITLES = [
+	["gates", "Gates"],
+	["checks", "Checks"],
+	["acknowledgements", "Acknowledged warnings"],
+	["onBehalf", "Trial balances uploaded on behalf"],
+	["exceptions", "Trial balance exceptions"],
+	["covers", "Covers"],
+	["previous", "Earlier periods"],
+];
+// B28: each section's rows, shown rows and "and N more" come from summaryView.
 const sections = computed(() =>
-	view.value
-		? [
-				{ key: "gates", title: "Gates", rows: view.value.gates.rows, empty: view.value.gates.empty },
-				{ key: "checks", title: "Checks", rows: view.value.checks.rows, empty: view.value.checks.empty },
-				{
-					key: "acknowledgements",
-					title: "Acknowledged warnings",
-					rows: view.value.acknowledgements.rows,
-					empty: view.value.acknowledgements.empty,
-				},
-				{
-					key: "onBehalf",
-					title: "Trial balances uploaded on behalf",
-					rows: view.value.onBehalf.rows,
-					empty: view.value.onBehalf.empty,
-				},
-				{
-					key: "exceptions",
-					title: "Trial balance exceptions",
-					rows: view.value.exceptions.rows,
-					empty: view.value.exceptions.empty,
-				},
-				{ key: "covers", title: "Covers", rows: view.value.covers.rows, empty: view.value.covers.empty },
-				{
-					key: "previous",
-					title: "Earlier periods",
-					rows: view.value.previous.rows,
-					empty: view.value.previous.empty,
-				},
-			]
-		: [],
+	view.value ? SECTION_TITLES.map(([key, title]) => ({ key, title, ...view.value[key] })) : [],
 );
+
+// B28: which long sections the user expanded with Show all; a new period starts collapsed.
+const expanded = ref({});
+function toggleSection(key) {
+	expanded.value = { ...expanded.value, [key]: !expanded.value[key] };
+}
+const visibleRows = (s) => (expanded.value[s.key] ? s.rows : s.shown);
 
 const unknownOr = (value) => (value === null || value === undefined || value === "" ? "unknown" : value);
 </script>
@@ -346,12 +334,18 @@ const unknownOr = (value) => (value === null || value === undefined || value ===
 				<h2 class="text-base font-semibold text-ink-gray-9">{{ s.title }}</h2>
 				<ul class="mt-2 divide-y divide-outline-gray-1 rounded border border-outline-gray-2">
 					<li
-						v-for="(row, i) in s.rows"
+						v-for="(row, i) in visibleRows(s)"
 						:key="i"
 						class="px-4 py-2 text-base"
 						:class="s.empty ? 'text-ink-gray-5' : 'text-ink-gray-8'"
 					>{{ row }}</li>
 				</ul>
+				<div v-if="s.moreText" class="mt-2 flex items-center gap-3 text-sm text-ink-gray-6">
+					<span v-if="!expanded[s.key]">{{ s.moreText }}</span>
+					<Button variant="ghost" @click="toggleSection(s.key)">
+						{{ expanded[s.key] ? "Show fewer" : `Show all ${s.rows.length}` }}
+					</Button>
+				</div>
 			</section>
 		</template>
 	</div>
