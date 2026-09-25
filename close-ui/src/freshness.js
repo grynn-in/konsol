@@ -28,6 +28,17 @@ function sameCalendarDay(a, b, timeZone) {
 }
 
 /** A Date, shown in `timeZone`, relative to `now` — "10:42" today, "Sep 20, 10:42" otherwise. */
+// B09b: a server timestamp must carry its zone ("Z" or "+hh:mm"). A zone-less
+// string would be read in the browser's zone and show the wrong hour, so it is
+// refused rather than guessed.
+const ZONED = /(Z|[+-]\d{2}:?\d{2})$/;
+function parseZoned(value) {
+  if (typeof value !== "string" || !ZONED.test(value)) {
+    throw new Error(`Timestamp has no time zone: ${value}`);
+  }
+  return new Date(value);
+}
+
 function formatTime(date, now, timeZone) {
   const time = new Intl.DateTimeFormat("en-GB", {
     timeZone,
@@ -82,7 +93,7 @@ export function freshnessView(payload, now, timeZone) {
     case "fresh":
       return {
         tone,
-        text: `As of ${formatTime(new Date(as_of), now, timeZone)}`,
+        text: `As of ${formatTime(parseZoned(as_of), now, timeZone)}`,
         detail: null,
       };
 
@@ -98,7 +109,7 @@ export function freshnessView(payload, now, timeZone) {
       return {
         tone,
         text: `Numbers older than changes to ${names}`,
-        detail: as_of ? `As of ${formatTime(new Date(as_of), now, timeZone)}` : null,
+        detail: as_of ? `As of ${formatTime(parseZoned(as_of), now, timeZone)}` : null,
       };
     }
 
@@ -108,7 +119,7 @@ export function freshnessView(payload, now, timeZone) {
       return {
         tone,
         text: `Rebuild failed: ${reason}`,
-        detail: at ? `Last attempt ${formatTime(new Date(at), now, timeZone)}` : null,
+        detail: at ? `Last attempt ${formatTime(parseZoned(at), now, timeZone)}` : null,
       };
     }
 
