@@ -16,7 +16,7 @@ _spec.loader.exec_module(M)
 FIRST = (2025, 7)
 UNDECLARED = {
     "code": "first_close_undeclared",
-    "message": "Declare the first close period in EPM Settings (System Manager) before signing off.",
+    "message": "Declare the first close period in Close Settings (the Close Lead or System Manager) before signing off.",
 }
 
 
@@ -44,7 +44,7 @@ def test_undeclared_first_close_is_a_named_gap():
 
 
 def test_first_close_read_back_as_zero_is_undeclared():
-    # EPM Settings Int fields read back as 0 when unset (coordinator note, A06).
+    # Close Settings Int fields read back as 0 when unset (coordinator note, A06).
     for first_close in ((0, 0), (2025, 0), (0, 7)):
         assert M.config_gaps(first_close, (2025, 9), {"ZZA": "Monthly"}) == [UNDECLARED], first_close
 

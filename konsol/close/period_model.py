@@ -69,7 +69,7 @@ def _regular(rows):
 
 
 FIRST_CLOSE_UNDECLARED = (
-    "Declare the first close period (EPM Settings, Close Order). konsol does not "
+    "Declare the first close period (Close Settings, Close Order). konsol does not "
     "guess where closing starts: every earlier period is history (konsol#303)."
 )
 

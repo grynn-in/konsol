@@ -7,8 +7,8 @@
   first close period up to Pn-1 is Open, or its sign-off is ``Re-sign Needed``
   (Problems 9). The oldest blocking period is named ("Sign off P8 first").
 
-A first close period of ``None``, or with a 0 in either part (EPM Settings Int
-fields read back as 0 when unset), is undeclared. Nothing is guessed.
+A first close period of ``None``, or with a 0 in either part (Close Settings
+Int fields read back as 0 when unset), is undeclared. Nothing is guessed.
 Imports nothing from frappe or konsol.
 """
 
@@ -20,7 +20,8 @@ FREQUENCIES = ("Monthly", "Quarterly")
 RE_SIGN_NEEDED = "Re-sign Needed"
 
 _UNDECLARED_MESSAGE = (
-    "Declare the first close period in EPM Settings (System Manager) before signing off."
+    "Declare the first close period in Close Settings (the Close Lead or System Manager) "
+    "before signing off."
 )
 
 
