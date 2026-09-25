@@ -12,7 +12,7 @@
 // means the caller never read it, not that it is zero. Server messages may
 // contain a literal "<br>" (A17: `signoff_gate.assert_can_sign` joins its
 // problems with "<br>"); this module splits them into separate lines and
-// HTML-escapes each one, so a caller can render them as plain text lines
+// returns plain text lines: the screen renders them with a text binding (never v-html), which escapes them once (B15b)
 // and never needs `v-html`. An unknown `action` throws.
 
 const KNOWN_ACTIONS = [
@@ -28,16 +28,13 @@ const KNOWN_ACTIONS = [
 
 const NONE = "None";
 
-const ESCAPE_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
-function escapeHtml(text) {
-	return String(text).replace(/[&<>"']/g, (c) => ESCAPE_MAP[c]);
-}
+
 
 /**
  * Splits a server message on a literal "<br>" (any of `<br>`, `<br/>`,
  * `<br />`, case-insensitive), trims and drops empty lines, and
- * HTML-escapes each line. A message with no "<br>" comes back as one line.
+ * Plain text, not escaped (B15b). A message with no "<br>" comes back as one line.
  * `null`/`undefined` comes back as `[]` (nothing to show).
  */
 export function messageLines(text) {
@@ -48,7 +45,7 @@ export function messageLines(text) {
 		.split(/<br\s*\/?>/gi)
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0)
-		.map(escapeHtml);
+		;
 }
 
 function unknownOr(value) {
@@ -99,7 +96,7 @@ function acknowledgementsSection(ack) {
 	const names = (ack && ack.names) || [];
 	const total = ack ? ack.total : null;
 	const unlisted = ack ? ack.unlisted : null;
-	const rows = names.map((name) => `Acknowledged: ${escapeHtml(name)}`);
+	const rows = names.map((name) => `Acknowledged: ${name}`);
 	if (names.length || total !== null && total !== undefined) {
 		rows.push(`Warned in total: ${unknownOr(total)}`);
 		rows.push(`Not listed above: ${unknownOr(unlisted)}`);
@@ -110,23 +107,23 @@ function acknowledgementsSection(ack) {
 function onBehalfSection(onBehalf) {
 	const labels = (onBehalf && onBehalf.labels) || [];
 	const unknown = (onBehalf && onBehalf.unknown) || [];
-	return section([...labels, ...unknown].map(escapeHtml));
+	return section([...labels, ...unknown]);
 }
 
 function exceptionsSection(exceptions) {
 	const rows = (exceptions || []).map(
-		(e) => `${escapeHtml(e.entity)}: ${escapeHtml(e.reason)} (declared by ${escapeHtml(e.declared_by)})`,
+		(e) => `${e.entity}: ${e.reason} (declared by ${e.declared_by})`,
 	);
 	return section(rows);
 }
 
 function coversSection(covers) {
-	return section((covers || []).map(escapeHtml));
+	return section((covers || []));
 }
 
 function previousSection(previous) {
 	const rows = (previous || []).map((p) => `${p.code}: ${p.status}, ${p.signoff}`);
-	return section(rows.map(escapeHtml));
+	return section(rows);
 }
 
 /**
@@ -139,7 +136,7 @@ export function summaryView(summary) {
 	assertKnownAction(summary.action);
 	return {
 		action: summary.action,
-		label: escapeHtml(summary.label),
+		label: summary.label,
 		gates: gatesSection(summary.gates),
 		checks: checksSection(summary.checks),
 		acknowledgements: acknowledgementsSection(summary.acknowledgements),

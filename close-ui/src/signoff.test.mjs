@@ -137,8 +137,8 @@ test("a server message joined with <br> is split into separate escaped lines", (
   );
 });
 
-test("a message is HTML-escaped, never left as markup", () => {
-  assert.deepEqual(messageLines("A & B <script>"), ["A &amp; B &lt;script&gt;"]);
+test("a message is left as plain text for a text binding to escape", () => {
+  assert.deepEqual(messageLines("A & B <script>"), ["A & B <script>"]);
 });
 
 test("<br>-joined gate messages are split and escaped inside the gates section", () => {
@@ -205,4 +205,20 @@ test("failure path: an unknown action throws", () => {
 test("B15b: lines stay plain text; the screen's text binding does the escaping", () => {
 	// Escaping here AND in Vue's {{ }} would show "&amp;" to the user.
 	assert.deepEqual(messageLines("R&D costs<br>P&L <check>"), ["R&D costs", "P&L <check>"]);
+});
+
+test("B15b: no screen renders server text as HTML (no v-html anywhere in src)", async () => {
+	const { readdir, readFile } = await import("node:fs/promises");
+	const { join } = await import("node:path");
+	const root = new URL(".", import.meta.url).pathname;
+	const bad = [];
+	async function walk(dir) {
+		for (const e of await readdir(dir, { withFileTypes: true })) {
+			const p = join(dir, e.name);
+			if (e.isDirectory()) await walk(p);
+			else if (p.endsWith(".vue") && (await readFile(p, "utf8")).includes("v-html")) bad.push(p);
+		}
+	}
+	await walk(root);
+	assert.deepEqual(bad, []);
 });
