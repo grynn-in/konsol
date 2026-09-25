@@ -529,8 +529,9 @@ def test_other_personas_get_entities_assigned_null():
 # --- A56: the ownership gap is judged for the open periods, not for today -------
 #
 # An Active leaf entity is named in "Ownership missing" only when no submitted
-# Ownership Period covers the start of an Open Regular period from the first
-# close on (P7, the completeness scope). The detail names those periods.
+# Ownership Period covers the start of ANY Open Regular period from the first
+# close on (coordinator, 25 Sep: an entity uncovered at a period's start is out
+# of scope for it under P7, not missing). The detail names the judged periods.
 # Measured in C1: an entity owned from 2099-01-01, with the open periods in
 # 2099, was named because the gap was judged as of today.
 
@@ -565,19 +566,24 @@ def test_ownership_from_next_year_covers_open_periods_next_year():
 
 
 def test_ownership_gap_names_the_uncovered_open_periods():
+    gap = _gap(_call(_Site()), "ownership")
+    assert gap["entities"] == ["ZZC"], gap
+    # ZZC is uncovered in every open period from the first close on (P07-P11);
+    # P06 is history and P05 is Closed, so neither is named.
+    assert gap["detail"] == "ZZC: FY2025 P07, FY2025 P08, FY2025 P09, FY2025 P10, FY2025 P11", \
+        gap["detail"]
+
+
+def test_mid_year_acquisition_is_not_an_ownership_gap():
+    # Coordinator on A56: ZZN is owned from P09 on. By P7 it is simply out of
+    # scope for P07 and P08, so it is missing nothing; naming it is noise.
     site = _Site()
-    # ZZN is owned from P09 on: uncovered at the start of P07 and P08 only.
     site.entities.append(_entity("ZZN"))
     site.owners.append(_D(data_area_id="ZZN", end_date=None,
                           effective_date=date(2025, 9, 1), docstatus=1))
     gap = _gap(_call(site), "ownership")
-    assert gap["entities"] == ["ZZC", "ZZN"], gap
-    assert "ZZN: FY2025 P07, FY2025 P08" in gap["detail"], gap["detail"]
-    assert "ZZN: FY2025 P07, FY2025 P08," not in gap["detail"], gap["detail"]
-    # ZZC is uncovered in every open period from the first close on (P07-P11);
-    # P06 is history and P05 is Closed, so neither is named.
-    assert "ZZC: FY2025 P07, FY2025 P08, FY2025 P09, FY2025 P10, FY2025 P11" in gap["detail"]
-    assert "P06" not in gap["detail"] and "P05" not in gap["detail"], gap["detail"]
+    assert gap["entities"] == ["ZZC"], gap
+    assert "ZZN" not in gap["detail"], gap["detail"]
 
 
 def test_ownership_that_ended_before_the_open_periods_is_a_gap():
