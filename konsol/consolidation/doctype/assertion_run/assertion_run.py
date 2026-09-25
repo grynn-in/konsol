@@ -31,7 +31,36 @@ def _assert_year_declared(fiscal_year):
         )
 
 
+#: Result and sign-off fields a new run must never carry in (konsol#305 A02b).
+#: With R3 the Analyst may create a run; measured live 25 Sep 2026, a run
+#: inserted with status "Green" and signoff_status "Signed Off" saved as sent,
+#: because read_only only guards the form. A test keeps this list equal to the
+#: doctype's read_only fields, less title, status, signoff_status, triggered_by.
+NEW_RUN_BLANK_FIELDS = (
+    "total", "passed", "failed", "errored", "warned",
+    "signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
+    "warnings_at_signoff", "started_at", "completed_at", "duration_seconds", "log",
+)
+
+
 class AssertionRun(Document):
+    def before_insert(self):
+        """A new run starts Queued, unsigned, with no results, triggered by
+        the caller, whatever the insert request carried (A02b). Only the
+        worker and sign_off_close fill these in, on later saves.
+
+        Only trigger_close_run may create a run (A02c): it also enqueues the
+        suite, so a run inserted any other way would sit Queued with no job and
+        block every other run until the reaper errors it."""
+        if not getattr(self.flags, "started_by_trigger", False):
+            frappe.throw(frappe._("Start a close run with Run checks (trigger_close_run), not by creating the record."))
+        for field in NEW_RUN_BLANK_FIELDS:
+            self.set(field, None)
+        self.status = "Queued"
+        self.signoff_status = "Not Signed Off"
+        self.set("results", [])
+        self.triggered_by = frappe.session.user
+
     def validate(self):
         """The year, and the period when one is given, must be declared: an
         undeclared one is refused before the run starts (konsol#189). Unlike
@@ -101,17 +130,20 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     """Create an Assertion Run and enqueue the assertion suite.
 
     This writes — it inserts an Assertion Run, commits, and enqueues
-    `run_close_assertions` on the long queue — so it is POST-only, and it is
-    the close that it starts, so only the Close Lead (`EPM Admin`) and System
-    Manager may call it (konsol#166). The gate comes before the "already in
-    progress" check, so a user without the role is refused whatever the run
-    state, rather than learning from the error which runs are live.
+    `run_close_assertions` on the long queue — so it is POST-only. Starting a
+    run is not the sign-off: the Close Lead (`EPM Admin`), the Group
+    Accountant (`EPM Analyst`) and System Manager may all trigger it (R3,
+    konsol#297); only the Close Lead and System Manager may sign it off
+    (`sign_off_close`, which enforces write on Assertion Run). The gate comes
+    before the "already in progress" check, so a user without the role is
+    refused whatever the run state, rather than learning from the error which
+    runs are live.
 
     Refuses to start if another run is already Queued/Running — only one
     assertion suite may run at a time (concurrent `dbt test` would contend on
     the warehouse and produce confusing interleaved state).
     """
-    frappe.only_for(("EPM Admin", "System Manager"))
+    frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
     active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
     if active:
         frappe.throw(
@@ -129,6 +161,7 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
             "title": frappe.utils.now(),
         }
     )
+    doc.flags.started_by_trigger = True
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
     frappe.enqueue(
