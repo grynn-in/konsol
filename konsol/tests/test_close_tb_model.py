@@ -4,9 +4,9 @@ check_rows() says what is wrong with each line of a parsed trial balance, with
 a suggestion where one can be made, plus the file-level problems and the
 totals. It is loaded by path and imports no frappe.
 
-The parity tests hold it to validate_tb_rows (the submit path) until A35
-rebuilds validate_tb_rows on top of it: on every fixture, a file the submit
-path accepts is exactly a file check_rows calls ok.
+validate_tb_rows (the submit path) is built on it (A35, decision P1): the
+identity tests prove the controller calls this very file, and that on every
+fixture a file the submit path accepts is exactly a file check_rows calls ok.
 """
 import ast
 import importlib.util
@@ -251,7 +251,7 @@ def test_tolerance_constant_matches_the_controller():
     assert M.BALANCE_TOLERANCE == C.BALANCE_TOLERANCE
 
 
-# --- parity with validate_tb_rows (Problems 1; A35 turns this into identity) ---------
+# --- identity with validate_tb_rows (Problems 1, decision P1, A35) -------------------
 
 PARITY = {
     "good": "main_account,debit,credit\n1010,100,0\n2010,0,100\n",
@@ -266,7 +266,14 @@ PARITY = {
 }
 
 
-def test_parity_with_validate_tb_rows_on_every_fixture():
+def test_the_controller_uses_this_check_rows():
+    """One rule set: the submit path's check_rows is this module's, not a copy."""
+    assert hasattr(C, "check_rows"), "validate_tb_rows must be built on tb_model.check_rows (A35)"
+    assert os.path.samefile(C.check_rows.__code__.co_filename, _MODEL)
+    assert C.check_rows.__code__.co_code == M.check_rows.__code__.co_code
+
+
+def test_identity_with_validate_tb_rows_on_every_fixture():
     for name, text in PARITY.items():
         rows = _rows(text)
         submit_ok = C.validate_tb_rows(rows, chart=CHART, entity=ENTITY, known_entities=KNOWN) == []
@@ -277,7 +284,7 @@ def test_parity_with_validate_tb_rows_on_every_fixture():
     assert sum(1 for t in PARITY.values() if not _check(_rows(t))["ok"]) == 7
 
 
-def test_parity_with_no_chart():
+def test_identity_with_no_chart():
     rows = _rows(PARITY["good"])
     assert (C.validate_tb_rows(rows, chart={}, entity=ENTITY, known_entities=KNOWN) == []) \
         == _check(rows, chart={})["ok"]

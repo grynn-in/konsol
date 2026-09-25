@@ -39,9 +39,11 @@ refuses the file, since one file holds one basis. A blank cell is "not given".
 """
 
 import csv
+import importlib.util
 import io
 import json
 import math
+import os
 import uuid
 
 import frappe
@@ -168,25 +170,63 @@ NO_CHART = ("No group chart is published yet: upload and publish one (Main Accou
             "before submitting trial balances")
 
 
+def _load_tb_model():
+    """konsol/close/tb_model.py, loaded by path: it is pure, and the host tests
+    load this controller under a stub ``konsol`` package that has no ``close``."""
+    app_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    spec = importlib.util.spec_from_file_location(
+        "konsol_tbs_close_tb_model", os.path.join(app_dir, "close", "tb_model.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: konsol#305 A35 (decision P1): the per-line checker is the one rule set; the
+#: file-level strings below are only its wording for a whole file.
+_tb_model = _load_tb_model()
+check_rows = _tb_model.check_rows
+
+#: Row problems worded per file below; any other row problem is reported with its line.
+_FILE_WORDED = frozenset({
+    _tb_model.DUPLICATE_ROW, _tb_model.SELF_PARTNER, _tb_model.UNKNOWN_PARTNER,
+    _tb_model.NEGATIVE_AMOUNT, _tb_model.HEADING_ACCOUNT, _tb_model.CLOSED_ACCOUNT,
+    _tb_model.UNKNOWN_ACCOUNT,
+    # the amount basis is judged once, by validate() against the form (basis_problems)
+    _tb_model.AMOUNT_BASIS,
+})
+
+
+def _flagged(result, code):
+    """(row, problem) for every row of a check_rows result with a problem of ``code``."""
+    return [(row, p) for row in result["rows"] for p in row["problems"] if p["code"] == code]
+
+
+def _chart_messages(result, chart):
+    """The file-level wording of check_rows' account problems (konsol#182)."""
+    if not chart:
+        return [NO_CHART]
+    out = []
+    for code in sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.HEADING_ACCOUNT)}):
+        out.append(f"{code} is a heading in the group chart; post to the accounts under it.")
+    closed = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.CLOSED_ACCOUNT)})
+    if closed:
+        out.append(f"Not open for posting in the group chart (is_posting is off): {', '.join(closed)}. "
+                   "Post to another account, or ask the Close Lead to open it.")
+    unknown = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.UNKNOWN_ACCOUNT)})
+    if unknown:
+        out.append(f"Account(s) not in the group chart: {', '.join(unknown)}")
+    return out
+
+
 def chart_errors(rows, chart):
     """What the group chart says about the accounts a trial balance posts to.
     ``chart`` is konsol.group_chart.chart_accounts(). Pure; host-testable.
 
     No chart at all is one refusal, not every account listed. A heading, and an
-    account closed for posting, are refused with the reason."""
-    if not chart:
-        return [NO_CHART]
-    codes = sorted({r["main_account"] for r in rows})
-    out = [f"{c} is a heading in the group chart; post to the accounts under it."
-           for c in codes if c in chart and chart[c].get("is_group")]
-    closed = [c for c in codes if c in chart and not chart[c].get("is_group") and not chart[c].get("is_posting")]
-    if closed:
-        out.append(f"Not open for posting in the group chart (is_posting is off): {', '.join(closed)}. "
-                   "Post to another account, or ask the Close Lead to open it.")
-    unknown = [c for c in codes if c not in chart]
-    if unknown:
-        out.append(f"Account(s) not in the group chart: {', '.join(unknown)}")
-    return out
+    account closed for posting, are refused with the reason. The rules are
+    check_rows' (konsol#305 A35)."""
+    result = check_rows(rows, chart, None, None, None, BALANCE_TOLERANCE)
+    return _chart_messages(result, chart)
 
 
 def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
@@ -205,73 +245,71 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
     chart (konsol#182) is the group chart, konsol.group_chart.chart_accounts();
     when given it decides the accounts (chart_errors) and known_accounts is
     not read.
+
+    konsol#305 A35 (decision P1): every rule is konsol.close.tb_model.check_rows';
+    this function only words its per-line problems per file. The amount basis
+    is left to validate() (basis_problems against the form).
     """
+    judged = chart
+    if chart is None and known_accounts is not None:
+        # A bare list of codes is a chart of posting accounts.
+        judged = {code: {"is_group": 0, "is_posting": 1} for code in known_accounts}
+    result = check_rows(rows, judged, entity, known_entities, None, tolerance)
     errors = []
 
-    # One row per (account, partner): an entity may hold one intercompany
-    # account with several partners, one row each.
-    seen, dupes = set(), set()
-    for r in rows:
-        key = (r["main_account"], r.get(PARTNER) or "")
-        if key in seen:
-            dupes.add(_row_label(r))
-        seen.add(key)
+    dupes = sorted({_row_label({"main_account": row["main_account"], PARTNER: row["partner"]})
+                    for row, _ in _flagged(result, _tb_model.DUPLICATE_ROW)})
     if dupes:
         errors.append(
-            f"Duplicate account rows: {', '.join(sorted(dupes))} — "
+            f"Duplicate account rows: {', '.join(dupes)} — "
             "one row per account and partner; merge them before submitting"
         )
 
-    partnered = [r for r in rows if r.get(PARTNER)]
-    if entity:
-        own = sorted({r["main_account"] for r in partnered
-                      if r[PARTNER].upper() == entity.upper()})
-        if own:
-            errors.append(
-                f"Partner is the entity itself ({entity}) on: {', '.join(own)} — "
-                "a partner is the other group entity; leave it blank for a third party"
-            )
-    if known_entities is not None:
-        known = set(known_entities)
-        by_upper = {e.upper(): e for e in known}
-        unknown = sorted({r[PARTNER] for r in partnered
-                          if r[PARTNER] not in known
-                          and not (entity and r[PARTNER].upper() == entity.upper())})
-        if unknown:
-            named = [f"{u} (did you mean {by_upper[u.upper()]}?)" if u.upper() in by_upper else u
-                     for u in unknown]
-            errors.append(
-                f"Unknown partner entit{'y' if len(unknown) == 1 else 'ies'}: {', '.join(named)} — "
-                "a partner must be an existing entity that is not a group"
-            )
+    own = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.SELF_PARTNER)})
+    if own:
+        errors.append(
+            f"Partner is the entity itself ({entity}) on: {', '.join(own)} — "
+            "a partner is the other group entity; leave it blank for a third party"
+        )
 
-    negative = sorted({r["main_account"] for r in rows
-                       if r["debit"] < 0 or r["credit"] < 0})
+    suggested = {}
+    for row, p in _flagged(result, _tb_model.UNKNOWN_PARTNER):
+        # check_rows words a case-only match as "Did you mean <entity>?"
+        match = p["suggestion"][len("Did you mean "):-1] if p["suggestion"] else ""
+        suggested[row["partner"]] = match
+    if suggested:
+        unknown = sorted(suggested)
+        named = [f"{u} (did you mean {suggested[u]}?)" if suggested[u] else u for u in unknown]
+        errors.append(
+            f"Unknown partner entit{'y' if len(unknown) == 1 else 'ies'}: {', '.join(named)} — "
+            "a partner must be an existing entity that is not a group"
+        )
+
+    negative = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.NEGATIVE_AMOUNT)})
     if negative:
         errors.append(
             f"Negative amounts on: {', '.join(negative)} — post the value to "
             "the opposite column instead of using a sign"
         )
 
-    total_debit = sum(r["debit"] for r in rows)
-    total_credit = sum(r["credit"] for r in rows)
-    if abs(total_debit - total_credit) > tolerance:
-        errors.append(
-            f"Debits ({total_debit:,.2f}) do not equal credits "
-            f"({total_credit:,.2f}); difference "
-            f"{total_debit - total_credit:,.2f} exceeds the "
-            f"{tolerance} tolerance"
-        )
+    # The balance, and any file problem check_rows gains later. NO_CHART is
+    # worded with the chart below; the form's basis is validate()'s.
+    not_here = {NO_CHART, *basis_problems(None, [])}
+    errors.extend(p for p in result["file_problems"] if p not in not_here)
+
+    for row in result["rows"]:
+        errors.extend(f"Line {row['line']}: {p['message']}" for p in row["problems"]
+                      if p["code"] not in _FILE_WORDED)
 
     if chart is not None:
-        errors.extend(chart_errors(rows, chart))
+        errors.extend(_chart_messages(result, chart))
     elif known_accounts is not None:
-        known = set(known_accounts)
-        unknown = sorted({r["main_account"] for r in rows
-                          if r["main_account"] not in known})
-        if unknown:
+        if judged:
+            errors.extend(_chart_messages(result, judged))
+        elif rows:
+            # No known account at all: every account is outside the chart.
             errors.append(
-                f"Account(s) not in the group chart: {', '.join(unknown)}"
+                f"Account(s) not in the group chart: {', '.join(sorted({r['main_account'] for r in rows}))}"
             )
 
     return errors

@@ -765,3 +765,58 @@ def test_list_view_offers_set_amount_basis():
     for basis in ALL_BASES:
         assert basis in js, basis
     assert "show_alert" in js and "refresh" in js
+
+
+# -- konsol#305 A35 (decision P1): one rule set, validate_tb_rows is built on check_rows ------
+
+def _with_check_rows(fake, fn):
+    """Run fn with the controller's check_rows replaced by fake, then restore it."""
+    missing = object()
+    real = getattr(_m, "check_rows", missing)
+    _m.check_rows = fake
+    try:
+        return fn()
+    finally:
+        if real is missing:
+            del _m.check_rows
+        else:
+            _m.check_rows = real
+
+
+def _fake_result(file_problems=(), row_problems=()):
+    def fake(rows, chart, entity, known_entities, form_basis, tolerance):
+        return {
+            "ok": False,
+            "rows": [{"line": 2, "main_account": "1010", "partner": "", "debit": 10.0,
+                      "credit": 0.0, "problems": list(row_problems)}],
+            "file_problems": list(file_problems),
+            "totals": {"debit": 10.0, "credit": 10.0, "difference": 0.0},
+        }
+    return fake
+
+
+def test_validate_tb_rows_surfaces_a_file_problem_from_check_rows():
+    sentinel = "ZZ sentinel file problem from check_rows"
+    errors = _with_check_rows(_fake_result(file_problems=[sentinel]),
+                              lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
+    assert sentinel in errors, (
+        "validate_tb_rows must derive its verdict from konsol.close.tb_model.check_rows "
+        f"(decision P1); got {errors!r}")
+
+
+def test_validate_tb_rows_surfaces_a_row_problem_it_has_no_file_wording_for():
+    """A rule added to check_rows later refuses the submit too, with its line."""
+    problem = {"code": "ZZ_NEW_RULE", "message": "ZZ sentinel row problem", "suggestion": ""}
+    errors = _with_check_rows(_fake_result(row_problems=[problem]),
+                              lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
+    assert "Line 2: ZZ sentinel row problem" in errors, errors
+
+
+def test_validate_tb_rows_leaves_the_amount_basis_to_the_form_check():
+    """Failure path: the basis is judged once, by validate() against the form
+    (basis_problems), so check_rows' basis problems are not repeated here."""
+    basis = {"code": "AMOUNT_BASIS", "message": "Line 2: basis", "suggestion": ""}
+    form_level = _m.basis_problems(None, [])
+    errors = _with_check_rows(_fake_result(file_problems=form_level, row_problems=[basis]),
+                              lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
+    assert errors == []
