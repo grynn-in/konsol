@@ -445,3 +445,354 @@ def test_tb_api_is_post_only_and_gated_in_source():
         source = fh.read()
     assert '@frappe.whitelist(methods=["POST"])\ndef check_tb(' in source
     assert "from konsol.entity_permissions import assert_entity_access" in source
+
+
+# ================================================================================
+# submit_tb (konsol#305 A24): upload a corrected file = cancel + submit in one step
+# ================================================================================
+#
+# The same recording site, with documents that record the write they stand for.
+# Every gate that refuses must leave the log empty; the happy path's log is the
+# order of work; a failure after the cancel must end with the new batch's claim
+# deleted and the old batch re-claimed (Problems 3: a MariaDB rollback puts the
+# old document back to docstatus 1, but not its ClickHouse claim).
+
+OLD = {"name": "TBS-ZZOP-2099-P8-001", "batch_id": "b-old", "data_area_id": "ZZOP",
+       "fiscal_year": 2099, "fiscal_period": 8, "row_count": 2,
+       "amount_basis": "Period movement", "docstatus": 1}
+
+
+class _Boom(Exception):
+    pass
+
+
+class _SubmitSite(_Site):
+    """``fail`` names the step that raises: "insert" (the new TB's validate),
+    "submit" (after its claim landed), "cancel"; ``fail_execute`` makes every
+    ClickHouse statement raise (the restore itself fails)."""
+
+    def __init__(self, fail=None, fail_execute=False, on_behalf="No", docs=None, **kw):
+        super().__init__(**kw)
+        self.fail = fail
+        self.fail_execute = fail_execute
+        self.on_behalf = on_behalf
+        self.docs = dict(docs or {OLD["name"]: OLD})
+        self.files = []
+
+    def frappe(self):
+        frappe = super().frappe()
+        site = self
+
+        class _Doc(_Row):
+            pass
+
+        class _Old(_Doc):
+            def cancel(self, *a, **k):
+                site.record("cancel", self.name)
+                if site.fail == "cancel":
+                    raise frappe.ValidationError("Cannot cancel a trial balance submission")
+                self["docstatus"] = 2
+                return self
+
+        class _File(_Doc):
+            def insert(self, *a, **k):
+                site.record("insert", "File")
+                self["file_url"] = "/private/files/" + self["file_name"]
+                site.files.append(dict(self))
+                return self
+
+        class _New(_Doc):
+            def insert(self, *a, **k):
+                site.record("insert", "Trial Balance Submission", self.get("amended_from"))
+                if site.fail == "insert":
+                    raise frappe.ValidationError("Trial balance failed validation: injected")
+                self["name"] = "TBS-ZZOP-2099-P8-001-1" if self.get("amended_from") else "TBS-ZZOP-2099-P8-002"
+                self["batch_id"] = "b-new"
+                self["uploaded_on_behalf"] = site.on_behalf
+                return self
+
+            def submit(self, *a, **k):
+                site.record("submit", self.name)
+                if site.fail == "submit":
+                    # the controller claimed the batch, then something after it raised
+                    site.record("claimed", self.batch_id)
+                    raise _Boom("the Build Approval hook raised")
+                self["docstatus"] = 1
+                return self
+
+        def get_doc(*a, **k):
+            if a and isinstance(a[0], dict):
+                spec = dict(a[0])
+                if spec.get("doctype") == "File":
+                    return _File(spec)
+                if spec.get("doctype") == "Trial Balance Submission":
+                    return _New(spec)
+                raise AssertionError(f"unexpected get_doc({spec!r})")
+            if a and a[0] == "Trial Balance Submission":
+                return _Old(site.docs[a[1]])
+            # the stub's own recording get_doc (the recording-stub self test)
+            site.record("get_doc", a[0] if a else k)
+            return _Row(doctype=a[0] if a and isinstance(a[0], str) else None)
+
+        frappe.get_doc = get_doc
+        return frappe
+
+
+def _execute_recorder(site):
+    def execute(sql, *a, **k):
+        site.record("clickhouse.execute", " ".join(sql.split()))
+        if site.fail_execute:
+            raise _Boom("ClickHouse is down")
+    return execute
+
+
+def _submit(site, **kwargs):
+    api, frappe, period_status = _load(site)
+    api.execute = _execute_recorder(site)
+    args = {"entity": "ZZOP", "fiscal_year": 2099, "fiscal_period": 8,
+            "amount_basis": "Period movement", "content": GOOD, "replaces": None}
+    args.update(kwargs)
+    return api.submit_tb(**args), frappe, period_status
+
+
+def _submit_raises(site, **kwargs):
+    try:
+        result, _, _ = _submit(site, **kwargs)
+    except Exception as e:   # noqa: BLE001 - the type is asserted by the caller
+        return e
+    raise AssertionError(f"submit_tb did not raise: {result!r}")
+
+
+# -- happy paths ---------------------------------------------------------------------
+
+def test_submit_replaces_in_order_cancel_file_insert_submit():
+    site = _SubmitSite(submitted={("ZZOP", 2099, 8): OLD["name"]})
+    result, _, _ = _submit(site, replaces=OLD["name"])
+    assert [e[:2] for e in site.log] == [
+        ("cancel", OLD["name"]),
+        ("insert", "File"),
+        ("insert", "Trial Balance Submission"),
+        ("submit", "TBS-ZZOP-2099-P8-001-1"),
+    ], site.log
+    # amended_from names the old TB
+    assert site.log[2] == ("insert", "Trial Balance Submission", OLD["name"])
+    assert result == {"name": "TBS-ZZOP-2099-P8-001-1", "replaced": OLD["name"],
+                      "on_behalf": False}
+    # the endpoint itself writes nothing to ClickHouse on success: the controller claims
+    assert not any(e[0] == "clickhouse.execute" for e in site.log)
+
+
+def test_a_first_submit_cancels_nothing_and_amends_nothing():
+    site = _SubmitSite()
+    result, _, _ = _submit(site)
+    assert [e[:2] for e in site.log] == [
+        ("insert", "File"), ("insert", "Trial Balance Submission"),
+        ("submit", "TBS-ZZOP-2099-P8-002")], site.log
+    assert site.log[1] == ("insert", "Trial Balance Submission", None)
+    assert result == {"name": "TBS-ZZOP-2099-P8-002", "replaced": None, "on_behalf": False}
+
+
+def test_the_file_is_private_named_for_the_period_and_holds_the_text():
+    site = _SubmitSite()
+    _submit(site, content="﻿" + GOOD)
+    (f,) = site.files
+    assert f["is_private"] == 1
+    assert f["file_name"] == "ZZOP-FY2099-P8.csv"
+    assert f["content"] == GOOD
+    # the new TB reads the file back through its url (the controller's _parse_file)
+
+
+def test_the_new_tb_carries_the_form_values_and_the_file_url():
+    site = _SubmitSite()
+    seen = {}
+    api, frappe, _ = _load(site)
+    api.execute = _execute_recorder(site)
+    real_get_doc = frappe.get_doc
+
+    def spy(*a, **k):
+        doc = real_get_doc(*a, **k)
+        if a and isinstance(a[0], dict) and a[0].get("doctype") == "Trial Balance Submission":
+            seen.update(a[0])
+        return doc
+
+    frappe.get_doc = spy
+    api.submit_tb(entity="ZZOP", fiscal_year="2099", fiscal_period="8",
+                  amount_basis="Period movement", content=GOOD)
+    assert seen["data_area_id"] == "ZZOP"
+    assert seen["fiscal_year"] == 2099 and seen["fiscal_period"] == 8
+    assert seen["amount_basis"] == "Period movement"
+    assert seen["tb_file"] == "/private/files/ZZOP-FY2099-P8.csv"
+    assert "uploaded_on_behalf" not in seen   # the server sets it (A18), never the request
+
+
+def test_on_behalf_is_what_the_server_recorded():
+    for flag, expected in (("Yes", True), ("No", False), ("", None)):
+        site = _SubmitSite(on_behalf=flag, roles=("EPM Admin",))
+        result, _, _ = _submit(site)
+        assert result["on_behalf"] is expected, (flag, result)
+
+
+def test_the_request_cannot_send_on_behalf():
+    import inspect
+    api, _, _ = _load(_SubmitSite())
+    params = inspect.signature(api.submit_tb).parameters
+    assert "on_behalf" not in params and "uploaded_on_behalf" not in params
+    assert not any(p.kind == p.VAR_KEYWORD for p in params.values())
+
+
+# -- refusals before anything is written ----------------------------------------------
+
+def test_submit_in_a_period_that_is_not_open_is_refused_and_writes_nothing():
+    for period_status, year_status in (("Closed", "Open"), ("Locked", "Open"), ("Open", "Closed")):
+        site = _SubmitSite(period_status=period_status, year_status=year_status,
+                           submitted={("ZZOP", 2099, 8): OLD["name"]})
+        err = _submit_raises(site, replaces=OLD["name"])
+        assert "Cannot submit a trial balance" in str(err), str(err)
+        assert site.log == [], site.log
+
+
+def test_submit_of_an_undeclared_period_is_refused_and_writes_nothing():
+    site = _SubmitSite(declared=False)
+    err = _submit_raises(site)
+    assert type(err).__name__ == "PeriodNotDeclared", repr(err)
+    assert site.log == []
+
+
+def test_a_failed_check_is_refused_with_the_first_problems_and_writes_nothing():
+    site = _SubmitSite(submitted={("ZZOP", 2099, 8): OLD["name"]})
+    err = _submit_raises(site, content=BAD, replaces=OLD["name"])
+    msg = str(err)
+    assert "Line 2: Account 4001 is not in the group chart" in msg, msg
+    assert "do not equal credits" in msg, msg
+    assert site.log == [], site.log
+
+
+def test_an_unreadable_file_is_refused_and_writes_nothing():
+    for content in (MALFORMED, "", None):
+        site = _SubmitSite()
+        err = _submit_raises(site, content=content)
+        assert "trial balance" in str(err).lower(), str(err)
+        assert site.log == [], (content, site.log)
+
+
+def test_a_stale_replaces_is_refused_and_writes_nothing():
+    cases = (
+        ({("ZZOP", 2099, 8): OLD["name"]}, "TBS-ZZOP-2099-P8-000"),  # another TB is live now
+        ({("ZZOP", 2099, 8): OLD["name"]}, None),                    # one appeared since the check
+        ({}, OLD["name"]),                                            # the checked one was cancelled
+    )
+    for submitted, replaces in cases:
+        site = _SubmitSite(submitted=submitted)
+        err = _submit_raises(site, replaces=replaces)
+        assert str(err) == ("The trial balance changed since you checked it; "
+                            "check the file again."), str(err)
+        assert site.log == [], site.log
+
+
+def test_an_empty_replaces_means_none():
+    site = _SubmitSite()
+    result, _, _ = _submit(site, replaces="")
+    assert result["replaced"] is None
+
+
+def test_submit_refuses_an_entity_outside_scope_and_writes_nothing():
+    site = _SubmitSite(allowed={"ZZOP"})
+    err = _submit_raises(site, entity="ZZB")
+    assert type(err).__name__ == "PermissionError", repr(err)
+    assert site.access_checked == ["ZZB"]
+    assert site.log == []
+
+
+def test_submit_refuses_a_group_or_unknown_entity_and_writes_nothing():
+    for entity in ("ZZG", "ZZNOPE"):
+        site = _SubmitSite()
+        err = _submit_raises(site, entity=entity)
+        assert entity in str(err)
+        assert site.log == []
+
+
+def test_submit_refuses_roles_outside_the_gate():
+    for roles in (("EPM Analyst",), ("EPM User",), ()):
+        site = _SubmitSite(roles=roles)
+        err = _submit_raises(site)
+        assert type(err).__name__ == "PermissionError", (roles, repr(err))
+        assert site.access_checked == []
+        assert site.log == []
+    site = _SubmitSite(roles=("EPM Admin",))
+    _submit(site)
+    assert set(site.only_for_roles) == set(ROLES)
+
+
+# -- a failure after the cancel restores the old claim -------------------------------------
+
+def _claim_of_old(entry):
+    return (entry[0] == "clickhouse.execute"
+            and entry[1].startswith("INSERT INTO epm_raw.trial_balance_submission_control")
+            and "'b-old'" in entry[1] and f"'{OLD['name']}'" in entry[1]
+            and "'Period movement'" in entry[1])
+
+
+def _delete_of_new(entry):
+    return (entry[0] == "clickhouse.execute"
+            and entry[1].startswith("ALTER TABLE epm_raw.trial_balance_submission_control DELETE")
+            and "batch_id = 'b-new'" in entry[1] and "mutations_sync = 1" in entry[1])
+
+
+def test_a_failing_new_submit_reclaims_the_old_batch_and_propagates():
+    site = _SubmitSite(fail="submit", submitted={("ZZOP", 2099, 8): OLD["name"]})
+    err = _submit_raises(site, replaces=OLD["name"])
+    assert isinstance(err, _Boom) and str(err) == "the Build Approval hook raised", repr(err)
+    steps = [e[:2] for e in site.log]
+    assert steps[:5] == [("cancel", OLD["name"]), ("insert", "File"),
+                         ("insert", "Trial Balance Submission"),
+                         ("submit", "TBS-ZZOP-2099-P8-001-1"), ("claimed", "b-new")], site.log
+    # then: the new batch's claim is deleted, and the old batch is claimed again
+    assert len(site.log) == 7, site.log
+    assert _delete_of_new(site.log[5]), site.log[5]
+    assert _claim_of_old(site.log[6]), site.log[6]
+
+
+def test_a_failing_new_validate_reclaims_the_old_batch_and_propagates():
+    site = _SubmitSite(fail="insert", submitted={("ZZOP", 2099, 8): OLD["name"]})
+    err = _submit_raises(site, replaces=OLD["name"])
+    assert "injected" in str(err), repr(err)
+    assert [e[:2] for e in site.log][:3] == [("cancel", OLD["name"]), ("insert", "File"),
+                                            ("insert", "Trial Balance Submission")]
+    # nothing of the new batch was claimed: only the old claim is re-inserted
+    ch = [e for e in site.log if e[0] == "clickhouse.execute"]
+    assert len(ch) == 1 and _claim_of_old(ch[0]), site.log
+
+
+def test_a_failing_first_submit_reclaims_nothing():
+    site = _SubmitSite(fail="submit")
+    err = _submit_raises(site)
+    assert isinstance(err, _Boom)
+    ch = [e for e in site.log if e[0] == "clickhouse.execute"]
+    assert len(ch) == 1 and _delete_of_new(ch[0]), site.log
+    assert not any(_claim_of_old(e) for e in site.log)
+
+
+def test_a_failing_cancel_reclaims_the_old_batch_too():
+    """on_cancel may have deleted the claim before a later cancel hook raised."""
+    site = _SubmitSite(fail="cancel", submitted={("ZZOP", 2099, 8): OLD["name"]})
+    err = _submit_raises(site, replaces=OLD["name"])
+    assert "Cannot cancel" in str(err)
+    assert [e[:2] for e in site.log][0] == ("cancel", OLD["name"])
+    ch = [e for e in site.log if e[0] == "clickhouse.execute"]
+    assert len(ch) == 1 and _claim_of_old(ch[0]), site.log
+
+
+def test_a_failed_restore_is_not_silent():
+    site = _SubmitSite(fail="submit", fail_execute=True,
+                       submitted={("ZZOP", 2099, 8): OLD["name"]})
+    err = _submit_raises(site, replaces=OLD["name"])
+    msg = str(err)
+    assert "the Build Approval hook raised" in msg, msg
+    assert OLD["name"] in msg and "not claimed in the warehouse" in msg, msg
+    assert "b-new" in msg, msg
+
+
+def test_submit_tb_is_post_only_in_source():
+    with open(TB_API) as fh:
+        source = fh.read()
+    assert '@frappe.whitelist(methods=["POST"])\ndef submit_tb(' in source
