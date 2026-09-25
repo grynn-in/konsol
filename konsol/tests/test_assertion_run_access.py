@@ -89,10 +89,36 @@ def test_trigger_close_run_is_post_only():
 
 def test_only_the_close_roles_may_start_a_close_run():
     """The gate is the first statement, ahead of the "already in progress"
-    check, so a user without the role is refused whatever the run state."""
+    check, so a user without the role is refused whatever the run state.
+
+    R3 (konsol#297): the Analyst runs checks too, so it joins the Close Lead
+    and System Manager here."""
     roles = _only_for_roles(_first_statement(_function(ASSERTION_RUN, "trigger_close_run")))
-    assert roles == {"EPM Admin", "System Manager"}, (
+    assert roles == {"EPM Admin", "EPM Analyst", "System Manager"}, (
         f"trigger_close_run does not open with frappe.only_for of the close roles: {roles}")
+
+
+def test_the_analyst_may_create_but_never_write_a_run():
+    """R3 (konsol#297): the Analyst runs checks, but the sign-off is still the
+    Close Lead's. The JSON grants create with no write on the level-0 row, and
+    `sign_off_close`'s first statement enforces write on the caller, so a
+    create-only Analyst is refused there whatever else changes."""
+    meta = _meta(ASSERTION_RUN_JSON)
+    rows = [p for p in meta["permissions"] if p.get("role") == "EPM Analyst" and not p.get("permlevel")]
+    assert rows, "no level-0 EPM Analyst permission row on Assertion Run"
+    assert all(p.get("create") for p in rows), f"EPM Analyst has no create on Assertion Run: {rows}"
+    assert not any(p.get("write") for p in rows), f"EPM Analyst gained write on Assertion Run: {rows}"
+
+    stmt = _first_statement(_function(ASSERTION_RUN, "sign_off_close"))
+    assert isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call), (
+        f"sign_off_close does not open with a call: {ast.dump(stmt)}")
+    call = stmt.value
+    assert (isinstance(call.func, ast.Attribute) and call.func.attr == "has_permission"
+            and isinstance(call.func.value, ast.Name) and call.func.value.id == "frappe"), (
+        f"sign_off_close does not open with frappe.has_permission: {ast.dump(stmt)}")
+    positional = [ast.literal_eval(a) for a in call.args]
+    assert positional[:2] == ["Assertion Run", "write"], (
+        f"sign_off_close's has_permission does not check write on Assertion Run: {positional}")
 
 
 def test_only_the_launch_roles_may_read_the_launch_options():
