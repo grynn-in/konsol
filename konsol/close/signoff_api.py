@@ -47,6 +47,17 @@ submitting user, and a duplicate, a closed period, a group entity or an
 entity-period with a submitted trial balance is refused there. The endpoint
 takes no ``declared_by`` and sends none. Only a blank reason is refused before
 insert, so nothing is written for it.
+
+``close_period(fiscal_year, fiscal_period, note)`` and
+``reopen_period(fiscal_year, fiscal_period, reason)`` (POST, Close Lead; A34,
+stories 9.3, 9.5) go through ``period_status.set_status``, which calls the
+EPM Fiscal Year's own ``close_period`` / ``reopen_period``. So every gate
+there runs: the role transition, the group-rate gate and the sign-off gate
+(A23) on close, the re-sign marking of later periods (A31) on reopen, and the
+closing-note stamp. Neither endpoint writes a period status itself. A reopen
+with a blank (or whitespace-only) reason is refused before ``set_status``.
+Both return ``{status, closed_by, closed_on}``. The shape is copied from the
+old control endpoint's period-status call, not imported (R02 deletes it).
 """
 import datetime
 
@@ -62,7 +73,9 @@ from konsol.consolidation.doctype.assertion_run.assertion_run import (
     sign_off_close,
 )
 from konsol.entity_permissions import allowed_entity_codes
+from konsol import period_status
 from konsol.period_status import PeriodNotDeclared
+from konsol.schema_lifecycle import check_epm_admin
 
 REGULAR = "Regular"
 
@@ -293,3 +306,39 @@ def declare_tb_exception(entity, fiscal_year, fiscal_period, reason):
     doc.insert()
     doc.submit()
     return doc.name
+
+
+def _status_result(doc):
+    return {"status": doc.status, "closed_by": doc.closed_by or None,
+            "closed_on": _iso(doc.closed_on)}
+
+
+@frappe.whitelist(methods=["POST"])
+def close_period(fiscal_year, fiscal_period, note=None):
+    """Close the period through its EPM Fiscal Year (A34, story 9.3).
+
+    The group-rate and sign-off gates (A23) are the EPM Fiscal Year's; their
+    refusals pass through unchanged. ``note`` goes onto the closing note.
+    """
+    # A literal: the endpoint contract test reads it.
+    frappe.only_for(("EPM Admin", "System Manager"))
+    check_epm_admin()
+    key = _period(fiscal_year, fiscal_period)
+    doc = period_status.set_status(key[0], key[1], period_status.CLOSED, note=note)
+    return _status_result(doc)
+
+
+@frappe.whitelist(methods=["POST"])
+def reopen_period(fiscal_year, fiscal_period, reason):
+    """Reopen the period through its EPM Fiscal Year, for a stated reason
+    (A34, story 9.5). Later signed periods are marked Re-sign Needed there
+    (A31); refusals pass through unchanged.
+    """
+    # A literal: the endpoint contract test reads it.
+    frappe.only_for(("EPM Admin", "System Manager"))
+    check_epm_admin()
+    key = _period(fiscal_year, fiscal_period)
+    if not (reason or "").strip():
+        frappe.throw("Give the reason for reopening FY%d P%02d." % key)
+    doc = period_status.set_status(key[0], key[1], period_status.OPEN, reason=reason)
+    return _status_result(doc)
