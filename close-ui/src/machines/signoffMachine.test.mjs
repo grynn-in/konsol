@@ -77,6 +77,11 @@ function summaryOf(action, extra = {}) {
 		previous: [],
 		can_sign: true,
 		can_override: false,
+		// A49: get_signoff always carries these three. "Open" is the ordinary
+		// case (the period is signed off but not yet closed).
+		period_status: "Open",
+		closed_by: null,
+		closed_on: null,
 		...extra,
 	};
 }
@@ -85,6 +90,18 @@ const SIGN_S = summaryOf("sign");
 const ACK_S = summaryOf("acknowledge");
 const OVR_S = summaryOf("override", { can_override: true });
 const SIGNED_S = summaryOf("signed", { label: "Signed Off" });
+const SIGNED_CLOSED_S = summaryOf("signed", {
+	label: "Signed Off",
+	period_status: "Closed",
+	closed_by: "lead@example.com",
+	closed_on: "2026-09-25",
+});
+const SIGNED_LOCKED_S = summaryOf("signed", {
+	label: "Signed Off",
+	period_status: "Locked",
+	closed_by: "lead@example.com",
+	closed_on: "2026-01-15",
+});
 
 function value(actor) {
 	return JSON.stringify(actor.getSnapshot().value);
@@ -269,6 +286,68 @@ test("an already signed period loads straight into signed", async () => {
 	const h = start();
 	await toSigned(h);
 	assert.equal(h.calls.sign.length, 0);
+});
+
+// ---- B14b: a loaded, already-closed period (A49's period_status) ----------
+
+test("a loaded signed+Closed period lands in closed (offers Reopen, never Close)", async () => {
+	const h = start();
+	await toLoaded(h, SIGNED_CLOSED_S);
+	assert.equal(value(h.actor), '"closed"');
+	assert.deepEqual(h.actor.getSnapshot().context.summary, SIGNED_CLOSED_S);
+	assertRefuses(h, except("REOPEN"), "closed (loaded Closed)");
+	h.actor.send(REOPEN);
+	assert.equal(value(h.actor), '"reopening"');
+});
+
+test("a loaded signed+Locked period lands in closed, but REOPEN is refused: no Reopen offered", async () => {
+	const h = start();
+	await toLoaded(h, SIGNED_LOCKED_S);
+	assert.equal(value(h.actor), '"closed"');
+	assert.deepEqual(h.actor.getSnapshot().context.summary, SIGNED_LOCKED_S);
+	assertRefuses(h, ALL, "closed (loaded Locked)");
+});
+
+test("load returns signed with an unknown period_status → loadFailed, not signed", async () => {
+	for (const bad of ["Frozen", "", null, undefined]) {
+		const h = start();
+		await toLoaded(h, summaryOf("signed", { label: "Signed Off", period_status: bad }));
+		assert.equal(value(h.actor), '"loadFailed"');
+		const c = h.actor.getSnapshot().context;
+		assert.equal(c.summary, null);
+		assert.match(c.error, /Unknown period status/);
+	}
+});
+
+test("after signing, a reload that reports Closed lands in closed (confirming → closed)", async () => {
+	const h = start();
+	await toSigning(h);
+	h.last("sign").resolve({});
+	await flush();
+	assert.equal(value(h.actor), '"confirming"');
+	await toLoaded(h, SIGNED_CLOSED_S);
+	assert.equal(value(h.actor), '"closed"');
+	assert.deepEqual(h.actor.getSnapshot().context.summary, SIGNED_CLOSED_S);
+});
+
+test("after signing, a reload that reports Locked lands in closed with Reopen refused", async () => {
+	const h = start();
+	await toSigning(h);
+	h.last("sign").resolve({});
+	await flush();
+	await toLoaded(h, SIGNED_LOCKED_S);
+	assert.equal(value(h.actor), '"closed"');
+	assertRefuses(h, ALL, "closed (confirming → Locked)");
+});
+
+test("after signing, a reload with an unknown period_status → loadFailed, not signed", async () => {
+	const h = start();
+	await toSigning(h);
+	h.last("sign").resolve({});
+	await flush();
+	await toLoaded(h, summaryOf("signed", { label: "Signed Off", period_status: "Frozen" }));
+	assert.equal(value(h.actor), '"loadFailed"');
+	assert.match(h.actor.getSnapshot().context.error, /Unknown period status/);
 });
 
 test("CANCEL leaves acknowledging and overriding for review, the summary unchanged", async () => {
