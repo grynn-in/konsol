@@ -151,7 +151,8 @@ def _frappe(site):
     frappe.enqueue = enqueue
     frappe.db = types.SimpleNamespace(get_value=get_value, commit=commit)
     frappe.session = types.SimpleNamespace(user="zz-analyst@example.com")
-    frappe.utils = types.SimpleNamespace(now=lambda: "2026-09-30 00:00:00")
+    frappe.utils = types.SimpleNamespace(now=lambda: "2026-09-30 00:00:00",
+                                         get_system_timezone=lambda: "Europe/London")
     return frappe
 
 
@@ -188,13 +189,19 @@ def _call(site, fn, *args):
     names = ["konsol", "konsol.close", "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run"]
     mods = {n: types.ModuleType(n) for n in names}
+    tspec = importlib.util.spec_from_file_location("konsol.close.timefmt",
+                                                   os.path.join(APP_DIR, "close", "timefmt.py"))
+    timefmt = importlib.util.module_from_spec(tspec)
+    tspec.loader.exec_module(timefmt)
     mods.update({
         "frappe": frappe,
+        "konsol.close.timefmt": timefmt,
         "konsol.close.checks_model": model,
         "konsol.close.freshness_api": freshness_api,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
     })
     mods["konsol.close"].checks_model = model
+    mods["konsol.close"].timefmt = timefmt
     mods["konsol.close"].freshness_api = freshness_api
     mods["konsol.consolidation.doctype.assertion_run"].assertion_run = assertion_run
     saved = {n: sys.modules.get(n) for n in mods}
@@ -365,3 +372,20 @@ def test_run_checks_as_a_viewer_or_entity_accountant_is_refused():
         assert site.runs == [] and site.enqueued == [] and site.commits == 0, role
         # Refused by run_checks' own gate, before trigger_close_run is reached.
         assert site.only_for_calls == [RUNNERS], site.only_for_calls
+
+
+def test_a_zoned_as_of_and_a_naive_completed_at_compare_without_error():
+    """A47: A16b made as_of zoned; completed_at comes from the database naive
+    (site-local). Comparing the two raised TypeError inside get_checks."""
+    site = _Site(runs=[_run("RUN-1", "Green", _dt(10), _dt(10, 1))], steps={"RUN-1": []},
+                 as_of=_dt(11).isoformat() + "+01:00", project_path=_manifest({}))
+    out, _ = _call(site, "get_checks", 2026, 9)
+    assert out["staleness"] == "stale"
+    assert out["latest"]["completed_at"].endswith("+01:00"), out["latest"]
+
+
+def test_completed_at_is_sent_with_the_sites_offset():
+    site = _Site(runs=[_run("RUN-1", "Green", _dt(10), _dt(10, 1))], steps={"RUN-1": []},
+                 as_of=None, project_path=_manifest({}))
+    out, _ = _call(site, "get_checks", 2026, 9)
+    assert out["latest"]["completed_at"].endswith("+01:00"), out["latest"]
