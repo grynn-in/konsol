@@ -38,6 +38,15 @@ entity is counted, not dropped. Read-only.
 Close Lead) signs the period's latest terminal run through
 ``assertion_run.sign_off_close``, which holds the write check, the gates (A22)
 and the Amber/Red rules. ``sign`` never writes a sign-off field itself.
+
+``declare_tb_exception(entity, fiscal_year, fiscal_period, reason)`` (POST,
+Close Lead; A33, stories 9.1, 9.2) inserts and submits a ``TB Exception``
+through the document's own ``insert`` and ``submit``, so the A08 controller
+and Frappe's permission checks run: ``declared_by`` is set there to the
+submitting user, and a duplicate, a closed period, a group entity or an
+entity-period with a submitted trial balance is refused there. The endpoint
+takes no ``declared_by`` and sends none. Only a blank reason is refused before
+insert, so nothing is written for it.
 """
 import datetime
 
@@ -259,3 +268,28 @@ def sign(fiscal_year, fiscal_period, acknowledgement=None, override_reason=None)
         frappe.throw("Run the checks for FY%d %s first." % (key[0], row["period_code"]))
     return sign_off_close(run["name"], override_reason=override_reason,
                           acknowledgement=acknowledgement)
+
+
+@frappe.whitelist(methods=["POST"])
+def declare_tb_exception(entity, fiscal_year, fiscal_period, reason):
+    """Declare "no trial balance for ``entity`` in the period, because ``reason``"
+    (A33). Returns the new TB Exception's name.
+
+    Every rule is the A08 controller's; its refusals pass through unchanged.
+    """
+    # A literal: the endpoint contract test reads it.
+    frappe.only_for(("EPM Admin", "System Manager"))
+    key = _period(fiscal_year, fiscal_period)
+    if not (reason or "").strip():
+        frappe.throw("Give the reason %s has no trial balance for FY%d P%02d." % (
+            entity, key[0], key[1]))
+    doc = frappe.get_doc({
+        "doctype": "TB Exception",
+        "data_area_id": entity,
+        "fiscal_year": key[0],
+        "fiscal_period": key[1],
+        "reason": reason,
+    })
+    doc.insert()
+    doc.submit()
+    return doc.name

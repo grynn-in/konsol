@@ -624,3 +624,133 @@ def test_sign_refuses_a_period_that_is_not_a_number():
     _result, exc = _call_sign(site, "2025", "P9")
     assert "whole numbers" in str(exc)
     assert site.signed == []
+
+
+# --- A33: declare_tb_exception -----------------------------------------------------
+
+class _TBXDoc:
+    """A stub TB Exception: records insert and submit. The controller (A08) is
+    not loaded here; its refusals are simulated by ``site.tbx_error``."""
+
+    def __init__(self, site, data):
+        self.site, self.data, self.name = site, dict(data), None
+        self.steps = []
+
+    def insert(self, *a, **k):
+        assert not a and not k, "insert must not bypass permissions: %r %r" % (a, k)
+        self.steps.append("insert")
+        self.site.tbx_steps.append("insert")
+        if self.site.tbx_error is not None:
+            raise self.site.tbx_error
+        self.name = "TBX-00042"
+        return self
+
+    def submit(self, *a, **k):
+        assert not a and not k, "submit must not bypass permissions: %r %r" % (a, k)
+        assert self.steps == ["insert"], self.steps
+        self.steps.append("submit")
+        self.site.tbx_steps.append("submit")
+        return self
+
+
+def _call_declare(site, *args, **kwargs):
+    """Call declare_tb_exception with the stubs installed. Returns (result, exception)."""
+    module, mods, frappe = _load(site)
+    site.tbx_docs, site.tbx_steps = [], []
+    site.tbx_error = getattr(site, "tbx_error", None)
+
+    def get_doc(arg, *a, **k):
+        assert isinstance(arg, dict) and not a and not k, (arg, a, k)
+        doc = _TBXDoc(site, arg)
+        site.tbx_docs.append(doc)
+        return doc
+
+    frappe.get_doc = get_doc
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        try:
+            return module.declare_tb_exception(*args, **kwargs), None
+        except Exception as exc:  # noqa: BLE001 - the type is asserted by the caller
+            return None, exc
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def test_declare_is_post_only_and_gated_on_the_close_lead():
+    site = _Site()
+    _call_declare(site, "ZZB", 2025, 9, "Dormant since June")
+    assert site.whitelisted["declare_tb_exception"] == ["POST"]
+    assert site.only_for[0] == ("EPM Admin", "System Manager")
+
+
+def test_declare_inserts_then_submits_with_the_reason_passed_through():
+    site = _Site()
+    result, exc = _call_declare(site, "ZZB", "2025", "9", "Dormant since June")
+    assert exc is None, exc
+    assert result == "TBX-00042"
+    assert site.tbx_steps == ["insert", "submit"]
+    [doc] = site.tbx_docs
+    assert doc.data == {"doctype": "TB Exception", "data_area_id": "ZZB",
+                        "fiscal_year": 2025, "fiscal_period": 9,
+                        "reason": "Dormant since June"}
+
+
+def test_declare_never_sends_declared_by():
+    """The controller sets declared_by to the submitting user (A08); the endpoint
+    neither takes it nor sends it, so a forged value in the request cannot land."""
+    import inspect
+    module, _mods, _frappe = _load(_Site())
+    params = inspect.signature(module.declare_tb_exception).parameters
+    assert list(params) == ["entity", "fiscal_year", "fiscal_period", "reason"], list(params)
+    assert all(p.kind is p.POSITIONAL_OR_KEYWORD for p in params.values())
+    site = _Site()
+    _call_declare(site, "ZZB", 2025, 9, "Dormant")
+    assert "declared_by" not in site.tbx_docs[0].data
+    _result, exc = _call_declare(_Site(), "ZZB", 2025, 9, "Dormant",
+                                 declared_by="someone-else@example.com")
+    assert isinstance(exc, TypeError), exc
+
+
+def test_a_blank_reason_is_refused_before_insert():
+    for reason in ("", "   \n\t", None):
+        site = _Site()
+        _result, exc = _call_declare(site, "ZZB", 2025, 9, reason)
+        assert type(exc).__name__ == "ValidationError", (reason, exc)
+        assert "reason" in str(exc).lower(), exc
+        assert site.tbx_docs == [] and site.tbx_steps == [], reason
+
+
+def test_an_analyst_cannot_declare():
+    site = _Site(roles=("EPM Analyst",))
+    _result, exc = _call_declare(site, "ZZB", 2025, 9, "Dormant")
+    assert type(exc).__name__ == "PermissionError", exc
+    assert site.tbx_docs == [] and site.tbx_steps == []
+
+
+def test_other_close_roles_cannot_declare():
+    for role in ("Entity Accountant", "EPM User", "Guest"):
+        site = _Site(roles=(role,))
+        _result, exc = _call_declare(site, "ZZB", 2025, 9, "Dormant")
+        assert type(exc).__name__ == "PermissionError", (role, exc)
+        assert site.tbx_steps == [], role
+
+
+def test_a_controller_refusal_propagates_unchanged_and_nothing_is_submitted():
+    site = _Site()
+    refusal = RuntimeError("TBX-00001 already declares no trial balance for ZZE FY2025 P9.")
+    site.tbx_error = refusal
+    _result, exc = _call_declare(site, "ZZE", 2025, 9, "Dormant")
+    assert exc is refusal
+    assert site.tbx_steps == ["insert"]
+
+
+def test_declare_refuses_a_period_that_is_not_a_number():
+    site = _Site()
+    _result, exc = _call_declare(site, "ZZB", "2025", "P9", "Dormant")
+    assert "whole numbers" in str(exc)
+    assert site.tbx_steps == []
