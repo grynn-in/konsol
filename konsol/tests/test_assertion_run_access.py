@@ -169,3 +169,81 @@ def test_only_the_close_roles_read_the_failure_sample():
     for p in rows:
         assert bool(p.get("write")) == bool(level_0[p["role"]].get("write")), (
             f"{p['role']} permlevel-1 write does not match its level-0 write: {p}")
+
+
+# ---------------------------------------------------------------------------
+# A02b (konsol#305): with R3 the Analyst may CREATE an Assertion Run. Measured
+# live 25 Sep 2026: an EPM Analyst inserted a run carrying status "Green" and
+# signoff_status "Signed Off" and it saved as sent (read_only is a form
+# property, not an insert guard). A new run must always start Queued and
+# unsigned, whatever the request carries.
+# ---------------------------------------------------------------------------
+def _before_insert_runner():
+    """Compile AssertionRun.before_insert (and the module constant it reads)
+    against a stub frappe, so the reset is exercised, not just grepped."""
+    import types
+
+    path = os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AssertionRun")
+    fn = next((n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_insert"), None)
+    assert fn is not None, "AssertionRun has no before_insert"
+    consts = [n for n in tree.body if isinstance(n, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id == "NEW_RUN_BLANK_FIELDS" for t in n.targets)]
+    module = ast.Module(body=consts + [fn], type_ignores=[])
+    ns = {"frappe": types.SimpleNamespace(session=types.SimpleNamespace(user="caller@example.com"))}
+    exec(compile(ast.fix_missing_locations(module), path, "exec"), ns)
+    return ns["before_insert"]
+
+
+class _Doc:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def set(self, key, value):
+        setattr(self, key, value)
+
+
+def test_a_new_run_cannot_arrive_signed_or_scored():
+    before_insert = _before_insert_runner()
+    forged = _Doc(
+        status="Green", signoff_status="Signed Off", signed_off_by="x@example.com",
+        signed_off_at="2026-09-25 10:00:00", override_reason="r", acknowledgement="a",
+        warnings_at_signoff="w", total=127, passed=127, failed=0, errored=0, warned=0,
+        started_at="t", completed_at="t", duration_seconds=1.0, log="l",
+        triggered_by="someone-else@example.com", results=[{"status": "Pass"}],
+        fiscal_year=2010, fiscal_period=2, title="kept",
+    )
+    before_insert(forged)
+    assert forged.status == "Queued"
+    assert forged.signoff_status == "Not Signed Off"
+    for field in ("signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
+                  "warnings_at_signoff", "total", "passed", "failed", "errored", "warned",
+                  "started_at", "completed_at", "duration_seconds", "log"):
+        assert getattr(forged, field) in (None, 0, ""), field
+    assert forged.results == []
+    assert forged.triggered_by == "caller@example.com"
+    # what the caller legitimately chooses survives
+    assert (forged.fiscal_year, forged.fiscal_period, forged.title) == (2010, 2, "kept")
+
+
+def test_every_read_only_result_field_is_reset_on_insert():
+    """The reset list covers every read_only field of the doctype except the
+    ones the caller legitimately sets (title) and the two with fixed starting
+    values (status, signoff_status); a read_only field added later must be
+    added to the reset list or here, on purpose."""
+    import json
+
+    before_insert = _before_insert_runner()  # also asserts the method exists
+    del before_insert
+    path = os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "NEW_RUN_BLANK_FIELDS" for t in n.targets))
+    blanked = set(ast.literal_eval(node.value))
+    meta = json.load(open(os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.json")))
+    read_only = {f["fieldname"] for f in meta["fields"] if f.get("read_only")
+                 and f["fieldtype"] not in ("Section Break", "Column Break", "Tab Break")}
+    assert read_only - {"title", "status", "signoff_status", "triggered_by"} == blanked
