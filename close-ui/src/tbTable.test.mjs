@@ -145,3 +145,16 @@ test("compareRows: an intercompany row keeps its partner and is_ic flag", () => 
   assert.equal(view.rows[0].is_ic, true);
   assert.equal(view.rows[0].change, "0.00");
 });
+
+test("B12b: the known statuses are exactly the ones tb_read_api.py (A25) sends", async () => {
+  // Drift guard: A25 added "Quarter not declared"; a status the screen does not
+  // know throws, so a server status missing here breaks the TB screen on live.
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("../../konsol/close/tb_read_api.py", import.meta.url), "utf8");
+  const server = new Set([...src.matchAll(/^[A-Z_]+ = "([^"]+)"$/gm)]
+    .map((m) => m[1])
+    .filter((v) => ["Received", "Exception declared", "Not expected this period", "Missing",
+      "Frequency not declared", "Quarter not declared"].includes(v) || /declared|Missing|Received|expected/.test(v)));
+  const { KNOWN_STATUSES } = await import("./tbTable.js");
+  assert.deepEqual([...KNOWN_STATUSES].sort(), [...server].sort());
+});
