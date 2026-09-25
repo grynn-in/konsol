@@ -11,6 +11,13 @@ place to refuse it. read_only on the doctype only guards the form.
 - Result fields change only inside run_close_assertions (the worker).
 - Any other save that changes one is refused; a change to neither is allowed.
 
+A50 (found by A48): the run's scope and origin (fiscal_year, fiscal_period,
+pipeline_run, triggered_by) never change after insert, for any writer: a Close
+Lead could MOVE a signed run to another period with set_value(fiscal_period=N),
+and that period then read as signed. The results table (Assertion Step rows)
+changes only inside the worker: a frappe.client.save with edited step rows
+could rewrite which checks failed.
+
 assertion_run.py is loaded against a stub frappe, as in
 test_close_assertion_suite.py (copied, not imported).
 """
@@ -31,6 +38,9 @@ SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_
                   "acknowledgement", "warnings_at_signoff")
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
                  "started_at", "completed_at", "duration_seconds")
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by")
+STEP_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_step",
+                         "assertion_step.json")
 
 #: A value for each field that differs from the saved row in _saved().
 FORGED = {
@@ -42,7 +52,38 @@ FORGED = {
     "started_at": datetime.datetime(2026, 9, 25, 12, 0, 0),
     "completed_at": datetime.datetime(2026, 9, 25, 12, 5, 0),
     "duration_seconds": 1.5,
+    "fiscal_year": 2098, "fiscal_period": 2, "pipeline_run": "PR-FORGED",
+    "triggered_by": "forger@example.com",
 }
+
+
+def _steps():
+    """The stored results: one pass, two fails (fresh dicts each call)."""
+    return [
+        {"assertion": "assert_a", "dimension": "Other", "status": "Pass", "rows_failed": 0,
+         "severity": "error", "message": "", "failures_table": "", "sample_rows": ""},
+        {"assertion": "assert_b", "dimension": "FX", "status": "Fail", "rows_failed": 4,
+         "severity": "error", "message": "4 rows", "failures_table": "audit.assert_b",
+         "sample_rows": "x"},
+        {"assertion": "assert_c", "dimension": "Consolidation", "status": "Fail",
+         "rows_failed": 2, "severity": "error", "message": "2 rows",
+         "failures_table": "audit.assert_c", "sample_rows": "y"},
+    ]
+
+
+def _edited_steps():
+    """Each way a forged save can rewrite which checks failed."""
+    added = _steps() + [dict(_steps()[0], assertion="assert_d")]
+    removed = _steps()[:2]
+    status = _steps()
+    status[1]["status"] = "Pass"
+    rows = _steps()
+    rows[2]["rows_failed"] = 0
+    message = _steps()
+    message[1]["message"] = "all fine"
+    emptied = []
+    return {"added": added, "removed": removed, "status": status, "rows_failed": rows,
+            "message": message, "emptied": emptied}
 
 
 def _saved():
@@ -55,6 +96,7 @@ def _saved():
         "duration_seconds": 300.0,
         "signoff_status": "Not Signed Off", "signed_off_by": None, "signed_off_at": None,
         "override_reason": None, "acknowledgement": None, "warnings_at_signoff": None,
+        "pipeline_run": None, "triggered_by": "analyst@example.com", "results": _steps(),
     }
 
 
@@ -346,3 +388,122 @@ def test_no_other_save_of_an_assertion_run_in_the_module():
             if not inside:
                 bare.append(node.lineno)
     assert not bare, "doc.save outside a writing() block at line(s) %s" % bare
+
+
+# --- A50: scope and origin never change after insert ------------------------
+
+def test_scope_fields_are_declared():
+    module, _ = _load()
+    assert tuple(module.SCOPE_FIELDS) == SCOPE_FIELDS
+    declared = {f["fieldname"] for f in json.load(open(AR_JSON))["fields"]}
+    missing = [f for f in SCOPE_FIELDS if f not in declared]
+    assert not missing, "not fields of Assertion Run: %s" % missing
+
+
+def test_scope_change_is_refused_for_every_writer():
+    """No writer may move a run: the gates find a period's runs by
+    fiscal_year/fiscal_period, so a moved signed run signs another period."""
+    module, _ = _load()
+    accepted = []
+    for writer in (None, module.SIGNOFF_WRITER, module.WORKER_WRITER):
+        for field in SCOPE_FIELDS:
+            doc = _doc(module, **{field: FORGED[field]})
+            if writer is None:
+                msg = _refused(doc.validate)
+            else:
+                with module.writing(writer, "AR-1"):
+                    msg = _refused(doc.validate)
+            if msg is None:
+                accepted.append((writer, field))
+            else:
+                assert field in msg, "the refusal must name the field: %r" % msg
+    assert not accepted, "scope changed: %s" % accepted
+
+
+def test_the_live_move_is_refused():
+    """A48 live: set_value(fiscal_period=N) on a signed run."""
+    module, _ = _load()
+    doc = _doc(module, fiscal_period=3, signoff_status="Not Signed Off")
+    msg = _refused(doc.validate)
+    assert msg is not None and "fiscal_period" in msg, msg
+
+
+def test_a_desk_save_of_an_unchanged_scope_is_allowed():
+    """A year-only run is stored with fiscal_period 0; the Desk may send it
+    back as 0, "" or None, and an empty Link as "". Neither is a move."""
+    module, _ = _load()
+    for period in (0, "", None):
+        before = _saved()
+        before["fiscal_period"] = 0
+        fields = _saved()
+        fields.update(fiscal_period=period, pipeline_run="", fiscal_year="2099",
+                      title="new title")
+        module.AssertionRun(_is_new=False, _before_save=before, **fields).validate()
+
+
+# --- A50: the results table changes only inside the worker -------------------
+
+def test_step_fields_are_the_declared_ones():
+    module, _ = _load()
+    fields = [f["fieldname"] for f in json.load(open(STEP_JSON))["fields"]
+              if f["fieldtype"] not in ("Section Break", "Column Break", "Tab Break")]
+    assert sorted(module.STEP_FIELDS) == sorted(fields), (module.STEP_FIELDS, fields)
+
+
+def test_an_unflagged_edit_to_the_results_is_refused():
+    module, _ = _load()
+    accepted = []
+    for case, rows in _edited_steps().items():
+        msg = _refused(_doc(module, results=rows).validate)
+        if msg is None:
+            accepted.append(case)
+        else:
+            assert "results" in msg, "the refusal must name the table: %r" % msg
+    assert not accepted, "unflagged results edits saved: %s" % accepted
+
+
+def test_the_signoff_writer_cannot_edit_the_results():
+    module, _ = _load()
+    with module.writing(module.SIGNOFF_WRITER, "AR-1"):
+        for case, rows in _edited_steps().items():
+            assert _refused(_doc(module, results=rows).validate) is not None, case
+
+
+def test_the_worker_may_replace_the_results():
+    """Failure path: the worker's own save (it rebuilds the table in
+    _parse_results) must still pass."""
+    module, _ = _load()
+    with module.writing(module.WORKER_WRITER, "AR-1"):
+        for rows in _edited_steps().values():
+            _doc(module, results=rows).validate()
+        # the flag covers its own run only
+    with module.writing(module.WORKER_WRITER, "AR-OTHER"):
+        assert _refused(_doc(module, results=[]).validate) is not None
+
+
+def test_a_desk_save_with_unchanged_results_is_allowed():
+    """The Desk sends child rows back with row metadata and Ints as strings."""
+    module, _ = _load()
+    rows = _steps()
+    for i, row in enumerate(rows, start=1):
+        row.update(name="row-%d" % i, idx=i, parent="AR-1", doctype="Assertion Step")
+        row["rows_failed"] = str(row["rows_failed"])
+    _doc(module, results=rows, title="new title").validate()
+
+
+def test_child_rows_as_documents_are_compared():
+    """Frappe holds child rows as Documents, read with .get(field)."""
+    module, _ = _load()
+
+    class Row:
+        def __init__(self, data):
+            self._d = data
+
+        def get(self, field):
+            return self._d.get(field)
+
+    same = [Row(r) for r in _steps()]
+    _doc(module, results=same).validate()
+    changed = _steps()
+    changed[1]["status"] = "Pass"
+    assert _refused(_doc(module, results=[Row(r) for r in changed]).validate) is not None

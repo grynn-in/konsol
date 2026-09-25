@@ -54,6 +54,16 @@ SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
                  "started_at", "completed_at", "duration_seconds")
 
+#: Scope and origin: set at insert, never changed after, by any writer (A50).
+#: Found live by A48: set_value(fiscal_period=N) by the Close Lead MOVED a
+#: signed run, and latest_close_run / signoff_gate, which find a period's runs
+#: by fiscal_year/fiscal_period, then read that other period as signed.
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by")
+#: The fields of an Assertion Step row. The results table changes only inside
+#: the worker (A50): a save with edited rows could rewrite which checks failed.
+STEP_FIELDS = ("assertion", "dimension", "status", "rows_failed", "severity", "message",
+               "failures_table", "sample_rows")
+
 SIGNOFF_WRITER = "sign-off"
 WORKER_WRITER = "worker"
 #: What each writer may change. A writer changing the other's fields is refused.
@@ -96,6 +106,19 @@ def _norm(value):
         return str(value)
 
 
+def _norm_scope(value):
+    """A scope value as the database holds it: Frappe stores an empty Int as 0
+    and an empty Link as NULL, so 0, "" and None are the same empty scope."""
+    value = _norm(value)
+    return None if value == 0 else value
+
+
+def _steps(rows):
+    """The results table as comparable tuples, in row order. Rows are child
+    Documents on a real save and dicts from a Desk payload; both have .get."""
+    return [tuple(_norm(row.get(f)) for f in STEP_FIELDS) for row in (rows or [])]
+
+
 class AssertionRun(Document):
     def before_insert(self):
         """A new run starts Queued, unsigned, with no results, triggered by
@@ -130,16 +153,36 @@ class AssertionRun(Document):
         fiscal_year/fiscal_period actually changed from the saved version —
         a later status/result save is not re-gated.
 
-        The frozen fields are checked on every save of a stored run (A48).
+        The frozen fields are checked on every save of a stored run (A48,
+        A50). A stored run's scope never changes (A50); the declared check
+        still runs first on a scope change, so moving a run to an undeclared
+        period is refused as undeclared, and to a declared one as a move.
         """
         self._refuse_unflagged_changes()
-        if not (self.is_new() or self.has_value_changed("fiscal_year")
+        if (self.is_new() or self.has_value_changed("fiscal_year")
                 or self.has_value_changed("fiscal_period")):
+            if self.fiscal_year and self.fiscal_period not in (None, ""):
+                assert_declared(self.fiscal_year, self.fiscal_period)
+            elif self.fiscal_year:
+                _assert_year_declared(self.fiscal_year)
+        self._refuse_scope_change()
+
+    def _refuse_scope_change(self):
+        """Refuse any change to a stored run's scope or origin, whoever saves
+        it (A50). No writer moves a run: the worker and sign-off only reload
+        and save it."""
+        if self.is_new():
             return
-        if self.fiscal_year and self.fiscal_period not in (None, ""):
-            assert_declared(self.fiscal_year, self.fiscal_period)
-        elif self.fiscal_year:
-            _assert_year_declared(self.fiscal_year)
+        before = self.get_doc_before_save()
+        if before is None:
+            return
+        moved = [f for f in SCOPE_FIELDS
+                 if _norm_scope(before.get(f)) != _norm_scope(self.get(f))]
+        if moved:
+            frappe.throw(frappe._(
+                "Assertion Run {0}: {1} is fixed when the run starts and cannot be changed. "
+                "Run the checks for the other period instead. Nothing was saved.").format(
+                    self.name, ", ".join(moved)))
 
     def _refuse_unflagged_changes(self):
         """Refuse a change to a sign-off or result field made by anyone but
@@ -154,12 +197,17 @@ class AssertionRun(Document):
             return
         changed = [f for f in SIGNOFF_FIELDS + RESULT_FIELDS
                    if _norm(before.get(f)) != _norm(self.get(f))]
+        # The results table belongs to the worker, like the counts it feeds (A50).
+        if _steps(before.get("results")) != _steps(self.get("results")):
+            changed.append("results")
         if not changed:
             return
         active = _writer.get()
         allowed = ()
         if active and active[1] == self.name:
             allowed = _WRITER_FIELDS[active[0]]
+        if active and active[1] == self.name and active[0] == WORKER_WRITER:
+            allowed = allowed + ("results",)
         refused = [f for f in changed if f not in allowed]
         if refused:
             frappe.throw(frappe._(
