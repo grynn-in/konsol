@@ -176,6 +176,7 @@ def _install_stubs():
         commit=lambda: None,
     )
     frappe.new_doc = lambda doctype: _m.Dimension()
+    frappe.get_all = _get_all
     frappe.get_doc = _get_doc
     sys.modules["frappe"] = frappe
 
@@ -193,10 +194,28 @@ def _install_stubs():
 
     lifecycle = types.ModuleType("konsol.schema_lifecycle")
     lifecycle.check_epm_admin = _check_epm_admin
-    lifecycle.apply_and_rebuild = (
-        lambda doc, action: _REBUILDS.append((doc.name, action)))
+    lifecycle.apply_and_rebuild = _apply_and_rebuild
     sys.modules["konsol.schema_lifecycle"] = lifecycle
     sys.modules.pop("konsol.config_service", None)
+
+
+def _apply_and_rebuild(doc, action):
+    _REBUILDS.append((doc.name, action))
+    # What apply_schema_for_publish would read: the row as written.
+    _APPLIED_ROWS.append(dict(_STORE[doc.name]))
+
+
+#: The stored row at each apply_and_rebuild call.
+_APPLIED_ROWS = []
+
+
+def _get_all(doctype, filters=None, fields=None, **kwargs):
+    """frappe.get_all over the stub store (equality filters only)."""
+    rows = []
+    for row in _STORE.values():
+        if all(row.get(k) == v for k, v in (filters or {}).items()):
+            rows.append(_Flags({f: row.get(f) for f in fields}))
+    return rows
 
 
 def _get_doc(doctype, name):
@@ -242,6 +261,7 @@ SCHEMA_EDITS = {
 def _reset(admin=True):
     _STORE.clear()
     del _REBUILDS[:]
+    del _APPLIED_ROWS[:]
     _ADMIN["on"] = admin
 
 
@@ -455,3 +475,84 @@ def test_a_non_admin_may_still_save_metadata_on_a_draft():
     doc.save()
     assert _STORE[NAME]["label"] == "Sales Region"
     assert _REBUILDS == [], _REBUILDS
+
+
+# --- a bundle can declare a trial-balance dimension (#295, approved 25 Sep) -
+#
+# in_trial_balance was not in _DIMENSION_WRITABLE_FIELDS, so upsert_dimension
+# dropped it without a word: a bundle declaring a trial-balance dimension as
+# Published created one that no trial-balance column was ever added for, and
+# export_config left the flag out, so an export re-imported elsewhere lost it.
+# survives_close is carried for the same reason: a bundle that ticks it must
+# be refused by the controller (konsol#247: refuse, never accept and ignore),
+# not have the tick silently dropped.
+
+
+def _tb_spec(status="Published", **fields):
+    spec = _spec_for(status)
+    spec.update(fields)
+    return spec
+
+
+def test_upsert_persists_in_trial_balance_ticked():
+    _reset()
+    config_service.upsert_dimension(_tb_spec("Draft", in_trial_balance=1))
+    assert _STORE[NAME]["in_trial_balance"] == 1, _STORE[NAME]
+
+
+def test_upsert_persists_in_trial_balance_given_as_text_zero():
+    """REST and CSV carry a Check as text; "0" means unticked."""
+    _reset()
+    _stored("Draft", in_trial_balance=1)
+    config_service.upsert_dimension(_tb_spec("Draft", in_trial_balance="0"))
+    assert _STORE[NAME]["in_trial_balance"] == 0, _STORE[NAME]
+
+
+def test_a_bundle_creating_a_published_tb_dimension_applies_with_the_flag_set():
+    _reset()
+    config_service.apply_config(
+        {"dimensions": [_tb_spec("Published", in_trial_balance=1)]})
+    assert _REBUILDS == [(NAME, "Publish")], _REBUILDS
+    assert _APPLIED_ROWS[0]["in_trial_balance"] == 1, _APPLIED_ROWS
+
+
+def test_in_trial_balance_survives_an_export_and_reimport():
+    """list_dimensions is what export_config writes; upsert is what reads it."""
+    _reset()
+    _stored("Published", in_trial_balance=1)
+    exported = config_service.list_dimensions()
+    assert exported[0].get("in_trial_balance") is True, exported
+    assert exported[0].get("survives_close") is False, exported
+    _reset()
+    row = dict(exported[0])
+    row.pop("name", None)
+    config_service.upsert_dimension(row)
+    assert _STORE[NAME]["in_trial_balance"] == 1, _STORE[NAME]
+    assert _REBUILDS == [(NAME, "Publish")], _REBUILDS
+
+
+def test_upsert_result_reports_the_trial_balance_flags():
+    _reset()
+    result = config_service.upsert_dimension(_tb_spec("Draft", in_trial_balance=1))
+    assert result["dimension"].get("in_trial_balance") is True, result
+    assert result["dimension"].get("survives_close") is False, result
+
+
+def test_a_bundle_ticking_survives_close_is_refused_not_dropped():
+    _reset()
+    try:
+        config_service.upsert_dimension(
+            _tb_spec("Draft", in_trial_balance=1, survives_close=1))
+    except _ValidationError:
+        pass
+    else:
+        raise AssertionError(
+            f"survives_close=1 was accepted; stored {_STORE.get(NAME)}")
+    assert NAME not in _STORE or not _STORE[NAME].get("survives_close")
+
+
+def test_a_bundle_with_survives_close_off_is_accepted():
+    _reset()
+    config_service.upsert_dimension(
+        _tb_spec("Draft", in_trial_balance=1, survives_close="0"))
+    assert _STORE[NAME]["survives_close"] == 0, _STORE[NAME]
