@@ -11,7 +11,8 @@
 // The services are injected by the screen with machine.provide({actors}); the
 // screen closes over the period:
 //   load()                                     → the get_signoff summary (A30, A49)
-//   sign({acknowledgement, override_reason})   → A32 sign
+//   sign({run, acknowledgement, override_reason}) → A32 sign; `run` (A58) is
+//                                                the summary's checks.run
 //   close({note})                              → A34 close_period
 //   reopen({reason})                           → A34 reopen_period
 // The defaults below refuse by name, so a screen that forgets one fails visibly.
@@ -34,7 +35,10 @@
 //   acknowledging  CONFIRM_ACK {text}, non-blank → signing; CANCEL → review; REFRESH → loading
 //   overriding     CONFIRM_OVERRIDE {text}, non-blank → signing; CANCEL → review; REFRESH → loading
 //   signing        nothing: a sign-off in flight is never abandoned
-//                  done → confirming; error → review with the server message
+//                  done → confirming; error → review with the server message,
+//                  except A58's stale-run refusal ("The checks were re-run
+//                  ...") → loading, keeping the message: the new run's
+//                  summary is fetched and any typed text is dropped
 //   confirming     nothing: the summary is loaded again after a sign-off
 //                  same branching as `loading`'s done above (B14b: a re-sign
 //                  of an already-closed/locked period lands straight in
@@ -94,6 +98,12 @@ function messageOf(error) {
 	if (typeof error === "string" && error.trim()) return error;
 	return "The request failed with no message";
 }
+
+/** A58: the start of signoff_api.sign's refusal when the run the summary
+ * showed is no longer the latest (an Analyst re-ran the checks). */
+export const STALE_RUN_REFUSAL = "The checks were re-run";
+
+const isStaleRun = (error) => messageOf(error).startsWith(STALE_RUN_REFUSAL);
 
 /** The trimmed text, or null when it is not text or only whitespace. */
 function typed(text) {
@@ -199,15 +209,24 @@ export const signoffMachine = setup({
 		signing: {
 			invoke: {
 				src: "sign",
-				input: ({ event }) => ({
+				input: ({ context, event }) => ({
+					// A58: the run this summary showed; the server refuses a stale one.
+					run: context.summary?.checks?.run ?? null,
 					acknowledgement: event.type === "CONFIRM_ACK" ? typed(event.text) : null,
 					override_reason: event.type === "CONFIRM_OVERRIDE" ? typed(event.text) : null,
 				}),
 				onDone: { target: "confirming", actions: periodChanged("sign") },
-				onError: {
-					target: "review",
-					actions: assign({ error: ({ event }) => messageOf(event.error) }),
-				},
+				onError: [
+					{
+						guard: ({ event }) => isStaleRun(event.error),
+						target: "loading",
+						actions: assign({ error: ({ event }) => messageOf(event.error) }),
+					},
+					{
+						target: "review",
+						actions: assign({ error: ({ event }) => messageOf(event.error) }),
+					},
+				],
 			},
 		},
 		confirming: {

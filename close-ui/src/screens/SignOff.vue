@@ -20,6 +20,9 @@
  * - A refused sign returns the machine to `review` with the server's message,
  *   shown verbatim (split on <br> into lines). "Signed" appears only in the
  *   signed/closed region, which only a server reload saying "signed" reaches.
+ * - A58: the sign POST carries `run`, the run the summary showed. When the
+ *   checks were re-run meanwhile the server refuses it; the machine reloads
+ *   the summary with that message, and the typed text is dropped.
  *
  * konsol#305 B32: the header's period state comes from the period context,
  * loaded by AppShell. When the machine emits PERIOD_CHANGED (a sign, close or
@@ -82,6 +85,7 @@ function machineFor(p) {
 			sign: fromPromise(({ input }) =>
 				post(SIGN, {
 					...key,
+					run: input.run,
 					acknowledgement: input.acknowledgement,
 					override_reason: input.override_reason,
 				}),

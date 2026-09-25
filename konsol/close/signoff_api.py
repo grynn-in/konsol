@@ -35,10 +35,14 @@ to those entities; the others are counted (``hidden``), never named, and the
 message is rebuilt from what may be shown. The gates still block: a hidden
 entity is counted, not dropped. Read-only.
 
-``sign(fiscal_year, fiscal_period, acknowledgement, override_reason)`` (POST,
-Close Lead) signs the period's latest terminal run through
+``sign(fiscal_year, fiscal_period, run, acknowledgement, override_reason)``
+(POST, Close Lead) signs the period's latest terminal run through
 ``assertion_run.sign_off_close``, which holds the write check, the gates (A22)
 and the Amber/Red rules. ``sign`` never writes a sign-off field itself.
+``run`` (A58) is the run the summary showed; it is required, and when it is
+not the latest terminal run (the checks were re-run meanwhile) the sign is
+refused, so a typed acknowledgement or override never lands on a run the
+Close Lead did not review.
 
 ``declare_tb_exception(entity, fiscal_year, fiscal_period, reason)`` (POST,
 Close Lead; A33, stories 9.1, 9.2) inserts and submits a ``TB Exception``
@@ -272,10 +276,12 @@ def get_signoff(fiscal_year, fiscal_period):
 
 
 @frappe.whitelist(methods=["POST"])
-def sign(fiscal_year, fiscal_period, acknowledgement=None, override_reason=None):
+def sign(fiscal_year, fiscal_period, run=None, acknowledgement=None, override_reason=None):
     """Sign off the period's latest terminal run (A32, story 9.2).
 
-    Everything that decides whether the signature lands is in
+    ``run`` is the run the summary showed (A58): a missing name, or one that
+    is no longer the latest terminal run, is refused and nothing is signed.
+    Everything else that decides whether the signature lands is in
     ``sign_off_close``: write permission, the gates (A22), the Amber
     acknowledgement and the Red override. Its refusals pass through unchanged.
     """
@@ -283,10 +289,16 @@ def sign(fiscal_year, fiscal_period, acknowledgement=None, override_reason=None)
     frappe.only_for(("EPM Admin", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     row = _declared_row(fiscal_calendar.fiscal_period_rows(), key)
-    run = latest_close_run(*key)
-    if not run:
+    if not (run or "").strip():
+        frappe.throw("Reload the sign-off for FY%d %s: the request did not say which checks "
+                     "run it signs." % (key[0], row["period_code"]))
+    latest = latest_close_run(*key)
+    if not latest:
         frappe.throw("Run the checks for FY%d %s first." % (key[0], row["period_code"]))
-    return sign_off_close(run["name"], override_reason=override_reason,
+    if latest["name"] != run.strip():
+        frappe.throw("The checks were re-run (now %s, %s); review the new result before signing."
+                     % (latest["name"], latest["status"]))
+    return sign_off_close(latest["name"], override_reason=override_reason,
                           acknowledgement=acknowledgement)
 
 
