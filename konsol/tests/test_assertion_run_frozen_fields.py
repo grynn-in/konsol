@@ -168,6 +168,9 @@ def _load():
     period_status = types.ModuleType("konsol.period_status")
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (_Refused,), {})
     period_status.assert_declared = lambda *a: None
+    period_status.OPEN = "Open"
+    # A59: trigger_close_run and sign_off_close read the period's status; open here.
+    period_status.period_row = lambda fy, fp: {"code": "P%02d" % int(fp), "status": "Open"}
 
     as_spec = importlib.util.spec_from_file_location(
         "konsol.assertion_status", os.path.join(APP_DIR, "assertion_status.py"))

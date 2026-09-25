@@ -53,7 +53,9 @@ def _test_node(name, description=""):
 
 class _Site:
     def __init__(self, runs=(), steps=None, roles=("EPM User",), as_of=None,
-                 project_path=None):
+                 project_path=None, period_state="Open"):
+        self.period_state = period_state  # the period's effective status (A59)
+        self.period_reads = []
         self.runs = [dict(r) for r in runs]
         self.steps = steps or {}  # run name -> [step dict incl. sample_rows]
         self.roles = set(roles)
@@ -156,9 +158,27 @@ def _frappe(site):
     return frappe
 
 
-def _assertion_run_module(frappe):
+def _period_status(site, frappe):
+    """A stub konsol.period_status: every period is declared, with the site's
+    effective status. ``period_row`` is the one reader A59 uses."""
+    ps = types.ModuleType("konsol.period_status")
+    ps.OPEN, ps.CLOSED, ps.LOCKED = "Open", "Closed", "Locked"
+    ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+
+    def period_row(fiscal_year, fiscal_period):
+        site.period_reads.append((int(fiscal_year), int(fiscal_period)))
+        return {"fiscal_year": int(fiscal_year), "fiscal_period": int(fiscal_period),
+                "code": "P%02d" % int(fiscal_period), "type": "Regular",
+                "status": site.period_state}
+
+    ps.period_row = period_row
+    return ps
+
+
+def _assertion_run_module(frappe, period_status):
     """The real definitions named in REAL_FROM_ASSERTION_RUN, compiled from
-    assertion_run.py's source against the stub frappe."""
+    assertion_run.py's source against the stub frappe and period_status (the
+    names assertion_run.py imports from it at the top)."""
     with open(ASSERTION_RUN_PY) as fh:
         tree = ast.parse(fh.read())
     body = []
@@ -169,7 +189,8 @@ def _assertion_run_module(frappe):
                 getattr(t, "id", None) in REAL_FROM_ASSERTION_RUN for t in node.targets):
             body.append(node)
     module = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
-    module.__dict__.update({"frappe": frappe, "os": os, "json": json})
+    module.__dict__.update({"frappe": frappe, "os": os, "json": json,
+                            "period_row": period_status.period_row, "OPEN": period_status.OPEN})
     exec(compile(ast.Module(body=body, type_ignores=[]), ASSERTION_RUN_PY, "exec"), module.__dict__)
     missing = [n for n in REAL_FROM_ASSERTION_RUN if n not in module.__dict__]
     assert not missing, f"assertion_run.py no longer defines {missing}"
@@ -185,7 +206,8 @@ def _call(site, fn, *args):
     freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
                                                "pending": 0, "changed_since": [],
                                                "last_failed": None}
-    assertion_run = _assertion_run_module(frappe)
+    period_status = _period_status(site, frappe)
+    assertion_run = _assertion_run_module(frappe, period_status)
     names = ["konsol", "konsol.close", "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run"]
     mods = {n: types.ModuleType(n) for n in names}
@@ -198,8 +220,10 @@ def _call(site, fn, *args):
         "konsol.close.timefmt": timefmt,
         "konsol.close.checks_model": model,
         "konsol.close.freshness_api": freshness_api,
+        "konsol.period_status": period_status,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
     })
+    mods["konsol"].period_status = period_status
     mods["konsol.close"].checks_model = model
     mods["konsol.close"].timefmt = timefmt
     mods["konsol.close"].freshness_api = freshness_api
@@ -389,3 +413,46 @@ def test_completed_at_is_sent_with_the_sites_offset():
                  as_of=None, project_path=_manifest({}))
     out, _ = _call(site, "get_checks", 2026, 9)
     assert out["latest"]["completed_at"].endswith("+01:00"), out["latest"]
+
+
+# --- A59: no checks on a Closed or Locked period --------------------------------
+
+def test_run_checks_on_a_closed_or_locked_period_is_refused_and_creates_no_run():
+    for state in ("Closed", "Locked"):
+        site = _Site(roles=("EPM Admin",), period_state=state)
+        msg = _raises(lambda: _call(site, "run_checks", 2026, 6), "ValidationError")
+        assert "FY2026 P06 is %s; reopen it to run the checks" % state in msg, msg
+        assert site.runs == [] and site.enqueued == [] and site.commits == 0, state
+
+
+def test_a_closed_period_is_refused_before_the_in_progress_guard():
+    """The closed period is the reason to name, whatever else is running."""
+    site = _Site(runs=[_run("RUN-1", "Running", _dt(10), period=8)], roles=("EPM Admin",),
+                 period_state="Closed")
+    msg = _raises(lambda: _call(site, "run_checks", 2026, 9), "ValidationError")
+    assert "is Closed; reopen it" in msg, msg
+    assert len(site.runs) == 1 and site.enqueued == []
+
+
+def test_run_checks_on_an_open_period_reads_its_status_and_runs():
+    site = _Site(roles=("EPM Analyst",), period_state="Open")
+    name, _ = _call(site, "run_checks", 2026, 9)
+    assert name == "ZZ-RUN-1"
+    assert (2026, 9) in site.period_reads
+
+
+def test_can_run_is_false_on_a_closed_or_locked_period_even_for_a_runner():
+    for state in ("Closed", "Locked"):
+        for role in RUNNERS:
+            site = _Site(runs=[_run("RUN-1", "Green", _dt(10), _dt(10, 1))], steps={"RUN-1": []},
+                         roles=(role,), project_path=_manifest({}), period_state=state)
+            out, _ = _call(site, "get_checks", 2026, 9)
+            assert out["can_run"] is False, (state, role)
+            assert out["period_status"] == state, out.get("period_status")
+
+
+def test_can_run_on_an_open_period_reports_the_status():
+    site = _Site(roles=("EPM Analyst",), project_path=_manifest({}))
+    out, _ = _call(site, "get_checks", 2026, 9)
+    assert out["can_run"] is True
+    assert out["period_status"] == "Open"

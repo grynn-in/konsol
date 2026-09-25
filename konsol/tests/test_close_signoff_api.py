@@ -521,6 +521,33 @@ def test_closed_period_reports_closed_with_who_and_when():
     assert result["closed_on"] == "2025-09-05T17:30:00+01:00"
 
 
+# --- A59: a Closed or Locked period offers neither Run nor Sign ----------------
+
+def test_a_closed_period_with_a_newer_unsigned_run_offers_no_sign():
+    """A59: a run made on a closed period (before A59 refused it) is the latest
+    and unsigned. The summary must not offer Sign or Run: reopen first."""
+    for state in ("Closed", "Locked"):
+        site = _Site()
+        site.rows[7]["status"] = state  # P08
+        site.records["Assertion Run"].append(
+            _run("RUN-08b", 8, status="Green", signoff="Not Signed Off",
+                 completed=datetime(2025, 9, 20, 9, 0)))
+        result = _get(site, 2025, 8)
+        assert result["checks"]["run"] == "RUN-08b", result["checks"]
+        assert result["period_status"] == state
+        assert result["action"] == "blocked", (state, result["action"])
+        assert result["label"] == (
+            "The period is %s; reopen it to run the checks or sign off" % state), result["label"]
+
+
+def test_a_signed_closed_period_still_reads_signed():
+    site = _Site()
+    site.rows[7]["status"] = "Locked"
+    result = _get(site, 2025, 8)
+    assert result["action"] == "signed"
+    assert result["period_status"] == "Locked"
+
+
 # --- failure paths --------------------------------------------------------------
 
 def test_an_open_earlier_period_blocks_with_its_name():
