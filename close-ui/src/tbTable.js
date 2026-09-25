@@ -20,6 +20,8 @@
 // when there is nothing to show (no previous TB, or the two bases are not
 // comparable), and that renders as the dash "—", never "0.00".
 
+import { formatTime, parseZoned } from "./timefmt.js";
+
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 const DASH = "—";
 
@@ -77,34 +79,15 @@ export const KNOWN_STATUSES = new Set([
 // B27: times on the TB list read like the freshness bar (B09): "10:42" today,
 // "Sep 20, 10:42" otherwise, in the user's zone, which the caller passes in.
 // A zone-less server timestamp is refused (B09b), never read in the browser's
-// zone. The rule is B09's; tbTable.test.mjs holds the two texts equal.
-// (freshness.js does not export its formatter; a shared module is proposed
-// outside this row.)
-const ZONED = /(Z|[+-]\d{2}:?\d{2})$/;
+// zone. B29: the formatter is timefmt.js's, shared with the freshness bar.
 const NOT_RECORDED = "not recorded";
 
-function parseZoned(value) {
-  if (typeof value !== "string" || !ZONED.test(value)) {
-    throw new Error(`Timestamp has no time zone: ${value}`);
-  }
-  return new Date(value);
-}
-
-function dayKey(date, timeZone) {
-  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-}
-
-function formatTime(value, now, timeZone) {
+/** A server timestamp (or none) -> its text on the TB list. */
+function timestampText(value, now, timeZone) {
   if (value === null || value === undefined) {
     return NOT_RECORDED;
   }
-  const date = parseZoned(value);
-  const time = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
-  if (dayKey(date, timeZone) === dayKey(now, timeZone)) {
-    return time;
-  }
-  const day = new Intl.DateTimeFormat("en-US", { timeZone, month: "short", day: "numeric" }).format(date);
-  return `${day}, ${time}`;
+  return formatTime(parseZoned(value), now, timeZone);
 }
 
 /**
@@ -143,7 +126,7 @@ export function entityRows(myTbs, now, timeZone) {
         }
       : null;
     const exception = entity.exception
-      ? { ...entity.exception, declaredOnText: formatTime(entity.exception.declared_on, now, timeZone) }
+      ? { ...entity.exception, declaredOnText: timestampText(entity.exception.declared_on, now, timeZone) }
       : null;
     return {
       entity: entity.entity,
@@ -151,7 +134,7 @@ export function entityRows(myTbs, now, timeZone) {
       status: entity.status,
       tb,
       tbText: tb ? tb.name : DASH,
-      uploaded: tb ? formatTime(tb.creation, now, timeZone) : DASH,
+      uploaded: tb ? timestampText(tb.creation, now, timeZone) : DASH,
       exception,
     };
   });

@@ -35,6 +35,7 @@ import LoadState from "./LoadState.vue";
 import { get } from "../api.js";
 import { navFor } from "../nav.js";
 import { freshnessView } from "../freshness.js";
+import { userTimeZone } from "../timefmt.js";
 import { format, parse } from "../route.js";
 import { landingPath, landingState } from "../router.js";
 import { messageLines } from "../signoff.js";
@@ -54,17 +55,6 @@ const PERSONA_LABELS = {
 const route = useRoute();
 const router = useRouter();
 
-/** The user's IANA zone: Frappe's boot, else the browser's; null if neither says. */
-function userTimeZone() {
-	const boot = typeof window !== "undefined" && window.frappe && window.frappe.boot;
-	const fromBoot = boot && boot.time_zone && boot.time_zone.user;
-	if (fromBoot) return fromBoot;
-	try {
-		return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
-	} catch {
-		return null;
-	}
-}
 const timeZone = userTimeZone();
 
 function periodName(key) {
