@@ -52,6 +52,14 @@ const snap = shallowRef(null);
 const ackText = ref("");
 const overrideText = ref("");
 let actor = null;
+// B28: which long sections the user expanded with Show all; a new period starts collapsed.
+// B30: declared before the immediate period watcher below, which resets it on
+// setup; declared after it, setup threw "Cannot access before initialization".
+const expanded = ref({});
+function toggleSection(key) {
+	expanded.value = { ...expanded.value, [key]: !expanded.value[key] };
+}
+const visibleRows = (s) => (expanded.value[s.key] ? s.rows : s.shown);
 
 function machineFor(p) {
 	const key = { fiscal_year: p.year, fiscal_period: p.period };
@@ -167,12 +175,6 @@ const sections = computed(() =>
 	view.value ? SECTION_TITLES.map(([key, title]) => ({ key, title, ...view.value[key] })) : [],
 );
 
-// B28: which long sections the user expanded with Show all; a new period starts collapsed.
-const expanded = ref({});
-function toggleSection(key) {
-	expanded.value = { ...expanded.value, [key]: !expanded.value[key] };
-}
-const visibleRows = (s) => (expanded.value[s.key] ? s.rows : s.shown);
 
 const unknownOr = (value) => (value === null || value === undefined || value === "" ? "unknown" : value);
 </script>
