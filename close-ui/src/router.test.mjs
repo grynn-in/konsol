@@ -42,7 +42,7 @@ test("failure path: an undeclared first close names the reason, never a guessed 
   const context = {
     landing: { period: null, rule: "first_close_undeclared", reason: "first_close_undeclared" },
   };
-  assert.equal(landingPath(context), "/close/none/first_close_undeclared/my-work");
+  assert.equal(landingPath(context), null); // B16b: stay on /close; the shell shows the reason
 });
 
 test("failure path: a Viewer who has signed nothing names the reason (long text, URL-escaped)", () => {
