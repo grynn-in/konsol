@@ -175,7 +175,11 @@ def get_dimension(name):
 
 
 def upsert_dimension(spec, publish=False):
-    """Create or update a Dimension doc. Saves as Draft unless publish=True."""
+    """Create or update a Dimension doc. Saves as Draft unless publish=True.
+
+    A spec whose ``status`` is Published applies the schema without
+    publish=True: the Dimension's save does it (konsol#295).
+    """
     spec = dict(spec or {})
     name = spec.get("dimension_name")
     if not name:
@@ -201,11 +205,14 @@ def upsert_dimension(spec, publish=False):
         if "status" in spec and not publish:
             doc.status = spec["status"]
 
-    doc.save()
-    frappe.db.commit()
-
+    # One save either way, and the save applies the schema when the dimension
+    # ends up Published or leaves it (konsol#295). publish() saves too (and
+    # inserts a new doc), so saving first and then publishing applied twice.
     if publish:
         doc.publish()
+    else:
+        doc.save()
+    frappe.db.commit()
 
     doc.reload()
 
