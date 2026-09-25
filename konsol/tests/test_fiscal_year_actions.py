@@ -154,7 +154,8 @@ def _load():
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.utils", "konsol",
-        "konsol.fiscal_calendar", "konsol.group_rates")}
+        "konsol.fiscal_calendar", "konsol.group_rates", "konsol.close",
+        "konsol.close.signoff_gate")}
     calendar = mods["konsol.fiscal_calendar"]
     calendar.used = set()
     calendar.periods_in_use = lambda fiscal_year, lock=False: set(calendar.used)
@@ -175,6 +176,23 @@ def _load():
 
     rates.assert_rates_complete = assert_rates_complete
     mods["konsol"].group_rates = rates
+
+    # konsol#305 A23: the sign-off gate, recorded. `fail_for` maps a period
+    # number to its refusal; the real rule is tested in test_close_signoff_gate.py.
+    gate = mods["konsol.close.signoff_gate"]
+    gate.calls = []
+    gate.fail_for = {}
+
+    def assert_period_closable(fiscal_year, fiscal_period, period_type):
+        gate.calls.append((fiscal_year, fiscal_period, period_type))
+        frappe.events.append(("signoff", fiscal_year, fiscal_period))
+        if fiscal_period in gate.fail_for:
+            raise Thrown(gate.fail_for[fiscal_period])
+
+    gate.assert_period_closable = assert_period_closable
+    mods["konsol.close"].signoff_gate = gate
+    mods["konsol.close"].__path__ = []
+    mods["konsol"].close = mods["konsol.close"]
 
     frappe = mods["frappe"]
     #: The order of lock queries, reloads and rate checks, as (kind, ...).
@@ -692,6 +710,118 @@ def test_actions_are_whitelisted_post():
 # -- Close / Lock / Reopen Year -----------------------------------------------------
 
 ALL_PERIODS = list(range(0, 14))    # OPN, P01..P12, CLS
+
+
+def _gate():
+    return sys.modules["konsol.close.signoff_gate"]
+
+
+# -- konsol#305 A23: closing needs a sign-off ------------------------------------
+
+UNSIGNED = "Close 2025-5 is not signed off (run RUN-5, status Red). Failing: assert_x."
+
+
+def test_closing_an_unsigned_regular_period_is_refused_and_nothing_saved():
+    with _load() as module:
+        _gate().fail_for = {5: UNSIGNED}
+        doc = _valid_year(module)
+        for call in (lambda: doc.close_period(5), lambda: doc.lock_period(5)):
+            result, err = _act(call)
+            assert err is not None and "not signed off" in err, err
+            assert _row(doc, 5).status == "Open"
+            assert _row(doc, 5).closed_by is None and _row(doc, 5).closed_on is None
+            assert doc.saves == 0
+        assert _gate().calls == [(2025, 5, "Regular"), (2025, 5, "Regular")], _gate().calls
+
+
+def test_closing_passes_the_rows_period_type_to_the_gate():
+    # The gate decides history and non-Regular exemptions; the controller
+    # hands it the row's declared type (OPN is Opening, CLS is Closing).
+    with _load() as module:
+        doc = _valid_year(module)
+        for p in (0, 3, 13):
+            result, err = _act(lambda: doc.close_period(p))
+            assert err is None, err
+        assert _gate().calls == [(2025, 0, "Opening"), (2025, 3, "Regular"),
+                                 (2025, 13, "Closing")], _gate().calls
+        assert _row(doc, 3).status == "Closed"
+
+
+def test_rate_gate_runs_before_signoff_gate():
+    with _load() as module:
+        events = sys.modules["frappe"].events
+        doc = _valid_year(module)
+        events.clear()
+        result, err = _act(lambda: doc.close_period(3))
+        assert err is None, err
+        assert _first(events, "rates") < _first(events, "signoff"), events
+
+        # A failing rate gate refuses before the sign-off gate runs.
+        _rates().fail = "no approved group exchange rate for EUR → USD Closing"
+        doc = _valid_year(module)
+        _gate().calls.clear()
+        result, err = _act(lambda: doc.close_period(4))
+        assert err is not None and "group exchange rate" in err, err
+        assert _gate().calls == [], _gate().calls
+
+
+def test_reopening_and_closed_to_locked_are_not_signoff_gated():
+    with _load() as module:
+        _gate().fail_for = {3: UNSIGNED, 4: UNSIGNED}
+        doc = _valid_year(module, row_status={3: "Closed", 4: "Closed"})
+        result, err = _act(lambda: doc.reopen_period(3, "Late invoice"))
+        assert err is None, err
+        result, err = _act(lambda: doc.lock_period(4))
+        assert err is None, err
+        assert _gate().calls == [], _gate().calls
+
+
+def test_close_year_with_one_unsigned_period_refuses_and_names_it():
+    with _load() as module:
+        _gate().fail_for = {5: UNSIGNED}
+        doc = _valid_year(module, closing_note="FY opened.")
+        before = _snapshot(doc)
+        result, err = _act(lambda: doc.close_year(note="Year-end close"))
+        assert err is not None, "the year closed with an unsigned period"
+        assert "P05" in err and "not signed off" in err and "nothing was changed" in err, err
+        # Every row leaving Open went through the gate with its type.
+        fpm = sys.modules["konsol.fiscal_patterns_model"]
+        types_by_period = {r["period"]: r["type"] for r in fpm.generate_periods(
+            "Monthly (12)", date(2025, 1, 1), date(2025, 12, 31))}
+        assert _gate().calls == [(2025, p, types_by_period[p]) for p in ALL_PERIODS], \
+            _gate().calls
+        assert doc.saves == 0
+        assert _snapshot(doc) == before, "rows changed although the close was refused"
+        assert doc.status == "Open" and doc.closed_by is None
+        assert doc.closing_note == "FY opened.", doc.closing_note
+
+        # Lock Year from Open is gated the same way.
+        doc = _valid_year(module)
+        result, err = _act(lambda: doc.lock_year())
+        assert err is not None and "P05" in err, err
+        assert doc.saves == 0
+
+
+def test_close_year_names_rate_and_signoff_failures_together():
+    with _load() as module:
+        _rates().fail_for = {9: "group EU has no reporting currency"}
+        _gate().fail_for = {5: UNSIGNED}
+        doc = _valid_year(module)
+        result, err = _act(lambda: doc.close_year())
+        assert err is not None
+        for needle in ("P05", "P09", "no reporting currency", "not signed off"):
+            assert needle in err, (needle, err)
+        assert doc.saves == 0
+        events = sys.modules["frappe"].events
+        assert _first(events, "rates", "5)") < _first(events, "signoff", "5)"), events
+
+
+def test_close_year_skips_the_gate_for_rows_already_closed():
+    with _load() as module:
+        doc = _valid_year(module, row_status={3: "Closed", 4: "Locked"})
+        result, err = _act(lambda: doc.close_year())
+        assert err is None, err
+        assert [c[1] for c in _gate().calls] == [p for p in ALL_PERIODS if p not in (3, 4)]
 
 
 def _snapshot(doc):

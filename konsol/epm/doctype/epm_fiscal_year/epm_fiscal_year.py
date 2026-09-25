@@ -133,6 +133,22 @@ def _rate_failure(fiscal_year, fiscal_period):
     return None
 
 
+def _signoff_failure(fiscal_year, fiscal_period, period_type):
+    """The sign-off gate's refusal for one period, or None if it passes
+    (konsol#305 A23). As _rate_failure, the refusal's logged message is taken
+    back off the log."""
+    from konsol.close import signoff_gate
+    log = getattr(getattr(frappe, "local", None), "message_log", None)
+    logged = len(log) if log is not None else 0
+    try:
+        signoff_gate.assert_period_closable(fiscal_year, fiscal_period, period_type)
+    except frappe.ValidationError as e:
+        if log is not None:
+            del log[logged:]
+        return str(e)
+    return None
+
+
 class EPMFiscalYear(Document):
     #: konsol#189: every period row, with its effective status, is published
     #: here (fiscal_calendar.fiscal_period_rows). The rows are computed — a
@@ -372,6 +388,11 @@ class EPMFiscalYear(Document):
         elif current == fstm.OPEN:
             from konsol import group_rates
             group_rates.assert_rates_complete(self.fiscal_year, row.fiscal_period)
+            # konsol#305 A23: a Regular period from the first close on needs a
+            # signed run; history and non-Regular periods are exempt (P5).
+            from konsol.close import signoff_gate
+            signoff_gate.assert_period_closable(
+                self.fiscal_year, row.fiscal_period, row.period_type)
 
         now = frappe.utils.now_datetime()
         _stamp(row, new, now)
@@ -382,7 +403,8 @@ class EPMFiscalYear(Document):
 
     @frappe.whitelist(methods=["POST"])
     def close_year(self, note=None):
-        """Close the year and every Open row; all or nothing on group rates."""
+        """Close the year and every Open row; all or nothing on group rates
+        and sign-off (konsol#305 A23)."""
         return self._set_year_status(fstm.CLOSED, "closed", note)
 
     @frappe.whitelist(methods=["POST"])
@@ -422,16 +444,24 @@ class EPMFiscalYear(Document):
         else:
             moving = [r for r in (self.periods or [])
                       if fstm.effective_status(new, _status(r.status)) != _status(r.status)]
-            failures = []
+            failures, unsigned = [], []
             for r in moving:
                 if _status(r.status) == fstm.OPEN:
                     failure = _rate_failure(self.fiscal_year, r.fiscal_period)
                     if failure:
                         failures.append(f"{r.period_code}: {failure}")
-            if failures:
+                    failure = _signoff_failure(self.fiscal_year, r.fiscal_period, r.period_type)
+                    if failure:
+                        unsigned.append(f"{r.period_code}: {failure}")
+            if failures or unsigned:
+                reasons = []
+                if failures:
+                    reasons.append(f"{len(failures)} of its periods fail the group-rate check")
+                if unsigned:
+                    reasons.append(f"{len(unsigned)} of its periods are not signed off")
                 frappe.throw(
-                    f"{label} can't be {verb}: {len(failures)} of its periods fail the "
-                    "group-rate check; nothing was changed.\n" + "\n".join(failures))
+                    f"{label} can't be {verb}: {' and '.join(reasons)}; nothing was changed.\n"
+                    + "\n".join(failures + unsigned))
 
         now = frappe.utils.now_datetime()
         for r in moving:
