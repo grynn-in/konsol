@@ -31,7 +31,30 @@ def _assert_year_declared(fiscal_year):
         )
 
 
+#: Result and sign-off fields a new run must never carry in (konsol#305 A02b).
+#: With R3 the Analyst may create a run; measured live 25 Sep 2026, a run
+#: inserted with status "Green" and signoff_status "Signed Off" saved as sent,
+#: because read_only only guards the form. A test keeps this list equal to the
+#: doctype's read_only fields, less title, status, signoff_status, triggered_by.
+NEW_RUN_BLANK_FIELDS = (
+    "total", "passed", "failed", "errored", "warned",
+    "signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
+    "warnings_at_signoff", "started_at", "completed_at", "duration_seconds", "log",
+)
+
+
 class AssertionRun(Document):
+    def before_insert(self):
+        """A new run starts Queued, unsigned, with no results, triggered by
+        the caller, whatever the insert request carried (A02b). Only the
+        worker and sign_off_close fill these in, on later saves."""
+        for field in NEW_RUN_BLANK_FIELDS:
+            self.set(field, None)
+        self.status = "Queued"
+        self.signoff_status = "Not Signed Off"
+        self.set("results", [])
+        self.triggered_by = frappe.session.user
+
     def validate(self):
         """The year, and the period when one is given, must be declared: an
         undeclared one is refused before the run starts (konsol#189). Unlike
