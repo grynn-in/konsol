@@ -40,7 +40,7 @@ test("pending: blue, '<n> changes pending'", () => {
 test("stale: amber, names what changed since the last build", () => {
   const payload = {
     state: "stale",
-    as_of: "2026-09-24T09:00:00Z", // 10:00 Europe/London
+    as_of: "2026-09-25T09:00:00Z", // 10:00 Europe/London, same day as `now`
     pending: 0,
     changed_since: ["Trial Balance Submission"],
     last_failed: null,
@@ -52,6 +52,18 @@ test("stale: amber, names what changed since the last build", () => {
     "Numbers older than changes to Trial Balance Submission",
   );
   assert.equal(view.detail, "As of 10:00");
+});
+
+test("stale: a time on an earlier calendar day (in the given zone) carries its date", () => {
+  const payload = {
+    state: "stale",
+    as_of: "2026-09-24T09:00:00Z", // 10:00 Europe/London, the day before `now`
+    pending: 0,
+    changed_since: ["Trial Balance Submission"],
+    last_failed: null,
+  };
+  const view = freshnessView(payload, NOW, TZ);
+  assert.equal(view.detail, "As of Sep 24, 10:00");
 });
 
 test("stale: several changed doctypes are listed together", () => {
