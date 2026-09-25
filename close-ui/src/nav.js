@@ -59,7 +59,7 @@ export function navFor(persona, roles, counts) {
 		return {
 			screen,
 			label: LABELS[screen],
-			count: entry ? entry.count : 0,
+			count: entry ? entry.count : null,
 			blocking: entry ? Boolean(entry.blocking) : false,
 		};
 	});
