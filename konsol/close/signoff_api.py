@@ -14,7 +14,8 @@ A21 ``signoff_model.summary``:
   ``uploaded_on_behalf`` "Yes"/"No"/blank (A18) mapped to 1/0/None (blank is
   unknown: uploaded before it was recorded, Problems 16). Any other value is
   refused, not guessed;
-- exceptions: the period's submitted TB Exceptions (A08);
+- exceptions: the period's submitted TB Exceptions (A08), each with
+  ``declared_on`` (its creation, zoned: A55);
 - covers notes: ``signoff_model.covers_notes`` over the fiscal year's
   submitted TBs and exceptions up to the period, WITH ``frequencies`` so a
   quarterly entity's quarter-end TB carries its quarter (A41);
@@ -233,7 +234,8 @@ def get_signoff(fiscal_year, fiscal_period):
 
     tbs = visible(_year_records("Trial Balance Submission", key,
                                 ["name", "owner", "uploaded_on_behalf"]))
-    exceptions = visible(_year_records("TB Exception", key, ["reason", "declared_by"]))
+    exceptions = visible(_year_records("TB Exception", key,
+                                       ["reason", "declared_by", "creation"]))
     in_period = lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])) == key  # noqa: E731
 
     run = _run(key)
@@ -253,6 +255,11 @@ def get_signoff(fiscal_year, fiscal_period):
         _scoped(problems, allowed, key),
         can_override,
     )
+    # A55: when each exception was declared, with the site's offset. The A08
+    # controller allows one submitted exception per entity-period.
+    declared_on = {r["data_area_id"]: _iso(r.get("creation")) for r in exceptions if in_period(r)}
+    for e in result["exceptions"]:
+        e["declared_on"] = declared_on.get(e["entity"])
     closed = _closed(key)
     result.update({
         "can_sign": bool(frappe.has_permission("Assertion Run", "write")),
