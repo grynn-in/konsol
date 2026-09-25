@@ -525,3 +525,97 @@ def test_child_rows_as_documents_are_compared():
     changed = _steps()
     changed[1]["status"] = "Pass"
     assert _refused(_doc(module, results=[Row(r) for r in changed]).validate) is not None
+
+
+# --- A51: a finished run cannot be deleted -----------------------------------
+# Found by A50: System Manager has delete on Assertion Run. Deleting a newer
+# unsigned run makes an older signed run the one latest_close_run returns, so
+# the period reads as signed. frappe.client.delete -> frappe.delete_doc ->
+# on_trash, and on_trash runs with force=True too. Test cleanup on live uses
+# frappe.db.delete on ZZ rows, never the API.
+
+TERMINAL = ("Green", "Amber", "Red", "Error")
+SIGNED = ("Signed Off", "Acknowledged", "Overridden", "Re-sign Needed")
+
+
+def _trash(module, **changes):
+    fields = _saved()
+    fields.update(changes)
+    doc = module.AssertionRun(_is_new=False, _before_save=None, **fields)
+    return _refused(doc.on_trash)
+
+
+def test_a_terminal_run_cannot_be_deleted():
+    module, _ = _load()
+    for status in TERMINAL:
+        msg = _trash(module, status=status, signoff_status="Not Signed Off")
+        assert msg is not None, "a %s run was deleted" % status
+        assert "AR-1" in msg and status in msg and "cannot be deleted" in msg, msg
+
+
+def test_a_signed_run_cannot_be_deleted():
+    """Signed, or signed and then invalidated (Re-sign Needed, A27): both are
+    the record of a close. Refused whatever the status field says."""
+    module, _ = _load()
+    for signoff in SIGNED:
+        for status in ("Green", "Queued"):
+            msg = _trash(module, status=status, signoff_status=signoff,
+                         results=[] if status == "Queued" else _steps())
+            assert msg is not None, "a %s run (%s) was deleted" % (signoff, status)
+            assert "AR-1" in msg and signoff in msg and "cannot be deleted" in msg, msg
+
+
+def test_a_started_run_cannot_be_deleted():
+    """Running, or Queued with results already written: it has started."""
+    module, _ = _load()
+    msg = _trash(module, status="Running", results=[], signoff_status="Not Signed Off")
+    assert msg is not None and "AR-1" in msg and "Running" in msg, msg
+    msg = _trash(module, status="Queued", signoff_status="Not Signed Off")
+    assert msg is not None and "AR-1" in msg and "results" in msg, msg
+
+
+def test_a_run_that_never_started_can_be_deleted():
+    """Failure path: a Queued run with no results and no sign-off may go."""
+    module, _ = _load()
+    for results in ([], None):
+        for signoff in ("Not Signed Off", None, ""):
+            assert _trash(module, status="Queued", results=results,
+                          signoff_status=signoff) is None, (results, signoff)
+
+
+# --- A51: two A50 refusal messages corrected ---------------------------------
+
+def test_a_results_refusal_names_only_the_worker():
+    module, _ = _load()
+    rows = _edited_steps()["status"]
+    assert _refused(_doc(module, results=rows).validate) == (
+        "Assertion Run AR-1: results can only be changed by running the checks. "
+        "Nothing was saved.")
+    assert _refused(_doc(module, status="Green").validate) == (
+        "Assertion Run AR-1: status can only be changed by running the checks. "
+        "Nothing was saved.")
+
+
+def test_a_signoff_refusal_names_only_sign_off():
+    module, _ = _load()
+    assert _refused(_doc(module, signoff_status="Signed Off").validate) == (
+        "Assertion Run AR-1: signoff_status can only be changed by Sign off "
+        "(sign_off_close). Nothing was saved.")
+
+
+def test_a_mixed_refusal_names_each_writer():
+    module, _ = _load()
+    assert _refused(_doc(module, signoff_status="Signed Off", status="Green").validate) == (
+        "Assertion Run AR-1: signoff_status can only be changed by Sign off "
+        "(sign_off_close); status can only be changed by running the checks. "
+        "Nothing was saved.")
+
+
+def test_the_scope_refusal_agrees_in_number():
+    module, _ = _load()
+    tail = (" when the run starts and cannot be changed. "
+            "Run the checks for the other period instead. Nothing was saved.")
+    assert _refused(_doc(module, fiscal_year=2098, fiscal_period=2).validate) == (
+        "Assertion Run AR-1: fiscal_year, fiscal_period are fixed" + tail)
+    assert _refused(_doc(module, fiscal_period=2).validate) == (
+        "Assertion Run AR-1: fiscal_period is fixed" + tail)
