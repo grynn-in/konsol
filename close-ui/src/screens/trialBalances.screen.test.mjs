@@ -137,3 +137,27 @@ test("(B18b) failure path: an unknown ?entity= is ignored with a note, never gue
   assert.doesNotMatch(source, /rows\[0\]|rows\.find\([^)]*\)\s*\|\|\s*rows\[/,
     "an unknown ?entity= is never replaced by a guessed row");
 });
+
+// --- B27: no literal "None"; times formatted in the user's zone -----------
+
+test("(B27) the template never shows the literal 'None'", () => {
+  const tpl = template(read());
+  assert.doesNotMatch(tpl, />\s*None\s*</, "a missing TB shows the dash from tbTable, not 'None'");
+});
+
+test("(B27) the TB and uploaded cells use tbTable's tbText / uploaded, not raw creation", () => {
+  const source = read();
+  const tpl = template(source);
+  assert.match(tpl, /row\.tbText/);
+  assert.match(tpl, /row\.uploaded/);
+  assert.match(tpl, /selected\.uploaded/);
+  assert.doesNotMatch(tpl, /tb\.creation/, "the raw server timestamp is never shown");
+});
+
+test("(B27) entityRows gets the user's zone and now; a missing zone is shown, not guessed", () => {
+  const source = read();
+  const s = script(source);
+  assert.match(s, /entityRows\([^)]*,\s*[^)]*,\s*timeZone\s*\)/);
+  assert.match(s, /time_zone/, "Frappe's boot time_zone.user is read, as AppShell does");
+  assert.match(s, /if\s*\(!timeZone\)/, "no zone is an explicit error, never a default");
+});

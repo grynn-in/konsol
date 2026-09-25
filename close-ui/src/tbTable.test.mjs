@@ -2,6 +2,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { checkRows, entityRows, compareRows } from "./tbTable.js";
+import { freshnessView } from "./freshness.js";
+
+// B27: entityRows needs the user's zone and `now`, like freshnessView (B09).
+const NOW = new Date("2026-09-25T12:00:00Z");
+const TZ = "Europe/London";
 
 // Convention used throughout this file and tbTable.js: an amount is debit
 // minus credit. A negative amount (a credit balance, or a check-row credit
@@ -68,7 +73,7 @@ test("entityRows: the on-behalf label is kept verbatim", () => {
       },
     ],
   };
-  const view = entityRows(myTbs);
+  const view = entityRows(myTbs, NOW, TZ);
   assert.equal(view[0].tb.on_behalf_label, "by admin@example.com for ZZE");
 });
 
@@ -78,7 +83,7 @@ test("entityRows: a TB-less entity keeps tb as null, never an empty object", () 
     can_upload: true,
     entities: [{ entity: "ZZM", name: "ZZ Missing", status: "Missing", tb: null, exception: null }],
   };
-  const view = entityRows(myTbs);
+  const view = entityRows(myTbs, NOW, TZ);
   assert.equal(view[0].tb, null);
   assert.equal(view[0].status, "Missing");
 });
@@ -89,7 +94,7 @@ test("entityRows: failure path — an unknown status throws, never renders blank
     can_upload: true,
     entities: [{ entity: "ZZX", name: "ZZ X", status: "Somehow Pending", tb: null, exception: null }],
   };
-  assert.throws(() => entityRows(myTbs), /unknown.*status/i);
+  assert.throws(() => entityRows(myTbs, NOW, TZ), /unknown.*status/i);
 });
 
 test("compareRows: a change of None renders as —, and basis_note passes through", () => {
@@ -157,4 +162,74 @@ test("B12b: the known statuses are exactly the ones tb_read_api.py (A25) sends",
       "Frequency not declared", "Quarter not declared"].includes(v) || /declared|Missing|Received|expected/.test(v)));
   const { KNOWN_STATUSES } = await import("./tbTable.js");
   assert.deepEqual([...KNOWN_STATUSES].sort(), [...server].sort());
+});
+
+// --- B27: no literal "None", and times in the user's zone ------------------
+
+function oneEntity(overrides) {
+  return {
+    period_open: true,
+    can_upload: true,
+    entities: [{ entity: "ZZE", name: "ZZ Entity", status: "Received", tb: null, exception: null, ...overrides }],
+  };
+}
+
+test("(B27) a null tb renders the dash for the trial balance and the uploaded time, never 'None'", () => {
+  const [row] = entityRows(oneEntity({ status: "Missing" }), NOW, TZ);
+  assert.equal(row.tb, null);
+  assert.equal(row.tbText, "—");
+  assert.equal(row.uploaded, "—");
+  assert.notEqual(row.tbText, "None");
+});
+
+test("(B27) a TB's name is its tbText", () => {
+  const [row] = entityRows(oneEntity({ tb: { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "by a@example.com", creation: "2026-09-25T09:30:00+00:00" } }), NOW, TZ);
+  assert.equal(row.tbText, "TBSUB-0001");
+});
+
+test("(B27) a zoned upload time renders in the user's zone: today as HH:MM", () => {
+  // 09:30 UTC is 10:30 in London (BST) and 15:00 in Kolkata.
+  const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "by a@example.com", creation: "2026-09-25T09:30:00+00:00" };
+  assert.equal(entityRows(oneEntity({ tb }), NOW, "Europe/London")[0].uploaded, "10:30");
+  assert.equal(entityRows(oneEntity({ tb }), NOW, "Asia/Kolkata")[0].uploaded, "15:00");
+});
+
+test("(B27) an earlier day renders as 'Sep 20, 10:42', the same text as the freshness bar", () => {
+  const creation = "2026-09-20T09:42:00Z";
+  const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation };
+  const [row] = entityRows(oneEntity({ tb }), NOW, TZ);
+  assert.equal(row.uploaded, "Sep 20, 10:42");
+  const bar = freshnessView({ state: "fresh", as_of: creation }, NOW, TZ).text;
+  assert.equal(`As of ${row.uploaded}`, bar, "one formatting rule with B09");
+});
+
+test("(B27) an exception's declared_on (A55) is formatted in the user's zone", () => {
+  const exception = { name: "TBX-1", reason: "dormant", declared_by: "a@example.com", declared_on: "2026-09-25T09:30:00+00:00" };
+  const [row] = entityRows(oneEntity({ status: "Exception declared", exception }), NOW, TZ);
+  assert.equal(row.exception.declaredOnText, "10:30");
+  assert.equal(row.exception.reason, "dormant");
+  assert.equal(row.uploaded, "—");
+});
+
+test("(B27) failure path: a zone-less upload time throws (B09b), never read in the browser's zone", () => {
+  const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation: "2026-09-25T20:22:31.605721" };
+  assert.throws(() => entityRows(oneEntity({ tb }), NOW, TZ), /no time zone/i);
+});
+
+test("(B27) failure path: a zone-less declared_on throws", () => {
+  const exception = { name: "TBX-1", reason: "dormant", declared_by: "a", declared_on: "2026-09-25 20:22:31" };
+  assert.throws(() => entityRows(oneEntity({ status: "Exception declared", exception }), NOW, TZ), /no time zone/i);
+});
+
+test("(B27) failure path: no time zone or no valid now is refused, never defaulted", () => {
+  const myTbs = oneEntity({ status: "Missing" });
+  assert.throws(() => entityRows(myTbs, NOW), /time zone/i);
+  assert.throws(() => entityRows(myTbs, NOW, ""), /time zone/i);
+  assert.throws(() => entityRows(myTbs, undefined, TZ), /now/i);
+  assert.throws(() => entityRows(myTbs, new Date("x"), TZ), /now/i);
+});
+
+test("(B27) a TB the server sent with no creation reads 'not recorded', never a guessed time", () => {
+  const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation: null };
+  assert.equal(entityRows(oneEntity({ tb }), NOW, TZ)[0].uploaded, "not recorded");
 });
