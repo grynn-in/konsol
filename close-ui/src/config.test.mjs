@@ -34,11 +34,25 @@ test("vite.config.js builds into konsol/public/close", () => {
   );
 });
 
-test("vite.config.js fixes the entry, chunk and asset file names to close.*", () => {
+test("vite.config.js fixes the entry and chunk file names to close.*", () => {
   const source = read(VITE_CONFIG);
   assert.match(source, /entryFileNames:\s*["']close\.js["']/);
   assert.match(source, /chunkFileNames:\s*["']close\.\[name\]\.js["']/);
-  assert.match(source, /assetFileNames:\s*["']close\.\[ext\]["']/);
+});
+
+// konsol#305 B25: a flat "close.[ext]" pattern collided across ~15 fonts and
+// 2 stylesheets, and Rollup's disambiguation counter assigned the numeric
+// suffixes in build-order, not content order — proven non-reproducible
+// across three straight builds of the same source. assetFileNames became a
+// function: a fixed "close.css" for the one entry stylesheet www/close.html
+// (B04) hardcodes a URL to, and a content hash for everything else, so the
+// same source always produces the same file names.
+test("vite.config.js keeps a fixed name only for the entry stylesheet, and content-hashes every other asset", () => {
+  const source = read(VITE_CONFIG);
+  assert.match(source, /assetFileNames:\s*\(assetInfo\)\s*=>/);
+  assert.match(source, /original\s*===\s*["']index\.css["']/);
+  assert.match(source, /return\s*["']close\.css["']/);
+  assert.match(source, /return\s*["']close\.\[name\]\.\[hash\]\[extname\]["']/);
 });
 
 test("vite.config.js keeps the frappeui plugin off proxy/boot/build-config, and the vue plugin", () => {

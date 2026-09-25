@@ -80,7 +80,28 @@ export default defineConfig({
 			output: {
 				entryFileNames: "close.js",
 				chunkFileNames: "close.[name].js",
-				assetFileNames: "close.[ext]",
+				// "close.[ext]" (a fixed name per extension) collided: ~15 font
+				// files and 2 stylesheets all target "close.woff"/"close.woff2"/
+				// "close.css", and Rollup's disambiguation counter assigns the
+				// numeric suffixes in whatever order it happens to finish
+				// processing each asset — NOT the same order on every build of
+				// the same source (confirmed: three straight `vite build` runs
+				// with no source change each shuffled which font's bytes ended
+				// up as close2.woff vs close9.woff). That breaks "the committed
+				// bundle is reproducible from the committed source" outright.
+				// Content-hashed names fix it: identical content always yields
+				// the identical name, independent of build order. The one
+				// exception is the entry stylesheet (Rollup names it from the
+				// HTML entry, "index.css") — www/close.html (B04) hardcodes
+				// "/assets/konsol/close/close.css", so it alone keeps a fixed
+				// name; every other asset (fonts, route-split stylesheets) is
+				// referenced only from generated code, which Vite rewrites to
+				// match automatically.
+				assetFileNames: (assetInfo) => {
+					const original = assetInfo.names?.[0] ?? assetInfo.name ?? "asset";
+					if (original === "index.css") return "close.css";
+					return "close.[name].[hash][extname]";
+				},
 			},
 		},
 	},
