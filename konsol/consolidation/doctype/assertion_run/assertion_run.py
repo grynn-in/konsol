@@ -182,10 +182,11 @@ class AssertionRun(Document):
         moved = [f for f in SCOPE_FIELDS
                  if _norm_scope(before.get(f)) != _norm_scope(self.get(f))]
         if moved:
+            verb = "are" if len(moved) > 1 else "is"
             frappe.throw(frappe._(
-                "Assertion Run {0}: {1} is fixed when the run starts and cannot be changed. "
+                "Assertion Run {0}: {1} {2} fixed when the run starts and cannot be changed. "
                 "Run the checks for the other period instead. Nothing was saved.").format(
-                    self.name, ", ".join(moved)))
+                    self.name, ", ".join(moved), verb))
 
     def _refuse_unflagged_changes(self):
         """Refuse a change to a sign-off or result field made by anyone but
@@ -212,10 +213,47 @@ class AssertionRun(Document):
         if active and active[1] == self.name and active[0] == WORKER_WRITER:
             allowed = allowed + ("results",)
         refused = [f for f in changed if f not in allowed]
-        if refused:
-            frappe.throw(frappe._(
-                "Assertion Run {0}: {1} can only be changed by running the checks or by Sign off "
-                "(sign_off_close). Nothing was saved.").format(self.name, ", ".join(refused)))
+        if not refused:
+            return
+        # Each refused field names its own writer (A51): a results or status
+        # change is never fixed by signing off.
+        signoff = [f for f in refused if f in SIGNOFF_FIELDS]
+        result = [f for f in refused if f not in SIGNOFF_FIELDS]
+        parts = []
+        if signoff:
+            parts.append(frappe._("{0} can only be changed by Sign off (sign_off_close)").format(
+                ", ".join(signoff)))
+        if result:
+            parts.append(frappe._("{0} can only be changed by running the checks").format(
+                ", ".join(result)))
+        frappe.throw(frappe._("Assertion Run {0}: {1}. Nothing was saved.").format(
+            self.name, "; ".join(str(p) for p in parts)))
+
+    def on_trash(self):
+        """Only a run that never started may be deleted (A51).
+
+        A finished run (Green/Amber/Red/Error), a Running one, and any signed
+        one (including Re-sign Needed) is the record of the checks and the
+        close. Found by A50: deleting a newer unsigned run made an older signed
+        run the one latest_close_run returns, so the period read as signed.
+        frappe.delete_doc calls on_trash even with force=True, so this holds
+        for every delete path through the API. A Queued run with no results
+        and no sign-off may still be removed."""
+        signoff = self.signoff_status or "Not Signed Off"
+        if signoff != "Not Signed Off":
+            message = frappe._("Assertion Run {0} cannot be deleted: it is {1}, and a signed run "
+                               "is the record of the close. Nothing was deleted.").format(
+                                   self.name, signoff)
+        elif self.status != "Queued":
+            message = frappe._("Assertion Run {0} cannot be deleted: it is {1}, and a started or "
+                               "finished run is the record of the checks. Nothing was deleted.").format(
+                                   self.name, self.status)
+        elif self.get("results"):
+            message = frappe._("Assertion Run {0} cannot be deleted: it already has results, so it "
+                               "has started. Nothing was deleted.").format(self.name)
+        else:
+            return
+        frappe.throw(message)
 
 
 # --- dimension classification (filename/keyword -> bucket) ---------------
