@@ -17,6 +17,10 @@
  * While the latest run is running, get_checks is polled every 5 s; the timer
  * stops when the run finishes or the screen goes. The period comes from the
  * URL (route.js, D5); nothing is stored in the browser.
+ *
+ * konsol#305 B13b: each cause shows checksView's `label` ("Failed", "Error"
+ * or "Warning") as text next to its title, never colour alone, and each
+ * domain heading shows its fail count and warn count apart.
  */
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -203,12 +207,27 @@ const bannerTone = computed(() => {
 			<section v-for="domain in checks.view.domains" :key="domain.name" class="mt-6">
 				<h2 class="flex items-center gap-2 text-base font-semibold text-ink-gray-9">
 					{{ domain.name }}
-					<span class="rounded bg-surface-gray-2 px-1.5 text-xs font-medium text-ink-gray-7">{{ domain.count }}</span>
+					<span
+						v-if="domain.count"
+						class="rounded bg-surface-red-2 px-1.5 text-xs font-medium text-ink-red-4"
+					>{{ domain.count }} failed</span>
+					<span
+						v-if="domain.warnCount"
+						class="rounded bg-surface-amber-2 px-1.5 text-xs font-medium text-ink-amber-4"
+					>{{ domain.warnCount }} warning{{ domain.warnCount === 1 ? "" : "s" }}</span>
 				</h2>
 				<ul class="mt-2 divide-y divide-outline-gray-1 rounded border border-outline-gray-2">
 					<li v-for="cause in domain.causes" :key="cause.title" class="px-4 py-3">
 						<div class="flex items-baseline justify-between gap-3">
-							<p class="text-base font-medium text-ink-gray-9">{{ cause.title }}</p>
+							<p class="flex min-w-0 items-center gap-2">
+								<span class="truncate text-base font-medium text-ink-gray-9">{{ cause.title }}</span>
+								<span
+									class="shrink-0 rounded px-1.5 text-xs font-medium"
+									:class="cause.status === 'Warn'
+										? 'bg-surface-amber-2 text-ink-amber-4'
+										: 'bg-surface-red-2 text-ink-red-4'"
+								>{{ cause.label }}</span>
+							</p>
 							<p class="shrink-0 text-sm text-ink-gray-6">{{ cause.rows }} {{ cause.rows === 1 ? "row" : "rows" }}</p>
 						</div>
 						<p class="mt-1 text-sm text-ink-gray-7">{{ cause.text }}</p>
