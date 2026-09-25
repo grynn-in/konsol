@@ -1,8 +1,11 @@
 """TB check model: what is wrong with each line of a trial balance (konsol#305 A11, story 3.2).
 
 Pure: imports no frappe, and is loaded by path in its tests. The input rows are
-``parse_tb_csv`` output (trial_balance_submission.py); ``line`` is the CSV line,
-so the first data row is line 2.
+``parse_tb_csv`` output (trial_balance_submission.py), which carries the
+physical CSV line each row came from as ``"line"`` (konsol#305 A38). Rows
+without it (a caller's own fixtures) fall back to ``index + 2`` — the first
+data row is line 2 when there is no blank line or multi-line quoted field
+to drift it.
 
 ``check_rows`` reports per line, with a suggestion where one can be made, so a
 screen can point at the line to fix. The rules and their wording mirror
@@ -129,7 +132,8 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
 
     lines_by_key = {}
     for index, r in enumerate(rows):
-        lines_by_key.setdefault((r["main_account"], r.get(PARTNER) or ""), []).append(index + 2)
+        lines_by_key.setdefault((r["main_account"], r.get(PARTNER) or ""), []).append(
+            r.get("line", index + 2))
 
     known = set(known_entities) if known_entities is not None else None
     by_upper = {e.upper(): e for e in (known or ())}
@@ -138,7 +142,7 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
 
     out_rows = []
     for index, r in enumerate(rows):
-        line = index + 2
+        line = r.get("line", index + 2)
         partner = r.get(PARTNER) or ""
         problems = []
         if chart:
