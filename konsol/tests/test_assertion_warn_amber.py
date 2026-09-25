@@ -71,6 +71,7 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
         name="AR-1", status=status, warned=warned, signoff_status="Not Signed Off",
         signoff_saved=False, acknowledgement=None, warnings_at_signoff=None,
         override_reason=None, signed_off_by=None, signed_off_at=None,
+        fiscal_year=2099, fiscal_period=1,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 
@@ -129,6 +130,31 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
     finally:
         for n, old in saved.items():
             sys.modules[n] = old if old is not None else sys.modules.pop(n, None)
+
+    # sign_off_close imports the period gate lazily (konsol#305 A22). The
+    # gate is tested in test_close_signoff_wiring.py and
+    # test_close_signoff_gate.py; here it is a no-op, installed only for the
+    # duration of each call.
+    gate = types.ModuleType("konsol.close.signoff_gate")
+    gate.assert_can_sign = lambda *a: None
+    close_pkg = types.ModuleType("konsol.close")
+    close_pkg.signoff_gate = gate
+    sign_off_close = module.sign_off_close
+
+    def sign_off_with_a_clear_gate(*a, **k):
+        names = ("konsol.close", "konsol.close.signoff_gate")
+        before = {n: sys.modules.get(n) for n in names}
+        sys.modules.update({"konsol.close": close_pkg, "konsol.close.signoff_gate": gate})
+        try:
+            return sign_off_close(*a, **k)
+        finally:
+            for n, old in before.items():
+                if old is None:
+                    sys.modules.pop(n, None)
+                else:
+                    sys.modules[n] = old
+
+    module.sign_off_close = sign_off_with_a_clear_gate
     return module, frappe, saved_doc, Document
 
 

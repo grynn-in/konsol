@@ -283,9 +283,16 @@ def _warning_summary(names, total):
     return text
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     """Sign off a Assertion Run — the reconciliation gate.
+
+    POST-only: it writes the signature and commits (konsol#305 Problems 10).
+    A sign-off is for a period: a year-only run is refused, and the period's
+    gates (``konsol.close.signoff_gate.assert_can_sign``: configuration gaps,
+    the order gate, completeness) must pass before anything changes (A22,
+    story 9.2). They run ahead of the status branches, so neither an
+    acknowledgement nor an override reason gets past a blocked period.
 
     Green  -> signed off (caller must have write on Assertion Run).
     Amber  -> warnings only (konsol#265): not blocked and no override role, but
@@ -312,6 +319,14 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
         frappe.throw(
             frappe._("Assertion Run {0} is still {1} — wait for it to finish before signing off.")
             .format(close_run, doc.status))
+
+    if doc.fiscal_period in (None, "", 0):
+        frappe.throw(
+            frappe._("A sign-off is for a period; run {0} has none. Run the checks for a period and sign that run off.")
+            .format(close_run), title=frappe._("Sign-off blocked"))
+    # Imported here: signoff_gate reads assertion_run's TERMINAL_STATUSES.
+    from konsol.close import signoff_gate
+    signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
 
     # Recorded on every path, not only the Amber one: a Red close overridden
     # with 12 warnings outstanding must say so too, or the stronger gate ends
