@@ -170,3 +170,217 @@ def test_module_imports_no_frappe():
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith(("frappe", "konsol"))
             assert node.level == 0
+
+
+# --- A10: expected entities, quarter-end ---------------------------------------
+# Rows have the fiscal_calendar.fiscal_period_rows() shape. Quarter-end is read
+# from the declared ``quarter`` field, never from ``fiscal_period % 3``.
+
+
+def _row(fy, fp, quarter="", period_type="Regular", code=None):
+    return {
+        "fiscal_year": fy,
+        "fiscal_period": fp,
+        "period_code": code or "P%02d" % fp,
+        "period_type": period_type,
+        "quarter": quarter,
+    }
+
+
+def _monthly_year(fy=2025):
+    """P00 Opening, P01-P12 Regular with Q1 = P01-P03 ... Q4 = P10-P12, P13 Closing."""
+    rows = [_row(fy, 0, period_type="Opening")]
+    for fp in range(1, 13):
+        rows.append(_row(fy, fp, "Q%d" % ((fp - 1) // 3 + 1)))
+    rows.append(_row(fy, 13, period_type="Closing"))
+    return rows
+
+
+FREQ = {"ZZM": "Monthly", "ZZQ": "Quarterly"}
+
+
+def test_monthly_entities_are_always_expected():
+    rows = _monthly_year()
+    for fp in range(1, 13):
+        res = M.expected_entities(FREQ, (2025, fp), rows)
+        assert "ZZM" in res["expected"], fp
+
+
+def test_quarterly_entity_expected_at_quarter_end_only():
+    rows = _monthly_year()
+    p03 = M.expected_entities(FREQ, (2025, 3), rows)
+    assert p03 == {"expected": ["ZZM", "ZZQ"], "not_expected": [], "frequency_undeclared": [], "gaps": []}
+    p02 = M.expected_entities(FREQ, (2025, 2), rows)
+    assert p02 == {"expected": ["ZZM"], "not_expected": ["ZZQ"], "frequency_undeclared": [], "gaps": []}
+
+
+def test_quarter_end_follows_the_declared_quarter_not_period_mod_3():
+    # A 13-period year whose Close Lead declared Q1 = P01-P04: P03 is NOT quarter-end, P04 is.
+    rows = [_row(2025, fp, q) for fp, q in
+            [(1, "Q1"), (2, "Q1"), (3, "Q1"), (4, "Q1"), (5, "Q2"), (6, "Q2"), (7, "Q2"),
+             (8, "Q3"), (9, "Q3"), (10, "Q3"), (11, "Q4"), (12, "Q4"), (13, "Q4")]]
+    assert M.expected_entities(FREQ, (2025, 3), rows)["not_expected"] == ["ZZQ"]
+    assert M.expected_entities(FREQ, (2025, 4), rows)["expected"] == ["ZZM", "ZZQ"]
+    assert M.expected_entities(FREQ, (2025, 12), rows)["not_expected"] == ["ZZQ"]
+    assert M.expected_entities(FREQ, (2025, 13), rows)["expected"] == ["ZZM", "ZZQ"]
+
+
+def test_non_regular_rows_never_make_a_quarter_end():
+    # A Closing P13 carrying Q4 must not push the quarter-end past P12.
+    rows = _monthly_year()
+    rows[-1]["quarter"] = "Q4"
+    assert M.expected_entities(FREQ, (2025, 12), rows)["expected"] == ["ZZM", "ZZQ"]
+
+
+def test_quarterly_entity_and_blank_target_quarter_is_a_gap():
+    # A 13-period year: Generate Periods leaves quarter blank.
+    rows = [_row(2025, fp) for fp in range(1, 14)]
+    res = M.expected_entities(FREQ, (2025, 3), rows)
+    assert res["expected"] == ["ZZM"]
+    assert res["not_expected"] == []
+    assert [g["code"] for g in res["gaps"]] == ["quarter_undeclared"]
+    gap = res["gaps"][0]
+    assert gap["entities"] == ["ZZQ"]
+    assert "P03" in gap["message"] and "Quarter" in gap["message"]
+
+
+def test_blank_quarter_elsewhere_in_the_year_is_a_gap_not_a_guess():
+    # P01 declares Q1 but P02-P03 are blank: whether P01 ends Q1 is unknown.
+    rows = [_row(2025, 1, "Q1")] + [_row(2025, fp) for fp in range(2, 13)]
+    res = M.expected_entities(FREQ, (2025, 1), rows)
+    assert [g["code"] for g in res["gaps"]] == ["quarter_undeclared"]
+    assert "ZZQ" not in res["expected"] and "ZZQ" not in res["not_expected"]
+
+
+def test_blank_quarter_is_no_gap_without_quarterly_entities():
+    rows = [_row(2025, fp) for fp in range(1, 14)]
+    res = M.expected_entities({"ZZM": "Monthly"}, (2025, 3), rows)
+    assert res == {"expected": ["ZZM"], "not_expected": [], "frequency_undeclared": [], "gaps": []}
+
+
+def test_blank_frequency_is_neither_expected_nor_excused():
+    rows = _monthly_year()
+    res = M.expected_entities({"ZZM": "Monthly", "ZZB": "", "ZZN": None}, (2025, 3), rows)
+    assert res["expected"] == ["ZZM"]
+    assert res["not_expected"] == []
+    assert res["frequency_undeclared"] == ["ZZB", "ZZN"]
+    # config_gaps already reports the blank frequency; it is not a second gap here.
+    assert res["gaps"] == []
+
+
+def test_expected_entities_refuses_what_it_cannot_decide():
+    rows = _monthly_year()
+    cases = [
+        ({"ZZX": "Weekly"}, (2025, 3), "Weekly"),       # unknown frequency
+        (FREQ, (2025, 14), "not in the calendar"),      # target missing from rows
+        (FREQ, (2025, 13), "Regular"),                  # non-Regular target (P5)
+    ]
+    for frequencies, target, needle in cases:
+        try:
+            M.expected_entities(frequencies, target, rows)
+        except ValueError as exc:
+            assert needle in str(exc), (target, str(exc))
+        else:
+            raise AssertionError("must raise for %r %r" % (frequencies, target))
+
+
+def test_expected_entities_accepts_list_keys():
+    assert M.expected_entities(FREQ, [2025, 3], _monthly_year())["expected"] == ["ZZM", "ZZQ"]
+
+
+# --- A10: completeness gate -----------------------------------------------------
+
+
+def _doc(entity, fp=9, fy=2025, docstatus=1):
+    return {"data_area_id": entity, "fiscal_year": fy, "fiscal_period": fp, "docstatus": docstatus}
+
+
+def test_completeness_names_the_missing_entities_sorted():
+    res = M.completeness_problem(["ZZC", "ZZB", "ZZA"], [_doc("ZZC")], [])
+    assert res == {
+        "missing": ["ZZA", "ZZB"],
+        "message": "No trial balance from ZZA, ZZB. Upload them or declare an exception.",
+    }
+
+
+def test_completeness_one_missing_entity():
+    res = M.completeness_problem(["ZZA"], [], [])
+    assert res == {
+        "missing": ["ZZA"],
+        "message": "No trial balance from ZZA. Upload it or declare an exception.",
+    }
+
+
+def test_completeness_tb_or_exception_satisfies():
+    assert M.completeness_problem(["ZZA", "ZZB"], [_doc("ZZA")], [_doc("ZZB")]) is None
+
+
+def test_completeness_nothing_expected_is_none():
+    assert M.completeness_problem([], [], []) is None
+
+
+def test_cancelled_or_draft_documents_cover_nothing():
+    for docstatus in (0, 2):
+        res = M.completeness_problem(["ZZA", "ZZB"], [_doc("ZZA", docstatus=docstatus)],
+                                     [_doc("ZZB", docstatus=docstatus)])
+        assert res["missing"] == ["ZZA", "ZZB"], docstatus
+
+
+def test_completeness_needs_a_docstatus_not_a_default():
+    try:
+        M.completeness_problem(["ZZA"], [{"data_area_id": "ZZA"}], [])
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("a record without docstatus must not count as submitted")
+
+
+# --- A10: covers notes ----------------------------------------------------------
+
+
+def test_exception_then_tb_covers_both_periods():
+    notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], [_doc("ZZA", 8)])
+    assert notes == ["ZZA: covers P08–P09"]
+
+
+def test_a_run_of_exceptions_is_covered_from_its_first_period():
+    exc = [_doc("ZZA", 7), _doc("ZZA", 8)]
+    notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], exc)
+    assert notes == ["ZZA: covers P07–P09"]
+
+
+def test_the_run_stops_at_a_period_with_a_tb():
+    exc = [_doc("ZZA", 6), _doc("ZZA", 8)]
+    tbs = [_doc("ZZA", 7), _doc("ZZA", 9)]
+    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers P08–P09"]
+
+
+def test_no_note_without_a_tb_in_the_target_or_an_exception_before_it():
+    rows = _monthly_year()
+    assert M.covers_notes((2025, 9), rows, [], [_doc("ZZA", 8)]) == []
+    assert M.covers_notes((2025, 9), rows, [_doc("ZZA", 9)], []) == []
+    assert M.covers_notes((2025, 9), rows, [_doc("ZZA", 9)], [_doc("ZZA", 7)]) == []
+
+
+def test_a_cancelled_exception_covers_nothing():
+    notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], [_doc("ZZA", 8, docstatus=2)])
+    assert notes == []
+
+
+def test_a_cancelled_tb_in_the_target_covers_nothing():
+    notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9, docstatus=2)], [_doc("ZZA", 8)])
+    assert notes == []
+
+
+def test_covers_notes_skip_non_regular_rows_and_stop_at_the_year():
+    rows = _monthly_year(2025) + _monthly_year(2026)
+    # FY2026 P01 does not cover FY2025 P12: the year-end needs its own trial balance.
+    notes = M.covers_notes((2026, 1), rows, [_doc("ZZA", 1, fy=2026)], [_doc("ZZA", 12)])
+    assert notes == []
+
+
+def test_covers_notes_are_sorted_by_entity():
+    tbs = [_doc("ZZB", 9), _doc("ZZA", 9)]
+    exc = [_doc("ZZB", 8), _doc("ZZA", 8)]
+    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == [
+        "ZZA: covers P08–P09", "ZZB: covers P08–P09"]
