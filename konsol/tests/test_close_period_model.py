@@ -420,3 +420,17 @@ def test_other_open_excludes_the_selected_period():
     states = M.period_states(_live_rows(), {}, (2025, 7), set())["states"]
     keys = [s["key"] for s in M.other_open(states, (2025, 7), (2025, 7))]
     assert (2025, 7) not in keys and keys[0] == (2025, 8)
+
+
+def test_signed_states_match_the_assertion_run_controller():
+    # One source of truth: the pure model mirrors assertion_run.SIGNED_STATES.
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", None) == "SIGNED_STATES" for t in n.targets)]
+    assert found == [M.SIGNED_STATES]
+
+
+def test_re_sign_needed_is_not_a_signed_state():
+    assert "Re-sign Needed" not in M.SIGNED_STATES
