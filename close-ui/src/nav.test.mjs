@@ -64,10 +64,11 @@ test("counts attach to their screens, and a blocking count is flagged", () => {
 	assert.equal(byScreen["sign-off"].blocking, true);
 });
 
-test("a screen missing from by_screen defaults to a zero, non-blocking count", () => {
+test("a screen missing from by_screen has an unknown count, never zero", () => {
+	// Coordinator (25 Sep): 0 would claim "nothing to do"; the truth is "not known".
 	const nav = navFor("close_lead", ["EPM Admin"], { by_screen: {} });
 	for (const item of nav) {
-		assert.equal(item.count, 0);
+		assert.equal(item.count, null);
 		assert.equal(item.blocking, false);
 	}
 });
