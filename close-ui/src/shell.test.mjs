@@ -193,3 +193,26 @@ test("failure path: no .vue file in src/ uses window.open(, window.prompt( or a 
     .filter(([, found]) => found.length);
   assert.deepEqual(bad, []);
 });
+
+// --- found on live (25 Sep): states that read as wrong facts ---------------
+
+test("live: other_open is 'unknown', not 'none', while the first close period is undeclared", () => {
+  // A04 other_open returns [] when first close is undeclared; "none" would
+  // state a fact nobody computed.
+  const tpl = template(read(HEADER_BAR));
+  assert.match(read(HEADER_BAR), /first_close_undeclared/);
+  assert.match(tpl, /unknown until the first close period is declared/);
+});
+
+test("live: a bad address still loads who I am, so the nav never waits forever", () => {
+  // On /close/abc/1/my-work the nav showed "Fetching your screens" for good:
+  // the context was never requested for a malformed address.
+  const source = read(APP_SHELL);
+  assert.doesNotMatch(source, /if \(p\.error\) return;/);
+});
+
+test("live: a refused call (no close role) tells the user whom to ask", () => {
+  const source = read(APP_SHELL);
+  assert.match(source, /PermissionError/);
+  assert.match(template(source), /Ask the System Manager/);
+});
