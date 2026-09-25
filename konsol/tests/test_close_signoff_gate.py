@@ -576,7 +576,7 @@ def test_module_has_no_whitelisted_functions():
     assert site.whitelisted == set()
 
 
-# --- A31: reopening marks later signed periods "Re-sign Needed" ---------------
+# --- A31/A57: reopening marks the period and later signed periods "Re-sign Needed"
 
 def _reopen_site():
     """FY2025 first close P07; P07-P09 signed, P10 run unsigned, P11 no run."""
@@ -599,26 +599,48 @@ def _run_rec(site, name):
     return next(r for r in site.records["Assertion Run"] if r["name"] == name)
 
 
-def test_reopening_marks_every_later_signed_regular_period():
+def test_reopening_marks_the_reopened_period_and_every_later_signed_regular_period():
     site = _reopen_site()
     marked = _mark(site, 2025, 7, "P07")
-    assert sorted(marked) == ["RUN-8", "RUN-9"], marked
-    for name in ("RUN-8", "RUN-9"):
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
+    for name in ("RUN-7", "RUN-8", "RUN-9"):
         rec = _run_rec(site, name)
         assert rec["signoff_status"] == "Re-sign Needed", rec
         text = rec["affected_by"]
         assert text == ("FY2025 P07 reopened on 2026-09-25 by zz-lead@example.com: "
                         "Late supplier invoice"), text
-    # The unsigned P10, the reopened P07 itself and the history P05 are untouched.
+    # The unsigned P10 and the history P05 are untouched.
     assert _run_rec(site, "RUN-10")["signoff_status"] == "Not Signed Off"
-    assert _run_rec(site, "RUN-7")["signoff_status"] == "Signed Off"
     assert _run_rec(site, "RUN-5")["signoff_status"] == "Signed Off"
+
+
+def test_a_reopened_period_cannot_close_on_its_old_signature():
+    # A57 (review #1): reopen P07 with P07 and P08 signed -> both latest runs
+    # are Re-sign Needed, and closing P07 is refused until it is re-signed.
+    site = _reopen_site()
+    _mark(site, 2025, 7, "P07")
+    for name in ("RUN-7", "RUN-8"):
+        assert _run_rec(site, name)["signoff_status"] == "Re-sign Needed", name
+    result, err = _closable(site, 2025, 7)
+    assert err is not None and "not signed off" in str(err), (result, err)
+    # Re-signed on a fresh run: the close goes through.
+    site.records["Assertion Run"].append(_run("RUN-7-B", 2025, 7, day=9))
+    result, err = _closable(site, 2025, 7)
+    assert err is None, err
+    assert result == "RUN-7-B", result
+
+
+def test_the_function_is_named_for_what_it_marks():
+    # It marks the reopened period too, so "later" in the name would lie.
+    module = _load(_Site())[0]
+    assert hasattr(module, "mark_resign_needed_on_reopen"), "renamed function missing"
+    assert not hasattr(module, "mark_later_resign_needed"), "old name still exported"
 
 
 def test_the_mark_is_saved_through_the_signoff_writer():
     site = _reopen_site()
     _mark(site, 2025, 7, "P07")
-    assert sorted(s[0] for s in site.saves) == ["RUN-8", "RUN-9"], site.saves
+    assert sorted(s[0] for s in site.saves) == ["RUN-7", "RUN-8", "RUN-9"], site.saves
     for name, active, changed, ignore in site.saves:
         assert active == ("sign-off", name), (name, active)
         assert set(changed) == {"signoff_status", "affected_by"}, changed
@@ -630,7 +652,7 @@ def test_only_the_latest_signed_run_of_a_period_is_marked():
     site.records["Assertion Run"].append(_run("RUN-8-OLD", 2025, 8, day=1))
     _run_rec(site, "RUN-8")["completed_at"] = datetime(2026, 1, 5)
     marked = _mark(site, 2025, 7, "P07")
-    assert sorted(marked) == ["RUN-8", "RUN-9"], marked
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
     assert _run_rec(site, "RUN-8-OLD")["signoff_status"] == "Signed Off"
 
 
@@ -639,7 +661,7 @@ def test_a_run_already_needing_re_sign_is_left_alone():
     _run_rec(site, "RUN-8")["signoff_status"] = "Re-sign Needed"
     _run_rec(site, "RUN-8")["affected_by"] = "FY2025 P07 reopened earlier"
     marked = _mark(site, 2025, 7, "P07")
-    assert marked == ["RUN-9"], marked
+    assert marked == ["RUN-7", "RUN-9"], marked
     assert _run_rec(site, "RUN-8")["affected_by"] == "FY2025 P07 reopened earlier"
 
 
@@ -656,9 +678,11 @@ def test_reopening_across_the_year_boundary_marks_the_next_year():
 def test_history_periods_before_the_first_close_are_never_marked():
     site = _reopen_site()
     site.records["Assertion Run"].append(_run("RUN-6", 2025, 6))
+    site.records["Assertion Run"].append(_run("RUN-3", 2025, 3))
     marked = _mark(site, 2025, 3, "P03")
     assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
-    for name in ("RUN-5", "RUN-6"):
+    # Reopening a history period does not mark it (it was never gated).
+    for name in ("RUN-3", "RUN-5", "RUN-6"):
         assert _run_rec(site, name)["signoff_status"] == "Signed Off", name
 
 
@@ -676,8 +700,9 @@ def test_an_undeclared_first_close_marks_every_later_signed_period():
     # mark errs toward re-signing: every later signed Regular run is marked.
     site = _reopen_site()
     site.settings = {}
+    site.records["Assertion Run"].append(_run("RUN-3", 2025, 3))
     marked = _mark(site, 2025, 3, "P03")
-    assert sorted(marked) == ["RUN-5", "RUN-7", "RUN-8", "RUN-9"], marked
+    assert sorted(marked) == ["RUN-3", "RUN-5", "RUN-7", "RUN-8", "RUN-9"], marked
 
 
 def test_nothing_later_signed_marks_nothing_and_saves_nothing():

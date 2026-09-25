@@ -191,16 +191,17 @@ def _load():
 
     gate.assert_period_closable = assert_period_closable
 
-    # konsol#305 A31: reopening marks later signed periods; recorded here, the
-    # rule itself is tested in test_close_signoff_gate.py.
+    # konsol#305 A31/A57: reopening marks the reopened period and every later
+    # signed period; recorded here, the rule itself is tested in
+    # test_close_signoff_gate.py.
     gate.marks = []
 
-    def mark_later_resign_needed(fiscal_year, fiscal_period, period_code, reason, user):
+    def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason, user):
         gate.marks.append((fiscal_year, fiscal_period, period_code, reason, user))
         frappe.events.append(("mark", fiscal_year, fiscal_period))
         return []
 
-    gate.mark_later_resign_needed = mark_later_resign_needed
+    gate.mark_resign_needed_on_reopen = mark_resign_needed_on_reopen
     mods["konsol.close"].signoff_gate = gate
     mods["konsol.close"].__path__ = []
     mods["konsol"].close = mods["konsol.close"]
