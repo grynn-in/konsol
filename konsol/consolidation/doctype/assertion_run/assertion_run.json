@@ -117,7 +117,7 @@
       "fieldname": "signoff_status",
       "fieldtype": "Select",
       "label": "Sign-off Status",
-      "options": "Not Signed Off\nSigned Off\nAcknowledged\nOverridden",
+      "options": "Not Signed Off\nSigned Off\nAcknowledged\nOverridden\nRe-sign Needed",
       "default": "Not Signed Off",
       "read_only": 1,
       "in_list_view": 1,
@@ -160,6 +160,13 @@
       "label": "Warnings At Sign-off",
       "read_only": 1,
       "description": "The assertions that were warning when this close was signed."
+    },
+    {
+      "fieldname": "affected_by",
+      "fieldtype": "Small Text",
+      "label": "Affected By",
+      "read_only": 1,
+      "description": "Set when an earlier period is reopened after this run was signed: the run no longer counts as signed, and the checks must run again (konsol#303)."
     },
     {
       "fieldname": "tab_timing",

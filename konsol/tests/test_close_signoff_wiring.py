@@ -15,12 +15,14 @@ imported lazily inside `sign_off_close`, so the stub gate is installed in
 import ast
 import contextlib
 import importlib.util
+import json
 import os
 import sys
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AR_PY = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+AR_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.json")
 
 
 class GateBlocked(Exception):
@@ -28,7 +30,7 @@ class GateBlocked(Exception):
 
 
 def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fiscal_period=1,
-          gate_raises=False):
+          gate_raises=False, affected_by=None):
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.PermissionError = type("PermissionError", (Exception,), {})
@@ -40,7 +42,7 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
         name="AR-1", status=status, warned=0, signoff_status=signoff_status,
         signoff_saved=False, acknowledgement=None, warnings_at_signoff=None,
         override_reason=None, signed_off_by=None, signed_off_at=None,
-        fiscal_year=fiscal_year, fiscal_period=fiscal_period,
+        fiscal_year=fiscal_year, fiscal_period=fiscal_period, affected_by=affected_by,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 
@@ -217,3 +219,85 @@ def test_sign_off_close_is_post_only():
     (Problems 10)."""
     methods = _whitelist_methods("sign_off_close")
     assert methods == ["POST"], f'sign_off_close is not @frappe.whitelist(methods=["POST"]): {methods}'
+
+
+# --- A27: "Re-sign Needed" (story 9.5, #303 point 4; Problems 9) ------------
+
+RE_SIGN = "Re-sign Needed"
+AFFECTED = "FY2099 P01 reopened by lead@example.com on 2026-09-25"
+
+
+def _ar_fields():
+    with open(AR_JSON) as f:
+        meta = json.load(f)
+    return meta["fields"]
+
+
+def test_re_sign_needed_is_a_signoff_option():
+    fields = {f["fieldname"]: f for f in _ar_fields()}
+    options = fields["signoff_status"]["options"].split("\n")
+    assert RE_SIGN in options, f"signoff_status has no {RE_SIGN!r} option: {options}"
+    # The existing states stay, in their order, ahead of the new one.
+    assert options[:4] == ["Not Signed Off", "Signed Off", "Acknowledged", "Overridden"], options
+
+
+def test_affected_by_is_a_read_only_field_on_the_signoff_tab():
+    fields = _ar_fields()
+    names = [f["fieldname"] for f in fields]
+    assert "affected_by" in names, "Assertion Run has no affected_by field"
+    field = fields[names.index("affected_by")]
+    assert field["fieldtype"] == "Small Text", field
+    assert field.get("read_only") == 1, "affected_by must be read_only: it is set by the system"
+    start, end = names.index("tab_signoff"), names.index("tab_timing")
+    assert start < names.index("affected_by") < end, "affected_by is not on the Sign-off tab"
+
+
+def test_re_sign_needed_does_not_count_as_signed():
+    module, *_ = _load()
+    assert RE_SIGN not in module.SIGNED_STATES, module.SIGNED_STATES
+    assert set(module.SIGNED_STATES) == {"Signed Off", "Acknowledged", "Overridden"}
+
+
+def test_sign_off_close_refuses_a_re_sign_needed_run_and_saves_nothing():
+    for status in ("Green", "Amber", "Red"):
+        module, frappe, doc, gate, calls = _load(status=status, signoff_status=RE_SIGN,
+                                                 affected_by=AFFECTED)
+        try:
+            _sign(module, gate, acknowledgement="ok" if status == "Amber" else None,
+                  override_reason="ok" if status == "Red" else None)
+            raise AssertionError(f"a {status} run in {RE_SIGN} was signed again")
+        except frappe.ValidationError as e:
+            msg = str(e)
+        assert msg == ("An earlier period was reopened after this run: %s. Run the checks "
+                       "again, then sign off the new run." % AFFECTED), msg
+        assert doc.signoff_saved is False, f"{status}: the run was saved"
+        assert doc.signoff_status == RE_SIGN
+        assert doc.signed_off_by is None and doc.signed_off_at is None
+        assert calls == [], f"{status}: the gate was called for a run that must be re-run"
+
+
+def test_a_not_signed_run_is_still_signed():
+    """Failure path: the refusal is for Re-sign Needed only."""
+    module, _, doc, gate, calls = _load(signoff_status="Not Signed Off")
+    _sign(module, gate)
+    assert doc.signoff_status == "Signed Off" and doc.signoff_saved is True
+
+
+def _run_row(signoff_status):
+    row = types.SimpleNamespace(name="AR-1", status="Green", signoff_status=signoff_status,
+                                failed=0, errored=0)
+    row.get = lambda k: getattr(row, k)
+    return row
+
+
+def test_assert_close_signed_off_refuses_a_re_sign_needed_run():
+    module, frappe, *_ = _load()
+    frappe.get_all = lambda dt, **k: [] if "pluck" in k else [_run_row(RE_SIGN)]
+    try:
+        module.assert_close_signed_off(2099, 1)
+        raise AssertionError("a Re-sign Needed run passed assert_close_signed_off")
+    except frappe.ValidationError as e:
+        assert "is not signed off" in str(e), str(e)
+    # Failure path: a signed run still passes.
+    frappe.get_all = lambda dt, **k: [] if "pluck" in k else [_run_row("Signed Off")]
+    assert module.assert_close_signed_off(2099, 1) == "AR-1"
