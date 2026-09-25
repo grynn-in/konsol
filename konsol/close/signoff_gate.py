@@ -15,6 +15,10 @@ Reads the site and passes it through the pure models:
   Opening/Closing/Adjustment rows never block the order gate.
 - ``assert_can_sign(fy, fp)`` throws one message listing every problem,
   titled "Sign-off blocked".
+- ``assert_period_closable(fy, fp, period_type)`` (A23; story 9.3): closing
+  or locking an Open Regular period at or after the first close period needs
+  a signed run (``assertion_run.assert_close_signed_off``). History periods
+  and non-Regular periods are exempt (P5); an undeclared first close refuses.
 
 The first close period is read from Close Settings; its Int fields read back
 as 0 when unset, which ``signoff_model.first_close_key`` maps to undeclared.
@@ -29,6 +33,7 @@ from konsol.close import period_model, signoff_model
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
+CLOSE_BLOCKED_TITLE = "Close blocked"
 REGULAR = "Regular"
 
 
@@ -161,3 +166,23 @@ def assert_can_sign(fiscal_year, fiscal_period):
     messages = problem_messages(sign_off_problems(fiscal_year, fiscal_period))
     if messages:
         frappe.throw("<br>".join(messages), title=BLOCKED_TITLE)
+
+
+def assert_period_closable(fiscal_year, fiscal_period, period_type):
+    """Throw unless the period may leave Open; return the signed run's name,
+    or None when the period is exempt (non-Regular, or history before the
+    first close period)."""
+    if period_type != REGULAR:
+        return None
+    key = _key(fiscal_year, fiscal_period)
+    first = _first_close()
+    if first is None:
+        frappe.throw(
+            "Declare the first close period in Close Settings before closing "
+            "FY%d P%02d." % key, title=CLOSE_BLOCKED_TITLE)
+    if key < first:
+        return None
+    # Imported here: assertion_run imports this module's callers (A22).
+    from konsol.consolidation.doctype.assertion_run.assertion_run import (
+        assert_close_signed_off)
+    return assert_close_signed_off(*key)
