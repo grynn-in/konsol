@@ -61,9 +61,15 @@ test("AppShell polls freshness every 60 s, only while the tab is visible", () =>
   assert.match(source, /clearInterval|clearTimeout/, "the poll is stopped, not leaked");
 });
 
-test("AppShell takes the time zone from Frappe's boot or the browser and never invents one", () => {
+test("AppShell takes the time zone from timefmt.js (B29) and never invents one", () => {
   const source = read(APP_SHELL);
-  assert.match(source, /resolvedOptions\(\)\.timeZone/);
+  // B29: the lookup (Frappe's boot, else the browser) lives in timefmt.js,
+  // whose test checks it. Here: imported, not copied. Comments are stripped
+  // so a mention in prose cannot satisfy the check.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  assert.match(code, /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/);
+  assert.doesNotMatch(code, /function\s+userTimeZone\b|\buserTimeZone\s*=/, "no local copy");
+  assert.doesNotMatch(code, /resolvedOptions\(\)/, "no local copy of the lookup");
   assert.doesNotMatch(source, /["'](UTC|Etc\/[A-Za-z]+|Europe\/[A-Za-z]+|America\/[A-Za-z]+|Asia\/[A-Za-z]+)["']/,
     "no hard-coded zone");
 });

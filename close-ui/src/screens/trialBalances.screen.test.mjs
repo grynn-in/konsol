@@ -158,6 +158,11 @@ test("(B27) entityRows gets the user's zone and now; a missing zone is shown, no
   const source = read();
   const s = script(source);
   assert.match(s, /entityRows\([^)]*,\s*[^)]*,\s*timeZone\s*\)/);
-  assert.match(s, /time_zone/, "Frappe's boot time_zone.user is read, as AppShell does");
+  // B29: the zone comes from timefmt.js, imported, never a local copy.
+  // Comments are stripped so a mention in prose cannot satisfy the check.
+  const code = s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  assert.match(code, /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/);
+  assert.doesNotMatch(code, /function\s+userTimeZone\b|\buserTimeZone\s*=/, "no local copy");
+  assert.doesNotMatch(code, /time_zone|resolvedOptions\(\)/, "no local copy of the lookup");
   assert.match(s, /if\s*\(!timeZone\)/, "no zone is an explicit error, never a default");
 });
