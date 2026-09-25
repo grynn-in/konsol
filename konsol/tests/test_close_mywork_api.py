@@ -524,3 +524,85 @@ def test_other_personas_get_entities_assigned_null():
         site = _Site(roles=roles)
         result = _call(site)
         assert result["entities_assigned"] is None, roles
+
+
+# --- A56: the ownership gap is judged for the open periods, not for today -------
+#
+# An Active leaf entity is named in "Ownership missing" only when no submitted
+# Ownership Period covers the start of an Open Regular period from the first
+# close on (P7, the completeness scope). The detail names those periods.
+# Measured in C1: an entity owned from 2099-01-01, with the open periods in
+# 2099, was named because the gap was judged as of today.
+
+
+def _gap(result, gap):
+    return next((i for i in result["items"] if i["id"] == "gap:" + gap), None)
+
+
+def _next_year_site():
+    """First close FY2026 P01; FY2026 P01-P03 Open (not started on TODAY).
+    ZZOP is owned from 2026-01-01; ZZA-ZZD as in _Site (ZZC uncovered)."""
+    site = _Site()
+    site.first_close = (2026, 1)
+    for fp in (1, 2, 3):
+        site.rows.append({"fiscal_year": 2026, "fiscal_period": fp, "period_code": "P%02d" % fp,
+                          "period_label": "P%02d" % fp, "period_type": "Regular",
+                          "start_date": date(2026, fp, 1), "end_date": _month_end(2026, fp),
+                          "quarter": "Q1", "status": "Open"})
+    site.entities.append(_entity("ZZOP", ""))
+    site.owners.append(_D(data_area_id="ZZOP", end_date=None,
+                          effective_date=date(2026, 1, 1), docstatus=1))
+    return site
+
+
+def test_ownership_from_next_year_covers_open_periods_next_year():
+    result = _call(_next_year_site())
+    gap = _gap(result, "ownership")
+    assert gap is not None and "ZZOP" not in gap["entities"], gap
+    assert gap["entities"] == ["ZZC"], gap
+    # In scope for the open periods, so its blank frequency is a gap.
+    assert "ZZOP" in _gap(result, "frequency")["entities"]
+
+
+def test_ownership_gap_names_the_uncovered_open_periods():
+    site = _Site()
+    # ZZN is owned from P09 on: uncovered at the start of P07 and P08 only.
+    site.entities.append(_entity("ZZN"))
+    site.owners.append(_D(data_area_id="ZZN", end_date=None,
+                          effective_date=date(2025, 9, 1), docstatus=1))
+    gap = _gap(_call(site), "ownership")
+    assert gap["entities"] == ["ZZC", "ZZN"], gap
+    assert "ZZN: FY2025 P07, FY2025 P08" in gap["detail"], gap["detail"]
+    assert "ZZN: FY2025 P07, FY2025 P08," not in gap["detail"], gap["detail"]
+    # ZZC is uncovered in every open period from the first close on (P07-P11);
+    # P06 is history and P05 is Closed, so neither is named.
+    assert "ZZC: FY2025 P07, FY2025 P08, FY2025 P09, FY2025 P10, FY2025 P11" in gap["detail"]
+    assert "P06" not in gap["detail"] and "P05" not in gap["detail"], gap["detail"]
+
+
+def test_ownership_that_ended_before_the_open_periods_is_a_gap():
+    site = _Site()
+    site.owners[0] = _D(data_area_id="ZZA", end_date=date(2025, 6, 30),
+                        effective_date=date(2020, 1, 1), docstatus=1)
+    gap = _gap(_call(site), "ownership")
+    assert "ZZA" in gap["entities"], gap
+    assert "ZZA: FY2025 P07" in gap["detail"], gap["detail"]
+
+
+def test_no_open_period_from_the_first_close_on_means_no_ownership_gap():
+    site = _Site()
+    for row in site.rows:
+        if row["period_type"] == "Regular" and row["fiscal_period"] >= 7:
+            row["status"] = "Closed"
+    assert _gap(_call(site), "ownership") is None
+
+
+def test_undeclared_first_close_judges_ownership_over_every_open_regular_period():
+    site = _Site()
+    site.first_close = (0, 0)
+    gap = _gap(_call(site), "ownership")
+    assert gap["entities"] == ["ZZC"], gap
+    # No history without a first close: P06 is judged too; P05 (Closed) and
+    # P00 (not Regular) are not.
+    assert "ZZC: FY2025 P06, FY2025 P07" in gap["detail"], gap["detail"]
+    assert "P05" not in gap["detail"] and "P00" not in gap["detail"], gap["detail"]
