@@ -77,9 +77,8 @@ def test_close_ui_job_uses_close_ui_lockfile_path():
     assert "konsol-exec" not in block
 
 
-def test_js_tests_job_is_unchanged():
-    """The existing konsol-exec job must still exist and still name konsol-exec."""
-    block = _job_block(_read_workflow(), "js-tests")
-    assert block is not None
-    assert "working-directory: konsol-exec" in block
-    assert "cache-dependency-path: konsol-exec/yarn.lock" in block
+def test_old_js_tests_job_is_removed():
+    """konsol#305 R01 deleted konsol-exec, so its js-tests job must be gone too."""
+    workflow = _read_workflow()
+    assert _job_block(workflow, "js-tests") is None
+    assert "konsol-exec" not in workflow

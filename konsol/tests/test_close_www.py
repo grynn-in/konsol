@@ -36,10 +36,10 @@ def test_route_rule_is_present():
     assert '{"from_route": "/close/<path:app_path>", "to_route": "close"}' in hooks
 
 
-def test_konsol_exec_route_rule_is_not_removed():
-    # R01 removes it, not this row.
+def test_konsol_exec_route_rule_is_removed():
+    # konsol#305 R01 removed the old SPA and its route rule.
     hooks = _read(HOOKS_PATH)
-    assert '{"from_route": "/konsol-exec/<path:app_path>", "to_route": "konsol-exec"}' in hooks
+    assert "/konsol-exec/" not in hooks
 
 
 # ---- controller: guest redirect, csrf token, asset cache-buster ----------

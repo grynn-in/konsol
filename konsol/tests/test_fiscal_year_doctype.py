@@ -8,7 +8,6 @@ dates and its own close/lock status.
 import ast
 import json
 import os
-import re
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCTYPE_JSON = os.path.join(
@@ -17,9 +16,6 @@ YEAR_DOCTYPE_JSON = os.path.join(
     APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year.json")
 SETTINGS_JSON = os.path.join(
     APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json")
-YEAR_LIST_JS = os.path.join(
-    APP_DIR, "epm", "doctype", "epm_fiscal_year", "epm_fiscal_year_list.js")
-HOME_JS = os.path.join(os.path.dirname(APP_DIR), "konsol-exec", "src", "home.js")
 
 FIELD_ORDER = [
     "fiscal_period",
@@ -451,44 +447,6 @@ def test_postable_type_settings():
     expected_head = ["tab_close", "tb_periods_section"] + list(TB_CHECK_FIELDS)
     start = field_order.index("tab_close")
     assert field_order[start:start + len(expected_head)] == expected_head
-
-
-# --- EPM Fiscal Year: list view indicator colour matches home theme --------
-
-FISCAL_YEAR_STATUSES = ("Open", "Closed", "Locked")
-
-
-def _status_colors(js_source):
-    """Pull {status: "colour"} pairs for our three statuses out of a JS file.
-
-    Regex, not a JS parser — good enough to compare literal colour strings
-    between konsol's list view and konsol-exec's home theme.
-    """
-    colors = {}
-    for status in FISCAL_YEAR_STATUSES:
-        m = re.search(status + r'\s*:\s*(?:__\()?"(\w+)"', js_source)
-        assert m, f"No colour found for status {status!r}"
-        colors[status] = m.group(1)
-    return colors
-
-
-def test_list_indicator_matches_period_theme():
-    with open(YEAR_LIST_JS) as f:
-        list_js = f.read()
-    assert 'frappe.listview_settings["EPM Fiscal Year"]' in list_js
-    assert "get_indicator" in list_js
-
-    with open(HOME_JS) as f:
-        home_js = f.read()
-    assert "PERIOD_THEME" in home_js
-
-    list_colors = _status_colors(list_js)
-    theme_colors = _status_colors(home_js)
-
-    for status in FISCAL_YEAR_STATUSES:
-        assert list_colors[status] == theme_colors[status], (
-            f"{status}: list view uses {list_colors[status]!r}, "
-            f"PERIOD_THEME uses {theme_colors[status]!r}")
 
 
 # --- on the desk (konsol#189, modelled on test_main_account.py) -------------
