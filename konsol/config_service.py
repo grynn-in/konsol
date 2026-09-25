@@ -13,6 +13,7 @@ from konsol.connector_credentials import (
     connector_export_row,
     credentials_configured,
 )
+from konsol.tb_dimension_model import _is_on
 
 _DIMENSION_FIELDS = [
     "name",
@@ -21,6 +22,8 @@ _DIMENSION_FIELDS = [
     "label",
     "cube_type",
     "in_budget",
+    "in_trial_balance",
+    "survives_close",
     "allocation_role",
     "permission_doctype",
     "status",
@@ -40,9 +43,19 @@ _DIMENSION_WRITABLE_FIELDS = [
     "label",
     "cube_type",
     "in_budget",
+    "in_trial_balance",
+    "survives_close",
     "allocation_role",
     "permission_doctype",
 ]
+
+#: The trial-balance Check fields (konsol#255), written as 1 or 0 by the
+#: intake's reading of a Check. A bundle from JSON or CSV may carry the text
+#: "0" or "false", and Frappe's cast would store "yes" as 0 where the
+#: Dimension controller reads it as ticked. survives_close is carried so that
+#: a bundle ticking it is refused by the controller, not silently dropped
+#: (konsol#247); it is exported so a round trip keeps both (konsol#295).
+_DIMENSION_TB_FLAGS = ("in_trial_balance", "survives_close")
 
 _DIMENSION_CUBE_TYPES = {"string", "number"}
 _MEASURE_CUBE_TYPES = {"sum", "count", "avg"}
@@ -104,6 +117,8 @@ def _normalize_filters(filters):
 def _serialize_dimension(row):
     data = dict(row)
     data["in_budget"] = bool(data.get("in_budget"))
+    for field in _DIMENSION_TB_FLAGS:
+        data[field] = bool(data.get(field))
     return data
 
 
@@ -204,6 +219,9 @@ def upsert_dimension(spec, publish=False):
                 setattr(doc, field, spec[field])
         if "status" in spec and not publish:
             doc.status = spec["status"]
+    for field in _DIMENSION_TB_FLAGS:
+        if field in spec:
+            setattr(doc, field, 1 if _is_on(spec[field]) else 0)
 
     # One save either way, and the save applies the schema when the dimension
     # ends up Published or leaves it (konsol#295). publish() saves too (and

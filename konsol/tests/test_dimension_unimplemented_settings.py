@@ -434,7 +434,12 @@ def test_nothing_in_the_warehouse_reads_survives_close():
             with open(path, encoding="utf-8", errors="replace") as fh:
                 if FIELD in fh.read():
                     readers.append(os.path.relpath(path, _APP))
-    # dimension.py is the refusal itself; it is the one place the name may
-    # appear outside the doctype JSON that declares the field.
-    assert readers == [os.path.join("epm", "doctype", "dimension", "dimension.py")], (
-        f"{FIELD} is read somewhere: {readers}")
+    # dimension.py is the refusal itself. config_service.py carries the field
+    # through a config bundle and its export (konsol#295), so that a bundle
+    # ticking it reaches that refusal instead of having the tick dropped; it
+    # computes nothing from it. Those are the only places the name may appear
+    # outside the doctype JSON that declares the field.
+    assert sorted(readers) == sorted([
+        "config_service.py",
+        os.path.join("epm", "doctype", "dimension", "dimension.py"),
+    ]), f"{FIELD} is read somewhere: {readers}"
