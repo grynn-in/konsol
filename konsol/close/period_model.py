@@ -68,14 +68,24 @@ def _regular(rows):
         yield row, start, end
 
 
-def _working_landing(rows, today):
+FIRST_CLOSE_UNDECLARED = (
+    "Declare the first close period (EPM Settings, Close Order). konsol does not "
+    "guess where closing starts: every earlier period is history (konsol#303)."
+)
+
+
+def _working_landing(rows, today, first_close):
+    if first_close is None:
+        return {"period": None, "rule": "first_close_undeclared", "reason": FIRST_CLOSE_UNDECLARED}
+    first = (int(first_close[0]), int(first_close[1]))
+    candidates = [(row, start, end) for row, start, end in _regular(rows) if _key(row) >= first]
     open_ended = [
-        _key(row) for row, _start, end in _regular(rows)
+        _key(row) for row, _start, end in candidates
         if row.get("status") == "Open" and end < today
     ]
     if open_ended:
         return {"period": min(open_ended), "rule": "oldest_open_ended", "reason": None}
-    for row, start, end in _regular(rows):
+    for row, start, end in candidates:
         if start <= today <= end:
             return {"period": _key(row), "rule": "contains_today", "reason": None}
     return {
@@ -88,20 +98,23 @@ def _working_landing(rows, today):
     }
 
 
-def landing(rows, signed_keys, persona, today):
+def landing(rows, signed_keys, persona, today, first_close):
     """The period a persona lands on.
 
     ``rows`` are ``fiscal_calendar.fiscal_period_rows()`` dicts (``status`` is
     the effective status); ``signed_keys`` is the set of
     ``(fiscal_year, fiscal_period)`` with a valid sign-off; ``today`` is a
-    ``datetime.date``.
+    ``datetime.date``. ``first_close`` is the declared first close period
+    ``(fiscal_year, fiscal_period)`` or None; earlier periods are history and
+    never landed on, and None is a named gap (A03b, konsol#303). It has no
+    default on purpose.
 
     Returns ``{"period", "rule", "reason"}``; a Viewer's result also carries
     ``provisional``, the landing a non-viewer would get.
     """
     if persona not in PERSONAS:
         raise ValueError("Unknown close persona: %r" % (persona,))
-    working = _working_landing(rows, today)
+    working = _working_landing(rows, today, first_close)
     if persona != VIEWER:
         return working
     signed = [(int(fy), int(fp)) for fy, fp in (signed_keys or ())]
