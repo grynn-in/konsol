@@ -83,9 +83,13 @@ def parse_tb_csv(text):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, description,
-    partner_data_area_id, amount_basis}; the partner and the basis are ''
-    when the file has no such column or the cell is blank. The basis is
-    returned as written: validate() judges it (konsol.tb_basis_model).
+    partner_data_area_id, amount_basis, line}; the partner and the basis are
+    '' when the file has no such column or the cell is blank. The basis is
+    returned as written: validate() judges it (konsol.tb_basis_model). ``line``
+    is the physical line the row came from (``reader.line_num``, konsol#305
+    A38): csv.DictReader skips blank lines and a quoted field can span lines,
+    so counting data rows (``index + 2``) drifts from the file's own line
+    numbers whenever either happens.
     Raises ValueError with a human-readable message on structural problems —
     a missing header, a non-numeric amount, a blank account. Business
     validation (balance, duplicates, chart membership) is validate_tb_rows()'s
@@ -112,7 +116,11 @@ def parse_tb_csv(text):
         )
 
     rows = []
-    for lineno, raw in enumerate(reader, start=2):
+    for raw in reader:
+        # reader.line_num is the physical line of the row just read (konsol#305
+        # A38): unlike enumerate(reader, start=2), it stays correct across a
+        # blank line DictReader skipped or a quoted field that spanned lines.
+        lineno = reader.line_num
         # csv.DictReader parks surplus cells under the None restkey as a LIST;
         # without this check a stray trailing comma becomes an AttributeError
         # deep in the strip() below instead of a readable message.
@@ -154,6 +162,7 @@ def parse_tb_csv(text):
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
             BASIS: item.get(BASIS, ""),
+            "line": lineno,
         })
     if not rows:
         raise ValueError("The file has a header but no data rows")
