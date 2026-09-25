@@ -821,3 +821,88 @@ def test_validate_tb_rows_leaves_the_amount_basis_to_the_form_check():
     errors = _with_check_rows(_fake_result(file_problems=form_level, row_problems=[basis]),
                               lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
     assert errors == []
+
+
+# -- konsol#305 A40: a trial balance cannot be submitted over a TB Exception --------------------
+# A08's TB Exception already refuses to be declared where a submitted TB exists
+# (test_close_tb_exception.py: test_existing_submitted_tb_is_refused). This is
+# the other direction: a TB submit must not land while a submitted exception
+# still declares "no trial balance" for the same entity-period — otherwise the
+# audit trail would carry both, and the gate that accepted the exception would
+# be wrong.
+
+def _wire_tb_exception_check(tb_exception_name):
+    """Run validate() with assert_postable/assert_open/_check_entity_access/the
+    entity lock all stubbed to pass straight through, and frappe.db.get_value
+    answering both the Trial Balance Submission lock read
+    (_check_no_other_submission, no other submission) and the TB Exception
+    read. _parse_file is stubbed to raise, so reaching it proves both checks
+    let the submit through; never reaching it proves one of them refused
+    first."""
+    calls = []
+
+    def get_value(doctype, filters, fieldname=None, **kw):
+        calls.append((doctype, dict(filters), fieldname, kw))
+        if doctype == "Trial Balance Submission":
+            return None  # no other live submission: A38's check passes through
+        if doctype == "TB Exception":
+            return tb_exception_name
+        raise AssertionError(f"unexpected read of {doctype}")
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    names = ("assert_postable", "assert_open", "frappe")
+    saved = {n: getattr(_m, n) for n in names if hasattr(_m, n)}
+    _m.assert_postable = lambda fy, fp: None
+    _m.assert_open = lambda fy, fp, action="run": None
+    _m.frappe = types.SimpleNamespace(
+        db=types.SimpleNamespace(sql=lambda *a, **k: None, get_value=get_value),
+        throw=throw,
+    )
+    try:
+        doc = _m.TrialBalanceSubmission()
+        doc.batch_id, doc.data_area_id = "b1", "FR01"
+        doc.fiscal_year, doc.fiscal_period = 2026, 8
+        doc.name = "TBS-NEW"
+        doc._check_entity_access = lambda: None
+        doc._parse_file = lambda: (_ for _ in ()).throw(AssertionError("validate reached _parse_file"))
+        try:
+            doc.validate()
+            reached_parse = False
+        except AssertionError as e:
+            if "reached _parse_file" not in str(e):
+                raise
+            reached_parse = True
+    finally:
+        for n in names:
+            if n in saved:
+                setattr(_m, n, saved[n])
+            else:
+                delattr(_m, n)
+    return calls, reached_parse
+
+
+def test_submit_is_refused_over_a_submitted_tb_exception():
+    try:
+        _wire_tb_exception_check("TBX-00001")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert str(e) == ("TBX-00001 declares no trial balance for FR01 2026 P08. "
+                          "Cancel it first (Close Lead).")
+
+
+def test_submit_is_allowed_when_no_tb_exception_is_submitted():
+    """A cancelled exception (docstatus 2) never matches the docstatus=1
+    filter, so get_value returns None here just as it would for a real
+    cancelled TB Exception — validate() proceeds to parse the file."""
+    calls, reached_parse = _wire_tb_exception_check(None)
+    assert reached_parse, "validate() did not get past the TB Exception check"
+    read = next(c for c in calls if c[0] == "TB Exception")
+    doctype, filters, fieldname, kw = read
+    assert filters.get("data_area_id") == "FR01"
+    assert filters.get("fiscal_year") == 2026
+    assert filters.get("fiscal_period") == 8
+    assert filters.get("docstatus") == 1
+    assert fieldname == "name"
+    assert kw.get("for_update") is True

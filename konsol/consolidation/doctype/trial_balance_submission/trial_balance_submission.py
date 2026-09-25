@@ -521,6 +521,7 @@ class TrialBalanceSubmission(Document):
         # in consolidation (#151 review). Held until the request commits.
         frappe.db.sql("SELECT `name` FROM `tabEntity` WHERE `name` = %s FOR UPDATE", self.data_area_id)
         self._check_no_other_submission()
+        self._check_no_tb_exception()
 
         rows = self._parse_file()
         # konsol#182: the one chart reader, the Published Main Accounts in
@@ -634,6 +635,35 @@ class TrialBalanceSubmission(Document):
                 f"{other} is already submitted for {self.data_area_id} "
                 f"{self.fiscal_year} P{self.fiscal_period}. Cancel or amend it "
                 "first — consolidation would otherwise count both."
+            )
+
+    def _check_no_tb_exception(self):
+        """konsol#305 A40: a submitted TB Exception (A08) declares that this
+        entity-period has no trial balance at all, and the sign-off
+        completeness gate trusts that declaration in place of one. Landing a
+        real submission on top would leave both on record — the gate already
+        satisfied by "no TB", and an actual TB sitting right beside it. The
+        exception must be cancelled first, same as a second TB submission
+        (_check_no_other_submission above).
+        """
+        exception = frappe.db.get_value(
+            "TB Exception",
+            {
+                "data_area_id": self.data_area_id,
+                "fiscal_year": self.fiscal_year,
+                "fiscal_period": self.fiscal_period,
+                "docstatus": 1,
+            },
+            "name",
+            # a locking read: a concurrent declare/cancel waits for this
+            # submit's commit, same reasoning as _check_no_other_submission.
+            for_update=True,
+        )
+        if exception:
+            frappe.throw(
+                f"{exception} declares no trial balance for {self.data_area_id} "
+                f"{self.fiscal_year} P{self.fiscal_period:02d}. Cancel it first "
+                "(Close Lead)."
             )
 
     def _parse_file(self):
