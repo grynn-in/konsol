@@ -98,13 +98,29 @@ test("each item shows its period tag, owner and one action", () => {
   assert.match(t, /itemRoute\(item\)|routeOf\(item\)/);
 });
 
-test("an Entity Accountant with no entities gets the explicit A25 message and no upload control", () => {
+test("an Entity Accountant with no entities gets the explicit A25 message and no upload control (B18b: from entities_assigned, not my_tbs)", () => {
   const source = read();
-  assert.match(source, /konsol\.close\.tb_read_api\.my_tbs/);
+  assert.doesNotMatch(source, /konsol\.close\.tb_read_api\.my_tbs/,
+    "B18b: no separate my_tbs call; entities_assigned comes with get_my_work");
+  assert.match(source, /entities_assigned/);
   assert.match(source, /No entities are assigned to you\. Ask the System Manager\./);
-  assert.match(source, /entity_accountant/);
   assert.doesNotMatch(template(source), /[Uu]pload (a |the )?(TB|trial balance) file|type="file"/,
     "My work has no upload control");
+});
+
+test("(B18b) an Entity Accountant with entities assigned but none in scope this period gets a distinct out-of-scope message", () => {
+  const source = read();
+  assert.match(source, /entitiesAssigned === true/, "the true-but-empty case is handled separately from false");
+  const t = template(source);
+  assert.match(t, /entityBanner/);
+});
+
+test("(B18b) each item's age comes from myWork.js's ageText, with today injected, never read inside a pure module", () => {
+  const s = script(read());
+  assert.match(s, /import\s*\{[^}]*\bageText\b[^}]*\}\s*from\s*["']\.\.\/myWork\.js["']/);
+  assert.match(s, /ageText\(/);
+  const t = template(read());
+  assert.match(t, /ageOf\(item\)|ageText\(/, "the age is rendered per item");
 });
 
 test("failure path: no /app/ literal and no new-tab link outside the gap-item branch (story 0.4)", () => {
