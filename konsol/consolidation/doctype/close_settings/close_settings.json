@@ -1,0 +1,54 @@
+{
+ "name": "Close Settings",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 1,
+ "istable": 0,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "description": "Close policy the Close Lead owns (konsol#305 P13). EPM Settings stays System Manager only.",
+ "fields": [
+  {
+   "fieldname": "close_order_section",
+   "fieldtype": "Section Break",
+   "label": "Close Order"
+  },
+  {
+   "fieldname": "first_close_fiscal_year",
+   "fieldtype": "Int",
+   "label": "First Close Fiscal Year",
+   "description": "The first period konsol closes. Earlier periods are history (opening balances). No default: sign-off and period close are refused until this is declared (konsol#303)."
+  },
+  {
+   "fieldname": "first_close_fiscal_period",
+   "fieldtype": "Int",
+   "label": "First Close Fiscal Period"
+  }
+ ],
+ "field_order": [
+  "close_order_section",
+  "first_close_fiscal_year",
+  "first_close_fiscal_period"
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1
+  }
+ ]
+}
