@@ -398,7 +398,7 @@ def test_signed_states_match_the_assertion_run_controller():
         tree = ast.parse(fh.read())
     found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
              and any(getattr(t, "id", None) == "SIGNED_STATES" for t in n.targets)]
-    assert found == [M.SIGNED_STATES + ("ZZ mutated",)]
+    assert found == [M.SIGNED_STATES]
 
 
 def test_re_sign_needed_is_not_a_signed_state():
