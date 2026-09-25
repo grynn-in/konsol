@@ -166,7 +166,10 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
 
     total_debit = sum(r["debit"] for r in rows)
     total_credit = sum(r["credit"] for r in rows)
-    if abs(total_debit - total_credit) > tolerance:
+    # parse_tb_csv rounds every amount to cents, so the difference does too:
+    # comparing raw floats can put an exact multiple of a cent (e.g. 0.01)
+    # a hair over the tolerance (100.01 - 100 == 0.010000000000005).
+    if abs(round(total_debit - total_credit, 2)) > tolerance:
         file_problems.append(
             f"Debits ({total_debit:,.2f}) do not equal credits "
             f"({total_credit:,.2f}); difference "
