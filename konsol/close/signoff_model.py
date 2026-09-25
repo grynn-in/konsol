@@ -353,6 +353,10 @@ _LABELS = {
     "override": "Override the failed checks and sign off",
 }
 _RED_LABEL = "Checks failed: only the Close Lead can override them with a reason"
+#: A period's effective status (konsol.fiscal_status_model).
+OPEN = "Open"
+PERIOD_STATUSES = (OPEN, "Closed", "Locked")
+_NOT_OPEN_LABEL = "The period is %s; reopen it to run the checks or sign off"
 
 
 def _gate_messages(problems):
@@ -409,7 +413,10 @@ def _on_behalf(rows):
     return {"labels": labels, "unknown": unknown}
 
 
-def _action(run, problems, can_override):
+def _action(run, problems, can_override, period_status):
+    if period_status not in PERIOD_STATUSES:
+        raise ValueError("Unknown period status %r; expected one of %s."
+                         % (period_status, ", ".join(PERIOD_STATUSES)))
     if run is not None:
         if run["status"] not in RUN_STATUSES:
             raise ValueError("Unknown Assertion Run status %r; expected one of %s."
@@ -419,6 +426,9 @@ def _action(run, problems, can_override):
                              % (run["signoff_status"], ", ".join(SIGNOFF_STATES)))
         if run["signoff_status"] in SIGNED_STATES:
             return "signed", run["signoff_status"]
+    if period_status != OPEN:
+        # A59: no checks and no sign-off on a Closed or Locked period.
+        return "blocked", _NOT_OPEN_LABEL % period_status
     blocked = _blocked_label(problems)
     if blocked:
         return "blocked", blocked
@@ -438,7 +448,8 @@ def _action(run, problems, can_override):
     return "blocked", _RED_LABEL
 
 
-def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override):
+def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override,
+            *, period_status):
     """The sign-off summary of story 9.1 and the next action.
 
     - ``run``: the latest terminal Assertion Run (``name``, ``status``,
@@ -452,13 +463,16 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
     - ``covers``: ``covers_notes`` output. ``previous``: period states
       (``key``, ``code``, ``status``, ``signoff``).
     - ``problems``: ``signoff_gate.sign_off_problems`` output.
+    - ``period_status``: the period's effective status, Open, Closed or
+      Locked (required; anything else raises ValueError).
 
     ``action`` is one of signed, blocked, run_checks, rerun, wait, sign,
-    acknowledge, override. A signed run stays signed; otherwise any gate blocks
+    acknowledge, override. A signed run stays signed; otherwise a Closed or
+    Locked period blocks (reopen it: A59), then any gate blocks
     (configuration first, then order, then completeness). An unknown run or
     sign-off status raises ValueError.
     """
-    action, label = _action(run, problems, can_override)
+    action, label = _action(run, problems, can_override, period_status)
     return {
         "action": action,
         "label": label,

@@ -254,6 +254,7 @@ def get_signoff(fiscal_year, fiscal_period):
         _previous(rows, key, signoff_gate._first_close()),
         _scoped(problems, allowed, key),
         can_override,
+        period_status=row["status"],
     )
     # A55: when each exception was declared, with the site's offset. The A08
     # controller allows one submitted exception per entity-period.

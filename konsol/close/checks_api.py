@@ -19,6 +19,7 @@ from datetime import datetime
 
 import frappe
 
+from konsol import period_status
 from konsol.close.checks_model import by_cause, staleness
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
@@ -93,7 +94,12 @@ def _descriptions():
 @frappe.whitelist(methods=["GET"])
 def get_checks(fiscal_year, fiscal_period):
     """The period's checks: ``{latest, staleness, staleness_note, as_of,
-    results_run, domains, failures, warnings, can_run}``.
+    results_run, domains, failures, warnings, can_run, period_status}``.
+
+    ``can_run`` needs a runner's role AND an Open period (A59): the checks
+    are not run on a Closed or Locked period (``trigger_close_run`` refuses
+    it). ``period_status`` is the period's effective status, so the screen
+    can say why. An undeclared period is refused (PeriodNotDeclared).
 
     ``latest`` is ``{name, status, completed_at}`` or None; ``staleness`` is
     ``not_run``, ``running``, ``stale`` or ``current`` (A13); ``domains`` is
@@ -101,6 +107,7 @@ def get_checks(fiscal_year, fiscal_period):
     """
     frappe.only_for(("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager"))
     year, period = _period(fiscal_year, fiscal_period)
+    status = period_status.period_row(year, period)["status"]
 
     latest = _latest(year, period)
     as_of = current_freshness()["as_of"]
@@ -122,14 +129,16 @@ def get_checks(fiscal_year, fiscal_period):
         "domains": grouped["domains"],
         "failures": grouped["failures"],
         "warnings": grouped["warnings"],
-        "can_run": bool(set(frappe.get_roles()) & set(RUNNERS)),
+        "can_run": status == period_status.OPEN and bool(set(frappe.get_roles()) & set(RUNNERS)),
+        "period_status": status,
     }
 
 
 @frappe.whitelist(methods=["POST"])
 def run_checks(fiscal_year, fiscal_period):
     """Start the close checks for the period; returns the new Assertion Run's
-    name. Refuses while another run is Queued or Running (trigger_close_run)."""
+    name. Refuses a period that is not Open, and refuses while another run is
+    Queued or Running (both in trigger_close_run)."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
     year, period = _period(fiscal_year, fiscal_period)
     return trigger_close_run(year, period)

@@ -15,7 +15,7 @@ from frappe.model.document import Document
 
 from konsol.assertion_status import (captures_rows, is_assertion, run_status,
                                      severity_of, step_status)
-from konsol.period_status import PeriodNotDeclared, assert_declared
+from konsol.period_status import OPEN, PeriodNotDeclared, assert_declared, period_row
 
 
 def _assert_year_declared(fiscal_year):
@@ -309,11 +309,24 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     refused whatever the run state, rather than learning from the error which
     runs are live.
 
+    Refuses a period that is not Open (A59): a new run on a Closed or Locked
+    period would become its latest run, unsigned, and the closed period would
+    read as not signed off. The period is read (locking, period_row) before
+    anything is inserted, and ahead of the "already in progress" check so the
+    closed period is the reason named.
+
     Refuses to start if another run is already Queued/Running — only one
     assertion suite may run at a time (concurrent `dbt test` would contend on
     the warehouse and produce confusing interleaved state).
     """
     frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
+    if fiscal_year not in (None, "") and fiscal_period not in (None, "", 0):
+        period = period_row(fiscal_year, fiscal_period)
+        if period["status"] != OPEN:
+            frappe.throw(frappe._("FY{0} {1} is {2}; reopen it to run the checks. "
+                                  "Nothing was started.").format(
+                                      fiscal_year, period["code"], period["status"]),
+                         title=frappe._("Period not open"))
     active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
     if active:
         frappe.throw(
@@ -476,6 +489,7 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     Red/Error -> BLOCKED, unless the caller is an EPM Admin / System Manager AND
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
+    A period that is not Open (Closed, Locked) -> rejected before the gates (A59).
     """
     # Enforce write access BEFORE we switch to ignore_permissions for the save
     # (the sign-off fields are read_only, so the save itself must bypass perms).
@@ -505,6 +519,13 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
         frappe.throw(
             frappe._("A sign-off is for a period; run {0} has none. Run the checks for a period and sign that run off.")
             .format(close_run), title=frappe._("Sign-off blocked"))
+    # A59: a Closed or Locked period is not signed; reopening it is the way on.
+    period = period_row(doc.fiscal_year, doc.fiscal_period)
+    if period["status"] != OPEN:
+        frappe.throw(
+            frappe._("FY{0} {1} is {2}; reopen it to sign off. Nothing was signed.").format(
+                doc.fiscal_year, period["code"], period["status"]),
+            title=frappe._("Sign-off blocked"))
     # Imported here: signoff_gate reads assertion_run's TERMINAL_STATUSES.
     from konsol.close import signoff_gate
     signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
