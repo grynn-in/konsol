@@ -148,6 +148,7 @@ def _period(code, **over):
         "signoff": "Not signed off",
         "gates_blocked": False,
         "rates_missing": 0,
+        "status": "Open",
     }
     facts.update(over)
     return facts
@@ -362,6 +363,24 @@ def test_rank_blocking_then_todo_then_waiting_older_period_first_then_title():
         ("waiting", 2025, 7, "Waiting on checks"),
     ]
     assert M.rank([]) == []
+
+
+# --- A45: a signed but still-Open period gives the Close Lead "Close <code>" ---
+
+
+def test_signed_off_but_still_open_gives_close_lead_a_close_todo():
+    per = {P08: _period("P08", signoff="Signed Off", status="Open")}
+    items = M.period_items("close_lead", per, FIRST)
+    assert [(i["id"], i["title"], i["kind"]) for i in items] == [
+        ("close:2025-08", "Close P08", "todo")]
+    assert items[0]["action"] == {"screen": "sign-off"}
+    for persona in ("group_accountant", "entity_accountant"):
+        assert M.period_items(persona, per, FIRST) == []
+
+
+def test_signed_off_and_closed_gives_no_close_item():
+    per = {P08: _period("P08", signoff="Signed Off", status="Closed")}
+    assert M.period_items("close_lead", per, FIRST) == []
 
 
 def test_rank_keeps_setup_gap_items_first_among_blocking():
