@@ -74,33 +74,85 @@ export const KNOWN_STATUSES = new Set([
   "Quarter not declared",
 ]);
 
+// B27: times on the TB list read like the freshness bar (B09): "10:42" today,
+// "Sep 20, 10:42" otherwise, in the user's zone, which the caller passes in.
+// A zone-less server timestamp is refused (B09b), never read in the browser's
+// zone. The rule is B09's; tbTable.test.mjs holds the two texts equal.
+// (freshness.js does not export its formatter; a shared module is proposed
+// outside this row.)
+const ZONED = /(Z|[+-]\d{2}:?\d{2})$/;
+const NOT_RECORDED = "not recorded";
+
+function parseZoned(value) {
+  if (typeof value !== "string" || !ZONED.test(value)) {
+    throw new Error(`Timestamp has no time zone: ${value}`);
+  }
+  return new Date(value);
+}
+
+function dayKey(date, timeZone) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function formatTime(value, now, timeZone) {
+  if (value === null || value === undefined) {
+    return NOT_RECORDED;
+  }
+  const date = parseZoned(value);
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  if (dayKey(date, timeZone) === dayKey(now, timeZone)) {
+    return time;
+  }
+  const day = new Intl.DateTimeFormat("en-US", { timeZone, month: "short", day: "numeric" }).format(date);
+  return `${day}, ${time}`;
+}
+
 /**
  * A25's `my_tbs(...)` result -> one row per entity: `{entity, name, status,
- * tb, exception}`. `tb` stays `null` when there is none (never `{}`); its
- * `on_behalf_label`, when present, is passed through exactly as the server
- * sent it — this never rewrites or re-derives it.
+ * tb, tbText, uploaded, exception}`. `tb` stays `null` when there is none
+ * (never `{}`); its `on_behalf_label`, when present, is passed through exactly
+ * as the server sent it — this never rewrites or re-derives it.
+ *
+ * B27: `tbText` is the TB's name, or the dash when there is none (never the
+ * literal "None"). `uploaded` is the TB's `creation` formatted in `timeZone`
+ * relative to `now` (the dash with no TB, "not recorded" when the server sent
+ * none), and an exception carries `declaredOnText` the same way. `now` and
+ * `timeZone` are required, as in freshnessView (B09); a zone-less timestamp
+ * throws.
  *
  * Throws on a status this module does not know, so an entity is never shown
  * with a blank or guessed status.
  */
-export function entityRows(myTbs) {
+export function entityRows(myTbs, now, timeZone) {
+  if (!timeZone) {
+    throw new Error("entityRows requires a time zone");
+  }
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error("entityRows requires a valid `now`");
+  }
   return (myTbs.entities || []).map((entity) => {
     if (!KNOWN_STATUSES.has(entity.status)) {
       throw new Error(`entityRows: unknown TB status: ${entity.status}`);
     }
+    const tb = entity.tb
+      ? {
+          name: entity.tb.name,
+          owner: entity.tb.owner,
+          on_behalf_label: entity.tb.on_behalf_label,
+          creation: entity.tb.creation,
+        }
+      : null;
+    const exception = entity.exception
+      ? { ...entity.exception, declaredOnText: formatTime(entity.exception.declared_on, now, timeZone) }
+      : null;
     return {
       entity: entity.entity,
       name: entity.name,
       status: entity.status,
-      tb: entity.tb
-        ? {
-            name: entity.tb.name,
-            owner: entity.tb.owner,
-            on_behalf_label: entity.tb.on_behalf_label,
-            creation: entity.tb.creation,
-          }
-        : null,
-      exception: entity.exception || null,
+      tb,
+      tbText: tb ? tb.name : DASH,
+      uploaded: tb ? formatTime(tb.creation, now, timeZone) : DASH,
+      exception,
     };
   });
 }
