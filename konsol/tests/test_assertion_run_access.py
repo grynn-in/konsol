@@ -207,7 +207,7 @@ class _Doc:
 
 def test_a_new_run_cannot_arrive_signed_or_scored():
     before_insert = _before_insert_runner()
-    forged = _Doc(
+    forged = _Doc(flags=__import__("types").SimpleNamespace(started_by_trigger=True),
         status="Green", signoff_status="Signed Off", signed_off_by="x@example.com",
         signed_off_at="2026-09-25 10:00:00", override_reason="r", acknowledgement="a",
         warnings_at_signoff="w", total=127, passed=127, failed=0, errored=0, warned=0,
@@ -247,3 +247,40 @@ def test_every_read_only_result_field_is_reset_on_insert():
     read_only = {f["fieldname"] for f in meta["fields"] if f.get("read_only")
                  and f["fieldtype"] not in ("Section Break", "Column Break", "Tab Break")}
     assert read_only - {"title", "status", "signoff_status", "triggered_by"} == blanked
+
+
+def test_a_run_is_only_created_through_trigger_close_run():
+    """A02c: a direct insert (REST, Desk) is refused; only trigger_close_run,
+    which also enqueues the suite, may create a run. Otherwise a queued run
+    with no job blocks every other run until the reaper errors it."""
+    before_insert = _before_insert_runner()
+
+    class Refused(Exception):
+        pass
+
+    import types
+    before_insert.__globals__["frappe"] = types.SimpleNamespace(
+        session=types.SimpleNamespace(user="caller@example.com"),
+        throw=lambda *a, **k: (_ for _ in ()).throw(Refused(a[0] if a else "")),
+        _=lambda s: s,
+    )
+    direct = _Doc(flags=types.SimpleNamespace(), results=[])
+    try:
+        before_insert(direct)
+        raise AssertionError("a direct insert was not refused")
+    except Refused:
+        pass
+    via_trigger = _Doc(flags=types.SimpleNamespace(started_by_trigger=True), results=[])
+    before_insert(via_trigger)
+    assert via_trigger.status == "Queued"
+
+
+def test_trigger_close_run_marks_its_insert():
+    path = os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.py")
+    with open(path) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "trigger_close_run")
+    body = ast.get_source_segment(src, fn)
+    assert "doc.flags.started_by_trigger = True" in body
+    assert body.index("doc.flags.started_by_trigger = True") < body.index("doc.insert(")
