@@ -634,6 +634,16 @@ test("close rejects → signed with the error; closed stays null; CLOSE again cl
 	assert.equal(h.calls.close.length, 2);
 });
 
+test("a close error does not survive a REFRESH from signed", async () => {
+	const h = start();
+	await toClosing(h);
+	h.last("close").reject(new Error("Rates missing"));
+	await flush();
+	h.actor.send(REFRESH);
+	assert.equal(value(h.actor), '"loading"');
+	assert.equal(h.actor.getSnapshot().context.error, null);
+});
+
 test("reopen rejects → closed with the error, closed kept; REOPEN again clears it", async () => {
 	const h = start();
 	await toReopening(h);
