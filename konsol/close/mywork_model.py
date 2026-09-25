@@ -22,6 +22,9 @@ Rules:
   and its ``action`` opens the Desk page (story 0.4: the Desk only for
   configuration gaps).
 - A missing fact raises ValueError: nothing is guessed.
+- A53: a gap item has no period, so it carries ``since: None`` with
+  ``since_reason: "configuration gap"`` — the screen shows nothing it was
+  not sent, never an invented age.
 """
 
 GAPS = ("first_close", "chart", "frequency", "ownership", "accountants")
@@ -50,6 +53,8 @@ def _item(gap, title, detail, owner, desk, entities=(), users=()):
         "entities": sorted(set(entities)),
         "users": sorted(set(users)),
         "action": {"desk": desk},
+        "since": None,
+        "since_reason": "configuration gap",
     }
 
 
@@ -123,6 +128,13 @@ PERSONAS = (CLOSE_LEAD, GROUP_ACCOUNTANT, ENTITY_ACCOUNTANT, VIEWER)
 
 PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "signoff",
                "gates_blocked", "rates_missing", "status")
+#: A53: ``since`` (the period's end date, ISO) is read from ``facts`` when the
+#: caller supplies it and carried on ``item["period"]["since"]`` for every
+#: period item, so B18 can show an age. It is not in PERIOD_KEYS: it is read
+#: with ``facts.get``, never guessed or defaulted to today, and a caller that
+#: omits it simply gets ``since: None`` on the period (the API layer is the
+#: one that requires and validates it, per period row, before it ever reaches
+#: this pure model).
 CHECK_STATES = ("not_run", "running", "stale", "failed", "current")
 KINDS = ("blocking", "todo", "waiting")
 
@@ -155,7 +167,8 @@ def _period_item(persona, key, facts, slug, kind, title, action):
         "id": "%s:%d-%02d" % (slug, fy, fp),
         "kind": kind,
         "title": title,
-        "period": {"fiscal_year": fy, "fiscal_period": fp, "code": facts["code"]},
+        "period": {"fiscal_year": fy, "fiscal_period": fp, "code": facts["code"],
+                   "since": facts.get("since")},
         "owner": OWNERS[persona],
         "action": action,
     }

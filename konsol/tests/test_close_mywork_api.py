@@ -450,3 +450,52 @@ def test_errored_run_is_failed_not_current():
     ids = _ids(_call(site))
     assert "signoff:2025-08" not in ids
     assert "checks-waiting:2025-08" in ids
+
+
+# --- A53: items carry an age (`since` = the period's end date) -----------------
+
+
+def test_period_items_carry_since_as_their_period_end_date():
+    site = _Site()
+    result = _call(site)
+    ends = {fp: _month_end(2025, fp).isoformat() for fp in (7, 8, 9)}
+    seen = set()
+    for item in result["items"]:
+        period = item.get("period")
+        if period is None:
+            continue
+        fp = period["fiscal_period"]
+        assert period["since"] == ends[fp], item
+        seen.add(fp)
+    assert seen == {7, 8, 9}
+
+
+def test_rate_gate_error_item_also_carries_since():
+    site = _Site()
+    site.rates[(2025, 8)] = (None, "ServerException UNKNOWN_TABLE", [])
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "rates-error:2025-08")
+    assert item["period"]["since"] == _month_end(2025, 8).isoformat()
+
+
+def test_gap_items_carry_since_none_and_a_reason():
+    site = _Site()
+    site.first_close = (0, 0)  # only gap items are returned
+    result = _call(site)
+    assert result["items"]
+    for item in result["items"]:
+        assert item["id"].startswith("gap:"), item
+        assert item["since"] is None, item
+        assert item["since_reason"] == "configuration gap", item
+
+
+def test_period_with_no_end_date_raises_and_is_never_given_today():
+    site = _Site()
+    for row in site.rows:
+        if (row["fiscal_year"], row["fiscal_period"]) == (2025, 7):
+            row["end_date"] = None
+    with pytest.raises(Exception) as info:
+        _call(site)
+    message = str(info.value)
+    assert "end date" in message, message
+    assert "P07" in message, message
