@@ -591,8 +591,8 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
 def _approved_keys(fiscal_year, fiscal_period, lock=False):
     """The (from, to, rate_type) of every approved rate for the period.
 
-    Plain read by default: this is also called on every view of the
-    read-only home screen (home_api._rate_gate), where LOCK IN SHARE MODE
+    Plain read by default: this is also called on every read of the close
+    app's My work screen (close.mywork_api), where LOCK IN SHARE MODE
     would take share locks on Group Exchange Rate rows and can block rate
     saves for the request's duration.
 
@@ -620,12 +620,12 @@ def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False):
 def rate_gate(fiscal_year, fiscal_period, lock=False):
     """What the close gate says: (missing keys, None, blockers), or (None, why
     the warehouse can't answer, []). ``blockers`` names each group the period
-    translates into that has no reporting currency. The role home shows the
-    same answer.
+    translates into that has no reporting currency. The close app's My work
+    screen shows the same answer.
 
     ``lock`` is opt-in and passed through to ``_approved_keys``: plain by
-    default, which is how home_api._rate_gate calls this on every view of the
-    read-only home screen. Only assert_rates_complete passes ``lock=True``,
+    default, which is how close.mywork_api calls this on every read of the
+    close app's My work screen. Only assert_rates_complete passes ``lock=True``,
     to see a rate committed while the close waited on the year lock (PR #191
     re-review finding 4) — a share lock there is fine, since a close is rare
     and already holds the year lock.

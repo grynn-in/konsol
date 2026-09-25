@@ -18,7 +18,6 @@ import glob
 import importlib.util
 import json
 import os
-import re
 import sys
 import types
 
@@ -78,9 +77,6 @@ def test_every_role_the_app_names_is_created():
     for aliases in _assigned_dict(sheet, "LAYER_ROLE_ALIASES").values():
         for role in aliases:
             named.setdefault(role, "budget_sheet.py LAYER_ROLE_ALIASES")
-    with open(os.path.join(APP_DIR, "control_api.py")) as f:
-        for role in re.findall(r'owner="([^"]+)"', f.read()):
-            named.setdefault(role, "control_api.py owner=")
     missing = {r: where for r, where in named.items() if r and r not in FRAPPE_ROLES and r not in _created_roles()}
     assert not missing, f"named but never created by install.ROLES: {missing}"
 

@@ -5,10 +5,8 @@ correction is a new document in an open period. Consolidation Adjustment and
 IC Balance gated only their cancel, so a draft whose period closed while it
 waited could still be submitted into it.
 
-The home disables only what the server refuses and annotates what it allows
-but can't complete, so its two lists (submit needs an open period, every save
-does) are checked here against the controllers themselves, run against a
-closed period."""
+Two lists (submit needs an open period, every save does) are checked here
+against the controllers themselves, run against a closed period."""
 import ast
 import glob
 import importlib.util
@@ -25,9 +23,22 @@ CLOSED = "Dec 2099 is closed."
 #: a fiscal year/period never declared, for the assert_declared stub to refuse
 UNDECLARED = (2001, 1)
 
-_spec = importlib.util.spec_from_file_location("home_model", os.path.join(APP_DIR, "home_model.py"))
-M = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(M)
+#: Submit needs an open period for exactly these doctypes. Held here since
+#: konsol#305 R02 deleted home_model.py, where the old home kept them; the
+#: tests below check the list against what the controllers actually refuse.
+SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
+    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance",
+    "Group Exchange Rate"})
+
+#: Of those, the ones whose every save is refused in a closed period (a trial
+#: balance checks the period in validate): there the draft can only be deleted.
+SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
+
+#: The submittable doctypes checked against a closed period: every doctype the
+#: old home offered a submit for (read from home_api before R02 deleted it).
+SUBMIT_CANDIDATES = frozenset({
+    "Consolidation Adjustment", "Group Exchange Rate", "Historical Equity Rate",
+    "IC Balance", "Ownership Period", "Trial Balance Submission"})
 
 
 def _controller_paths():
@@ -45,19 +56,6 @@ def _controller_paths():
 
 
 PATHS = _controller_paths()
-
-
-def _home_api_tree():
-    with open(os.path.join(APP_DIR, "home_api.py")) as f:
-        return ast.parse(f.read())
-
-
-def _home_actions(tree=None):
-    """(doctype, ptype, call node) for every _action call in home_api."""
-    for c in ast.walk(tree or _home_api_tree()):
-        if (isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_action" and len(c.args) >= 3
-                and all(isinstance(a, ast.Constant) for a in c.args[1:3])):
-            yield c.args[1].value, c.args[2].value, c
 
 
 # --- which private methods may be skipped -----------------------------------
@@ -258,7 +256,7 @@ def _refuses_in_a_closed_period(doctype, hooks):
 
 def _compare(refusing, expected, why_not, what):
     assert refusing == set(expected), (
-        f"{what}: server-only {sorted(refusing - expected)}, home-only {sorted(expected - refusing)}; "
+        f"{what}: server-only {sorted(refusing - expected)}, list-only {sorted(expected - refusing)}; "
         + "; ".join(w for w in why_not if w))
 
 
@@ -266,18 +264,18 @@ def test_the_home_blocks_exactly_the_submits_the_server_refuses():
     """Every doctype the home offers a submit for, run through validate and
     before_submit (Frappe's submit order) in a closed period: the set that
     refuses is SUBMIT_NEEDS_OPEN_PERIOD."""
-    offered = {doctype for doctype, ptype, _ in _home_actions() if ptype == "submit"}
-    assert set(M.SUBMIT_NEEDS_OPEN_PERIOD) <= offered, offered
+    offered = set(SUBMIT_CANDIDATES)
+    assert set(SUBMIT_NEEDS_OPEN_PERIOD) <= offered, offered
     results = {dt: _refuses_in_a_closed_period(dt, ("validate", "before_submit")) for dt in sorted(offered)}
-    _compare({dt for dt, (r, _) in results.items() if r}, M.SUBMIT_NEEDS_OPEN_PERIOD,
+    _compare({dt for dt, (r, _) in results.items() if r}, SUBMIT_NEEDS_OPEN_PERIOD,
              [w for _, w in results.values()], "submit refused in a closed period")
 
 
 def test_the_home_knows_exactly_which_saves_the_server_refuses():
     """validate alone, in a closed period: the doctypes that refuse every save
     are SAVE_NEEDS_OPEN_PERIOD, and the others still take a save there."""
-    results = {dt: _refuses_in_a_closed_period(dt, ("validate",)) for dt in sorted(M.SUBMIT_NEEDS_OPEN_PERIOD)}
-    _compare({dt for dt, (r, _) in results.items() if r}, M.SAVE_NEEDS_OPEN_PERIOD,
+    results = {dt: _refuses_in_a_closed_period(dt, ("validate",)) for dt in sorted(SUBMIT_NEEDS_OPEN_PERIOD)}
+    _compare({dt for dt, (r, _) in results.items() if r}, SAVE_NEEDS_OPEN_PERIOD,
              [w for _, w in results.values()], "save refused in a closed period")
 
 
@@ -344,110 +342,3 @@ def test_submit_into_an_open_period_still_works():
     d = _doc(module, "Consolidation Adjustment")
     d.before_submit()
     assert (d.status, d.approved_by) == ("Approved", "approver@example.com")
-
-
-# --- what the home shows in a closed period ---------------------------------
-
-def test_closed_period_notes_what_the_server_allows_but_cannot_complete():
-    # every link opens a form the server still takes something on: none is blocked
-    assert M.closed_period("Consolidation Adjustment", CLOSED, "approve") == {
-        "note": "Can't approve: Dec 2099 is closed."}
-    assert M.closed_period("Consolidation Adjustment", CLOSED, "be approved") == {
-        "note": "Can't be approved: Dec 2099 is closed."}
-    assert M.closed_period("IC Balance", CLOSED) == {"note": "Can't submit: Dec 2099 is closed."}
-    # a trial balance draft takes no save there, only a delete: the note says
-    # so to a viewer who may delete, and says who may to one who can't
-    assert M.closed_period("Trial Balance Submission", CLOSED, can_delete=True) == {
-        "note": "Can't submit: Dec 2099 is closed. Delete the draft if it isn't needed."}
-    assert M.closed_period("Trial Balance Submission", CLOSED, can_delete=False) == {
-        "note": "Can't submit: Dec 2099 is closed. Ask an EPM Admin to delete the draft if it isn't needed."}
-    assert M.closed_period("Trial Balance Submission", CLOSED) == M.closed_period(
-        "Trial Balance Submission", CLOSED, can_delete=False)
-    assert M.closed_period("Trial Balance Submission", None, can_delete=True) == {"note": None}
-    # the delete right only changes the trial balance note
-    assert M.closed_period("IC Balance", CLOSED, can_delete=True) == M.closed_period("IC Balance", CLOSED)
-    # open period, or a doctype whose submit the server takes: nothing to say
-    assert M.closed_period("IC Balance", None) == {"note": None}
-    assert M.closed_period("Ownership Period", CLOSED) == {"note": None}
-    assert M.SAVE_NEEDS_OPEN_PERIOD <= M.SUBMIT_NEEDS_OPEN_PERIOD
-
-
-def test_every_home_link_to_a_gated_doctype_says_what_a_closed_period_does():
-    """Each submit or edit link to a period-gated doctype takes its note from
-    M.closed_period, and no queue link is blocked on the period."""
-    seen = set()
-    for doctype, ptype, call in _home_actions():
-        gate = [k.value for k in call.keywords if k.arg is None
-                and isinstance(k.value, ast.Call) and ast.unparse(k.value.func) == "M.closed_period"]
-        assert not any(k.arg in ("blocked", "note") for k in call.keywords), ast.unparse(call)
-        if doctype in M.SUBMIT_NEEDS_OPEN_PERIOD and ptype in ("submit", "write"):
-            assert len(gate) == 1, ast.unparse(call)
-            assert ast.unparse(gate[0].args[0]) == repr(doctype) and ast.unparse(gate[0].args[1]) == "closed", ast.unparse(call)
-            seen.add(doctype)
-        else:
-            assert not gate, ast.unparse(call)
-    assert seen == set(M.SUBMIT_NEEDS_OPEN_PERIOD), seen
-
-
-def test_the_trial_balance_note_rests_on_who_may_delete_a_draft():
-    """The closed-period note sends an Entity Accountant (the only role that
-    gets trial balance rows) to an EPM Admin, because only EPM Admin and
-    System Manager may delete a draft. If these rights change, revisit
-    home_model.closed_period's trial balance note."""
-    with open(PATHS["Trial Balance Submission"][:-3] + ".json") as f:
-        perms = {p["role"]: p for p in json.load(f)["permissions"] if not p.get("permlevel")}
-    assert perms["Entity Accountant"].get("submit") and not perms["Entity Accountant"].get("delete"), (
-        "Entity Accountant's trial balance rights changed: revisit the closed-period note")
-    assert perms["EPM Admin"].get("delete") and perms["System Manager"].get("delete"), (
-        "EPM Admin / System Manager lost delete on Trial Balance Submission: revisit the closed-period note")
-
-
-def test_the_trial_balance_link_asks_the_viewers_delete_right():
-    """home_api decides can_delete with the permission helper, only in a
-    closed period, and passes it to M.closed_period for the draft's link."""
-    tree = _home_api_tree()
-    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
-               and [ast.unparse(t) for t in n.targets] == ["can_delete"]]
-    assert len(assigns) == 1, [ast.unparse(a) for a in assigns]
-    assert ast.unparse(assigns[0].value) == (
-        "bool(closed) and _can('Trial Balance Submission', 'delete', doc=draft.name)"), ast.unparse(assigns[0].value)
-    tb = [call for dt, ptype, call in _home_actions(tree) if dt == "Trial Balance Submission" and ptype == "submit"]
-    assert len(tb) == 1
-    gate = next(k.value for k in tb[0].keywords if k.arg is None)
-    assert [(k.arg, ast.unparse(k.value)) for k in gate.keywords] == [("can_delete", "can_delete")], ast.unparse(gate)
-
-
-def test_an_action_is_never_blocked_behind_the_permission_check():
-    """The closed period no longer blocks any queue link, so _action has no
-    `blocked` override: allowed is the user's permission, nothing else."""
-    fn = next(n for n in _home_api_tree().body if isinstance(n, ast.FunctionDef) and n.name == "_action")
-    params = [a.arg for a in fn.args.args + fn.args.kwonlyargs]
-    assert "blocked" not in params and "blocked" not in ast.unparse(fn), params
-
-
-def test_send_for_approval_says_the_draft_cannot_be_approved():
-    for doctype, ptype, call in _home_actions():
-        if call.args[0].value == "Send for approval":
-            gate = next(k.value for k in call.keywords if k.arg is None)
-            assert ast.unparse(gate.args[2]) == "'be approved'", ast.unparse(call)
-            return
-    raise AssertionError("no Send for approval action")
-
-
-def test_the_trial_balance_upload_is_offered_only_in_an_open_period():
-    """The server refuses the upload in a closed period, so the home doesn't
-    offer it there: the create action sits under `period_open`."""
-    tree = _home_api_tree()
-    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-    uploads = [c for dt, ptype, c in _home_actions(tree) if dt == "Trial Balance Submission" and ptype == "create"]
-    assert uploads, "no trial balance upload action"
-    for call in uploads:
-        node = call
-        while node in parents:
-            parent = parents[node]
-            if isinstance(parent, ast.If) and node in parent.body:
-                assert ast.unparse(parent.test) == "period_open", ast.unparse(parent.test)
-                break
-            node = parent
-        else:
-            raise AssertionError("the upload is offered unconditionally")
