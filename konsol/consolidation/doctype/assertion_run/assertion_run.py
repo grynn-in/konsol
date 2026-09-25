@@ -47,7 +47,13 @@ class AssertionRun(Document):
     def before_insert(self):
         """A new run starts Queued, unsigned, with no results, triggered by
         the caller, whatever the insert request carried (A02b). Only the
-        worker and sign_off_close fill these in, on later saves."""
+        worker and sign_off_close fill these in, on later saves.
+
+        Only trigger_close_run may create a run (A02c): it also enqueues the
+        suite, so a run inserted any other way would sit Queued with no job and
+        block every other run until the reaper errors it."""
+        if not getattr(self.flags, "started_by_trigger", False):
+            frappe.throw(frappe._("Start a close run with Run checks (trigger_close_run), not by creating the record."))
         for field in NEW_RUN_BLANK_FIELDS:
             self.set(field, None)
         self.status = "Queued"
@@ -155,6 +161,7 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
             "title": frappe.utils.now(),
         }
     )
+    doc.flags.started_by_trigger = True
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
     frappe.enqueue(
