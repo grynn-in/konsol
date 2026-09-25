@@ -24,6 +24,10 @@ What it does (tasks.md C1 step 1; Problems 14 — site-wide changes):
   names (P1, P2);
 - users zz-c1-ea (Entity Accountant, User Permission Entity = ZZOP),
   zz-c1-analyst (EPM Analyst), zz-c1-lead (EPM Admin), zz-c1-viewer (EPM User).
+
+Before any change it records the highest Build Approval and Pipeline Run names
+(C1b), so the cleanup can list every build the walk-through caused, and prints
+the pending builds that already exist (they absorb this run's requests).
 """
 import datetime
 import json
@@ -58,6 +62,30 @@ def counts():
     return {dt: frappe.db.count(dt) for dt in COUNTED}
 
 
+#: Build Approval states that are not terminal (tasks.request_build_for_scope).
+OPEN_BUILD_STATES = ("Draft", "Pending Review", "Approved", "Running")
+
+
+def name_number(name):
+    """BAPR-00061 -> 61; None for a name that is not <prefix>-<digits>."""
+    tail = str(name).rsplit("-", 1)[-1]
+    return int(tail) if "-" in str(name) and tail.isdigit() else None
+
+
+def highest(doctype):
+    """The highest numbered name of ``doctype`` ({"name", "number"}); number 0
+    when there is none. A name outside the naming series is refused, since the
+    cleanup could not place it before or after the mark."""
+    names = frappe.get_all(doctype, pluck="name", limit_page_length=0)
+    odd = [n for n in names if name_number(n) is None]
+    if odd:
+        raise SystemExit(f"REFUSED, nothing changed: {doctype} names outside the naming series: {odd}")
+    if not names:
+        return {"name": None, "number": 0}
+    top = max(names, key=name_number)
+    return {"name": top, "number": name_number(top)}
+
+
 def refuse_if_present():
     problems = []
     if frappe.db.exists("EPM Fiscal Year", str(FY)) or frappe.db.exists("EPM Fiscal Year", {"fiscal_year": FY}):
@@ -87,14 +115,23 @@ def main():
     frappe.connect()
     frappe.set_user("Administrator")
     refuse_if_present()
+    ba_mark, run_mark = highest("Build Approval"), highest("Pipeline Run")  # refuse before any change
 
     state = {
         "started_at": frappe.utils.now(),
         "counts_before": counts(),
         "close_settings_singles": [list(r) for r in frappe.db.sql(
             "select field, value from tabSingles where doctype='Close Settings' order by field")],
-        "build_approvals_before": frappe.get_all("Build Approval", pluck="name", limit_page_length=0),
-        "pipeline_runs_before": frappe.get_all("Pipeline Run", pluck="name", limit_page_length=0),
+        # The highest names before setup (C1b): the cleanup lists every Build
+        # Approval and Pipeline Run above them and touches none at or below.
+        "build_approval_mark": ba_mark,
+        "pipeline_run_mark": run_mark,
+        # Pending builds that already exist absorb this run's requests for
+        # their scope (the debounce); listed, never touched (rule 9).
+        "open_build_approvals_before": frappe.get_all(
+            "Build Approval", filters={"workflow_state": ["in", OPEN_BUILD_STATES]},
+            fields=["name", "workflow_state", "build_scope", "trigger_doctype", "trigger_docname"],
+            order_by="name asc", limit_page_length=0),
         "files_before": frappe.get_all("File", pluck="name", limit_page_length=0),
         "created": {"fiscal_year": None, "entity": None, "cg_node": None, "ownership_period": None,
                     "tb_exceptions": [], "rates": [], "users": [], "user_permissions": []},
@@ -222,6 +259,11 @@ def main():
     for dt in COUNTED:
         print(f"  count {dt}: {state['counts_before'][dt]} -> {state['counts_after_setup'][dt]}")
     print("  sign-off problems 2099/1:", signoff_gate.sign_off_problems(FY, 1))
+    print("  build approval mark:", state["build_approval_mark"], "pipeline run mark:", state["pipeline_run_mark"])
+    for ba in state["open_build_approvals_before"]:
+        print(f"  pre-existing open build {ba['name']} ({ba['workflow_state']}, {ba['build_scope']}, "
+              f"trigger {ba['trigger_doctype']} {ba['trigger_docname']}): absorbs this run's "
+              f"{ba['build_scope']} requests; the cleanup will not touch it")
 
 
 if __name__ == "__main__":
