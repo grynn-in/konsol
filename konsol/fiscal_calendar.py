@@ -22,6 +22,7 @@ _PERIOD_DATA = {
     "IC Balance": True,
     "Group Exchange Rate": True,
     "Assertion Run": False,
+    "TB Exception": True,
 }
 
 #: Doctypes whose documents carry a fiscal year + period that must be declared.
