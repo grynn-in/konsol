@@ -311,10 +311,10 @@ def test_catch_up_uses_the_loaded_periods():
 # --- failure paths -----------------------------------------------------------
 
 def test_an_undeclared_period_raises_period_not_declared():
-    site = _Site()
-    module, frappe, period_status = _load(site)
-    with pytest.raises(period_status.PeriodNotDeclared):
-        _call(site, 2030, 1)
+    with pytest.raises(Exception) as err:
+        _call(_Site(), 2030, 1)
+    assert type(err.value).__name__ == "PeriodNotDeclared"
+    assert "2030" in str(err.value)
 
 
 def test_half_a_period_is_refused_not_guessed():
