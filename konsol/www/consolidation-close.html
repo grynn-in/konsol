@@ -1,0 +1,18 @@
+{% extends "templates/web.html" %}
+{% block title %}Consolidation Close Wizard{% endblock %}
+{% block style %}
+<link rel="stylesheet" href="/assets/konsol/close_wizard/vendor/98.css">
+<link rel="stylesheet" href="/assets/konsol/close_wizard/desktop.css">
+<style>
+  .navbar, .web-footer, footer, .page-header { display: none !important; }
+  .page-content, .container { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
+  body { background: #008080; }
+</style>
+{% endblock %}
+{% block page_content %}
+<script>window.csrf_token = "{{ csrf_token }}";</script>
+<div id="root" class="w98-hide-frappe"></div>
+<script src="/assets/konsol/close_wizard/vendor/react.production.min.js"></script>
+<script src="/assets/konsol/close_wizard/vendor/react-dom.production.min.js"></script>
+<script src="/assets/konsol/close_wizard/app.js?v={{ js_version }}"></script>
+{% endblock %}
