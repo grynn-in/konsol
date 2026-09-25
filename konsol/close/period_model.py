@@ -123,3 +123,105 @@ def landing(rows, signed_keys, persona, today, first_close):
                 "provisional": working}
     return {"period": None, "rule": None, "reason": NO_SIGNED_REASON,
             "provisional": working}
+
+
+# --- A04: period states, other open periods, the catch-up label ------------
+
+#: Copied from assertion_run.SIGNED_STATES (assertion_run.py:224); not imported.
+SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
+
+NOT_RUN = "Not run"
+NOT_SIGNED_OFF = "Not signed off"
+
+
+def _first(first_close):
+    if first_close is None:
+        return None
+    return (int(first_close[0]), int(first_close[1]))
+
+
+def _period_name(key):
+    return "FY%d P%02d" % key
+
+
+def _catch_up(regular_keys, first, loaded):
+    """The catch-up label for the first close period, or None (#303 point 1).
+
+    The label appears only when earlier Regular periods of its year exist and
+    the period right after the previous loaded one is not the first close
+    period itself. With nothing loaded before, the catch-up covers from the
+    first Regular period of its year.
+    """
+    earlier_in_year = [k for k in regular_keys if k[0] == first[0] and k < first]
+    if not earlier_in_year:
+        return None
+    before = [k for k in loaded if k < first]
+    if before:
+        previous = max(before)
+        after = [k for k in regular_keys if k > previous]
+        start = min(after) if after else first
+    else:
+        start = min(earlier_in_year)
+    if start >= first:
+        return None
+    return "Catch-up: covers from %s" % _period_name(start)
+
+
+def period_states(rows, runs, first_close, loaded_keys):
+    """One state per Regular period, oldest first, plus configuration gaps.
+
+    ``rows`` are ``fiscal_period_rows()`` dicts; ``runs`` maps a key to the
+    latest terminal run ``{"name", "status", "signoff_status"}``;
+    ``first_close`` is the declared first close key or None (no default);
+    ``loaded_keys`` are the keys with a submitted TB.
+
+    Returns ``{"states": [...], "config_gaps": [...]}``. With no first close
+    period, ``is_history`` and ``catch_up`` are None on every state and the
+    gap ``first_close_undeclared`` is returned: nothing is assumed.
+    """
+    runs = runs or {}
+    loaded = {(int(fy), int(fp)) for fy, fp in (loaded_keys or ())}
+    first = _first(first_close)
+    regular = sorted(((_key(row), row) for row, _s, _e in _regular(rows)), key=lambda kr: kr[0])
+    regular_keys = [k for k, _row in regular]
+    catch_up = _catch_up(regular_keys, first, loaded) if first is not None else None
+    states = []
+    for key, row in regular:
+        run = runs.get(key) or {}
+        signoff = run.get("signoff_status") or NOT_SIGNED_OFF
+        states.append({
+            "key": key,
+            "code": row.get("period_code"),
+            "label": row.get("period_label") or row.get("period_code"),
+            "status": row.get("status"),
+            "start_date": row.get("start_date"),
+            "end_date": row.get("end_date"),
+            "run": run.get("name"),
+            "checks": run.get("status") or NOT_RUN,
+            "signoff": signoff,
+            "is_signed": signoff in SIGNED_STATES,
+            "is_history": None if first is None else key < first,
+            "catch_up": catch_up if key == first else None,
+        })
+    gaps = []
+    if first is None:
+        gaps.append({"code": "first_close_undeclared", "message": FIRST_CLOSE_UNDECLARED})
+    return {"states": states, "config_gaps": gaps}
+
+
+def other_open(states, selected_key, first_close):
+    """Open periods from the first close period on, other than the selected one, oldest first.
+
+    History (before ``first_close``) is never open work. With no first close
+    period declared nothing is reported; the gap is surfaced by
+    ``period_states``.
+    """
+    first = _first(first_close)
+    if first is None:
+        return []
+    selected = None if selected_key is None else (int(selected_key[0]), int(selected_key[1]))
+    found = [
+        s for s in states or ()
+        if s.get("status") == "Open" and tuple(s["key"]) >= first and tuple(s["key"]) != selected
+    ]
+    return sorted(found, key=lambda s: tuple(s["key"]))
