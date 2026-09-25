@@ -26,6 +26,7 @@ import { defineComponent, defineAsyncComponent, computed, h, reactive } from "vu
 export const landingState = reactive({ reason: null, error: null });
 import { get } from "./api.js";
 import { format } from "./route.js";
+import { navFor } from "./nav.js";
 
 function pascalCase(slug) {
   return String(slug)
@@ -43,11 +44,18 @@ const NotBuiltYet = defineComponent({
 });
 
 /**
- * `get_context()` result -> the D5 landing path, on the My work screen.
+ * `get_context()` result -> the D5 landing path, on the persona's FIRST
+ * screen (B16c) — not always My work. `navFor` (B08) is what decides a
+ * persona's screen order (a Viewer has no My work, so lands on Trial
+ * balances); this stays the single source of that ordering rather than a
+ * second, hard-coded one here.
+ *
  * `landing.period` null names the gap instead of guessing a period — an
  * undeclared first close, or a Viewer who has signed nothing (A15's
- * `landing.reason`): `/close/none/<reason>/my-work`, the reason
- * URL-escaped since it can be a full sentence, not a short code.
+ * `landing.reason`); the shell renders that reason and stays on /close
+ * (B16b). An unknown persona (no close role — `navFor` returns a single
+ * `{screen: null}` entry) is the same: never guess a screen, so never
+ * `/close/<year>/<period>/null`.
  */
 export function landingPath(context) {
   const landing = context.landing;
@@ -57,8 +65,14 @@ export function landingPath(context) {
     // Putting the reason into the URL made route.js read it as a bad year.
     return null;
   }
+  const me = context.me || {};
+  const screen = navFor(me.persona, me.roles)[0]?.screen;
+  if (screen == null) {
+    // No close role: navFor's single entry has screen: null. Never guess.
+    return null;
+  }
   const [year, period] = landing.period;
-  return format({ year, period, screen: "my-work" });
+  return format({ year, period, screen });
 }
 
 /**
