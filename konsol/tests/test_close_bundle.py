@@ -11,6 +11,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 
 APP_DIR = os.path.join(os.path.dirname(__file__), "..")
 BUNDLE_DIR = os.path.abspath(os.path.join(APP_DIR, "public", "close"))
@@ -42,18 +43,93 @@ def _hash_src_dir(src_dir):
     return h.hexdigest()
 
 
-def test_close_js_and_css_exist():
-    assert os.path.isfile(os.path.join(BUNDLE_DIR, "close.js")), (
-        "konsol/public/close/close.js is missing — build it with "
+def _manifest():
+    path = os.path.join(BUNDLE_DIR, "build-manifest.json")
+    assert os.path.isfile(path), (
+        "konsol/public/close/build-manifest.json is missing — build with "
         "`cd close-ui && yarn build` and commit the result."
     )
-    assert os.path.isfile(os.path.join(BUNDLE_DIR, "close.css"))
+    with open(path) as f:
+        return json.load(f)
 
 
-def test_index_html_references_close_js_and_css():
+#: A relative ES import in the minified bundle: `from"./x.js"`,
+#: `import"./x.js"` or `import("./x.js")`.
+_REL_IMPORT = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*["']\./([^"']+\.js)["']""")
+
+
+def _relative_imports(path):
+    return set(_REL_IMPORT.findall(_read(path).decode("utf-8")))
+
+
+def test_manifest_names_a_content_hashed_entry_and_stylesheet_that_exist():
+    # konsol#305 B26: the entry is content-hashed (close.<hash>.js) so the
+    # page needs no `?v=` query. A query makes the page's URL differ from the
+    # `./close.js` the lazy chunks import, and the browser then runs the
+    # module twice (C1 run 1: a blank period screen).
+    manifest = _manifest()
+    entry = manifest.get("entry")
+    css = manifest.get("css")
+    assert entry and re.fullmatch(r"close\.[A-Za-z0-9_-]+\.js", entry), (
+        "build-manifest.json must name the content-hashed entry "
+        "(close.<hash>.js); got %r" % (entry,)
+    )
+    assert css and re.fullmatch(r"close\.[A-Za-z0-9_-]+\.css", css), (
+        "build-manifest.json must name the content-hashed entry stylesheet "
+        "(close.<hash>.css); got %r" % (css,)
+    )
+    assert os.path.isfile(os.path.join(BUNDLE_DIR, entry)), entry
+    assert os.path.isfile(os.path.join(BUNDLE_DIR, css)), css
+
+
+def test_no_fixed_name_entry_is_left_in_the_bundle():
+    # A leftover close.js / close.css is a second copy of the app a stale
+    # template or chunk could still load.
+    for name in ("close.js", "close.css"):
+        assert not os.path.exists(os.path.join(BUNDLE_DIR, name)), name
+
+
+def test_index_html_references_the_manifest_entry_and_stylesheet():
+    manifest = _manifest()
     html = _read(os.path.join(BUNDLE_DIR, "index.html")).decode("utf-8")
-    assert "/assets/konsol/close/close.js" in html
-    assert "/assets/konsol/close/close.css" in html
+    assert '"/assets/konsol/close/%s"' % manifest["entry"] in html
+    assert '"/assets/konsol/close/%s"' % manifest["css"] in html
+
+
+def test_every_relative_import_in_the_bundle_resolves_to_a_bundle_file():
+    for path in glob.glob(os.path.join(BUNDLE_DIR, "*.js")):
+        for target in _relative_imports(path):
+            assert os.path.isfile(os.path.join(BUNDLE_DIR, target)), (
+                "%s imports ./%s, which is not in the bundle"
+                % (os.path.basename(path), target)
+            )
+
+
+def test_every_chunk_that_imports_the_entry_imports_the_manifest_name():
+    # The page loads /assets/konsol/close/<entry>; a chunk resolves
+    # `./<entry>` against the same directory, so the URLs are identical and
+    # the browser runs the module ONCE. A chunk importing any other
+    # close.*.js that is not itself a chunk would start a second instance.
+    manifest = _manifest()
+    entry = manifest["entry"]
+    route_chunks = _relative_imports(os.path.join(BUNDLE_DIR, entry))
+    assert route_chunks, "the entry lazily imports no route chunk"
+    importers = 0
+    for path in glob.glob(os.path.join(BUNDLE_DIR, "*.js")):
+        name = os.path.basename(path)
+        if name == entry:
+            continue
+        imports = _relative_imports(path)
+        assert "close.js" not in imports, (
+            "%s imports ./close.js, not the entry ./%s" % (name, entry)
+        )
+        if entry in imports:
+            importers += 1
+    for chunk in route_chunks:
+        assert entry in _relative_imports(os.path.join(BUNDLE_DIR, chunk)), (
+            "route chunk %s does not import the entry ./%s" % (chunk, entry)
+        )
+    assert importers >= len(route_chunks)
 
 
 def test_no_bundle_file_mentions_the_old_konsol_exec_spa():

@@ -34,25 +34,33 @@ test("vite.config.js builds into konsol/public/close", () => {
   );
 });
 
-test("vite.config.js fixes the entry and chunk file names to close.*", () => {
+// konsol#305 B26: the entry and its stylesheet are content-hashed, and so
+// are the route chunks. A fixed "close.js" loaded by www/close.html with a
+// `?v=` query differed from the "./close.js" the lazy chunks import, so the
+// browser ran the module twice and a period screen rendered blank (C1 run 1).
+// With hashed names the page reads the name from build-manifest.json and
+// needs no query: page and chunks import one identical URL.
+test("vite.config.js content-hashes the entry and chunk file names", () => {
   const source = read(VITE_CONFIG);
-  assert.match(source, /entryFileNames:\s*["']close\.js["']/);
-  assert.match(source, /chunkFileNames:\s*["']close\.\[name\]\.js["']/);
+  assert.match(source, /entryFileNames:\s*["']close\.\[hash\]\.js["']/);
+  assert.match(source, /chunkFileNames:\s*["']close\.\[name\]\.\[hash\]\.js["']/);
+  assert.doesNotMatch(source, /entryFileNames:\s*["']close\.js["']/);
 });
 
-// konsol#305 B25: a flat "close.[ext]" pattern collided across ~15 fonts and
-// 2 stylesheets, and Rollup's disambiguation counter assigned the numeric
-// suffixes in build-order, not content order — proven non-reproducible
-// across three straight builds of the same source. assetFileNames became a
-// function: a fixed "close.css" for the one entry stylesheet www/close.html
-// (B04) hardcodes a URL to, and a content hash for everything else, so the
-// same source always produces the same file names.
-test("vite.config.js keeps a fixed name only for the entry stylesheet, and content-hashes every other asset", () => {
+test("vite.config.js content-hashes the entry stylesheet and every other asset", () => {
   const source = read(VITE_CONFIG);
   assert.match(source, /assetFileNames:\s*\(assetInfo\)\s*=>/);
   assert.match(source, /original\s*===\s*["']index\.css["']/);
-  assert.match(source, /return\s*["']close\.css["']/);
+  assert.match(source, /return\s*["']close\.\[hash\]\.css["']/);
+  assert.doesNotMatch(source, /return\s*["']close\.css["']/);
   assert.match(source, /return\s*["']close\.\[name\]\.\[hash\]\[extname\]["']/);
+});
+
+test("vite.config.js writes the entry and its stylesheet into build-manifest.json", () => {
+  const source = read(VITE_CONFIG);
+  assert.match(source, /build-manifest\.json/);
+  assert.match(source, /entry:\s*\w/);
+  assert.match(source, /css:\s*\w/);
 });
 
 test("vite.config.js keeps the frappeui plugin off proxy/boot/build-config, and the vue plugin", () => {

@@ -1,7 +1,7 @@
 {% extends "templates/web.html" %}
 {% block title %}Close{% endblock %}
 {% block style %}
-<link rel="stylesheet" href="/assets/konsol/close/close.css?v={{ css_version }}">
+<link rel="stylesheet" href="{{ close_css }}">
 <style>
   /* The SPA owns the viewport. Fonts and colour come from frappe-ui, which
      ships its own faces in the bundle and follows the desk's theme — so there
@@ -13,5 +13,5 @@
 {% block page_content %}
 <script>window.csrf_token = "{{ csrf_token }}";</script>
 <div id="root"></div>
-<script type="module" src="/assets/konsol/close/close.js?v={{ js_version }}"></script>
+<script type="module" src="{{ close_js }}"></script>
 {% endblock %}

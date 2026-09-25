@@ -39,8 +39,15 @@ function hashSrcDir(srcDir) {
 	return hash.digest("hex");
 }
 
+// konsol#305 B26: the entry and its stylesheet are content-hashed, so
+// www/close.py cannot hardcode their names. The plugin records the emitted
+// entry chunk and its stylesheet in build-manifest.json, and close.py emits
+// exactly those names with NO `?v=` query: the page and every lazy chunk
+// then import one identical URL, and the browser runs the module ONCE.
 function sourceManifestPlugin() {
 	let outDir;
+	let entryFile;
+	let cssFile;
 	return {
 		name: "konsol-close-source-manifest",
 		configResolved(config) {
@@ -50,11 +57,27 @@ function sourceManifestPlugin() {
 			// written, never forced into konsol/public/close.
 			outDir = config.build.outDir;
 		},
+		generateBundle(_options, bundle) {
+			const entries = Object.values(bundle).filter(
+				(file) => file.type === "chunk" && file.isEntry,
+			);
+			if (entries.length !== 1) {
+				this.error(`expected one entry chunk, found ${entries.length}`);
+			}
+			entryFile = entries[0].fileName;
+			const importedCss = [...(entries[0].viteMetadata?.importedCss ?? [])];
+			if (importedCss.length !== 1) {
+				this.error(
+					`expected the entry to import one stylesheet, found ${importedCss.length}`,
+				);
+			}
+			cssFile = importedCss[0];
+		},
 		closeBundle() {
 			const srcHash = hashSrcDir(path.resolve(root, "src"));
 			writeFileSync(
 				path.resolve(outDir, "build-manifest.json"),
-				JSON.stringify({ srcHash }, null, 2) + "\n",
+				JSON.stringify({ srcHash, entry: entryFile, css: cssFile }, null, 2) + "\n",
 			);
 		},
 	};
@@ -78,8 +101,11 @@ export default defineConfig({
 		emptyOutDir: true,
 		rollupOptions: {
 			output: {
-				entryFileNames: "close.js",
-				chunkFileNames: "close.[name].js",
+				// konsol#305 B26: content-hashed, not fixed. See sourceManifestPlugin.
+				// Chunks are hashed too, so a cached chunk can never import an
+				// entry name from an older build.
+				entryFileNames: "close.[hash].js",
+				chunkFileNames: "close.[name].[hash].js",
 				// "close.[ext]" (a fixed name per extension) collided: ~15 font
 				// files and 2 stylesheets all target "close.woff"/"close.woff2"/
 				// "close.css", and Rollup's disambiguation counter assigns the
@@ -90,16 +116,13 @@ export default defineConfig({
 				// up as close2.woff vs close9.woff). That breaks "the committed
 				// bundle is reproducible from the committed source" outright.
 				// Content-hashed names fix it: identical content always yields
-				// the identical name, independent of build order. The one
-				// exception is the entry stylesheet (Rollup names it from the
-				// HTML entry, "index.css") — www/close.html (B04) hardcodes
-				// "/assets/konsol/close/close.css", so it alone keeps a fixed
-				// name; every other asset (fonts, route-split stylesheets) is
-				// referenced only from generated code, which Vite rewrites to
-				// match automatically.
+				// the identical name, independent of build order. The entry
+				// stylesheet (Rollup names it from the HTML entry, "index.css")
+				// is hashed as close.<hash>.css and recorded in
+				// build-manifest.json for www/close.py (B26).
 				assetFileNames: (assetInfo) => {
 					const original = assetInfo.names?.[0] ?? assetInfo.name ?? "asset";
-					if (original === "index.css") return "close.css";
+					if (original === "index.css") return "close.[hash].css";
 					return "close.[name].[hash][extname]";
 				},
 			},
