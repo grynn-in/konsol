@@ -98,8 +98,9 @@ const context = reactive({ status: "loading", data: null, error: null });
 let contextSeq = 0;
 
 async function loadContext() {
-	const p = parsed.value;
-	if (p.error) return;
+	// A malformed address still loads who I am (no period), so the nav and
+	// header are known; only the main area names the bad address.
+	const p = parsed.value.error ? { year: null, bad: true } : parsed.value;
 	const seq = ++contextSeq;
 	context.status = "loading";
 	context.error = null;
@@ -109,7 +110,7 @@ async function loadContext() {
 		if (seq !== contextSeq) return;
 		context.data = data;
 		context.status = "ready";
-		if (p.year == null) {
+		if (p.year == null && !p.bad) {
 			// On /close: land if there is somewhere to land, else show why not.
 			landingState.error = null;
 			const target = landingPath(data);
@@ -141,7 +142,9 @@ async function retryLanding() {
 /** The header keeps the period list while a new period loads, but not the old selection. */
 const headerContext = computed(() => {
 	if (!context.data) return null;
-	return context.status === "ready" ? context.data : { ...context.data, selected: null };
+	// A bad address loaded the no-period context: its `selected` is not the URL's period.
+	const ok = context.status === "ready" && !parsed.value.error;
+	return ok ? context.data : { ...context.data, selected: null };
 });
 
 const me = computed(() => (context.data && context.data.me) || null);
@@ -245,7 +248,7 @@ const periodKey = computed(() => {
 watch(
 	periodKey,
 	(key) => {
-		if (key == null || key.startsWith("error:")) return;
+		if (key == null) return;
 		loadContext();
 		loadMyWork();
 	},
@@ -262,6 +265,11 @@ onBeforeUnmount(() => {
 	window.removeEventListener("keydown", onKey);
 	stopPolling();
 });
+
+/** A refused call (403): the user holds no close role. */
+function isRefused(message) {
+	return /PermissionError|not permitted/i.test(String(message || ""));
+}
 
 /** What the main area shows; every branch is a designed, visible state. */
 const view = computed(() => {
@@ -372,15 +380,20 @@ function goProvisional() {
 				<LoadState v-if="view === 'booting'" state="loading" what="your landing period" :source="CONTEXT" />
 
 				<template v-else-if="view === 'landing'">
-					<LoadState
-						v-if="landingState.error"
-						state="error"
-						what="your landing period"
-						:source="CONTEXT"
-						:error="landingState.error"
-						:busy="landingBusy"
-						@retry="retryLanding"
-					/>
+					<template v-if="landingState.error">
+						<LoadState
+							state="error"
+							what="your landing period"
+							:source="CONTEXT"
+							:error="landingState.error"
+							:busy="landingBusy"
+							@retry="retryLanding"
+						/>
+						<p v-if="isRefused(landingState.error)" class="mx-auto -mt-6 max-w-3xl px-6 text-sm text-ink-gray-7">
+							The server refused the request: you may hold no close role. Ask the System Manager for one of
+							EPM User (Viewer), Entity Accountant, EPM Analyst or EPM Admin.
+						</p>
+					</template>
 					<div v-else-if="landingState.reason" class="mx-auto max-w-3xl px-6 py-10">
 						<div class="rounded border border-outline-gray-2 bg-surface-gray-1 px-5 py-5">
 							<h1 class="text-lg font-semibold text-ink-gray-9">No period to open yet</h1>
@@ -433,14 +446,19 @@ function goProvisional() {
 					:what="current ? `the period ${periodName([current.year, current.period])}` : 'the period'"
 					:source="CONTEXT"
 				/>
-				<LoadState
-					v-else-if="view === 'error'"
-					state="error"
-					:what="current ? `the period ${periodName([current.year, current.period])}` : 'the period'"
-					:source="CONTEXT"
-					:error="context.error"
-					@retry="loadContext"
-				/>
+				<template v-else-if="view === 'error'">
+					<LoadState
+						state="error"
+						:what="current ? `the period ${periodName([current.year, current.period])}` : 'the period'"
+						:source="CONTEXT"
+						:error="context.error"
+						@retry="loadContext"
+					/>
+					<p v-if="isRefused(context.error)" class="mx-auto -mt-6 max-w-3xl px-6 text-sm text-ink-gray-7">
+						The server refused the request: you may hold no close role. Ask the System Manager for one of
+						EPM User (Viewer), Entity Accountant, EPM Analyst or EPM Admin.
+					</p>
+				</template>
 
 				<div v-else-if="view === 'no-role'" class="mx-auto max-w-3xl px-6 py-10">
 					<div class="rounded border border-outline-amber-1 bg-surface-amber-1 px-5 py-5 text-ink-amber-3">

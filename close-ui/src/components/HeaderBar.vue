@@ -52,6 +52,8 @@ function routerPath(year, period, screen) {
 const selected = computed(() => (props.context && props.context.selected) || null);
 const me = computed(() => (props.context && props.context.me) || null);
 const gaps = computed(() => (props.context && props.context.config_gaps) || []);
+/** A04 `other_open` is [] when the first close period is undeclared: unknown, not none. */
+const firstCloseUndeclared = computed(() => gaps.value.some((g) => g.code === "first_close_undeclared"));
 
 const periodsByYear = computed(() => {
 	const groups = new Map();
@@ -183,7 +185,8 @@ const FRESHNESS_TONE = {
 				:to="routerPath(s.key[0], s.key[1], screen)"
 				class="rounded px-1.5 py-0.5 text-ink-blue-3 underline-offset-2 hover:underline"
 			>{{ periodName(s.key) }}</RouterLink>
-			<span v-if="!selected.other_open || !selected.other_open.length" class="text-ink-gray-5">none</span>
+			<span v-if="firstCloseUndeclared" class="text-ink-gray-5">unknown until the first close period is declared</span>
+			<span v-else-if="!selected.other_open || !selected.other_open.length" class="text-ink-gray-5">none</span>
 		</div>
 
 		<div
