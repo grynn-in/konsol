@@ -109,6 +109,7 @@ class _Site:
         self.rate_calls = []
         self.problem_calls = []
         self.only_for_calls = []
+        self.ownership_queries = 0
 
 
 def _frappe(site):
@@ -133,6 +134,7 @@ def _frappe(site):
             rows = site.entities
         elif doctype == "Ownership Period":
             assert filters.get("docstatus") == 1, filters
+            site.ownership_queries += 1
             start = filters["effective_date"][1]
             rows = [o for o in site.owners if o.effective_date <= start]
         elif doctype == "Has Role":
@@ -612,3 +614,40 @@ def test_undeclared_first_close_judges_ownership_over_every_open_regular_period(
     # P00 (not Regular) are not.
     assert "ZZC: FY2025 P06, FY2025 P07" in gap["detail"], gap["detail"]
     assert "P05" not in gap["detail"] and "P00" not in gap["detail"], gap["detail"]
+
+
+# --- A61: ownership is read once per judged period, not once per leaf --------
+#
+# Review #7: `_covered(start)` sat inside the per-leaf comprehension, so a load
+# made (leaves x judged periods) Ownership Period queries (~329 x 12 on live).
+
+
+def _three_periods_five_leaves():
+    """First close 2025 P07; P07-P09 Open (judged), P10-P11 Closed. Five leaves:
+    ZZA-ZZD as in _Site (ZZC uncovered) plus ZZE, owned."""
+    site = _Site()
+    for row in site.rows:
+        if row["period_type"] == "Regular" and row["fiscal_period"] >= 10:
+            row["status"] = "Closed"
+    site.entities.append(_entity("ZZE"))
+    site.owners.append(_owner("ZZE"))
+    return site
+
+
+def test_ownership_is_queried_once_per_judged_period():
+    site = _three_periods_five_leaves()
+    result = _call(site)
+    assert site.ownership_queries == 3, \
+        "%d Ownership Period queries for 3 periods x 5 leaves" % site.ownership_queries
+    # Same result as before: only ZZC is uncovered, over the three judged periods.
+    gap = _gap(result, "ownership")
+    assert gap["entities"] == ["ZZC"], gap
+    assert gap["detail"] == "ZZC: FY2025 P07, FY2025 P08, FY2025 P09", gap["detail"]
+
+
+def test_no_leaves_still_answers_without_error():
+    site = _three_periods_five_leaves()
+    site.entities = []
+    result = _call(site)
+    assert site.ownership_queries <= 3, site.ownership_queries
+    assert _gap(result, "ownership") is None
