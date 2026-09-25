@@ -118,3 +118,22 @@ test("failure path: no v-html, window.open or bare Loading… text", () => {
   assert.doesNotMatch(source, /window\.open\(|window\.prompt\(/);
   assert.doesNotMatch(template(source), />\s*Loading…?\s*</);
 });
+
+// --- B18b: `?entity=` pre-selects the detail area -------------------------
+
+test("(B18b) a ?entity= in the URL opens that entity's detail area", () => {
+  const source = read();
+  assert.match(source, /route\.query\.entity/, "the query is read from the URL, not remembered client state");
+  assert.match(source, /selectedCode\.value\s*=\s*match\.entity/);
+});
+
+test("(B18b) failure path: an unknown ?entity= is ignored with a note, never guessed", () => {
+  const source = read();
+  assert.match(source, /entityNote/);
+  const t = template(source);
+  assert.match(t, /entityNote/, "the note is rendered");
+  // Never silently falls back to the first row or any other row when the
+  // requested entity is not found.
+  assert.doesNotMatch(source, /rows\[0\]|rows\.find\([^)]*\)\s*\|\|\s*rows\[/,
+    "an unknown ?entity= is never replaced by a guessed row");
+});
