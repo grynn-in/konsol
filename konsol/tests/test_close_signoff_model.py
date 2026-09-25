@@ -386,6 +386,43 @@ def test_covers_notes_are_sorted_by_entity():
         "ZZA: covers P08–P09", "ZZB: covers P08–P09"]
 
 
+# --- A41: a quarterly entity's quarter-end TB is labelled with its quarter -----
+
+
+def test_quarterly_entity_quarter_end_tb_notes_the_full_quarter():
+    # Q1 = P01-P03 (_monthly_year); ZZQ's single P03 TB covers the whole quarter.
+    freq = {"ZZQ": "Quarterly"}
+    notes = M.covers_notes((2025, 3), _monthly_year(), [_doc("ZZQ", 3)], [], frequencies=freq)
+    assert notes == ["ZZQ: quarterly — covers P01–P03"]
+
+
+def test_monthly_entity_gets_no_quarterly_note():
+    freq = {"ZZM": "Monthly"}
+    notes = M.covers_notes((2025, 3), _monthly_year(), [_doc("ZZM", 3)], [], frequencies=freq)
+    assert notes == []
+
+
+def test_quarterly_entity_not_at_quarter_end_gets_no_quarterly_note():
+    freq = {"ZZQ": "Quarterly"}
+    notes = M.covers_notes((2025, 2), _monthly_year(), [_doc("ZZQ", 2)], [], frequencies=freq)
+    assert notes == []
+
+
+def test_quarterly_note_needs_a_declared_quarter_not_a_guess():
+    # Generate Periods leaves quarter blank: the gap stays A10's quarter_undeclared,
+    # covers_notes never guesses a quarter span.
+    rows = [_row(2025, fp) for fp in range(1, 14)]
+    freq = {"ZZQ": "Quarterly"}
+    notes = M.covers_notes((2025, 3), rows, [_doc("ZZQ", 3)], [], frequencies=freq)
+    assert notes == []
+
+
+def test_quarterly_note_omitted_when_frequencies_not_passed():
+    # Existing 4-argument callers keep working unchanged; no quarterly note is guessed.
+    notes = M.covers_notes((2025, 3), _monthly_year(), [_doc("ZZQ", 3)], [])
+    assert notes == []
+
+
 # --- A21: the sign-off summary (story 9.1) -----------------------------------
 
 NO_PROBLEMS = {"config_gaps": [], "order": None, "completeness": None}
