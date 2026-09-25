@@ -592,7 +592,7 @@ def _reopen_site():
 
 
 def _mark(site, fy, fp, code, reason="Late supplier invoice", user="zz-lead@example.com"):
-    return _call(site, "mark_later_resign_needed", fy, fp, code, reason, user)
+    return _call(site, "mark_resign_needed_on_reopen", fy, fp, code, reason, user)
 
 
 def _run_rec(site, name):

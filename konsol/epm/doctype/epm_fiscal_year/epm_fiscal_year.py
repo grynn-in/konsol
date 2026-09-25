@@ -385,10 +385,11 @@ class EPMFiscalYear(Document):
                 frappe.throw(
                     f"FY{self.fiscal_year} is {year_status}; Reopen the year first, "
                     f"then period {row.period_code}.")
-            # konsol#305 A31 (#303 point 4): later signed periods stop counting
-            # as signed; they are marked Re-sign Needed through the sign-off writer.
+            # konsol#305 A31/A57 (#303 point 4): the reopened period and every
+            # later signed period stop counting as signed; they are marked
+            # Re-sign Needed through the sign-off writer.
             from konsol.close import signoff_gate
-            signoff_gate.mark_later_resign_needed(
+            signoff_gate.mark_resign_needed_on_reopen(
                 self.fiscal_year, row.fiscal_period, row.period_code, text,
                 frappe.session.user)
         elif current == fstm.OPEN:
