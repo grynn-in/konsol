@@ -23,14 +23,27 @@ The on-behalf label (R4, konsol#297) follows ``uploaded_on_behalf`` (A18):
 (uploaded before it was recorded; Problems 16), never read as "No".
 
 No due date is shown: nothing declares one (Problems 6).
+
+``tb_compare(entity, fiscal_year, fiscal_period)`` (A28, story 3.4) compares
+the entity's submitted trial balance with the one of the previous declared
+Regular period (``tb_view_model.previous_period``, A12: across a year end,
+never an Opening, Closing or Adjustment period). The files are read as the
+submission reads them (``File.get_content``, BOM stripped, ``parse_tb_csv``)
+and joined by ``tb_view_model.compare``. No previous trial balance is a note,
+never a comparison against zero. The entity is checked first
+(``assert_entity_access``): another entity's TB is never read.
 """
 import datetime
 
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import signoff_gate, signoff_model
-from konsol.entity_permissions import allowed_entity_codes
+from konsol.close import signoff_gate, signoff_model, tb_view_model
+from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission import (
+    parse_tb_csv,
+)
+from konsol.entity_permissions import allowed_entity_codes, assert_entity_access
+from konsol.tb_basis_model import AMOUNT_BASES
 from konsol.period_status import PeriodNotDeclared
 
 REGULAR = "Regular"
@@ -56,8 +69,8 @@ def _iso(value):
     return None if value in (None, "") else str(value)
 
 
-def _regular_row(key):
-    for row in fiscal_calendar.fiscal_period_rows():
+def _regular_row(key, rows=None):
+    for row in (fiscal_calendar.fiscal_period_rows() if rows is None else rows):
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             break
     else:
@@ -176,4 +189,97 @@ def my_tbs(fiscal_year, fiscal_period):
         })
     out.sort(key=lambda e: (_RANK.get(e["status"], 2), e["entity"]))
     result["entities"] = out
+    return result
+
+
+def _submitted_tb(entity, key):
+    """The entity's submitted Trial Balance Submission for the period, or None."""
+    found = frappe.get_all(
+        "Trial Balance Submission",
+        filters={"data_area_id": entity, "fiscal_year": key[0], "fiscal_period": key[1],
+                 "docstatus": 1},
+        fields=["name", "tb_file", "amount_basis"], order_by="creation desc",
+        limit_page_length=0,
+    )
+    return found[0] if found else None
+
+
+def _basis(tb):
+    if tb.get("amount_basis") not in AMOUNT_BASES:
+        frappe.throw(
+            "Trial balance %s declares no amount basis (%r): set it with Set amount basis "
+            "on the Trial Balance Submission list." % (tb["name"], tb.get("amount_basis") or ""))
+    return tb["amount_basis"]
+
+
+def _tb_rows(tb):
+    """Parsed rows of a submitted TB's file, read as the submission reads it."""
+    if not tb.get("tb_file"):
+        frappe.throw("Trial balance %s has no file attached: attach its CSV." % tb["name"])
+    content = frappe.get_doc("File", {"file_url": tb["tb_file"]}).get_content()
+    content = (content.decode("utf-8-sig") if isinstance(content, bytes)
+               else content.lstrip("\ufeff"))
+    try:
+        return parse_tb_csv(content)
+    except ValueError as e:
+        frappe.throw("Could not read the file of trial balance %s: %s" % (tb["name"], e))
+
+
+def _code(row, key):
+    """The period's code; qualified with the year when it is not ``key``'s year."""
+    code = row.get("period_code") or "P%02d" % int(row["fiscal_period"])
+    return code if int(row["fiscal_year"]) == key[0] else "FY%d %s" % (int(row["fiscal_year"]), code)
+
+
+@frappe.whitelist(methods=["GET"])
+def tb_compare(entity, fiscal_year, fiscal_period):
+    """This period's trial balance against the previous period's, by account.
+
+    Returns the ``tb_view_model.compare`` result (``rows``, ``basis_note``,
+    ``previous_note``, ``previous_code``) plus ``entity``, ``current`` and
+    ``previous`` (``{fiscal_year, fiscal_period, code, tb, basis}``;
+    ``previous`` is None when the calendar declares no previous Regular
+    period, and its ``tb``/``basis`` are None when that period has no
+    submitted TB). Read-only. Refuses an entity the caller may not access,
+    an undeclared or non-Regular period, a period with no submitted TB, and
+    a TB with no declared amount basis.
+    """
+    # A literal: the endpoint contract test reads it.
+    frappe.only_for(("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager"))
+    assert_entity_access(entity)
+    key = (int(fiscal_year), int(fiscal_period))
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    row = _regular_row(key, period_rows)
+    code = _code(row, key)
+
+    current_tb = _submitted_tb(entity, key)
+    if current_tb is None:
+        frappe.throw("No submitted trial balance for %s %s: submit one for the period first."
+                     % (entity, code))
+    current_basis = _basis(current_tb)
+
+    prev_row = tb_view_model.previous_period(period_rows, key[0], key[1])
+    previous = None
+    previous_rows = previous_basis = previous_code = None
+    if prev_row is not None:
+        prev_key = (int(prev_row["fiscal_year"]), int(prev_row["fiscal_period"]))
+        previous_code = _code(prev_row, key)
+        previous_tb = _submitted_tb(entity, prev_key)
+        if previous_tb is not None:
+            previous_basis = _basis(previous_tb)
+        previous = {"fiscal_year": prev_key[0], "fiscal_period": prev_key[1],
+                    "code": previous_code,
+                    "tb": previous_tb["name"] if previous_tb else None,
+                    "basis": previous_basis}
+        if previous_tb is not None:
+            previous_rows = _tb_rows(previous_tb)
+
+    result = tb_view_model.compare(_tb_rows(current_tb), previous_rows, current_basis,
+                                   previous_basis, previous_code)
+    result.update({
+        "entity": entity,
+        "current": {"fiscal_year": key[0], "fiscal_period": key[1], "code": code,
+                    "tb": current_tb["name"], "basis": current_basis},
+        "previous": previous,
+    })
     return result
