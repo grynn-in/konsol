@@ -38,6 +38,12 @@ Per-period facts:
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
 counts every item; another screen counts the items whose action opens it.
 Read-only.
+
+A53: every period item's ``period`` carries ``since`` — the ISO end date of
+that period ("how long this period has been over"), so the screen can show an
+age. A period row with no end date is a configuration problem and raises;
+it is never given today's date. A setup-gap item has no period, so it carries
+a top-level ``since: None`` with ``since_reason: "configuration gap"``.
 """
 from datetime import date, datetime
 
@@ -176,7 +182,7 @@ def _checks(key, as_of):
     return state, failed, signoff or period_model.NOT_SIGNED_OFF
 
 
-def _rates_error_item(key, code, error):
+def _rates_error_item(key, code, error, end_date):
     fy, fp = key
     return {
         "id": "rates-error:%d-%02d" % key,
@@ -184,7 +190,8 @@ def _rates_error_item(key, code, error):
         "title": "Rates cannot be checked: %s" % error,
         "detail": ("The warehouse could not say which currencies %s translates (%s). "
                    "Rebuild the consolidation, then open this again." % (code, error)),
-        "period": {"fiscal_year": fy, "fiscal_period": fp, "code": code},
+        "period": {"fiscal_year": fy, "fiscal_period": fp, "code": code,
+                  "since": end_date.isoformat()},
         "owner": mywork_model.OWNERS[mywork_model.CLOSE_LEAD],
         "action": {"screen": "sign-off"},
     }
@@ -197,6 +204,11 @@ def _period_facts(first_close, allowed, today):
     per_period, extra = {}, []
     for key, row in _open_rows(first_close, today):
         code = row.get("period_code") or "FY%d P%02d" % key
+        end_date = _date(row.get("end_date"))
+        if end_date is None:
+            # A53: the age shown for a period is its end date. A period row with
+            # no end date is a configuration problem, never silently today's date.
+            frappe.throw("%s has no end date: fix its row in EPM Fiscal Year." % code)
         problems = signoff_gate.sign_off_problems(key[0], key[1])
         completeness = problems.get("completeness") or {}
         missing = sorted(completeness.get("missing") or ())
@@ -204,11 +216,11 @@ def _period_facts(first_close, allowed, today):
         checks, failed, signoff = _checks(key, as_of)
         rates_missing, error, blockers = group_rates.rate_gate(key[0], key[1])
         if error:
-            extra.append(_rates_error_item(key, code, error))
+            extra.append(_rates_error_item(key, code, error, end_date))
             blocked = True
         per_period[key] = {
             "code": code,
-            "ended": _date(row.get("end_date")) < today,
+            "ended": end_date < today,
             "status": row.get("status"),
             "my_missing": _mine(missing, allowed),
             "missing": missing,
@@ -217,6 +229,7 @@ def _period_facts(first_close, allowed, today):
             "signoff": signoff,
             "gates_blocked": blocked,
             "rates_missing": len(rates_missing or ()) + len(blockers or ()),
+            "since": end_date.isoformat(),
         }
     return per_period, extra
 
