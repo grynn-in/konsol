@@ -1,4 +1,4 @@
-"""Sign-off endpoints for the close app (konsol#305 A30, A49; stories 9.1, 9.2, 9.3, 9.5).
+"""Sign-off endpoints for the close app (konsol#305 A30, A49, A32; stories 9.1, 9.2, 9.3, 9.5).
 
 ``get_signoff(fiscal_year, fiscal_period)`` (GET, every close role; the
 Viewer reads the summary, R6) reads the site and passes it through the pure
@@ -33,6 +33,11 @@ labels, exceptions and covers notes. Gate entries that list entities are cut
 to those entities; the others are counted (``hidden``), never named, and the
 message is rebuilt from what may be shown. The gates still block: a hidden
 entity is counted, not dropped. Read-only.
+
+``sign(fiscal_year, fiscal_period, acknowledgement, override_reason)`` (POST,
+Close Lead) signs the period's latest terminal run through
+``assertion_run.sign_off_close``, which holds the write check, the gates (A22)
+and the Amber/Red rules. ``sign`` never writes a sign-off field itself.
 """
 import datetime
 
@@ -45,6 +50,7 @@ from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
     _warned_assertion_names,
     latest_close_run,
+    sign_off_close,
 )
 from konsol.entity_permissions import allowed_entity_codes
 from konsol.period_status import PeriodNotDeclared
@@ -234,3 +240,22 @@ def get_signoff(fiscal_year, fiscal_period):
         "closed_on": _iso(closed.get("closed_on")),
     })
     return result
+
+
+@frappe.whitelist(methods=["POST"])
+def sign(fiscal_year, fiscal_period, acknowledgement=None, override_reason=None):
+    """Sign off the period's latest terminal run (A32, story 9.2).
+
+    Everything that decides whether the signature lands is in
+    ``sign_off_close``: write permission, the gates (A22), the Amber
+    acknowledgement and the Red override. Its refusals pass through unchanged.
+    """
+    # A literal: the endpoint contract test reads it.
+    frappe.only_for(("EPM Admin", "System Manager"))
+    key = _period(fiscal_year, fiscal_period)
+    row = _declared_row(fiscal_calendar.fiscal_period_rows(), key)
+    run = latest_close_run(*key)
+    if not run:
+        frappe.throw("Run the checks for FY%d %s first." % (key[0], row["period_code"]))
+    return sign_off_close(run["name"], override_reason=override_reason,
+                          acknowledgement=acknowledgement)
