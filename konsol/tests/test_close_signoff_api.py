@@ -1,7 +1,10 @@
-"""Sign-off API: konsol/close/signoff_api.py `get_signoff` (konsol#305 A30, A49; stories 9.1, 9.2, 9.3, 9.5).
+"""Sign-off API: konsol/close/signoff_api.py `get_signoff` and `sign` (konsol#305 A30, A49, A32; stories 9.1, 9.2, 9.3, 9.5).
 
 GET `get_signoff(fiscal_year, fiscal_period)` returns the A21 summary plus
 `can_sign`, `can_override`, `period_status`, `closed_by` and `closed_on`.
+POST `sign(fiscal_year, fiscal_period, acknowledgement, override_reason)` signs
+the period's latest terminal run through `sign_off_close` (stubbed here: it
+records its arguments and raises `site.sign_error` when set).
 
 Loaded against a stub frappe (pattern: test_close_tb_read_api.py `_load`,
 copied, not imported). The gates are the REAL `signoff_gate` (A17) over the
@@ -115,6 +118,8 @@ class _Site:
         self.only_for = []
         self.whitelisted = {}
         self.writes = []
+        self.signed = []
+        self.sign_error = None
 
 
 def _match(value, cond):
@@ -242,6 +247,14 @@ def _load(site):
         return rows[0] if rows else None
 
     ar.latest_close_run = latest_close_run
+
+    def sign_off_close(close_run, override_reason=None, acknowledgement=None):
+        site.signed.append((close_run, override_reason, acknowledgement))
+        if site.sign_error is not None:
+            raise site.sign_error
+        return {"signoff_status": "Acknowledged", "signed_off_by": LEAD}
+
+    ar.sign_off_close = sign_off_close
     ar._warned_assertion_names = lambda run, limit=50: list(site.warned_names.get(run, []))[:limit]
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
@@ -516,3 +529,98 @@ def test_entity_accountant_with_no_entities_sees_no_entity():
     for other in ("ZZA", "ZZB", "ZZC", "ZZD", "ZZE", "ZZQ"):
         assert other not in text, other
     assert result["covers"] == []
+
+
+# --- A32: sign ---------------------------------------------------------------------
+
+def _call_sign(site, *args, **kwargs):
+    """Call sign with the stubs installed. Returns (result, exception)."""
+    module, mods, _frappe = _load(site)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        try:
+            return module.sign(*args, **kwargs), None
+        except Exception as exc:  # noqa: BLE001 - the type is asserted by the caller
+            return None, exc
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def test_sign_is_post_only_and_gated_on_the_close_lead():
+    site = _Site()
+    _call_sign(site, 2025, 9, acknowledgement="Seen")
+    assert site.whitelisted["sign"] == ["POST"]
+    assert site.only_for[0] == ("EPM Admin", "System Manager")
+
+
+def test_sign_passes_the_latest_terminal_run_and_the_arguments_through():
+    site = _Site()
+    result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen the 3 warnings",
+                             override_reason="n/a")
+    assert exc is None, exc
+    assert site.signed == [("RUN-09", "n/a", "Seen the 3 warnings")]
+    assert result == {"signoff_status": "Acknowledged", "signed_off_by": LEAD}
+
+
+def test_sign_takes_the_latest_terminal_run_not_a_queued_one():
+    site = _Site()
+    site.records["Assertion Run"].append(
+        _run("RUN-09-Q", 9, status="Queued", signoff="Not Signed Off",
+             completed=datetime(2025, 10, 9, 9, 0)))
+    site.records["Assertion Run"].append(
+        _run("RUN-09-B", 9, status="Red", signoff="Not Signed Off",
+             completed=datetime(2025, 10, 8, 9, 0)))
+    _result, exc = _call_sign(site, "2025", "9", override_reason="Known FX gap")
+    assert exc is None, exc
+    assert site.signed == [("RUN-09-B", "Known FX gap", None)]
+
+
+def test_sign_with_no_run_is_refused_naming_the_period():
+    site = _Site()
+    site.records["Assertion Run"] = [r for r in site.records["Assertion Run"]
+                                     if r["fiscal_period"] != 9]
+    _result, exc = _call_sign(site, 2025, 9)
+    assert type(exc).__name__ == "ValidationError", exc
+    assert str(exc) == "Run the checks for FY2025 P09 first."
+    assert site.signed == []
+
+
+def test_an_analyst_cannot_sign():
+    site = _Site(roles=("EPM Analyst",))
+    _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+    assert type(exc).__name__ == "PermissionError", exc
+    assert site.signed == []
+
+
+def test_other_close_roles_cannot_sign():
+    for role in ("Entity Accountant", "EPM User", "Guest"):
+        site = _Site(roles=(role,))
+        _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+        assert type(exc).__name__ == "PermissionError", (role, exc)
+        assert site.signed == [], role
+
+
+def test_a_gate_refusal_from_sign_off_close_propagates_unchanged():
+    site = _Site()
+    refusal = RuntimeError("Sign-off blocked: Sign off P07 first.")
+    site.sign_error = refusal
+    _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+    assert exc is refusal
+    assert site.signed == [("RUN-09", None, "Seen")]
+
+
+def test_sign_refuses_an_undeclared_period():
+    _result, exc = _call_sign(_Site(), 2031, 1)
+    assert type(exc).__name__ == "PeriodNotDeclared", exc
+
+
+def test_sign_refuses_a_period_that_is_not_a_number():
+    site = _Site()
+    _result, exc = _call_sign(site, "2025", "P9")
+    assert "whole numbers" in str(exc)
+    assert site.signed == []
