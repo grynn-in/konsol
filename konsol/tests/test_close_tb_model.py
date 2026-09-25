@@ -157,6 +157,39 @@ def test_unknown_account_with_nothing_close_has_no_suggestion():
     assert p["suggestion"] == ""
 
 
+# --- unknown-account tie-break (konsol#305 A43) -----------------------------
+#
+# difflib.get_close_matches uses heapq.nlargest over (score, candidate), which
+# breaks a tie on the LARGEST string. Measured live: 1001 -> "Did you mean
+# 7100?" although 1000 and 1010 also tie on ratio and are the nearer codes.
+# The declared tie-break is: highest ratio, then longest shared prefix, then
+# smallest absolute numeric distance when both codes are numeric, then the
+# lowest code.
+
+def test_unknown_account_tie_break_prefers_the_longest_shared_prefix():
+    chart = {c: _acct() for c in ("1000", "1010", "1100", "7100")}
+    r = _check(_rows("main_account,debit,credit\n1001,10,0\n1000,0,10\n"), chart=chart)
+    (p,) = _problems(r, 2)
+    assert p["code"] == "UNKNOWN_ACCOUNT"
+    assert p["suggestion"] == "Did you mean 1000?"
+
+
+def test_unknown_account_tie_break_prefers_the_longest_shared_prefix_over_the_last_string():
+    chart = {c: _acct() for c in ("4010", "9400")}
+    r = _check(_rows("main_account,debit,credit\n4001,10,0\n4010,0,10\n"), chart=chart)
+    (p,) = _problems(r, 2)
+    assert p["code"] == "UNKNOWN_ACCOUNT"
+    assert p["suggestion"] == "Did you mean 4010?"
+
+
+def test_unknown_account_suggestion_unchanged_with_a_single_near_match():
+    """A11's own case is unaffected: a single candidate close enough needs no
+    tie-break."""
+    r = _check(_rows("main_account,debit,credit\n4001,10,0\n1010,0,10\n"))
+    (p,) = _problems(r, 2)
+    assert p["suggestion"] == "Did you mean 4010?"
+
+
 def test_heading_account_is_a_row_problem():
     r = _check(_rows("main_account,debit,credit\n1000,10,0\n1010,0,10\n"))
     (p,) = _problems(r, 2)
