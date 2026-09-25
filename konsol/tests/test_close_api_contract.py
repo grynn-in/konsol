@@ -222,3 +222,32 @@ def bad_endpoint():
     problems = check_source(source, "bad.py")
     codes = sorted(p["code"] for p in problems)
     assert codes == ["bad_methods", "get_writes", "no_gate"], problems
+
+
+def test_the_checker_catches_a_bare_decorator():
+    """Failure path (A01b): `@frappe.whitelist` with no call allows GET and
+    declares no method. It must be found, not skipped."""
+    source = '''
+import frappe
+
+
+@frappe.whitelist
+def bare_endpoint():
+    frappe.get_doc("Test Doctype").insert()
+'''
+    codes = sorted(p["code"] for p in check_source(source, "bare.py"))
+    assert codes == ["bad_methods", "get_writes", "no_gate"], codes
+
+
+def test_no_endpoint_hides_outside_an_api_module():
+    """A01b: every `@frappe.whitelist` in konsol/close lives in a `*_api.py`
+    module, so the three rules above see every endpoint."""
+    bad = []
+    for path in _close_files():
+        if path.endswith("_api.py"):
+            continue
+        with open(path) as f:
+            tree = ast.parse(f.read())
+        rel = os.path.relpath(path, APP_DIR)
+        bad += [f"{rel}:{fn.name} is whitelisted outside a *_api.py module" for fn in _whitelisted_functions(tree)]
+    assert not bad, "\n".join(bad)
