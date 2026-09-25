@@ -162,3 +162,26 @@ test("Nothing is stored in the browser (D5)", () => {
     assert.ok(!source.includes(store), `no ${store}`);
   }
 });
+
+// --- konsol#305 B32: the header follows sign, close and reopen -------------
+
+test("B32: SignOff.vue injects CONTEXT_RELOAD from the shell, with no silent default", () => {
+  const js = script(read());
+  assert.match(js, /import\s*\{[^}]*\bCONTEXT_RELOAD\b[^}]*\}\s*from\s*["']\.\.\/contextRefresh\.js["']/);
+  assert.match(js, /\bconst\s+reloadContext\s*=\s*inject\(\s*CONTEXT_RELOAD\s*\)/, "inject with no default");
+  assert.match(js, /import\s*\{[^}]*\binject\b[^}]*\}\s*from\s*["']vue["']/);
+});
+
+test("B32: SignOff.vue calls the reload from the machine's PERIOD_CHANGED event, and nowhere else", () => {
+  const js = script(read());
+  assert.match(js, /import\s*\{[^}]*\bPERIOD_CHANGED\b[^}]*\}\s*from\s*["']\.\.\/machines\/signoffMachine\.js["']/);
+  assert.match(js, /actor\.on\(\s*PERIOD_CHANGED\s*,\s*\(\)\s*=>\s*reloadContext\(\)\s*\)/, "the machine decides; the screen calls");
+  assert.equal((js.match(/reloadContext\(\)/g) || []).length, 1, "one call site: the event");
+});
+
+test("B32: reloadContext is declared before the immediate period watcher (B30)", () => {
+  const js = script(read());
+  const decl = js.search(/\bconst\s+reloadContext\s*=/);
+  const watcher = js.indexOf("{ immediate: true }");
+  assert.ok(decl >= 0 && watcher > decl, "declared before the watcher that subscribes to it");
+});
