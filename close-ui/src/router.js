@@ -20,7 +20,10 @@
 // helper alone (mirrors route.test.mjs (B07) keeping vue-router itself out
 // of the pure test).
 import { createRouter, createWebHistory } from "vue-router";
-import { defineComponent, defineAsyncComponent, computed, h } from "vue";
+import { defineComponent, defineAsyncComponent, computed, h, reactive } from "vue";
+
+/** Why /close has no period to land on, or the error reaching the server (B16b); the shell renders it. */
+export const landingState = reactive({ reason: null, error: null });
 import { get } from "./api.js";
 import { format } from "./route.js";
 
@@ -49,7 +52,10 @@ const NotBuiltYet = defineComponent({
 export function landingPath(context) {
   const landing = context.landing;
   if (landing.period == null) {
-    return `/close/none/${encodeURIComponent(landing.reason)}/my-work`;
+    // B16b: no period to land on (first close undeclared, or a Viewer with
+    // nothing signed). Stay on /close; the shell shows `landing.reason`.
+    // Putting the reason into the URL made route.js read it as a bad year.
+    return null;
   }
   const [year, period] = landing.period;
   return format({ year, period, screen: "my-work" });
@@ -87,9 +93,22 @@ export function createCloseRouter() {
 
   router.beforeEach(async (to) => {
     if (to.path !== "/") return true;
-    const context = await get("konsol.close.period_api.get_context");
-    const target = landingPath(context).replace(/^\/close/, "");
-    return target || "/";
+    landingState.reason = null;
+    landingState.error = null;
+    let context;
+    try {
+      context = await get("konsol.close.period_api.get_context");
+    } catch (e) {
+      // B16b: never a blank screen: the shell shows the server's message.
+      landingState.error = e.message;
+      return true;
+    }
+    const target = landingPath(context);
+    if (target == null) {
+      landingState.reason = context.landing.reason;
+      return true;
+    }
+    return target.replace(/^\/close/, "");
   });
 
   return router;
