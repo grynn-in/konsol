@@ -637,14 +637,14 @@ def _call_sign(site, *args, **kwargs):
 
 def test_sign_is_post_only_and_gated_on_the_close_lead():
     site = _Site()
-    _call_sign(site, 2025, 9, acknowledgement="Seen")
+    _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
     assert site.whitelisted["sign"] == ["POST"]
     assert site.only_for[0] == ("EPM Admin", "System Manager")
 
 
 def test_sign_passes_the_latest_terminal_run_and_the_arguments_through():
     site = _Site()
-    result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen the 3 warnings",
+    result, exc = _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen the 3 warnings",
                              override_reason="n/a")
     assert exc is None, exc
     assert site.signed == [("RUN-09", "n/a", "Seen the 3 warnings")]
@@ -659,7 +659,7 @@ def test_sign_takes_the_latest_terminal_run_not_a_queued_one():
     site.records["Assertion Run"].append(
         _run("RUN-09-B", 9, status="Red", signoff="Not Signed Off",
              completed=datetime(2025, 10, 8, 9, 0)))
-    _result, exc = _call_sign(site, "2025", "9", override_reason="Known FX gap")
+    _result, exc = _call_sign(site, "2025", "9", run="RUN-09-B", override_reason="Known FX gap")
     assert exc is None, exc
     assert site.signed == [("RUN-09-B", "Known FX gap", None)]
 
@@ -668,7 +668,7 @@ def test_sign_with_no_run_is_refused_naming_the_period():
     site = _Site()
     site.records["Assertion Run"] = [r for r in site.records["Assertion Run"]
                                      if r["fiscal_period"] != 9]
-    _result, exc = _call_sign(site, 2025, 9)
+    _result, exc = _call_sign(site, 2025, 9, run="RUN-09")
     assert type(exc).__name__ == "ValidationError", exc
     assert str(exc) == "Run the checks for FY2025 P09 first."
     assert site.signed == []
@@ -676,7 +676,7 @@ def test_sign_with_no_run_is_refused_naming_the_period():
 
 def test_an_analyst_cannot_sign():
     site = _Site(roles=("EPM Analyst",))
-    _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+    _result, exc = _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
     assert type(exc).__name__ == "PermissionError", exc
     assert site.signed == []
 
@@ -684,7 +684,7 @@ def test_an_analyst_cannot_sign():
 def test_other_close_roles_cannot_sign():
     for role in ("Entity Accountant", "EPM User", "Guest"):
         site = _Site(roles=(role,))
-        _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+        _result, exc = _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
         assert type(exc).__name__ == "PermissionError", (role, exc)
         assert site.signed == [], role
 
@@ -693,19 +693,19 @@ def test_a_gate_refusal_from_sign_off_close_propagates_unchanged():
     site = _Site()
     refusal = RuntimeError("Sign-off blocked: Sign off P07 first.")
     site.sign_error = refusal
-    _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+    _result, exc = _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
     assert exc is refusal
     assert site.signed == [("RUN-09", None, "Seen")]
 
 
 def test_sign_refuses_an_undeclared_period():
-    _result, exc = _call_sign(_Site(), 2031, 1)
+    _result, exc = _call_sign(_Site(), 2031, 1, run="RUN-09")
     assert type(exc).__name__ == "PeriodNotDeclared", exc
 
 
 def test_sign_refuses_a_period_that_is_not_a_number():
     site = _Site()
-    _result, exc = _call_sign(site, "2025", "P9")
+    _result, exc = _call_sign(site, "2025", "P9", run="RUN-09")
     assert "whole numbers" in str(exc)
     assert site.signed == []
 
@@ -944,3 +944,53 @@ def test_close_and_reopen_refuse_a_period_that_is_not_a_number():
         _result, exc = _call_status(site, fn, *args)
         assert "whole numbers" in str(exc), (fn, exc)
         assert site.status_calls == [], fn
+
+
+# --- A58: sign is bound to the run the Close Lead reviewed ------------------------------
+
+def _rerun(site):
+    """An Analyst re-ran the checks after the summary showed RUN-09: RUN-09-B
+    (Red) finished later and is now the latest terminal run."""
+    site.records["Assertion Run"].append(
+        _run("RUN-09-B", 9, status="Red", signoff="Not Signed Off",
+             completed=datetime(2025, 10, 9, 9, 0)))
+
+
+def test_sign_with_a_stale_run_is_refused_and_signs_nothing():
+    site = _Site()
+    _rerun(site)
+    _result, exc = _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen the 3 warnings")
+    assert type(exc).__name__ == "ValidationError", exc
+    assert str(exc) == ("The checks were re-run (now RUN-09-B, Red); "
+                        "review the new result before signing.")
+    # Neither the reviewed run nor the new one is signed.
+    assert site.signed == []
+    assert site.writes == []
+    states = {r["name"]: r["signoff_status"] for r in site.records["Assertion Run"]
+              if r["fiscal_period"] == 9}
+    assert states == {"RUN-09": "Not Signed Off", "RUN-09-B": "Not Signed Off"}
+
+
+def test_sign_without_a_run_name_is_refused_and_signs_nothing():
+    for missing in (None, "", "   "):
+        site = _Site()
+        _result, exc = _call_sign(site, 2025, 9, run=missing, acknowledgement="Seen")
+        assert type(exc).__name__ == "ValidationError", (missing, exc)
+        assert str(exc) == ("Reload the sign-off for FY2025 P09: the request did not say "
+                            "which checks run it signs."), missing
+        assert site.signed == [], missing
+
+
+def test_sign_with_no_run_argument_at_all_is_refused():
+    site = _Site()
+    _result, exc = _call_sign(site, 2025, 9, acknowledgement="Seen")
+    assert type(exc).__name__ == "ValidationError", exc
+    assert site.signed == []
+
+
+def test_sign_with_the_matching_run_signs_it():
+    site = _Site()
+    _rerun(site)
+    _result, exc = _call_sign(site, 2025, 9, run="RUN-09-B", override_reason="Known FX gap")
+    assert exc is None, exc
+    assert site.signed == [("RUN-09-B", "Known FX gap", None)]

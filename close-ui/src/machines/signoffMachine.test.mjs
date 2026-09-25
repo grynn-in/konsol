@@ -30,6 +30,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, fromPromise } from "xstate";
+import { readFileSync } from "node:fs";
 import { signoffMachine, ACTIONS } from "./signoffMachine.js";
 
 const flush = async () => {
@@ -69,7 +70,8 @@ function summaryOf(action, extra = {}) {
 		action,
 		label: `label for ${action}`,
 		gates: { config_gaps: [], order: null, completeness: null, messages: [] },
-		checks: {},
+		// A58: the run the summary shows; SIGN sends it back.
+		checks: { run: "RUN-A" },
 		acknowledgements: {},
 		on_behalf: [],
 		exceptions: [],
@@ -244,7 +246,7 @@ test("sign: review → SIGN → signing → confirming (load again) → signed",
 	h.actor.send(SIGN);
 	assert.equal(value(h.actor), '"signing"');
 	await flush();
-	assert.deepEqual(h.last("sign").input, { acknowledgement: null, override_reason: null });
+	assert.deepEqual(h.last("sign").input, { run: "RUN-A", acknowledgement: null, override_reason: null });
 	h.last("sign").resolve({ signoff_status: "Signed Off" });
 	await flush();
 	assert.equal(value(h.actor), '"confirming"');
@@ -262,7 +264,7 @@ test("acknowledge (Amber): the typed text is sent, trimmed, as the acknowledgeme
 	h.actor.send({ type: "CONFIRM_ACK", text: "  I have read the 3 warnings  " });
 	assert.equal(value(h.actor), '"signing"');
 	await flush();
-	assert.deepEqual(h.last("sign").input, { acknowledgement: "I have read the 3 warnings", override_reason: null });
+	assert.deepEqual(h.last("sign").input, { run: "RUN-A", acknowledgement: "I have read the 3 warnings", override_reason: null });
 	h.last("sign").resolve({});
 	await flush();
 	await toLoaded(h, summaryOf("signed", { label: "Acknowledged" }));
@@ -275,7 +277,7 @@ test("override (Red, Close Lead): the typed reason is sent, trimmed, as the over
 	h.actor.send({ type: "CONFIRM_OVERRIDE", text: "\tKnown timing difference\n" });
 	assert.equal(value(h.actor), '"signing"');
 	await flush();
-	assert.deepEqual(h.last("sign").input, { acknowledgement: null, override_reason: "Known timing difference" });
+	assert.deepEqual(h.last("sign").input, { run: "RUN-A", acknowledgement: null, override_reason: "Known timing difference" });
 	h.last("sign").resolve({});
 	await flush();
 	await toLoaded(h, summaryOf("signed", { label: "Overridden" }));
@@ -931,4 +933,64 @@ test("B32 failure path: cancel, loads and refreshes emit nothing", async () => {
 		assert.equal(value(h.actor), '"closed"');
 	});
 	assert.deepEqual(emitted, []);
+});
+
+// ---- A58: sign is bound to the run the Close Lead reviewed ----------------
+
+const STALE = "The checks were re-run (now RUN-B, Red); review the new result before signing.";
+
+test("A58: the SIGN request carries the run the summary showed", async () => {
+	const h = start();
+	await toReview(h, summaryOf("sign", { checks: { run: "RUN-7" } }));
+	h.actor.send(SIGN);
+	await flush();
+	assert.equal(h.last("sign").input.run, "RUN-7");
+});
+
+test("A58: a summary with no run sends run null (the server refuses it by name)", async () => {
+	const h = start();
+	await toReview(h, summaryOf("sign", { checks: {} }));
+	h.actor.send(SIGN);
+	await flush();
+	assert.equal(h.last("sign").input.run, null);
+});
+
+test("A58: a stale-run refusal reloads the summary, keeps the message, and drops the typed text", async () => {
+	const h = start();
+	await toAcknowledging(h);
+	h.actor.send({ type: "CONFIRM_ACK", text: "Seen the warnings of RUN-A" });
+	await flush();
+	assert.equal(h.last("sign").input.run, "RUN-A");
+	h.last("sign").reject(new Error(STALE));
+	await flush();
+	assert.equal(value(h.actor), '"loading"', "a stale-run refusal reloads the summary");
+	assert.equal(h.calls.load.length, 2);
+	const fresh = summaryOf("override", { can_override: true, checks: { run: "RUN-B" } });
+	await toLoaded(h, fresh);
+	const c = h.actor.getSnapshot().context;
+	assert.equal(value(h.actor), '"review"', "never back in a half-typed dialog");
+	assert.deepEqual(c.summary, fresh);
+	assert.equal(c.error, STALE);
+	// The old acknowledgement is gone: signing the new run needs new text.
+	assertRefuses(h, [CONFIRM_ACK, CONFIRM_OVERRIDE], "review after a stale-run reload");
+	h.actor.send(OVERRIDE);
+	h.actor.send({ type: "CONFIRM_OVERRIDE", text: "Known FX gap" });
+	await flush();
+	assert.deepEqual(h.last("sign").input, { run: "RUN-B", acknowledgement: null, override_reason: "Known FX gap" });
+	assert.equal(h.calls.sign.length, 2);
+});
+
+test("A58: any other sign refusal still returns to review without a reload", async () => {
+	const h = start();
+	await toSigning(h);
+	h.last("sign").reject(new Error("Sign off FY2026 P06 first"));
+	await flush();
+	assert.equal(value(h.actor), '"review"');
+	assert.equal(h.calls.load.length, 1);
+});
+
+test("A58: the sign-off screen posts the machine's run to signoff_api.sign", () => {
+	const src = readFileSync(new URL("../screens/SignOff.vue", import.meta.url), "utf8");
+	const call = src.slice(src.indexOf("post(SIGN"), src.indexOf("post(SIGN") + 300);
+	assert.match(call, /run:\s*input\.run/, "the SIGN body must carry input.run");
 });
