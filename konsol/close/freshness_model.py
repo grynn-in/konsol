@@ -13,8 +13,11 @@ Rules:
 
 - A build is successful only when ``workflow_state == "Completed"``;
   ``completed_at`` is written on failure too (tasks.py:399).
-- A change is covered by a Completed build whose scope is ``scope_of[dt]`` or
-  ``"full"`` and whose ``completed_at`` is at or after the change.
+- A change is covered by a Completed ``consolidation`` or ``full`` build whose
+  ``completed_at`` is at or after the change, whatever the doctype's own scope
+  (A05b: a ``staging`` build rebuilds gold_consolidation_adjustments but not
+  gold_fully_consolidated_tb, measured from the dbt manifest 25 Sep 2026).
+  ``scope_of`` still names every doctype that may be passed.
 - ``as_of`` is the latest Completed ``completed_at`` over the scopes that
   reach the consolidated numbers: ``consolidation`` and ``full``.
 - ``last_failed`` is set when the latest terminal (Completed or Failed)
@@ -87,7 +90,7 @@ def freshness(builds, input_changes, scope_of, flagged_states):
                 f"{dt} has no build scope declared; add it to tasks.DOCTYPE_BUILD_MAP "
                 "so its changes can be judged."
             )
-        covering = [last_ok[s] for s in (scope_of[dt], FULL) if s in last_ok]
+        covering = [last_ok[s] for s in NUMBERS_SCOPES if s in last_ok]
         if not covering or change["modified"] > max(covering):
             changed.add(dt)
     changed_since = sorted(changed)
