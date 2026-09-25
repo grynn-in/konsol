@@ -107,7 +107,11 @@ def setup_gap_items(facts):
 #   the period is not signed and no gate blocks. When a gate blocks, the item
 #   is "Waiting on <earliest earlier open period>" instead, or "Waiting on the
 #   sign-off gates" when no earlier open period explains it. The Close Lead
-#   also waits on trial balances and on checks.
+#   also waits on trial balances and on checks. "Close <code>" (todo) when the
+#   period is signed off (``signoff`` in SIGNED_STATES) but its ``status`` is
+#   still "Open" (9.3: signing off is not the end of the close, and the
+#   period can otherwise sit Open unnoticed, blocking the next one's order
+#   gate). Only the Close Lead sees it.
 # - Viewer: no items.
 # Actions are in-app screens, never the Desk (story 0.4).
 
@@ -118,7 +122,7 @@ VIEWER = "viewer"
 PERSONAS = (CLOSE_LEAD, GROUP_ACCOUNTANT, ENTITY_ACCOUNTANT, VIEWER)
 
 PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "signoff",
-               "gates_blocked", "rates_missing")
+               "gates_blocked", "rates_missing", "status")
 CHECK_STATES = ("not_run", "running", "stale", "failed", "current")
 KINDS = ("blocking", "todo", "waiting")
 
@@ -198,6 +202,10 @@ def _close_lead(key, facts, earlier_open):
     resign = facts["signoff"] == RE_SIGN_NEEDED
     if resign:
         items.append(_period_item(p, key, facts, "resign", "blocking", "Re-sign needed", signoff))
+    signed = facts["signoff"] in SIGNED_STATES
+    if signed and facts["status"] == "Open":
+        items.append(_period_item(p, key, facts, "close", "todo", "Close %s" % facts["code"],
+                                  signoff))
     missing = sorted(set(facts["missing"] or ()))
     if missing:
         items.append(_period_item(p, key, facts, "tbs-waiting", "waiting",
@@ -212,7 +220,7 @@ def _close_lead(key, facts, earlier_open):
         items.append(_period_item(p, key, facts, "checks-waiting", "waiting", "Waiting on checks",
                                   {"screen": "checks"}))
     clean = facts["checks"] == "current" and not failed and not rates
-    if clean and not resign and facts["signoff"] not in SIGNED_STATES:
+    if clean and not resign and not signed:
         if not facts["gates_blocked"]:
             items.append(_period_item(p, key, facts, "signoff", "todo",
                                       "Sign off %s" % facts["code"], signoff))
