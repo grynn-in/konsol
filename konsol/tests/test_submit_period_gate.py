@@ -164,7 +164,7 @@ def _load(path, period_open):
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
         "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.schema_lifecycle",
-        "konsol.epm", "konsol.epm.budget_grain")}
+        "konsol.tb_dimension", "konsol.epm", "konsol.epm.budget_grain")}
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
@@ -196,15 +196,22 @@ def _load(path, period_open):
     mods["konsol.period_status"].first_period_affected = lambda d: d
     mods["konsol.schema_lifecycle"].request_governed_rebuild = request_governed_rebuild
     mods["konsol.epm.budget_grain"].digest_name = lambda *a, **k: "ZZ"
+    # konsol#255: the controller reads the site's Dimension records before it
+    # parses a file. That reader binds frappe, so it is stubbed here; a site
+    # that declares none is what these period tests are about.
+    mods["konsol.tb_dimension"].declared_dimensions = lambda: []
 
     # konsolidat#199: the controller imports the real, frappe-free rule module
-    # konsol.tb_basis_model; the stub package has no __path__, so load it from
-    # the repo and register it beside the stubs.
-    basis_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tb_basis_model.py")
-    basis_spec = importlib.util.spec_from_file_location("konsol.tb_basis_model", basis_path)
-    basis_mod = importlib.util.module_from_spec(basis_spec)
-    basis_spec.loader.exec_module(basis_mod)
-    mods["konsol.tb_basis_model"] = basis_mod
+    # konsol.tb_basis_model; konsol#255 added konsol.tb_dimension_model beside
+    # it. The stub package has no __path__, so load each from the repo and
+    # register it beside the stubs.
+    app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for pure in ("tb_basis_model", "tb_dimension_model"):
+        pure_spec = importlib.util.spec_from_file_location(
+            f"konsol.{pure}", os.path.join(app_dir, f"{pure}.py"))
+        pure_mod = importlib.util.module_from_spec(pure_spec)
+        pure_spec.loader.exec_module(pure_mod)
+        mods[f"konsol.{pure}"] = pure_mod
 
     saved = {name: sys.modules.get(name) for name in mods}
     sys.modules.update(mods)

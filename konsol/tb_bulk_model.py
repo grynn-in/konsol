@@ -31,6 +31,7 @@ import io
 import math
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
+from konsol.tb_dimension_model import accepted_dimension_columns, dimension_problems, is_dimension_column
 
 PARTNER = "partner_data_area_id"
 REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit")
@@ -50,6 +51,11 @@ ALIASES = {
     # konsolidat#199: the single upload accepts the same spellings for the basis
     **{alias.replace(" ", "_"): BASIS for alias in BASIS_ALIASES},
 }
+#: Optional columns a file may carry, beyond REQUIRED.
+OPTIONAL = ("description", PARTNER, BASIS)
+#: Every header this contract accepts, AFTER alias resolution. A header
+#: outside this set is refused by name rather than dropped (konsol#255).
+ACCEPTED = frozenset(REQUIRED + OPTIONAL)
 #: Structural problems are reported together, up to this many lines.
 MAX_LINE_ERRORS = 20
 
@@ -105,7 +111,7 @@ def _whole(value, what, lineno, errors):
         return None
 
 
-def split_table(table):
+def split_table(table, declared_dimensions=()):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
     Keys keep the order they first appear in the file. Each row is
@@ -116,6 +122,16 @@ def split_table(table):
     same one (group_basis reads it). Raises ValueError listing every
     structural problem (up to MAX_LINE_ERRORS lines) so a file can be fixed
     in one pass.
+
+    `declared_dimensions` are the site's Dimension rows (dimension_name,
+    status, in_trial_balance); the default, no dimensions, means a site that
+    declares none and keeps every existing caller working. A dim_* column the
+    site has Published and ticked in_trial_balance is accepted and lands on
+    each row under its own name, as a string, '' when the cell is blank — a
+    dimension is optional per row. Any other dim_* header is refused saying
+    WHICH of declare / publish / tick is missing (konsol.tb_dimension_model),
+    since the fix differs. This function stays pure: the caller does the
+    looking up.
     """
     lines = [(i, row) for i, row in enumerate(table, start=1) if any(cell(c) for c in row)]
     if not lines:
@@ -129,12 +145,58 @@ def split_table(table):
             "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description]"
             "[, partner_data_area_id][, amount_basis]"
         )
+    # An unrecognised header is refused, not ignored (konsol#255). This used
+    # to check only that REQUIRED was present, so any other column was never
+    # read and its values were dropped without a word — a file of cost centres
+    # loaded clean and arrived with the cost centres gone. A loader that
+    # silently discards what it was given is konsol#247 broken at the intake.
+    # Blank names are skipped: Excel writes a trailing comma, which is not a
+    # column.
+    #
+    # A dim_* header is the declared dimensions' business, not this set's, and
+    # it is refused with its own sentence — declare it, publish it, or tick the
+    # flag — because the generic "here is the accepted header" line does not
+    # tell the reader which of the three to do. Both kinds of problem are
+    # raised together, as the line errors below are, so one pass fixes the file.
+    declared = list(declared_dimensions)
+    accepted_dims = accepted_dimension_columns(declared)
+    unknown = [n for n in names
+               if n and n not in ACCEPTED and n not in accepted_dims
+               and not is_dimension_column(n)]
+    problems = []
+    if unknown:
+        problems.append(
+            f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} on line "
+            f"{head_line}. The header may be "
+            "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit"
+            "[, description][, partner_data_area_id][, amount_basis]"
+        )
+    problems.extend(dimension_problems([n for n in names if n not in accepted_dims], declared))
+    if problems:
+        raise ValueError("\n".join(problems))
     if names.count(PARTNER) > 1:
         raise ValueError(f"Two partner columns on line {head_line}: keep one")
     if names.count(BASIS) > 1:
         raise ValueError(f"Two amount_basis columns on line {head_line}: keep one of "
                          + ", ".join(BASIS_ALIASES))
+    # A dimension named twice is refused for the same reason the partner and
+    # the basis are (konsol#255): `col` below resolves a name to names.index(n),
+    # the FIRST occurrence, so the second column was read by nobody and its
+    # values were dropped without a word. Every repeated dimension is named in
+    # one refusal, as the header problems above are, so one pass fixes the file.
+    # This sits AFTER the dimension_problems raise deliberately: an undeclared
+    # dim_* header has already been refused with declare / publish / tick, and
+    # telling the reader to "keep one" of a column they may not carry at all
+    # would be two answers to one question.
+    repeated_dims = [n for i, n in enumerate(names)
+                     if n in accepted_dims and names.index(n) == i
+                     and names.count(n) > 1]
+    if repeated_dims:
+        raise ValueError("\n".join(
+            f"Two {n} columns on line {head_line}: keep one" for n in repeated_dims))
     col = {n: names.index(n) for n in set(names)}
+    #: The accepted dim_* columns this file actually carries, in header order.
+    dim_names = [n for n in names if n in accepted_dims]
 
     groups, errors = {}, []
     first_basis = {}   # group key -> (lineno, basis) of the first row that gives one
@@ -177,6 +239,7 @@ def split_table(table):
             "main_account": account, "debit": debit, "credit": credit,
             "description": cell(get("description")), PARTNER: cell(get(PARTNER)),
             BASIS: basis,
+            **{d: cell(get(d)) for d in dim_names},
         })
 
     if errors:
@@ -233,16 +296,24 @@ def group_csv(rows, source=None):
     The amount_basis column is written only when the rows give one, so the
     generated file says what the uploaded file said and the submission's
     validate() confirms it against the form (konsolidat#199).
+
+    Every dim_* column the rows carry is written after the existing ones,
+    sorted so the output is deterministic. Without this the dimensions the
+    bulk file declared would be dropped between the two parsers — this file
+    is fed straight back into parse_tb_csv (konsol#255).
     """
     basis = group_basis(rows)
+    dim_names = sorted({k for r in rows for k in r if is_dimension_column(k)})
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(["main_account", "debit", "credit", "description", PARTNER]
-                    + ([BASIS] if basis else []) + (["source_upload"] if source else []))
+                    + ([BASIS] if basis else []) + (["source_upload"] if source else [])
+                    + dim_names)
     for r in rows:
         writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", ""),
                          r.get(PARTNER, "")] + ([r.get(BASIS, "")] if basis else [])
-                        + ([source] if source else []))
+                        + ([source] if source else [])
+                        + [r.get(d, "") for d in dim_names])
     return out.getvalue()
 
 

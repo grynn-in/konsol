@@ -2,7 +2,8 @@
 
 Reads all config doctypes (Dimension, Measure, Dataset) and applies:
   1. dbt_project.yml vars regeneration
-  2. ClickHouse ALTER TABLE for missing columns
+  2. ClickHouse ALTER TABLE for missing columns, then the declared dim_*
+     columns added to the raw trial-balance table (added only — konsol#255)
   3. Budget Line custom field sync
   4. Optional dbt build trigger
 
@@ -18,6 +19,21 @@ from konsol.dbt_config import regenerate_vars
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+
+# The raw trial-balance landing table, and the only column names
+# _sync_tb_dimension_columns may put into its DDL: _SAFE_IDENTIFIER's shape
+# plus a mandatory dim_ prefix.
+#
+# \Z, not $: `$` also matches just before a trailing newline, so
+# re.match(r"^dim_[a-z0-9_]+$", "dim_x\n") is True and a dimension_name
+# carrying a newline — the UI will not accept one, a patch, a fixture, the
+# REST API and a data import all will — was interpolated into DDL as-is
+# (konsol#255). Every call site uses .fullmatch as well, so neither alone is
+# load-bearing. _SAFE_IDENTIFIER and _SAFE_TABLE_NAME above have the same
+# `$`; that is pre-existing and filed separately.
+_TB_RAW_TABLE = "epm_raw.trial_balance_submissions"
+_TB_DIM_PREFIX = "dim_"
+_SAFE_TB_DIM_COLUMN = re.compile(r"^dim_[a-z0-9_]+\Z")
 
 # ClickHouse type mapping for Cube types
 _CH_TYPE_MAP = {
@@ -181,6 +197,7 @@ def _apply_schema_steps():
     summary = {
         "vars_updated": False,
         "columns_added": [],
+        "tb_dimension_columns_synced": [],
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
@@ -202,6 +219,19 @@ def _apply_schema_steps():
     except Exception as e:
         summary["errors"].append(f"ClickHouse DDL: {str(e)}")
         frappe.log_error("schema_apply: CH DDL failed", frappe.get_traceback())
+
+    # 2b. Add the declared dim_* columns to the raw trial-balance table. It
+    # only adds: an undeclared column holds uploaded values (konsol#255).
+    # ClickHouse DDL, so it lives here with the other DDL and not with the
+    # Frappe Custom Field sync. After step 2 deliberately: that step is what
+    # guarantees the raw table exists before columns are altered onto it.
+    try:
+        summary["tb_dimension_columns_synced"] = _sync_tb_dimension_columns()
+    except Exception as e:
+        summary["errors"].append(f"TB dimension columns: {str(e)}")
+        frappe.log_error(
+            "schema_apply: TB dimension columns failed", frappe.get_traceback()
+        )
 
     # 3. Create ClickHouse tables + dbt sources for write-back facts
     try:
@@ -265,6 +295,114 @@ def _apply_clickhouse_columns():
                 )
 
     return added
+
+
+def _tb_table_columns():
+    """Every column ClickHouse reports on the raw trial-balance table.
+
+    The table is created by static DDL (clickhouse._RAW_TABLE_DDL, and
+    init-db.sql) which runs once against an empty volume and cannot know a
+    customer's dimensions, so what is actually on the table has to be read
+    back rather than assumed.
+    """
+    database, _, table = _TB_RAW_TABLE.partition(".")
+    text = ch_execute(
+        "SELECT name FROM system.columns "
+        f"WHERE database = '{database}' AND table = '{table}' ORDER BY name"
+    )
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _refuse_tb_dim_column(name, where):
+    """Log a dimension column name that may not be interpolated into DDL."""
+    frappe.log_error(
+        "schema_apply: refused a trial-balance dimension column name",
+        f"{name!r} ({where}) is not {_SAFE_TB_DIM_COLUMN.pattern}; "
+        "it was never put into SQL.",
+    )
+    return f"refused {name}"
+
+
+def _sync_tb_dimension_columns():
+    """Add the declared dimension columns to the raw trial-balance table.
+
+    Which dimension columns `epm_raw.trial_balance_submissions` carries is
+    per-customer: it is the Published Dimension records with
+    in_trial_balance = 1. That set changes after the table exists, so a
+    declared column missing from the table is added by ALTER. Idempotent: a
+    second run finds nothing to add and emits no DDL.
+
+    **Nothing is ever dropped.** Until 22 September 2026 this also removed the
+    columns no longer declared, mirroring _sync_budget_custom_fields_locked().
+    A Custom Field is metadata and can be re-created; a column on `epm_raw`
+    holds every value the customer uploaded into it, and the whole
+    bronze→gold chain rebuilds from that table — so the drop destroyed those
+    values permanently, and re-publishing brought the column back empty.
+    Dimension.unpublish() reached it (status = "Inactive" ->
+    apply_and_rebuild -> apply_schema_for_publish), and so did a rename
+    (autoname is field:dimension_name), a delete, unticking in_trial_balance
+    and any unrelated Measure or Dataset publish, because apply_and_rebuild is
+    the shared publish path. One click, data gone.
+
+    Deepak Pai chose option A, never drop:
+    https://github.com/grynn-in/konsol/issues/255#issuecomment-5782540260
+
+    Orphan dim_* columns accumulating is the accepted consequence: they are
+    String DEFAULT '' and they hold history that is otherwise unrecoverable.
+    Un-declaring stops new values arriving — nothing writes a column the
+    declared set no longer names — while the values already accepted stay
+    readable. Reclaiming an orphan deliberately (option B: a retire flag, an
+    explicit drop with its own confirmation) was considered and deferred; do
+    not reintroduce a cleanup, a TTL or a nagging warning here.
+
+    Declared names are still validated against _SAFE_TB_DIM_COLUMN before they
+    reach SQL, because they are interpolated; a name that fails is refused and
+    logged, never interpolated. Columns read back off the table are validated
+    too and simply not counted as present — with no DROP, the worst an
+    unparseable one can now cause is a redundant ADD COLUMN IF NOT EXISTS.
+
+    String DEFAULT '': a dimension is optional per row, so blank is legal.
+
+    Returns:
+        List of "added <col>" / "refused <name>" strings for the caller to
+        log. Never "removed <col>": this function removes nothing.
+    """
+    declared = frappe.get_all(
+        "Dimension",
+        filters={"in_trial_balance": 1, "status": "Published"},
+        fields=["dimension_name"],
+        limit_page_length=0,
+    )
+
+    actions = []
+    wanted = set()
+    for dim in declared:
+        name = dim.dimension_name or ""
+        if not _SAFE_TB_DIM_COLUMN.fullmatch(name):
+            actions.append(_refuse_tb_dim_column(name, "declared on Dimension"))
+            continue
+        wanted.add(name)
+
+    existing = set()
+    for column in _tb_table_columns():
+        if not column.startswith(_TB_DIM_PREFIX):
+            continue  # a real column: not a dimension column
+        if not _SAFE_TB_DIM_COLUMN.fullmatch(column):
+            actions.append(_refuse_tb_dim_column(column, f"on {_TB_RAW_TABLE}"))
+            continue
+        existing.add(column)
+
+    for name in sorted(wanted - existing):
+        ch_execute(
+            f"ALTER TABLE {_TB_RAW_TABLE} ADD COLUMN IF NOT EXISTS "
+            f"{name} String DEFAULT ''"
+        )
+        actions.append(f"added {name}")
+
+    # No second loop over `existing - wanted`. Those are the columns a
+    # customer stopped declaring, and they still hold what was uploaded into
+    # them; see this function's docstring and konsol#255.
+    return actions
 
 
 def _apply_fact_tables():

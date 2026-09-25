@@ -52,6 +52,10 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
+from konsol.tb_dimension import declared_dimensions
+from konsol.tb_dimension_model import (
+    accepted_dimension_columns, dimension_problems, is_dimension_column,
+)
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
@@ -67,6 +71,16 @@ PARTNER = "partner_data_area_id"
 #: Other header spellings accepted for PARTNER.
 PARTNER_ALIASES = ("partner", "partner_entity", "partner_id", "counterparty")
 
+#: Written by tb_bulk_model.group_csv to record which upload a generated file
+#: came from. Accepted and ignored here; refusing it would break the bulk path
+#: feeding its own output back in as single submissions.
+SOURCE_UPLOAD = "source_upload"
+
+#: Every header this contract accepts, AFTER alias resolution. A header
+#: outside this set is refused by name rather than dropped (konsol#255).
+_ACCEPTED_COLUMNS = frozenset(
+    _REQUIRED_COLUMNS + ("description", PARTNER, BASIS, SOURCE_UPLOAD))
+
 
 def _column(header):
     name = (header or "").strip().lower()
@@ -77,7 +91,7 @@ def _column(header):
     return name
 
 
-def parse_tb_csv(text):
+def parse_tb_csv(text, declared_dimensions=()):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, description,
@@ -88,6 +102,15 @@ def parse_tb_csv(text):
     a missing header, a non-numeric amount, a blank account. Business
     validation (balance, duplicates, chart membership) is validate_tb_rows()'s
     job, so a file can be parsed and then reported on as a whole.
+
+    `declared_dimensions` are the site's Dimension rows (dimension_name,
+    status, in_trial_balance); the default, no dimensions, means a site that
+    declares none and keeps every existing caller working. A dim_* column the
+    site has Published and ticked in_trial_balance is accepted and lands on
+    each row under its own name, '' when the cell is blank — a dimension is
+    optional per row. Any other dim_* header is refused saying WHICH of
+    declare / publish / tick is missing (konsol.tb_dimension_model), since
+    the fix differs. This function stays pure: the caller does the looking up.
     """
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
@@ -99,6 +122,31 @@ def parse_tb_csv(text):
             f"Missing column(s) {', '.join(missing)} — the header must be "
             "main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]"
         )
+    # An unrecognised header is refused, not ignored (konsol#255). This used
+    # to check only that _REQUIRED_COLUMNS were present, so every other column
+    # was never read and its values were dropped without a word — the same
+    # silent drop the bulk loader had. Blank names are skipped: a trailing
+    # comma is not a column.
+    #
+    # A dim_* header is the declared dimensions' business and gets its own
+    # sentence — declare it, publish it, or tick the flag — because the generic
+    # line does not say which of the three to do. Both kinds are raised
+    # together so one pass fixes the file (konsol#255).
+    declared = list(declared_dimensions)
+    accepted_dims = accepted_dimension_columns(declared)
+    unknown = [h for h in headers
+               if h and h not in _ACCEPTED_COLUMNS and h not in accepted_dims
+               and not is_dimension_column(h)]
+    problems = []
+    if unknown:
+        problems.append(
+            f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} — the "
+            "header may be main_account,debit,credit[,description]"
+            "[,partner_data_area_id][,amount_basis]"
+        )
+    problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
+    if problems:
+        raise ValueError("\n".join(problems))
     if headers.count(PARTNER) > 1:
         raise ValueError(
             "Two partner columns: keep one of partner_data_area_id, "
@@ -108,6 +156,23 @@ def parse_tb_csv(text):
         raise ValueError(
             "Two amount_basis columns: keep one of " + ", ".join(BASIS_ALIASES)
         )
+    # A dimension named twice is refused for the same reason the partner and
+    # the basis are (konsol#255): csv.DictReader maps a repeated header onto a
+    # single key, so one of the two columns never reached the row and its
+    # values were dropped without a word. Every repeated dimension is named in
+    # one refusal so one pass fixes the file. Placed AFTER the
+    # dimension_problems raise on purpose: an undeclared dim_* header has
+    # already been refused with declare / publish / tick, and adding "keep one"
+    # to that would be two answers to one question.
+    repeated_dims = [h for i, h in enumerate(headers)
+                     if h in accepted_dims and headers.index(h) == i
+                     and headers.count(h) > 1]
+    if repeated_dims:
+        raise ValueError("\n".join(
+            f"Two {h} columns: keep one" for h in repeated_dims))
+
+    #: The accepted dim_* columns this file actually carries, in header order.
+    dim_headers = [h for h in headers if h in accepted_dims]
 
     rows = []
     for lineno, raw in enumerate(reader, start=2):
@@ -152,6 +217,7 @@ def parse_tb_csv(text):
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
             BASIS: item.get(BASIS, ""),
+            **{d: item.get(d, "") for d in dim_headers},
         })
     if not rows:
         raise ValueError("The file has a header but no data rows")
@@ -309,6 +375,24 @@ def _sql_str(value):
 
 #: Claim tuples per control-table INSERT (the same size _land_rows uses).
 _CLAIM_BATCH = 1000
+
+
+def _raw_table_columns():
+    """Every column ClickHouse reports on the raw trial-balance table.
+
+    Read back rather than assumed. The table is created by static DDL
+    (``konsol.clickhouse._RAW_TABLE_DDL``, and konsolidat's init-db.sql) which
+    runs against an empty volume and cannot know a customer's dimensions; the
+    dim_* columns arrive later, by ALTER, when Apply Schema runs
+    (``konsol.schema_apply._sync_tb_dimension_columns``). So what the table
+    actually carries is a fact about the deployment, not about this code.
+    """
+    database, _, table = RAW_TABLE.partition(".")
+    text = execute(
+        "SELECT name FROM system.columns "
+        f"WHERE database = '{_sql_str(database)}' AND table = '{_sql_str(table)}'"
+    )
+    return {line.strip() for line in (text or "").splitlines() if line.strip()}
 
 
 def _claim_values(doc, basis):
@@ -576,7 +660,13 @@ class TrialBalanceSubmission(Document):
         # may already have decoded into the string.
         content = content.decode("utf-8-sig") if isinstance(content, bytes) else content.lstrip("\ufeff")
         try:
-            return parse_tb_csv(content)
+            # The site's own Dimension records decide which dim_* columns
+            # this file may carry (konsol#255). Read here, on the frappe side,
+            # so parse_tb_csv stays pure. Until this argument was passed the
+            # accepted set was empty on every real upload and every dim_*
+            # header was refused with "create the Dimension ..." while the
+            # administrator was looking at it, Published and ticked.
+            return parse_tb_csv(content, declared_dimensions())
         except ValueError as e:
             frappe.throw(f"Could not read the trial balance file: {e}")
 
@@ -605,9 +695,51 @@ class TrialBalanceSubmission(Document):
         # amount_basis to one created before konsolidat#199.
         ensure_raw_tables()
 
+    def _assert_dimension_columns(self, dims):
+        """Refuse the submission if the raw table lacks a column it must write.
+
+        The dim_* columns are not in the static DDL: they are added by ALTER
+        when an administrator runs Apply Schema, so a Dimension published
+        since the last one is accepted by the parser and has nowhere to land.
+        Two things could happen then, and both are worse than refusing:
+        ClickHouse rejects the whole INSERT with its own message about a
+        column nobody outside the warehouse has heard of, or — if this code
+        chose its columns from the table instead of from the file — the values
+        vanish without a word, which is konsol#247 broken at the intake and
+        exactly what every refusal in tb_dimension_model exists to prevent.
+
+        So it is refused here, naming the dimension and the one action that
+        fixes it. ``ensure_raw_tables`` takes the same position for the static
+        columns: a submission must never land rows into a table that is
+        missing a column it writes.
+        """
+        missing = [d for d in dims if d not in _raw_table_columns()]
+        if not missing:
+            return
+        one = len(missing) == 1
+        frappe.throw(
+            f"The warehouse has no column for {', '.join(missing)} yet, so "
+            f"{'that dimension' if one else 'those dimensions'} would be lost. "
+            "Run Apply Schema to add "
+            f"{'it' if one else 'them'}, then submit this trial balance again."
+        )
+
     def _land_rows(self, rows):
+        # The dim_* columns THIS file carries (konsol#255), sorted so the
+        # statement is deterministic whatever order the header was in. Taken
+        # from the parsed rows — parse_tb_csv already refused every dim_*
+        # header the site has not declared, Published and ticked — and never
+        # from a name written here: which dimensions exist is the customer's
+        # data, not konsol's shape (konsol#287).
+        dims = sorted({k for r in rows for k in r if is_dimension_column(k)})
+        if dims:
+            self._assert_dimension_columns(dims)
         values = []
         for r in rows:
+            # A dimension is optional per row and the column is String
+            # DEFAULT '', so a blank cell lands as '' rather than stopping
+            # the file.
+            dim_values = "".join(f", '{_sql_str(r.get(d) or '')}'" for d in dims)
             values.append(
                 f"('{_sql_str(self.batch_id)}', "
                 f"'{_sql_str(self.data_area_id)}', "
@@ -616,15 +748,16 @@ class TrialBalanceSubmission(Document):
                 f"{float(r['debit'])}, {float(r['credit'])}, "
                 f"'{_sql_str(r['description'])}', "
                 f"'{_sql_str(self.name)}', now(), "
-                f"'{_sql_str(r.get(PARTNER) or '')}')"
+                f"'{_sql_str(r.get(PARTNER) or '')}'{dim_values})"
             )
+        dim_columns = "".join(f", {d}" for d in dims)
         batch_size = 1000
         for i in range(0, len(values), batch_size):
             execute(
                 f"INSERT INTO {RAW_TABLE} (batch_id, data_area_id, "
                 "fiscal_year, fiscal_period, main_account, debit_amount, "
                 "credit_amount, description, submission_name, submitted_at, "
-                f"{PARTNER}) "
+                f"{PARTNER}{dim_columns}) "
                 "VALUES " + ", ".join(values[i:i + batch_size])
             )
 
