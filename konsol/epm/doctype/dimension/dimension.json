@@ -65,7 +65,7 @@
       "label": "Survives Year-End Close",
       "default": "0",
       "depends_on": "eval:doc.in_trial_balance",
-      "description": "On: each (account, dimension value) P&L balance zeroes into retained earnings carrying that same value. Off: P&L closes to a retained-earnings row outside this dimension. Only meaningful when the dimension is in the trial balance."
+      "description": "Off, and off is the only behaviour konsol implements: at year end the P&L closes into a single retained-earnings row that carries no dimension value. On is NOT IMPLEMENTED and konsol refuses to save it ticked (konsol#255) rather than accept a setting that changes no number; when it is built, it will zero each account-and-value P&L balance into retained earnings carrying that value. Only meaningful when the dimension is in the trial balance."
     },
     {
       "fieldname": "allocation_role",
