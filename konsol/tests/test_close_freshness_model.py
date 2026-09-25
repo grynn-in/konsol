@@ -78,7 +78,11 @@ def test_a_change_at_the_build_instant_is_covered():
     assert out["state"] == "fresh"
 
 
-def test_adjustment_covered_by_later_staging_build_is_not_stale():
+def test_a_staging_build_does_not_make_an_adjustment_current():
+    """A05b, measured 25 Sep 2026 from the dbt manifest: `tag:domain:staging`
+    rebuilds gold_consolidation_adjustments but not gold_fully_consolidated_tb,
+    gold_ic_eliminations or gold_entity_ownership. So an adjustment is only in
+    the consolidated numbers after a consolidation or full build."""
     out = _run(
         [
             _build("BA-1", "consolidation", "Completed", _t(10)),
@@ -86,10 +90,17 @@ def test_adjustment_covered_by_later_staging_build_is_not_stale():
         ],
         [_change("Consolidation Adjustment", _t(11))],
     )
-    assert out["state"] == "fresh"
-    assert out["changed_since"] == []
-    # a staging build does not move as_of
+    assert out["state"] == "stale"
+    assert out["changed_since"] == ["Consolidation Adjustment"]
     assert out["as_of"] == _t(10)
+
+
+def test_a_later_consolidation_build_makes_an_adjustment_current():
+    out = _run(
+        [_build("BA-1", "consolidation", "Completed", _t(12))],
+        [_change("Consolidation Adjustment", _t(11))],
+    )
+    assert out["state"] == "fresh"
 
 
 def test_staging_build_does_not_cover_a_consolidation_doctype():
