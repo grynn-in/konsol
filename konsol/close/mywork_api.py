@@ -44,6 +44,16 @@ that period ("how long this period has been over"), so the screen can show an
 age. A period row with no end date is a configuration problem and raises;
 it is never given today's date. A setup-gap item has no period, so it carries
 a top-level ``since: None`` with ``since_reason: "configuration gap"``.
+
+A54: the result carries a top-level ``entities_assigned``: ``true`` or
+``false`` for the Entity Accountant persona, ``None`` for every other
+persona. It answers "does this user have any entity assigned at all", from
+``entity_permissions.allowed_entity_codes()`` directly (``None``/non-empty =
+true, empty set = false) — never from ``my_missing`` or any other per-period,
+in-scope-only list, whose ``[]`` cannot tell "nothing assigned" from
+"assigned, but none in scope this period". The screen uses this to avoid
+telling an Entity Accountant with real assignments "No entities are assigned
+to you" just because none of theirs falls in the current period.
 """
 from datetime import date, datetime
 
@@ -259,11 +269,18 @@ def get_my_work():
     roles = [r for r in ALL_CLOSE_ROLES if r in set(frappe.get_roles(frappe.session.user))]
     persona = period_model.persona(roles)
     if persona == period_model.VIEWER:
-        return {"items": [], "counts": _counts([], persona)}
+        return {"items": [], "counts": _counts([], persona), "entities_assigned": None}
 
     today = frappe.utils.getdate()
     first_close = _first_close()
     allowed = entity_permissions.allowed_entity_codes()
+    # A54: whether the Entity Accountant has any entity assigned at all,
+    # independent of this period's scope. `allowed` is the caller's raw grant
+    # (None = unrestricted, set() = none, a non-empty set = some); only the
+    # Entity Accountant persona is ever restricted to a named set, so this is
+    # never asked of anyone else.
+    entities_assigned = ((allowed is None or bool(allowed))
+                         if persona == period_model.ENTITY_ACCOUNTANT else None)
     items = mywork_model.setup_gap_items(_gap_facts(first_close, persona, allowed, today))
     if first_close is not None:
         per_period, extra = _period_facts(first_close, allowed, today)
@@ -271,4 +288,4 @@ def get_my_work():
         if persona == period_model.CLOSE_LEAD:
             items.extend(extra)
     items = mywork_model.rank(items)
-    return {"items": items, "counts": _counts(items, persona)}
+    return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}
