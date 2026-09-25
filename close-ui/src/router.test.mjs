@@ -45,7 +45,7 @@ test("failure path: an undeclared first close names the reason, never a guessed 
   assert.equal(landingPath(context), null); // B16b: stay on /close; the shell shows the reason
 });
 
-test("failure path: a Viewer who has signed nothing names the reason (long text, URL-escaped)", () => {
+test("failure path: a Viewer who has signed nothing names the reason (stays on /close)", () => {
   const reason =
     "No period has been signed off yet. Switch to the provisional period to see the close in progress.";
   const context = {
@@ -56,10 +56,8 @@ test("failure path: a Viewer who has signed nothing names the reason (long text,
       provisional: { period: [2025, 9], rule: "current", reason: null },
     },
   };
-  assert.equal(
-    landingPath(context),
-    `/close/none/${encodeURIComponent(reason)}/my-work`,
-  );
+  // B16b: no period → stay on /close; the shell shows the reason and the provisional switch.
+  assert.equal(landingPath(context), null);
 });
 
 test("router.js resolves screens through import.meta.glob(\"./screens/*.vue\")", () => {
