@@ -95,7 +95,31 @@ class _Doc:  # stand-in for frappe.model.document.Document
     """``save`` runs ``validate``, because that is what Frappe's save does."""
 
     def save(self):
+        # Then on_update, as Frappe's save does: since konsol#295 that is where
+        # publish()/unpublish() apply the schema. No stored row here, so the
+        # doc-before-save is None, as on an insert.
         self.validate()
+        self.on_update()
+
+    def get_doc_before_save(self):
+        return None
+
+    @property
+    def flags(self):
+        # frappe._dict per document; the tests build docs with __new__.
+        if "_flags" not in self.__dict__:
+            self.__dict__["_flags"] = _Flags()
+        return self.__dict__["_flags"]
+
+
+class _Flags(dict):
+    """frappe._dict: attribute access, missing keys read as None."""
+
+    def __getattr__(self, key):
+        return self.get(key)
+
+    def __setattr__(self, key, value):
+        self[key] = value
 
 
 _stub("frappe", whitelist=lambda *a, **k: (lambda fn: fn),
@@ -410,7 +434,12 @@ def test_nothing_in_the_warehouse_reads_survives_close():
             with open(path, encoding="utf-8", errors="replace") as fh:
                 if FIELD in fh.read():
                     readers.append(os.path.relpath(path, _APP))
-    # dimension.py is the refusal itself; it is the one place the name may
-    # appear outside the doctype JSON that declares the field.
-    assert readers == [os.path.join("epm", "doctype", "dimension", "dimension.py")], (
-        f"{FIELD} is read somewhere: {readers}")
+    # dimension.py is the refusal itself. config_service.py carries the field
+    # through a config bundle and its export (konsol#295), so that a bundle
+    # ticking it reaches that refusal instead of having the tick dropped; it
+    # computes nothing from it. Those are the only places the name may appear
+    # outside the doctype JSON that declares the field.
+    assert sorted(readers) == sorted([
+        "config_service.py",
+        os.path.join("epm", "doctype", "dimension", "dimension.py"),
+    ]), f"{FIELD} is read somewhere: {readers}"

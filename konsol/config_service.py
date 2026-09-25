@@ -21,6 +21,8 @@ _DIMENSION_FIELDS = [
     "label",
     "cube_type",
     "in_budget",
+    "in_trial_balance",
+    "survives_close",
     "allocation_role",
     "permission_doctype",
     "status",
@@ -40,9 +42,19 @@ _DIMENSION_WRITABLE_FIELDS = [
     "label",
     "cube_type",
     "in_budget",
+    "in_trial_balance",
+    "survives_close",
     "allocation_role",
     "permission_doctype",
 ]
+
+#: The trial-balance Check fields (konsol#255), exported as bool like
+#: in_budget. survives_close is carried so that a bundle ticking it is refused
+#: by the controller, not silently dropped (konsol#247); both are exported so a
+#: round trip keeps them (konsol#295). A text value such as "0" or "yes" is
+#: written as 1 or 0 by Dimension.before_validate, for every Check and every
+#: path, so it is not normalised here as well.
+_DIMENSION_TB_FLAGS = ("in_trial_balance", "survives_close")
 
 _DIMENSION_CUBE_TYPES = {"string", "number"}
 _MEASURE_CUBE_TYPES = {"sum", "count", "avg"}
@@ -104,6 +116,8 @@ def _normalize_filters(filters):
 def _serialize_dimension(row):
     data = dict(row)
     data["in_budget"] = bool(data.get("in_budget"))
+    for field in _DIMENSION_TB_FLAGS:
+        data[field] = bool(data.get(field))
     return data
 
 
@@ -175,7 +189,11 @@ def get_dimension(name):
 
 
 def upsert_dimension(spec, publish=False):
-    """Create or update a Dimension doc. Saves as Draft unless publish=True."""
+    """Create or update a Dimension doc. Saves as Draft unless publish=True.
+
+    A spec whose ``status`` is Published applies the schema without
+    publish=True: the Dimension's save does it (konsol#295).
+    """
     spec = dict(spec or {})
     name = spec.get("dimension_name")
     if not name:
@@ -201,11 +219,14 @@ def upsert_dimension(spec, publish=False):
         if "status" in spec and not publish:
             doc.status = spec["status"]
 
-    doc.save()
-    frappe.db.commit()
-
+    # One save either way, and the save applies the schema when the dimension
+    # ends up Published or leaves it (konsol#295). publish() saves too (and
+    # inserts a new doc), so saving first and then publishing applied twice.
     if publish:
         doc.publish()
+    else:
+        doc.save()
+    frappe.db.commit()
 
     doc.reload()
 
