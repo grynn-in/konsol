@@ -12,11 +12,18 @@
  *   the server did not send reads "not recorded", never a guessed "by <owner>".
  * - Read only (D1): no cell is editable. Selecting an entity opens its detail
  *   area; B20 mounts the upload section and B21 the compare section there.
+ * - The upload section (B20) is shown only to the personas who upload: the
+ *   Entity Accountant (my_tbs lists only their own entities) and the Close
+ *   Lead (whose upload the server labels on-behalf, R4), and only when the
+ *   server says `can_upload` (the period is Open and the user may create a
+ *   trial balance). After a submit the list is re-read in place, so the
+ *   server's own label is shown; the detail area stays open.
  * - No due date is shown: nothing declares one (Problems 6).
  */
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import LoadState from "../components/LoadState.vue";
+import TbUpload from "../sections/TbUpload.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
 import { entityRows } from "../tbTable.js";
@@ -95,7 +102,24 @@ async function retry() {
 	}
 }
 
-watch(() => route.path, fetchAll, { immediate: true });
+watch(() => route.path, () => fetchAll(), { immediate: true });
+
+const refreshError = ref(null);
+
+/** After a submit: re-read my_tbs without leaving the detail area. */
+async function refreshAfterSubmit() {
+	const p = period.value;
+	const mine = ++seq;
+	refreshError.value = null;
+	try {
+		const tbs = await get(MY_TBS, { fiscal_year: p.year, fiscal_period: p.period });
+		if (mine !== seq) return;
+		load.data = tbs;
+	} catch (e) {
+		if (mine !== seq) return;
+		refreshError.value = `The trial balance was received, but the list could not be re-read: ${e.message}`;
+	}
+}
 
 /** `entityRows` refuses an unknown status; that refusal is shown, not hidden. */
 const table = computed(() => {
@@ -133,6 +157,8 @@ const total = computed(() => (table.value.rows ? table.value.rows.length : null)
 const selected = computed(() =>
 	(table.value.rows || []).find((r) => r.entity === selectedCode.value) || null,
 );
+
+const canUpload = computed(() => Boolean(load.data && load.data.can_upload) && (load.persona === "entity_accountant" || load.persona === "close_lead"));
 
 function select(code) {
 	selectedCode.value = selectedCode.value === code ? null : code;
@@ -246,7 +272,17 @@ function select(code) {
 						<dd class="text-ink-gray-8">None submitted for this period.</dd>
 					</template>
 				</dl>
-				<!-- B20 mounts the upload section here (TbUpload.vue); B21 the compare section. -->
+				<p v-if="refreshError" role="alert" class="mt-3 text-sm text-ink-red-3">{{ refreshError }}</p>
+				<TbUpload
+					v-if="canUpload"
+					:key="`${selected.entity}-${period.year}-${period.period}`"
+					:entity="selected.entity"
+					:entity-name="selected.name"
+					:fiscal-year="period.year"
+					:fiscal-period="period.period"
+					@submitted="refreshAfterSubmit"
+				/>
+				<!-- B21 mounts the compare section here. -->
 			</section>
 		</LoadState>
 	</div>
