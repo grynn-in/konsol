@@ -99,6 +99,47 @@ def test_good_file_is_ok_with_row_shape_and_totals():
     assert r["totals"] == {"debit": 100.5, "credit": 100.5, "difference": 0.0}
 
 
+# --- the reported line is the real CSV line, not index + 2 (konsol#305 A38) -------
+
+def test_problem_line_survives_a_blank_line_in_the_file():
+    """csv.DictReader skips blank lines, so a row problem after one must name
+    the file's own line 4, not the row-count-based line 3."""
+    r = _check(_rows("main_account,debit,credit\n1010,1,0\n\n4001,0,1\n"))
+    assert [row["line"] for row in r["rows"]] == [2, 4]  # line 3 was blank; no row for it
+    (p,) = _problems(r, 4)
+    assert p["code"] == "UNKNOWN_ACCOUNT"
+    assert p["message"] == "Account 4001 is not in the group chart"
+
+
+def test_duplicate_message_names_the_real_line_across_a_blank_line():
+    r = _check(_rows(
+        "main_account,debit,credit,partner_data_area_id\n"
+        "1010,10,0,ZZB\n\n1010,10,0,ZZB\n2010,0,20,\n"
+    ))
+    assert [row["line"] for row in r["rows"]] == [2, 4, 5]
+    assert "line 4" in _problems(r, 2)[0]["message"]
+    assert "line 2" in _problems(r, 4)[0]["message"]
+
+
+def test_parse_tb_csvs_own_errors_name_the_real_line_after_a_blank_line():
+    """Failure path: the structural errors parse_tb_csv raises itself must use
+    the same physical-line counting as the rows it returns."""
+    try:
+        C.parse_tb_csv("main_account,debit,credit\n1010,1,0\n\n,0,1\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "Line 4: main_account is blank" in str(e)
+
+
+def test_a_row_with_no_line_key_falls_back_to_index_plus_two():
+    """A caller that builds rows itself (not via parse_tb_csv) still gets a
+    reasonable line number instead of a KeyError."""
+    rows = [{"main_account": "1010", "debit": 10, "credit": 0},
+            {"main_account": "2010", "debit": 0, "credit": 10}]
+    r = _check(rows)
+    assert [row["line"] for row in r["rows"]] == [2, 3]
+
+
 def test_unknown_account_suggests_the_closest_posting_account():
     r = _check(_rows("main_account,debit,credit\n4001,10,0\n1010,0,10\n"))
     assert r["ok"] is False

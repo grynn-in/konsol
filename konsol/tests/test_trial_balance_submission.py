@@ -54,9 +54,10 @@ GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
 def test_parse_good_file():
     rows = _m.parse_tb_csv(GOOD)
     assert len(rows) == 2
+    # "line" is the physical CSV line the row came from (konsol#305 A38).
     assert rows[0] == {"main_account": "1010", "debit": 100.5,
                        "credit": 0.0, "description": "", "partner_data_area_id": "",
-                       "amount_basis": ""}
+                       "amount_basis": "", "line": 2}
 
 
 def test_parse_accepts_description_and_case_insensitive_header():
