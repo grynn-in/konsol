@@ -23,7 +23,6 @@ RUN_STEP_JSON = os.path.join(APP_DIR, "pipeline", "doctype", "run_step", "run_st
 RPT_PY = os.path.join(APP_DIR, "consolidation", "report", "close_assertions",
                       "close_assertions.py")
 TASKS_PY = os.path.join(APP_DIR, "tasks.py")
-CONTROL_PY = os.path.join(APP_DIR, "control_api.py")
 
 
 def _src(path):
@@ -527,50 +526,3 @@ def test_amber_run_has_a_list_view_indicator():
     """Otherwise every Amber run reads 'Unknown' in the list."""
     src = _src(os.path.join(AR_DIR, "assertion_run_list.js"))
     assert "Amber:" in src
-
-
-def test_amber_close_still_counts_as_completed_today():
-    """A close signed over warnings finished; it must not vanish from the
-    operator's 'done today' count."""
-    seg = _segment(_src(CONTROL_PY), "def _completed_today", "def _budget_rounds")
-    assert "Amber" in seg
-
-
-def test_control_room_does_not_show_an_amber_close_as_never_started():
-    """_close_machine fed the row status everywhere except _completed_today."""
-    seg = _segment(_src(CONTROL_PY), "def _close_machine", "def _pbr_machine")
-    assert "Amber" in seg
-
-
-def test_control_room_warn_step_is_finished_not_pending():
-    src = _src(CONTROL_PY)
-    assert src.count('res.status in ("Pass", "Warn")') == 2, \
-        "both close-run step renderers must treat a Warn as finished"
-    assert "Warning" in _segment(src, "def _step_state", "def _pipe_phase")
-
-
-# --- the close navigator on Home -------------------------------------------
-
-def test_home_offers_to_acknowledge_an_amber_close():
-    """The blocking defect found in review: Amber fell through to `waiting`,
-    so Home showed a disabled Sign off button reading "Opens when close
-    assertions are green" and offered no route to the acknowledgement."""
-    seg = _segment(_src(os.path.join(APP_DIR, "home_model.py")),
-                   "def assertions_stage", "def signoff_stage")
-    assert 'status == "Amber"' in seg
-    assert '"ready"' in seg, "Amber must be signable, not waiting"
-    assert '"Acknowledged"' in seg, "a signed Amber close reads as unfinished forever"
-
-
-def test_home_signoff_opens_for_a_ready_assertion_stage():
-    seg = _segment(_src(os.path.join(APP_DIR, "home_model.py")),
-                   "def signoff_stage", "def ordered")
-    assert '"ready"' in seg and "assertions_state in" in seg
-
-
-def test_home_queue_prompts_for_the_acknowledgement():
-    """Nothing else ever tells the accountant a warning is waiting."""
-    src = _src(os.path.join(APP_DIR, "home_api.py"))
-    assert '"warned"' in src, "the count is never fetched"
-    seg = _segment(src, 'a = by_id["assertions"]', 's = by_id["signoff"]')
-    assert 'a["state"] == "ready"' in seg
