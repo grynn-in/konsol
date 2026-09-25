@@ -65,12 +65,13 @@ export function checkRows(result) {
 // The TB statuses A25 declares (signoff_model.expected_entities). A status
 // this module does not know is refused, not guessed at: it is never shown
 // as if it were one of these.
-const KNOWN_STATUSES = new Set([
+export const KNOWN_STATUSES = new Set([
   "Received",
   "Exception declared",
   "Not expected this period",
   "Missing",
   "Frequency not declared",
+  "Quarter not declared",
 ]);
 
 /**
