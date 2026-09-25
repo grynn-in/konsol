@@ -231,6 +231,15 @@ def test_the_viewer_still_lands_on_the_latest_signed_without_a_first_close_perio
     assert res["provisional"]["rule"] == "first_close_undeclared"
 
 
+def test_first_close_undeclared_reason_names_close_settings_not_epm_settings():
+    # konsol#305 A36b: the first close period lives in Close Settings, a
+    # doctype the Close Lead (EPM Admin) can write; EPM Settings is
+    # System Manager only (A36 was proved impossible live).
+    res = M.landing(_years(2026), set(), "close_lead", D(2026, 10, 3), first_close=None)
+    assert "Close Settings" in res["reason"]
+    assert "EPM Settings" not in res["reason"]
+
+
 def test_first_close_is_required():
     try:
         M.landing(_years(2026), set(), "close_lead", D(2026, 10, 3))
