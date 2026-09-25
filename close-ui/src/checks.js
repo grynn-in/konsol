@@ -14,6 +14,13 @@
 // differs from `latest.name` (the newest run, possibly still in flight),
 // the banner says the results are from an earlier run. An unknown
 // staleness state is never silently shown as current: this module throws.
+//
+// konsol#305 B13b: a Warn cause must never look like a pass, and a Fail
+// must never look like a Warn. Each cause keeps A13's `status`
+// (Fail|Error|Warn) and `severity`, plus a `label` the screen renders as
+// text (never colour alone). A domain keeps A13's `count` (how many fail:
+// Fail + Error) and `warn_count` (how many warn) apart, as `count` and
+// `warnCount`. An unknown status throws — it is never shown as a pass.
 
 const BANNER_TEXT = {
   stale: "Checks are older than the numbers — run them again",
@@ -23,6 +30,12 @@ const BANNER_TEXT = {
 };
 
 const EARLIER_RUN_NOTE = "These results are from an earlier run.";
+
+const STATUS_LABEL = {
+  Fail: "Failed",
+  Error: "Error",
+  Warn: "Warning",
+};
 
 function bannerFor({ staleness, latest, results_run }) {
   if (!Object.prototype.hasOwnProperty.call(BANNER_TEXT, staleness)) {
@@ -37,8 +50,15 @@ function bannerFor({ staleness, latest, results_run }) {
 }
 
 function causeView(cause) {
+  const label = STATUS_LABEL[cause.status];
+  if (!label) {
+    throw new Error(`Unknown cause status: ${cause.status}`);
+  }
   return {
     title: cause.title,
+    status: cause.status,
+    label,
+    severity: cause.severity,
     text: cause.description_missing
       ? `No description declared for ${cause.assertion}`
       : cause.description,
@@ -48,12 +68,12 @@ function causeView(cause) {
 
 function domainView(domain) {
   const causes = [...domain.failures, ...domain.warnings].map(causeView);
-  return { name: domain.domain, count: causes.length, causes };
+  return { name: domain.domain, count: domain.count, warnCount: domain.warn_count, causes };
 }
 
 /**
- * A26's `get_checks` payload → `{banner, domains:[{name, count,
- * causes:[{title, text, rows}]}], canRun}`.
+ * A26's `get_checks` payload → `{banner, domains:[{name, count, warnCount,
+ * causes:[{title, status, label, severity, text, rows}]}], canRun}`.
  */
 export function checksView(payload) {
   return {

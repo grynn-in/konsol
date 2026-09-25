@@ -110,3 +110,8 @@ test("Results from an earlier run are labelled: the banner comes from checksView
 test("No v-html anywhere", () => {
   assert.doesNotMatch(read(), /v-html/);
 });
+
+test("B13b: a warning looks different from a failure — the cause's label renders as text, not colour alone", () => {
+  const tpl = template(read());
+  assert.match(tpl, /cause\.label\b/, "the Fail/Error/Warn label from checksView renders");
+});
