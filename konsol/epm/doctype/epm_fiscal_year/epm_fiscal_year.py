@@ -239,6 +239,39 @@ class EPMFiscalYear(Document):
         if status_action and before is not None:
             self._assert_status_action_structure_unchanged(before)
 
+    def before_save(self):
+        self._keep_data_change_record()
+
+    def _keep_data_change_record(self):
+        """konsol#305 A65: only ``signoff_gate.record_data_change`` writes a
+        period row's data_changed_at / data_changed_by / data_change. Frappe
+        writes every child row back from the document, so a year loaded
+        before a concurrent data change (a Close/Lock/Reopen, Generate
+        Periods or a desk edit) would put the old values back and lose the
+        record silently. Each row therefore takes the database's values just
+        before the write; a row not yet in the database takes none.
+
+        A locking read: under REPEATABLE READ a plain read can return this
+        transaction's older snapshot, and the lock makes a concurrent
+        record_data_change wait for this save instead of landing between the
+        read and the write. Frappe's save has already locked the year row
+        (check_if_latest), and record_data_change's callers reach the year
+        row before the period row too, so the lock order is the same."""
+        from konsol.close.signoff_gate import DATA_CHANGE_FIELDS
+
+        saved = {}
+        if self.name:
+            for row in frappe.db.sql(
+                    "select name, data_changed_at, data_changed_by, data_change "
+                    "from `tabEPM Fiscal Year Period` "
+                    "where parenttype = 'EPM Fiscal Year' and parent = %s for update",
+                    (self.name,), as_dict=True):
+                saved[row["name"]] = row
+        for row in self.periods or []:
+            db_row = saved.get(row.name) if row.name else None
+            for field in DATA_CHANGE_FIELDS:
+                setattr(row, field, db_row.get(field) if db_row else None)
+
     def on_trash(self):
         """Refuse deleting a year whose periods documents use. on_trash runs
         before the delete (after_delete would be too late to refuse)."""

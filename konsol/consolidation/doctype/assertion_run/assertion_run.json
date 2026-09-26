@@ -166,7 +166,7 @@
       "fieldtype": "Small Text",
       "label": "Affected By",
       "read_only": 1,
-      "description": "Set when an earlier period is reopened after this run was signed: the run no longer counts as signed, and the checks must run again (konsol#303)."
+      "description": "Why this run's sign-off no longer counts: a reopen of this or an earlier period, or a data change after the run (#305-R2b-3)."
     },
     {
       "fieldname": "tab_timing",
