@@ -14,6 +14,7 @@ imported lazily inside `sign_off_close`, so the stub gate is installed in
 """
 import ast
 import contextlib
+import datetime
 import importlib.util
 import json
 import os
@@ -25,12 +26,20 @@ AR_PY = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "asse
 AR_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.json")
 
 
+def _get_datetime(value):
+    """frappe.utils.get_datetime: a datetime stays, an ISO string is parsed."""
+    if isinstance(value, datetime.datetime):
+        return value
+    return datetime.datetime.fromisoformat(str(value))
+
+
 class GateBlocked(Exception):
     """What the stub gate raises: stands for "Sign-off blocked"."""
 
 
 def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fiscal_period=1,
-          gate_raises=False, affected_by=None, period_state="Open"):
+          gate_raises=False, affected_by=None, period_state="Open",
+          completed_at=datetime.datetime(2026, 9, 26, 9, 0), data_change=None):
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.PermissionError = type("PermissionError", (Exception,), {})
@@ -43,6 +52,7 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
         signoff_saved=False, acknowledgement=None, warnings_at_signoff=None,
         override_reason=None, signed_off_by=None, signed_off_at=None,
         fiscal_year=fiscal_year, fiscal_period=fiscal_period, affected_by=affected_by,
+        completed_at=completed_at,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 
@@ -53,7 +63,8 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
     frappe.has_permission = lambda *a, **k: True
     frappe.session = types.SimpleNamespace(user="lead@example.com")
     frappe.utils = types.SimpleNamespace(get_bench_path=lambda: "/bench",
-                                         now_datetime=lambda: "NOW")
+                                         now_datetime=lambda: "NOW",
+                                         get_datetime=_get_datetime)
     frappe.db = types.SimpleNamespace(
         get_value=lambda *a, **k: "AR-1", commit=lambda: None, exists=lambda *a, **k: True)
     frappe.get_doc = lambda dt, name=None: saved_doc
@@ -107,6 +118,9 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
 
     gate = types.ModuleType("konsol.close.signoff_gate")
     gate.assert_can_sign = assert_can_sign
+    # A63: the period's last recorded data change (blank: none recorded).
+    gate.data_change = lambda fy, fp: dict(data_change or {
+        "data_changed_at": None, "data_changed_by": None, "data_change": None})
     return module, frappe, saved_doc, gate, calls
 
 
@@ -273,8 +287,9 @@ def test_sign_off_close_refuses_a_re_sign_needed_run_and_saves_nothing():
             raise AssertionError(f"a {status} run in {RE_SIGN} was signed again")
         except frappe.ValidationError as e:
             msg = str(e)
-        assert msg == ("An earlier period was reopened after this run: %s. Run the checks "
-                       "again, then sign off the new run." % AFFECTED), msg
+        # A63: the refusal names what happened (affected_by), not always a reopen.
+        assert msg == ("This run's sign-off no longer counts: %s. Run the checks again, "
+                       "then sign off the new run." % AFFECTED), msg
         assert doc.signoff_saved is False, f"{status}: the run was saved"
         assert doc.signoff_status == RE_SIGN
         assert doc.signed_off_by is None and doc.signed_off_at is None
@@ -324,3 +339,272 @@ def test_a_closed_or_locked_period_is_refused_before_the_gate():
             assert calls == [], "%s/%s: the gate ran for a closed period" % (state, status)
             assert doc.signoff_saved is False
             assert doc.signoff_status == "Not Signed Off"
+
+
+# --- A63 (#305-R2b-3): a signature covers only the data its run checked ------
+
+CHANGED_AT = datetime.datetime(2026, 9, 26, 10, 15, 30)
+CHANGE = {"data_changed_at": CHANGED_AT, "data_changed_by": "zz-acct@example.com",
+          "data_change": "TB TBS-ZZOP-2099-P1-905 cancelled"}
+STALE = ("TB TBS-ZZOP-2099-P1-905 cancelled at 2026-09-26 10:15:30 by zz-acct@example.com, "
+         "after these checks ran; re-run the checks before signing.")
+
+
+def test_a_run_that_completed_before_the_data_changed_is_refused_and_nothing_written():
+    for status, kwargs in (("Green", {}), ("Amber", {"acknowledgement": "reviewed"}),
+                           ("Red", {"override_reason": "known"})):
+        module, frappe, doc, gate, calls = _load(
+            status=status, completed_at=datetime.datetime(2026, 9, 26, 9, 0),
+            data_change=CHANGE)
+        try:
+            _sign(module, gate, **kwargs)
+            raise AssertionError("%s: a run older than the data change was signed" % status)
+        except frappe.ValidationError as e:
+            assert str(e) == STALE, str(e)
+        assert doc.signoff_saved is False, status
+        assert doc.signoff_status == "Not Signed Off", status
+        assert doc.signed_off_by is None and doc.signed_off_at is None
+        assert doc.acknowledgement is None and doc.override_reason is None
+        assert calls == [], "%s: the gate ran for a run that must be re-run" % status
+
+
+def test_a_run_that_completed_after_the_data_changed_is_signed():
+    module, _, doc, gate, calls = _load(
+        completed_at=datetime.datetime(2026, 9, 26, 10, 20), data_change=CHANGE)
+    _sign(module, gate)
+    assert doc.signoff_status == "Signed Off" and doc.signoff_saved is True
+    assert calls == [(2099, 1)]
+
+
+def test_a_run_completed_as_an_iso_string_is_compared_as_a_time():
+    module, frappe, doc, gate, _ = _load(completed_at="2026-09-26 09:00:00",
+                                         data_change=dict(CHANGE, data_changed_at=
+                                                          "2026-09-26 10:15:30"))
+    try:
+        _sign(module, gate)
+        raise AssertionError("a string completed_at older than the change was signed")
+    except frappe.ValidationError as e:
+        assert str(e) == STALE, str(e)
+    assert doc.signoff_saved is False
+
+
+def test_a_blank_data_changed_at_never_refuses():
+    for blank in (None, ""):
+        module, _, doc, gate, calls = _load(
+            completed_at=datetime.datetime(2020, 1, 1),
+            data_change={"data_changed_at": blank, "data_changed_by": None, "data_change": None})
+        _sign(module, gate)
+        assert doc.signoff_status == "Signed Off", blank
+        assert doc.signoff_saved is True, blank
+
+
+def test_a_re_sign_needed_refusal_shows_what_changed_the_data():
+    text = "TB TBS-ZZOP-2099-P1-905 cancelled at 2026-09-26 10:15:30 by zz-acct@example.com"
+    module, frappe, doc, gate, calls = _load(signoff_status=RE_SIGN, affected_by=text)
+    try:
+        _sign(module, gate)
+        raise AssertionError("a Re-sign Needed run was signed")
+    except frappe.ValidationError as e:
+        msg = str(e)
+    assert text in msg, msg
+    assert "reopened" not in msg, "the refusal still says a period was reopened: " + msg
+    assert doc.signoff_saved is False
+
+
+# --- A63: the five hook points record the change -------------------------------
+
+TBS_PY = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_submission",
+                      "trial_balance_submission.py")
+TBX_PY = os.path.join(APP_DIR, "consolidation", "doctype", "tb_exception", "tb_exception.py")
+UPLOADER = "zz-acct@example.com"
+
+
+class _Hooks:
+    """Records every call the hook points make, in order, across the stub
+    signoff_gate (``record``) and ClickHouse (``ch``)."""
+
+    def __init__(self, raise_on_record=False):
+        self.log = []
+        self.raise_on_record = raise_on_record
+
+    def gate(self):
+        gate = types.ModuleType("konsol.close.signoff_gate")
+
+        def record_data_change(fiscal_year, fiscal_period, text, user):
+            self.log.append(("record", fiscal_year, fiscal_period, text, user))
+            if self.raise_on_record:
+                raise RuntimeError("record refused")
+            return []
+
+        gate.record_data_change = record_data_change
+        return gate
+
+
+def _hook_modules(hooks):
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+    frappe.PermissionError = type("PermissionError", (Exception,), {})
+
+    def throw(msg, exc=None, *a, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    frappe.throw = throw
+    frappe._ = lambda s: s
+    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    frappe.session = types.SimpleNamespace(user=UPLOADER)
+
+    class Document:
+        def __init__(self, **f):
+            self.__dict__.update(f)
+
+    doc_mod = types.ModuleType("frappe.model.document")
+    doc_mod.Document = Document
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.tb_basis_model resolves
+    clickhouse = types.ModuleType("konsol.clickhouse")
+    clickhouse.execute = lambda sql, *a, **k: hooks.log.append(("ch", sql)) or ""
+    clickhouse.ensure_raw_tables = lambda: None
+    period_status = types.ModuleType("konsol.period_status")
+    for name in ("assert_open", "assert_postable", "assert_declared"):
+        setattr(period_status, name, lambda *a, **k: None)
+    lifecycle = types.ModuleType("konsol.schema_lifecycle")
+    lifecycle.check_epm_admin = lambda: None
+    close = types.ModuleType("konsol.close")
+    gate = hooks.gate()
+    close.signoff_gate = gate
+    return {"frappe": frappe, "frappe.model": types.ModuleType("frappe.model"),
+            "frappe.model.document": doc_mod, "konsol": konsol,
+            "konsol.clickhouse": clickhouse, "konsol.period_status": period_status,
+            "konsol.schema_lifecycle": lifecycle, "konsol.close": close,
+            "konsol.close.signoff_gate": gate}
+
+
+@contextlib.contextmanager
+def _installed(mods):
+    saved = {n: sys.modules.get(n) for n in list(mods) + ["konsol.tb_basis_model"]}
+    sys.modules.update(mods)
+    sys.modules.pop("konsol.tb_basis_model", None)
+    try:
+        yield
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def _hook_module(path, hooks):
+    mods = _hook_modules(hooks)
+    with _installed(mods):
+        spec = importlib.util.spec_from_file_location("a63_hook_under_test", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module, mods
+
+
+def _tbs(module, **over):
+    doc = module.TrialBalanceSubmission(
+        name="TBS-ZZOP-2099-P1-905", batch_id="b905", data_area_id="ZZOP", fiscal_year=2099,
+        fiscal_period=1, row_count=2, amount_basis="Period movement")
+    doc.__dict__.update(over)
+    doc._parse_file = lambda: []
+    doc._ensure_tables = lambda: None
+    doc._land_rows = lambda rows: None
+    return doc
+
+
+def _records(hooks):
+    return [e[1:] for e in hooks.log if e[0] == "record"]
+
+
+def test_tb_submit_records_the_change_before_anything_reaches_clickhouse():
+    hooks = _Hooks()
+    module, mods = _hook_module(TBS_PY, hooks)
+    with _installed(mods):
+        _tbs(module).on_submit()
+    assert _records(hooks) == [(2099, 1, "TB TBS-ZZOP-2099-P1-905 submitted", UPLOADER)], hooks.log
+    assert hooks.log[0][0] == "record", "ClickHouse was written before the change was recorded"
+    assert any(e[0] == "ch" for e in hooks.log), "the claim was not written"
+
+
+def test_tb_cancel_records_the_change_before_the_claim_is_deleted():
+    hooks = _Hooks()
+    module, mods = _hook_module(TBS_PY, hooks)
+    with _installed(mods):
+        _tbs(module, fiscal_period=7).on_cancel()
+    assert _records(hooks) == [(2099, 7, "TB TBS-ZZOP-2099-P1-905 cancelled", UPLOADER)], hooks.log
+    assert [e[0] for e in hooks.log] == ["record", "ch"], hooks.log
+
+
+def test_a_refused_record_leaves_clickhouse_untouched():
+    """Failure path: ClickHouse has no transaction, so the change is recorded
+    first and a refusal there stops the claim (or its delete) from happening."""
+    for method in ("on_submit", "on_cancel"):
+        hooks = _Hooks(raise_on_record=True)
+        module, mods = _hook_module(TBS_PY, hooks)
+        with _installed(mods):
+            try:
+                getattr(_tbs(module), method)()
+                raise AssertionError("%s went on after the record was refused" % method)
+            except RuntimeError as e:
+                assert "record refused" in str(e)
+        assert [e for e in hooks.log if e[0] == "ch"] == [], (method, hooks.log)
+
+
+def _tbx(module, **over):
+    doc = module.TBException(name="TBX-00905", docstatus=1, data_area_id="ZZOP",
+                             fiscal_year=2099, fiscal_period=3, reason="Dormant")
+    doc.__dict__.update(over)
+    return doc
+
+
+def test_tb_exception_submit_and_cancel_record_the_change():
+    hooks = _Hooks()
+    module, mods = _hook_module(TBX_PY, hooks)
+    with _installed(mods):
+        _tbx(module).on_submit()
+        _tbx(module, docstatus=2).on_cancel()
+    assert _records(hooks) == [
+        (2099, 3, "TB Exception TBX-00905 submitted", UPLOADER),
+        (2099, 3, "TB Exception TBX-00905 cancelled", UPLOADER)], hooks.log
+
+
+def _amount_rows():
+    def row(name, fp, docstatus=1):
+        return types.SimpleNamespace(name=name, docstatus=docstatus, batch_id="b-" + name,
+                                     data_area_id="ZZOP", fiscal_year=2099, fiscal_period=fp,
+                                     row_count=2)
+    return {"TBS-1": row("TBS-1", 3), "TBS-2": row("TBS-2", 4), "TBS-3": row("TBS-3", 3),
+            "TBS-4": row("TBS-4", 5, docstatus=2)}
+
+
+def test_set_amount_basis_records_one_change_per_period_before_the_claim():
+    hooks = _Hooks()
+    module, mods = _hook_module(TBS_PY, hooks)
+    rows = _amount_rows()
+    mods["frappe"].db = types.SimpleNamespace(
+        get_value=lambda dt, name, fields, **k: rows.get(name),
+        set_value=lambda dt, name, field, value, **k: hooks.log.append(("set", name)))
+    with _installed(mods):
+        out = module.set_amount_basis(["TBS-1", "TBS-2", "TBS-3", "TBS-4"],
+                                      "Period-end balance")
+    assert out["updated"] == 3, out
+    assert _records(hooks) == [
+        (2099, 3, "Amount basis of TB TBS-1, TBS-3 set to Period-end balance", UPLOADER),
+        (2099, 4, "Amount basis of TB TBS-2 set to Period-end balance", UPLOADER)], hooks.log
+    kinds = [e[0] for e in hooks.log]
+    assert kinds == ["set", "set", "set", "record", "record", "ch"], kinds
+
+
+def test_set_amount_basis_with_nothing_updated_records_nothing():
+    hooks = _Hooks()
+    module, mods = _hook_module(TBS_PY, hooks)
+    rows = _amount_rows()
+    mods["frappe"].db = types.SimpleNamespace(
+        get_value=lambda dt, name, fields, **k: rows.get(name),
+        set_value=lambda *a, **k: hooks.log.append(("set",)))
+    with _installed(mods):
+        out = module.set_amount_basis(["TBS-4", "TBS-9"], "Period-end balance")
+    assert out["updated"] == 0
+    assert hooks.log == [], hooks.log

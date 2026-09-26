@@ -339,6 +339,9 @@ def test_sign_off_close_saves_as_the_signoff_writer():
     frappe.get_doc = lambda *a, **k: doc
     gate = types.ModuleType("konsol.close.signoff_gate")
     gate.assert_can_sign = lambda *a: None
+    # A63: no data change recorded, so the run is current.
+    gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
+                                   "data_change": None}
     pkg = types.ModuleType("konsol.close")
     pkg.signoff_gate = gate
     names = ("konsol", "konsol.close", "konsol.close.signoff_gate")

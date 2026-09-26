@@ -106,6 +106,8 @@ class _Site:
         self.rows = rows
         self.first_close = (2025, 1)
         self.closed = {(2025, fp): (LEAD, CLOSED_ON) for fp in range(1, 9)}
+        #: A63: the period rows' data-change fields, by (year, period).
+        self.data_changed = {}
         runs = [_run("RUN-%02d" % fp, fp) for fp in range(1, 9)]
         runs.append(_run("RUN-09", 9, status="Amber", signoff="Not Signed Off", warned=3))
         entities = ["ZZA", "ZZB", "ZZC", "ZZD", "ZZE"]
@@ -194,7 +196,7 @@ def _load(site):
             assert set(name) >= {"parent", "fiscal_period"}, name
             key = (int(name["parent"]), int(name["fiscal_period"]))
             by, on = site.closed.get(key, (None, None))
-            row = _D(closed_by=by, closed_on=on)
+            row = _D(closed_by=by, closed_on=on, **site.data_changed.get(key, {}))
         else:
             rows = _rows(doctype, {"name": name})
             if not rows:
@@ -1021,3 +1023,24 @@ def test_sign_with_the_matching_run_signs_it():
     _result, exc = _call_sign(site, 2025, 9, run="RUN-09-B", override_reason="Known FX gap")
     assert exc is None, exc
     assert site.signed == [("RUN-09-B", "Known FX gap", None)]
+
+
+# --- A63: the summary carries the period's last data change, zoned ------------
+
+def test_get_signoff_carries_the_data_change_zoned():
+    site = _Site()
+    site.data_changed[(2025, 9)] = {
+        "data_changed_at": datetime(2025, 10, 4, 11, 0), "data_changed_by": LEAD,
+        "data_change": "TB TB-ZZA-9 cancelled"}
+    result = _get(site)
+    assert result["data_changed_at"] == "2025-10-04T11:00:00+01:00", result["data_changed_at"]
+    assert result["data_changed_by"] == LEAD
+    assert result["data_change"] == "TB TB-ZZA-9 cancelled"
+    _assert_every_datetime_zoned(result)
+
+
+def test_get_signoff_with_no_data_change_recorded_sends_none():
+    result = _get(_Site())
+    for field in ("data_changed_at", "data_changed_by", "data_change"):
+        assert field in result, "get_signoff has no %s" % field
+        assert result[field] is None, (field, result[field])

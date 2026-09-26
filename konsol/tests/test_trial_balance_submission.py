@@ -47,6 +47,11 @@ _stub("konsol.schema_lifecycle", check_epm_admin=lambda: _ADMIN_CHECKS.append(Tr
 _spec = importlib.util.spec_from_file_location("tbs_under_test", _SRC)
 _m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_m)
+# konsol#305 A63: submit, cancel and set_amount_basis record a data change on
+# the period through konsol.close.signoff_gate, which this stub site has no
+# fiscal calendar for. That wiring (and its order before ClickHouse) is tested
+# in test_close_signoff_wiring.py; here it is a no-op.
+_m._record_data_change = lambda *a, **k: None
 
 GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
 

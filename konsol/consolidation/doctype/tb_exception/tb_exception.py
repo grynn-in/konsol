@@ -13,6 +13,10 @@ A value sent on a draft is cleared, so a document never names a declarer
 who did not submit it.
 
 Nothing here reaches ClickHouse; the gate reads MariaDB.
+
+Submit and cancel change what the period's checks read, so both record a
+data change on the period (konsol#305 A63): a signature over checks that ran
+before it stops counting.
 """
 
 import frappe
@@ -63,6 +67,20 @@ class TBException(Document):
 
     def before_submit(self):
         self.declared_by = frappe.session.user
+
+    def on_submit(self):
+        self._record_data_change("submitted")
+
+    def on_cancel(self):
+        self._record_data_change("cancelled")
+
+    def _record_data_change(self, what):
+        # Imported here: signoff_gate is frappe-bound and reads the fiscal calendar.
+        from konsol.close import signoff_gate
+
+        signoff_gate.record_data_change(
+            self.fiscal_year, self.fiscal_period,
+            "TB Exception %s %s" % (self.name, what), frappe.session.user)
 
     def before_cancel(self):
         """validate() is not run on cancel, so the period gate is applied here."""

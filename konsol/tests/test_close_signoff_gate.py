@@ -22,6 +22,8 @@ PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
+#: A63: the time the stub site's clock reads when a data change is recorded.
+CHANGED_AT = datetime(2026, 9, 26, 10, 15, 30)
 SIGNED = ("Signed Off", "Acknowledged", "Overridden")
 QUARTERS = {1: "Q1", 2: "Q1", 3: "Q1", 4: "Q2", 5: "Q2", 6: "Q2",
             7: "Q3", 8: "Q3", 9: "Q3", 10: "Q4", 11: "Q4", 12: "Q4"}
@@ -103,6 +105,9 @@ class _Site:
         self.signed_off_calls = []
         #: (run name, writer in force, fields changed) per Assertion Run save (A31).
         self.saves = []
+        #: A63: the period rows' data-change fields, and every write to them.
+        self.data_changes = {}
+        self.period_writes = []
 
 
 def _match(value, cond):
@@ -164,7 +169,33 @@ def _load(site):
     frappe.get_all = get_all
     frappe._ = lambda s: s
     frappe._dict = _D
-    frappe.db = types.SimpleNamespace(get_single_value=get_single_value)
+    def get_value(doctype, filters, fieldname, as_dict=False, **k):
+        # A63: the EPM Fiscal Year Period row, looked up the way signoff_api's
+        # _closed does (the year is named by its fiscal_year).
+        assert doctype == "EPM Fiscal Year Period", doctype
+        assert filters.get("parenttype") == "EPM Fiscal Year", filters
+        assert filters.get("parentfield") == "periods", filters
+        key = (int(filters["parent"]), int(filters["fiscal_period"]))
+        row = next((r for r in site.rows
+                    if (r["fiscal_year"], r["fiscal_period"]) == key), None)
+        if row is None:
+            return None
+        rec = _D(name="ROW-%d-%d" % key, period_type=row["period_type"],
+                 **site.data_changes.get(key, {}))
+        if isinstance(fieldname, (list, tuple)):
+            return _D({f: rec.get(f) for f in fieldname}) if as_dict else tuple(
+                rec.get(f) for f in fieldname)
+        return rec.get(fieldname)
+
+    def set_value(doctype, name, values, value=None, update_modified=True, **k):
+        assert doctype == "EPM Fiscal Year Period", doctype
+        assert isinstance(values, dict), values
+        site.period_writes.append((name, dict(values), update_modified))
+        fy, fp = (int(x) for x in name.split("-")[1:])
+        site.data_changes.setdefault((fy, fp), {}).update(values)
+
+    frappe.db = types.SimpleNamespace(get_single_value=get_single_value,
+                                      get_value=get_value, set_value=set_value)
     frappe.session = types.SimpleNamespace(user="zz@example.com")
 
     def _by_path(name, path):
@@ -243,7 +274,8 @@ def _load(site):
         raise AssertionError("stub: no Assertion Run %s" % name)
 
     frappe.get_doc = get_doc
-    frappe.utils = types.SimpleNamespace(nowdate=lambda: "2026-09-25")
+    frappe.utils = types.SimpleNamespace(nowdate=lambda: "2026-09-25",
+                                         now_datetime=lambda: CHANGED_AT)
     konsol.close, konsol.fiscal_calendar, konsol.period_status = close, calendar, period_status
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -710,3 +742,112 @@ def test_nothing_later_signed_marks_nothing_and_saves_nothing():
     marked = _mark(site, 2025, 11, "P11")
     assert marked == [] and site.saves == [], (marked, site.saves)
 
+
+
+# --- A63 (#305-R2b-3): a signature covers only the data its run checked ------
+
+PERIOD_JSON = os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year_period",
+                           "epm_fiscal_year_period.json")
+CHANGE_FIELDS = ("data_changed_at", "data_changed_by", "data_change")
+CHANGED_TEXT = "TB TBS-ZZA-2025-8 cancelled"
+CHANGED_BY = "zz-acct@example.com"
+
+
+def _record(site, fy, fp, text=CHANGED_TEXT, user=CHANGED_BY):
+    return _call(site, "record_data_change", fy, fp, text, user)
+
+
+def test_a_data_change_is_recorded_on_the_period_row():
+    site = _Site()
+    _record(site, 2025, 8)
+    assert site.period_writes == [
+        ("ROW-2025-8", {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
+                        "data_change": CHANGED_TEXT}, False)], site.period_writes
+
+
+def test_a_data_change_marks_the_periods_signed_run_re_sign_needed_with_the_text():
+    site = _Site()
+    marked = _record(site, 2025, 8)
+    assert marked == ["RUN-8"], marked
+    rec = _run_rec(site, "RUN-8")
+    assert rec["signoff_status"] == "Re-sign Needed", rec
+    assert rec["affected_by"] == (
+        "TB TBS-ZZA-2025-8 cancelled at 2026-09-26 10:15:30 by zz-acct@example.com"), rec
+    # Only that period: the earlier signed P07 keeps its signature.
+    assert _run_rec(site, "RUN-7")["signoff_status"] == "Signed Off"
+    # Through the sign-off writer, never a raw field write.
+    assert [(s[0], s[1]) for s in site.saves] == [("RUN-8", ("sign-off", "RUN-8"))], site.saves
+    assert site.saves[0][3] is True, "the uploader need not own the run"
+
+
+def test_only_the_latest_signed_run_of_the_period_is_marked():
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-8-OLD", 2025, 8, day=1))
+    _run_rec(site, "RUN-8")["completed_at"] = datetime(2026, 1, 5)
+    assert _record(site, 2025, 8) == ["RUN-8"]
+    assert _run_rec(site, "RUN-8-OLD")["signoff_status"] == "Signed Off"
+
+
+def test_an_unsigned_period_records_the_change_and_marks_nothing():
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9, signoff="Not Signed Off"))
+    assert _record(site, 2025, 9) == []
+    assert site.saves == []
+    assert site.data_changes[(2025, 9)]["data_change"] == CHANGED_TEXT
+    assert _run_rec(site, "RUN-9")["signoff_status"] == "Not Signed Off"
+
+
+def test_a_history_period_change_is_recorded_but_marks_nothing():
+    site = _Site()   # first close P07
+    site.records["Assertion Run"].append(_run("RUN-5", 2025, 5))
+    assert _record(site, 2025, 5) == []
+    assert site.saves == []
+    assert _run_rec(site, "RUN-5")["signoff_status"] == "Signed Off"
+    assert site.data_changes[(2025, 5)]["data_changed_by"] == CHANGED_BY
+
+
+def test_a_non_regular_period_change_is_recorded_but_marks_nothing():
+    site = _Site()
+    site.rows = _year(2025, overrides={9: "Open"}, closing="Open")
+    site.records["Assertion Run"].append(_run("RUN-13", 2025, 13))
+    assert _record(site, 2025, 13) == []
+    assert site.saves == []
+    assert _run_rec(site, "RUN-13")["signoff_status"] == "Signed Off"
+    assert site.data_changes[(2025, 13)]["data_change"] == CHANGED_TEXT
+
+
+def test_an_undeclared_period_is_refused_and_nothing_is_written():
+    site = _Site()
+    with pytest.raises(Exception) as info:
+        _record(site, 2031, 4)
+    assert type(info.value).__name__ == "PeriodNotDeclared", type(info.value)
+    assert "FY2031 P04 is not declared" in str(info.value), str(info.value)
+    assert site.period_writes == [] and site.saves == []
+
+
+def test_data_change_reads_the_three_fields_and_blank_is_none():
+    site = _Site()
+    assert _call(site, "data_change", 2025, 9) == {
+        "data_changed_at": None, "data_changed_by": None, "data_change": None}
+    _record(site, 2025, 9)
+    assert _call(site, "data_change", 2025, 9) == {
+        "data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
+        "data_change": CHANGED_TEXT}
+
+
+def test_the_period_json_has_the_three_read_only_fields_in_the_close_section():
+    import json
+    with open(PERIOD_JSON) as f:
+        meta = json.load(f)
+    fields = {f["fieldname"]: f for f in meta["fields"]}
+    types_ = {"data_changed_at": ("Datetime", None), "data_changed_by": ("Link", "User"),
+              "data_change": ("Small Text", None)}
+    for name, (fieldtype, options) in types_.items():
+        assert name in fields, "EPM Fiscal Year Period has no %s" % name
+        assert fields[name]["fieldtype"] == fieldtype, fields[name]
+        assert fields[name].get("options") == options, fields[name]
+        assert fields[name].get("read_only") == 1, "%s must be read_only" % name
+    order = meta["field_order"]
+    assert order[order.index("closed_on") + 1:order.index("closed_on") + 4] == list(
+        CHANGE_FIELDS), order
+    assert [f["fieldname"] for f in meta["fields"]] == order, "fields not in field_order order"

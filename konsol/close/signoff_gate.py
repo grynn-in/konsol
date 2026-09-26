@@ -30,6 +30,16 @@ Reads the site and passes it through the pure models:
   errs toward re-signing). The mark is saved through
   ``assertion_run.writing(SIGNOFF_WRITER, run)``, so the frozen-field guard
   (A48) still applies to everything else; it never uses ``db.set_value``.
+- ``record_data_change(fy, fp, text, user)`` (A63, #305-R2b-3): a trial
+  balance or TB exception submitted or cancelled, or an amount basis set,
+  changes the data a period's checks read. The period row's
+  ``data_changed_at`` / ``data_changed_by`` / ``data_change`` are set (a
+  direct row update: no EPM Fiscal Year validate runs), and the period's
+  latest signed run is marked "Re-sign Needed" through the same writer, with
+  ``affected_by`` = "<text> at <time> by <user>". History periods (before the
+  first close) and non-Regular periods are recorded but never marked.
+  ``sign_off_close`` refuses a run that completed before ``data_changed_at``.
+- ``data_change(fy, fp)``: the period row's three fields, blanks as None.
 
 The first close period is read from Close Settings; its Int fields read back
 as 0 when unset, which ``signoff_model.first_close_key`` maps to undeclared.
@@ -199,27 +209,15 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     return assert_close_signed_off(*key)
 
 
-def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason, user):
-    """Mark the latest signed run of the reopened Regular period
-    (``fiscal_year``, ``fiscal_period``) and of every Regular period after it
-    "Re-sign Needed"; return the marked run names. No commit: the reopen's
-    request commits or rolls back."""
+def _mark_latest_signed(affected, affected_by):
+    """Mark the latest signed terminal run of each period in ``affected``
+    "Re-sign Needed" with ``affected_by``; return the marked run names."""
     # Imported here: assertion_run imports this module's callers (A22).
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
         RE_SIGN_NEEDED, SIGNED_STATES, SIGNOFF_WRITER, TERMINAL_STATUSES, writing)
 
-    target = _key(fiscal_year, fiscal_period)
-    first = _first_close()
-    affected = {
-        _key(r["fiscal_year"], r["fiscal_period"])
-        for r in fiscal_calendar.fiscal_period_rows()
-        if r.get("period_type") == REGULAR
-        and _key(r["fiscal_year"], r["fiscal_period"]) >= target
-        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
-    }
     if not affected:
         return []
-
     latest = {}
     for r in frappe.get_all(
         "Assertion Run",
@@ -232,8 +230,6 @@ def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason
         if key in affected:
             latest.setdefault(key, r["name"])
 
-    affected_by = "FY%d %s reopened on %s by %s: %s" % (
-        target[0], period_code, frappe.utils.nowdate(), user, reason)
     marked = []
     for key in sorted(latest):
         name = latest[key]
@@ -241,9 +237,80 @@ def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason
         run.signoff_status = RE_SIGN_NEEDED
         run.affected_by = affected_by
         with writing(SIGNOFF_WRITER, name):
-            # The reopener (Close Lead) need not own the run; the mark is a
-            # consequence of the reopen, not an edit of the run.
+            # The reopener or uploader need not own the run; the mark is a
+            # consequence of their action, not an edit of the run.
             run.save(ignore_permissions=True)
         marked.append(name)
     return marked
+
+
+def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason, user):
+    """Mark the latest signed run of the reopened Regular period
+    (``fiscal_year``, ``fiscal_period``) and of every Regular period after it
+    "Re-sign Needed"; return the marked run names. No commit: the reopen's
+    request commits or rolls back."""
+    target = _key(fiscal_year, fiscal_period)
+    first = _first_close()
+    affected = {
+        _key(r["fiscal_year"], r["fiscal_period"])
+        for r in fiscal_calendar.fiscal_period_rows()
+        if r.get("period_type") == REGULAR
+        and _key(r["fiscal_year"], r["fiscal_period"]) >= target
+        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
+    }
+    affected_by = "FY%d %s reopened on %s by %s: %s" % (
+        target[0], period_code, frappe.utils.nowdate(), user, reason)
+    return _mark_latest_signed(affected, affected_by)
+
+
+#: The period row's record of the last change to the data its checks read (A63).
+DATA_CHANGE_FIELDS = ("data_changed_at", "data_changed_by", "data_change")
+
+
+def _period_row(key, fields):
+    row = frappe.db.get_value(
+        "EPM Fiscal Year Period",
+        {"parent": str(key[0]), "parenttype": "EPM Fiscal Year", "parentfield": "periods",
+         "fiscal_period": key[1]},
+        list(fields), as_dict=True,
+    )
+    if not row:
+        frappe.throw(
+            "FY%d P%02d is not declared: create it in EPM Fiscal Year." % key, PeriodNotDeclared)
+    return row
+
+
+def data_change(fiscal_year, fiscal_period):
+    """``{data_changed_at, data_changed_by, data_change}`` of the period row;
+    a blank field reads as None ("no change recorded")."""
+    row = _period_row(_key(fiscal_year, fiscal_period), DATA_CHANGE_FIELDS)
+    return {f: row.get(f) or None for f in DATA_CHANGE_FIELDS}
+
+
+def record_data_change(fiscal_year, fiscal_period, text, user):
+    """Record that the period's data changed (``text``, by ``user``, now) on
+    its EPM Fiscal Year Period row, and mark the period's latest signed run
+    "Re-sign Needed". Returns the marked run names.
+
+    A direct row update (``db.set_value`` on the child row), so no EPM Fiscal
+    Year validate runs. No commit: the caller's request commits or rolls back.
+    A history period (before the first close) or a non-Regular period is
+    recorded but nothing is marked; with no first close declared, a Regular
+    period is marked (the mark errs toward re-signing, as on a reopen).
+    """
+    key = _key(fiscal_year, fiscal_period)
+    row = _period_row(key, ("name", "period_type"))
+    at = frappe.utils.now_datetime()
+    frappe.db.set_value(
+        "EPM Fiscal Year Period", row["name"],
+        {"data_changed_at": at, "data_changed_by": user, "data_change": text},
+        update_modified=False,
+    )
+    if row.get("period_type") != REGULAR:
+        return []
+    first = _first_close()
+    if first is not None and key < first:
+        return []
+    affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
+    return _mark_latest_signed({key}, affected_by)
 
