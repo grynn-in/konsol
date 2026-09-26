@@ -26,6 +26,10 @@
  * context, loaded once by AppShell. When a poll shows the latest run reach a
  * terminal state or a new run appear (contextReloadNeeded), this screen calls
  * the shell's quiet context reload (injected under CONTEXT_RELOAD), once.
+ *
+ * konsol#305 B34: on a Closed or Locked period checksView's `runUnavailable`
+ * ("FY2025 P06 is Closed; reopen it to run the checks") shows in place of
+ * the Run button, so the missing button always has a reason.
  */
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -82,7 +86,7 @@ async function loadChecks({ quiet = false } = {}) {
 		});
 		if (mine !== seq) return;
 		// checksView throws on a state it does not know: shown as an error, never as current.
-		checks.view = checksView(payload);
+		checks.view = checksView(payload, periodName.value);
 		const nextLatest = payload.latest || null;
 		if (contextReloadNeeded(lastLatest, nextLatest)) reloadContext();
 		lastLatest = nextLatest;
@@ -173,6 +177,10 @@ const bannerTone = computed(() => {
 			>
 				{{ inProgress ? "Checks running" : "Run checks" }}
 			</Button>
+			<p
+				v-else-if="checks.view && checks.view.runUnavailable"
+				class="max-w-xs text-sm text-ink-gray-6"
+			>{{ checks.view.runUnavailable }}</p>
 		</div>
 
 		<div

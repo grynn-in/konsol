@@ -137,3 +137,18 @@ test("Checks.vue forgets the last run it saw when the period changes, and adds n
   assert.equal((js.match(/setTimeout\(/g) || []).length, 1, "only the existing running poll");
   assert.doesNotMatch(js, /setInterval\(/);
 });
+
+// --- konsol#305 B34: why Run is unavailable on a closed period ------------
+
+test("B34: Checks.vue passes the period name to checksView", () => {
+  assert.match(script(read()), /checksView\(\s*payload\s*,\s*periodName\.value\s*\)/);
+});
+
+test("B34: the reason Run is unavailable renders in place of the Run button", () => {
+  const tpl = template(read());
+  assert.match(tpl, /v-else-if="[^"]*\brunUnavailable\b[^"]*"/, "shown when the Run button is not");
+  assert.match(tpl, /\{\{\s*checks\.view\.runUnavailable\s*\}\}/, "the text comes from checksView");
+  const i = tpl.indexOf('@click="runChecks"');
+  const reasonAt = tpl.indexOf("runUnavailable");
+  assert.ok(reasonAt > i, "the reason follows the Run button, as its v-else-if");
+});

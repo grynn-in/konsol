@@ -45,6 +45,7 @@ function payload(overrides = {}) {
     failures: 0,
     warnings: 0,
     can_run: false,
+    period_status: "Open",
     ...overrides,
   };
 }
@@ -186,5 +187,41 @@ test("failure path: an unknown staleness throws, never falls through as current"
   assert.throws(
     () => checksView(payload({ staleness: "weird" })),
     /Unknown staleness state: weird/,
+  );
+});
+
+// --- konsol#305 B34: why Run is unavailable on a closed period ------------
+
+test("B34: a Closed period says why Run is unavailable, and offers no run", () => {
+  const view = checksView(payload({ period_status: "Closed", can_run: false }), "FY2025 P06");
+  assert.equal(view.runUnavailable, "FY2025 P06 is Closed; reopen it to run the checks");
+  assert.equal(view.canRun, false);
+});
+
+test("B34: a Locked period says why Run is unavailable, and offers no run", () => {
+  const view = checksView(payload({ period_status: "Locked", can_run: false }), "FY2025 P06");
+  assert.equal(view.runUnavailable, "FY2025 P06 is Locked; reopen it to run the checks");
+  assert.equal(view.canRun, false);
+});
+
+test("B34: a closed period offers no run even if can_run were true", () => {
+  const view = checksView(payload({ period_status: "Closed", can_run: true }), "FY2025 P06");
+  assert.equal(view.canRun, false);
+});
+
+test("B34: an Open period with a runner's role shows Run and no reason", () => {
+  const view = checksView(payload({ period_status: "Open", can_run: true }), "FY2025 P06");
+  assert.equal(view.canRun, true);
+  assert.equal(view.runUnavailable, null);
+});
+
+test("B34: failure path — an unknown period_status throws, never guessed", () => {
+  assert.throws(
+    () => checksView(payload({ period_status: "Frozen" }), "FY2025 P06"),
+    /Unknown period status: Frozen/,
+  );
+  assert.throws(
+    () => checksView(payload({ period_status: undefined }), "FY2025 P06"),
+    /Unknown period status: undefined/,
   );
 });
