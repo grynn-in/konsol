@@ -139,6 +139,9 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
     # duration of each call.
     gate = types.ModuleType("konsol.close.signoff_gate")
     gate.assert_can_sign = lambda *a: None
+    # A63: no data change recorded, so the run is current.
+    gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
+                                   "data_change": None}
     close_pkg = types.ModuleType("konsol.close")
     close_pkg.signoff_gate = gate
     sign_off_close = module.sign_off_close

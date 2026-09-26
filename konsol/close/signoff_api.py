@@ -27,6 +27,9 @@ It adds ``can_sign`` (write on Assertion Run, the test ``sign_off_close``
 applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
 (the effective status from ``fiscal_period_rows``) with ``closed_by`` and
 ``closed_on`` from the period row, so a reloaded closed period shows Closed.
+A63 adds the period row's ``data_changed_at`` (zoned), ``data_changed_by``
+and ``data_change``: the last change to the data the checks read (None when
+none is recorded). ``sign_off_close`` refuses a run older than it.
 
 Entity scope is a security boundary. A caller restricted by
 ``entity_permissions.allowed_entity_codes`` sees only their entities' on-behalf
@@ -212,14 +215,15 @@ def _closed(key):
         "EPM Fiscal Year Period",
         {"parent": str(key[0]), "parenttype": "EPM Fiscal Year", "parentfield": "periods",
          "fiscal_period": key[1]},
-        ["closed_by", "closed_on"], as_dict=True,
+        ["closed_by", "closed_on"] + list(signoff_gate.DATA_CHANGE_FIELDS), as_dict=True,
     ) or {}
 
 
 @frappe.whitelist(methods=["GET"])
 def get_signoff(fiscal_year, fiscal_period):
     """The period's sign-off summary (A21's shape) plus ``can_sign``,
-    ``can_override``, ``period_status``, ``closed_by`` and ``closed_on``.
+    ``can_override``, ``period_status``, ``closed_by``, ``closed_on`` and
+    (A63) ``data_changed_at``, ``data_changed_by`` and ``data_change``.
 
     Read-only. Refuses an undeclared period (PeriodNotDeclared) and a
     non-Regular one (only Regular periods are signed off, P5).
@@ -272,6 +276,9 @@ def get_signoff(fiscal_year, fiscal_period):
         "period_status": row["status"],
         "closed_by": closed.get("closed_by") or None,
         "closed_on": _iso(closed.get("closed_on")),
+        "data_changed_at": _iso(closed.get("data_changed_at")),
+        "data_changed_by": closed.get("data_changed_by") or None,
+        "data_change": closed.get("data_change") or None,
     })
     return result
 

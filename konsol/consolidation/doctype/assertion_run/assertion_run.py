@@ -409,8 +409,9 @@ TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
 # counts as signed off — warnings do not block a close — but it is a distinct
 # state so a list of closes shows which were signed over outstanding warnings.
 SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
-# "Re-sign Needed" (A27; #303 point 4) is a run whose sign-off stopped counting
-# because an earlier period was reopened after it. It is NOT a signed state, so
+# "Re-sign Needed" (A27, A63; #303 point 4) is a run whose sign-off stopped
+# counting because a period was reopened, or the period's data changed, after
+# it; affected_by says which. It is NOT a signed state, so
 # latest_close_run users and assert_close_signed_off read it as unsigned, and
 # sign_off_close refuses it: the checks must run again (Problems 9).
 RE_SIGN_NEEDED = "Re-sign Needed"
@@ -494,6 +495,10 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
     A period that is not Open (Closed, Locked) -> rejected before the gates (A59).
+    A run that completed before the period's ``data_changed_at`` (a TB or TB
+    exception submitted or cancelled, or an amount basis set, after the checks
+    ran) -> rejected before the gates (A63): the signature would cover data
+    the run never checked. A blank ``data_changed_at`` never refuses.
     """
     # Enforce write access BEFORE we switch to ignore_permissions for the save
     # (the sign-off fields are read_only, so the save itself must bypass perms).
@@ -510,7 +515,7 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
 
     if doc.signoff_status == RE_SIGN_NEEDED:
         frappe.throw(
-            frappe._("An earlier period was reopened after this run: {0}. Run the checks again, "
+            frappe._("This run's sign-off no longer counts: {0}. Run the checks again, "
                      "then sign off the new run.").format(doc.affected_by),
             title=frappe._("Sign-off blocked"))
 
@@ -532,6 +537,20 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
             title=frappe._("Sign-off blocked"))
     # Imported here: signoff_gate reads assertion_run's TERMINAL_STATUSES.
     from konsol.close import signoff_gate
+    # A63 (#305-R2b-3): a signature covers only the data its run checked.
+    change = signoff_gate.data_change(doc.fiscal_year, doc.fiscal_period)
+    if change.get("data_changed_at"):
+        changed_at = frappe.utils.get_datetime(change["data_changed_at"])
+        completed = frappe.utils.get_datetime(doc.completed_at) if doc.completed_at else None
+        # A terminal run with no completed_at cannot show it followed the
+        # change, so it is refused too rather than assumed current.
+        if completed is None or completed < changed_at:
+            frappe.throw(
+                frappe._("{0} at {1} by {2}, after these checks ran; re-run the checks "
+                         "before signing.").format(
+                    change.get("data_change"), changed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    change.get("data_changed_by")),
+                title=frappe._("Sign-off blocked"))
     signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
 
     # Recorded on every path, not only the Amber one: a Red close overridden

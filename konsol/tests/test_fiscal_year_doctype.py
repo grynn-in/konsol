@@ -31,6 +31,10 @@ FIELD_ORDER = [
     "close_col_break",
     "closed_by",
     "closed_on",
+    # konsol#305 A63: the last change to the data the period's checks read.
+    "data_changed_at",
+    "data_changed_by",
+    "data_change",
 ]
 
 EXPECTED_FIELDS = {
@@ -132,6 +136,26 @@ EXPECTED_FIELDS = {
         "label": "Closed On",
         "read_only": 1,
         "depends_on": "eval:doc.status != 'Open'",
+    },
+    "data_changed_at": {
+        "fieldtype": "Datetime",
+        "label": "Data Changed At",
+        "read_only": 1,
+        "description": "When a trial balance, a TB exception or an amount basis of this period "
+                       "last changed. A checks run that finished before this cannot be signed "
+                       "off (konsol#305 A63).",
+    },
+    "data_changed_by": {
+        "fieldtype": "Link",
+        "label": "Data Changed By",
+        "options": "User",
+        "read_only": 1,
+    },
+    "data_change": {
+        "fieldtype": "Small Text",
+        "label": "Data Change",
+        "read_only": 1,
+        "description": 'What changed, e.g. "TB TBS-0001 cancelled".',
     },
 }
 

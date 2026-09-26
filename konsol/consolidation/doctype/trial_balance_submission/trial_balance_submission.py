@@ -387,6 +387,17 @@ def _claim_insert(values):
 _NAMES_HELP = "names must be a JSON list of Trial Balance Submission names"
 
 
+def _record_data_change(fiscal_year, fiscal_period, text):
+    """konsol#305 A63 (#305-R2b-3): the period's data changed, so a signature
+    over checks that ran before now stops counting. Called before any
+    ClickHouse write, which has no transaction: a refusal here leaves the
+    warehouse untouched and MariaDB rolls back."""
+    # Imported here: signoff_gate is frappe-bound and reads the fiscal calendar.
+    from konsol.close import signoff_gate
+
+    signoff_gate.record_data_change(fiscal_year, fiscal_period, text, frappe.session.user)
+
+
 @frappe.whitelist(methods=["POST"])
 def set_amount_basis(names, amount_basis):
     """Declare the Amount Basis of already-submitted trial balances (konsolidat#199).
@@ -470,6 +481,13 @@ def set_amount_basis(names, amount_basis):
         # modified stamp is left alone: nothing the user wrote changed.
         frappe.db.set_value("Trial Balance Submission", row.name, "amount_basis", basis,
                             update_modified=False)
+    # A63: one data change per period, recorded in MariaDB before the claim.
+    by_period = {}
+    for row in rows:
+        by_period.setdefault((row.fiscal_year, row.fiscal_period), []).append(row.name)
+    for (fiscal_year, fiscal_period), changed in sorted(by_period.items()):
+        _record_data_change(fiscal_year, fiscal_period, "Amount basis of TB %s set to %s"
+                            % (", ".join(changed), basis))
     values = [_claim_values(row, basis) for row in rows]
     for i in range(0, len(values), _CLAIM_BATCH):
         execute(_claim_insert(values[i:i + _CLAIM_BATCH]))
@@ -557,6 +575,8 @@ class TrialBalanceSubmission(Document):
                             indicator="orange")
 
     def on_submit(self):
+        # A63: recorded before ClickHouse is touched (see _record_data_change).
+        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s submitted" % self.name)
         rows = self._parse_file()
         self._ensure_tables()
         # Idempotent landing: a failed claim rolls the document back to draft
@@ -581,6 +601,8 @@ class TrialBalanceSubmission(Document):
         assert_open(self.fiscal_year, self.fiscal_period, action="cancel a trial balance submission")
 
     def on_cancel(self):
+        # A63: recorded before the claim is deleted (see _record_data_change).
+        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s cancelled" % self.name)
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.
         # mutations_sync=1: the delete must be VISIBLE before this returns —
