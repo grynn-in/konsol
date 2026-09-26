@@ -54,14 +54,18 @@ NEW_RUN_BLANK_FIELDS = (
 SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
                   "acknowledgement", "warnings_at_signoff", "affected_by")
 #: Result fields: only the worker (run_close_assertions) writes them (A48).
+#: log (A62) is the dbt output, the run's evidence: a Close Lead could rewrite
+#: a signed run's log with set_value. Its checkpoints and the reaper's note use
+#: frappe.db.set_value, which skips validate.
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
-                 "started_at", "completed_at", "duration_seconds")
+                 "started_at", "completed_at", "duration_seconds", "log")
 
 #: Scope and origin: set at insert, never changed after, by any writer (A50).
 #: Found live by A48: set_value(fiscal_period=N) by the Close Lead MOVED a
 #: signed run, and latest_close_run / signoff_gate, which find a period's runs
 #: by fiscal_year/fiscal_period, then read that other period as signed.
-SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by")
+#: title (A62) is set by trigger_close_run at insert and names the run.
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title")
 #: The fields of an Assertion Step row. The results table changes only inside
 #: the worker (A50): a save with edited rows could rewrite which checks failed.
 STEP_FIELDS = ("assertion", "dimension", "status", "rows_failed", "severity", "message",
