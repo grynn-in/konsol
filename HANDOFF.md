@@ -4,6 +4,34 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (26 Sep): the close app — konsol#305 Delivery 1 — is built on branch `close-d1`; the PR is next.** It replaces konsol-exec with a new SPA at `/close`: `close-ui/` is Vue 3 + frappe-ui + xstate, and the built bundle is committed at `konsol/public/close` with `build-manifest.json`. Operations happen there; configuration stays in the Desk.
+- **Roles and screens:** My work, Trial balances, Checks and Sign-off.
+  - Entity Accountant: upload, fix, re-upload and submit.
+  - Analyst: run the checks.
+  - Close Lead: sign off with a typed acknowledgement for Amber or an override for Red, close and reopen.
+  - Viewer: read only.
+- **Proven live** by four scripted browser walk-throughs, with no workaround. Evidence is in the session scratchpad `c1/run4/`. The scripts are `scripts/close_c1_setup.py` and `scripts/close_c1_cleanup.py`.
+- **Tests:** host 3015/3015 across 181 files, 60 skipped; `cd close-ui && node --test src/` gives 394/394.
+- **Removed:** konsol-exec, `home_api`, `home_model`, `control_api` and `scripts/hot-deploy-exec.sh`. The workspace tile is now "Close" → `/close`. Bulk TB upload remains in the Desk (Trial Balance Upload).
+- **Doctypes touched:**
+  - **Operational:** Assertion Run (sign-off, results, scope, log and title frozen outside their writers; deleting a finished run is refused), Trial Balance Submission (`uploaded_on_behalf`; row checks shared with the app), and the new TB Exception.
+  - **Config:** the new Close Settings (first close period), `Entity.reporting_frequency`, and three read-only fields on EPM Fiscal Year Period (`data_changed_at`, `data_changed_by`, `data_change`).
+- **Upgrade steps for an existing site after migrate:**
+  1. Declare the first close period in Close Settings. Until you do, no Regular period can be closed or locked, and the error says so.
+  2. Set a reporting frequency on every in-scope entity (328 on live). Sign-off stays blocked until they are set.
+  - `/konsol-exec` bookmarks now return 404.
+- **Decisions built in:** all are on konsol#305 and in memory.
+  - #298-T1, the technology choice.
+  - #303-3a: first close period, order and TB completeness.
+  - #305-R2b-3: a signature covers only the data its run checked, recorded on the period row.
+  - #305-R5a: the first close period is locked once used.
+- **Open:**
+  - A39 and A44 wait for konsol#255 / PR #288.
+  - #306: staging-build scope, and a delete queues no build.
+  - #304: auto-reversal.
+  - konsolidat#248: check descriptions.
+  - A run that finishes after a TB change does not prove the checks read that TB, because the TB reaches the warehouse only after its build runs. This is the freshness question, not yet filed.
+
 **Update (22 Sep, later): the two deploy-path defects are fixed and merged (konsolidat#242 as `a73e143`, closing #239 and #240).** `deploy.sh:395` now writes its dbt log to `mktemp "${TMPDIR:-/tmp}/konsolidat-dbt.XXXXXX"`, and `docker/frappe/Dockerfile` installs `file`. Two lines. Red-then-green measured on GNU coreutils 9.1, in a root container and as a normal user.
 
 **Do not add `set -o pipefail` to `deploy.sh`.** konsolidat#239 suggested it and it would break step 5: the step reads `${PIPESTATUS[0]}` on purpose so `docker compose … | tee` reports dbt's status rather than `tee`'s, and then tells a compilation error (abort the deploy) from data-quality failures on demo data (tolerate). Under `pipefail` with `set -e` the script exits at the pipeline and that classification never runs — the bug konsolidat#139 was filed for. Three tests in `tests/test_deploy_portability.py` exist to keep it out.
@@ -1156,8 +1184,7 @@ and got `0.0` everywhere: **an empty result returns `0.0` for any valid
 measure, so it proves nothing. Pick keys with data and compare blank vs the
 named measure vs a different one.**
 
-Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **2359/2359 passed across 158 files** on main at `9903cbd`, with 8 files skipped (the known live-site/pytest set — check that list, see konsol#248); `cd konsol-exec && node --test src/*.test.mjs
-src/orchestrator/*.test.mjs` → 48/48 with #148.
+Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **2359/2359 passed across 158 files** on main at `9903cbd`, with 8 files skipped (the known live-site/pytest set — check that list, see konsol#248); `cd close-ui && node --test src/` → 394/394 on `close-d1` (konsol-exec and its tests were removed in konsol#305 R01).
 
 Drive the live stack without a deploy by `docker cp` into
 `konsolidat_backend` (dbt files there land in `repo/dbt_project`, which is bind-mounted) plus a plain script with

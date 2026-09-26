@@ -10,7 +10,7 @@ Run, Allocation Rule and Allocation Driver.
 `_dt()`, so a REBUILD produces a clean workspace, and dashboard.py no longer
 mentions allocation at all. The gap is the trigger:
 `_workspace_needs_refresh()` tested only for ADDITIONS and layout changes --
-Konsol Exec present, Konsol Control absent, pre-redesign card labels, the
+the Close URL shortcut present (Konsol Exec before konsol#305 R01), Konsol Control absent, pre-redesign card labels, the
 Model & Metadata card, Main Account added (konsol#182), EPM Fiscal Year added
 (konsol#189), number cards/charts, an Overview header. Nothing asked whether a
 doctype it links to had DISAPPEARED, so a removal never triggered a refresh
@@ -58,7 +58,7 @@ def _current_layout(extra_links=(), extra_shortcuts=()):
 
     If any of them fired, a test below would pass for the wrong reason.
     """
-    shortcuts = [_Row(label="Konsol Exec", link_to=None, type="URL"),
+    shortcuts = [_Row(label="Close", link_to=None, type="URL"),
                  _Row(label="Datasets", link_to="Dataset", type="DocType")]
     links = [_Row(label="Model & Metadata", link_to=None, type="Card Break"),
              _Row(label="Datasets", link_to="Dataset", type="Link"),
@@ -138,12 +138,23 @@ def test_a_shortcut_to_a_deleted_doctype_forces_a_refresh():
 
 
 def test_a_url_shortcut_is_not_treated_as_a_missing_doctype():
-    """Konsol Exec is type=URL with no link_to; it must not look deleted."""
+    """A URL shortcut has no link_to; it must not look deleted."""
     ws = _current_layout(extra_shortcuts=[
         _Row(label="Somewhere", link_to=None, type="URL", url="https://example.invalid"),
     ])
     mod = _dashboard_with(ws)
     assert mod._workspace_needs_refresh() is False
+
+
+def test_the_old_konsol_exec_tile_triggers_a_rebuild():
+    """konsol#305 R01 upgrade path: a site still showing the "Konsol Exec"
+    tile (/konsol-exec, now a 404) rebuilds into the "Close" tile."""
+    ws = _current_layout()
+    ws.shortcuts = [s for s in ws.shortcuts if s.label != "Close"] + [
+        _Row(label="Konsol Exec", link_to=None, type="URL"),
+    ]
+    mod = _dashboard_with(ws)
+    assert mod._workspace_needs_refresh() is True
 
 
 def test_a_card_break_is_not_treated_as_a_missing_doctype():

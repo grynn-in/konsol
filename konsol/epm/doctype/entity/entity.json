@@ -18,6 +18,7 @@
   "is_group",
   "col_break_1",
   "status",
+  "reporting_frequency",
   "functional_currency",
   "country",
   "erp_source",
@@ -70,6 +71,13 @@
    "label": "Status",
    "options": "Active\nDormant\nDisposed",
    "in_standard_filter": 1
+  },
+  {
+   "fieldname": "reporting_frequency",
+   "fieldtype": "Select",
+   "label": "Reporting Frequency",
+   "options": "\nMonthly\nQuarterly",
+   "description": "How often this entity submits a trial balance. Quarterly entities are expected only in quarter-end periods. No default: a blank frequency is a blocking gap at sign-off (konsol#303)."
   },
   {
    "fieldname": "functional_currency",

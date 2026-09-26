@@ -2,7 +2,6 @@
   "name": "konsol",
   "private": true,
   "scripts": {
-    "build": "cd konsol-exec && yarn install --frozen-lockfile && yarn build",
-    "build:exec": "yarn build"
+    "build": "cd close-ui && yarn install --frozen-lockfile && yarn build"
   }
 }

@@ -172,52 +172,6 @@ def test_period_status_is_retired_read_only():
     assert "assert_rates_complete" not in _controller_src(), "the rate gate is EPM Fiscal Year's"
 
 
-# ---- the run guard -------------------------------------------------------
-
-def test_start_process_refuses_a_closed_period():
-    """Enforced server-side, so the API cannot be used to post into a period
-    someone has signed off."""
-    with open(os.path.join(APP_DIR, "control_api.py")) as f:
-        src = f.read()
-    assert "assert_open" in src
-    start = src.index("def start_process")
-    nxt = src.index("def ", start + 10)
-    assert "assert_open" in src[start:nxt], "the guard must be inside start_process"
-
-
-def test_snapshot_reports_the_period_block():
-    with open(os.path.join(APP_DIR, "control_api.py")) as f:
-        src = f.read()
-    assert "_period_block" in src
-    assert "def get_snapshot(fiscal_year=None, fiscal_period=None)" in src
-
-
-def test_set_period_status_is_whitelisted_and_permission_checked():
-    with open(os.path.join(APP_DIR, "control_api.py")) as f:
-        src = f.read()
-    start = src.index("def set_period_status")
-    nxt = src.index("def ", start + 10)
-    body = src[start:nxt]
-    assert "check_epm_admin()" in body
-
-    # It writes (closes/locks/reopens a period), so per the project rule a
-    # plain @frappe.whitelist() (which also accepts GET) is not enough: a GET
-    # request would run the write and then roll back at the end of the
-    # request while still reporting success. Must be POST-only.
-    tree = ast.parse(src)
-    func = next(n for n in tree.body
-                if isinstance(n, ast.FunctionDef) and n.name == "set_period_status")
-    found = False
-    for dec in func.decorator_list:
-        if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
-                and dec.func.attr == "whitelist"
-                and isinstance(dec.func.value, ast.Name) and dec.func.value.id == "frappe"):
-            for kw in dec.keywords:
-                if kw.arg == "methods":
-                    found = ast.literal_eval(kw.value) == ["POST"]
-    assert found, "set_period_status is not @frappe.whitelist(methods=['POST'])"
-
-
 def test_undeclared_period_is_refused():
     """konsol#189: only declared periods exist; nothing defaults to Open. The
     behaviour is exercised in test_period_status_api.py."""

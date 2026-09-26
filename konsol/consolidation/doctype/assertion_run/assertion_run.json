@@ -117,7 +117,7 @@
       "fieldname": "signoff_status",
       "fieldtype": "Select",
       "label": "Sign-off Status",
-      "options": "Not Signed Off\nSigned Off\nAcknowledged\nOverridden",
+      "options": "Not Signed Off\nSigned Off\nAcknowledged\nOverridden\nRe-sign Needed",
       "default": "Not Signed Off",
       "read_only": 1,
       "in_list_view": 1,
@@ -160,6 +160,13 @@
       "label": "Warnings At Sign-off",
       "read_only": 1,
       "description": "The assertions that were warning when this close was signed."
+    },
+    {
+      "fieldname": "affected_by",
+      "fieldtype": "Small Text",
+      "label": "Affected By",
+      "read_only": 1,
+      "description": "Why this run's sign-off no longer counts: a reopen of this or an earlier period, or a data change after the run (#305-R2b-3)."
     },
     {
       "fieldname": "tab_timing",
@@ -252,6 +259,7 @@
     {
       "role": "EPM Analyst",
       "read": 1,
+      "create": 1,
       "report": 1,
       "print": 1,
       "export": 1,

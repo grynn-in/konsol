@@ -4,6 +4,8 @@ Mirrors the frappe/press build-state pattern: a parent doc with a child table
 (`Assertion Step`) of per-check rows, a status Select rendered as a colored
 indicator, and a streamed log via frappe.publish_realtime.
 """
+import contextlib
+import contextvars
 import json
 import os
 import subprocess
@@ -13,7 +15,7 @@ from frappe.model.document import Document
 
 from konsol.assertion_status import (captures_rows, is_assertion, run_status,
                                      severity_of, step_status)
-from konsol.period_status import PeriodNotDeclared, assert_declared
+from konsol.period_status import OPEN, PeriodNotDeclared, assert_declared, period_row
 
 
 def _assert_year_declared(fiscal_year):
@@ -31,7 +33,117 @@ def _assert_year_declared(fiscal_year):
         )
 
 
+#: Result and sign-off fields a new run must never carry in (konsol#305 A02b).
+#: With R3 the Analyst may create a run; measured live 25 Sep 2026, a run
+#: inserted with status "Green" and signoff_status "Signed Off" saved as sent,
+#: because read_only only guards the form. A test keeps this list equal to the
+#: doctype's read_only fields, less title, status, signoff_status, triggered_by.
+NEW_RUN_BLANK_FIELDS = (
+    "total", "passed", "failed", "errored", "warned",
+    "signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
+    "warnings_at_signoff", "affected_by", "started_at", "completed_at", "duration_seconds",
+    "log",
+)
+
+
+#: Sign-off fields: only sign_off_close writes them (A48). Measured live 25 Sep
+#: 2026 (A22): frappe.client.set_value by the Close Lead stored a forged
+#: "Signed Off" / "Overridden", and every gate reads signoff_status.
+#: affected_by (A27) goes with them: it records why a run became "Re-sign
+#: Needed", so it changes only with signoff_status, through the same writer.
+SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
+                  "acknowledgement", "warnings_at_signoff", "affected_by")
+#: Result fields: only the worker (run_close_assertions) writes them (A48).
+#: log (A62) is the dbt output, the run's evidence: a Close Lead could rewrite
+#: a signed run's log with set_value. Its checkpoints and the reaper's note use
+#: frappe.db.set_value, which skips validate.
+RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
+                 "started_at", "completed_at", "duration_seconds", "log")
+
+#: Scope and origin: set at insert, never changed after, by any writer (A50).
+#: Found live by A48: set_value(fiscal_period=N) by the Close Lead MOVED a
+#: signed run, and latest_close_run / signoff_gate, which find a period's runs
+#: by fiscal_year/fiscal_period, then read that other period as signed.
+#: title (A62) is set by trigger_close_run at insert and names the run.
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title")
+#: The fields of an Assertion Step row. The results table changes only inside
+#: the worker (A50): a save with edited rows could rewrite which checks failed.
+STEP_FIELDS = ("assertion", "dimension", "status", "rows_failed", "severity", "message",
+               "failures_table", "sample_rows")
+
+SIGNOFF_WRITER = "sign-off"
+WORKER_WRITER = "worker"
+#: What each writer may change. A writer changing the other's fields is refused.
+_WRITER_FIELDS = {SIGNOFF_WRITER: SIGNOFF_FIELDS, WORKER_WRITER: RESULT_FIELDS}
+
+# The writer is held in a context variable, not in doc.flags: it is set only by
+# server code in this module, a request cannot carry it, and it names one run.
+# reap_stale_close_runs and the log checkpoint write with frappe.db.set_value,
+# which does not call validate, so they need no writer.
+_writer = contextvars.ContextVar("assertion_run_writer", default=None)
+
+
+@contextlib.contextmanager
+def writing(writer, run_name):
+    """Mark saves of ``run_name`` inside the block as made by ``writer``."""
+    if writer not in _WRITER_FIELDS:
+        raise ValueError("Unknown Assertion Run writer %r" % (writer,))
+    token = _writer.set((writer, run_name))
+    try:
+        yield
+    finally:
+        _writer.reset(token)
+
+
+def active_writer():
+    """The (writer, run name) in force, or None."""
+    return _writer.get()
+
+
+def _norm(value):
+    """A value as the database holds it, so a Desk save that sends a datetime
+    as a string or a whole Float as an int is not a change."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _norm_scope(value):
+    """A scope value as the database holds it: Frappe stores an empty Int as 0
+    and an empty Link as NULL, so 0, "" and None are the same empty scope."""
+    value = _norm(value)
+    return None if value == 0 else value
+
+
+def _steps(rows):
+    """The results table as comparable tuples, in row order. Rows are child
+    Documents on a real save and dicts from a Desk payload; both have .get."""
+    return [tuple(_norm(row.get(f)) for f in STEP_FIELDS) for row in (rows or [])]
+
+
 class AssertionRun(Document):
+    def before_insert(self):
+        """A new run starts Queued, unsigned, with no results, triggered by
+        the caller, whatever the insert request carried (A02b). Only the
+        worker and sign_off_close fill these in, on later saves.
+
+        Only trigger_close_run may create a run (A02c): it also enqueues the
+        suite, so a run inserted any other way would sit Queued with no job and
+        block every other run until the reaper errors it."""
+        if not getattr(self.flags, "started_by_trigger", False):
+            frappe.throw(frappe._("Start a close run with Run checks (trigger_close_run), not by creating the record."))
+        for field in NEW_RUN_BLANK_FIELDS:
+            self.set(field, None)
+        self.status = "Queued"
+        self.signoff_status = "Not Signed Off"
+        self.set("results", [])
+        self.triggered_by = frappe.session.user
+
     def validate(self):
         """The year, and the period when one is given, must be declared: an
         undeclared one is refused before the run starts (konsol#189). Unlike
@@ -47,14 +159,105 @@ class AssertionRun(Document):
         concurrency guard. So the check runs only on insert, or when
         fiscal_year/fiscal_period actually changed from the saved version —
         a later status/result save is not re-gated.
+
+        The frozen fields are checked on every save of a stored run (A48,
+        A50). A stored run's scope never changes (A50); the declared check
+        still runs first on a scope change, so moving a run to an undeclared
+        period is refused as undeclared, and to a declared one as a move.
         """
-        if not (self.is_new() or self.has_value_changed("fiscal_year")
+        self._refuse_unflagged_changes()
+        if (self.is_new() or self.has_value_changed("fiscal_year")
                 or self.has_value_changed("fiscal_period")):
+            if self.fiscal_year and self.fiscal_period not in (None, ""):
+                assert_declared(self.fiscal_year, self.fiscal_period)
+            elif self.fiscal_year:
+                _assert_year_declared(self.fiscal_year)
+        self._refuse_scope_change()
+
+    def _refuse_scope_change(self):
+        """Refuse any change to a stored run's scope or origin, whoever saves
+        it (A50). No writer moves a run: the worker and sign-off only reload
+        and save it."""
+        if self.is_new():
             return
-        if self.fiscal_year and self.fiscal_period not in (None, ""):
-            assert_declared(self.fiscal_year, self.fiscal_period)
-        elif self.fiscal_year:
-            _assert_year_declared(self.fiscal_year)
+        before = self.get_doc_before_save()
+        if before is None:
+            return
+        moved = [f for f in SCOPE_FIELDS
+                 if _norm_scope(before.get(f)) != _norm_scope(self.get(f))]
+        if moved:
+            verb = "are" if len(moved) > 1 else "is"
+            frappe.throw(frappe._(
+                "Assertion Run {0}: {1} {2} fixed when the run starts and cannot be changed. "
+                "Run the checks for the other period instead. Nothing was saved.").format(
+                    self.name, ", ".join(moved), verb))
+
+    def _refuse_unflagged_changes(self):
+        """Refuse a change to a sign-off or result field made by anyone but
+        its writer (A48). frappe.client.set_value and save both come here."""
+        if self.is_new():
+            return
+        before = self.get_doc_before_save()
+        if before is None:
+            # Frappe loads the saved version on every save of a stored row; it
+            # is None only when the row no longer exists, so there is nothing
+            # to forge. has_value_changed treats this case the same way.
+            return
+        changed = [f for f in SIGNOFF_FIELDS + RESULT_FIELDS
+                   if _norm(before.get(f)) != _norm(self.get(f))]
+        # The results table belongs to the worker, like the counts it feeds (A50).
+        if _steps(before.get("results")) != _steps(self.get("results")):
+            changed.append("results")
+        if not changed:
+            return
+        active = _writer.get()
+        allowed = ()
+        if active and active[1] == self.name:
+            allowed = _WRITER_FIELDS[active[0]]
+        if active and active[1] == self.name and active[0] == WORKER_WRITER:
+            allowed = allowed + ("results",)
+        refused = [f for f in changed if f not in allowed]
+        if not refused:
+            return
+        # Each refused field names its own writer (A51): a results or status
+        # change is never fixed by signing off.
+        signoff = [f for f in refused if f in SIGNOFF_FIELDS]
+        result = [f for f in refused if f not in SIGNOFF_FIELDS]
+        parts = []
+        if signoff:
+            parts.append(frappe._("{0} can only be changed by Sign off (sign_off_close)").format(
+                ", ".join(signoff)))
+        if result:
+            parts.append(frappe._("{0} can only be changed by running the checks").format(
+                ", ".join(result)))
+        frappe.throw(frappe._("Assertion Run {0}: {1}. Nothing was saved.").format(
+            self.name, "; ".join(str(p) for p in parts)))
+
+    def on_trash(self):
+        """Only a run that never started may be deleted (A51).
+
+        A finished run (Green/Amber/Red/Error), a Running one, and any signed
+        one (including Re-sign Needed) is the record of the checks and the
+        close. Found by A50: deleting a newer unsigned run made an older signed
+        run the one latest_close_run returns, so the period read as signed.
+        frappe.delete_doc calls on_trash even with force=True, so this holds
+        for every delete path through the API. A Queued run with no results
+        and no sign-off may still be removed."""
+        signoff = self.signoff_status or "Not Signed Off"
+        if signoff != "Not Signed Off":
+            message = frappe._("Assertion Run {0} cannot be deleted: it is {1}, and a signed run "
+                               "is the record of the close. Nothing was deleted.").format(
+                                   self.name, signoff)
+        elif self.status != "Queued":
+            message = frappe._("Assertion Run {0} cannot be deleted: it is {1}, and a started or "
+                               "finished run is the record of the checks. Nothing was deleted.").format(
+                                   self.name, self.status)
+        elif self.get("results"):
+            message = frappe._("Assertion Run {0} cannot be deleted: it already has results, so it "
+                               "has started. Nothing was deleted.").format(self.name)
+        else:
+            return
+        frappe.throw(message)
 
 
 # --- dimension classification (filename/keyword -> bucket) ---------------
@@ -101,17 +304,33 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     """Create an Assertion Run and enqueue the assertion suite.
 
     This writes — it inserts an Assertion Run, commits, and enqueues
-    `run_close_assertions` on the long queue — so it is POST-only, and it is
-    the close that it starts, so only the Close Lead (`EPM Admin`) and System
-    Manager may call it (konsol#166). The gate comes before the "already in
-    progress" check, so a user without the role is refused whatever the run
-    state, rather than learning from the error which runs are live.
+    `run_close_assertions` on the long queue — so it is POST-only. Starting a
+    run is not the sign-off: the Close Lead (`EPM Admin`), the Group
+    Accountant (`EPM Analyst`) and System Manager may all trigger it (R3,
+    konsol#297); only the Close Lead and System Manager may sign it off
+    (`sign_off_close`, which enforces write on Assertion Run). The gate comes
+    before the "already in progress" check, so a user without the role is
+    refused whatever the run state, rather than learning from the error which
+    runs are live.
+
+    Refuses a period that is not Open (A59): a new run on a Closed or Locked
+    period would become its latest run, unsigned, and the closed period would
+    read as not signed off. The period is read (locking, period_row) before
+    anything is inserted, and ahead of the "already in progress" check so the
+    closed period is the reason named.
 
     Refuses to start if another run is already Queued/Running — only one
     assertion suite may run at a time (concurrent `dbt test` would contend on
     the warehouse and produce confusing interleaved state).
     """
-    frappe.only_for(("EPM Admin", "System Manager"))
+    frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
+    if fiscal_year not in (None, "") and fiscal_period not in (None, "", 0):
+        period = period_row(fiscal_year, fiscal_period)
+        if period["status"] != OPEN:
+            frappe.throw(frappe._("FY{0} {1} is {2}; reopen it to run the checks. "
+                                  "Nothing was started.").format(
+                                      fiscal_year, period["code"], period["status"]),
+                         title=frappe._("Period not open"))
     active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
     if active:
         frappe.throw(
@@ -129,6 +348,7 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
             "title": frappe.utils.now(),
         }
     )
+    doc.flags.started_by_trigger = True
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
     frappe.enqueue(
@@ -189,6 +409,12 @@ TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
 # counts as signed off — warnings do not block a close — but it is a distinct
 # state so a list of closes shows which were signed over outstanding warnings.
 SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
+# "Re-sign Needed" (A27, A63; #303 point 4) is a run whose sign-off stopped
+# counting because a period was reopened, or the period's data changed, after
+# it; affected_by says which. It is NOT a signed state, so
+# latest_close_run users and assert_close_signed_off read it as unsigned, and
+# sign_off_close refuses it: the checks must run again (Problems 9).
+RE_SIGN_NEEDED = "Re-sign Needed"
 
 
 def latest_close_run(fiscal_year, fiscal_period):
@@ -250,9 +476,22 @@ def _warning_summary(names, total):
     return text
 
 
-@frappe.whitelist()
+#: A65: how sign_off_close's data-change refusal starts. close-ui's sign-off
+#: machine exports the same text (signoffMachine.js DATA_CHANGED_REFUSAL) and
+#: reloads the summary on it; test_close_signoff_wiring.py pins the two.
+DATA_CHANGED_REFUSAL = "Re-run the checks before signing"
+
+
+@frappe.whitelist(methods=["POST"])
 def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     """Sign off a Assertion Run — the reconciliation gate.
+
+    POST-only: it writes the signature and commits (konsol#305 Problems 10).
+    A sign-off is for a period: a year-only run is refused, and the period's
+    gates (``konsol.close.signoff_gate.assert_can_sign``: configuration gaps,
+    the order gate, completeness) must pass before anything changes (A22,
+    story 9.2). They run ahead of the status branches, so neither an
+    acknowledgement nor an override reason gets past a blocked period.
 
     Green  -> signed off (caller must have write on Assertion Run).
     Amber  -> warnings only (konsol#265): not blocked and no override role, but
@@ -261,6 +500,14 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     Red/Error -> BLOCKED, unless the caller is an EPM Admin / System Manager AND
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
+    A period that is not Open (Closed, Locked) -> rejected before the gates (A59).
+    A run that did not START after the period's ``data_changed_at`` (a TB or
+    TB exception submitted or cancelled, or an amount basis set, after the
+    checks started) -> rejected before the gates (A63, A65): the signature
+    would cover data the run may never have read. A change made while the run
+    executed counts, however late the run completed; a terminal run with no
+    ``started_at`` is refused while a change is recorded. A blank
+    ``data_changed_at`` never refuses.
     """
     # Enforce write access BEFORE we switch to ignore_permissions for the save
     # (the sign-off fields are read_only, so the save itself must bypass perms).
@@ -275,10 +522,51 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
             frappe._("Assertion Run {0} is already {1}.").format(close_run, doc.signoff_status),
             title=frappe._("Already signed off"))
 
+    if doc.signoff_status == RE_SIGN_NEEDED:
+        frappe.throw(
+            frappe._("This run's sign-off no longer counts: {0}. Run the checks again, "
+                     "then sign off the new run.").format(doc.affected_by),
+            title=frappe._("Sign-off blocked"))
+
     if doc.status in ("Queued", "Running"):
         frappe.throw(
             frappe._("Assertion Run {0} is still {1} — wait for it to finish before signing off.")
             .format(close_run, doc.status))
+
+    if doc.fiscal_period in (None, "", 0):
+        frappe.throw(
+            frappe._("A sign-off is for a period; run {0} has none. Run the checks for a period and sign that run off.")
+            .format(close_run), title=frappe._("Sign-off blocked"))
+    # A59: a Closed or Locked period is not signed; reopening it is the way on.
+    period = period_row(doc.fiscal_year, doc.fiscal_period)
+    if period["status"] != OPEN:
+        frappe.throw(
+            frappe._("FY{0} {1} is {2}; reopen it to sign off. Nothing was signed.").format(
+                doc.fiscal_year, period["code"], period["status"]),
+            title=frappe._("Sign-off blocked"))
+    # Imported here: signoff_gate reads assertion_run's TERMINAL_STATUSES.
+    from konsol.close import signoff_gate, signoff_model
+    # A63 (#305-R2b-3): a signature covers only the data its run checked.
+    # A65: the run must have STARTED after the change. A66: the rule lives in
+    # signoff_model.data_change_problem, which the summary uses too.
+    change = signoff_gate.data_change(doc.fiscal_year, doc.fiscal_period)
+    changed = signoff_model.data_change_problem(
+        frappe.utils.get_datetime(doc.started_at) if doc.started_at else None,
+        dict(change, data_changed_at=frappe.utils.get_datetime(change["data_changed_at"])
+             if change.get("data_changed_at") else None))
+    if changed and changed["code"] == signoff_model.NO_START_TIME:
+        # A terminal run with no started_at cannot show it followed the
+        # change, so it is refused rather than assumed current.
+        frappe.throw(
+            frappe._("{0}: {1}, and this run has no start time, so it cannot show it "
+                     "started after that change.").format(DATA_CHANGED_REFUSAL, changed["what"]),
+            title=frappe._("Sign-off blocked"))
+    if changed:
+        frappe.throw(
+            frappe._("{0}: {1}, after these checks started.").format(
+                DATA_CHANGED_REFUSAL, changed["what"]),
+            title=frappe._("Sign-off blocked"))
+    signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
 
     # Recorded on every path, not only the Amber one: a Red close overridden
     # with 12 warnings outstanding must say so too, or the stronger gate ends
@@ -331,7 +619,8 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     doc.override_reason = reason
     doc.acknowledgement = ack
     doc.warnings_at_signoff = warnings
-    doc.save(ignore_permissions=True)
+    with writing(SIGNOFF_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
 
@@ -352,6 +641,13 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
             frappe._("No completed Assertion Run for {0}-{1}. Run the close assertion suite before sign-off.")
             .format(fiscal_year, fiscal_period),
             title=frappe._("Close not asserted"))
+    if run.signoff_status == RE_SIGN_NEEDED:
+        # A66: say why the signature stopped counting (a reopen, a data change).
+        affected_by = frappe.db.get_value("Assertion Run", run.name, "affected_by")
+        frappe.throw(
+            frappe._("Close {0}-{1} needs a new sign-off: {2}. Run the checks again, "
+                     "then sign off the new run.").format(fiscal_year, fiscal_period, affected_by),
+            title=frappe._("Close sign-off required"))
     if run.signoff_status not in SIGNED_STATES:
         failing = ", ".join(_failed_assertion_names(run.name)) or "(see results)"
         frappe.throw(
@@ -368,7 +664,8 @@ def run_close_assertions(close_run):
     doc.status = "Running"
     doc.started_at = frappe.utils.now_datetime()
     doc.log = ""
-    doc.save(ignore_permissions=True)
+    with writing(WORKER_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
 
     project_path = frappe.get_single("EPM Settings").dbt_project_path or "/home/frappe/dbt_project"
@@ -408,7 +705,8 @@ def run_close_assertions(close_run):
     doc.completed_at = frappe.utils.now_datetime()
     if doc.started_at and doc.completed_at:
         doc.duration_seconds = round((doc.completed_at - doc.started_at).total_seconds(), 1)
-    doc.save(ignore_permissions=True)
+    with writing(WORKER_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
     frappe.db.commit()
     _emit(close_run, done=True, status=doc.status, passed=doc.passed,
           failed=doc.failed, errored=doc.errored, warned=doc.warned)
