@@ -545,29 +545,27 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
                 doc.fiscal_year, period["code"], period["status"]),
             title=frappe._("Sign-off blocked"))
     # Imported here: signoff_gate reads assertion_run's TERMINAL_STATUSES.
-    from konsol.close import signoff_gate
+    from konsol.close import signoff_gate, signoff_model
     # A63 (#305-R2b-3): a signature covers only the data its run checked.
+    # A65: the run must have STARTED after the change. A66: the rule lives in
+    # signoff_model.data_change_problem, which the summary uses too.
     change = signoff_gate.data_change(doc.fiscal_year, doc.fiscal_period)
-    if change.get("data_changed_at"):
-        changed_at = frappe.utils.get_datetime(change["data_changed_at"])
-        # A65: compare the START. A run that started before the change and
-        # completed after it may have read the data before the change landed.
-        started = frappe.utils.get_datetime(doc.started_at) if doc.started_at else None
-        what = "{0} at {1} by {2}".format(
-            change.get("data_change"), changed_at.strftime("%Y-%m-%d %H:%M:%S"),
-            change.get("data_changed_by"))
-        if started is None:
-            # A terminal run with no started_at cannot show it followed the
-            # change, so it is refused rather than assumed current.
-            frappe.throw(
-                frappe._("{0}: {1}, and this run has no start time, so it cannot show it "
-                         "started after that change.").format(DATA_CHANGED_REFUSAL, what),
-                title=frappe._("Sign-off blocked"))
-        if started <= changed_at:
-            frappe.throw(
-                frappe._("{0}: {1}, after these checks started.").format(
-                    DATA_CHANGED_REFUSAL, what),
-                title=frappe._("Sign-off blocked"))
+    changed = signoff_model.data_change_problem(
+        frappe.utils.get_datetime(doc.started_at) if doc.started_at else None,
+        dict(change, data_changed_at=frappe.utils.get_datetime(change["data_changed_at"])
+             if change.get("data_changed_at") else None))
+    if changed and changed["code"] == signoff_model.NO_START_TIME:
+        # A terminal run with no started_at cannot show it followed the
+        # change, so it is refused rather than assumed current.
+        frappe.throw(
+            frappe._("{0}: {1}, and this run has no start time, so it cannot show it "
+                     "started after that change.").format(DATA_CHANGED_REFUSAL, changed["what"]),
+            title=frappe._("Sign-off blocked"))
+    if changed:
+        frappe.throw(
+            frappe._("{0}: {1}, after these checks started.").format(
+                DATA_CHANGED_REFUSAL, changed["what"]),
+            title=frappe._("Sign-off blocked"))
     signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
 
     # Recorded on every path, not only the Amber one: a Red close overridden
@@ -643,6 +641,13 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
             frappe._("No completed Assertion Run for {0}-{1}. Run the close assertion suite before sign-off.")
             .format(fiscal_year, fiscal_period),
             title=frappe._("Close not asserted"))
+    if run.signoff_status == RE_SIGN_NEEDED:
+        # A66: say why the signature stopped counting (a reopen, a data change).
+        affected_by = frappe.db.get_value("Assertion Run", run.name, "affected_by")
+        frappe.throw(
+            frappe._("Close {0}-{1} needs a new sign-off: {2}. Run the checks again, "
+                     "then sign off the new run.").format(fiscal_year, fiscal_period, affected_by),
+            title=frappe._("Close sign-off required"))
     if run.signoff_status not in SIGNED_STATES:
         failing = ", ".join(_failed_assertion_names(run.name)) or "(see results)"
         frappe.throw(

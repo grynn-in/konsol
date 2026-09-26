@@ -71,6 +71,8 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
         signoff_saved=False, acknowledgement=None, warnings_at_signoff=None,
         override_reason=None, signed_off_by=None, signed_off_at=None,
         fiscal_year=2099, fiscal_period=1,
+        # A66: sign_off_close always hands the run's start to the data-change rule.
+        started_at=None,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 
@@ -142,14 +144,22 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
     # A63: no data change recorded, so the run is current.
     gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
                                    "data_change": None}
+    # A66: sign_off_close decides the data-change refusal through the real,
+    # pure signoff_model (loaded by path).
+    sm_spec = importlib.util.spec_from_file_location(
+        "signoff_model_for_warn_amber", os.path.join(APP_DIR, "close", "signoff_model.py"))
+    signoff_model = importlib.util.module_from_spec(sm_spec)
+    sm_spec.loader.exec_module(signoff_model)
     close_pkg = types.ModuleType("konsol.close")
     close_pkg.signoff_gate = gate
+    close_pkg.signoff_model = signoff_model
     sign_off_close = module.sign_off_close
 
     def sign_off_with_a_clear_gate(*a, **k):
-        names = ("konsol.close", "konsol.close.signoff_gate")
+        names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
         before = {n: sys.modules.get(n) for n in names}
-        sys.modules.update({"konsol.close": close_pkg, "konsol.close.signoff_gate": gate})
+        sys.modules.update({"konsol.close": close_pkg, "konsol.close.signoff_gate": gate,
+                            "konsol.close.signoff_model": signoff_model})
         try:
             return sign_off_close(*a, **k)
         finally:

@@ -334,7 +334,8 @@ def test_sign_off_close_saves_as_the_signoff_writer():
     module, frappe = _load()
     seen = []
     doc = types.SimpleNamespace(name="AR-1", status="Green", warned=0, fiscal_year=2099,
-                                fiscal_period=1, signoff_status="Not Signed Off")
+                                fiscal_period=1, signoff_status="Not Signed Off",
+                                started_at=None)
     doc.save = lambda **k: seen.append(module.active_writer())
     frappe.get_doc = lambda *a, **k: doc
     gate = types.ModuleType("konsol.close.signoff_gate")
@@ -342,14 +343,21 @@ def test_sign_off_close_saves_as_the_signoff_writer():
     # A63: no data change recorded, so the run is current.
     gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
                                    "data_change": None}
+    # A66: the data-change rule is the real, pure signoff_model (loaded by path).
+    sm_spec = importlib.util.spec_from_file_location(
+        "signoff_model_for_frozen_fields", os.path.join(APP_DIR, "close", "signoff_model.py"))
+    signoff_model = importlib.util.module_from_spec(sm_spec)
+    sm_spec.loader.exec_module(signoff_model)
     pkg = types.ModuleType("konsol.close")
     pkg.signoff_gate = gate
-    names = ("konsol", "konsol.close", "konsol.close.signoff_gate")
+    pkg.signoff_model = signoff_model
+    names = ("konsol", "konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
     before = {n: sys.modules.get(n) for n in names}
     konsol_pkg = types.ModuleType("konsol")
     konsol_pkg.close = pkg
     sys.modules.update({"konsol": konsol_pkg, "konsol.close": pkg,
-                        "konsol.close.signoff_gate": gate})
+                        "konsol.close.signoff_gate": gate,
+                        "konsol.close.signoff_model": signoff_model})
     try:
         module.sign_off_close("AR-1")
     finally:
