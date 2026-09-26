@@ -18,6 +18,10 @@ and that period then read as signed. The results table (Assertion Step rows)
 changes only inside the worker: a frappe.client.save with edited step rows
 could rewrite which checks failed.
 
+A62 (review #8): `log` (the dbt output, the run's evidence) is a result field,
+written only by the worker, and `title` is fixed at insert with the scope. A
+Close Lead could otherwise rewrite a signed run's log with set_value.
+
 assertion_run.py is loaded against a stub frappe, as in
 test_close_assertion_suite.py (copied, not imported).
 """
@@ -37,8 +41,8 @@ AR_JSON = os.path.join(AR_DIR, "assertion_run.json")
 SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
                   "acknowledgement", "warnings_at_signoff", "affected_by")
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
-                 "started_at", "completed_at", "duration_seconds")
-SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by")
+                 "started_at", "completed_at", "duration_seconds", "log")
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title")
 STEP_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_step",
                          "assertion_step.json")
 
@@ -54,6 +58,7 @@ FORGED = {
     "duration_seconds": 1.5,
     "fiscal_year": 2098, "fiscal_period": 2, "pipeline_run": "PR-FORGED",
     "triggered_by": "forger@example.com",
+    "log": "forged: all 131 assertions passed", "title": "forged title",
 }
 
 
@@ -97,6 +102,7 @@ def _saved():
         "signoff_status": "Not Signed Off", "signed_off_by": None, "signed_off_at": None,
         "override_reason": None, "acknowledgement": None, "warnings_at_signoff": None,
         "affected_by": None, "pipeline_run": None, "triggered_by": "analyst@example.com", "results": _steps(),
+        "log": "dbt test: 1 pass, 2 fail",
     }
 
 
@@ -244,9 +250,11 @@ def test_the_live_forge_is_refused():
     assert _refused(doc.validate) is not None
 
 
-def test_a_change_to_neither_is_allowed():
+def test_a_save_that_changes_nothing_is_allowed():
+    """A62: every field of a stored run is now frozen, so the allowed save is
+    one that changes nothing (the Desk sending the row back)."""
     module, _ = _load()
-    _doc(module, title="new title").validate()
+    _doc(module).validate()
 
 
 def test_a_desk_form_save_with_string_values_is_allowed():
@@ -254,7 +262,7 @@ def test_a_desk_form_save_with_string_values_is_allowed():
     that is whole as an int. Equal values are not a change."""
     module, _ = _load()
     s = _saved()
-    doc = _doc(module, title="new title",
+    doc = _doc(module,
                started_at=str(s["started_at"]), completed_at=str(s["completed_at"]),
                duration_seconds=300, signed_off_by="", override_reason="")
     doc.validate()
@@ -457,8 +465,7 @@ def test_a_desk_save_of_an_unchanged_scope_is_allowed():
         before = _saved()
         before["fiscal_period"] = 0
         fields = _saved()
-        fields.update(fiscal_period=period, pipeline_run="", fiscal_year="2099",
-                      title="new title")
+        fields.update(fiscal_period=period, pipeline_run="", fiscal_year="2099")
         module.AssertionRun(_is_new=False, _before_save=before, **fields).validate()
 
 
@@ -509,7 +516,7 @@ def test_a_desk_save_with_unchanged_results_is_allowed():
     for i, row in enumerate(rows, start=1):
         row.update(name="row-%d" % i, idx=i, parent="AR-1", doctype="Assertion Step")
         row["rows_failed"] = str(row["rows_failed"])
-    _doc(module, results=rows, title="new title").validate()
+    _doc(module, results=rows).validate()
 
 
 def test_child_rows_as_documents_are_compared():
@@ -622,3 +629,46 @@ def test_the_scope_refusal_agrees_in_number():
         "Assertion Run AR-1: fiscal_year, fiscal_period are fixed" + tail)
     assert _refused(_doc(module, fiscal_period=2).validate) == (
         "Assertion Run AR-1: fiscal_period is fixed" + tail)
+
+
+# --- A62: the log and the title are frozen too -------------------------------
+
+def test_the_log_forge_is_refused():
+    """Review #8: set_value(log=...) by the Close Lead on a signed run."""
+    module, _ = _load()
+    before = dict(_saved(), signoff_status="Signed Off", signed_off_by="lead@example.com")
+    doc = module.AssertionRun(_is_new=False, _before_save=before,
+                              **dict(before, log=FORGED["log"]))
+    msg = _refused(doc.validate)
+    assert msg is not None, "an unflagged save rewrote the log"
+    assert "log" in msg and "running the checks" in msg, msg
+
+
+def test_the_log_is_refused_to_the_signoff_writer():
+    module, _ = _load()
+    with module.writing(module.SIGNOFF_WRITER, "AR-1"):
+        msg = _refused(_doc(module, log=FORGED["log"]).validate)
+    assert msg is not None and "log" in msg, msg
+
+
+def test_the_worker_may_write_the_log():
+    """Failure path: the worker's own saves (log cleared at start, full log at
+    the end) must still go through."""
+    module, _ = _load()
+    with module.writing(module.WORKER_WRITER, "AR-1"):
+        _doc(module, log="").validate()
+        _doc(module, log="dbt test: done", status="Green").validate()
+    with module.writing(module.WORKER_WRITER, "AR-OTHER"):
+        assert _refused(_doc(module, log="x").validate) is not None
+
+
+def test_the_title_is_refused_for_every_writer():
+    module, _ = _load()
+    for writer in (None, module.SIGNOFF_WRITER, module.WORKER_WRITER):
+        doc = _doc(module, title=FORGED["title"])
+        if writer is None:
+            msg = _refused(doc.validate)
+        else:
+            with module.writing(writer, "AR-1"):
+                msg = _refused(doc.validate)
+        assert msg is not None and "title" in msg, (writer, msg)
