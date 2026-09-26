@@ -318,6 +318,40 @@ def test_imbalance_just_over_tolerance_is_still_refused():
     assert r["totals"]["difference"] == 0.02
 
 
+def _raw(debit, credit):
+    """Two rows whose totals differ by ``debit - credit``, not rounded by parse_tb_csv."""
+    return [
+        {"main_account": "1010", "debit": debit, "credit": 0.0, "line": 2},
+        {"main_account": "2010", "debit": 0.0, "credit": credit, "line": 3},
+    ]
+
+
+def test_rounding_does_not_loosen_the_tolerance():
+    """A60: round(dr - cr, 2) let 0.014 pass a 0.01 tolerance; the rule is exact."""
+    for debit, credit in ((100.014, 100.0), (100.011, 100.0), (0.014, 0.0)):
+        r = _check(_raw(debit, credit))
+        assert r["ok"] is False, (debit, credit)
+        assert len(r["file_problems"]) == 1, (debit, credit)
+        assert "exceeds the 0.01 tolerance" in r["file_problems"][0]
+
+
+def test_exactly_the_tolerance_is_accepted_despite_float_noise():
+    """100.01 - 100 == 0.010000000000005 in floats; it is still exactly one cent."""
+    for debit, credit in ((100.01, 100.0), (0.01, 0.0), (100.0, 100.01)):
+        r = _check(_raw(debit, credit))
+        assert r["ok"] is True, (debit, credit)
+        assert r["file_problems"] == [], (debit, credit)
+
+
+def test_a_declared_tolerance_other_than_a_cent_is_exact_too():
+    """Failure path: with a 0.012 tolerance, 0.014 is refused (rounding made it 0.01)
+    and 0.012 itself is accepted."""
+    r = _check(_raw(100.014, 100.0), tolerance=0.012)
+    assert r["ok"] is False
+    r = _check(_raw(100.012, 100.0), tolerance=0.012)
+    assert r["ok"] is True
+
+
 def test_no_chart_is_the_no_chart_file_problem():
     """Failure path: no published chart is one refusal, not every account listed."""
     for chart in (None, {}):
