@@ -1044,3 +1044,29 @@ def test_get_signoff_with_no_data_change_recorded_sends_none():
     for field in ("data_changed_at", "data_changed_by", "data_change"):
         assert field in result, "get_signoff has no %s" % field
         assert result[field] is None, (field, result[field])
+
+
+# --- A66: the summary does not offer a sign the server will refuse -----------
+
+def _changed(site, started_at):
+    site.data_changed[(2025, 9)] = {
+        "data_changed_at": datetime(2025, 10, 4, 11, 0, 30), "data_changed_by": LEAD,
+        "data_change": "TB TB-ZZA-9 cancelled"}
+    run = next(r for r in site.records["Assertion Run"] if r["name"] == "RUN-09")
+    run["started_at"] = started_at
+
+
+def test_get_signoff_blocks_a_run_that_started_before_the_data_change():
+    label = ("TB TB-ZZA-9 cancelled at 2025-10-04 11:00:30 by %s, after these checks "
+             "started; run the checks again" % LEAD)
+    for started in (datetime(2025, 10, 4, 10, 0), datetime(2025, 10, 4, 11, 0, 30), None):
+        site = _Site()
+        _changed(site, started)
+        result = _get(site)
+        assert (result["action"], result["label"]) == ("blocked", label), (started, result["label"])
+
+
+def test_get_signoff_offers_the_sign_to_a_run_that_started_after_the_change():
+    site = _Site()
+    _changed(site, datetime(2025, 10, 4, 11, 5))
+    assert _get(site)["action"] == "acknowledge"
