@@ -14,11 +14,15 @@
   submitted TB Exception (#303-3a point 3). Only ``docstatus == 1`` counts.
 - ``covers_notes``: "<entity>: covers P08–P09" when a TB follows a run of
   exceptions in the same fiscal year.
+- ``data_change_problem`` (A66): the one rule for "this run did not start
+  after the period's last data change", shared with ``sign_off_close``.
 
 A first close period of ``None``, or with a 0 in either part (Close Settings
 Int fields read back as 0 when unset), is undeclared. Nothing is guessed.
+
 Imports nothing from frappe or konsol.
 """
+import datetime as _dt
 
 FIRST_CLOSE_UNDECLARED = "first_close_undeclared"
 HISTORY_PERIOD = "history_period"
@@ -413,7 +417,50 @@ def _on_behalf(rows):
     return {"labels": labels, "unknown": unknown}
 
 
-def _action(run, problems, can_override, period_status):
+# --- A63/A65/A66: a signature covers only the data its run checked ----------
+
+STARTED_BEFORE_CHANGE = "started_before_change"
+NO_START_TIME = "no_start_time"
+_CHANGED_LABEL = "%s, after these checks started; run the checks again"
+
+
+def _as_datetime(value):
+    """A datetime, an ISO string parsed, or None for a blank."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, _dt.datetime):
+        return value
+    return _dt.datetime.fromisoformat(str(value))
+
+
+def data_change_problem(started_at, change):
+    """THE rule for "this run may not sign over the period's data change",
+    shared by ``assertion_run.sign_off_close`` (the refusal) and ``summary``
+    (the offered action), so the screen never offers a sign the server refuses.
+
+    ``change`` holds the period row's ``data_changed_at``, ``data_changed_by``
+    and ``data_change``. None when no change is recorded (a blank
+    ``data_changed_at``) or the run STARTED strictly after it (A65). Otherwise
+    ``{"code", "what"}``: ``code`` is ``no_start_time`` (a blank ``started_at``
+    cannot show it followed the change) or ``started_before_change`` (started
+    at or before it); ``what`` is "<data_change> at <YYYY-MM-DD HH:MM:SS> by
+    <user>".
+    """
+    changed_at = _as_datetime(change.get("data_changed_at"))
+    if changed_at is None:
+        return None
+    what = "%s at %s by %s" % (change.get("data_change"),
+                               changed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                               change.get("data_changed_by"))
+    started = _as_datetime(started_at)
+    if started is None:
+        return {"code": NO_START_TIME, "what": what}
+    if started <= changed_at:
+        return {"code": STARTED_BEFORE_CHANGE, "what": what}
+    return None
+
+
+def _action(run, problems, can_override, period_status, data_change):
     if period_status not in PERIOD_STATUSES:
         raise ValueError("Unknown period status %r; expected one of %s."
                          % (period_status, ", ".join(PERIOD_STATUSES)))
@@ -429,6 +476,11 @@ def _action(run, problems, can_override, period_status):
     if period_status != OPEN:
         # A59: no checks and no sign-off on a Closed or Locked period.
         return "blocked", _NOT_OPEN_LABEL % period_status
+    if run is not None and run["signoff_status"] != RE_SIGN_NEEDED:
+        # A66: sign_off_close refuses this run before its gates; so does the screen.
+        changed = data_change_problem(run.get("started_at"), data_change)
+        if changed:
+            return "blocked", _CHANGED_LABEL % changed["what"]
     blocked = _blocked_label(problems)
     if blocked:
         return "blocked", blocked
@@ -449,7 +501,7 @@ def _action(run, problems, can_override, period_status):
 
 
 def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override,
-            *, period_status):
+            *, period_status, data_change):
     """The sign-off summary of story 9.1 and the next action.
 
     - ``run``: the latest terminal Assertion Run (``name``, ``status``,
@@ -465,14 +517,20 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
     - ``problems``: ``signoff_gate.sign_off_problems`` output.
     - ``period_status``: the period's effective status, Open, Closed or
       Locked (required; anything else raises ValueError).
+    - ``data_change`` (required, A66): the period row's ``data_changed_at``,
+      ``data_changed_by`` and ``data_change`` (blanks: none recorded). With
+      the run's ``started_at`` it goes through ``data_change_problem``: a run
+      that did not start after the change is ``blocked`` with
+      "<what>, after these checks started; run the checks again".
 
     ``action`` is one of signed, blocked, run_checks, rerun, wait, sign,
     acknowledge, override. A signed run stays signed; otherwise a Closed or
-    Locked period blocks (reopen it: A59), then any gate blocks
+    Locked period blocks (reopen it: A59), then a data change after the run
+    started (A66; a Re-sign Needed run keeps ``rerun``), then any gate blocks
     (configuration first, then order, then completeness). An unknown run or
     sign-off status raises ValueError.
     """
-    action, label = _action(run, problems, can_override, period_status)
+    action, label = _action(run, problems, can_override, period_status, data_change)
     return {
         "action": action,
         "label": label,

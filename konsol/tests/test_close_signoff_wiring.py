@@ -126,14 +126,30 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
     return module, frappe, saved_doc, gate, calls
 
 
+MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
+
+
+def _real_model():
+    """konsol/close/signoff_model.py, pure, loaded by path (A66: sign_off_close
+    shares its data-change rule)."""
+    spec = importlib.util.spec_from_file_location("signoff_model_for_wiring", MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 @contextlib.contextmanager
-def _gate_installed(gate):
-    """The stub gate in sys.modules for one call; the real modules after."""
+def _gate_installed(gate, model=None):
+    """The stub gate (and the real, or a spy, signoff_model) in sys.modules for
+    one call; the real modules after."""
+    model = model if model is not None else _real_model()
     close = types.ModuleType("konsol.close")
     close.signoff_gate = gate
-    names = ("konsol.close", "konsol.close.signoff_gate")
+    close.signoff_model = model
+    names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
     saved = {n: sys.modules.get(n) for n in names}
-    sys.modules.update({"konsol.close": close, "konsol.close.signoff_gate": gate})
+    sys.modules.update({"konsol.close": close, "konsol.close.signoff_gate": gate,
+                        "konsol.close.signoff_model": model})
     try:
         yield
     finally:
@@ -144,8 +160,8 @@ def _gate_installed(gate):
                 sys.modules[n] = old
 
 
-def _sign(module, gate, **kwargs):
-    with _gate_installed(gate):
+def _sign(module, gate, model=None, **kwargs):
+    with _gate_installed(gate, model):
         return module.sign_off_close("AR-1", **kwargs)
 
 
@@ -315,11 +331,16 @@ def _run_row(signoff_status):
 def test_assert_close_signed_off_refuses_a_re_sign_needed_run():
     module, frappe, *_ = _load()
     frappe.get_all = lambda dt, **k: [] if "pluck" in k else [_run_row(RE_SIGN)]
+    frappe.db.get_value = lambda dt, name, field, *a, **k: (
+        AFFECTED if (dt, name, field) == ("Assertion Run", "AR-1", "affected_by") else None)
     try:
         module.assert_close_signed_off(2099, 1)
         raise AssertionError("a Re-sign Needed run passed assert_close_signed_off")
     except frappe.ValidationError as e:
-        assert "is not signed off" in str(e), str(e)
+        # A66: the refusal names why the signature stopped counting, not
+        # "not signed off (status Amber). Failing: (see results)".
+        assert str(e) == ("Close 2099-1 needs a new sign-off: %s. Run the checks again, "
+                          "then sign off the new run." % AFFECTED), str(e)
     # Failure path: a signed run still passes.
     frappe.get_all = lambda dt, **k: [] if "pluck" in k else [_run_row("Signed Off")]
     assert module.assert_close_signed_off(2099, 1) == "AR-1"
@@ -670,3 +691,57 @@ def test_affected_by_description_names_reopen_and_data_change():
     assert field.get("description") == (
         "Why this run's sign-off no longer counts: a reopen of this or an earlier period, "
         "or a data change after the run (#305-R2b-3)."), field.get("description")
+
+
+# --- A66: one data-change rule, shared by sign_off_close and the summary -----
+
+def test_sign_off_close_and_the_summary_share_one_data_change_rule():
+    """Import identity: sign_off_close decides through
+    signoff_model.data_change_problem, so a spy there decides the outcome."""
+    real = _real_model()
+    seen = []
+
+    def spy(started_at, change):
+        seen.append((started_at, change.get("data_changed_at")))
+        return {"code": real.STARTED_BEFORE_CHANGE, "what": "SPY"}
+
+    model = types.ModuleType("konsol.close.signoff_model")
+    model.__dict__.update({k: v for k, v in vars(real).items() if not k.startswith("__")})
+    model.data_change_problem = spy
+    # The run started after the change: only the spy can refuse it.
+    module, frappe, doc, gate, calls = _load(
+        started_at=datetime.datetime(2026, 9, 26, 10, 16), data_change=CHANGE)
+    try:
+        _sign(module, gate, model=model)
+        raise AssertionError("sign_off_close did not ask signoff_model.data_change_problem")
+    except frappe.ValidationError as e:
+        assert str(e) == "Re-run the checks before signing: SPY, after these checks started.", str(e)
+    assert seen == [(datetime.datetime(2026, 9, 26, 10, 16), CHANGED_AT)], seen
+    assert doc.signoff_saved is False
+
+
+def test_sign_off_close_holds_no_copy_of_the_rule():
+    tree = ast.parse(open(AR_PY, encoding="utf-8").read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "sign_off_close")
+    compares = [ast.unparse(c) for c in ast.walk(fn) if isinstance(c, ast.Compare)
+                and any(isinstance(op, (ast.LtE, ast.Lt, ast.Gt, ast.GtE)) for op in c.ops)]
+    assert compares == [], "sign_off_close compares times itself: %s" % compares
+    calls = {ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert "signoff_model.data_change_problem" in calls, sorted(calls)
+
+
+def test_assert_close_signed_off_other_refusals_are_unchanged():
+    module, frappe, *_ = _load()
+    frappe.get_all = lambda dt, **k: [] if "pluck" in k else [_run_row("Not Signed Off")]
+    try:
+        module.assert_close_signed_off(2099, 1)
+        raise AssertionError("an unsigned run passed assert_close_signed_off")
+    except frappe.ValidationError as e:
+        assert str(e) == ("Close 2099-1 is not signed off (run AR-1, status Green). "
+                          "Failing: (see results)."), str(e)
+    frappe.get_all = lambda dt, **k: []
+    try:
+        module.assert_close_signed_off(2099, 1)
+        raise AssertionError("no run passed assert_close_signed_off")
+    except frappe.ValidationError as e:
+        assert "No completed Assertion Run for 2099-1" in str(e), str(e)

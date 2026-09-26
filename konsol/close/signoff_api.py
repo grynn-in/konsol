@@ -29,7 +29,9 @@ applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
 ``closed_on`` from the period row, so a reloaded closed period shows Closed.
 A63 adds the period row's ``data_changed_at`` (zoned), ``data_changed_by``
 and ``data_change``: the last change to the data the checks read (None when
-none is recorded). ``sign_off_close`` refuses a run older than it.
+none is recorded). ``sign_off_close`` refuses a run that did not start after
+it, and (A66) the summary's action is ``blocked`` for that run too, through
+the same ``signoff_model.data_change_problem``.
 
 Entity scope is a security boundary. A caller restricted by
 ``entity_permissions.allowed_entity_codes`` sees only their entities' on-behalf
@@ -116,12 +118,16 @@ def _iso(value):
 
 
 def _run(key):
-    """The latest terminal run with its ``warned`` count, or None."""
+    """The latest terminal run with its ``warned`` count and (A66)
+    ``started_at``, or None."""
     run = latest_close_run(*key)
     if not run:
         return None
     run = dict(run)
-    run["warned"] = frappe.db.get_value("Assertion Run", run["name"], "warned")
+    extra = frappe.db.get_value("Assertion Run", run["name"], ["warned", "started_at"],
+                                as_dict=True) or {}
+    run["warned"] = extra.get("warned")
+    run["started_at"] = extra.get("started_at")
     return run
 
 
@@ -247,6 +253,7 @@ def get_signoff(fiscal_year, fiscal_period):
     in_period = lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])) == key  # noqa: E731
 
     run = _run(key)
+    closed = _closed(key)
     warned_names = _warned_assertion_names(run["name"]) if run and run.get("warned") else []
     on_behalf = [{"data_area_id": r["data_area_id"], "owner": r["owner"],
                   "uploaded_on_behalf": _on_behalf_flag(r)} for r in tbs if in_period(r)]
@@ -263,13 +270,14 @@ def get_signoff(fiscal_year, fiscal_period):
         _scoped(problems, allowed, key),
         can_override,
         period_status=row["status"],
+        # A66: the same rule sign_off_close refuses with (the run's started_at).
+        data_change={f: closed.get(f) for f in signoff_gate.DATA_CHANGE_FIELDS},
     )
     # A55: when each exception was declared, with the site's offset. The A08
     # controller allows one submitted exception per entity-period.
     declared_on = {r["data_area_id"]: _iso(r.get("creation")) for r in exceptions if in_period(r)}
     for e in result["exceptions"]:
         e["declared_on"] = declared_on.get(e["entity"])
-    closed = _closed(key)
     result.update({
         "can_sign": bool(frappe.has_permission("Assertion Run", "write")),
         "can_override": can_override,

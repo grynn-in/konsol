@@ -38,7 +38,8 @@ Reads the site and passes it through the pure models:
   latest signed run is marked "Re-sign Needed" through the same writer, with
   ``affected_by`` = "<text> at <time> by <user>". History periods (before the
   first close) and non-Regular periods are recorded but never marked.
-  ``sign_off_close`` refuses a run that completed before ``data_changed_at``.
+  ``sign_off_close`` refuses a run that did not start after ``data_changed_at``
+  (A65), through ``signoff_model.data_change_problem`` (A66).
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
 
 The first close period is read from Close Settings; its Int fields read back

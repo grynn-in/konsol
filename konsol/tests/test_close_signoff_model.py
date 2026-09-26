@@ -461,11 +461,15 @@ def _run(status="Green", signoff="Not Signed Off", **extra):
     return run
 
 
+NO_CHANGE = {"data_changed_at": None, "data_changed_by": None, "data_change": None}
+
+
 def _summary(run=None, warned=(), on_behalf=(), exceptions=(), covers=(), previous=(),
-             problems=None, can_override=False, period_status="Open"):
+             problems=None, can_override=False, period_status="Open", data_change=None):
     return M.summary(run, list(warned), list(on_behalf), list(exceptions), list(covers),
                      list(previous), problems if problems is not None else NO_PROBLEMS, can_override,
-                     period_status=period_status)
+                     period_status=period_status,
+                     data_change=data_change if data_change is not None else NO_CHANGE)
 
 
 # --- A59: no checks and no signing on a Closed or Locked period ----------------
@@ -677,3 +681,96 @@ def test_signed_states_match_the_assertion_run_controller():
     found = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
              and any(getattr(t, "id", None) == "SIGNED_STATES" for t in n.targets)]
     assert found == [M.SIGNED_STATES]
+
+
+# --- A66: the summary never offers a sign the server refuses (data change) ----
+
+import datetime  # noqa: E402
+
+CHANGED_AT = datetime.datetime(2026, 9, 26, 10, 15, 30)
+CHANGE = {"data_changed_at": CHANGED_AT, "data_changed_by": "zz-acct@example.com",
+          "data_change": "TB TBS-ZZOP-2099-P1-905 cancelled"}
+CHANGED_LABEL = ("TB TBS-ZZOP-2099-P1-905 cancelled at 2026-09-26 10:15:30 by "
+                 "zz-acct@example.com, after these checks started; run the checks again")
+_STATUS_ACTION = {"Green": "sign", "Amber": "acknowledge", "Red": "override", "Error": "override"}
+
+
+def test_a_run_started_before_the_data_change_is_blocked_whatever_its_status():
+    for status in ("Green", "Amber", "Red", "Error"):
+        run = _run(status, started_at=datetime.datetime(2026, 9, 26, 9, 0))
+        s = _summary(run=run, can_override=True, data_change=CHANGE)
+        assert s["action"] == "blocked", (status, s["action"])
+        assert s["label"] == CHANGED_LABEL, (status, s["label"])
+
+
+def test_a_run_started_at_the_same_instant_as_the_change_is_blocked():
+    s = _summary(run=_run("Amber", started_at=CHANGED_AT), data_change=CHANGE)
+    assert (s["action"], s["label"]) == ("blocked", CHANGED_LABEL), s["action"]
+
+
+def test_a_run_with_no_start_time_is_blocked_while_a_change_is_recorded():
+    for run in (_run("Amber", started_at=None), _run("Amber", started_at=""), _run("Amber")):
+        s = _summary(run=run, data_change=CHANGE)
+        assert (s["action"], s["label"]) == ("blocked", CHANGED_LABEL), run
+
+
+def test_a_run_started_after_the_change_is_offered_its_sign():
+    for status, action in _STATUS_ACTION.items():
+        run = _run(status, started_at=datetime.datetime(2026, 9, 26, 10, 16))
+        s = _summary(run=run, can_override=True, data_change=CHANGE)
+        assert s["action"] == action, (status, s["action"])
+
+
+def test_an_iso_string_start_and_change_compare_as_times():
+    run = _run("Green", started_at="2026-09-26 09:00:00")
+    s = _summary(run=run, data_change=dict(CHANGE, data_changed_at="2026-09-26 10:15:30"))
+    assert (s["action"], s["label"]) == ("blocked", CHANGED_LABEL), s["label"]
+    run = _run("Green", started_at="2026-09-26 10:16:00")
+    s = _summary(run=run, data_change=dict(CHANGE, data_changed_at="2026-09-26 10:15:30"))
+    assert s["action"] == "sign", s["action"]
+
+
+def test_no_data_change_recorded_never_blocks():
+    for blank in (None, ""):
+        change = dict(NO_CHANGE, data_changed_at=blank)
+        assert _summary(run=_run("Green"), data_change=change)["action"] == "sign", blank
+
+
+def test_the_data_change_block_does_not_hide_a_signed_run_or_a_closed_period():
+    old = datetime.datetime(2026, 9, 26, 9, 0)
+    s = _summary(run=_run("Green", "Signed Off", started_at=old), data_change=CHANGE)
+    assert s["action"] == "signed"
+    s = _summary(run=_run("Green", started_at=old), data_change=CHANGE, period_status="Closed")
+    assert s["label"] == "The period is Closed; reopen it to run the checks or sign off"
+    # Re-sign Needed keeps its own "run the checks again" action.
+    s = _summary(run=_run("Green", "Re-sign Needed", started_at=old), data_change=CHANGE)
+    assert s["action"] == "rerun"
+
+
+def test_the_summary_requires_the_data_change():
+    """Failure path: an omitted data change is not read as "none recorded"."""
+    try:
+        M.summary(_run("Green"), [], [], [], [], [], NO_PROBLEMS, False, period_status="Open")
+        raise AssertionError("summary ran without being told the period's data change")
+    except TypeError:
+        pass
+
+
+def test_data_change_problem_is_the_one_rule():
+    p = M.data_change_problem
+    assert p(datetime.datetime(2026, 9, 26, 9, 0), NO_CHANGE) is None
+    assert p(datetime.datetime(2026, 9, 26, 10, 16), CHANGE) is None
+    what = "TB TBS-ZZOP-2099-P1-905 cancelled at 2026-09-26 10:15:30 by zz-acct@example.com"
+    assert p(datetime.datetime(2026, 9, 26, 9, 0), CHANGE) == {
+        "code": M.STARTED_BEFORE_CHANGE, "what": what}
+    assert p(CHANGED_AT, CHANGE) == {"code": M.STARTED_BEFORE_CHANGE, "what": what}
+    for blank in (None, ""):
+        assert p(blank, CHANGE) == {"code": M.NO_START_TIME, "what": what}, blank
+
+
+def test_the_summary_calls_the_shared_rule():
+    tree = ast.parse(open(MODEL_PATH, encoding="utf-8").read())
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    called = {c.func.id for n in (fns["_action"], fns["summary"]) for c in ast.walk(n)
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "data_change_problem" in called, sorted(called)
