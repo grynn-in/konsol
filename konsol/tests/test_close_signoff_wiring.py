@@ -30,7 +30,7 @@ class GateBlocked(Exception):
 
 
 def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fiscal_period=1,
-          gate_raises=False, affected_by=None):
+          gate_raises=False, affected_by=None, period_state="Open"):
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.PermissionError = type("PermissionError", (Exception,), {})
@@ -70,6 +70,11 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
     period_status = types.ModuleType("konsol.period_status")
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     period_status.assert_declared = lambda *a: None
+    period_status.OPEN = "Open"
+    # A59: sign_off_close reads the period's effective status through period_row.
+    period_status.period_row = lambda fy, fp: {
+        "fiscal_year": fy, "fiscal_period": fp, "code": "P%02d" % int(fp), "type": "Regular",
+        "status": period_state}
 
     as_spec = importlib.util.spec_from_file_location(
         "konsol.assertion_status", os.path.join(APP_DIR, "assertion_status.py"))
@@ -301,3 +306,21 @@ def test_assert_close_signed_off_refuses_a_re_sign_needed_run():
     # Failure path: a signed run still passes.
     frappe.get_all = lambda dt, **k: [] if "pluck" in k else [_run_row("Signed Off")]
     assert module.assert_close_signed_off(2099, 1) == "AR-1"
+
+
+def test_a_closed_or_locked_period_is_refused_before_the_gate():
+    """A59: signing a run on a Closed or Locked period is refused, whatever the
+    run's status, before the gate runs and before anything is saved."""
+    for state in ("Closed", "Locked"):
+        for status, kwargs in (("Green", {}), ("Amber", {"acknowledgement": "reviewed"}),
+                               ("Red", {"override_reason": "known"})):
+            module, frappe, doc, gate, calls = _load(status=status, fiscal_year=2099,
+                                                     fiscal_period=6, period_state=state)
+            try:
+                _sign(module, gate, **kwargs)
+                raise AssertionError("a %s run was signed on a %s period" % (status, state))
+            except frappe.ValidationError as e:
+                assert "FY2099 P06 is %s; reopen it to sign off" % state in str(e), str(e)
+            assert calls == [], "%s/%s: the gate ran for a closed period" % (state, status)
+            assert doc.signoff_saved is False
+            assert doc.signoff_status == "Not Signed Off"

@@ -462,9 +462,54 @@ def _run(status="Green", signoff="Not Signed Off", **extra):
 
 
 def _summary(run=None, warned=(), on_behalf=(), exceptions=(), covers=(), previous=(),
-             problems=None, can_override=False):
+             problems=None, can_override=False, period_status="Open"):
     return M.summary(run, list(warned), list(on_behalf), list(exceptions), list(covers),
-                     list(previous), problems if problems is not None else NO_PROBLEMS, can_override)
+                     list(previous), problems if problems is not None else NO_PROBLEMS, can_override,
+                     period_status=period_status)
+
+
+# --- A59: no checks and no signing on a Closed or Locked period ----------------
+
+def test_a_closed_or_locked_period_offers_neither_run_nor_sign():
+    """A59: a Closed or Locked period's unsigned run is not signed, and no
+    new run is offered: the only way on is to reopen the period."""
+    runs = [None, _run("Green"), _run("Amber", warned=1), _run("Red"), _run("Error"),
+            _run("Queued"), _run("Running"), _run("Green", "Re-sign Needed")]
+    for state in ("Closed", "Locked"):
+        for run in runs:
+            s = _summary(run=run, can_override=True, period_status=state)
+            what = (state, run and run["status"], run and run["signoff_status"])
+            assert s["action"] == "blocked", (what, s["action"])
+            assert s["label"] == "The period is %s; reopen it to run the checks or sign off" % state, (
+                what, s["label"])
+
+
+def test_a_closed_period_blocks_before_the_other_gates():
+    s = _summary(run=_run("Green"), problems=ORDER_P07, period_status="Closed")
+    assert s["action"] == "blocked"
+    assert s["label"].startswith("The period is Closed")
+
+
+def test_a_signed_run_on_a_closed_period_stays_signed():
+    for state in ("Signed Off", "Acknowledged", "Overridden"):
+        for period_status in ("Closed", "Locked"):
+            s = _summary(run=_run("Green", state), period_status=period_status)
+            assert (s["action"], s["label"]) == ("signed", state), (state, period_status)
+
+
+def test_an_open_period_is_unchanged():
+    assert _summary(run=_run("Green"), period_status="Open")["action"] == "sign"
+    assert _summary(run=None, period_status="Open")["action"] == "run_checks"
+
+
+def test_an_unknown_period_status_is_refused_not_guessed():
+    for bad in (None, "", "open", "Frozen"):
+        try:
+            _summary(run=_run("Green"), period_status=bad)
+        except ValueError as e:
+            assert "period status" in str(e).lower(), str(e)
+            continue
+        raise AssertionError("summary accepted period status %r" % (bad,))
 
 
 def test_an_open_earlier_period_blocks_with_the_button_text():

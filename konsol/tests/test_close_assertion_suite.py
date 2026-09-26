@@ -201,6 +201,9 @@ def _load_assertion_run(declared_years=(), declared_periods=()):
                 f"FY{fiscal_year} has no period {fiscal_period}: not declared.")
 
     period_status.assert_declared = assert_declared
+    period_status.OPEN = "Open"
+    # A59: trigger_close_run and sign_off_close read the period's status; open here.
+    period_status.period_row = lambda fy, fp: {"code": "P%02d" % int(fp), "status": "Open"}
 
     # konsol#265: assertion_run imports the status mapping from
     # konsol.assertion_status. That module imports no frappe, so load the REAL
