@@ -32,6 +32,15 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
   - konsolidat#248: check descriptions.
   - A run that finishes after a TB change does not prove the checks read that TB, because the TB reaches the warehouse only after its build runs. This is the freshness question, not yet filed.
 
+**Update (25 Sep, later): konsol#255's reporting leg is PROVEN.**
+- **Result:** on live intake (run by the worker), one account split across two dimension values reaches gold, and the hierarchy rolls it up: ZZALL 950 = ZZNORTH 700 + ZZSOUTH 250. The dbt branch `k255-dbt-dims` was built into scratch schema `epm_k255`.
+- **Proof needed a fix:** the upload refused a split account until PR #302.
+- **PR #296 fixes #295:** a Dimension that ends up Published gets its column, however it got there.
+- **Both PRs** merge into `k255-tb-dimensions`.
+- **Filed:** konsolidat#246, konsol#299, #300, #301.
+- **Unexplained:** the scheduler container runs TB code that matches neither main nor the branch.
+- **Detail:** `.claude/memory/active/k255-dimensions.md`, "READ FIRST".
+
 **Update (25 Sep): konsol#255's reporting leg is open, reconnoitred, and NOT built.** Full detail in `.claude/memory/active/k255-dimensions.md`; read that before touching it. The headline is a blunt live check that reframes the work: **there is no dimension or hierarchy data on the live stack at all.** All 47,308 rows of `gold_trial_balance` carry `''` in every `dim_*` column; `epm_staging.reporting_hierarchies`, `gold_reporting_hierarchy`, its closure table, and `gold_tb_at_hierarchy_node` are all **zero rows**. The rollup has never produced a row on live for any dimension, TB-sourced or ERP-sourced. So the leg is not "deploy and look" — it needs ZZ data created through the real admin flow (a Dimension, a Reporting Hierarchy with members, a TB upload) before a dbt build can show anything.
 
 Two facts found while tracing it. **The TB path has no separate gold fork:** a submission merges into the ledger at silver (`silver_gl_entries.sql:196`, marked `posting_type = 'Trial Balance Submission'`), so `gold_trial_balance` and everything downstream is the TB path. And **`var('dimensions')` is generated, not hand-maintained** — `Dimension.publish()` runs `dbt_config.regenerate_vars()`, which splices the managed block of `dbt_project.yml`; since `/home/frappe/dbt_project` is a bind mount of `konsolidat/repo/dbt_project`, publishing a dimension on the live stack edits the konsolidat repo working tree on the Mac.
