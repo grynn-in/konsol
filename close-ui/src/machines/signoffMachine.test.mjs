@@ -994,3 +994,41 @@ test("A58: the sign-off screen posts the machine's run to signoff_api.sign", () 
 	const call = src.slice(src.indexOf("post(SIGN"), src.indexOf("post(SIGN") + 300);
 	assert.match(call, /run:\s*input\.run/, "the SIGN body must carry input.run");
 });
+
+// ---- A65: a data change after the checks started is handled like A58 ------
+
+const DATA_CHANGED =
+	"Re-run the checks before signing: TB TBS-ZZOP-2099-P1-905 cancelled at 2026-09-26 10:15:30 by zz-acct@example.com, after these checks started.";
+
+test("A65: the machine exports the data-change refusal prefix the server starts with", async () => {
+	const { DATA_CHANGED_REFUSAL } = await import("./signoffMachine.js");
+	assert.equal(DATA_CHANGED_REFUSAL, "Re-run the checks before signing");
+	assert.ok(DATA_CHANGED.startsWith(DATA_CHANGED_REFUSAL));
+});
+
+test("A65: a data-change refusal reloads the summary, keeps the message, and drops the typed text", async () => {
+	const h = start();
+	await toAcknowledging(h);
+	h.actor.send({ type: "CONFIRM_ACK", text: "Seen the warnings of RUN-A" });
+	await flush();
+	h.last("sign").reject(new Error(DATA_CHANGED));
+	await flush();
+	assert.equal(value(h.actor), '"loading"', "a data-change refusal reloads the summary");
+	assert.equal(h.calls.load.length, 2);
+	const fresh = summaryOf("rerun", { can_sign: false });
+	await toLoaded(h, fresh);
+	const c = h.actor.getSnapshot().context;
+	assert.equal(value(h.actor), '"review"', "never back in a half-typed dialog");
+	assert.deepEqual(c.summary, fresh);
+	assert.equal(c.error, DATA_CHANGED);
+	assertRefuses(h, [CONFIRM_ACK, CONFIRM_OVERRIDE], "review after a data-change reload");
+});
+
+test("A65: the prefix must lead; the same words later in a message do not reload", async () => {
+	const h = start();
+	await toSigning(h);
+	h.last("sign").reject(new Error("Sign off FY2026 P06 first. Re-run the checks before signing"));
+	await flush();
+	assert.equal(value(h.actor), '"review"');
+	assert.equal(h.calls.load.length, 1);
+});
