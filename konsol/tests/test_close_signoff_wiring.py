@@ -18,6 +18,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 
@@ -39,7 +40,8 @@ class GateBlocked(Exception):
 
 def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fiscal_period=1,
           gate_raises=False, affected_by=None, period_state="Open",
-          completed_at=datetime.datetime(2026, 9, 26, 9, 0), data_change=None):
+          completed_at=datetime.datetime(2026, 9, 26, 9, 0), data_change=None,
+          started_at=datetime.datetime(2026, 9, 26, 8, 55)):
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.PermissionError = type("PermissionError", (Exception,), {})
@@ -52,7 +54,7 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
         signoff_saved=False, acknowledgement=None, warnings_at_signoff=None,
         override_reason=None, signed_off_by=None, signed_off_at=None,
         fiscal_year=fiscal_year, fiscal_period=fiscal_period, affected_by=affected_by,
-        completed_at=completed_at,
+        completed_at=completed_at, started_at=started_at,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 
@@ -346,46 +348,97 @@ def test_a_closed_or_locked_period_is_refused_before_the_gate():
 CHANGED_AT = datetime.datetime(2026, 9, 26, 10, 15, 30)
 CHANGE = {"data_changed_at": CHANGED_AT, "data_changed_by": "zz-acct@example.com",
           "data_change": "TB TBS-ZZOP-2099-P1-905 cancelled"}
-STALE = ("TB TBS-ZZOP-2099-P1-905 cancelled at 2026-09-26 10:15:30 by zz-acct@example.com, "
-         "after these checks ran; re-run the checks before signing.")
+# A65: the refusal starts with a stable prefix the sign-off machine matches
+# (close-ui/src/machines/signoffMachine.js DATA_CHANGED_REFUSAL).
+STALE = ("Re-run the checks before signing: TB TBS-ZZOP-2099-P1-905 cancelled at "
+         "2026-09-26 10:15:30 by zz-acct@example.com, after these checks started.")
+NO_START = ("Re-run the checks before signing: TB TBS-ZZOP-2099-P1-905 cancelled at "
+            "2026-09-26 10:15:30 by zz-acct@example.com, and this run has no start time, "
+            "so it cannot show it started after that change.")
+SIGNOFF_MACHINE = os.path.join(os.path.dirname(APP_DIR), "close-ui", "src", "machines",
+                               "signoffMachine.js")
 
 
-def test_a_run_that_completed_before_the_data_changed_is_refused_and_nothing_written():
+def _refused(module, frappe, doc, gate, calls, expected, what, **kwargs):
+    try:
+        _sign(module, gate, **kwargs)
+        raise AssertionError(what + " was signed")
+    except frappe.ValidationError as e:
+        assert str(e) == expected, str(e)
+    assert doc.signoff_saved is False, what
+    assert doc.signoff_status == "Not Signed Off", what
+    assert doc.signed_off_by is None and doc.signed_off_at is None, what
+    assert doc.acknowledgement is None and doc.override_reason is None, what
+    assert calls == [], "%s: the gate ran for a run that must be re-run" % what
+
+
+def test_a_run_that_started_and_completed_before_the_data_changed_is_refused():
     for status, kwargs in (("Green", {}), ("Amber", {"acknowledgement": "reviewed"}),
                            ("Red", {"override_reason": "known"})):
-        module, frappe, doc, gate, calls = _load(
-            status=status, completed_at=datetime.datetime(2026, 9, 26, 9, 0),
-            data_change=CHANGE)
-        try:
-            _sign(module, gate, **kwargs)
-            raise AssertionError("%s: a run older than the data change was signed" % status)
-        except frappe.ValidationError as e:
-            assert str(e) == STALE, str(e)
-        assert doc.signoff_saved is False, status
-        assert doc.signoff_status == "Not Signed Off", status
-        assert doc.signed_off_by is None and doc.signed_off_at is None
-        assert doc.acknowledgement is None and doc.override_reason is None
-        assert calls == [], "%s: the gate ran for a run that must be re-run" % status
+        loaded = _load(status=status, started_at=datetime.datetime(2026, 9, 26, 8, 55),
+                       completed_at=datetime.datetime(2026, 9, 26, 9, 0), data_change=CHANGE)
+        _refused(*loaded, STALE, "%s: a run older than the data change" % status, **kwargs)
 
 
-def test_a_run_that_completed_after_the_data_changed_is_signed():
+def test_a_run_started_before_the_change_and_completed_after_it_is_refused():
+    """A65 hole 1: the change landed WHILE the run executed, so the run may
+    not have seen it, although it completed after it."""
+    loaded = _load(started_at=datetime.datetime(2026, 9, 26, 10, 15),
+                   completed_at=datetime.datetime(2026, 9, 26, 10, 20), data_change=CHANGE)
+    _refused(*loaded, STALE, "a run that was executing when the data changed")
+
+
+def test_a_run_started_exactly_at_the_change_is_refused():
+    loaded = _load(started_at=CHANGED_AT, completed_at=datetime.datetime(2026, 9, 26, 10, 20),
+                   data_change=CHANGE)
+    _refused(*loaded, STALE, "a run that started at the same instant as the change")
+
+
+def test_a_run_started_after_the_data_changed_is_signed():
     module, _, doc, gate, calls = _load(
+        started_at=datetime.datetime(2026, 9, 26, 10, 16),
         completed_at=datetime.datetime(2026, 9, 26, 10, 20), data_change=CHANGE)
     _sign(module, gate)
     assert doc.signoff_status == "Signed Off" and doc.signoff_saved is True
     assert calls == [(2099, 1)]
 
 
-def test_a_run_completed_as_an_iso_string_is_compared_as_a_time():
-    module, frappe, doc, gate, _ = _load(completed_at="2026-09-26 09:00:00",
-                                         data_change=dict(CHANGE, data_changed_at=
-                                                          "2026-09-26 10:15:30"))
-    try:
-        _sign(module, gate)
-        raise AssertionError("a string completed_at older than the change was signed")
-    except frappe.ValidationError as e:
-        assert str(e) == STALE, str(e)
-    assert doc.signoff_saved is False
+def test_a_terminal_run_with_no_start_time_is_refused_while_a_change_is_recorded():
+    for blank in (None, ""):
+        loaded = _load(started_at=blank, completed_at=datetime.datetime(2026, 9, 26, 10, 20),
+                       data_change=CHANGE)
+        _refused(*loaded, NO_START, "a run with started_at %r" % (blank,))
+
+
+def test_a_run_started_as_an_iso_string_is_compared_as_a_time():
+    loaded = _load(started_at="2026-09-26 09:00:00", completed_at="2026-09-26 10:20:00",
+                   data_change=dict(CHANGE, data_changed_at="2026-09-26 10:15:30"))
+    _refused(*loaded, STALE, "a string started_at older than the change")
+
+
+def _machine_prefix():
+    with open(SIGNOFF_MACHINE) as f:
+        src = f.read()
+    found = re.search(r'export const DATA_CHANGED_REFUSAL = "([^"]+)";', src)
+    assert found, "signoffMachine.js exports no DATA_CHANGED_REFUSAL string"
+    return found.group(1)
+
+
+def test_the_data_change_refusal_starts_with_the_machines_prefix():
+    prefix = _machine_prefix()
+    module, *_ = _load()
+    assert module.DATA_CHANGED_REFUSAL == prefix, (module.DATA_CHANGED_REFUSAL, prefix)
+    for expected in (STALE, NO_START):
+        assert expected.startswith(prefix), expected
+    # The real refusals, not only the pinned text.
+    for kwargs, what in (({"started_at": datetime.datetime(2026, 9, 26, 9, 0)}, "stale"),
+                         ({"started_at": None}, "no start")):
+        module, frappe, doc, gate, _ = _load(data_change=CHANGE, **kwargs)
+        try:
+            _sign(module, gate)
+            raise AssertionError(what + ": signed")
+        except frappe.ValidationError as e:
+            assert str(e).startswith(prefix), (what, str(e))
 
 
 def test_a_blank_data_changed_at_never_refuses():
@@ -608,3 +661,12 @@ def test_set_amount_basis_with_nothing_updated_records_nothing():
         out = module.set_amount_basis(["TBS-4", "TBS-9"], "Period-end balance")
     assert out["updated"] == 0
     assert hooks.log == [], hooks.log
+
+
+# --- A65: the affected_by description names every cause ----------------------
+
+def test_affected_by_description_names_reopen_and_data_change():
+    field = {f["fieldname"]: f for f in _ar_fields()}["affected_by"]
+    assert field.get("description") == (
+        "Why this run's sign-off no longer counts: a reopen of this or an earlier period, "
+        "or a data change after the run (#305-R2b-3)."), field.get("description")

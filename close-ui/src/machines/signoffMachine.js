@@ -37,7 +37,8 @@
 //   signing        nothing: a sign-off in flight is never abandoned
 //                  done → confirming; error → review with the server message,
 //                  except A58's stale-run refusal ("The checks were re-run
-//                  ...") → loading, keeping the message: the new run's
+//                  ...") and A65's data-change refusal ("Re-run the checks
+//                  before signing ...") → loading, keeping the message: the new run's
 //                  summary is fetched and any typed text is dropped
 //   confirming     nothing: the summary is loaded again after a sign-off
 //                  same branching as `loading`'s done above (B14b: a re-sign
@@ -103,7 +104,18 @@ function messageOf(error) {
  * showed is no longer the latest (an Analyst re-ran the checks). */
 export const STALE_RUN_REFUSAL = "The checks were re-run";
 
-const isStaleRun = (error) => messageOf(error).startsWith(STALE_RUN_REFUSAL);
+/** A65: the start of sign_off_close's refusal when the period's data changed
+ * after the run started (#305-R2b-3). The server message starts with exactly
+ * this text (assertion_run.py DATA_CHANGED_REFUSAL; pinned by
+ * test_close_signoff_wiring.py). */
+export const DATA_CHANGED_REFUSAL = "Re-run the checks before signing";
+
+/** A refusal answered by reloading the summary: the run it showed can no
+ * longer be signed (A58 re-run, A65 data change). */
+const isStaleRun = (error) => {
+	const message = messageOf(error);
+	return message.startsWith(STALE_RUN_REFUSAL) || message.startsWith(DATA_CHANGED_REFUSAL);
+};
 
 /** The trimmed text, or null when it is not text or only whitespace. */
 function typed(text) {

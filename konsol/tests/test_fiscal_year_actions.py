@@ -122,6 +122,10 @@ def _load():
             """Runs validate(), as Frappe's save does, counts the save and
             writes the document back as the saved version."""
             self.validate()
+            # As Frappe's run_before_save_methods: validate, then before_save.
+            before_save = getattr(type(self), "before_save", None)
+            if before_save is not None:
+                before_save(self)
             self.saves += 1
             self._before_save = type(self)(**_fields(self))
             return self
@@ -202,6 +206,7 @@ def _load():
         return []
 
     gate.mark_resign_needed_on_reopen = mark_resign_needed_on_reopen
+    gate.DATA_CHANGE_FIELDS = ("data_changed_at", "data_changed_by", "data_change")
     mods["konsol.close"].signoff_gate = gate
     mods["konsol.close"].__path__ = []
     mods["konsol"].close = mods["konsol.close"]
@@ -210,8 +215,14 @@ def _load():
     #: The order of lock queries, reloads and rate checks, as (kind, ...).
     frappe.events = []
 
+    #: konsol#305 A65: the EPM Fiscal Year Period rows' data_changed_* values
+    #: as the database holds them; the reply to a query that reads them.
+    frappe.data_change_rows = []
+
     def sql(query, values=None, *args, **kwargs):
         frappe.events.append(("sql", " ".join(query.split()), values))
+        if "data_changed_at" in query:
+            return [dict(r) for r in frappe.data_change_rows]
         return []
 
     frappe.db = types.SimpleNamespace(sql=sql)
@@ -1334,3 +1345,79 @@ def test_reopening_the_year_does_not_mark():
         assert err is None, err
         assert _gate().marks == [], _gate().marks
 
+
+
+# -- konsol#305 A65: only record_data_change writes the data-change record ----------
+
+CHANGED = datetime(2026, 9, 26, 10, 15, 30)
+DATA_FIELDS = ("data_changed_at", "data_changed_by", "data_change")
+
+
+def _db_change(code, at=CHANGED, by="zz-acct@example.com", text="TB TBS-ZZ cancelled"):
+    return {"name": code, "data_changed_at": at, "data_changed_by": by, "data_change": text}
+
+
+def _data_query():
+    """The one query that read the data-change record, as (sql, values)."""
+    found = [e for e in sys.modules["frappe"].events
+             if e[0] == "sql" and "data_changed_at" in e[1]]
+    assert len(found) == 1, found
+    return found[0][1], found[0][2]
+
+
+def test_a_status_action_keeps_the_databases_data_change_record():
+    """A year loaded before a concurrent record_data_change holds blank
+    data_changed_* rows; its save must not write those blanks back."""
+    for action in ("close", "lock", "reopen"):
+        with _load() as module:
+            frappe = sys.modules["frappe"]
+            frappe.data_change_rows = [_db_change("P03"), _db_change("P05", text="basis set")]
+            doc = _valid_year(module, row_status={3: "Closed"} if action == "reopen" else None)
+            # What the action's reload read (the stub's saved version) is
+            # stale: P03/P05 blank, and P07 holding values the database no
+            # longer has. The action reloads, so the stale values are these.
+            _row(doc._before_save, 7).data_changed_at = datetime(2020, 1, 1)
+            _row(doc._before_save, 7).data_change = "stale"
+            if action == "close":
+                result, err = _act(lambda: doc.close_period(3))
+            elif action == "lock":
+                result, err = _act(lambda: doc.lock_period(3))
+            else:
+                result, err = _act(lambda: doc.reopen_period(3, "Late invoice"))
+            assert err is None, (action, err)
+            assert doc.saves == 1, action
+            p03, p05, p07 = _row(doc, 3), _row(doc, 5), _row(doc, 7)
+            assert (p03.data_changed_at, p03.data_changed_by, p03.data_change) == (
+                CHANGED, "zz-acct@example.com", "TB TBS-ZZ cancelled"), (action, vars(p03))
+            assert p05.data_change == "basis set", (action, vars(p05))
+            for f in DATA_FIELDS:
+                assert getattr(p07, f) is None, (action, f, "the document's value was written")
+                assert getattr(_row(doc, 1), f) is None, (action, f)
+            query, values = _data_query()
+            assert "for update" in query.lower(), \
+                "a plain read can miss a change committed after the snapshot: " + query
+            assert "`tabEPM Fiscal Year Period`" in query, query
+            assert values in ("2025", ("2025",)), values
+
+
+def test_an_unsaved_row_gets_no_data_change_record():
+    with _load() as module:
+        frappe = sys.modules["frappe"]
+        frappe.data_change_rows = [_db_change("P03")]
+        doc = _valid_year(module)
+        row = _row(doc, 3)
+        row.name = None     # a new row: matched by name, never by period code
+        row.data_change = "typed by a caller"
+        doc.before_save()
+        for f in DATA_FIELDS:
+            assert getattr(row, f) is None, f
+
+
+def test_a_year_with_no_name_reads_nothing():
+    with _load() as module:
+        doc = _valid_year(module)
+        doc.name = None
+        doc.periods[0].data_change = "typed by a caller"
+        doc.before_save()
+        assert not [e for e in sys.modules["frappe"].events if e[0] == "sql"]
+        assert doc.periods[0].data_change is None

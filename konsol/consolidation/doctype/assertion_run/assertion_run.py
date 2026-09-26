@@ -476,6 +476,12 @@ def _warning_summary(names, total):
     return text
 
 
+#: A65: how sign_off_close's data-change refusal starts. close-ui's sign-off
+#: machine exports the same text (signoffMachine.js DATA_CHANGED_REFUSAL) and
+#: reloads the summary on it; test_close_signoff_wiring.py pins the two.
+DATA_CHANGED_REFUSAL = "Re-run the checks before signing"
+
+
 @frappe.whitelist(methods=["POST"])
 def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     """Sign off a Assertion Run — the reconciliation gate.
@@ -495,10 +501,13 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
                  supplies a reason -> recorded as an audited "Overridden" sign-off.
     Queued/Running -> rejected (run not finished).
     A period that is not Open (Closed, Locked) -> rejected before the gates (A59).
-    A run that completed before the period's ``data_changed_at`` (a TB or TB
-    exception submitted or cancelled, or an amount basis set, after the checks
-    ran) -> rejected before the gates (A63): the signature would cover data
-    the run never checked. A blank ``data_changed_at`` never refuses.
+    A run that did not START after the period's ``data_changed_at`` (a TB or
+    TB exception submitted or cancelled, or an amount basis set, after the
+    checks started) -> rejected before the gates (A63, A65): the signature
+    would cover data the run may never have read. A change made while the run
+    executed counts, however late the run completed; a terminal run with no
+    ``started_at`` is refused while a change is recorded. A blank
+    ``data_changed_at`` never refuses.
     """
     # Enforce write access BEFORE we switch to ignore_permissions for the save
     # (the sign-off fields are read_only, so the save itself must bypass perms).
@@ -541,15 +550,23 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     change = signoff_gate.data_change(doc.fiscal_year, doc.fiscal_period)
     if change.get("data_changed_at"):
         changed_at = frappe.utils.get_datetime(change["data_changed_at"])
-        completed = frappe.utils.get_datetime(doc.completed_at) if doc.completed_at else None
-        # A terminal run with no completed_at cannot show it followed the
-        # change, so it is refused too rather than assumed current.
-        if completed is None or completed < changed_at:
+        # A65: compare the START. A run that started before the change and
+        # completed after it may have read the data before the change landed.
+        started = frappe.utils.get_datetime(doc.started_at) if doc.started_at else None
+        what = "{0} at {1} by {2}".format(
+            change.get("data_change"), changed_at.strftime("%Y-%m-%d %H:%M:%S"),
+            change.get("data_changed_by"))
+        if started is None:
+            # A terminal run with no started_at cannot show it followed the
+            # change, so it is refused rather than assumed current.
             frappe.throw(
-                frappe._("{0} at {1} by {2}, after these checks ran; re-run the checks "
-                         "before signing.").format(
-                    change.get("data_change"), changed_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    change.get("data_changed_by")),
+                frappe._("{0}: {1}, and this run has no start time, so it cannot show it "
+                         "started after that change.").format(DATA_CHANGED_REFUSAL, what),
+                title=frappe._("Sign-off blocked"))
+        if started <= changed_at:
+            frappe.throw(
+                frappe._("{0}: {1}, after these checks started.").format(
+                    DATA_CHANGED_REFUSAL, what),
                 title=frappe._("Sign-off blocked"))
     signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
 
