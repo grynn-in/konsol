@@ -22,6 +22,15 @@
 // Fail + Error) and `warn_count` (how many warn) apart, as `count` and
 // `warnCount`. An unknown status throws — it is never shown as a pass.
 
+// konsol#305 B34: A59 made `get_checks` return `period_status` (Open |
+// Closed | Locked) and `can_run` false unless the period is Open. On a
+// Closed or Locked period the view says why Run is unavailable
+// (`runUnavailable`) and offers no run. An unknown status throws — it is
+// never guessed as Open.
+
+const PERIOD_OPEN = "Open";
+const PERIOD_SETTLED = ["Closed", "Locked"];
+
 const BANNER_TEXT = {
   stale: "Checks are older than the numbers — run them again",
   running: "Checks running…",
@@ -71,14 +80,28 @@ function domainView(domain) {
   return { name: domain.domain, count: domain.count, warnCount: domain.warn_count, causes };
 }
 
+function runUnavailableFor(periodStatus, periodName) {
+  if (periodStatus === PERIOD_OPEN) {
+    return null;
+  }
+  if (!PERIOD_SETTLED.includes(periodStatus)) {
+    throw new Error(`Unknown period status: ${periodStatus}`);
+  }
+  return `${periodName} is ${periodStatus}; reopen it to run the checks`;
+}
+
 /**
  * A26's `get_checks` payload → `{banner, domains:[{name, count, warnCount,
- * causes:[{title, status, label, severity, text, rows}]}], canRun}`.
+ * causes:[{title, status, label, severity, text, rows}]}], canRun,
+ * runUnavailable}`. `periodName` (e.g. "FY2025 P06") names the period in
+ * the `runUnavailable` reason.
  */
-export function checksView(payload) {
+export function checksView(payload, periodName) {
+  const runUnavailable = runUnavailableFor(payload.period_status, periodName);
   return {
     banner: bannerFor(payload),
     domains: (payload.domains || []).map(domainView),
-    canRun: Boolean(payload.can_run),
+    canRun: runUnavailable === null && Boolean(payload.can_run),
+    runUnavailable,
   };
 }
