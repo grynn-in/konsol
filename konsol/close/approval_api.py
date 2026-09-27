@@ -39,8 +39,8 @@ def approve(doctype, name, reason=None):
     if frappe.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}):
         from frappe.model.workflow import apply_workflow
 
-        # Mirrors approve_adjustment (api.py:1819-1829). apply_workflow returns
-        # None when it queues a background submission; read the doc back then.
+        # apply_workflow returns None when it queues a background submission;
+        # read the doc back then.
         doc = apply_workflow(doc, "Approve") or frappe.get_doc(doctype, name)
     else:
         doc.submit()

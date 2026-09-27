@@ -1814,37 +1814,6 @@ def get_reporting_hierarchy_tree(hierarchy_name=None, as_of=None):
 
 
 # ---------------------------------------------------------------------------
-# PRD-16: Consolidation Adjustment Workflow API
-# ---------------------------------------------------------------------------
-
-@frappe.whitelist(methods=["POST"])
-def approve_adjustment(name):
-    """Approve a Consolidation Adjustment: the workflow's Approve, which
-    submits it (#131). Pending Approval -> Approved."""
-    from frappe.model.workflow import apply_workflow
-
-    doc = apply_workflow(frappe.get_doc("Consolidation Adjustment", name), "Approve")
-    return {
-        "status": doc.status,
-        "approved_by": doc.approved_by,
-        "approved_at": str(doc.approved_at),
-    }
-
-
-@frappe.whitelist(methods=["POST"])
-def reverse_adjustment(name):
-    """Reverse an Approved Consolidation Adjustment: the workflow's Reverse,
-    which cancels it and so removes it from the warehouse (#131). Refused once
-    its period is closed; a correction then is a new adjustment in an open
-    period. It used to insert a mirror adjustment and save() the submitted
-    original, which always raised."""
-    from frappe.model.workflow import apply_workflow
-
-    doc = apply_workflow(frappe.get_doc("Consolidation Adjustment", name), "Reverse")
-    return {"original": doc.name, "status": doc.status}
-
-
-# ---------------------------------------------------------------------------
 # Airbyte Sync Webhook
 # ---------------------------------------------------------------------------
 
