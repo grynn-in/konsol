@@ -188,3 +188,10 @@ def test_module_imports_no_frappe():
             assert not any(a.name.startswith("frappe") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("frappe")
+
+
+def test_an_unknown_policy_refuses_a_self_approval():
+    """P03b: a value that is neither declared policy never approves (fail closed)."""
+    msg = M.self_approval_problem("Allowed", "alice", "alice", "IC Balance", "ICB-1", "a reason", None)
+    assert msg is not None
+    assert "'Allowed'" in msg and "Close Settings" in msg
