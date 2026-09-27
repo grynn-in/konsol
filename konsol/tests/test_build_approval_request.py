@@ -750,3 +750,22 @@ def test_a_person_approving_a_row_that_carries_a_reason_is_recorded_as_the_appro
     assert site.rows[name]["workflow_state"] == "Approved"
     assert site.rows[name]["approved_by"] == "zz.admin@example.com"
     assert site.rows[name]["auto_approve_reason"] == REASON
+
+
+def test_without_a_workflow_a_reset_of_an_auto_approved_row_waits_for_review():
+    """The reset clears the reason before the no-workflow move reads it."""
+    site = _Site(workflow=False)
+    name = "ZZ-BA-0010"
+    site.rows[name] = dict(name=name, build_scope="consolidation", risk_level="high", workflow_state="Completed",
+                           approved_by="zz.admin@example.com", requested_by="zz.admin@example.com",
+                           rebuild_requested=0, error_message=None, started_at="2026-09-01 10:00:00",
+                           completed_at="2026-09-01 10:05:00", duration_seconds=300,
+                           auto_approve_reason=REASON)
+    with site.installed():
+        doc = site.frappe.get_doc("Build Approval", name)
+        doc.workflow_state = "Draft"
+        doc.save()
+    assert site.rows[name]["workflow_state"] == "Pending Review"
+    assert site.rows[name]["auto_approve_reason"] is None
+    assert site.rows[name]["approved_by"] is None
+    assert site.enqueued == []

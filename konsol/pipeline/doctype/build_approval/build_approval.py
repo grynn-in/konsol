@@ -4,6 +4,8 @@ Manages workflow transitions for governed dbt builds.
 Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin approval.
 With the Build Approval Workflow active, a new row takes its Request transition
 (after_insert); without one, before_save moves it (konsol#215).
+A build that an approval requested carries auto_approve_reason, set only by
+konsol's trigger, and goes to Approved on its own (konsol#305-D2-10).
 """
 import frappe
 from frappe.model.document import Document
@@ -24,6 +26,11 @@ SCOPE_RISK = {
 # konsol.build_lock.BUILD_WRITER_FLAG, by name: set only around konsol's own
 # saves that move a build out of Running (build_lock.build_writer).
 BUILD_WRITER_FLAG = "konsol_build_writer"
+# Set only by tasks.request_build_for_scope around its insert of a build that
+# an approval requested (konsol#305-D2-10). frappe.flags lives for one request
+# or job, so no REST call can set it.
+AUTO_APPROVE_FLAG = "konsol_auto_approve"
+AUTO_APPROVE_FORGED_MESSAGE = "Only konsol's build trigger sets Auto-Approved Because (konsol#305-D2-10)."
 RUNNING_BUILD_MESSAGE = (
     "This build is running. Wait for it to finish, or for the reaper to fail it "
     "after 30 minutes, then reset it."
@@ -43,6 +50,15 @@ class BuildApproval(Document):
         # (#139 review). _doc_before_save was loaded FOR UPDATE by
         # check_if_latest, so it holds the current flag.
         before = self.get_doc_before_save()
+        # The reason an approval auto-approved this build is konsol's to set
+        # (konsol#305-D2-10). read_only does not stop a REST insert or save,
+        # and EPM Analyst has create, so any change a person makes is refused.
+        # getattr: rows built before the field existed, in older test stubs;
+        # a loaded Document always carries every column.
+        saved_reason = getattr(before, "auto_approve_reason", None) if before else None
+        reason = getattr(self, "auto_approve_reason", None)
+        if (reason or None) != (saved_reason or None) and not frappe.flags.get(AUTO_APPROVE_FLAG):
+            frappe.throw(AUTO_APPROVE_FORGED_MESSAGE, frappe.PermissionError)
         # Only konsol's build path moves a build out of Running: the build
         # job's finish and stopped-before-dbt saves, marked with
         # build_lock.build_writer(), and the reaper, which writes with
@@ -90,6 +106,9 @@ class BuildApproval(Document):
             # The next move to Approved records who approved this run, not
             # the last one (konsol#215).
             self.approved_by = None
+            # A rerun is a person's request and follows the normal risk rules
+            # (konsol#305-D2-10).
+            self.auto_approve_reason = reason = None
         self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
 
         if not self.requested_by:
@@ -104,11 +123,20 @@ class BuildApproval(Document):
             if self.risk_level == "low":
                 self.workflow_state = "Approved"
                 self.approved_by = "Administrator"
+            elif reason:
+                # An approval requested this build (konsol#305-D2-10).
+                self.workflow_state = "Approved"
             else:
                 self.workflow_state = "Pending Review"
 
         if self.workflow_state == "Approved" and not self.approved_by and self.has_value_changed("workflow_state"):
-            self.approved_by = "Administrator" if self.risk_level == "low" else frappe.session.user
+            if reason and frappe.flags.get(AUTO_APPROVE_FLAG):
+                # konsol approved it for the approver whose submit asked for
+                # the build (konsol#305-D2-10). A person who later approves a
+                # row carrying a reason is recorded as themself.
+                self.approved_by = self.requested_by
+            else:
+                self.approved_by = "Administrator" if self.risk_level == "low" else frappe.session.user
 
         # Populate sync info from EPM Settings
         self._populate_sync_info()
@@ -137,6 +165,14 @@ class BuildApproval(Document):
         left in Draft, a debounce state the reaper does not watch, would
         absorb every later request for its scope and never build (konsol#215
         review 2).
+
+        A row whose auto_approve_reason konsol's trigger set (an approval
+        requested the build, konsol#305-D2-10) and which Request left in
+        Pending Review then takes Approve, still as Administrator; that save
+        enqueues the build. The Request save has already published
+        build_request_pending once by then. If the site's workflow offers no
+        Approve there, the row stays Pending Review for a person and an Error
+        Log says so: visible, never silent.
         """
         from frappe.model.workflow import apply_workflow, get_transitions
 
@@ -148,7 +184,13 @@ class BuildApproval(Document):
                 return
             offered = any(t.get("action") == "Request" for t in get_transitions(fresh))
             if offered:
-                apply_workflow(fresh, "Request")
+                fresh = apply_workflow(fresh, "Request")
+                if fresh.workflow_state == "Pending Review" and fresh.auto_approve_reason:
+                    if any(t.get("action") == "Approve" for t in get_transitions(fresh)):
+                        apply_workflow(fresh, "Approve")
+                    else:
+                        frappe.log_error(title=f"Build Approval {self.name}: auto-approve not offered",
+                                         message=fresh.auto_approve_reason)
         if not offered:
             frappe.throw(
                 f"The Build Approval Workflow offers no Request for this {self.build_scope} build; "
