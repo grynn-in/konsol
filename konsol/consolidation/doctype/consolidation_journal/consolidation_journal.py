@@ -22,6 +22,13 @@ from konsol.period_status import assert_declared, assert_open
 #: A blank Link is stored as NULL: match both spellings (business_combination.py:68).
 _BLANK = ["is", "not set"]
 
+#: konsol.close.approval_api carries the same literal (named by string, like
+#: build_approval.py's own BUILD_WRITER_FLAG): a test asserts the two stay in
+#: step. Set only around approval_api.reject's own apply_workflow("Reject")
+#: call, request-scoped, so no Desk workflow-bar Reject (which sets no reason)
+#: can supply it (konsol#305 J06a, P23).
+REJECT_REASON_FLAG = "konsol_reject_reason"
+
 
 class ConsolidationJournal(Document):
     # konsol#305 J05 (#305-D2-11, #305-D2-12): one row per line, submitted
@@ -48,12 +55,36 @@ class ConsolidationJournal(Document):
         assert_declared(self.fiscal_year, self.fiscal_period)
         if self.docstatus == 0 and self.status and self.status not in _states(0):
             frappe.throw(_("{0} is set by approving or reversing the journal, not by saving it.").format(self.status))
+        self._validate_reject_reason()
         pair_problem = journal_model.reversal_pair_problem(
             cint(self.get("reverse_fiscal_year")), cint(self.get("reverse_fiscal_period"))
         )
         if pair_problem:
             frappe.throw(pair_problem)
         self._validate_lines_and_totals()
+
+    def _validate_reject_reason(self):
+        """A save that moves ``status`` from a later docstatus-0 state (for
+        example Pending Approval) back to the workflow's first state (Draft)
+        is a rejection (konsol#305 J06a, P23). Only
+        ``konsol.close.approval_api.reject`` may do that: it sets
+        ``REJECT_REASON_FLAG`` around its own ``apply_workflow(doc,
+        "Reject")`` call. A direct Desk Reject, which carries no reason,
+        leaves the flag unset and is refused here."""
+        if self.docstatus != 0:
+            return
+        first = _first_state()
+        if self.status != first:
+            return
+        before = self.get_doc_before_save()
+        before_status = getattr(before, "status", None) if before else None
+        if before_status is None or before_status == first or before_status not in _states(0):
+            return
+        flagged = frappe.flags.get(REJECT_REASON_FLAG, {}).get((self.doctype, self.name))
+        if not flagged:
+            frappe.throw(_(
+                "Reject the journal with a reason through konsol.close.approval_api.reject."
+            ))
 
     def _validate_lines_and_totals(self):
         """Balance check before send (#305-D2-1): the lines and the total
