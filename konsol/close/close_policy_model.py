@@ -21,10 +21,10 @@ ALLOWED_WITH_REASON = "Allowed with reason"
 SELF_APPROVAL_POLICIES = (BLOCKED, ALLOWED_WITH_REASON)
 
 # The doctypes whose submit is a Close Lead's approval of work someone else
-# can prepare (konsol#305-D2-3). The Consolidation Journal (rows J01...) joins
-# this list by adding one line when it replaces Consolidation Adjustment.
+# can prepare (konsol#305-D2-3). The Consolidation Journal replaced
+# Consolidation Adjustment here in the row that made it submittable (J03).
 APPROVAL_DOCTYPES = (
-    "Consolidation Adjustment",
+    "Consolidation Journal",
     "Business Combination",
     "Business Disposal",
     "Group Exchange Rate",

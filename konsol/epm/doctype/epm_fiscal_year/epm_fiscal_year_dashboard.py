@@ -10,7 +10,7 @@ def get_data():
             },
             {
                 "label": "Consolidation",
-                "items": ["Consolidation Adjustment", "IC Balance"],
+                "items": ["Consolidation Journal", "Consolidation Adjustment", "IC Balance"],
             },
         ],
     }
