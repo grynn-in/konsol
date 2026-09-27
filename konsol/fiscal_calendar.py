@@ -18,7 +18,7 @@ import frappe
 #: documents (docstatus 2); drafts count. Non-submittable ones count every row.
 _PERIOD_DATA = {
     "Trial Balance Submission": True,
-    "Consolidation Adjustment": True,
+    "Consolidation Journal": True,
     "IC Balance": True,
     "Group Exchange Rate": True,
     "Assertion Run": False,

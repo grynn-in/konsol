@@ -9,9 +9,13 @@
 Enumerated across every workflow file and every controller in the app.
 """
 import ast
+import contextlib
 import glob
+import importlib.util
 import json
 import os
+import sys
+import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -95,13 +99,13 @@ def test_no_controller_saves_itself_on_submit_or_cancel():
     assert not offenders, offenders
 
 
-def test_an_adjustment_is_reversed_only_in_an_open_period():
+def test_a_journal_is_reversed_only_in_an_open_period():
     for path, cls in _controllers():
-        if cls.name == "ConsolidationAdjustment":
+        if cls.name == "ConsolidationJournal":
             fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel")
             assert "assert_open" in ast.unparse(fn)
             return
-    raise AssertionError("ConsolidationAdjustment not found")
+    raise AssertionError("ConsolidationJournal not found")
 
 
 def test_workflows_are_installed_on_fresh_and_existing_sites_never_overwritten():
@@ -126,37 +130,80 @@ def test_every_installed_workflow_has_a_definition():
     assert installed and set(installed) <= defined, (installed, defined)
 
 
-def _api_function(name):
+def test_no_endpoint_names_the_retired_adjustment():
+    """konsol#305 J11: konsol-exec (the endpoints' only UI caller) is dumped,
+    and approval_api.approve is the one approve path (decided 27 Sep: no
+    third approve path). approve_adjustment / reverse_adjustment and every
+    "Consolidation Adjustment" mention leave api.py; approval_api's comment
+    about the old endpoint goes too."""
     with open(os.path.join(APP_DIR, "api.py")) as f:
-        tree = ast.parse(f.read())
-    return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        api_src = f.read()
+    assert "def approve_adjustment" not in api_src
+    assert "def reverse_adjustment" not in api_src
+    assert "Consolidation Adjustment" not in api_src
+    with open(os.path.join(APP_DIR, "close", "approval_api.py")) as f:
+        approval_api_src = f.read()
+    assert "approve_adjustment" not in approval_api_src
 
 
-def test_the_adjustment_api_goes_through_the_workflow():
-    """The old endpoints set status and saved: approve made an Approved draft
-    that never reached the warehouse, reverse saved a submitted doc (#134 review)."""
-    for name, action in (("approve_adjustment", "Approve"), ("reverse_adjustment", "Reverse")):
-        fn = _api_function(name)
-        src = ast.unparse(fn)
-        assert f"apply_workflow(" in src and f"'{action}'" in src, name
-        assigns = [t for n in ast.walk(fn) if isinstance(n, ast.Assign) for t in n.targets
-                   if isinstance(t, ast.Attribute) and t.attr in ("status", "docstatus")]
-        saves = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("save", "submit", "cancel", "insert", "set", "set_value", "db_set")]
-        assert not assigns and not saves, name
-
-
-def test_an_adjustment_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
+def test_a_journal_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
+    """konsol#305 J06: the journal keeps the adjustment's guards, now that
+    its own workflow is installed."""
     for path, cls in _controllers():
-        if cls.name != "ConsolidationAdjustment":
+        if cls.name != "ConsolidationJournal":
             continue
         methods = {n.name: ast.unparse(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
         assert "approved_by = self.approved_at = None" in methods["before_insert"]
         assert "_states(0)" in methods["validate"] and "frappe.throw" in methods["validate"]
         for hook, docstatus in (("before_submit", 1), ("before_cancel", 2)):
             assert f"_states({docstatus})" in methods[hook] and "get_workflow_name" in methods[hook], hook
-        assert "after_delete" in methods and "on_trash" not in methods
+        # after_delete drives the warehouse sync (#120); on_trash would re-send the row
+        assert "on_trash" not in methods
         return
-    raise AssertionError("ConsolidationAdjustment not found")
+    raise AssertionError("ConsolidationJournal not found")
+
+
+#: The retired Consolidation Adjustment Workflow's states and transitions, as
+#: shipped at close-d2 0965b57 (konsol#305 J12 deleted its JSON). J06 gave the
+#: journal exactly these; the literal keeps that pin now the file is gone.
+_RETIRED_ADJUSTMENT_WORKFLOW = {
+    "states": [
+        {"state": "Draft", "doc_status": "0", "allow_edit": "EPM Analyst"},
+        {"state": "Pending Approval", "doc_status": "0", "allow_edit": "EPM Admin"},
+        {"state": "Approved", "doc_status": "1", "allow_edit": "EPM Admin"},
+        {"state": "Reversed", "doc_status": "2", "allow_edit": "EPM Analyst"},
+    ],
+    "transitions": [
+        {"state": "Draft", "action": "Send for Approval", "next_state": "Pending Approval",
+         "allowed": "EPM Analyst", "allow_self_approval": 1},
+        {"state": "Pending Approval", "action": "Reject", "next_state": "Draft",
+         "allowed": "EPM Admin", "allow_self_approval": 1},
+        {"state": "Pending Approval", "action": "Approve", "next_state": "Approved",
+         "allowed": "EPM Admin", "allow_self_approval": 1},
+        {"state": "Approved", "action": "Reverse", "next_state": "Reversed",
+         "allowed": "EPM Admin", "allow_self_approval": 1},
+    ],
+}
+
+
+def test_the_journal_workflow_is_installed_and_mirrors_the_adjustment():
+    """konsol#305 J06 (#305-D2-1, R1): the journal takes the adjustment's
+    workflow, states, roles and all. allow_self_approval stays 1: R5 is the
+    runtime hook's (konsol.close.self_approval), not the JSON's. J12 deleted
+    the adjustment's JSON; its shape is kept above as a literal."""
+    import re
+    with open(os.path.join(APP_DIR, "workflows.py")) as f:
+        installed = re.findall(r'"([^"]+)"', f.read().split("INSTALLED = (")[1].split(")")[0])
+    assert "Consolidation Journal" in installed, installed
+    by_type = {wf["document_type"]: wf for _, wf in _workflows()}
+    assert "Consolidation Journal" in by_type, "no consolidation_journal_workflow.json"
+    assert "Consolidation Adjustment" not in by_type, "the retired workflow JSON is back"
+    journal, adjustment = by_type["Consolidation Journal"], _RETIRED_ADJUSTMENT_WORKFLOW
+    assert journal["name"] == journal["workflow_name"] == "Consolidation Journal Workflow"
+    assert journal["workflow_state_field"] == "status" and journal["is_active"] == 1
+    assert journal["states"] == adjustment["states"]
+    assert journal["transitions"] == adjustment["transitions"]
+    assert all(t["allow_self_approval"] == 1 for t in journal["transitions"])
 
 
 def test_a_doctype_that_grants_amend_can_be_amended():
@@ -175,4 +222,59 @@ def test_a_doctype_that_grants_amend_can_be_amended():
             if not any(f["fieldname"] == "amended_from" for f in d["fields"]):
                 missing.append(d["name"])
     assert not missing, missing
+
+
+@contextlib.contextmanager
+def _stub_frappe(**attrs):
+    stub = types.ModuleType("frappe")
+    for k, v in attrs.items():
+        setattr(stub, k, v)
+    saved = sys.modules.get("frappe")
+    sys.modules["frappe"] = stub
+    try:
+        yield stub
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
+
+
+def _load(relpath, name):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(APP_DIR, relpath))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_workflows_install_and_never_rewrite():
+    """konsol#305 J12a (Problems P13): the role-upgrade code loses its only
+    user (Consolidation Adjustment, now retired from INSTALLED) and is
+    deleted. A workflow install creates a missing workflow and otherwise
+    leaves an installed one alone; it never rewrites one."""
+    with open(os.path.join(APP_DIR, "workflows.py")) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assigned = {t.id for n in tree.body if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    gone = {"PREVIOUSLY_SHIPPED_ROLES", "planned_role_upgrade", "_upgrade_roles", "_grant_previous_approvers"}
+    assert not (gone & (defined | assigned)), gone & (defined | assigned)
+
+    import re
+    installed = re.findall(r'"([^"]+)"', src.split("INSTALLED = (")[1].split(")")[0])
+    assert "Consolidation Adjustment" not in installed, installed
+    assert "Consolidation Journal" in installed, installed
+
+    def _refused(*a, **k):
+        raise AssertionError("install_workflows must not call get_doc when every workflow already exists")
+
+    with _stub_frappe(
+        get_app_path=lambda app: APP_DIR,
+        db=types.SimpleNamespace(exists=lambda *a, **k: True),
+        get_doc=_refused,
+    ):
+        wf = _load("workflows.py", "_wf_no_rewrite_under_test")
+        result = wf.install_workflows()
+    assert result == []
 

@@ -1,6 +1,8 @@
 import frappe
 from frappe.model.document import Document
 
+from konsol.close import close_policy_model
+
 REGULAR = "Regular"
 # Effective period statuses that fix the first close (fiscal_status_model).
 _CLOSED_STATUSES = ("Closed", "Locked")
@@ -27,6 +29,7 @@ class CloseSettings(Document):
     def validate(self):
         self.validate_first_close_period()
         self.validate_first_close_locked()
+        self.validate_policies()
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank
@@ -88,3 +91,14 @@ class CloseSettings(Document):
                 "{0} is already {1} under the current first close ({2}); "
                 "the first close period can no longer move."
             ).format(_label(key), used, _label(old)))
+
+    def validate_policies(self):
+        """konsol#305-D2-3, D2-9: self_approval and rate_move_threshold have
+        no default. A save is refused only for an unknown self-approval
+        value or a negative threshold; blank / 0 is undeclared and saves
+        fine — it is reported elsewhere as a setup gap
+        (close_policy_model.policy_gaps), never guessed."""
+        problems = close_policy_model.settings_problems(
+            self.self_approval, self.rate_move_threshold)
+        if problems:
+            frappe.throw("<br>".join(problems))

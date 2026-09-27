@@ -51,7 +51,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import period_model, signoff_model
+from konsol.close import close_policy_model, period_model, signoff_model
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
@@ -123,6 +123,16 @@ def _first_close():
     ))
 
 
+def _policies():
+    """(self_approval, rate_move_threshold), read straight from Close
+    Settings; undeclared (blank / 0) is never guessed (P05, #305-D2-3,
+    #305-D2-9)."""
+    return (
+        frappe.db.get_single_value("Close Settings", "self_approval"),
+        frappe.db.get_single_value("Close Settings", "rate_move_threshold"),
+    )
+
+
 def _latest_runs():
     """The latest terminal Assertion Run per period (mirrors assertion_run.latest_close_run)."""
     # Imported here: assertion_run's sign-off will call this gate (A22).
@@ -166,6 +176,7 @@ def sign_off_problems(fiscal_year, fiscal_period):
 
     expected = signoff_model.expected_entities(frequencies, key, rows)
     gaps.extend(expected["gaps"])
+    gaps.extend(close_policy_model.policy_gaps(*_policies()))
     completeness = signoff_model.completeness_problem(
         expected["expected"],
         _submitted("Trial Balance Submission", key),

@@ -17,7 +17,7 @@ import tempfile
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "IC Balance")
+GATED_IN_BEFORE_SUBMIT = ("Consolidation Journal", "IC Balance")
 PERIOD_GATES = {"assert_open", "assert_open_between"}
 CLOSED = "Dec 2099 is closed."
 #: a fiscal year/period never declared, for the assert_declared stub to refuse
@@ -27,8 +27,8 @@ UNDECLARED = (2001, 1)
 #: konsol#305 R02 deleted home_model.py, where the old home kept them; the
 #: tests below check the list against what the controllers actually refuse.
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
-    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance",
-    "Group Exchange Rate"})
+    "Trial Balance Submission", "Consolidation Journal",
+    "IC Balance", "Group Exchange Rate"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
 #: balance checks the period in validate): there the draft can only be deleted.
@@ -37,8 +37,8 @@ SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 #: The submittable doctypes checked against a closed period: every doctype the
 #: old home offered a submit for (read from home_api before R02 deleted it).
 SUBMIT_CANDIDATES = frozenset({
-    "Consolidation Adjustment", "Group Exchange Rate", "Historical Equity Rate",
-    "IC Balance", "Ownership Period", "Trial Balance Submission"})
+    "Consolidation Journal", "Group Exchange Rate",
+    "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission"})
 
 
 def _controller_paths():
@@ -204,6 +204,18 @@ def _load(path, period_open):
     basis_spec.loader.exec_module(basis_mod)
     mods["konsol.tb_basis_model"] = basis_mod
 
+    # konsol#305 J04: Consolidation Journal imports the real, frappe-free
+    # konsol.close.journal_model the same way; the stub "konsol" package has
+    # no __path__, so load it from the repo and register it beside the stubs.
+    journal_model_path = os.path.join(APP_DIR, "close", "journal_model.py")
+    jm_spec = importlib.util.spec_from_file_location("konsol.close.journal_model", journal_model_path)
+    journal_model_mod = importlib.util.module_from_spec(jm_spec)
+    jm_spec.loader.exec_module(journal_model_mod)
+    close_pkg = types.ModuleType("konsol.close")
+    close_pkg.journal_model = journal_model_mod
+    mods["konsol.close"] = close_pkg
+    mods["konsol.close.journal_model"] = journal_model_mod
+
     saved = {name: sys.modules.get(name) for name in mods}
     sys.modules.update(mods)
     try:
@@ -338,7 +350,7 @@ def test_submit_into_an_open_period_still_works():
         d.before_submit()
         assert [c[:2] for c in record["checked"]] == [(2099, 12)], doctype
         assert record["checked"][0][2].split()[0] in ("approve", "submit"), record["checked"]
-    module, _ = _load(PATHS["Consolidation Adjustment"], period_open=True)
-    d = _doc(module, "Consolidation Adjustment")
+    module, _ = _load(PATHS["Consolidation Journal"], period_open=True)
+    d = _doc(module, "Consolidation Journal")
     d.before_submit()
     assert (d.status, d.approved_by) == ("Approved", "approver@example.com")

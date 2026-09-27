@@ -391,7 +391,7 @@ class BusinessCombination(Document):
         if getdate(nowdate()) > last_day:
             return [
                 f"{_PREFIX}the 12-month measurement period for this acquisition ended on "
-                f"{last_day}; record later changes as a Consolidation Adjustment."
+                f"{last_day}; record later changes as a Consolidation Journal."
             ]
         return []
 

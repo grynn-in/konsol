@@ -5,6 +5,7 @@ These tests define the API that tasks.py, api.py, install.py, and the
 Build Approval doctype must satisfy.
 """
 import ast
+import importlib.util
 import json
 import os
 
@@ -23,7 +24,7 @@ EPM_SETTINGS_JSON = os.path.join(
 # The 9 doctypes that trigger builds on save
 TRIGGER_DOCTYPES = [
     "Consolidation Group",
-    "Consolidation Adjustment",
+    "Consolidation Journal",
     "Ownership Period",
     "Historical Equity Rate",
     "IC Elimination Rule",
@@ -32,6 +33,10 @@ TRIGGER_DOCTYPES = [
     # translates from
     "Entity",
     "Trial Balance Submission",
+    # konsol#306, #305-D2-10: approving or cancelling a deal is a
+    # consolidation input too; nothing rebuilt after one before this.
+    "Business Combination",
+    "Business Disposal",
 ]
 
 VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}
@@ -278,6 +283,23 @@ def test_pbr_has_sync_info_fields():
     assert not missing, f"Missing sync info fields: {missing}"
 
 
+def test_pbr_records_why_it_auto_approved_and_only_konsol_sets_it():
+    """konsol#305-D2-10: the reason an approval auto-approved its build is on
+    the row, read-only, and never copied onto a duplicate (S03b)."""
+    with open(PBR_JSON) as f:
+        data = json.load(f)
+    fields = [f for f in data["fields"] if "fieldname" in f]
+    names = [f["fieldname"] for f in fields]
+    assert "auto_approve_reason" in names, "Build Approval has no auto_approve_reason"
+    field = fields[names.index("auto_approve_reason")]
+    assert field["fieldtype"] == "Small Text"
+    assert field["label"] == "Auto-Approved Because"
+    assert field.get("read_only") == 1
+    assert field.get("no_copy") == 1
+    assert "konsol#305-D2-10" in field.get("description", "")
+    assert names.index("auto_approve_reason") == names.index("trigger_docname") + 1
+
+
 def test_pbr_controller_exists():
     """build_approval.py controller must exist."""
     assert os.path.isfile(PBR_PY)
@@ -504,6 +526,42 @@ def test_every_hooks_trigger_doctype_has_a_build_mapping():
                          isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
     missing = [t for t in triggers if t not in build_map]
     assert not missing, f"trigger doctypes with no build mapping: {missing}"
+
+
+def test_every_consolidation_input_reaches_the_consolidated_numbers():
+    """konsol#306, #305-D2-10: approving or changing a consolidation input
+    must request a build that reaches gold_fully_consolidated_tb, not stop at
+    "staging". Covers every doctype in hooks._dbt_trigger_doctypes plus
+    Entity (konsol#110: its build is requested from the controller, not
+    doc_events, but DOCTYPE_BUILD_MAP still carries its scope).
+
+    NUMBERS_SCOPES is loaded from freshness_model.py by path rather than
+    copied here, so this test tracks what "reaches the numbers" means instead
+    of asserting its own stale guess of it."""
+    hooks_src = _read(os.path.join(os.path.dirname(TASKS_PATH), "hooks.py"))
+    block = hooks_src.split("_dbt_trigger_doctypes = [")[1].split("]")[0]
+    triggers = [ln.strip().strip('",') for ln in block.splitlines()
+                if ln.strip().startswith('"')]
+    assert triggers, "no trigger doctypes parsed from hooks.py"
+
+    model_path = os.path.join(os.path.dirname(TASKS_PATH), "close", "freshness_model.py")
+    spec = importlib.util.spec_from_file_location(
+        "freshness_model_for_build_governance_test", model_path)
+    freshness_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(freshness_model)
+
+    tree = _parse(TASKS_PATH)
+    build_map = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                     if isinstance(n, ast.Assign) and any(
+                         isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
+
+    consolidation_inputs = list(triggers) + ["Entity"]
+    wrong = {dt: build_map[dt]["scope"] for dt in consolidation_inputs
+             if build_map[dt]["scope"] not in freshness_model.NUMBERS_SCOPES}
+    assert not wrong, (
+        "doctypes whose build never reaches the consolidated numbers: "
+        f"{wrong}"
+    )
 
 
 # ===================================================================

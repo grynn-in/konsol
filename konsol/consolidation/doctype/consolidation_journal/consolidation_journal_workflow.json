@@ -1,8 +1,8 @@
 {
  "doctype": "Workflow",
- "name": "Consolidation Adjustment Workflow",
- "workflow_name": "Consolidation Adjustment Workflow",
- "document_type": "Consolidation Adjustment",
+ "name": "Consolidation Journal Workflow",
+ "workflow_name": "Consolidation Journal Workflow",
+ "document_type": "Consolidation Journal",
  "is_active": 1,
  "workflow_state_field": "status",
  "send_email_alert": 0,

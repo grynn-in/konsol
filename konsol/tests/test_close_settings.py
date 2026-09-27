@@ -107,6 +107,29 @@ def test_first_close_fields_are_int_with_no_default_or_reqd():
     assert "No default" in by_name["first_close_fiscal_year"].get("description", "")
 
 
+def test_self_approval_field_no_default_or_reqd():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    assert "self_approval" in by_name, "self_approval is missing"
+    field = by_name["self_approval"]
+    assert field["fieldtype"] == "Select"
+    assert field["options"] == "\nBlocked\nAllowed with reason"
+    assert "default" not in field, "self_approval must have no default"
+    assert not field.get("reqd"), "self_approval must not be reqd"
+    assert not field.get("permlevel"), "self_approval must be permlevel 0"
+    assert "No default" in field.get("description", "")
+
+
+def test_rate_move_threshold_field_no_default_or_reqd():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    assert "rate_move_threshold" in by_name, "rate_move_threshold is missing"
+    field = by_name["rate_move_threshold"]
+    assert field["fieldtype"] == "Percent"
+    assert "default" not in field, "rate_move_threshold must have no default"
+    assert not field.get("reqd"), "rate_move_threshold must not be reqd"
+    assert not field.get("permlevel"), "rate_move_threshold must be permlevel 0"
+    assert "No default" in field.get("description", "")
+
+
 def test_field_order_lists_every_field():
     doc = _doc()
     assert doc["field_order"] == [f["fieldname"] for f in doc["fields"]]
@@ -157,7 +180,7 @@ class _Refused(Exception):
     """What the stubbed frappe.throw raises."""
 
 
-def _run(year, period, period_row_fn):
+def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0):
     saved_throw = _m.frappe.throw
     saved_row = sys.modules["konsol.period_status"].period_row
 
@@ -170,6 +193,8 @@ def _run(year, period, period_row_fn):
         doc = _m.CloseSettings()
         doc.first_close_fiscal_year = year
         doc.first_close_fiscal_period = period
+        doc.self_approval = self_approval
+        doc.rate_move_threshold = rate_move_threshold
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
@@ -233,6 +258,36 @@ def test_regular_period_is_ok():
 
     _run(2025, 7, row)  # must not raise
     assert seen == [(2025, 7)]
+
+
+# ---------------------------------------------------------------------------
+# konsol#305-D2-3, D2-9: validate_policies. No default — blank/0 is
+# undeclared and allowed to save; only an unknown value or a negative
+# threshold is refused.
+# ---------------------------------------------------------------------------
+
+def test_unknown_self_approval_is_refused():
+    try:
+        _run(None, None, _default_period_row, self_approval="Sometimes")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "Sometimes" in str(e)
+
+
+def test_negative_rate_move_threshold_is_refused():
+    try:
+        _run(None, None, _default_period_row, rate_move_threshold=-1)
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "negative" in str(e).lower()
+
+
+def test_blank_and_zero_policies_are_undeclared_not_refused():
+    _run(None, None, _default_period_row, self_approval="", rate_move_threshold=0)
+
+
+def test_declared_policies_pass():
+    _run(None, None, _default_period_row, self_approval="Blocked", rate_move_threshold=50)
 
 
 # ---------------------------------------------------------------------------

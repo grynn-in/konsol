@@ -185,9 +185,10 @@ class GroupExchangeRate(Document):
         self.quote_label = group_rates.quote_label(self.quote, self._per(), self.from_currency, self.to_currency)
 
     def _require_reasons(self):
-        """Say why: always for an amendment, and for a move over 50% from the
-        previous approved rate for this key or from the ERP quote. Compared as
-        true rates, whatever unit each is quoted per."""
+        """Say why: always for an amendment, and for a move over the declared
+        Rate Move threshold (Close Settings, konsol#305-D2-9) from the
+        previous approved rate for this key or from the ERP quote. Compared
+        as true rates, whatever unit each is quoted per."""
         from konsol import group_rates
 
         if (self.change_reason or "").strip():
@@ -203,7 +204,8 @@ class GroupExchangeRate(Document):
             self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period)
         erp = group_rates.true_rate(self.erp_quote, self._per()) if self.erp_quote else None
         problem = group_rates.move_problem(self._rate(), previous, erp,
-                                           unit=f"{self.to_currency} per {self.from_currency}")
+                                           unit=f"{self.to_currency} per {self.from_currency}",
+                                           threshold=group_rates.move_threshold())
         if problem:
             frappe.throw(problem, frappe.MandatoryError)
 

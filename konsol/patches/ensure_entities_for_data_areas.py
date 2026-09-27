@@ -35,6 +35,10 @@ REFERRING_DOCTYPES = (
     "Budget Annual Input",
     # konsol#303: TB Exception names the entity with no trial balance.
     "TB Exception",
+    # konsol#292/#305-D2-12: the journal's line carries the entity (the header
+    # does not). A child table has the same data_area_id column, and the
+    # table_exists() guard makes the entry free before the doctype exists.
+    "Consolidation Journal Line",
 )
 
 

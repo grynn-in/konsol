@@ -143,8 +143,9 @@ copy in).
    - Walk every workflow transition in a live test, including the refused
      cancel of a closed period.
 
-Existing doctypes that don't follow this yet (Consolidation Adjustment, #131)
-are brought in line one PR at a time.
+Existing doctypes that don't follow this yet are brought in line one PR at a
+time (Consolidation Adjustment, #131, which didn't, was retired outright by
+konsol#292 rather than brought in line).
 
 ## ClickHouse / dbt traps
 

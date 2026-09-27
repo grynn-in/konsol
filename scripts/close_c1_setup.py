@@ -45,6 +45,13 @@ GROUP = "ECL_GROUP"
 CURRENCY = "USD"
 PASSWORD = "Zz-c1-Pass!2026"
 REASON = "C1 walk-through"
+#: konsol#305 P10 (Problems 0, 1, 2; close_policy_model.py): the walk-through's
+#: own sign-off step is refused with self_approval_undeclared /
+#: rate_move_undeclared unless these are declared. Blank and 0 both read back
+#: as undeclared, so this is a real policy, not a placeholder: Blocked (no
+#: self-approval), and a small positive move threshold (never 0).
+SELF_APPROVAL_POLICY = "Blocked"
+RATE_MOVE_THRESHOLD = 50
 USERS = {
     "zz-c1-ea@example.com": ["Entity Accountant"],
     "zz-c1-analyst@example.com": ["EPM Analyst"],
@@ -149,10 +156,13 @@ def main():
     frappe.db.commit()
     save_state(state)
 
-    # 2. First close period.
+    # 2. First close period, and the two policies sign-off also needs
+    # declared (P05): self-approval and the rate move threshold.
     cs = frappe.get_single("Close Settings")
     cs.first_close_fiscal_year = FY
     cs.first_close_fiscal_period = 1
+    cs.self_approval = SELF_APPROVAL_POLICY
+    cs.rate_move_threshold = RATE_MOVE_THRESHOLD
     cs.save()
     frappe.db.commit()
 

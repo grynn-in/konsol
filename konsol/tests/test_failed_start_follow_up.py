@@ -370,6 +370,23 @@ def test_the_writer_flag_is_one_name_in_both_modules():
     assert "_fail_active_runs_of_reset_build" not in controller, "a Running row can no longer be reset"
 
 
+def test_the_auto_approve_flag_is_one_name_owned_by_the_controller():
+    """konsol#305-D2-10: the trigger takes the flag's name from the controller
+    that reads it, so the two cannot drift; the trigger spells no copy of it.
+    Its set-and-clear around the insert is run in test_build_trigger.py."""
+    path = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+    with open(path) as f:
+        assert 'AUTO_APPROVE_FLAG = "konsol_auto_approve"' in f.read()
+    src = ast.unparse(_fn(TASKS, "request_build_for_scope"))
+    assert ("from konsol.pipeline.doctype.build_approval.build_approval import AUTO_APPROVE_FLAG"
+            in src), "import the controller's name"
+    with open(TASKS) as f:
+        assert "konsol_auto_approve" not in f.read()
+    body = src[src.index("pbr.insert(") - 200:]
+    assert src.index("finally:") > src.index("pbr.insert("), "cleared in a finally"
+    assert "AUTO_APPROVE_FLAG" in body
+
+
 def test_the_writer_flag_is_set_only_inside_and_never_leaks():
     frappe = _frappe_stub()
     frappe.flags = _D()

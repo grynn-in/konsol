@@ -4,6 +4,36 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (27 Sep): konsol#305 Delivery 2, wave 1 (prerequisites), is built.** It is on konsol `close-d2` and konsolidat `k305-d2`. The decisions are on #305: D2-1..12, P21-1 and P25.
+- **Consolidation Journal replaces Consolidation Adjustment** (#292, D2-1, D2-12). The journal is a header with lines. It must balance in total to the cent, and each line names its entity.
+  - Only `konsol.close.approval_api.approve` and `reject` approve or reject it. A reject needs a reason.
+  - The retirement patch `retire_consolidation_adjustment` refuses to run while any Consolidation Adjustment rows exist. Live has 0.
+- **Reversals (#304, D2-2, D2-11, P25).** The journal names its reversal period. Approval checks that the period is declared, Regular, later than the journal's period, and Open. A cancel is refused unless the reversal period is still Open.
+  - dbt posts the reversal in exactly that period.
+  - Three tests guard it: the reversal exists, it lands in a declared Regular period, and it negates the original.
+- **Approvals rebuild the numbers (#306, D2-10).** The six consolidation inputs, plus Business Combination and Business Disposal, request a `consolidation` build.
+  - A Close Lead's approval auto-approves that build, and `Build Approval.auto_approve_reason` records why. Only konsol's trigger can set that field.
+  - A reversal, or an approval absorbed into a build that is already pending, is never auto-approved.
+- **R2 and R5 (D2-3).**
+  - The Analyst can no longer submit Historical Equity Rate or IC Balance.
+  - Close Settings has a new `self_approval` field (Blocked / Allowed with reason) with no default. One `before_submit` hook applies it to every approval doctype, with no Administrator exemption.
+- **D2-9.** The 50% rate-move constant is gone. Close Settings `rate_move_threshold` replaces it, with no default.
+- **Tests:** host 3181/3181 across 188 files, 60 skipped; `close-ui` 394/394. There was one batch review; its 4 should-fix findings were fixed test-first.
+- **Deploy order:**
+  - **On live, deploy konsolidat `k305-d2` (V01) before konsol.** Live already has the new reversal columns, and konsol's migrate drops `auto_reverse_period`, which the old dbt model still reads.
+  - On a site without the new columns, deploy konsol first.
+  - J05 deploys whole, so the old adjustment sync never runs beside the journal's.
+- **Before the close works on live after migrate:**
+  - Declare `self_approval` and `rate_move_threshold` in Close Settings. Until then sign-off stays blocked, every self-approval is refused, and every rate that moves needs a reason.
+  - Check that the workspace link to Consolidation Adjustment is gone (it heals at after_migrate).
+- **Open, not fixed (for Deepak):**
+  - An Admin can edit an Analyst's pending journal and then approve it. The preparer is still the owner, so R5 never fires.
+  - A rejected Build Approval does not undo its staging write, so the next auto-approved build picks that change up unreviewed.
+  - Seven dbt tests may never fail: konsolidat#249.
+- **Next:** wave 2 (E2 period grid, E10 audit trail, E4 rates and ownership), then wave 3 (E5, E6), then wave 4 (E8).
+  - The wave-3 intercompany screens must show "not configured" separately from "reconciled". Live has 0 Intercompany Accounts, so `gold_ic_reconciliation` is empty by construction (konsol#293).
+  - Task file, Ralph prompt and dbt gate: `bench-15/archive/konsol-305-d2/` (outside git).
+
 **Update (26 Sep): the close app — konsol#305 Delivery 1 — is built on branch `close-d1`; the PR is next.** It replaces konsol-exec with a new SPA at `/close`: `close-ui/` is Vue 3 + frappe-ui + xstate, and the built bundle is committed at `konsol/public/close` with `build-manifest.json`. Operations happen there; configuration stays in the Desk.
 - **Roles and screens:** My work, Trial balances, Checks and Sign-off.
   - Entity Accountant: upload, fix, re-upload and submit.
