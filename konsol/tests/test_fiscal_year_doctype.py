@@ -487,6 +487,18 @@ def test_fiscal_year_on_the_desk():
     assert labels["EPM Fiscal Year"] == "Fiscal Year"
     cards = dict(_literal(os.path.join(APP_DIR, "dashboard.py"), "_CARDS"))
     assert "EPM Fiscal Year" in cards["Reference Data"]
+
+
+def test_consolidation_card_lists_the_journal_not_the_adjustment():
+    """konsol#305 J09: the workspace's Consolidation card names the journal,
+    not the doctype it replaces. (epm_fiscal_year_dashboard.py's Connections
+    keep both, per J03/the J09 coordinator note, until J12 retires the
+    doctype — this test is dashboard.py's card only.)"""
+    cards = dict(_literal(os.path.join(APP_DIR, "dashboard.py"), "_CARDS"))
+    assert "Consolidation Journal" in cards["Consolidation"]
+    assert "Consolidation Adjustment" not in cards["Consolidation"]
+    labels = _literal(os.path.join(APP_DIR, "dashboard.py"), "_LABELS")
+    assert labels["Consolidation Journal"] == "Consolidation Journals"
     with open(os.path.join(APP_DIR, "dashboard.py")) as f:
         refresh = f.read().split("def _workspace_needs_refresh")[1].split("\ndef ")[0]
     assert '"EPM Fiscal Year" not in' in refresh, "existing sites must rebuild the card once"
