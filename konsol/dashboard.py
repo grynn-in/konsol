@@ -57,6 +57,7 @@ _LABELS = {
     "Intercompany Account": "Intercompany Accounts",
     "IC Balance": "IC Balances",
     "Consolidation Adjustment": "Consolidation Adjustments",
+    "Consolidation Journal": "Consolidation Journals",
     "Assertion Run": "Assertion Runs",
     "EPM Settings": "EPM Settings",
 }
@@ -103,7 +104,7 @@ _CARDS = [
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
-        "IC Elimination Rule", "Intercompany Account", "IC Balance", "Consolidation Adjustment",
+        "IC Elimination Rule", "Intercompany Account", "IC Balance", "Consolidation Journal",
     ]),
     ("Assertions", [
         "Assertion Run",
