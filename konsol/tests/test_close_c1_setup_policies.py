@@ -63,11 +63,27 @@ def _attr_assignments(func, varname):
     return out
 
 
-def _literal(value_node):
-    """The Python value of ``value_node`` if it is a literal constant, else
-    None (for example a bare ``Name`` such as ``FY``, which this test does
-    not need to resolve)."""
-    return value_node.value if isinstance(value_node, ast.Constant) else None
+def _module_consts(tree):
+    """``{name: literal value}`` for every top-level ``NAME = <constant>`` in
+    the module (the file's own style: ``FY = 2099``, ``PASSWORD = "..."``)."""
+    out = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)):
+            out[node.targets[0].id] = node.value.value
+    return out
+
+
+def _literal(value_node, consts=None):
+    """The Python value of ``value_node``: a literal constant directly, or a
+    bare ``Name`` resolved against ``consts`` (module-level constants); None
+    if it is neither (for example ``FY``, which this test does not resolve
+    since it never checks the first close's actual year)."""
+    if isinstance(value_node, ast.Constant):
+        return value_node.value
+    if consts is not None and isinstance(value_node, ast.Name) and value_node.id in consts:
+        return consts[value_node.id]
+    return None
 
 
 def test_module_parses_and_has_a_main_with_first_close():
@@ -107,8 +123,9 @@ def test_declared_policy_values_are_not_the_undeclared_sentinels():
     # Blank self_approval and 0 rate_move_threshold both read back as
     # "undeclared" (close_policy_model.policy_gaps); a real policy must be a
     # non-blank string and a strictly positive number.
-    self_approval = _literal(assigned.get("self_approval"))
-    rate_move_threshold = _literal(assigned.get("rate_move_threshold"))
+    consts = _module_consts(tree)
+    self_approval = _literal(assigned.get("self_approval"), consts)
+    rate_move_threshold = _literal(assigned.get("rate_move_threshold"), consts)
     assert isinstance(self_approval, str) and self_approval
     assert isinstance(rate_move_threshold, (int, float)) and rate_move_threshold > 0
     # Problems 0 (tasks.md): rate_move_threshold must be a positive number,
