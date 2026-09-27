@@ -20,6 +20,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE_PY = os.path.join(APP_DIR, "close", "signoff_gate.py")
 PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
+CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -90,7 +91,8 @@ class _Site:
 
     def __init__(self):
         self.rows = _year(2025, overrides={9: "Open", 10: "Open", 11: "Open", 12: "Open"})
-        self.settings = {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 7}
+        self.settings = {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 7,
+                         "self_approval": "Blocked", "rate_move_threshold": 50}
         self.records = {
             "Entity": [_entity("ZZA"), _entity("ZZB", "Quarterly")],
             "Ownership Period": [_owner("ZZA"), _owner("ZZB")],
@@ -208,7 +210,9 @@ def _load(site):
     close = types.ModuleType("konsol.close")
     period_model = _by_path("konsol.close.period_model", PERIOD_MODEL_PY)
     signoff_model = _by_path("konsol.close.signoff_model", SIGNOFF_MODEL_PY)
+    close_policy_model = _by_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
     close.period_model, close.signoff_model = period_model, signoff_model
+    close.close_policy_model = close_policy_model
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -281,6 +285,7 @@ def _load(site):
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.close.period_model": period_model,
             "konsol.close.signoff_model": signoff_model,
+            "konsol.close.close_policy_model": close_policy_model,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -357,7 +362,11 @@ def test_undeclared_first_close_blocks_and_skips_the_order_gate():
         site.settings = settings
         site.rows = _year(2025, status="Open")  # every period Open: (0,0) would land on P01
         problems = _call(site, "sign_off_problems", 2025, 9)
-        assert [g["code"] for g in problems["config_gaps"]] == ["first_close_undeclared"], settings
+        # P05: these settings dicts never declare the two policies either, so
+        # policy_gaps adds both codes after the first-close gap.
+        assert [g["code"] for g in problems["config_gaps"]] == [
+            "first_close_undeclared", "self_approval_undeclared", "rate_move_undeclared",
+        ], settings
         assert problems["order"] is None, settings
         message = _blocked(site)
         assert "Declare the first close period in Close Settings" in message, message
@@ -449,9 +458,37 @@ def test_a_blank_frequency_blocks_and_names_the_entity():
     assert "Set the Reporting Frequency (Monthly or Quarterly) on ZZB" in message, message
 
 
+# --- P05: the two policy gaps (#305-D2-3, #305-D2-9) ---------------------------
+
+def test_both_policies_declared_add_no_gap():
+    site = _Site()  # self_approval="Blocked", rate_move_threshold=50
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == []
+    assert _call(site, "assert_can_sign", 2025, 9) is None
+
+
+def test_undeclared_self_approval_blocks_sign_off():
+    site = _Site()
+    site.settings["self_approval"] = ""
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["self_approval_undeclared"]
+    message = _blocked(site)
+    assert "Declare the self-approval policy" in message, message
+
+
+def test_undeclared_rate_move_threshold_blocks_sign_off():
+    site = _Site()
+    site.settings["rate_move_threshold"] = 0  # Frappe Percent reads back 0 when unset
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["rate_move_undeclared"]
+    message = _blocked(site)
+    assert "Declare the rate move threshold" in message, message
+
+
 def test_one_message_lists_every_problem():
     site = _Site()
-    site.settings = {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 7}
+    site.settings = {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 7,
+                     "self_approval": "Blocked", "rate_move_threshold": 50}
     site.rows = _year(2025, overrides={7: "Open", 9: "Open"})
     site.records["Assertion Run"] = []
     site.records["Entity"] = [_entity("ZZA"), _entity("ZZB", "Quarterly"), _entity("ZZC", None)]
