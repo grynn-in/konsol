@@ -67,10 +67,48 @@ def _get_value_stub(root, nodes, accounts):
     return get_value
 
 
+def _period_row(fiscal_year, fiscal_period, period_type="Regular", status="Open"):
+    """A fiscal_calendar.fiscal_period_rows() row (konsol#305 J04a)."""
+    return {
+        "fiscal_year": fiscal_year,
+        "fiscal_period": fiscal_period,
+        "period_code": f"P{fiscal_period}",
+        "period_label": f"P{fiscal_period}",
+        "period_type": period_type,
+        "start_date": None,
+        "end_date": None,
+        "quarter": "",
+        "status": status,
+    }
+
+
+#: The journal's own period (from _doc's defaults) is FY2024 P12; a later
+#: Regular period, Open and Closed, for the reversal-check tests.
+DEFAULT_PERIOD_ROWS = [
+    _period_row(2024, 12, "Regular", "Open"),
+    _period_row(2025, 1, "Regular", "Open"),
+    _period_row(2025, 2, "Regular", "Closed"),
+]
+
+#: before_submit imports konsol.fiscal_calendar lazily (it needs a live site;
+#: mirrors close_settings.py's own lazy import), so its stub must outlive one
+#: _load() call — the test may call before_submit only after _load() has
+#: already restored sys.modules. Registered once, permanently, like
+#: test_close_settings.py's own module-scope `_stub`; run-host-tests.py's
+#: per-file isolation drops it once this file's tests are done.
+_PERIOD_ROWS_NOW = [DEFAULT_PERIOD_ROWS]
+if "konsol.fiscal_calendar" not in sys.modules:
+    _fiscal_calendar_stub = types.ModuleType("konsol.fiscal_calendar")
+    _fiscal_calendar_stub.fiscal_period_rows = lambda: list(_PERIOD_ROWS_NOW[0])
+    sys.modules["konsol.fiscal_calendar"] = _fiscal_calendar_stub
+
+
 def _load(states=None, period_open=True, declared=True,
-          root=DEFAULT_ROOT, nodes=DEFAULT_NODES, accounts=DEFAULT_ACCOUNTS):
+          root=DEFAULT_ROOT, nodes=DEFAULT_NODES, accounts=DEFAULT_ACCOUNTS,
+          period_rows=DEFAULT_PERIOD_ROWS):
     """Import the controller with frappe stubbed. ``states`` is the active
     workflow's [(state, doc_status)], or None for no workflow."""
+    _PERIOD_ROWS_NOW[0] = period_rows
     checked = []
 
     def assert_declared(fiscal_year, fiscal_period):
@@ -143,7 +181,8 @@ def _load(states=None, period_open=True, declared=True,
 def _doc(module, **fields):
     base = dict(doctype="Consolidation Journal", status="Draft", docstatus=0, fiscal_year=2024,
                 fiscal_period=12, approved_by=None, approved_at=None,
-                consolidation_group=DEFAULT_GROUP, lines=list(DEFAULT_LINES))
+                consolidation_group=DEFAULT_GROUP, lines=list(DEFAULT_LINES),
+                reverse_fiscal_year=0, reverse_fiscal_period=0)
     return module.ConsolidationJournal(**dict(base, **fields))
 
 
@@ -300,3 +339,26 @@ def test_a_valid_journal_sets_totals_and_currency():
     d = _doc(module)
     d.validate()
     assert (d.total_debit, d.total_credit, d.currency) == (100.0, 100.0, "USD")
+
+
+# --- J04a: the journal names its reversal period; approval checks it ------
+
+def test_a_save_naming_only_the_reversal_year_is_refused():
+    module, _ = _load()
+    assert _refused(_doc(module, reverse_fiscal_year=2025).validate)
+
+
+def test_a_submit_naming_a_closed_period_is_refused_and_docstatus_stays_0():
+    module, _ = _load()
+    d = _doc(module, status="Pending Approval",
+              reverse_fiscal_year=2025, reverse_fiscal_period=2)
+    assert _refused(d.before_submit)
+    assert d.docstatus == 0
+
+
+def test_a_submit_naming_a_later_open_regular_period_submits():
+    module, _ = _load()
+    d = _doc(module, status="Pending Approval",
+              reverse_fiscal_year=2025, reverse_fiscal_period=1)
+    d.before_submit()
+    assert d.status == "Approved"

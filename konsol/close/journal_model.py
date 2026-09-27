@@ -87,3 +87,52 @@ def balance_problem(total_debit, total_credit):
     if debit != credit:
         return f"The journal does not balance: debit {debit} vs credit {credit}."
     return None
+
+
+def reversal_pair_problem(reverse_year, reverse_period):
+    """None when both the reversal year and period are named, or neither is
+    (a blank Int reads as 0). Naming only one is refused (#305-D2-11)."""
+    ry = reverse_year or 0
+    rp = reverse_period or 0
+    if (ry == 0) != (rp == 0):
+        return "Name both the reversal year and period, or leave both blank."
+    return None
+
+
+def reversal_problem(fiscal_year, fiscal_period, reverse_year, reverse_period, period_rows):
+    """None when the named reversal period is fit to post into, or a
+    sentence naming the fix (#305-D2-11).
+
+    ``period_rows`` carry the keys of ``fiscal_calendar.fiscal_period_rows()``
+    (``status`` is effective: fiscal_status_model.effective_status).
+    """
+    pair_problem = reversal_pair_problem(reverse_year, reverse_period)
+    if pair_problem:
+        return pair_problem
+    ry = reverse_year or 0
+    rp = reverse_period or 0
+    if ry == 0 and rp == 0:
+        return None
+    row = next(
+        (r for r in period_rows
+         if int(r["fiscal_year"]) == ry and int(r["fiscal_period"]) == rp),
+        None,
+    )
+    if row is None:
+        return (
+            f"FY{ry} P{rp} is not a declared period; declare it, or name "
+            "another reversal period."
+        )
+    if row["period_type"] != "Regular":
+        return (
+            f"FY{ry} P{rp} is a {row['period_type']} period; a reversal "
+            "posts only into a Regular period."
+        )
+    if (ry, rp) <= (int(fiscal_year), int(fiscal_period)):
+        return (
+            f"FY{ry} P{rp} is not after this journal's period "
+            f"FY{fiscal_year} P{fiscal_period}."
+        )
+    if row["status"] != "Open":
+        return f"FY{ry} P{rp} is {row['status']}; name an Open period."
+    return None

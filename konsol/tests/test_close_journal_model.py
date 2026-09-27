@@ -76,6 +76,84 @@ def test_a_clean_journal_has_no_problems_at_all():
     assert problems == []
 
 
+def _period_row(fiscal_year, fiscal_period, period_type="Regular", status="Open"):
+    """A fiscal_calendar.fiscal_period_rows() row, minimal but with every key
+    reversal_problem might read."""
+    return {
+        "fiscal_year": fiscal_year,
+        "fiscal_period": fiscal_period,
+        "period_code": f"P{fiscal_period}",
+        "period_label": f"P{fiscal_period}",
+        "period_type": period_type,
+        "start_date": None,
+        "end_date": None,
+        "quarter": "",
+        "status": status,
+    }
+
+
+#: The journal's own period is FY2024 P12.
+_OWN = (2024, 12)
+_ROWS = [
+    _period_row(2024, 11, "Regular", "Open"),      # an earlier period
+    _period_row(2024, 12, "Regular", "Open"),       # the journal's own period
+    _period_row(2024, 13, "Closing", "Open"),       # a Closing period
+    _period_row(2025, 1, "Regular", "Open"),        # next year's P1: Regular + Open
+    _period_row(2025, 2, "Regular", "Closed"),      # a Closed target
+    _period_row(2025, 3, "Regular", "Locked"),       # a Locked target
+]
+
+
+def test_reversal_pair_problem_both_zero_is_none():
+    assert M.reversal_pair_problem(0, 0) is None
+
+
+def test_reversal_pair_problem_year_only_is_refused():
+    assert M.reversal_pair_problem(2025, 0) is not None
+
+
+def test_reversal_pair_problem_period_only_is_refused():
+    assert M.reversal_pair_problem(0, 1) is not None
+
+
+def test_reversal_problem_both_zero_is_none():
+    assert M.reversal_problem(*_OWN, 0, 0, _ROWS) is None
+
+
+def test_reversal_problem_an_undeclared_period_is_refused():
+    problem = M.reversal_problem(*_OWN, 2099, 1, _ROWS)
+    assert problem is not None and "declared" in problem
+
+
+def test_reversal_problem_a_closing_period_is_refused():
+    problem = M.reversal_problem(*_OWN, 2024, 13, _ROWS)
+    assert problem is not None and "Closing" in problem
+
+
+def test_reversal_problem_the_journals_own_period_is_refused():
+    problem = M.reversal_problem(*_OWN, *_OWN, _ROWS)
+    assert problem is not None and "after" in problem
+
+
+def test_reversal_problem_an_earlier_period_is_refused():
+    problem = M.reversal_problem(*_OWN, 2024, 11, _ROWS)
+    assert problem is not None and "after" in problem
+
+
+def test_reversal_problem_a_closed_target_is_refused():
+    problem = M.reversal_problem(*_OWN, 2025, 2, _ROWS)
+    assert problem is not None and "Closed" in problem
+
+
+def test_reversal_problem_a_locked_target_is_refused():
+    problem = M.reversal_problem(*_OWN, 2025, 3, _ROWS)
+    assert problem is not None and "Locked" in problem
+
+
+def test_reversal_problem_next_years_open_regular_period_is_none():
+    assert M.reversal_problem(*_OWN, 2025, 1, _ROWS) is None
+
+
 def test_module_imports_no_frappe():
     with open(_PATH) as fh:
         tree = ast.parse(fh.read())
