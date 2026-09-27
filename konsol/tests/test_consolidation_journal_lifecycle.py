@@ -362,3 +362,57 @@ def test_a_submit_naming_a_later_open_regular_period_submits():
               reverse_fiscal_year=2025, reverse_fiscal_period=1)
     d.before_submit()
     assert d.status == "Approved"
+
+
+# --- J04b: reversing a journal is refused unless its reversal period is Open
+
+def test_reversing_with_a_closed_reversal_period_is_refused_naming_it():
+    module, _ = _load(period_rows=[
+        _period_row(2024, 12, "Regular", "Open"),
+        _period_row(2025, 1, "Regular", "Closed"),
+    ])
+    d = _doc(module, status="Approved", docstatus=1,
+              reverse_fiscal_year=2025, reverse_fiscal_period=1)
+    try:
+        d.before_cancel()
+    except Refused as e:
+        assert "2025" in str(e) and "1" in str(e) and "Closed" in str(e), str(e)
+    else:
+        raise AssertionError("cancel with a Closed reversal period was not refused")
+    assert d.status == "Approved"
+
+
+def test_reversing_with_a_locked_reversal_period_is_refused_naming_it():
+    module, _ = _load(period_rows=[
+        _period_row(2024, 12, "Regular", "Open"),
+        _period_row(2025, 1, "Regular", "Locked"),
+    ])
+    d = _doc(module, status="Approved", docstatus=1,
+              reverse_fiscal_year=2025, reverse_fiscal_period=1)
+    try:
+        d.before_cancel()
+    except Refused as e:
+        assert "2025" in str(e) and "1" in str(e) and "Locked" in str(e), str(e)
+    else:
+        raise AssertionError("cancel with a Locked reversal period was not refused")
+    assert d.status == "Approved"
+
+
+def test_reversing_with_an_open_reversal_period_passes():
+    module, _ = _load(period_rows=[
+        _period_row(2024, 12, "Regular", "Open"),
+        _period_row(2025, 1, "Regular", "Open"),
+    ])
+    d = _doc(module, status="Approved", docstatus=1,
+              reverse_fiscal_year=2025, reverse_fiscal_period=1)
+    d.before_cancel()
+    assert d.status == "Reversed"
+
+
+def test_reversing_a_journal_with_no_reversal_period_is_unaffected():
+    """A plain journal (no reversal period named) must not be refused by
+    this rule (#305-P25's failure path)."""
+    module, _ = _load()
+    d = _doc(module, status="Approved", docstatus=1)
+    d.before_cancel()
+    assert d.status == "Reversed"
