@@ -23,6 +23,7 @@ def _facts(**over):
         "frequency_missing": [],
         "ownership_missing": [],
         "accountants_without_entities": [],
+        "policy_gaps": [],
     }
     facts.update(over)
     return facts
@@ -62,12 +63,20 @@ def test_empty_lists_give_no_item():
     assert ids == []
 
 
+_BOTH_POLICY_GAPS = [
+    {"code": "self_approval_undeclared", "message": "Declare the self-approval policy."},
+    {"code": "rate_move_undeclared", "message": "Declare the rate move threshold."},
+]
+
+
 def test_every_gap_present_ids_stable_and_ordered():
     facts = _facts(first_close=None, chart_published=False, frequency_missing=["FR01"],
-                   ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"])
+                   ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
+                   policy_gaps=_BOTH_POLICY_GAPS)
     items = M.setup_gap_items(facts)
     assert [i["id"] for i in items] == [
-        "gap:first_close", "gap:chart", "gap:frequency", "gap:ownership", "gap:accountants"]
+        "gap:first_close", "gap:self_approval", "gap:rate_move", "gap:chart", "gap:frequency",
+        "gap:ownership", "gap:accountants"]
     # Same input, same output: ids never depend on order or content.
     assert M.setup_gap_items(dict(facts)) == items
 
@@ -75,8 +84,11 @@ def test_every_gap_present_ids_stable_and_ordered():
 def test_desk_actions_point_at_configuration():
     items = _by_id(M.setup_gap_items(_facts(
         first_close=None, chart_published=False, frequency_missing=["FR01"],
-        ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"])))
+        ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
+        policy_gaps=_BOTH_POLICY_GAPS)))
     assert items["gap:first_close"]["action"] == {"desk": "/app/close-settings"}
+    assert items["gap:self_approval"]["action"] == {"desk": "/app/close-settings"}
+    assert items["gap:rate_move"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:chart"]["action"] == {"desk": "/app/main-account"}
     assert items["gap:frequency"]["action"] == {"desk": "/app/entity"}
     assert items["gap:ownership"]["action"] == {"desk": "/app/ownership-period"}
@@ -88,11 +100,39 @@ def test_desk_actions_point_at_configuration():
 def test_every_gap_is_blocking_with_an_owner_role():
     items = M.setup_gap_items(_facts(
         first_close=None, chart_published=False, frequency_missing=["FR01"],
-        ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"]))
+        ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
+        policy_gaps=_BOTH_POLICY_GAPS))
     for item in items:
         assert item["kind"] == "blocking"
         assert item["owner"] in ("EPM Admin", "System Manager")
         assert item["title"] and item["detail"]
+
+
+def test_a_policy_gap_is_one_item_with_owner_action_and_no_since():
+    items = M.setup_gap_items(_facts(
+        policy_gaps=[{"code": "self_approval_undeclared", "message": "Declare it in Close Settings."}]))
+    assert [i["id"] for i in items] == ["gap:self_approval"]
+    item = items[0]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["since"] is None
+    assert item["detail"] == "Declare it in Close Settings."
+    assert item["title"] == "Self-approval policy not declared"
+
+
+def test_the_rate_move_gap_alone_is_one_item():
+    items = M.setup_gap_items(_facts(
+        policy_gaps=[{"code": "rate_move_undeclared", "message": "Declare the rate move threshold."}]))
+    assert [i["id"] for i in items] == ["gap:rate_move"]
+    assert items[0]["title"] == "Rate move threshold not declared"
+    assert items[0]["detail"] == "Declare the rate move threshold."
+
+
+def test_missing_policy_gaps_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["policy_gaps"]
+    with pytest.raises(ValueError, match="policy_gaps"):
+        M.setup_gap_items(facts)
 
 
 def test_first_close_missing_is_an_item_even_when_everything_else_is_fine():

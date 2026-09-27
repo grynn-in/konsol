@@ -3,11 +3,15 @@
 ``get_my_work`` (GET) reads the site and passes it through the pure models:
 
 - setup gaps (A14 ``mywork_model.setup_gap_items``):
-  the first close period (Close Settings; 0 read back = undeclared), whether
-  the group chart is published, in-scope entities with a blank reporting
-  frequency, Active leaf entities with no submitted ownership period covering
-  the start of any open period (A56, below), and enabled Entity Accountants
-  with no Entity user permission;
+  the first close period (Close Settings; 0 read back = undeclared), the two
+  konsol#305-D2-3/D2-9 policy gaps (self-approval, rate move; P02
+  ``close_policy_model.policy_gaps``, P06), whether the group chart is
+  published, in-scope entities with a blank reporting frequency, Active leaf
+  entities with no submitted ownership period covering the start of any open
+  period (A56, below), and enabled Entity Accountants with no Entity user
+  permission. The Entity Accountant persona is shown none of the policy gaps:
+  they cannot declare Close Settings, and neither policy touches a trial
+  balance (mirrors ``accountants_without_entities``);
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -73,7 +77,8 @@ from datetime import date, datetime
 import frappe
 
 from konsol import entity_permissions, fiscal_calendar, group_chart, group_rates
-from konsol.close import checks_model, mywork_model, period_model, signoff_gate, signoff_model
+from konsol.close import (checks_model, close_policy_model, mywork_model, period_model,
+                          signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
@@ -107,6 +112,13 @@ def _first_close():
         frappe.db.get_single_value("Close Settings", "first_close_fiscal_year"),
         frappe.db.get_single_value("Close Settings", "first_close_fiscal_period"),
     ))
+
+
+def _policies():
+    return (
+        frappe.db.get_single_value("Close Settings", "self_approval"),
+        frappe.db.get_single_value("Close Settings", "rate_move_threshold"),
+    )
 
 
 # --- setup gaps ----------------------------------------------------------------
@@ -200,6 +212,7 @@ def _gap_facts(first_close, persona, allowed):
         "frequency_missing": sorted(frequency_missing) if group else _mine(frequency_missing, allowed),
         "ownership_missing": sorted(ownership_missing) if group else _mine(ownership_missing, allowed),
         "accountants_without_entities": _accountants_without_entities() if group else [],
+        "policy_gaps": close_policy_model.policy_gaps(*_policies()) if group else [],
     }, uncovered
 
 

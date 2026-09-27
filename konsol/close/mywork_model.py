@@ -5,6 +5,9 @@ Imports nothing from frappe or konsol; the caller gathers ``facts``:
 - ``first_close``: the first close period ``(fiscal_year, fiscal_period)``
   from Close Settings, or None. A key with a 0 part is unset (Close Settings
   Int fields read back as 0) and counts as None.
+- ``policy_gaps``: the ``close_policy_model.policy_gaps(...)`` list (konsol#305
+  P02): ``{"code", "message"}`` for each undeclared policy (self-approval,
+  rate move), in that order. ``[]`` when both are declared.
 - ``chart_published``: bool; False when ``group_chart.chart_accounts()`` is
   empty.
 - ``frequency_missing``: in-scope entities with no ``reporting_frequency``.
@@ -27,9 +30,16 @@ Rules:
   not sent, never an invented age.
 """
 
-GAPS = ("first_close", "chart", "frequency", "ownership", "accountants")
+GAPS = ("first_close", "self_approval", "rate_move", "chart", "frequency", "ownership",
+        "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
-             "accountants_without_entities")
+             "accountants_without_entities", "policy_gaps")
+
+#: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
+_POLICY_GAPS = {
+    "self_approval_undeclared": ("self_approval", "Self-approval policy not declared"),
+    "rate_move_undeclared": ("rate_move", "Rate move threshold not declared"),
+}
 
 
 def _declared(first_close):
@@ -70,6 +80,9 @@ def setup_gap_items(facts):
         items.append(_item("first_close", "First close period not declared",
                            "Set the first close period in Close Settings.", "EPM Admin",
                            "/app/close-settings"))
+    for gap in facts["policy_gaps"] or ():
+        gap_id, title = _POLICY_GAPS[gap["code"]]
+        items.append(_item(gap_id, title, gap["message"], "EPM Admin", "/app/close-settings"))
     if not facts["chart_published"]:
         items.append(_item("chart", "Group chart not published",
                            "Publish the Main Accounts of the group chart.", "EPM Admin",

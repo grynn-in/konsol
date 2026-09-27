@@ -30,7 +30,8 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO_DIR = os.path.dirname(APP_DIR)
 API_PY = os.path.join(APP_DIR, "close", "mywork_api.py")
 NAV_JS = os.path.join(REPO_DIR, "close-ui", "src", "nav.js")
-REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model")
+REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model",
+               "close_policy_model")
 
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 TODAY = date(2025, 9, 15)
@@ -81,6 +82,7 @@ class _Site:
         self.user = user
         self.allowed = allowed  # allowed_entity_codes(): None = unrestricted
         self.first_close = (2025, 7)
+        self.policies = ("Blocked", 50)
         self.rows = _rows()
         self.entities = [_entity("ZZA", ""), _entity("ZZB", ""), _entity("ZZC"), _entity("ZZD")]
         self.owners = [_owner("ZZA"), _owner("ZZB"), _owner("ZZD")]  # ZZC uncovered
@@ -161,7 +163,9 @@ def _frappe(site):
     def get_single_value(doctype, field):
         assert doctype == "Close Settings", doctype
         fy, fp = site.first_close
-        return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp}[field]
+        self_approval, rate_move_threshold = site.policies
+        return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp,
+                "self_approval": self_approval, "rate_move_threshold": rate_move_threshold}[field]
 
     def forbidden(*a, **k):
         raise AssertionError("get_my_work must not write")
@@ -501,6 +505,38 @@ def test_period_with_no_end_date_raises_and_is_never_given_today():
     message = str(info.value)
     assert "end date" in message, message
     assert "P07" in message, message
+
+
+# --- konsol#305 P02/P06: the undeclared policies are setup-gap items -----------
+
+
+def test_undeclared_policies_are_gap_items_for_the_close_lead():
+    site = _Site()
+    site.policies = ("", 0)
+    result = _call(site)
+    ids = _ids(result)
+    assert "gap:self_approval" in ids and "gap:rate_move" in ids
+    for gap in ("gap:self_approval", "gap:rate_move"):
+        item = next(i for i in result["items"] if i["id"] == gap)
+        assert item["owner"] == "EPM Admin"
+        assert item["action"] == {"desk": "/app/close-settings"}
+    _assert_counts_add_up(result, "close_lead")
+
+
+def test_declared_policies_give_no_policy_gap_items():
+    site = _Site()
+    site.policies = ("Blocked", 50)
+    ids = _ids(_call(site))
+    assert "gap:self_approval" not in ids and "gap:rate_move" not in ids
+
+
+def test_entity_accountant_never_sees_the_policy_gaps():
+    # The Entity Accountant cannot declare Close Settings, and neither policy
+    # touches a trial balance (mirrors gap:accountants).
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.policies = ("", 0)
+    ids = _ids(_call(site))
+    assert "gap:self_approval" not in ids and "gap:rate_move" not in ids
 
 
 # --- A54: entities_assigned for the Entity Accountant ---------------------------
