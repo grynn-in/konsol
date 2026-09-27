@@ -104,6 +104,15 @@ def test_an_adjustment_is_reversed_only_in_an_open_period():
     raise AssertionError("ConsolidationAdjustment not found")
 
 
+def test_a_journal_is_reversed_only_in_an_open_period():
+    for path, cls in _controllers():
+        if cls.name == "ConsolidationJournal":
+            fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel")
+            assert "assert_open" in ast.unparse(fn)
+            return
+    raise AssertionError("ConsolidationJournal not found")
+
+
 def test_workflows_are_installed_on_fresh_and_existing_sites_never_overwritten():
     with open(os.path.join(APP_DIR, "hooks.py")) as f:
         hooks = f.read()
@@ -160,6 +169,41 @@ def test_an_adjustment_cannot_skip_the_workflow_or_carry_an_approval_into_a_draf
         assert "on_trash" not in methods
         return
     raise AssertionError("ConsolidationAdjustment not found")
+
+
+def test_a_journal_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
+    """konsol#305 J06: the journal keeps the adjustment's guards, now that
+    its own workflow is installed."""
+    for path, cls in _controllers():
+        if cls.name != "ConsolidationJournal":
+            continue
+        methods = {n.name: ast.unparse(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
+        assert "approved_by = self.approved_at = None" in methods["before_insert"]
+        assert "_states(0)" in methods["validate"] and "frappe.throw" in methods["validate"]
+        for hook, docstatus in (("before_submit", 1), ("before_cancel", 2)):
+            assert f"_states({docstatus})" in methods[hook] and "get_workflow_name" in methods[hook], hook
+        # after_delete drives the warehouse sync (#120); on_trash would re-send the row
+        assert "on_trash" not in methods
+        return
+    raise AssertionError("ConsolidationJournal not found")
+
+
+def test_the_journal_workflow_is_installed_and_mirrors_the_adjustment():
+    """konsol#305 J06 (#305-D2-1, R1): the journal takes the adjustment's
+    workflow, states, roles and all. allow_self_approval stays 1: R5 is the
+    runtime hook's (konsol.close.self_approval), not the JSON's."""
+    import re
+    with open(os.path.join(APP_DIR, "workflows.py")) as f:
+        installed = re.findall(r'"([^"]+)"', f.read().split("INSTALLED = (")[1].split(")")[0])
+    assert "Consolidation Journal" in installed, installed
+    by_type = {wf["document_type"]: wf for _, wf in _workflows()}
+    assert "Consolidation Journal" in by_type, "no consolidation_journal_workflow.json"
+    journal, adjustment = by_type["Consolidation Journal"], by_type["Consolidation Adjustment"]
+    assert journal["name"] == journal["workflow_name"] == "Consolidation Journal Workflow"
+    assert journal["workflow_state_field"] == "status" and journal["is_active"] == 1
+    assert journal["states"] == adjustment["states"]
+    assert journal["transitions"] == adjustment["transitions"]
+    assert all(t["allow_self_approval"] == 1 for t in journal["transitions"])
 
 
 def test_a_doctype_that_grants_amend_can_be_amended():
