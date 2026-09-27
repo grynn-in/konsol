@@ -164,8 +164,30 @@ class ConsolidationJournal(Document):
 
     def before_cancel(self):
         """Reverse only while the period is open. After close, a correction
-        is a NEW journal in an open period."""
+        is a NEW journal in an open period.
+
+        A named reversal period (#305-P25) must also still be Open: the
+        reversal rows vanish with the original (#305-D2-2), so cancelling
+        once that period has closed or been signed would change its numbers
+        with no document posted there. A journal with no reversal period is
+        unaffected."""
         assert_open(self.fiscal_year, self.fiscal_period, action="reverse a consolidation journal")
+        reverse_year = cint(self.get("reverse_fiscal_year"))
+        reverse_period = cint(self.get("reverse_fiscal_period"))
+        if reverse_year or reverse_period:
+            # Imported lazily, same as before_submit: needs a live site.
+            from konsol.fiscal_calendar import fiscal_period_rows
+            row = next(
+                (r for r in fiscal_period_rows()
+                 if int(r["fiscal_year"]) == reverse_year and int(r["fiscal_period"]) == reverse_period),
+                None,
+            )
+            status = row["status"] if row else "not declared"
+            if status != "Open":
+                frappe.throw(
+                    f"FY{reverse_year} P{reverse_period} is {status}; reopen "
+                    "it before reversing this journal."
+                )
         if get_workflow_name(self.doctype):
             if self.status not in _states(2):
                 frappe.throw(_("Reverse the journal through its workflow."))
