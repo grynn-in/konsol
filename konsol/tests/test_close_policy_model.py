@@ -108,6 +108,75 @@ def test_approval_doctypes_holds_the_seven():
     }
 
 
+# --- self_approval_problem -------------------------------------------------
+
+def test_a_different_approver_passes():
+    """Rule 1: user != owner. This never needs a policy at all."""
+    assert M.self_approval_problem("Blocked", "alice", "bob", "IC Balance", "ICB-1", None, None) is None
+
+
+def test_an_exempt_self_approval_passes_even_under_blocked():
+    assert M.self_approval_problem("Blocked", "alice", "alice", "Ownership Period", "OP-1", None, "derived") is None
+    assert M.self_approval_problem("Blocked", "alice", "alice", "IC Balance", "ICB-1", None, "system") is None
+
+
+def test_undeclared_policy_names_the_close_settings_gap_and_the_document():
+    msg = M.self_approval_problem("", "alice", "alice", "IC Balance", "ICB-1", None, None)
+    assert msg.startswith("alice prepared IC Balance ICB-1; ")
+    assert "Close Settings" in msg
+
+
+def test_none_policy_is_also_undeclared():
+    msg = M.self_approval_problem(None, "alice", "alice", "IC Balance", "ICB-1", None, None)
+    assert msg.startswith("alice prepared IC Balance ICB-1; ")
+
+
+def test_blocked_refuses_naming_the_preparer_and_document():
+    msg = M.self_approval_problem("Blocked", "alice", "alice", "IC Balance", "ICB-1", None, None)
+    assert msg == (
+        "Close Settings blocks self-approval: alice prepared IC Balance ICB-1, "
+        "so another Close Lead must approve it."
+    )
+
+
+def test_blocked_refuses_even_when_a_reason_is_supplied():
+    """This is the failure path: a reason never overrides Blocked."""
+    msg = M.self_approval_problem("Blocked", "alice", "alice", "IC Balance", "ICB-1", "a good reason", None)
+    assert msg == (
+        "Close Settings blocks self-approval: alice prepared IC Balance ICB-1, "
+        "so another Close Lead must approve it."
+    )
+
+
+def test_allowed_with_reason_and_a_blank_reason_refuses():
+    msg = M.self_approval_problem("Allowed with reason", "alice", "alice", "IC Balance", "ICB-1", "", None)
+    assert msg == (
+        "Close Settings allows self-approval only with a reason: approve IC Balance ICB-1 "
+        "through konsol.close.approval_api.approve with a reason, or ask another Close Lead to approve it."
+    )
+
+
+def test_allowed_with_reason_and_a_whitespace_only_reason_refuses():
+    """A whitespace-only reason counts as blank."""
+    msg = M.self_approval_problem("Allowed with reason", "alice", "alice", "IC Balance", "ICB-1", "   ", None)
+    assert msg is not None
+    assert "only with a reason" in msg
+
+
+def test_allowed_with_reason_and_a_reason_passes():
+    assert M.self_approval_problem(
+        "Allowed with reason", "alice", "alice", "IC Balance", "ICB-1", "moved because of X", None
+    ) is None
+
+
+# --- self_approval_note ------------------------------------------------------
+
+def test_self_approval_note_names_the_user_policy_and_reason():
+    assert M.self_approval_note("Allowed with reason", "alice", "moved because of X") == (
+        "Self-approved by alice under Close Settings (Allowed with reason): moved because of X"
+    )
+
+
 # --- module contract --------------------------------------------------------
 
 def test_module_imports_no_frappe():
