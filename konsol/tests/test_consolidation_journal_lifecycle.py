@@ -67,8 +67,33 @@ def _get_value_stub(root, nodes, accounts):
     return get_value
 
 
+def _period_row(fiscal_year, fiscal_period, period_type="Regular", status="Open"):
+    """A fiscal_calendar.fiscal_period_rows() row (konsol#305 J04a)."""
+    return {
+        "fiscal_year": fiscal_year,
+        "fiscal_period": fiscal_period,
+        "period_code": f"P{fiscal_period}",
+        "period_label": f"P{fiscal_period}",
+        "period_type": period_type,
+        "start_date": None,
+        "end_date": None,
+        "quarter": "",
+        "status": status,
+    }
+
+
+#: The journal's own period (from _doc's defaults) is FY2024 P12; a later
+#: Regular period, Open and Closed, for the reversal-check tests.
+DEFAULT_PERIOD_ROWS = [
+    _period_row(2024, 12, "Regular", "Open"),
+    _period_row(2025, 1, "Regular", "Open"),
+    _period_row(2025, 2, "Regular", "Closed"),
+]
+
+
 def _load(states=None, period_open=True, declared=True,
-          root=DEFAULT_ROOT, nodes=DEFAULT_NODES, accounts=DEFAULT_ACCOUNTS):
+          root=DEFAULT_ROOT, nodes=DEFAULT_NODES, accounts=DEFAULT_ACCOUNTS,
+          period_rows=DEFAULT_PERIOD_ROWS):
     """Import the controller with frappe stubbed. ``states`` is the active
     workflow's [(state, doc_status)], or None for no workflow."""
     checked = []
@@ -95,7 +120,7 @@ def _load(states=None, period_open=True, declared=True,
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
-        "konsol", "konsol.clickhouse", "konsol.period_status")}
+        "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.fiscal_calendar")}
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
@@ -112,6 +137,7 @@ def _load(states=None, period_open=True, declared=True,
     mods["konsol.clickhouse"].sync_doctype = lambda *a: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_declared = assert_declared
+    mods["konsol.fiscal_calendar"].fiscal_period_rows = lambda: list(period_rows)
 
     # journal_model.py is pure (J01) and loaded by path, exactly like
     # test_close_journal_model.py, then wired in as konsol.close.journal_model
@@ -143,7 +169,8 @@ def _load(states=None, period_open=True, declared=True,
 def _doc(module, **fields):
     base = dict(doctype="Consolidation Journal", status="Draft", docstatus=0, fiscal_year=2024,
                 fiscal_period=12, approved_by=None, approved_at=None,
-                consolidation_group=DEFAULT_GROUP, lines=list(DEFAULT_LINES))
+                consolidation_group=DEFAULT_GROUP, lines=list(DEFAULT_LINES),
+                reverse_fiscal_year=0, reverse_fiscal_period=0)
     return module.ConsolidationJournal(**dict(base, **fields))
 
 
@@ -300,3 +327,26 @@ def test_a_valid_journal_sets_totals_and_currency():
     d = _doc(module)
     d.validate()
     assert (d.total_debit, d.total_credit, d.currency) == (100.0, 100.0, "USD")
+
+
+# --- J04a: the journal names its reversal period; approval checks it ------
+
+def test_a_save_naming_only_the_reversal_year_is_refused():
+    module, _ = _load()
+    assert _refused(_doc(module, reverse_fiscal_year=2025).validate)
+
+
+def test_a_submit_naming_a_closed_period_is_refused_and_docstatus_stays_0():
+    module, _ = _load()
+    d = _doc(module, status="Pending Approval",
+              reverse_fiscal_year=2025, reverse_fiscal_period=2)
+    assert _refused(d.before_submit)
+    assert d.docstatus == 0
+
+
+def test_a_submit_naming_a_later_open_regular_period_submits():
+    module, _ = _load()
+    d = _doc(module, status="Pending Approval",
+              reverse_fiscal_year=2025, reverse_fiscal_period=1)
+    d.before_submit()
+    assert d.status == "Approved"
