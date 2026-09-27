@@ -177,6 +177,68 @@ def test_self_approval_note_names_the_user_policy_and_reason():
     )
 
 
+# --- approval_build_reason ---------------------------------------------------
+
+def test_on_submit_by_epm_admin_gives_a_reason():
+    msg = M.approval_build_reason(
+        "Historical Equity Rate", "HER-1", "on_submit", "alice", ["EPM Admin"]
+    )
+    assert msg == "Auto-approved: alice approved Historical Equity Rate HER-1 (konsol#305-D2-10)."
+
+
+def test_on_submit_by_system_manager_gives_a_reason():
+    msg = M.approval_build_reason(
+        "Historical Equity Rate", "HER-1", "on_submit", "alice", ["System Manager"]
+    )
+    assert msg == "Auto-approved: alice approved Historical Equity Rate HER-1 (konsol#305-D2-10)."
+
+
+def test_on_cancel_is_not_an_approval():
+    """This is the failure path: a Reverse (cancel) never auto-approves (P22)."""
+    assert M.approval_build_reason(
+        "Historical Equity Rate", "HER-1", "on_cancel", "alice", ["EPM Admin"]
+    ) is None
+
+
+def test_on_update_is_not_an_approval():
+    assert M.approval_build_reason(
+        "Historical Equity Rate", "HER-1", "on_update", "alice", ["EPM Admin"]
+    ) is None
+
+
+def test_trial_balance_submission_is_never_an_approval():
+    """An Entity Accountant's own submit, not an approval of someone else's
+    work (excluded from APPROVAL_DOCTYPES above; P22)."""
+    assert M.approval_build_reason(
+        "Trial Balance Submission", "TBS-1", "on_submit", "alice", ["EPM Admin"]
+    ) is None
+
+
+def test_consolidation_group_save_is_not_an_approval():
+    """Consolidation Group is a save, not a submit, and is not in
+    APPROVAL_DOCTYPES (P22)."""
+    assert M.approval_build_reason(
+        "Consolidation Group", "ECL_GROUP", "on_submit", "alice", ["EPM Admin"]
+    ) is None
+
+
+def test_an_epm_analyst_alone_gives_no_reason():
+    """This is the failure path: roles must meet APPROVER_ROLES."""
+    assert M.approval_build_reason(
+        "Historical Equity Rate", "HER-1", "on_submit", "alice", ["EPM Analyst"]
+    ) is None
+
+
+def test_administrator_holding_every_role_counts_as_an_approval():
+    """Administrator holds every role via frappe.get_roles; there is no
+    exemption (accepted 27 Sep)."""
+    msg = M.approval_build_reason(
+        "Historical Equity Rate", "HER-1", "on_submit", "Administrator",
+        ["EPM Admin", "EPM Analyst", "System Manager", "Entity Accountant", "EPM User"],
+    )
+    assert msg == "Auto-approved: Administrator approved Historical Equity Rate HER-1 (konsol#305-D2-10)."
+
+
 # --- module contract --------------------------------------------------------
 
 def test_module_imports_no_frappe():
