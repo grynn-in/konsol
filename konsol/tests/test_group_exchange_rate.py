@@ -1095,7 +1095,7 @@ def test_rate_gate_lock_only_for_close():
     home_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
     assert home_queries, "expected a read of Group Exchange Rate for the approved keys"
     assert not any("LOCK IN SHARE MODE" in q for q in home_queries), \
-        "rate_gate's default (home_api's call) must not take a row lock: " + repr(home_queries)
+        "rate_gate's default (close.mywork_api's call) must not take a row lock: " + repr(home_queries)
 
     record["sql"] = []
     assert not _refused(r.assert_rates_complete, 2024, 3)

@@ -321,13 +321,7 @@ def test_no_zero_count_allow_entries():
 # "fourteen" periods, "1 to 12") or treating an absent close state as Open.
 # The declared calendar means a period only has a state when the server says
 # it is declared; the UI's words must say that, not guess it.
-_KONSOL_EXEC_SRC = os.path.join(os.path.dirname(APP_DIR), "konsol-exec", "src")
-_STALE_COPY_FILES = {
-    "domain.js": os.path.join(_KONSOL_EXEC_SRC, "domain.js"),
-    "SignoffPanel.vue": os.path.join(_KONSOL_EXEC_SRC, "components", "SignoffPanel.vue"),
-    "Navigator.vue": os.path.join(_KONSOL_EXEC_SRC, "components", "Navigator.vue"),
-    "UploadView.vue": os.path.join(_KONSOL_EXEC_SRC, "components", "UploadView.vue"),
-}
+_CLOSE_UI_SRC = os.path.join(os.path.dirname(APP_DIR), "close-ui", "src")
 _STALE_COPY_PHRASES = (
     "no period status record",
     "fourteen",
@@ -335,19 +329,32 @@ _STALE_COPY_PHRASES = (
 )
 
 
+def _close_ui_source_files():
+    """Every non-test .js/.vue file under close-ui/src (konsol#305 R01: the
+    check moved here from the deleted konsol-exec/src)."""
+    out = {}
+    for root, _dirs, files in os.walk(_CLOSE_UI_SRC):
+        for name in files:
+            if name.endswith(".test.mjs") or not name.endswith((".js", ".vue")):
+                continue
+            path = os.path.join(root, name)
+            out[os.path.relpath(path, _CLOSE_UI_SRC)] = path
+    return out
+
+
 def test_no_absent_means_open_copy():
-    """None of the four SPA files may describe the old implied calendar, or
+    """No close-ui source file may describe the old implied calendar, or
     fall back an absent/undeclared period status to Open."""
+    files = _close_ui_source_files()
+    assert files, f"no close-ui source files found under {_CLOSE_UI_SRC}"
     offenders = []
-    texts = {}
-    for label, path in _STALE_COPY_FILES.items():
-        assert os.path.exists(path), f"{label}: not found at {path}"
+    for label, path in sorted(files.items()):
         with open(path, encoding="utf-8") as f:
-            texts[label] = f.read()
-        lower = texts[label].lower()
+            text = f.read()
+        lower = text.lower()
         for phrase in _STALE_COPY_PHRASES:
             if phrase in lower:
                 offenders.append(f"{label}: contains {phrase!r}")
-    if '|| "Open"' in texts["SignoffPanel.vue"] or "|| 'Open'" in texts["SignoffPanel.vue"]:
-        offenders.append('SignoffPanel.vue: status falls back to || "Open"')
+        if '|| "Open"' in text or "|| 'Open'" in text:
+            offenders.append(f'{label}: status falls back to || "Open"')
     assert not offenders, "stale absent-means-open copy:\n" + "\n".join(offenders)

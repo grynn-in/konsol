@@ -105,3 +105,31 @@ def test_no_consolidation_currency_setting():
         src = f.read()
     assert "get_consolidation_currency" not in src
     assert "DEFAULT_CONSOLIDATION_CURRENCY" not in src
+
+
+def test_no_first_close_fields_in_epm_settings():
+    """konsol#305 A36b: A06 put the first close period on EPM Settings
+    (System Manager only), then A36 proved live that field-level permlevel
+    write cannot let the Close Lead save just those fields — Frappe's base
+    write check reads permlevel-0 rows only. A36a moved the fields to their
+    own doctype, Close Settings (EPM Admin + System Manager write), so this
+    reverts A06's additions here."""
+    path = os.path.join(
+        APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.json"
+    )
+    with open(path) as f:
+        doc = json.load(f)
+    names = {f["fieldname"] for f in doc["fields"]}
+    assert not names & {
+        "close_order_section", "first_close_fiscal_year", "first_close_fiscal_period",
+    }
+    assert "close_order_section" not in doc["field_order"]
+    assert "first_close_fiscal_year" not in doc["field_order"]
+    assert "first_close_fiscal_period" not in doc["field_order"]
+
+    with open(os.path.join(
+        APP_DIR, "pipeline", "doctype", "epm_settings", "epm_settings.py"
+    )) as f:
+        src = f.read()
+    assert "validate_first_close_period" not in src
+    assert "first_close_fiscal_year" not in src

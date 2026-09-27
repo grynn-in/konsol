@@ -39,9 +39,11 @@ refuses the file, since one file holds one basis. A blank cell is "not given".
 """
 
 import csv
+import importlib.util
 import io
 import json
 import math
+import os
 import uuid
 
 import frappe
@@ -81,9 +83,13 @@ def parse_tb_csv(text):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, description,
-    partner_data_area_id, amount_basis}; the partner and the basis are ''
-    when the file has no such column or the cell is blank. The basis is
-    returned as written: validate() judges it (konsol.tb_basis_model).
+    partner_data_area_id, amount_basis, line}; the partner and the basis are
+    '' when the file has no such column or the cell is blank. The basis is
+    returned as written: validate() judges it (konsol.tb_basis_model). ``line``
+    is the physical line the row came from (``reader.line_num``, konsol#305
+    A38): csv.DictReader skips blank lines and a quoted field can span lines,
+    so counting data rows (``index + 2``) drifts from the file's own line
+    numbers whenever either happens.
     Raises ValueError with a human-readable message on structural problems —
     a missing header, a non-numeric amount, a blank account. Business
     validation (balance, duplicates, chart membership) is validate_tb_rows()'s
@@ -110,7 +116,11 @@ def parse_tb_csv(text):
         )
 
     rows = []
-    for lineno, raw in enumerate(reader, start=2):
+    for raw in reader:
+        # reader.line_num is the physical line of the row just read (konsol#305
+        # A38): unlike enumerate(reader, start=2), it stays correct across a
+        # blank line DictReader skipped or a quoted field that spanned lines.
+        lineno = reader.line_num
         # csv.DictReader parks surplus cells under the None restkey as a LIST;
         # without this check a stray trailing comma becomes an AttributeError
         # deep in the strip() below instead of a readable message.
@@ -152,6 +162,7 @@ def parse_tb_csv(text):
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
             BASIS: item.get(BASIS, ""),
+            "line": lineno,
         })
     if not rows:
         raise ValueError("The file has a header but no data rows")
@@ -168,25 +179,63 @@ NO_CHART = ("No group chart is published yet: upload and publish one (Main Accou
             "before submitting trial balances")
 
 
+def _load_tb_model():
+    """konsol/close/tb_model.py, loaded by path: it is pure, and the host tests
+    load this controller under a stub ``konsol`` package that has no ``close``."""
+    app_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    spec = importlib.util.spec_from_file_location(
+        "konsol_tbs_close_tb_model", os.path.join(app_dir, "close", "tb_model.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: konsol#305 A35 (decision P1): the per-line checker is the one rule set; the
+#: file-level strings below are only its wording for a whole file.
+_tb_model = _load_tb_model()
+check_rows = _tb_model.check_rows
+
+#: Row problems worded per file below; any other row problem is reported with its line.
+_FILE_WORDED = frozenset({
+    _tb_model.DUPLICATE_ROW, _tb_model.SELF_PARTNER, _tb_model.UNKNOWN_PARTNER,
+    _tb_model.NEGATIVE_AMOUNT, _tb_model.HEADING_ACCOUNT, _tb_model.CLOSED_ACCOUNT,
+    _tb_model.UNKNOWN_ACCOUNT,
+    # the amount basis is judged once, by validate() against the form (basis_problems)
+    _tb_model.AMOUNT_BASIS,
+})
+
+
+def _flagged(result, code):
+    """(row, problem) for every row of a check_rows result with a problem of ``code``."""
+    return [(row, p) for row in result["rows"] for p in row["problems"] if p["code"] == code]
+
+
+def _chart_messages(result, chart):
+    """The file-level wording of check_rows' account problems (konsol#182)."""
+    if not chart:
+        return [NO_CHART]
+    out = []
+    for code in sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.HEADING_ACCOUNT)}):
+        out.append(f"{code} is a heading in the group chart; post to the accounts under it.")
+    closed = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.CLOSED_ACCOUNT)})
+    if closed:
+        out.append(f"Not open for posting in the group chart (is_posting is off): {', '.join(closed)}. "
+                   "Post to another account, or ask the Close Lead to open it.")
+    unknown = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.UNKNOWN_ACCOUNT)})
+    if unknown:
+        out.append(f"Account(s) not in the group chart: {', '.join(unknown)}")
+    return out
+
+
 def chart_errors(rows, chart):
     """What the group chart says about the accounts a trial balance posts to.
     ``chart`` is konsol.group_chart.chart_accounts(). Pure; host-testable.
 
     No chart at all is one refusal, not every account listed. A heading, and an
-    account closed for posting, are refused with the reason."""
-    if not chart:
-        return [NO_CHART]
-    codes = sorted({r["main_account"] for r in rows})
-    out = [f"{c} is a heading in the group chart; post to the accounts under it."
-           for c in codes if c in chart and chart[c].get("is_group")]
-    closed = [c for c in codes if c in chart and not chart[c].get("is_group") and not chart[c].get("is_posting")]
-    if closed:
-        out.append(f"Not open for posting in the group chart (is_posting is off): {', '.join(closed)}. "
-                   "Post to another account, or ask the Close Lead to open it.")
-    unknown = [c for c in codes if c not in chart]
-    if unknown:
-        out.append(f"Account(s) not in the group chart: {', '.join(unknown)}")
-    return out
+    account closed for posting, are refused with the reason. The rules are
+    check_rows' (konsol#305 A35)."""
+    result = check_rows(rows, chart, None, None, None, BALANCE_TOLERANCE)
+    return _chart_messages(result, chart)
 
 
 def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
@@ -205,73 +254,71 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
     chart (konsol#182) is the group chart, konsol.group_chart.chart_accounts();
     when given it decides the accounts (chart_errors) and known_accounts is
     not read.
+
+    konsol#305 A35 (decision P1): every rule is konsol.close.tb_model.check_rows';
+    this function only words its per-line problems per file. The amount basis
+    is left to validate() (basis_problems against the form).
     """
+    judged = chart
+    if chart is None and known_accounts is not None:
+        # A bare list of codes is a chart of posting accounts.
+        judged = {code: {"is_group": 0, "is_posting": 1} for code in known_accounts}
+    result = check_rows(rows, judged, entity, known_entities, None, tolerance)
     errors = []
 
-    # One row per (account, partner): an entity may hold one intercompany
-    # account with several partners, one row each.
-    seen, dupes = set(), set()
-    for r in rows:
-        key = (r["main_account"], r.get(PARTNER) or "")
-        if key in seen:
-            dupes.add(_row_label(r))
-        seen.add(key)
+    dupes = sorted({_row_label({"main_account": row["main_account"], PARTNER: row["partner"]})
+                    for row, _ in _flagged(result, _tb_model.DUPLICATE_ROW)})
     if dupes:
         errors.append(
-            f"Duplicate account rows: {', '.join(sorted(dupes))} — "
+            f"Duplicate account rows: {', '.join(dupes)} — "
             "one row per account and partner; merge them before submitting"
         )
 
-    partnered = [r for r in rows if r.get(PARTNER)]
-    if entity:
-        own = sorted({r["main_account"] for r in partnered
-                      if r[PARTNER].upper() == entity.upper()})
-        if own:
-            errors.append(
-                f"Partner is the entity itself ({entity}) on: {', '.join(own)} — "
-                "a partner is the other group entity; leave it blank for a third party"
-            )
-    if known_entities is not None:
-        known = set(known_entities)
-        by_upper = {e.upper(): e for e in known}
-        unknown = sorted({r[PARTNER] for r in partnered
-                          if r[PARTNER] not in known
-                          and not (entity and r[PARTNER].upper() == entity.upper())})
-        if unknown:
-            named = [f"{u} (did you mean {by_upper[u.upper()]}?)" if u.upper() in by_upper else u
-                     for u in unknown]
-            errors.append(
-                f"Unknown partner entit{'y' if len(unknown) == 1 else 'ies'}: {', '.join(named)} — "
-                "a partner must be an existing entity that is not a group"
-            )
+    own = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.SELF_PARTNER)})
+    if own:
+        errors.append(
+            f"Partner is the entity itself ({entity}) on: {', '.join(own)} — "
+            "a partner is the other group entity; leave it blank for a third party"
+        )
 
-    negative = sorted({r["main_account"] for r in rows
-                       if r["debit"] < 0 or r["credit"] < 0})
+    suggested = {}
+    for row, p in _flagged(result, _tb_model.UNKNOWN_PARTNER):
+        # check_rows words a case-only match as "Did you mean <entity>?"
+        match = p["suggestion"][len("Did you mean "):-1] if p["suggestion"] else ""
+        suggested[row["partner"]] = match
+    if suggested:
+        unknown = sorted(suggested)
+        named = [f"{u} (did you mean {suggested[u]}?)" if suggested[u] else u for u in unknown]
+        errors.append(
+            f"Unknown partner entit{'y' if len(unknown) == 1 else 'ies'}: {', '.join(named)} — "
+            "a partner must be an existing entity that is not a group"
+        )
+
+    negative = sorted({row["main_account"] for row, _ in _flagged(result, _tb_model.NEGATIVE_AMOUNT)})
     if negative:
         errors.append(
             f"Negative amounts on: {', '.join(negative)} — post the value to "
             "the opposite column instead of using a sign"
         )
 
-    total_debit = sum(r["debit"] for r in rows)
-    total_credit = sum(r["credit"] for r in rows)
-    if abs(total_debit - total_credit) > tolerance:
-        errors.append(
-            f"Debits ({total_debit:,.2f}) do not equal credits "
-            f"({total_credit:,.2f}); difference "
-            f"{total_debit - total_credit:,.2f} exceeds the "
-            f"{tolerance} tolerance"
-        )
+    # The balance, and any file problem check_rows gains later. NO_CHART is
+    # worded with the chart below; the form's basis is validate()'s.
+    not_here = {NO_CHART, *basis_problems(None, [])}
+    errors.extend(p for p in result["file_problems"] if p not in not_here)
+
+    for row in result["rows"]:
+        errors.extend(f"Line {row['line']}: {p['message']}" for p in row["problems"]
+                      if p["code"] not in _FILE_WORDED)
 
     if chart is not None:
-        errors.extend(chart_errors(rows, chart))
+        errors.extend(_chart_messages(result, chart))
     elif known_accounts is not None:
-        known = set(known_accounts)
-        unknown = sorted({r["main_account"] for r in rows
-                          if r["main_account"] not in known})
-        if unknown:
+        if judged:
+            errors.extend(_chart_messages(result, judged))
+        elif rows:
+            # No known account at all: every account is outside the chart.
             errors.append(
-                f"Account(s) not in the group chart: {', '.join(unknown)}"
+                f"Account(s) not in the group chart: {', '.join(sorted({r['main_account'] for r in rows}))}"
             )
 
     return errors
@@ -338,6 +385,17 @@ def _claim_insert(values):
 
 
 _NAMES_HELP = "names must be a JSON list of Trial Balance Submission names"
+
+
+def _record_data_change(fiscal_year, fiscal_period, text):
+    """konsol#305 A63 (#305-R2b-3): the period's data changed, so a signature
+    over checks that ran before now stops counting. Called before any
+    ClickHouse write, which has no transaction: a refusal here leaves the
+    warehouse untouched and MariaDB rolls back."""
+    # Imported here: signoff_gate is frappe-bound and reads the fiscal calendar.
+    from konsol.close import signoff_gate
+
+    signoff_gate.record_data_change(fiscal_year, fiscal_period, text, frappe.session.user)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -423,6 +481,13 @@ def set_amount_basis(names, amount_basis):
         # modified stamp is left alone: nothing the user wrote changed.
         frappe.db.set_value("Trial Balance Submission", row.name, "amount_basis", basis,
                             update_modified=False)
+    # A63: one data change per period, recorded in MariaDB before the claim.
+    by_period = {}
+    for row in rows:
+        by_period.setdefault((row.fiscal_year, row.fiscal_period), []).append(row.name)
+    for (fiscal_year, fiscal_period), changed in sorted(by_period.items()):
+        _record_data_change(fiscal_year, fiscal_period, "Amount basis of TB %s set to %s"
+                            % (", ".join(changed), basis))
     values = [_claim_values(row, basis) for row in rows]
     for i in range(0, len(values), _CLAIM_BATCH):
         execute(_claim_insert(values[i:i + _CLAIM_BATCH]))
@@ -430,6 +495,28 @@ def set_amount_basis(names, amount_basis):
 
 
 class TrialBalanceSubmission(Document):
+
+    def before_insert(self):
+        # R4 (konsol#297, konsol#305 A18): record whether this TB was uploaded
+        # on the entity's behalf, from the uploader's roles and assigned
+        # entities. Always computed here; whatever the request sent is
+        # overwritten. Amending runs insert again, so an amendment is judged
+        # by its own uploader.
+        from konsol.entity_permissions import assigned_entities, subtree_codes
+
+        on_behalf = _tb_model.is_on_behalf(
+            frappe.get_roles(), self.data_area_id, subtree_codes(assigned_entities()))
+        self.uploaded_on_behalf = "Yes" if on_behalf else "No"
+
+    def before_validate(self):
+        """A saved TB keeps the flag it was inserted with: a draft edit that
+        sends another value is put back. A TB from before the field existed
+        stays blank ("unknown", Problems 16). Frappe runs this before
+        validate on every insert and save."""
+        if self.is_new():
+            return
+        self.uploaded_on_behalf = frappe.db.get_value(
+            "Trial Balance Submission", self.name, "uploaded_on_behalf") or ""
 
     def validate(self):
         if not self.batch_id:
@@ -452,6 +539,7 @@ class TrialBalanceSubmission(Document):
         # in consolidation (#151 review). Held until the request commits.
         frappe.db.sql("SELECT `name` FROM `tabEntity` WHERE `name` = %s FOR UPDATE", self.data_area_id)
         self._check_no_other_submission()
+        self._check_no_tb_exception()
 
         rows = self._parse_file()
         # konsol#182: the one chart reader, the Published Main Accounts in
@@ -487,6 +575,8 @@ class TrialBalanceSubmission(Document):
                             indicator="orange")
 
     def on_submit(self):
+        # A63: recorded before ClickHouse is touched (see _record_data_change).
+        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s submitted" % self.name)
         rows = self._parse_file()
         self._ensure_tables()
         # Idempotent landing: a failed claim rolls the document back to draft
@@ -511,6 +601,8 @@ class TrialBalanceSubmission(Document):
         assert_open(self.fiscal_year, self.fiscal_period, action="cancel a trial balance submission")
 
     def on_cancel(self):
+        # A63: recorded before the claim is deleted (see _record_data_change).
+        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s cancelled" % self.name)
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.
         # mutations_sync=1: the delete must be VISIBLE before this returns —
@@ -565,6 +657,35 @@ class TrialBalanceSubmission(Document):
                 f"{other} is already submitted for {self.data_area_id} "
                 f"{self.fiscal_year} P{self.fiscal_period}. Cancel or amend it "
                 "first — consolidation would otherwise count both."
+            )
+
+    def _check_no_tb_exception(self):
+        """konsol#305 A40: a submitted TB Exception (A08) declares that this
+        entity-period has no trial balance at all, and the sign-off
+        completeness gate trusts that declaration in place of one. Landing a
+        real submission on top would leave both on record — the gate already
+        satisfied by "no TB", and an actual TB sitting right beside it. The
+        exception must be cancelled first, same as a second TB submission
+        (_check_no_other_submission above).
+        """
+        exception = frappe.db.get_value(
+            "TB Exception",
+            {
+                "data_area_id": self.data_area_id,
+                "fiscal_year": self.fiscal_year,
+                "fiscal_period": self.fiscal_period,
+                "docstatus": 1,
+            },
+            "name",
+            # a locking read: a concurrent declare/cancel waits for this
+            # submit's commit, same reasoning as _check_no_other_submission.
+            for_update=True,
+        )
+        if exception:
+            frappe.throw(
+                f"{exception} declares no trial balance for {self.data_area_id} "
+                f"{self.fiscal_year} P{self.fiscal_period:02d}. Cancel it first "
+                "(Close Lead)."
             )
 
     def _parse_file(self):

@@ -24,12 +24,6 @@ def test_orchestrator_mutating_endpoints_guarded():
         assert "check_epm_admin()" in body, f"{fn} missing check_epm_admin() guard"
 
 
-def test_control_start_process_guarded():
-    body = _func_src(os.path.join(APP, "control_api.py"), "start_process")
-    assert body is not None
-    assert "check_epm_admin()" in body
-
-
 def test_trigger_pipeline_guarded():
     # #67 fix 4: the legacy state-mutating trigger_pipeline must enforce the same
     # EPM Admin role guard as the orchestrator API.

@@ -33,6 +33,8 @@ REFERRING_DOCTYPES = (
     # entity is a konsol Entity, so it takes the Link and joins the sweep — the
     # table_exists() guard makes that free on a site that predates it.
     "Budget Annual Input",
+    # konsol#303: TB Exception names the entity with no trial balance.
+    "TB Exception",
 )
 
 

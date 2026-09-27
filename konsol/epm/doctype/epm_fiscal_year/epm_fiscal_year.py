@@ -133,6 +133,22 @@ def _rate_failure(fiscal_year, fiscal_period):
     return None
 
 
+def _signoff_failure(fiscal_year, fiscal_period, period_type):
+    """The sign-off gate's refusal for one period, or None if it passes
+    (konsol#305 A23). As _rate_failure, the refusal's logged message is taken
+    back off the log."""
+    from konsol.close import signoff_gate
+    log = getattr(getattr(frappe, "local", None), "message_log", None)
+    logged = len(log) if log is not None else 0
+    try:
+        signoff_gate.assert_period_closable(fiscal_year, fiscal_period, period_type)
+    except frappe.ValidationError as e:
+        if log is not None:
+            del log[logged:]
+        return str(e)
+    return None
+
+
 class EPMFiscalYear(Document):
     #: konsol#189: every period row, with its effective status, is published
     #: here (fiscal_calendar.fiscal_period_rows). The rows are computed — a
@@ -222,6 +238,39 @@ class EPMFiscalYear(Document):
         # move that _check_status_fields_unchanged doesn't compare).
         if status_action and before is not None:
             self._assert_status_action_structure_unchanged(before)
+
+    def before_save(self):
+        self._keep_data_change_record()
+
+    def _keep_data_change_record(self):
+        """konsol#305 A65: only ``signoff_gate.record_data_change`` writes a
+        period row's data_changed_at / data_changed_by / data_change. Frappe
+        writes every child row back from the document, so a year loaded
+        before a concurrent data change (a Close/Lock/Reopen, Generate
+        Periods or a desk edit) would put the old values back and lose the
+        record silently. Each row therefore takes the database's values just
+        before the write; a row not yet in the database takes none.
+
+        A locking read: under REPEATABLE READ a plain read can return this
+        transaction's older snapshot, and the lock makes a concurrent
+        record_data_change wait for this save instead of landing between the
+        read and the write. Frappe's save has already locked the year row
+        (check_if_latest), and record_data_change's callers reach the year
+        row before the period row too, so the lock order is the same."""
+        from konsol.close.signoff_gate import DATA_CHANGE_FIELDS
+
+        saved = {}
+        if self.name:
+            for row in frappe.db.sql(
+                    "select name, data_changed_at, data_changed_by, data_change "
+                    "from `tabEPM Fiscal Year Period` "
+                    "where parenttype = 'EPM Fiscal Year' and parent = %s for update",
+                    (self.name,), as_dict=True):
+                saved[row["name"]] = row
+        for row in self.periods or []:
+            db_row = saved.get(row.name) if row.name else None
+            for field in DATA_CHANGE_FIELDS:
+                setattr(row, field, db_row.get(field) if db_row else None)
 
     def on_trash(self):
         """Refuse deleting a year whose periods documents use. on_trash runs
@@ -369,9 +418,21 @@ class EPMFiscalYear(Document):
                 frappe.throw(
                     f"FY{self.fiscal_year} is {year_status}; Reopen the year first, "
                     f"then period {row.period_code}.")
+            # konsol#305 A31/A57 (#303 point 4): the reopened period and every
+            # later signed period stop counting as signed; they are marked
+            # Re-sign Needed through the sign-off writer.
+            from konsol.close import signoff_gate
+            signoff_gate.mark_resign_needed_on_reopen(
+                self.fiscal_year, row.fiscal_period, row.period_code, text,
+                frappe.session.user)
         elif current == fstm.OPEN:
             from konsol import group_rates
             group_rates.assert_rates_complete(self.fiscal_year, row.fiscal_period)
+            # konsol#305 A23: a Regular period from the first close on needs a
+            # signed run; history and non-Regular periods are exempt (P5).
+            from konsol.close import signoff_gate
+            signoff_gate.assert_period_closable(
+                self.fiscal_year, row.fiscal_period, row.period_type)
 
         now = frappe.utils.now_datetime()
         _stamp(row, new, now)
@@ -382,7 +443,8 @@ class EPMFiscalYear(Document):
 
     @frappe.whitelist(methods=["POST"])
     def close_year(self, note=None):
-        """Close the year and every Open row; all or nothing on group rates."""
+        """Close the year and every Open row; all or nothing on group rates
+        and sign-off (konsol#305 A23)."""
         return self._set_year_status(fstm.CLOSED, "closed", note)
 
     @frappe.whitelist(methods=["POST"])
@@ -422,16 +484,24 @@ class EPMFiscalYear(Document):
         else:
             moving = [r for r in (self.periods or [])
                       if fstm.effective_status(new, _status(r.status)) != _status(r.status)]
-            failures = []
+            failures, unsigned = [], []
             for r in moving:
                 if _status(r.status) == fstm.OPEN:
                     failure = _rate_failure(self.fiscal_year, r.fiscal_period)
                     if failure:
                         failures.append(f"{r.period_code}: {failure}")
-            if failures:
+                    failure = _signoff_failure(self.fiscal_year, r.fiscal_period, r.period_type)
+                    if failure:
+                        unsigned.append(f"{r.period_code}: {failure}")
+            if failures or unsigned:
+                reasons = []
+                if failures:
+                    reasons.append(f"{len(failures)} of its periods fail the group-rate check")
+                if unsigned:
+                    reasons.append(f"{len(unsigned)} of its periods are not signed off")
                 frappe.throw(
-                    f"{label} can't be {verb}: {len(failures)} of its periods fail the "
-                    "group-rate check; nothing was changed.\n" + "\n".join(failures))
+                    f"{label} can't be {verb}: {' and '.join(reasons)}; nothing was changed.\n"
+                    + "\n".join(failures + unsigned))
 
         now = frappe.utils.now_datetime()
         for r in moving:

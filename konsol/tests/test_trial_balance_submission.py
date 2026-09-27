@@ -47,6 +47,11 @@ _stub("konsol.schema_lifecycle", check_epm_admin=lambda: _ADMIN_CHECKS.append(Tr
 _spec = importlib.util.spec_from_file_location("tbs_under_test", _SRC)
 _m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_m)
+# konsol#305 A63: submit, cancel and set_amount_basis record a data change on
+# the period through konsol.close.signoff_gate, which this stub site has no
+# fiscal calendar for. That wiring (and its order before ClickHouse) is tested
+# in test_close_signoff_wiring.py; here it is a no-op.
+_m._record_data_change = lambda *a, **k: None
 
 GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
 
@@ -54,9 +59,10 @@ GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
 def test_parse_good_file():
     rows = _m.parse_tb_csv(GOOD)
     assert len(rows) == 2
+    # "line" is the physical CSV line the row came from (konsol#305 A38).
     assert rows[0] == {"main_account": "1010", "debit": 100.5,
                        "credit": 0.0, "description": "", "partner_data_area_id": "",
-                       "amount_basis": ""}
+                       "amount_basis": "", "line": 2}
 
 
 def test_parse_accepts_description_and_case_insensitive_header():
@@ -765,3 +771,143 @@ def test_list_view_offers_set_amount_basis():
     for basis in ALL_BASES:
         assert basis in js, basis
     assert "show_alert" in js and "refresh" in js
+
+
+# -- konsol#305 A35 (decision P1): one rule set, validate_tb_rows is built on check_rows ------
+
+def _with_check_rows(fake, fn):
+    """Run fn with the controller's check_rows replaced by fake, then restore it."""
+    missing = object()
+    real = getattr(_m, "check_rows", missing)
+    _m.check_rows = fake
+    try:
+        return fn()
+    finally:
+        if real is missing:
+            del _m.check_rows
+        else:
+            _m.check_rows = real
+
+
+def _fake_result(file_problems=(), row_problems=()):
+    def fake(rows, chart, entity, known_entities, form_basis, tolerance):
+        return {
+            "ok": False,
+            "rows": [{"line": 2, "main_account": "1010", "partner": "", "debit": 10.0,
+                      "credit": 0.0, "problems": list(row_problems)}],
+            "file_problems": list(file_problems),
+            "totals": {"debit": 10.0, "credit": 10.0, "difference": 0.0},
+        }
+    return fake
+
+
+def test_validate_tb_rows_surfaces_a_file_problem_from_check_rows():
+    sentinel = "ZZ sentinel file problem from check_rows"
+    errors = _with_check_rows(_fake_result(file_problems=[sentinel]),
+                              lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
+    assert sentinel in errors, (
+        "validate_tb_rows must derive its verdict from konsol.close.tb_model.check_rows "
+        f"(decision P1); got {errors!r}")
+
+
+def test_validate_tb_rows_surfaces_a_row_problem_it_has_no_file_wording_for():
+    """A rule added to check_rows later refuses the submit too, with its line."""
+    problem = {"code": "ZZ_NEW_RULE", "message": "ZZ sentinel row problem", "suggestion": ""}
+    errors = _with_check_rows(_fake_result(row_problems=[problem]),
+                              lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
+    assert "Line 2: ZZ sentinel row problem" in errors, errors
+
+
+def test_validate_tb_rows_leaves_the_amount_basis_to_the_form_check():
+    """Failure path: the basis is judged once, by validate() against the form
+    (basis_problems), so check_rows' basis problems are not repeated here."""
+    basis = {"code": "AMOUNT_BASIS", "message": "Line 2: basis", "suggestion": ""}
+    form_level = _m.basis_problems(None, [])
+    errors = _with_check_rows(_fake_result(file_problems=form_level, row_problems=[basis]),
+                              lambda: _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))))
+    assert errors == []
+
+
+# -- konsol#305 A40: a trial balance cannot be submitted over a TB Exception --------------------
+# A08's TB Exception already refuses to be declared where a submitted TB exists
+# (test_close_tb_exception.py: test_existing_submitted_tb_is_refused). This is
+# the other direction: a TB submit must not land while a submitted exception
+# still declares "no trial balance" for the same entity-period — otherwise the
+# audit trail would carry both, and the gate that accepted the exception would
+# be wrong.
+
+def _wire_tb_exception_check(tb_exception_name):
+    """Run validate() with assert_postable/assert_open/_check_entity_access/the
+    entity lock all stubbed to pass straight through, and frappe.db.get_value
+    answering both the Trial Balance Submission lock read
+    (_check_no_other_submission, no other submission) and the TB Exception
+    read. _parse_file is stubbed to raise, so reaching it proves both checks
+    let the submit through; never reaching it proves one of them refused
+    first."""
+    calls = []
+
+    def get_value(doctype, filters, fieldname=None, **kw):
+        calls.append((doctype, dict(filters), fieldname, kw))
+        if doctype == "Trial Balance Submission":
+            return None  # no other live submission: A38's check passes through
+        if doctype == "TB Exception":
+            return tb_exception_name
+        raise AssertionError(f"unexpected read of {doctype}")
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    names = ("assert_postable", "assert_open", "frappe")
+    saved = {n: getattr(_m, n) for n in names if hasattr(_m, n)}
+    _m.assert_postable = lambda fy, fp: None
+    _m.assert_open = lambda fy, fp, action="run": None
+    _m.frappe = types.SimpleNamespace(
+        db=types.SimpleNamespace(sql=lambda *a, **k: None, get_value=get_value),
+        throw=throw,
+    )
+    try:
+        doc = _m.TrialBalanceSubmission()
+        doc.batch_id, doc.data_area_id = "b1", "FR01"
+        doc.fiscal_year, doc.fiscal_period = 2026, 8
+        doc.name = "TBS-NEW"
+        doc._check_entity_access = lambda: None
+        doc._parse_file = lambda: (_ for _ in ()).throw(AssertionError("validate reached _parse_file"))
+        try:
+            doc.validate()
+            reached_parse = False
+        except AssertionError as e:
+            if "reached _parse_file" not in str(e):
+                raise
+            reached_parse = True
+    finally:
+        for n in names:
+            if n in saved:
+                setattr(_m, n, saved[n])
+            else:
+                delattr(_m, n)
+    return calls, reached_parse
+
+
+def test_submit_is_refused_over_a_submitted_tb_exception():
+    try:
+        _wire_tb_exception_check("TBX-00001")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert str(e) == ("TBX-00001 declares no trial balance for FR01 2026 P08. "
+                          "Cancel it first (Close Lead).")
+
+
+def test_submit_is_allowed_when_no_tb_exception_is_submitted():
+    """A cancelled exception (docstatus 2) never matches the docstatus=1
+    filter, so get_value returns None here just as it would for a real
+    cancelled TB Exception — validate() proceeds to parse the file."""
+    calls, reached_parse = _wire_tb_exception_check(None)
+    assert reached_parse, "validate() did not get past the TB Exception check"
+    read = next(c for c in calls if c[0] == "TB Exception")
+    doctype, filters, fieldname, kw = read
+    assert filters.get("data_area_id") == "FR01"
+    assert filters.get("fiscal_year") == 2026
+    assert filters.get("fiscal_period") == 8
+    assert filters.get("docstatus") == 1
+    assert fieldname == "name"
+    assert kw.get("for_update") is True

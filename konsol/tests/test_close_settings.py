@@ -57,6 +57,21 @@ _m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_m)
 
 
+class _NothingStoredDb:
+    """A64: the stored first close the lock check compares against. By
+    default nothing is stored (a first declaration), so the A36a validate
+    cases below never reach the lock check; A64's tests install their own."""
+
+    @staticmethod
+    def get_single_value(doctype, field):
+        assert doctype == "Close Settings", doctype
+        return 0
+
+
+if not hasattr(_m.frappe, "db"):
+    _m.frappe.db = _NothingStoredDb()
+
+
 # ---------------------------------------------------------------------------
 # JSON shape
 # ---------------------------------------------------------------------------
@@ -218,3 +233,185 @@ def test_regular_period_is_ok():
 
     _run(2025, 7, row)  # must not raise
     assert seen == [(2025, 7)]
+
+
+# ---------------------------------------------------------------------------
+# konsol#305 A64 (#305-R5a, Deepak 26 Sep): the first close period is locked
+# once used. A move of the first close period (year or period) is refused when
+# any Regular period from min(old, new) onward has a signed latest close run
+# or is Closed or Locked. A first declaration (0 -> a value) and a save with no
+# change stay allowed.
+# ---------------------------------------------------------------------------
+
+_SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
+
+
+def _period_rows(statuses, year=2025):
+    """Twelve Regular rows for ``year`` plus an Adjustment row at P13.
+    ``statuses`` maps a period number to its effective status (default Open)."""
+    rows = []
+    for p in range(1, 13):
+        rows.append({"fiscal_year": year, "fiscal_period": p,
+                     "period_code": "FY%d-P%02d" % (year, p),
+                     "period_type": "Regular", "status": statuses.get(p, "Open")})
+    rows.append({"fiscal_year": year, "fiscal_period": 13,
+                 "period_code": "FY%d-P13-ADJ" % year,
+                 "period_type": "Adjustment", "status": statuses.get(13, "Open")})
+    return rows
+
+
+def _regular_row(y, p):
+    return {"code": "FY%d-P%02d" % (y, p), "type": "Regular"}
+
+
+def _move(old, new, rows, runs=None):
+    """Save Close Settings from ``old`` (stored) to ``new`` (on the doc), with
+    ``rows`` as fiscal_period_rows() and ``runs`` as the latest terminal run per
+    period key. Stubs are installed only for the call and restored after."""
+    runs = runs or {}
+    stored = {"first_close_fiscal_year": old[0], "first_close_fiscal_period": old[1]}
+
+    fc = types.ModuleType("konsol.fiscal_calendar")
+    fc.fiscal_period_rows = lambda: [dict(r) for r in rows]
+    close_pkg = types.ModuleType("konsol.close")
+    close_pkg.__path__ = []
+    gate = types.ModuleType("konsol.close.signoff_gate")
+    gate._latest_runs = lambda: {k: dict(v) for k, v in runs.items()}
+    close_pkg.signoff_gate = gate
+    ar = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
+    ar.SIGNED_STATES = _SIGNED_STATES
+    stubs = {
+        "konsol.fiscal_calendar": fc,
+        "konsol.close": close_pkg,
+        "konsol.close.signoff_gate": gate,
+        "konsol.consolidation": types.ModuleType("konsol.consolidation"),
+        "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
+        "konsol.consolidation.doctype.assertion_run":
+            types.ModuleType("konsol.consolidation.doctype.assertion_run"),
+        "konsol.consolidation.doctype.assertion_run.assertion_run": ar,
+    }
+    for name in ("konsol.consolidation", "konsol.consolidation.doctype",
+                 "konsol.consolidation.doctype.assertion_run"):
+        stubs[name].__path__ = []
+    saved = {name: sys.modules.get(name) for name in stubs}
+    saved_konsol_fc = getattr(sys.modules["konsol"], "fiscal_calendar", None)
+    saved_db = getattr(_m.frappe, "db", None)
+
+    class _Db:
+        @staticmethod
+        def get_single_value(doctype, field):
+            assert doctype == "Close Settings", doctype
+            return stored[field]
+
+    sys.modules.update(stubs)
+    sys.modules["konsol"].fiscal_calendar = fc
+    _m.frappe.db = _Db()
+    try:
+        _run(new[0], new[1], _regular_row)
+    finally:
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+        if saved_konsol_fc is None:
+            if hasattr(sys.modules["konsol"], "fiscal_calendar"):
+                delattr(sys.modules["konsol"], "fiscal_calendar")
+        else:
+            sys.modules["konsol"].fiscal_calendar = saved_konsol_fc
+        if saved_db is None:
+            if hasattr(_m.frappe, "db"):
+                delattr(_m.frappe, "db")
+        else:
+            _m.frappe.db = saved_db
+
+
+def _refused(old, new, rows, runs=None):
+    try:
+        _move(old, new, rows, runs)
+    except _Refused as e:
+        return str(e)
+    raise AssertionError("expected the move %r -> %r to be refused" % (old, new))
+
+
+_P07_CLOSED = "FY2025 P07 is already closed under the current first close (FY2025 P07); " \
+              "the first close period can no longer move."
+
+
+def test_move_forward_past_a_closed_period_is_refused():
+    rows = _period_rows({7: "Closed"})
+    assert _refused((2025, 7), (2025, 9), rows) == _P07_CLOSED
+
+
+def test_move_back_before_a_closed_period_is_refused():
+    rows = _period_rows({7: "Closed"})
+    assert _refused((2025, 7), (2025, 5), rows) == _P07_CLOSED
+
+
+def test_move_of_the_year_is_refused():
+    rows = _period_rows({7: "Closed"}) + [
+        dict(r, fiscal_year=2026, period_code=r["period_code"].replace("2025", "2026"),
+             status="Open") for r in _period_rows({})]
+    assert _refused((2025, 7), (2026, 7), rows) == _P07_CLOSED
+
+
+def test_locked_period_blocks_the_move():
+    rows = _period_rows({8: "Locked"})
+    msg = _refused((2025, 7), (2025, 9), rows)
+    assert msg == ("FY2025 P08 is already locked under the current first close (FY2025 P07); "
+                   "the first close period can no longer move.")
+
+
+def test_signed_latest_run_blocks_the_move():
+    rows = _period_rows({})
+    for state in _SIGNED_STATES:
+        runs = {(2025, 8): {"name": "AR-1", "signoff_status": state}}
+        msg = _refused((2025, 7), (2025, 5), rows, runs)
+        assert msg == ("FY2025 P08 is already signed under the current first close "
+                       "(FY2025 P07); the first close period can no longer move."), msg
+
+
+def test_first_blocking_period_is_named():
+    rows = _period_rows({9: "Closed"})
+    runs = {(2025, 8): {"name": "AR-1", "signoff_status": "Signed Off"}}
+    msg = _refused((2025, 7), (2025, 10), rows, runs)
+    assert msg.startswith("FY2025 P08 is already signed"), msg
+
+
+def test_nothing_signed_or_closed_from_min_on_allows_the_move():
+    # P03 is Closed, and P04's run is unsigned or Re-sign Needed: all are
+    # before min(old, new) = P05, or not signed, so the move is allowed.
+    rows = _period_rows({3: "Closed"})
+    runs = {(2025, 3): {"name": "AR-0", "signoff_status": "Signed Off"},
+            (2025, 6): {"name": "AR-1", "signoff_status": "Re-sign Needed"},
+            (2025, 8): {"name": "AR-2", "signoff_status": ""}}
+    _move((2025, 7), (2025, 9), rows, runs)
+    _move((2025, 7), (2025, 5), rows, runs)
+
+
+def test_non_regular_periods_never_block():
+    rows = _period_rows({13: "Closed"})
+    runs = {(2025, 13): {"name": "AR-ADJ", "signoff_status": "Signed Off"}}
+    _move((2025, 7), (2025, 9), rows, runs)
+
+
+def test_first_declaration_is_allowed_even_with_closed_periods():
+    rows = _period_rows({7: "Closed", 8: "Closed"})
+    _move((0, 0), (2025, 7), rows)
+    _move((None, None), (2025, 9), rows)
+
+
+def test_save_without_change_is_allowed():
+    rows = _period_rows({7: "Closed", 8: "Locked"})
+    runs = {(2025, 9): {"name": "AR-1", "signoff_status": "Signed Off"}}
+    _move((2025, 7), (2025, 7), rows, runs)
+
+
+def test_clearing_a_used_first_close_is_refused():
+    # Clearing is a move too: from the old value onward nothing may be used.
+    rows = _period_rows({7: "Closed"})
+    assert _refused((2025, 7), (0, 0), rows) == _P07_CLOSED
+
+
+def test_clearing_an_unused_first_close_is_allowed():
+    _move((2025, 7), (0, 0), _period_rows({3: "Closed"}))

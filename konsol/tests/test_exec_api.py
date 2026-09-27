@@ -1,37 +1,18 @@
-"""TDD — konsol-exec exec-plane API client + backend ``get_run`` (E4).
+"""TDD — orchestrator exec-plane backend ``get_run`` (E4).
 
-E4 wires the konsol-exec Vite SPA to the PRD-10 orchestrator API:
+A whitelisted ``konsol.orchestrator.api.get_run(run_name)`` returns
+``{name, status, steps:[...]}`` (the Pipeline Run child rows). Like the rest of
+the orchestrator core it imports on the host without frappe; the behavioural
+test is frappe-guarded with ``pytest.importorskip``.
 
-1. **Backend** — a whitelisted ``konsol.orchestrator.api.get_run(run_name)``
-   returning ``{name, status, steps:[...]}`` (the Pipeline Run child rows the
-   SPA normalises via ``runModel.normalizeRun``). Like the rest of the
-   orchestrator core it imports on the host without frappe; the behavioural
-   test is frappe-guarded with ``pytest.importorskip``.
-2. **SPA api client** — ``konsol-exec/src/api.js`` gains ``startRun`` /
-   ``getRun`` / ``retryStep`` / ``resumeRun`` / ``cancelRun`` (each delegating
-   to ``frappeCall("konsol.orchestrator.api.<fn>", ...)``) plus ``onRunStep``
-   wrapping ``frappe.realtime?.on("orchestrator_step", cb)``.
-
-Following the established static-assertion style, the SPA half reads the JS
-source and asserts the functions + backend method strings + realtime topic are
-present. No bench / no browser needed for the host suite.
+konsol#305 R01 removed the konsol-exec SPA, and with it the static checks on
+its ``src/api.js`` client that used to live here.
 """
 import inspect
-import os
 
 import pytest
 
 from konsol.orchestrator import api
-
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-API_JS_PATH = os.path.join(
-    os.path.dirname(APP_DIR), "konsol-exec", "src", "api.js"
-)
-
-
-def _api_js():
-    with open(API_JS_PATH) as f:
-        return f.read()
 
 
 # ---- backend get_run surface (imports without frappe) -------------------
@@ -105,58 +86,3 @@ def test_get_run_returns_run_with_steps():
         assert field in step, field
     assert step["step_id"] == "silver"
     assert step["rows"] == 42
-
-
-# ---- SPA api client (static assertion over api.js) ----------------------
-
-def test_api_js_exists():
-    assert os.path.exists(API_JS_PATH)
-
-
-def test_api_js_exports_startRun():
-    js = _api_js()
-    assert "export function startRun" in js
-    assert "konsol.orchestrator.api.start_run" in js
-
-
-def test_api_js_exports_getRun():
-    js = _api_js()
-    assert "export function getRun" in js
-    assert "konsol.orchestrator.api.get_run" in js
-
-
-def test_api_js_exports_retryStep():
-    js = _api_js()
-    assert "export function retryStep" in js
-    assert "konsol.orchestrator.api.retry_step" in js
-
-
-def test_api_js_exports_resumeRun():
-    js = _api_js()
-    assert "export function resumeRun" in js
-    assert "konsol.orchestrator.api.resume_run" in js
-
-
-def test_api_js_exports_cancelRun():
-    js = _api_js()
-    assert "export function cancelRun" in js
-    assert "konsol.orchestrator.api.cancel_run" in js
-
-
-def test_api_js_exports_onRunStep_realtime():
-    js = _api_js()
-    assert "export function onRunStep" in js
-    assert "orchestrator_step" in js
-    assert "frappe.realtime" in js
-
-
-def test_api_js_passes_step_id_arg():
-    # retry/resume must forward the chosen step id to the backend
-    js = _api_js()
-    assert "step_id" in js
-
-
-def test_api_js_exports_getLaunchOptions():
-    js = _api_js()
-    assert "export function getLaunchOptions" in js
-    assert "konsol.orchestrator.api.launch_options" in js
