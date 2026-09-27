@@ -28,15 +28,21 @@ def _dbt_bin():
 # ---------------------------------------------------------------------------
 # Build scope mapping: doctype → (scope, risk)
 # ---------------------------------------------------------------------------
-# All 9 trigger doctypes map to "staging" (low risk) by default.
-# Full/actuals/consolidation rebuilds require manual Build Approval.
+# Every trigger doctype maps to "consolidation" (high risk): approving or
+# changing any of them is an input that gold_fully_consolidated_tb reads,
+# directly or through a parent (konsol#306, #305-D2-10). None stops at
+# "staging" — a staging-only build would leave the consolidated numbers stale.
 DOCTYPE_BUILD_MAP = {
-    "Consolidation Group": {"scope": "staging", "risk": "low"},
-    "Consolidation Adjustment": {"scope": "staging", "risk": "low"},
-    "Ownership Period": {"scope": "staging", "risk": "low"},
-    "Historical Equity Rate": {"scope": "staging", "risk": "low"},
-    "IC Elimination Rule": {"scope": "staging", "risk": "low"},
-    "IC Balance": {"scope": "staging", "risk": "low"},
+    # konsol#306, #305-D2-10: was "staging" — staging rebuilds
+    # gold_consolidation_adjustments etc. but not gold_fully_consolidated_tb
+    # (+tag:domain:consolidation pulls the staging-tagged models in as
+    # parents; manifest measured 26 Sep).
+    "Consolidation Group": {"scope": "consolidation", "risk": "high"},
+    "Consolidation Adjustment": {"scope": "consolidation", "risk": "high"},
+    "Ownership Period": {"scope": "consolidation", "risk": "high"},
+    "Historical Equity Rate": {"scope": "consolidation", "risk": "high"},
+    "IC Elimination Rule": {"scope": "consolidation", "risk": "high"},
+    "IC Balance": {"scope": "consolidation", "risk": "high"},
     # konsol#110: consolidation, not staging — `staging` selects five models,
     # none of which read the entity registry; `+tag:domain:consolidation`
     # reaches silver_entity_currencies and gold_consolidated_trial_balance.

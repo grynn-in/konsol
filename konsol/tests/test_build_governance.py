@@ -5,6 +5,7 @@ These tests define the API that tasks.py, api.py, install.py, and the
 Build Approval doctype must satisfy.
 """
 import ast
+import importlib.util
 import json
 import os
 
@@ -504,6 +505,42 @@ def test_every_hooks_trigger_doctype_has_a_build_mapping():
                          isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
     missing = [t for t in triggers if t not in build_map]
     assert not missing, f"trigger doctypes with no build mapping: {missing}"
+
+
+def test_every_consolidation_input_reaches_the_consolidated_numbers():
+    """konsol#306, #305-D2-10: approving or changing a consolidation input
+    must request a build that reaches gold_fully_consolidated_tb, not stop at
+    "staging". Covers every doctype in hooks._dbt_trigger_doctypes plus
+    Entity (konsol#110: its build is requested from the controller, not
+    doc_events, but DOCTYPE_BUILD_MAP still carries its scope).
+
+    NUMBERS_SCOPES is loaded from freshness_model.py by path rather than
+    copied here, so this test tracks what "reaches the numbers" means instead
+    of asserting its own stale guess of it."""
+    hooks_src = _read(os.path.join(os.path.dirname(TASKS_PATH), "hooks.py"))
+    block = hooks_src.split("_dbt_trigger_doctypes = [")[1].split("]")[0]
+    triggers = [ln.strip().strip('",') for ln in block.splitlines()
+                if ln.strip().startswith('"')]
+    assert triggers, "no trigger doctypes parsed from hooks.py"
+
+    model_path = os.path.join(os.path.dirname(TASKS_PATH), "close", "freshness_model.py")
+    spec = importlib.util.spec_from_file_location(
+        "freshness_model_for_build_governance_test", model_path)
+    freshness_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(freshness_model)
+
+    tree = _parse(TASKS_PATH)
+    build_map = next(ast.literal_eval(n.value) for n in ast.walk(tree)
+                     if isinstance(n, ast.Assign) and any(
+                         isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
+
+    consolidation_inputs = list(triggers) + ["Entity"]
+    wrong = {dt: build_map[dt]["scope"] for dt in consolidation_inputs
+             if build_map[dt]["scope"] not in freshness_model.NUMBERS_SCOPES}
+    assert not wrong, (
+        "doctypes whose build never reaches the consolidated numbers: "
+        f"{wrong}"
+    )
 
 
 # ===================================================================
