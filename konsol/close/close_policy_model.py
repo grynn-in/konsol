@@ -42,6 +42,13 @@ APPROVAL_DOCTYPES = (
 #   docstatus 0.
 # - Budget Cycle: a budget doctype, outside the close.
 
+# The roles approval_api.approve admits (approval_api.py:23). A submit by
+# someone holding at least one of these is an approval, for the build
+# auto-approve rule (konsol#305-D2-10). Administrator holds every role
+# (frappe.get_roles), so an Administrator submit counts too; there is no
+# exemption (accepted 27 Sep).
+APPROVER_ROLES = ("EPM Admin", "System Manager")
+
 SELF_APPROVAL_UNDECLARED = "self_approval_undeclared"
 RATE_MOVE_UNDECLARED = "rate_move_undeclared"
 
@@ -137,3 +144,30 @@ def self_approval_note(policy, user, reason):
     """The Comment text left on a document self-approved under Close
     Settings (Allowed with reason)."""
     return "Self-approved by %s under Close Settings (%s): %s" % (user, policy, reason)
+
+
+def approval_build_reason(doctype, name, method, user, roles):
+    """The sentence recorded on an auto-approved Build Approval when the
+    trigger that requested the build was itself an approval (konsol#305-D2-10),
+    or None when the normal risk rules apply.
+
+    "An approval" means all three:
+      - ``method == "on_submit"``;
+      - ``doctype`` is one of ``APPROVAL_DOCTYPES``, so it is someone
+        approving work that could be someone else's (a Reverse/cancel is
+        not; nor is a save of a doctype that is never submitted, such as
+        Consolidation Group or IC Elimination Rule; nor Trial Balance
+        Submission, an Entity Accountant's own submit, excluded above);
+      - ``roles`` meets ``APPROVER_ROLES``: the roles ``approval_api.approve``
+        admits, so an EPM Analyst's own submit never counts.
+
+    Everything else returns None; the caller falls back to the normal risk
+    rules.
+    """
+    if method != "on_submit":
+        return None
+    if doctype not in APPROVAL_DOCTYPES:
+        return None
+    if not set(roles or ()) & set(APPROVER_ROLES):
+        return None
+    return "Auto-approved: %s approved %s %s (konsol#305-D2-10)." % (user, doctype, name)
