@@ -26,10 +26,12 @@ Two plausibility checks guard entry (the #138 review):
   ``usd_log10(to) - usd_log10(from)``. One rule for every pair, IDR and VND
   included, and a 100x error on JPY trips it. A currency with no reference is
   refused until one is set.
-* **Soft:** a rate that moves more than 50% from the previous approved rate for
-  its key, or from the ERP quote it was proposed from, needs a Reason for
-  Change. Real moves that size happen (ARS fell 55% in Dec 2023), so a reason
-  lets it through.
+* **Soft:** a rate that moves more than the declared Rate Move threshold
+  (Close Settings, konsol#305-D2-9) from the previous approved rate for its
+  key, or from the ERP quote it was proposed from, needs a Reason for Change.
+  Real moves that size happen (ARS fell 55% in Dec 2023), so a reason lets it
+  through. The threshold is never guessed: while it is undeclared, any such
+  move needs the declaration or a reason.
 """
 import decimal
 import json
@@ -38,6 +40,7 @@ import re
 
 import frappe
 
+from konsol.close import close_policy_model
 from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
 from konsol.period_status import PeriodNotDeclared, period_dates  # noqa: F401 — surfaced for callers
 
@@ -60,8 +63,6 @@ ERP_RATE_TYPES = {"Closing": ("Closing", "Default"), "Average": ("Average", "Def
 REFERENCE_FIELD = "usd_log10"
 #: A rate more than this many powers of ten from the references is refused.
 MAGNITUDE_TOLERANCE_DECADES = 1.0
-#: A move larger than this fraction needs a Reason for Change.
-MOVE_NEEDS_REASON = 0.5
 #: "Quoted per" (decided 13 Sep 2026: one source of truth, published by konsol).
 #: A quote is units of the group currency per this many units of the
 #: from-currency, so its direction never flips: 0.6607 USD per 100 JPY. The
@@ -167,24 +168,41 @@ def magnitude_problem(from_currency, to_currency, rate, refs=None):
     return magnitude_verdict(from_currency, to_currency, rate, refs)[1]
 
 
-def move_problem(rate, previous=None, erp_rate=None, unit=""):
-    """None, or why ``rate`` needs a Reason for Change: it moves more than 50%
-    from ``previous`` ((rate, label) of the last approved rate for its key) or
-    from ``erp_rate`` (the ERP quote it was proposed from). Rates are "to per
-    1 from", whatever unit they are quoted per; ``unit`` labels them
-    ("USD per JPY")."""
+def move_threshold():
+    """The declared Rate Move threshold (Close Settings, konsol#305-D2-9), as a
+    fraction, or None while it is undeclared. Never guessed."""
+    return close_policy_model.move_fraction(frappe.db.get_single_value("Close Settings", "rate_move_threshold"))
+
+
+def move_problem(rate, previous=None, erp_rate=None, unit="", threshold=None):
+    """None, or why ``rate`` needs a Reason for Change: it moves more than
+    ``threshold`` (a fraction, e.g. 0.5 for 50%) from ``previous`` ((rate,
+    label) of the last approved rate for its key) or from ``erp_rate`` (the
+    ERP quote it was proposed from). Rates are "to per 1 from", whatever unit
+    they are quoted per; ``unit`` labels them ("USD per JPY").
+
+    With nothing to compare against, this is always None: a first rate for a
+    key needs no reason regardless of the threshold. With a reference and no
+    declared ``threshold``, the gap names Close Settings rather than guessing
+    a value (konsol#305-D2-9)."""
     rate = float(rate)
     unit = f" {unit}" if unit else ""
+    refs = [(ref, what) for ref, what in (
+        (previous[0], f"the previous approved rate {previous[1]}") if previous else (None, None),
+        (erp_rate, "the ERP quote"),
+    ) if ref and float(ref) > 0]
+    if not refs:
+        return None
+    if threshold is None:
+        return close_policy_model.policy_gaps("x", 0)[0]["message"]
     moves = []
-    for ref, what in ((previous[0], f"the previous approved rate {previous[1]}") if previous else (None, None),
-                      (erp_rate, "the ERP quote")):
-        if ref and float(ref) > 0:
-            change = rate / float(ref) - 1.0
-            if abs(change) > MOVE_NEEDS_REASON:
-                moves.append(f"{change:+.0%} from {what} ({float(ref):.9g}{unit})")
+    for ref, what in refs:
+        change = rate / float(ref) - 1.0
+        if abs(change) > threshold:
+            moves.append(f"{change:+.0%} from {what} ({float(ref):.9g}{unit})")
     if not moves:
         return None
-    return (f"This rate ({rate:.9g}{unit}) moves " + " and ".join(moves) + ". A move over 50% can be "
+    return (f"This rate ({rate:.9g}{unit}) moves " + " and ".join(moves) + f". A move over {threshold:.0%} can be "
             "real, but say why (Reason for Change) before it is saved.")
 
 
@@ -686,8 +704,9 @@ def prefill_from_erp(fiscal_year, fiscal_period):
     is left alone. Group Accountant, Close Lead and System Manager only.
 
     A quote the magnitude guard refuses is reported, not inserted, so the
-    refusal pops no dialog. A quote that moves more than 50% needs a person's
-    reason, so it is reported too: enter it by hand with the reason."""
+    refusal pops no dialog. A quote that moves more than the declared Rate
+    Move threshold (Close Settings) needs a person's reason, so it is
+    reported too: enter it by hand with the reason."""
     frappe.only_for(PREFILL_ROLES)
     fy, fp = int(fiscal_year), int(fiscal_period)
     pairs = required_pairs(fy, fp) or tree_pairs(fy, fp)
