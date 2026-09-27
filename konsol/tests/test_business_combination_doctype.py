@@ -318,4 +318,4 @@ def test_the_workflow_is_installed():
         src = f.read()
     installed = re.findall(r'"([^"]+)"', src.split("INSTALLED = (")[1].split(")")[0])
     assert "Business Combination" in installed
-    assert "Consolidation Adjustment" in installed, "the existing entry stays"
+    assert "Consolidation Journal" in installed, "the existing entry stays"

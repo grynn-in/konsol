@@ -466,8 +466,9 @@ def _install_workflows():
     Never fails a migrate."""
     try:
         from konsol.workflows import install_workflows
-        # Printed, not only logged: a role upgrade changes who may approve,
-        # and the person running the migrate is the one who needs to know.
+        # Printed, not only logged: a workflow install changes how a doctype
+        # is approved, and the person running the migrate is the one who
+        # needs to know.
         for line in install_workflows():
             print(f"konsol workflows: {line}")
     except Exception as e:

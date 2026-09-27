@@ -245,42 +245,6 @@ def test_restrict_by_default_still_applies_to_everyone():
     assert _allowed_for(["EPM User"], restrict=True) == set()
 
 
-def _planner():
-    with _stub_frappe():
-        return _load("workflows.py", "_wf_under_test")
-
-
-def test_untouched_shipped_workflow_takes_the_new_roles():
-    wf = _planner()
-    definition = _workflow("Consolidation Adjustment")
-    states = [(s["state"], "System Manager") for s in definition["states"]]
-    transitions = [(t["state"], t["action"], "System Manager") for t in definition["transitions"]]
-    plan = wf.planned_role_upgrade(states, transitions, definition, wf.PREVIOUSLY_SHIPPED_ROLES["Consolidation Adjustment"])
-    assert plan is not None
-    edit, allowed = plan
-    assert allowed[("Pending Approval", "Approve")] == "EPM Admin"
-    assert allowed[("Draft", "Send for Approval")] == "EPM Analyst"
-    assert edit["Draft"] == "EPM Analyst"
-
-
-def test_a_customised_workflow_is_left_alone():
-    wf = _planner()
-    definition = _workflow("Consolidation Adjustment")
-    prev = wf.PREVIOUSLY_SHIPPED_ROLES["Consolidation Adjustment"]
-    states = [(s["state"], "System Manager") for s in definition["states"]]
-    transitions = [(t["state"], t["action"], "System Manager") for t in definition["transitions"]]
-    # a site gave one transition to its own role
-    custom = list(transitions)
-    custom[0] = (custom[0][0], custom[0][1], "Finance Controller")
-    assert wf.planned_role_upgrade(states, custom, definition, prev) is None
-    # a site added its own state
-    assert wf.planned_role_upgrade(states + [("On Hold", "System Manager")], transitions, definition, prev) is None
-    # already upgraded: nothing to do
-    current_states = [(s["state"], s["allow_edit"]) for s in definition["states"]]
-    current_tr = [(t["state"], t["action"], t["allowed"]) for t in definition["transitions"]]
-    assert wf.planned_role_upgrade(current_states, current_tr, definition, prev) is None
-
-
 def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
     """A role with create but no edit on Draft makes a document it can never
     touch again once saved (the review of #146 caught the Close Lead there)."""
@@ -298,75 +262,6 @@ def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
             assert p["role"] in editors, p["role"]
 
 
-def test_upgrade_rewrites_roles_only_and_keeps_previous_approvers():
-    definition = _workflow("Consolidation Adjustment")
-    saved, granted = [], {}
-
-    class Row(types.SimpleNamespace):
-        pass
-
-    wf_doc = types.SimpleNamespace(
-        name="Consolidation Adjustment Workflow",
-        states=[Row(state=s["state"], doc_status=s["doc_status"], allow_edit="System Manager")
-                for s in definition["states"]],
-        transitions=[Row(state=t["state"], action=t["action"], next_state=t["next_state"], allowed="System Manager")
-                     for t in definition["transitions"]],
-        save=lambda ignore_permissions=False: saved.append(True),
-    )
-
-    class User:
-        def __init__(self, name):
-            self.name = name
-
-        def add_roles(self, *roles):
-            granted[self.name] = list(roles)
-
-    roles_of = {"ops@example.com": ["System Manager"], "lead@example.com": ["System Manager", "EPM Admin"],
-                "off@example.com": ["System Manager"], "prof@example.com": ["System Manager"]}
-    users = {"ops@example.com": (1, None), "lead@example.com": (1, None), "off@example.com": (0, None),
-             "prof@example.com": (1, "Accounts")}
-
-    class User:  # noqa: F811 - add_roles must change what get_roles returns
-        def __init__(self, name):
-            self.name = name
-
-        def add_roles(self, *roles):
-            granted[self.name] = list(roles)
-            roles_of[self.name] = roles_of[self.name] + list(roles)
-
-    def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
-        if doctype == "Has Role":
-            return ["Administrator", *users]
-        if doctype == "User":
-            rows = [n for n in filters["name"][1]
-                    if "enabled" not in filters or users[n][0] == filters["enabled"]]
-            return [types.SimpleNamespace(name=n, role_profile_name=users[n][1]) for n in rows]
-        raise AssertionError(doctype)
-
-    with _stub_frappe(
-        db=types.SimpleNamespace(get_value=lambda dt, filters, field: "Consolidation Adjustment Workflow",
-                                 savepoint=lambda name: None, rollback=lambda save_point=None: None),
-        get_doc=lambda dt, name: wf_doc if dt == "Workflow" else User(name),
-        get_all=get_all,
-        get_roles=lambda user=None: roles_of.get(user, []),
-    ):
-        wf = _load("workflows.py", "_wf_upgrade_under_test")
-        result = wf._upgrade_roles(definition)
-
-    assert saved == [True]
-    assert {s.state: s.allow_edit for s in wf_doc.states} == {s["state"]: s["allow_edit"] for s in definition["states"]}
-    assert {(t.state, t.action): t.allowed for t in wf_doc.transitions} == {
-        (t["state"], t["action"]): t["allowed"] for t in definition["transitions"]}
-    # nothing but the roles moved
-    assert [t.next_state for t in wf_doc.transitions] == [t["next_state"] for t in definition["transitions"]]
-    # off@ is disabled and prof@ is on a Role Profile: neither is granted,
-    # and the Role Profile user is reported rather than silently dropped
-    assert granted == {"ops@example.com": ["EPM Admin", "EPM Analyst"], "lead@example.com": ["EPM Analyst"]}
-    assert result["granted"] == granted
-    assert any("prof@example.com" in n and "Accounts" in n for n in result["notes"]), result["notes"]
-    assert not any("off@example.com" in n for n in result["notes"])
-
-
 def test_whoever_can_amend_can_open_the_cancelled_state():
     """The desk strips amend from a form the workflow makes read-only, so the
     amending role must be allow_edit on every cancelled (docstatus 2) state."""
@@ -377,37 +272,3 @@ def test_whoever_can_amend_can_open_the_cancelled_state():
             assert p["role"] in cancelled_editors, p["role"]
 
 
-def test_a_failed_grant_is_rolled_back_to_its_savepoint_and_reported():
-    calls = []
-
-    class Broken:
-        def add_roles(self, *roles):
-            calls.append(("add", roles))
-            raise RuntimeError("on_update failed")
-
-    with _stub_frappe(
-        db=types.SimpleNamespace(savepoint=lambda name: calls.append(("savepoint", name)),
-                                 rollback=lambda save_point=None: calls.append(("rollback", save_point))),
-        get_all=lambda doctype, filters=None, pluck=None, fields=None, **kw: (
-            ["ops@example.com"] if doctype == "Has Role"
-            else [types.SimpleNamespace(name="ops@example.com", role_profile_name=None)]),
-        get_roles=lambda user=None: ["System Manager"],
-        get_doc=lambda dt, name: Broken(),
-    ):
-        wf = _load("workflows.py", "_wf_grant_fail_under_test")
-        granted, notes = wf._grant_previous_approvers({"System Manager"}, {"EPM Admin"})
-    assert granted == {}
-    assert [c[0] for c in calls] == ["savepoint", "add", "rollback"]
-    assert calls[0][1] == calls[2][1]
-    assert any("ops@example.com" in n and "by hand" in n for n in notes)
-
-
-def test_upgrade_skips_a_workflow_by_another_name():
-    saved = []
-    with _stub_frappe(
-        db=types.SimpleNamespace(get_value=lambda dt, filters, field: None),
-        get_doc=lambda *a: saved.append(a),
-    ):
-        wf = _load("workflows.py", "_wf_skip_under_test")
-        assert wf._upgrade_roles(_workflow("Consolidation Adjustment")) is None
-    assert saved == []
