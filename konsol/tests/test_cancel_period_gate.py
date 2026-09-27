@@ -16,7 +16,6 @@ from contextlib import contextmanager
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATED = {
-    "ConsolidationAdjustment": "assert_open",
     "ConsolidationJournal": "assert_open",
     "ICBalance": "assert_open",
     "HistoricalEquityRate": "assert_open_between",

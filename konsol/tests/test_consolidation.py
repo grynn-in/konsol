@@ -1,4 +1,4 @@
-"""TDD tests for Consolidation Group, IC Elimination Rule, Consolidation Adjustment."""
+"""TDD tests for Consolidation Group, IC Elimination Rule, Consolidation Journal."""
 import ast
 import glob
 import json
@@ -133,41 +133,14 @@ def test_ic_elimination_rule_ch_sync():
     assert "epm_gold.ic_elimination_rules" not in content
 
 
-# --- Consolidation Adjustment ---
-
-def test_consolidation_adjustment_json_exists():
-    assert _doctype_file("consolidation_adjustment", "json") is not None
-
-
-def test_consolidation_adjustment_has_required_fields():
-    meta = _load_json("consolidation_adjustment")
-    fields = [f["fieldname"] for f in meta["fields"]]
-    for f in ["consolidation_group", "adjustment_type", "journal_id", "data_area_id",
-              "fiscal_year", "fiscal_period", "main_account", "debit_amount", "credit_amount"]:
-        assert f in fields, f"Missing field: {f}"
-
-
-def test_consolidation_adjustment_types():
-    meta = _load_json("consolidation_adjustment")
-    for field in meta["fields"]:
-        if field["fieldname"] == "adjustment_type":
-            options = field["options"].split("\n")
-            assert "topside" in options
-            assert "reclassification" in options
-
-
-def test_consolidation_adjustment_has_posted_by():
-    meta = _load_json("consolidation_adjustment")
-    fields = [f["fieldname"] for f in meta["fields"]]
-    assert "posted_by" in fields
-
+# --- Consolidation Journal ---
 
 def test_consolidation_journal_ch_sync():
     """konsol#305 J05: the journal is the one writer of
     epm_staging.consolidation_adjustments (one row per line). Consolidation
-    Adjustment stops writing it in the same change: reconcile_all
-    TRUNCATE+INSERTs every write-through table, so two controllers naming one
-    table erase each other (Problems P12).
+    Adjustment, its other writer, stopped in the same change and is deleted
+    (J12): reconcile_all TRUNCATE+INSERTs every write-through table, so two
+    controllers naming one table erase each other (Problems P12).
 
     konsolidat#146: the legacy epm_gold write-through stays gone."""
     journal = _load_py("consolidation_journal")
@@ -180,16 +153,10 @@ def test_consolidation_journal_ch_sync():
         assert hook in journal, hook
     assert "def on_trash(" not in journal
 
-    adjustment = _load_py("consolidation_adjustment")
-    assert "CH_STAGING_TABLE" not in adjustment
-    assert "CH_STAGING_FIELD_MAP" not in adjustment
-    assert "resync_staging" not in adjustment
-    assert "sync_doctype" not in adjustment
-    assert "epm_gold.consolidation_adjustments" not in adjustment
-
 
 def test_all_consolidation_doctypes_module_consolidation():
-    for dt in ["consolidation_group", "ic_elimination_rule", "consolidation_adjustment"]:
+    for dt in ["consolidation_group", "ic_elimination_rule", "consolidation_journal",
+               "consolidation_journal_line"]:
         meta = _load_json(dt)
         assert meta["module"] == "Consolidation", f"{dt} not in Consolidation module"
 
@@ -408,7 +375,7 @@ def test_nothing_else_ships_transactional_data_as_a_fixture():
         shipped.update(r.get("doctype") for r in rows if isinstance(r, dict))
     for doctype in ("Ownership Period", "Trial Balance Submission",
                     "Historical Equity Rate", "IC Balance",
-                    "Consolidation Adjustment"):
+                    "Consolidation Journal"):
         assert doctype not in shipped, (
             f"{doctype} is submittable transactional data; a fixture would "
             f"force-delete and reinsert it on every migrate")

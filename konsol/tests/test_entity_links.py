@@ -21,7 +21,6 @@ REFERRING_DOCTYPES = {
     "Consolidation Group",
     "Ownership Period",
     "Budget Sheet",
-    "Consolidation Adjustment",
     "Historical Equity Rate",
     "Trial Balance Submission",
     # konsolidat#146: the top-down half of budget input, moved out of

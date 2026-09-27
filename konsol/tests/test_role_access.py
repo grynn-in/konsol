@@ -92,10 +92,9 @@ def test_after_install_creates_roles_before_workflows():
 # loss both show up here rather than in production.
 MATRIX = {
     "Trial Balance Submission": {"EPM Admin": "rwcdsxa", "Entity Accountant": "rwcsxa", "EPM Analyst": "r", "EPM User": "r"},
-    # The Close Lead approves and reverses; drafting, and amending a reversed
-    # adjustment into a new draft, is the Group Accountant's.
-    "Consolidation Adjustment": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
-    # konsol#305 J06: the journal replaces the adjustment with the same split
+    # konsol#305 J06: the journal replaces the adjustment with its split. The
+    # Close Lead approves and reverses; drafting, and amending a reversed
+    # journal into a new draft, is the Group Accountant's.
     "Consolidation Journal": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
     "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "Ownership Period": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
@@ -146,23 +145,6 @@ def test_entity_accountant_gets_only_entity_scoped_write():
             assert meta["name"] in scoped, f"Entity Accountant can write {meta['name']}, which is not entity-scoped"
 
 
-def test_adjustment_workflow_analyst_drafts_admin_approves():
-    wf = _workflow("Consolidation Adjustment")
-    status = {s["state"]: int(s["doc_status"]) for s in wf["states"]}
-    allowed = {t["action"]: t["allowed"] for t in wf["transitions"]}
-    assert allowed == {"Send for Approval": "EPM Analyst", "Reject": "EPM Admin",
-                       "Approve": "EPM Admin", "Reverse": "EPM Admin"}
-    # submit is the approval, so the approving role holds submit and the
-    # drafting role does not
-    for t in wf["transitions"]:
-        if status[t["next_state"]] == 1:
-            assert "s" in _perm("Consolidation Adjustment", t["allowed"])
-        if status[t["next_state"]] == 2:
-            assert "x" in _perm("Consolidation Adjustment", t["allowed"])
-        assert "w" in _perm("Consolidation Adjustment", t["allowed"]), t
-    assert "s" not in _perm("Consolidation Adjustment", "EPM Analyst")
-
-
 def test_journal_workflow_analyst_drafts_admin_approves():
     wf = _workflow("Consolidation Journal")
     status = {s["state"]: int(s["doc_status"]) for s in wf["states"]}
@@ -181,7 +163,7 @@ def test_journal_workflow_analyst_drafts_admin_approves():
 
 
 def test_only_the_close_lead_approves_consolidation_work():
-    for doctype in ("Consolidation Adjustment", "Consolidation Journal", "Ownership Period", "Trial Balance Submission",
+    for doctype in ("Consolidation Journal", "Ownership Period", "Trial Balance Submission",
                     "Historical Equity Rate", "IC Balance"):
         submitters = {p["role"] for p in _meta(doctype).get("permissions", []) if p.get("submit")}
         assert submitters <= {"System Manager", "Administrator", "EPM Admin", "Entity Accountant"}, (doctype, submitters)
@@ -245,11 +227,12 @@ def test_restrict_by_default_still_applies_to_everyone():
     assert _allowed_for(["EPM User"], restrict=True) == set()
 
 
-def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
+def test_whoever_can_create_a_journal_can_edit_and_send_it():
     """A role with create but no edit on Draft makes a document it can never
-    touch again once saved (the review of #146 caught the Close Lead there)."""
-    wf = _workflow("Consolidation Adjustment")
-    perms = _meta("Consolidation Adjustment").get("permissions", [])
+    touch again once saved (the review of #146 caught the Close Lead there on
+    Consolidation Adjustment; konsol#305 J12 retargets it to the journal)."""
+    wf = _workflow("Consolidation Journal")
+    perms = _meta("Consolidation Journal").get("permissions", [])
     draft_editors = {s["allow_edit"] for s in wf["states"] if s["state"] == "Draft"}
     senders = {t["allowed"] for t in wf["transitions"] if t["state"] == "Draft"}
     editors = {s["allow_edit"] for s in wf["states"]}
@@ -265,9 +248,9 @@ def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
 def test_whoever_can_amend_can_open_the_cancelled_state():
     """The desk strips amend from a form the workflow makes read-only, so the
     amending role must be allow_edit on every cancelled (docstatus 2) state."""
-    wf = _workflow("Consolidation Adjustment")
+    wf = _workflow("Consolidation Journal")
     cancelled_editors = {s["allow_edit"] for s in wf["states"] if int(s["doc_status"]) == 2}
-    for p in _meta("Consolidation Adjustment").get("permissions", []):
+    for p in _meta("Consolidation Journal").get("permissions", []):
         if p.get("amend") and p["role"] not in FRAPPE_ROLES:
             assert p["role"] in cancelled_editors, p["role"]
 

@@ -99,15 +99,6 @@ def test_no_controller_saves_itself_on_submit_or_cancel():
     assert not offenders, offenders
 
 
-def test_an_adjustment_is_reversed_only_in_an_open_period():
-    for path, cls in _controllers():
-        if cls.name == "ConsolidationAdjustment":
-            fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel")
-            assert "assert_open" in ast.unparse(fn)
-            return
-    raise AssertionError("ConsolidationAdjustment not found")
-
-
 def test_a_journal_is_reversed_only_in_an_open_period():
     for path, cls in _controllers():
         if cls.name == "ConsolidationJournal":
@@ -155,23 +146,6 @@ def test_no_endpoint_names_the_retired_adjustment():
     assert "approve_adjustment" not in approval_api_src
 
 
-def test_an_adjustment_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
-    for path, cls in _controllers():
-        if cls.name != "ConsolidationAdjustment":
-            continue
-        methods = {n.name: ast.unparse(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
-        assert "approved_by = self.approved_at = None" in methods["before_insert"]
-        assert "_states(0)" in methods["validate"] and "frappe.throw" in methods["validate"]
-        for hook, docstatus in (("before_submit", 1), ("before_cancel", 2)):
-            assert f"_states({docstatus})" in methods[hook] and "get_workflow_name" in methods[hook], hook
-        # konsol#305 J05: the warehouse sync, and the after_delete that drove
-        # it (#120), moved to Consolidation Journal; test_consolidation.py
-        # pins the journal's hooks.
-        assert "on_trash" not in methods
-        return
-    raise AssertionError("ConsolidationAdjustment not found")
-
-
 def test_a_journal_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
     """konsol#305 J06: the journal keeps the adjustment's guards, now that
     its own workflow is installed."""
@@ -189,17 +163,42 @@ def test_a_journal_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
     raise AssertionError("ConsolidationJournal not found")
 
 
+#: The retired Consolidation Adjustment Workflow's states and transitions, as
+#: shipped at close-d2 0965b57 (konsol#305 J12 deleted its JSON). J06 gave the
+#: journal exactly these; the literal keeps that pin now the file is gone.
+_RETIRED_ADJUSTMENT_WORKFLOW = {
+    "states": [
+        {"state": "Draft", "doc_status": "0", "allow_edit": "EPM Analyst"},
+        {"state": "Pending Approval", "doc_status": "0", "allow_edit": "EPM Admin"},
+        {"state": "Approved", "doc_status": "1", "allow_edit": "EPM Admin"},
+        {"state": "Reversed", "doc_status": "2", "allow_edit": "EPM Analyst"},
+    ],
+    "transitions": [
+        {"state": "Draft", "action": "Send for Approval", "next_state": "Pending Approval",
+         "allowed": "EPM Analyst", "allow_self_approval": 1},
+        {"state": "Pending Approval", "action": "Reject", "next_state": "Draft",
+         "allowed": "EPM Admin", "allow_self_approval": 1},
+        {"state": "Pending Approval", "action": "Approve", "next_state": "Approved",
+         "allowed": "EPM Admin", "allow_self_approval": 1},
+        {"state": "Approved", "action": "Reverse", "next_state": "Reversed",
+         "allowed": "EPM Admin", "allow_self_approval": 1},
+    ],
+}
+
+
 def test_the_journal_workflow_is_installed_and_mirrors_the_adjustment():
     """konsol#305 J06 (#305-D2-1, R1): the journal takes the adjustment's
     workflow, states, roles and all. allow_self_approval stays 1: R5 is the
-    runtime hook's (konsol.close.self_approval), not the JSON's."""
+    runtime hook's (konsol.close.self_approval), not the JSON's. J12 deleted
+    the adjustment's JSON; its shape is kept above as a literal."""
     import re
     with open(os.path.join(APP_DIR, "workflows.py")) as f:
         installed = re.findall(r'"([^"]+)"', f.read().split("INSTALLED = (")[1].split(")")[0])
     assert "Consolidation Journal" in installed, installed
     by_type = {wf["document_type"]: wf for _, wf in _workflows()}
     assert "Consolidation Journal" in by_type, "no consolidation_journal_workflow.json"
-    journal, adjustment = by_type["Consolidation Journal"], by_type["Consolidation Adjustment"]
+    assert "Consolidation Adjustment" not in by_type, "the retired workflow JSON is back"
+    journal, adjustment = by_type["Consolidation Journal"], _RETIRED_ADJUSTMENT_WORKFLOW
     assert journal["name"] == journal["workflow_name"] == "Consolidation Journal Workflow"
     assert journal["workflow_state_field"] == "status" and journal["is_active"] == 1
     assert journal["states"] == adjustment["states"]

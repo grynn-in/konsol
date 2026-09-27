@@ -17,6 +17,30 @@ def test_module_parses():
     ast.parse(_src("entity_permissions.py"))
 
 
+def test_every_scoped_doctype_exists_and_carries_data_area_id():
+    """hooks.py generates a query-condition hook per entry, so an entry for a
+    deleted doctype (konsol#305 J12: Consolidation Adjustment) is a hook for
+    nothing. Each entry must have its doctype JSON, with data_area_id."""
+    import glob
+    import json
+    tree = ast.parse(_src("entity_permissions.py"))
+    scoped = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                  and getattr(n.targets[0], "id", None) == "ENTITY_SCOPED_DOCTYPES")
+    assert "Consolidation Adjustment" not in scoped
+    fields = {}
+    for path in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.json")):
+        with open(path) as f:
+            try:
+                d = json.load(f)
+            except ValueError:
+                continue
+        if isinstance(d, dict) and d.get("doctype") == "DocType":
+            fields[d["name"]] = {x.get("fieldname") for x in d.get("fields", [])}
+    for dt in scoped:
+        assert dt in fields, f"{dt} is entity-scoped but has no doctype"
+        assert "data_area_id" in fields[dt], f"{dt} is entity-scoped but has no data_area_id"
+
+
 def test_hooks_register_query_conditions_for_every_scoped_doctype():
     """There were none at all before, so desk lists were never filtered."""
     hooks = _src("hooks.py")

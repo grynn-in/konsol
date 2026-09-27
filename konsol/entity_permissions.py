@@ -31,7 +31,6 @@ ENTITY_SCOPED_DOCTYPES = (
     "Consolidation Group",
     "Ownership Period",
     "Budget Sheet",
-    "Consolidation Adjustment",
     "Historical Equity Rate",
     "Trial Balance Submission",
 )

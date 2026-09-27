@@ -17,7 +17,7 @@ import tempfile
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "Consolidation Journal", "IC Balance")
+GATED_IN_BEFORE_SUBMIT = ("Consolidation Journal", "IC Balance")
 PERIOD_GATES = {"assert_open", "assert_open_between"}
 CLOSED = "Dec 2099 is closed."
 #: a fiscal year/period never declared, for the assert_declared stub to refuse
@@ -27,7 +27,7 @@ UNDECLARED = (2001, 1)
 #: konsol#305 R02 deleted home_model.py, where the old home kept them; the
 #: tests below check the list against what the controllers actually refuse.
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
-    "Trial Balance Submission", "Consolidation Adjustment", "Consolidation Journal",
+    "Trial Balance Submission", "Consolidation Journal",
     "IC Balance", "Group Exchange Rate"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
@@ -37,7 +37,7 @@ SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 #: The submittable doctypes checked against a closed period: every doctype the
 #: old home offered a submit for (read from home_api before R02 deleted it).
 SUBMIT_CANDIDATES = frozenset({
-    "Consolidation Adjustment", "Consolidation Journal", "Group Exchange Rate",
+    "Consolidation Journal", "Group Exchange Rate",
     "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission"})
 
 
@@ -350,7 +350,7 @@ def test_submit_into_an_open_period_still_works():
         d.before_submit()
         assert [c[:2] for c in record["checked"]] == [(2099, 12)], doctype
         assert record["checked"][0][2].split()[0] in ("approve", "submit"), record["checked"]
-    module, _ = _load(PATHS["Consolidation Adjustment"], period_open=True)
-    d = _doc(module, "Consolidation Adjustment")
+    module, _ = _load(PATHS["Consolidation Journal"], period_open=True)
+    d = _doc(module, "Consolidation Journal")
     d.before_submit()
     assert (d.status, d.approved_by) == ("Approved", "approver@example.com")
