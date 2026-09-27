@@ -49,6 +49,13 @@ SUBMITTABLE = {
 }
 BUILD_MAP = {dt: {"scope": "staging", "risk": "low"} for dt in TRIGGERS}
 BUILD_MAP.update({
+    # S01/#306, #305-D2-10: every trigger reaches gold_fully_consolidated_tb.
+    "Consolidation Group": {"scope": "consolidation", "risk": "high"},
+    "Consolidation Adjustment": {"scope": "consolidation", "risk": "high"},
+    "Ownership Period": {"scope": "consolidation", "risk": "high"},
+    "Historical Equity Rate": {"scope": "consolidation", "risk": "high"},
+    "IC Elimination Rule": {"scope": "consolidation", "risk": "high"},
+    "IC Balance": {"scope": "consolidation", "risk": "high"},
     "Entity": {"scope": "consolidation", "risk": "high"},
     "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
     "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
