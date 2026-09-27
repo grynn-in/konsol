@@ -20,6 +20,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE_PY = os.path.join(APP_DIR, "close", "signoff_gate.py")
 PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
+CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -209,7 +210,9 @@ def _load(site):
     close = types.ModuleType("konsol.close")
     period_model = _by_path("konsol.close.period_model", PERIOD_MODEL_PY)
     signoff_model = _by_path("konsol.close.signoff_model", SIGNOFF_MODEL_PY)
+    close_policy_model = _by_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
     close.period_model, close.signoff_model = period_model, signoff_model
+    close.close_policy_model = close_policy_model
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -282,6 +285,7 @@ def _load(site):
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.close.period_model": period_model,
             "konsol.close.signoff_model": signoff_model,
+            "konsol.close.close_policy_model": close_policy_model,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),

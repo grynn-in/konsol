@@ -29,6 +29,8 @@ from datetime import date, datetime
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOSE_DIR = os.path.join(APP_DIR, "close")
 API_PY = os.path.join(CLOSE_DIR, "signoff_api.py")
+# P05: signoff_gate.py now imports close_policy_model; loaded for real below
+# alongside signoff_model/period_model/timefmt (real, by path).
 
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 QUARTERS = {1: "Q1", 2: "Q1", 3: "Q1", 4: "Q2", 5: "Q2", 6: "Q2",
@@ -105,6 +107,9 @@ class _Site:
         rows += [_period(2025, fp, "Open") for fp in range(9, 13)]
         self.rows = rows
         self.first_close = (2025, 1)
+        #: P05 (#305-D2-3, #305-D2-9): both declared, so signoff_gate adds no
+        #: policy gap by default; a test sets ``site.policies`` to probe a gap.
+        self.policies = ("Blocked", 50)
         self.closed = {(2025, fp): (LEAD, CLOSED_ON) for fp in range(1, 9)}
         #: A63: the period rows' data-change fields, by (year, period).
         self.data_changed = {}
@@ -210,7 +215,10 @@ def _load(site):
     def get_single_value(doctype, field):
         assert doctype == "Close Settings", doctype
         fy, fp = site.first_close or (0, 0)
-        return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp}[field]
+        self_approval, rate_move_threshold = site.policies
+        return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp,
+                "self_approval": self_approval,
+                "rate_move_threshold": rate_move_threshold}[field]
 
     def _write(*a, **k):
         site.writes.append(a)
@@ -316,10 +324,10 @@ def _load(site):
             "konsol.consolidation.doctype.assertion_run.assertion_run": ar}
     saved = {n: sys.modules.get(n) for n in list(mods) + [
         "konsol.close.signoff_model", "konsol.close.period_model", "konsol.close.signoff_gate",
-        "konsol.close.timefmt"]}
+        "konsol.close.timefmt", "konsol.close.close_policy_model"]}
     sys.modules.update(mods)
     try:
-        for name in ("signoff_model", "period_model", "timefmt", "signoff_gate"):
+        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt", "signoff_gate"):
             mod = _by_path("konsol.close." + name, os.path.join(CLOSE_DIR, name + ".py"))
             sys.modules["konsol.close." + name] = mod
             setattr(close, name, mod)
