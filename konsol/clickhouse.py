@@ -771,6 +771,25 @@ _REFERENCE_TABLE_DDL = {
         "(parent String, idx UInt16, component String, amount Float64, "
         "currency String, settlement_date Date, description String) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),    # konsol#305-D2-11 (Deepak Pai, 27 Sep 2026): the Consolidation Journal's
+    # warehouse table. The journal names its reversal period, so
+    # auto_reverse_period is replaced by reverse_fiscal_year and
+    # reverse_fiscal_period (0/0 = no reversal): LAST here and in
+    # _ADDED_COLUMNS, and the old column is in _RETIRED_COLUMNS. konsol owns
+    # the DDL from here on; keep it in sync with konsolidat's
+    # clickhouse/init-db.sql, which follows it (V01). Deploy with V01 in one
+    # window (Problems P24): the dbt model before V01 reads auto_reverse_period.
+    "epm_staging.consolidation_adjustments": (
+        "(consolidation_group String, adjustment_type String, journal_id String, "
+        "data_area_id String, fiscal_year UInt16, fiscal_period UInt8, "
+        "main_account String, debit_amount Decimal(18,2) DEFAULT 0, "
+        "credit_amount Decimal(18,2) DEFAULT 0, description String DEFAULT '', "
+        "posted_by String DEFAULT '', status String DEFAULT 'Approved', "
+        "approved_by String DEFAULT '', approved_at DateTime DEFAULT '1970-01-01 00:00:00', "
+        "reversal_journal_id String DEFAULT '', created_at DateTime DEFAULT now(), "
+        "reverse_fiscal_year UInt16 DEFAULT 0, reverse_fiscal_period UInt8 DEFAULT 0) "
+        "ENGINE = MergeTree() ORDER BY (consolidation_group, journal_id, fiscal_year, "
+        "fiscal_period, main_account)"
     ),
 }
 
@@ -838,6 +857,9 @@ _RETIRED_COLUMNS = {
     # konsol#197: no dbt model ever selected it — the cash-flow models read
     # is_cash, cf_category and cf_line_item and negate the movement themselves
     "epm_staging.cash_flow_categories": ["sign"],
+    # konsol#305-D2-11: the journal names its reversal period
+    # (reverse_fiscal_year, reverse_fiscal_period) instead
+    "epm_staging.consolidation_adjustments": ["auto_reverse_period"],
 }
 
 # The trial-balance landing and control tables (F8). KEEP IN SYNC with
@@ -914,6 +936,11 @@ _ADDED_COLUMNS = {
     # konsol#103: ISO Currency's magnitude reference for the group rate guard;
     # NaN until the ISO Currency write-through fills it
     "epm_gold.currencies": [("usd_log10", "Float64 DEFAULT nan")],
+    # konsol#305-D2-11: the period a journal reverses in; 0/0 = no reversal
+    "epm_staging.consolidation_adjustments": [
+        ("reverse_fiscal_year", "UInt16 DEFAULT 0"),
+        ("reverse_fiscal_period", "UInt8 DEFAULT 0"),
+    ],
 }
 
 
