@@ -233,6 +233,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_staging.business_combination_costs",
         "epm_staging.business_disposals",
         "epm_staging.business_disposal_proceeds",
+        # konsol#305-D2-11: the journal's warehouse table; konsol owns its DDL
+        # so a migrate can add the reversal columns and drop the old one
+        "epm_staging.consolidation_adjustments",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""
@@ -267,6 +270,49 @@ def test_added_columns_reach_tables_that_already_exist():
         for c, t in cols:
             assert create < sql.index(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} {t}"), (table, c)
     assert "CREATE DATABASE IF NOT EXISTS epm_raw" in sql
+
+
+CA_TABLE = "epm_staging.consolidation_adjustments"
+CA_BODY = (
+    "(consolidation_group String, adjustment_type String, journal_id String, "
+    "data_area_id String, fiscal_year UInt16, fiscal_period UInt8, "
+    "main_account String, debit_amount Decimal(18,2) DEFAULT 0, "
+    "credit_amount Decimal(18,2) DEFAULT 0, description String DEFAULT '', "
+    "posted_by String DEFAULT '', status String DEFAULT 'Approved', "
+    "approved_by String DEFAULT '', approved_at DateTime DEFAULT '1970-01-01 00:00:00', "
+    "reversal_journal_id String DEFAULT '', created_at DateTime DEFAULT now(), "
+    "reverse_fiscal_year UInt16 DEFAULT 0, reverse_fiscal_period UInt8 DEFAULT 0) "
+    "ENGINE = MergeTree() ORDER BY (consolidation_group, journal_id, fiscal_year, "
+    "fiscal_period, main_account)")
+
+
+def test_consolidation_adjustments_names_its_reversal_period():
+    """konsol#305-D2-11. The journal names its reversal period: the warehouse
+    table replaces auto_reverse_period with reverse_fiscal_year and
+    reverse_fiscal_period (0/0 = no reversal). konsol owns the DDL, so a
+    migrate creates the table, ADDs the two columns to an existing one, and
+    only then DROPs the old column: an upgraded table ends in the fresh shape.
+    Keep the body in sync with konsolidat's clickhouse/init-db.sql."""
+    m, _ = _load_clickhouse()
+    assert m._REFERENCE_TABLE_DDL.get(CA_TABLE) == CA_BODY
+    assert "auto_reverse_period" not in m._REFERENCE_TABLE_DDL[CA_TABLE]
+    assert m._ADDED_COLUMNS.get(CA_TABLE) == [
+        ("reverse_fiscal_year", "UInt16 DEFAULT 0"),
+        ("reverse_fiscal_period", "UInt8 DEFAULT 0"),
+    ]
+    assert m._RETIRED_COLUMNS.get(CA_TABLE) == ["auto_reverse_period"]
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    m.ensure_reference_tables()
+    create = sql.index(f"CREATE TABLE IF NOT EXISTS {CA_TABLE} {CA_BODY}")
+    assert "auto_reverse_period" not in sql[create]
+    add_year = sql.index(
+        f"ALTER TABLE {CA_TABLE} ADD COLUMN IF NOT EXISTS reverse_fiscal_year UInt16 DEFAULT 0")
+    add_period = sql.index(
+        f"ALTER TABLE {CA_TABLE} ADD COLUMN IF NOT EXISTS reverse_fiscal_period UInt8 DEFAULT 0")
+    drop = sql.index(f"ALTER TABLE {CA_TABLE} DROP COLUMN IF EXISTS auto_reverse_period")
+    assert create < add_year < drop
+    assert create < add_period < drop
 
 
 def test_the_group_root_carries_its_policy_and_declared_accounts():
