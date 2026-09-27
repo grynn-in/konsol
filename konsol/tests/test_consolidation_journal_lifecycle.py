@@ -90,12 +90,25 @@ DEFAULT_PERIOD_ROWS = [
     _period_row(2025, 2, "Regular", "Closed"),
 ]
 
+#: before_submit imports konsol.fiscal_calendar lazily (it needs a live site;
+#: mirrors close_settings.py's own lazy import), so its stub must outlive one
+#: _load() call — the test may call before_submit only after _load() has
+#: already restored sys.modules. Registered once, permanently, like
+#: test_close_settings.py's own module-scope `_stub`; run-host-tests.py's
+#: per-file isolation drops it once this file's tests are done.
+_PERIOD_ROWS_NOW = [DEFAULT_PERIOD_ROWS]
+if "konsol.fiscal_calendar" not in sys.modules:
+    _fiscal_calendar_stub = types.ModuleType("konsol.fiscal_calendar")
+    _fiscal_calendar_stub.fiscal_period_rows = lambda: list(_PERIOD_ROWS_NOW[0])
+    sys.modules["konsol.fiscal_calendar"] = _fiscal_calendar_stub
+
 
 def _load(states=None, period_open=True, declared=True,
           root=DEFAULT_ROOT, nodes=DEFAULT_NODES, accounts=DEFAULT_ACCOUNTS,
           period_rows=DEFAULT_PERIOD_ROWS):
     """Import the controller with frappe stubbed. ``states`` is the active
     workflow's [(state, doc_status)], or None for no workflow."""
+    _PERIOD_ROWS_NOW[0] = period_rows
     checked = []
 
     def assert_declared(fiscal_year, fiscal_period):
@@ -120,7 +133,7 @@ def _load(states=None, period_open=True, declared=True,
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
-        "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.fiscal_calendar")}
+        "konsol", "konsol.clickhouse", "konsol.period_status")}
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
@@ -137,7 +150,6 @@ def _load(states=None, period_open=True, declared=True,
     mods["konsol.clickhouse"].sync_doctype = lambda *a: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_declared = assert_declared
-    mods["konsol.fiscal_calendar"].fiscal_period_rows = lambda: list(period_rows)
 
     # journal_model.py is pure (J01) and loaded by path, exactly like
     # test_close_journal_model.py, then wired in as konsol.close.journal_model

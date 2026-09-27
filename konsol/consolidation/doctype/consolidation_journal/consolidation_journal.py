@@ -38,6 +38,11 @@ class ConsolidationJournal(Document):
         assert_declared(self.fiscal_year, self.fiscal_period)
         if self.docstatus == 0 and self.status and self.status not in _states(0):
             frappe.throw(_("{0} is set by approving or reversing the journal, not by saving it.").format(self.status))
+        pair_problem = journal_model.reversal_pair_problem(
+            cint(self.get("reverse_fiscal_year")), cint(self.get("reverse_fiscal_period"))
+        )
+        if pair_problem:
+            frappe.throw(pair_problem)
         self._validate_lines_and_totals()
 
     def _validate_lines_and_totals(self):
@@ -124,6 +129,19 @@ class ConsolidationJournal(Document):
         period is open: a draft whose period closed while it waited for review
         is corrected by a new journal in an open period (#149)."""
         assert_open(self.fiscal_year, self.fiscal_period, action="approve a consolidation journal")
+        reverse_year = cint(self.get("reverse_fiscal_year"))
+        reverse_period = cint(self.get("reverse_fiscal_period"))
+        if reverse_year or reverse_period:
+            # Imported lazily: needs a live site; the controller test stubs it
+            # only when it actually exercises a named reversal period (mirrors
+            # close_settings.py's own lazy fiscal_calendar import).
+            from konsol.fiscal_calendar import fiscal_period_rows
+            problem = journal_model.reversal_problem(
+                self.fiscal_year, self.fiscal_period, reverse_year, reverse_period,
+                fiscal_period_rows(),
+            )
+            if problem:
+                frappe.throw(problem)
         if get_workflow_name(self.doctype):
             # apply_workflow sets the submitted state before it submits. A
             # direct submit would land a review state at docstatus 1.
