@@ -264,3 +264,17 @@ def test_staging_rows_skip_lines_whose_journal_is_not_in_the_headers():
 
 def test_staging_rows_of_nothing_is_empty():
     assert M.staging_rows([], []) == []
+
+
+def test_a_renamed_approved_state_still_reaches_the_warehouse_as_approved():
+    """Review finding 4 (27 Sep): dbt keeps only status in ('Approved','Reversed').
+    A site may rename its workflow states (consolidation_journal._states), and
+    resync reads only submitted journals, so the warehouse status is the
+    contract's 'Approved', never the site's label."""
+    header = _header("CJ-00009", "Renamed")
+    header["status"] = "Posted"
+    rows = M.staging_rows([header], [
+        _staging_line("CJ-00009", 1, "E1", "1000", debit=10),
+        _staging_line("CJ-00009", 2, "E2", "2000", credit=10),
+    ])
+    assert {dict(zip(_STAGING_COLUMNS, r))["status"] for r in rows} == {"Approved"}
