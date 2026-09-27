@@ -19,6 +19,7 @@ import frappe
 _PERIOD_DATA = {
     "Trial Balance Submission": True,
     "Consolidation Adjustment": True,
+    "Consolidation Journal": True,
     "IC Balance": True,
     "Group Exchange Rate": True,
     "Assertion Run": False,

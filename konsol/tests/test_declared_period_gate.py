@@ -15,6 +15,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATES = {"assert_declared", "assert_postable"}
 CONTROLLERS = {
     "Consolidation Adjustment": "consolidation/doctype/consolidation_adjustment/consolidation_adjustment.py",
+    "Consolidation Journal": "consolidation/doctype/consolidation_journal/consolidation_journal.py",
     "IC Balance": "consolidation/doctype/ic_balance/ic_balance.py",
     "Group Exchange Rate": "consolidation/doctype/group_exchange_rate/group_exchange_rate.py",
     "Trial Balance Submission": "consolidation/doctype/trial_balance_submission/trial_balance_submission.py",
