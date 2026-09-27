@@ -106,8 +106,18 @@ def test_consolidation_group_links_children():
     items = _items(data)
     assert "Ownership Period" in items
     assert "Historical Equity Rate" in items
-    assert "Consolidation Adjustment" in items
+    assert "Consolidation Journal" in items
     assert data["method"] == "konsol.desk.connections.get_open_count"
+
+
+def test_consolidation_adjustment_absent_from_group_and_trigger_lists():
+    from konsol.desk.connection_filters import (
+        CONSOLIDATION_GROUP_CHILD_DOCTYPES,
+        PIPELINE_BUILD_TRIGGER_DOCTYPES,
+    )
+
+    assert "Consolidation Adjustment" not in CONSOLIDATION_GROUP_CHILD_DOCTYPES
+    assert "Consolidation Adjustment" not in PIPELINE_BUILD_TRIGGER_DOCTYPES
 
 
 def test_build_approval_dashboard_links_runs_and_trigger_js():
@@ -126,9 +136,9 @@ def test_build_approval_dashboard_links_runs_and_trigger_js():
 def test_pipeline_build_request_trigger_helper():
     from konsol.desk.connection_filters import pipeline_build_request_trigger
 
-    assert pipeline_build_request_trigger("Consolidation Adjustment", "CADJ-1") == (
-        "Consolidation Adjustment",
-        ["CADJ-1"],
+    assert pipeline_build_request_trigger("Consolidation Journal", "CJ-00001") == (
+        "Consolidation Journal",
+        ["CJ-00001"],
     )
     assert pipeline_build_request_trigger(None, None) == (None, [])
 
