@@ -166,6 +166,8 @@ def staging_rows(headers, lines):
     - ``description`` is the line's, else the header's;
     - ``reversal_journal_id`` is blank: dbt generates the reversal rows;
     - the reversal pair is the header's (0/0 = no reversal, #305-D2-11);
+    - ``status`` is always ``'Approved'``: only submitted journals are
+      written, whatever the site calls that workflow state;
     - an empty ``approved_at`` stays None, which the insert writes as the
       column's DEFAULT.
 
@@ -189,7 +191,10 @@ def staging_rows(headers, lines):
             line["credit_amount"],
             line.get("description") or header.get("description") or "",
             header["owner"],
-            header["status"],
+            # The warehouse contract's status, not the site's workflow label:
+            # resync writes only submitted journals, and dbt keeps only
+            # Approved/Reversed (review finding 4, 27 Sep).
+            "Approved",
             header.get("approved_by") or "",
             header.get("approved_at") or None,
             "",
