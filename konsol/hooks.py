@@ -118,7 +118,7 @@ scheduler_events = {
 
 _dbt_trigger_doctypes = [
     "Consolidation Group",
-    "Consolidation Adjustment",
+    "Consolidation Journal",
     "Ownership Period",
     "Historical Equity Rate",
     "IC Elimination Rule",

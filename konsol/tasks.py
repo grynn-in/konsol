@@ -38,7 +38,7 @@ DOCTYPE_BUILD_MAP = {
     # (+tag:domain:consolidation pulls the staging-tagged models in as
     # parents; manifest measured 26 Sep).
     "Consolidation Group": {"scope": "consolidation", "risk": "high"},
-    "Consolidation Adjustment": {"scope": "consolidation", "risk": "high"},
+    "Consolidation Journal": {"scope": "consolidation", "risk": "high"},
     "Ownership Period": {"scope": "consolidation", "risk": "high"},
     "Historical Equity Rate": {"scope": "consolidation", "risk": "high"},
     "IC Elimination Rule": {"scope": "consolidation", "risk": "high"},
