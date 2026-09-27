@@ -771,7 +771,8 @@ _REFERENCE_TABLE_DDL = {
         "(parent String, idx UInt16, component String, amount Float64, "
         "currency String, settlement_date Date, description String) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
-    ),    # konsol#305-D2-11 (Deepak Pai, 27 Sep 2026): the Consolidation Journal's
+    ),
+    # konsol#305-D2-11 (Deepak Pai, 27 Sep 2026): the Consolidation Journal's
     # warehouse table. The journal names its reversal period, so
     # auto_reverse_period is replaced by reverse_fiscal_year and
     # reverse_fiscal_period (0/0 = no reversal): LAST here and in
