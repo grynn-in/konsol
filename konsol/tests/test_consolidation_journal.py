@@ -200,3 +200,12 @@ def test_header_permissions_are_consolidation_adjustments_matrix():
 def test_header_folder_has_the_three_files():
     for name in ("__init__.py", HEADER + ".json", HEADER + ".py"):
         assert os.path.exists(os.path.join(DOCTYPE_DIR, HEADER, name)), f"{HEADER}/{name} missing"
+
+
+def test_line_entity_ignores_user_permissions():
+    """#305-P21-1: journals are not entity-scoped. Frappe checks User Permissions
+    on child-row Links too, so without this a Viewer scoped to one entity could
+    list every journal but open none with a line on another entity (review
+    finding 3, 27 Sep)."""
+    fields = {f["fieldname"]: f for f in _json("consolidation_journal_line")["fields"]}
+    assert fields["data_area_id"].get("ignore_user_permissions") == 1

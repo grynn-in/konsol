@@ -836,6 +836,9 @@ def test_the_move_rule():
     assert problem and "over 30%" in problem, problem
     # undeclared (threshold=None): a reference to compare against exists, so the
     # gap names Close Settings rather than guessing a value
+    # a small declared threshold is stated as declared, not rounded to "0%"
+    small = r.move_problem(1.01, (1.0, "P11"), None, threshold=0.005)
+    assert small and "over 0.5%" in small, small
     undeclared = r.move_problem(1.6, (1.0, "P11"), None, threshold=None)
     assert undeclared and "Close Settings" in undeclared, undeclared
     assert r.move_problem(1.6, None, None, threshold=None) is None, \
