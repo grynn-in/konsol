@@ -27,6 +27,12 @@ unrestricted. Sites wanting deny-by-default get it explicitly via
 import frappe
 
 #: Doctypes whose `data_area_id` identifies the entity a row belongs to.
+#:
+#: Consolidation Journal is deliberately absent (#305-P21-1, Deepak Pai,
+#: 27 Sep 2026): journals are group-level work, not entity-scoped, so a
+#: single-entity Viewer sees every journal. The header also carries no
+#: `data_area_id` (#305-D2-12) — adding it here would generate a query
+#: condition on a column that does not exist.
 ENTITY_SCOPED_DOCTYPES = (
     "Consolidation Group",
     "Ownership Period",
