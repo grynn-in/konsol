@@ -652,10 +652,20 @@ def on_consolidation_doc_update(doc, method):
         frappe.logger().warning(f"No build mapping for doctype: {doc.doctype}")
         return
 
-    request_build_for_scope(mapping["scope"], doc.doctype, doc.name)
+    # konsol#305-D2-10: a build that an approval requested auto-approves. The
+    # job runs as the user who saved the trigger (frappe.enqueue passes
+    # user=session.user), so the session is the approver. Imported here, not
+    # at module level: every worker imports tasks.py, and konsol/close/
+    # arrives with the same deploy.
+    from konsol.close.close_policy_model import approval_build_reason
+
+    user = frappe.session.user
+    reason = approval_build_reason(doc.doctype, doc.name, method, user, frappe.get_roles(user))
+    request_build_for_scope(mapping["scope"], doc.doctype, doc.name, auto_approve_reason=reason)
 
 
-def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_changes=False):
+def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_changes=False,
+                            auto_approve_reason=None):
     """Request a build of ``scope``: debounced, serialised, and committed.
 
     It commits, so it runs only inside a job: request_consolidation_build's
@@ -666,7 +676,16 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
     build absorbed and never read. The new approval is flagged like an
     absorbing one, so if it too fails to start, the sweep retries it (#140
     review). Absorbed into a pending build instead, the debounce flags that.
+
+    ``auto_approve_reason``: an approval requested this build
+    (close_policy_model.approval_build_reason, konsol#305-D2-10). The row is
+    inserted with it under the controller's AUTO_APPROVE_FLAG, set only around
+    the insert, so it lands Approved. Absorbed into a pending build, the reason
+    is dropped and logged: that build may carry unreviewed changes, so an
+    approval does not approve it (P22).
     """
+    from konsol.pipeline.doctype.build_approval.build_approval import AUTO_APPROVE_FLAG
+
     # Serialise every build request (konsol.build_lock). The debounce below is
     # check-then-insert: two workers running this at once both found nothing
     # pending and both inserted a Build Approval (#110 re-review; per-entity
@@ -696,8 +715,10 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
         # finishes (#129). A pending one will read it anyway.
         flag_running_build(existing[0])
         frappe.db.commit()
+        dropped = "; absorbed; auto-approve not applied" if auto_approve_reason else ""
         frappe.logger().info(
             f"Build request already pending for scope={scope} ({existing[0].name}), skipping"
+            f"{dropped}"
         )
         return
 
@@ -709,7 +730,15 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
     pbr.trigger_docname = trigger_docname
     pbr.requested_by = frappe.session.user
     pbr.rebuild_requested = 1 if carries_changes else 0
-    pbr.insert(ignore_permissions=True)
+    if auto_approve_reason:
+        pbr.auto_approve_reason = auto_approve_reason
+        frappe.flags[AUTO_APPROVE_FLAG] = True
+        try:
+            pbr.insert(ignore_permissions=True)
+        finally:
+            frappe.flags.pop(AUTO_APPROVE_FLAG, None)
+    else:
+        pbr.insert(ignore_permissions=True)
     frappe.db.commit()
 
     frappe.logger().info(
