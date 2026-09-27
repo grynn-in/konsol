@@ -134,6 +134,12 @@ _dbt_trigger_doctypes = [
     # gold_consolidated_trial_balance translates at. Submittable, so only
     # on_submit / on_cancel request the build; a draft save requests nothing.
     "Group Exchange Rate",
+    # konsol#306, #305-D2-10: approving (or reversing) a deal is a
+    # consolidation input too. Both are submittable, so on_update is a
+    # no-op (queue_consolidation_build's is_submittable guard) and only
+    # on_submit / on_cancel request the build.
+    "Business Combination",
+    "Business Disposal",
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed
