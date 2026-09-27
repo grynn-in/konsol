@@ -95,6 +95,8 @@ MATRIX = {
     # The Close Lead approves and reverses; drafting, and amending a reversed
     # adjustment into a new draft, is the Group Accountant's.
     "Consolidation Adjustment": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
+    # konsol#305 J06: the journal replaces the adjustment with the same split
+    "Consolidation Journal": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
     "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "Ownership Period": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
@@ -161,8 +163,25 @@ def test_adjustment_workflow_analyst_drafts_admin_approves():
     assert "s" not in _perm("Consolidation Adjustment", "EPM Analyst")
 
 
+def test_journal_workflow_analyst_drafts_admin_approves():
+    wf = _workflow("Consolidation Journal")
+    status = {s["state"]: int(s["doc_status"]) for s in wf["states"]}
+    allowed = {t["action"]: t["allowed"] for t in wf["transitions"]}
+    assert allowed == {"Send for Approval": "EPM Analyst", "Reject": "EPM Admin",
+                       "Approve": "EPM Admin", "Reverse": "EPM Admin"}
+    # submit is the approval, so the approving role holds submit and the
+    # drafting role does not
+    for t in wf["transitions"]:
+        if status[t["next_state"]] == 1:
+            assert "s" in _perm("Consolidation Journal", t["allowed"])
+        if status[t["next_state"]] == 2:
+            assert "x" in _perm("Consolidation Journal", t["allowed"])
+        assert "w" in _perm("Consolidation Journal", t["allowed"]), t
+    assert "s" not in _perm("Consolidation Journal", "EPM Analyst")
+
+
 def test_only_the_close_lead_approves_consolidation_work():
-    for doctype in ("Consolidation Adjustment", "Ownership Period", "Trial Balance Submission",
+    for doctype in ("Consolidation Adjustment", "Consolidation Journal", "Ownership Period", "Trial Balance Submission",
                     "Historical Equity Rate", "IC Balance"):
         submitters = {p["role"] for p in _meta(doctype).get("permissions", []) if p.get("submit")}
         assert submitters <= {"System Manager", "Administrator", "EPM Admin", "Entity Accountant"}, (doctype, submitters)
