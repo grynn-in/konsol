@@ -351,7 +351,8 @@ def resolve_sync_filters(doctype):
       submit of any doc (grynn-in/konsolidat#92, finding #1). Keyed on the
       doctype's own ``is_submittable`` so it covers every submittable
       consolidation doctype at once (Ownership Period, IC Balance,
-      Consolidation Adjustment, Historical Equity Rate, …).
+      Consolidation Journal, Historical Equity Rate, …). Consolidation
+      Adjustment was here until it was retired outright by konsol#292.
 
     Both write paths go through here — the document hooks and
     ``reconcile_all`` — because they used to disagree. publish() synced
@@ -1196,7 +1197,9 @@ def _write_through_doctypes():
             # Rule and Consolidation Adjustment, and all three silently dropped
             # out of reconcile with it. Their staging tables would then never be
             # repaired after a fixture import, which is the drift reconcile
-            # exists for.
+            # exists for. (Consolidation Adjustment itself was later retired
+            # outright by konsol#292; its staging table, still named
+            # consolidation_adjustments, now belongs to Consolidation Journal.)
             found.append(doctype)
     if not found:
         frappe.logger().warning(

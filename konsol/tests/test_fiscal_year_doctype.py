@@ -492,8 +492,9 @@ def test_fiscal_year_on_the_desk():
 def test_consolidation_card_lists_the_journal_not_the_adjustment():
     """konsol#305 J09: the workspace's Consolidation card names the journal,
     not the doctype it replaces. (epm_fiscal_year_dashboard.py's Connections
-    keep both, per J03/the J09 coordinator note, until J12 retires the
-    doctype — this test is dashboard.py's card only.)"""
+    also name only the journal now: J12 retired the doctype and dropped it
+    from Connections too, as an out-of-list edit its gate forced — this test
+    is dashboard.py's card only.)"""
     cards = dict(_literal(os.path.join(APP_DIR, "dashboard.py"), "_CARDS"))
     assert "Consolidation Journal" in cards["Consolidation"]
     assert "Consolidation Adjustment" not in cards["Consolidation"]
