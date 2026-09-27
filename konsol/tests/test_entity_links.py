@@ -30,6 +30,9 @@ REFERRING_DOCTYPES = {
     # konsol has no Entity for and is deliberately named erp_data_area.
     "Budget Annual Input",
     "TB Exception",
+    # konsol#292/#305-D2-12: the entity moves to each line of the journal
+    # (the header carries no data_area_id).
+    "Consolidation Journal Line",
 }
 
 
