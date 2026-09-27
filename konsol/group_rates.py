@@ -202,7 +202,7 @@ def move_problem(rate, previous=None, erp_rate=None, unit="", threshold=None):
             moves.append(f"{change:+.0%} from {what} ({float(ref):.9g}{unit})")
     if not moves:
         return None
-    return (f"This rate ({rate:.9g}{unit}) moves " + " and ".join(moves) + f". A move over {threshold:.0%} can be "
+    return (f"This rate ({rate:.9g}{unit}) moves " + " and ".join(moves) + f". A move over {threshold * 100:g}% can be "
             "real, but say why (Reason for Change) before it is saved.")
 
 
