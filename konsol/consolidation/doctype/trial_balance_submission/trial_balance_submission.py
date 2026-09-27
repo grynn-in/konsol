@@ -19,8 +19,8 @@ transactions, so correctness comes from ordering, not atomicity:
 
 CSV contract (header required, case-insensitive):
     main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]
-Amounts are in the entity's accounting currency. One row per account and
-partner.
+Amounts are in the entity's accounting currency. One row per account,
+partner and declared dimension values (konsol#255).
 
 partner_data_area_id (konsol#159; `partner`, `partner_entity`, `partner_id`
 and `counterparty` are accepted too) is the OTHER group entity a row is held
@@ -224,9 +224,25 @@ def parse_tb_csv(text, declared_dimensions=()):
     return rows
 
 
-def _row_label(r):
-    partner = r.get(PARTNER) or ""
-    return f"{r['main_account']} (partner {partner})" if partner else r["main_account"]
+def _row_dimensions(rows):
+    """The dim_* columns these rows carry, sorted: the set _land_rows writes.
+
+    Taken from the rows because the parsers put a dim_* key on a row only for
+    a dimension the site has declared, Published and ticked; any other dim_*
+    header was refused before a row existed (konsol.tb_dimension_model)."""
+    return sorted({k for r in rows for k in r if is_dimension_column(k)})
+
+
+def _row_key(r, dims):
+    """The grain a row lands at: account, partner and every dimension value.
+    A missing or blank value is '' -- what _land_rows writes for it."""
+    return (r["main_account"], r.get(PARTNER) or "", *((r.get(d) or "") for d in dims))
+
+
+def _row_label(r, dims=()):
+    parts = [f"partner {r.get(PARTNER)}"] if r.get(PARTNER) else []
+    parts += [f"{d} {r.get(d)}" for d in dims if r.get(d)]
+    return f"{r['main_account']} ({', '.join(parts)})" if parts else r["main_account"]
 
 
 #: konsol#182: a site with no Published Main Account has no chart to post to.
@@ -274,18 +290,25 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
     """
     errors = []
 
-    # One row per (account, partner): an entity may hold one intercompany
-    # account with several partners, one row each.
+    # One row per landed key: account, partner and every declared dimension
+    # the file carries (konsol#255). An entity may hold one intercompany
+    # account with several partners, and one account split across the values
+    # of a dimension, one row each. The key is the grain _land_rows writes
+    # and the warehouse keys movements on; keyed on (account, partner) alone,
+    # a file splitting an account by a declared dimension was refused as a
+    # duplicate on both intakes.
+    dims = _row_dimensions(rows)
     seen, dupes = set(), set()
     for r in rows:
-        key = (r["main_account"], r.get(PARTNER) or "")
+        key = _row_key(r, dims)
         if key in seen:
-            dupes.add(_row_label(r))
+            dupes.add(_row_label(r, dims))
         seen.add(key)
     if dupes:
+        grain = f"account, partner and {', '.join(dims)}" if dims else "account and partner"
         errors.append(
             f"Duplicate account rows: {', '.join(sorted(dupes))} — "
-            "one row per account and partner; merge them before submitting"
+            f"one row per {grain}; merge them before submitting"
         )
 
     partnered = [r for r in rows if r.get(PARTNER)]
@@ -731,7 +754,7 @@ class TrialBalanceSubmission(Document):
         # header the site has not declared, Published and ticked — and never
         # from a name written here: which dimensions exist is the customer's
         # data, not konsol's shape (konsol#287).
-        dims = sorted({k for r in rows for k in r if is_dimension_column(k)})
+        dims = _row_dimensions(rows)
         if dims:
             self._assert_dimension_columns(dims)
         values = []

@@ -13,8 +13,8 @@ an .xlsx workbook):
 
 `entity`, `year`, `period` and `account` are accepted for the first four, and
 `partner`, `partner_entity`, `partner_id` or `counterparty` for the partner.
-Amounts are in each entity's own accounting currency, one row per account and
-partner, debits and credits both positive (the same contract as a single
+Amounts are in each entity's own accounting currency, one row per account,
+partner and declared dimension values, debits and credits both positive (the same contract as a single
 upload). The partner is the other group entity an intercompany row is held
 with; it is optional (konsol#159).
 

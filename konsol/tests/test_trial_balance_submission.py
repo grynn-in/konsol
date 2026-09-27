@@ -1036,3 +1036,137 @@ def test_parse_amount_basis_keep_one_refusal_is_unchanged():
         "main_account,debit,credit,amount_basis,basis\n"
         "1010,100,0,Actual,Actual\n")
     assert "Two amount_basis columns" in msg, msg
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: the duplicate-row key is the grain a row LANDS at.
+#
+# _land_rows writes one raw row per parsed row with every dim_* value the file
+# carries, and the warehouse keys movements on account + partner + every
+# declared dimension. The duplicate check keyed on (account, partner) only, so
+# a file splitting one account across two values of a declared dimension -- the
+# basic "report by department" case -- was refused as a duplicate on BOTH
+# intakes (measured on live, TBU-00851, 25 Sep 2026). These tests pin the key
+# to the landed grain: dimensions split a row, identical keys still refuse.
+# ---------------------------------------------------------------------------
+
+#: Named here because a test must name a dimension; shipped konsol may not (konsol#287).
+_SPLIT_DIM = "dim_zz_region"
+_OTHER_DIM = "dim_zz_channel"
+_SPLIT_COLUMNS = _RAW_COLUMNS[:-1] + (_SPLIT_DIM, _OTHER_DIM)
+
+
+def _dup_errors(errs):
+    return [e for e in errs if "Duplicate" in e]
+
+
+def test_one_account_split_across_two_values_of_a_declared_dimension_is_accepted_and_lands():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n"
+        "1000,700,0,ZZNORTH\n1000,250,0,ZZSOUTH\n2010,0,950,\n",
+        [declared(_SPLIT_DIM)])
+    assert _m.validate_tb_rows(rows) == []
+    insert = _land(rows, _SPLIT_COLUMNS)[-1]
+    assert f"partner_data_area_id, {_SPLIT_DIM}) VALUES" in insert, insert
+    assert "'1000', 700.0, 0.0" in insert and "now(), '', 'ZZNORTH')" in insert, insert
+    assert "'1000', 250.0, 0.0" in insert and "now(), '', 'ZZSOUTH')" in insert, insert
+
+
+def test_same_account_same_dimension_values_same_partner_is_still_refused():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,partner_data_area_id,{_SPLIT_DIM}\n"
+        "1000,700,0,ZZB,ZZNORTH\n1000,250,0,ZZB,ZZNORTH\n1000,1,0,ZZC,ZZNORTH\n2010,0,951,,\n",
+        [declared(_SPLIT_DIM)])
+    dup = _dup_errors(_m.validate_tb_rows(rows))
+    assert len(dup) == 1, dup
+    assert "1000" in dup[0] and "ZZB" in dup[0] and "ZZNORTH" in dup[0], dup
+    assert "ZZC" not in dup[0], dup
+
+
+def test_the_duplicate_refusal_names_the_key_it_used_including_the_dimensions():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,5,0,ZZNORTH\n1000,5,0,ZZNORTH\n2010,0,10,\n",
+        [declared(_SPLIT_DIM)])
+    dup = _dup_errors(_m.validate_tb_rows(rows))
+    assert len(dup) == 1 and _SPLIT_DIM in dup[0], dup
+    assert "account, partner and " + _SPLIT_DIM in dup[0], dup
+    # A file with no dimension keeps the sentence it always had.
+    plain = _dup_errors(_m.validate_tb_rows(_rows(("1010", 5, 0), ("1010", 5, 0), ("2010", 0, 10))))
+    assert "one row per account and partner" in plain[0], plain
+
+
+def test_a_blank_dimension_value_and_a_filled_one_on_the_same_account_are_distinct():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,100,0,\n1000,50,0,ZZNORTH\n2010,0,150,\n",
+        [declared(_SPLIT_DIM)])
+    assert _m.validate_tb_rows(rows) == []
+    # ...but two blanks on one account are one slice, and refused.
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,100,0,\n1000,50,0,\n2010,0,150,\n",
+        [declared(_SPLIT_DIM)])
+    assert len(_dup_errors(_m.validate_tb_rows(rows))) == 1
+
+
+def test_two_dimensions_split_a_row_only_when_the_whole_tuple_differs():
+    decl = [declared(_SPLIT_DIM), declared(_OTHER_DIM)]
+    head = f"main_account,debit,credit,{_SPLIT_DIM},{_OTHER_DIM}\n"
+    ok = _m.parse_tb_csv(head + "1000,5,0,ZZNORTH,ZZC1\n1000,5,0,ZZNORTH,ZZC2\n2010,0,10,,\n", decl)
+    assert _m.validate_tb_rows(ok) == []
+    bad = _m.parse_tb_csv(head + "1000,5,0,ZZNORTH,ZZC1\n1000,5,0,ZZNORTH,ZZC1\n2010,0,10,,\n", decl)
+    dup = _dup_errors(_m.validate_tb_rows(bad))
+    assert len(dup) == 1 and _SPLIT_DIM in dup[0] and _OTHER_DIM in dup[0], dup
+
+
+def test_an_undeclared_dimension_cannot_be_used_to_dodge_the_duplicate_check():
+    """A column the site has not declared is refused at parse on both intakes,
+    so no row ever reaches validate_tb_rows carrying it as a split key."""
+    msg = _parse_raises("main_account,debit,credit,dim_zz_undeclared\n"
+                        "1000,5,0,ZZA\n1000,5,0,ZZB\n2010,0,10,\n",
+                        [declared(_SPLIT_DIM)])
+    assert "dim_zz_undeclared" in msg and "not declared" in msg.lower(), msg
+    try:
+        _bulk.split_table([_BULK_HEADER + ["dim_zz_undeclared"],
+                           ["ZZA", "2025", "6", "1000", "5", "0", "ZZA"],
+                           ["ZZA", "2025", "6", "1000", "5", "0", "ZZB"],
+                           ["ZZA", "2025", "6", "2010", "0", "10", ""]],
+                          [declared(_SPLIT_DIM)])
+        raise AssertionError("expected the bulk intake to refuse the undeclared column")
+    except ValueError as e:
+        assert "dim_zz_undeclared" in str(e) and "not declared" in str(e).lower(), str(e)
+
+
+def _bulk_report(table, decl):
+    """The bulk intake's verdict on its one entity-period, with the real
+    single-submission validator (tb_bulk._check passes exactly this)."""
+    ((key, rows),) = _bulk.split_table(table, decl).items()
+    report = _bulk.check_group(
+        key, rows, known_accounts=None, visible=True, leaf=True,
+        period={"code": "P06", "type": "Regular", "status": "Open"},
+        postable_types={"Regular"}, existing=None, validate_rows=_m.validate_tb_rows)
+    return rows, report
+
+
+def test_both_intakes_accept_the_split_and_refuse_the_same_duplicate():
+    decl = [declared(_SPLIT_DIM)]
+    split = [_BULK_HEADER + [_SPLIT_DIM],
+             ["ZZA", "2025", "6", "1000", "700", "0", "ZZNORTH"],
+             ["ZZA", "2025", "6", "1000", "250", "0", "ZZSOUTH"],
+             ["ZZA", "2025", "6", "2010", "0", "950", ""]]
+    rows, report = _bulk_report(split, decl)
+    assert report["ok"] and report["errors"] == [], report
+    # The bulk load feeds group_csv back through the single parser and
+    # validator (TrialBalanceSubmission.validate); the split must survive it
+    # and land both slices.
+    again = _m.parse_tb_csv(_bulk.group_csv(rows, source="TBU-ZZ"), decl)
+    assert _m.validate_tb_rows(again) == []
+    insert = _land(again, _SPLIT_COLUMNS)[-1]
+    assert "'ZZNORTH')" in insert and "'ZZSOUTH')" in insert, insert
+
+    dup = split[:2] + [["ZZA", "2025", "6", "1000", "250", "0", "ZZNORTH"],
+                       ["ZZA", "2025", "6", "2010", "0", "950", ""]]
+    _, report = _bulk_report(dup, decl)
+    single = _dup_errors(_m.validate_tb_rows(_m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,700,0,ZZNORTH\n1000,250,0,ZZNORTH\n2010,0,950,\n",
+        decl)))
+    assert not report["ok"], report
+    assert _dup_errors(report["errors"]) == single and len(single) == 1, (report, single)
