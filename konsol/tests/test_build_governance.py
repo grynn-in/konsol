@@ -283,6 +283,23 @@ def test_pbr_has_sync_info_fields():
     assert not missing, f"Missing sync info fields: {missing}"
 
 
+def test_pbr_records_why_it_auto_approved_and_only_konsol_sets_it():
+    """konsol#305-D2-10: the reason an approval auto-approved its build is on
+    the row, read-only, and never copied onto a duplicate (S03b)."""
+    with open(PBR_JSON) as f:
+        data = json.load(f)
+    fields = [f for f in data["fields"] if "fieldname" in f]
+    names = [f["fieldname"] for f in fields]
+    assert "auto_approve_reason" in names, "Build Approval has no auto_approve_reason"
+    field = fields[names.index("auto_approve_reason")]
+    assert field["fieldtype"] == "Small Text"
+    assert field["label"] == "Auto-Approved Because"
+    assert field.get("read_only") == 1
+    assert field.get("no_copy") == 1
+    assert "konsol#305-D2-10" in field.get("description", "")
+    assert names.index("auto_approve_reason") == names.index("trigger_docname") + 1
+
+
 def test_pbr_controller_exists():
     """build_approval.py controller must exist."""
     assert os.path.isfile(PBR_PY)
