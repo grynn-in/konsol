@@ -85,6 +85,7 @@ def _frappe(site):
             self.name = name
             self.owner = site.owner
             self.docstatus = 0
+            self.status = None
             self.flags = types.SimpleNamespace()
 
         def submit(self):
@@ -112,11 +113,16 @@ def _frappe(site):
 
     def apply_workflow(doc, action):
         site.applied.append((doc.doctype, doc.name, action))
-        assert action == "Approve", action
+        assert action in ("Approve", "Reject"), action
         # apply_workflow rebuilds and reloads the doc (workflow.py:101-102),
         # so only the request-scoped flag survives, not doc.flags.
         fresh = _Doc(doc.doctype, doc.name)
-        fresh.submit()
+        if action == "Approve":
+            fresh.submit()
+        else:
+            # Reject moves docstatus 0 -> 0 (Pending Approval -> Draft): a
+            # save, not a submit.
+            fresh.status = "Draft"
         return fresh
 
     frappe.throw = throw
@@ -263,3 +269,48 @@ def test_an_allowed_self_approval_with_a_reason_lands_with_a_comment():
     out, _ = _call(site, "approve", "IC Balance", "ZZ-IC-1", reason="ZZ reason")
     assert out == {"name": "ZZ-IC-1", "docstatus": 1, "self_approved": True}
     assert len(site.comments) == 1 and "ZZ reason" in site.comments[0][2]
+
+
+# --- reject (J06a: rejecting a journal needs a reason) -----------------------------
+
+def test_reject_with_a_blank_reason_is_refused():
+    for reason in (None, "", "   "):
+        site = _Site()
+        msg = _raises(lambda: _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1",
+                                     reason=reason), "ValidationError")
+        assert "reason" in msg.lower(), msg
+        assert site.applied == [] and site.comments == []
+        assert not site.flags.get("konsol_reject_reason")
+
+
+def test_reject_by_an_analyst_is_refused_by_only_for():
+    site = _Site(roles=("EPM Analyst",), user=ANALYST)
+    _raises(lambda: _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1", reason="ZZ why"),
+            "PermissionError")
+    assert site.only_for_calls == [("EPM Admin", "System Manager")]
+    assert site.applied == [] and site.comments == []
+
+
+def test_reject_a_doctype_with_no_active_workflow_is_refused_naming_d2_8():
+    for doctype in ("IC Balance", "Trial Balance Submission", "User"):
+        site = _Site()
+        msg = _raises(lambda: _call(site, "reject", doctype, "ZZ-1", reason="ZZ why"),
+                      "ValidationError")
+        assert "D2-8" in msg or "305-D2-8" in msg, msg
+        assert site.applied == [] and site.comments == []
+        assert not site.flags.get("konsol_reject_reason")
+
+
+def test_reject_with_a_reason_applies_the_workflow_sets_the_flag_and_comments():
+    site = _Site()
+    out, _ = _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1", reason="ZZ wrong account")
+    assert site.applied == [("Consolidation Journal", "ZZ-CJ-1", "Reject")], site.applied
+    assert site.flags["konsol_reject_reason"] == {("Consolidation Journal", "ZZ-CJ-1"):
+                                                   "ZZ wrong account"}
+    assert out["name"] == "ZZ-CJ-1"
+    assert len(site.comments) == 1
+    assert site.comments[0] == ("Consolidation Journal", "ZZ-CJ-1", "Rejected: ZZ wrong account")
+
+
+def test_the_reject_and_self_approval_reason_flags_are_named_differently():
+    assert "konsol_reject_reason" != "konsol_self_approval_reason"
