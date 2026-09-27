@@ -3,12 +3,12 @@
 CONSOLIDATION_GROUP_CHILD_DOCTYPES = (
     "Ownership Period",
     "Historical Equity Rate",
-    "Consolidation Adjustment",
+    "Consolidation Journal",
 )
 
 PIPELINE_BUILD_TRIGGER_DOCTYPES = [
     "Consolidation Group",
-    "Consolidation Adjustment",
+    "Consolidation Journal",
     "Ownership Period",
     "Historical Equity Rate",
     "IC Elimination Rule",
