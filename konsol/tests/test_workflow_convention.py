@@ -9,9 +9,13 @@
 Enumerated across every workflow file and every controller in the app.
 """
 import ast
+import contextlib
 import glob
+import importlib.util
 import json
 import os
+import sys
+import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -222,4 +226,59 @@ def test_a_doctype_that_grants_amend_can_be_amended():
             if not any(f["fieldname"] == "amended_from" for f in d["fields"]):
                 missing.append(d["name"])
     assert not missing, missing
+
+
+@contextlib.contextmanager
+def _stub_frappe(**attrs):
+    stub = types.ModuleType("frappe")
+    for k, v in attrs.items():
+        setattr(stub, k, v)
+    saved = sys.modules.get("frappe")
+    sys.modules["frappe"] = stub
+    try:
+        yield stub
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
+
+
+def _load(relpath, name):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(APP_DIR, relpath))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_workflows_install_and_never_rewrite():
+    """konsol#305 J12a (Problems P13): the role-upgrade code loses its only
+    user (Consolidation Adjustment, now retired from INSTALLED) and is
+    deleted. A workflow install creates a missing workflow and otherwise
+    leaves an installed one alone; it never rewrites one."""
+    with open(os.path.join(APP_DIR, "workflows.py")) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assigned = {t.id for n in tree.body if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    gone = {"PREVIOUSLY_SHIPPED_ROLES", "planned_role_upgrade", "_upgrade_roles", "_grant_previous_approvers"}
+    assert not (gone & (defined | assigned)), gone & (defined | assigned)
+
+    import re
+    installed = re.findall(r'"([^"]+)"', src.split("INSTALLED = (")[1].split(")")[0])
+    assert "Consolidation Adjustment" not in installed, installed
+    assert "Consolidation Journal" in installed, installed
+
+    def _refused(*a, **k):
+        raise AssertionError("install_workflows must not call get_doc when every workflow already exists")
+
+    with _stub_frappe(
+        get_app_path=lambda app: APP_DIR,
+        db=types.SimpleNamespace(exists=lambda *a, **k: True),
+        get_doc=_refused,
+    ):
+        wf = _load("workflows.py", "_wf_no_rewrite_under_test")
+        result = wf.install_workflows()
+    assert result == []
 
