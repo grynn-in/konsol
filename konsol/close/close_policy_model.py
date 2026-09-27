@@ -88,3 +88,47 @@ def policy_gaps(self_approval, rate_move_threshold):
     if not rate_move_threshold:
         gaps.append({"code": RATE_MOVE_UNDECLARED, "message": _RATE_MOVE_MESSAGE})
     return gaps
+
+
+def self_approval_problem(policy, owner, user, doctype, name, reason=None, exempt=None):
+    """None, or the sentence that refuses ``user`` approving a document they
+    prepared (``owner``), under the declared ``self_approval`` ``policy``
+    (konsol#305-D2-3, R5). The rules, in order:
+
+    1. ``user != owner``, or a non-empty ``exempt`` reason (the caller's own,
+       e.g. "derived" for a Business Combination's Ownership Period, or
+       "system" for a patch/install/migrate) — always passes.
+    2. Undeclared policy (blank or None) refuses, naming the Close Settings
+       gap (P02's ``SELF_APPROVAL_UNDECLARED`` message), prefixed with who
+       prepared what.
+    3. Blocked always refuses, whether or not a reason is supplied.
+    4. Allowed with reason and a blank (or whitespace-only) reason refuses.
+    5. Allowed with reason and a reason — passes.
+
+    This model does not read frappe flags; it only honours a non-empty
+    ``exempt`` its caller already decided.
+    """
+    if user != owner or exempt:
+        return None
+    if not policy:
+        return "%s prepared %s %s; %s" % (user, doctype, name, _SELF_APPROVAL_MESSAGE)
+    if policy == BLOCKED:
+        return (
+            "Close Settings blocks self-approval: %s prepared %s %s, "
+            "so another Close Lead must approve it." % (user, doctype, name)
+        )
+    if policy == ALLOWED_WITH_REASON:
+        if not (reason or "").strip():
+            return (
+                "Close Settings allows self-approval only with a reason: "
+                "approve %s %s through konsol.close.approval_api.approve "
+                "with a reason, or ask another Close Lead to approve it." % (doctype, name)
+            )
+        return None
+    return None
+
+
+def self_approval_note(policy, user, reason):
+    """The Comment text left on a document self-approved under Close
+    Settings (Allowed with reason)."""
+    return "Self-approved by %s under Close Settings (%s): %s" % (user, policy, reason)
