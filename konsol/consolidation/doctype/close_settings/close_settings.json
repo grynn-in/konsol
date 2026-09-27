@@ -24,12 +24,39 @@
    "fieldname": "first_close_fiscal_period",
    "fieldtype": "Int",
    "label": "First Close Fiscal Period"
+  },
+  {
+   "fieldname": "approvals_section",
+   "fieldtype": "Section Break",
+   "label": "Approvals"
+  },
+  {
+   "fieldname": "self_approval",
+   "fieldtype": "Select",
+   "label": "Self-Approval",
+   "options": "\nBlocked\nAllowed with reason",
+   "description": "Whether the person who prepared a document may approve it. No default: until declared, a self-approval is refused and sign-off lists the gap (konsol#305-D2-3)."
+  },
+  {
+   "fieldname": "rates_section",
+   "fieldtype": "Section Break",
+   "label": "Rates"
+  },
+  {
+   "fieldname": "rate_move_threshold",
+   "fieldtype": "Percent",
+   "label": "Rate Move Needing a Reason",
+   "description": "A group rate that moves more than this from the previous approved rate or the ERP quote needs a Reason for Change. No default; 0 is undeclared (konsol#305-D2-9)."
   }
  ],
  "field_order": [
   "close_order_section",
   "first_close_fiscal_year",
-  "first_close_fiscal_period"
+  "first_close_fiscal_period",
+  "approvals_section",
+  "self_approval",
+  "rates_section",
+  "rate_move_threshold"
  ],
  "permissions": [
   {
