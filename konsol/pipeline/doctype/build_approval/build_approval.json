@@ -64,6 +64,14 @@
       "read_only": 1
     },
     {
+      "fieldname": "auto_approve_reason",
+      "fieldtype": "Small Text",
+      "label": "Auto-Approved Because",
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "Set only by konsol's build trigger when an approval requested this build (konsol#305-D2-10). Blank means the normal risk rules applied."
+    },
+    {
       "fieldname": "workflow_state",
       "fieldtype": "Select",
       "label": "Workflow State",

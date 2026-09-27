@@ -1,0 +1,81 @@
+{
+ "name": "Close Settings",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 1,
+ "istable": 0,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "description": "Close policy the Close Lead owns (konsol#305 P13). EPM Settings stays System Manager only.",
+ "fields": [
+  {
+   "fieldname": "close_order_section",
+   "fieldtype": "Section Break",
+   "label": "Close Order"
+  },
+  {
+   "fieldname": "first_close_fiscal_year",
+   "fieldtype": "Int",
+   "label": "First Close Fiscal Year",
+   "description": "The first period konsol closes. Earlier periods are history (opening balances). No default: sign-off and period close are refused until this is declared (konsol#303)."
+  },
+  {
+   "fieldname": "first_close_fiscal_period",
+   "fieldtype": "Int",
+   "label": "First Close Fiscal Period"
+  },
+  {
+   "fieldname": "approvals_section",
+   "fieldtype": "Section Break",
+   "label": "Approvals"
+  },
+  {
+   "fieldname": "self_approval",
+   "fieldtype": "Select",
+   "label": "Self-Approval",
+   "options": "\nBlocked\nAllowed with reason",
+   "description": "Whether the person who prepared a document may approve it. No default: until declared, a self-approval is refused and sign-off lists the gap (konsol#305-D2-3)."
+  },
+  {
+   "fieldname": "rates_section",
+   "fieldtype": "Section Break",
+   "label": "Rates"
+  },
+  {
+   "fieldname": "rate_move_threshold",
+   "fieldtype": "Percent",
+   "label": "Rate Move Needing a Reason",
+   "description": "A group rate that moves more than this from the previous approved rate or the ERP quote needs a Reason for Change. No default; 0 is undeclared (konsol#305-D2-9)."
+  }
+ ],
+ "field_order": [
+  "close_order_section",
+  "first_close_fiscal_year",
+  "first_close_fiscal_period",
+  "approvals_section",
+  "self_approval",
+  "rates_section",
+  "rate_move_threshold"
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1
+  }
+ ]
+}

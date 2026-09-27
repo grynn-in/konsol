@@ -318,4 +318,16 @@ def test_the_workflow_is_installed():
         src = f.read()
     installed = re.findall(r'"([^"]+)"', src.split("INSTALLED = (")[1].split(")")[0])
     assert "Business Combination" in installed
-    assert "Consolidation Adjustment" in installed, "the existing entry stays"
+    assert "Consolidation Journal" in installed, "the existing entry stays"
+
+
+def test_the_measurement_period_refusal_points_at_the_journal():
+    """konsol#305 J11: Consolidation Adjustment is retired; a later change to
+    an approved deal, past its measurement period, is recorded as a
+    Consolidation Journal instead."""
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "business_combination",
+                         "business_combination.py")
+    with open(path) as f:
+        src = f.read()
+    assert "record later changes as a Consolidation Journal." in src
+    assert "record later changes as a Consolidation Adjustment" not in src

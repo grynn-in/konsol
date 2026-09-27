@@ -18,7 +18,6 @@ import glob
 import importlib.util
 import json
 import os
-import re
 import sys
 import types
 
@@ -78,9 +77,6 @@ def test_every_role_the_app_names_is_created():
     for aliases in _assigned_dict(sheet, "LAYER_ROLE_ALIASES").values():
         for role in aliases:
             named.setdefault(role, "budget_sheet.py LAYER_ROLE_ALIASES")
-    with open(os.path.join(APP_DIR, "control_api.py")) as f:
-        for role in re.findall(r'owner="([^"]+)"', f.read()):
-            named.setdefault(role, "control_api.py owner=")
     missing = {r: where for r, where in named.items() if r and r not in FRAPPE_ROLES and r not in _created_roles()}
     assert not missing, f"named but never created by install.ROLES: {missing}"
 
@@ -96,19 +92,20 @@ def test_after_install_creates_roles_before_workflows():
 # loss both show up here rather than in production.
 MATRIX = {
     "Trial Balance Submission": {"EPM Admin": "rwcdsxa", "Entity Accountant": "rwcsxa", "EPM Analyst": "r", "EPM User": "r"},
-    # The Close Lead approves and reverses; drafting, and amending a reversed
-    # adjustment into a new draft, is the Group Accountant's.
-    "Consolidation Adjustment": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
-    "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcs", "EPM User": "r"},
+    # konsol#305 J06: the journal replaces the adjustment with its split. The
+    # Close Lead approves and reverses; drafting, and amending a reversed
+    # journal into a new draft, is the Group Accountant's.
+    "Consolidation Journal": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
+    "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "Ownership Period": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
-    "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcsx", "EPM User": "r"},
+    "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "IC Elimination Rule": {"EPM Admin": "rwcd", "EPM Analyst": "r"},
     # konsol#159: the Group Accountant drafts the flag; publishing is the
     # Close Lead's (check_epm_admin, also on a plain save to Published)
     "Intercompany Account": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
     "Consolidation Group": {"EPM Admin": "rwcd", "EPM Analyst": "r", "EPM User": "r"},
     "Pipeline Run": {"EPM Admin": "rw", "EPM Analyst": "r", "EPM User": "r"},
-    "Assertion Run": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r"},
+    "Assertion Run": {"EPM Admin": "rwc", "EPM Analyst": "rc", "EPM User": "r"},
     # konsol#189: retired, read-only history; status lives on EPM Fiscal Year
     "Period Status": {"EPM Admin": "r", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
     # bulk trial balance upload: only the role that submits trial balances loads
@@ -148,8 +145,8 @@ def test_entity_accountant_gets_only_entity_scoped_write():
             assert meta["name"] in scoped, f"Entity Accountant can write {meta['name']}, which is not entity-scoped"
 
 
-def test_adjustment_workflow_analyst_drafts_admin_approves():
-    wf = _workflow("Consolidation Adjustment")
+def test_journal_workflow_analyst_drafts_admin_approves():
+    wf = _workflow("Consolidation Journal")
     status = {s["state"]: int(s["doc_status"]) for s in wf["states"]}
     allowed = {t["action"]: t["allowed"] for t in wf["transitions"]}
     assert allowed == {"Send for Approval": "EPM Analyst", "Reject": "EPM Admin",
@@ -158,15 +155,16 @@ def test_adjustment_workflow_analyst_drafts_admin_approves():
     # drafting role does not
     for t in wf["transitions"]:
         if status[t["next_state"]] == 1:
-            assert "s" in _perm("Consolidation Adjustment", t["allowed"])
+            assert "s" in _perm("Consolidation Journal", t["allowed"])
         if status[t["next_state"]] == 2:
-            assert "x" in _perm("Consolidation Adjustment", t["allowed"])
-        assert "w" in _perm("Consolidation Adjustment", t["allowed"]), t
-    assert "s" not in _perm("Consolidation Adjustment", "EPM Analyst")
+            assert "x" in _perm("Consolidation Journal", t["allowed"])
+        assert "w" in _perm("Consolidation Journal", t["allowed"]), t
+    assert "s" not in _perm("Consolidation Journal", "EPM Analyst")
 
 
 def test_only_the_close_lead_approves_consolidation_work():
-    for doctype in ("Consolidation Adjustment", "Ownership Period", "Trial Balance Submission"):
+    for doctype in ("Consolidation Journal", "Ownership Period", "Trial Balance Submission",
+                    "Historical Equity Rate", "IC Balance"):
         submitters = {p["role"] for p in _meta(doctype).get("permissions", []) if p.get("submit")}
         assert submitters <= {"System Manager", "Administrator", "EPM Admin", "Entity Accountant"}, (doctype, submitters)
         assert "EPM Analyst" not in submitters, doctype
@@ -229,47 +227,12 @@ def test_restrict_by_default_still_applies_to_everyone():
     assert _allowed_for(["EPM User"], restrict=True) == set()
 
 
-def _planner():
-    with _stub_frappe():
-        return _load("workflows.py", "_wf_under_test")
-
-
-def test_untouched_shipped_workflow_takes_the_new_roles():
-    wf = _planner()
-    definition = _workflow("Consolidation Adjustment")
-    states = [(s["state"], "System Manager") for s in definition["states"]]
-    transitions = [(t["state"], t["action"], "System Manager") for t in definition["transitions"]]
-    plan = wf.planned_role_upgrade(states, transitions, definition, wf.PREVIOUSLY_SHIPPED_ROLES["Consolidation Adjustment"])
-    assert plan is not None
-    edit, allowed = plan
-    assert allowed[("Pending Approval", "Approve")] == "EPM Admin"
-    assert allowed[("Draft", "Send for Approval")] == "EPM Analyst"
-    assert edit["Draft"] == "EPM Analyst"
-
-
-def test_a_customised_workflow_is_left_alone():
-    wf = _planner()
-    definition = _workflow("Consolidation Adjustment")
-    prev = wf.PREVIOUSLY_SHIPPED_ROLES["Consolidation Adjustment"]
-    states = [(s["state"], "System Manager") for s in definition["states"]]
-    transitions = [(t["state"], t["action"], "System Manager") for t in definition["transitions"]]
-    # a site gave one transition to its own role
-    custom = list(transitions)
-    custom[0] = (custom[0][0], custom[0][1], "Finance Controller")
-    assert wf.planned_role_upgrade(states, custom, definition, prev) is None
-    # a site added its own state
-    assert wf.planned_role_upgrade(states + [("On Hold", "System Manager")], transitions, definition, prev) is None
-    # already upgraded: nothing to do
-    current_states = [(s["state"], s["allow_edit"]) for s in definition["states"]]
-    current_tr = [(t["state"], t["action"], t["allowed"]) for t in definition["transitions"]]
-    assert wf.planned_role_upgrade(current_states, current_tr, definition, prev) is None
-
-
-def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
+def test_whoever_can_create_a_journal_can_edit_and_send_it():
     """A role with create but no edit on Draft makes a document it can never
-    touch again once saved (the review of #146 caught the Close Lead there)."""
-    wf = _workflow("Consolidation Adjustment")
-    perms = _meta("Consolidation Adjustment").get("permissions", [])
+    touch again once saved (the review of #146 caught the Close Lead there on
+    Consolidation Adjustment; konsol#305 J12 retargets it to the journal)."""
+    wf = _workflow("Consolidation Journal")
+    perms = _meta("Consolidation Journal").get("permissions", [])
     draft_editors = {s["allow_edit"] for s in wf["states"] if s["state"] == "Draft"}
     senders = {t["allowed"] for t in wf["transitions"] if t["state"] == "Draft"}
     editors = {s["allow_edit"] for s in wf["states"]}
@@ -282,116 +245,13 @@ def test_whoever_can_create_an_adjustment_can_edit_and_send_it():
             assert p["role"] in editors, p["role"]
 
 
-def test_upgrade_rewrites_roles_only_and_keeps_previous_approvers():
-    definition = _workflow("Consolidation Adjustment")
-    saved, granted = [], {}
-
-    class Row(types.SimpleNamespace):
-        pass
-
-    wf_doc = types.SimpleNamespace(
-        name="Consolidation Adjustment Workflow",
-        states=[Row(state=s["state"], doc_status=s["doc_status"], allow_edit="System Manager")
-                for s in definition["states"]],
-        transitions=[Row(state=t["state"], action=t["action"], next_state=t["next_state"], allowed="System Manager")
-                     for t in definition["transitions"]],
-        save=lambda ignore_permissions=False: saved.append(True),
-    )
-
-    class User:
-        def __init__(self, name):
-            self.name = name
-
-        def add_roles(self, *roles):
-            granted[self.name] = list(roles)
-
-    roles_of = {"ops@example.com": ["System Manager"], "lead@example.com": ["System Manager", "EPM Admin"],
-                "off@example.com": ["System Manager"], "prof@example.com": ["System Manager"]}
-    users = {"ops@example.com": (1, None), "lead@example.com": (1, None), "off@example.com": (0, None),
-             "prof@example.com": (1, "Accounts")}
-
-    class User:  # noqa: F811 - add_roles must change what get_roles returns
-        def __init__(self, name):
-            self.name = name
-
-        def add_roles(self, *roles):
-            granted[self.name] = list(roles)
-            roles_of[self.name] = roles_of[self.name] + list(roles)
-
-    def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
-        if doctype == "Has Role":
-            return ["Administrator", *users]
-        if doctype == "User":
-            rows = [n for n in filters["name"][1]
-                    if "enabled" not in filters or users[n][0] == filters["enabled"]]
-            return [types.SimpleNamespace(name=n, role_profile_name=users[n][1]) for n in rows]
-        raise AssertionError(doctype)
-
-    with _stub_frappe(
-        db=types.SimpleNamespace(get_value=lambda dt, filters, field: "Consolidation Adjustment Workflow",
-                                 savepoint=lambda name: None, rollback=lambda save_point=None: None),
-        get_doc=lambda dt, name: wf_doc if dt == "Workflow" else User(name),
-        get_all=get_all,
-        get_roles=lambda user=None: roles_of.get(user, []),
-    ):
-        wf = _load("workflows.py", "_wf_upgrade_under_test")
-        result = wf._upgrade_roles(definition)
-
-    assert saved == [True]
-    assert {s.state: s.allow_edit for s in wf_doc.states} == {s["state"]: s["allow_edit"] for s in definition["states"]}
-    assert {(t.state, t.action): t.allowed for t in wf_doc.transitions} == {
-        (t["state"], t["action"]): t["allowed"] for t in definition["transitions"]}
-    # nothing but the roles moved
-    assert [t.next_state for t in wf_doc.transitions] == [t["next_state"] for t in definition["transitions"]]
-    # off@ is disabled and prof@ is on a Role Profile: neither is granted,
-    # and the Role Profile user is reported rather than silently dropped
-    assert granted == {"ops@example.com": ["EPM Admin", "EPM Analyst"], "lead@example.com": ["EPM Analyst"]}
-    assert result["granted"] == granted
-    assert any("prof@example.com" in n and "Accounts" in n for n in result["notes"]), result["notes"]
-    assert not any("off@example.com" in n for n in result["notes"])
-
-
 def test_whoever_can_amend_can_open_the_cancelled_state():
     """The desk strips amend from a form the workflow makes read-only, so the
     amending role must be allow_edit on every cancelled (docstatus 2) state."""
-    wf = _workflow("Consolidation Adjustment")
+    wf = _workflow("Consolidation Journal")
     cancelled_editors = {s["allow_edit"] for s in wf["states"] if int(s["doc_status"]) == 2}
-    for p in _meta("Consolidation Adjustment").get("permissions", []):
+    for p in _meta("Consolidation Journal").get("permissions", []):
         if p.get("amend") and p["role"] not in FRAPPE_ROLES:
             assert p["role"] in cancelled_editors, p["role"]
 
 
-def test_a_failed_grant_is_rolled_back_to_its_savepoint_and_reported():
-    calls = []
-
-    class Broken:
-        def add_roles(self, *roles):
-            calls.append(("add", roles))
-            raise RuntimeError("on_update failed")
-
-    with _stub_frappe(
-        db=types.SimpleNamespace(savepoint=lambda name: calls.append(("savepoint", name)),
-                                 rollback=lambda save_point=None: calls.append(("rollback", save_point))),
-        get_all=lambda doctype, filters=None, pluck=None, fields=None, **kw: (
-            ["ops@example.com"] if doctype == "Has Role"
-            else [types.SimpleNamespace(name="ops@example.com", role_profile_name=None)]),
-        get_roles=lambda user=None: ["System Manager"],
-        get_doc=lambda dt, name: Broken(),
-    ):
-        wf = _load("workflows.py", "_wf_grant_fail_under_test")
-        granted, notes = wf._grant_previous_approvers({"System Manager"}, {"EPM Admin"})
-    assert granted == {}
-    assert [c[0] for c in calls] == ["savepoint", "add", "rollback"]
-    assert calls[0][1] == calls[2][1]
-    assert any("ops@example.com" in n and "by hand" in n for n in notes)
-
-
-def test_upgrade_skips_a_workflow_by_another_name():
-    saved = []
-    with _stub_frappe(
-        db=types.SimpleNamespace(get_value=lambda dt, filters, field: None),
-        get_doc=lambda *a: saved.append(a),
-    ):
-        wf = _load("workflows.py", "_wf_skip_under_test")
-        assert wf._upgrade_roles(_workflow("Consolidation Adjustment")) is None
-    assert saved == []

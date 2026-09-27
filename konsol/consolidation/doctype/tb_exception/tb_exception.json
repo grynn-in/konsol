@@ -1,0 +1,139 @@
+{
+ "actions": [],
+ "autoname": "TBX-.#####",
+ "creation": "2026-09-25 12:00:00.000000",
+ "description": "No trial balance for an entity in a period, and why. Declared by the Close Lead; the sign-off completeness gate accepts a submitted one in place of a trial balance (konsol#303).",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "data_area_id",
+  "fiscal_year",
+  "fiscal_period",
+  "col_break_1",
+  "declared_by",
+  "amended_from",
+  "reason_section",
+  "reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "data_area_id",
+   "fieldtype": "Link",
+   "options": "Entity",
+   "label": "Entity",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The entity that has no trial balance for the period. A group entity is refused: it never submits one."
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "label": "Fiscal Period",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The period number. It must be declared in EPM Fiscal Year and Open."
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "declared_by",
+   "fieldtype": "Link",
+   "options": "User",
+   "label": "Declared By",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_list_view": 1,
+   "description": "Set on submit to the user who submitted it. Empty on a draft."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "options": "TB Exception",
+   "label": "Amended From",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "reason_section",
+   "fieldtype": "Section Break",
+   "label": "Reason"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason",
+   "reqd": 1,
+   "description": "Why this entity has no trial balance for the period, for example \"Dormant since 2024, no postings\". Shown at sign-off and in the audit trail."
+  }
+ ],
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-09-25 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "TB Exception",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "data_area_id",
+ "track_changes": 1
+}

@@ -56,7 +56,7 @@ _LABELS = {
     "IC Elimination Rule": "IC Elimination Rules",
     "Intercompany Account": "Intercompany Accounts",
     "IC Balance": "IC Balances",
-    "Consolidation Adjustment": "Consolidation Adjustments",
+    "Consolidation Journal": "Consolidation Journals",
     "Assertion Run": "Assertion Runs",
     "EPM Settings": "EPM Settings",
 }
@@ -68,7 +68,7 @@ def _label(dt):
 
 # External app shortcuts: (label, url, colour)
 _URL_SHORTCUTS = [
-    ("Konsol Exec", "/konsol-exec", "Teal"),
+    ("Close", "/close", "Teal"),
 ]
 
 # Colourful top-row shortcut tiles — one per functional process: (doctype, colour)
@@ -103,7 +103,7 @@ _CARDS = [
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
-        "IC Elimination Rule", "Intercompany Account", "IC Balance", "Consolidation Adjustment",
+        "IC Elimination Rule", "Intercompany Account", "IC Balance", "Consolidation Journal",
     ]),
     ("Assertions", [
         "Assertion Run",
@@ -125,7 +125,10 @@ def _workspace_needs_refresh():
     ws = frappe.get_doc("Workspace", WORKSPACE)
     shortcut_labels = {s.label for s in (ws.shortcuts or [])}
     card_labels = {l.label for l in (ws.links or []) if l.type == "Card Break"}
-    if "Konsol Exec" not in shortcut_labels:
+    # A URL shortcut this layout declares is missing → rebuild. konsol#305 R01
+    # replaced the old SPA's tile with "Close" (/close); a site still showing
+    # the old tile rebuilds once on the next migrate.
+    if any(label not in shortcut_labels for label, _url, _colour in _URL_SHORTCUTS):
         return True
     if "Konsol Control" in shortcut_labels:
         return True

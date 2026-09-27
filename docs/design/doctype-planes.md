@@ -325,7 +325,8 @@ the app, and it lives in the SPA's model rather than beside the gate.
 1. **The highest-risk gate in the app has no buttons and no role check.**
    `build_approval.py:4` states "high-risk scopes require EPM Admin approval",
    but `workflow_state` is a plain editable `Select` (no Frappe Workflow —
-   `workflows.INSTALLED` holds only Consolidation Adjustment), `build_approval.js`
+   `workflows.INSTALLED` held only Consolidation Adjustment, since retired by
+   konsol#292), `build_approval.js`
    only rewires the dashboard's Trigger link, nothing in `before_save` checks a
    role on `Pending Review → Approved`, there is no `has_permission` hook for the
    doctype, and the DocPerms grant **EPM Analyst** write
@@ -432,8 +433,10 @@ operating doctypes plus the control gate that releases it.
                 └──────────────────────────────────────────────┘
                           │
                           ▼
+                (Consolidation Adjustment retired outright by konsol#292;
+                 replaced below by Consolidation Journal, same lifecycle)
  5 Adjustments  ┌──────────────────────────────────────────────┐
-                │ Consolidation Adjustment  CADJ-{journal}-####│
+                │ Consolidation Journal          CJ-#####      │
                 │ SUBMITTABLE · the ONLY installed Frappe      │
                 │ Workflow in the app:                         │
                 │   Draft ─Send for Approval▶ Pending Approval │
@@ -493,7 +496,7 @@ doctypes should follow.
 | **Pre-fill from ERP** | Group Exchange Rate | **list view** inner button |
 | Submit = approve | Group Exchange Rate | submit bar |
 | Submit / Cancel | Ownership Period, Historical Equity Rate, IC Balance | submit bar |
-| **Send for Approval / Reject / Approve / Reverse** | Consolidation Adjustment | Frappe workflow bar |
+| **Send for Approval / Reject / Approve / Reverse** | Consolidation Journal | Frappe workflow bar |
 | Draft ▸ submit | Business Combination, Business Disposal | Frappe workflow bar (installed #202) |
 | Cell + batch save | Budget Sheet | Excel add-in |
 
@@ -507,7 +510,9 @@ doctypes should follow.
    cannot discover that the capability exists.
 
 2. **Three of thirteen operating doctypes have a real approval UI.** Consolidation
-   Adjustment was the only installed Frappe Workflow until #202.
+   Adjustment was the only installed Frappe Workflow until #202 — and was
+   itself retired outright by konsol#292, replaced one-for-one by
+   Consolidation Journal.
    konsol#202 added two more (Business Combination, Business Disposal).
    Everything else expresses "submit is the approval" through the bare Frappe
    submit bar, so an approval, a correction and a data entry all look identical.

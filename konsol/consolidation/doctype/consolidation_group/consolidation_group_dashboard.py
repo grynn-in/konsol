@@ -1,7 +1,7 @@
 _CONSOLIDATION_CHILDREN = [
     "Ownership Period",
     "Historical Equity Rate",
-    "Consolidation Adjustment",
+    "Consolidation Journal",
 ]
 
 

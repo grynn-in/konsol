@@ -270,3 +270,185 @@ def test_the_build_lock_is_one_row_that_always_exists():
     assert "FROM `tabDocType` WHERE name = 'Build Approval'" in sql and "FOR UPDATE" in sql
     assert "Build Scope`" not in sql
 
+
+
+# --- konsol#305-D2-10: an approval's build auto-approves ---------------------
+# The trigger computes S03a's reason (close_policy_model.approval_build_reason)
+# and request_build_for_scope inserts the Build Approval with it, under the
+# controller's AUTO_APPROVE_FLAG, so S03b's before_save and _take_request
+# approve it. Run for real against a stub frappe, as above.
+
+import importlib.util
+import sys
+
+POLICY_MODEL = os.path.join(APP_DIR, "close", "close_policy_model.py")
+CONTROLLER = os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")
+CONTROLLER_MOD = "konsol.pipeline.doctype.build_approval.build_approval"
+
+
+class _Flags(dict):
+    """frappe._dict: attribute reads and writes are item reads and writes."""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+
+
+def _controller_flag():
+    """AUTO_APPROVE_FLAG's value, read from the controller itself, so the stub
+    carries the real name."""
+    with open(CONTROLLER) as f:
+        tree = ast.parse(f.read())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "AUTO_APPROVE_FLAG" for t in n.targets))
+    return ast.literal_eval(node.value)
+
+
+def _policy_model():
+    spec = importlib.util.spec_from_file_location("close_policy_model_s03c", POLICY_MODEL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _exec_tasks(names, ns, mods):
+    """Exec the named top-level nodes of tasks.py (functions, or the
+    DOCTYPE_BUILD_MAP assignment) into ``ns`` with ``mods`` in sys.modules for
+    the calls' lazy imports; return a runner that keeps them installed."""
+    with open(TASKS) as f:
+        tree = ast.parse(f.read())
+    body = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in names)
+            or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in names for t in n.targets))]
+    exec(compile(ast.Module(body=body, type_ignores=[]), TASKS, "exec"), ns)
+
+    def run(fn, *a, **k):
+        saved = {m: sys.modules.get(m) for m in mods}
+        sys.modules.update(mods)
+        try:
+            return ns[fn](*a, **k)
+        finally:
+            for m, old in saved.items():
+                if old is None:
+                    sys.modules.pop(m, None)
+                else:
+                    sys.modules[m] = old
+    return run
+
+
+def _trigger(doctype, method, user, roles):
+    """on_consolidation_doc_update with request_build_for_scope recorded."""
+    requests = []
+    frappe = types.SimpleNamespace(
+        flags=types.SimpleNamespace(**{f: False for f in FLAGS}),
+        session=types.SimpleNamespace(user=user),
+        get_roles=lambda u=None: list(roles),
+        logger=lambda: types.SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
+        _dict=_Flags)
+    ns = {"frappe": frappe,
+          "request_build_for_scope": lambda *a, **k: requests.append((a, k))}
+    run = _exec_tasks({"on_consolidation_doc_update", "DOCTYPE_BUILD_MAP"}, ns,
+                      {"konsol.close.close_policy_model": _policy_model()})
+    run("on_consolidation_doc_update", _Flags(doctype=doctype, name="ZZ-probe"), method)
+    return requests
+
+
+def test_an_admins_approval_requests_its_build_with_the_reason():
+    requests = _trigger("Historical Equity Rate", "on_submit", "zz-admin@example.com", ["EPM Admin"])
+    assert len(requests) == 1, requests
+    args, kw = requests[0]
+    assert args[:3] == ("consolidation", "Historical Equity Rate", "ZZ-probe")
+    assert kw.get("auto_approve_reason") == (
+        "Auto-approved: zz-admin@example.com approved Historical Equity Rate ZZ-probe (konsol#305-D2-10)."), kw
+
+
+def test_a_reverse_or_an_analysts_submit_requests_its_build_without_a_reason():
+    """A Reverse is not an approval (P22), nor is an EPM Analyst's submit: the
+    trigger still passes the keyword, as None, so the normal rules apply."""
+    for method, roles in (("on_cancel", ["EPM Admin"]), ("on_submit", ["EPM Analyst"])):
+        requests = _trigger("Historical Equity Rate", method, "zz-user@example.com", roles)
+        assert len(requests) == 1, (method, roles)
+        _, kw = requests[0]
+        assert "auto_approve_reason" in kw and kw["auto_approve_reason"] is None, (method, roles, kw)
+
+
+class _RequestSite:
+    """request_build_for_scope's frappe: the debounce read, new_doc, insert."""
+
+    def __init__(self, pending=None, insert_raises=False):
+        self.flag = _controller_flag()
+        self.pending = pending
+        self.insert_raises = insert_raises
+        self.inserted, self.flag_during_insert, self.logs, self.commits = [], [], [], 0
+        site = self
+
+        class Pbr:
+            def insert(self, ignore_permissions=False):
+                site.flag_during_insert.append(site.frappe.flags.get(site.flag))
+                if site.insert_raises:
+                    raise RuntimeError("the insert failed")
+                self.name = "ZZ-BA-1"
+                site.inserted.append(self)
+
+        def commit():
+            site.commits += 1
+
+        self.frappe = types.SimpleNamespace(
+            flags=_Flags(),
+            session=types.SimpleNamespace(user="zz-admin@example.com"),
+            new_doc=lambda doctype: Pbr(),
+            db=types.SimpleNamespace(
+                sql=lambda q, *a, **k: [_Flags(name="BA-P", workflow_state=self.pending)] if self.pending else [],
+                commit=commit),
+            logger=lambda: types.SimpleNamespace(info=self.logs.append, warning=self.logs.append))
+        build_lock = types.SimpleNamespace(lock_build_requests=lambda: None, flag_running_build=lambda row: None)
+        controller = types.SimpleNamespace(AUTO_APPROVE_FLAG=self.flag)
+        self.run = _exec_tasks({"request_build_for_scope"}, {"frappe": self.frappe},
+                               {"konsol.build_lock": build_lock, CONTROLLER_MOD: controller})
+
+    def request(self, **k):
+        return self.run("request_build_for_scope", "consolidation", "Historical Equity Rate", "ZZ-probe", **k)
+
+
+REASON = "Auto-approved: zz-admin@example.com approved Historical Equity Rate ZZ-probe (konsol#305-D2-10)."
+
+
+def test_a_reason_is_inserted_under_the_flag_and_the_flag_never_leaks():
+    site = _RequestSite()
+    site.request(auto_approve_reason=REASON)
+    assert site.flag == "konsol_auto_approve"
+    assert len(site.inserted) == 1 and site.inserted[0].auto_approve_reason == REASON
+    assert site.flag_during_insert == [True], "the controller approves only under the flag"
+    assert not site.frappe.flags.get(site.flag), "cleared after the insert"
+
+    site = _RequestSite(insert_raises=True)
+    try:
+        site.request(auto_approve_reason=REASON)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("the insert's error must reach the job")
+    assert site.flag_during_insert == [True]
+    assert not site.frappe.flags.get(site.flag), "cleared when the insert raises too"
+
+
+def test_a_request_without_a_reason_is_inserted_without_the_flag():
+    """The entity controller, a finished build's follow-up and the reaper pass
+    no reason; their rows follow the normal risk rules."""
+    site = _RequestSite()
+    site.request()
+    assert len(site.inserted) == 1 and not getattr(site.inserted[0], "auto_approve_reason", None)
+    assert site.flag_during_insert == [None]
+    assert site.flag not in site.frappe.flags
+
+
+def test_an_absorbed_request_logs_that_its_auto_approve_was_not_applied():
+    """The pending build keeps its state: it may carry unreviewed changes
+    (P22), so an approval that the debounce absorbs does not approve it."""
+    for state in ("Draft", "Pending Review", "Approved", "Running"):
+        site = _RequestSite(pending=state)
+        site.request(auto_approve_reason=REASON)
+        assert site.inserted == [] and site.flag_during_insert == [], state
+        assert any("absorbed; auto-approve not applied" in str(m) for m in site.logs), (state, site.logs)
+        assert not site.frappe.flags.get(site.flag)
+    site = _RequestSite(pending="Pending Review")
+    site.request()
+    assert not any("auto-approve" in str(m) for m in site.logs), "no reason, nothing dropped"

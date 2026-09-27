@@ -1,4 +1,4 @@
-"""TDD tests for Consolidation Group, IC Elimination Rule, Consolidation Adjustment."""
+"""TDD tests for Consolidation Group, IC Elimination Rule, Consolidation Journal."""
 import ast
 import glob
 import json
@@ -133,52 +133,74 @@ def test_ic_elimination_rule_ch_sync():
     assert "epm_gold.ic_elimination_rules" not in content
 
 
-# --- Consolidation Adjustment ---
+# --- Consolidation Journal ---
 
-def test_consolidation_adjustment_json_exists():
-    assert _doctype_file("consolidation_adjustment", "json") is not None
+def test_consolidation_journal_ch_sync():
+    """konsol#305 J05: the journal is the one writer of
+    epm_staging.consolidation_adjustments (one row per line). Consolidation
+    Adjustment, its other writer, stopped in the same change and is deleted
+    (J12): reconcile_all TRUNCATE+INSERTs every write-through table, so two
+    controllers naming one table erase each other (Problems P12).
 
-
-def test_consolidation_adjustment_has_required_fields():
-    meta = _load_json("consolidation_adjustment")
-    fields = [f["fieldname"] for f in meta["fields"]]
-    for f in ["consolidation_group", "adjustment_type", "journal_id", "data_area_id",
-              "fiscal_year", "fiscal_period", "main_account", "debit_amount", "credit_amount"]:
-        assert f in fields, f"Missing field: {f}"
-
-
-def test_consolidation_adjustment_types():
-    meta = _load_json("consolidation_adjustment")
-    for field in meta["fields"]:
-        if field["fieldname"] == "adjustment_type":
-            options = field["options"].split("\n")
-            assert "topside" in options
-            assert "reclassification" in options
-
-
-def test_consolidation_adjustment_has_posted_by():
-    meta = _load_json("consolidation_adjustment")
-    fields = [f["fieldname"] for f in meta["fields"]]
-    assert "posted_by" in fields
-
-
-def test_consolidation_adjustment_ch_sync():
-    """konsolidat#146: the legacy epm_gold write-through is gone. It carried no
-    `status` column and the dbt model labelled everything it read from that
-    relation 'Approved' unconditionally, so the approval workflow only ever held
-    because the model preferred staging whenever staging was non-empty."""
-    content = _load_py("consolidation_adjustment")
-    assert "sync_doctype" in content
-    assert 'CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"' in content
-    assert "epm_gold.consolidation_adjustments" not in content
-    staging = content.split("CH_STAGING_FIELD_MAP")[1].split("}")[0]
-    assert '"status"' in staging, "the workflow status must reach the warehouse"
+    konsolidat#146: the legacy epm_gold write-through stays gone."""
+    journal = _load_py("consolidation_journal")
+    assert 'CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"' in journal
+    assert "def resync_staging(" in journal
+    assert "epm_gold.consolidation_adjustments" not in journal
+    # submit adds the rows, cancel and delete remove them; after_delete, not
+    # on_trash, which runs before the row is gone (#120)
+    for hook in ("def on_submit(", "def on_cancel(", "def after_delete("):
+        assert hook in journal, hook
+    assert "def on_trash(" not in journal
 
 
 def test_all_consolidation_doctypes_module_consolidation():
-    for dt in ["consolidation_group", "ic_elimination_rule", "consolidation_adjustment"]:
+    for dt in ["consolidation_group", "ic_elimination_rule", "consolidation_journal",
+               "consolidation_journal_line"]:
         meta = _load_json(dt)
         assert meta["module"] == "Consolidation", f"{dt} not in Consolidation module"
+
+
+
+# --- konsol#305 J12: Consolidation Adjustment is retired --------------------
+
+def _string_constants(rel_path, name):
+    """Every string literal in the module-level assignment ``name`` of
+    ``rel_path`` (under konsol/). Fails if the assignment is missing, so a
+    rename cannot make the check pass vacuously."""
+    with open(os.path.join(APP_DIR, rel_path)) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        if any(getattr(t, "id", None) == name for t in targets):
+            return {n.value for n in ast.walk(node.value)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    raise AssertionError(f"{rel_path} has no module-level {name}")
+
+
+def test_consolidation_adjustment_is_retired():
+    """#305-D2-1: the journal replaced Consolidation Adjustment outright (0
+    rows). The doctype's folder is gone, and no registration names it. The
+    orphan-sweep patch, comments and a pure fixture keep the name as history."""
+    folder = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_adjustment")
+    assert not os.path.exists(folder), f"{folder} still exists"
+    assert _doctype_file("consolidation_adjustment", "json") is None
+    registrations = [
+        ("workflows.py", "INSTALLED"),
+        ("fiscal_calendar.py", "_PERIOD_DATA"),
+        ("hooks.py", "_dbt_trigger_doctypes"),
+        ("tasks.py", "DOCTYPE_BUILD_MAP"),
+        ("entity_permissions.py", "ENTITY_SCOPED_DOCTYPES"),
+        (os.path.join("close", "close_policy_model.py"), "APPROVAL_DOCTYPES"),
+        ("dashboard.py", "_LABELS"),
+        ("dashboard.py", "_CARDS"),
+        (os.path.join("desk", "connection_filters.py"), "CONSOLIDATION_GROUP_CHILD_DOCTYPES"),
+        (os.path.join("desk", "connection_filters.py"), "PIPELINE_BUILD_TRIGGER_DOCTYPES"),
+    ]
+    named = [f"{path}:{name}" for path, name in registrations
+             if "Consolidation Adjustment" in _string_constants(path, name)]
+    assert not named, f"still registered in {named}"
 
 
 # --- F2: Ownership Period is the only ownership grain ----------------------
@@ -353,7 +375,7 @@ def test_nothing_else_ships_transactional_data_as_a_fixture():
         shipped.update(r.get("doctype") for r in rows if isinstance(r, dict))
     for doctype in ("Ownership Period", "Trial Balance Submission",
                     "Historical Equity Rate", "IC Balance",
-                    "Consolidation Adjustment"):
+                    "Consolidation Journal"):
         assert doctype not in shipped, (
             f"{doctype} is submittable transactional data; a fixture would "
             f"force-delete and reinsert it on every migrate")

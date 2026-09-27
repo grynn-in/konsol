@@ -1,0 +1,12 @@
+@import "@fontsource/ibm-plex-sans";
+@import "@fontsource/ibm-plex-mono";
+@import "frappe-ui/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* The SPA owns the full viewport inside the Frappe website shell. */
+#root {
+	min-height: 100vh;
+}

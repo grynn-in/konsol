@@ -89,10 +89,36 @@ def test_trigger_close_run_is_post_only():
 
 def test_only_the_close_roles_may_start_a_close_run():
     """The gate is the first statement, ahead of the "already in progress"
-    check, so a user without the role is refused whatever the run state."""
+    check, so a user without the role is refused whatever the run state.
+
+    R3 (konsol#297): the Analyst runs checks too, so it joins the Close Lead
+    and System Manager here."""
     roles = _only_for_roles(_first_statement(_function(ASSERTION_RUN, "trigger_close_run")))
-    assert roles == {"EPM Admin", "System Manager"}, (
+    assert roles == {"EPM Admin", "EPM Analyst", "System Manager"}, (
         f"trigger_close_run does not open with frappe.only_for of the close roles: {roles}")
+
+
+def test_the_analyst_may_create_but_never_write_a_run():
+    """R3 (konsol#297): the Analyst runs checks, but the sign-off is still the
+    Close Lead's. The JSON grants create with no write on the level-0 row, and
+    `sign_off_close`'s first statement enforces write on the caller, so a
+    create-only Analyst is refused there whatever else changes."""
+    meta = _meta(ASSERTION_RUN_JSON)
+    rows = [p for p in meta["permissions"] if p.get("role") == "EPM Analyst" and not p.get("permlevel")]
+    assert rows, "no level-0 EPM Analyst permission row on Assertion Run"
+    assert all(p.get("create") for p in rows), f"EPM Analyst has no create on Assertion Run: {rows}"
+    assert not any(p.get("write") for p in rows), f"EPM Analyst gained write on Assertion Run: {rows}"
+
+    stmt = _first_statement(_function(ASSERTION_RUN, "sign_off_close"))
+    assert isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call), (
+        f"sign_off_close does not open with a call: {ast.dump(stmt)}")
+    call = stmt.value
+    assert (isinstance(call.func, ast.Attribute) and call.func.attr == "has_permission"
+            and isinstance(call.func.value, ast.Name) and call.func.value.id == "frappe"), (
+        f"sign_off_close does not open with frappe.has_permission: {ast.dump(stmt)}")
+    positional = [ast.literal_eval(a) for a in call.args]
+    assert positional[:2] == ["Assertion Run", "write"], (
+        f"sign_off_close's has_permission does not check write on Assertion Run: {positional}")
 
 
 def test_only_the_launch_roles_may_read_the_launch_options():
@@ -143,3 +169,118 @@ def test_only_the_close_roles_read_the_failure_sample():
     for p in rows:
         assert bool(p.get("write")) == bool(level_0[p["role"]].get("write")), (
             f"{p['role']} permlevel-1 write does not match its level-0 write: {p}")
+
+
+# ---------------------------------------------------------------------------
+# A02b (konsol#305): with R3 the Analyst may CREATE an Assertion Run. Measured
+# live 25 Sep 2026: an EPM Analyst inserted a run carrying status "Green" and
+# signoff_status "Signed Off" and it saved as sent (read_only is a form
+# property, not an insert guard). A new run must always start Queued and
+# unsigned, whatever the request carries.
+# ---------------------------------------------------------------------------
+def _before_insert_runner():
+    """Compile AssertionRun.before_insert (and the module constant it reads)
+    against a stub frappe, so the reset is exercised, not just grepped."""
+    import types
+
+    path = os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AssertionRun")
+    fn = next((n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_insert"), None)
+    assert fn is not None, "AssertionRun has no before_insert"
+    consts = [n for n in tree.body if isinstance(n, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id == "NEW_RUN_BLANK_FIELDS" for t in n.targets)]
+    module = ast.Module(body=consts + [fn], type_ignores=[])
+    ns = {"frappe": types.SimpleNamespace(session=types.SimpleNamespace(user="caller@example.com"))}
+    exec(compile(ast.fix_missing_locations(module), path, "exec"), ns)
+    return ns["before_insert"]
+
+
+class _Doc:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def set(self, key, value):
+        setattr(self, key, value)
+
+
+def test_a_new_run_cannot_arrive_signed_or_scored():
+    before_insert = _before_insert_runner()
+    forged = _Doc(flags=__import__("types").SimpleNamespace(started_by_trigger=True),
+        status="Green", signoff_status="Signed Off", signed_off_by="x@example.com",
+        signed_off_at="2026-09-25 10:00:00", override_reason="r", acknowledgement="a",
+        warnings_at_signoff="w", total=127, passed=127, failed=0, errored=0, warned=0,
+        started_at="t", completed_at="t", duration_seconds=1.0, log="l",
+        triggered_by="someone-else@example.com", results=[{"status": "Pass"}],
+        fiscal_year=2010, fiscal_period=2, title="kept",
+    )
+    before_insert(forged)
+    assert forged.status == "Queued"
+    assert forged.signoff_status == "Not Signed Off"
+    for field in ("signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
+                  "warnings_at_signoff", "total", "passed", "failed", "errored", "warned",
+                  "started_at", "completed_at", "duration_seconds", "log"):
+        assert getattr(forged, field) in (None, 0, ""), field
+    assert forged.results == []
+    assert forged.triggered_by == "caller@example.com"
+    # what the caller legitimately chooses survives
+    assert (forged.fiscal_year, forged.fiscal_period, forged.title) == (2010, 2, "kept")
+
+
+def test_every_read_only_result_field_is_reset_on_insert():
+    """The reset list covers every read_only field of the doctype except the
+    ones the caller legitimately sets (title) and the two with fixed starting
+    values (status, signoff_status); a read_only field added later must be
+    added to the reset list or here, on purpose."""
+    import json
+
+    before_insert = _before_insert_runner()  # also asserts the method exists
+    del before_insert
+    path = os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "NEW_RUN_BLANK_FIELDS" for t in n.targets))
+    blanked = set(ast.literal_eval(node.value))
+    meta = json.load(open(os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.json")))
+    read_only = {f["fieldname"] for f in meta["fields"] if f.get("read_only")
+                 and f["fieldtype"] not in ("Section Break", "Column Break", "Tab Break")}
+    assert read_only - {"title", "status", "signoff_status", "triggered_by"} == blanked
+
+
+def test_a_run_is_only_created_through_trigger_close_run():
+    """A02c: a direct insert (REST, Desk) is refused; only trigger_close_run,
+    which also enqueues the suite, may create a run. Otherwise a queued run
+    with no job blocks every other run until the reaper errors it."""
+    before_insert = _before_insert_runner()
+
+    class Refused(Exception):
+        pass
+
+    import types
+    before_insert.__globals__["frappe"] = types.SimpleNamespace(
+        session=types.SimpleNamespace(user="caller@example.com"),
+        throw=lambda *a, **k: (_ for _ in ()).throw(Refused(a[0] if a else "")),
+        _=lambda s: s,
+    )
+    direct = _Doc(flags=types.SimpleNamespace(), results=[])
+    try:
+        before_insert(direct)
+        raise AssertionError("a direct insert was not refused")
+    except Refused:
+        pass
+    via_trigger = _Doc(flags=types.SimpleNamespace(started_by_trigger=True), results=[])
+    before_insert(via_trigger)
+    assert via_trigger.status == "Queued"
+
+
+def test_trigger_close_run_marks_its_insert():
+    path = os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.py")
+    with open(path) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "trigger_close_run")
+    body = ast.get_source_segment(src, fn)
+    assert "doc.flags.started_by_trigger = True" in body
+    assert body.index("doc.flags.started_by_trigger = True") < body.index("doc.insert(")

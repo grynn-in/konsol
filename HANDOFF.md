@@ -4,6 +4,79 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (27 Sep): konsol#305 Delivery 2, wave 1 (prerequisites), is built.** It is on konsol `close-d2` and konsolidat `k305-d2`. The decisions are on #305: D2-1..12, P21-1 and P25.
+- **Consolidation Journal replaces Consolidation Adjustment** (#292, D2-1, D2-12). The journal is a header with lines. It must balance in total to the cent, and each line names its entity.
+  - Only `konsol.close.approval_api.approve` and `reject` approve or reject it. A reject needs a reason.
+  - The retirement patch `retire_consolidation_adjustment` refuses to run while any Consolidation Adjustment rows exist. Live has 0.
+- **Reversals (#304, D2-2, D2-11, P25).** The journal names its reversal period. Approval checks that the period is declared, Regular, later than the journal's period, and Open. A cancel is refused unless the reversal period is still Open.
+  - dbt posts the reversal in exactly that period.
+  - Three tests guard it: the reversal exists, it lands in a declared Regular period, and it negates the original.
+- **Approvals rebuild the numbers (#306, D2-10).** The six consolidation inputs, plus Business Combination and Business Disposal, request a `consolidation` build.
+  - A Close Lead's approval auto-approves that build, and `Build Approval.auto_approve_reason` records why. Only konsol's trigger can set that field.
+  - A reversal, or an approval absorbed into a build that is already pending, is never auto-approved.
+- **R2 and R5 (D2-3).**
+  - The Analyst can no longer submit Historical Equity Rate or IC Balance.
+  - Close Settings has a new `self_approval` field (Blocked / Allowed with reason) with no default. One `before_submit` hook applies it to every approval doctype, with no Administrator exemption.
+- **D2-9.** The 50% rate-move constant is gone. Close Settings `rate_move_threshold` replaces it, with no default.
+- **Tests:** host 3181/3181 across 188 files, 60 skipped; `close-ui` 394/394. There was one batch review; its 4 should-fix findings were fixed test-first.
+- **Deploy order:**
+  - **On live, deploy konsolidat `k305-d2` (V01) before konsol.** Live already has the new reversal columns, and konsol's migrate drops `auto_reverse_period`, which the old dbt model still reads.
+  - On a site without the new columns, deploy konsol first.
+  - J05 deploys whole, so the old adjustment sync never runs beside the journal's.
+- **Before the close works on live after migrate:**
+  - Declare `self_approval` and `rate_move_threshold` in Close Settings. Until then sign-off stays blocked, every self-approval is refused, and every rate that moves needs a reason.
+  - Check that the workspace link to Consolidation Adjustment is gone (it heals at after_migrate).
+- **Open, not fixed (for Deepak):**
+  - An Admin can edit an Analyst's pending journal and then approve it. The preparer is still the owner, so R5 never fires.
+  - A rejected Build Approval does not undo its staging write, so the next auto-approved build picks that change up unreviewed.
+  - Seven dbt tests may never fail: konsolidat#249.
+- **Next:** wave 2 (E2 period grid, E10 audit trail, E4 rates and ownership), then wave 3 (E5, E6), then wave 4 (E8).
+  - The wave-3 intercompany screens must show "not configured" separately from "reconciled". Live has 0 Intercompany Accounts, so `gold_ic_reconciliation` is empty by construction (konsol#293).
+  - Task file, Ralph prompt and dbt gate: `bench-15/archive/konsol-305-d2/` (outside git).
+
+**Update (26 Sep): the close app — konsol#305 Delivery 1 — is built on branch `close-d1`; the PR is next.** It replaces konsol-exec with a new SPA at `/close`: `close-ui/` is Vue 3 + frappe-ui + xstate, and the built bundle is committed at `konsol/public/close` with `build-manifest.json`. Operations happen there; configuration stays in the Desk.
+- **Roles and screens:** My work, Trial balances, Checks and Sign-off.
+  - Entity Accountant: upload, fix, re-upload and submit.
+  - Analyst: run the checks.
+  - Close Lead: sign off with a typed acknowledgement for Amber or an override for Red, close and reopen.
+  - Viewer: read only.
+- **Proven live** by four scripted browser walk-throughs, with no workaround. Evidence is in the session scratchpad `c1/run4/`. The scripts are `scripts/close_c1_setup.py` and `scripts/close_c1_cleanup.py`.
+- **Tests:** host 3015/3015 across 181 files, 60 skipped; `cd close-ui && node --test src/` gives 394/394.
+- **Removed:** konsol-exec, `home_api`, `home_model`, `control_api` and `scripts/hot-deploy-exec.sh`. The workspace tile is now "Close" → `/close`. Bulk TB upload remains in the Desk (Trial Balance Upload).
+- **Doctypes touched:**
+  - **Operational:** Assertion Run (sign-off, results, scope, log and title frozen outside their writers; deleting a finished run is refused), Trial Balance Submission (`uploaded_on_behalf`; row checks shared with the app), and the new TB Exception.
+  - **Config:** the new Close Settings (first close period), `Entity.reporting_frequency`, and three read-only fields on EPM Fiscal Year Period (`data_changed_at`, `data_changed_by`, `data_change`).
+- **Upgrade steps for an existing site after migrate:**
+  1. Declare the first close period in Close Settings. Until you do, no Regular period can be closed or locked, and the error says so.
+  2. Set a reporting frequency on every in-scope entity (328 on live). Sign-off stays blocked until they are set.
+  - `/konsol-exec` bookmarks now return 404.
+- **Decisions built in:** all are on konsol#305 and in memory.
+  - #298-T1, the technology choice.
+  - #303-3a: first close period, order and TB completeness.
+  - #305-R2b-3: a signature covers only the data its run checked, recorded on the period row.
+  - #305-R5a: the first close period is locked once used.
+- **Open:**
+  - A39 and A44 wait for konsol#255 / PR #288.
+  - #306: staging-build scope, and a delete queues no build.
+  - #304: auto-reversal.
+  - konsolidat#248: check descriptions.
+  - A run that finishes after a TB change does not prove the checks read that TB, because the TB reaches the warehouse only after its build runs. This is the freshness question, not yet filed.
+
+**Update (25 Sep, later): konsol#255's reporting leg is PROVEN.**
+- **Result:** on live intake (run by the worker), one account split across two dimension values reaches gold, and the hierarchy rolls it up: ZZALL 950 = ZZNORTH 700 + ZZSOUTH 250. The dbt branch `k255-dbt-dims` was built into scratch schema `epm_k255`.
+- **Proof needed a fix:** the upload refused a split account until PR #302.
+- **PR #296 fixes #295:** a Dimension that ends up Published gets its column, however it got there.
+- **Both PRs** merge into `k255-tb-dimensions`.
+- **Filed:** konsolidat#246, konsol#299, #300, #301.
+- **Unexplained:** the scheduler container runs TB code that matches neither main nor the branch.
+- **Detail:** `.claude/memory/active/k255-dimensions.md`, "READ FIRST".
+
+**Update (25 Sep): konsol#255's reporting leg is open, reconnoitred, and NOT built.** Full detail in `.claude/memory/active/k255-dimensions.md`; read that before touching it. The headline is a blunt live check that reframes the work: **there is no dimension or hierarchy data on the live stack at all.** All 47,308 rows of `gold_trial_balance` carry `''` in every `dim_*` column; `epm_staging.reporting_hierarchies`, `gold_reporting_hierarchy`, its closure table, and `gold_tb_at_hierarchy_node` are all **zero rows**. The rollup has never produced a row on live for any dimension, TB-sourced or ERP-sourced. So the leg is not "deploy and look" — it needs ZZ data created through the real admin flow (a Dimension, a Reporting Hierarchy with members, a TB upload) before a dbt build can show anything.
+
+Two facts found while tracing it. **The TB path has no separate gold fork:** a submission merges into the ledger at silver (`silver_gl_entries.sql:196`, marked `posting_type = 'Trial Balance Submission'`), so `gold_trial_balance` and everything downstream is the TB path. And **`var('dimensions')` is generated, not hand-maintained** — `Dimension.publish()` runs `dbt_config.regenerate_vars()`, which splices the managed block of `dbt_project.yml`; since `/home/frappe/dbt_project` is a bind mount of `konsolidat/repo/dbt_project`, publishing a dimension on the live stack edits the konsolidat repo working tree on the Mac.
+
+**Correction to the 25 Sep record: the earlier live A/B probe was reported "fully cleaned" and was not.** `dim_zz_probe` was still in `dbt_project.yml` in the container and uncommitted in the repo — written there by the probe's own `publish()` through that bind mount. I had checked ClickHouse and the Frappe records but never the file the generator writes. Reverted 25 Sep; the next probe's cleanup must include it.
+
 **Update (22 Sep, later): the two deploy-path defects are fixed and merged (konsolidat#242 as `a73e143`, closing #239 and #240).** `deploy.sh:395` now writes its dbt log to `mktemp "${TMPDIR:-/tmp}/konsolidat-dbt.XXXXXX"`, and `docker/frappe/Dockerfile` installs `file`. Two lines. Red-then-green measured on GNU coreutils 9.1, in a root container and as a normal user.
 
 **Do not add `set -o pipefail` to `deploy.sh`.** konsolidat#239 suggested it and it would break step 5: the step reads `${PIPESTATUS[0]}` on purpose so `docker compose … | tee` reports dbt's status rather than `tee`'s, and then tells a compilation error (abort the deploy) from data-quality failures on demo data (tolerate). Under `pipefail` with `set -e` the script exits at the pipeline and that classification never runs — the bug konsolidat#139 was filed for. Three tests in `tests/test_deploy_portability.py` exist to keep it out.
@@ -16,11 +89,55 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 **Filed along the way, all open:** konsolidat#241 (a restore smoke test — back up a seeded site, restore it, assert a row count), **#243** (nine shell scripts have no portability guard; do it with shellcheck, not another hand-written parser), **#244** (the Frappe image is never built in CI, so nothing can guard what it contains).
 
-**Two live findings recorded 22 Sep, not yet filed.**
+**Two live findings recorded 22 Sep. Five issues came out of them, all open.**
 
 *Budget and forecast.* Every budget table on the live site is empty — `budget_annual_input`, `budget_monthly_input`, `gold_spread_budget`, `gold_budget_at_hierarchy_node`, `silver_budget_entries`, all 0 rows. `gold_variance_analysis` holds 47,308 rows (the trial-balance count) with `budget_amount` NULL in all of them. **That is correct output, not a defect (Deepak, 22 Sep): no budget means budget zero, so unbudgetted actuals are an adverse variance.** What is undecided is the other side: konsol *refuses* such a read (`"No active budget scenario belongs to FY{year}"`) while Cube, Excel ODBC and any direct ClickHouse reader see the correct adverse variance. Same data, two answers by door. Also: **there is no budget intake** — no upload, no `budget_bulk.py`; budget arrives cell-by-cell through the Excel add-in or hand-typed in the Desk. And **forecast is not a thing to build**: no doctype, no model, no table, no Dataset with `scenario_key: "forecast"`, so a flat forecast read is refused; `HIERARCHY_SCENARIO_CONFIG["forecast"]` is byte-identical to `["budget"]`. konsol#106 is a decision, not a build.
 
 *konsol-exec.* A full task inventory was taken from the code. **What it does that the Frappe Desk cannot is three things:** set a build's stage range (`from_stage`/`to_stage` are enqueue arguments, not fields on `Pipeline Run`), the live step rail with per-step Retry/Resume, and the one-file-many-entities TB loader. Everything else has a Desk equivalent, and much of the app *is* the Desk — every month-queue action is `window.open('/app/…')`. Of ~30 xstate states across its five machines (not six), **five** reflect server state; `closeMachine` (338 lines) has none. Defects found and not yet filed: five writes reachable by GET (`send_reminder`, `start_run`, `retry_step`, `resume_run`, `cancel_run` — three of which defeat the rollback with an explicit commit); three reads with no role guard at all (`get_snapshot`, `get_run_detail`, `get_run` — any authenticated user can read run console logs and every process's blockers); a green toast saying "Reminder sent" when `send_reminder` only writes a log line; the closed-period guard is dead because the app sends neither `fiscal_year` nor `fiscal_period`; two buttons labelled "Build" that create materially different runs; `runExecMachine` and `runDetailMachine` have zero tests.
+
+**Filed 22 Sep, from reading the demo rather than the code.** Opening
+`/konsol-exec/2025/0` beside `/konsol-exec/2025/1` showed two byte-identical
+pages, and pulling that thread produced five issues, two of which outrank most
+of what is on konsol#216's triage:
+
+- **konsol#289 — a valid trial balance for an entity with no ownership period is
+  accepted, then silently dropped.** Measured on the demo: 20 submitted, Valid
+  trial balances across `CA_OVIVO` (FY2025 P07-P12), `US_OVIVO` (same) and
+  `US_CHAMP` (FY2013-FY2020 P12). The close reports `41 of 306 in` for Jul 2025
+  while two of those entities submitted for that exact month — they are in
+  **neither the numerator nor the denominator**, because every count is scoped to
+  `in_close = leaves & covered` (`home_api.py:253`). The only trace is a queue
+  row reading "Ownership missing", which looks like a setup chore. This is data
+  loss with no signal, in accounting software.
+- **konsolidat#245 — nine of `gold_fully_consolidated_tb`'s ten layers hardcode
+  blank dimensions.** One `dim_select`, nine `dim_empty_strings`: IC eliminations
+  (both legs), CTA, top-side, equity method and all four deal journals. So
+  slicing the consolidated TB by any dimension returns **entity balances only**,
+  and every adjustment falls in the `''` bucket. Separately,
+  `gold_tb_at_hierarchy_node` reads `gold_trial_balance` — the entity-level fact —
+  so a management hierarchy never meets an elimination at all. **This is a
+  decision, not a defect**: three candidate policies are on the issue, and it must
+  be settled before konsol#292's child table is built.
+- **konsol#290** — `Ownership Period.consolidation_group` is required,
+  unvalidated free text, and part of the document name. A typo creates submitted
+  ownership that covers nothing, so the queue keeps saying "ownership missing"
+  while the record plainly exists.
+- **konsol#291** — the close queue renders one configuration gap as N recurring
+  monthly tasks. All 30 items on the demo are period-invariant (23 entities with
+  no ownership period at all, 5 date-anchored rates, 2 placeholders), and every
+  fix is a `window.open` into the Desk with no refetch.
+- **konsol#292** — `Consolidation Adjustment` is a journal line, not a journal:
+  one account with both a debit and a credit, and a two-sided entry is two
+  documents sharing a free-text `journal_id`. Nothing checks the journal balances
+  until a dbt test after the build, and the demo shows `Assertions: Not run`.
+  Submit approves one leg. Zero rows exist on either site, so the restructure is
+  free today and the warehouse contract does not change.
+
+**The demo's numbers, for whoever looks next.** 329 active non-group entities,
+306 with ownership covering the month, 23 without. At most 41 of the 306 have
+ever delivered a trial balance (FY2024 P12 and FY2025 P07-P12); every other
+period reads `0 of 306 in`. So the close is permanently red for reasons that are
+mostly data, not code.
 
 
 ## Decisions register
@@ -1112,8 +1229,7 @@ and got `0.0` everywhere: **an empty result returns `0.0` for any valid
 measure, so it proves nothing. Pick keys with data and compare blank vs the
 named measure vs a different one.**
 
-Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **2359/2359 passed across 158 files** on main at `9903cbd`, with 8 files skipped (the known live-site/pytest set — check that list, see konsol#248); `cd konsol-exec && node --test src/*.test.mjs
-src/orchestrator/*.test.mjs` → 48/48 with #148.
+Local test loops: `.venv/bin/python scripts/run-host-tests.py` → **2359/2359 passed across 158 files** on main at `9903cbd`, with 8 files skipped (the known live-site/pytest set — check that list, see konsol#248); `cd close-ui && node --test src/` → 394/394 on `close-d1` (konsol-exec and its tests were removed in konsol#305 R01).
 
 Drive the live stack without a deploy by `docker cp` into
 `konsolidat_backend` (dbt files there land in `repo/dbt_project`, which is bind-mounted) plus a plain script with

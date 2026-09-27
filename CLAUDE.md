@@ -21,7 +21,7 @@ copy in).
 ## Testing: host tests, then live. Never deploy.
 
 - Host tests: `.venv/bin/python scripts/run-host-tests.py`. JS:
-  `cd konsol-exec && node --test src/*.test.mjs src/orchestrator/*.test.mjs`.
+  `cd close-ui && node --test src/`.
 - **Do not run `deploy.sh`** to verify anything (user rule; it takes 10–20 min
   and OOMs without `COMPOSE_PARALLEL_LIMIT=1`). Test on the running stack:
   - `docker cp` changed files into `konsolidat_backend`, **and into
@@ -143,8 +143,9 @@ copy in).
    - Walk every workflow transition in a live test, including the refused
      cancel of a closed period.
 
-Existing doctypes that don't follow this yet (Consolidation Adjustment, #131)
-are brought in line one PR at a time.
+Existing doctypes that don't follow this yet are brought in line one PR at a
+time (Consolidation Adjustment, #131, which didn't, was retired outright by
+konsol#292 rather than brought in line).
 
 ## ClickHouse / dbt traps
 

@@ -151,7 +151,7 @@
    "label": "Reason for Change",
    "no_copy": 1,
    "mandatory_depends_on": "eval:doc.amended_from",
-   "description": "Required when this rate amends a cancelled one, and when it moves more than 50% from the previous approved rate for its key or from the ERP quote. A rate in a closed period changes only after the period is reopened; the reopen, the cancelled rate and this reason are the audit trail."
+   "description": "Required when this rate amends a cancelled one, and when it moves more than the Rate Move Needing a Reason in Close Settings from the previous approved rate or the ERP quote. A rate in a closed period changes only after the period is reopened; the reopen, the cancelled rate and this reason are the audit trail."
   },
   {
    "fieldname": "amended_from",

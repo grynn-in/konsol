@@ -43,7 +43,7 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
-            flags=None, refs=None, previous=None):
+            flags=None, refs=None, previous=None, move_threshold_pct=50):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -81,6 +81,9 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         sql=sql,
         exists=lambda dt, f=None: False,
         add_index=lambda *a, **k: record.setdefault("index", []).append((a, k)),
+        # Close Settings' rate_move_threshold (konsol#305-D2-9): a bare Percent
+        # (50 means 50%), or None to test the undeclared case.
+        get_single_value=lambda dt, field, _pct=move_threshold_pct: _pct,
     )
     return frappe
 
@@ -279,7 +282,8 @@ def _validate(**fields):
     ctx = fields.pop("_ctx", {})
     module, record = _controller(**ctx)
     d = _doc(module, **fields)
-    rules = _rules_module(_frappe({}, **{k: v for k, v in ctx.items() if k in ("refs", "previous")}))
+    rules = _rules_module(_frappe(
+        {}, **{k: v for k, v in ctx.items() if k in ("refs", "previous", "move_threshold_pct")}))
     message = None
     with _konsol(rules):
         try:
@@ -368,6 +372,15 @@ def test_a_move_over_half_needs_a_reason():
     assert refused and "from the ERP quote" in msg
     # an amendment always needs one
     assert _validate(amended_from="GER-2099-12-EUR-CHF-Closing-01", change_reason="")[0]
+    # the threshold is declared in Close Settings, not coded (konsol#305-D2-9):
+    # a 55% move passes under a declared 60% threshold, with no reason needed
+    assert not _validate(_ctx={"previous": previous, "move_threshold_pct": 60}, **ars)[0], \
+        "-55% is under a declared 60% threshold"
+    # undeclared (0/None reads back as unset): refused naming Close Settings, unless a reason is given
+    refused, _, msg = _validate(_ctx={"previous": previous, "move_threshold_pct": None}, **ars)
+    assert refused and "Close Settings" in msg
+    assert not _validate(_ctx={"previous": previous, "move_threshold_pct": None},
+                          change_reason="Devaluation, 13 Dec", **ars)[0]
 
 
 def test_an_amendment_must_say_why():
@@ -809,12 +822,28 @@ def test_the_magnitude_guard_reads_iso_currency():
 
 
 def test_the_move_rule():
+    """The threshold is declared in Close Settings, not coded (konsol#305-D2-9):
+    ``move_problem`` takes it as a fraction, and there is no coded default."""
     r = _rules()
-    assert r.move_problem(1.0, (1.4, "P11"), None) is None, "-29%"
-    assert "-55%" in r.move_problem(0.45, (1.0, "P11"), None)
-    assert "+60%" in r.move_problem(1.6, None, 1.0)
-    assert r.move_problem(1.6, None, None) is None, "no previous rate, no quote: nothing to compare"
-    assert r.MOVE_NEEDS_REASON == 0.5
+    # today's four cases, unchanged, with the old default made explicit
+    assert r.move_problem(1.0, (1.4, "P11"), None, threshold=0.5) is None, "-29%"
+    assert "-55%" in r.move_problem(0.45, (1.0, "P11"), None, threshold=0.5)
+    assert "+60%" in r.move_problem(1.6, None, 1.0, threshold=0.5)
+    assert r.move_problem(1.6, None, None, threshold=0.5) is None, "no previous rate, no quote: nothing to compare"
+    # a different declared threshold changes what needs a reason
+    assert r.move_problem(1.0, (1.4, "P11"), None, threshold=0.3) is None, "-29% is still under 30%"
+    problem = r.move_problem(1.4, (1.0, "P11"), None, threshold=0.3)
+    assert problem and "over 30%" in problem, problem
+    # undeclared (threshold=None): a reference to compare against exists, so the
+    # gap names Close Settings rather than guessing a value
+    # a small declared threshold is stated as declared, not rounded to "0%"
+    small = r.move_problem(1.01, (1.0, "P11"), None, threshold=0.005)
+    assert small and "over 0.5%" in small, small
+    undeclared = r.move_problem(1.6, (1.0, "P11"), None, threshold=None)
+    assert undeclared and "Close Settings" in undeclared, undeclared
+    assert r.move_problem(1.6, None, None, threshold=None) is None, \
+        "nothing to compare against: no gap either, even undeclared"
+    assert not hasattr(r, "MOVE_NEEDS_REASON"), "the threshold is declared, not coded"
 
 
 def test_the_previous_rate_is_read_as_a_true_rate():
@@ -1095,7 +1124,7 @@ def test_rate_gate_lock_only_for_close():
     home_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
     assert home_queries, "expected a read of Group Exchange Rate for the approved keys"
     assert not any("LOCK IN SHARE MODE" in q for q in home_queries), \
-        "rate_gate's default (home_api's call) must not take a row lock: " + repr(home_queries)
+        "rate_gate's default (close.mywork_api's call) must not take a row lock: " + repr(home_queries)
 
     record["sql"] = []
     assert not _refused(r.assert_rates_complete, 2024, 3)

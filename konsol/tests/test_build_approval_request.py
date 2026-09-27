@@ -28,17 +28,19 @@ class _D(dict):
     __setattr__ = dict.__setitem__
 
 
-def _transitions(request=True):
+def _transitions(request=True, approve=True):
     """The shipped workflow's Request/Approve rows, as frappe returns them.
-    ``request=False``: a site that removed every Request row."""
+    ``request=False``: a site that removed every Request row.
+    ``approve=False``: a site that removed Pending Review's Approve."""
     rows = []
     for role in ("EPM Analyst", "EPM Admin", "System Manager", "Administrator") if request else ():
         rows.append(_D(state="Draft", action="Request", next_state="Approved", allowed=role,
                        condition='doc.risk_level == "low"'))
         rows.append(_D(state="Draft", action="Request", next_state="Pending Review", allowed=role,
                        condition='doc.risk_level == "high"'))
-    rows.append(_D(state="Pending Review", action="Approve", next_state="Approved", allowed="EPM Admin",
-                   condition=None))
+    if approve:
+        rows.append(_D(state="Pending Review", action="Approve", next_state="Approved", allowed="EPM Admin",
+                       condition=None))
     for state in ("Completed", "Failed", "Cancelled"):
         for role in ("EPM Analyst", "EPM Admin", "System Manager"):
             rows.append(_D(state=state, action="Run Again", next_state="Draft", allowed=role, condition=None))
@@ -49,8 +51,9 @@ class _Site:
     """A stub frappe site: its db, session, workflow module and what they saw."""
 
     def __init__(self, workflow=True, user="zz.analyst@example.com", roles=("EPM Analyst",),
-                 can_read=True, request=True):
+                 can_read=True, request=True, approve=True):
         self.rows = {}
+        self.errors = []
         self.roles = set(roles)
         self.applied = []
         self.applied_as = []
@@ -103,6 +106,7 @@ class _Site:
         frappe.publish_realtime = lambda event, data=None, *a, **k: self.published.append((event, data))
         frappe.enqueue = lambda *a, **k: self.enqueued.append(k.get("build_request"))
         frappe.logger = lambda *a, **k: types.SimpleNamespace(info=lambda *a, **k: None)
+        frappe.log_error = lambda title=None, message=None, **k: self.errors.append((title, message))
 
         def get_doc(doctype, name):
             assert doctype == "Build Approval"
@@ -120,6 +124,8 @@ class _Site:
                 self._before = before
                 self._new = new
                 self.flags = _D()
+                # frappe sets every column of the meta (init_valid_columns), unset ones None
+                self.auto_approve_reason = None
                 self.__dict__.update(fields)
 
             def get_doc_before_save(self):
@@ -158,7 +164,7 @@ class _Site:
             if not can_read and session.user != "Administrator":
                 raise PermissionError(f"{session.user} may not read Build Approval")
             found = []
-            for t in _transitions(request):
+            for t in _transitions(request, approve):
                 if t.state != doc.workflow_state or t.allowed not in session_roles():
                     continue
                 if t.condition and not eval(t.condition, {}, {"doc": types.SimpleNamespace(**doc.fields())}):
@@ -208,19 +214,25 @@ class _Site:
                 else:
                     sys.modules[m] = old
 
-    def insert(self, scope, name="ZZ-BA-0001", after_insert_script=None):
+    def insert(self, scope, name="ZZ-BA-0001", after_insert_script=None, auto_approve_reason=None,
+               flag=False):
         """Document.insert: before_save, write the row, after_insert, then
         run_post_save_methods (on_update) on the same instance.
 
         v15 sets flags.in_insert around before_save and on_update, and clears
         it for after_insert (document.py ~308-335). ``after_insert_script``
         runs after the controller's after_insert, as a server script does.
-        An exception rolls the whole insert back."""
+        An exception rolls the whole insert back. ``flag``: konsol's trigger
+        (tasks.request_build_for_scope) sets konsol_auto_approve around the
+        insert (konsol#305-D2-10), and clears it after, even on an error."""
         doc = self.BuildApproval(before=None, new=True, name=name, build_scope=scope,
                                  workflow_state="Draft", approved_by=None, requested_by=None,
-                                 rebuild_requested=0, error_message=None, started_at=None)
+                                 rebuild_requested=0, error_message=None, started_at=None,
+                                 auto_approve_reason=auto_approve_reason)
         self.inserted = doc
         snapshot = copy.deepcopy(self.rows)
+        if flag:
+            self.frappe.flags.konsol_auto_approve = True
         try:
             with self.installed():
                 doc.flags.in_insert = True
@@ -240,6 +252,8 @@ class _Site:
             self.rows.clear()
             self.rows.update(snapshot)
             raise
+        finally:
+            self.frappe.flags.pop("konsol_auto_approve", None)
         return self.rows[name]
 
 
@@ -609,3 +623,149 @@ def test_without_a_workflow_the_insert_still_enqueues_or_notifies_once():
     site = _Site(workflow=False)
     site.insert("actuals")
     assert site.published == [("build_request_pending", {"name": "ZZ-BA-0001", "scope": "actuals"})]
+
+
+# --- an approval's build auto-approves, and only konsol sets why (konsol#305 S03b) ---
+
+REASON = ("Auto-approved: zz.admin@example.com approved Historical Equity Rate ZZ-HER-1 "
+          "(konsol#305-D2-10).")
+FORGE_REFUSED = "Only konsol's build trigger sets Auto-Approved Because (konsol#305-D2-10)."
+
+
+def _admin_site(**k):
+    """The request job runs as the user whose submit asked for the build."""
+    return _Site(user="zz.admin@example.com", roles=("EPM Admin",), **k)
+
+
+def test_a_high_risk_row_with_a_reason_under_the_flag_is_requested_then_approved():
+    site = _admin_site()
+    row = site.insert("consolidation", auto_approve_reason=REASON, flag=True)
+    assert [a for _, a in site.applied] == ["Request", "Approve"]
+    assert site.applied_as == ["Administrator", "Administrator"], "konsol's steps, as Administrator"
+    assert row["workflow_state"] == "Approved"
+    assert row["approved_by"] == row["requested_by"] == "zz.admin@example.com"
+    assert row["auto_approve_reason"] == REASON, "the reason stays on the row"
+    assert site.enqueued == ["ZZ-BA-0001"], "enqueued once, by the Approve's save"
+    assert site.published == [("build_request_pending", {"name": "ZZ-BA-0001", "scope": "consolidation"})], \
+        "the Request save still notifies once before the approve"
+    assert site.inserted.workflow_state == "Approved"
+    assert site.errors == []
+    assert not site.frappe.flags.get("konsol_auto_approve")
+
+
+def test_a_reason_without_the_flag_is_refused_and_nothing_lands():
+    """The forge: read_only does not stop a REST insert, and EPM Analyst has create."""
+    for user, roles in (("zz.analyst@example.com", ("EPM Analyst",)), ("zz.admin@example.com", ("EPM Admin",))):
+        site = _Site(user=user, roles=roles)
+        try:
+            site.insert("consolidation", auto_approve_reason="forged")
+        except site.frappe.PermissionError as e:
+            assert str(e) == FORGE_REFUSED, user
+        else:
+            raise AssertionError(f"{user}: a forged reason was accepted")
+        assert site.rows == {}, user
+        assert site.applied == [] and site.enqueued == [] and site.published == [], user
+
+
+def test_a_save_that_sets_or_changes_the_reason_without_the_flag_is_refused():
+    for old, new in ((None, "forged"), (REASON, "forged"), (REASON, None)):
+        site = _admin_site()
+        name = "ZZ-BA-0007"
+        site.rows[name] = dict(name=name, build_scope="consolidation", risk_level="high",
+                               workflow_state="Pending Review", approved_by=None,
+                               requested_by="zz.analyst@example.com", rebuild_requested=0, error_message=None,
+                               started_at=None, completed_at=None, duration_seconds=0, auto_approve_reason=old)
+        snapshot = copy.deepcopy(site.rows)
+        with site.installed():
+            doc = site.frappe.get_doc("Build Approval", name)
+            doc.auto_approve_reason = new
+            assert _raised(doc.save) == FORGE_REFUSED, (old, new)
+        assert site.rows == snapshot, (old, new)
+        assert site.enqueued == [], (old, new)
+
+
+def test_a_row_without_a_reason_still_waits_for_review():
+    site = _admin_site()
+    row = site.insert("consolidation")
+    assert [a for _, a in site.applied] == ["Request"]
+    assert row["workflow_state"] == "Pending Review"
+    assert row["approved_by"] is None
+    assert not row["auto_approve_reason"]
+    assert site.enqueued == []
+
+
+def test_run_again_of_an_auto_approved_row_clears_the_reason_and_waits_for_review():
+    """A rerun is a person's request and follows the normal rules."""
+    site = _Site()
+    name = "ZZ-BA-0008"
+    site.rows[name] = dict(name=name, build_scope="consolidation", risk_level="high", workflow_state="Completed",
+                           approved_by="zz.admin@example.com", requested_by="zz.admin@example.com",
+                           rebuild_requested=0, error_message=None, started_at="2026-09-01 10:00:00",
+                           completed_at="2026-09-01 10:05:00", duration_seconds=300,
+                           auto_approve_reason=REASON)
+    with site.installed():
+        site.frappe.model.workflow.apply_workflow(site.frappe.get_doc("Build Approval", name), "Run Again")
+    row = site.rows[name]
+    assert row["auto_approve_reason"] is None
+    assert row["workflow_state"] == "Pending Review"
+    assert row["approved_by"] is None
+    assert [a for _, a in site.applied] == ["Run Again", "Request"]
+    assert site.enqueued == []
+
+
+def test_without_a_workflow_a_reason_approves_the_row_in_before_save():
+    site = _admin_site(workflow=False)
+    row = site.insert("consolidation", auto_approve_reason=REASON, flag=True)
+    assert site.state_after_before_save == "Approved"
+    assert row["workflow_state"] == "Approved"
+    assert row["approved_by"] == row["requested_by"] == "zz.admin@example.com"
+    assert row["auto_approve_reason"] == REASON
+    assert site.enqueued == ["ZZ-BA-0001"]
+    assert site.applied == []
+
+
+def test_a_workflow_without_approve_leaves_the_row_pending_and_logs_it():
+    """Visible, never silent: the row waits for a person, and an Error Log says why."""
+    site = _admin_site(approve=False)
+    row = site.insert("consolidation", auto_approve_reason=REASON, flag=True)
+    assert [a for _, a in site.applied] == ["Request"]
+    assert row["workflow_state"] == "Pending Review"
+    assert row["approved_by"] is None
+    assert row["auto_approve_reason"] == REASON
+    assert site.enqueued == []
+    assert site.errors == [("Build Approval ZZ-BA-0001: auto-approve not offered", REASON)]
+
+
+def test_a_person_approving_a_row_that_carries_a_reason_is_recorded_as_the_approver():
+    """approved_by names the requester only for konsol's own approve. A row left
+    Pending Review (no Approve offered) and approved later by a person names that person."""
+    site = _admin_site()
+    name = "ZZ-BA-0009"
+    site.rows[name] = dict(name=name, build_scope="consolidation", risk_level="high",
+                           workflow_state="Pending Review", approved_by=None,
+                           requested_by="zz.analyst@example.com", rebuild_requested=0, error_message=None,
+                           started_at=None, completed_at=None, duration_seconds=0, auto_approve_reason=REASON)
+    with site.installed():
+        site.frappe.model.workflow.apply_workflow(site.frappe.get_doc("Build Approval", name), "Approve")
+    assert site.rows[name]["workflow_state"] == "Approved"
+    assert site.rows[name]["approved_by"] == "zz.admin@example.com"
+    assert site.rows[name]["auto_approve_reason"] == REASON
+
+
+def test_without_a_workflow_a_reset_of_an_auto_approved_row_waits_for_review():
+    """The reset clears the reason before the no-workflow move reads it."""
+    site = _Site(workflow=False)
+    name = "ZZ-BA-0010"
+    site.rows[name] = dict(name=name, build_scope="consolidation", risk_level="high", workflow_state="Completed",
+                           approved_by="zz.admin@example.com", requested_by="zz.admin@example.com",
+                           rebuild_requested=0, error_message=None, started_at="2026-09-01 10:00:00",
+                           completed_at="2026-09-01 10:05:00", duration_seconds=300,
+                           auto_approve_reason=REASON)
+    with site.installed():
+        doc = site.frappe.get_doc("Build Approval", name)
+        doc.workflow_state = "Draft"
+        doc.save()
+    assert site.rows[name]["workflow_state"] == "Pending Review"
+    assert site.rows[name]["auto_approve_reason"] is None
+    assert site.rows[name]["approved_by"] is None
+    assert site.enqueued == []
