@@ -41,6 +41,21 @@ def test_every_scoped_doctype_exists_and_carries_data_area_id():
         assert "data_area_id" in fields[dt], f"{dt} is entity-scoped but has no data_area_id"
 
 
+def test_consolidation_journal_is_not_entity_scoped():
+    """#305-P21-1 (Deepak Pai, 27 Sep 2026): journals are group-level work and
+    are not entity-scoped — a single-entity Viewer sees every journal. The
+    header carries no data_area_id (#305-D2-12), so scoping it would generate
+    a query condition on a column that does not exist."""
+    tree = ast.parse(_src("entity_permissions.py"))
+    scoped = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                  and getattr(n.targets[0], "id", None) == "ENTITY_SCOPED_DOCTYPES")
+    assert "Consolidation Journal" not in scoped
+    assert "#305-P21-1" in _src("entity_permissions.py"), (
+        "the deliberate-absence decision must be recorded beside "
+        "ENTITY_SCOPED_DOCTYPES, citing #305-P21-1"
+    )
+
+
 def test_hooks_register_query_conditions_for_every_scoped_doctype():
     """There were none at all before, so desk lists were never filtered."""
     hooks = _src("hooks.py")
