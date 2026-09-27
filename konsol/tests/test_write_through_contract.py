@@ -900,3 +900,92 @@ def test_no_unguarded_drop_database_anywhere_in_the_app():
                 continue  # the one guarded site, asserted above
             offenders.append(f"{path}:{lineno}: {line.strip()[:70]}")
     assert not offenders, offenders
+
+
+# --- konsol#305 J05: one writer per warehouse table -------------------------
+
+def _write_through_targets():
+    """{table: [owner, ...]} for every string assigned to CH_TABLE or
+    CH_STAGING_TABLE in a doctype controller (``*/doctype/*/*.py``)."""
+    import ast
+    import glob
+
+    owners = {}
+    for path in sorted(glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.py"))):
+        with open(path) as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [t.id for t in targets if isinstance(t, ast.Name)]
+            if not any(n in ("CH_TABLE", "CH_STAGING_TABLE") for n in names):
+                continue
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                owner = os.path.relpath(path, APP_DIR)
+                owners.setdefault(node.value.value, [])
+                if owner not in owners[node.value.value]:
+                    owners[node.value.value].append(owner)
+    return owners
+
+
+def test_no_two_controllers_write_one_table():
+    """konsol#305 J05 (Problems P12). reconcile_all re-syncs every
+    write-through doctype with TRUNCATE+INSERT, so two controllers naming one
+    table erase each other: the last writer wins, and Consolidation
+    Adjustment at 0 rows would empty the journal's rows on every migrate."""
+    owners = _write_through_targets()
+    assert "epm_staging.consolidation_adjustments" in owners, sorted(owners)
+    shared = {table: files for table, files in owners.items() if len(files) > 1}
+    assert not shared, shared
+
+
+def _ddl_column_names(body):
+    """Column names of a CREATE body '(c1 T, c2 Decimal(18,2) ...) ENGINE ...'."""
+    inner = body[body.index("(") + 1:body.index(") ENGINE")]
+    names, depth, current = [], 0, ""
+    for ch in inner:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            names.append(current.strip().split()[0])
+            current = ""
+        else:
+            current += ch
+    if current.strip():
+        names.append(current.strip().split()[0])
+    return names
+
+
+def test_the_journal_writes_only_declared_columns():
+    """Every column the journal writes exists in J05a's DDL for the table,
+    and in its order; created_at is left to the column's DEFAULT now()."""
+    import ast
+
+    cj_path = os.path.join(APP_DIR, "consolidation", "doctype",
+                           "consolidation_journal", "consolidation_journal.py")
+    with open(cj_path) as fh:
+        tree = ast.parse(fh.read())
+    assigned = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    assigned[t.id] = node.value
+    assert "CH_STAGING_COLUMNS" in assigned, "the journal declares CH_STAGING_COLUMNS"
+    assert ast.unparse(assigned["CH_STAGING_COLUMNS"]) == "journal_model.STAGING_COLUMNS", (
+        "one column list: the controller writes the rows journal_model.staging_rows builds")
+
+    jm_path = os.path.join(APP_DIR, "close", "journal_model.py")
+    spec = importlib.util.spec_from_file_location("journal_model_for_contract", jm_path)
+    jm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(jm)
+
+    m, _ = _load_clickhouse()
+    declared = _ddl_column_names(m._REFERENCE_TABLE_DDL[CA_TABLE])
+    written = list(jm.STAGING_COLUMNS)
+    missing = [c for c in written if c not in declared]
+    assert not missing, missing
+    assert written == [c for c in declared if c != "created_at"]
