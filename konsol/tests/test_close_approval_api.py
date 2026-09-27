@@ -25,7 +25,7 @@ MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 LEAD = "zz-lead@example.com"
 ANALYST = "zz-analyst@example.com"
 ALLOWED = "Allowed with reason"
-WORKFLOW_DOCTYPES = ("Consolidation Adjustment", "Business Combination", "Business Disposal")
+WORKFLOW_DOCTYPES = ("Consolidation Journal", "Business Combination", "Business Disposal")
 
 
 class _Flags(dict):

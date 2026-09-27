@@ -17,7 +17,7 @@ import tempfile
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "IC Balance")
+GATED_IN_BEFORE_SUBMIT = ("Consolidation Adjustment", "Consolidation Journal", "IC Balance")
 PERIOD_GATES = {"assert_open", "assert_open_between"}
 CLOSED = "Dec 2099 is closed."
 #: a fiscal year/period never declared, for the assert_declared stub to refuse
@@ -27,8 +27,8 @@ UNDECLARED = (2001, 1)
 #: konsol#305 R02 deleted home_model.py, where the old home kept them; the
 #: tests below check the list against what the controllers actually refuse.
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
-    "Trial Balance Submission", "Consolidation Adjustment", "IC Balance",
-    "Group Exchange Rate"})
+    "Trial Balance Submission", "Consolidation Adjustment", "Consolidation Journal",
+    "IC Balance", "Group Exchange Rate"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
 #: balance checks the period in validate): there the draft can only be deleted.
@@ -37,8 +37,8 @@ SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 #: The submittable doctypes checked against a closed period: every doctype the
 #: old home offered a submit for (read from home_api before R02 deleted it).
 SUBMIT_CANDIDATES = frozenset({
-    "Consolidation Adjustment", "Group Exchange Rate", "Historical Equity Rate",
-    "IC Balance", "Ownership Period", "Trial Balance Submission"})
+    "Consolidation Adjustment", "Consolidation Journal", "Group Exchange Rate",
+    "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission"})
 
 
 def _controller_paths():

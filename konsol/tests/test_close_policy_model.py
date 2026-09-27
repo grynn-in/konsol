@@ -98,7 +98,7 @@ def test_approval_doctypes_excludes_the_four():
 
 def test_approval_doctypes_holds_the_seven():
     assert set(M.APPROVAL_DOCTYPES) == {
-        "Consolidation Adjustment",
+        "Consolidation Journal",
         "Business Combination",
         "Business Disposal",
         "Group Exchange Rate",
