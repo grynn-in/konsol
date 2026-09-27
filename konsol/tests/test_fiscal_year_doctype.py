@@ -142,8 +142,8 @@ EXPECTED_FIELDS = {
         "label": "Data Changed At",
         "read_only": 1,
         "description": "When a trial balance, a TB exception or an amount basis of this period "
-                       "last changed. A checks run that finished before this cannot be signed "
-                       "off (konsol#305 A63).",
+                       "last changed. A checks run that started before this cannot be signed "
+                       "off (konsol#305 #305-R2b-3).",
     },
     "data_changed_by": {
         "fieldtype": "Link",
