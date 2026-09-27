@@ -5,7 +5,7 @@ It acts only on ``close_policy_model.APPROVAL_DOCTYPES`` and applies
 ``close_policy_model.self_approval_problem`` to the submitting user and the
 document's owner (its preparer). Frappe runs it on every submit path: the Desk
 submit button, a workflow "Approve" (``apply_workflow`` ends in
-``doc.submit()``), ``approve_adjustment`` and every programmatic submit.
+``doc.submit()``), ``approval_api.approve`` and every programmatic submit.
 
 Every user is held to the declared policy; there is no system-user exemption
 (coordinator, 27 Sep). The only exemptions are the two named ones below.
