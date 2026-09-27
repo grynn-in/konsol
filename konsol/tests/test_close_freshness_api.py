@@ -39,19 +39,19 @@ def _zoned(day, hour=0):
 ALL_CLOSE_ROLES = {"EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager"}
 
 TRIGGERS = [
-    "Consolidation Group", "Consolidation Adjustment", "Ownership Period",
+    "Consolidation Group", "Consolidation Journal", "Ownership Period",
     "Historical Equity Rate", "IC Elimination Rule", "IC Balance",
     "Trial Balance Submission", "Group Exchange Rate",
 ]
 SUBMITTABLE = {
-    "Consolidation Adjustment", "Ownership Period", "Historical Equity Rate",
+    "Consolidation Journal", "Ownership Period", "Historical Equity Rate",
     "IC Balance", "Trial Balance Submission", "Group Exchange Rate",
 }
 BUILD_MAP = {dt: {"scope": "staging", "risk": "low"} for dt in TRIGGERS}
 BUILD_MAP.update({
     # S01/#306, #305-D2-10: every trigger reaches gold_fully_consolidated_tb.
     "Consolidation Group": {"scope": "consolidation", "risk": "high"},
-    "Consolidation Adjustment": {"scope": "consolidation", "risk": "high"},
+    "Consolidation Journal": {"scope": "consolidation", "risk": "high"},
     "Ownership Period": {"scope": "consolidation", "risk": "high"},
     "Historical Equity Rate": {"scope": "consolidation", "risk": "high"},
     "IC Elimination Rule": {"scope": "consolidation", "risk": "high"},
@@ -304,7 +304,7 @@ def test_a_deleted_draft_of_a_submittable_doctype_does_not_count():
     # a cancel already counts (docstatus IN (1,2) stays in the live table).
     site = _Site(
         builds=[_build("BA-1", "consolidation", "Completed", _dt(10))],
-        deleted={"Consolidation Adjustment": [_dt(11)]},
+        deleted={"Consolidation Journal": [_dt(11)]},
     )
     out = _call(site)
     assert out["state"] == "fresh", out

@@ -24,7 +24,7 @@ EPM_SETTINGS_JSON = os.path.join(
 # The 9 doctypes that trigger builds on save
 TRIGGER_DOCTYPES = [
     "Consolidation Group",
-    "Consolidation Adjustment",
+    "Consolidation Journal",
     "Ownership Period",
     "Historical Equity Rate",
     "IC Elimination Rule",
