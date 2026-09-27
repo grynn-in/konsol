@@ -154,7 +154,10 @@ def test_an_adjustment_cannot_skip_the_workflow_or_carry_an_approval_into_a_draf
         assert "_states(0)" in methods["validate"] and "frappe.throw" in methods["validate"]
         for hook, docstatus in (("before_submit", 1), ("before_cancel", 2)):
             assert f"_states({docstatus})" in methods[hook] and "get_workflow_name" in methods[hook], hook
-        assert "after_delete" in methods and "on_trash" not in methods
+        # konsol#305 J05: the warehouse sync, and the after_delete that drove
+        # it (#120), moved to Consolidation Journal; test_consolidation.py
+        # pins the journal's hooks.
+        assert "on_trash" not in methods
         return
     raise AssertionError("ConsolidationAdjustment not found")
 

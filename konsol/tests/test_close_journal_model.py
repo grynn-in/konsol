@@ -162,3 +162,105 @@ def test_module_imports_no_frappe():
             assert not any(a.name.split(".")[0] in ("frappe", "konsol") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert (node.module or "").split(".")[0] not in ("frappe", "konsol")
+
+
+# --- J05: the rows the journal writes to epm_staging.consolidation_adjustments
+
+#: J05a's DDL order without created_at (the column's DEFAULT now() fills it).
+_STAGING_COLUMNS = (
+    "consolidation_group", "adjustment_type", "journal_id", "data_area_id",
+    "fiscal_year", "fiscal_period", "main_account", "debit_amount",
+    "credit_amount", "description", "posted_by", "status", "approved_by",
+    "approved_at", "reversal_journal_id", "reverse_fiscal_year",
+    "reverse_fiscal_period",
+)
+
+
+def _header(name, description, reverse=(0, 0), approved_at="2026-09-27 10:00:00"):
+    return {
+        "name": name,
+        "consolidation_group": "ZZ_GROUP",
+        "adjustment_type": "topside",
+        "fiscal_year": 2024,
+        "fiscal_period": 12,
+        "description": description,
+        "owner": f"preparer-{name}@example.com",
+        "status": "Approved",
+        "approved_by": "approver@example.com",
+        "approved_at": approved_at,
+        "modified": "2026-09-27 10:00:00",
+        "reverse_fiscal_year": reverse[0],
+        "reverse_fiscal_period": reverse[1],
+    }
+
+
+def _staging_line(parent, idx, entity, account, debit=0, credit=0, description=None):
+    return {
+        "parent": parent, "idx": idx, "data_area_id": entity,
+        "main_account": account, "debit_amount": debit,
+        "credit_amount": credit, "description": description,
+    }
+
+
+def test_staging_columns_are_the_tables_ddl_order_without_created_at():
+    assert tuple(M.STAGING_COLUMNS) == _STAGING_COLUMNS
+
+
+def test_staging_rows_one_tuple_per_line_in_column_order():
+    """2 journals x 2 lines on two entities -> 4 tuples. The line's entity and
+    description win over the header; the header's reversal pair is carried;
+    posted_by is the owner (D2-3); reversal_journal_id is blank."""
+    headers = [
+        _header("CJ-00001", "Header one", reverse=(2025, 1)),
+        _header("CJ-00002", "Header two", approved_at=None),
+    ]
+    lines = [
+        _staging_line("CJ-00001", 1, "E1", "1000", debit=100, description="Line one"),
+        _staging_line("CJ-00001", 2, "E2", "2000", credit=100),
+        _staging_line("CJ-00002", 1, "E2", "3000", debit=5.5),
+        _staging_line("CJ-00002", 2, "E1", "4000", credit=5.5, description="Line four"),
+    ]
+    rows = M.staging_rows(headers, lines)
+    assert len(rows) == 4
+    for row in rows:
+        assert len(row) == len(_STAGING_COLUMNS)
+    as_dicts = [dict(zip(_STAGING_COLUMNS, r)) for r in rows]
+    first, second, third, fourth = as_dicts
+
+    assert first == {
+        "consolidation_group": "ZZ_GROUP", "adjustment_type": "topside",
+        "journal_id": "CJ-00001", "data_area_id": "E1", "fiscal_year": 2024,
+        "fiscal_period": 12, "main_account": "1000", "debit_amount": 100,
+        "credit_amount": 0, "description": "Line one",
+        "posted_by": "preparer-CJ-00001@example.com", "status": "Approved",
+        "approved_by": "approver@example.com",
+        "approved_at": "2026-09-27 10:00:00", "reversal_journal_id": "",
+        "reverse_fiscal_year": 2025, "reverse_fiscal_period": 1,
+    }
+    # the line's entity wins; a line with no description takes the header's
+    assert (second["data_area_id"], second["description"]) == ("E2", "Header one")
+    assert (second["reverse_fiscal_year"], second["reverse_fiscal_period"]) == (2025, 1)
+    # the second journal: no reversal (0/0), its own entities and owner
+    assert (third["journal_id"], third["data_area_id"], third["description"]) == (
+        "CJ-00002", "E2", "Header two")
+    assert (third["reverse_fiscal_year"], third["reverse_fiscal_period"]) == (0, 0)
+    assert third["posted_by"] == "preparer-CJ-00002@example.com"
+    assert (fourth["data_area_id"], fourth["description"]) == ("E1", "Line four")
+    # an empty approved_at stays None: _sql_value writes DEFAULT for it
+    assert third["approved_at"] is None and fourth["approved_at"] is None
+
+
+def test_staging_rows_skip_lines_whose_journal_is_not_in_the_headers():
+    """Only submitted journals are read as headers; a stray line (a draft's)
+    must not reach the warehouse without its header."""
+    headers = [_header("CJ-00001", "Header one")]
+    lines = [
+        _staging_line("CJ-00001", 1, "E1", "1000", debit=1),
+        _staging_line("CJ-00009", 1, "E1", "1000", debit=1),
+    ]
+    rows = M.staging_rows(headers, lines)
+    assert [r[_STAGING_COLUMNS.index("journal_id")] for r in rows] == ["CJ-00001"]
+
+
+def test_staging_rows_of_nothing_is_empty():
+    assert M.staging_rows([], []) == []

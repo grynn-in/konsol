@@ -9,42 +9,15 @@ from frappe.model.document import Document
 from frappe.model.workflow import get_workflow_name
 from frappe.utils import cint, now_datetime
 
-from konsol.clickhouse import sync_doctype
 from konsol.period_status import assert_declared, assert_open
 
 
 class ConsolidationAdjustment(Document):
-    # konsolidat#146: the legacy epm_gold write-through is GONE. It existed to
-    # replace a dbt seed — and seeds materialise into epm_gold, so the CSV and
-    # this sync were the SAME ClickHouse relation, overwriting each other on
-    # every `dbt seed` and every `bench migrate`. The seed is deleted and every
-    # dbt reader moved to the staging table below, which is the richer one
-    # anyway (the legacy map dropped the workflow/method columns entirely).
-    # The legacy map also had no `status` column, and the dbt model labelled
-    # everything it read from that relation 'Approved' unconditionally — so the
-    # workflow only ever held because the model preferred staging whenever it
-    # was non-empty.
-
-    # PRD-16: Staging sync with workflow fields
-    CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"
-    CH_STAGING_FIELD_MAP = {
-        "consolidation_group": "consolidation_group",
-        "adjustment_type": "adjustment_type",
-        "journal_id": "journal_id",
-        "data_area_id": "data_area_id",
-        "fiscal_year": "fiscal_year",
-        "fiscal_period": "fiscal_period",
-        "main_account": "main_account",
-        "debit_amount": "debit_amount",
-        "credit_amount": "credit_amount",
-        "description": "description",
-        "posted_by": "posted_by",
-        "status": "status",
-        "approved_by": "approved_by",
-        "approved_at": "approved_at",
-        "reversal_journal_id": "reversal_journal_id",
-        "auto_reverse_period": "auto_reverse_period",
-    }
+    # konsol#305 J05: Consolidation Adjustment no longer writes the warehouse.
+    # Consolidation Journal is the one writer of
+    # epm_staging.consolidation_adjustments; two controllers naming one table
+    # erase each other in reconcile_all's TRUNCATE+INSERT (Problems P12).
+    # (konsolidat#146 removed the legacy epm_gold write-through earlier.)
 
     def before_insert(self):
         """Every new adjustment starts in the first state with no approver. An
@@ -95,20 +68,6 @@ class ConsolidationAdjustment(Document):
         else:
             self.status = "Reversed"
 
-    # The warehouse holds only submitted rows (resolve_sync_filters:
-    # docstatus=1), so submit adds the row, cancel removes it, and a draft
-    # save changes nothing it reads. Synced after the commit (konsol#124).
-    def on_submit(self):
-        _queue_sync()
-
-    def on_cancel(self):
-        _queue_sync()
-
-    def after_delete(self):
-        """after_delete, not on_trash: on_trash ran before the row was gone,
-        so the sync re-published it (#120)."""
-        _queue_sync()
-
 
 def _workflow():
     name = get_workflow_name("Consolidation Adjustment")
@@ -128,13 +87,3 @@ def _first_state():
     wf = _workflow()
     return wf.states[0].state if wf else "Draft"
 
-
-def _queue_sync():
-    queued = getattr(frappe.db.after_commit, "_functions", ())
-    if _sync_adjustments not in queued:
-        frappe.db.after_commit.add(_sync_adjustments)
-
-
-def _sync_adjustments():
-    sync_doctype("Consolidation Adjustment", ConsolidationAdjustment.CH_STAGING_TABLE,
-                 ConsolidationAdjustment.CH_STAGING_FIELD_MAP)

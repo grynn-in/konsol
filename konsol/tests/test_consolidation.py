@@ -162,17 +162,30 @@ def test_consolidation_adjustment_has_posted_by():
     assert "posted_by" in fields
 
 
-def test_consolidation_adjustment_ch_sync():
-    """konsolidat#146: the legacy epm_gold write-through is gone. It carried no
-    `status` column and the dbt model labelled everything it read from that
-    relation 'Approved' unconditionally, so the approval workflow only ever held
-    because the model preferred staging whenever staging was non-empty."""
-    content = _load_py("consolidation_adjustment")
-    assert "sync_doctype" in content
-    assert 'CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"' in content
-    assert "epm_gold.consolidation_adjustments" not in content
-    staging = content.split("CH_STAGING_FIELD_MAP")[1].split("}")[0]
-    assert '"status"' in staging, "the workflow status must reach the warehouse"
+def test_consolidation_journal_ch_sync():
+    """konsol#305 J05: the journal is the one writer of
+    epm_staging.consolidation_adjustments (one row per line). Consolidation
+    Adjustment stops writing it in the same change: reconcile_all
+    TRUNCATE+INSERTs every write-through table, so two controllers naming one
+    table erase each other (Problems P12).
+
+    konsolidat#146: the legacy epm_gold write-through stays gone."""
+    journal = _load_py("consolidation_journal")
+    assert 'CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"' in journal
+    assert "def resync_staging(" in journal
+    assert "epm_gold.consolidation_adjustments" not in journal
+    # submit adds the rows, cancel and delete remove them; after_delete, not
+    # on_trash, which runs before the row is gone (#120)
+    for hook in ("def on_submit(", "def on_cancel(", "def after_delete("):
+        assert hook in journal, hook
+    assert "def on_trash(" not in journal
+
+    adjustment = _load_py("consolidation_adjustment")
+    assert "CH_STAGING_TABLE" not in adjustment
+    assert "CH_STAGING_FIELD_MAP" not in adjustment
+    assert "resync_staging" not in adjustment
+    assert "sync_doctype" not in adjustment
+    assert "epm_gold.consolidation_adjustments" not in adjustment
 
 
 def test_all_consolidation_doctypes_module_consolidation():

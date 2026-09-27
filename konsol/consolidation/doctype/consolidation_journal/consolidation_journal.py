@@ -3,7 +3,11 @@ lines each name their entity (konsol#292, #305-D2-1, #305-D2-12).
 
 It replaces Consolidation Adjustment and keeps its lifecycle (Draft ->
 Pending Approval -> Approved -> Reversed; submit is the approval, cancel the
-reversal). The warehouse sync arrives in J05.
+reversal).
+
+It is the one writer of epm_staging.consolidation_adjustments (J05): one row
+per line, rebuilt after every submit, cancel and delete. Consolidation
+Adjustment no longer writes that table (Problems P12).
 """
 import frappe
 from frappe import _
@@ -11,6 +15,7 @@ from frappe.model.document import Document
 from frappe.model.workflow import get_workflow_name
 from frappe.utils import cint, now_datetime
 
+from konsol import clickhouse
 from konsol.close import journal_model
 from konsol.period_status import assert_declared, assert_open
 
@@ -19,6 +24,11 @@ _BLANK = ["is", "not set"]
 
 
 class ConsolidationJournal(Document):
+    # konsol#305 J05 (#305-D2-11, #305-D2-12): one row per line, submitted
+    # journals only. reconcile_all finds this through resync_staging.
+    CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"
+    CH_STAGING_COLUMNS = journal_model.STAGING_COLUMNS
+
     def before_insert(self):
         """Every new journal starts in the first state with no approver. An
         amendment or a Duplicate copies status and approver (status isn't
@@ -161,6 +171,63 @@ class ConsolidationJournal(Document):
                 frappe.throw(_("Reverse the journal through its workflow."))
         else:
             self.status = "Reversed"
+
+    # The warehouse holds only submitted journals, so submit adds the rows,
+    # cancel removes them, and a draft save changes nothing it reads. Synced
+    # after the commit, once per transaction (konsol#124).
+    def on_submit(self):
+        self._queue_sync()
+
+    def on_cancel(self):
+        self._queue_sync()
+
+    def after_delete(self):
+        """after_delete, not on_trash: on_trash runs before the row is gone,
+        so the full-table re-send would put it straight back (#120)."""
+        self._queue_sync()
+
+    def _queue_sync(self):
+        clickhouse.after_commit_once(("consolidation_journal",), type(self).resync_staging)
+
+    @classmethod
+    def resync_staging(cls, force=False):
+        """Rebuild the table from every submitted journal's lines
+        (TRUNCATE+INSERT). Returns the row count, or None when the write
+        failed or was skipped (clickhouse.sync_table)."""
+        headers = frappe.get_all(
+            "Consolidation Journal",
+            filters={"docstatus": 1},
+            fields=[
+                "name", "consolidation_group", "adjustment_type", "fiscal_year",
+                "fiscal_period", "description", "owner", "status", "approved_by",
+                "approved_at", "modified", "reverse_fiscal_year", "reverse_fiscal_period",
+            ],
+            limit_page_length=0,
+        )
+        lines = []
+        if headers:
+            lines = frappe.get_all(
+                "Consolidation Journal Line",
+                filters={
+                    "parenttype": "Consolidation Journal",
+                    "parent": ["in", [h["name"] for h in headers]],
+                },
+                fields=["parent", "idx", "data_area_id", "main_account",
+                        "debit_amount", "credit_amount", "description"],
+                order_by="parent asc, idx asc",
+                limit_page_length=0,
+            )
+        modified = [h["modified"] for h in headers if h.get("modified")]
+        source_max_modified = (
+            max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None
+        )
+        return clickhouse.sync_table(
+            cls.CH_STAGING_TABLE,
+            list(cls.CH_STAGING_COLUMNS),
+            journal_model.staging_rows(headers, lines),
+            source_max_modified=source_max_modified,
+            force=force,
+        )
 
 
 def _workflow():
