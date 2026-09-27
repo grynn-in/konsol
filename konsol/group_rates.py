@@ -194,7 +194,7 @@ def move_problem(rate, previous=None, erp_rate=None, unit="", threshold=None):
     if not refs:
         return None
     if threshold is None:
-        return close_policy_model.policy_gaps("x", 0)[0]["message"]
+        return close_policy_model.RATE_MOVE_MESSAGE
     moves = []
     for ref, what in refs:
         change = rate / float(ref) - 1.0

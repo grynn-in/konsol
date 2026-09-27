@@ -49,7 +49,7 @@ _SELF_APPROVAL_MESSAGE = (
     "Declare the self-approval policy (Blocked, or Allowed with reason) in "
     "Close Settings (the Close Lead or System Manager)."
 )
-_RATE_MOVE_MESSAGE = (
+RATE_MOVE_MESSAGE = (
     "Declare the rate move threshold in Close Settings (the Close Lead or "
     "System Manager): a group rate that moves more than it from the previous "
     "approved rate or the ERP quote needs a Reason for Change."
@@ -86,7 +86,7 @@ def policy_gaps(self_approval, rate_move_threshold):
     if not self_approval:
         gaps.append({"code": SELF_APPROVAL_UNDECLARED, "message": _SELF_APPROVAL_MESSAGE})
     if not rate_move_threshold:
-        gaps.append({"code": RATE_MOVE_UNDECLARED, "message": _RATE_MOVE_MESSAGE})
+        gaps.append({"code": RATE_MOVE_UNDECLARED, "message": RATE_MOVE_MESSAGE})
     return gaps
 
 
