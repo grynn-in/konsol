@@ -139,23 +139,20 @@ def test_every_installed_workflow_has_a_definition():
     assert installed and set(installed) <= defined, (installed, defined)
 
 
-def _api_function(name):
+def test_no_endpoint_names_the_retired_adjustment():
+    """konsol#305 J11: konsol-exec (the endpoints' only UI caller) is dumped,
+    and approval_api.approve is the one approve path (decided 27 Sep: no
+    third approve path). approve_adjustment / reverse_adjustment and every
+    "Consolidation Adjustment" mention leave api.py; approval_api's comment
+    about the old endpoint goes too."""
     with open(os.path.join(APP_DIR, "api.py")) as f:
-        tree = ast.parse(f.read())
-    return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-
-
-def test_the_adjustment_api_goes_through_the_workflow():
-    """The old endpoints set status and saved: approve made an Approved draft
-    that never reached the warehouse, reverse saved a submitted doc (#134 review)."""
-    for name, action in (("approve_adjustment", "Approve"), ("reverse_adjustment", "Reverse")):
-        fn = _api_function(name)
-        src = ast.unparse(fn)
-        assert f"apply_workflow(" in src and f"'{action}'" in src, name
-        assigns = [t for n in ast.walk(fn) if isinstance(n, ast.Assign) for t in n.targets
-                   if isinstance(t, ast.Attribute) and t.attr in ("status", "docstatus")]
-        saves = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") in ("save", "submit", "cancel", "insert", "set", "set_value", "db_set")]
-        assert not assigns and not saves, name
+        api_src = f.read()
+    assert "def approve_adjustment" not in api_src
+    assert "def reverse_adjustment" not in api_src
+    assert "Consolidation Adjustment" not in api_src
+    with open(os.path.join(APP_DIR, "close", "approval_api.py")) as f:
+        approval_api_src = f.read()
+    assert "approve_adjustment" not in approval_api_src
 
 
 def test_an_adjustment_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
