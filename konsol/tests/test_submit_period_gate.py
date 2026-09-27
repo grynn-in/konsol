@@ -204,6 +204,18 @@ def _load(path, period_open):
     basis_spec.loader.exec_module(basis_mod)
     mods["konsol.tb_basis_model"] = basis_mod
 
+    # konsol#305 J04: Consolidation Journal imports the real, frappe-free
+    # konsol.close.journal_model the same way; the stub "konsol" package has
+    # no __path__, so load it from the repo and register it beside the stubs.
+    journal_model_path = os.path.join(APP_DIR, "close", "journal_model.py")
+    jm_spec = importlib.util.spec_from_file_location("konsol.close.journal_model", journal_model_path)
+    journal_model_mod = importlib.util.module_from_spec(jm_spec)
+    jm_spec.loader.exec_module(journal_model_mod)
+    close_pkg = types.ModuleType("konsol.close")
+    close_pkg.journal_model = journal_model_mod
+    mods["konsol.close"] = close_pkg
+    mods["konsol.close.journal_model"] = journal_model_mod
+
     saved = {name: sys.modules.get(name) for name in mods}
     sys.modules.update(mods)
     try:
