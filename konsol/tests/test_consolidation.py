@@ -174,6 +174,11 @@ def test_consolidation_journal_ch_sync():
     assert 'CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"' in journal
     assert "def resync_staging(" in journal
     assert "epm_gold.consolidation_adjustments" not in journal
+    # submit adds the rows, cancel and delete remove them; after_delete, not
+    # on_trash, which runs before the row is gone (#120)
+    for hook in ("def on_submit(", "def on_cancel(", "def after_delete("):
+        assert hook in journal, hook
+    assert "def on_trash(" not in journal
 
     adjustment = _load_py("consolidation_adjustment")
     assert "CH_STAGING_TABLE" not in adjustment

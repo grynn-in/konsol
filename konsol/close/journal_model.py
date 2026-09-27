@@ -136,3 +136,64 @@ def reversal_problem(fiscal_year, fiscal_period, reverse_year, reverse_period, p
     if row["status"] != "Open":
         return f"FY{ry} P{rp} is {row['status']}; name an Open period."
     return None
+
+
+#: The columns the journal writes to epm_staging.consolidation_adjustments:
+#: J05a's DDL order (clickhouse._REFERENCE_TABLE_DDL) without ``created_at``,
+#: which the column's DEFAULT now() fills (konsol#305 J05, #305-D2-11/12).
+STAGING_COLUMNS = (
+    "consolidation_group", "adjustment_type", "journal_id", "data_area_id",
+    "fiscal_year", "fiscal_period", "main_account", "debit_amount",
+    "credit_amount", "description", "posted_by", "status", "approved_by",
+    "approved_at", "reversal_journal_id", "reverse_fiscal_year",
+    "reverse_fiscal_period",
+)
+
+
+def staging_rows(headers, lines):
+    """One tuple per journal line, in ``STAGING_COLUMNS`` order.
+
+    ``headers`` are the submitted journals (dicts with ``name``,
+    ``consolidation_group``, ``adjustment_type``, ``fiscal_year``,
+    ``fiscal_period``, ``description``, ``owner``, ``status``,
+    ``approved_by``, ``approved_at``, ``reverse_fiscal_year`` and
+    ``reverse_fiscal_period``); ``lines`` their line rows (``parent``,
+    ``idx``, ``data_area_id``, ``main_account``, ``debit_amount``,
+    ``credit_amount``, ``description``), in the order to write them.
+
+    - ``journal_id`` is the journal's name; ``data_area_id`` the line's
+      entity (#305-D2-12); ``posted_by`` the journal's owner (D2-3);
+    - ``description`` is the line's, else the header's;
+    - ``reversal_journal_id`` is blank: dbt generates the reversal rows;
+    - the reversal pair is the header's (0/0 = no reversal, #305-D2-11);
+    - an empty ``approved_at`` stays None, which the insert writes as the
+      column's DEFAULT.
+
+    A line whose journal is not among ``headers`` (a draft's) is skipped.
+    """
+    by_name = {h["name"]: h for h in headers}
+    rows = []
+    for line in lines:
+        header = by_name.get(line["parent"])
+        if header is None:
+            continue
+        rows.append((
+            header["consolidation_group"],
+            header["adjustment_type"],
+            header["name"],
+            line["data_area_id"],
+            header["fiscal_year"],
+            header["fiscal_period"],
+            line["main_account"],
+            line["debit_amount"],
+            line["credit_amount"],
+            line.get("description") or header.get("description") or "",
+            header["owner"],
+            header["status"],
+            header.get("approved_by") or "",
+            header.get("approved_at") or None,
+            "",
+            header.get("reverse_fiscal_year") or 0,
+            header.get("reverse_fiscal_period") or 0,
+        ))
+    return rows
