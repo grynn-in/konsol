@@ -33,6 +33,10 @@ TRIGGER_DOCTYPES = [
     # translates from
     "Entity",
     "Trial Balance Submission",
+    # konsol#306, #305-D2-10: approving or cancelling a deal is a
+    # consolidation input too; nothing rebuilt after one before this.
+    "Business Combination",
+    "Business Disposal",
 ]
 
 VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}
