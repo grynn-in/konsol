@@ -95,9 +95,9 @@ MATRIX = {
     # The Close Lead approves and reverses; drafting, and amending a reversed
     # adjustment into a new draft, is the Group Accountant's.
     "Consolidation Adjustment": {"EPM Admin": "rwsx", "EPM Analyst": "rwcda", "EPM User": "r"},
-    "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcs", "EPM User": "r"},
+    "Historical Equity Rate": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "Ownership Period": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
-    "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwcsx", "EPM User": "r"},
+    "IC Balance": {"EPM Admin": "rwcdsx", "EPM Analyst": "rwc", "EPM User": "r"},
     "IC Elimination Rule": {"EPM Admin": "rwcd", "EPM Analyst": "r"},
     # konsol#159: the Group Accountant drafts the flag; publishing is the
     # Close Lead's (check_epm_admin, also on a plain save to Published)
@@ -162,7 +162,8 @@ def test_adjustment_workflow_analyst_drafts_admin_approves():
 
 
 def test_only_the_close_lead_approves_consolidation_work():
-    for doctype in ("Consolidation Adjustment", "Ownership Period", "Trial Balance Submission"):
+    for doctype in ("Consolidation Adjustment", "Ownership Period", "Trial Balance Submission",
+                    "Historical Equity Rate", "IC Balance"):
         submitters = {p["role"] for p in _meta(doctype).get("permissions", []) if p.get("submit")}
         assert submitters <= {"System Manager", "Administrator", "EPM Admin", "Entity Accountant"}, (doctype, submitters)
         assert "EPM Analyst" not in submitters, doctype
