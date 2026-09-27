@@ -209,6 +209,24 @@ def test_one_account_may_carry_several_partners_but_not_one_partner_twice():
     assert "4030 (partner ZZB)" in dup and "1010" in dup and "ZZC" not in dup
 
 
+def _drow(account, debit, credit, value, partner=""):
+    return {"main_account": account, "debit": debit, "credit": credit,
+            "description": "", "partner_data_area_id": partner, "dim_zzseg": value}
+
+
+def test_one_account_may_carry_several_dimension_values_but_not_one_value_twice():
+    """konsol#255: the grain is (account, partner, dimension values), so an
+    account split across two values of a declared dimension is two rows, not
+    a duplicate. Found by the live A/B: the key was still (account, partner),
+    so the one file dimensions exist to carry was refused on both intakes."""
+    rows = [_drow("1010", 100, 0, "ZZA"), _drow("1010", 50, 0, "ZZB"),
+            _drow("2010", 0, 150, "")]
+    assert _m.validate_tb_rows(rows) == []
+    errs = _m.validate_tb_rows(rows + [_drow("1010", 1, 0, "ZZB"), _drow("2010", 0, 1, "")])
+    dup = next(e for e in errs if "Duplicate" in e)
+    assert "1010 (dim_zzseg ZZB)" in dup and "2010" in dup and "ZZA" not in dup
+
+
 def test_a_partner_equal_to_the_entity_is_refused():
     rows = [_prow("4030", 0, 10, "zza"), _prow("1010", 10, 0)]
     errs = _m.validate_tb_rows(rows, entity="ZZA", known_entities={"ZZA", "ZZB"})
