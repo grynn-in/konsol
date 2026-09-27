@@ -104,6 +104,7 @@ def self_approval_problem(policy, owner, user, doctype, name, reason=None, exemp
     3. Blocked always refuses, whether or not a reason is supplied.
     4. Allowed with reason and a blank (or whitespace-only) reason refuses.
     5. Allowed with reason and a reason — passes.
+    6. Any other value refuses (fail closed; P03b).
 
     This model does not read frappe flags; it only honours a non-empty
     ``exempt`` its caller already decided.
@@ -125,7 +126,11 @@ def self_approval_problem(policy, owner, user, doctype, name, reason=None, exemp
                 "with a reason, or ask another Close Lead to approve it." % (doctype, name)
             )
         return None
-    return None
+    return (
+        "Close Settings holds an unknown self-approval policy %r; declare "
+        "Blocked or Allowed with reason before %s %s can be self-approved."
+        % (policy, doctype, name)
+    )
 
 
 def self_approval_note(policy, user, reason):
