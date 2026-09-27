@@ -224,15 +224,9 @@ def parse_tb_csv(text, declared_dimensions=()):
     return rows
 
 
-def _row_dimensions(r):
-    """The row's non-blank dimension values, sorted by column (konsol#255)."""
-    return tuple(sorted((k, r[k]) for k in r if is_dimension_column(k) and r[k]))
-
-
 def _row_label(r):
-    parts = [f"partner {r[PARTNER]}"] if r.get(PARTNER) else []
-    parts += [f"{k} {v}" for k, v in _row_dimensions(r)]
-    return f"{r['main_account']} ({', '.join(parts)})" if parts else r["main_account"]
+    partner = r.get(PARTNER) or ""
+    return f"{r['main_account']} (partner {partner})" if partner else r["main_account"]
 
 
 #: konsol#182: a site with no Published Main Account has no chart to post to.
@@ -280,21 +274,18 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
     """
     errors = []
 
-    # One row per (account, partner, dimension values): an entity may hold one
-    # intercompany account with several partners, and one account under
-    # several values of a declared dimension (konsol#255), one row each. A
-    # blank cell is left out of the key, so it keys the same as a file with
-    # no such column: a blank and a valued row of one account are two rows.
+    # One row per (account, partner): an entity may hold one intercompany
+    # account with several partners, one row each.
     seen, dupes = set(), set()
     for r in rows:
-        key = (r["main_account"], r.get(PARTNER) or "", _row_dimensions(r))
+        key = (r["main_account"], r.get(PARTNER) or "")
         if key in seen:
             dupes.add(_row_label(r))
         seen.add(key)
     if dupes:
         errors.append(
             f"Duplicate account rows: {', '.join(sorted(dupes))} — "
-            "one row per account, partner and dimension values; merge them before submitting"
+            "one row per account and partner; merge them before submitting"
         )
 
     partnered = [r for r in rows if r.get(PARTNER)]
