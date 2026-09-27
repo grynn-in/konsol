@@ -12,6 +12,7 @@ import types
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CJ = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_journal", "consolidation_journal.py")
 JOURNAL_MODEL = os.path.join(APP_DIR, "close", "journal_model.py")
+APPROVAL_API = os.path.join(APP_DIR, "close", "approval_api.py")
 WF = [("Draft", 0), ("Pending Approval", 0), ("Approved", 1), ("Reversed", 2)]
 
 #: The default fixture _load()/_doc() give every test unless overridden
@@ -126,10 +127,15 @@ def _load(states=None, period_open=True, declared=True,
 
     class Document:
         def __init__(self, **kwargs):
+            before_save = kwargs.pop("_before_save", None)
             self.__dict__.update(kwargs)
+            self._before_save = before_save
 
         def get(self, field, default=None):
             return getattr(self, field, default)
+
+        def get_doc_before_save(self):
+            return self._before_save
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
@@ -137,6 +143,7 @@ def _load(states=None, period_open=True, declared=True,
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
+    frappe.flags = {}
     frappe.session = types.SimpleNamespace(user="approver@example.com")
     frappe.get_cached_doc = lambda doctype, name: wf
     frappe.db = types.SimpleNamespace(
@@ -416,3 +423,45 @@ def test_reversing_a_journal_with_no_reversal_period_is_unaffected():
     d = _doc(module, status="Approved", docstatus=1)
     d.before_cancel()
     assert d.status == "Reversed"
+
+
+# --- J06a: rejecting a journal needs a reason -------------------------------
+
+def test_pending_approval_to_draft_without_the_flag_is_refused():
+    for states in (None, WF):
+        module, _ = _load(states)
+        before = types.SimpleNamespace(status="Pending Approval")
+        d = _doc(module, name="ZZ-CJ-1", status="Draft", _before_save=before)
+        assert _refused(d.validate)
+
+
+def test_pending_approval_to_draft_with_the_flag_passes():
+    for states in (None, WF):
+        module, _ = _load(states)
+        before = types.SimpleNamespace(status="Pending Approval")
+        module.frappe.flags[module.REJECT_REASON_FLAG] = {
+            ("Consolidation Journal", "ZZ-CJ-1"): "ZZ wrong account"}
+        d = _doc(module, name="ZZ-CJ-1", status="Draft", _before_save=before)
+        d.validate()  # does not raise
+
+
+def test_draft_to_pending_approval_is_unaffected_by_the_reject_flag():
+    module, _ = _load()
+    before = types.SimpleNamespace(status="Draft")
+    d = _doc(module, name="ZZ-CJ-2", status="Pending Approval", _before_save=before)
+    d.validate()  # unaffected: not a rejection, no flag needed
+
+
+def test_a_fresh_draft_with_no_prior_save_is_unaffected():
+    module, _ = _load()
+    d = _doc(module, name="ZZ-CJ-3", status="Draft")  # no _before_save: a first save
+    d.validate()  # does not raise
+
+
+def test_the_reject_reason_flag_is_named_the_same_in_both_modules():
+    with open(CJ) as f:
+        controller = f.read()
+    with open(APPROVAL_API) as f:
+        api = f.read()
+    assert 'REJECT_REASON_FLAG = "konsol_reject_reason"' in controller
+    assert 'REJECT_REASON_FLAG = "konsol_reject_reason"' in api
