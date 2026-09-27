@@ -56,6 +56,10 @@ DOCTYPE_BUILD_MAP = {
     # konsol#103: the governed translation rates. `staging` would not reach
     # gold_consolidated_trial_balance, which is what reads them.
     "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
+    # konsol#306, #305-D2-10: a deal's approval (or reversal) changes the
+    # consolidated numbers just as an adjustment does.
+    "Business Combination": {"scope": "consolidation", "risk": "high"},
+    "Business Disposal": {"scope": "consolidation", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
