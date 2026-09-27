@@ -194,6 +194,48 @@ def test_all_consolidation_doctypes_module_consolidation():
         assert meta["module"] == "Consolidation", f"{dt} not in Consolidation module"
 
 
+
+# --- konsol#305 J12: Consolidation Adjustment is retired --------------------
+
+def _string_constants(rel_path, name):
+    """Every string literal in the module-level assignment ``name`` of
+    ``rel_path`` (under konsol/). Fails if the assignment is missing, so a
+    rename cannot make the check pass vacuously."""
+    with open(os.path.join(APP_DIR, rel_path)) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        if any(getattr(t, "id", None) == name for t in targets):
+            return {n.value for n in ast.walk(node.value)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    raise AssertionError(f"{rel_path} has no module-level {name}")
+
+
+def test_consolidation_adjustment_is_retired():
+    """#305-D2-1: the journal replaced Consolidation Adjustment outright (0
+    rows). The doctype's folder is gone, and no registration names it. The
+    orphan-sweep patch, comments and a pure fixture keep the name as history."""
+    folder = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_adjustment")
+    assert not os.path.exists(folder), f"{folder} still exists"
+    assert _doctype_file("consolidation_adjustment", "json") is None
+    registrations = [
+        ("workflows.py", "INSTALLED"),
+        ("fiscal_calendar.py", "_PERIOD_DATA"),
+        ("hooks.py", "_dbt_trigger_doctypes"),
+        ("tasks.py", "DOCTYPE_BUILD_MAP"),
+        ("entity_permissions.py", "ENTITY_SCOPED_DOCTYPES"),
+        (os.path.join("close", "close_policy_model.py"), "APPROVAL_DOCTYPES"),
+        ("dashboard.py", "_LABELS"),
+        ("dashboard.py", "_CARDS"),
+        (os.path.join("desk", "connection_filters.py"), "CONSOLIDATION_GROUP_CHILD_DOCTYPES"),
+        (os.path.join("desk", "connection_filters.py"), "PIPELINE_BUILD_TRIGGER_DOCTYPES"),
+    ]
+    named = [f"{path}:{name}" for path, name in registrations
+             if "Consolidation Adjustment" in _string_constants(path, name)]
+    assert not named, f"still registered in {named}"
+
+
 # --- F2: Ownership Period is the only ownership grain ----------------------
 
 def _ownership_period_src():
