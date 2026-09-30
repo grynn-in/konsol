@@ -51,7 +51,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import close_policy_model, period_model, signoff_model
+from konsol.close import close_policy_model, period_model, scope_model, signoff_model
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
@@ -92,28 +92,30 @@ def _regular_row(rows, key):
     return row
 
 
-def _frequencies(start):
-    """``{entity: reporting_frequency}`` for the entities in scope at ``start``."""
+def _scope(start):
+    """``({entity: reporting_frequency}, covered_set)`` for the entities in
+    scope at ``start``. The coverage rule itself lives in ``scope_model``
+    (G02): both callers here, and ``sign_off_problems``'s #289 caller (E205b),
+    read it from one place."""
     entities = frappe.get_all(
         "Entity", filters={"is_group": 0, "status": "Active"},
         fields=["name", "reporting_frequency"], limit_page_length=0,
     )
-    covered = set()
-    for o in frappe.get_all(
+    names = {e["name"]: e["reporting_frequency"] or "" for e in entities}
+    rows = frappe.get_all(
         "Ownership Period",
         filters={"docstatus": 1, "effective_date": ["<=", start], "data_area_id": ["is", "set"]},
-        fields=["data_area_id", "end_date"], limit_page_length=0,
-    ):
-        end = _date(o["end_date"])
-        if end is None or end >= start:
-            covered.add(o["data_area_id"])
-    return {e["name"]: e["reporting_frequency"] or "" for e in entities if e["name"] in covered}
+        fields=["data_area_id", "end_date", "effective_date"], limit_page_length=0,
+    )
+    covered = scope_model.covered(rows, start)
+    frequencies = {e: names[e] for e in scope_model.in_scope(names, covered)}
+    return frequencies, covered
 
 
 def in_scope_entities(fiscal_year, fiscal_period):
     """Names of the entities in scope for the period, sorted."""
     row = _row(fiscal_calendar.fiscal_period_rows(), _key(fiscal_year, fiscal_period))
-    return sorted(_frequencies(_date(row["start_date"])))
+    return sorted(_scope(_date(row["start_date"]))[0])
 
 
 def _first_close():
@@ -162,7 +164,7 @@ def sign_off_problems(fiscal_year, fiscal_period):
     key = _key(fiscal_year, fiscal_period)
     rows = fiscal_calendar.fiscal_period_rows()
     row = _regular_row(rows, key)
-    frequencies = _frequencies(_date(row["start_date"]))
+    frequencies, _covered = _scope(_date(row["start_date"]))
     first = _first_close()
 
     gaps = signoff_model.config_gaps(first, key, frequencies)
