@@ -78,7 +78,7 @@ import frappe
 
 from konsol import entity_permissions, fiscal_calendar, group_chart, group_rates
 from konsol.close import (checks_model, close_policy_model, mywork_model, period_model,
-                          signoff_gate, signoff_model)
+                          scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
@@ -134,16 +134,12 @@ def _leaves():
 
 def _covered(start):
     """Entities with a submitted ownership period covering ``start``."""
-    covered = set()
-    for o in frappe.get_all(
+    rows = frappe.get_all(
         "Ownership Period",
         filters={"docstatus": 1, "effective_date": ["<=", start], "data_area_id": ["is", "set"]},
-        fields=["data_area_id", "end_date"], limit_page_length=0,
-    ):
-        end = _date(o.get("end_date"))
-        if end is None or end >= start:
-            covered.add(o.get("data_area_id"))
-    return covered
+        fields=["data_area_id", "effective_date", "end_date"], limit_page_length=0,
+    )
+    return scope_model.covered(rows, start)
 
 
 def _accountants_without_entities():
@@ -194,7 +190,7 @@ def _ownership_scope(leaves, first_close):
     in_scope = set()
     for _, start in judged:
         covered = _covered(start)  # once per period, not once per leaf (A61)
-        in_scope.update(e for e in leaves if e in covered)
+        in_scope.update(scope_model.in_scope(leaves, covered))
     labels = [label for label, _ in judged]
     uncovered = {e: labels for e in leaves if e not in in_scope} if judged else {}
     return in_scope, uncovered
