@@ -106,6 +106,37 @@ def _cut(entities, allowed):
     return visible, len(entities) - len(visible)
 
 
+def _noun(n, singular, plural=None):
+    plural = plural or (singular + "s")
+    return "%d %s" % (n, singular if n == 1 else plural)
+
+
+def _hidden_detail(hidden):
+    """E201b: an item whose pre-cut list is non-empty stays blocked even when
+    the cut leaves nothing visible; this is its detail, and it never names
+    the hidden entity."""
+    return "%s you cannot see" % _noun(hidden, "entity")
+
+
+_GAP_LABELS = {
+    signoff_model.FREQUENCY_UNDECLARED: "Reporting frequency not set",
+    signoff_model.QUARTER_UNDECLARED: "Quarter not declared",
+}
+
+
+def _scoped_gap_detail(gap, allowed):
+    """A leftover configuration gap's detail text. A gap with no
+    ``entities`` key, or an unrestricted caller (``allowed is None``), keeps
+    its own message unchanged. Otherwise ``signoff_model``'s message can name
+    up to 5 entities (E201b), so this writes its own wording: the gap code's
+    plain label plus the visible and hidden counts, naming nobody."""
+    if "entities" not in gap or allowed is None:
+        return gap["message"]
+    visible, hidden = _cut(gap["entities"], allowed)
+    label = _GAP_LABELS.get(gap["code"], gap["code"])
+    return "%s: %s, and %d you cannot see" % (label, _noun(len(visible), "entity"), hidden)
+
+
 def _period_open_item(period_row):
     status = period_row.get("status")
     if status == "Open":
@@ -147,7 +178,7 @@ def _configuration_item(config_gaps, allowed):
     for gap in leftover:
         entities.extend(gap.get("entities") or ())
     visible, hidden = _cut(entities, allowed)
-    detail = " ".join(g["message"] for g in leftover)
+    detail = " ".join(_scoped_gap_detail(gap, allowed) for gap in leftover)
     return _item("configuration", BLOCKED, detail, visible, hidden)
 
 
@@ -157,7 +188,9 @@ def _ownership_item(by_code, allowed):
         return _item("ownership", OK, "Every trial balance has ownership")
     visible, hidden = _cut(gap.get("entities"), allowed)
     if not visible:
-        return _item("ownership", OK, "Every trial balance has ownership", hidden=hidden)
+        # E201b: the gate still blocks these entities; a hidden problem is
+        # never read as "ok".
+        return _item("ownership", BLOCKED, _hidden_detail(hidden), hidden=hidden)
     n = len(visible)
     noun = "entity has" if n == 1 else "entities have"
     detail = "%d %s no ownership for the period" % (n, noun)
@@ -169,7 +202,8 @@ def _trial_balances_item(completeness, allowed):
         return _item("trial_balances", OK, "Every expected trial balance is in")
     visible, hidden = _cut(completeness.get("missing"), allowed)
     if not visible:
-        return _item("trial_balances", OK, "Every expected trial balance is in", hidden=hidden)
+        # E201b: same rule as ownership above.
+        return _item("trial_balances", BLOCKED, _hidden_detail(hidden), hidden=hidden)
     return _item("trial_balances", BLOCKED, "%d trial balances missing" % len(visible), visible, hidden)
 
 
