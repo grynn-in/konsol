@@ -241,6 +241,69 @@ def test_checks_unknown_status_raises():
     assert caught is not None
 
 
+def test_a_fully_hidden_ownership_gap_still_blocks_and_never_leaks():
+    # E201b: E201 read a fully-hidden entity list as "ok" while the sign-off
+    # gate still blocks. Red today: state is "ok".
+    gap = SM.unowned_tb_gap(["ZZX"], (2025, 9))
+    result = _readiness(problems=_problems(config_gaps=[gap]), allowed={"ZZA"})
+    ownership = _by_code(result, "ownership")
+    assert ownership["state"] == "blocked"
+    assert ownership["entities"] == []
+    assert ownership["hidden"] == 1
+    assert "1 entity you cannot see" in ownership["detail"]
+    assert "ZZX" not in json.dumps(result)
+    assert result["ready"] < result["total"]
+
+
+def test_a_fully_hidden_ownership_gap_with_no_scope_restriction_is_unchanged():
+    gap = SM.unowned_tb_gap(["ZZX"], (2025, 9))
+    result = _readiness(problems=_problems(config_gaps=[gap]), allowed=None)
+    ownership = _by_code(result, "ownership")
+    assert ownership["state"] == "blocked"
+    assert ownership["entities"] == ["ZZX"]
+    assert ownership["hidden"] == 0
+
+
+def test_hidden_trial_balance_gaps_still_block():
+    completeness = {"missing": ["ZZX", "ZZY"], "message": "No trial balance from ZZX, ZZY."}
+    result = _readiness(problems=_problems(completeness=completeness), allowed={"ZZA"})
+    trial_balances = _by_code(result, "trial_balances")
+    assert trial_balances["state"] == "blocked"
+    assert trial_balances["entities"] == []
+    assert trial_balances["hidden"] == 2
+    dumped = json.dumps(result)
+    assert "ZZX" not in dumped and "ZZY" not in dumped
+
+
+def test_hidden_trial_balance_gaps_with_no_scope_restriction_are_unchanged():
+    completeness = {"missing": ["ZZX", "ZZY"], "message": "No trial balance from ZZX, ZZY."}
+    result = _readiness(problems=_problems(completeness=completeness), allowed=None)
+    trial_balances = _by_code(result, "trial_balances")
+    assert trial_balances["state"] == "blocked"
+    assert trial_balances["entities"] == ["ZZX", "ZZY"]
+    assert trial_balances["hidden"] == 0
+
+
+def test_configuration_frequency_gap_is_scoped_and_never_leaks_a_hidden_entity():
+    # Red today: _configuration_item joins gap["message"] unchanged, and the
+    # real signoff_model message names every blank-frequency entity.
+    gap = SM.config_gaps((2025, 1), (2025, 9), {"ZZA": None, "ZZX": None})[0]
+    assert gap["code"] == SM.FREQUENCY_UNDECLARED
+    assert "ZZA" in gap["message"] and "ZZX" in gap["message"]
+    result = _readiness(problems=_problems(config_gaps=[gap]), allowed={"ZZA"})
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert "ZZX" not in json.dumps(result)
+
+
+def test_configuration_frequency_gap_with_no_scope_restriction_is_unchanged():
+    gap = SM.config_gaps((2025, 1), (2025, 9), {"ZZA": None, "ZZX": None})[0]
+    result = _readiness(problems=_problems(config_gaps=[gap]), allowed=None)
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert gap["message"] in configuration["detail"]
+
+
 def test_module_imports_no_frappe():
     tree = ast.parse(_src(M.__file__))
     for node in ast.walk(tree):
