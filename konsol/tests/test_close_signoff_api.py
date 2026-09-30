@@ -653,6 +653,37 @@ def test_entity_accountant_with_no_entities_sees_no_entity():
     assert result["covers"] == []
 
 
+def test_unowned_tb_gap_is_scoped_to_the_callers_entities():
+    """E205c (#289): a scoped caller sees a count, not the generic fallback."""
+    site = _Site()
+    site.records["Entity"].append(_entity("ZZX"))
+    site.records["Trial Balance Submission"].append(_tb("ZZX"))
+    site.allowed = {"ZZA"}
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"] if g["code"] == "tb_without_ownership"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == []
+    assert gap["hidden"] == 1
+    assert "1 entity outside your scope" in gap["message"]
+    assert "record the ownership" in gap["message"]
+    assert "ZZX" not in gap["message"]
+    assert "tb_without_ownership (" not in gap["message"]
+
+
+def test_unowned_tb_gap_unscoped_names_the_entity():
+    """E205a's message, unmodified, when the caller is not scoped."""
+    site = _Site()
+    site.records["Entity"].append(_entity("ZZX"))
+    site.records["Trial Balance Submission"].append(_tb("ZZX"))
+    site.allowed = None
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"] if g["code"] == "tb_without_ownership"]
+    assert len(gaps) == 1
+    assert gaps[0]["entities"] == ["ZZX"]
+    assert "ZZX" in gaps[0]["message"]
+
+
 # --- A32: sign ---------------------------------------------------------------------
 
 def _call_sign(site, *args, **kwargs):
