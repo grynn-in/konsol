@@ -7,7 +7,10 @@ Reads all config doctypes (Dimension, Measure, Dataset) and applies:
   3. Budget Line custom field sync
   4. Optional dbt build trigger
 
-Called deliberately — NOT triggered automatically on individual saves.
+Called deliberately, and by the publish path (apply_and_rebuild). Since
+konsol#295 that path also runs on a Dimension save that moves it into or out
+of Published, or edits a field read here while Published; any other save
+does not trigger it.
 """
 import json
 import re

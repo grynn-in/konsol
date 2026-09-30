@@ -180,10 +180,10 @@ def test_dimension_imports_lifecycle():
     assert "from konsol.schema_lifecycle import" in content
 
 
-def test_dimension_no_on_update():
-    """Saves must remain side-effect-free — no on_update hook."""
-    methods = _get_class_methods(_load_py("dimension"))
-    assert "on_update" not in methods
+# test_dimension_no_on_update was deleted with konsol#295. It pinned "saves are
+# side-effect-free", which Deepak Pai reversed on 25 Sep 2026: a Dimension that
+# ends up Published gets its column however it got there, so the controller now
+# has an on_update. test_dimension_published_gets_column.py tests what it does.
 
 
 # ---------------------------------------------------------------------------

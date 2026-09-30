@@ -99,7 +99,31 @@ class _Doc:  # stand-in for frappe.model.document.Document
     """
 
     def save(self):
+        # Then on_update, as Frappe's save does: since konsol#295 that is where
+        # publish()/unpublish() apply the schema. No stored row here, so the
+        # doc-before-save is None, as on an insert.
         self.validate()
+        self.on_update()
+
+    def get_doc_before_save(self):
+        return None
+
+    @property
+    def flags(self):
+        # frappe._dict per document; the tests build docs with __new__.
+        if "_flags" not in self.__dict__:
+            self.__dict__["_flags"] = _Flags()
+        return self.__dict__["_flags"]
+
+
+class _Flags(dict):
+    """frappe._dict: attribute access, missing keys read as None."""
+
+    def __getattr__(self, key):
+        return self.get(key)
+
+    def __setattr__(self, key, value):
+        self[key] = value
 
 
 _stub("frappe", whitelist=lambda *a, **k: (lambda fn: fn),

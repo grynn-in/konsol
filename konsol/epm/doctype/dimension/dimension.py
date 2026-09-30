@@ -1,9 +1,24 @@
 """Dimension — config doctype for EPM dimensions.
 
-Saves are pure metadata — no side effects. Use Publish/Unpublish to apply
-schema changes (DDL, dbt vars, budget fields) and request a governed full-scope
-rebuild via Build Approval (preflight + approval + audit), not a direct
-dbt build.
+A save that changes what the warehouse sees applies the schema. That is a
+save that moves the dimension into or out of Published, or that edits, while
+Published, a field the schema step reads (``SCHEMA_FIELDS``). It runs
+``apply_and_rebuild``: DDL, dbt vars, budget fields, then a governed
+full-scope rebuild via Build Approval (preflight + approval + audit), not a
+direct dbt build. Any other save is metadata only and requests nothing.
+
+Until 25 September 2026 every save was metadata only and only Publish /
+Unpublish applied the schema. So a Dimension that became Published another
+way got no warehouse column: a config bundle (``upsert_dimension`` with
+``status: Published``), the Desk form's status field, REST or a data import.
+Deepak Pai decided on konsol#295: "A dimension that ends up Published gets its
+column (and its dbt vars) automatically, however it got there." Rejected:
+keeping saves side-effect free and making the bundle tell the admin to run
+Apply Schema, a second step every onboarding would have to remember.
+
+Publish / Unpublish now set the status and save; the save does the rest, once.
+Writes that bypass the controller (``frappe.db.set_value``, raw SQL in a
+patch) still apply nothing; run Apply Schema after one.
 """
 import frappe
 from frappe.model.document import Document
@@ -21,8 +36,52 @@ SURVIVES_CLOSE = "survives_close"
 #: fieldname: the label is the only name of this setting an admin has seen.
 SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
 
+#: The fields ``apply_schema_for_publish`` reads off a Published Dimension. A
+#: save that changes one of them while Published applies the schema (#295).
+#: Where each is read:
+#:   dbt_config._build_dimensions_vars: source_column, label, cube_type,
+#:     in_budget, allocation_role (``var('dimensions')``)
+#:   schema_apply._apply_clickhouse_columns: cube_type
+#:   schema_apply._sync_tb_dimension_columns: in_trial_balance
+#:   schema_apply._sync_budget_custom_fields: label, in_budget
+#: All of them also read dimension_name, which is not listed because a save
+#: cannot change it: autoname is field:dimension_name, and Frappe's
+#: ``_sync_autoname_field`` puts it back to the name before the write.
+#: Add a field here when one of those readers starts reading it.
+SCHEMA_FIELDS = ("source_column", "label", "cube_type", "allocation_role")
+#: The Check fields among them. Compared after ``before_validate`` has written
+#: them as 0 or 1, so they compare as stored.
+SCHEMA_FLAGS = ("in_budget", FLAG)
+
+#: Every Check field on Dimension, normalised by ``before_validate``.
+CHECK_FIELDS = ("in_budget", FLAG, SURVIVES_CLOSE)
+
 
 class Dimension(Document):
+
+    def before_validate(self):
+        """Write each Check as 1 or 0, by the intake's ``_is_on`` (#295 review).
+
+        Frappe stores a Check as ``1 if cint(value) else 0``, so the text
+        "true" or "yes" from REST, CSV or a bundle lands as 0. ``validate``
+        reads the same value with ``_is_on``, as ticked, and so did the change
+        detector in ``on_update``: validate judged, and the detector compared,
+        a value that was not the one stored. A Published ``in_budget`` could
+        flip 1 -> 0 with no schema apply.
+
+        One reading, set here before anything reads it: ``_is_on``, the
+        intake's rule, which the trial-balance upload already applies to these
+        same flags. The alternative, reading them as Frappe's cint, would make
+        "true" and "yes" mean unticked, which quietly inverts what the sender
+        wrote. After this the stored row, ``validate`` and ``on_update`` all
+        see the same 0 or 1.
+
+        ``before_validate``: Frappe runs it on insert and save, before
+        ``validate``, and still runs it when ``flags.ignore_validate`` skips
+        ``validate``.
+        """
+        for field in CHECK_FIELDS:
+            setattr(self, field, 1 if _is_on(getattr(self, field, 0)) else 0)
 
     def validate(self):
         """Refuse a trial-balance dimension the warehouse cannot spell (#255).
@@ -159,18 +218,77 @@ class Dimension(Document):
                 frappe.ValidationError,
             )
 
+    def on_update(self):
+        """Apply the schema when this save changed what the warehouse sees (#295).
+
+        ``on_update``, not ``validate`` or ``before_save``: Frappe runs it on
+        insert and on save alike, after the row is written in this
+        transaction, so ``apply_schema_for_publish`` reads the new row. It is
+        not skipped by ``flags.ignore_validate`` either, as those two are.
+
+        The admin check is here and not only in ``publish()``: otherwise a
+        user who may not press Publish could reach the same DDL and rebuild
+        by editing the status field. A save that applies nothing is not
+        checked, so metadata edits keep the doctype's own permissions.
+        """
+        action = self._schema_action()
+        if not action:
+            return
+        check_epm_admin()
+        apply_and_rebuild(self, action)
+
+    def _schema_action(self):
+        """"Publish", "Unpublish" or None: what this save does to the schema.
+
+        Read against the row as it stood before the save (Frappe's
+        ``get_doc_before_save``; None on insert, which counts as not
+        Published). ``flags.apply_schema`` is set by ``publish()`` and
+        ``unpublish()`` so a re-publish with nothing changed still applies:
+        that is the repair schema_lifecycle documents for a failed DDL.
+        """
+        before = self.get_doc_before_save()
+        was = bool(before) and before.get("status") == "Published"
+        now = self.status == "Published"
+        forced = self.flags.pop("apply_schema", False)
+        if now and (forced or not was or self._schema_fields_changed(before)):
+            return "Publish"
+        if (was and not now) or forced:
+            return "Unpublish"
+        return None
+
+    def _schema_fields_changed(self, before):
+        """Whether a field in SCHEMA_FIELDS or SCHEMA_FLAGS differs from `before`."""
+        for field in SCHEMA_FIELDS:
+            if (before.get(field) or "") != (self.get(field) or ""):
+                return True
+        for field in SCHEMA_FLAGS:
+            # Both 0 or 1: the row as stored, and this doc after before_validate.
+            if (before.get(field) or 0) != (self.get(field) or 0):
+                return True
+        return False
+
     @frappe.whitelist()
     def publish(self):
-        """Publish this dimension: apply schema + trigger dbt rebuild."""
+        """Publish this dimension. The save applies the schema, once (#295)."""
         check_epm_admin()
         self.status = "Published"
-        self.save()
-        apply_and_rebuild(self, "Publish")
+        self.flags.apply_schema = True
+        try:
+            self.save()
+        finally:
+            # A save refused before on_update must not leave the flag to
+            # force the next, unrelated save of this object.
+            self.flags.pop("apply_schema", None)
 
     @frappe.whitelist()
     def unpublish(self):
-        """Unpublish (deactivate) this dimension: apply schema + trigger dbt rebuild."""
+        """Unpublish (deactivate) this dimension. The save applies the schema, once (#295)."""
         check_epm_admin()
         self.status = "Inactive"
-        self.save()
-        apply_and_rebuild(self, "Unpublish")
+        self.flags.apply_schema = True
+        try:
+            self.save()
+        finally:
+            # A save refused before on_update must not leave the flag to
+            # force the next, unrelated save of this object.
+            self.flags.pop("apply_schema", None)
