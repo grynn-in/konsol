@@ -218,6 +218,9 @@ def _load(site):
         raise AssertionError("stub: a TB read must not touch ClickHouse")
 
     clickhouse.execute = clickhouse.ensure_raw_tables = _no_clickhouse
+    # konsol#255: the site's Dimension records; none unless a test declares one.
+    tb_dimension = types.ModuleType("konsol.tb_dimension")
+    tb_dimension.declared_dimensions = lambda: list(getattr(site, "tb_dimensions", ()))
     mods = {"frappe": frappe, "frappe.model": types.ModuleType("frappe.model"),
             "frappe.model.document": doc_mod, "konsol": konsol, "konsol.close": close,
             "konsol.close.signoff_model": signoff_model,
@@ -225,16 +228,21 @@ def _load(site):
             "konsol.close.timefmt": close.timefmt,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
+            "konsol.tb_dimension": tb_dimension,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
             "konsol.consolidation.doctype.trial_balance_submission":
                 types.ModuleType("konsol.consolidation.doctype.trial_balance_submission")}
-    saved = {n: sys.modules.get(n) for n in list(mods) + ["konsol.tb_basis_model", CONTROLLER,
+    saved = {n: sys.modules.get(n) for n in list(mods) + ["konsol.tb_basis_model",
+                                                          "konsol.tb_dimension_model", CONTROLLER,
                                                           "konsol.close.tb_view_model"]}
     sys.modules.update(mods)
     try:
         mods["konsol.tb_basis_model"] = _by_path("konsol.tb_basis_model", BASIS_MODEL_PY)
         sys.modules["konsol.tb_basis_model"] = mods["konsol.tb_basis_model"]
+        mods["konsol.tb_dimension_model"] = _by_path(
+            "konsol.tb_dimension_model", os.path.join(APP_DIR, "tb_dimension_model.py"))
+        sys.modules["konsol.tb_dimension_model"] = mods["konsol.tb_dimension_model"]
         mods[CONTROLLER] = _by_path(CONTROLLER, CONTROLLER_PY)
         sys.modules[CONTROLLER] = mods[CONTROLLER]
         close.tb_view_model = _by_path("konsol.close.tb_view_model", VIEW_MODEL_PY)

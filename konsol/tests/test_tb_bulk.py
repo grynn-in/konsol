@@ -54,6 +54,19 @@ def test_the_load_job_resolves_the_basis_before_creating_each_submission():
     assert "_load_one(" in text and "basis" in text.split("_load_one(", 1)[1].split(")", 1)[0]
 
 
+def test_both_split_table_calls_pass_the_sites_declared_dimensions():
+    """konsol#255: split_table defaults declared_dimensions to none, so a call
+    that omits it refuses every dim_* header whatever the site declared. Both
+    calls are covered end to end in test_dimensions_reach_the_warehouse.py;
+    this is the cheap guard that neither loses the argument again."""
+    src = _source()
+    calls = [line for line in src.splitlines() if "M.split_table(" in line]
+    assert len(calls) == 2, f"expected two split_table calls, found {len(calls)}: {calls}"
+    for line in calls:
+        assert "declared_dimensions()" in line, line
+    assert "from konsol.tb_dimension import declared_dimensions" in src
+
+
 def test_the_check_reads_the_uploads_basis():
     assert "doc.amount_basis" in _function_text("_record_check")
     assert "amount_basis" in _function_text("check_file")

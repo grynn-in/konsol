@@ -197,6 +197,7 @@ _NAMES = (
     "konsol.fiscal_status_model", "konsol.period_status", "konsol.tb_basis_model",
     "konsol.schema_lifecycle", "konsol.group_chart", "konsol.entity_permissions",
     "konsol.close", "konsol.close.tb_model", CONTROLLER_NAME, "konsol.close.tb_api",
+    "konsol.tb_dimension", "konsol.tb_dimension_model",
 )
 
 
@@ -228,16 +229,21 @@ def _load(site):
         entity_permissions.assert_entity_access = assert_entity_access
         schema_lifecycle = types.ModuleType("konsol.schema_lifecycle")
         schema_lifecycle.check_epm_admin = lambda: None
+        # konsol#255: the site's Dimension records; none unless a test declares one.
+        tb_dimension = types.ModuleType("konsol.tb_dimension")
+        tb_dimension.declared_dimensions = lambda: list(getattr(site, "tb_dimensions", ()))
         sys.modules.update({
             "frappe": frappe, "frappe.model": types.ModuleType("frappe.model"),
             "frappe.model.document": doc_mod, "konsol": konsol, "konsol.close": close,
             "konsol.clickhouse": clickhouse, "konsol.group_chart": group_chart,
             "konsol.entity_permissions": entity_permissions,
             "konsol.schema_lifecycle": schema_lifecycle,
+            "konsol.tb_dimension": tb_dimension,
         })
         _load_path("konsol.fiscal_status_model", os.path.join(APP_DIR, "fiscal_status_model.py"))
         period_status = _load_path("konsol.period_status", os.path.join(APP_DIR, "period_status.py"))
         _load_path("konsol.tb_basis_model", os.path.join(APP_DIR, "tb_basis_model.py"))
+        _load_path("konsol.tb_dimension_model", os.path.join(APP_DIR, "tb_dimension_model.py"))
         _load_path("konsol.close.tb_model", os.path.join(APP_DIR, "close", "tb_model.py"))
         _load_path(CONTROLLER_NAME, CONTROLLER)
         api = _load_path("konsol.close.tb_api", TB_API)
@@ -295,6 +301,44 @@ def test_bytes_content_with_a_bom_is_decoded():
     result, _, _ = _check(site, content=("﻿" + GOOD).encode("utf-8"))
     assert result["ok"] is True, result
     assert site.log == []
+
+
+# -- declared dimensions (konsol#255) ---------------------------------------------
+
+#: One account split across two values of a declared dimension, plus a blank one.
+SPLIT = ("main_account,debit,credit,dim_zzseg\n"
+         "1010,100,0,ZZA\n1010,50,0,ZZB\n2010,0,150,\n")
+_DECLARED = [{"dimension_name": "dim_zzseg", "status": "Published", "in_trial_balance": 1}]
+
+
+def test_the_check_accepts_a_file_split_by_a_declared_dimension():
+    """The check screen parses with the site's declared dimensions, as the
+    submission does: before konsol#255 met konsol#305 it passed none, so every
+    file the submission accepted with a dimension column was refused here."""
+    site = _Site(allowed={"ZZOP"})
+    site.tb_dimensions = _DECLARED
+    result, _, _ = _check(site, content=SPLIT)
+    assert result["ok"] is True, result
+    assert [r["dimensions"] for r in result["rows"]] == [
+        {"dim_zzseg": "ZZA"}, {"dim_zzseg": "ZZB"}, {"dim_zzseg": ""}]
+    assert site.log == []
+
+
+def test_the_same_account_and_dimension_value_twice_is_a_duplicate_naming_the_value():
+    site = _Site(allowed={"ZZOP"})
+    site.tb_dimensions = _DECLARED
+    result, _, _ = _check(site, content=SPLIT + "1010,1,0,ZZB\n2010,0,1,ZZA\n")
+    assert result["ok"] is False
+    dup = [p["message"] for r in result["rows"] for p in r["problems"] if p["code"] == "DUPLICATE_ROW"]
+    assert len(dup) == 2 and all("1010 (dim_zzseg ZZB)" in m for m in dup), dup
+    assert all("one row per account, partner and dim_zzseg" in m for m in dup), dup
+
+
+def test_an_undeclared_dimension_column_is_still_refused_by_the_check():
+    site = _Site(allowed={"ZZOP"})
+    result, _, _ = _check(site, content=SPLIT)
+    assert result["ok"] is False
+    assert "dim_zzseg" in (result.get("read_problem") or str(result["file_problems"])), result
 
 
 # -- per-row problems -------------------------------------------------------------
