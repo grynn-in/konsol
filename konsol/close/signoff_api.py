@@ -177,7 +177,7 @@ def _names(visible, hidden):
     return ", ".join(parts)
 
 
-def _scoped_gap(gap, allowed, fiscal_year):
+def _scoped_gap(gap, allowed, key):
     entities = gap.get("entities")
     if entities is None:
         return gap
@@ -191,7 +191,11 @@ def _scoped_gap(gap, allowed, fiscal_year):
                    % names)
     elif gap["code"] == signoff_model.QUARTER_UNDECLARED:
         message = ("Declare the Quarter of every Regular period of FY%d in the fiscal year "
-                   "before signing off (quarterly: %s)." % (fiscal_year, names))
+                   "before signing off (quarterly: %s)." % (key[0], names))
+    elif gap["code"] == signoff_model.UNOWNED_TB:
+        message = ("Trial balances from %s have no ownership for FY%d P%02d: record the "
+                   "ownership or cancel the trial balance before signing off."
+                   % (names, key[0], key[1]))
     else:
         message = "%s (%s)." % (gap["code"], names)
     return dict(gap, entities=mine, hidden=hidden, message=message)
@@ -201,7 +205,7 @@ def _scoped(problems, allowed, key):
     """``problems`` with other entities' codes replaced by a count."""
     if allowed is None:
         return problems
-    gaps = [_scoped_gap(g, allowed, key[0]) for g in problems["config_gaps"]]
+    gaps = [_scoped_gap(g, allowed, key) for g in problems["config_gaps"]]
     completeness = problems["completeness"]
     if completeness:
         mine = [e for e in completeness["missing"] if e in allowed]
