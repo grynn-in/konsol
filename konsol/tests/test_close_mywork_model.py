@@ -189,6 +189,7 @@ def _period(code, **over):
         "gates_blocked": False,
         "rates_missing": 0,
         "status": "Open",
+        "unowned": [],
     }
     facts.update(over)
     return facts
@@ -286,6 +287,31 @@ def test_close_lead_items():
         assert item["owner"] == "EPM Admin"
     assert _titles(items)["Rates missing (2)"]["action"] == {"screen": "sign-off"}
     assert _titles(items)["Re-sign needed"]["action"] == {"screen": "sign-off"}
+
+
+def test_close_lead_unowned_tb_is_one_blocking_item():
+    # konsol#305 E206, #289: a submitted TB with no covering ownership.
+    per = {P07: _period("FY2025 P07", unowned=["ZZX"])}
+    items = M.period_items("close_lead", per, FIRST)
+    item = next(i for i in items if i["id"] == "unowned:2025-07")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["entities"] == ["ZZX"]
+    assert item["title"] == "Trial balance with no ownership (1)"
+
+
+def test_only_the_close_lead_sees_the_unowned_tb_item():
+    per = {P07: _period("FY2025 P07", unowned=["ZZX"])}
+    for persona in ("group_accountant", "entity_accountant", "viewer"):
+        items = M.period_items(persona, per, FIRST)
+        assert not any(i["id"].startswith("unowned:") for i in items), persona
+
+
+def test_missing_unowned_fact_raises_not_guessed():
+    per = _two_open()
+    del per[P07]["unowned"]
+    with pytest.raises(ValueError, match="unowned"):
+        M.period_items("close_lead", per, FIRST)
 
 
 def test_close_lead_sign_off_todo_when_checks_current_and_no_gate_blocks():

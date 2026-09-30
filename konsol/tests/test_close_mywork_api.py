@@ -466,6 +466,29 @@ def test_errored_run_is_failed_not_current():
     assert "checks-waiting:2025-08" in ids
 
 
+# --- konsol#305 E206, #289: a blocking item for a valid TB with no ownership ---
+
+
+def test_close_lead_gets_the_unowned_tb_item():
+    site = _Site()
+    site.problems[(2025, 9)]["config_gaps"] = [
+        {"code": "tb_without_ownership", "entities": ["ZZX"], "message": "…"}]
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "unowned:2025-09")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["entities"] == ["ZZX"]
+    _assert_counts_add_up(result, "close_lead")
+
+
+def test_entity_accountant_does_not_get_the_unowned_tb_item():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.problems[(2025, 9)]["config_gaps"] = [
+        {"code": "tb_without_ownership", "entities": ["ZZX"], "message": "…"}]
+    result = _call(site)
+    assert not any(i["id"].startswith("unowned:") for i in result["items"])
+
+
 # --- A53: items carry an age (`since` = the period's end date) -----------------
 
 

@@ -120,7 +120,9 @@ def setup_gap_items(facts):
 #   ``my_missing`` is read, so another entity's item never reaches them.
 # - Group Accountant: "Run checks" (todo) when checks are not_run or stale;
 #   "N checks failing" (blocking); "Waiting on N trial balances" (waiting).
-# - Close Lead: "Rates missing (N)" and "Re-sign needed" (blocking); "Sign off
+# - Close Lead: "Rates missing (N)" and "Re-sign needed" (blocking); "Trial
+#   balance with no ownership (N)" (blocking, #289) when the sign-off gate
+#   reports a submitted TB with no covering ownership; "Sign off
 #   <code>" (todo) when checks are current, none fail, no rates are missing,
 #   the period is not signed and no gate blocks. When a gate blocks, the item
 #   is "Waiting on <earliest earlier open period>" instead, or "Waiting on the
@@ -140,7 +142,7 @@ VIEWER = "viewer"
 PERSONAS = (CLOSE_LEAD, GROUP_ACCOUNTANT, ENTITY_ACCOUNTANT, VIEWER)
 
 PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "signoff",
-               "gates_blocked", "rates_missing", "status")
+               "gates_blocked", "rates_missing", "status", "unowned")
 #: A53: ``since`` (the period's end date, ISO) is read from ``facts`` when the
 #: caller supplies it and carried on ``item["period"]["since"]`` for every
 #: period item, so B18 can show an age. It is not in PERIOD_KEYS: it is read
@@ -228,6 +230,14 @@ def _close_lead(key, facts, earlier_open):
     resign = facts["signoff"] == RE_SIGN_NEEDED
     if resign:
         items.append(_period_item(p, key, facts, "resign", "blocking", "Re-sign needed", signoff))
+    unowned = sorted(set(facts["unowned"] or ()))
+    if unowned:
+        item = _period_item(p, key, facts, "unowned", "blocking",
+                            "Trial balance with no ownership (%d)" % len(unowned),
+                            {"desk": "/app/ownership-period"})
+        item["detail"] = ", ".join(unowned)
+        item["entities"] = unowned
+        items.append(item)
     signed = facts["signoff"] in SIGNED_STATES
     if signed and facts["status"] == "Open":
         items.append(_period_item(p, key, facts, "close", "todo", "Close %s" % facts["code"],
