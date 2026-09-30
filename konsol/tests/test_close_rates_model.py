@@ -90,7 +90,7 @@ def test_previous_is_latest_earlier_period_with_label_and_delta():
     result = M.grid(required={("EUR", "GBP")}, docs=docs, earlier=earlier, threshold=0.5,
                      move_problem=_no_op_move_problem)
     cell = result["rows"][0]["closing"]
-    assert cell["previous"]["label"] == "FY2025 P05 (GER-P05)"
+    assert cell["previous"]["label"] == "FY2025 P5 (GER-P05)"
     assert cell["previous"]["rate"] == 0.80
     assert abs(cell["delta"] - (0.90 / 0.80 - 1)) < 1e-12
 
