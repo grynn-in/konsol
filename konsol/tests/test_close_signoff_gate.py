@@ -913,3 +913,80 @@ def test_the_period_json_has_the_three_read_only_fields_in_the_close_section():
     assert order[order.index("closed_on") + 1:order.index("closed_on") + 4] == list(
         CHANGE_FIELDS), order
     assert [f["fieldname"] for f in meta["fields"]] == order, "fields not in field_order order"
+
+
+# --- E205b (#289, #305-W2-2): a submitted TB with no ownership blocks sign-off --
+
+def _unowned_site(ownership=None, tb=None):
+    """_Site plus ZZX: an Active leaf with ``ownership`` (None: none at all)
+    and ``tb`` (default: a submitted P09 TB)."""
+    site = _Site()
+    site.records["Entity"] += [_entity("ZZX")]
+    if ownership is not None:
+        site.records["Ownership Period"] += [ownership]
+    site.records["Trial Balance Submission"] += [tb if tb is not None else _rec("ZZX", 2025, 9)]
+    return site
+
+
+def _unowned_gaps(problems):
+    return [g for g in problems["config_gaps"] if g["code"] == "tb_without_ownership"]
+
+
+def test_a_submitted_tb_with_no_ownership_is_a_config_gap():
+    site = _unowned_site()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    gaps = _unowned_gaps(problems)
+    assert len(gaps) == 1, problems["config_gaps"]
+    assert gaps[0]["entities"] == ["ZZX"], gaps[0]
+    # ZZX is not in scope, so ZZA/ZZB completeness is unchanged
+    assert problems["completeness"] is None, problems["completeness"]
+
+
+def test_a_submitted_tb_with_no_ownership_blocks_the_sign_off():
+    message = _blocked(_unowned_site())
+    for part in ("ZZX", "Ownership Period"):
+        assert part in message, (part, message)
+
+
+def test_ownership_ended_before_the_period_start_is_the_gap():
+    site = _unowned_site(ownership=_owner("ZZX", end=date(2025, 8, 31)))
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["entities"] for g in _unowned_gaps(problems)] == [["ZZX"]], problems["config_gaps"]
+    assert problems["completeness"] is None, problems["completeness"]
+
+
+def test_the_gap_follows_the_policy_gaps():
+    site = _unowned_site()
+    site.settings["self_approval"] = ""
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["self_approval_undeclared", "tb_without_ownership"], codes
+
+
+def test_a_draft_tb_with_no_ownership_is_no_gap():
+    site = _unowned_site(tb=_rec("ZZX", 2025, 9, docstatus=0))
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+
+
+def test_a_tb_for_another_period_is_no_gap():
+    site = _unowned_site(tb=_rec("ZZX", 2025, 8))
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+
+
+def test_covered_ownership_is_no_gap_and_completeness_is_the_usual_rule():
+    site = _unowned_site(ownership=_owner("ZZX"))
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+    # in scope with no TB: it is missing, not unowned
+    site.records["Trial Balance Submission"].pop()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert problems["config_gaps"] == [], problems["config_gaps"]
+    assert problems["completeness"]["missing"] == ["ZZX"], problems["completeness"]
+
+
+def test_the_period_trial_balances_are_read_once():
+    site = _unowned_site()
+    _call(site, "sign_off_problems", 2025, 9)
+    tb_reads = [c for c in site.get_all_calls if c[0] == "Trial Balance Submission"]
+    assert len(tb_reads) == 1, tb_reads
