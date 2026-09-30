@@ -23,7 +23,7 @@ import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "grid_api.py")
-REAL_MODELS = ("scope_model", "signoff_model", "period_grid_model")
+REAL_MODELS = ("scope_model", "signoff_model", "period_grid_model", "readiness_model")
 GRID_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
 
 
@@ -89,6 +89,11 @@ class _Site:
         self.only_for_calls = []
         self.get_all_calls = {}
         self.period_rows_calls = 0
+        # E204 get_readiness stubs.
+        self.problems_result = {"config_gaps": [], "order": None, "completeness": None}
+        self.problem_calls = []
+        self.run_result = None
+        self.run_calls = []
 
 
 def _match(value, cond):
@@ -166,9 +171,14 @@ def _model(name):
     return module
 
 
-def _call(site, fy=2025, fp=9):
+def _load_api(site):
+    """Build grid_api.py with every dependency stubbed (E203's fiscal
+    calendar / rates / entity-permission / period stubs, plus E204's
+    sign-off gate and assertion-run stubs), import it, and return the
+    module. ``site.errors`` is set for the caller."""
     frappe = _frappe(site)
-    names = ["konsol", "konsol.close"]
+    names = ["konsol", "konsol.close", "konsol.consolidation",
+             "konsol.consolidation.doctype", "konsol.consolidation.doctype.assertion_run"]
     mods = {n: types.ModuleType(n) for n in names}
     mods["frappe"] = frappe
     for name in REAL_MODELS:
@@ -194,12 +204,28 @@ def _call(site, fy=2025, fp=9):
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
     period_status = types.ModuleType("konsol.period_status")
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    signoff_gate = types.ModuleType("konsol.close.signoff_gate")
+
+    def sign_off_problems(fy, fp):
+        site.problem_calls.append((fy, fp))
+        return site.problems_result
+
+    signoff_gate.sign_off_problems = sign_off_problems
+    assertion_run = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
+
+    def latest_close_run(fy, fp):
+        site.run_calls.append((fy, fp))
+        return site.run_result
+
+    assertion_run.latest_close_run = latest_close_run
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.group_rates": group_rates,
         "konsol.entity_permissions": entity_permissions,
         "konsol.period_status": period_status,
+        "konsol.close.signoff_gate": signoff_gate,
+        "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -212,16 +238,21 @@ def _call(site, fy=2025, fp=9):
         spec = importlib.util.spec_from_file_location("konsol.close.grid_api", API_PY)
         api = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(api)
-        site.errors = types.SimpleNamespace(PermissionError=frappe.PermissionError,
-                                            ValidationError=frappe.ValidationError,
-                                            PeriodNotDeclared=period_status.PeriodNotDeclared)
-        result = api.get_period_grid(fy, fp)
     finally:
         for n, old in saved.items():
             if old is None:
                 sys.modules.pop(n, None)
             else:
                 sys.modules[n] = old
+    site.errors = types.SimpleNamespace(PermissionError=frappe.PermissionError,
+                                        ValidationError=frappe.ValidationError,
+                                        PeriodNotDeclared=period_status.PeriodNotDeclared)
+    return api
+
+
+def _call(site, fy=2025, fp=9):
+    api = _load_api(site)
+    result = api.get_period_grid(fy, fp)
     json.dumps(result)  # JSON-safe
     return result
 
@@ -229,6 +260,19 @@ def _call(site, fy=2025, fp=9):
 def _call_raises(site, fy=2025, fp=9):
     with pytest.raises(Exception) as info:
         _call(site, fy, fp)
+    return info.value
+
+
+def _call_readiness(site, fy=2025, fp=9):
+    api = _load_api(site)
+    result = api.get_readiness(fy, fp)
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _call_readiness_raises(site, fy=2025, fp=9):
+    with pytest.raises(Exception) as info:
+        _call_readiness(site, fy, fp)
     return info.value
 
 
@@ -378,3 +422,80 @@ def test_nothing_is_written():
     for word in (".insert(", ".save(", ".submit(", "db.set_value", "db.commit", "db.sql",
                  "enqueue", "get_doc"):
         assert word not in src, word
+
+
+# === get_readiness (konsol#305 E204) ============================================
+#
+# `get_readiness(fiscal_year, fiscal_period)` is the same decorator, `only_for`
+# tuple and period checks as `get_period_grid` (E203), then reads
+# `signoff_gate.sign_off_problems`, `group_rates.rate_gate` (plain, no lock),
+# `assertion_run.latest_close_run` and `allowed_entity_codes`, each once, and
+# returns `readiness_model.readiness(period_row, problems, rates, run, allowed)`.
+# The strip and the sign-off gate cannot disagree about a gap: both read
+# `sign_off_problems`.
+
+# --- permission and period checks ----------------------------------------------
+
+def test_readiness_an_entity_accountant_is_refused():
+    site = _Site()
+    site.roles = {"Entity Accountant"}
+    err = _call_readiness_raises(site)
+    assert isinstance(err, site.errors.PermissionError), err
+    assert site.only_for_calls == [GRID_ROLES]
+    assert site.problem_calls == [] and site.rate_calls == [] and site.run_calls == []
+
+
+def test_readiness_an_undeclared_period_is_refused():
+    site = _Site()
+    err = _call_readiness_raises(site, 2031, 9)
+    assert isinstance(err, site.errors.PeriodNotDeclared), err
+    assert site.problem_calls == [] and site.rate_calls == [] and site.run_calls == []
+
+
+def test_readiness_a_closing_period_is_refused_before_sign_off_problems():
+    site = _Site()
+    err = _call_readiness_raises(site, 2025, 13)
+    assert isinstance(err, site.errors.ValidationError), err
+    assert not isinstance(err, site.errors.PeriodNotDeclared), err
+    assert "Regular" in str(err) and "Closing" in str(err), err
+    # The failure path for a per-item re-read: refused before any reader runs.
+    assert site.problem_calls == [] and site.rate_calls == [] and site.run_calls == []
+
+
+# --- the checklist ---------------------------------------------------------------
+
+def test_readiness_a_clean_period_is_fully_ready():
+    site = _Site()
+    site.run_result = {"name": "AR-1", "status": "Green", "signoff_status": None,
+                        "failed": 0, "errored": 0}
+    result = _call_readiness(site)
+    assert result["total"] == 9
+    assert result["ready"] == 9, result
+    assert [item["code"] for item in result["items"]] == [
+        "period_open", "first_close", "previous_signed", "policies", "configuration",
+        "ownership", "trial_balances", "rates", "checks",
+    ]
+
+
+def test_readiness_the_289_gap_is_blocked_and_hides_a_scoped_entity():
+    site = _Site()
+    gap = {"code": "tb_without_ownership", "entities": ["ZZA", "ZZX"],
+           "message": "Trial balances from ZZA, ZZX have no ownership for FY2025 P09."}
+    site.problems_result = {"config_gaps": [gap], "order": None, "completeness": None}
+    site.allowed = {"ZZA"}
+    result = _call_readiness(site)
+    items = {item["code"]: item for item in result["items"]}
+    ownership = items["ownership"]
+    assert ownership["state"] == "blocked", ownership
+    assert ownership["hidden"] == 1, ownership
+    assert "ZZX" not in json.dumps(result)
+
+
+def test_readiness_each_reader_is_called_exactly_once():
+    """The failure path for re-reading per item: one call each, not one per
+    readiness item."""
+    site = _Site()
+    _call_readiness(site)
+    assert site.problem_calls == [(2025, 9)]
+    assert site.rate_calls == [(2025, 9)]
+    assert site.run_calls == [(2025, 9)]
