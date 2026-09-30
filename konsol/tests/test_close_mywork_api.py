@@ -31,7 +31,7 @@ REPO_DIR = os.path.dirname(APP_DIR)
 API_PY = os.path.join(APP_DIR, "close", "mywork_api.py")
 NAV_JS = os.path.join(REPO_DIR, "close-ui", "src", "nav.js")
 REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model",
-               "close_policy_model")
+               "close_policy_model", "scope_model")
 
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 TODAY = date(2025, 9, 15)
@@ -213,6 +213,14 @@ def _call(site):
     for name in REAL_MODELS:
         mods["konsol.close." + name] = _model(name)
         setattr(mods["konsol.close"], name, mods["konsol.close." + name])
+
+    real_covered = mods["konsol.close.scope_model"].covered
+
+    def _spy_covered(rows, start_date):
+        site.__dict__.setdefault("scope_calls", []).append(start_date)
+        return real_covered(rows, start_date)
+
+    mods["konsol.close.scope_model"].covered = _spy_covered
 
     fiscal_calendar = types.ModuleType("konsol.fiscal_calendar")
     fiscal_calendar.fiscal_period_rows = lambda *a, **k: [dict(r) for r in site.rows]
@@ -679,6 +687,23 @@ def test_ownership_is_queried_once_per_judged_period():
     gap = _gap(result, "ownership")
     assert gap["entities"] == ["ZZC"], gap
     assert gap["detail"] == "ZZC: FY2025 P07, FY2025 P08, FY2025 P09", gap["detail"]
+
+
+# --- G03: coverage is computed through scope_model, not a second copy -------
+
+
+def test_coverage_is_computed_by_scope_model():
+    site = _three_periods_five_leaves()
+    result = _call(site)
+    assert site.scope_calls == [date(2025, 7, 1), date(2025, 8, 1), date(2025, 9, 1)], \
+        site.scope_calls
+    gap = _gap(result, "ownership")
+    assert gap["entities"] == ["ZZC"], gap
+
+
+def test_the_inline_rule_is_gone():
+    with open(API_PY) as fh:
+        assert "end >= start" not in fh.read()
 
 
 def test_no_leaves_still_answers_without_error():
