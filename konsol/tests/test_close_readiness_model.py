@@ -63,12 +63,15 @@ def _by_code(result, code):
     raise AssertionError("no item %r in %r" % (code, [i["code"] for i in result["items"]]))
 
 
-def _readiness(period_row=None, problems=None, rates=None, run=None, allowed=None):
+_UNSET = object()
+
+
+def _readiness(period_row=None, problems=None, rates=None, run=_UNSET, allowed=None):
     return M.readiness(
         period_row if period_row is not None else _period_row(),
         problems if problems is not None else _problems(),
         rates if rates is not None else _rates(),
-        run if run is not None else _run(),
+        _run() if run is _UNSET else run,
         allowed,
     )
 
