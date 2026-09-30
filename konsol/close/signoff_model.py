@@ -28,6 +28,7 @@ FIRST_CLOSE_UNDECLARED = "first_close_undeclared"
 HISTORY_PERIOD = "history_period"
 FREQUENCY_UNDECLARED = "frequency_undeclared"
 QUARTER_UNDECLARED = "quarter_undeclared"
+UNOWNED_TB = "tb_without_ownership"
 
 FREQUENCIES = ("Monthly", "Quarterly")
 RE_SIGN_NEEDED = "Re-sign Needed"
@@ -103,6 +104,36 @@ def config_gaps(first_close, target, frequencies):
             "message": message,
         })
     return gaps
+
+
+def unowned_tb_gap(entities, target):
+    """The #289 gap: ``entities`` submitted a trial balance for ``target`` with
+    no covering ownership. ``entities`` is sorted in the result. None when
+    ``entities`` is empty or None.
+    """
+    entities = sorted(entities or [])
+    if not entities:
+        return None
+    label = _label(_key(target))
+    if len(entities) > 5:
+        message = (
+            "%d entities submitted a trial balance but have no ownership for %s. "
+            "Record their Ownership Periods, or cancel the trial balances, before signing off."
+            % (len(entities), label)
+        )
+    elif len(entities) == 1:
+        message = (
+            "%s: %s submitted a trial balance but has no ownership for the period. "
+            "Record its Ownership Period, or cancel the trial balance, before signing off."
+            % (label, entities[0])
+        )
+    else:
+        message = (
+            "%s: %s submitted trial balances but have no ownership for the period. "
+            "Record their Ownership Periods, or cancel the trial balances, before signing off."
+            % (label, ", ".join(entities))
+        )
+    return {"code": UNOWNED_TB, "entities": entities, "message": message}
 
 
 def _blocks(state):
