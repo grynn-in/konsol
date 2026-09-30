@@ -21,6 +21,7 @@ GATE_PY = os.path.join(APP_DIR, "close", "signoff_gate.py")
 PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
+SCOPE_MODEL_PY = os.path.join(APP_DIR, "close", "scope_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -211,8 +212,17 @@ def _load(site):
     period_model = _by_path("konsol.close.period_model", PERIOD_MODEL_PY)
     signoff_model = _by_path("konsol.close.signoff_model", SIGNOFF_MODEL_PY)
     close_policy_model = _by_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
+    scope_model = _by_path("konsol.close.scope_model", SCOPE_MODEL_PY)
+    _real_covered = scope_model.covered
+
+    def _covered_spy(rows, start_date):
+        site.__dict__.setdefault("scope_calls", []).append(start_date)
+        return _real_covered(rows, start_date)
+
+    scope_model.covered = _covered_spy
     close.period_model, close.signoff_model = period_model, signoff_model
     close.close_policy_model = close_policy_model
+    close.scope_model = scope_model
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -286,6 +296,7 @@ def _load(site):
             "konsol.close.period_model": period_model,
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.close_policy_model": close_policy_model,
+            "konsol.close.scope_model": scope_model,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -347,6 +358,20 @@ def test_in_scope_entities_are_active_leaves_with_covering_ownership():
                                _entity("ZZN")]  # ZZN: no ownership period
     site.records["Ownership Period"] += [_owner("ZZG"), _owner("ZZI")]
     assert _call(site, "in_scope_entities", 2025, 9) == ["ZZA", "ZZB"]
+
+
+# --- G02: the scope computation goes through scope_model, once -----------------
+
+def test_scope_is_computed_by_scope_model():
+    site = _Site()
+    assert _call(site, "in_scope_entities", 2025, 9) == ["ZZA", "ZZB"]
+    assert site.scope_calls == [date(2025, 9, 1)], site.scope_calls
+
+
+def test_the_inline_rule_is_gone():
+    with open(GATE_PY) as f:
+        source = f.read()
+    assert "end >= start" not in source, "signoff_gate keeps its own copy of the coverage rule"
 
 
 # --- failure paths: each raises, one message naming every fix -----------------

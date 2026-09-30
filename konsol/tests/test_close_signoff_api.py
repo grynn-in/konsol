@@ -324,10 +324,11 @@ def _load(site):
             "konsol.consolidation.doctype.assertion_run.assertion_run": ar}
     saved = {n: sys.modules.get(n) for n in list(mods) + [
         "konsol.close.signoff_model", "konsol.close.period_model", "konsol.close.signoff_gate",
-        "konsol.close.timefmt", "konsol.close.close_policy_model"]}
+        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model"]}
     sys.modules.update(mods)
     try:
-        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt", "signoff_gate"):
+        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt",
+                      "scope_model", "signoff_gate"):
             mod = _by_path("konsol.close." + name, os.path.join(CLOSE_DIR, name + ".py"))
             sys.modules["konsol.close." + name] = mod
             setattr(close, name, mod)
