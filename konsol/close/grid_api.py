@@ -1,4 +1,5 @@
-"""Period grid endpoints for the close app (konsol#305 E203; stories 2.2, 2.3; W2-2, W2-4).
+"""Period grid endpoints for the close app (konsol#305 E203, E204; stories
+2.1, 2.2, 2.3; W2-2, W2-4).
 
 ``get_period_grid(fiscal_year, fiscal_period)`` returns one row per in-scope
 or unowned entity (the #289 set: a submitted TB with no covering ownership)
@@ -16,13 +17,23 @@ entity, and nothing is written.
 The Entity Accountant is not a grid role (E2-7): the grid is an all-entity
 read of group configuration. Rows are still cut to the caller's permitted
 entities, with a ``hidden`` count (E2-6).
+
+``get_readiness(fiscal_year, fiscal_period)`` returns the readiness
+checklist (``readiness_model.readiness``) for a Regular period, built from
+the same sign-off gate the sign-off screen uses
+(``signoff_gate.sign_off_problems``), the same plain ``group_rates.rate_gate``
+the grid uses, the latest terminal close run
+(``assertion_run.latest_close_run``) and ``allowed_entity_codes``. Each
+reader is called once. The strip and the gate read the same
+``sign_off_problems`` call, so they cannot disagree about a gap.
 """
 import datetime
 
 import frappe
 
 from konsol import fiscal_calendar, group_rates
-from konsol.close import period_grid_model
+from konsol.close import period_grid_model, readiness_model, signoff_gate
+from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 from konsol.entity_permissions import allowed_entity_codes
 from konsol.period_status import PeriodNotDeclared
 
@@ -127,3 +138,28 @@ def get_period_grid(fiscal_year, fiscal_period):
     period = {"fiscal_year": key[0], "fiscal_period": key[1], "code": row.get("period_code"),
               "status": row.get("status"), "start_date": _iso(start)}
     return dict({"period": period}, **grid)
+
+
+@frappe.whitelist(methods=["GET"])
+def get_readiness(fiscal_year, fiscal_period):
+    """``readiness_model.readiness(...)`` for a Regular period: the
+    readiness checklist shown in the close app's readiness strip. Reads the
+    same gate the sign-off screen uses (``signoff_gate.sign_off_problems``),
+    so the strip and the gate can never disagree about a gap. Read-only.
+    Refuses an undeclared period (PeriodNotDeclared) and a non-Regular one,
+    before any reader runs.
+    """
+    # A literal: the endpoint contract test reads it. No Entity Accountant (E2-7).
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    key = (int(fiscal_year), int(fiscal_period))
+    rows = fiscal_calendar.fiscal_period_rows()
+    row = _regular_row(key, rows)
+
+    problems = signoff_gate.sign_off_problems(*key)
+    rates = group_rates.rate_gate(*key)
+    run = latest_close_run(*key)
+    allowed = allowed_entity_codes()
+
+    period_row = {"code": row.get("period_code"), "status": row.get("status"),
+                  "period_type": row.get("period_type")}
+    return readiness_model.readiness(period_row, problems, rates, run, allowed)
