@@ -37,7 +37,10 @@ Per-period facts:
 - ``rates_missing``: ``group_rates.rate_gate`` missing keys plus groups with
   no reporting currency. When the warehouse cannot answer, the Close Lead
   gets a blocking item carrying the error, and the period counts as blocked,
-  so it is never offered for sign-off.
+  so it is never offered for sign-off;
+- ``unowned`` (#289, E206): entities named by the sign-off gate's
+  ``tb_without_ownership`` config gap — a submitted TB with no covering
+  ownership. Only the Close Lead is shown the resulting blocking item.
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -294,6 +297,8 @@ def _period_facts(first_close, allowed, today):
         if error:
             extra.append(_rates_error_item(key, code, error, end_date))
             blocked = True
+        unowned = sorted(e for g in problems["config_gaps"] if g["code"] == signoff_model.UNOWNED_TB
+                         for e in g.get("entities") or ())
         per_period[key] = {
             "code": code,
             "ended": end_date < today,
@@ -305,6 +310,7 @@ def _period_facts(first_close, allowed, today):
             "signoff": signoff,
             "gates_blocked": blocked,
             "rates_missing": len(rates_missing or ()) + len(blockers or ()),
+            "unowned": unowned,
             "since": end_date.isoformat(),
         }
     return per_period, extra
