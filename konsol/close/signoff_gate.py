@@ -13,6 +13,8 @@ Reads the site and passes it through the pure models:
   the order gate is skipped (``order_problem`` needs a declared first close).
   Only Regular periods are gated (P5): a non-Regular target is refused, and
   Opening/Closing/Adjustment rows never block the order gate.
+  A submitted TB from an entity with no covering ownership at the period
+  start is a ``tb_without_ownership`` config gap (E205b, #289, #305-W2-2).
 - ``assert_can_sign(fy, fp)`` throws one message listing every problem,
   titled "Sign-off blocked".
 - ``assert_period_closable(fy, fp, period_type)`` (A23; story 9.3): closing
@@ -164,7 +166,7 @@ def sign_off_problems(fiscal_year, fiscal_period):
     key = _key(fiscal_year, fiscal_period)
     rows = fiscal_calendar.fiscal_period_rows()
     row = _regular_row(rows, key)
-    frequencies, _covered = _scope(_date(row["start_date"]))
+    frequencies, covered = _scope(_date(row["start_date"]))
     first = _first_close()
 
     gaps = signoff_model.config_gaps(first, key, frequencies)
@@ -179,10 +181,15 @@ def sign_off_problems(fiscal_year, fiscal_period):
     expected = signoff_model.expected_entities(frequencies, key, rows)
     gaps.extend(expected["gaps"])
     gaps.extend(close_policy_model.policy_gaps(*_policies()))
+    tbs = _submitted("Trial Balance Submission", key)
+    # #289 (#305-W2-2): a submitted TB from an entity with no covering
+    # ownership at the period start is consolidated nowhere; it blocks.
+    unowned = scope_model.uncovered_with_tb({r["data_area_id"] for r in tbs}, covered)
+    unowned_gap = signoff_model.unowned_tb_gap(sorted(unowned), key)
+    if unowned_gap:
+        gaps.append(unowned_gap)
     completeness = signoff_model.completeness_problem(
-        expected["expected"],
-        _submitted("Trial Balance Submission", key),
-        _submitted("TB Exception", key),
+        expected["expected"], tbs, _submitted("TB Exception", key),
     )
     return {"config_gaps": gaps, "order": order, "completeness": completeness}
 
