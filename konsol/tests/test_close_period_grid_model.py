@@ -5,6 +5,7 @@ Loaded by path; the module imports nothing from frappe or konsol.
 import ast
 import datetime
 import importlib.util
+import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -212,6 +213,164 @@ def test_drift_guard_status_constants_match_tb_read_api():
         "tb_read_api.py no longer defines all six status constants at module level"
     for name, value in tb_read_api_constants.items():
         assert getattr(M, name) == value, name
+
+
+# --- rate_cell (E202b) ------------------------------------------------------
+
+def test_rate_cell_error_is_blocking():
+    rates = {"group_currencies": set(), "missing": None, "error": "UNKNOWN_TABLE",
+             "approved": set(), "drafts": set()}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.BLOCKING, "label": "Cannot check: UNKNOWN_TABLE"}
+
+
+def test_rate_cell_blank_currency_is_blocking():
+    rates = {"group_currencies": {"EUR"}, "missing": [], "error": None,
+             "approved": set(), "drafts": set()}
+    assert M.rate_cell("", rates) == {"tone": M.BLOCKING, "label": "Currency not declared"}
+    assert M.rate_cell(None, rates) == {"tone": M.BLOCKING, "label": "Currency not declared"}
+
+
+def test_rate_cell_no_group_currency_is_blocking():
+    rates = {"group_currencies": set(), "missing": [], "error": None,
+             "approved": set(), "drafts": set()}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.BLOCKING, "label": "No group reporting currency"}
+
+
+def test_rate_cell_no_targets_is_group_currency():
+    rates = {"group_currencies": {"USD"}, "missing": [], "error": None,
+             "approved": set(), "drafts": set()}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.NONE, "label": "Group currency"}
+
+
+def test_rate_cell_single_target_missing_no_draft():
+    rates = {"group_currencies": {"USD", "EUR"}, "missing": [("USD", "EUR", "Closing")],
+             "error": None, "approved": set(), "drafts": set()}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.BLOCKING, "label": "Missing"}
+
+
+def test_rate_cell_single_target_missing_with_draft_is_awaiting_approval():
+    rates = {"group_currencies": {"USD", "EUR"}, "missing": [("USD", "EUR", "Closing")],
+             "error": None, "approved": set(), "drafts": {("USD", "EUR")}}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.BLOCKING, "label": "Awaiting approval"}
+
+
+def test_rate_cell_single_target_approved_is_ok():
+    rates = {"group_currencies": {"USD", "EUR"}, "missing": [],
+             "error": None, "approved": {("USD", "EUR")}, "drafts": set()}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.OK, "label": "Approved"}
+
+
+def test_rate_cell_single_target_not_needed():
+    rates = {"group_currencies": {"USD", "EUR"}, "missing": [],
+             "error": None, "approved": set(), "drafts": set()}
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.NONE, "label": "Not needed (last build)"}
+
+
+def test_rate_cell_multi_target_worst_tone_wins_and_labels_join():
+    rates = {
+        "group_currencies": {"USD", "EUR", "GBP"},
+        "missing": [("USD", "EUR", "Closing")],
+        "error": None,
+        "approved": {("USD", "GBP")},
+        "drafts": set(),
+    }
+    cell = M.rate_cell("USD", rates)
+    assert cell == {"tone": M.BLOCKING, "label": "EUR: Missing; GBP: Approved"}
+
+
+# --- period_grid (E202b) -----------------------------------------------------
+
+def _period_rows():
+    """Every Regular row of FY2025, quarters Q3 (P07-P09) and Q4 (P10-P12), so
+    target P08 (not the last of Q3) is not a quarter-end."""
+    quarters = {7: "Q3", 8: "Q3", 9: "Q3", 10: "Q4", 11: "Q4", 12: "Q4"}
+    return [
+        {
+            "fiscal_year": 2025, "fiscal_period": fp, "period_code": "P%02d" % fp,
+            "period_type": "Regular", "quarter": q,
+            "start_date": datetime.date(2025, fp, 1), "end_date": None,
+        }
+        for fp, q in quarters.items()
+    ]
+
+
+def _grid_fixture(allowed=None):
+    """3 in-scope entities (ZZA, ZZB Monthly; ZZC Quarterly, not at a
+    quarter-end for target P08) plus 1 unowned (ZZU: a submitted TB, no
+    covering ownership) -- 4 rows."""
+    entities = [
+        {"name": "ZZA", "entity_name": "Alpha", "status": "Active",
+         "functional_currency": "USD", "reporting_frequency": "Monthly"},
+        {"name": "ZZB", "entity_name": "Beta", "status": "Active",
+         "functional_currency": "USD", "reporting_frequency": "Monthly"},
+        {"name": "ZZC", "entity_name": "Gamma", "status": "Active",
+         "functional_currency": "USD", "reporting_frequency": "Quarterly"},
+        {"name": "ZZU", "entity_name": "Unowned", "status": "Active",
+         "functional_currency": "USD", "reporting_frequency": "Monthly"},
+    ]
+    ownership_rows = [
+        {"data_area_id": code, "effective_date": datetime.date(2020, 1, 1), "end_date": None,
+         "consolidation_group": "G1", "consolidation_method": "full", "ownership_pct": 100.0}
+        for code in ("ZZA", "ZZB", "ZZC")
+    ]
+    tbs = {"ZZA": {"name": "TB-A"}, "ZZU": {"name": "TB-U"}}
+    exceptions = {}
+    rates = {"group_currencies": {"USD"}, "missing": [], "error": None,
+             "approved": set(), "drafts": set()}
+    return M.period_grid((2025, 8), _period_rows(), entities, ownership_rows, tbs, exceptions,
+                          rates, allowed)
+
+
+def _by_entity(result):
+    return {row["entity"]: row for row in result["rows"]}
+
+
+def test_period_grid_three_in_scope_plus_one_unowned():
+    result = _grid_fixture()
+    assert result["counts"]["rows"] == 4
+    by_entity = _by_entity(result)
+    assert set(by_entity) == {"ZZA", "ZZB", "ZZC", "ZZU"}
+    unowned = by_entity["ZZU"]
+    assert unowned["ownership"] == {"tone": M.BLOCKING, "label": "None for P08"}
+    assert unowned["tb"] == {"tone": M.BLOCKING, "label": "Not consolidated: no ownership"}
+    assert unowned["problem"] is True
+
+
+def test_period_grid_counts_problems_equals_rows_with_problem():
+    result = _grid_fixture()
+    assert result["counts"]["problems"] == sum(1 for row in result["rows"] if row["problem"])
+    assert result["counts"]["problems"] > 0
+
+
+def test_period_grid_allowed_cuts_rows_and_counts_hidden():
+    result = _grid_fixture(allowed={"ZZA"})
+    assert [row["entity"] for row in result["rows"]] == ["ZZA"]
+    assert result["counts"]["hidden"] == 3
+    dumped = json.dumps(result)
+    for code in ("ZZB", "ZZC", "ZZU"):
+        assert code not in dumped
+
+
+def test_period_grid_row_has_exactly_the_declared_columns():
+    """The failure path for an extra column."""
+    result = _grid_fixture()
+    expected_keys = {"entity", "name", "currency", "in_scope", "problem", "ownership", "tb", "rate"}
+    for row in result["rows"]:
+        assert set(row) == expected_keys
+
+
+def test_period_grid_quarterly_entity_outside_quarter_end_is_not_expected_and_not_a_problem():
+    result = _grid_fixture()
+    quarterly = _by_entity(result)["ZZC"]
+    assert quarterly["tb"] == {"tone": M.NONE, "label": "Not expected this period"}
+    assert quarterly["problem"] is False
 
 
 # --- module contract --------------------------------------------------------
