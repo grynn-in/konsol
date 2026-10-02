@@ -114,6 +114,22 @@ test("L01d: the created time is formatted through timefmt (rates.js pendingCreat
   assert.match(tpl, /\(\s*item\.created\s*\)/, "item.created is passed through a formatting call");
 });
 
+test("L01f: pendingCreatedText is called with no systemZone/naiveInZone fallback, and a naive created throws that is caught and shown as this item's own error text", () => {
+  const js = script(read());
+  assert.doesNotMatch(js, /naiveInZone/, "the naive-time fallback helper is gone from this section too");
+  assert.doesNotMatch(js, /systemZone/i, "no system-zone parameter is threaded through any more");
+  // createdText must call pendingCreatedText with exactly (created, now, timeZone) --
+  // three arguments, not the old four-argument naive-fallback shape.
+  const call = js.match(/pendingCreatedText\(([^)]*)\)/);
+  assert.ok(call, "calls pendingCreatedText");
+  const args = call[1].split(",").map((a) => a.trim());
+  assert.equal(args.length, 3, `pendingCreatedText is called with 3 arguments, got: ${call[1]}`);
+  // The call is wrapped so one item's unparsable created shows its own
+  // error text in place of a converted time, never crashing the whole list.
+  assert.match(js, /try\s*\{[\s\S]*pendingCreatedText\([\s\S]*?\}\s*catch\s*\(e\)\s*\{[\s\S]*return\s+e\.message/,
+    "pendingCreatedText is wrapped in try/catch, returning e.message as the visible error text");
+});
+
 test("#305-R01p: the empty state is built by the pure pendingEmptyMessage(view) helper, not a hardcoded string", () => {
   const source = read();
   assert.match(
