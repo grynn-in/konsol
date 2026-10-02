@@ -103,7 +103,10 @@ function labelTone(event) {
 	return found;
 }
 
-function itemText(event) {
+/** `periodFiscalYear` is `payload.period.fiscal_year` (the server's
+ * period), the only fiscal year the payload carries -- `_event_out`
+ * (trail_api.py:116-137) sends no `fiscal_year` on the event itself. */
+function itemText(event, periodFiscalYear) {
 	if (TB_KINDS.has(event.kind)) {
 		return `Trial balance · ${event.entity}`;
 	}
@@ -111,7 +114,7 @@ function itemText(event) {
 		return `Period ${(event.detail || {}).period_code}`;
 	}
 	if (YEAR_KINDS.has(event.kind)) {
-		return `FY${event.fiscal_year}`;
+		return `FY${periodFiscalYear}`;
 	}
 	return `${event.reference_doctype} ${event.reference_name}`;
 }
@@ -158,14 +161,14 @@ function detailText(event) {
 	return parts.join(" · ");
 }
 
-function eventRow(event, now, timeZone) {
+function eventRow(event, now, timeZone, periodFiscalYear) {
 	const { label, tone } = labelTone(event);
 	return {
 		name: event.name,
 		kind: event.kind,
 		label,
 		tone,
-		item: itemText(event),
+		item: itemText(event, periodFiscalYear),
 		by: byText(event),
 		time: formatTime(parseZoned(event.at), now, timeZone),
 		detail: detailText(event),
@@ -246,13 +249,13 @@ export function trailView(payload, now, timeZone) {
 	if (!Object.prototype.hasOwnProperty.call(payload, "hidden")) {
 		throw new Error("Audit trail payload has no hidden count.");
 	}
-	const { summary, events } = payload;
+	const { summary, events, period } = payload;
 	return {
 		signedOff: signedOffText(summary.signoff, now, timeZone),
 		result: resultText(summary.signoff),
 		closedLocked: closedLockedText(summary, now, timeZone),
 		exceptions: exceptionsText(summary.counts),
-		rows: events.map((event) => eventRow(event, now, timeZone)),
+		rows: events.map((event) => eventRow(event, now, timeZone, period.fiscal_year)),
 		hiddenNote: payload.hidden > 0
 			? `${payload.hidden} events for entities outside your scope are not shown`
 			: null,
