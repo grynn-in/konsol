@@ -64,9 +64,9 @@ export function checkRows(result) {
   };
 }
 
-// The TB statuses A25 declares (signoff_model.expected_entities). A status
-// this module does not know is refused, not guessed at: it is never shown
-// as if it were one of these.
+// The seven TB statuses tb_read_api.py's `TB_STATUSES` declares (A25, E209a's
+// #289 gap). A status this module does not know is refused, not guessed at:
+// it is never shown as if it were one of these.
 export const KNOWN_STATUSES = new Set([
   "Received",
   "Exception declared",
@@ -74,6 +74,7 @@ export const KNOWN_STATUSES = new Set([
   "Missing",
   "Frequency not declared",
   "Quarter not declared",
+  "Not consolidated: no ownership for this period",
 ]);
 
 // B27: times on the TB list read like the freshness bar (B09): "10:42" today,
