@@ -137,6 +137,26 @@ def test_live_signed_off_plain_signed_off_with_blank_reason_gives_no_problems():
     )) == []
 
 
+# --- KINDS: approval_cancelled (T02c, #305-W2-8) -------------------------------
+
+def test_approval_cancelled_is_a_declared_kind():
+    assert "approval_cancelled" in M.KINDS
+
+
+def test_live_approval_cancelled_with_no_reason_gives_no_problems():
+    # Frappe's cancel takes no reason, and a Reverse is a cancel (top Problems
+    # W2-P5): approval_cancelled is not in REASON_REQUIRED.
+    assert M.event_problems(_event(kind="approval_cancelled")) == []
+
+
+def test_approval_cancelled_with_period_zero_is_named():
+    # Not a year kind: fiscal_period must not be 0.
+    _field_named(
+        M.event_problems(_event(kind="approval_cancelled", fiscal_period=0)),
+        "fiscal_period",
+    )
+
+
 # --- approval_kind --------------------------------------------------------------
 
 def test_approval_kind_approver_in_preparers_is_self_approved():
