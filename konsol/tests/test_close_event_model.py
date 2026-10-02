@@ -139,12 +139,23 @@ def test_live_signed_off_plain_signed_off_with_blank_reason_gives_no_problems():
 
 # --- approval_kind --------------------------------------------------------------
 
-def test_approval_kind_equal_ids_is_self_approved():
-    assert M.approval_kind("a", "a") == "self_approved"
+def test_approval_kind_approver_in_preparers_is_self_approved():
+    assert M.approval_kind({"a", "b"}, "b") == "self_approved"
 
 
-def test_approval_kind_different_ids_is_approved():
-    assert M.approval_kind("a", "b") == "approved"
+def test_approval_kind_approver_not_in_preparers_is_approved():
+    assert M.approval_kind({"a"}, "b") == "approved"
+
+
+def test_approval_kind_preparers_a_string_raises_type_error():
+    # Failure path: a str passed by mistake would match by substring
+    # ("b" in "ab" is True), silently calling a non-preparer self-approved.
+    try:
+        M.approval_kind("ab", "b")
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("approval_kind('ab', 'b') should raise TypeError")
 
 
 # --- detail_json -----------------------------------------------------------------
