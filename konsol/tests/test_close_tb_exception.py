@@ -307,3 +307,94 @@ def test_forged_declared_by_is_cleared_on_draft_and_replaced_on_submit():
     doc.validate()
     doc.before_submit()
     assert doc.declared_by == "close.lead@example.com"
+
+
+# ---- konsol#305 T05 (#305-W2-1): declare and cancel write their Close Event ----------
+
+def _with_close(log, fn, raises=None):
+    """Run ``fn`` with stub ``konsol.close.signoff_gate`` and
+    ``konsol.close.close_event``; both append to ``log`` in call order
+    (``record`` raises ``raises`` when given). Restored afterwards."""
+    gate = types.ModuleType("konsol.close.signoff_gate")
+    gate.record_data_change = lambda fy, fp, text, user: log.append(("data_change", text))
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def record(kind, *a, **k):
+        if raises is not None:
+            raise raises
+        log.append(("event", kind, a, k))
+        return "CE-000000001"
+
+    close_event.record = record
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = []
+    close = types.ModuleType("konsol.close")
+    close.__path__ = []
+    close.signoff_gate, close.close_event = gate, close_event
+    konsol.close = close
+    mods = {"konsol": konsol, "konsol.close": close,
+            "konsol.close.signoff_gate": gate, "konsol.close.close_event": close_event}
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        return fn()
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def _submit(doc):
+    """Frappe's submit order: validate, before_submit, on_submit."""
+    doc.docstatus = 1
+    doc.validate()
+    doc.before_submit()
+    doc.on_submit()
+
+
+def test_submit_records_tb_exception_declared_with_the_reason_and_the_entity():
+    m, _ = _load(_Site())
+    log = []
+    _with_close(log, lambda: _submit(_doc(m)))
+    events = [e for e in log if e[0] == "event"]
+    assert [e[1] for e in events] == ["tb_exception_declared"], log
+    _kind, args, kw = events[0][1:]
+    assert args == (2025, 3, "TB Exception", "TBX-00001"), args
+    assert kw["reason"] == "Dormant entity, no activity"
+    assert kw["entity"] == "ZZOP"
+    # in the action's own transaction, after the A63 data change
+    assert [e[0] for e in log] == ["data_change", "event"], log
+
+
+def test_cancel_records_tb_exception_cancelled():
+    m, _ = _load(_Site())
+    log = []
+    doc = _doc(m, docstatus=1)
+    _with_close(log, lambda: (doc.before_cancel(), doc.on_cancel()))
+    events = [e for e in log if e[0] == "event"]
+    assert [e[1] for e in events] == ["tb_exception_cancelled"], log
+    _kind, args, kw = events[0][1:]
+    assert args == (2025, 3, "TB Exception", "TBX-00001"), args
+    assert kw["entity"] == "ZZOP"
+
+
+def test_a_blank_reason_is_refused_before_any_event():
+    """Failure path: validate refuses, so neither the data change nor the event is written."""
+    m, _ = _load(_Site())
+    for reason in ("", "   ", None):
+        log = []
+        _refused(lambda: _with_close(log, lambda: _submit(_doc(m, reason=reason))), "reason")
+        assert log == [], log
+
+
+def test_a_failing_event_propagates_out_of_submit_and_cancel():
+    m, _ = _load(_Site())
+    for run in (lambda d: _submit(d), lambda d: d.on_cancel()):
+        log = []
+        try:
+            _with_close(log, lambda: run(_doc(m)), raises=RuntimeError("event refused"))
+            assert False, "the writer's error was swallowed"
+        except RuntimeError as e:
+            assert str(e) == "event refused"

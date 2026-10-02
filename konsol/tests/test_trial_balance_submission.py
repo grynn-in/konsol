@@ -1316,3 +1316,124 @@ def test_submit_is_allowed_when_no_tb_exception_is_submitted():
     assert filters.get("docstatus") == 1
     assert fieldname == "name"
     assert kw.get("for_update") is True
+
+
+# -- konsol#305 T05 (#305-W2-1): submit and cancel write their Close Event before ClickHouse --------
+
+def _with_close_event(log, fn, raises=None):
+    """Run ``fn`` with a stub ``konsol.close.close_event`` whose ``record``
+    appends ``("event", kind, args, kwargs)`` to ``log`` — the same log the
+    ClickHouse stub appends ``("ch", ...)`` to — or raises ``raises``.
+    The stub package and module are restored afterwards, so nothing leaks."""
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def record(kind, *a, **k):
+        if raises is not None:
+            raise raises
+        log.append(("event", kind, a, k))
+        return "CE-000000001"
+
+    close_event.record = record
+    close = types.ModuleType("konsol.close")
+    close.__path__ = []
+    close.close_event = close_event
+    names = ("konsol.close", "konsol.close.close_event")
+    saved = {n: sys.modules.get(n) for n in names}
+    saved_ch = (_m.execute, _m.ensure_raw_tables)
+    sys.modules.update({"konsol.close": close, "konsol.close.close_event": close_event})
+    _m.execute = lambda sql, *a, **k: log.append(("ch", sql)) or ""
+    _m.ensure_raw_tables = lambda: log.append(("ch", "ensure_raw_tables"))
+    try:
+        return fn()
+    finally:
+        _m.execute, _m.ensure_raw_tables = saved_ch
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def _tb_doc(**over):
+    doc = _m.TrialBalanceSubmission()
+    doc.name, doc.batch_id, doc.data_area_id = "TBS-00042", "b42", "ZZA"
+    doc.fiscal_year, doc.fiscal_period, doc.row_count = 2099, 3, 2
+    doc.amount_basis, doc.uploaded_on_behalf, doc.amended_from = CLOSING, "Yes", "TBS-00041"
+    doc._parse_file = lambda: []
+    doc._land_rows = lambda rows: None
+    for k, v in over.items():
+        setattr(doc, k, v)
+    return doc
+
+
+def test_submit_records_tb_submitted_before_clickhouse_is_touched():
+    log = []
+    doc = _tb_doc()
+    _with_close_event(log, doc.on_submit)
+    events = [e for e in log if e[0] == "event"]
+    assert [e[1] for e in events] == ["tb_submitted"], log
+    first_ch = next(i for i, e in enumerate(log) if e[0] == "ch")
+    assert log.index(events[0]) < first_ch, f"event after ClickHouse: {log}"
+    _kind, _a, args, kw = events[0]
+    assert args == (2099, 3, "Trial Balance Submission", "TBS-00042"), args
+    assert kw["entity"] == "ZZA"
+    assert kw["detail"] == {"on_behalf": "Yes", "replaces": "TBS-00041"}
+
+
+def test_submit_of_an_original_tb_replaces_nothing_and_keeps_an_unknown_on_behalf_blank():
+    log = []
+    _with_close_event(log, _tb_doc(amended_from=None, uploaded_on_behalf=None).on_submit)
+    kw = next(e for e in log if e[0] == "event")[3]
+    assert kw["detail"] == {"on_behalf": "", "replaces": None}
+
+
+def test_cancel_records_tb_cancelled_before_the_claim_is_deleted():
+    log = []
+    _with_close_event(log, _tb_doc().on_cancel)
+    events = [e for e in log if e[0] == "event"]
+    assert [e[1] for e in events] == ["tb_cancelled"], log
+    first_ch = next(i for i, e in enumerate(log) if e[0] == "ch")
+    assert log.index(events[0]) < first_ch, f"event after ClickHouse: {log}"
+    assert events[0][2] == (2099, 3, "Trial Balance Submission", "TBS-00042")
+    assert events[0][3]["entity"] == "ZZA"
+
+
+def test_a_failing_event_stops_the_submit_with_no_clickhouse_write():
+    """Failure path: the writer's error propagates (never caught), and
+    ClickHouse — which has no transaction — is never touched."""
+    for action in ("on_submit", "on_cancel"):
+        log = []
+        doc = _tb_doc()
+        try:
+            _with_close_event(log, getattr(doc, action), raises=RuntimeError("event refused"))
+            assert False, f"{action}: the writer's error was swallowed"
+        except RuntimeError as e:
+            assert str(e) == "event refused"
+        assert [e for e in log if e[0] == "ch"] == [], f"{action} reached ClickHouse: {log}"
+
+
+def test_a_refused_data_change_writes_no_event_and_no_clickhouse():
+    """Failure path: a submit refused before the event (here by the A63 data
+    change) records nothing anywhere."""
+    def refuse(*a, **k):
+        raise RuntimeError("refused")
+
+    saved = _m._record_data_change
+    _m._record_data_change = refuse
+    try:
+        for action in ("on_submit", "on_cancel"):
+            log = []
+            try:
+                _with_close_event(log, getattr(_tb_doc(), action))
+                assert False, f"{action}: not refused"
+            except RuntimeError as e:
+                assert str(e) == "refused"
+            assert log == [], f"{action} wrote: {log}"
+    finally:
+        _m._record_data_change = saved
+
+
+def test_the_close_event_stub_does_not_leak():
+    before = (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event"))
+    _with_close_event([], _tb_doc().on_cancel)
+    assert (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event")) == before
