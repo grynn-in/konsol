@@ -77,6 +77,9 @@ class _Site:
             _earlier("GER-00", "EUR", "GBP", "Average", 0.81, 2025, 6),
         ]
         self.versions = []  # {"ref_doctype", "docname", "owner", "data"}
+        self.her = []  # Historical Equity Rate drafts (E405)
+        self.ops = []  # Ownership Period drafts (E405)
+        self.allowed = None  # allowed_entity_codes(): None = unrestricted (E405, W2-10)
         self.move_answer = None
         self.move_calls = []
         self.needs_calls = []
@@ -85,6 +88,24 @@ class _Site:
         self.named = {}  # name -> _FakeDoc, for get_doc(doctype, name)
         self.get_doc_calls = []  # what get_doc received
         self.new_docs = []  # every _FakeDoc built from a dict
+
+
+def _her(name, data_area_id="ZZA", group="CG1", account="4000", rate_date=None,
+         historical_rate=1.2, owner=ANALYST, creation=None, docstatus=0):
+    return {"name": name, "consolidation_group": group, "data_area_id": data_area_id,
+            "main_account": account, "rate_date": rate_date or date(2024, 1, 1),
+            "historical_rate": historical_rate, "owner": owner,
+            "creation": creation or datetime(2025, 7, 1, 9, 0, 0), "docstatus": docstatus}
+
+
+def _op(name, data_area_id="ZZA", group="CG1", effective_date=None, end_date=None,
+        ownership_pct=60.0, consolidation_method="Equity", owner=ANALYST, creation=None,
+        docstatus=0):
+    return {"name": name, "consolidation_group": group, "data_area_id": data_area_id,
+            "effective_date": effective_date or date(2025, 1, 1), "end_date": end_date,
+            "ownership_pct": ownership_pct, "consolidation_method": consolidation_method,
+            "owner": owner, "creation": creation or datetime(2025, 7, 2, 9, 0, 0),
+            "docstatus": docstatus}
 
 
 def _match(row, filters):
@@ -123,6 +144,10 @@ def _frappe(site):
             rows = [r for r in site.docs if _match(r, filters)]
         elif doctype == "Version":
             rows = [r for r in site.versions if _match(r, filters)]
+        elif doctype == "Historical Equity Rate":
+            rows = [r for r in site.her if _match(r, filters)]
+        elif doctype == "Ownership Period":
+            rows = [r for r in site.ops if _match(r, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         return [{f: r.get(f) for f in fields} for r in rows]
@@ -278,16 +303,21 @@ def _invoke(site, run):
     close.__path__ = []
     group_rates = _group_rates(site)
     fiscal_calendar = _fiscal_calendar(site)
+    entity_permissions = types.ModuleType("konsol.entity_permissions")
+    entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
     konsol.close = close
     konsol.group_rates = group_rates
     konsol.fiscal_calendar = fiscal_calendar
+    konsol.entity_permissions = entity_permissions
     names = ["frappe", "konsol", "konsol.close", "konsol.group_rates", "konsol.fiscal_calendar",
-             "konsol.close.close_policy_model", "konsol.close.rates_model",
-             "konsol.close.self_approval", "close_rates_api_under_test"]
+             "konsol.entity_permissions", "konsol.close.close_policy_model",
+             "konsol.close.rates_model", "konsol.close.self_approval",
+             "close_rates_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
                         "konsol.group_rates": group_rates,
-                        "konsol.fiscal_calendar": fiscal_calendar})
+                        "konsol.fiscal_calendar": fiscal_calendar,
+                        "konsol.entity_permissions": entity_permissions})
     try:
         close.close_policy_model = _load_path(
             "konsol.close.close_policy_model", os.path.join(CLOSE_DIR, "close_policy_model.py"))
@@ -311,6 +341,16 @@ def _invoke(site, run):
 def _call_raises(site, fy=2025, fp=7):
     with pytest.raises(Exception) as info:
         _call(site, fy, fp)
+    return info.value
+
+
+def _call_pending(site):
+    return _invoke(site, lambda api: api.get_pending())
+
+
+def _call_pending_raises(site):
+    with pytest.raises(Exception) as info:
+        _call_pending(site)
     return info.value
 
 
@@ -752,3 +792,115 @@ def test_the_close_lead_may_save_the_analysts_draft_and_the_owner_is_untouched()
     _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.845)
     assert doc.owner == ANALYST
     assert [c[0] for c in doc.calls] == ["save"]
+
+
+# --- get_pending (E405): HER and OP drafts awaiting approval -----------------------
+
+def test_get_pending_lists_her_direct_and_refuses_the_leads_own_op_under_blocked():
+    site = _Site()
+    site.her = [_her("HER-1", owner=ANALYST)]
+    site.ops = [_op("OP-1", owner=LEAD)]
+    site.user = LEAD
+    site.roles = {"EPM Admin"}
+    site.policy = "Blocked"
+    result = _call_pending(site)
+    json.dumps(result)
+    her_item = next(i for i in result["items"] if i["doctype"] == "Historical Equity Rate")
+    op_item = next(i for i in result["items"] if i["doctype"] == "Ownership Period")
+    assert her_item["approve"]["mode"] == "direct"
+    # failure path: self-approval under Blocked is refused
+    assert op_item["approve"]["mode"] == "refused"
+    assert result["counts"]["Historical Equity Rate"] == 1
+    assert result["counts"]["Ownership Period"] == 1
+    assert isinstance(her_item["created"], str) and isinstance(op_item["created"], str)
+
+
+def test_failure_path_seen_by_the_analyst_every_item_is_not_approver():
+    site = _Site()
+    site.her = [_her("HER-1", owner=ANALYST)]
+    site.ops = [_op("OP-1", owner=LEAD)]
+    site.user = ANALYST
+    site.roles = {"EPM Analyst"}
+    result = _call_pending(site)
+    assert result["items"] and all(i["approve"]["mode"] == "not_approver" for i in result["items"])
+    assert result["can_approve"] is False
+
+
+def test_under_allowed_with_reason_the_leads_own_op_needs_a_reason():
+    site = _Site()
+    site.ops = [_op("OP-1", owner=LEAD)]
+    site.user = LEAD
+    site.roles = {"EPM Admin"}
+    site.policy = "Allowed with reason"
+    result = _call_pending(site)
+    op_item = next(i for i in result["items"] if i["doctype"] == "Ownership Period")
+    assert op_item["approve"]["mode"] == "reason"
+    assert "approval_api.approve" in op_item["approve"]["message"]
+
+
+def test_no_drafts_gives_empty_items_and_zero_counts_never_missing_keys():
+    site = _Site()
+    result = _call_pending(site)
+    assert result["items"] == []
+    assert result["counts"]["Historical Equity Rate"] == 0
+    assert result["counts"]["Ownership Period"] == 0
+
+
+def test_failure_path_the_entity_accountant_is_refused_from_pending():
+    site = _Site()
+    site.her = [_her("HER-1")]
+    site.roles = {"Entity Accountant"}
+    err = _call_pending_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.reads == []
+
+
+def test_pending_query_count_is_constant_in_the_number_of_drafts():
+    one = _Site()
+    one.her = [_her("HER-1")]
+    one.ops = [_op("OP-1")]
+    ten = _Site()
+    ten.her = [_her("HER-%d" % i) for i in range(5)]
+    ten.ops = [_op("OP-%d" % i) for i in range(5)]
+    r1, r10 = _call_pending(one), _call_pending(ten)
+    assert len(r1["items"]) == 2 and len(r10["items"]) == 10
+    assert len(one.reads) == 7, one.reads
+    assert len(ten.reads) == 7, ten.reads
+
+
+# --- get_pending: Viewer and entity scope (#305-W2-10, W2-14) ----------------------
+
+def test_a_viewer_reads_pending_but_every_item_is_not_approver():
+    site = _Site()
+    site.her = [_her("HER-1")]
+    site.ops = [_op("OP-1")]
+    site.user = VIEWER
+    site.roles = {"EPM User"}
+    result = _call_pending(site)
+    assert result["items"] and all(i["approve"]["mode"] == "not_approver" for i in result["items"])
+    assert result["can_approve"] is False
+
+
+def test_failure_path_a_leak_items_are_cut_to_the_callers_allowed_entities():
+    site = _Site()
+    site.her = [_her("HER-A", data_area_id="ZZA"), _her("HER-X", data_area_id="ZZX")]
+    site.allowed = {"ZZA"}
+    result = _call_pending(site)
+    assert len(result["items"]) == 1
+    assert result["counts"]["hidden"] == 1
+    dumped = json.dumps(result)
+    assert "ZZX" not in dumped, dumped
+
+
+def test_the_w2_14_case_an_op_edited_by_the_lead_is_refused_under_blocked():
+    site = _Site()
+    site.ops = [_op("OP-1", owner=ANALYST)]
+    site.versions = [{"ref_doctype": "Ownership Period", "docname": "OP-1", "owner": LEAD,
+                      "data": json.dumps({"changed": [["ownership_pct", 50, 60]]})}]
+    site.user = LEAD
+    site.roles = {"EPM Admin"}
+    site.policy = "Blocked"
+    result = _call_pending(site)
+    op_item = result["items"][0]
+    assert op_item["approve"]["mode"] == "refused"
+    assert op_item["edited_by"] == [LEAD]
