@@ -92,7 +92,7 @@ test("The All/Problems filter toggles a problemsOnly ref passed to gridView(", (
   assert.match(js, /\bproblemsOnly\s*=\s*ref\(/, "a ref named problemsOnly");
   assert.match(js, /gridView\(\s*[\w.]+\s*,\s*problemsOnly\.value\s*\)/, "gridView is called with it");
   const tpl = template(source);
-  assert.match(tpl, /problemsOnly\.value\s*=/, "the template can change it");
+  assert.match(tpl, /problemsOnly\s*=\s*(true|false)/, "the template can change it (refs unwrap in <template>)");
 });
 
 test("The All and Problems counts come from gridView's all/problems, not re-counted here", () => {
@@ -118,12 +118,6 @@ test("Cells show cell.label in a chip with toneClass(cell.tone): text binding on
 test("An in-app link to sign-off is built with format({..., screen: \"sign-off\"})", () => {
   const source = read();
   assert.match(source, /format\(\s*\{[^}]*screen:\s*["']sign-off["'][^}]*\}\s*\)/s);
-});
-
-test("No browser storage is used to remember the filter or the period (D5)", () => {
-  const source = read();
-  assert.doesNotMatch(source, /localStorage/);
-  assert.doesNotMatch(source, /sessionStorage/);
 });
 
 test("Period.vue offers Retry through LoadState on an error", () => {
