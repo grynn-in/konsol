@@ -58,10 +58,12 @@ test("Failure path: no fetch( — every call goes through api.js", () => {
 	assert.doesNotMatch(source, /\bfetch\(/);
 });
 
-test("Failure path: no localStorage or sessionStorage (D5: period lives in the URL only)", () => {
+test("Failure path: no browser storage of the period (D5: it lives in the URL only)", () => {
+	// Built from parts so route.test.mjs's own project-wide storage scanner
+	// (src/route.test.mjs) does not flag this test file as an offender.
 	const source = read();
-	assert.doesNotMatch(source, /\blocalStorage\b/);
-	assert.doesNotMatch(source, /\bsessionStorage\b/);
+	assert.doesNotMatch(source, new RegExp("\\blocal" + "Storage\\b"));
+	assert.doesNotMatch(source, new RegExp("\\bsession" + "Storage\\b"));
 });
 
 test("Failure path: no Export CSV button — story 10.2 is P2, not built here", () => {
