@@ -32,16 +32,19 @@ Reads the site and passes it through the pure models:
   errs toward re-signing). The mark is saved through
   ``assertion_run.writing(SIGNOFF_WRITER, run)``, so the frozen-field guard
   (A48) still applies to everything else; it never uses ``db.set_value``.
-- ``record_data_change(fy, fp, text, user)`` (A63, #305-R2b-3): a trial
-  balance or TB exception submitted or cancelled, or an amount basis set,
-  changes the data a period's checks read. The period row's
-  ``data_changed_at`` / ``data_changed_by`` / ``data_change`` are set (a
-  direct row update: no EPM Fiscal Year validate runs), and the period's
-  latest signed run is marked "Re-sign Needed" through the same writer, with
-  ``affected_by`` = "<text> at <time> by <user>". History periods (before the
-  first close) and non-Regular periods are recorded but never marked.
-  ``sign_off_close`` refuses a run that did not start after ``data_changed_at``
-  (A65), through ``signoff_model.data_change_problem`` (A66).
+- ``record_data_change(fy, fp, text, user, entity=None)`` (A63, #305-R2b-3;
+  entity: S1, E2-6): a trial balance or TB exception submitted or cancelled,
+  or an amount basis set, changes the data a period's checks read. The
+  period row's ``data_changed_at`` / ``data_changed_by`` / ``data_change``
+  are set (a direct row update: no EPM Fiscal Year validate runs), and the
+  period's latest signed run is marked "Re-sign Needed" through the same
+  writer, with ``affected_by`` = "<text> at <time> by <user>". History
+  periods (before the first close) and non-Regular periods are recorded but
+  never marked. ``entity``, when the caller names one, is passed to the
+  ``signoff_voided`` Close Event the mark writes, so trail scoping hides a
+  void whose reason names a hidden TB. ``sign_off_close`` refuses a run that
+  did not start after ``data_changed_at`` (A65), through
+  ``signoff_model.data_change_problem`` (A66).
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
 
 The first close period is read from Close Settings; its Int fields read back
@@ -230,12 +233,16 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     return assert_close_signed_off(*key)
 
 
-def _mark_latest_signed(affected, affected_by):
+def _mark_latest_signed(affected, affected_by, entity=None):
     """Mark the latest signed terminal run of each period in ``affected``
     "Re-sign Needed" with ``affected_by``; return the marked run names. Each
     mark also records a ``signoff_voided`` Close Event in the caller's own
     transaction (E10-P6a, konsol#305 T04b, my judgement): a reopen or a data
-    change voids a signature, and the trail should say why."""
+    change voids a signature, and the trail should say why. ``entity``
+    (S1, E2-6) scopes that event: a reopen names none (every later Regular
+    period is affected, not one entity's data), while a data change caused
+    by one entity's TB names it, so trail scoping can hide the void from a
+    reader without access to that entity."""
     # Imported here: assertion_run imports this module's callers (A22).
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
         RE_SIGN_NEEDED, SIGNED_STATES, SIGNOFF_WRITER, TERMINAL_STATUSES, writing)
@@ -269,7 +276,7 @@ def _mark_latest_signed(affected, affected_by):
         # caller commits, :262-263 / :307-308 equivalents). A writer failure
         # propagates uncaught, same as T04's signed_off event (E10-P11).
         close_event.record("signoff_voided", run.fiscal_year, run.fiscal_period,
-                            "Assertion Run", name, reason=affected_by)
+                            "Assertion Run", name, reason=affected_by, entity=entity)
         marked.append(name)
     return marked
 
@@ -317,7 +324,7 @@ def data_change(fiscal_year, fiscal_period):
     return {f: row.get(f) or None for f in DATA_CHANGE_FIELDS}
 
 
-def record_data_change(fiscal_year, fiscal_period, text, user):
+def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     """Record that the period's data changed (``text``, by ``user``, now) on
     its EPM Fiscal Year Period row, and mark the period's latest signed run
     "Re-sign Needed". Returns the marked run names.
@@ -327,6 +334,13 @@ def record_data_change(fiscal_year, fiscal_period, text, user):
     A history period (before the first close) or a non-Regular period is
     recorded but nothing is marked; with no first close declared, a Regular
     period is marked (the mark errs toward re-signing, as on a reopen).
+
+    ``entity`` (S1, E2-6): the entity whose data changed, when the caller can
+    name one (a TB submit or cancel, a TB Exception, an amount basis set on
+    a TB). It is passed through to the ``signoff_voided`` Close Event, so a
+    reader scoped to other entities does not see why this period's signature
+    stopped counting. Blank (the default) when no single entity caused the
+    change.
     """
     key = _key(fiscal_year, fiscal_period)
     row = _period_row(key, ("name", "period_type"))
@@ -342,5 +356,5 @@ def record_data_change(fiscal_year, fiscal_period, text, user):
     if first is not None and key < first:
         return []
     affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
-    return _mark_latest_signed({key}, affected_by)
+    return _mark_latest_signed({key}, affected_by, entity=entity)
 
