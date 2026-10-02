@@ -104,8 +104,30 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         problems = M.declaration_problems(self._row(), self._parent_row())
         if problems:
             frappe.throw("\n".join(problems), title="Main Account")
+        self._refuse_allow_ic_withdrawal()
         self._guard_publish()
         self._warn_if_reclassified()
+
+    def _refuse_allow_ic_withdrawal(self):
+        """konsol#293 (#182 PR5a): allow_ic is the chart's precondition for a
+        pairing, so it cannot be withdrawn while a Published Intercompany
+        Account names this account.
+
+        Only read the pairing table when the flag is actually going away: on a
+        new row, and on every save that leaves allow_ic set, there is nothing to
+        refuse and no query to pay for.
+        """
+        if M.flag(self.allow_ic):
+            return
+        before = self.get_doc_before_save()
+        if not before or not M.flag(before.get("allow_ic")):
+            return
+        from konsol.consolidation.doctype.intercompany_account.intercompany_account import (
+            intercompany_accounts,
+        )
+        problem = M.allow_ic_withdrawal_problem(self._row(), paired_accounts=intercompany_accounts())
+        if problem:
+            frappe.throw(problem, title="Allow Intercompany")
 
     def _guard_publish(self):
         """A Published row is the Close Lead's (intercompany_account.py's shape).

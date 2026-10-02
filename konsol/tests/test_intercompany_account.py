@@ -226,6 +226,14 @@ def test_the_publish_check_locks_before_reading_difference_accounts():
         raise _Refused(msg)
 
     chart = types.ModuleType("group_chart_stub")
+    # konsol#293: _before_publish reads the rows now, not just the codes, so the
+    # allow_ic precondition and chart membership come from one read. Both
+    # accounts declare allow_ic here, so what this test asserts — the
+    # difference-account refusal — is still what fires.
+    _accts = {c: {"main_account": c, "is_group": 0, "is_posting": 1, "allow_ic": 1}
+              for c in ("4030", "5030")}
+    chart.chart_accounts = lambda: _accts
+    chart.posting_codes = lambda c: {k for k, a in c.items() if not a["is_group"] and a["is_posting"]}
     chart.chart_codes = lambda: {"4030", "5030"}
     saved = sys.modules.get("konsol.group_chart")
     sys.modules["konsol.group_chart"] = chart

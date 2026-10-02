@@ -177,6 +177,28 @@ def declaration_problems(row, parent=None):
     return out
 
 
+def allow_ic_withdrawal_problem(row, *, paired_accounts):
+    """Why this account may not clear ``allow_ic``, or "". Pure (konsol#293).
+
+    ``allow_ic`` is the chart's precondition for carrying intercompany rows;
+    ``Intercompany Account`` stays the pairing table and the source of the set
+    (konsol#182, decision 3 of 13 Sep 2026). ``paired_accounts`` is every
+    account a Published Intercompany Account names, passed in by the caller.
+
+    Withdrawing the precondition under a live pairing would leave the chart
+    saying the account carries no intercompany rows while consolidation goes on
+    eliminating it. The two declarations would disagree with nothing to notice,
+    which is what konsol#293 was filed for. Retire the pairing first.
+    """
+    if flag(row.get("allow_ic")):
+        return ""
+    code = text(row.get("main_account"))
+    if code not in set(paired_accounts or ()):
+        return ""
+    return (f"{code} is named by a Published Intercompany Account, so it may still carry "
+            "intercompany rows: retire that pairing before clearing allow_ic")
+
+
 def publish_problems(row, parent=None):
     """What stops an account being published: every declaration a leaf needs
     (a heading needs its name and chart), that only an Equity account is
