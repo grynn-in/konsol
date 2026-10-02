@@ -58,7 +58,7 @@ import RatesPending from "../sections/RatesPending.vue";
 import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, ownershipView, mergeDrafts } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, mergeDrafts } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
@@ -448,12 +448,13 @@ function rowNotes(row) {
 	return notes;
 }
 
-/** E410: the "Historical equity rates" tab label carries the pending HER
- * count (the wireframe), from `counts["Historical Equity Rate"]`. The OP
- * count is not folded in: the wireframe's "N pending" names HER only. */
+/** E410/#305-R01p: the "Historical equity rates" tab label carries every
+ * pending item, HER and OP together (`pendingCount`, rates.js): the tab
+ * holds both doctypes' drafts, so "N pending" undercounts if it names HER
+ * alone. */
 const herPendingCount = computed(() => {
 	if (!pendingViewData.value) return null;
-	return pendingViewData.value.counts["Historical Equity Rate"];
+	return pendingCount(pendingViewData.value.counts);
 });
 /** E411: the "Ownership" tab label carries the blocking count (the
  * wireframe's "N gap(s)"), from `view.blocking.length`; plain "Ownership"

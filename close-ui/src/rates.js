@@ -336,6 +336,31 @@ export function pendingView(payload) {
   };
 }
 
+/** #305-R01p: the "Historical equity rates" tab's total pending count --
+ * HER and OP together (`counts["Historical Equity Rate"] +
+ * counts["Ownership Period"]`). The two doctypes share one tab, so the
+ * wireframe's "N pending" counts both; counting HER alone (the live
+ * defect) understates the tab when OP drafts are also waiting. */
+export function pendingCount(counts) {
+  return (counts["Historical Equity Rate"] || 0) + (counts["Ownership Period"] || 0);
+}
+
+/** #305-R01p: the pending list's empty-state text, from `pendingView`'s
+ * result (`{items, counts}`). Null when there are visible items (the
+ * caller renders the list instead). With no visible items and
+ * `counts.hidden > 0`, entities outside the viewer's scope have drafts the
+ * viewer cannot see, so "none awaiting" would be a lie -- this names the
+ * hidden count instead (mirrors periodGrid.js's hiddenNote / auditTrail.js's
+ * hiddenNote). Only when nothing is hidden either does it say none awaiting. */
+export function pendingEmptyMessage(view) {
+  if (view.items.length) return null;
+  const hidden = (view.counts && view.counts.hidden) || 0;
+  if (hidden > 0) {
+    return `${hidden} awaiting outside your scope`;
+  }
+  return "No historical equity rates or ownership periods are awaiting approval.";
+}
+
 /** `get_ownership` payload -> `{blocking, outOfScopeCount, inScopeCount,
  * canRecord, hiddenCount}`. `blocking` entries (`{entity, message, desk}`)
  * are server-authored sentences and pass through unchanged; the
