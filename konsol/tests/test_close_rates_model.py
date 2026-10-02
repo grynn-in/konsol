@@ -1,6 +1,10 @@
-"""Rates model, pure: konsol/close/rates_model.py (konsol#305 E401).
+"""Rates model, pure: konsol/close/rates_model.py (konsol#305 E401, E402).
 
 Loaded by path; the module imports nothing from frappe or konsol.
+
+E402 injects the real ``self_approval_problem`` and ``APPROVER_ROLES`` from
+close_policy_model.py (loaded by path too), rather than copying the policy
+rule (#305-W2-14).
 """
 import ast
 import importlib.util
@@ -11,6 +15,14 @@ _spec = importlib.util.spec_from_file_location(
     "rates_model_under_test", os.path.join(APP_DIR, "close", "rates_model.py"))
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
+
+CPM_PATH = os.path.join(APP_DIR, "close", "close_policy_model.py")
+_cpm_spec = importlib.util.spec_from_file_location(
+    "rates_model_test_close_policy_model", CPM_PATH)
+CPM = importlib.util.module_from_spec(_cpm_spec)
+_cpm_spec.loader.exec_module(CPM)
+SELF_APPROVAL_PROBLEM = CPM.self_approval_problem
+APPROVER_ROLES = CPM.APPROVER_ROLES
 
 
 def _doc(name, from_currency, to_currency, rate_type, rate, docstatus, owner,
@@ -215,6 +227,165 @@ def test_summary_counts_add_up_to_twice_row_count():
     summary = result["summary"]
     assert sum(summary.values()) == 2 * len(result["rows"])
     assert sum(summary.values()) == 6
+
+
+def test_approve_mode_by_an_analyst_is_not_approver_whatever_the_owner_or_policy():
+    """Failure path — an Analyst never approves (R2)."""
+    for policy in ("", "Blocked", "Allowed with reason", "Sometimes"):
+        for preparers in ({"alice"}, {"bob"}):
+            mode = M.approve_mode("bob", ("EPM Analyst",), preparers, "IC Balance", "ICB-1",
+                                   policy, APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+            assert mode == {"mode": "not_approver", "message": "The Close Lead approves (R2)."}
+
+
+def test_approve_mode_close_lead_approving_anothers_draft_is_direct_under_every_policy():
+    for policy in ("Blocked", "Allowed with reason", ""):
+        mode = M.approve_mode("lead", ("EPM Admin",), {"alice"}, "IC Balance", "ICB-1",
+                               policy, APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+        assert mode == {"mode": "direct", "message": None}
+
+
+def test_approve_mode_self_approval_under_blocked_is_refused():
+    """Failure path — self-approval under Blocked is refused, and a reason never
+    turns it into 'reason'."""
+    mode = M.approve_mode("alice", ("EPM Admin",), {"alice"}, "IC Balance", "ICB-1",
+                           "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode["mode"] == "refused"
+    assert "blocks self-approval" in mode["message"]
+
+
+def test_approve_mode_self_approval_under_allowed_with_reason_gives_reason_mode():
+    mode = M.approve_mode("alice", ("EPM Admin",), {"alice"}, "IC Balance", "ICB-1",
+                           "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode["mode"] == "reason"
+    assert "approval_api.approve" in mode["message"]
+
+
+def test_approve_mode_self_approval_with_undeclared_policy_is_refused():
+    """Failure path — undeclared policy refuses, naming Close Settings."""
+    mode = M.approve_mode("alice", ("EPM Admin",), {"alice"}, "IC Balance", "ICB-1",
+                           "", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode["mode"] == "refused"
+    assert "Close Settings" in mode["message"]
+
+
+def test_approve_mode_self_approval_with_unknown_policy_is_refused():
+    mode = M.approve_mode("alice", ("EPM Admin",), {"alice"}, "IC Balance", "ICB-1",
+                           "Sometimes", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode["mode"] == "refused"
+
+
+def test_approve_mode_w2_14_editor_approver_is_refused_under_blocked():
+    """Failure path, the W2-14 case: owner 'analyst', preparers {'analyst',
+    'lead'}, user 'lead', policy Blocked -> refused."""
+    mode = M.approve_mode("lead", ("EPM Admin",), {"analyst", "lead"}, "Ownership Period", "OP-1",
+                           "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode["mode"] == "refused"
+
+
+def test_approve_mode_w2_14_editor_approver_gets_reason_mode_under_allowed_with_reason():
+    mode = M.approve_mode("lead", ("EPM Admin",), {"analyst", "lead"}, "Ownership Period", "OP-1",
+                           "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode["mode"] == "reason"
+
+
+def test_approve_mode_w2_14_non_editor_approver_is_direct():
+    mode = M.approve_mode("lead", ("EPM Admin",), {"analyst"}, "Ownership Period", "OP-1",
+                           "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert mode == {"mode": "direct", "message": None}
+
+
+def _her(name, consolidation_group, data_area_id, main_account, rate_date, historical_rate,
+         owner, created):
+    return {
+        "name": name,
+        "consolidation_group": consolidation_group,
+        "data_area_id": data_area_id,
+        "main_account": main_account,
+        "rate_date": rate_date,
+        "historical_rate": historical_rate,
+        "owner": owner,
+        "created": created,
+    }
+
+
+def _op(name, consolidation_group, data_area_id, effective_date, end_date, ownership_pct,
+        consolidation_method, owner, created):
+    return {
+        "name": name,
+        "consolidation_group": consolidation_group,
+        "data_area_id": data_area_id,
+        "effective_date": effective_date,
+        "end_date": end_date,
+        "ownership_pct": ownership_pct,
+        "consolidation_method": consolidation_method,
+        "owner": owner,
+        "created": created,
+    }
+
+
+def test_pending_items_sorts_oldest_first_and_shapes_her_and_op():
+    her = [_her("HER-1", "G1", "ZZENT", "4000 - Revenue", "2026-09-30", 1.2345,
+                "alice", "2026-09-02T10:00:00")]
+    ops = [_op("OP-1", "G1", "ZZENT", "2026-01-01", None, 80, "Full", "alice",
+               "2026-09-01T09:00:00")]
+    preparers_by_name = {"HER-1": frozenset({"alice"}), "OP-1": frozenset({"alice"})}
+    items = M.pending_items(her, ops, preparers_by_name, "lead", ("EPM Admin",),
+                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert [item["name"] for item in items] == ["OP-1", "HER-1"]
+
+    op_item, her_item = items
+    assert op_item["doctype"] == "Ownership Period"
+    assert op_item["title"] == "ZZENT in G1 from 2026-01-01"
+    assert op_item["detail"] == "80% · Full"
+    assert op_item["preparer"] == "alice"
+    assert op_item["edited_by"] == []
+    assert op_item["created"] == "2026-09-01T09:00:00"
+    assert op_item["approve"] == M.approve_mode("lead", ("EPM Admin",), {"alice"}, "Ownership Period",
+                                                 "OP-1", "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+
+    assert her_item["doctype"] == "Historical Equity Rate"
+    assert her_item["title"] == "ZZENT · 4000 - Revenue · 2026-09-30"
+    assert her_item["detail"] == "1.2345 (group G1)"
+    assert her_item["preparer"] == "alice"
+    assert her_item["edited_by"] == []
+
+
+def test_pending_items_op_with_end_date_includes_to_suffix():
+    ops = [_op("OP-2", "G1", "ZZENT", "2026-01-01", "2026-06-30", 60, "Equity", "alice",
+               "2026-09-01T09:00:00")]
+    preparers_by_name = {"OP-2": frozenset({"alice"})}
+    items = M.pending_items([], ops, preparers_by_name, "lead", ("EPM Admin",),
+                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert items[0]["detail"] == "60% · Equity to 2026-06-30"
+
+
+def test_pending_items_edited_by_lists_the_other_preparers_sorted():
+    her = [_her("HER-2", "G1", "ZZENT", "4000 - Revenue", "2026-09-30", 1.1,
+                "alice", "2026-09-02T10:00:00")]
+    preparers_by_name = {"HER-2": frozenset({"alice", "zed", "lead"})}
+    items = M.pending_items(her, [], preparers_by_name, "lead", ("EPM Admin",),
+                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert items[0]["preparer"] == "alice"
+    assert items[0]["edited_by"] == ["lead", "zed"]
+
+
+def test_pending_items_missing_name_raises_key_error():
+    """Failure path: a name missing from preparers_by_name is never treated
+    as owner-only."""
+    her = [_her("HER-3", "G1", "ZZENT", "4000 - Revenue", "2026-09-30", 1.1,
+                "alice", "2026-09-02T10:00:00")]
+    try:
+        M.pending_items(her, [], {}, "lead", ("EPM Admin",), "Blocked",
+                         APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+        raise AssertionError("expected KeyError")
+    except KeyError:
+        pass
+
+
+def test_pending_items_empty_inputs_give_empty_list():
+    assert M.pending_items([], [], {}, "lead", ("EPM Admin",), "Blocked",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM) == []
 
 
 def test_module_imports_no_frappe():
