@@ -177,7 +177,8 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
-    frappe.utils = types.SimpleNamespace(getdate=lambda *a: TODAY)
+    frappe.utils = types.SimpleNamespace(getdate=lambda *a: TODAY,
+                                         get_system_timezone=lambda: "Europe/London")
     frappe.db = types.SimpleNamespace(get_single_value=get_single_value, set_value=forbidden,
                                       commit=forbidden, sql=forbidden)
     frappe.get_doc = forbidden
@@ -213,6 +214,14 @@ def _call(site):
     for name in REAL_MODELS:
         mods["konsol.close." + name] = _model(name)
         setattr(mods["konsol.close"], name, mods["konsol.close." + name])
+
+    # L01a: _aware (A47) lazily imports timefmt (pure, mirrors checks_api).
+    tspec = importlib.util.spec_from_file_location(
+        "konsol.close.timefmt", os.path.join(APP_DIR, "close", "timefmt.py"))
+    timefmt = importlib.util.module_from_spec(tspec)
+    tspec.loader.exec_module(timefmt)
+    mods["konsol.close.timefmt"] = timefmt
+    mods["konsol.close"].timefmt = timefmt
 
     real_covered = mods["konsol.close.scope_model"].covered
 
@@ -369,6 +378,19 @@ def test_stale_run_asks_for_a_rerun():
     site = _Site(roles=("EPM Analyst",))
     site.as_of = "2025-09-12T00:00:00"  # rebuilt after P08's run
     assert "checks-run:2025-08" in _ids(_call(site))
+
+
+def test_a_zoned_as_of_and_a_naive_completed_at_compare_without_error():
+    """L01a (A47): freshness_api's as_of is zoned (A16b gives it the site's
+    UTC offset); the newest Assertion Run's completed_at is read back naive
+    from the database. get_my_work compared them directly and 500'd with
+    "can't compare offset-naive and offset-aware datetimes". Same fix
+    checks_api.py already applies (its own A47 test); same verdict as
+    test_stale_run_asks_for_a_rerun's all-naive pair for the same instant,
+    here written zoned."""
+    site = _Site(roles=("EPM Analyst",))
+    site.as_of = "2025-09-12T00:00:00+01:00"  # same instant as the naive pair above
+    assert "checks-run:2025-08" in _ids(_call(site))  # no TypeError, same verdict
 
 
 def test_entity_accountant_sees_only_its_own_entities():
