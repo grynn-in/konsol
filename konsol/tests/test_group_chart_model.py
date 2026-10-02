@@ -633,3 +633,28 @@ def test_one_flagged_account_and_none_existing_is_fine():
                                      head=RE_HEAD), {})
     assert report["ok"], report["errors"]
     assert report["insert"] == ["ZZ3000", "ZZ1000"]
+
+
+# -- konsol#293: allow_ic is a precondition for a pairing -------------------------------
+
+def test_clearing_allow_ic_is_refused_while_a_published_pairing_names_the_account():
+    """#182 PR5a: the pairing table is the source of the set, and allow_ic is the
+    chart's precondition for it. Withdrawing the precondition under a live
+    pairing is refused, or consolidation goes on eliminating an account the
+    chart says may not carry intercompany."""
+    row = leaf(main_account="ZZ4030", allow_ic=0)
+    problem = M.allow_ic_withdrawal_problem(row, paired_accounts={"ZZ4030"})
+    assert problem, "clearing allow_ic under a Published pairing must be refused"
+    assert "ZZ4030" in problem
+    assert "Intercompany Account" in problem
+
+
+def test_clearing_allow_ic_is_fine_when_no_pairing_names_the_account():
+    row = leaf(main_account="ZZ4030", allow_ic=0)
+    assert M.allow_ic_withdrawal_problem(row, paired_accounts=set()) == ""
+    assert M.allow_ic_withdrawal_problem(row, paired_accounts={"ZZ5030"}) == ""
+
+
+def test_keeping_allow_ic_set_is_never_a_withdrawal():
+    row = leaf(main_account="ZZ4030", allow_ic=1)
+    assert M.allow_ic_withdrawal_problem(row, paired_accounts={"ZZ4030"}) == ""

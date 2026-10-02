@@ -104,8 +104,43 @@ class MainAccount(NestedSet, GovernedReferenceDocument):
         problems = M.declaration_problems(self._row(), self._parent_row())
         if problems:
             frappe.throw("\n".join(problems), title="Main Account")
+        # After _guard_publish: ticking Is Group on a Published leaf clears
+        # allow_ic in the form's JS (main_account.js), so a paired leaf becoming
+        # a heading must get _refuse_if_in_use's message, which names is_group —
+        # the field the user actually changed — not this one (review finding 3).
         self._guard_publish()
+        self._refuse_allow_ic_withdrawal()
         self._warn_if_reclassified()
+
+    def _refuse_allow_ic_withdrawal(self):
+        """konsol#293 (#182 PR5a): allow_ic is the chart's precondition for a
+        pairing, so it cannot be withdrawn while a Published Intercompany
+        Account names this account.
+
+        Only read the pairing table when the flag is actually going away: on a
+        new row, and on every save that leaves allow_ic set, there is nothing to
+        refuse and no query to pay for.
+
+        The read is serialised on Intercompany Account's own ``tabDocType`` row,
+        the lock _validate_one_pair and _before_publish already take. Without it
+        this check and the pairing publish are two plain reads under REPEATABLE
+        READ: each would miss the other's uncommitted row, both would pass, and
+        the result is a Published pairing on an account declaring allow_ic = 0
+        (review finding 1).
+        """
+        if M.flag(self.allow_ic):
+            return
+        before = self.get_doc_before_save()
+        if not before or not M.flag(before.get("allow_ic")):
+            return
+        from konsol.consolidation.doctype.intercompany_account.intercompany_account import (
+            DOCTYPE as ICA_DOCTYPE,
+            intercompany_accounts,
+        )
+        frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", (ICA_DOCTYPE,))
+        problem = M.allow_ic_withdrawal_problem(self._row(), paired_accounts=intercompany_accounts())
+        if problem:
+            frappe.throw(problem, title="Allow Intercompany")
 
     def _guard_publish(self):
         """A Published row is the Close Lead's (intercompany_account.py's shape).
