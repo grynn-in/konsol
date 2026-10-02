@@ -229,9 +229,32 @@ test("The tab bar is final: Group rates, Historical equity rates, Ownership", ()
 
 test("Status, previous rate, delta, flag and preparer come from the cell view", () => {
   const tpl = template(read());
-  for (const field of ["statusLabel", "previousValue", "previousLabel", "deltaText", "flag", "preparer"]) {
+  for (const field of ["statusLabel", "previousValue", "previousLabel", "deltaText", "flagTag", "preparer"]) {
     assert.match(tpl, new RegExp(`\\.${field}\\b`), `renders ${field}`);
   }
+});
+
+// -- R01v: a move is judged only where a rate can still be entered -----------
+
+test("R01v goal 1: no bare .flag left in the template — the decision is flagTag/flagMessage from rates.js, not a re-check of the raw server flag", () => {
+  const tpl = template(read());
+  assert.doesNotMatch(tpl, /\.flag\b(?!(Tag|Message))/, "the template reads flagTag/flagMessage, not the raw cell.flag");
+});
+
+test("R01v goal 1: the per-cell warning box is keyed off flagMessage (null for an Approved cell), not the raw flag", () => {
+  const js = script(read());
+  const fn = js.match(/function rowNotes\(row\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn, "rowNotes(row) exists");
+  assert.match(fn[1], /\.flagMessage\b/, "rowNotes reads cell.flagMessage, not cell.flag");
+});
+
+test("R01v goal 4: the Ownership tab count comes from the pure ownershipGapsCount helper (visible + hidden), not blocking.length alone", () => {
+  const source = read();
+  const imp = source.match(/import\s*\{([^}]*)\}\s*from\s*["']\.\.\/rates\.js["']/);
+  assert.ok(imp, "imports from ../rates.js");
+  assert.match(imp[1], /\bownershipGapsCount\b/, "imports ownershipGapsCount");
+  const js = script(source);
+  assert.match(js, /\bownershipGapsCount\(/, "the tab's gap count is built from ownershipGapsCount, not .blocking.length alone");
 });
 
 // -- R01o: change reason, edited by, extra drafts, source (SPA should-fix 6) --

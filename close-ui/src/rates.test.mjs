@@ -19,7 +19,9 @@ import {
   pendingEmptyMessage,
   ownershipView,
   ownershipEmptyMessage,
+  ownershipGapsCount,
   mergeDrafts,
+  moveFlagView,
 } from "./rates.js";
 
 function cell(overrides = {}) {
@@ -208,11 +210,12 @@ test("extraDraftsText pluralises for more than one extra draft", () => {
 
 // -- undeclared threshold -----------------------------------------------------
 
-test("undeclared threshold: thresholdText is the gap message, no digit in it", () => {
+test("R01v goal 2: undeclared threshold — thresholdText is null (the gap already shows once, in the banner), never the gap message again", () => {
   const gap = { code: "rate_move_undeclared", message: "Declare the rate move threshold in Close Settings." };
   const view = gridView(payload({ threshold_pct: null, policy_gaps: [gap] }));
-  assert.equal(view.thresholdText, gap.message);
-  assert.ok(!/\d/.test(view.thresholdText));
+  assert.equal(view.thresholdText, null);
+  // The gap still reaches the screen — once, in the banner.
+  assert.deepEqual(view.banner, [gap.message]);
 });
 
 test("declared threshold: thresholdText names the percent", () => {
@@ -227,6 +230,101 @@ test("a declared threshold with no gap given still throws nothing (sanity)", () 
 test("undeclared threshold with no matching gap throws rather than guessing", () => {
   assert.throws(() => gridView(payload({ threshold_pct: null, policy_gaps: [] })),
     /rate_move_undeclared/);
+});
+
+// -- R01v: moveFlagView — a move is judged only where a rate can still be entered ---
+//
+// group_rates.move_problem sets cell.flag to the SAME "declare the threshold"
+// sentence on every cell with something to compare against whenever the
+// threshold is undeclared, Approved cells included (facts: live, 28/28
+// approved cells flagged). moveFlagView is the pure decision over where that
+// shows: never on an Approved cell (goal 1), and only as the short
+// "no threshold declared" cue — never the sentence again, never "flagged" —
+// when the threshold itself is undeclared (goals 2, 3).
+
+test("moveFlagView: an Approved cell never shows a flag, threshold declared", () => {
+  const cell = { status: "approved", flag: "This rate moves +40% from the previous approved rate." };
+  assert.deepEqual(moveFlagView(cell, true), { tag: null, message: null });
+});
+
+test("moveFlagView: an Approved cell never shows a flag, threshold undeclared", () => {
+  const cell = { status: "approved", flag: "Declare the rate move threshold in Close Settings." };
+  assert.deepEqual(moveFlagView(cell, false), { tag: null, message: null });
+});
+
+test("moveFlagView: an editable cell with no flag shows nothing", () => {
+  assert.deepEqual(moveFlagView({ status: "missing", flag: null }, true), { tag: null, message: null });
+  assert.deepEqual(moveFlagView({ status: "awaiting_approval", flag: null }, false), { tag: null, message: null });
+});
+
+test("moveFlagView: an editable cell with a real flag and a declared threshold shows 'flagged' and the sentence", () => {
+  const cell = { status: "awaiting_approval", flag: "This rate moves +40% from the previous approved rate." };
+  assert.deepEqual(moveFlagView(cell, true), { tag: "flagged", message: cell.flag });
+});
+
+test("moveFlagView: an editable cell with a flag and an undeclared threshold shows the short cue, not the sentence (goals 2, 3)", () => {
+  const cell = { status: "missing", flag: "Declare the rate move threshold in Close Settings." };
+  assert.deepEqual(moveFlagView(cell, false), { tag: "no threshold declared", message: null });
+});
+
+// -- R01v: gridView carries the decision through cellView (flagTag/flagMessage) ----
+
+test("gridView goal 1: an Approved cell with a flag renders no flagTag and no flagMessage, threshold declared", () => {
+  const view = gridView(payload({
+    threshold_pct: 30,
+    rows: [row({ closing: cell({
+      status: "approved", name: "GER-1", quote: 1.4, quoted_per: "1", rate: 1.4,
+      previous: { rate: 1, quoted_per: 1, fiscal_year: 2026, fiscal_period: 7, name: "GER-0", label: "FY2026 P07 (GER-0)" },
+      delta: 0.4,
+      flag: "This rate (1.4) moves +40% from the previous approved rate (1 USD per JPY). A move over 30% can be real, but say why (Reason for Change) before it is saved.",
+    }) })],
+  }));
+  assert.equal(view.rows[0].closing.flagTag, null);
+  assert.equal(view.rows[0].closing.flagMessage, null);
+});
+
+test("gridView goals 2/3: a draft cell flagged only because the threshold is undeclared shows 'no threshold declared', not the gap sentence again", () => {
+  const gap = { code: "rate_move_undeclared", message: "Declare the rate move threshold in Close Settings." };
+  const view = gridView(payload({
+    threshold_pct: null,
+    policy_gaps: [gap],
+    rows: [row({ closing: cell({
+      status: "awaiting_approval", name: "GER-2", quote: 1, quoted_per: "1", rate: 1,
+      previous: { rate: 1, quoted_per: 1, fiscal_year: 2026, fiscal_period: 7, name: "GER-0", label: "FY2026 P07 (GER-0)" },
+      delta: 0,
+      flag: gap.message,
+    }) })],
+  }));
+  assert.equal(view.rows[0].closing.deltaText, "+0.0%");
+  assert.equal(view.rows[0].closing.flagTag, "no threshold declared");
+  assert.equal(view.rows[0].closing.flagMessage, null);
+  // The sentence itself still reaches the screen exactly once — the banner.
+  assert.deepEqual(view.banner, [gap.message]);
+});
+
+test("gridView: a draft cell with a real flag and a declared threshold still shows the warning (unchanged path)", () => {
+  const view = gridView(payload({
+    threshold_pct: 30,
+    rows: [row({ average: cell({
+      status: "missing", flag: "This rate moves +40% from the previous approved rate.",
+    }) })],
+  }));
+  assert.equal(view.rows[0].average.flagTag, "flagged");
+  assert.equal(view.rows[0].average.flagMessage, "This rate moves +40% from the previous approved rate.");
+});
+
+// -- R01v goal 4 (folded in from R01q's gate): ownership tab counts hidden gaps too --
+
+test("ownershipGapsCount: visible + hidden blocking gaps, so a scoped user never reads zero while gaps exist outside their scope", () => {
+  assert.equal(ownershipGapsCount({ blocking: [{ entity: "E1" }, { entity: "E2" }], blockingHidden: 3 }), 5);
+});
+
+test("ownershipGapsCount: no hidden gaps is just the visible count", () => {
+  assert.equal(ownershipGapsCount({ blocking: [{ entity: "E1" }], blockingHidden: 0 }), 1);
+});
+
+test("ownershipGapsCount: a view not yet loaded (null) is null, not zero", () => {
+  assert.equal(ownershipGapsCount(null), null);
 });
 
 // -- banner order -------------------------------------------------------------
