@@ -388,3 +388,45 @@ def test_a_string_of_preparers_raises_type_error():
             assert "preparers" in str(exc)
             continue
         raise AssertionError("a str of preparers must raise TypeError")
+
+
+# --- R01a (#305-W2-14, review M1): edits carried in the submitting request ---
+# ``submit_carries_edit(diff, state_field)`` reads the diff Frappe computes for
+# the submitting save (frappe.core.doctype.version.version.get_diff, the same
+# dict its Version will hold) and says whether the submitter edited the draft
+# in that same request.
+
+def test_no_diff_is_not_an_edit():
+    assert M.submit_carries_edit(None) is False
+    assert M.submit_carries_edit({}) is False
+
+
+def test_a_submit_that_changes_only_docstatus_is_not_an_edit():
+    assert M.submit_carries_edit({"changed": [["docstatus", 0, 1]]}) is False
+
+
+def test_a_submit_that_also_changes_a_field_is_an_edit():
+    """Failure path, review M1: the quote changed in the submitting request."""
+    diff = {"changed": [("quote", 1.1, 1.5), ("docstatus", 0, 1)],
+            "added": [], "removed": [], "row_changed": []}
+    assert M.submit_carries_edit(diff) is True
+    assert M.submit_carries_edit(diff, state_field="status") is True
+
+
+def test_a_workflow_approve_changes_only_the_state_field_and_docstatus():
+    """A workflow Approve sets the state field and submits: not an edit."""
+    diff = {"changed": [["status", "Pending Approval", "Approved"], ["docstatus", 0, 1]]}
+    assert M.submit_carries_edit(diff, state_field="status") is False
+
+
+def test_the_state_field_counts_when_the_doctype_has_no_workflow():
+    diff = {"changed": [["status", "Pending Approval", "Approved"], ["docstatus", 0, 1]]}
+    assert M.submit_carries_edit(diff, state_field=None) is True
+
+
+def test_a_child_row_change_in_the_submit_is_an_edit():
+    for key, rows in (("row_changed", [["lines", 0, "CJL-1", [["debit", 1, 2]]]]),
+                      ("added", [["lines", {"name": "CJL-2"}]]),
+                      ("removed", [["lines", {"name": "CJL-1"}]])):
+        diff = {"changed": [["docstatus", 0, 1]], key: rows}
+        assert M.submit_carries_edit(diff, state_field="status") is True, key

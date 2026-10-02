@@ -150,6 +150,38 @@ def _load(policy, user=ADMIN, flags=None, versions=None, state_fields=None,
     frappe.events = []
     writer = _writer(frappe, frappe.events, record_raises, period_raises)
 
+    # R01a: Frappe's own diff of the submitting save (version.get_diff),
+    # stubbed over the test docs' ``values``: scalar fields go to ``changed``,
+    # list fields are child rows keyed by ``name``. Calls are in ``frappe.diffs``.
+    frappe.diffs = []
+
+    def get_diff(old, new, for_child=False, compare_cancelled=False):
+        frappe.diffs.append((old, new))
+        out = {"changed": [], "added": [], "removed": [], "row_changed": [],
+               "data_import": None, "updater_reference": None}
+        for key in sorted(set(old.values) | set(new.values)):
+            o, n = old.values.get(key), new.values.get(key)
+            if isinstance(o, list) or isinstance(n, list):
+                old_rows = {r["name"]: r for r in o or ()}
+                new_rows = {r["name"]: r for r in n or ()}
+                for i, (rn, row) in enumerate(new_rows.items()):
+                    if rn not in old_rows:
+                        out["added"].append([key, row])
+                    elif row != old_rows[rn]:
+                        out["row_changed"].append([key, i, rn, [
+                            [f, old_rows[rn].get(f), row.get(f)] for f in sorted(row)
+                            if row.get(f) != old_rows[rn].get(f)]])
+                out["removed"].extend([key, r] for rn, r in old_rows.items()
+                                      if rn not in new_rows)
+            elif o != n:
+                out["changed"].append((key, o, n))
+        if any(out[k] for k in ("changed", "added", "removed", "row_changed")):
+            return out
+        return None
+
+    version_mod = types.ModuleType("frappe.core.doctype.version.version")
+    version_mod.get_diff = get_diff
+
     close_pkg = types.ModuleType("konsol.close")
     close_pkg.__path__ = [os.path.join(APP_DIR, "close")]
     model = _model()
@@ -163,7 +195,11 @@ def _load(policy, user=ADMIN, flags=None, versions=None, state_fields=None,
     mods = {"frappe": frappe, "konsol": konsol_pkg, "konsol.close": close_pkg,
             "konsol.close.close_policy_model": model,
             "konsol.close.close_event": writer,
-            "konsol.close.close_event_model": close_pkg.close_event_model}
+            "konsol.close.close_event_model": close_pkg.close_event_model,
+            "frappe.core": types.ModuleType("frappe.core"),
+            "frappe.core.doctype": types.ModuleType("frappe.core.doctype"),
+            "frappe.core.doctype.version": types.ModuleType("frappe.core.doctype.version"),
+            "frappe.core.doctype.version.version": version_mod}
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -197,7 +233,12 @@ def _restore(saved):
             sys.modules.pop(n, None)
 
 
-def _doc(doctype="IC Balance", name="ICB-1", owner=ADMIN, **fields):
+def _doc(doctype="IC Balance", name="ICB-1", owner=ADMIN, before=None, values=None,
+         **fields):
+    """``before``: the saved draft's field values (``get_doc_before_save``),
+    None for an insert-and-submit. ``values``: this submit's field values; a
+    list value is a child table of rows keyed by ``name``. Both feed the stub
+    ``get_diff``; docstatus is 0 before and 1 now, as at ``before_submit``."""
     comments = []
     # A Frappe document has every field of its doctype; blank unless given.
     fields = dict({"data_area_id": None, "acquired_entity": None, "disposed_entity": None},
@@ -205,6 +246,12 @@ def _doc(doctype="IC Balance", name="ICB-1", owner=ADMIN, **fields):
     doc = types.SimpleNamespace(doctype=doctype, name=name, owner=owner, comments=comments,
                                 **fields)
     doc.add_comment = lambda kind, text=None, **k: comments.append((kind, text))
+    doc.values = dict(values if values is not None else (before or {}), docstatus=1)
+    saved = None
+    if before is not None:
+        saved = types.SimpleNamespace(doctype=doctype, name=name, owner=owner,
+                                      values=dict(before, docstatus=0))
+    doc.get_doc_before_save = lambda: saved
     return doc
 
 
@@ -418,6 +465,90 @@ def test_preparers_for_no_names_reads_nothing():
     mod, frappe, reads = _load(policy="Blocked")
     assert mod.preparers_for("IC Balance", {}) == {}
     assert reads == []
+
+
+# --- R01a (#305-W2-14, review M1): edits carried in the submitting request ---
+# The Version of the submitting save is written after before_submit
+# (frappe/model/document.py:1197), so preparers_for cannot see it; the hook
+# reads Frappe's diff of the pending save instead.
+
+GER_DRAFT = {"quote": 1.1, "from_currency": "EUR"}
+
+
+def test_the_close_lead_who_changes_the_quote_while_submitting_is_blocked():
+    # Failure path, review M1: red while the hook reads only saved Versions.
+    mod, frappe, _ = _load(policy="Blocked")
+    doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
+               before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
+    msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
+    assert "blocks self-approval" in msg and "GER-1" in msg, msg
+    assert frappe.events == [] and doc.comments == []
+    assert frappe.diffs and frappe.diffs[0][0] is doc.get_doc_before_save(), frappe.diffs
+    assert frappe.diffs[0][1] is doc, frappe.diffs
+
+
+def test_the_quote_changer_needs_a_reason_under_allowed_with_reason():
+    mod, frappe, _ = _load(policy="Allowed with reason")
+    doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
+               before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
+    msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
+    assert "konsol.close.approval_api.approve" in msg, msg
+    assert frappe.events == [] and doc.comments == []
+
+
+def test_the_quote_changer_with_a_reason_is_recorded_as_self_approved_by_both():
+    mod, frappe, _ = _load(policy="Allowed with reason", flags={
+        "konsol_self_approval_reason": {("Group Exchange Rate", "GER-1"): "ZZ fix"}})
+    doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
+               before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
+    mod.check(doc, "before_submit")
+    assert len(doc.comments) == 1, doc.comments
+    assert len(frappe.events) == 1, frappe.events
+    event = frappe.events[0]
+    assert event["kind"] == "self_approved" and event["reason"] == "ZZ fix", event
+    assert event["detail"]["preparer"] == OTHER, event
+    assert event["detail"]["preparers"] == sorted((ADMIN, OTHER)), event
+
+
+def test_a_submit_that_changes_only_docstatus_is_an_approval():
+    for policy in ("Blocked", "Allowed with reason", ""):
+        mod, frappe, _ = _load(policy=policy)
+        doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
+                   before=GER_DRAFT)
+        mod.check(doc, "before_submit")
+        assert frappe.diffs, "the pending diff was not read"
+        assert [e["kind"] for e in frappe.events] == ["approved"], frappe.events
+        assert frappe.events[0]["detail"]["preparers"] == [OTHER], frappe.events
+
+
+def test_a_workflow_approve_changes_only_the_state_field():
+    mod, frappe, _ = _load(policy="Blocked", state_fields={"Consolidation Journal": "status"})
+    draft = {"status": "Pending Approval", "lines": [{"name": "CJL-1", "debit": 1}]}
+    doc = _doc(doctype="Consolidation Journal", name="CJ-1", owner=OTHER,
+               before=draft, values=dict(draft, status="Approved"))
+    mod.check(doc, "before_submit")
+    assert [e["kind"] for e in frappe.events] == ["approved"], frappe.events
+
+
+def test_a_journal_line_changed_while_approving_makes_the_close_lead_a_preparer():
+    # Failure path: a child-row edit in the submitting request counts.
+    mod, frappe, _ = _load(policy="Blocked", state_fields={"Consolidation Journal": "status"})
+    draft = {"status": "Pending Approval", "lines": [{"name": "CJL-1", "debit": 1}]}
+    for lines in ([{"name": "CJL-1", "debit": 2}],
+                  [{"name": "CJL-1", "debit": 1}, {"name": "CJL-2", "debit": 0}],
+                  []):
+        doc = _doc(doctype="Consolidation Journal", name="CJ-1", owner=OTHER,
+                   before=draft, values=dict(draft, status="Approved", lines=lines))
+        _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
+    assert frappe.events == []
+
+
+def test_an_insert_and_submit_has_no_saved_draft_to_diff():
+    mod, frappe, _ = _load(policy="Blocked")
+    doc = _doc(owner=OTHER, before=None)
+    mod.check(doc, "before_submit")
+    assert frappe.diffs == []
+    assert [e["kind"] for e in frappe.events] == ["approved"], frappe.events
 
 
 # --- T02b (#305-W2-1): every approval writes its Close Event in the hook ------
