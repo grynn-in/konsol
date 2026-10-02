@@ -220,6 +220,8 @@ def test_the_publish_check_locks_before_reading_difference_accounts():
         sent.append((" ".join(query.split()), values))
         if "`tabConsolidation Group`" in query and values == ("5030",):
             return [_Flags(name="CG-ZZGRP-")]
+        if "`tabMain Account`" in query:            # konsol#293: the allow_ic read
+            return [{"name": "4030", "allow_ic": 1}, {"name": "5030", "allow_ic": 1}]
         return []
 
     def throw(msg, *a, **k):
@@ -251,9 +253,12 @@ def test_the_publish_check_locks_before_reading_difference_accounts():
         else:
             sys.modules["konsol.group_chart"] = saved
     assert sent[0] == ("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", ("Intercompany Account",))
-    reads = sent[1:]
+    # Only the difference-account reads: konsol#293 added a locking allow_ic read
+    # between them and the lock, and this test is about these queries' shape, so
+    # it selects them rather than asserting the whole sequence.
+    reads = [s for s in sent[1:] if "`ic_difference_account` = %s" in s[0]]
     assert [v for _q, v in reads] == [("4030",), ("5030",)]
-    assert all(q.endswith("FOR UPDATE") and "`ic_difference_account` = %s" in q for q, _v in reads)
+    assert all(q.endswith("FOR UPDATE") for q, _v in reads)
 
 
 # -- konsol#293: the chart must declare allow_ic before a pairing is published ----------
@@ -286,3 +291,60 @@ def test_a_single_account_pairing_is_checked_too():
     1-tuple); it still needs the flag."""
     assert M.allow_ic_problem(("4030",), {"4030": 0})
     assert M.allow_ic_problem(("4030",), {"4030": 1}) == ""
+
+
+def test_the_allow_ic_precondition_is_read_under_a_lock():
+    """Review finding 1. The chart's allow_ic must be read FOR UPDATE on the
+    rows being paired, not from the plain chart_accounts() dict: MariaDB here is
+    REPEATABLE READ, so two plain reads let this check and Main Account's
+    withdrawal guard both pass and leave a Published pairing on an account
+    declaring allow_ic = 0."""
+    sent = []
+
+    def sql(query, values=None, as_dict=False):
+        sent.append((" ".join(query.split()), values))
+        if "`tabMain Account`" in query:
+            return [{"name": "4030", "allow_ic": 1}, {"name": "5030", "allow_ic": 1}]
+        return []
+
+    chart = types.ModuleType("group_chart_stub")
+    _accts = {c: {"main_account": c, "is_group": 0, "is_posting": 1, "allow_ic": 1}
+              for c in ("4030", "5030")}
+    chart.chart_accounts = lambda: _accts
+    chart.posting_codes = lambda c: {k for k, a in c.items() if not a["is_group"] and a["is_posting"]}
+    chart.chart_codes = lambda: {"4030", "5030"}
+    saved = sys.modules.get("konsol.group_chart")
+    sys.modules["konsol.group_chart"] = chart
+    M.frappe.db = types.SimpleNamespace(sql=sql)
+    M.frappe.throw = lambda msg, *a, **k: (_ for _ in ()).throw(_Refused(msg))
+    try:
+        M.IntercompanyAccount._before_publish(_doc("Published", "Draft"))
+    except Exception:
+        pass
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.group_chart", None)
+        else:
+            sys.modules["konsol.group_chart"] = saved
+
+    reads = [q for q, _ in sent if "`tabMain Account`" in q]
+    assert reads, "allow_ic was not read from tabMain Account at all"
+    assert all("FOR UPDATE" in q for q in reads), reads
+    # and the serialising doctype lock still comes first, as it did before
+    assert "FOR UPDATE" in sent[0][0] and "`tabDocType`" in sent[0][0], sent[0]
+    assert sent.index(next(s for s in sent if "`tabMain Account`" in s[0])) > 0
+
+
+def test_the_withdrawal_guard_locks_before_reading_the_pairing_table():
+    """Review finding 1, the other side. Main Account's guard must take
+    Intercompany Account's serialising tabDocType lock before it reads the
+    pairing table, the lock _validate_one_pair and _before_publish take."""
+    path = os.path.join(APP_DIR, "epm", "doctype", "main_account", "main_account.py")
+    with open(path) as f:
+        src = f.read()
+    start = src.index("def _refuse_allow_ic_withdrawal")
+    body = src[start:src.index("\n    def ", start + 10)]
+    assert "FOR UPDATE" in body, "the withdrawal guard reads the pairing table without a lock"
+    assert body.index("FOR UPDATE") < body.index("intercompany_accounts(self._row"
+                                                 ) if "intercompany_accounts(self._row" in body else True
+    assert "`tabDocType`" in body, body

@@ -189,14 +189,26 @@ class IntercompanyAccount(GovernedReferenceDocument):
         from konsol.group_chart import chart_accounts, posting_codes
 
         accounts = [a for a in checked if a]
-        # One read answers both questions: chart_codes() is posting_codes() over
-        # this same dict, and the allow_ic check needs the rows themselves.
         chart = chart_accounts()
-        missing = [a for a in accounts if a not in posting_codes(chart)]
+        codes = posting_codes(chart)          # hoisted: one pass, not one per account
+        missing = [a for a in accounts if a not in codes]
         if missing:
             frappe.throw(f"Not in the group chart: {', '.join(missing)}")
         # konsol#293 (#182 PR5a): the chart's precondition for being paired.
-        undeclared = allow_ic_problem(accounts, {c: a["allow_ic"] for c, a in chart.items()})
+        #
+        # Read allow_ic with FOR UPDATE on just these rows, not from the chart
+        # dict above. chart_accounts() is a plain get_all, and MariaDB here is
+        # REPEATABLE READ: a concurrent save clearing allow_ic would be invisible
+        # to it and unblocked by it, so this check and Main Account's withdrawal
+        # guard could both pass and leave a Published pairing on an account the
+        # chart says carries no intercompany rows — the divergence #293 exists to
+        # prevent (review finding 1). Two rows, by primary key, so the lock is
+        # narrow; intercompany_accounts() stays a plain read because the trial
+        # balance calls it on every upload.
+        locked = frappe.db.sql(
+            "SELECT `name`, `allow_ic` FROM `tabMain Account` WHERE `name` IN %s FOR UPDATE",
+            (tuple(accounts),), as_dict=True)
+        undeclared = allow_ic_problem(accounts, {r["name"]: r["allow_ic"] for r in locked})
         if undeclared:
             frappe.throw(undeclared)
         diff = sorted({r.name for a in accounts for r in frappe.db.sql(

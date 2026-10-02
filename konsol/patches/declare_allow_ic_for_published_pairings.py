@@ -57,8 +57,13 @@ def execute():
         # added since it was published must not block the migrate.
         frappe.db.set_value(DOCTYPE, name, "allow_ic", 1, update_modified=False)
 
+    # Published only: the chart is Published rows (group_chart.chart_accounts),
+    # so a paired code whose Main Account is Draft or Inactive is NOT in the
+    # chart and must be named here rather than counted as present (review
+    # finding 5).
     missing = sorted(paired - set(frappe.get_all(
-        DOCTYPE, filters={"name": ["in", sorted(paired)]}, pluck="name", limit_page_length=0)))
+        DOCTYPE, filters={"name": ["in", sorted(paired)], "status": M.PUBLISHED},
+        pluck="name", limit_page_length=0)))
     print("declare_allow_ic_for_published_pairings: %d account(s) paired, %d given allow_ic%s"
           % (len(paired), len(need),
              (", %d not in the chart at all: %s" % (len(missing), ", ".join(missing))) if missing else ""))
