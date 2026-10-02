@@ -3,6 +3,7 @@ import ast
 import importlib
 import os
 import sys
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -790,3 +791,32 @@ def test_list_connectors_returns_rows(config_service):
 
     assert rows[0]["connector_name"] == "ERPNext Demo"
     assert rows[0]["enabled"] is True
+
+def _config_service_with_dataset_options(options):
+    """config_service under a mocked frappe whose Dataset source_type Select
+    holds `options`. Fixture-free on purpose: CI runs run-host-tests.py,
+    which does not run tests that take pytest fixtures."""
+    fake_frappe = MagicMock()
+    fake_frappe.get_meta.return_value.get_field.return_value = MagicMock(options=options)
+    fake_frappe.throw.side_effect = ValueError
+    with mock.patch.dict(sys.modules, {"frappe": fake_frappe}):
+        sys.modules.pop("konsol.config_service", None)
+        module = importlib.import_module("konsol.config_service")
+    return module, fake_frappe
+
+
+def test_fact_source_types_are_the_dataset_doctypes_own():
+    """The config API asks the Dataset doctype which source types exist,
+    rather than keeping a second list that can drift (#313: the doctype
+    lacked a value the shipped default used, and fresh installs aborted)."""
+    module, fake_frappe = _config_service_with_dataset_options("ERP GL\nZZ New Type")
+    module._validate_fact_spec({"source_type": "ZZ New Type"}, require_core_fields=False)
+    fake_frappe.get_meta.assert_called_with("Dataset")
+
+    try:
+        module._validate_fact_spec({"source_type": "Budget"}, require_core_fields=False)
+        raise AssertionError("expected a refusal")
+    except ValueError:
+        pass
+    message = fake_frappe.throw.call_args[0][0]
+    assert "'Budget'" in message and "ERP GL" in message and "ZZ New Type" in message, message
