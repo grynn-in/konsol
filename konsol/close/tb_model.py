@@ -29,6 +29,8 @@ def _load_sibling(name, filename):
 
 
 _basis = _load_sibling("konsol_close_tb_basis_model", "tb_basis_model.py")
+#: konsol#255: which dim_* columns a row carries. Pure (imports only ``re``).
+_dims = _load_sibling("konsol_close_tb_dimension_model", "tb_dimension_model.py")
 
 #: sum(debit) and sum(credit) may differ by at most this much (currency units).
 #: The caller passes the tolerance; this mirrors the controller's constant, and a
@@ -155,6 +157,29 @@ def _basis_problems(form_basis, line, cell, form_level):
             for p in _basis.basis_problems(form_basis, [(line, cell)]) if p not in form_level]
 
 
+def row_dimensions(rows):
+    """The dim_* columns these rows carry, sorted: the set _land_rows writes (konsol#255)."""
+    return sorted({k for r in rows for k in r if _dims.is_dimension_column(k)})
+
+
+def row_key(r, dims):
+    """The grain a row lands at: account, partner and every dimension value.
+    A missing or blank value is '' — what _land_rows writes for it."""
+    return (r["main_account"], r.get(PARTNER) or "", *((r.get(d) or "") for d in dims))
+
+
+def row_label(r, dims=()):
+    """A row named by its key: the account, then its partner and non-blank dimension values."""
+    parts = [f"partner {r.get(PARTNER)}"] if r.get(PARTNER) else []
+    parts += [f"{d} {r.get(d)}" for d in dims if r.get(d)]
+    return f"{r['main_account']} ({', '.join(parts)})" if parts else r["main_account"]
+
+
+def row_grain(dims):
+    """The duplicate rule in words: one row per this."""
+    return f"account, partner and {', '.join(dims)}" if dims else "account and partner"
+
+
 def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
     """Per-line problems, file problems and totals for parsed trial-balance rows.
 
@@ -171,10 +196,15 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
     posting_codes = sorted(c for c, a in (chart or {}).items()
                            if not a.get("is_group") and a.get("is_posting"))
 
+    # One row per landed key (konsol#255): account, partner and the value of
+    # every declared dimension the file carries, '' for a blank — the grain
+    # _land_rows writes. The parsers put a dim_* key on a row only for a
+    # dimension the site declared, Published and ticked, so an undeclared
+    # column cannot widen the key; it is refused before a row exists.
+    dims = row_dimensions(rows)
     lines_by_key = {}
     for index, r in enumerate(rows):
-        lines_by_key.setdefault((r["main_account"], r.get(PARTNER) or ""), []).append(
-            r.get("line", index + 2))
+        lines_by_key.setdefault(row_key(r, dims), []).append(r.get("line", index + 2))
 
     known = set(known_entities) if known_entities is not None else None
     by_upper = {e.upper(): e for e in (known or ())}
@@ -189,25 +219,29 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
         if chart:
             problems.extend(_account_problems(r["main_account"], chart, posting_codes))
         problems.extend(_negative_problems(r))
-        others = [n for n in lines_by_key[(r["main_account"], partner)] if n != line]
+        others = [n for n in lines_by_key[row_key(r, dims)] if n != line]
         if others:
-            label = f"{r['main_account']} (partner {partner})" if partner else r["main_account"]
             problems.append(_problem(
                 DUPLICATE_ROW,
-                f"Duplicate row for {label}: also on line {', '.join(str(n) for n in others)} — "
-                "one row per account and partner",
+                f"Duplicate row for {row_label(r, dims)}: also on line "
+                f"{', '.join(str(n) for n in others)} — one row per {row_grain(dims)}",
                 "Merge them into one row",
             ))
         problems.extend(_partner_problems(partner, entity, known, by_upper))
         problems.extend(_basis_problems(form_basis, line, r.get(BASIS) or "", form_level))
-        out_rows.append({
+        out = {
             "line": line,
             "main_account": r["main_account"],
             "partner": partner,
             "debit": r["debit"],
             "credit": r["credit"],
             "problems": problems,
-        })
+        }
+        if dims:
+            # Only when the file carries dimensions, so a file without them
+            # reads exactly as it did before konsol#255.
+            out["dimensions"] = {d: r.get(d) or "" for d in dims}
+        out_rows.append(out)
 
     total_debit = sum(r["debit"] for r in rows)
     total_credit = sum(r["credit"] for r in rows)

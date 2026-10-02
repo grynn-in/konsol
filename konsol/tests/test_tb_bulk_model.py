@@ -291,6 +291,13 @@ def _load_tb_bulk(*, entities, postable, period_lookup):
     group_chart = types.ModuleType("konsol.group_chart")
     group_chart.chart_accounts = lambda: {}
 
+    # konsol#255: _check now reads the site's declared dimensions before it
+    # splits the file. That reader binds frappe, so it is stubbed; these tests
+    # are about periods, and a site that declares no dimension is the case
+    # they describe.
+    tb_dimension = types.ModuleType("konsol.tb_dimension")
+    tb_dimension.declared_dimensions = lambda: []
+
     ica_mod = types.ModuleType("konsol.consolidation.doctype.intercompany_account.intercompany_account")
     ica_mod.intercompany_accounts = lambda: []
 
@@ -304,6 +311,7 @@ def _load_tb_bulk(*, entities, postable, period_lookup):
         "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
         "konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission": tbs_mod,
         "konsol.entity_permissions": entity_permissions, "konsol.group_chart": group_chart,
+        "konsol.tb_dimension": tb_dimension,
         "konsol.consolidation.doctype.intercompany_account.intercompany_account": ica_mod,
     }
     saved = {k: sys.modules.get(k) for k in stubs}
@@ -459,3 +467,230 @@ def test_temp_helper_is_gone():
     assert "_temp_period_fact" not in names
     assert "_TEMP_POSTABLE_TYPES" not in names
     assert "TEMP until konsol#189 task 20" not in open(TB_BULK_PATH).read()
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: an unrecognised header is refused, not silently dropped.
+#
+# split_table checked only that the six required columns were PRESENT. Every
+# other column was never read, so a file carrying cost centres loaded cleanly
+# and arrived with the cost centres gone -- the loader dropping data without
+# saying so, which is konsol#247 broken in the intake itself.
+# ---------------------------------------------------------------------------
+
+def test_an_unrecognised_header_is_refused_by_name():
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100"]]
+    msg = _raises(M.split_table, table)
+    assert "dim_cost_center" in msg, msg
+
+
+def test_the_refusal_names_every_unrecognised_header_at_once():
+    """A file is fixed in one pass, like the line errors above."""
+    table = [HEADER + ["cost centre", "Region", "notes"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC1", "EMEA", "x"]]
+    msg = _raises(M.split_table, table)
+    for expected in ("cost_centre", "region", "notes"):
+        assert expected in msg, (expected, msg)
+
+
+def test_the_refusal_says_what_is_accepted():
+    table = [HEADER + ["nonsense"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "x"]]
+    msg = _raises(M.split_table, table)
+    assert "main_account" in msg and "debit" in msg, msg
+
+
+def test_every_documented_header_still_loads():
+    """The full accepted set, including the aliases, stays accepted."""
+    table = [["Entity", "Year", "Period", "Account", "Debit", "Credit",
+              "Description", "Counterparty", "Amount Basis"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "cash", "AMUS",
+              "Period movement"]]
+    rows = M.split_table(table)[("AMDE", 2025, 12)]
+    assert rows[0]["partner_data_area_id"] == "AMUS"
+    assert rows[0]["description"] == "cash"
+
+
+def test_a_blank_trailing_header_is_not_an_unknown_column():
+    """Excel writes a trailing comma; an empty header name is not a column."""
+    table = [HEADER + [""],
+             ["AMDE", "2025", "12", "1010", "100", "0", ""]]
+    rows = M.split_table(table)[("AMDE", 2025, 12)]
+    assert rows[0]["main_account"] == "1010"
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a DECLARED dim_* column is accepted and its values are carried.
+#
+# The refusal above is the right default -- an unrecognised column is never
+# dropped in silence -- but a site that has declared dim_cost_center and ticked
+# in_trial_balance on it must be able to send that column. split_table takes
+# the declared dimensions as an argument and stays pure; the query that finds
+# them lives at the call site.
+# ---------------------------------------------------------------------------
+
+def declared(name, status="Published", in_trial_balance=1):
+    return {"dimension_name": name, "status": status,
+            "in_trial_balance": in_trial_balance}
+
+
+def test_a_declared_dimension_column_is_accepted_and_its_value_lands():
+    table = [HEADER + ["dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "D7"]]
+    rows = M.split_table(table, [declared("dim_cost_center"),
+                                 declared("dim_department")])[("AMDE", 2025, 12)]
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_a_blank_dimension_cell_is_legal_and_lands_as_empty():
+    """A dimension is optional per row: blank is a value, not a refusal."""
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", ""],
+             ["AMDE", "2025", "12", "2010", "0", "100", "CC100"]]
+    rows = M.split_table(table, [declared("dim_cost_center")])[("AMDE", 2025, 12)]
+    assert rows[0]["dim_cost_center"] == ""
+    assert rows[1]["dim_cost_center"] == "CC100"
+
+
+def test_an_undeclared_dimension_column_is_refused_as_undeclared():
+    table = [HEADER + ["dim_widget"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "W1"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_a_flag_off_dimension_column_is_refused_saying_the_flag_is_off():
+    table = [HEADER + ["dim_project"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "P1"]]
+    msg = _raises(M.split_table, table,
+                  [declared("dim_project", in_trial_balance=0)])
+    assert "dim_project" in msg, msg
+    assert "in_trial_balance" in msg, msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_a_draft_dimension_column_is_refused_as_not_published():
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC1"]]
+    msg = _raises(M.split_table, table,
+                  [declared("dim_cost_center", status="Draft")])
+    assert "dim_cost_center" in msg, msg
+    assert "not published" in msg.lower(), msg
+    assert "Draft" in msg, msg
+
+
+def test_a_bad_dimension_header_and_a_bad_ordinary_header_are_reported_together():
+    """One pass fixes the file: both kinds of problem in the one refusal."""
+    table = [HEADER + ["dim_widget", "notes"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "W1", "x"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "notes" in msg, msg
+    assert "Unrecognised column" in msg, msg
+
+
+def test_group_csv_writes_the_dimension_columns_the_rows_carry():
+    table = [HEADER + ["dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", ""]]
+    rows = M.split_table(table, [declared("dim_cost_center"),
+                                 declared("dim_department")])[("AMDE", 2025, 12)]
+    text = M.group_csv(rows)
+    header = next(csv.reader(io.StringIO(text)))
+    assert header[:5] == ["main_account", "debit", "credit", "description",
+                          "partner_data_area_id"]
+    assert header[-2:] == ["dim_cost_center", "dim_department"], header
+    out = list(csv.DictReader(io.StringIO(text)))
+    assert out[0]["dim_cost_center"] == "CC100"
+    assert out[0]["dim_department"] == ""
+
+
+def test_group_csv_writes_no_dimension_columns_when_the_rows_carry_none():
+    table = [HEADER, ["AMDE", "2025", "12", "1010", "100", "0"]]
+    rows = M.split_table(table)[("AMDE", 2025, 12)]
+    header = next(csv.reader(io.StringIO(M.group_csv(rows))))
+    assert header == ["main_account", "debit", "credit", "description",
+                      "partner_data_area_id"]
+
+
+def test_without_declared_dimensions_a_dim_column_is_still_refused():
+    """Every existing caller passes nothing: a site declaring no dimensions
+    carries no dim_* column, and the refusal still names the header."""
+    table = [HEADER + ["dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100"]]
+    msg = _raises(M.split_table, table)
+    assert "dim_cost_center" in msg, msg
+    rows = M.split_table([HEADER, ["AMDE", "2025", "12", "1010", "100", "0"]])
+    assert rows[("AMDE", 2025, 12)][0] == {
+        "main_account": "1010", "debit": 100.0, "credit": 0.0,
+        "description": "", "partner_data_area_id": "", "amount_basis": ""}
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a REPEATED dim_* column is refused, not silently halved.
+#
+# Measured on this branch before the fix: a header naming dim_cost_center twice
+# was ACCEPTED and the second column's value vanished --
+#
+#   header: ...,dim_cost_center,dim_cost_center   row: ...,CC100,CC999
+#   -> {'main_account': '1010', ..., 'dim_cost_center': 'CC100'}   CC999 gone
+#
+# because the header is resolved to a column index with names.index(n), which
+# takes the first occurrence. partner_data_area_id and amount_basis already had
+# a "keep one" guard for exactly this; dimensions were added without it.
+# ---------------------------------------------------------------------------
+
+def test_a_repeated_dimension_column_is_refused_naming_the_dimension():
+    table = [HEADER + ["dim_cost_center", "dim_cost_center"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "CC999"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_cost_center" in msg, msg
+    assert "keep one" in msg, msg
+
+
+def test_two_repeated_dimensions_are_both_named_in_one_refusal():
+    """A file is fixed in one pass: every repeated dimension is named."""
+    table = [HEADER + ["dim_cost_center", "dim_department",
+                       "dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC1", "D1", "CC2", "D2"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center"),
+                                         declared("dim_department")])
+    assert "dim_cost_center" in msg, msg
+    assert "dim_department" in msg, msg
+
+
+def test_two_different_dimensions_each_appearing_once_still_load():
+    table = [HEADER + ["dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "D7"]]
+    rows = M.split_table(table, [declared("dim_cost_center"),
+                                 declared("dim_department")])[("AMDE", 2025, 12)]
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_a_repeated_undeclared_dimension_column_is_refused_as_undeclared():
+    """The undeclared refusal comes first and stands alone: the reader is told
+    to declare the dimension, not confusingly told both things at once."""
+    table = [HEADER + ["dim_widget", "dim_widget"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "W1", "W2"]]
+    msg = _raises(M.split_table, table, [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "keep one" not in msg, msg
+
+
+def test_the_partner_keep_one_refusal_is_unchanged():
+    table = [HEADER + ["partner_data_area_id", "partner"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "AMUS", "AMUK"]]
+    msg = _raises(M.split_table, table)
+    assert "Two partner columns" in msg, msg
+
+
+def test_the_amount_basis_keep_one_refusal_is_unchanged():
+    table = [HEADER + ["amount_basis", "basis"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "Actual", "Actual"]]
+    msg = _raises(M.split_table, table)
+    assert "Two amount_basis columns" in msg, msg

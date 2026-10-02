@@ -244,15 +244,78 @@ def test_the_partner_is_optional():
     assert _m.partnerless_warning([]) == ""
 
 
-def test_the_partner_lands_in_the_raw_table():
+def _land(rows, columns=()):
+    """Land `rows` and return the SQL sent. `columns` is what ClickHouse
+    reports on the raw table when _land_rows asks."""
     sent = []
-    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+
+    def execute(sql, *a, **k):
+        sent.append(sql)
+        return "\n".join(columns) if "system.columns" in sql else ""
+
+    _m.execute = execute
     doc = _m.TrialBalanceSubmission()
     doc.batch_id, doc.data_area_id, doc.fiscal_year, doc.fiscal_period, doc.name = "b1", "ZZA", 2099, 1, "TBS-1"
-    doc._land_rows([_prow("4030", 0, 10, "ZZB"), _prow("1010", 10, 0)])
+    doc._land_rows(rows)
+    return sent
+
+
+def test_the_partner_lands_in_the_raw_table():
+    """No dimension in the file: the column list is the static one, and the
+    raw table is not interrogated at all.
+
+    Until konsol#255 row 13 this asserted the static column list for EVERY
+    file, which pinned the defect it was meant to describe: a declared
+    dimension was parsed onto each row and then dropped here, because the
+    INSERT named no dimension and no test could see it. The static shape is
+    still right for a file that carries no dim_* column, which is what this
+    now says."""
+    sent = _land([_prow("4030", 0, 10, "ZZB"), _prow("1010", 10, 0)])
     assert len(sent) == 1
     assert "submitted_at, partner_data_area_id) VALUES" in sent[0]
     assert "now(), 'ZZB')" in sent[0] and "now(), '')" in sent[0]
+
+
+#: A file carrying one dimension. Named here because a test must name a
+#: dimension to be a test; shipped konsol may not (konsol#287).
+_DIM = "dim_cost_center"
+_RAW_COLUMNS = ("batch_id", "data_area_id", "fiscal_year", "fiscal_period", "main_account",
+                "debit_amount", "credit_amount", "description", "submission_name",
+                "submitted_at", "partner_data_area_id", _DIM)
+
+
+def test_a_declared_dimension_lands_in_the_raw_table():
+    """konsol#255: the value the parser carried onto the row reaches the
+    INSERT, after the partner and in a deterministic order. Blank is legal."""
+    rows = [dict(_prow("4030", 0, 10, "ZZB"), **{_DIM: "CC100"}),
+            dict(_prow("1010", 10, 0), **{_DIM: ""})]
+    sent = _land(rows, _RAW_COLUMNS)
+    insert = sent[-1]
+    assert f"submitted_at, partner_data_area_id, {_DIM}) VALUES" in insert
+    assert "now(), 'ZZB', 'CC100')" in insert and "now(), '', '')" in insert
+
+
+def test_landing_is_refused_when_the_raw_table_has_no_column_for_the_dimension():
+    """The dim_* columns arrive by ALTER at Apply Schema time, so a dimension
+    published since the last one has nowhere to land. Refused by name — never
+    landed into a table that cannot hold it, and never quietly dropped."""
+    rows = [dict(_prow("4030", 0, 10, "ZZB"), **{_DIM: "CC100"})]
+    thrown = []
+
+    def throw(msg, *a, **k):
+        thrown.append(msg)
+        raise RuntimeError(msg)
+
+    saved = _m.frappe
+    _m.frappe = types.SimpleNamespace(throw=throw)
+    try:
+        _land(rows, _RAW_COLUMNS[:-1])
+        assert False, "expected the missing column to refuse the submission"
+    except RuntimeError:
+        pass
+    finally:
+        _m.frappe = saved
+    assert _DIM in thrown[0] and "Apply Schema" in thrown[0], thrown
 
 
 # -- konsol#189: validate refuses a period that is undeclared, or not postable ------------------
@@ -771,6 +834,348 @@ def test_list_view_offers_set_amount_basis():
     for basis in ALL_BASES:
         assert basis in js, basis
     assert "show_alert" in js and "refresh" in js
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: the single upload has the same silent drop as the bulk one.
+#
+# parse_tb_csv checked only that _REQUIRED_COLUMNS were present, so any other
+# column was never read and its values vanished without a word. Both intakes
+# refuse now, or the bulk path would be stricter than the single one it feeds.
+# ---------------------------------------------------------------------------
+
+def test_parse_refuses_an_unrecognised_column_by_name():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "dim_cost_center" in str(e), str(e)
+
+
+def test_parse_names_every_unrecognised_column_at_once():
+    try:
+        _m.parse_tb_csv("main_account,debit,credit,Region,notes\n1010,5,0,EMEA,x\n")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        msg = str(e)
+        assert "region" in msg and "notes" in msg, msg
+
+
+def test_parse_still_accepts_source_upload():
+    """group_csv writes source_upload into the file it generates for each
+    entity-period, so the single parser must go on accepting and ignoring it —
+    refusing it would break the bulk path feeding its own output back in."""
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,description,partner_data_area_id,source_upload\n"
+        "1010,5,0,,,ZZ-UPLOAD\n")
+    assert rows[0]["main_account"] == "1010"
+    assert "source_upload" not in rows[0]
+
+
+def test_parse_still_accepts_every_documented_column():
+    rows = _m.parse_tb_csv(
+        "Main_Account,Debit,Credit,Description,Counterparty,Amount Basis\n"
+        "1010,5,0,Cash,AMUS,Period movement\n")
+    assert rows[0]["partner_data_area_id"] == "AMUS"
+    assert rows[0]["description"] == "Cash"
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a DECLARED dim_* column is accepted and its values are carried.
+#
+# Both intakes learn the same rule, and the bulk one feeds its own output back
+# in here: what group_csv writes, parse_tb_csv must read. declared_dimensions
+# is an argument, so these functions stay pure and the query that finds the
+# site's Dimensions lives at the call site.
+# ---------------------------------------------------------------------------
+
+_BULK = importlib.util.spec_from_file_location(
+    "tb_bulk_model_under_test", os.path.join(_HERE, "..", "tb_bulk_model.py"))
+_bulk = importlib.util.module_from_spec(_BULK)
+_BULK.loader.exec_module(_bulk)
+
+_BULK_HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account",
+                "debit", "credit"]
+
+
+def declared(name, status="Published", in_trial_balance=1):
+    return {"dimension_name": name, "status": status,
+            "in_trial_balance": in_trial_balance}
+
+
+def _parse_raises(text, declared_dimensions=()):
+    try:
+        _m.parse_tb_csv(text, declared_dimensions)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError("expected ValueError")
+
+
+def test_parse_accepts_a_declared_dimension_column_and_carries_its_value():
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,dim_cost_center,dim_department\n"
+        "1010,5,0,CC100,D7\n",
+        [declared("dim_cost_center"), declared("dim_department")])
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_parse_accepts_a_blank_dimension_cell():
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,dim_cost_center\n1010,5,0,\n2010,0,5,CC100\n",
+        [declared("dim_cost_center")])
+    assert rows[0]["dim_cost_center"] == ""
+    assert rows[1]["dim_cost_center"] == "CC100"
+
+
+def test_parse_refuses_an_undeclared_dimension_column_as_undeclared():
+    msg = _parse_raises("main_account,debit,credit,dim_widget\n1010,5,0,W1\n",
+                        [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_parse_refuses_a_flag_off_dimension_column_saying_the_flag_is_off():
+    msg = _parse_raises("main_account,debit,credit,dim_project\n1010,5,0,P1\n",
+                        [declared("dim_project", in_trial_balance=0)])
+    assert "dim_project" in msg, msg
+    assert "in_trial_balance" in msg, msg
+    assert "Unrecognised column" not in msg, msg
+
+
+def test_parse_refuses_a_draft_dimension_column_as_not_published():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n",
+        [declared("dim_cost_center", status="Draft")])
+    assert "dim_cost_center" in msg, msg
+    assert "not published" in msg.lower(), msg
+    assert "Draft" in msg, msg
+
+
+def test_parse_reports_a_bad_dimension_header_and_a_bad_ordinary_one_together():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_widget,notes\n1010,5,0,W1,x\n",
+        [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "notes" in msg, msg
+    assert "Unrecognised column" in msg, msg
+
+
+def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser():
+    """The regression that matters: the bulk path feeds group_csv's output
+    back in as a single submission, so a dimension dropped between the two
+    parsers is a dimension lost without a word."""
+    dims = [declared("dim_cost_center"), declared("dim_department")]
+    table = [_BULK_HEADER + ["description", "dim_cost_center", "dim_department"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "cash", "CC100", "D7"],
+             ["AMDE", "2025", "12", "2010", "0", "100", "", "", "D9"]]
+    rows = _bulk.split_table(table, dims)[("AMDE", 2025, 12)]
+    text = _bulk.group_csv(rows, source="ZZ-UPLOAD")
+    back = _m.parse_tb_csv(text, dims)
+    assert [(r["main_account"], r["dim_cost_center"], r["dim_department"])
+            for r in back] == [("1010", "CC100", "D7"), ("2010", "", "D9")]
+
+
+def test_parse_without_declared_dimensions_is_unchanged():
+    """Every existing caller passes nothing and gets exactly what it got."""
+    msg = _parse_raises("main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n")
+    assert "dim_cost_center" in msg, msg
+    rows = _m.parse_tb_csv(GOOD)
+    assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0,
+                       "description": "", "partner_data_area_id": "",
+                       "amount_basis": "", "line": 2}
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: a REPEATED dim_* column is refused here too. csv.DictReader maps
+# a repeated header onto one key, so one of the two columns was dropped in
+# silence -- the same defect the bulk parser had, and the same guard
+# partner_data_area_id and amount_basis already carry on this intake.
+# ---------------------------------------------------------------------------
+
+def test_parse_refuses_a_repeated_dimension_column_naming_the_dimension():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_cost_center,dim_cost_center\n"
+        "1010,100,0,CC100,CC999\n",
+        [declared("dim_cost_center")])
+    assert "dim_cost_center" in msg, msg
+    assert "keep one" in msg, msg
+
+
+def test_parse_names_every_repeated_dimension_in_one_refusal():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_cost_center,dim_department,"
+        "dim_cost_center,dim_department\n1010,100,0,CC1,D1,CC2,D2\n",
+        [declared("dim_cost_center"), declared("dim_department")])
+    assert "dim_cost_center" in msg, msg
+    assert "dim_department" in msg, msg
+
+
+def test_parse_still_loads_two_different_dimensions_each_appearing_once():
+    rows = _m.parse_tb_csv(
+        "main_account,debit,credit,dim_cost_center,dim_department\n"
+        "1010,100,0,CC100,D7\n",
+        [declared("dim_cost_center"), declared("dim_department")])
+    assert rows[0]["dim_cost_center"] == "CC100"
+    assert rows[0]["dim_department"] == "D7"
+
+
+def test_parse_refuses_a_repeated_undeclared_dimension_as_undeclared():
+    msg = _parse_raises(
+        "main_account,debit,credit,dim_widget,dim_widget\n1010,100,0,W1,W2\n",
+        [declared("dim_cost_center")])
+    assert "dim_widget" in msg, msg
+    assert "not declared" in msg.lower(), msg
+    assert "keep one" not in msg, msg
+
+
+def test_parse_partner_keep_one_refusal_is_unchanged():
+    msg = _parse_raises(
+        "main_account,debit,credit,partner_data_area_id,partner\n"
+        "1010,100,0,AMUS,AMUK\n")
+    assert "Two partner columns" in msg, msg
+
+
+def test_parse_amount_basis_keep_one_refusal_is_unchanged():
+    msg = _parse_raises(
+        "main_account,debit,credit,amount_basis,basis\n"
+        "1010,100,0,Actual,Actual\n")
+    assert "Two amount_basis columns" in msg, msg
+
+
+# ---------------------------------------------------------------------------
+# konsol#255: the duplicate-row key is the grain a row LANDS at.
+#
+# _land_rows writes one raw row per parsed row with every dim_* value the file
+# carries, and the warehouse keys movements on account + partner + every
+# declared dimension. The duplicate check keyed on (account, partner) only, so
+# a file splitting one account across two values of a declared dimension -- the
+# basic "report by department" case -- was refused as a duplicate on BOTH
+# intakes (measured on live, TBU-00851, 25 Sep 2026). These tests pin the key
+# to the landed grain: dimensions split a row, identical keys still refuse.
+# ---------------------------------------------------------------------------
+
+#: Named here because a test must name a dimension; shipped konsol may not (konsol#287).
+_SPLIT_DIM = "dim_zz_region"
+_OTHER_DIM = "dim_zz_channel"
+_SPLIT_COLUMNS = _RAW_COLUMNS[:-1] + (_SPLIT_DIM, _OTHER_DIM)
+
+
+def _dup_errors(errs):
+    return [e for e in errs if "Duplicate" in e]
+
+
+def test_one_account_split_across_two_values_of_a_declared_dimension_is_accepted_and_lands():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n"
+        "1000,700,0,ZZNORTH\n1000,250,0,ZZSOUTH\n2010,0,950,\n",
+        [declared(_SPLIT_DIM)])
+    assert _m.validate_tb_rows(rows) == []
+    insert = _land(rows, _SPLIT_COLUMNS)[-1]
+    assert f"partner_data_area_id, {_SPLIT_DIM}) VALUES" in insert, insert
+    assert "'1000', 700.0, 0.0" in insert and "now(), '', 'ZZNORTH')" in insert, insert
+    assert "'1000', 250.0, 0.0" in insert and "now(), '', 'ZZSOUTH')" in insert, insert
+
+
+def test_same_account_same_dimension_values_same_partner_is_still_refused():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,partner_data_area_id,{_SPLIT_DIM}\n"
+        "1000,700,0,ZZB,ZZNORTH\n1000,250,0,ZZB,ZZNORTH\n1000,1,0,ZZC,ZZNORTH\n2010,0,951,,\n",
+        [declared(_SPLIT_DIM)])
+    dup = _dup_errors(_m.validate_tb_rows(rows))
+    assert len(dup) == 1, dup
+    assert "1000" in dup[0] and "ZZB" in dup[0] and "ZZNORTH" in dup[0], dup
+    assert "ZZC" not in dup[0], dup
+
+
+def test_the_duplicate_refusal_names_the_key_it_used_including_the_dimensions():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,5,0,ZZNORTH\n1000,5,0,ZZNORTH\n2010,0,10,\n",
+        [declared(_SPLIT_DIM)])
+    dup = _dup_errors(_m.validate_tb_rows(rows))
+    assert len(dup) == 1 and _SPLIT_DIM in dup[0], dup
+    assert "account, partner and " + _SPLIT_DIM in dup[0], dup
+    # A file with no dimension keeps the sentence it always had.
+    plain = _dup_errors(_m.validate_tb_rows(_rows(("1010", 5, 0), ("1010", 5, 0), ("2010", 0, 10))))
+    assert "one row per account and partner" in plain[0], plain
+
+
+def test_a_blank_dimension_value_and_a_filled_one_on_the_same_account_are_distinct():
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,100,0,\n1000,50,0,ZZNORTH\n2010,0,150,\n",
+        [declared(_SPLIT_DIM)])
+    assert _m.validate_tb_rows(rows) == []
+    # ...but two blanks on one account are one slice, and refused.
+    rows = _m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,100,0,\n1000,50,0,\n2010,0,150,\n",
+        [declared(_SPLIT_DIM)])
+    assert len(_dup_errors(_m.validate_tb_rows(rows))) == 1
+
+
+def test_two_dimensions_split_a_row_only_when_the_whole_tuple_differs():
+    decl = [declared(_SPLIT_DIM), declared(_OTHER_DIM)]
+    head = f"main_account,debit,credit,{_SPLIT_DIM},{_OTHER_DIM}\n"
+    ok = _m.parse_tb_csv(head + "1000,5,0,ZZNORTH,ZZC1\n1000,5,0,ZZNORTH,ZZC2\n2010,0,10,,\n", decl)
+    assert _m.validate_tb_rows(ok) == []
+    bad = _m.parse_tb_csv(head + "1000,5,0,ZZNORTH,ZZC1\n1000,5,0,ZZNORTH,ZZC1\n2010,0,10,,\n", decl)
+    dup = _dup_errors(_m.validate_tb_rows(bad))
+    assert len(dup) == 1 and _SPLIT_DIM in dup[0] and _OTHER_DIM in dup[0], dup
+
+
+def test_an_undeclared_dimension_cannot_be_used_to_dodge_the_duplicate_check():
+    """A column the site has not declared is refused at parse on both intakes,
+    so no row ever reaches validate_tb_rows carrying it as a split key."""
+    msg = _parse_raises("main_account,debit,credit,dim_zz_undeclared\n"
+                        "1000,5,0,ZZA\n1000,5,0,ZZB\n2010,0,10,\n",
+                        [declared(_SPLIT_DIM)])
+    assert "dim_zz_undeclared" in msg and "not declared" in msg.lower(), msg
+    try:
+        _bulk.split_table([_BULK_HEADER + ["dim_zz_undeclared"],
+                           ["ZZA", "2025", "6", "1000", "5", "0", "ZZA"],
+                           ["ZZA", "2025", "6", "1000", "5", "0", "ZZB"],
+                           ["ZZA", "2025", "6", "2010", "0", "10", ""]],
+                          [declared(_SPLIT_DIM)])
+        raise AssertionError("expected the bulk intake to refuse the undeclared column")
+    except ValueError as e:
+        assert "dim_zz_undeclared" in str(e) and "not declared" in str(e).lower(), str(e)
+
+
+def _bulk_report(table, decl):
+    """The bulk intake's verdict on its one entity-period, with the real
+    single-submission validator (tb_bulk._check passes exactly this)."""
+    ((key, rows),) = _bulk.split_table(table, decl).items()
+    report = _bulk.check_group(
+        key, rows, known_accounts=None, visible=True, leaf=True,
+        period={"code": "P06", "type": "Regular", "status": "Open"},
+        postable_types={"Regular"}, existing=None, validate_rows=_m.validate_tb_rows)
+    return rows, report
+
+
+def test_both_intakes_accept_the_split_and_refuse_the_same_duplicate():
+    decl = [declared(_SPLIT_DIM)]
+    split = [_BULK_HEADER + [_SPLIT_DIM],
+             ["ZZA", "2025", "6", "1000", "700", "0", "ZZNORTH"],
+             ["ZZA", "2025", "6", "1000", "250", "0", "ZZSOUTH"],
+             ["ZZA", "2025", "6", "2010", "0", "950", ""]]
+    rows, report = _bulk_report(split, decl)
+    assert report["ok"] and report["errors"] == [], report
+    # The bulk load feeds group_csv back through the single parser and
+    # validator (TrialBalanceSubmission.validate); the split must survive it
+    # and land both slices.
+    again = _m.parse_tb_csv(_bulk.group_csv(rows, source="TBU-ZZ"), decl)
+    assert _m.validate_tb_rows(again) == []
+    insert = _land(again, _SPLIT_COLUMNS)[-1]
+    assert "'ZZNORTH')" in insert and "'ZZSOUTH')" in insert, insert
+
+    dup = split[:2] + [["ZZA", "2025", "6", "1000", "250", "0", "ZZNORTH"],
+                       ["ZZA", "2025", "6", "2010", "0", "950", ""]]
+    _, report = _bulk_report(dup, decl)
+    single = _dup_errors(_m.validate_tb_rows(_m.parse_tb_csv(
+        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,700,0,ZZNORTH\n1000,250,0,ZZNORTH\n2010,0,950,\n",
+        decl)))
+    assert not report["ok"], report
+    assert _dup_errors(report["errors"]) == single and len(single) == 1, (report, single)
 
 
 # -- konsol#305 A35 (decision P1): one rule set, validate_tb_rows is built on check_rows ------

@@ -53,6 +53,21 @@
       "description": "Include in budget models"
     },
     {
+      "fieldname": "in_trial_balance",
+      "fieldtype": "Check",
+      "label": "Include in Trial Balance",
+      "default": "0",
+      "description": "A trial balance file may carry a dim_<name> column for this dimension. Off means the column is not recognised on upload."
+    },
+    {
+      "fieldname": "survives_close",
+      "fieldtype": "Check",
+      "label": "Survives Year-End Close",
+      "default": "0",
+      "depends_on": "eval:doc.in_trial_balance",
+      "description": "Off, and off is the only behaviour konsol implements: at year end the P&L closes into a single retained-earnings row that carries no dimension value. On is NOT IMPLEMENTED and konsol refuses to save it ticked (konsol#255) rather than accept a setting that changes no number; when it is built, it will zero each account-and-value P&L balance into retained earnings carrying that value. Only meaningful when the dimension is in the trial balance."
+    },
+    {
       "fieldname": "allocation_role",
       "fieldtype": "Data",
       "label": "Allocation Role",

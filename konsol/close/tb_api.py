@@ -26,6 +26,7 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
 from konsol.entity_permissions import assert_entity_access
 from konsol.group_chart import chart_accounts
 from konsol.period_status import OPEN, assert_open, assert_postable, period_row
+from konsol.tb_dimension import declared_dimensions
 
 #: How many problems a refused submit names; the check screen shows them all.
 _FIRST_PROBLEMS = 5
@@ -90,7 +91,8 @@ def check_tb(entity, fiscal_year, fiscal_period, amount_basis, content):
         period_problem = f"FY{year} P{number} is {period['status']}: a trial balance can't be submitted"
 
     try:
-        rows = parse_tb_csv(_text(content))
+        # The site's declared dimensions, as the submission parses it (konsol#255).
+        rows = parse_tb_csv(_text(content), declared_dimensions())
         read_problem = None
     except ValueError as e:
         rows = []
@@ -174,7 +176,7 @@ def submit_tb(entity, fiscal_year, fiscal_period, amount_basis, content, replace
 
     text = _text(content)
     try:
-        rows = parse_tb_csv(text)
+        rows = parse_tb_csv(text, declared_dimensions())
     except ValueError as e:
         frappe.throw(f"Could not read the trial balance file: {e}")
     result = check_rows(rows, chart_accounts(), entity, _partner_entities(rows),
