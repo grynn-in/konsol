@@ -1,11 +1,17 @@
 """Audit trail endpoint for the close app (konsol#305 T07b; story 10.1;
 #297 R-decision "auditors are Viewers with audit trail"; amended 2 Oct by
-#305-W2-9).
+#305-W2-9; amended by T07c).
 
 ``get_trail(fiscal_year, fiscal_period)`` (GET) is the one read endpoint
 behind the Audit trail board (board 8): the period, the summary
 (``trail_model.summary``) and the events (``trail_model.ordered``), each
 with its actor's full name resolved and its datetimes as ISO strings.
+
+T07c: the summary's actors (``signoff.by``, ``closed.by``, ``locked.by``)
+are resolved to ``by_name``/``by_missing`` the same way an event's
+``actor`` is, from the one ``User`` read ``_event_out`` already does --
+every ``by`` names an actor of one of the scoped events, so this adds no
+second read.
 
 The Entity Accountant is not admitted: the trail holds every entity's
 events (E10-P8), the boundary #305-P21 draws for the journal too.
@@ -73,16 +79,37 @@ def _iso_span(span):
     return span
 
 
-def _iso_summary(summary):
+def _with_by_name(d, users):
+    """Adds ``by_name``/``by_missing`` next to ``d["by"]`` (T07c), resolved
+    from the same single User lookup ``_event_out`` uses for ``actor`` --
+    the actor named in ``by`` always belongs to one of ``events`` (the
+    summary is computed over the same scoped list), so this never issues a
+    second User read. A deleted actor shows the id itself, with
+    ``by_missing: True``, exactly as a deleted event actor does. ``d`` with
+    no ``by`` key (``{"state": "none"}``), or None (no close/lock span), is
+    returned unchanged."""
+    if not d or "by" not in d:
+        return d
+    d = dict(d)
+    by = d.get("by")
+    user = users.get(by)
+    d["by_name"] = user["full_name"] if user else by
+    d["by_missing"] = user is None
+    return d
+
+
+def _iso_summary(summary, users):
     """``trail_model.summary``'s datetimes (``signoff.at``, ``closed.at``,
-    ``locked.at``) as ISO strings."""
+    ``locked.at``) as ISO strings, and its actors (``signoff.by``,
+    ``closed.by``, ``locked.by``) resolved to names like the events
+    (T07c)."""
     summary = dict(summary)
     signoff = dict(summary["signoff"])
     if "at" in signoff:
         signoff["at"] = _iso(signoff.get("at"))
-    summary["signoff"] = signoff
-    summary["closed"] = _iso_span(summary.get("closed"))
-    summary["locked"] = _iso_span(summary.get("locked"))
+    summary["signoff"] = _with_by_name(signoff, users)
+    summary["closed"] = _with_by_name(_iso_span(summary.get("closed")), users)
+    summary["locked"] = _with_by_name(_iso_span(summary.get("locked")), users)
     return summary
 
 
@@ -155,7 +182,7 @@ def get_trail(fiscal_year, fiscal_period):
             "code": row["code"],
             "status": row["status"],
         },
-        "summary": _iso_summary(trail_model.summary(events)),
+        "summary": _iso_summary(trail_model.summary(events), users),
         "events": [_event_out(e, users) for e in events],
         "hidden": hidden,
     }

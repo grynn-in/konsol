@@ -258,6 +258,57 @@ def test_unreadable_detail_raises_naming_the_event():
     assert "CE-9" in msg
 
 
+# --- summary actor resolution (T07c) ------------------------------------------
+
+def test_summary_signoff_by_gets_by_name_like_the_events():
+    site = _Site()
+    site.events = [
+        _event("CE-1", "signed_off", _dt(15), actor="zz-signer@example.com",
+              detail=json.dumps({"signoff_status": "Signed Off", "run_status": "Green"})),
+    ]
+    site.users = [_user("zz-signer@example.com", "Sam Signer")]
+    out = _call(site, 2026, 9)
+    signoff = out["summary"]["signoff"]
+    assert signoff["by"] == "zz-signer@example.com"
+    assert signoff["by_name"] == "Sam Signer"
+    assert signoff["by_missing"] is False
+
+
+def test_summary_signoff_signer_deleted_gives_by_missing_and_the_id():
+    site = _Site()
+    site.events = [
+        _event("CE-1", "signed_off", _dt(15), actor="zz-ghost@example.com",
+              detail=json.dumps({"signoff_status": "Signed Off", "run_status": "Green"})),
+    ]
+    site.users = []
+    out = _call(site, 2026, 9)
+    signoff = out["summary"]["signoff"]
+    assert signoff["by"] == "zz-ghost@example.com"
+    assert signoff["by_name"] == "zz-ghost@example.com"
+    assert signoff["by_missing"] is True
+
+
+def test_summary_closed_and_locked_by_get_names_and_the_user_read_happens_once():
+    site = _Site()
+    site.events = [
+        _event("CE-1", "signed_off", _dt(15), actor="zz-s@example.com",
+              detail=json.dumps({"signoff_status": "Signed Off", "run_status": "Green"})),
+        _event("CE-2", "period_closed", _dt(16), actor="zz-c@example.com"),
+        _event("CE-3", "period_locked", _dt(17), actor="zz-l@example.com"),
+    ]
+    site.users = [
+        _user("zz-s@example.com", "S Signer"),
+        _user("zz-c@example.com", "C Closer"),
+        _user("zz-l@example.com", "L Locker"),
+    ]
+    out = _call(site, 2026, 9)
+    assert out["summary"]["closed"]["by_name"] == "C Closer"
+    assert out["summary"]["closed"]["by_missing"] is False
+    assert out["summary"]["locked"]["by_name"] == "L Locker"
+    assert out["summary"]["locked"]["by_missing"] is False
+    assert site.get_all_calls["User"] == 1
+
+
 # --- actor resolution --------------------------------------------------------
 
 def test_a_deleted_actor_shows_the_id_and_is_marked_missing():
