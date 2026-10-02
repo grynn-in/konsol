@@ -621,6 +621,15 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     doc.warnings_at_signoff = warnings
     with writing(SIGNOFF_WRITER, doc.name):
         doc.save(ignore_permissions=True)
+    # #305-W2-1: the Close Event is written in the same transaction, after
+    # the save and before the commit, so there is never a signature without
+    # its event. A writer failure propagates uncaught (E10-P11) and rolls
+    # the signature back with it.
+    from konsol.close import close_event
+    close_event.record("signed_off", doc.fiscal_year, doc.fiscal_period, "Assertion Run",
+                        doc.name, reason=reason or ack,
+                        detail={"signoff_status": new_state, "run_status": doc.status,
+                                "warnings": warnings or None})
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
 
