@@ -241,6 +241,26 @@ def test_checks_unknown_status_raises():
     assert caught is not None
 
 
+def test_noun_pluralises_entity_correctly():
+    # L01c: live walk showed '2 entitys you cannot see'. _noun's default
+    # plural (singular + 's') is wrong for 'entity'; the call sites must say
+    # 'entities'. Red today: _noun(2, "entity") == "2 entitys".
+    assert M._noun(1, "entity") == "1 entity"
+    assert M._noun(2, "entity") == "2 entities"
+
+
+def test_a_fully_hidden_ownership_gap_with_two_hidden_uses_the_plural():
+    # L01c: the hidden-detail text for 2 hidden entities. Red today:
+    # "2 entitys you cannot see".
+    gap = SM.unowned_tb_gap(["ZZX", "ZZY"], (2025, 9))
+    result = _readiness(problems=_problems(config_gaps=[gap]), allowed={"ZZA"})
+    ownership = _by_code(result, "ownership")
+    assert ownership["state"] == "blocked"
+    assert ownership["hidden"] == 2
+    assert "2 entities you cannot see" in ownership["detail"]
+    assert "entitys" not in ownership["detail"]
+
+
 def test_a_fully_hidden_ownership_gap_still_blocks_and_never_leaks():
     # E201b: E201 read a fully-hidden entity list as "ok" while the sign-off
     # gate still blocks. Red today: state is "ok".
