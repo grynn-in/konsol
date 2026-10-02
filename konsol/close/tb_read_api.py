@@ -18,6 +18,12 @@ all, an empty set means none). Entity scope is a security boundary: every query
 is limited to the visible entities, and expectations are computed over them
 only, so no other entity's code appears in the result.
 
+- ``Not consolidated: no ownership for this period``: besides the in-scope
+  entities, every entity the caller may see that submitted a trial balance
+  for the period with no covering ownership (#289). The set is exactly the
+  sign-off gate's ``tb_without_ownership`` gap
+  (``signoff_gate.sign_off_problems``), never re-derived.
+
 The on-behalf label (R4, konsol#297) follows ``uploaded_on_behalf`` (A18):
 "Yes" -> "by <owner> for <entity>", "No" -> "by <owner>", blank -> unknown
 (uploaded before it was recorded; Problems 16), never read as "No".
@@ -56,10 +62,16 @@ NOT_EXPECTED = "Not expected this period"
 MISSING = "Missing"
 FREQUENCY_NOT_DECLARED = "Frequency not declared"
 QUARTER_NOT_DECLARED = "Quarter not declared"
+NOT_CONSOLIDATED = "Not consolidated: no ownership for this period"
+
+#: every status my_tbs can emit (E209b's screen drift guard reads this).
+TB_STATUSES = (RECEIVED, EXCEPTION_DECLARED, NOT_EXPECTED, MISSING,
+               FREQUENCY_NOT_DECLARED, QUARTER_NOT_DECLARED, NOT_CONSOLIDATED)
 
 # Missing first (story 3.1: what needs doing), then the configuration gaps,
-# then the settled statuses; entity code within each.
-_RANK = {MISSING: 0, FREQUENCY_NOT_DECLARED: 1, QUARTER_NOT_DECLARED: 1}
+# then the settled statuses; entity code within each. Not consolidated (#289)
+# ranks with Missing: someone must act.
+_RANK = {MISSING: 0, NOT_CONSOLIDATED: 0, FREQUENCY_NOT_DECLARED: 1, QUARTER_NOT_DECLARED: 1}
 
 _ON_BEHALF = {"Yes": True, "No": False}
 
@@ -90,13 +102,20 @@ def _regular_row(key, rows=None):
     return row
 
 
-def _visible(key):
+def _visible(key, allowed):
     """In-scope entity codes the caller may see, sorted."""
-    allowed = allowed_entity_codes()
-    if allowed is not None and not allowed:
-        return []
     scope = signoff_gate.in_scope_entities(*key)
     return sorted(e for e in scope if allowed is None or e in allowed)
+
+
+def _unowned(key, allowed):
+    """Entities with a submitted TB and no covering ownership for the period
+    (#289), cut to ``allowed``, sorted. This is exactly the sign-off gate's
+    ``tb_without_ownership`` gap; never re-derived."""
+    problems = signoff_gate.sign_off_problems(*key)
+    gap = sorted(e for g in problems["config_gaps"] if g["code"] == signoff_model.UNOWNED_TB
+                 for e in g.get("entities") or ())
+    return [e for e in gap if allowed is None or e in allowed]
 
 
 def _records(doctype, key, entities, fields):
@@ -154,12 +173,18 @@ def my_tbs(fiscal_year, fiscal_period):
         "entities": [],
     }
 
-    visible = _visible(key)
-    if not visible:
+    allowed = allowed_entity_codes()
+    if allowed is not None and not allowed:
+        return result
+
+    visible = _visible(key, allowed)
+    unowned = _unowned(key, allowed)
+    all_codes = sorted(set(visible) | set(unowned))
+    if not all_codes:
         return result
 
     entities = {e["name"]: e for e in frappe.get_all(
-        "Entity", filters={"name": ["in", visible]},
+        "Entity", filters={"name": ["in", all_codes]},
         fields=["name", "entity_name", "reporting_frequency"], limit_page_length=0,
     )}
     frequencies = {code: (entities[code].get("reporting_frequency") or "")
@@ -168,9 +193,9 @@ def my_tbs(fiscal_year, fiscal_period):
         frequencies, key, fiscal_calendar.fiscal_period_rows())
     quarter_unknown = {e for g in expected["gaps"]
                        if g["code"] == signoff_model.QUARTER_UNDECLARED for e in g["entities"]}
-    tbs = _records("Trial Balance Submission", key, visible,
+    tbs = _records("Trial Balance Submission", key, all_codes,
                    ["name", "owner", "uploaded_on_behalf", "creation"])
-    exceptions = _records("TB Exception", key, visible,
+    exceptions = _records("TB Exception", key, all_codes,
                           ["name", "reason", "declared_by", "creation"])
 
     out = []
@@ -193,6 +218,16 @@ def my_tbs(fiscal_year, fiscal_period):
             "status": status,
             "tb": _tb(tbs.get(code), code),
             "exception": _exception(exceptions.get(code)),
+        })
+    for code in unowned:
+        if code in frequencies:
+            continue  # G01 interface: an unowned entity is never in scope too.
+        out.append({
+            "entity": code,
+            "name": entities[code].get("entity_name") or code,
+            "status": NOT_CONSOLIDATED,
+            "tb": _tb(tbs.get(code), code),
+            "exception": None,
         })
     out.sort(key=lambda e: (_RANK.get(e["status"], 2), e["entity"]))
     result["entities"] = out

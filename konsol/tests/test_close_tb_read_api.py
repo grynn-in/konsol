@@ -103,6 +103,8 @@ class _Site:
         self.files = {}          # file_url -> content (bytes or str), for tb_compare
         self.files_read = []
         self.access_checked = []
+        self.gaps = []                    # sign_off_problems()["config_gaps"]
+        self.sign_off_problems_calls = []
 
 
 def _match(value, cond):
@@ -187,7 +189,12 @@ def _load(site):
         assert (fy, fp) == site.asked, (fy, fp)
         return list(site.in_scope)
 
+    def sign_off_problems(fy, fp):
+        site.sign_off_problems_calls.append((fy, fp))
+        return {"config_gaps": list(site.gaps), "order": None, "completeness": None}
+
     gate.in_scope_entities = in_scope_entities
+    gate.sign_off_problems = sign_off_problems
     close.signoff_model, close.signoff_gate = signoff_model, gate
     close.timefmt = _by_path("konsol.close.timefmt", TIMEFMT_PY)
     calendar = types.ModuleType("konsol.fiscal_calendar")
@@ -272,6 +279,23 @@ def _my_tbs(site, fy=2025, fp=9):
 
 def _by_entity(result):
     return {e["entity"]: e for e in result["entities"]}
+
+
+def _real_signoff_model():
+    """The real signoff_model (A10), loaded by path: for building a realistic
+    #289 gap dict, the same shape signoff_gate.sign_off_problems returns."""
+    spec = importlib.util.spec_from_file_location(
+        "test_close_tb_read_api_signoff_model", SIGNOFF_MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_SIGNOFF_MODEL = _real_signoff_model()
+
+
+def _unowned_gap(entities, fy=2025, fp=9):
+    return _SIGNOFF_MODEL.unowned_tb_gap(entities, (fy, fp))
 
 
 # --- the gate and the method ---------------------------------------------------
@@ -372,6 +396,64 @@ def test_a_draft_or_other_period_tb_is_not_received():
     by = _by_entity(_my_tbs(site))
     assert by["ZZA"]["status"] == "Missing"
     assert by["ZZA"]["tb"] is None and by["ZZA"]["exception"] is None
+
+
+# --- #289: a TB with no covering ownership (konsol#305 E209a) -----------------------
+
+NOT_CONSOLIDATED = "Not consolidated: no ownership for this period"
+
+
+def test_an_unowned_tb_shows_not_consolidated_and_sorts_with_missing():
+    site = _Site()
+    site.in_scope = []
+    site.records["Entity"] = [_entity("ZZX")]
+    site.records["Trial Balance Submission"] = [_tb("TB-X", "ZZX")]
+    site.gaps = [_unowned_gap(["ZZX"])]
+    result = _my_tbs(site)
+    got = [(e["entity"], e["status"]) for e in result["entities"]]
+    assert got == [("ZZX", NOT_CONSOLIDATED)], got
+    by = _by_entity(result)
+    assert by["ZZX"]["tb"]["name"] == "TB-X"
+    assert by["ZZX"]["exception"] is None
+    assert by["ZZX"]["name"] == "Entity ZZX"
+
+
+def test_an_unowned_entity_outside_allowed_leaks_nowhere():
+    site = _Site()
+    site.in_scope = []
+    site.allowed = {"ZZA"}
+    site.gaps = [_unowned_gap(["ZZA", "ZZX"])]
+    result = _my_tbs(site)
+    assert [e["entity"] for e in result["entities"]] == ["ZZA"]
+    assert _by_entity(result)["ZZA"]["status"] == NOT_CONSOLIDATED
+    text = json.dumps(result)
+    assert "ZZX" not in text, text
+
+
+def test_an_empty_allowed_set_never_calls_sign_off_problems():
+    site = _Site()
+    site.allowed = set()
+    site.gaps = [_unowned_gap(["ZZX"])]
+    result = _my_tbs(site)
+    assert result["entities"] == []
+    assert site.sign_off_problems_calls == []
+
+
+def test_sign_off_problems_is_called_once_and_the_tb_query_stays_one():
+    site = _Site()
+    result = _my_tbs(site)
+    assert site.sign_off_problems_calls == [(2025, 9)]
+    tb_reads = [f for d, f in site.get_all_calls if d == "Trial Balance Submission"]
+    assert len(tb_reads) == 1, site.get_all_calls
+    assert result["entities"]  # the ordinary in-scope path still works
+
+
+def test_tb_statuses_holds_every_status_my_tbs_can_emit():
+    module, _mods = _load(_Site())
+    assert module.TB_STATUSES == (
+        "Received", "Exception declared", "Not expected this period", "Missing",
+        "Frequency not declared", "Quarter not declared", NOT_CONSOLIDATED), module.TB_STATUSES
+    assert len(set(module.TB_STATUSES)) == 7
 
 
 # --- the TB and the on-behalf label (R4) --------------------------------------------
