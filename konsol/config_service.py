@@ -103,7 +103,20 @@ _FACT_WRITABLE_FIELDS = [
     "reroute_column",
 ]
 
-_SOURCE_TYPES = {"ERP GL", "Budget", "Statistical", "Sub-ledger"}
+def _source_types():
+    """The Dataset source types, as the doctype's own Select declares them.
+
+    Read from the meta, not copied: a second list here once disagreed with
+    the doctype and with the shipped default, and fresh installs aborted
+    (konsol#313)."""
+    field = frappe.get_meta("Dataset").get_field("source_type")
+    options = [o for o in ((field.options if field else "") or "").split("\n") if o]
+    if not options:
+        # A Dataset doctype without the field, or with no options, is a site
+        # that has not migrated: say so rather than refuse every value.
+        frappe.throw("The Dataset doctype declares no source types; run bench migrate.",
+                     frappe.ValidationError)
+    return options
 _CONFIG_API_VERSION = "konsol/v1"
 
 
@@ -468,9 +481,10 @@ def _validate_fact_spec(spec, *, require_core_fields):
         )
 
     source_type = spec.get("source_type")
-    if source_type and source_type not in _SOURCE_TYPES:
+    allowed = _source_types() if source_type else []
+    if source_type and source_type not in allowed:
         frappe.throw(
-            f"Invalid source_type '{source_type}'. Must be one of: {', '.join(sorted(_SOURCE_TYPES))}",
+            f"Invalid source_type '{source_type}'. Must be one of: {', '.join(allowed)}",
             frappe.ValidationError,
         )
 
