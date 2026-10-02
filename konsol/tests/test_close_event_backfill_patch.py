@@ -342,6 +342,41 @@ def test_execute_reloads_close_event_first():
     assert site.calls[0] == ("reload_doc", "consolidation", "doctype", "close_event")
 
 
+# S2 (R01e, 2 Oct 2026): a site that predates D1 has not synced these
+# doctypes' new columns when this patch runs pre_model_sync, before schema
+# sync. Every doctype the patch reads -- not just Close Event -- must be
+# reload_doc'ed before the first get_all/get_doc touches it.
+DOCTYPE_RELOAD = {
+    "Consolidation Journal": ("consolidation", "consolidation_journal"),
+    "Assertion Run": ("consolidation", "assertion_run"),
+    "Business Combination": ("consolidation", "business_combination"),
+    "Business Disposal": ("consolidation", "business_disposal"),
+    "Group Exchange Rate": ("consolidation", "group_exchange_rate"),
+    "Ownership Period": ("consolidation", "ownership_period"),
+    "Historical Equity Rate": ("consolidation", "historical_equity_rate"),
+    "IC Balance": ("consolidation", "ic_balance"),
+    "Trial Balance Submission": ("consolidation", "trial_balance_submission"),
+    "TB Exception": ("consolidation", "tb_exception"),
+    "EPM Fiscal Year": ("epm", "epm_fiscal_year"),
+}
+
+
+def test_execute_reloads_every_doctype_it_reads_before_the_first_get_all():
+    site = _Site()
+    _call(site, "execute", capture=[])
+    reloaded = set()
+    for call in site.calls:
+        if call[0] == "reload_doc":
+            reloaded.add((call[1], call[3]))
+            continue
+        if call[0] in ("get_all", "get_doc"):
+            doctype = call[1]
+            if doctype in DOCTYPE_RELOAD:
+                assert DOCTYPE_RELOAD[doctype] in reloaded, (
+                    "%s was read before its reload_doc (site predating D1 "
+                    "would raise 'Unknown column')" % doctype)
+
+
 def test_execute_inserts_the_expected_kinds_through_record_backfill():
     site = _Site()
     _call(site, "execute", capture=[])

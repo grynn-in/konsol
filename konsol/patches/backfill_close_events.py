@@ -24,10 +24,13 @@ Rules this patch keeps:
   ``orphan_run_versions`` and counted under ``"document deleted"``.
 - Nothing commits here: the patch runner commits after ``execute`` returns,
   so a failure inserts nothing.
-- patches.txt has no sections, so this runs pre_model_sync: ``execute``
-  reloads Close Event before anything else. It is the last line of
-  patches.txt, after ``lift_ownership_to_ownership_period``, whose system
-  submits it recovers (E10-P10).
+- patches.txt has no sections, so this runs pre_model_sync, before schema
+  sync: ``execute`` reloads Close Event, then every other doctype it reads
+  (``_RELOAD_BEFORE_READ``), before the first ``get_all``. A site that
+  predates D1 has not synced these doctypes' new columns yet, and would
+  otherwise raise "Unknown column" (S2, found by R01e, 2 Oct 2026). It is
+  the last line of patches.txt, after ``lift_ownership_to_ownership_period``,
+  whose system submits it recovers (E10-P10).
 """
 import frappe
 
@@ -54,6 +57,25 @@ _CONTROLLER_PLACED = ("Business Combination", "Business Disposal")
 _RUN_FIELDS = ["name", "fiscal_year", "fiscal_period", "signed_off_by", "signed_off_at",
                "signoff_status", "status", "override_reason", "acknowledgement", "affected_by"]
 _COMMENT_PREFIXES = ("Self-approved by ", "Rejected: ")
+
+#: Every other doctype this patch reads (directly, or dynamically through
+#: _read_docs for whatever ref_doctype a Version/Comment names), reloaded
+#: before the first get_all/get_doc so a site that predates D1 has their new
+#: columns synced first (S2, R01e). Close Event is reloaded separately,
+#: first, since it is a wholly new doctype.
+_RELOAD_BEFORE_READ = (
+    ("consolidation", "consolidation_journal"),
+    ("consolidation", "assertion_run"),
+    ("consolidation", "business_combination"),
+    ("consolidation", "business_disposal"),
+    ("consolidation", "group_exchange_rate"),
+    ("consolidation", "ownership_period"),
+    ("consolidation", "historical_equity_rate"),
+    ("consolidation", "ic_balance"),
+    ("consolidation", "trial_balance_submission"),
+    ("consolidation", "tb_exception"),
+    ("epm", "epm_fiscal_year"),
+)
 
 
 class _Placements:
@@ -208,6 +230,8 @@ def dry_run():
 
 def execute():
     frappe.reload_doc("consolidation", "doctype", "close_event")
+    for module, doctype in _RELOAD_BEFORE_READ:
+        frappe.reload_doc(module, "doctype", doctype)
     events, unplaced = plan()
     for event in events:
         close_event.record_backfill(event)
