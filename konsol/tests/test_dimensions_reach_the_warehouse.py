@@ -206,6 +206,8 @@ def _frappe(site):
                 return _file_doc(site, site.files[url])
             if doctype == "Trial Balance Submission":
                 doc = site.tbs_class()
+                # before_insert always sets these on a real document (T05b).
+                doc.__dict__.update({"uploaded_on_behalf": "No", "amended_from": None})
                 doc.__dict__.update({k: v for k, v in first.items() if k != "doctype"})
                 doc.name, doc.batch_id = "TBS-BULK-1", "batch-bulk-1"
                 doc.row_count = 0

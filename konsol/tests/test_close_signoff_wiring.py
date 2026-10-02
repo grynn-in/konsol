@@ -606,7 +606,9 @@ def _hook_module(path, hooks):
 def _tbs(module, **over):
     doc = module.TrialBalanceSubmission(
         name="TBS-ZZOP-2099-P1-905", batch_id="b905", data_area_id="ZZOP", fiscal_year=2099,
-        fiscal_period=1, row_count=2, amount_basis="Period movement")
+        fiscal_period=1, row_count=2, amount_basis="Period movement",
+        # before_insert always sets these on a real document (T05b).
+        uploaded_on_behalf="No", amended_from=None)
     doc.__dict__.update(over)
     doc._parse_file = lambda: []
     doc._ensure_tables = lambda: None
