@@ -32,7 +32,7 @@ import TbUpload from "../sections/TbUpload.vue";
 import TbCompare from "../sections/TbCompare.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
-import { entityRows } from "../tbTable.js";
+import { entityRows, entityWord } from "../tbTable.js";
 import { userTimeZone } from "../timefmt.js";
 
 const MY_TBS = "konsol.close.tb_read_api.my_tbs";
@@ -235,7 +235,7 @@ watch(
 			</p>
 
 			<p class="mb-3 text-sm text-ink-gray-7">
-				<span class="font-medium text-ink-gray-9">{{ countText(total) }}</span> entities:
+				<span class="font-medium text-ink-gray-9">{{ countText(total) }}</span> {{ entityWord(total) }}:
 				<template v-for="(s, i) in summary" :key="s.status">
 					<span v-if="i > 0">, </span>{{ countText(s.count) }} {{ s.status.toLowerCase() }}
 				</template>

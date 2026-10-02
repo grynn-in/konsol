@@ -64,6 +64,14 @@ export function checkRows(result) {
   };
 }
 
+/**
+ * E209c: the noun for a count of entities — "entity" only for exactly 1,
+ * "entities" for every other count, including 0 and an unknown (null) count.
+ */
+export function entityWord(n) {
+  return n === 1 ? "entity" : "entities";
+}
+
 // The seven TB statuses tb_read_api.py's `TB_STATUSES` declares (A25, E209a's
 // #289 gap). A status this module does not know is refused, not guessed at:
 // it is never shown as if it were one of these.
