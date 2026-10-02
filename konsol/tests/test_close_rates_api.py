@@ -91,19 +91,21 @@ class _Site:
 
 
 def _her(name, data_area_id="ZZA", group="CG1", account="4000", rate_date=None,
-         historical_rate=1.2, owner=ANALYST, creation=None):
+         historical_rate=1.2, owner=ANALYST, creation=None, docstatus=0):
     return {"name": name, "consolidation_group": group, "data_area_id": data_area_id,
             "main_account": account, "rate_date": rate_date or date(2024, 1, 1),
             "historical_rate": historical_rate, "owner": owner,
-            "creation": creation or datetime(2025, 7, 1, 9, 0, 0)}
+            "creation": creation or datetime(2025, 7, 1, 9, 0, 0), "docstatus": docstatus}
 
 
 def _op(name, data_area_id="ZZA", group="CG1", effective_date=None, end_date=None,
-        ownership_pct=60.0, consolidation_method="Equity", owner=ANALYST, creation=None):
+        ownership_pct=60.0, consolidation_method="Equity", owner=ANALYST, creation=None,
+        docstatus=0):
     return {"name": name, "consolidation_group": group, "data_area_id": data_area_id,
             "effective_date": effective_date or date(2025, 1, 1), "end_date": end_date,
             "ownership_pct": ownership_pct, "consolidation_method": consolidation_method,
-            "owner": owner, "creation": creation or datetime(2025, 7, 2, 9, 0, 0)}
+            "owner": owner, "creation": creation or datetime(2025, 7, 2, 9, 0, 0),
+            "docstatus": docstatus}
 
 
 def _match(row, filters):
