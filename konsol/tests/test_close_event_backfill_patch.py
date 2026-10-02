@@ -463,6 +463,35 @@ def test_dry_run_writes_nothing_and_matches_execute():
     assert summary["unplaced"] == dry["unplaced"]
 
 
+def test_orphan_run_version_is_counted_as_document_deleted():
+    # T06c (found by T06b, 2 Oct): a sign-off Version whose Assertion Run no
+    # longer exists must not be dropped silently -- it is counted.
+    site = _Site()
+    site.versions = site.versions + [
+        _v("V20", "Assertion Run", "RUN-DELETED", "lead@x", 22,
+           changed=[["signoff_status", "Not Signed Off", "Signed Off"]])]
+    dry = _call(site, "dry_run")
+    assert dry["unplaced"]["document deleted"] == 1
+    assert dry["by_kind"] == EXPECTED_KINDS, "the rest of the plan is unaffected"
+
+
+def test_both_transitions_of_a_deleted_runs_versions_count_separately():
+    # Measured on live (T06c, 2 Oct): a run with no remaining document had 2
+    # signoff_status transitions in its Versions (into Signed Off, then into
+    # Re-sign Needed); the expected live dry run is {"document deleted": 2}.
+    site = _Site()
+    site.versions = site.versions + [
+        _v("V20", "Assertion Run", "RUN-DELETED", "lead@x", 22,
+           changed=[["signoff_status", "Not Signed Off", "Signed Off"]]),
+        _v("V21", "Assertion Run", "RUN-DELETED", "lead@x", 23,
+           changed=[["signoff_status", "Signed Off", "Re-sign Needed"]]),
+    ]
+    dry = _call(site, "dry_run")
+    assert dry["unplaced"] == {"document deleted": 2}
+    assert dry["by_kind"] == EXPECTED_KINDS
+    assert site.inserted == [], "dry_run writes nothing"
+
+
 def test_patch_is_registered_once_after_the_journal_retirement():
     # The rule, not "mine is last": an append-only registry grows (lesson
     # 16 Sep). The backfill reads Consolidation Journals, so it runs after
