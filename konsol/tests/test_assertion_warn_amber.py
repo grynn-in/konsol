@@ -54,7 +54,8 @@ def _segment(src, start, end):
 # The wiring is not, and source-text assertions cannot catch a branch that is
 # present but wrong, so the functions that decide a close are exercised here.
 
-def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None):
+def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None,
+          record_raises=False):
     import importlib.util
     import sys
     import types
@@ -84,8 +85,12 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
     frappe.session = types.SimpleNamespace(user="acct@example.com")
     frappe.utils = types.SimpleNamespace(get_bench_path=lambda: "/bench",
                                          now_datetime=lambda: "NOW")
+    # konsol#305 T04: the Close Event writer and the commit append to one
+    # list, so a test can see which came first.
+    frappe.events = []
     frappe.db = types.SimpleNamespace(
-        get_value=lambda *a, **k: "AR-1", commit=lambda: None, exists=lambda *a, **k: True)
+        get_value=lambda *a, **k: "AR-1", commit=lambda: frappe.events.append("commit"),
+        exists=lambda *a, **k: True)
     frappe.get_doc = lambda dt, name=None: saved_doc
     frappe.get_all = lambda dt, **k: list(warning_names or [])
     frappe.publish_realtime = lambda *a, **k: None
@@ -150,16 +155,36 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None)
         "signoff_model_for_warn_amber", os.path.join(APP_DIR, "close", "signoff_model.py"))
     signoff_model = importlib.util.module_from_spec(sm_spec)
     sm_spec.loader.exec_module(signoff_model)
+    # konsol#305 T04: the Close Event writer (T02a), stubbed. Its `record`
+    # appends to frappe.events, or raises when the test asks it to.
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def record(kind, fiscal_year, fiscal_period, reference_doctype=None,
+               reference_name=None, reason=None, detail=None, entity=None):
+        if record_raises:
+            raise RuntimeError("the Close Event writer failed")
+        frappe.events.append({"kind": kind, "fiscal_year": fiscal_year,
+                              "fiscal_period": fiscal_period,
+                              "reference_doctype": reference_doctype,
+                              "reference_name": reference_name, "reason": reason,
+                              "detail": detail, "entity": entity,
+                              "saved_before": saved_doc.signoff_saved})
+        return "CE-000000001"
+
+    close_event.record = record
     close_pkg = types.ModuleType("konsol.close")
     close_pkg.signoff_gate = gate
     close_pkg.signoff_model = signoff_model
+    close_pkg.close_event = close_event
     sign_off_close = module.sign_off_close
 
     def sign_off_with_a_clear_gate(*a, **k):
-        names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
+        names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model",
+                 "konsol.close.close_event")
         before = {n: sys.modules.get(n) for n in names}
         sys.modules.update({"konsol.close": close_pkg, "konsol.close.signoff_gate": gate,
-                            "konsol.close.signoff_model": signoff_model})
+                            "konsol.close.signoff_model": signoff_model,
+                            "konsol.close.close_event": close_event})
         try:
             return sign_off_close(*a, **k)
         finally:
@@ -542,3 +567,88 @@ def test_amber_run_has_a_list_view_indicator():
     """Otherwise every Amber run reads 'Unknown' in the list."""
     src = _src(os.path.join(AR_DIR, "assertion_run_list.js"))
     assert "Amber:" in src
+
+
+# --- konsol#305 T04: the sign-off writes its Close Event ---------------------
+# #305-W2-1: the event is inserted in the sign-off's own transaction, after the
+# save and BEFORE frappe.db.commit(). Placed after the commit, a failing event
+# would leave a committed signature with no event.
+
+def _events(frappe):
+    return [e for e in frappe.events if e != "commit"]
+
+
+def test_an_acknowledged_signoff_records_its_event_before_the_commit():
+    module, frappe, doc, _ = _load(status="Amber", warned=2,
+                                   warning_names=["assert_tb_balances", "assert_fx_sane"])
+    module.sign_off_close("AR-1", acknowledgement="TB out by 0.02, immaterial")
+    events = _events(frappe)
+    assert len(events) == 1, frappe.events
+    e = events[0]
+    assert e["kind"] == "signed_off"
+    assert (e["fiscal_year"], e["fiscal_period"]) == (2099, 1)
+    assert (e["reference_doctype"], e["reference_name"]) == ("Assertion Run", "AR-1")
+    assert e["reason"] == "TB out by 0.02, immaterial"
+    assert e["detail"]["signoff_status"] == "Acknowledged"
+    assert e["detail"]["run_status"] == "Amber"
+    assert "assert_tb_balances" in e["detail"]["warnings"]
+    assert e["saved_before"] is True, "the event was recorded before the signature was saved"
+    assert "commit" in frappe.events, "the sign-off no longer commits"
+    assert frappe.events.index(e) < frappe.events.index("commit"), \
+        "the event comes after the commit: a failing writer would leave a signature with no event"
+
+
+def test_a_green_signoff_records_signed_off_with_no_text():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    module.sign_off_close("AR-1")
+    (e,) = _events(frappe)
+    assert e["kind"] == "signed_off"
+    assert e["detail"]["signoff_status"] == "Signed Off"
+    assert e["detail"]["run_status"] == "Green"
+    assert e["detail"]["warnings"] is None, "no warnings is None, not an empty string"
+    assert e["reason"] is None
+    assert frappe.events.index(e) < frappe.events.index("commit")
+
+
+def test_an_overridden_red_signoff_records_the_override_reason():
+    module, frappe, doc, _ = _load(status="Red", warned=0, roles=("EPM Admin",))
+    module.sign_off_close("AR-1", override_reason="known, fixing next period")
+    (e,) = _events(frappe)
+    assert e["detail"]["signoff_status"] == "Overridden"
+    assert e["detail"]["run_status"] == "Red"
+    assert e["reason"] == "known, fixing next period"
+    assert frappe.events.index(e) < frappe.events.index("commit")
+
+
+def test_a_refused_signoff_records_nothing_and_commits_nothing():
+    """Failure path: Amber with no acknowledgement is refused, so no event."""
+    module, frappe, doc, _ = _load(status="Amber", warned=2,
+                                   warning_names=["assert_tb_balances", "assert_fx_sane"])
+    try:
+        module.sign_off_close("AR-1")
+        raise AssertionError("an Amber close signed with no acknowledgement")
+    except frappe.ValidationError:
+        pass
+    assert frappe.events == [], frappe.events
+
+
+def test_a_red_signoff_refused_for_the_role_records_nothing():
+    module, frappe, doc, _ = _load(status="Red", warned=0, roles=())
+    try:
+        module.sign_off_close("AR-1", override_reason="shipping anyway")
+        raise AssertionError("a Red close was signed without the override role")
+    except frappe.PermissionError:
+        pass
+    assert frappe.events == [], frappe.events
+
+
+def test_a_failing_event_writer_stops_the_signoff_before_its_commit():
+    """Failure path: the writer's exception propagates, uncaught, and the
+    sign-off never commits, so the request rolls the signature back."""
+    module, frappe, doc, _ = _load(status="Green", warned=0, record_raises=True)
+    try:
+        module.sign_off_close("AR-1")
+        raise AssertionError("the sign-off swallowed the Close Event writer's failure")
+    except RuntimeError as e:
+        assert "Close Event writer failed" in str(e)
+    assert "commit" not in frappe.events, "the sign-off committed without its event"

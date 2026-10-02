@@ -565,11 +565,18 @@ def _hook_modules(hooks):
     close = types.ModuleType("konsol.close")
     gate = hooks.gate()
     close.signoff_gate = gate
+    # konsol#305 T05a: a stub Close Event writer (T02a, pattern of T04a's
+    # _close_event_stub), so T05's lazy `from konsol.close import close_event`
+    # resolves here. It keeps its own log (`.events`), never hooks.log: the
+    # wiring tests pin hooks.log to exactly ["record", "ch"].
+    close_event = _close_event_stub()
+    close.close_event = close_event
     return {"frappe": frappe, "frappe.model": types.ModuleType("frappe.model"),
             "frappe.model.document": doc_mod, "konsol": konsol,
             "konsol.clickhouse": clickhouse, "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle, "konsol.close": close,
-            "konsol.close.signoff_gate": gate}
+            "konsol.close.signoff_gate": gate,
+            "konsol.close.close_event": close_event}
 
 
 @contextlib.contextmanager
@@ -599,7 +606,9 @@ def _hook_module(path, hooks):
 def _tbs(module, **over):
     doc = module.TrialBalanceSubmission(
         name="TBS-ZZOP-2099-P1-905", batch_id="b905", data_area_id="ZZOP", fiscal_year=2099,
-        fiscal_period=1, row_count=2, amount_basis="Period movement")
+        fiscal_period=1, row_count=2, amount_basis="Period movement",
+        # before_insert always sets these on a real document (T05b).
+        uploaded_on_behalf="No", amended_from=None)
     doc.__dict__.update(over)
     doc._parse_file = lambda: []
     doc._ensure_tables = lambda: None
@@ -783,4 +792,19 @@ def test_the_close_event_stub_does_not_leak_into_sys_modules():
         raise AssertionError("a blocked gate signed off")
     except GateBlocked:
         pass
+    assert sys.modules.get("konsol.close.close_event") is before
+
+
+# --- konsol#305 T05a: _hook_modules' close_event stub does not leak ---------
+
+def test_hook_modules_close_event_stub_does_not_leak_into_sys_modules():
+    """Failure path: a close_event stub left out of _hook_modules' returned
+    map (or _installed's restore) would leak into later tests."""
+    before = sys.modules.get("konsol.close.close_event")
+    hooks = _Hooks()
+    module, mods = _hook_module(TBS_PY, hooks)
+    assert sys.modules.get("konsol.close.close_event") is before
+    with _installed(mods):
+        _tbs(module).on_submit()
+        assert sys.modules.get("konsol.close.close_event") is mods["konsol.close.close_event"]
     assert sys.modules.get("konsol.close.close_event") is before

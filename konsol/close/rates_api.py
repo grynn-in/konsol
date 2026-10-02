@@ -32,11 +32,23 @@ reaches it. It goes through ``insert()`` / ``save()`` with no ``ignore_*``
 flag, so the doctype's own validate decides (magnitude, digits, group currency,
 the move and its reason), and Frappe sets the owner. The Analyst has no submit
 on Group Exchange Rate, so the Analyst never approves (R2).
+
+``get_pending()`` (GET, E405) lists every Historical Equity Rate and
+Ownership Period draft (docstatus 0; both have no submit for the Analyst, so
+a draft always awaits the Close Lead), with the preparer, who else edited it
+(``edited_by``, #305-W2-14) and the caller's approve mode. HER is not
+period-keyed (E4-P12), so this lists every open draft site-wide. A Viewer
+reads it and sees ``not_approver`` on every item (#305-W2-10). The items are
+cut to ``entity_permissions.allowed_entity_codes()`` (#305-W2-10, W2-14),
+with a ``hidden`` count: a hidden entity's draft never appears in the
+response. Approving is the existing ``approval_api.approve``; this endpoint
+writes nothing.
 """
 import frappe
 
 from konsol import fiscal_calendar, group_rates
 from konsol.close import close_policy_model, rates_model, self_approval
+from konsol.entity_permissions import allowed_entity_codes
 
 #: Who reads the Rates screen (#305-W2-3, W2-10). The Entity Accountant does not.
 RATES_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
@@ -225,3 +237,78 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
 
     return {"name": doc.name, "docstatus": doc.docstatus, "quote_label": doc.get("quote_label"),
             "source": doc.get("source")}
+
+
+HER = "Historical Equity Rate"
+OP = "Ownership Period"
+HER_FIELDS = ["name", "consolidation_group", "data_area_id", "main_account", "rate_date",
+              "historical_rate", "owner", "creation"]
+OP_FIELDS = ["name", "consolidation_group", "data_area_id", "effective_date", "end_date",
+             "ownership_pct", "consolidation_method", "owner", "creation"]
+
+
+def _iso(value):
+    try:
+        return value.isoformat()
+    except AttributeError:
+        return None if value in (None, "") else str(value)
+
+
+def _visible(docs, allowed):
+    """``(visible, hidden_count)``. A draft is visible when its entity
+    (``data_area_id``) is in ``allowed``, or ``allowed`` is None (#305-W2-10,
+    W2-14; mirrors ``period_grid_model.period_grid``'s cut)."""
+    if allowed is None:
+        return docs, 0
+    visible = [d for d in docs if d["data_area_id"] in allowed]
+    return visible, len(docs) - len(visible)
+
+
+def _drafts(doctype, fields):
+    return frappe.get_all(doctype, filters={"docstatus": 0}, fields=fields,
+                          order_by="creation asc", limit_page_length=0)
+
+
+@frappe.whitelist(methods=["GET"])
+def get_pending():
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    her_all = _drafts(HER, HER_FIELDS)
+    ops_all = _drafts(OP, OP_FIELDS)
+    allowed = allowed_entity_codes()
+    her_visible, her_hidden = _visible(her_all, allowed)
+    ops_visible, ops_hidden = _visible(ops_all, allowed)
+
+    her = []
+    for doc in her_visible:
+        doc = dict(doc)
+        doc["created"] = _iso(doc.pop("creation", None))
+        doc["rate_date"] = _iso(doc.get("rate_date"))
+        her.append(doc)
+    ops = []
+    for doc in ops_visible:
+        doc = dict(doc)
+        doc["created"] = _iso(doc.pop("creation", None))
+        doc["effective_date"] = _iso(doc.get("effective_date"))
+        doc["end_date"] = _iso(doc.get("end_date"))
+        ops.append(doc)
+
+    policy = frappe.db.get_single_value("Close Settings", "self_approval")
+
+    preparers_by_name = {}
+    preparers_by_name.update(
+        self_approval.preparers_for(HER, {d["name"]: d["owner"] for d in her}))
+    preparers_by_name.update(
+        self_approval.preparers_for(OP, {d["name"]: d["owner"] for d in ops}))
+
+    user = frappe.session.user
+    roles = frappe.get_roles(user)
+    items = rates_model.pending_items(
+        her, ops, preparers_by_name, user, roles, policy,
+        close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
+
+    return {
+        "items": items,
+        "counts": {HER: len(her), OP: len(ops), "hidden": her_hidden + ops_hidden},
+        "self_approval": policy or None,
+        "can_approve": bool(set(roles) & set(close_policy_model.APPROVER_ROLES)),
+    }
