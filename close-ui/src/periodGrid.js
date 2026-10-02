@@ -89,26 +89,34 @@ const MAX_VISIBLE_ENTITIES = 5;
 // entity's code never appears anywhere in the result). When the item names
 // more than MAX_VISIBLE_ENTITIES codes, only the first MAX_VISIBLE_ENTITIES
 // are printed, followed by "and N more" for the rest.
+//
+// R01m: when no entities are visible (`item.entities` is empty), the server
+// already folded the hidden count into `detail` itself (readiness_model's
+// `_hidden_detail`: "N entities you cannot see") — there is nothing left to
+// list, so this returns null rather than a bare "and N outside your scope"
+// that would double-count alongside that detail text. The suffix is only
+// ever appended here when there is a visible list to attach it to.
 function entitiesText(item) {
-	const parts = [];
-	if (item.entities && item.entities.length) {
-		const visible = item.entities.slice(0, MAX_VISIBLE_ENTITIES);
-		let codes = visible.join(", ");
-		if (item.entities.length > MAX_VISIBLE_ENTITIES) {
-			codes += ` and ${item.entities.length - MAX_VISIBLE_ENTITIES} more`;
-		}
-		parts.push(codes);
+	if (!item.entities || !item.entities.length) {
+		return null;
+	}
+	const visible = item.entities.slice(0, MAX_VISIBLE_ENTITIES);
+	let codes = visible.join(", ");
+	if (item.entities.length > MAX_VISIBLE_ENTITIES) {
+		codes += ` and ${item.entities.length - MAX_VISIBLE_ENTITIES} more`;
 	}
 	if (item.hidden) {
-		parts.push(`and ${item.hidden} outside your scope`);
+		codes += ` and ${item.hidden} outside your scope`;
 	}
-	return parts.length ? parts.join(" ") : null;
+	return codes;
 }
 
 /**
  * `readinessView(payload)` -> `{title, items: [{glyph, text, entities}]}`
  * for the readiness strip. `payload` is `get_readiness`'s return value
- * directly. An unknown item state throws.
+ * directly. An unknown item state throws. `text` is the item's label and
+ * detail together ("Checks: Green"), so the strip never shows a bare detail
+ * with no indication of which check it belongs to (R01m).
  */
 export function readinessView(payload) {
 	const items = (payload.items || []).map((item) => {
@@ -117,7 +125,7 @@ export function readinessView(payload) {
 		}
 		return {
 			glyph: GLYPHS[item.state],
-			text: item.detail,
+			text: `${item.label}: ${item.detail}`,
 			entities: entitiesText(item),
 		};
 	});
