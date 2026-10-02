@@ -12,7 +12,7 @@
 // client default for that case; the caller asks the server (A15) for the
 // landing period.
 
-export const SCREENS = ["my-work", "trial-balances", "checks", "sign-off"];
+export const SCREENS = ["my-work", "period", "trial-balances", "checks", "sign-off"];
 
 const INTEGER_RE = /^\d+$/;
 
