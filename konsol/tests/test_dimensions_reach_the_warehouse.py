@@ -441,8 +441,9 @@ def _run_bulk_load(site, bulk, csv_text=BULK_CSV, name="TBU-1"):
     # for the call, like rq; what it was told is kept on the site.
     site.data_changes = []
     signoff_gate = types.ModuleType("konsol.close.signoff_gate")
-    signoff_gate.record_data_change = lambda fy, fp, text, user: site.data_changes.append(
-        (fy, fp, text))
+    # konsol#305 R01d: on_submit now always passes entity=data_area_id.
+    signoff_gate.record_data_change = lambda fy, fp, text, user, entity=None: (
+        site.data_changes.append((fy, fp, text)))
     close = types.ModuleType("konsol.close")
     close.signoff_gate = signoff_gate
     # konsol#305 T05a: a stub Close Event writer (T02a), so T05's lazy
