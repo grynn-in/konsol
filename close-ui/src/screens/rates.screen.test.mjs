@@ -323,13 +323,18 @@ test("saveRates checks mySeq against seq before every cellErrors/reasonOpen writ
   const fn = js.match(/async function saveRates\(\)\s*\{([\s\S]*?)\n\}/);
   assert.ok(fn);
   const body = fn[1];
-  const writeLines = body
-    .split("\n")
-    .filter((line) => /\bcellErrors\[[^\]]+\]\s*=|\breasonOpen\[[^\]]+\]\s*=/.test(line));
-  assert.ok(writeLines.length >= 2, "saveRates still writes cellErrors and reasonOpen somewhere");
-  for (const line of writeLines) {
-    assert.match(line, /mySeq\s*===\s*seq/, `write is guarded by the seq check: ${line.trim()}`);
+  const writeRe = /\bcellErrors\[[^\]]+\]\s*=|\breasonOpen\[[^\]]+\]\s*=/g;
+  let match;
+  let found = 0;
+  while ((match = writeRe.exec(body))) {
+    found++;
+    // A guard either sits on the same line (`if (mySeq === seq) cellErrors[...] = ...;`)
+    // or wraps a small block above it (`if (mySeq === seq) {` then the write a
+    // couple of lines down); either way it is close by, not anywhere in the function.
+    const before = body.slice(Math.max(0, match.index - 160), match.index);
+    assert.match(before, /mySeq\s*===\s*seq/, `write is guarded by the seq check nearby: ${match[0]}`);
   }
+  assert.ok(found >= 2, "saveRates still writes cellErrors and reasonOpen somewhere");
 });
 
 test("saveRates does not reload a period it has already navigated away from", () => {
