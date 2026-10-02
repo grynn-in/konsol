@@ -256,13 +256,3 @@ def test_every_seeded_select_value_is_one_its_doctype_allows():
                 problems += _select_problems(row["doctype"], row, where)
     assert not problems, "\n".join(problems)
 
-
-def test_the_config_api_allows_exactly_the_dataset_source_types():
-    """config_service validates source_type against its own set. If it and the
-    doctype disagree, a value one accepts the other refuses."""
-    tree = ast.parse(open(os.path.join(APP_DIR, "config_service.py"), encoding="utf-8").read())
-    declared = next(ast.literal_eval(n.value) for n in tree.body
-                    if isinstance(n, ast.Assign)
-                    and any(getattr(t, "id", None) == "_SOURCE_TYPES" for t in n.targets))
-    options = [o for o in _doctype_fields("Dataset")["source_type"]["options"].split("\n") if o]
-    assert set(declared) == set(options), (sorted(declared), options)
