@@ -215,7 +215,14 @@ def _load(site):
         close = types.ModuleType("konsol.close")
         close.__path__ = [os.path.join(APP_DIR, "close")]
         clickhouse = types.ModuleType("konsol.clickhouse")
-        clickhouse.execute = lambda *a, **k: site.record("clickhouse.execute", a)
+        def execute(sql, *a, **k):
+            # A system.columns read is a read, not a write: answered from the
+            # site's raw-table columns and not logged (konsol#255).
+            if "system.columns" in sql:
+                return "\n".join(getattr(site, "raw_columns", ()))
+            return site.record("clickhouse.execute", (sql,) + a)
+
+        clickhouse.execute = execute
         clickhouse.ensure_raw_tables = lambda: site.record("clickhouse.ensure_raw_tables")
         group_chart = types.ModuleType("konsol.group_chart")
         group_chart.chart_accounts = lambda: dict(site.chart or {})
@@ -317,6 +324,7 @@ def test_the_check_accepts_a_file_split_by_a_declared_dimension():
     file the submission accepted with a dimension column was refused here."""
     site = _Site(allowed={"ZZOP"})
     site.tb_dimensions = _DECLARED
+    site.raw_columns = ("main_account", "dim_zzseg")   # Apply Schema has run
     result, _, _ = _check(site, content=SPLIT)
     assert result["ok"] is True, result
     assert [r["dimensions"] for r in result["rows"]] == [
@@ -327,11 +335,27 @@ def test_the_check_accepts_a_file_split_by_a_declared_dimension():
 def test_the_same_account_and_dimension_value_twice_is_a_duplicate_naming_the_value():
     site = _Site(allowed={"ZZOP"})
     site.tb_dimensions = _DECLARED
+    site.raw_columns = ("main_account", "dim_zzseg")
     result, _, _ = _check(site, content=SPLIT + "1010,1,0,ZZB\n2010,0,1,ZZA\n")
     assert result["ok"] is False
     dup = [p["message"] for r in result["rows"] for p in r["problems"] if p["code"] == "DUPLICATE_ROW"]
     assert len(dup) == 2 and all("1010 (dim_zzseg ZZB)" in m for m in dup), dup
     assert all("one row per account, partner and dim_zzseg" in m for m in dup), dup
+
+
+def test_the_check_refuses_a_dimension_the_warehouse_has_no_column_for_yet():
+    """Declared, Published and ticked, but Apply Schema has not added the
+    column. The submit refuses that file before landing it (konsol#255); the
+    check must say so too, or it reports ok for a file whose submit then
+    fails after cancelling the TB it replaces."""
+    site = _Site(allowed={"ZZOP"})
+    site.tb_dimensions = _DECLARED
+    site.raw_columns = ("main_account",)   # no dim_zzseg yet
+    result, _, _ = _check(site, content=SPLIT)
+    assert result["ok"] is False, result
+    problem = result["file_problems"][0]
+    assert "no column for dim_zzseg" in problem and "Apply Schema" in problem, result
+    assert site.log == []
 
 
 def test_an_undeclared_dimension_column_is_still_refused_by_the_check():

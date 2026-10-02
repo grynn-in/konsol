@@ -596,6 +596,29 @@ def test_the_previous_period_crosses_the_year_boundary():
     assert "/private/files/TB-A24-13.csv" not in site.files_read
 
 
+def test_a_stored_tb_with_an_extra_column_is_still_compared():
+    """A TB already landed is read back, not re-judged (konsol#255). Intake now
+    refuses a column outside the contract, but a file accepted before that
+    rule, when an extra column was silently ignored, is still the previous
+    period's TB and must stay comparable."""
+    site = _compare_site()
+    site.files["/private/files/TB-A8.csv"] = (
+        "main_account,debit,credit,account_name\n1010,60,0,Cash\n3000,0,60,Equity\n")
+    rows = _row_map(_tb_compare(site))
+    assert rows[("1010", "")]["previous"] == 60 and rows[("1010", "")]["change"] == 40, rows
+
+
+def test_a_stored_tb_whose_dimension_is_no_longer_declared_is_still_compared():
+    """A dimension a site later un-declares (unticked, Draft, deleted) leaves
+    its column in files that landed while it was declared. Those files are
+    history: reading them back must not depend on today's declarations."""
+    site = _compare_site()
+    site.files["/private/files/TB-A8.csv"] = (
+        "main_account,debit,credit,dim_zzseg\n1010,40,0,ZZA\n1010,20,0,ZZB\n3000,0,60,\n")
+    rows = _row_map(_tb_compare(site))
+    assert rows[("1010", "")]["previous"] == 60, rows
+
+
 # --- failure paths ---------------------------------------------------------------------
 
 def test_no_previous_tb_is_a_note_never_a_comparison_against_zero():
