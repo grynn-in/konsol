@@ -90,10 +90,10 @@ ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", 
 
 #: Screens each persona sees, in order; mirrors close-ui/src/nav.js SCREENS_BY_PERSONA.
 SCREENS = {
-    period_model.CLOSE_LEAD: ("my-work", "period", "trial-balances", "checks", "sign-off"),
-    period_model.GROUP_ACCOUNTANT: ("my-work", "period", "trial-balances", "checks", "sign-off"),
+    period_model.CLOSE_LEAD: ("my-work", "period", "trial-balances", "rates", "checks", "sign-off"),
+    period_model.GROUP_ACCOUNTANT: ("my-work", "period", "trial-balances", "rates", "checks", "sign-off"),
     period_model.ENTITY_ACCOUNTANT: ("my-work", "trial-balances"),
-    period_model.VIEWER: ("trial-balances", "period", "checks", "sign-off"),
+    period_model.VIEWER: ("trial-balances", "rates", "period", "checks", "sign-off"),
 }
 MY_WORK = "my-work"
 REGULAR = "Regular"

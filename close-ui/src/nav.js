@@ -17,6 +17,7 @@
 export const SCREEN_MY_WORK = "my-work";
 export const SCREEN_PERIOD = "period";
 export const SCREEN_TRIAL_BALANCES = "trial-balances";
+export const SCREEN_RATES = "rates";
 export const SCREEN_CHECKS = "checks";
 export const SCREEN_SIGN_OFF = "sign-off";
 
@@ -24,19 +25,23 @@ const LABELS = {
 	[SCREEN_MY_WORK]: "My work",
 	[SCREEN_PERIOD]: "Period",
 	[SCREEN_TRIAL_BALANCES]: "Trial balances",
+	[SCREEN_RATES]: "Rates & ownership",
 	[SCREEN_CHECKS]: "Checks",
 	[SCREEN_SIGN_OFF]: "Sign-off",
 };
 
 // Screens each persona sees, in display order.
 const SCREENS_BY_PERSONA = {
-	close_lead: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_CHECKS, SCREEN_SIGN_OFF],
-	group_accountant: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_CHECKS, SCREEN_SIGN_OFF],
+	close_lead: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_RATES, SCREEN_CHECKS, SCREEN_SIGN_OFF],
+	group_accountant: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_RATES, SCREEN_CHECKS, SCREEN_SIGN_OFF],
 	// My work has no items for an Entity Accountant's own screens; Checks,
-	// Sign-off and Period are out of scope for Delivery 1 (E2-7).
+	// Sign-off, Period and Rates & ownership are out of scope for Delivery 1
+	// (E2-7).
 	entity_accountant: [SCREEN_MY_WORK, SCREEN_TRIAL_BALANCES],
 	// A Viewer has nothing to action, so no My work; Sign-off is read-only.
-	viewer: [SCREEN_TRIAL_BALANCES, SCREEN_PERIOD, SCREEN_CHECKS, SCREEN_SIGN_OFF],
+	// #305-W2-10: a Viewer can read Rates & ownership too, directly after
+	// Trial balances; the landing (first screen) stays Trial balances.
+	viewer: [SCREEN_TRIAL_BALANCES, SCREEN_RATES, SCREEN_PERIOD, SCREEN_CHECKS, SCREEN_SIGN_OFF],
 };
 
 /**

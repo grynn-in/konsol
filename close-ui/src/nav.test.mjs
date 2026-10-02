@@ -5,19 +5,19 @@ import { navFor } from "./nav.js";
 
 const NO_COUNTS = { by_screen: {} };
 
-test("close_lead sees all five screens", () => {
+test("close_lead sees all six screens, rates right after trial-balances", () => {
 	const nav = navFor("close_lead", ["EPM Admin"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "period", "trial-balances", "checks", "sign-off"],
+		["my-work", "period", "trial-balances", "rates", "checks", "sign-off"],
 	);
 });
 
-test("group_accountant (Analyst) sees all five screens", () => {
+test("group_accountant (Analyst) sees all six screens, rates right after trial-balances", () => {
 	const nav = navFor("group_accountant", ["EPM Analyst"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "period", "trial-balances", "checks", "sign-off"],
+		["my-work", "period", "trial-balances", "rates", "checks", "sign-off"],
 	);
 });
 
@@ -29,17 +29,17 @@ test("entity_accountant sees My work and Trial balances only, never Checks, Sign
 	);
 });
 
-test("viewer sees Trial balances, Period, Checks and Sign-off, never My work", () => {
+test("viewer sees Trial balances, Rates, Period, Checks and Sign-off, never My work; still lands on Trial balances", () => {
 	const nav = navFor("viewer", ["EPM User"], NO_COUNTS);
-	assert.deepEqual(
-		nav.map((n) => n.screen),
-		["trial-balances", "period", "checks", "sign-off"],
-	);
+	const screens = nav.map((n) => n.screen);
+	assert.deepEqual(screens, ["trial-balances", "rates", "period", "checks", "sign-off"]);
+	assert.equal(screens[0], "trial-balances"); // #305-W2-10: the landing is unchanged
 });
 
-test("failure path: entity_accountant's nav never contains period", () => {
+test("failure path: entity_accountant's nav never contains period or rates", () => {
 	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
 	assert.ok(!nav.map((n) => n.screen).includes("period"));
+	assert.ok(!nav.map((n) => n.screen).includes("rates"));
 });
 
 test("each item carries its label", () => {
@@ -48,6 +48,7 @@ test("each item carries its label", () => {
 	assert.equal(byScreen["my-work"], "My work");
 	assert.equal(byScreen["period"], "Period");
 	assert.equal(byScreen["trial-balances"], "Trial balances");
+	assert.equal(byScreen["rates"], "Rates & ownership");
 	assert.equal(byScreen["checks"], "Checks");
 	assert.equal(byScreen["sign-off"], "Sign-off");
 });
