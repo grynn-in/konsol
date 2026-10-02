@@ -635,8 +635,8 @@ def test_the_query_count_is_constant_in_the_number_of_pairs():
     one, six = _pairs_site(1), _pairs_site(6)
     r1, r6 = _call(one), _call(six)
     assert len(r1["rows"]) == 1 and len(r6["rows"]) == 6
-    assert len(one.reads) == 7, one.reads
-    assert len(six.reads) == 7, six.reads
+    assert len(one.reads) == 8, one.reads  # 7 + 1 get_meta for quoted_per_options (E409b)
+    assert len(six.reads) == 8, six.reads
     assert one.needs_calls == [(2025, 7)] and six.needs_calls == [(2025, 7)]
     versions = [r for r in six.reads if r == ("get_all", "Version")]
     assert len(versions) == 1
