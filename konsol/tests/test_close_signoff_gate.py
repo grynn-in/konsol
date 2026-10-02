@@ -21,6 +21,7 @@ GATE_PY = os.path.join(APP_DIR, "close", "signoff_gate.py")
 PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
+SCOPE_MODEL_PY = os.path.join(APP_DIR, "close", "scope_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -110,6 +111,11 @@ class _Site:
         #: A63: the period rows' data-change fields, and every write to them.
         self.data_changes = {}
         self.period_writes = []
+        #: T04b: (kind, fiscal_year, fiscal_period, reference_doctype,
+        #: reference_name, reason) per close_event.record call.
+        self.close_events = []
+        #: T04b failure path: set to a message to make close_event.record raise.
+        self.close_event_fail = None
 
 
 def _match(value, cond):
@@ -211,8 +217,31 @@ def _load(site):
     period_model = _by_path("konsol.close.period_model", PERIOD_MODEL_PY)
     signoff_model = _by_path("konsol.close.signoff_model", SIGNOFF_MODEL_PY)
     close_policy_model = _by_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
+    scope_model = _by_path("konsol.close.scope_model", SCOPE_MODEL_PY)
+    _real_covered = scope_model.covered
+
+    def _covered_spy(rows, start_date):
+        site.__dict__.setdefault("scope_calls", []).append(start_date)
+        return _real_covered(rows, start_date)
+
+    scope_model.covered = _covered_spy
     close.period_model, close.signoff_model = period_model, signoff_model
     close.close_policy_model = close_policy_model
+    close.scope_model = scope_model
+
+    # T04b: a stub Close Event writer (T02a's konsol/close/close_event.py),
+    # so the gate's lazy `from konsol.close import close_event` resolves.
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def _record_event(kind, fiscal_year, fiscal_period, reference_doctype=None,
+                       reference_name=None, reason=None, detail=None, entity=None):
+        if site.close_event_fail:
+            raise RuntimeError(site.close_event_fail)
+        site.close_events.append(
+            (kind, fiscal_year, fiscal_period, reference_doctype, reference_name, reason, entity))
+
+    close_event.record = _record_event
+    close.close_event = close_event
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -286,6 +315,8 @@ def _load(site):
             "konsol.close.period_model": period_model,
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.close_policy_model": close_policy_model,
+            "konsol.close.scope_model": scope_model,
+            "konsol.close.close_event": close_event,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -347,6 +378,20 @@ def test_in_scope_entities_are_active_leaves_with_covering_ownership():
                                _entity("ZZN")]  # ZZN: no ownership period
     site.records["Ownership Period"] += [_owner("ZZG"), _owner("ZZI")]
     assert _call(site, "in_scope_entities", 2025, 9) == ["ZZA", "ZZB"]
+
+
+# --- G02: the scope computation goes through scope_model, once -----------------
+
+def test_scope_is_computed_by_scope_model():
+    site = _Site()
+    assert _call(site, "in_scope_entities", 2025, 9) == ["ZZA", "ZZB"]
+    assert site.scope_calls == [date(2025, 9, 1)], site.scope_calls
+
+
+def test_the_inline_rule_is_gone():
+    with open(GATE_PY) as f:
+        source = f.read()
+    assert "end >= start" not in source, "signoff_gate keeps its own copy of the coverage rule"
 
 
 # --- failure paths: each raises, one message naming every fix -----------------
@@ -780,6 +825,33 @@ def test_nothing_later_signed_marks_nothing_and_saves_nothing():
     assert marked == [] and site.saves == [], (marked, site.saves)
 
 
+# --- E10-P6a (konsol#305 T04b): a voided sign-off writes its event ----------
+
+def test_reopening_records_a_signoff_voided_event_per_marked_run():
+    site = _reopen_site()
+    marked = _mark(site, 2025, 7, "P07")
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
+    assert sorted(e[4] for e in site.close_events) == sorted(marked), site.close_events
+    for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
+        assert kind == "signoff_voided", kind
+        assert fy == 2025, fy
+        assert ref_dt == "Assertion Run", ref_dt
+        assert ref_name in marked, ref_name
+        assert "reopened" in reason, reason
+        # S1/E2-6: a reopen names no entity; the void stays group-visible.
+        assert entity is None, entity
+    # Each event names the run's own period, not just the reopened period.
+    by_name = {e[4]: e for e in site.close_events}
+    assert by_name["RUN-9"][2] == 9, by_name["RUN-9"]
+
+
+def test_a_close_event_failure_propagates_from_a_reopen():
+    site = _reopen_site()
+    site.close_event_fail = "writer down"
+    with pytest.raises(RuntimeError) as info:
+        _mark(site, 2025, 7, "P07")
+    assert "writer down" in str(info.value)
+
 
 # --- A63 (#305-R2b-3): a signature covers only the data its run checked ------
 
@@ -841,6 +913,47 @@ def test_a_history_period_change_is_recorded_but_marks_nothing():
     assert site.saves == []
     assert _run_rec(site, "RUN-5")["signoff_status"] == "Signed Off"
     assert site.data_changes[(2025, 5)]["data_changed_by"] == CHANGED_BY
+    # T04b failure path: nothing marked (before the first close) -> no event.
+    assert site.close_events == []
+
+
+def test_a_data_change_records_a_signoff_voided_event():
+    site = _Site()
+    marked = _record(site, 2025, 8)
+    assert marked == ["RUN-8"], marked
+    assert len(site.close_events) == 1, site.close_events
+    kind, fy, fp, ref_dt, ref_name, reason, entity = site.close_events[0]
+    assert (kind, fy, fp, ref_dt, ref_name) == (
+        "signoff_voided", 2025, 8, "Assertion Run", "RUN-8"), site.close_events
+    assert CHANGED_TEXT in reason, reason
+    # No caller named an entity here: the void stays group-visible.
+    assert entity is None, entity
+
+
+# --- S1, E2-6: a TB-triggered void carries its entity -----------------------
+
+def test_a_data_change_names_its_entity_in_the_voided_event():
+    """record_data_change accepts entity and passes it to the signoff_voided
+    event, so trail scoping can hide a void whose reason names a hidden TB."""
+    site = _Site()
+    marked = _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY, "ZZA")
+    assert marked == ["RUN-8"], marked
+    assert len(site.close_events) == 1, site.close_events
+    kind, fy, fp, ref_dt, ref_name, reason, entity = site.close_events[0]
+    assert (kind, fy, fp, ref_dt, ref_name) == (
+        "signoff_voided", 2025, 8, "Assertion Run", "RUN-8"), site.close_events
+    assert entity == "ZZA", site.close_events
+
+
+def test_a_close_event_failure_propagates_from_a_data_change():
+    site = _Site()
+    site.close_event_fail = "writer down"
+    with pytest.raises(RuntimeError) as info:
+        _record(site, 2025, 8)
+    assert "writer down" in str(info.value)
+    # The run's own save already happened in this (the caller's own)
+    # transaction; only the event failed to write.
+    assert site.saves and site.saves[0][0] == "RUN-8", site.saves
 
 
 def test_a_non_regular_period_change_is_recorded_but_marks_nothing():
@@ -888,3 +1001,80 @@ def test_the_period_json_has_the_three_read_only_fields_in_the_close_section():
     assert order[order.index("closed_on") + 1:order.index("closed_on") + 4] == list(
         CHANGE_FIELDS), order
     assert [f["fieldname"] for f in meta["fields"]] == order, "fields not in field_order order"
+
+
+# --- E205b (#289, #305-W2-2): a submitted TB with no ownership blocks sign-off --
+
+def _unowned_site(ownership=None, tb=None):
+    """_Site plus ZZX: an Active leaf with ``ownership`` (None: none at all)
+    and ``tb`` (default: a submitted P09 TB)."""
+    site = _Site()
+    site.records["Entity"] += [_entity("ZZX")]
+    if ownership is not None:
+        site.records["Ownership Period"] += [ownership]
+    site.records["Trial Balance Submission"] += [tb if tb is not None else _rec("ZZX", 2025, 9)]
+    return site
+
+
+def _unowned_gaps(problems):
+    return [g for g in problems["config_gaps"] if g["code"] == "tb_without_ownership"]
+
+
+def test_a_submitted_tb_with_no_ownership_is_a_config_gap():
+    site = _unowned_site()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    gaps = _unowned_gaps(problems)
+    assert len(gaps) == 1, problems["config_gaps"]
+    assert gaps[0]["entities"] == ["ZZX"], gaps[0]
+    # ZZX is not in scope, so ZZA/ZZB completeness is unchanged
+    assert problems["completeness"] is None, problems["completeness"]
+
+
+def test_a_submitted_tb_with_no_ownership_blocks_the_sign_off():
+    message = _blocked(_unowned_site())
+    for part in ("ZZX", "Ownership Period"):
+        assert part in message, (part, message)
+
+
+def test_ownership_ended_before_the_period_start_is_the_gap():
+    site = _unowned_site(ownership=_owner("ZZX", end=date(2025, 8, 31)))
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["entities"] for g in _unowned_gaps(problems)] == [["ZZX"]], problems["config_gaps"]
+    assert problems["completeness"] is None, problems["completeness"]
+
+
+def test_the_gap_follows_the_policy_gaps():
+    site = _unowned_site()
+    site.settings["self_approval"] = ""
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["self_approval_undeclared", "tb_without_ownership"], codes
+
+
+def test_a_draft_tb_with_no_ownership_is_no_gap():
+    site = _unowned_site(tb=_rec("ZZX", 2025, 9, docstatus=0))
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+
+
+def test_a_tb_for_another_period_is_no_gap():
+    site = _unowned_site(tb=_rec("ZZX", 2025, 8))
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+
+
+def test_covered_ownership_is_no_gap_and_completeness_is_the_usual_rule():
+    site = _unowned_site(ownership=_owner("ZZX"))
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+    # in scope with no TB: it is missing, not unowned
+    site.records["Trial Balance Submission"].pop()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert problems["config_gaps"] == [], problems["config_gaps"]
+    assert problems["completeness"]["missing"] == ["ZZX"], problems["completeness"]
+
+
+def test_the_period_trial_balances_are_read_once():
+    site = _unowned_site()
+    _call(site, "sign_off_problems", 2025, 9)
+    tb_reads = [c for c in site.get_all_calls if c[0] == "Trial Balance Submission"]
+    assert len(tb_reads) == 1, tb_reads

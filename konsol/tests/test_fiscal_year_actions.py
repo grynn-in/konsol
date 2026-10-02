@@ -159,7 +159,7 @@ def _load():
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.utils", "konsol",
         "konsol.fiscal_calendar", "konsol.group_rates", "konsol.close",
-        "konsol.close.signoff_gate")}
+        "konsol.close.signoff_gate", "konsol.close.close_event")}
     calendar = mods["konsol.fiscal_calendar"]
     calendar.used = set()
     calendar.periods_in_use = lambda fiscal_year, lock=False: set(calendar.used)
@@ -208,6 +208,29 @@ def _load():
     gate.mark_resign_needed_on_reopen = mark_resign_needed_on_reopen
     gate.DATA_CHANGE_FIELDS = ("data_changed_at", "data_changed_by", "data_change")
     mods["konsol.close"].signoff_gate = gate
+
+    # konsol#305 T03: the Close Event writer, recorded. `fail` makes record()
+    # raise, as a failing insert would; `on_record` runs inside record() so a
+    # test can see what had happened by then (the save, before the event).
+    events_writer = mods["konsol.close.close_event"]
+    events_writer.recorded = []
+    events_writer.fail = None
+    events_writer.on_record = None
+
+    def record(kind, fiscal_year, fiscal_period, reference_doctype=None, reference_name=None,
+               reason=None, detail=None, entity=None):
+        if events_writer.on_record is not None:
+            events_writer.on_record()
+        if events_writer.fail:
+            raise RuntimeError(events_writer.fail)
+        events_writer.recorded.append(_dict(
+            kind=kind, fiscal_year=fiscal_year, fiscal_period=fiscal_period,
+            reference_doctype=reference_doctype, reference_name=reference_name,
+            reason=reason, detail=copy.deepcopy(detail), entity=entity))
+        return f"CE-{len(events_writer.recorded):09d}"
+
+    events_writer.record = record
+    mods["konsol.close"].close_event = events_writer
     mods["konsol.close"].__path__ = []
     mods["konsol"].close = mods["konsol.close"]
 
@@ -1421,3 +1444,148 @@ def test_a_year_with_no_name_reads_nothing():
         doc.before_save()
         assert not [e for e in sys.modules["frappe"].events if e[0] == "sql"]
         assert doc.periods[0].data_change is None
+
+
+# -- konsol#305 T03: every period and year action writes its Close Event ---------
+
+def _writer():
+    return sys.modules["konsol.close.close_event"]
+
+
+def _kinds():
+    return [e.kind for e in _writer().recorded]
+
+
+def test_close_period_records_period_closed():
+    with _load() as module:
+        doc = _valid_year(module)
+        seen = []
+        _writer().on_record = lambda: seen.append(doc.saves)
+        result, err = _act(lambda: doc.close_period(7, note="ZZ"))
+        assert err is None, err
+        assert _kinds() == ["period_closed"], _kinds()
+        e = _writer().recorded[0]
+        assert (e.fiscal_year, e.fiscal_period) == (2025, 7), e
+        assert (e.reference_doctype, e.reference_name) == ("EPM Fiscal Year", "2025"), e
+        assert e.reason == "ZZ", e
+        assert e.detail == {"period_code": "P07", "from": "Open"}, e.detail
+        # The event follows the save, in the same call (the request's transaction).
+        assert seen == [1], seen
+
+
+def test_close_period_without_note_records_no_reason():
+    with _load() as module:
+        doc = _valid_year(module)
+        result, err = _act(lambda: doc.close_period(7))
+        assert err is None, err
+        assert _writer().recorded[0].reason is None, _writer().recorded[0]
+
+
+def test_lock_period_records_period_locked():
+    with _load() as module:
+        doc = _valid_year(module, row_status={4: "Closed"})
+        result, err = _act(lambda: doc.lock_period(4, note="Audit done"))
+        assert err is None, err
+        assert _kinds() == ["period_locked"], _kinds()
+        e = _writer().recorded[0]
+        assert e.fiscal_period == 4 and e.reason == "Audit done", e
+        assert e.detail == {"period_code": "P04", "from": "Closed"}, e.detail
+
+
+def test_reopen_period_records_period_reopened_with_reason():
+    with _load() as module:
+        doc = _valid_year(module, row_status={7: "Closed"})
+        result, err = _act(lambda: doc.reopen_period(7, "  late TB "))
+        assert err is None, err
+        assert _kinds() == ["period_reopened"], _kinds()
+        e = _writer().recorded[0]
+        assert e.fiscal_period == 7 and e.reason == "late TB", e
+        assert e.detail == {"period_code": "P07", "from": "Closed"}, e.detail
+
+
+def test_close_year_records_each_row_moved_and_the_year():
+    with _load() as module:
+        doc = _valid_year(module)
+        seen = []
+        _writer().on_record = lambda: seen.append(doc.saves)
+        result, err = _act(lambda: doc.close_year(note="Year-end close"))
+        assert err is None, err
+        rec = _writer().recorded
+        codes = [r.period_code for r in doc.periods]
+        assert _kinds() == ["period_closed"] * len(ALL_PERIODS) + ["year_closed"], _kinds()
+        for e, p, code in zip(rec, ALL_PERIODS, codes):
+            assert (e.fiscal_year, e.fiscal_period) == (2025, p), e
+            assert e.reason == "Year-end close", e
+            assert e.detail == {"period_code": code, "from": "Open", "via": "year"}, e.detail
+            assert (e.reference_doctype, e.reference_name) == ("EPM Fiscal Year", "2025"), e
+        year = rec[-1]
+        assert year.fiscal_period == 0 and year.reason == "Year-end close", year
+        assert (year.reference_doctype, year.reference_name) == ("EPM Fiscal Year", "2025"), year
+        assert year.detail == {"from": "Open", "periods_moved": codes}, year.detail
+        assert seen == [1] * len(rec), "an event was written before the save"
+
+
+def test_lock_year_records_from_status_before_the_stamp():
+    with _load() as module:
+        doc = _valid_year(module, row_status={3: "Closed", 4: "Locked"})
+        result, err = _act(lambda: doc.lock_year())
+        assert err is None, err
+        rec = _writer().recorded
+        moved = [p for p in ALL_PERIODS if p != 4]
+        assert _kinds() == ["period_locked"] * len(moved) + ["year_locked"], _kinds()
+        froms = {e.fiscal_period: e.detail["from"] for e in rec[:-1]}
+        assert froms[3] == "Closed" and froms[5] == "Open", froms
+        assert 4 not in froms, "a row that did not move recorded an event"
+        assert rec[-1].reason is None and rec[-1].fiscal_period == 0, rec[-1]
+
+
+def test_reopen_year_records_only_the_year_event():
+    with _load() as module:
+        doc = _valid_year(module, status="Closed")
+        result, err = _act(lambda: doc.reopen_year("audit"))
+        assert err is None, err
+        assert _kinds() == ["year_reopened"], _kinds()
+        e = _writer().recorded[0]
+        assert e.fiscal_period == 0 and e.reason == "audit", e
+        assert e.detail == {"from": "Closed", "periods_moved": []}, e.detail
+
+
+def test_a_refused_action_records_nothing():
+    with _load() as module:
+        # Reopen with no reason.
+        doc = _valid_year(module, row_status={7: "Closed"})
+        for blank in (None, "", "   "):
+            result, err = _act(lambda: doc.reopen_period(7, blank))
+            assert err is not None, blank
+        result, err = _act(lambda: doc.reopen_year(""))
+        assert err is not None
+        # Close Year refused by the sign-off gate.
+        _gate().fail_for = {5: UNSIGNED}
+        doc = _valid_year(module)
+        result, err = _act(lambda: doc.close_year(note="Year-end close"))
+        assert err is not None and "not signed off" in err, err
+        # Close Period refused by the rate gate.
+        _rates().fail = "no approved group exchange rate"
+        result, err = _act(lambda: doc.close_period(3))
+        assert err is not None
+        # Already in that state.
+        _rates().fail = None
+        doc = _valid_year(module, row_status={3: "Closed"})
+        result, err = _act(lambda: doc.close_period(3))
+        assert err is not None and "already" in err, err
+        assert _writer().recorded == [], _kinds()
+
+
+def test_a_failing_writer_stops_the_action():
+    for call in (lambda d: d.close_period(7, note="ZZ"), lambda d: d.close_year()):
+        with _load() as module:
+            doc = _valid_year(module)
+            _writer().fail = "insert failed"
+            result = "unset"
+            try:
+                result = call(doc)
+            except RuntimeError as e:
+                assert "insert failed" in str(e), e
+            else:
+                raise AssertionError("the writer's failure was swallowed: " + repr(result))
+            assert result == "unset", "the action returned although its event failed"

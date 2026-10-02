@@ -324,10 +324,11 @@ def _load(site):
             "konsol.consolidation.doctype.assertion_run.assertion_run": ar}
     saved = {n: sys.modules.get(n) for n in list(mods) + [
         "konsol.close.signoff_model", "konsol.close.period_model", "konsol.close.signoff_gate",
-        "konsol.close.timefmt", "konsol.close.close_policy_model"]}
+        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model"]}
     sys.modules.update(mods)
     try:
-        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt", "signoff_gate"):
+        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt",
+                      "scope_model", "signoff_gate"):
             mod = _by_path("konsol.close." + name, os.path.join(CLOSE_DIR, name + ".py"))
             sys.modules["konsol.close." + name] = mod
             setattr(close, name, mod)
@@ -650,6 +651,37 @@ def test_entity_accountant_with_no_entities_sees_no_entity():
     for other in ("ZZA", "ZZB", "ZZC", "ZZD", "ZZE", "ZZQ"):
         assert other not in text, other
     assert result["covers"] == []
+
+
+def test_unowned_tb_gap_is_scoped_to_the_callers_entities():
+    """E205c (#289): a scoped caller sees a count, not the generic fallback."""
+    site = _Site()
+    site.records["Entity"].append(_entity("ZZX"))
+    site.records["Trial Balance Submission"].append(_tb("ZZX"))
+    site.allowed = {"ZZA"}
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"] if g["code"] == "tb_without_ownership"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == []
+    assert gap["hidden"] == 1
+    assert "1 entity outside your scope" in gap["message"]
+    assert "record the ownership" in gap["message"]
+    assert "ZZX" not in gap["message"]
+    assert "tb_without_ownership (" not in gap["message"]
+
+
+def test_unowned_tb_gap_unscoped_names_the_entity():
+    """E205a's message, unmodified, when the caller is not scoped."""
+    site = _Site()
+    site.records["Entity"].append(_entity("ZZX"))
+    site.records["Trial Balance Submission"].append(_tb("ZZX"))
+    site.allowed = None
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"] if g["code"] == "tb_without_ownership"]
+    assert len(gaps) == 1
+    assert gaps[0]["entities"] == ["ZZX"]
+    assert "ZZX" in gaps[0]["message"]
 
 
 # --- A32: sign ---------------------------------------------------------------------

@@ -32,7 +32,7 @@ import TbUpload from "../sections/TbUpload.vue";
 import TbCompare from "../sections/TbCompare.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
-import { entityRows } from "../tbTable.js";
+import { entityRows, entityWord } from "../tbTable.js";
 import { userTimeZone } from "../timefmt.js";
 
 const MY_TBS = "konsol.close.tb_read_api.my_tbs";
@@ -41,10 +41,12 @@ const CONTEXT = "konsol.close.period_api.get_context";
 const NOT_RECORDED = "not recorded";
 const NO_ENTITIES_EA = "No entities are assigned to you. Ask the System Manager.";
 
-// One style per A25 status (all six, per the A25 note). Missing and the two
-// "not declared" gaps are the ones that need someone to act.
+// One style per A25 status (all seven, per the A25/E209a note). Missing, the
+// two "not declared" gaps, and the #289 "Not consolidated" gap are the ones
+// that need someone to act.
 const STATUS_TONE = {
 	"Missing": "bg-surface-red-1 text-ink-red-3",
+	"Not consolidated: no ownership for this period": "bg-surface-red-1 text-ink-red-3",
 	"Frequency not declared": "bg-surface-amber-1 text-ink-amber-3",
 	"Quarter not declared": "bg-surface-amber-1 text-ink-amber-3",
 	"Received": "bg-surface-green-1 text-ink-green-3",
@@ -233,7 +235,7 @@ watch(
 			</p>
 
 			<p class="mb-3 text-sm text-ink-gray-7">
-				<span class="font-medium text-ink-gray-9">{{ countText(total) }}</span> entities:
+				<span class="font-medium text-ink-gray-9">{{ countText(total) }}</span> {{ entityWord(total) }}:
 				<template v-for="(s, i) in summary" :key="s.status">
 					<span v-if="i > 0">, </span>{{ countText(s.count) }} {{ s.status.toLowerCase() }}
 				</template>

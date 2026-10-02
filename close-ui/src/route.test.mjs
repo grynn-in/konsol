@@ -32,7 +32,23 @@ function walk(dir) {
 }
 
 test("SCREENS is the declared screen list", () => {
-  assert.deepEqual(SCREENS, ["my-work", "trial-balances", "checks", "sign-off"]);
+  assert.deepEqual(SCREENS, ["my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"]);
+});
+
+test("the period slug parses", () => {
+  assert.deepEqual(parse("/close/2025/9/period"), { year: 2025, period: 9, screen: "period" });
+});
+
+test("the rates slug parses", () => {
+  assert.deepEqual(parse("/close/2025/7/rates"), { year: 2025, period: 7, screen: "rates" });
+});
+
+test("the audit-trail slug parses", () => {
+  assert.deepEqual(parse("/close/2026/8/audit-trail"), { year: 2026, period: 8, screen: "audit-trail" });
+});
+
+test("failure path: a near-miss slug is an explicit unknown-screen error", () => {
+  assert.deepEqual(parse("/close/2026/8/audit"), { error: "unknown screen" });
 });
 
 test("parse and format round-trip for every screen", () => {

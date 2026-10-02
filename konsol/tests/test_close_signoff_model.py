@@ -116,6 +116,45 @@ def test_an_unknown_frequency_is_refused_not_skipped():
         raise AssertionError("an unknown frequency must raise ValueError")
 
 
+# --- unowned_tb_gap ------------------------------------------------------------
+
+def test_no_entities_is_no_gap():
+    assert M.unowned_tb_gap([], (2025, 9)) is None
+    assert M.unowned_tb_gap(None, (2025, 9)) is None
+
+
+def test_one_entity_names_it():
+    gap = M.unowned_tb_gap(["ZZX"], (2025, 9))
+    assert gap["code"] == M.UNOWNED_TB
+    assert gap["entities"] == ["ZZX"]
+    assert "ZZX" in gap["message"]
+    assert "FY2025 P09" in gap["message"]
+    assert "Ownership Period" in gap["message"]
+    assert "cancel" in gap["message"]
+
+
+def test_entities_are_sorted_in_the_result():
+    gap = M.unowned_tb_gap(["ZZY", "ZZX"], (2025, 9))
+    assert gap["entities"] == ["ZZX", "ZZY"]
+    assert "ZZX, ZZY" in gap["message"]
+
+
+def test_more_than_five_are_counted_not_named():
+    entities = ["ZZ%d" % i for i in range(1, 7)]  # 6 entities
+    gap = M.unowned_tb_gap(entities, (2025, 9))
+    assert gap["entities"] == sorted(entities)
+    assert "6 entities" in gap["message"]
+    assert "FY2025 P09" in gap["message"]
+    for entity in entities:
+        assert entity not in gap["message"]
+
+
+def test_unowned_tb_is_a_new_code():
+    existing = {M.FIRST_CLOSE_UNDECLARED, M.HISTORY_PERIOD, M.FREQUENCY_UNDECLARED,
+                M.QUARTER_UNDECLARED}
+    assert M.UNOWNED_TB not in existing
+
+
 # --- order_problem ------------------------------------------------------------
 
 def test_open_earlier_periods_block_and_the_oldest_is_named():

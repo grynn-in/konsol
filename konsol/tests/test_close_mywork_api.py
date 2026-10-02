@@ -31,7 +31,7 @@ REPO_DIR = os.path.dirname(APP_DIR)
 API_PY = os.path.join(APP_DIR, "close", "mywork_api.py")
 NAV_JS = os.path.join(REPO_DIR, "close-ui", "src", "nav.js")
 REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model",
-               "close_policy_model")
+               "close_policy_model", "scope_model")
 
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 TODAY = date(2025, 9, 15)
@@ -177,7 +177,8 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
-    frappe.utils = types.SimpleNamespace(getdate=lambda *a: TODAY)
+    frappe.utils = types.SimpleNamespace(getdate=lambda *a: TODAY,
+                                         get_system_timezone=lambda: "Europe/London")
     frappe.db = types.SimpleNamespace(get_single_value=get_single_value, set_value=forbidden,
                                       commit=forbidden, sql=forbidden)
     frappe.get_doc = forbidden
@@ -213,6 +214,22 @@ def _call(site):
     for name in REAL_MODELS:
         mods["konsol.close." + name] = _model(name)
         setattr(mods["konsol.close"], name, mods["konsol.close." + name])
+
+    # L01a: _aware (A47) lazily imports timefmt (pure, mirrors checks_api).
+    tspec = importlib.util.spec_from_file_location(
+        "konsol.close.timefmt", os.path.join(APP_DIR, "close", "timefmt.py"))
+    timefmt = importlib.util.module_from_spec(tspec)
+    tspec.loader.exec_module(timefmt)
+    mods["konsol.close.timefmt"] = timefmt
+    mods["konsol.close"].timefmt = timefmt
+
+    real_covered = mods["konsol.close.scope_model"].covered
+
+    def _spy_covered(rows, start_date):
+        site.__dict__.setdefault("scope_calls", []).append(start_date)
+        return real_covered(rows, start_date)
+
+    mods["konsol.close.scope_model"].covered = _spy_covered
 
     fiscal_calendar = types.ModuleType("konsol.fiscal_calendar")
     fiscal_calendar.fiscal_period_rows = lambda *a, **k: [dict(r) for r in site.rows]
@@ -350,7 +367,10 @@ def test_group_accountant_runs_checks_and_sees_failures():
     assert "checks-run:2025-09" in ids  # never run
     assert "checks-run:2025-08" not in ids  # current Green run
     assert "tbs-waiting:2025-07" in ids
-    assert not any(i["id"].startswith("rates") for i in result["items"])
+    # konsol#305 E412 (#305-W2-11): the Analyst gets "Rates missing" too.
+    rates = next(i for i in result["items"] if i["id"] == "rates:2025-07")
+    assert rates["kind"] == "blocking" and rates["action"] == {"screen": "rates"}
+    assert not any(i["id"].startswith("rates-error") for i in result["items"])
     _assert_counts_add_up(result, "group_accountant")
 
 
@@ -358,6 +378,19 @@ def test_stale_run_asks_for_a_rerun():
     site = _Site(roles=("EPM Analyst",))
     site.as_of = "2025-09-12T00:00:00"  # rebuilt after P08's run
     assert "checks-run:2025-08" in _ids(_call(site))
+
+
+def test_a_zoned_as_of_and_a_naive_completed_at_compare_without_error():
+    """L01a (A47): freshness_api's as_of is zoned (A16b gives it the site's
+    UTC offset); the newest Assertion Run's completed_at is read back naive
+    from the database. get_my_work compared them directly and 500'd with
+    "can't compare offset-naive and offset-aware datetimes". Same fix
+    checks_api.py already applies (its own A47 test); same verdict as
+    test_stale_run_asks_for_a_rerun's all-naive pair for the same instant,
+    here written zoned."""
+    site = _Site(roles=("EPM Analyst",))
+    site.as_of = "2025-09-12T00:00:00+01:00"  # same instant as the naive pair above
+    assert "checks-run:2025-08" in _ids(_call(site))  # no TypeError, same verdict
 
 
 def test_entity_accountant_sees_only_its_own_entities():
@@ -446,7 +479,9 @@ def test_rate_blockers_count_as_missing_rates():
 def test_rate_gate_error_item_goes_to_the_close_lead_only():
     site = _Site(roles=("EPM Analyst",))
     site.rates[(2025, 8)] = (None, "ServerException UNKNOWN_TABLE", [])
-    assert not any(i.startswith("rates") for i in _ids(_call(site)))
+    # konsol#305 E412 (#305-W2-11): the Analyst still gets the P07 "Rates
+    # missing" item; only the rate-gate error item stays Close Lead only.
+    assert not any(i.startswith("rates-error") for i in _ids(_call(site)))
 
 
 def test_errored_run_is_failed_not_current():
@@ -456,6 +491,29 @@ def test_errored_run_is_failed_not_current():
     ids = _ids(_call(site))
     assert "signoff:2025-08" not in ids
     assert "checks-waiting:2025-08" in ids
+
+
+# --- konsol#305 E206, #289: a blocking item for a valid TB with no ownership ---
+
+
+def test_close_lead_gets_the_unowned_tb_item():
+    site = _Site()
+    site.problems[(2025, 9)]["config_gaps"] = [
+        {"code": "tb_without_ownership", "entities": ["ZZX"], "message": "…"}]
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "unowned:2025-09")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["entities"] == ["ZZX"]
+    _assert_counts_add_up(result, "close_lead")
+
+
+def test_entity_accountant_does_not_get_the_unowned_tb_item():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.problems[(2025, 9)]["config_gaps"] = [
+        {"code": "tb_without_ownership", "entities": ["ZZX"], "message": "…"}]
+    result = _call(site)
+    assert not any(i["id"].startswith("unowned:") for i in result["items"])
 
 
 # --- A53: items carry an age (`since` = the period's end date) -----------------
@@ -679,6 +737,23 @@ def test_ownership_is_queried_once_per_judged_period():
     gap = _gap(result, "ownership")
     assert gap["entities"] == ["ZZC"], gap
     assert gap["detail"] == "ZZC: FY2025 P07, FY2025 P08, FY2025 P09", gap["detail"]
+
+
+# --- G03: coverage is computed through scope_model, not a second copy -------
+
+
+def test_coverage_is_computed_by_scope_model():
+    site = _three_periods_five_leaves()
+    result = _call(site)
+    assert site.scope_calls == [date(2025, 7, 1), date(2025, 8, 1), date(2025, 9, 1)], \
+        site.scope_calls
+    gap = _gap(result, "ownership")
+    assert gap["entities"] == ["ZZC"], gap
+
+
+def test_the_inline_rule_is_gone():
+    with open(API_PY) as fh:
+        assert "end >= start" not in fh.read()
 
 
 def test_no_leaves_still_answers_without_error():

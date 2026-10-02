@@ -120,7 +120,9 @@ def setup_gap_items(facts):
 #   ``my_missing`` is read, so another entity's item never reaches them.
 # - Group Accountant: "Run checks" (todo) when checks are not_run or stale;
 #   "N checks failing" (blocking); "Waiting on N trial balances" (waiting).
-# - Close Lead: "Rates missing (N)" and "Re-sign needed" (blocking); "Sign off
+# - Close Lead: "Rates missing (N)" and "Re-sign needed" (blocking); "Trial
+#   balance with no ownership (N)" (blocking, #289) when the sign-off gate
+#   reports a submitted TB with no covering ownership; "Sign off
 #   <code>" (todo) when checks are current, none fail, no rates are missing,
 #   the period is not signed and no gate blocks. When a gate blocks, the item
 #   is "Waiting on <earliest earlier open period>" instead, or "Waiting on the
@@ -140,7 +142,7 @@ VIEWER = "viewer"
 PERSONAS = (CLOSE_LEAD, GROUP_ACCOUNTANT, ENTITY_ACCOUNTANT, VIEWER)
 
 PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "signoff",
-               "gates_blocked", "rates_missing", "status")
+               "gates_blocked", "rates_missing", "status", "unowned")
 #: A53: ``since`` (the period's end date, ISO) is read from ``facts`` when the
 #: caller supplies it and carried on ``item["period"]["since"]`` for every
 #: period item, so B18 can show an age. It is not in PERIOD_KEYS: it is read
@@ -198,9 +200,24 @@ def _entity_accountant(key, facts):
     return items
 
 
+def _rates_item(p, key, facts):
+    """konsol#305 E412 (#305-W2-11): the Close Lead and the Group Accountant
+    both get "Rates missing (N)", pointed at the Rates screen. One builder,
+    called by both personas, so the id/kind/title/action cannot drift apart.
+    """
+    rates = int(facts["rates_missing"] or 0)
+    if not rates:
+        return None
+    return _period_item(p, key, facts, "rates", "blocking",
+                        "Rates missing (%d)" % rates, {"screen": "rates"})
+
+
 def _group_accountant(key, facts):
     items = []
     p = GROUP_ACCOUNTANT
+    rates_item = _rates_item(p, key, facts)
+    if rates_item:
+        items.append(rates_item)
     if facts["checks"] in ("not_run", "stale"):
         items.append(_period_item(p, key, facts, "checks-run", "todo", "Run checks",
                                   {"screen": "checks"}))
@@ -222,12 +239,20 @@ def _close_lead(key, facts, earlier_open):
     p = CLOSE_LEAD
     signoff = {"screen": "sign-off"}
     rates = int(facts["rates_missing"] or 0)
-    if rates:
-        items.append(_period_item(p, key, facts, "rates", "blocking",
-                                  "Rates missing (%d)" % rates, signoff))
+    rates_item = _rates_item(p, key, facts)
+    if rates_item:
+        items.append(rates_item)
     resign = facts["signoff"] == RE_SIGN_NEEDED
     if resign:
         items.append(_period_item(p, key, facts, "resign", "blocking", "Re-sign needed", signoff))
+    unowned = sorted(set(facts["unowned"] or ()))
+    if unowned:
+        item = _period_item(p, key, facts, "unowned", "blocking",
+                            "Trial balance with no ownership (%d)" % len(unowned),
+                            {"desk": "/app/ownership-period"})
+        item["detail"] = ", ".join(unowned)
+        item["entities"] = unowned
+        items.append(item)
     signed = facts["signoff"] in SIGNED_STATES
     if signed and facts["status"] == "Open":
         items.append(_period_item(p, key, facts, "close", "todo", "Close %s" % facts["code"],

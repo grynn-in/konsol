@@ -37,7 +37,10 @@ Per-period facts:
 - ``rates_missing``: ``group_rates.rate_gate`` missing keys plus groups with
   no reporting currency. When the warehouse cannot answer, the Close Lead
   gets a blocking item carrying the error, and the period counts as blocked,
-  so it is never offered for sign-off.
+  so it is never offered for sign-off;
+- ``unowned`` (#289, E206): entities named by the sign-off gate's
+  ``tb_without_ownership`` config gap — a submitted TB with no covering
+  ownership. Only the Close Lead is shown the resulting blocking item.
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -78,7 +81,7 @@ import frappe
 
 from konsol import entity_permissions, fiscal_calendar, group_chart, group_rates
 from konsol.close import (checks_model, close_policy_model, mywork_model, period_model,
-                          signoff_gate, signoff_model)
+                          scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
@@ -87,10 +90,10 @@ ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", 
 
 #: Screens each persona sees, in order; mirrors close-ui/src/nav.js SCREENS_BY_PERSONA.
 SCREENS = {
-    period_model.CLOSE_LEAD: ("my-work", "trial-balances", "checks", "sign-off"),
-    period_model.GROUP_ACCOUNTANT: ("my-work", "trial-balances", "checks", "sign-off"),
+    period_model.CLOSE_LEAD: ("my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"),
+    period_model.GROUP_ACCOUNTANT: ("my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"),
     period_model.ENTITY_ACCOUNTANT: ("my-work", "trial-balances"),
-    period_model.VIEWER: ("trial-balances", "checks", "sign-off"),
+    period_model.VIEWER: ("trial-balances", "rates", "period", "checks", "sign-off", "audit-trail"),
 }
 MY_WORK = "my-work"
 REGULAR = "Regular"
@@ -105,6 +108,18 @@ def _date(value):
     if isinstance(value, str) and value:
         return date.fromisoformat(value[:10])
     return None
+
+
+def _aware(value):
+    """A naive database datetime placed in the site's zone, so it compares with
+    the zoned ``as_of`` ``current_freshness`` returns (L01a/A47: ``get_my_work``
+    500'd with 'can't compare offset-naive and offset-aware datetimes'; mirrors
+    checks_api._aware — the same conversion checks_api.py already uses, not a
+    second rule)."""
+    if value is None or not hasattr(value, "hour") or value.tzinfo is not None:
+        return value
+    from konsol.close.timefmt import zoned_iso
+    return datetime.fromisoformat(zoned_iso(value, frappe.utils.get_system_timezone()))
 
 
 def _first_close():
@@ -134,16 +149,12 @@ def _leaves():
 
 def _covered(start):
     """Entities with a submitted ownership period covering ``start``."""
-    covered = set()
-    for o in frappe.get_all(
+    rows = frappe.get_all(
         "Ownership Period",
         filters={"docstatus": 1, "effective_date": ["<=", start], "data_area_id": ["is", "set"]},
-        fields=["data_area_id", "end_date"], limit_page_length=0,
-    ):
-        end = _date(o.get("end_date"))
-        if end is None or end >= start:
-            covered.add(o.get("data_area_id"))
-    return covered
+        fields=["data_area_id", "effective_date", "end_date"], limit_page_length=0,
+    )
+    return scope_model.covered(rows, start)
 
 
 def _accountants_without_entities():
@@ -194,7 +205,7 @@ def _ownership_scope(leaves, first_close):
     in_scope = set()
     for _, start in judged:
         covered = _covered(start)  # once per period, not once per leaf (A61)
-        in_scope.update(e for e in leaves if e in covered)
+        in_scope.update(scope_model.in_scope(leaves, covered))
     labels = [label for label, _ in judged]
     uncovered = {e: labels for e in leaves if e not in in_scope} if judged else {}
     return in_scope, uncovered
@@ -250,7 +261,10 @@ def _newest_run(key):
 
 
 def _checks(key, as_of):
-    state = checks_model.staleness(_newest_run(key), as_of)["state"]
+    run = _newest_run(key)
+    if run is not None:
+        run = dict(run, completed_at=_aware(run.get("completed_at")))
+    state = checks_model.staleness(run, as_of)["state"]
     terminal = latest_close_run(key[0], key[1])
     failed = 0
     signoff = None
@@ -280,7 +294,7 @@ def _rates_error_item(key, code, error, end_date):
 def _period_facts(first_close, allowed, today):
     """``(per_period, extra_items)``; extra items are the rate-gate errors."""
     as_of_text = current_freshness()["as_of"]
-    as_of = datetime.fromisoformat(as_of_text) if as_of_text else None
+    as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
     for key, row in _open_rows(first_close, today):
         code = row.get("period_code") or "FY%d P%02d" % key
@@ -298,6 +312,8 @@ def _period_facts(first_close, allowed, today):
         if error:
             extra.append(_rates_error_item(key, code, error, end_date))
             blocked = True
+        unowned = sorted(e for g in problems["config_gaps"] if g["code"] == signoff_model.UNOWNED_TB
+                         for e in g.get("entities") or ())
         per_period[key] = {
             "code": code,
             "ended": end_date < today,
@@ -309,6 +325,7 @@ def _period_facts(first_close, allowed, today):
             "signoff": signoff,
             "gates_blocked": blocked,
             "rates_missing": len(rates_missing or ()) + len(blockers or ()),
+            "unowned": unowned,
             "since": end_date.isoformat(),
         }
     return per_period, extra

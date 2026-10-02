@@ -118,6 +118,10 @@ MATRIX = {
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",
                "Budget Submitter": "r", "Budget Controller": "r", "Budget Manager": "r", "Budget Approver": "r"},
     "EPM Fiscal Year": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
+    # konsol#305 T01b: the audit trail is read-only for every role; only
+    # konsol.close.close_event writes it, and nobody deletes it (#305-W2-6)
+    "Close Event": {"EPM Admin": "r", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "",
+                    "System Manager": "r"},
 }
 
 

@@ -70,9 +70,19 @@ class TBException(Document):
 
     def on_submit(self):
         self._record_data_change("submitted")
+        self._record_event("tb_exception_declared", reason=self.reason)
 
     def on_cancel(self):
         self._record_data_change("cancelled")
+        self._record_event("tb_exception_cancelled")
+
+    def _record_event(self, kind, reason=None):
+        """konsol#305 T05 (#305-W2-1): the Close Event, in the action's own
+        transaction. Never caught: a failing event fails the declaration."""
+        from konsol.close import close_event
+
+        close_event.record(kind, self.fiscal_year, self.fiscal_period, "TB Exception",
+                           self.name, reason=reason, entity=self.data_area_id)
 
     def _record_data_change(self, what):
         # Imported here: signoff_gate is frappe-bound and reads the fiscal calendar.
@@ -80,7 +90,8 @@ class TBException(Document):
 
         signoff_gate.record_data_change(
             self.fiscal_year, self.fiscal_period,
-            "TB Exception %s %s" % (self.name, what), frappe.session.user)
+            "TB Exception %s %s" % (self.name, what), frappe.session.user,
+            entity=self.data_area_id)
 
     def before_cancel(self):
         """validate() is not run on cancel, so the period gate is applied here."""

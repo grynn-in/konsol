@@ -44,6 +44,7 @@ import { format, parse } from "../route.js";
 import { landingPath, landingState } from "../router.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { isSignedOffPeriod } from "../signedOffBar.js";
 
 const CONTEXT = "konsol.close.period_api.get_context";
 const FRESHNESS = "konsol.close.freshness_api.get_freshness";
@@ -301,7 +302,8 @@ const showProvisionalBar = computed(
 		provisional.value &&
 		provisional.value.period &&
 		current.value &&
-		(provisional.value.period[0] !== current.value.year || provisional.value.period[1] !== current.value.period),
+		(provisional.value.period[0] !== current.value.year || provisional.value.period[1] !== current.value.period) &&
+		isSignedOffPeriod(context.data && context.data.selected),
 );
 
 function goProvisional() {

@@ -208,6 +208,8 @@ def _frappe(site):
                 return _file_doc(site, site.files[url])
             if doctype == "Trial Balance Submission":
                 doc = site.tbs_class()
+                # before_insert always sets these on a real document (T05b).
+                doc.__dict__.update({"uploaded_on_behalf": "No", "amended_from": None})
                 doc.__dict__.update({k: v for k, v in first.items() if k != "doctype"})
                 doc.name, doc.batch_id = "TBS-BULK-1", "batch-bulk-1"
                 doc.row_count = 0
@@ -328,12 +330,21 @@ def _stubbed_modules(site, extra=None):
     patch.dict also removes any module first imported during the call.
     """
     signoff_gate = types.ModuleType("konsol.close.signoff_gate")
-    signoff_gate.record_data_change = lambda fy, fp, text, user: site.data_changes.append(
-        (fy, fp, text))
+    # konsol#305 R01d: on_submit now always passes entity=data_area_id.
+    signoff_gate.record_data_change = lambda fy, fp, text, user, entity=None: (
+        site.data_changes.append((fy, fp, text)))
     close = types.ModuleType("konsol.close")
     close.signoff_gate = signoff_gate
+    # konsol#305 T05a: a stub Close Event writer (T02a), so T05's lazy
+    # `from konsol.close import close_event` resolves during a submit. It keeps
+    # its own log, not site.data_changes.
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+    close_event.record = lambda *a, **k: close_event.events.append((a, k))
+    close.close_event = close_event
     return mock.patch.dict(sys.modules, {"konsol.close": close,
                                          "konsol.close.signoff_gate": signoff_gate,
+                                         "konsol.close.close_event": close_event,
                                          **(extra or {})})
 
 
@@ -344,6 +355,8 @@ def _submit_single(site, tbs, csv_text=SINGLE_CSV):
     doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "ZZA", 2099, 1
     doc.row_count, doc.amount_basis = 2, "Period movement"
     doc.tb_file = site.add_file(csv_text)
+    # before_insert always sets these on a real document (T05b).
+    doc.uploaded_on_behalf, doc.amended_from = "No", None
     with _stubbed_modules(site):
         doc.on_submit()
     return doc
@@ -497,3 +510,15 @@ def test_the_bulk_load_still_refuses_an_undeclared_dimension():
     last = _run_bulk_load(site, bulk, BULK_CSV.replace(DIM, "dim_made_up"), name="TBU-2")
     assert site.inserts == []
     assert "dim_made_up" in (last["error"] or ""), last
+
+
+# --- konsol#305 T05a: the close_event stub does not leak into sys.modules ---
+
+def test_bulk_load_close_event_stub_does_not_leak_into_sys_modules():
+    """Failure path: a close_event stub left out of _run_bulk_load's
+    saved/restored names would leak into later tests."""
+    before = sys.modules.get("konsol.close.close_event")
+    site = _Site()
+    tbs, bulk = _load(site, with_bulk=True)
+    _run_bulk_load(site, bulk)
+    assert sys.modules.get("konsol.close.close_event") is before

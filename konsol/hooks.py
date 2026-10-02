@@ -162,7 +162,7 @@ doc_events = {
 # konsol#305-D2-3 (R5): the self-approval policy on every approval doctype.
 # "*" because the doctype list lives in one place,
 # close_policy_model.APPROVAL_DOCTYPES; the hook ignores every other doctype.
-doc_events["*"] = {"before_submit": "konsol.close.self_approval.check"}
+doc_events["*"] = {"before_submit": "konsol.close.self_approval.check", "on_cancel": "konsol.close.cancel_event.record"}
 
 # ---------------------------------------------------------------------------
 # Entity-scoped access (#91)
@@ -187,6 +187,8 @@ has_permission = {
     dt: "konsol.entity_permissions.has_entity_permission" for dt in _ENTITY_SCOPED
 }
 has_permission["Entity"] = "konsol.entity_permissions.has_entity_doc_permission"
+permission_query_conditions["Close Event"] = "konsol.entity_permissions.close_event_conditions"
+has_permission["Close Event"] = "konsol.entity_permissions.has_close_event_permission"
 
 # A bulk trial balance upload holds every entity's figures (its report and
 # its file, whose read permission follows the upload): visible only to its

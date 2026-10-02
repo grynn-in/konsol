@@ -189,6 +189,7 @@ def _period(code, **over):
         "gates_blocked": False,
         "rates_missing": 0,
         "status": "Open",
+        "unowned": [],
     }
     facts.update(over)
     return facts
@@ -220,7 +221,8 @@ def test_period_item_shape_and_period_tag():
         assert item["kind"] in ("blocking", "todo", "waiting")
         assert item["period"]["code"] in ("FY2025 P07", "FY2025 P08")
         assert (item["period"]["fiscal_year"], item["period"]["fiscal_period"]) in (P07, P08)
-        assert item["action"]["screen"] in ("my-work", "trial-balances", "checks", "sign-off")
+        assert item["action"]["screen"] in ("my-work", "trial-balances", "checks", "sign-off",
+                                            "rates")
         assert "desk" not in item["action"]
 
 
@@ -251,6 +253,7 @@ def test_group_accountant_items():
     items = M.period_items("group_accountant", _two_open(), FIRST)
     got = {(i["period"]["fiscal_period"], i["title"], i["kind"]) for i in items}
     assert got == {
+        (7, "Rates missing (2)", "blocking"),
         (7, "Run checks", "todo"),
         (7, "Waiting on 2 trial balances", "waiting"),
         (8, "3 checks failing", "blocking"),
@@ -262,6 +265,24 @@ def test_group_accountant_items():
     assert screens["Run checks"] == "checks"
     assert screens["3 checks failing"] == "checks"
     assert screens["Waiting on 2 trial balances"] == "trial-balances"
+    assert screens["Rates missing (2)"] == "rates"
+
+
+def test_group_accountant_rates_missing_item_id_and_shape():
+    # konsol#305 E412 (#305-W2-11): the Analyst gets "Rates missing" too,
+    # built by the same helper as the Close Lead's.
+    items = M.period_items("group_accountant", _two_open(), FIRST)
+    item = next(i for i in items if i["id"] == "rates:2025-07")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"screen": "rates"}
+
+
+def test_entity_accountant_and_viewer_get_no_rates_item():
+    # Failure path: the rates item leaks to an entity persona.
+    per = {P07: _period("FY2025 P07", my_missing=["ZZA"], missing=["ZZA"], rates_missing=4)}
+    for persona in ("entity_accountant", "viewer"):
+        items = M.period_items(persona, per, FIRST)
+        assert not any(i["id"].startswith("rates:") for i in items), persona
 
 
 def test_group_accountant_run_checks_when_not_run_and_nothing_when_current():
@@ -284,8 +305,33 @@ def test_close_lead_items():
     }
     for item in items:
         assert item["owner"] == "EPM Admin"
-    assert _titles(items)["Rates missing (2)"]["action"] == {"screen": "sign-off"}
+    assert _titles(items)["Rates missing (2)"]["action"] == {"screen": "rates"}
     assert _titles(items)["Re-sign needed"]["action"] == {"screen": "sign-off"}
+
+
+def test_close_lead_unowned_tb_is_one_blocking_item():
+    # konsol#305 E206, #289: a submitted TB with no covering ownership.
+    per = {P07: _period("FY2025 P07", unowned=["ZZX"])}
+    items = M.period_items("close_lead", per, FIRST)
+    item = next(i for i in items if i["id"] == "unowned:2025-07")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["entities"] == ["ZZX"]
+    assert item["title"] == "Trial balance with no ownership (1)"
+
+
+def test_only_the_close_lead_sees_the_unowned_tb_item():
+    per = {P07: _period("FY2025 P07", unowned=["ZZX"])}
+    for persona in ("group_accountant", "entity_accountant", "viewer"):
+        items = M.period_items(persona, per, FIRST)
+        assert not any(i["id"].startswith("unowned:") for i in items), persona
+
+
+def test_missing_unowned_fact_raises_not_guessed():
+    per = _two_open()
+    del per[P07]["unowned"]
+    with pytest.raises(ValueError, match="unowned"):
+        M.period_items("close_lead", per, FIRST)
 
 
 def test_close_lead_sign_off_todo_when_checks_current_and_no_gate_blocks():
