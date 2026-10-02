@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import types
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(_HERE)
@@ -118,6 +119,7 @@ class _Site:
         self.raw_columns = list(raw_columns)
         self.sent = []
         self.files = {}
+        self.data_changes = []   # what on_submit told the sign-off gate
         self.dimension_queries = []
         self._n = 0
 
@@ -316,32 +318,23 @@ def _load(site, with_bulk=False):
 
 
 def _stubbed_modules(site, extra=None):
-    """Stub the modules an intake imports while it runs, then put them back.
+    """A ``patch.dict`` over sys.modules for the length of one submit.
 
     konsol#305 A63: on_submit records the data change against the period's
     sign-off, importing the frappe-bound ``konsol.close.signoff_gate`` when it
     runs, after ``_load`` has already restored ``sys.modules``. Both intakes
-    reach it, so both submit through this. What it was told is kept on
+    reach it, so both submit through this. What it was told is appended to
     ``site.data_changes``. ``extra`` adds modules for one caller (rq).
+    patch.dict also removes any module first imported during the call.
     """
-    site.data_changes = []
     signoff_gate = types.ModuleType("konsol.close.signoff_gate")
     signoff_gate.record_data_change = lambda fy, fp, text, user: site.data_changes.append(
         (fy, fp, text))
     close = types.ModuleType("konsol.close")
     close.signoff_gate = signoff_gate
-    mods = {"konsol.close": close, "konsol.close.signoff_gate": signoff_gate, **(extra or {})}
-    saved = {k: sys.modules.get(k) for k in mods}
-    sys.modules.update(mods)
-    return saved
-
-
-def _restore_modules(saved):
-    for k, v in saved.items():
-        if v is None:
-            sys.modules.pop(k, None)
-        else:
-            sys.modules[k] = v
+    return mock.patch.dict(sys.modules, {"konsol.close": close,
+                                         "konsol.close.signoff_gate": signoff_gate,
+                                         **(extra or {})})
 
 
 def _submit_single(site, tbs, csv_text=SINGLE_CSV):
@@ -351,11 +344,8 @@ def _submit_single(site, tbs, csv_text=SINGLE_CSV):
     doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "ZZA", 2099, 1
     doc.row_count, doc.amount_basis = 2, "Period movement"
     doc.tb_file = site.add_file(csv_text)
-    saved = _stubbed_modules(site)
-    try:
+    with _stubbed_modules(site):
         doc.on_submit()
-    finally:
-        _restore_modules(saved)
     return doc
 
 
@@ -369,6 +359,8 @@ def test_a_declared_dimension_reaches_the_warehouse_from_the_form():
 
     _submit_single(site, tbs)   # red: refused, "create the Dimension ..."
 
+    # konsol#305 A63: the submit is recorded against the period's sign-off.
+    assert site.data_changes == [(2099, 1, "TB TBS-1 submitted")], site.data_changes
     sql = site.one_insert()
     assert f"submitted_at, {'partner_data_area_id'}, {DIM}) VALUES" in sql, sql
     assert f"'{VALUE}'" in sql, sql
@@ -467,11 +459,8 @@ def _run_bulk_load(site, bulk, csv_text=BULK_CSV, name="TBU-1"):
     timeouts = types.ModuleType("rq.timeouts")
     timeouts.BaseTimeoutException = type("BaseTimeoutException", (Exception,), {})
     rq.timeouts = timeouts
-    saved = _stubbed_modules(site, {"rq": rq, "rq.timeouts": timeouts})
-    try:
+    with _stubbed_modules(site, {"rq": rq, "rq.timeouts": timeouts}):
         bulk.run_load(upload.name)
-    finally:
-        _restore_modules(saved)
     return site.progress[-1]
 
 

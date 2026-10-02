@@ -98,6 +98,11 @@ def _is_skip(exc):
     return isinstance(exc, unittest.SkipTest) or type(exc).__name__ == "Skipped"
 
 
+#: Modules that come with a Frappe bench and are never on a host. A test body
+#: that imports one has a missing stub, not a missing dependency (konsol#255).
+FRAPPE_STACK = frozenset({"frappe", "rq", "redis"})
+
+
 def _skip_reason(exc):
     """Why a file cannot run on a host, or None when its load error is a real
     failure. A broken konsol import (a renamed name, a missing submodule of an
@@ -243,12 +248,17 @@ def main(argv):
                     fn()
                     passed += 1
                 except ModuleNotFoundError as exc:
-                    # frappe is never on a host: a test body that reaches it
-                    # is missing a stub, and must fail rather than vanish into
-                    # the "needs pytest" list (a test that means to skip says
-                    # so with importorskip, handled below).
-                    reaches_frappe = (exc.name or "").split(".")[0] == "frappe"
-                    if _skip_reason(exc) and not reaches_frappe:
+                    root = (exc.name or "").split(".")[0]
+                    if root in FRAPPE_STACK:
+                        # Never on a host, so a test body that reaches it is
+                        # missing a stub. It fails, rather than vanishing into
+                        # "needs pytest": a test that means to skip says so
+                        # with importorskip, which is handled below.
+                        failures.append((rel, name, f"{type(exc).__name__}: {exc} "
+                                         f"(a test body reached the {root} stack: stub "
+                                         f"it, or importorskip if the test should skip)",
+                                         traceback.format_exc()))
+                    elif _skip_reason(exc):
                         # A third-party import inside the test body (yaml, requests).
                         missing_deps.add(exc.name or str(exc))
                         needs_pytest.append(f"{rel}::{name}")
