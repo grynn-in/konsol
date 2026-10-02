@@ -19,7 +19,7 @@ BACKFILL = "backfill"
 SOURCES = (LIVE, BACKFILL)
 
 KINDS = (
-    "approved", "self_approved", "rejected",
+    "approved", "self_approved", "rejected", "approval_cancelled",
     "period_closed", "period_locked", "period_reopened",
     "year_closed", "year_locked", "year_reopened",
     "signed_off", "signoff_voided",
