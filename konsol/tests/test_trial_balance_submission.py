@@ -579,15 +579,17 @@ def test_validate_checks_the_file_basis_against_the_form():
 def test_the_claim_carries_the_amount_basis():
     """on_submit's control-table INSERT names amount_basis last, after
     claimed_at, and lands the form's value; bronze reads the basis off the claim."""
-    sent = []
-    _m.execute = lambda sql, *a, **k: sent.append(sql) or ""
+    log = []
     doc = _m.TrialBalanceSubmission()
     doc.batch_id, doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "b1", "ZZA", 2099, 1
     doc.name, doc.row_count, doc.amount_basis = "TBS-1", 2, CLOSING
+    doc.uploaded_on_behalf, doc.amended_from = "No", None
     doc._parse_file = lambda: []
     doc._ensure_tables = lambda: None
     doc._land_rows = lambda rows: None
-    doc.on_submit()
+    # T05: on_submit also records a Close Event; the stub module stands in for it.
+    _with_close_event(log, doc.on_submit)
+    sent = [e[1] for e in log if e[0] == "ch"]
     claim = next(s for s in sent if s.startswith(f"INSERT INTO {_m.CONTROL_TABLE} "))
     assert "fiscal_period, row_count, claimed_at, amount_basis) VALUES" in claim
     assert claim.endswith(f"2, now(), '{CLOSING}')")
