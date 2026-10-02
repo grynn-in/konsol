@@ -83,6 +83,7 @@ class _Site:
         self.tbs = []  # Trial Balance Submission rows (E406): {"data_area_id", "fiscal_year", "fiscal_period", "docstatus"}
         self.can_record = True  # frappe.has_permission("Ownership Period", "create") (E406)
         self.allowed = None  # allowed_entity_codes(): None = unrestricted (E405, W2-10)
+        self.quoted_per_options = "1\n10\n100\n1000\n10000"  # E409b: Group Exchange Rate meta
         self.move_answer = None
         self.move_calls = []
         self.needs_calls = []
@@ -213,12 +214,19 @@ def _frappe(site):
         assert (doctype, ptype) == ("Ownership Period", "create"), (doctype, ptype)
         return site.can_record
 
+    def get_meta(doctype):
+        site.reads.append(("get_meta", doctype))
+        assert doctype == "Group Exchange Rate", doctype
+        fields = {"quoted_per": types.SimpleNamespace(options=site.quoted_per_options)}
+        return types.SimpleNamespace(get_field=lambda f: fields[f])
+
     frappe.get_doc = get_doc
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.get_all = get_all
+    frappe.get_meta = get_meta
     frappe.has_permission = has_permission
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.flags = {}
@@ -627,11 +635,26 @@ def test_the_query_count_is_constant_in_the_number_of_pairs():
     one, six = _pairs_site(1), _pairs_site(6)
     r1, r6 = _call(one), _call(six)
     assert len(r1["rows"]) == 1 and len(r6["rows"]) == 6
-    assert len(one.reads) == 7, one.reads
-    assert len(six.reads) == 7, six.reads
+    assert len(one.reads) == 8, one.reads  # 7 + 1 get_meta for quoted_per_options (E409b)
+    assert len(six.reads) == 8, six.reads
     assert one.needs_calls == [(2025, 7)] and six.needs_calls == [(2025, 7)]
     versions = [r for r in six.reads if r == ("get_all", "Version")]
     assert len(versions) == 1
+
+
+# --- quoted_per_options (E409b): the one source of truth is the doctype meta ---------
+
+def test_get_rates_sends_quoted_per_options_from_the_group_exchange_rate_meta():
+    site = _Site()
+    result = _call(site)
+    assert result["quoted_per_options"] == ["1", "10", "100", "1000", "10000"]
+
+
+def test_a_changed_meta_changes_the_quoted_per_options_payload():
+    site = _Site()
+    site.quoted_per_options = "5\n\n50\n"
+    result = _call(site)
+    assert result["quoted_per_options"] == ["5", "50"]
 
 
 # --- save_rate (E404): the Analyst saves a draft; nothing else can be set -----------

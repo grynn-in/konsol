@@ -17,11 +17,14 @@ rate grid, as ``rates_model.grid`` assembles it:
   judged on the draft's preparers (``self_approval.preparers_for``,
   #305-W2-14), with ``edited_by``: the preparers other than the owner. An
   approved or missing cell carries ``approve: None`` and ``edited_by: None``;
-- the policy gaps, and whether the caller may enter or approve.
+- the policy gaps, and whether the caller may enter or approve;
+- ``quoted_per_options``, the Group Exchange Rate ``quoted_per`` field's own
+  Select options (E409b): the one source of truth, so the screen never keeps
+  a hand-copied list of its own.
 
 Viewers (EPM User) read it and write nothing (#305-W2-10): ``approve_mode``
 already says ``not_approver`` for them. The number of reads does not depend
-on the number of pairs: 7 MariaDB reads and 1 ClickHouse query.
+on the number of pairs: 8 MariaDB reads and 1 ClickHouse query.
 
 ``save_rate(...)`` (POST, E404) saves one cell: a new Closing or Average draft,
 or an edit of a named draft. It names only the grain, the quote, the unit and
@@ -87,6 +90,13 @@ def _period_row(key):
 def _number(value):
     """A Float column as a JSON-safe float (MariaDB may hand back a Decimal)."""
     return None if value is None else float(value)
+
+
+def _quoted_per_options():
+    """The Group Exchange Rate ``quoted_per`` Select field's own options
+    (E409b), so the screen never keeps a hand-copied list of its own."""
+    options = frappe.get_meta(GER).get_field("quoted_per").options
+    return [line.strip() for line in (options or "").splitlines() if line.strip()]
 
 
 def _required(fy, fp):
@@ -184,6 +194,7 @@ def get_rates(fiscal_year, fiscal_period):
         "can_enter": bool(role_set & set(group_rates.PREFILL_ROLES))
         and period.get("status") == "Open",
         "can_approve": bool(role_set & set(close_policy_model.APPROVER_ROLES)),
+        "quoted_per_options": _quoted_per_options(),
     }
 
 
