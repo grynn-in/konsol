@@ -162,7 +162,7 @@ doc_events = {
 # konsol#305-D2-3 (R5): the self-approval policy on every approval doctype.
 # "*" because the doctype list lives in one place,
 # close_policy_model.APPROVAL_DOCTYPES; the hook ignores every other doctype.
-doc_events["*"] = {"before_submit": "konsol.close.self_approval.check"}
+doc_events["*"] = {"before_submit": "konsol.close.self_approval.check", "on_cancel": "konsol.close.cancel_event.record"}
 
 # ---------------------------------------------------------------------------
 # Entity-scoped access (#91)
