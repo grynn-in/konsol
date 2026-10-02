@@ -243,7 +243,12 @@ def main(argv):
                     fn()
                     passed += 1
                 except ModuleNotFoundError as exc:
-                    if _skip_reason(exc):
+                    # frappe is never on a host: a test body that reaches it
+                    # is missing a stub, and must fail rather than vanish into
+                    # the "needs pytest" list (a test that means to skip says
+                    # so with importorskip, handled below).
+                    reaches_frappe = (exc.name or "").split(".")[0] == "frappe"
+                    if _skip_reason(exc) and not reaches_frappe:
                         # A third-party import inside the test body (yaml, requests).
                         missing_deps.add(exc.name or str(exc))
                         needs_pytest.append(f"{rel}::{name}")
