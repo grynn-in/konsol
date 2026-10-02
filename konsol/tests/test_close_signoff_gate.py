@@ -238,7 +238,7 @@ def _load(site):
         if site.close_event_fail:
             raise RuntimeError(site.close_event_fail)
         site.close_events.append(
-            (kind, fiscal_year, fiscal_period, reference_doctype, reference_name, reason))
+            (kind, fiscal_year, fiscal_period, reference_doctype, reference_name, reason, entity))
 
     close_event.record = _record_event
     close.close_event = close_event
@@ -832,12 +832,14 @@ def test_reopening_records_a_signoff_voided_event_per_marked_run():
     marked = _mark(site, 2025, 7, "P07")
     assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
     assert sorted(e[4] for e in site.close_events) == sorted(marked), site.close_events
-    for kind, fy, fp, ref_dt, ref_name, reason in site.close_events:
+    for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
         assert kind == "signoff_voided", kind
         assert fy == 2025, fy
         assert ref_dt == "Assertion Run", ref_dt
         assert ref_name in marked, ref_name
         assert "reopened" in reason, reason
+        # S1/E2-6: a reopen names no entity; the void stays group-visible.
+        assert entity is None, entity
     # Each event names the run's own period, not just the reopened period.
     by_name = {e[4]: e for e in site.close_events}
     assert by_name["RUN-9"][2] == 9, by_name["RUN-9"]
@@ -920,10 +922,27 @@ def test_a_data_change_records_a_signoff_voided_event():
     marked = _record(site, 2025, 8)
     assert marked == ["RUN-8"], marked
     assert len(site.close_events) == 1, site.close_events
-    kind, fy, fp, ref_dt, ref_name, reason = site.close_events[0]
+    kind, fy, fp, ref_dt, ref_name, reason, entity = site.close_events[0]
     assert (kind, fy, fp, ref_dt, ref_name) == (
         "signoff_voided", 2025, 8, "Assertion Run", "RUN-8"), site.close_events
     assert CHANGED_TEXT in reason, reason
+    # No caller named an entity here: the void stays group-visible.
+    assert entity is None, entity
+
+
+# --- S1, E2-6: a TB-triggered void carries its entity -----------------------
+
+def test_a_data_change_names_its_entity_in_the_voided_event():
+    """record_data_change accepts entity and passes it to the signoff_voided
+    event, so trail scoping can hide a void whose reason names a hidden TB."""
+    site = _Site()
+    marked = _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY, "ZZA")
+    assert marked == ["RUN-8"], marked
+    assert len(site.close_events) == 1, site.close_events
+    kind, fy, fp, ref_dt, ref_name, reason, entity = site.close_events[0]
+    assert (kind, fy, fp, ref_dt, ref_name) == (
+        "signoff_voided", 2025, 8, "Assertion Run", "RUN-8"), site.close_events
+    assert entity == "ZZA", site.close_events
 
 
 def test_a_close_event_failure_propagates_from_a_data_change():
