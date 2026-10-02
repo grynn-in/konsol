@@ -172,13 +172,28 @@ test("banner: no pairs_error, no blockers, no gaps is an empty list", () => {
 });
 
 // -- saveBody -------------------------------------------------------------------
+//
+// saveBody takes a row as gridView hands it back out (camelCase
+// fromCurrency/toCurrency, closing/average cell views), not the raw
+// snake_case payload row() builds above.
 
 function period() {
   return { fiscal_year: 2026, fiscal_period: 8, period_code: "FY2026-P08", status: "Open" };
 }
 
+function viewRow(overrides = {}) {
+  return {
+    fromCurrency: "JPY",
+    toCurrency: "USD",
+    required: true,
+    closing: { name: null },
+    average: { name: null },
+    ...overrides,
+  };
+}
+
 test("saveBody: a new cell carries exactly the 8 keys, no name", () => {
-  const r = row({ closing: cell({ name: null }) });
+  const r = viewRow({ closing: { name: null } });
   const { body, error } = saveBody(period(), r, "Closing", { quote: "1.05", quotedPer: 1, changeReason: null });
   assert.equal(error, undefined);
   assert.deepEqual(Object.keys(body).sort(), [
@@ -192,7 +207,7 @@ test("saveBody: a new cell carries exactly the 8 keys, no name", () => {
 });
 
 test("saveBody: an edited cell adds name, and never docstatus/source/owner/erp_quote/source_note", () => {
-  const r = row({ average: cell({ name: "GER-77" }) });
+  const r = viewRow({ average: { name: "GER-77" } });
   const { body } = saveBody(period(), r, "Average", { quote: "1.1", quotedPer: 1, changeReason: "Market move" });
   assert.deepEqual(Object.keys(body).sort(), [
     "change_reason", "fiscal_period", "fiscal_year", "from_currency",
@@ -205,19 +220,19 @@ test("saveBody: an edited cell adds name, and never docstatus/source/owner/erp_q
 });
 
 test("saveBody: an empty quote gives an error and no body", () => {
-  const r = row();
+  const r = viewRow();
   const result = saveBody(period(), r, "Closing", { quote: "", quotedPer: 1, changeReason: null });
   assert.deepEqual(result, { error: "Enter a quote." });
 });
 
 test("saveBody: a non-numeric quote gives an error", () => {
-  const r = row();
+  const r = viewRow();
   const result = saveBody(period(), r, "Closing", { quote: "abc", quotedPer: 1, changeReason: null });
   assert.deepEqual(result, { error: "Enter a quote." });
 });
 
 test("saveBody: a blank Quoted Per gives an error", () => {
-  const r = row();
+  const r = viewRow();
   const result = saveBody(period(), r, "Closing", { quote: "1.05", quotedPer: "", changeReason: null });
   assert.deepEqual(result, { error: "Choose Quoted Per." });
 });
