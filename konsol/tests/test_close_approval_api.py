@@ -97,6 +97,8 @@ def _frappe(site):
             self.docstatus = 0
             self.status = None
             self.flags = types.SimpleNamespace()
+            # A Frappe document has every field of its doctype; blank unless given.
+            self.data_area_id = self.acquired_entity = self.disposed_entity = None
             for k, v in site.fields.items():
                 setattr(self, k, v)
 

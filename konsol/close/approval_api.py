@@ -11,10 +11,16 @@ This endpoint does not decide policy. The ``before_submit`` hook
 self-approval with no reason, or any Blocked self-approval, is refused there.
 
 The close-ui approval screen (E6) is the intended caller.
+
+Close Events (konsol#305 T02b, E10-P11): ``approve`` writes none itself. A
+Desk submit and a workflow "Approve" never reach it, so the approval event is
+written by the hook alone, once, for every submit path. ``reject`` is not a
+submit, so it writes its own ``rejected`` event, in its own transaction; the
+writer's exception is never caught.
 """
 import frappe
 
-from konsol.close import close_policy_model, self_approval
+from konsol.close import close_event, close_policy_model, self_approval
 from konsol.close.self_approval import REASON_FLAG
 
 
@@ -82,4 +88,7 @@ def reject(doctype, name, reason=None):
 
     doc = apply_workflow(doc, "Reject") or frappe.get_doc(doctype, name)
     doc.add_comment("Comment", f"Rejected: {reason}")
+    close_event.record(
+        "rejected", *close_event.period_of(doc), doctype, name, reason=reason,
+        entity=close_event.entity_of(doc), detail={"preparer": doc.owner})
     return {"name": doc.name, "status": doc.status}

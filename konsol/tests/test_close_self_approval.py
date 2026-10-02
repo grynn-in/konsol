@@ -171,16 +171,37 @@ def _load(policy, user=ADMIN, flags=None, versions=None, state_fields=None,
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
-        for n, old in saved.items():
-            if old is not None:
-                sys.modules[n] = old
-            else:
-                sys.modules.pop(n, None)
+        _restore(saved)
+
+    real_check = module.check
+
+    def check(doc, method=None):
+        # check imports the writer at call time (T02b), so the stubs are in
+        # sys.modules for the call too.
+        saved_now = {n: sys.modules.get(n) for n in mods}
+        sys.modules.update(mods)
+        try:
+            return real_check(doc, method)
+        finally:
+            _restore(saved_now)
+
+    module.check = check
     return module, frappe, reads
+
+
+def _restore(saved):
+    for n, old in saved.items():
+        if old is not None:
+            sys.modules[n] = old
+        else:
+            sys.modules.pop(n, None)
 
 
 def _doc(doctype="IC Balance", name="ICB-1", owner=ADMIN, **fields):
     comments = []
+    # A Frappe document has every field of its doctype; blank unless given.
+    fields = dict({"data_area_id": None, "acquired_entity": None, "disposed_entity": None},
+                  **fields)
     doc = types.SimpleNamespace(doctype=doctype, name=name, owner=owner, comments=comments,
                                 **fields)
     doc.add_comment = lambda kind, text=None, **k: comments.append((kind, text))
