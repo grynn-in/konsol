@@ -334,7 +334,7 @@ def test_a_clean_site_gives_four_rows_with_the_unowned_tb_a_problem():
     assert zzx["problem"] is True
     assert zzx["in_scope"] is False
     assert zzx["ownership"] == {"tone": "blocking", "label": "None for P09"}
-    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership"}
+    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period"}
     zza = rows["ZZA"]
     assert zza["problem"] is False, zza
     assert zza["ownership"]["label"] == "Full · 100%"
