@@ -174,7 +174,7 @@ def test_without_pytest_fixture_tests_are_listed_and_require_pytest_fails():
         return code, out.getvalue()
 
     with _test_file(FIXTURE_TESTS) as path, \
-            mock.patch.object(runner, "_pytest_available", lambda: False, create=True):
+            mock.patch.object(runner, "_pytest_available", lambda: False):
         code, out = run(path)
         assert code == 0 and "1/1 passed" in out and "2 test(s) skipped" in out, out
         code, out = run("--require-pytest", path)
@@ -192,3 +192,69 @@ def test_a_parametrized_fixture_test_counts_each_case():
         code, out = _run(path)
     assert code == 1, out
     assert "2/3 passed" in out and "did not run" not in out, out
+
+
+def _fixture_run(body, *names):
+    """Hand `names` in a generated file straight to the pytest half of the
+    runner; return (passed, total, failures, skips)."""
+    import pytest
+    del pytest
+    runner = _runner()
+    with _test_file(body) as path:
+        return runner._run_fixture_tests([("gen.py", path, n) for n in names])
+
+
+def test_one_name_pytest_cannot_collect_does_not_take_the_file_with_it():
+    """Node ids made pytest refuse the whole file over one bad name, so every
+    other fixture test in it failed too. Only the missing one fails now."""
+    passed, total, failures, _ = _fixture_run(
+        FIXTURE_TESTS, "test_fixture_passes", "test_ghost")
+    assert (passed, total) == (1, 2), failures
+    assert [(f[1], f[2]) for f in failures] == [("test_ghost", "pytest did not run this test")]
+
+
+def test_a_teardown_error_fails_the_test_once():
+    """pytest reports a test whose fixture breaks in teardown twice, a pass and
+    an error. It is one test, and it failed."""
+    body = ("import pytest\n\n\n@pytest.fixture\ndef broken():\n    yield 1\n"
+            "    raise RuntimeError('teardown boom')\n\n\n"
+            "def test_t(broken):\n    assert broken == 1\n")
+    passed, total, failures, _ = _fixture_run(body, "test_t")
+    assert (passed, total) == (0, 1), failures
+    assert len(failures) == 1 and "teardown boom" in failures[0][2] + failures[0][3]
+
+
+def test_an_xfail_counts_as_a_pass_not_a_skip():
+    """An expected failure ran and did what it declares; listing it as a skip
+    would fail a MUST_RUN file for it."""
+    body = ("import pytest\n\n\n@pytest.mark.xfail(reason='known')\n"
+            "def test_x(tmp_path):\n    assert False\n")
+    passed, total, failures, skips = _fixture_run(body, "test_x")
+    assert (passed, total, failures, skips) == (1, 1, [], [])
+
+
+def test_a_file_pytest_cannot_collect_fails_once_with_its_output():
+    """A file that imports on the host but not under pytest is one failure for
+    the file, carrying pytest's output, not one per test on top of it."""
+    body = ("import sys\nif '_pytest' in sys.modules:\n"
+            "    raise ImportError('only under pytest')\n\n\n"
+            "def test_a(tmp_path):\n    pass\n\n\ndef test_b(tmp_path):\n    pass\n")
+    passed, total, failures, _ = _fixture_run(body, "test_a", "test_b")
+    assert (passed, total) == (0, 2), failures
+    assert len(failures) == 1 and failures[0][1] == "<pytest>", failures
+    assert "only under pytest" in failures[0][3], failures
+
+
+def test_a_relative_path_resolves_from_where_the_runner_was_started():
+    """pytest runs from the app root; a path given relative to another
+    directory must still find the file."""
+    runner = _runner()
+    with _test_file(FIXTURE_TESTS) as path:
+        here = os.getcwd()
+        os.chdir(os.path.dirname(path))
+        try:
+            passed, total, failures, _ = runner._run_fixture_tests(
+                [("gen.py", os.path.basename(path), "test_fixture_passes")])
+        finally:
+            os.chdir(here)
+    assert (passed, total, failures) == (1, 1, []), failures

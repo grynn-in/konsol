@@ -193,6 +193,10 @@ def _must_run_failures(named, skipped, needs_pytest):
     return out
 
 
+#: Seconds one file's pytest run may take before it fails the run.
+PYTEST_TIMEOUT = 600
+
+
 def _pytest_available():
     return importlib.util.find_spec("pytest") is not None
 
@@ -203,8 +207,12 @@ def _run_fixture_tests(fixture_tests):
     One pytest process per file: the files stub ``sys.modules`` at import,
     and one collection over the whole suite collides. Returns (passed, total,
     failures, skips) in the runner's own shapes; a test pytest skips (an
-    importorskip, say) stays a listed skip. A file whose pytest run produced
-    no report (a collection error) fails as a whole, with pytest's output.
+    importorskip, say) stays a listed skip, and an xfail counts as a pass.
+
+    The file is selected with ``-k`` rather than node ids: one name pytest
+    cannot collect would make it refuse the whole file. The JUnit report is
+    authoritative, and only the requested tests in it count. A file that
+    cannot be collected fails once, as a whole, with pytest's output.
     """
     import subprocess
     import tempfile
@@ -212,46 +220,82 @@ def _run_fixture_tests(fixture_tests):
 
     by_file = {}
     for rel, path, name in fixture_tests:
-        by_file.setdefault((rel, path), []).append(name)
+        by_file.setdefault((rel, os.path.abspath(path)), []).append(name)
 
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
     passed = total = 0
     failures, skips = [], []
     for (rel, path), names in by_file.items():
+        wanted = set(names)
         with tempfile.TemporaryDirectory() as d:
             report = os.path.join(d, "report.xml")
-            proc = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                 f"--junitxml={report}", *[f"{path}::{n}" for n in names]],
-                cwd=ROOT, capture_output=True, text=True)
-            if not os.path.exists(report):
-                failures.append((rel, "<pytest>", f"pytest exited {proc.returncode} "
-                                 "without a report", proc.stdout + proc.stderr))
+            cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                   f"--rootdir={ROOT}", f"--junitxml={report}",
+                   "-k", " or ".join(sorted(wanted)), path]
+            try:
+                proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True,
+                                      text=True, timeout=PYTEST_TIMEOUT)
+                out = proc.stdout + proc.stderr
+            except subprocess.TimeoutExpired as exc:
+                total += len(wanted)
+                failures.append((rel, "<pytest>", f"pytest timed out after "
+                                 f"{PYTEST_TIMEOUT}s", _text(exc.stdout) + _text(exc.stderr)))
                 continue
-            seen = set()
+            if not os.path.exists(report):
+                total += len(wanted)
+                failures.append((rel, "<pytest>", f"pytest exited {proc.returncode} "
+                                 "without a report", out))
+                continue
+            # case name -> worst outcome. A teardown error reports a second
+            # entry for a test that passed; the error must win.
+            outcome = {}
+            file_errors = []
             for case in ET.parse(report).iter("testcase"):
                 name = case.get("name", "")
-                # a parametrized test reports one case per parameter set,
-                # "name[params]"; each counts, and all belong to its function
-                seen.add(name.split("[", 1)[0])
                 bad = case.find("failure")
                 if bad is None:
                     bad = case.find("error")
-                if case.find("skipped") is not None:
+                # a parametrized test reports one case per parameter set,
+                # "name[params]"; each counts, and all belong to its function
+                if name.split("[", 1)[0] not in wanted:
+                    if bad is not None:  # a collection error names the file
+                        file_errors.append(bad)
+                    continue
+                skip = case.find("skipped")
+                if bad is not None:
+                    result = (2, (bad.get("message") or "failed").strip(), bad.text or "")
+                elif skip is not None and skip.get("type") != "pytest.xfail":
+                    result = (1, None, None)
+                else:  # passed, or an expected failure that failed
+                    result = (0, None, None)
+                if result[0] >= outcome.get(name, (-1,))[0]:
+                    outcome[name] = result
+            if file_errors:
+                total += len(wanted)
+                bad = file_errors[0]
+                failures.append((rel, "<pytest>", (bad.get("message") or "error").strip(),
+                                 (bad.text or "") + out))
+                continue
+            for name, (rank, msg, tb) in outcome.items():
+                if rank == 1:
                     skips.append(f"{rel}::{name}")
-                elif bad is not None:
-                    total += 1
-                    failures.append((rel, name, (bad.get("message") or "failed").strip(),
-                                     bad.text or ""))
+                    continue
+                total += 1
+                if rank == 2:
+                    failures.append((rel, name, msg, tb))
                 else:
-                    total += 1
                     passed += 1
-            for name in names:
-                if name not in seen:
-                    # asked for, never reported: pytest could not collect it
-                    total += 1
-                    failures.append((rel, name, "pytest did not run this test",
-                                     proc.stdout + proc.stderr))
+            for name in sorted(wanted - {n.split("[", 1)[0] for n in outcome}):
+                # asked for, never reported: pytest could not collect it
+                total += 1
+                failures.append((rel, name, "pytest did not run this test", out))
     return passed, total, failures, skips
+
+
+def _text(b):
+    if b is None:
+        return ""
+    return b.decode(errors="replace") if isinstance(b, bytes) else b
 
 
 def main(argv):
@@ -397,7 +441,7 @@ def main(argv):
         print(f"\n{len(failures)} failure(s):")
         for rel, name, msg, tb in failures:
             print(f"\n  {rel}::{name}\n    {msg}")
-            if name == "<load>":
+            if name in ("<load>", "<pytest>") or msg == "pytest did not run this test":
                 # the cause is usually deep inside a konsol import
                 for line in tb.rstrip().splitlines()[-6:]:
                     print(f"      {line}")
