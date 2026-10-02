@@ -8,6 +8,12 @@ on their host. This runs them with nothing but the standard library.
 
     python3 scripts/run-host-tests.py                 # every host test
     python3 scripts/run-host-tests.py konsol/tests/test_period_status.py
+    python3 scripts/run-host-tests.py --require-pytest   # what CI runs
+
+A test that takes pytest fixtures cannot be called here. When pytest is
+installed, those tests run through it, one pytest process per file, and count
+in the totals (konsol#318). Without pytest they are listed as skips, and
+--require-pytest makes that a failure.
 
 Only covers tests that read source files. Anything importing `frappe` needs a
 live site:
@@ -187,9 +193,75 @@ def _must_run_failures(named, skipped, needs_pytest):
     return out
 
 
+def _pytest_available():
+    return importlib.util.find_spec("pytest") is not None
+
+
+def _run_fixture_tests(fixture_tests):
+    """Run tests that take pytest fixtures through pytest (konsol#318).
+
+    One pytest process per file: the files stub ``sys.modules`` at import,
+    and one collection over the whole suite collides. Returns (passed, total,
+    failures, skips) in the runner's own shapes; a test pytest skips (an
+    importorskip, say) stays a listed skip. A file whose pytest run produced
+    no report (a collection error) fails as a whole, with pytest's output.
+    """
+    import subprocess
+    import tempfile
+    import xml.etree.ElementTree as ET
+
+    by_file = {}
+    for rel, path, name in fixture_tests:
+        by_file.setdefault((rel, path), []).append(name)
+
+    passed = total = 0
+    failures, skips = [], []
+    for (rel, path), names in by_file.items():
+        with tempfile.TemporaryDirectory() as d:
+            report = os.path.join(d, "report.xml")
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                 f"--junitxml={report}", *[f"{path}::{n}" for n in names]],
+                cwd=ROOT, capture_output=True, text=True)
+            if not os.path.exists(report):
+                failures.append((rel, "<pytest>", f"pytest exited {proc.returncode} "
+                                 "without a report", proc.stdout + proc.stderr))
+                continue
+            seen = set()
+            for case in ET.parse(report).iter("testcase"):
+                name = case.get("name", "")
+                # a parametrized test reports one case per parameter set,
+                # "name[params]"; each counts, and all belong to its function
+                seen.add(name.split("[", 1)[0])
+                bad = case.find("failure")
+                if bad is None:
+                    bad = case.find("error")
+                if case.find("skipped") is not None:
+                    skips.append(f"{rel}::{name}")
+                elif bad is not None:
+                    total += 1
+                    failures.append((rel, name, (bad.get("message") or "failed").strip(),
+                                     bad.text or ""))
+                else:
+                    total += 1
+                    passed += 1
+            for name in names:
+                if name not in seen:
+                    # asked for, never reported: pytest could not collect it
+                    total += 1
+                    failures.append((rel, name, "pytest did not run this test",
+                                     proc.stdout + proc.stderr))
+    return passed, total, failures, skips
+
+
 def main(argv):
-    paths = argv[1:] or list(_discover())
+    # --require-pytest (CI passes it): tests that take pytest fixtures must
+    # run, so a missing pytest fails the run instead of skipping them all.
+    require_pytest = "--require-pytest" in argv[1:]
+    args = [a for a in argv[1:] if a != "--require-pytest"]
+    paths = args or list(_discover())
     total = passed = 0
+    fixture_tests = []   # (rel, path, name): run through pytest after the loop
     failures = []
     skipped = []
     load_failures = 0
@@ -240,7 +312,7 @@ def main(argv):
                 except (TypeError, ValueError):
                     takes_fixtures = False
                 if takes_fixtures:
-                    needs_pytest.append(f"{rel}::{name}")
+                    fixture_tests.append((rel, path, name))
                     continue
 
                 total += 1
@@ -279,6 +351,19 @@ def main(argv):
         finally:
             _isolate(before)
 
+    if fixture_tests and _pytest_available():
+        p, t, fixture_failures, fixture_skips = _run_fixture_tests(fixture_tests)
+        passed += p
+        total += t
+        failures.extend(fixture_failures)
+        needs_pytest.extend(fixture_skips)
+    elif fixture_tests:
+        needs_pytest.extend(f"{rel}::{name}" for rel, _, name in fixture_tests)
+        if require_pytest:
+            failures.append(("<runner>", "--require-pytest",
+                             f"pytest is required to run {len(fixture_tests)} test(s) "
+                             "that take pytest fixtures, and it is not installed", ""))
+
     ran = len(paths) - len(skipped) - load_failures
     print(f"{passed}/{total} passed across {ran} files")
 
@@ -298,7 +383,7 @@ def main(argv):
 
     # A declared skip that ran is good news and a stale list. Report it, but do
     # not fail: it makes a number unexplained, not wrong (konsol#247).
-    if not argv[1:]:
+    if not args:
         ran_anyway = sorted(declared - {rel for rel, _ in skipped})
         if ran_anyway:
             print(f"\n{len(ran_anyway)} declared skip(s) ran after all — trim "
@@ -306,7 +391,7 @@ def main(argv):
             for rel in ran_anyway:
                 print(f"  {rel}")
 
-    failures.extend(_must_run_failures(argv[1:], skipped, needs_pytest))
+    failures.extend(_must_run_failures(args, skipped, needs_pytest))
 
     if failures:
         print(f"\n{len(failures)} failure(s):")

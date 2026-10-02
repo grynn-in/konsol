@@ -141,6 +141,7 @@ def test_importorskip_mid_body_is_still_a_skip_and_is_listed():
 
 
 FIXTURE_TESTS = (
+    "import pytest\n\n\n"
     "def test_plain():\n    assert True\n\n\n"
     "def test_fixture_passes(tmp_path):\n    assert tmp_path.exists()\n\n\n"
     "def test_fixture_fails(tmp_path):\n    assert False, 'fixture boom'\n"
@@ -178,3 +179,16 @@ def test_without_pytest_fixture_tests_are_listed_and_require_pytest_fails():
         assert code == 0 and "1/1 passed" in out and "2 test(s) skipped" in out, out
         code, out = run("--require-pytest", path)
         assert code == 1 and "pytest is required" in out, out
+
+
+def test_a_parametrized_fixture_test_counts_each_case():
+    """A parametrized test is reported by pytest as name[params], one case per
+    parameter set. Each case counts; none is mistaken for a test that never ran."""
+    import pytest
+    del pytest
+    body = ("import pytest\n\n\n@pytest.mark.parametrize('n', [1, 2, 3])\n"
+            "def test_p(n, tmp_path):\n    assert n < 3, n\n")
+    with _test_file(body) as path:
+        code, out = _run(path)
+    assert code == 1, out
+    assert "2/3 passed" in out and "did not run" not in out, out
