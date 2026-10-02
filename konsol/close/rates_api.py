@@ -22,6 +22,16 @@ rate grid, as ``rates_model.grid`` assembles it:
 Viewers (EPM User) read it and write nothing (#305-W2-10): ``approve_mode``
 already says ``not_approver`` for them. The number of reads does not depend
 on the number of pairs: 7 MariaDB reads and 1 ClickHouse query.
+
+``save_rate(...)`` (POST, E404) saves one cell: a new Closing or Average draft,
+or an edit of a named draft. It names only the grain, the quote, the unit and
+the reason, and has no ``**kwargs``: Frappe drops any request key a whitelisted
+function does not name (``frappe.get_newargs``), so a forged ``docstatus``,
+``source``, ``erp_quote``, ``source_note``, ``owner`` or ``amended_from`` never
+reaches it. It goes through ``insert()`` / ``save()`` with no ``ignore_*``
+flag, so the doctype's own validate decides (magnitude, digits, group currency,
+the move and its reason), and Frappe sets the owner. The Analyst has no submit
+on Group Exchange Rate, so the Analyst never approves (R2).
 """
 import frappe
 
@@ -151,3 +161,67 @@ def get_rates(fiscal_year, fiscal_period):
         and period.get("status") == "Open",
         "can_approve": bool(role_set & set(close_policy_model.APPROVER_ROLES)),
     }
+
+
+def _reason(change_reason):
+    """The Reason for Change, stripped; blank is no reason."""
+    return (str(change_reason).strip() or None) if change_reason is not None else None
+
+
+def _grain_text(from_currency, to_currency, rate_type, fy, fp):
+    return f"{rate_type} {from_currency} → {to_currency} FY{fy} P{fp:02d}"
+
+
+@frappe.whitelist(methods=["POST"])
+def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type, quote,
+              quoted_per, change_reason=None, name=None):
+    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
+    if rate_type not in group_rates.RATE_TYPES:
+        frappe.throw(f"Rate Type {rate_type} is not a group rate type: "
+                     f"use one of {', '.join(group_rates.RATE_TYPES)}.")
+    key = _period(fiscal_year, fiscal_period)
+    period = _period_row(key)
+    fy, fp = key
+    status = period.get("status")
+    if status != "Open":
+        frappe.throw(f"FY{fy} P{fp:02d} is {status}: group rates lock when their period "
+                     "closes (reopen it first).")
+    reason = _reason(change_reason)
+
+    if not name:
+        grain = {"to_currency": to_currency, "from_currency": from_currency,
+                 "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp}
+        existing = frappe.get_all(GER, filters=dict(grain, docstatus=["in", [0, 1]]),
+                                  fields=["name", "docstatus"])
+        approved = [r["name"] for r in existing if r["docstatus"] == 1]
+        if approved:
+            frappe.throw(
+                f"{approved[0]} is already the approved {rate_type} rate {from_currency} → "
+                f"{to_currency} for FY{fy} P{fp:02d}; a change is a cancel and an amendment "
+                "with a Reason for Change (Desk; E4-P7).")
+        if existing:
+            frappe.throw(f"{existing[0]['name']} is already a draft for this rate: edit it.")
+        doc = frappe.get_doc({"doctype": GER, "to_currency": to_currency,
+                              "from_currency": from_currency, "rate_type": rate_type,
+                              "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
+                              "quoted_per": quoted_per, "change_reason": reason})
+        doc.insert()
+    else:
+        doc = frappe.get_doc(GER, name)
+        if doc.docstatus != 0:
+            frappe.throw(
+                f"{name} is {'approved' if doc.docstatus == 1 else 'cancelled'}, not a draft: "
+                "a change is a cancel and an amendment with a Reason for Change (Desk; E4-P7).")
+        theirs = (doc.from_currency, doc.to_currency, doc.rate_type,
+                  int(doc.fiscal_year), int(doc.fiscal_period))
+        asked = (from_currency, to_currency, rate_type, fy, fp)
+        if theirs != asked:
+            frappe.throw(f"{name} is the {_grain_text(*theirs)} rate, not "
+                         f"{_grain_text(*asked)}: save it under its own key.")
+        doc.quote = quote
+        doc.quoted_per = quoted_per
+        doc.change_reason = reason
+        doc.save()
+
+    return {"name": doc.name, "docstatus": doc.docstatus, "quote_label": doc.get("quote_label"),
+            "source": doc.get("source")}
