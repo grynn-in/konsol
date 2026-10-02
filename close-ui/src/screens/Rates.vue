@@ -585,6 +585,7 @@ const TABS = computed(() => [
 										<td class="px-3 py-2">
 											<div v-if="cellOf(row, rateType).previousValue != null" class="font-mono text-ink-gray-8">
 												{{ cellOf(row, rateType).previousValue }}
+												<span class="text-xs text-ink-gray-5">per {{ cellOf(row, rateType).previousQuotedPer }}</span>
 											</div>
 											<div class="text-xs text-ink-gray-5">{{ cellOf(row, rateType).previousLabel }}</div>
 										</td>
