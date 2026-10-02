@@ -21,6 +21,8 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "approval_api.py")
 HOOK_PY = os.path.join(APP_DIR, "close", "self_approval.py")
 MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
+EVENT_MODEL_PY = os.path.join(APP_DIR, "close", "close_event_model.py")
+WRITER_PY = os.path.join(APP_DIR, "close", "close_event.py")
 
 LEAD = "zz-lead@example.com"
 ANALYST = "zz-analyst@example.com"
@@ -38,8 +40,13 @@ class _Flags(dict):
 
 class _Site:
     def __init__(self, roles=("EPM Admin",), user=LEAD, owner=LEAD, policy=ALLOWED,
-                 workflows=WORKFLOW_DOCTYPES, versions=()):
+                 workflows=WORKFLOW_DOCTYPES, versions=(), run_hook=True, record_raises=None,
+                 fields=None):
         self.roles = set(roles)
+        self.run_hook = run_hook  # False: submit() does not run the P07 hook
+        self.record_raises = record_raises  # the stub writer raises this
+        self.fields = dict(fields or {})  # extra fields on every stub doc
+        self.events = []  # Close Events recorded (T02b)
         self.versions = list(versions)  # Version rows {"docname", "owner", "data"}
         self.version_reads = []  # (doctype, docnames)
         self.state_field_reads = []  # doctypes
@@ -90,9 +97,14 @@ def _frappe(site):
             self.docstatus = 0
             self.status = None
             self.flags = types.SimpleNamespace()
+            # A Frappe document has every field of its doctype; blank unless given.
+            self.data_area_id = self.acquired_entity = self.disposed_entity = None
+            for k, v in site.fields.items():
+                setattr(self, k, v)
 
         def submit(self):
-            hook["check"](self)  # the P07 before_submit hook, as Frappe runs it
+            if site.run_hook:
+                hook["check"](self)  # the P07 before_submit hook, as Frappe runs it
             self.docstatus = 1
             site.submitted.append((self.doctype, self.name))
 
@@ -158,17 +170,67 @@ def _frappe(site):
     return frappe, hook
 
 
+def _writer(site, frappe):
+    """The real T02a writer loaded by path under stubs (so ``entity_of`` is the
+    product's own); ``record`` appends to ``site.events`` (or raises
+    ``site.record_raises``) and ``period_of`` returns (2025, 7)."""
+    close_pkg = types.ModuleType("konsol.close")
+    close_pkg.close_event_model = _load_by_path("close_event_model_for_t02b", EVENT_MODEL_PY)
+    close_pkg.period_model = types.ModuleType("konsol.close.period_model")
+    konsol_pkg = types.ModuleType("konsol")
+    konsol_pkg.period_status = types.ModuleType("konsol.period_status")
+    konsol_pkg.close = close_pkg
+    controller = types.ModuleType("konsol.consolidation.doctype.close_event")
+    controller.close_event = types.SimpleNamespace()
+    mods = {"frappe": frappe, "konsol": konsol_pkg, "konsol.close": close_pkg,
+            "konsol.period_status": konsol_pkg.period_status,
+            "konsol.close.period_model": close_pkg.period_model,
+            "konsol.close.close_event_model": close_pkg.close_event_model,
+            "konsol.consolidation.doctype.close_event": controller}
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        writer = _load_by_path("close_event_writer_for_t02b", WRITER_PY)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    def record(kind, fiscal_year, fiscal_period, reference_doctype=None, reference_name=None,
+               reason=None, detail=None, entity=None):
+        if site.record_raises:
+            raise site.record_raises
+        site.events.append({"kind": kind, "fiscal_year": fiscal_year,
+                            "fiscal_period": fiscal_period,
+                            "reference_doctype": reference_doctype,
+                            "reference_name": reference_name, "reason": reason,
+                            "detail": detail, "entity": entity})
+        return "CE-%09d" % len(site.events)
+
+    writer.record = record
+    writer.period_of = lambda doc: (2025, 7)
+    return writer, close_pkg.close_event_model
+
+
 def _call(site, fn, *args, **kwargs):
     frappe, hook = _frappe(site)
+    writer, event_model = _writer(site, frappe)
     names = ["konsol", "konsol.close"]
     mods = {n: types.ModuleType(n) for n in names}
     mods.update({"frappe": frappe, "frappe.model": frappe.model,
                  "frappe.model.workflow": frappe.model.workflow})
     saved = {n: sys.modules.get(n) for n in
              names + ["frappe", "frappe.model", "frappe.model.workflow",
-                      "konsol.close.close_policy_model", "konsol.close.self_approval"]}
+                      "konsol.close.close_policy_model", "konsol.close.self_approval",
+                      "konsol.close.close_event", "konsol.close.close_event_model"]}
     sys.modules.update(mods)
     try:
+        sys.modules["konsol.close.close_event"] = writer
+        sys.modules["konsol.close.close_event_model"] = event_model
+        mods["konsol.close"].close_event = writer
+        mods["konsol.close"].close_event_model = event_model
         policy_model = _load_by_path("konsol.close.close_policy_model", MODEL_PY)
         sys.modules["konsol.close.close_policy_model"] = policy_model
         mods["konsol.close"].close_policy_model = policy_model
@@ -363,3 +425,95 @@ def test_reject_with_a_reason_applies_the_workflow_sets_the_flag_and_comments():
 
 def test_the_reject_and_self_approval_reason_flags_are_named_differently():
     assert "konsol_reject_reason" != "konsol_self_approval_reason"
+
+
+# --- T02b (#305-W2-1): reject writes its Close Event; approve leaves it to the hook ---
+
+def test_reject_records_one_rejected_event_with_its_reason():
+    site = _Site(owner=ANALYST)
+    _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1", reason="  wrong entity ")
+    assert site.events == [{
+        "kind": "rejected", "fiscal_year": 2025, "fiscal_period": 7,
+        "reference_doctype": "Consolidation Journal", "reference_name": "ZZ-CJ-1",
+        "reason": "wrong entity", "detail": {"preparer": ANALYST}, "entity": None,
+    }], site.events
+
+
+def test_reject_of_a_business_combination_carries_its_entity():
+    # #305-W2-9: the reject event gets the same entity as the approval's.
+    site = _Site(owner=ANALYST, fields={"acquired_entity": "ZZ01"})
+    _call(site, "reject", "Business Combination", "ZZ-BC-1", reason="ZZ wrong date")
+    assert [e["entity"] for e in site.events] == ["ZZ01"], site.events
+
+
+def test_reject_with_a_blank_reason_records_no_event():
+    # Failure path: refused before any event.
+    for reason in (None, "", "   "):
+        site = _Site()
+        _raises(lambda: _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1",
+                              reason=reason), "ValidationError")
+        assert site.events == []
+
+
+def test_reject_of_a_doctype_with_no_workflow_records_no_event():
+    site = _Site()
+    _raises(lambda: _call(site, "reject", "IC Balance", "ZZ-1", reason="ZZ why"),
+            "ValidationError")
+    assert site.events == []
+
+
+def test_a_failing_writer_stops_the_reject():
+    # Failure path: the writer's exception propagates out of reject, uncaught.
+    boom = RuntimeError("ZZ close event insert failed")
+    site = _Site(record_raises=boom)
+    try:
+        _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1", reason="ZZ why")
+    except RuntimeError as e:
+        assert e is boom
+    else:
+        raise AssertionError("the writer's exception was swallowed")
+    assert site.events == []
+
+
+def test_approve_records_nothing_itself():
+    # E10-P11: the approval event is the hook's; with the hook not run, approve
+    # writes no event.
+    for doctype in ("IC Balance",) + WORKFLOW_DOCTYPES:
+        site = _Site(owner=ANALYST, run_hook=False)
+        _call(site, "approve", doctype, "ZZ-1")
+        assert site.events == [], (doctype, site.events)
+
+
+def test_approve_through_the_real_hook_records_exactly_one_event():
+    site = _Site(owner=ANALYST)
+    _call(site, "approve", "IC Balance", "ZZ-IC-1")
+    assert [e["kind"] for e in site.events] == ["approved"], site.events
+    site = _Site()
+    _call(site, "approve", "Consolidation Journal", "ZZ-CJ-1", reason="ZZ cover")
+    assert [(e["kind"], e["reason"]) for e in site.events] == [
+        ("self_approved", "ZZ cover")], site.events
+
+
+def test_a_failing_writer_stops_the_approve():
+    boom = RuntimeError("ZZ close event insert failed")
+    site = _Site(owner=ANALYST, record_raises=boom)
+    try:
+        _call(site, "approve", "IC Balance", "ZZ-IC-1")
+    except RuntimeError as e:
+        assert e is boom
+    else:
+        raise AssertionError("the writer's exception was swallowed")
+    assert site.submitted == [] and site.events == []
+
+
+def test_approve_does_not_call_the_writer_in_its_source():
+    import ast
+    with open(API_PY) as f:
+        tree = ast.parse(f.read())
+    approve = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "approve")
+    calls = [ast.unparse(n.func) for n in ast.walk(approve) if isinstance(n, ast.Call)]
+    assert not [c for c in calls if "close_event" in c or c.endswith("record")], calls
+    reject = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "reject")
+    calls = [ast.unparse(n.func) for n in ast.walk(reject) if isinstance(n, ast.Call)]
+    assert "close_event.record" in calls, calls
