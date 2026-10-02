@@ -52,9 +52,14 @@ submitted trial balance but no ownership covering the period's start
 (blocking, #305-W2-2) and the Active leaf entities out of scope for
 information, using the one scope rule in ``scope_model`` (G01) and never
 re-deriving it. A Viewer reads it with ``can_record`` False (#305-W2-10).
+Refuses an undeclared period, and a non-Regular one (R01h; the ownership
+screen covers Regular periods only, mirroring ``grid_api``'s refusal).
 ``blocking`` and ``out_of_scope`` are cut to ``allowed_entity_codes()``, with
-a ``hidden`` count (W2-10, W2-14). The query is keyed to the period's start
-date; moving it to the period's end waits on G09/G04 (W2-16, blocked).
+a combined ``hidden`` count (W2-10, W2-14) and a ``blocking_hidden`` count
+(R01h) naming only the hidden blocking entities, so a caller can tell a
+hidden gap from a merely-hidden out-of-scope entity. The query is keyed to
+the period's start date; moving it to the period's end waits on G09/G04
+(W2-16, blocked).
 """
 from datetime import date, datetime
 from urllib.parse import quote
@@ -359,11 +364,23 @@ def _cut(codes, allowed, key=lambda c: c):
     return visible, len(codes) - len(visible)
 
 
+#: get_ownership (R01h): wording mirrors grid_api._regular_row.
+OWNERSHIP_REGULAR_ONLY = (
+    "FY%d P%02d is a %s period; the ownership screen covers Regular periods only: "
+    "pick a Regular period."
+)
+
+
 @frappe.whitelist(methods=["GET"])
 def get_ownership(fiscal_year, fiscal_period):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     period = _period_row(key)
+    if period.get("period_type") != "Regular":
+        frappe.throw(
+            OWNERSHIP_REGULAR_ONLY
+            % (key[0], key[1], period.get("period_type") or "blank-type")
+        )
     fy, fp = key
     start = _ownership_date(period.get("start_date"))
 
@@ -407,4 +424,5 @@ def get_ownership(fiscal_year, fiscal_period):
         "in_scope_count": in_scope_count,
         "can_record": bool(frappe.has_permission("Ownership Period", "create")),
         "hidden": blocking_hidden + out_of_scope_hidden,
+        "blocking_hidden": blocking_hidden,
     }
