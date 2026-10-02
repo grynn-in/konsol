@@ -120,7 +120,48 @@ test("a cell with no previous approved rate: label and delta both say so", () =>
     rows: [row({ closing: cell({ status: "approved", name: "GER-1", quote: 1, quoted_per: 1, rate: 1, previous: null, delta: null }) })],
   }));
   assert.equal(view.rows[0].closing.previousLabel, "No previous approved rate");
+  assert.equal(view.rows[0].closing.previousValue, null);
+  assert.equal(view.rows[0].closing.previousQuotedPer, null);
   assert.equal(view.rows[0].closing.deltaText, "—");
+});
+
+// -- previous value shown as a quote, not a bare true rate (R01k, SPA must-fix 2) --
+
+test("previous value is shown in its own quoted unit, not the bare true rate (per 1)", () => {
+  const view = gridView(payload({
+    rows: [row({ closing: cell({
+      status: "approved", name: "GER-2", quote: 0.6673, quoted_per: "100", rate: 0.006673,
+      previous: {
+        // the true rate a plain float division of 0.6607/100 gives, carrying
+        // the float noise group_rates.py's own true_rate() comment warns
+        // about; quoted_per is a Select field, so it arrives as a string.
+        rate: 0.006606999999999999, quoted_per: "100",
+        fiscal_year: 2026, fiscal_period: 7, name: "GER-1", label: "FY2026 P07 (GER-1)",
+      },
+      delta: 0.01,
+    }) })],
+  }));
+  const closing = view.rows[0].closing;
+  assert.equal(closing.previousValue, 0.6607);
+  assert.equal(closing.previousQuotedPer, 100);
+  // the delta is untouched: it is the server's own figure, never recomputed here.
+  assert.equal(closing.deltaText, "+1.0%");
+});
+
+test("previous value uses its own quoted_per even when the current quote uses a different one", () => {
+  const view = gridView(payload({
+    rows: [row({ closing: cell({
+      status: "approved", name: "GER-3", quote: 0.0066, quoted_per: "1", rate: 0.0066,
+      previous: {
+        rate: 0.0067, quoted_per: "100",
+        fiscal_year: 2026, fiscal_period: 7, name: "GER-2", label: "FY2026 P07 (GER-2)",
+      },
+      delta: -0.015,
+    }) })],
+  }));
+  const closing = view.rows[0].closing;
+  assert.equal(closing.previousValue, 0.67);
+  assert.equal(closing.previousQuotedPer, 100);
 });
 
 // -- undeclared threshold -----------------------------------------------------
