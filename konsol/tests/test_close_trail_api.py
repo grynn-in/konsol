@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import types
+from datetime import datetime
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "trail_api.py")
@@ -36,10 +37,15 @@ def _match(value, cond):
     return value == cond
 
 
+def _dt(day, hour=9, month=9):
+    return datetime(2026, month, day, hour, 0, 0)
+
+
 def _event(name, kind, at, **kw):
-    """A Close Event row as `frappe.get_all` would return it: `detail` is a
-    JSON string (or None), exactly as `close_event_model.detail_json`
-    stores it."""
+    """A Close Event row as `frappe.get_all` would return it: `at` is a real
+    `datetime` (Frappe casts a Datetime field), and `detail` is a JSON
+    string (or None), exactly as `close_event_model.detail_json` stores
+    it."""
     event = {
         "name": name, "kind": kind, "at": at,
         "fiscal_year": 2026, "fiscal_period": 9,
@@ -212,11 +218,11 @@ def _raises(fn, exc_name):
 def test_reads_the_period_plus_the_year_events_newest_first():
     site = _Site()
     site.events = [
-        _event("CE-1", "tb_submitted", "2026-09-10 09:00:00", entity="ZZA"),
-        _event("CE-2", "approved", "2026-09-12 09:00:00"),
-        _event("CE-3", "signed_off", "2026-09-15 09:00:00",
+        _event("CE-1", "tb_submitted", _dt(10), entity="ZZA"),
+        _event("CE-2", "approved", _dt(12)),
+        _event("CE-3", "signed_off", _dt(15),
               detail=json.dumps({"signoff_status": "Signed Off", "run_status": "Green"})),
-        _event("CE-4", "year_closed", "2026-09-01 09:00:00", fiscal_period=0),
+        _event("CE-4", "year_closed", _dt(1), fiscal_period=0),
     ]
     site.users = [_user("zz-a@example.com", "A Accountant")]
     out = _call(site, 2026, 9)
@@ -247,7 +253,7 @@ def test_an_undeclared_period_raises():
 
 def test_unreadable_detail_raises_naming_the_event():
     site = _Site()
-    site.events = [_event("CE-9", "approved", "2026-09-10 09:00:00", detail="{bad")]
+    site.events = [_event("CE-9", "approved", _dt(10), detail="{bad")]
     msg = _raises(lambda: _call(site, 2026, 9), "ValidationError")
     assert "CE-9" in msg
 
@@ -256,7 +262,7 @@ def test_unreadable_detail_raises_naming_the_event():
 
 def test_a_deleted_actor_shows_the_id_and_is_marked_missing():
     site = _Site()
-    site.events = [_event("CE-1", "approved", "2026-09-10 09:00:00",
+    site.events = [_event("CE-1", "approved", _dt(10),
                           actor="zz-ghost@example.com")]
     site.users = []
     out = _call(site, 2026, 9)
@@ -270,8 +276,8 @@ def test_a_deleted_actor_shows_the_id_and_is_marked_missing():
 def test_another_periods_events_are_not_returned():
     site = _Site()
     site.events = [
-        _event("CE-1", "approved", "2026-09-10 09:00:00", fiscal_period=9),
-        _event("CE-2", "approved", "2026-08-10 09:00:00", fiscal_period=8),
+        _event("CE-1", "approved", _dt(10), fiscal_period=9),
+        _event("CE-2", "approved", _dt(10, month=8), fiscal_period=8),
     ]
     out = _call(site, 2026, 9)
     assert [e["name"] for e in out["events"]] == ["CE-1"]
@@ -290,9 +296,9 @@ def test_allowed_entities_hides_the_other_entitys_event():
     site = _Site()
     site.allowed = {"ZZA"}
     site.events = [
-        _event("CE-1", "tb_submitted", "2026-09-10 09:00:00", entity="ZZA"),
-        _event("CE-2", "tb_submitted", "2026-09-11 09:00:00", entity="ZZX"),
-        _event("CE-3", "approved", "2026-09-12 09:00:00"),  # group-level (entity None)
+        _event("CE-1", "tb_submitted", _dt(10), entity="ZZA"),
+        _event("CE-2", "tb_submitted", _dt(11), entity="ZZX"),
+        _event("CE-3", "approved", _dt(12)),  # group-level (entity None)
     ]
     out = _call(site, 2026, 9)
     assert [e["name"] for e in out["events"]] == ["CE-3", "CE-1"]
@@ -304,8 +310,8 @@ def test_allowed_none_keeps_every_event():
     site = _Site()
     site.allowed = None
     site.events = [
-        _event("CE-1", "tb_submitted", "2026-09-10 09:00:00", entity="ZZA"),
-        _event("CE-2", "tb_submitted", "2026-09-11 09:00:00", entity="ZZX"),
+        _event("CE-1", "tb_submitted", _dt(10), entity="ZZA"),
+        _event("CE-2", "tb_submitted", _dt(11), entity="ZZX"),
     ]
     out = _call(site, 2026, 9)
     assert len(out["events"]) == 2
@@ -314,6 +320,6 @@ def test_allowed_none_keeps_every_event():
 
 def test_allowed_entity_codes_is_called_exactly_once():
     site = _Site()
-    site.events = [_event("CE-1", "approved", "2026-09-10 09:00:00")]
+    site.events = [_event("CE-1", "approved", _dt(10))]
     _call(site, 2026, 9)
     assert site.allowed_calls == 1
