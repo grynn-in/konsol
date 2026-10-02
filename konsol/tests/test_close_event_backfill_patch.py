@@ -198,8 +198,8 @@ def _frappe(site):
         out = []
         for r in rows:
             if _matches(r, filters):
-                for f in fields:
-                    assert f in r or f in ("name", "owner", "creation", "docstatus"), (doctype, f)
+                if doctype in FIELDS:  # a document read asks only for fields it has
+                    assert set(fields) <= FIELDS[doctype] | {"name", "owner"}, (doctype, fields)
                 out.append(_Dict({f: r.get(f) for f in fields}))
         return out
 
