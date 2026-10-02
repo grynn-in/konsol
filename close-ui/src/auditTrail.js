@@ -18,12 +18,13 @@
 //   trail_api._iso_summary) is `{signoff, closed, locked, counts}`.
 //   `signoff` is `{"state": "none"}`, or `{state: "signed", by, at,
 //   result, run_status, reason, warnings}`, or `{state: "voided", by, at,
-//   reason}`. `closed`/`locked` are `{by, at}` or null. **`by` here is the
-//   raw actor id (the event's `actor` field), not a resolved name** --
-//   unlike `events[]` below, `trail_model.summary` runs on the raw event
-//   dicts before `trail_api._event_out` resolves `actor_name`. This view
-//   model shows `by` as given; it does not cross-reference `events[]` to
-//   find a nicer name, because the row names no such lookup.
+//   reason}`. `closed`/`locked` are `{by, at}` or null. `trail_api`
+//   (T07c) adds `by_name` and `by_missing` next to `by` on `signoff`,
+//   `closed` and `locked`, resolved from the same single User lookup
+//   `_event_out` uses for `actor_name` -- so `by` is the raw actor id but
+//   is never shown raw once a name exists (T08d's `summaryBy`): the
+//   "signed" line shows `by_name`, or "<id> (user deleted)" when
+//   `by_missing`.
 //   `counts` is `{approvals, self_approvals, rejections, on_behalf_uploads,
 //   acknowledgements, overrides, reopenings, recovered,
 //   reasons_not_recorded, cancellations}`.
@@ -171,6 +172,22 @@ function eventRow(event, now, timeZone) {
 	};
 }
 
+/** T08d: the summary's resolved actor text for an entry that carries `by`
+ * (trail_api._with_by_name: `signoff`/`closed`/`locked`). `by_name` when
+ * the actor was resolved; "<id> (user deleted)" when `by_missing`; the
+ * raw `by` unchanged when no name was resolved at all (an older payload
+ * with no `by_name`/`by_missing`, so trailView still renders rather than
+ * guessing). Never shows the raw login once a name exists. */
+function summaryBy(entry) {
+	if (entry.by_missing) {
+		return `${entry.by} (user deleted)`;
+	}
+	if (Object.prototype.hasOwnProperty.call(entry, "by_name")) {
+		return entry.by_name;
+	}
+	return entry.by;
+}
+
 function signedOffText(signoff, now, timeZone) {
 	if (signoff.state === "none") {
 		return "Not signed off";
@@ -179,7 +196,7 @@ function signedOffText(signoff, now, timeZone) {
 		return `Voided — ${signoff.reason}`;
 	}
 	if (signoff.state === "signed") {
-		return `${signoff.by} · ${formatTime(parseZoned(signoff.at), now, timeZone)}`;
+		return `${summaryBy(signoff)} · ${formatTime(parseZoned(signoff.at), now, timeZone)}`;
 	}
 	throw new Error(`Unknown sign-off state: ${signoff.state}`);
 }
