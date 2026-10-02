@@ -256,8 +256,12 @@ def events_from_versions(versions, docs, periods, placements, approval_doctypes,
     """``(events, unplaced)`` from Versions:
 
     - 0->1 of an approval document: ``approval_kind(preparers, version.owner)``,
-      the preparers being the owner plus the editors before that Version;
-      1->2: ``approval_cancelled``;
+      the preparers being the owner, the editors before that Version, and
+      that Version's own owner too when its ``data`` also carries a field
+      edit alongside the ``docstatus`` change
+      (``close_policy_model.submit_carries_edit``, konsol#305 R01a/R01b: the
+      backfilled rule for a 0->1 Version matches the live rule for a
+      submitting request); 1->2: ``approval_cancelled``;
     - 0->1 / 1->2 of a Trial Balance Submission: ``tb_submitted`` /
       ``tb_cancelled``; of a TB Exception: ``tb_exception_declared`` /
       ``tb_exception_cancelled``;
@@ -299,6 +303,8 @@ def events_from_versions(versions, docs, periods, placements, approval_doctypes,
                 earlier = [{"owner": e.get("owner"), "data": d} for e, d in rows[:index]]
                 preparers = close_policy_model.preparers(
                     doc.get("owner"), earlier, state_fields.get(doctype))
+                if close_policy_model.submit_carries_edit(data, state_fields.get(doctype)):
+                    preparers = preparers | {actor}
                 events.append(_approval_event(
                     key, doc, preparers, actor, at, period, reasons))
             elif kind == "approval_cancelled":
