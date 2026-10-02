@@ -68,6 +68,7 @@ import frappe
 
 from konsol import fiscal_calendar, group_rates
 from konsol.close import close_policy_model, rates_model, scope_model, self_approval
+from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
 
 #: Who reads the Rates screen (#305-W2-3, W2-10). The Entity Accountant does not.
@@ -276,10 +277,13 @@ OP_FIELDS = ["name", "consolidation_group", "data_area_id", "effective_date", "e
 
 
 def _iso(value):
-    try:
+    """A datetime with the site's UTC offset (A55: Frappe stores it naive in
+    the system time zone); a plain date stays a date."""
+    if isinstance(value, datetime):
+        return zoned_iso(value, frappe.utils.get_system_timezone())
+    if isinstance(value, date):
         return value.isoformat()
-    except AttributeError:
-        return None if value in (None, "") else str(value)
+    return None if value in (None, "") else str(value)
 
 
 def _visible(docs, allowed):
