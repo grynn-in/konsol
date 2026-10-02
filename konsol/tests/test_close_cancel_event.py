@@ -111,7 +111,7 @@ def _writer(frappe, events, record_raises=None, period_raises=None):
     return writer
 
 
-def _load(flags=None, record_raises=None, period_raises=None):
+def _load(flags=None, record_raises=None, period_raises=None, table_exists=True):
     """``cancel_event`` loaded by path; its events are in ``frappe.events``."""
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
@@ -120,9 +120,16 @@ def _load(flags=None, record_raises=None, period_raises=None):
     def throw(msg, exc=None, **k):
         raise (exc or frappe.ValidationError)(msg)
 
+    def table_exists_fn(doctype):
+        assert doctype == "Close Event", doctype
+        return table_exists
+
     frappe.throw = throw
     frappe.flags = _Flags(flags or {})
     frappe.session = types.SimpleNamespace(user=LEAD)
+    frappe.db = types.SimpleNamespace(table_exists=table_exists_fn)
+    frappe.logger = lambda: types.SimpleNamespace(
+        warning=lambda *a, **k: None, info=lambda *a, **k: None)
     frappe.events = []
     writer = _writer(frappe, frappe.events, record_raises, period_raises)
 
@@ -254,10 +261,23 @@ def test_a_derived_ownership_period_cancel_is_recorded_as_derived():
     assert [e["detail"]["exempt"] for e in frappe.events] == ["derived"]
 
 
-def test_a_system_cancel_is_recovered_by_the_backfill_not_recorded_live():
-    # The failure path (E10-P10): a patch, install or migrate cancel.
+def test_a_system_cancel_records_one_approval_cancelled_event_with_exempt_system():
+    # R01g (#305-W2-S4): a patch, install or migrate cancel records live too.
     for flag in ("in_patch", "in_install", "in_migrate"):
         mod, frappe = _load(flags={flag: True})
+        mod.record(_doc(), "on_cancel")
+        assert len(frappe.events) == 1, flag
+        event = frappe.events[0]
+        assert event["kind"] == "approval_cancelled", event
+        assert event["reason"] is None, "Frappe's cancel takes no reason"
+        assert event["detail"] == {"preparer": ANALYST, "exempt": "system"}, event
+
+
+def test_a_system_cancel_when_the_close_event_table_does_not_exist_writes_nothing():
+    # Guard: a patch that runs before migrate's schema sync creates the Close
+    # Event table. No crash, nothing written.
+    for flag in ("in_patch", "in_install", "in_migrate"):
+        mod, frappe = _load(flags={flag: True}, table_exists=False)
         mod.record(_doc(), "on_cancel")
         assert frappe.events == [], flag
 
