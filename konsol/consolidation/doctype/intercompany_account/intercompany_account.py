@@ -47,6 +47,33 @@ def pair_conflicts(main_account, counterpart_account, others):
             if pair_of(m, c) != mine and set(pair_of(m, c)) & set(mine)]
 
 
+def allow_ic_problem(accounts, allow_ic_by_account):
+    """Why this pairing may not be published, or "". Pure; host-testable.
+
+    konsol#182 PR5a, built as konsol#293. This table is the source of the
+    intercompany set; ``Main Account.allow_ic`` is the chart's precondition for
+    being in it. Published without the flag, the chart says the account carries
+    no intercompany rows while consolidation eliminates it, and nothing notices.
+
+    ``allow_ic_by_account`` maps account code to the chart's flag. An account
+    absent from it has no declaration, so it is refused rather than assumed:
+    chart membership is checked separately (``_before_publish``), and this rule
+    never promotes a missing declaration into a permissive one.
+
+    #182's "ERP-origin accounts are exempt" clause is not built: ``Main
+    Account.source`` offers Manual and Upload only, so no account in the chart
+    has an ERP origin to be exempt (the ERP staging tree was removed,
+    konsolidat#221).
+    """
+    flags = allow_ic_by_account or {}
+    undeclared = [a for a in accounts if a and not flags.get(a)]
+    if not undeclared:
+        return ""
+    names = ", ".join(sorted(undeclared))
+    return (f"The group chart has not declared allow_ic on {names}. "
+            "Set Allow Intercompany on those accounts before publishing this pairing.")
+
+
 def _accounts(doc):
     """The row's (main, counterpart) as they are stored: stripped, and a
     counterpart equal to the account blank."""
@@ -159,13 +186,31 @@ class IntercompanyAccount(GovernedReferenceDocument):
         # first (this doctype's tabDocType row, as _validate_one_pair does),
         # then read by equality on an indexed column with FOR UPDATE.
         frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", (DOCTYPE,))
-        from konsol.group_chart import chart_codes
+        from konsol.group_chart import chart_accounts, posting_codes
 
         accounts = [a for a in checked if a]
-        chart = chart_codes()
-        missing = [a for a in accounts if a not in chart]
+        chart = chart_accounts()
+        codes = posting_codes(chart)          # hoisted: one pass, not one per account
+        missing = [a for a in accounts if a not in codes]
         if missing:
             frappe.throw(f"Not in the group chart: {', '.join(missing)}")
+        # konsol#293 (#182 PR5a): the chart's precondition for being paired.
+        #
+        # Read allow_ic with FOR UPDATE on just these rows, not from the chart
+        # dict above. chart_accounts() is a plain get_all, and MariaDB here is
+        # REPEATABLE READ: a concurrent save clearing allow_ic would be invisible
+        # to it and unblocked by it, so this check and Main Account's withdrawal
+        # guard could both pass and leave a Published pairing on an account the
+        # chart says carries no intercompany rows — the divergence #293 exists to
+        # prevent (review finding 1). Two rows, by primary key, so the lock is
+        # narrow; intercompany_accounts() stays a plain read because the trial
+        # balance calls it on every upload.
+        locked = frappe.db.sql(
+            "SELECT `name`, `allow_ic` FROM `tabMain Account` WHERE `name` IN %s FOR UPDATE",
+            (tuple(accounts),), as_dict=True)
+        undeclared = allow_ic_problem(accounts, {r["name"]: r["allow_ic"] for r in locked})
+        if undeclared:
+            frappe.throw(undeclared)
         diff = sorted({r.name for a in accounts for r in frappe.db.sql(
             "SELECT `name` FROM `tabConsolidation Group` WHERE `ic_difference_account` = %s FOR UPDATE",
             (a,), as_dict=True)})

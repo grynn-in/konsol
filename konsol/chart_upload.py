@@ -60,7 +60,37 @@ def _check(file_url):
         return {"ok": False, "errors": str(e).splitlines(), "writes": [], "chart_of_accounts": "", "rows": 0,
                 "insert": [], "update": [], "published_changes": [], "inactive": [], "unchanged": [],
                 "not_ready": [], "not_in_file": []}
-    return _refuse_leaves_in_use(M.plan_chart_load(rows, _existing()))
+    return _refuse_allow_ic_withdrawal(
+        _refuse_leaves_in_use(M.plan_chart_load(rows, _existing())))
+
+
+def _refuse_allow_ic_withdrawal(report):
+    """A file that clears allow_ic on an account a Published Intercompany
+    Account names is refused here, before anything is written (konsol#293,
+    review finding 2).
+
+    MainAccount.validate refuses it too, but that fires inside load_chart's
+    write loop: the save would raise, the except rolls back and re-raises, and
+    the caller gets a ValidationError instead of the documented report with
+    ``loaded`` False. A blank cell in a present allow_ic column parses as 0
+    (group_chart_model.parse_chart_table), so this is a plausible file, not a
+    contrived one.
+    """
+    codes = [c["main_account"] for c in report.get("published_changes") or []
+             if c["fields"].get("allow_ic") == [1, 0]]
+    if not codes:
+        return report
+    from konsol.epm.doctype.main_account.main_account import _intercompany_rows
+
+    problems = []
+    for code in codes:
+        if _intercompany_rows([code]):
+            problems.append(M.allow_ic_withdrawal_problem({"main_account": code, "allow_ic": 0},
+                                                          paired_accounts={code}))
+    problems = [p for p in problems if p]
+    if not problems:
+        return report
+    return {**report, "errors": report["errors"] + problems, "ok": False, "writes": []}
 
 
 def _refuse_leaves_in_use(report):
