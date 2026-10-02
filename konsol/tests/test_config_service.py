@@ -1,6 +1,7 @@
 """Tests for konsol.config_service and konsol.cli_api."""
 import ast
 import importlib
+import json
 import os
 import sys
 from unittest import mock
@@ -104,9 +105,24 @@ def test_config_service_queries_measure_doctype():
 
 # --- behavior with mocked frappe ---
 
+def _dataset_source_types():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "epm", "doctype", "dataset", "dataset.json")
+    with open(path, encoding="utf-8") as fh:
+        fields = json.load(fh)["fields"]
+    return next(f["options"] for f in fields if f.get("fieldname") == "source_type")
+
+
+_DATASET_SOURCE_TYPES = _dataset_source_types()
+
+
 @pytest.fixture
 def config_service(monkeypatch):
     fake_frappe = MagicMock()
+    # The Dataset doctype's real source_type options, so a fact spec is judged
+    # as production judges it (config_service reads them from the meta).
+    fake_frappe.get_meta.return_value.get_field.return_value = MagicMock(
+        options=_DATASET_SOURCE_TYPES)
     monkeypatch.setitem(sys.modules, "frappe", fake_frappe)
     if "konsol.config_service" in sys.modules:
         del sys.modules["konsol.config_service"]
@@ -473,6 +489,7 @@ def test_upsert_fact_table_creates_draft(config_service):
     )
 
     fake_frappe.new_doc.assert_called_once_with("Dataset")
+    fake_frappe.throw.assert_not_called()   # "Statistical" is a real source type
     doc.save.assert_called_once()
     doc.publish.assert_not_called()
     assert result["created"] is True

@@ -110,7 +110,13 @@ def _source_types():
     the doctype and with the shipped default, and fresh installs aborted
     (konsol#313)."""
     field = frappe.get_meta("Dataset").get_field("source_type")
-    return [o for o in (field.options or "").split("\n") if o]
+    options = [o for o in ((field.options if field else "") or "").split("\n") if o]
+    if not options:
+        # A Dataset doctype without the field, or with no options, is a site
+        # that has not migrated: say so rather than refuse every value.
+        frappe.throw("The Dataset doctype declares no source types; run bench migrate.",
+                     frappe.ValidationError)
+    return options
 _CONFIG_API_VERSION = "konsol/v1"
 
 
