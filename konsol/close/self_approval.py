@@ -51,7 +51,7 @@ def check(doc, method=None):
     policy = frappe.db.get_single_value("Close Settings", "self_approval")
     reason = _reason(doc)
     problem = close_policy_model.self_approval_problem(
-        policy, doc.owner, user, doc.doctype, doc.name, reason, exempt)
+        policy, frozenset((doc.owner,)), user, doc.doctype, doc.name, reason, exempt)
     if problem:
         frappe.throw(problem, frappe.PermissionError)
     doc.add_comment("Comment", close_policy_model.self_approval_note(
