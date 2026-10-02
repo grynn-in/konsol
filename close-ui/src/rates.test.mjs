@@ -16,6 +16,7 @@ import {
   approveBody,
   pendingView,
   ownershipView,
+  mergeDrafts,
 } from "./rates.js";
 
 function cell(overrides = {}) {
@@ -412,4 +413,59 @@ test("gridView reflects a changed quoted_per_options payload: no constant array 
 test("gridView defaults quotedPerOptions to an empty list, never a guessed one", () => {
   const view = gridView(payload());
   assert.deepEqual(view.quotedPerOptions, []);
+});
+
+// -- mergeDrafts (R01n): keeps a dirty or refused edit across a reload ------
+
+function viewCell(value, quotedPer) {
+  return { value, quotedPer };
+}
+
+test("mergeDrafts with no existing draft builds a clean baseline from the fresh cell", () => {
+  const merged = mergeDrafts(undefined, viewCell(1.25, "100"), false);
+  assert.deepEqual(merged, { quote: "1.25", quotedPer: "100", orig: { quote: "1.25", quotedPer: "100" } });
+});
+
+test("mergeDrafts with no existing draft and a null fresh value/quotedPer baselines to empty strings", () => {
+  const merged = mergeDrafts(undefined, viewCell(null, null), false);
+  assert.deepEqual(merged, { quote: "", quotedPer: "", orig: { quote: "", quotedPer: "" } });
+});
+
+test("mergeDrafts replaces a clean, un-refused draft with the fresh cell's current value", () => {
+  // The old draft equals its own orig (never edited) but the server's value
+  // has since moved (e.g. this cell was approved elsewhere and reloaded).
+  const old = { quote: "1.25", quotedPer: "100", orig: { quote: "1.25", quotedPer: "100" } };
+  const merged = mergeDrafts(old, viewCell(1.3, "100"), false);
+  assert.deepEqual(merged, { quote: "1.3", quotedPer: "100", orig: { quote: "1.3", quotedPer: "100" } });
+});
+
+test("mergeDrafts keeps a dirty draft across the reload (R01n: approve must not wipe other unsaved edits)", () => {
+  const old = { quote: "1.99", quotedPer: "100", orig: { quote: "1.25", quotedPer: "100" } };
+  const merged = mergeDrafts(old, viewCell(1.25, "100"), false);
+  assert.equal(merged, old, "the exact same draft object survives, untouched");
+});
+
+test("mergeDrafts keeps a dirty draft even when the fresh cell's value has also changed", () => {
+  const old = { quote: "1.99", quotedPer: "100", orig: { quote: "1.25", quotedPer: "100" } };
+  const merged = mergeDrafts(old, viewCell(1.4, "100"), false);
+  assert.equal(merged, old);
+});
+
+test("mergeDrafts keeps a refused draft even though it is clean (equals its own orig)", () => {
+  const old = { quote: "1.25", quotedPer: "100", orig: { quote: "1.25", quotedPer: "100" } };
+  const merged = mergeDrafts(old, viewCell(1.25, "100"), true);
+  assert.equal(merged, old, "hasError alone keeps the draft");
+});
+
+test("mergeDrafts: a quotedPer-only edit (quote unchanged) still counts as dirty", () => {
+  const old = { quote: "1.25", quotedPer: "1", orig: { quote: "1.25", quotedPer: "100" } };
+  const merged = mergeDrafts(old, viewCell(1.25, "100"), false);
+  assert.equal(merged, old);
+});
+
+test("mergeDrafts: a clean draft with no error is rebuilt as a new object (not the same reference)", () => {
+  const old = { quote: "1.25", quotedPer: "100", orig: { quote: "1.25", quotedPer: "100" } };
+  const merged = mergeDrafts(old, viewCell(1.25, "100"), false);
+  assert.notEqual(merged, old, "a clean, un-refused draft is replaced, not mutated in place");
+  assert.deepEqual(merged, old);
 });

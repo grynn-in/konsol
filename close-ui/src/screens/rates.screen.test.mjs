@@ -280,3 +280,61 @@ test("Failure path: an HER or OP approve looks up its mode from the loaded pendi
   assert.ok(fn, "actionFor(doctype, name) exists");
   assert.match(fn[2], /pending\.payload/, "actionFor also searches the pending payload");
 });
+
+// -- R01n: approve keeps unsaved edits; a save for an old period never lands on the new one --
+
+test("Rates.vue imports mergeDrafts from ../rates.js and resetDrafts uses it", () => {
+  const source = read();
+  const imp = source.match(/import\s*\{([^}]*)\}\s*from\s*["']\.\.\/rates\.js["']/);
+  assert.ok(imp, "imports from ../rates.js");
+  assert.match(imp[1], /\bmergeDrafts\b/, "imports mergeDrafts");
+  const js = script(source);
+  const fn = js.match(/function resetDrafts\(\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn, "resetDrafts() exists");
+  assert.match(fn[1], /\bmergeDrafts\(/, "resetDrafts rebuilds each cell through mergeDrafts, not an inline merge");
+});
+
+test("Failure path — resetDrafts no longer wipes a dirty, un-refused draft by only keeping cellErrors keys", () => {
+  const js = script(read());
+  const fn = js.match(/function resetDrafts\(\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn);
+  // The old bug: every key not in cellErrors was deleted outright before any
+  // per-cell decision. Guard against that pattern coming back.
+  assert.doesNotMatch(
+    fn[1],
+    /for\s*\(\s*const k of Object\.keys\(drafts\)\s*\)\s*if\s*\(!keep\.has\(k\)\)\s*delete drafts\[k\]/,
+    "drafts are no longer blanket-deleted ahead of the merge decision",
+  );
+});
+
+test("saveRates captures seq at its start, before any await", () => {
+  const js = script(read());
+  const fn = js.match(/async function saveRates\(\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn, "saveRates() exists");
+  const body = fn[1];
+  const captureIdx = body.search(/\bmySeq\s*=\s*seq\b/);
+  assert.ok(captureIdx >= 0, "captures mySeq = seq");
+  const firstAwaitIdx = body.indexOf("await ");
+  assert.ok(firstAwaitIdx < 0 || captureIdx < firstAwaitIdx, "seq is captured before the first await");
+});
+
+test("saveRates checks mySeq against seq before every cellErrors/reasonOpen write", () => {
+  const js = script(read());
+  const fn = js.match(/async function saveRates\(\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn);
+  const body = fn[1];
+  const writeLines = body
+    .split("\n")
+    .filter((line) => /\bcellErrors\[[^\]]+\]\s*=|\breasonOpen\[[^\]]+\]\s*=/.test(line));
+  assert.ok(writeLines.length >= 2, "saveRates still writes cellErrors and reasonOpen somewhere");
+  for (const line of writeLines) {
+    assert.match(line, /mySeq\s*===\s*seq/, `write is guarded by the seq check: ${line.trim()}`);
+  }
+});
+
+test("saveRates does not reload a period it has already navigated away from", () => {
+  const js = script(read());
+  const fn = js.match(/async function saveRates\(\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn);
+  assert.match(fn[1], /mySeq\s*===\s*seq[\s\S]*?loadRates\(/, "the final reload is also guarded by mySeq === seq");
+});
