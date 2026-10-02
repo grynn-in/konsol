@@ -8,6 +8,12 @@ on their host. This runs them with nothing but the standard library.
 
     python3 scripts/run-host-tests.py                 # every host test
     python3 scripts/run-host-tests.py konsol/tests/test_period_status.py
+    python3 scripts/run-host-tests.py --require-pytest   # what CI runs
+
+A test that takes pytest fixtures cannot be called here. When pytest is
+installed, those tests run through it, one pytest process per file, and count
+in the totals (konsol#318). Without pytest they are listed as skips, and
+--require-pytest makes that a failure.
 
 Only covers tests that read source files. Anything importing `frappe` needs a
 live site:
@@ -187,9 +193,119 @@ def _must_run_failures(named, skipped, needs_pytest):
     return out
 
 
+#: Seconds one file's pytest run may take before it fails the run.
+PYTEST_TIMEOUT = 600
+
+
+def _pytest_available():
+    return importlib.util.find_spec("pytest") is not None
+
+
+def _run_fixture_tests(fixture_tests):
+    """Run tests that take pytest fixtures through pytest (konsol#318).
+
+    One pytest process per file: the files stub ``sys.modules`` at import,
+    and one collection over the whole suite collides. Returns (passed, total,
+    failures, skips) in the runner's own shapes; a test pytest skips (an
+    importorskip, say) stays a listed skip, and an xfail counts as a pass.
+
+    The file is selected with ``-k`` rather than node ids: one name pytest
+    cannot collect would make it refuse the whole file. The JUnit report is
+    authoritative, and only the requested tests in it count. A file that
+    cannot be collected fails once, as a whole, with pytest's output.
+    """
+    import subprocess
+    import tempfile
+    import xml.etree.ElementTree as ET
+
+    by_file = {}
+    for rel, path, name in fixture_tests:
+        by_file.setdefault((rel, os.path.abspath(path)), []).append(name)
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
+    passed = total = 0
+    failures, skips = [], []
+    for (rel, path), names in by_file.items():
+        wanted = set(names)
+        with tempfile.TemporaryDirectory() as d:
+            report = os.path.join(d, "report.xml")
+            cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                   f"--rootdir={ROOT}", f"--junitxml={report}",
+                   "-k", " or ".join(sorted(wanted)), path]
+            try:
+                proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True,
+                                      text=True, timeout=PYTEST_TIMEOUT)
+                out = proc.stdout + proc.stderr
+            except subprocess.TimeoutExpired as exc:
+                total += len(wanted)
+                failures.append((rel, "<pytest>", f"pytest timed out after "
+                                 f"{PYTEST_TIMEOUT}s", _text(exc.stdout) + _text(exc.stderr)))
+                continue
+            if not os.path.exists(report):
+                total += len(wanted)
+                failures.append((rel, "<pytest>", f"pytest exited {proc.returncode} "
+                                 "without a report", out))
+                continue
+            # case name -> worst outcome. A teardown error reports a second
+            # entry for a test that passed; the error must win.
+            outcome = {}
+            file_errors = []
+            for case in ET.parse(report).iter("testcase"):
+                name = case.get("name", "")
+                bad = case.find("failure")
+                if bad is None:
+                    bad = case.find("error")
+                # a parametrized test reports one case per parameter set,
+                # "name[params]"; each counts, and all belong to its function
+                if name.split("[", 1)[0] not in wanted:
+                    if bad is not None:  # a collection error names the file
+                        file_errors.append(bad)
+                    continue
+                skip = case.find("skipped")
+                if bad is not None:
+                    result = (2, (bad.get("message") or "failed").strip(), bad.text or "")
+                elif skip is not None and skip.get("type") != "pytest.xfail":
+                    result = (1, None, None)
+                else:  # passed, or an expected failure that failed
+                    result = (0, None, None)
+                if result[0] >= outcome.get(name, (-1,))[0]:
+                    outcome[name] = result
+            if file_errors:
+                total += len(wanted)
+                bad = file_errors[0]
+                failures.append((rel, "<pytest>", (bad.get("message") or "error").strip(),
+                                 (bad.text or "") + out))
+                continue
+            for name, (rank, msg, tb) in outcome.items():
+                if rank == 1:
+                    skips.append(f"{rel}::{name}")
+                    continue
+                total += 1
+                if rank == 2:
+                    failures.append((rel, name, msg, tb))
+                else:
+                    passed += 1
+            for name in sorted(wanted - {n.split("[", 1)[0] for n in outcome}):
+                # asked for, never reported: pytest could not collect it
+                total += 1
+                failures.append((rel, name, "pytest did not run this test", out))
+    return passed, total, failures, skips
+
+
+def _text(b):
+    if b is None:
+        return ""
+    return b.decode(errors="replace") if isinstance(b, bytes) else b
+
+
 def main(argv):
-    paths = argv[1:] or list(_discover())
+    # --require-pytest (CI passes it): tests that take pytest fixtures must
+    # run, so a missing pytest fails the run instead of skipping them all.
+    require_pytest = "--require-pytest" in argv[1:]
+    args = [a for a in argv[1:] if a != "--require-pytest"]
+    paths = args or list(_discover())
     total = passed = 0
+    fixture_tests = []   # (rel, path, name): run through pytest after the loop
     failures = []
     skipped = []
     load_failures = 0
@@ -240,7 +356,7 @@ def main(argv):
                 except (TypeError, ValueError):
                     takes_fixtures = False
                 if takes_fixtures:
-                    needs_pytest.append(f"{rel}::{name}")
+                    fixture_tests.append((rel, path, name))
                     continue
 
                 total += 1
@@ -279,6 +395,19 @@ def main(argv):
         finally:
             _isolate(before)
 
+    if fixture_tests and _pytest_available():
+        p, t, fixture_failures, fixture_skips = _run_fixture_tests(fixture_tests)
+        passed += p
+        total += t
+        failures.extend(fixture_failures)
+        needs_pytest.extend(fixture_skips)
+    elif fixture_tests:
+        needs_pytest.extend(f"{rel}::{name}" for rel, _, name in fixture_tests)
+        if require_pytest:
+            failures.append(("<runner>", "--require-pytest",
+                             f"pytest is required to run {len(fixture_tests)} test(s) "
+                             "that take pytest fixtures, and it is not installed", ""))
+
     ran = len(paths) - len(skipped) - load_failures
     print(f"{passed}/{total} passed across {ran} files")
 
@@ -298,7 +427,7 @@ def main(argv):
 
     # A declared skip that ran is good news and a stale list. Report it, but do
     # not fail: it makes a number unexplained, not wrong (konsol#247).
-    if not argv[1:]:
+    if not args:
         ran_anyway = sorted(declared - {rel for rel, _ in skipped})
         if ran_anyway:
             print(f"\n{len(ran_anyway)} declared skip(s) ran after all — trim "
@@ -306,13 +435,13 @@ def main(argv):
             for rel in ran_anyway:
                 print(f"  {rel}")
 
-    failures.extend(_must_run_failures(argv[1:], skipped, needs_pytest))
+    failures.extend(_must_run_failures(args, skipped, needs_pytest))
 
     if failures:
         print(f"\n{len(failures)} failure(s):")
         for rel, name, msg, tb in failures:
             print(f"\n  {rel}::{name}\n    {msg}")
-            if name == "<load>":
+            if name in ("<load>", "<pytest>") or msg == "pytest did not run this test":
                 # the cause is usually deep inside a konsol import
                 for line in tb.rstrip().splitlines()[-6:]:
                     print(f"      {line}")

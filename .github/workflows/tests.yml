@@ -32,7 +32,10 @@ jobs:
       # exists to reveal.
       - run: pip install requests pyyaml pytest
       - name: Run host tests
-        run: python3 scripts/run-host-tests.py
+        # --require-pytest: tests that take pytest fixtures run through pytest
+        # and count; without pytest the run fails rather than skipping them
+        # all (konsol#318: 60 tests had never run here).
+        run: python3 scripts/run-host-tests.py --require-pytest
 
   close-ui-js-tests:
     name: close-ui JS tests
