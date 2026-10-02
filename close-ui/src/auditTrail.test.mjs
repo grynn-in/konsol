@@ -308,6 +308,58 @@ test("a signed summary gives '<by> · <when>', the run result, and closedLocked/
 	assert.equal(v.exceptions, "2 self-approval(s) · 1 on-behalf upload(s) · 0 override(s)");
 });
 
+test("T08d: a signed summary with by_name shows the name, never the raw login", () => {
+	const v = trailView(
+		payload([], {
+			summary: {
+				signoff: {
+					state: "signed",
+					by: "jane@example.com",
+					by_name: "Jane Doe",
+					by_missing: false,
+					at: "2026-09-20T10:42:00+00:00",
+					result: "Acknowledged",
+					run_status: "Amber",
+					reason: null,
+					warnings: null,
+				},
+				closed: null,
+				locked: null,
+				counts: counts(),
+			},
+		}),
+		NOW,
+		TZ
+	);
+	assert.equal(v.signedOff, "Jane Doe · 10:42");
+});
+
+test("T08d: a signed summary with by_missing shows '<id> (user deleted)'", () => {
+	const v = trailView(
+		payload([], {
+			summary: {
+				signoff: {
+					state: "signed",
+					by: "ghost@example.com",
+					by_name: "ghost@example.com",
+					by_missing: true,
+					at: "2026-09-20T10:42:00+00:00",
+					result: "Acknowledged",
+					run_status: "Amber",
+					reason: null,
+					warnings: null,
+				},
+				closed: null,
+				locked: null,
+				counts: counts(),
+			},
+		}),
+		NOW,
+		TZ
+	);
+	assert.equal(v.signedOff, "ghost@example.com (user deleted) · 10:42");
+});
+
 test("closedLocked is Open when neither closed nor locked is set", () => {
 	const v = trailView(payload([]), NOW, TZ);
 	assert.equal(v.closedLocked, "Open");
