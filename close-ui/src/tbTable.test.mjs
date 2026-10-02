@@ -151,17 +151,50 @@ test("compareRows: an intercompany row keeps its partner and is_ic flag", () => 
   assert.equal(view.rows[0].change, "0.00");
 });
 
-test("B12b: the known statuses are exactly the ones tb_read_api.py (A25) sends", async () => {
-  // Drift guard: A25 added "Quarter not declared"; a status the screen does not
-  // know throws, so a server status missing here breaks the TB screen on live.
+// E209b: the drift guard reads tb_read_api.py's own `TB_STATUSES` tuple
+// (every status `my_tbs` can emit) instead of guessing by keyword — a status
+// like "Not consolidated: no ownership for this period" matches no keyword,
+// so the old regex-filter guard would pass while the screen broke on it.
+function serverStatuses(src) {
+  const tuple = src.match(/TB_STATUSES = \(([\s\S]*?)\)/);
+  if (!tuple) {
+    throw new Error("tb_read_api.py has no TB_STATUSES tuple");
+  }
+  const names = [...tuple[1].matchAll(/[A-Z_]+/g)].map((m) => m[0]);
+  const values = Object.fromEntries(
+    [...src.matchAll(/^([A-Z_]+) = "([^"]+)"$/gm)].map((m) => [m[1], m[2]]),
+  );
+  return new Set(
+    names.map((name) => {
+      if (!(name in values)) {
+        throw new Error(`TB_STATUSES names ${name}, which has no NAME = "value" line`);
+      }
+      return values[name];
+    }),
+  );
+}
+
+test("B12b/E209b: the known statuses are exactly tb_read_api.py's TB_STATUSES (A25/E209a)", async () => {
+  // Drift guard: a status this module does not know throws, so a server
+  // status missing here breaks the TB screen on live.
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(new URL("../../konsol/close/tb_read_api.py", import.meta.url), "utf8");
-  const server = new Set([...src.matchAll(/^[A-Z_]+ = "([^"]+)"$/gm)]
-    .map((m) => m[1])
-    .filter((v) => ["Received", "Exception declared", "Not expected this period", "Missing",
-      "Frequency not declared", "Quarter not declared"].includes(v) || /declared|Missing|Received|expected/.test(v)));
+  const server = serverStatuses(src);
   const { KNOWN_STATUSES } = await import("./tbTable.js");
   assert.deepEqual([...KNOWN_STATUSES].sort(), [...server].sort());
+});
+
+test("the drift guard fails loudly, naming the tuple, when TB_STATUSES is missing", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("../../konsol/close/tb_read_api.py", import.meta.url), "utf8");
+  const mutated = src.replace(/TB_STATUSES = \([\s\S]*?\)/, "");
+  assert.throws(() => serverStatuses(mutated), /TB_STATUSES/);
+});
+
+test("entityRows: accepts the #289 'Not consolidated' status (E209a)", () => {
+  const myTbs = oneEntity({ entity: "ZZX", status: "Not consolidated: no ownership for this period" });
+  const [row] = entityRows(myTbs, NOW, TZ);
+  assert.equal(row.status, "Not consolidated: no ownership for this period");
 });
 
 // --- B27: no literal "None", and times in the user's zone ------------------

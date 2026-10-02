@@ -74,7 +74,7 @@ test("an Entity Accountant with no entities gets the explicit message (A25 note)
   assert.match(source, /konsol\.close\.period_api\.get_context/, "the persona comes from A15");
 });
 
-test("the screen handles all six A25 statuses via KNOWN_STATUSES, not its own list", () => {
+test("the screen handles all seven A25 statuses via KNOWN_STATUSES, not its own list", () => {
   const source = read();
   // Styling per status may be declared, but every status must be present so
   // none renders unstyled or blank.
@@ -85,9 +85,31 @@ test("the screen handles all six A25 statuses via KNOWN_STATUSES, not its own li
     "Received",
     "Exception declared",
     "Not expected this period",
+    "Not consolidated: no ownership for this period",
   ]) {
     assert.ok(source.includes(`"${status}"`), `status "${status}" is handled`);
   }
+});
+
+// E209b: STATUS_TONE has a key for every KNOWN_STATUSES value, parsed from
+// its own source (not a hardcoded list), so a status with no tone cannot
+// silently render unstyled.
+test("STATUS_TONE has a key for every KNOWN_STATUSES value, with the #289 status in red", async () => {
+  const source = read();
+  const block = source.match(/const STATUS_TONE = \{([\s\S]*?)\};/);
+  assert.ok(block, "the screen declares STATUS_TONE");
+  const tones = new Map(
+    [...block[1].matchAll(/"([^"]+)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]),
+  );
+  const { KNOWN_STATUSES } = await import("../tbTable.js");
+  for (const status of KNOWN_STATUSES) {
+    assert.ok(tones.has(status), `STATUS_TONE has a key for "${status}" — otherwise it renders unstyled`);
+  }
+  assert.equal(
+    tones.get("Not consolidated: no ownership for this period"),
+    "bg-surface-red-1 text-ink-red-3",
+    "someone must act, like Missing",
+  );
 });
 
 test("a null count reads 'unknown', never 0 or blank", () => {
