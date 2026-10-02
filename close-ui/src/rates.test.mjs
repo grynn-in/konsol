@@ -165,6 +165,44 @@ test("previous value uses its own quoted_per even when the current quote uses a 
   assert.equal(closing.previousQuotedPer, 100);
 });
 
+// -- cell carries what the approver needs (R01o, SPA should-fix 6) ------------
+
+test("gridView carries change_reason, edited_by, extra drafts and source through to the cell view", () => {
+  const view = gridView(payload({
+    rows: [row({ closing: cell({
+      status: "awaiting_approval", name: "GER-9", quote: 1.05, quoted_per: "1", rate: 1.05,
+      change_reason: "Market move", edited_by: ["analyst2@example.com"], source: "ERP pre-fill",
+      extra_drafts: ["GER-10"],
+    }) })],
+  }));
+  const closing = view.rows[0].closing;
+  assert.equal(closing.changeReason, "Market move");
+  assert.deepEqual(closing.editedBy, ["analyst2@example.com"]);
+  assert.equal(closing.source, "ERP pre-fill");
+  assert.equal(closing.extraDraftsText, "and 1 more draft");
+});
+
+test("a cell with no extra drafts, no change reason and no source carries them as null", () => {
+  const view = gridView(payload({
+    rows: [row({ closing: cell({ status: "approved", name: "GER-9", quote: 1.05, quoted_per: "1", rate: 1.05 }) })],
+  }));
+  const closing = view.rows[0].closing;
+  assert.equal(closing.changeReason, null);
+  assert.equal(closing.editedBy, null);
+  assert.equal(closing.source, null);
+  assert.equal(closing.extraDraftsText, null);
+});
+
+test("extraDraftsText pluralises for more than one extra draft", () => {
+  const view = gridView(payload({
+    rows: [row({ closing: cell({
+      status: "awaiting_approval", name: "GER-9", quote: 1.05, quoted_per: "1", rate: 1.05,
+      extra_drafts: ["GER-10", "GER-11"],
+    }) })],
+  }));
+  assert.equal(view.rows[0].closing.extraDraftsText, "and 2 more drafts");
+});
+
 // -- undeclared threshold -----------------------------------------------------
 
 test("undeclared threshold: thresholdText is the gap message, no digit in it", () => {

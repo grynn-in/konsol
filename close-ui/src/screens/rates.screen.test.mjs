@@ -234,6 +234,15 @@ test("Status, previous rate, delta, flag and preparer come from the cell view", 
   }
 });
 
+// -- R01o: change reason, edited by, extra drafts, source (SPA should-fix 6) --
+
+test("a cell shows changeReason, editedBy, extraDraftsText and source (R01o)", () => {
+  const tpl = template(read());
+  for (const field of ["changeReason", "editedBy", "extraDraftsText", "source"]) {
+    assert.match(tpl, new RegExp(`\\.${field}\\b`), `renders ${field}`);
+  }
+});
+
 // -- E410: pending HER/OP drafts, mounted in the "Historical equity rates" tab --
 
 test("Rates.vue names get_pending, and still has exactly one post(APPROVE call site", () => {

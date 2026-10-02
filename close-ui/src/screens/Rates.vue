@@ -591,6 +591,7 @@ const TABS = computed(() => [
 												<template v-if="cellOf(row, rateType).value != null">
 													{{ cellOf(row, rateType).value }}
 													<span class="text-xs text-ink-gray-5">per {{ cellOf(row, rateType).quotedPer }}</span>
+													<div v-if="cellOf(row, rateType).source" class="text-xs text-ink-gray-5">{{ cellOf(row, rateType).source }}</div>
 												</template>
 												<template v-else>—</template>
 											</span>
@@ -614,7 +615,12 @@ const TABS = computed(() => [
 												:class="statusClass(row, rateType)"
 											>{{ isDraft(row, rateType) ? "Draft" : cellOf(row, rateType).statusLabel }}</span>
 										</td>
-										<td class="px-3 py-2 text-ink-gray-7">{{ cellOf(row, rateType).preparer || "—" }}</td>
+										<td class="px-3 py-2 text-ink-gray-7">
+											{{ cellOf(row, rateType).preparer || "—" }}
+											<template v-if="cellOf(row, rateType).editedBy && cellOf(row, rateType).editedBy.length"> · edited by {{ cellOf(row, rateType).editedBy.join(", ") }}</template>
+											<div v-if="cellOf(row, rateType).changeReason" class="text-xs text-ink-gray-5">Reason: {{ cellOf(row, rateType).changeReason }}</div>
+											<div v-if="cellOf(row, rateType).extraDraftsText" class="text-xs text-ink-gray-5">{{ cellOf(row, rateType).extraDraftsText }}</div>
+										</td>
 										<td class="px-3 py-2">
 											<template v-if="cellOf(row, rateType).approve">
 												<div v-if="canApproveNow(cellOf(row, rateType))" class="flex flex-col gap-1">
