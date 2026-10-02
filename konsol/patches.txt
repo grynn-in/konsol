@@ -41,3 +41,4 @@ konsol.patches.link_historical_equity_rate_account
 konsol.patches.retire_allocation
 konsol.patches.retire_consolidation_adjustment
 konsol.patches.declare_ytd_measure_as_last
+konsol.patches.backfill_close_events
