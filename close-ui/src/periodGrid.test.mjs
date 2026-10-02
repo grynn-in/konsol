@@ -176,12 +176,31 @@ test("readinessView's entities text appends the hidden suffix", () => {
 	assert.equal(view.items[0].entities, "ZZAA, ZZBB and 2 outside your scope");
 });
 
-test("readinessView's entities text is only the hidden suffix when nothing is visible", () => {
+test("readinessView's entities text is null when nothing is visible: the detail already counts hidden (R01m)", () => {
+	// Real server shape (readiness_model._hidden_detail): a fully-hidden item's
+	// detail already says "N entities you cannot see", so the entities text
+	// must not repeat the count as a separate "(and N outside your scope)".
 	const p = readinessPayload({
-		items: [item("ownership", "blocked", { entities: [], hidden: 2 })],
+		items: [
+			item("ownership", "blocked", {
+				label: "Every trial balance has ownership",
+				detail: "2 entities you cannot see",
+				entities: [],
+				hidden: 2,
+			}),
+		],
 	});
 	const view = readinessView(p);
-	assert.equal(view.items[0].entities, "and 2 outside your scope");
+	assert.equal(view.items[0].entities, null);
+	assert.equal(view.items[0].text, "Every trial balance has ownership: 2 entities you cannot see");
+});
+
+test("readinessView prints the item's label with its detail (R01m)", () => {
+	const p = readinessPayload({
+		items: [item("checks", "ok", { label: "Checks", detail: "Green" })],
+	});
+	const view = readinessView(p);
+	assert.equal(view.items[0].text, "Checks: Green");
 });
 
 test("readinessView's entities text is null with no entities and nothing hidden", () => {
