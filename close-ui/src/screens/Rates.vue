@@ -58,7 +58,7 @@ import RatesPending from "../sections/RatesPending.vue";
 import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, mergeDrafts } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
@@ -433,12 +433,16 @@ function statusClass(row, rateType) {
 	return "bg-surface-red-2 text-ink-red-4";
 }
 
-/** Flag and refusal lines shown under a currency's two rows. */
+/** Flag and refusal lines shown under a currency's two rows. R01v: a
+ * per-cell warning box only for a judged, declared-threshold move
+ * (`flagMessage`, from `moveFlagView` in rates.js) — never for an Approved
+ * cell, and never the "declare the threshold" sentence again when the
+ * threshold is undeclared (that already shows once, in the banner). */
 function rowNotes(row) {
 	const notes = [];
 	for (const rateType of RATE_TYPES) {
 		const cell = cellOf(row, rateType);
-		if (cell.flag) notes.push({ key: `${rateType}-flag`, tone: "flag", rateType, lines: [cell.flag] });
+		if (cell.flagMessage) notes.push({ key: `${rateType}-flag`, tone: "flag", rateType, lines: [cell.flagMessage] });
 		const err = cellErrors[cellKey(row, rateType)];
 		if (err) notes.push({ key: `${rateType}-save`, tone: "error", rateType, lines: lines(err) });
 		if (cell.name && approveErrors[cell.name]) {
@@ -456,13 +460,12 @@ const herPendingCount = computed(() => {
 	if (!pendingViewData.value) return null;
 	return pendingCount(pendingViewData.value.counts);
 });
-/** E411: the "Ownership" tab label carries the blocking count (the
- * wireframe's "N gap(s)"), from `view.blocking.length`; plain "Ownership"
- * when there are none (or nothing has loaded yet). */
-const ownershipGapsCount = computed(() => {
-	if (!ownershipViewData.value) return null;
-	return ownershipViewData.value.blocking.length;
-});
+/** E411/#305-R01v (folded in from R01q's gate): the "Ownership" tab label's
+ * gap count, from the pure `ownershipGapsCount` (rates.js) — blocking plus
+ * hidden, never blocking alone: a scoped user whose own entities carry no
+ * gap must still see that gaps exist outside their scope, not plain
+ * "Ownership" read as none. */
+const ownershipTabCount = computed(() => ownershipGapsCount(ownershipViewData.value));
 const TABS = computed(() => [
 	{ key: "group", label: "Group rates" },
 	{
@@ -471,7 +474,7 @@ const TABS = computed(() => [
 	},
 	{
 		key: "ownership",
-		label: ownershipGapsCount.value ? `Ownership · ${ownershipGapsCount.value} gap(s)` : "Ownership",
+		label: ownershipTabCount.value ? `Ownership · ${ownershipTabCount.value} gap(s)` : "Ownership",
 	},
 ]);
 </script>
@@ -532,8 +535,7 @@ const TABS = computed(() => [
 					</div>
 
 					<p class="mb-3 text-sm text-ink-gray-6">
-						{{ view.thresholdText }}<template v-if="view.summary">
-							· {{ view.summary.missing }} missing · {{ view.summary.awaiting_approval }} awaiting approval
+						<template v-if="view.thresholdText">{{ view.thresholdText }} · </template><template v-if="view.summary">{{ view.summary.missing }} missing · {{ view.summary.awaiting_approval }} awaiting approval
 							· {{ view.summary.approved }} approved</template>
 					</p>
 
@@ -606,9 +608,9 @@ const TABS = computed(() => [
 										</td>
 										<td
 											class="px-3 py-2 font-mono"
-											:class="cellOf(row, rateType).flag ? 'font-semibold text-ink-amber-4' : 'text-ink-gray-8'"
+											:class="cellOf(row, rateType).flagTag ? 'font-semibold text-ink-amber-4' : 'text-ink-gray-8'"
 										>
-											{{ cellOf(row, rateType).deltaText }}<span v-if="cellOf(row, rateType).flag"> · flagged</span>
+											{{ cellOf(row, rateType).deltaText }}<span v-if="cellOf(row, rateType).flagTag"> · {{ cellOf(row, rateType).flagTag }}</span>
 										</td>
 										<td class="px-3 py-2">
 											<span

@@ -58,6 +58,22 @@
 //   draft (dirty, refused) and three input shapes (no old draft, a clean
 //   old draft, a dirty/refused one) worth covering with real inputs rather
 //   than asserting the source text names a variable.
+// - R01v: a cell's raw `flag` (facts: live, 28/28 Approved cells flagged
+//   "+0.0% · flagged" because `group_rates.move_problem` returns the same
+//   "declare the threshold" sentence for every cell with a reference,
+//   whenever the threshold is undeclared, Approved cells included) is
+//   replaced by `flagTag`/`flagMessage`, the pure decision `moveFlagView`
+//   makes over where it shows: never on an Approved cell (a move is judged
+//   only where a rate can still be entered), and as the short "no threshold
+//   declared" cue rather than "flagged" (and with no per-cell warning box)
+//   while the threshold itself is undeclared — that sentence already shows
+//   once, in the banner. `thresholdText` likewise returns `null`, not the
+//   gap message, while undeclared: the summary line adds nothing the banner
+//   does not already say. `ownershipGapsCount` is the same kind of fix
+//   folded in from R01q's gate: the Ownership tab's count was visible gaps
+//   only (`blocking.length`), so a scoped user with none of their own could
+//   read a plain "Ownership" tab (no count, read as none) while gaps
+//   existed outside their scope; it is now `blocking.length + blockingHidden`.
 
 export const STATUS_LABELS = {
   missing: "Missing",
@@ -140,8 +156,43 @@ function extraDraftsText(extraDrafts) {
   return count === 1 ? "and 1 more draft" : `and ${count} more drafts`;
 }
 
-function cellView(cell) {
+/**
+ * Where a cell's move problem (`cell.flag`, `group_rates.move_problem`'s
+ * sentence) should show (R01v, SPA must-fix follow-up): a move is judged
+ * only where a rate can still be entered, so an Approved cell never shows
+ * it, however the server set it (goal 1) — the server is right to report
+ * it, the view decides where to place it.
+ *
+ * A flag only means a judged move once a threshold is declared
+ * (`thresholdDeclared`). While it is not, `group_rates.move_problem`
+ * returns the identical "declare the threshold" sentence
+ * (`close_policy_model.RATE_MOVE_MESSAGE`) for every cell that has
+ * something to compare against, regardless of how far the rate has
+ * actually moved — that sentence already reaches the screen once, in the
+ * banner (`bannerFor`'s `policy_gaps`), so a cell shows only the short
+ * "no threshold declared" cue beside its delta (goal 3), never the
+ * sentence a second and third time (goal 2), and never the amber "flagged"
+ * word, which implies a judged, real move.
+ *
+ * Returns `{tag, message}`: `tag` is `"flagged"` (threshold declared, this
+ * rate exceeds it or the ERP quote), `"no threshold declared"` (threshold
+ * undeclared, a reference exists) or `null` (no flag, or Approved).
+ * `message` — the full sentence for the per-cell warning box — is non-null
+ * only for `"flagged"`.
+ */
+export function moveFlagView(cell, thresholdDeclared) {
+  if (cell.status === "approved" || !cell.flag) {
+    return { tag: null, message: null };
+  }
+  if (thresholdDeclared) {
+    return { tag: "flagged", message: cell.flag };
+  }
+  return { tag: "no threshold declared", message: null };
+}
+
+function cellView(cell, thresholdDeclared) {
   const prevQuote = previousQuote(cell.previous);
+  const moveFlag = moveFlagView(cell, thresholdDeclared);
   return {
     name: cell.name,
     status: cell.status,
@@ -152,7 +203,8 @@ function cellView(cell) {
     previousQuotedPer: prevQuote.quotedPer,
     previousLabel: previousLabel(cell.previous),
     deltaText: deltaText(cell.delta),
-    flag: cell.flag,
+    flagTag: moveFlag.tag,
+    flagMessage: moveFlag.message,
     preparer: cell.owner,
     approve: cell.approve ? approveAction(cell.approve) : null,
     changeReason: cell.change_reason ?? null,
@@ -162,13 +214,13 @@ function cellView(cell) {
   };
 }
 
-function rowView(row) {
+function rowView(row, thresholdDeclared) {
   return {
     fromCurrency: row.from_currency,
     toCurrency: row.to_currency,
     required: row.required,
-    closing: cellView(row.closing),
-    average: cellView(row.average),
+    closing: cellView(row.closing, thresholdDeclared),
+    average: cellView(row.average, thresholdDeclared),
   };
 }
 
@@ -191,13 +243,20 @@ function formatPct(n) {
   return String(Math.round(n * 10000) / 10000);
 }
 
+/**
+ * R01v goal 2: while the threshold is undeclared, its gap sentence belongs
+ * in the banner only — `bannerFor` already lists it once from
+ * `policy_gaps`. The summary line that `thresholdText` feeds adds nothing
+ * in that case (`null`); still validated against `policyGaps` so a payload
+ * that forgets the gap is a loud error here, not a silently blank screen.
+ */
 function thresholdText(thresholdPct, policyGaps) {
   if (thresholdPct === null || thresholdPct === undefined) {
     const gap = (policyGaps || []).find((g) => g.code === "rate_move_undeclared");
     if (!gap) {
       throw new Error("threshold_pct is undeclared but no rate_move_undeclared policy gap was given.");
     }
-    return gap.message;
+    return null;
   }
   return `Moves over ${formatPct(thresholdPct)}% need a Reason for Change`;
 }
@@ -209,9 +268,10 @@ function thresholdText(thresholdPct, policyGaps) {
  * policy_gaps[].message.
  */
 export function gridView(payload) {
+  const thresholdDeclared = payload.threshold_pct !== null && payload.threshold_pct !== undefined;
   return {
-    rows: (payload.rows || []).map(rowView),
-    unrequired: (payload.unrequired || []).map(rowView),
+    rows: (payload.rows || []).map((row) => rowView(row, thresholdDeclared)),
+    unrequired: (payload.unrequired || []).map((row) => rowView(row, thresholdDeclared)),
     banner: bannerFor(payload),
     summary: payload.summary,
     canEnter: Boolean(payload.can_enter),
@@ -396,4 +456,16 @@ export function ownershipEmptyMessage(view) {
     return `${hidden} ${hidden === 1 ? "gap" : "gaps"} outside your scope`;
   }
   return "No ownership gaps for this period.";
+}
+
+/** #305-R01v (folded in from R01q's gate): the Ownership tab label's gap
+ * count — every blocking gap, visible or hidden (`blocking.length +
+ * blockingHidden`), not the visible count alone. `ownershipView`'s result
+ * (or `null`/`undefined` while loading, mirroring `ownershipEmptyMessage`'s
+ * own guard) -> a number, or `null`. Counting the visible list alone let a
+ * scoped user whose own entities carry no gap read a plain "Ownership" tab
+ * label (0 gaps) while gaps still existed outside their scope. */
+export function ownershipGapsCount(view) {
+  if (!view) return null;
+  return view.blocking.length + (view.blockingHidden || 0);
 }
