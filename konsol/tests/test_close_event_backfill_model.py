@@ -50,10 +50,12 @@ def _cancel(name, doctype, docname, owner, creation):
     return _v(name, doctype, docname, owner, creation, {"changed": [["docstatus", 1, 2]]})
 
 
-def _run(versions, docs, periods=None, placements=None, reasons=None):
+def _run(versions, docs, periods=None, placements=None, reasons=None,
+         derived_ownership_periods=None):
     return M.events_from_versions(
         versions, docs, periods or {}, placements or {},
-        approval_doctypes=APPROVAL_DOCTYPES, state_fields=STATE_FIELDS, reasons=reasons)
+        approval_doctypes=APPROVAL_DOCTYPES, state_fields=STATE_FIELDS, reasons=reasons,
+        derived_ownership_periods=derived_ownership_periods)
 
 
 def _assert_valid(events):
@@ -185,6 +187,55 @@ def test_approval_event_carries_the_entity_from_docs():
                      {op: {"owner": A, "entity": "ZZE1"}}, placements={op: (2025, 13)})
     assert events[0]["entity"] == "ZZE1"
     assert (events[0]["fiscal_year"], events[0]["fiscal_period"]) == (2025, 13)
+
+
+# --- Business-Combination-derived Ownership Period (konsol#305 R01f) -----
+
+def test_bc_derived_ownership_period_submit_is_approved_exempt_derived():
+    """The Business Combination's own approval submits its Ownership Period
+    under ``frappe.flags.from_business_combination``
+    (business_combination.py:426-465); the live writer records that as
+    ``approved`` with ``detail.exempt == 'derived'``, never ``self_approved``,
+    even though the owner and the submitter are the same user
+    (self_approval.py:111-115). The backfill is fed the Business Combination's
+    stored link (``Business Combination.ownership_period``) and must match."""
+    op = ("Ownership Period", "OP-ZZ1")
+    events, unplaced = _run(
+        [_submit("V1", *op, A, "2025-03-05 10:00:00")],
+        {op: {"owner": A, "entity": "ZZE1"}}, placements={op: (2025, 3)},
+        derived_ownership_periods={"OP-ZZ1"})
+    assert unplaced == {}
+    assert len(events) == 1
+    e = events[0]
+    assert e["kind"] == "approved"
+    assert e["reason"] is None
+    assert "reason_not_recorded" not in e["detail"]
+    assert e["detail"]["exempt"] == "derived"
+    assert e["detail"]["preparer"] == A and e["detail"]["preparers"] == [A]
+    _assert_valid(events)
+
+
+def test_an_ownership_period_with_no_bc_link_is_judged_normally():
+    """Failure path: without the BC link, the same submit is judged as any
+    other approval doctype's -- self_approved, since the owner submits."""
+    op = ("Ownership Period", "OP-ZZ2")
+    events, _ = _run(
+        [_submit("V1", *op, A, "2025-03-05 10:00:00")],
+        {op: {"owner": A, "entity": "ZZE1"}}, placements={op: (2025, 3)})
+    assert events[0]["kind"] == "self_approved"
+    assert "exempt" not in events[0]["detail"]
+
+
+def test_bc_link_on_a_different_doctype_name_has_no_effect():
+    """``derived_ownership_periods`` names Ownership Period docnames; a name
+    that collides with another doctype's docname must not exempt it."""
+    cj = ("Consolidation Journal", "OP-ZZ1")
+    events, _ = _run(
+        [_submit("V1", *cj, A, "2025-03-05 10:00:00")],
+        {cj: {"owner": A}}, placements={cj: (2025, 3)},
+        derived_ownership_periods={"OP-ZZ1"})
+    assert events[0]["kind"] == "self_approved"
+    assert "exempt" not in events[0]["detail"]
 
 
 def test_a_doctype_outside_the_lists_gives_no_event():
