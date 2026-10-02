@@ -11,6 +11,11 @@ frappe at module level, so it is taken **injected** as ``move_problem``. The
 true rate is computed by the API before a doc dict reaches this module, so
 every ``rate``/``erp_rate`` this module sees is already "to per 1 from".
 
+Part 2 (konsol#305 E402; story 4.3; R2, R5; #305-W2-14) adds ``approve_mode``
+and ``pending_items``. The self-approval rule itself is not copied here
+either: ``close_policy_model.self_approval_problem`` is taken **injected**,
+so this module stays import-free.
+
 Imports nothing from frappe or konsol.
 """
 
@@ -168,3 +173,87 @@ def grid(required, docs, earlier, threshold, move_problem):
         summary[row["average"]["status"]] += 1
 
     return {"rows": rows, "unrequired": unrequired, "summary": summary}
+
+
+def approve_mode(user, roles, preparers, doctype, name, policy, approver_roles, self_approval_problem):
+    """What ``user`` may do with a draft, for the Rates screen's approve
+    column (story 4.3; R2, R5; #305-W2-14). Returns ``{"mode", "message"}``:
+
+    - ``not_approver`` when ``roles`` holds none of ``approver_roles`` (R2:
+      only the Close Lead approves).
+    - ``direct`` when the injected ``self_approval_problem`` sees no problem
+      with no reason: ``user`` is not one of ``preparers`` (the owner, plus
+      everyone who edited the draft, #305-W2-14), or the caller is exempt.
+    - ``reason`` when a reason would clear the problem (Allowed with reason):
+      the message is the no-reason refusal, so the caller can show it before
+      the Analyst/Close Lead supplies one.
+    - ``refused`` otherwise (Blocked, an undeclared policy, or an unknown
+      one), with the policy's own message.
+
+    ``self_approval_problem`` is injected so the rule is not copied here
+    (close_policy_model.self_approval_problem).
+    """
+    if not (set(roles or ()) & set(approver_roles)):
+        return {"mode": "not_approver", "message": "The Close Lead approves (R2)."}
+
+    problem = self_approval_problem(policy, preparers, user, doctype, name, None, None)
+    if problem is None:
+        return {"mode": "direct", "message": None}
+
+    with_reason = self_approval_problem(policy, preparers, user, doctype, name, "reason", None)
+    if with_reason is None:
+        return {"mode": "reason", "message": problem}
+
+    return {"mode": "refused", "message": problem}
+
+
+def _her_item(doc, preparers, mode):
+    return {
+        "doctype": "Historical Equity Rate",
+        "name": doc["name"],
+        "title": "%s · %s · %s" % (doc["data_area_id"], doc["main_account"], doc["rate_date"]),
+        "detail": "%.9g (group %s)" % (doc["historical_rate"], doc["consolidation_group"]),
+        "preparer": doc["owner"],
+        "edited_by": sorted(preparers - {doc["owner"]}),
+        "created": doc["created"],
+        "approve": mode,
+    }
+
+
+def _op_item(doc, preparers, mode):
+    detail = "%g%% · %s" % (doc["ownership_pct"], doc["consolidation_method"])
+    if doc.get("end_date"):
+        detail += " to %s" % doc["end_date"]
+    return {
+        "doctype": "Ownership Period",
+        "name": doc["name"],
+        "title": "%s in %s from %s" % (doc["data_area_id"], doc["consolidation_group"], doc["effective_date"]),
+        "detail": detail,
+        "preparer": doc["owner"],
+        "edited_by": sorted(preparers - {doc["owner"]}),
+        "created": doc["created"],
+        "approve": mode,
+    }
+
+
+def pending_items(her, ops, preparers_by_name, user, roles, policy, approver_roles, self_approval_problem):
+    """The pending Historical Equity Rate and Ownership Period drafts
+    (story 4.3; E4-P8, E4-P12), sorted oldest first by ``created``.
+
+    ``preparers_by_name`` is ``{name: frozenset}`` (self_approval.preparers_for).
+    A ``name`` missing from it raises KeyError: it is never treated as
+    owner-only.
+    """
+    items = []
+    for doc in her:
+        preparers = preparers_by_name[doc["name"]]
+        mode = approve_mode(user, roles, preparers, "Historical Equity Rate", doc["name"],
+                             policy, approver_roles, self_approval_problem)
+        items.append(_her_item(doc, preparers, mode))
+    for doc in ops:
+        preparers = preparers_by_name[doc["name"]]
+        mode = approve_mode(user, roles, preparers, "Ownership Period", doc["name"],
+                             policy, approver_roles, self_approval_problem)
+        items.append(_op_item(doc, preparers, mode))
+    items.sort(key=lambda item: item["created"])
+    return items
