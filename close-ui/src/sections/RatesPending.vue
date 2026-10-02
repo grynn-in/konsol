@@ -16,11 +16,21 @@
  * the Close Lead approves (R2). None of this is re-decided here — the mode
  * came from the server through `approveAction` (rates.js), already applied
  * by `pendingView`.
+ *
+ * L01d: each item's `created` is formatted like the TB list
+ * (`pendingCreatedText`, rates.js — B29's one timefmt.js formatter, never a
+ * second one here), in the viewer's own zone (`userTimeZone()`, same
+ * lookup TrialBalances.vue uses). `rates_api.get_pending`'s `created` is
+ * still naive for now (a backend gap logged as L01e, out of this section's
+ * files); `pendingCreatedText` reads a naive value as the system zone
+ * (`frappe.boot.time_zone.system` — Frappe's own storage convention, not a
+ * guess at the browser's) rather than showing the server's raw ISO string.
  */
 import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
 import { messageLines } from "../signoff.js";
-import { pendingEmptyMessage } from "../rates.js";
+import { pendingEmptyMessage, pendingCreatedText } from "../rates.js";
+import { userTimeZone } from "../timefmt.js";
 
 const props = defineProps({
 	/** `pendingView(payload)` (rates.js): `{items, counts, selfApproval, canApprove}`, or null while loading. */
@@ -48,6 +58,24 @@ function canApprove(item) {
 
 function kindLabel(item) {
 	return item.doctype === "Ownership Period" ? "Ownership period" : "Historical equity rate";
+}
+
+// L01d: the zone the created time displays in (same lookup as the TB
+// screen, B29) and, separately, the zone a naive `created` is read as
+// (Frappe's own system zone -- the server's own storage convention, not a
+// guess at the browser's, see rates.js's `pendingCreatedText`/
+// `naiveInZone`). `now` is captured once per mount, same simplification
+// TrialBalances.vue uses per load.
+const timeZone = userTimeZone();
+const systemTimeZone =
+	(typeof window !== "undefined" && window.frappe && window.frappe.boot
+		&& window.frappe.boot.time_zone && window.frappe.boot.time_zone.system) || null;
+const now = new Date();
+const NO_ZONE = "Your browser reported no time zone, so the created time cannot be shown.";
+
+function createdText(created) {
+	if (!timeZone) return NO_ZONE;
+	return pendingCreatedText(created, now, timeZone, systemTimeZone);
 }
 
 function start(item) {
@@ -83,7 +111,7 @@ function lines(text) {
 					<p class="mt-1 text-xs text-ink-gray-5">
 						Prepared by {{ item.preparer }}
 						<template v-if="item.edited_by && item.edited_by.length"> · edited by {{ item.edited_by.join(", ") }}</template>
-						· {{ item.created }}
+						· {{ createdText(item.created) }}
 					</p>
 				</div>
 				<div class="flex min-w-[10rem] flex-col items-end gap-1">

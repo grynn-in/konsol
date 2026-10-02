@@ -8,6 +8,7 @@
 // after this row was written).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { formatTime, parseZoned } from "./timefmt.js";
 import {
   STATUS_LABELS,
   gridView,
@@ -17,6 +18,7 @@ import {
   pendingView,
   pendingCount,
   pendingEmptyMessage,
+  pendingCreatedText,
   ownershipView,
   ownershipEmptyMessage,
   ownershipGapsCount,
@@ -555,6 +557,77 @@ test("pendingEmptyMessage: null when there are visible items, regardless of hidd
     can_approve: true,
   });
   assert.equal(pendingEmptyMessage(view), null);
+});
+
+// -- pendingCreatedText (L01d: the pending list showed a raw ISO string,
+// 'Prepared by Administrator · 2026-09-16T18:13:05.213749', never run
+// through timefmt.js like every other time on screen) ----------------------
+//
+// rates_api.get_pending's `created` is naive (rates_api.py `_iso` still
+// returns a bare `isoformat()`; every sibling close API's `_iso` calls
+// konsol/close/timefmt.py's `zoned_iso(value, get_system_timezone())`
+// first -- a backend gap, out of this row's files, logged as L01e). This
+// reads a naive value as `systemZone` wall time (Frappe's own storage
+// convention -- frappe/boot.py's `time_zone.system`, not a guess at the
+// browser's), then shows it in `timeZone` exactly like the TB list
+// (tbTable.js `timestampText`); a genuinely zoned value (once L01e lands)
+// is parsed as such, unchanged.
+
+const NOW = new Date("2026-09-25T12:00:00Z");
+
+test("pendingCreatedText: a naive HER `created` (the live defect's own value) formats exactly like the zoned equivalent timefmt gives the TB screen", () => {
+  // The live screenshot's raw value, read as the system zone's wall clock
+  // (Europe/London, BST = UTC+1 in September) is the same instant as the
+  // zoned string below.
+  const naive = "2026-09-16T18:13:05.213749";
+  const zoned = "2026-09-16T18:13:05+01:00";
+  assert.equal(
+    pendingCreatedText(naive, NOW, "Asia/Kolkata", "Europe/London"),
+    formatTime(parseZoned(zoned), NOW, "Asia/Kolkata"),
+  );
+});
+
+test("pendingCreatedText: today shows HH:MM, in the viewer's own zone", () => {
+  // 09:30 system-zone (UTC, no offset in September) wall time, shown in
+  // Europe/London (BST, UTC+1): 10:30, same day as NOW.
+  assert.equal(pendingCreatedText("2026-09-25T09:30:00", NOW, "Europe/London", "UTC"), "10:30");
+});
+
+test("pendingCreatedText: an earlier day renders as 'Sep 20, 10:42', the same text as the TB list", () => {
+  assert.equal(pendingCreatedText("2026-09-20T09:42:00", NOW, "Europe/London", "UTC"), "Sep 20, 10:42");
+});
+
+test("pendingCreatedText: a genuinely zoned `created` (once L01e lands) is read unchanged via parseZoned", () => {
+  assert.equal(
+    pendingCreatedText("2026-09-25T09:30:00+00:00", NOW, "Europe/London", "UTC"),
+    "10:30",
+  );
+});
+
+test("pendingCreatedText: null/undefined `created` reads 'not recorded', never a guessed time", () => {
+  assert.equal(pendingCreatedText(null, NOW, "Europe/London", "UTC"), "not recorded");
+  assert.equal(pendingCreatedText(undefined, NOW, "Europe/London", "UTC"), "not recorded");
+});
+
+test("pendingCreatedText: failure path — no viewer zone is refused, never defaulted", () => {
+  assert.throws(() => pendingCreatedText("2026-09-25T09:30:00", NOW, "", "UTC"), /time zone/i);
+  assert.throws(() => pendingCreatedText("2026-09-25T09:30:00", NOW, null, "UTC"), /time zone/i);
+});
+
+test("pendingCreatedText: failure path — no valid `now` is refused, never defaulted", () => {
+  assert.throws(() => pendingCreatedText("2026-09-25T09:30:00", undefined, "Europe/London", "UTC"), /now/i);
+  assert.throws(() => pendingCreatedText("2026-09-25T09:30:00", new Date("x"), "Europe/London", "UTC"), /now/i);
+});
+
+test("pendingCreatedText: failure path — a naive `created` with no system zone is refused, never read in the viewer's zone", () => {
+  assert.throws(
+    () => pendingCreatedText("2026-09-25T09:30:00", NOW, "Europe/London", null),
+    /system time zone/i,
+  );
+});
+
+test("pendingCreatedText: failure path — an unparsable `created` throws, same as parseZoned does for the zoned case", () => {
+  assert.throws(() => pendingCreatedText("not-a-timestamp", NOW, "Europe/London", "UTC"), /timestamp/i);
 });
 
 // -- ownershipView (supplementary, same reason as pendingView) ------------------
