@@ -367,7 +367,8 @@ def _signoff_run(**overrides):
 
 
 def test_acknowledged_run_gives_signed_off_acknowledged():
-    events = M.events_from_signoffs([_signoff_run()])
+    events, unplaced = M.events_from_signoffs([_signoff_run()])
+    assert unplaced == {}
     assert len(events) == 1
     e = events[0]
     assert e["kind"] == "signed_off" and e["actor"] == A
@@ -380,7 +381,8 @@ def test_acknowledged_run_gives_signed_off_acknowledged():
 def test_resign_needed_run_without_version_is_unknown_and_voided():
     run = _signoff_run(signoff_status="Re-sign Needed", acknowledgement=None,
                        affected_by="FY2025 2025-P07 reopened on 2025-08-09 by x: late TB")
-    events = M.events_from_signoffs([run])
+    events, unplaced = M.events_from_signoffs([run])
+    assert unplaced == {}
     by_kind = {e["kind"]: e for e in events}
     assert set(by_kind) == {"signed_off", "signoff_voided"}
     signed = by_kind["signed_off"]
@@ -398,7 +400,8 @@ def test_resign_needed_run_with_version_recovers_the_signed_state_and_voider():
         versions=[{"name": "V9", "owner": B, "creation": "2025-08-09 10:00:01",
                    "data": json.dumps({"changed": [
                        ["signoff_status", "Acknowledged", "Re-sign Needed"]]})}])
-    events = M.events_from_signoffs([run])
+    events, unplaced = M.events_from_signoffs([run])
+    assert unplaced == {}
     by_kind = {e["kind"]: e for e in events}
     assert by_kind["signed_off"]["detail"]["signoff_status"] == "Acknowledged"
     assert by_kind["signed_off"]["reason"] == "known FX warning"
@@ -408,7 +411,55 @@ def test_resign_needed_run_with_version_recovers_the_signed_state_and_voider():
 
 
 def test_run_never_signed_gives_nothing():
-    assert M.events_from_signoffs([_signoff_run(signed_off_by=None, signoff_status="")]) == []
+    events, unplaced = M.events_from_signoffs([_signoff_run(signed_off_by=None, signoff_status="")])
+    assert events == [] and unplaced == {}
+
+
+# --- T06c: a deleted run's own Versions are counted, not dropped ----------
+
+def _orphan_version(name, owner, creation, old, new):
+    return {"name": name, "owner": owner, "creation": creation,
+            "data": json.dumps({"changed": [["signoff_status", old, new]]})}
+
+
+def test_orphan_signoff_version_into_signed_state_is_unplaced_document_deleted():
+    v = _orphan_version("V9", B, "2025-08-09 10:00:00", "Not Signed Off", "Signed Off")
+    events, unplaced = M.events_from_signoffs([], orphan_versions=[v])
+    assert events == []
+    assert unplaced == {"document deleted": 1}
+
+
+def test_orphan_signoff_version_into_resign_needed_is_unplaced_document_deleted():
+    v = _orphan_version("V10", B, "2025-08-09 10:00:01", "Signed Off", "Re-sign Needed")
+    events, unplaced = M.events_from_signoffs([], orphan_versions=[v])
+    assert events == []
+    assert unplaced == {"document deleted": 1}
+
+
+def test_both_orphan_transitions_of_a_deleted_run_count_separately():
+    # Measured on live (T06c, 2 Oct): the 2 transitions of a run that no
+    # longer exists both count, matching T06b's expected unplaced {"document
+    # deleted": 2}.
+    v1 = _orphan_version("V9", B, "2025-08-09 10:00:00", "Not Signed Off", "Signed Off")
+    v2 = _orphan_version("V10", B, "2025-08-09 10:00:01", "Signed Off", "Re-sign Needed")
+    events, unplaced = M.events_from_signoffs([], orphan_versions=[v1, v2])
+    assert events == []
+    assert unplaced == {"document deleted": 2}
+
+
+def test_orphan_version_moving_away_from_a_signed_state_is_not_counted():
+    # Failure path: today's code (no orphan_versions parameter) cannot
+    # express this at all, and counting every orphan version unconditionally
+    # would over-count a transition that is neither a sign-off nor a void.
+    v = _orphan_version("V11", B, "2025-08-09 10:00:02", "Acknowledged", "Not Signed Off")
+    events, unplaced = M.events_from_signoffs([], orphan_versions=[v])
+    assert events == [] and unplaced == {}
+
+
+def test_orphan_versions_default_to_none_without_error():
+    events, unplaced = M.events_from_signoffs([_signoff_run()])
+    assert unplaced == {}
+    assert len(events) == 1
 
 
 # --- journals -------------------------------------------------------------
@@ -476,6 +527,19 @@ def test_backfill_combines_every_source():
     assert [e["kind"] for e in events] == ["rejected", "self_approved", "signed_off"]
     assert unplaced == {}
     _assert_valid(events)
+
+
+def test_backfill_counts_a_deleted_runs_orphan_signoff_versions():
+    orphan = [
+        _orphan_version("V9", B, "2025-08-09 10:00:00", "Not Signed Off", "Signed Off"),
+        _orphan_version("V10", B, "2025-08-09 10:00:01", "Signed Off", "Re-sign Needed"),
+    ]
+    events, unplaced = M.backfill(
+        versions=[], docs={}, periods={}, placements={}, comments=[], runs=[],
+        journals=[], existing=set(), cutoff=None, approval_doctypes=APPROVAL_DOCTYPES,
+        state_fields=STATE_FIELDS, orphan_run_versions=orphan)
+    assert events == []
+    assert unplaced == {"document deleted": 2}
 
 
 def test_not_recoverable_names_every_known_loss():

@@ -18,6 +18,11 @@ Decisions applied:
 - #305-W2-5: placement is the patch's job (``close_event.period_of``); this
   model takes it in ``placements`` and counts a None under
   ``UNPLACED_NO_PERIOD``.
+- T06c (found by T06b, 2 Oct): a sign-off or Re-sign Needed mark recorded
+  only in the Versions of an Assertion Run that no longer exists is counted
+  under ``UNPLACED_DELETED``, never dropped silently. The patch passes those
+  Versions in as ``orphan_versions``; the model never sees the deleted run
+  itself (there is none).
 
 Inputs (all plain):
 - a Version: ``{name, ref_doctype, docname, owner, creation, data}``; ``data``
@@ -405,14 +410,23 @@ def _with_flag(detail, verb, text):
 
 # --- sign-offs -------------------------------------------------------------
 
-def events_from_signoffs(runs):
-    """Events from Assertion Runs with ``signed_off_by``: ``signed_off`` for
-    each, and ``signoff_voided`` for one now "Re-sign Needed".
+def events_from_signoffs(runs, orphan_versions=None):
+    """``(events, unplaced)`` from Assertion Runs with ``signed_off_by``:
+    ``signed_off`` for each, and ``signoff_voided`` for one now "Re-sign
+    Needed".
 
     A run is ``{name, fiscal_year, fiscal_period, signed_off_by,
     signed_off_at, signoff_status, status, override_reason, acknowledgement,
     affected_by, versions}``; ``versions`` are the run's own Versions
     (``{name, owner, creation, data}``), which may be empty.
+
+    ``orphan_versions`` (T06c) are Assertion Run Versions whose run no
+    longer exists: the patch cannot attach them to any run, so this model
+    never builds an event from them. Each one whose ``signoff_status``
+    Version entry moves into a signed state or into "Re-sign Needed" is
+    counted under ``UNPLACED_DELETED`` instead of being dropped without a
+    count. A transition into any other state (for example away from a
+    signed state) is not a sign-off or a void, so it is not counted.
     """
     events = []
     for run in runs or ():
@@ -443,7 +457,12 @@ def events_from_signoffs(runs):
                 vdetail["reason_not_recorded"] = True
             events.append(_event("signoff_voided", period, actor, at, ref, reason=voided,
                                  detail=vdetail or None))
-    return _sorted(events)
+    unplaced = {}
+    for v in orphan_versions or ():
+        pair = _changed(_data(v), "signoff_status")
+        if pair and (pair[1] in _SIGNED_STATES or pair[1] == _RE_SIGN_NEEDED):
+            _count(unplaced, UNPLACED_DELETED)
+    return _sorted(events), unplaced
 
 
 def _resign_mark(run):
@@ -508,7 +527,7 @@ def new_events(candidates, existing, cutoff):
 
 
 def backfill(versions, docs, periods, placements, comments, runs, journals, existing,
-             cutoff, approval_doctypes, state_fields=None):
+             cutoff, approval_doctypes, state_fields=None, orphan_run_versions=None):
     """``(events, unplaced)``: every source above, then ``new_events``."""
     reasons = reasons_from_comments(comments)
     unplaced = {}
@@ -517,6 +536,8 @@ def backfill(versions, docs, periods, placements, comments, runs, journals, exis
     _merge(unplaced, u)
     rejected, u = events_from_rejections(comments, docs, placements)
     _merge(unplaced, u)
-    candidates = (from_versions + rejected + events_from_signoffs(runs)
+    signoffs, u = events_from_signoffs(runs, orphan_run_versions)
+    _merge(unplaced, u)
+    candidates = (from_versions + rejected + signoffs
                   + events_from_journals(journals, from_versions, reasons))
     return new_events(candidates, existing, cutoff), unplaced
