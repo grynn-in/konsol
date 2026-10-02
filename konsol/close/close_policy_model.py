@@ -150,6 +150,26 @@ def preparers(owner, versions, state_field=None):
     return frozenset(result)
 
 
+def submit_carries_edit(diff, state_field=None):
+    """True when the submitting save itself edits the draft (#305-W2-14,
+    review M1, konsol#305 R01a), so its submitter is a preparer.
+
+    ``diff`` is Frappe's diff of the pending save
+    (``frappe.core.doctype.version.version.get_diff``: the dict the Version
+    written after the submit will hold), or None when nothing changed. Unlike
+    ``_is_edit`` on a saved Version, the ``docstatus`` change is expected here
+    and ignored, as is the workflow ``state_field`` (a workflow Approve sets
+    it). Any other field changed, or any child row added, removed or changed,
+    is an edit.
+    """
+    if not diff:
+        return False
+    for change in diff.get("changed") or ():
+        if change[0] != "docstatus" and change[0] != state_field:
+            return True
+    return any(diff.get(k) for k in _CHILD_ROW_KEYS)
+
+
 def self_approval_problem(policy, preparers, user, doctype, name, reason=None, exempt=None):
     """None, or the sentence that refuses ``user`` approving a document they
     prepared (``user`` is in ``preparers``, see ``preparers()``), under the

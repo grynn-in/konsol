@@ -4,7 +4,8 @@
 It acts only on ``close_policy_model.APPROVAL_DOCTYPES`` and applies
 ``close_policy_model.self_approval_problem`` to the submitting user and the
 document's preparers: its owner, plus everyone who edited the draft
-(#305-W2-14, ``preparers_for``). Frappe runs it on every submit path: the Desk
+(#305-W2-14, ``preparers_for``), plus the submitter when the submitting
+request itself edits the draft (review M1, ``_edits_in_this_submit``). Frappe runs it on every submit path: the Desk
 submit button, a workflow "Approve" (``apply_workflow`` ends in
 ``doc.submit()``), ``approval_api.approve`` and every programmatic submit.
 
@@ -49,6 +50,29 @@ def _reason(doc):
     return (frappe.flags.get(REASON_FLAG) or {}).get((doc.doctype, doc.name))
 
 
+def _state_field(doctype):
+    """The doctype's active workflow state field, or None without a workflow."""
+    return frappe.db.get_value(
+        "Workflow", {"document_type": doctype, "is_active": 1}, "workflow_state_field")
+
+
+def _edits_in_this_submit(doc):
+    """True when the submitting request itself changes the draft (review M1).
+
+    The submit's own Version is written after ``before_submit``
+    (frappe/model/document.py:1197), so ``preparers_for`` cannot see it. This
+    reads Frappe's diff of the pending save, the same ``get_diff`` that
+    Version will hold, against the saved draft. An insert-and-submit has no
+    saved draft; its submitter is its owner.
+    """
+    before = doc.get_doc_before_save()
+    if before is None:
+        return False
+    from frappe.core.doctype.version.version import get_diff
+    return close_policy_model.submit_carries_edit(
+        get_diff(before, doc), _state_field(doc.doctype))
+
+
 def preparers_for(doctype, owners):
     """``{name: frozenset}`` of who prepared each document (#305-W2-14).
 
@@ -66,8 +90,7 @@ def preparers_for(doctype, owners):
         order_by="creation asc",
         limit_page_length=0,
     )
-    state_field = frappe.db.get_value(
-        "Workflow", {"document_type": doctype, "is_active": 1}, "workflow_state_field")
+    state_field = _state_field(doctype)
     by_name = {}
     for row in rows:
         by_name.setdefault(row["docname"], []).append(row)
@@ -91,6 +114,9 @@ def check(doc, method=None):
         return
     user = frappe.session.user
     preparers = preparers_for(doc.doctype, {doc.name: doc.owner})[doc.name]
+    if user not in preparers and _edits_in_this_submit(doc):
+        # Review M1: an approver who edits in the submitting request prepared it.
+        preparers = preparers | {user}
     self_approved = user in preparers  # #305-W2-14
     judged = self_approved and not exempt
     policy = reason = None
