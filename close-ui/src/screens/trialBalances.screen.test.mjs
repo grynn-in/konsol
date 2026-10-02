@@ -118,6 +118,16 @@ test("a null count reads 'unknown', never 0 or blank", () => {
   assert.match(source, /==\s*null/);
 });
 
+// E209c: the summary line agrees in number ("1 entity:", "2 entities:"),
+// never a hardcoded plural.
+test("(E209c) the summary line's noun agrees in number, via tbTable's entityWord", () => {
+  const source = read();
+  assert.match(source, /import\s*\{[^}]*\bentityWord\b[^}]*\}\s*from\s*["']\.\.\/tbTable\.js["']/);
+  const tpl = template(source);
+  assert.match(tpl, /entityWord\(total\)/, "the summary line builds its noun from entityWord(total)");
+  assert.doesNotMatch(tpl, />\s*entities:/, "the plural is never hardcoded in the template");
+});
+
 test("selecting an entity opens its detail area (filled by B20 and B21)", () => {
   const tpl = template(read());
   assert.match(tpl, /@click=/);

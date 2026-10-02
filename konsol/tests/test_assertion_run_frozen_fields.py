@@ -348,16 +348,29 @@ def test_sign_off_close_saves_as_the_signoff_writer():
         "signoff_model_for_frozen_fields", os.path.join(APP_DIR, "close", "signoff_model.py"))
     signoff_model = importlib.util.module_from_spec(sm_spec)
     sm_spec.loader.exec_module(signoff_model)
+    # konsol#305 T04a: a stub Close Event writer (T02a), so T04's lazy
+    # `from konsol.close import close_event` resolves. `record` appends
+    # `(kind, fiscal_year, fiscal_period)`; not yet asserted on (T04 does that).
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+
+    def record(kind, fiscal_year, fiscal_period, *a, **k):
+        close_event.events.append((kind, fiscal_year, fiscal_period))
+
+    close_event.record = record
     pkg = types.ModuleType("konsol.close")
     pkg.signoff_gate = gate
     pkg.signoff_model = signoff_model
-    names = ("konsol", "konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
+    pkg.close_event = close_event
+    names = ("konsol", "konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model",
+             "konsol.close.close_event")
     before = {n: sys.modules.get(n) for n in names}
     konsol_pkg = types.ModuleType("konsol")
     konsol_pkg.close = pkg
     sys.modules.update({"konsol": konsol_pkg, "konsol.close": pkg,
                         "konsol.close.signoff_gate": gate,
-                        "konsol.close.signoff_model": signoff_model})
+                        "konsol.close.signoff_model": signoff_model,
+                        "konsol.close.close_event": close_event})
     try:
         module.sign_off_close("AR-1")
     finally:
@@ -368,6 +381,9 @@ def test_sign_off_close_saves_as_the_signoff_writer():
                 sys.modules[n] = old
     assert seen == [(module.SIGNOFF_WRITER, "AR-1")], seen
     assert module.active_writer() is None
+    # konsol#305 T04a failure path: a close_event stub left out of the
+    # restored-names tuple would leak into later tests.
+    assert sys.modules.get("konsol.close.close_event") == before["konsol.close.close_event"]
 
 
 def test_worker_saves_as_the_worker_writer():
