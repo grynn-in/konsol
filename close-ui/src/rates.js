@@ -362,9 +362,13 @@ export function pendingEmptyMessage(view) {
 }
 
 /** `get_ownership` payload -> `{blocking, outOfScopeCount, inScopeCount,
- * canRecord, hiddenCount}`. `blocking` entries (`{entity, message, desk}`)
- * are server-authored sentences and pass through unchanged; the
- * out-of-scope list is shown only as a count. */
+ * canRecord, hiddenCount, blockingHidden}`. `blocking` entries
+ * (`{entity, message, desk}`) are server-authored sentences and pass
+ * through unchanged; the out-of-scope list is shown only as a count.
+ * `blockingHidden` (R01h: `blocking_hidden`) is the subset of `hiddenCount`
+ * that is a hidden blocking gap, not a merely-hidden out-of-scope entity --
+ * `ownershipEmptyMessage` needs that distinction, `hiddenCount` alone
+ * cannot tell the two apart. */
 export function ownershipView(payload) {
   return {
     blocking: payload.blocking || [],
@@ -372,5 +376,24 @@ export function ownershipView(payload) {
     inScopeCount: payload.in_scope_count,
     canRecord: Boolean(payload.can_record),
     hiddenCount: payload.hidden || 0,
+    blockingHidden: payload.blocking_hidden || 0,
   };
+}
+
+/** #305-R01q: the Ownership tab's empty-state sentence, from
+ * `ownershipView`'s result (or `null`/`undefined` while loading, mirroring
+ * the section's own `!view` branch). Null return when there are visible
+ * blocking entries (the caller renders the list instead). With no visible
+ * entries and `blockingHidden > 0`, entities outside the viewer's scope
+ * have ownership gaps the viewer cannot see, so "No ownership gaps" would
+ * be a lie -- this names the hidden count instead (mirrors
+ * pendingEmptyMessage / periodGrid.js's hiddenNote). Only when nothing is
+ * hidden either does it say there are none. */
+export function ownershipEmptyMessage(view) {
+  if (view && view.blocking.length) return null;
+  const hidden = (view && view.blockingHidden) || 0;
+  if (hidden > 0) {
+    return `${hidden} ${hidden === 1 ? "gap" : "gaps"} outside your scope`;
+  }
+  return "No ownership gaps for this period.";
 }
