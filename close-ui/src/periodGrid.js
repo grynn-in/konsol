@@ -79,13 +79,25 @@ export function gridView(payload, problemsOnly) {
 
 const GLYPHS = { ok: "✓", blocked: "✕", unknown: "?" };
 
+// E207b: never print more than this many entity codes in the readiness
+// strip (found on the live demo walk, 2 Oct — a configuration item printed
+// 306 codes).
+const MAX_VISIBLE_ENTITIES = 5;
+
 // The visible entity codes plus, when the server hid some, the count it
 // hid — never the hidden codes themselves (readiness_model.py: a hidden
-// entity's code never appears anywhere in the result).
+// entity's code never appears anywhere in the result). When the item names
+// more than MAX_VISIBLE_ENTITIES codes, only the first MAX_VISIBLE_ENTITIES
+// are printed, followed by "and N more" for the rest.
 function entitiesText(item) {
 	const parts = [];
 	if (item.entities && item.entities.length) {
-		parts.push(item.entities.join(", "));
+		const visible = item.entities.slice(0, MAX_VISIBLE_ENTITIES);
+		let codes = visible.join(", ");
+		if (item.entities.length > MAX_VISIBLE_ENTITIES) {
+			codes += ` and ${item.entities.length - MAX_VISIBLE_ENTITIES} more`;
+		}
+		parts.push(codes);
 	}
 	if (item.hidden) {
 		parts.push(`and ${item.hidden} outside your scope`);
