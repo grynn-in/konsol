@@ -150,6 +150,10 @@ export function gridView(payload) {
     canEnter: Boolean(payload.can_enter),
     canApprove: Boolean(payload.can_approve),
     thresholdText: thresholdText(payload.threshold_pct, payload.policy_gaps),
+    // E409c: the Group Exchange Rate `quoted_per` field's own Select options
+    // (E409b), passed through verbatim. No hand-copied list here: an empty
+    // default is a visible gap, never a guessed list of units.
+    quotedPerOptions: payload.quoted_per_options || [],
   };
 }
 

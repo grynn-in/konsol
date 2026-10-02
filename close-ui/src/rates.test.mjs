@@ -355,3 +355,20 @@ test("gridView passes can_enter and can_approve through as booleans", () => {
   assert.equal(view.canEnter, false);
   assert.equal(view.canApprove, true);
 });
+
+// -- quoted_per_options (E409c): the server's own Select options, not a hand-copied list ----
+
+test("gridView passes quoted_per_options through as quotedPerOptions", () => {
+  const view = gridView(payload({ quoted_per_options: ["1", "10", "100", "1000", "10000"] }));
+  assert.deepEqual(view.quotedPerOptions, ["1", "10", "100", "1000", "10000"]);
+});
+
+test("gridView reflects a changed quoted_per_options payload: no constant array of its own", () => {
+  const view = gridView(payload({ quoted_per_options: ["5", "50"] }));
+  assert.deepEqual(view.quotedPerOptions, ["5", "50"]);
+});
+
+test("gridView defaults quotedPerOptions to an empty list, never a guessed one", () => {
+  const view = gridView(payload());
+  assert.deepEqual(view.quotedPerOptions, []);
+});

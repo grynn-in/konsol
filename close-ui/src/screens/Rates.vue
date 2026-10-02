@@ -69,9 +69,6 @@ const GET_PENDING = "konsol.close.rates_api.get_pending";
 const GET_OWNERSHIP = "konsol.close.rates_api.get_ownership";
 const GER = "Group Exchange Rate";
 const RATE_TYPES = ["Closing", "Average"];
-/** Group Exchange Rate's own Select options (group_exchange_rate.json:97).
- * The server validates the value; this list only offers the choices. */
-const QUOTED_PER = ["1", "10", "100", "1000", "10000"];
 
 const route = useRoute();
 // No default: a screen outside the shell is a wiring bug, and Vue warns about it.
@@ -574,7 +571,7 @@ const TABS = computed(() => [
 													class="rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-ink-gray-8"
 												>
 													<option value="" disabled>Quoted Per</option>
-													<option v-for="q in QUOTED_PER" :key="q" :value="q">{{ q }}</option>
+													<option v-for="q in view.quotedPerOptions" :key="q" :value="q">{{ q }}</option>
 												</select>
 											</div>
 											<span v-else class="font-mono text-ink-gray-9">
