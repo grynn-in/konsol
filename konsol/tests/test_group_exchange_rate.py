@@ -423,6 +423,31 @@ def test_a_forged_source_is_refused():
                          _before=dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1"))[0]
 
 
+def test_a_forged_source_note_is_refused():
+    """source_note is read-only in the form only: REST writes it (E413,
+    finding from E404 2 Oct: a Desk/REST insert carrying source_note landed
+    it verbatim). Only Pre-fill from ERP and the rate adoption set it, each
+    under its own flag, exactly like source and erp_quote."""
+    refused, _, msg = _validate(source_note="ZZ forged")
+    assert refused and "Source Note" in msg
+    # an edit of a saved draft that changes the note is refused too
+    refused, _, msg = _validate(
+        source_note="ZZ forged",
+        _before=dict(source="Manual", erp_quote=0, quoted_per="1", source_note=""))
+    assert refused and "Source Note" in msg
+    # the real writers, each under its own flag
+    assert not _validate(source="ERP pre-fill", erp_quote=0.9478, source_note="d365_fo quote",
+                         _ctx={"flags": {"konsol_prefilling_rates": True}})[0]
+    assert not _validate(source="Adoption", source_note="the rate FY2099 P12 was translated at",
+                         _ctx={"flags": {"konsol_adopting_rates": True}, "user": "Administrator"})[0]
+    # editing the quote of a pre-filled draft with its note unchanged passes
+    refused, _, _ = _validate(
+        source="ERP pre-fill", erp_quote=0.9478, quote=0.9478, source_note="d365_fo quote",
+        _before=dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1",
+                     source_note="d365_fo quote"))
+    assert not refused
+
+
 def test_submit_is_gated_on_the_open_period():
     module, record = _controller(period_open=False)
     assert _refused(_doc(module).before_submit)
