@@ -10,6 +10,15 @@ Append-only:
   (E10-P2, decision #305-W2-6, Deepak Pai 2 Oct 2026). Removing an event
   takes raw SQL by a database admin: immutable at app level, not
   tamper-proof.
+- ``frappe.delete_doc(..., ignore_on_trash=True)`` skips ``on_trash``
+  (apps/frappe/frappe/model/delete_doc.py:125-128), so ``after_delete`` also
+  refuses, unconditionally, with the same sentence (konsol#305 T01c,
+  #305-W2-6). ``after_delete`` runs after the row is already gone from the
+  table, so this refusal works only by making the request raise, which rolls
+  the transaction back and restores the row; it is not a second check before
+  the delete happens. A script that catches the error and commits anyway
+  still deletes the row, and so does raw SQL by a database admin: that gap
+  is recorded and accepted (W2-P2), not closed by this row.
 
 The writer is held in a context variable, as assertion_run.py does for its
 writers. This module imports nothing from ``konsol.close``, so the writer can
@@ -53,5 +62,9 @@ class CloseEvent(Document):
                          frappe.PermissionError)
 
     def on_trash(self):
+        frappe.throw("A Close Event cannot be deleted; the audit trail is append-only.",
+                     frappe.PermissionError)
+
+    def after_delete(self):
         frappe.throw("A Close Event cannot be deleted; the audit trail is append-only.",
                      frappe.PermissionError)
