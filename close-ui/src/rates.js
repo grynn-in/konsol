@@ -36,6 +36,15 @@
 //   `quoted_per` (rates_model.py's `_previous_cell`), so it is re-expressed
 //   as a quote in that same unit, matching the wireframe (Rates.dc.html),
 //   which shows both sides as quotes, never a bare true rate.
+// - R01o (SPA should-fix 6): the cell view dropped `change_reason`,
+//   `edited_by` (#305-W2-14), `extra_drafts` and `source`, all already on
+//   every `rates_model` cell (and, for `edited_by`, set by `rates_api.py`
+//   alongside `approve`): an approver could not see why a rate moved, who
+//   else touched the draft besides its owner, that more than one draft
+//   exists for the same grain, or that a quote came from the ERP pre-fill
+//   rather than being typed. `extraDraftsText` turns the `extra_drafts`
+//   array into the count the approver needs ("and N more draft(s)"), not
+//   the names: those are internal doc IDs, not something to show.
 // - R01n (SPA should-fix 5): `Rates.vue`'s `resetDrafts` kept a cell's draft
 //   across a reload only when a save had just refused it (a key in
 //   `cellErrors`); any other unsaved, un-refused edit was silently
@@ -120,6 +129,17 @@ export function approveAction(approve) {
   return { kind, message: approve.message };
 }
 
+/** `["GER-10"]` (one extra draft besides the one shown) -> "and 1 more
+ * draft"; two or more -> "and N more drafts". `[]`/undefined -> null: no
+ * line to show. The names themselves are internal doc IDs and never shown. */
+function extraDraftsText(extraDrafts) {
+  const count = (extraDrafts || []).length;
+  if (!count) {
+    return null;
+  }
+  return count === 1 ? "and 1 more draft" : `and ${count} more drafts`;
+}
+
 function cellView(cell) {
   const prevQuote = previousQuote(cell.previous);
   return {
@@ -135,6 +155,10 @@ function cellView(cell) {
     flag: cell.flag,
     preparer: cell.owner,
     approve: cell.approve ? approveAction(cell.approve) : null,
+    changeReason: cell.change_reason ?? null,
+    editedBy: cell.edited_by ?? null,
+    extraDraftsText: extraDraftsText(cell.extra_drafts),
+    source: cell.source ?? null,
   };
 }
 
