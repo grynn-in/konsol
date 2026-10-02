@@ -90,7 +90,8 @@ class TBException(Document):
 
         signoff_gate.record_data_change(
             self.fiscal_year, self.fiscal_period,
-            "TB Exception %s %s" % (self.name, what), frappe.session.user)
+            "TB Exception %s %s" % (self.name, what), frappe.session.user,
+            entity=self.data_area_id)
 
     def before_cancel(self):
         """validate() is not run on cancel, so the period gate is applied here."""

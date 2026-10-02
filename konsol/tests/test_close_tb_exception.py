@@ -316,7 +316,8 @@ def _with_close(log, fn, raises=None):
     ``konsol.close.close_event``; both append to ``log`` in call order
     (``record`` raises ``raises`` when given). Restored afterwards."""
     gate = types.ModuleType("konsol.close.signoff_gate")
-    gate.record_data_change = lambda fy, fp, text, user: log.append(("data_change", text))
+    gate.record_data_change = lambda fy, fp, text, user, entity=None: log.append(
+        ("data_change", text, entity))
     close_event = types.ModuleType("konsol.close.close_event")
 
     def record(kind, *a, **k):
@@ -366,6 +367,8 @@ def test_submit_records_tb_exception_declared_with_the_reason_and_the_entity():
     assert kw["entity"] == "ZZOP"
     # in the action's own transaction, after the A63 data change
     assert [e[0] for e in log] == ["data_change", "event"], log
+    # S1, E2-6: the data change itself names the entity too.
+    assert log[0][2] == "ZZOP", log
 
 
 def test_cancel_records_tb_exception_cancelled():
@@ -378,6 +381,7 @@ def test_cancel_records_tb_exception_cancelled():
     _kind, args, kw = events[0][1:]
     assert args == (2025, 3, "TB Exception", "TBX-00001"), args
     assert kw["entity"] == "ZZOP"
+    assert log[0][2] == "ZZOP", log
 
 
 def test_a_blank_reason_is_refused_before_any_event():

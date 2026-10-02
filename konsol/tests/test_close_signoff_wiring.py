@@ -523,8 +523,8 @@ class _Hooks:
     def gate(self):
         gate = types.ModuleType("konsol.close.signoff_gate")
 
-        def record_data_change(fiscal_year, fiscal_period, text, user):
-            self.log.append(("record", fiscal_year, fiscal_period, text, user))
+        def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
+            self.log.append(("record", fiscal_year, fiscal_period, text, user, entity))
             if self.raise_on_record:
                 raise RuntimeError("record refused")
             return []
@@ -625,7 +625,8 @@ def test_tb_submit_records_the_change_before_anything_reaches_clickhouse():
     module, mods = _hook_module(TBS_PY, hooks)
     with _installed(mods):
         _tbs(module).on_submit()
-    assert _records(hooks) == [(2099, 1, "TB TBS-ZZOP-2099-P1-905 submitted", UPLOADER)], hooks.log
+    assert _records(hooks) == [
+        (2099, 1, "TB TBS-ZZOP-2099-P1-905 submitted", UPLOADER, "ZZOP")], hooks.log
     assert hooks.log[0][0] == "record", "ClickHouse was written before the change was recorded"
     assert any(e[0] == "ch" for e in hooks.log), "the claim was not written"
 
@@ -635,7 +636,8 @@ def test_tb_cancel_records_the_change_before_the_claim_is_deleted():
     module, mods = _hook_module(TBS_PY, hooks)
     with _installed(mods):
         _tbs(module, fiscal_period=7).on_cancel()
-    assert _records(hooks) == [(2099, 7, "TB TBS-ZZOP-2099-P1-905 cancelled", UPLOADER)], hooks.log
+    assert _records(hooks) == [
+        (2099, 7, "TB TBS-ZZOP-2099-P1-905 cancelled", UPLOADER, "ZZOP")], hooks.log
     assert [e[0] for e in hooks.log] == ["record", "ch"], hooks.log
 
 
@@ -668,8 +670,8 @@ def test_tb_exception_submit_and_cancel_record_the_change():
         _tbx(module).on_submit()
         _tbx(module, docstatus=2).on_cancel()
     assert _records(hooks) == [
-        (2099, 3, "TB Exception TBX-00905 submitted", UPLOADER),
-        (2099, 3, "TB Exception TBX-00905 cancelled", UPLOADER)], hooks.log
+        (2099, 3, "TB Exception TBX-00905 submitted", UPLOADER, "ZZOP"),
+        (2099, 3, "TB Exception TBX-00905 cancelled", UPLOADER, "ZZOP")], hooks.log
 
 
 def _amount_rows():
@@ -693,8 +695,8 @@ def test_set_amount_basis_records_one_change_per_period_before_the_claim():
                                       "Period-end balance")
     assert out["updated"] == 3, out
     assert _records(hooks) == [
-        (2099, 3, "Amount basis of TB TBS-1, TBS-3 set to Period-end balance", UPLOADER),
-        (2099, 4, "Amount basis of TB TBS-2 set to Period-end balance", UPLOADER)], hooks.log
+        (2099, 3, "Amount basis of TB TBS-1, TBS-3 set to Period-end balance", UPLOADER, "ZZOP"),
+        (2099, 4, "Amount basis of TB TBS-2 set to Period-end balance", UPLOADER, "ZZOP")], hooks.log
     kinds = [e[0] for e in hooks.log]
     assert kinds == ["set", "set", "set", "record", "record", "ch"], kinds
 
