@@ -18,6 +18,7 @@ import {
   pendingCount,
   pendingEmptyMessage,
   ownershipView,
+  ownershipEmptyMessage,
   mergeDrafts,
 } from "./rates.js";
 
@@ -475,6 +476,80 @@ test("ownershipView: counts out-of-scope and surfaces the hidden count", () => {
   assert.equal(view.inScopeCount, 306);
   assert.equal(view.canRecord, true);
   assert.equal(view.hiddenCount, 3);
+});
+
+test("ownershipView: blocking_hidden is surfaced separately from the combined hidden count", () => {
+  const view = ownershipView({
+    blocking: [],
+    out_of_scope: ["ZZC"],
+    in_scope_count: 10,
+    can_record: true,
+    hidden: 3,
+    blocking_hidden: 2,
+  });
+  assert.equal(view.hiddenCount, 3);
+  assert.equal(view.blockingHidden, 2);
+});
+
+test("ownershipView: blocking_hidden defaults to 0 when the payload omits it", () => {
+  const view = ownershipView({
+    blocking: [],
+    out_of_scope: [],
+    in_scope_count: 1,
+    can_record: true,
+    hidden: 0,
+  });
+  assert.equal(view.blockingHidden, 0);
+});
+
+// -- ownershipEmptyMessage (#305-R01q: SPA should-fix 9) ---------------------
+
+test("ownershipEmptyMessage: a hidden blocking gap is never read as 'no gaps' -- it names the hidden count instead", () => {
+  const view = ownershipView({
+    blocking: [],
+    out_of_scope: [],
+    in_scope_count: 10,
+    can_record: true,
+    hidden: 2,
+    blocking_hidden: 2,
+  });
+  assert.equal(ownershipEmptyMessage(view), "2 gaps outside your scope");
+});
+
+test("ownershipEmptyMessage: singular 'gap' for exactly one hidden blocking entity", () => {
+  const view = ownershipView({
+    blocking: [],
+    out_of_scope: [],
+    in_scope_count: 5,
+    can_record: true,
+    hidden: 1,
+    blocking_hidden: 1,
+  });
+  assert.equal(ownershipEmptyMessage(view), "1 gap outside your scope");
+});
+
+test("ownershipEmptyMessage: no blocking and nothing hidden says there are no gaps", () => {
+  const view = ownershipView({
+    blocking: [],
+    out_of_scope: [],
+    in_scope_count: 10,
+    can_record: true,
+    hidden: 0,
+    blocking_hidden: 0,
+  });
+  assert.equal(ownershipEmptyMessage(view), "No ownership gaps for this period.");
+});
+
+test("ownershipEmptyMessage: null when there are visible blocking entries, regardless of blocking_hidden", () => {
+  const view = ownershipView({
+    blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
+    out_of_scope: [],
+    in_scope_count: 1,
+    can_record: true,
+    hidden: 2,
+    blocking_hidden: 2,
+  });
+  assert.equal(ownershipEmptyMessage(view), null);
 });
 
 // -- can_enter / can_approve -------------------------------------------------
