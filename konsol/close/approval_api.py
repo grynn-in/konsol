@@ -14,7 +14,7 @@ The close-ui approval screen (E6) is the intended caller.
 """
 import frappe
 
-from konsol.close import close_policy_model
+from konsol.close import close_policy_model, self_approval
 from konsol.close.self_approval import REASON_FLAG
 
 
@@ -36,6 +36,9 @@ def approve(doctype, name, reason=None):
         # A request-scoped flag, not doc.flags: apply_workflow reloads the doc.
         frappe.flags[REASON_FLAG] = {(doctype, name): reason}
     doc = frappe.get_doc(doctype, name)
+    # The hook's own rule (#305-W2-14), read before the approve.
+    self_approved = frappe.session.user in self_approval.preparers_for(
+        doctype, {name: doc.owner})[name]
     if frappe.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}):
         from frappe.model.workflow import apply_workflow
 
@@ -47,7 +50,7 @@ def approve(doctype, name, reason=None):
     return {
         "name": doc.name,
         "docstatus": int(doc.docstatus),
-        "self_approved": doc.owner == frappe.session.user,
+        "self_approved": self_approved,
     }
 
 

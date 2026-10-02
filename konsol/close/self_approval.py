@@ -3,7 +3,8 @@
 
 It acts only on ``close_policy_model.APPROVAL_DOCTYPES`` and applies
 ``close_policy_model.self_approval_problem`` to the submitting user and the
-document's owner (its preparer). Frappe runs it on every submit path: the Desk
+document's preparers: its owner, plus everyone who edited the draft
+(#305-W2-14, ``preparers_for``). Frappe runs it on every submit path: the Desk
 submit button, a workflow "Approve" (``apply_workflow`` ends in
 ``doc.submit()``), ``approval_api.approve`` and every programmatic submit.
 
@@ -39,11 +40,40 @@ def _reason(doc):
     return (frappe.flags.get(REASON_FLAG) or {}).get((doc.doctype, doc.name))
 
 
+def preparers_for(doctype, owners):
+    """``{name: frozenset}`` of who prepared each document (#305-W2-14).
+
+    ``owners`` is ``{name: owner}``. Two reads, whatever the number of names:
+    the documents' Versions (``get_all`` ignores permissions, so an approver
+    without Version read is still judged) and the doctype's active workflow
+    state field (None without a workflow). Empty ``owners`` reads nothing.
+    """
+    if not owners:
+        return {}
+    rows = frappe.get_all(
+        "Version",
+        filters={"ref_doctype": doctype, "docname": ["in", sorted(owners)]},
+        fields=["docname", "owner", "data"],
+        order_by="creation asc",
+        limit_page_length=0,
+    )
+    state_field = frappe.db.get_value(
+        "Workflow", {"document_type": doctype, "is_active": 1}, "workflow_state_field")
+    by_name = {}
+    for row in rows:
+        by_name.setdefault(row["docname"], []).append(row)
+    return {
+        name: close_policy_model.preparers(owner, by_name.get(name, ()), state_field)
+        for name, owner in owners.items()
+    }
+
+
 def check(doc, method=None):
     if doc.doctype not in close_policy_model.APPROVAL_DOCTYPES:
         return
     user = frappe.session.user
-    if user != doc.owner:
+    preparers = preparers_for(doc.doctype, {doc.name: doc.owner})[doc.name]
+    if user not in preparers:
         return
     exempt = _exempt(doc)
     if exempt:
@@ -51,7 +81,7 @@ def check(doc, method=None):
     policy = frappe.db.get_single_value("Close Settings", "self_approval")
     reason = _reason(doc)
     problem = close_policy_model.self_approval_problem(
-        policy, frozenset((doc.owner,)), user, doc.doctype, doc.name, reason, exempt)
+        policy, preparers, user, doc.doctype, doc.name, reason, exempt)
     if problem:
         frappe.throw(problem, frappe.PermissionError)
     doc.add_comment("Comment", close_policy_model.self_approval_note(
