@@ -104,3 +104,36 @@ def test_a_broken_konsol_import_still_fails_as_a_load_error():
         code, out = _run(path)
     assert code == 1, out
     assert "<load>" in out, out
+
+
+def test_a_test_that_reaches_the_frappe_stack_mid_body_fails_instead_of_vanishing():
+    """frappe, rq and redis are never on a host, so a test body that imports
+    one has a missing stub, not a missing dependency. It used to be filed as
+    "needs pytest" and dropped from the total: six dimension tests went that
+    way after a merge made on_submit import a frappe-bound module, and the
+    suite and CI stayed green. Only the file's headline count changed.
+
+    The imported names cannot exist even inside a bench, so this holds where
+    frappe is installed too."""
+    for module in ("frappe.zz_konsol_never_a_module", "rq.zz_konsol_never_a_module"):
+        body = (f"def test_x():\n    import {module}  # noqa: F401\n\n\n"
+                "def test_y():\n    assert True\n")
+        with _test_file(body) as path:
+            code, out = _run(path)
+        assert code == 1, (module, out)
+        assert "test_x" in out and "stub it" in out, (module, out)
+        assert "1/2 passed" in out, (module, out)
+
+
+def test_importorskip_mid_body_is_still_a_skip_and_is_listed():
+    """A test that means to skip says so with importorskip, and still may:
+    it is reported as skipped, not passed and not failed."""
+    import pytest  # the generated file needs it; skip on a host without it
+    del pytest
+    body = ("import pytest\n\n\ndef test_x():\n"
+            "    pytest.importorskip('frappe.zz_konsol_never_a_module')\n\n\n"
+            "def test_y():\n    assert True\n")
+    with _test_file(body) as path:
+        code, out = _run(path)
+    assert code == 0, out
+    assert "1/1 passed" in out and "1 test(s) skipped" in out, out
