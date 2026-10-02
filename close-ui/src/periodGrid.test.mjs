@@ -190,6 +190,37 @@ test("readinessView's entities text is null with no entities and nothing hidden"
 	assert.equal(view.items[0].entities, null);
 });
 
+test("readinessView's entities text caps at 5 codes, with 'and N more' for the rest", () => {
+	const codes = Array.from({ length: 306 }, (_, i) => `ZZ${String(i + 1).padStart(3, "0")}`);
+	const p = readinessPayload({
+		items: [item("configuration", "blocked", { entities: codes, hidden: 0 })],
+	});
+	const view = readinessView(p);
+	assert.equal(view.items[0].entities, "ZZ001, ZZ002, ZZ003, ZZ004, ZZ005 and 301 more");
+});
+
+test("readinessView's entities text shows all 5 codes with no 'more' when there are exactly 5", () => {
+	const codes = ["ZZ001", "ZZ002", "ZZ003", "ZZ004", "ZZ005"];
+	const p = readinessPayload({
+		items: [item("configuration", "blocked", { entities: codes, hidden: 0 })],
+	});
+	const view = readinessView(p);
+	assert.equal(view.items[0].entities, "ZZ001, ZZ002, ZZ003, ZZ004, ZZ005");
+	assert.ok(!view.items[0].entities.includes("more"));
+});
+
+test("readinessView's entities text combines the 'and N more' cap with the hidden suffix", () => {
+	const codes = Array.from({ length: 7 }, (_, i) => `ZZ${String(i + 1).padStart(3, "0")}`);
+	const p = readinessPayload({
+		items: [item("configuration", "blocked", { entities: codes, hidden: 2 })],
+	});
+	const view = readinessView(p);
+	assert.equal(
+		view.items[0].entities,
+		"ZZ001, ZZ002, ZZ003, ZZ004, ZZ005 and 2 more and 2 outside your scope"
+	);
+});
+
 // The terms are built at run time (rather than written literally here) so
 // this file itself never contains the substrings route.test.mjs's
 // whole-tree scanner looks for.
