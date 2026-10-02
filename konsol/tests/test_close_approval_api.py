@@ -38,8 +38,11 @@ class _Flags(dict):
 
 class _Site:
     def __init__(self, roles=("EPM Admin",), user=LEAD, owner=LEAD, policy=ALLOWED,
-                 workflows=WORKFLOW_DOCTYPES):
+                 workflows=WORKFLOW_DOCTYPES, versions=()):
         self.roles = set(roles)
+        self.versions = list(versions)  # Version rows {"docname", "owner", "data"}
+        self.version_reads = []  # (doctype, docnames)
+        self.state_field_reads = []  # doctypes
         self.user = user
         self.owner = owner
         self.policy = policy
@@ -100,8 +103,21 @@ def _frappe(site):
         site.get_doc_calls.append((doctype, name))
         return _Doc(doctype, name)
 
+    def get_all(doctype, filters=None, fields=None, **k):
+        assert doctype == "Version", doctype
+        names = list(filters["docname"][1])
+        site.version_reads.append((filters["ref_doctype"], names))
+        return [dict(v) for v in site.versions if v["docname"] in names]
+
     def get_value(doctype, filters, fieldname="name", **k):
         assert doctype == "Workflow", doctype
+        if fieldname == "workflow_state_field":
+            # self_approval.preparers_for's read, kept apart from the
+            # endpoint's routing read below.
+            site.state_field_reads.append(filters.get("document_type"))
+            if filters.get("is_active") == 1 and filters.get("document_type") in site.workflows:
+                return "status"
+            return None
         site.workflow_reads.append(dict(filters))
         if filters.get("is_active") == 1 and filters.get("document_type") in site.workflows:
             return "ZZ " + filters["document_type"] + " Workflow"
@@ -130,6 +146,7 @@ def _frappe(site):
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.get_doc = get_doc
+    frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.db = types.SimpleNamespace(get_value=get_value, get_single_value=get_single_value)
     frappe.session = types.SimpleNamespace(user=site.user)
@@ -269,6 +286,38 @@ def test_an_allowed_self_approval_with_a_reason_lands_with_a_comment():
     out, _ = _call(site, "approve", "IC Balance", "ZZ-IC-1", reason="ZZ reason")
     assert out == {"name": "ZZ-IC-1", "docstatus": 1, "self_approved": True}
     assert len(site.comments) == 1 and "ZZ reason" in site.comments[0][2]
+
+
+# --- #305-W2-14 (P30b): self_approved follows the preparer rule ----------------------
+
+def _edit(name, owner, field="ic_sales_amount"):
+    import json
+    return {"docname": name, "owner": owner,
+            "data": json.dumps({"changed": [[field, 1, 2]], "added": [], "removed": [],
+                                "row_changed": []})}
+
+
+def test_a_close_lead_who_edited_the_draft_is_self_approved():
+    # The failure path: the endpoint reported owner == user only.
+    site = _Site(owner=ANALYST, versions=[_edit("ZZ-IC-1", LEAD)])
+    out, _ = _call(site, "approve", "IC Balance", "ZZ-IC-1", reason="ZZ cover")
+    assert out == {"name": "ZZ-IC-1", "docstatus": 1, "self_approved": True}, out
+    assert len(site.comments) == 1 and "ZZ cover" in site.comments[0][2]
+    assert ("IC Balance", ["ZZ-IC-1"]) in site.version_reads, site.version_reads
+
+
+def test_a_close_lead_who_edited_the_draft_with_no_reason_is_refused():
+    site = _Site(owner=ANALYST, versions=[_edit("ZZ-IC-1", LEAD)])
+    _raises(lambda: _call(site, "approve", "IC Balance", "ZZ-IC-1"), "PermissionError")
+    assert site.submitted == [] and site.comments == []
+
+
+def test_a_journal_reject_by_the_close_lead_is_not_self_approved():
+    site = _Site(owner=ANALYST, policy="Blocked",
+                 versions=[_edit("ZZ-CJ-1", LEAD, field="status")])
+    out, _ = _call(site, "approve", "Consolidation Journal", "ZZ-CJ-1")
+    assert out == {"name": "ZZ-CJ-1", "docstatus": 1, "self_approved": False}, out
+    assert "Consolidation Journal" in site.state_field_reads
 
 
 # --- reject (J06a: rejecting a journal needs a reason) -----------------------------
