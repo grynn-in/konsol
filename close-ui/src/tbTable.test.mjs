@@ -1,7 +1,7 @@
 // konsol#305 B12: tbTable.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkRows, entityRows, compareRows } from "./tbTable.js";
+import { checkRows, entityRows, compareRows, entityWord } from "./tbTable.js";
 import { freshnessView } from "./freshness.js";
 
 // B27: entityRows needs the user's zone and `now`, like freshnessView (B09).
@@ -265,4 +265,12 @@ test("(B27) failure path: no time zone or no valid now is refused, never default
 test("(B27) a TB the server sent with no creation reads 'not recorded', never a guessed time", () => {
   const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation: null };
   assert.equal(entityRows(oneEntity({ tb }), NOW, TZ)[0].uploaded, "not recorded");
+});
+
+// E209c: the Trial balances summary word agrees in number with the count.
+test("entityWord: 1 is singular, every other count (including 0 and null) is plural", () => {
+  assert.equal(entityWord(1), "entity");
+  assert.equal(entityWord(2), "entities");
+  assert.equal(entityWord(0), "entities");
+  assert.equal(entityWord(null), "entities");
 });
