@@ -20,7 +20,9 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
     PARTNER,
     _claim_insert,
     _claim_values,
+    _row_dimensions,
     _sql_str,
+    dimension_columns_problem,
     parse_tb_csv,
 )
 from konsol.entity_permissions import assert_entity_access
@@ -100,9 +102,13 @@ def check_tb(entity, fiscal_year, fiscal_period, amount_basis, content):
 
     result = check_rows(rows, chart_accounts(), entity, _partner_entities(rows),
                         amount_basis, BALANCE_TOLERANCE)
-    if read_problem:
-        result["file_problems"].insert(0, read_problem)
-        result["ok"] = False
+    # The submit refuses a dimension whose warehouse column Apply Schema has
+    # not added yet; the check says so first (konsol#255).
+    column_problem = dimension_columns_problem(_row_dimensions(rows))
+    for problem in (column_problem, read_problem):
+        if problem:
+            result["file_problems"].insert(0, problem)
+            result["ok"] = False
     result["period_problem"] = period_problem
     result["replaces"] = _submitted(entity, year, number)
     return result

@@ -228,8 +228,9 @@ def _tb_rows(tb):
     content = (content.decode("utf-8-sig") if isinstance(content, bytes)
                else content.lstrip("\ufeff"))
     try:
-        # The site's declared dimensions, as the submission parsed it (konsol#255).
-        return parse_tb_csv(content, declared_dimensions())
+        # Read back, not re-judged: a stored file stays readable whatever the
+        # site's dimensions or intake rules are today (konsol#255).
+        return parse_tb_csv(content, declared_dimensions(), stored=True)
     except ValueError as e:
         frappe.throw("Could not read the file of trial balance %s: %s" % (tb["name"], e))
 
