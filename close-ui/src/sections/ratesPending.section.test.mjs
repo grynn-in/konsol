@@ -92,6 +92,28 @@ test("Each item shows the preparer, the created date and its kind — OP drafts 
   assert.match(script(read()), /["']Ownership period["']/, "OP drafts are labelled 'Ownership period'");
 });
 
+test("L01d: the created time is formatted through timefmt (rates.js pendingCreatedText), never shown as the server's raw ISO string", () => {
+  const source = read();
+  assert.match(
+    source,
+    /import\s*\{[^}]*\bpendingCreatedText\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+    "imports pendingCreatedText from rates.js",
+  );
+  assert.match(
+    source,
+    /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/,
+    "imports userTimeZone from timefmt.js (same zone lookup as the TB screen, B29)",
+  );
+  const js = script(source);
+  assert.match(js, /\bpendingCreatedText\(/, "calls pendingCreatedText");
+  const tpl = template(source);
+  // The raw field is still the argument (not re-derived), but it must be
+  // wrapped by a call, not interpolated bare: `{{ item.created }}` alone
+  // would be the live defect again (the raw ISO string).
+  assert.doesNotMatch(tpl, /\{\{\s*item\.created\s*\}\}/, "created is never interpolated raw");
+  assert.match(tpl, /\(\s*item\.created\s*\)/, "item.created is passed through a formatting call");
+});
+
 test("#305-R01p: the empty state is built by the pure pendingEmptyMessage(view) helper, not a hardcoded string", () => {
   const source = read();
   assert.match(
