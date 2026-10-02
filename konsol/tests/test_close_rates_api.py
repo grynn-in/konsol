@@ -82,6 +82,9 @@ class _Site:
         self.needs_calls = []
         self.only_for_calls = []
         self.reads = []  # one entry per MariaDB read
+        self.named = {}  # name -> _FakeDoc, for get_doc(doctype, name)
+        self.get_doc_calls = []  # what get_doc received
+        self.new_docs = []  # every _FakeDoc built from a dict
 
 
 def _match(row, filters):
@@ -145,6 +148,19 @@ def _frappe(site):
         assert doctype == "Workflow", doctype
         return site.workflow_state_field
 
+    def get_doc(arg, name=None, **k):
+        site.get_doc_calls.append(dict(arg) if isinstance(arg, dict) else (arg, name))
+        if isinstance(arg, dict):
+            doc = _FakeDoc(dict(arg), new=True)
+            site.new_docs.append(doc)
+            return doc
+        site.reads.append(("get_doc", arg))
+        assert arg == "Group Exchange Rate", arg
+        if name not in site.named:
+            raise frappe.ValidationError("%s %s not found" % (arg, name))
+        return site.named[name]
+
+    frappe.get_doc = get_doc
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
@@ -156,6 +172,51 @@ def _frappe(site):
                                       get_value=get_value)
     frappe.session = types.SimpleNamespace(user=site.user)
     return frappe
+
+
+class _FakeDoc:
+    """A recording Group Exchange Rate: insert()/save() are counted, and run
+    what the controller would set (source Manual, a label) without deciding
+    anything for the endpoint."""
+
+    def __init__(self, data, new=False):
+        self.__dict__["_data"] = dict(data)
+        self.__dict__["flags"] = types.SimpleNamespace()
+        self.__dict__["calls"] = []
+        self.__dict__["_new"] = new
+
+    def __getattr__(self, key):
+        try:
+            return self.__dict__["_data"][key]
+        except KeyError:
+            raise AttributeError(key) from None
+
+    def __setattr__(self, key, value):
+        self.__dict__["_data"][key] = value
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def insert(self, *a, **k):
+        self.calls.append(("insert", a, k))
+        self._data.setdefault("name", "GER-NEW")
+        self._data.setdefault("docstatus", 0)
+        if not self._data.get("source"):
+            self._data["source"] = "Manual"
+        self._data["quote_label"] = "%s %s per %s %s" % (
+            self._data.get("quote"), self._data.get("to_currency"),
+            self._data.get("quoted_per"), self._data.get("from_currency"))
+        return self
+
+    def save(self, *a, **k):
+        self.calls.append(("save", a, k))
+        self._data["quote_label"] = "%s %s per %s %s" % (
+            self._data.get("quote"), self._data.get("to_currency"),
+            self._data.get("quoted_per"), self._data.get("from_currency"))
+        return self
+
+    def submit(self, *a, **k):
+        raise AssertionError("save_rate must never submit")
 
 
 def _group_rates(site):
@@ -206,6 +267,10 @@ def _load_path(name, path):
 
 
 def _call(site, fy=2025, fp=7):
+    return _invoke(site, lambda api: api.get_rates(fy, fp))
+
+
+def _invoke(site, run):
     frappe = _frappe(site)
     konsol = types.ModuleType("konsol")
     konsol.__path__ = []
@@ -231,7 +296,8 @@ def _call(site, fy=2025, fp=7):
         close.self_approval = _load_path(
             "konsol.close.self_approval", os.path.join(CLOSE_DIR, "self_approval.py"))
         api = _load_path("close_rates_api_under_test", API_PY)
-        result = api.get_rates(fy, fp)
+        site.frappe = frappe
+        result = run(api)
         json.dumps(result)  # JSON-safe
         return result
     finally:
@@ -485,3 +551,204 @@ def test_the_query_count_is_constant_in_the_number_of_pairs():
     assert one.needs_calls == [(2025, 7)] and six.needs_calls == [(2025, 7)]
     versions = [r for r in six.reads if r == ("get_all", "Version")]
     assert len(versions) == 1
+
+
+# --- save_rate (E404): the Analyst saves a draft; nothing else can be set -----------
+
+SAVE_PARAMS = ["fiscal_year", "fiscal_period", "from_currency", "to_currency", "rate_type",
+               "quote", "quoted_per", "change_reason", "name"]
+NEW_KEYS = {"doctype", "to_currency", "from_currency", "rate_type", "fiscal_year",
+            "fiscal_period", "quote", "quoted_per", "change_reason"}
+FORGED = ("docstatus", "source", "erp_quote", "source_note", "owner", "amended_from")
+
+
+def _analyst_site():
+    site = _Site()
+    site.user = ANALYST
+    site.roles = {"EPM Analyst"}
+    return site
+
+
+def _save(site, **kw):
+    args = {"fiscal_year": 2025, "fiscal_period": 7, "from_currency": "USD",
+            "to_currency": "GBP", "rate_type": "Closing", "quote": 0.79, "quoted_per": "1"}
+    args.update(kw)
+    return _invoke(site, lambda api: api.save_rate(**args))
+
+
+def _save_raises(site, **kw):
+    with pytest.raises(Exception) as info:
+        _save(site, **kw)
+    return info.value
+
+
+def _no_ignore_flags(site, doc):
+    assert not [k for k in vars(doc.flags) if k.startswith("ignore")], vars(doc.flags)
+    assert not [k for k in site.frappe.flags if str(k).startswith("ignore")], site.frappe.flags
+
+
+def test_save_rate_creates_a_new_draft_through_insert_with_only_the_nine_keys():
+    site = _analyst_site()
+    result = _save(site, change_reason="  RBI reference, 30 Sep  ")
+    assert site.only_for_calls == [("EPM Analyst", "EPM Admin", "System Manager")]
+    dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
+    assert len(dicts) == 1
+    assert set(dicts[0]) == NEW_KEYS, dicts[0]
+    assert dicts[0]["doctype"] == "Group Exchange Rate"
+    assert dicts[0]["change_reason"] == "RBI reference, 30 Sep"
+    assert (dicts[0]["fiscal_year"], dicts[0]["fiscal_period"]) == (2025, 7)
+    doc = site.new_docs[0]
+    assert [c[0] for c in doc.calls] == ["insert"]
+    _no_ignore_flags(site, doc)
+    assert result == {"name": "GER-NEW", "docstatus": 0, "quote_label": doc.quote_label,
+                      "source": "Manual"}
+
+
+def test_save_rate_reads_the_period_and_the_grain_once_each():
+    site = _analyst_site()
+    _save(site)
+    assert site.reads == [("sql", "fiscal_period_rows"), ("get_all", "Group Exchange Rate")], \
+        site.reads
+
+
+def test_forge_save_rate_takes_no_kwargs_and_names_only_the_nine_parameters():
+    import inspect
+
+    site = _analyst_site()
+    sig = _invoke(site, lambda api: {"sig": [(p.name, p.kind) for p in
+                                              inspect.signature(api.save_rate).parameters.values()]})
+    names = [n for n, _ in sig["sig"]]
+    assert names == SAVE_PARAMS, names
+    kinds = {k for _, k in sig["sig"]}
+    assert inspect.Parameter.VAR_KEYWORD not in kinds
+    assert inspect.Parameter.VAR_POSITIONAL not in kinds
+    for forged in FORGED:
+        assert forged not in names, forged
+
+
+def test_forge_a_forged_status_field_cannot_be_passed_at_all():
+    site = _analyst_site()
+    for forged in FORGED:
+        err = _save_raises(site, **{forged: "ZZ forged"})
+        assert isinstance(err, TypeError), (forged, err)
+    assert site.new_docs == []
+
+
+def test_failure_path_an_approved_key_with_no_name_is_refused_naming_the_amendment():
+    site = _analyst_site()
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
+    err = _save_raises(site, from_currency="EUR")
+    assert "GER-1" in str(err) and "amendment" in str(err), err
+    assert "already the approved Closing rate" in str(err), err
+    assert site.new_docs == []
+
+
+def test_failure_path_a_draft_key_with_no_name_is_refused_naming_the_draft():
+    site = _analyst_site()
+    err = _save_raises(site, from_currency="EUR", rate_type="Average")
+    assert "GER-2 is already a draft for this rate" in str(err), err
+    assert site.new_docs == []
+
+
+def test_a_cancelled_rate_does_not_block_a_new_draft():
+    site = _analyst_site()
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 2)]
+    result = _save(site, from_currency="EUR")
+    assert result["name"] == "GER-NEW"
+
+
+def _named(site, name="GER-2", **kw):
+    data = {"doctype": "Group Exchange Rate", "name": name, "from_currency": "EUR",
+            "to_currency": "GBP", "rate_type": "Average", "fiscal_year": 2025,
+            "fiscal_period": 7, "quote": 0.84, "quoted_per": "1", "change_reason": "old",
+            "docstatus": 0, "owner": ANALYST, "source": "ERP pre-fill", "erp_quote": 0.83,
+            "source_note": None, "amended_from": None, "quote_label": "x"}
+    data.update(kw)
+    doc = _FakeDoc(data)
+    site.named[name] = doc
+    return doc
+
+
+def test_update_by_name_changes_only_quote_quoted_per_and_change_reason():
+    site = _analyst_site()
+    doc = _named(site)
+    before = dict(doc._data)
+    result = _save(site, name="GER-2", from_currency="EUR", rate_type="Average",
+                   quote=8.5, quoted_per="10", change_reason="  RBI  ")
+    assert [c[0] for c in doc.calls] == ["save"]
+    changed = {k for k in set(before) | set(doc._data) if before.get(k) != doc._data.get(k)}
+    assert changed == {"quote", "quoted_per", "change_reason", "quote_label"}, changed
+    assert (doc.quote, doc.quoted_per, doc.change_reason) == (8.5, "10", "RBI")
+    assert site.new_docs == []
+    _no_ignore_flags(site, doc)
+    assert result["name"] == "GER-2" and result["docstatus"] == 0
+    assert site.reads == [("sql", "fiscal_period_rows"), ("get_doc", "Group Exchange Rate")]
+
+
+def test_update_by_name_with_a_blank_reason_clears_it():
+    site = _analyst_site()
+    doc = _named(site)
+    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", change_reason="   ")
+    assert not doc.change_reason
+
+
+def test_failure_path_a_named_approved_rate_is_refused():
+    site = _analyst_site()
+    doc = _named(site, docstatus=1)
+    err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average")
+    assert "GER-2" in str(err) and "amend" in str(err), err
+    assert doc.calls == []
+
+
+def test_failure_path_a_named_doc_with_a_different_grain_is_refused():
+    site = _analyst_site()
+    doc = _named(site)
+    for kw in ({"from_currency": "USD", "rate_type": "Average"},
+               {"from_currency": "EUR", "rate_type": "Closing"},
+               {"from_currency": "EUR", "rate_type": "Average", "fiscal_period": 6}):
+        if kw.get("fiscal_period") == 6:
+            site.periods = [_period(2025, 6, "Open"), _period(2025, 7, "Open")]
+        err = _save_raises(site, name="GER-2", **kw)
+        assert "GER-2" in str(err), err
+        assert "EUR" in str(err) and "Average" in str(err), err
+    assert doc.calls == []
+
+
+def test_failure_path_a_closed_period_is_refused_before_any_get_doc():
+    site = _analyst_site()
+    err = _save_raises(site, fiscal_period=6)
+    assert "is Closed" in str(err) and "reopen" in str(err), err
+    assert "FY2025 P06" in str(err), err
+    assert site.get_doc_calls == []
+    assert ("get_all", "Group Exchange Rate") not in site.reads
+
+
+def test_failure_path_an_undeclared_period_is_refused():
+    site = _analyst_site()
+    err = _save_raises(site, fiscal_year=2031, fiscal_period=9)
+    assert "not declared" in str(err), err
+    assert site.get_doc_calls == []
+
+
+def test_failure_path_rate_type_spot_is_refused_before_any_read():
+    site = _analyst_site()
+    err = _save_raises(site, rate_type="Spot")
+    assert "Spot" in str(err) and "Closing" in str(err), err
+    assert site.reads == [] and site.get_doc_calls == []
+
+
+def test_failure_path_the_entity_accountant_and_the_viewer_are_refused():
+    for role in ("Entity Accountant", "EPM User"):
+        site = _analyst_site()
+        site.roles = {role}
+        err = _save_raises(site)
+        assert type(err).__name__ == "PermissionError", (role, err)
+        assert site.reads == [] and site.get_doc_calls == []
+
+
+def test_the_close_lead_may_save_the_analysts_draft_and_the_owner_is_untouched():
+    site = _Site()
+    doc = _named(site)
+    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.845)
+    assert doc.owner == ANALYST
+    assert [c[0] for c in doc.calls] == ["save"]
