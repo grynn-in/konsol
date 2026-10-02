@@ -106,8 +106,20 @@ def _cut(entities, allowed):
     return visible, len(entities) - len(visible)
 
 
+_VOWELS = "aeiou"
+
+
+def _default_plural(singular):
+    """English pluralisation default, good enough for this module's nouns
+    (currently only 'entity'): a consonant before a trailing 'y' turns the
+    'y' into 'ies' (entity -> entities); anything else just appends 's'."""
+    if len(singular) > 1 and singular[-1] == "y" and singular[-2].lower() not in _VOWELS:
+        return singular[:-1] + "ies"
+    return singular + "s"
+
+
 def _noun(n, singular, plural=None):
-    plural = plural or (singular + "s")
+    plural = plural or _default_plural(singular)
     return "%d %s" % (n, singular if n == 1 else plural)
 
 
