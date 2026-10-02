@@ -246,3 +246,35 @@ def test_the_publish_check_locks_before_reading_difference_accounts():
     reads = sent[1:]
     assert [v for _q, v in reads] == [("4030",), ("5030",)]
     assert all(q.endswith("FOR UPDATE") and "`ic_difference_account` = %s" in q for q, _v in reads)
+
+
+# -- konsol#293: the chart must declare allow_ic before a pairing is published ----------
+
+def test_publishing_a_pairing_needs_allow_ic_on_both_accounts():
+    """#182 PR5a. The pairing table stays the source of the intercompany set;
+    allow_ic is the chart's precondition for being in it. Published without it,
+    the chart says the account carries no intercompany rows while consolidation
+    eliminates it — the two declarations disagree and nothing notices."""
+    problem = M.allow_ic_problem(("4030", "5030"), {"4030": 1, "5030": 0})
+    assert problem, "a pairing naming an account without allow_ic must be refused"
+    assert "5030" in problem
+    assert "4030" not in problem, "only the undeclared account is named"
+    assert "allow_ic" in problem
+
+
+def test_a_pairing_is_published_when_the_chart_declares_both():
+    assert M.allow_ic_problem(("4030", "5030"), {"4030": 1, "5030": 1}) == ""
+
+
+def test_an_account_absent_from_the_chart_map_is_not_declared():
+    """Chart membership is checked separately; absent here means the flag was
+    never declared, so it is refused rather than assumed."""
+    problem = M.allow_ic_problem(("4030",), {})
+    assert problem and "4030" in problem
+
+
+def test_a_single_account_pairing_is_checked_too():
+    """A blank counterpart means both sides use one account (pair_of returns a
+    1-tuple); it still needs the flag."""
+    assert M.allow_ic_problem(("4030",), {"4030": 0})
+    assert M.allow_ic_problem(("4030",), {"4030": 1}) == ""
