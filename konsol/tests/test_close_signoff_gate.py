@@ -111,6 +111,11 @@ class _Site:
         #: A63: the period rows' data-change fields, and every write to them.
         self.data_changes = {}
         self.period_writes = []
+        #: T04b: (kind, fiscal_year, fiscal_period, reference_doctype,
+        #: reference_name, reason) per close_event.record call.
+        self.close_events = []
+        #: T04b failure path: set to a message to make close_event.record raise.
+        self.close_event_fail = None
 
 
 def _match(value, cond):
@@ -223,6 +228,20 @@ def _load(site):
     close.period_model, close.signoff_model = period_model, signoff_model
     close.close_policy_model = close_policy_model
     close.scope_model = scope_model
+
+    # T04b: a stub Close Event writer (T02a's konsol/close/close_event.py),
+    # so the gate's lazy `from konsol.close import close_event` resolves.
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def _record_event(kind, fiscal_year, fiscal_period, reference_doctype=None,
+                       reference_name=None, reason=None, detail=None, entity=None):
+        if site.close_event_fail:
+            raise RuntimeError(site.close_event_fail)
+        site.close_events.append(
+            (kind, fiscal_year, fiscal_period, reference_doctype, reference_name, reason))
+
+    close_event.record = _record_event
+    close.close_event = close_event
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -297,6 +316,7 @@ def _load(site):
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.close_policy_model": close_policy_model,
             "konsol.close.scope_model": scope_model,
+            "konsol.close.close_event": close_event,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -805,6 +825,31 @@ def test_nothing_later_signed_marks_nothing_and_saves_nothing():
     assert marked == [] and site.saves == [], (marked, site.saves)
 
 
+# --- E10-P6a (konsol#305 T04b): a voided sign-off writes its event ----------
+
+def test_reopening_records_a_signoff_voided_event_per_marked_run():
+    site = _reopen_site()
+    marked = _mark(site, 2025, 7, "P07")
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
+    assert sorted(e[4] for e in site.close_events) == sorted(marked), site.close_events
+    for kind, fy, fp, ref_dt, ref_name, reason in site.close_events:
+        assert kind == "signoff_voided", kind
+        assert fy == 2025, fy
+        assert ref_dt == "Assertion Run", ref_dt
+        assert ref_name in marked, ref_name
+        assert "reopened" in reason, reason
+    # Each event names the run's own period, not just the reopened period.
+    by_name = {e[4]: e for e in site.close_events}
+    assert by_name["RUN-9"][2] == 9, by_name["RUN-9"]
+
+
+def test_a_close_event_failure_propagates_from_a_reopen():
+    site = _reopen_site()
+    site.close_event_fail = "writer down"
+    with pytest.raises(RuntimeError) as info:
+        _mark(site, 2025, 7, "P07")
+    assert "writer down" in str(info.value)
+
 
 # --- A63 (#305-R2b-3): a signature covers only the data its run checked ------
 
@@ -866,6 +911,30 @@ def test_a_history_period_change_is_recorded_but_marks_nothing():
     assert site.saves == []
     assert _run_rec(site, "RUN-5")["signoff_status"] == "Signed Off"
     assert site.data_changes[(2025, 5)]["data_changed_by"] == CHANGED_BY
+    # T04b failure path: nothing marked (before the first close) -> no event.
+    assert site.close_events == []
+
+
+def test_a_data_change_records_a_signoff_voided_event():
+    site = _Site()
+    marked = _record(site, 2025, 8)
+    assert marked == ["RUN-8"], marked
+    assert len(site.close_events) == 1, site.close_events
+    kind, fy, fp, ref_dt, ref_name, reason = site.close_events[0]
+    assert (kind, fy, fp, ref_dt, ref_name) == (
+        "signoff_voided", 2025, 8, "Assertion Run", "RUN-8"), site.close_events
+    assert CHANGED_TEXT in reason, reason
+
+
+def test_a_close_event_failure_propagates_from_a_data_change():
+    site = _Site()
+    site.close_event_fail = "writer down"
+    with pytest.raises(RuntimeError) as info:
+        _record(site, 2025, 8)
+    assert "writer down" in str(info.value)
+    # The run's own save already happened in this (the caller's own)
+    # transaction; only the event failed to write.
+    assert site.saves and site.saves[0][0] == "RUN-8", site.saves
 
 
 def test_a_non_regular_period_change_is_recorded_but_marks_nothing():
