@@ -200,9 +200,24 @@ def _entity_accountant(key, facts):
     return items
 
 
+def _rates_item(p, key, facts):
+    """konsol#305 E412 (#305-W2-11): the Close Lead and the Group Accountant
+    both get "Rates missing (N)", pointed at the Rates screen. One builder,
+    called by both personas, so the id/kind/title/action cannot drift apart.
+    """
+    rates = int(facts["rates_missing"] or 0)
+    if not rates:
+        return None
+    return _period_item(p, key, facts, "rates", "blocking",
+                        "Rates missing (%d)" % rates, {"screen": "rates"})
+
+
 def _group_accountant(key, facts):
     items = []
     p = GROUP_ACCOUNTANT
+    rates_item = _rates_item(p, key, facts)
+    if rates_item:
+        items.append(rates_item)
     if facts["checks"] in ("not_run", "stale"):
         items.append(_period_item(p, key, facts, "checks-run", "todo", "Run checks",
                                   {"screen": "checks"}))
@@ -224,9 +239,9 @@ def _close_lead(key, facts, earlier_open):
     p = CLOSE_LEAD
     signoff = {"screen": "sign-off"}
     rates = int(facts["rates_missing"] or 0)
-    if rates:
-        items.append(_period_item(p, key, facts, "rates", "blocking",
-                                  "Rates missing (%d)" % rates, signoff))
+    rates_item = _rates_item(p, key, facts)
+    if rates_item:
+        items.append(rates_item)
     resign = facts["signoff"] == RE_SIGN_NEEDED
     if resign:
         items.append(_period_item(p, key, facts, "resign", "blocking", "Re-sign needed", signoff))

@@ -358,7 +358,10 @@ def test_group_accountant_runs_checks_and_sees_failures():
     assert "checks-run:2025-09" in ids  # never run
     assert "checks-run:2025-08" not in ids  # current Green run
     assert "tbs-waiting:2025-07" in ids
-    assert not any(i["id"].startswith("rates") for i in result["items"])
+    # konsol#305 E412 (#305-W2-11): the Analyst gets "Rates missing" too.
+    rates = next(i for i in result["items"] if i["id"] == "rates:2025-07")
+    assert rates["kind"] == "blocking" and rates["action"] == {"screen": "rates"}
+    assert not any(i["id"].startswith("rates-error") for i in result["items"])
     _assert_counts_add_up(result, "group_accountant")
 
 
@@ -454,7 +457,9 @@ def test_rate_blockers_count_as_missing_rates():
 def test_rate_gate_error_item_goes_to_the_close_lead_only():
     site = _Site(roles=("EPM Analyst",))
     site.rates[(2025, 8)] = (None, "ServerException UNKNOWN_TABLE", [])
-    assert not any(i.startswith("rates") for i in _ids(_call(site)))
+    # konsol#305 E412 (#305-W2-11): the Analyst still gets the P07 "Rates
+    # missing" item; only the rate-gate error item stays Close Lead only.
+    assert not any(i.startswith("rates-error") for i in _ids(_call(site)))
 
 
 def test_errored_run_is_failed_not_current():
