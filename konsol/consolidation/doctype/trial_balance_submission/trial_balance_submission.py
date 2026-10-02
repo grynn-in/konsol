@@ -93,7 +93,7 @@ def _column(header):
     return name
 
 
-def parse_tb_csv(text, declared_dimensions=()):
+def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, description,
@@ -117,6 +117,15 @@ def parse_tb_csv(text, declared_dimensions=()):
     optional per row. Any other dim_* header is refused saying WHICH of
     declare / publish / tick is missing (konsol.tb_dimension_model), since
     the fix differs. This function stays pure: the caller does the looking up.
+
+    ``stored=True`` reads back a file that already landed, and does not judge
+    its header again: a column intake would refuse today, whether one outside
+    the contract that an older intake silently ignored or a dimension the
+    site has since un-declared, is ignored rather than refused. Its rows were
+    accepted when they landed, and the close screens must stay able to show
+    them. No header refusal applies (a repeated column keeps the last value),
+    and the caller passes no declared dimensions, so a read depends only on
+    the file. Intake never passes it (a test holds that).
     """
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
@@ -151,14 +160,18 @@ def parse_tb_csv(text, declared_dimensions=()):
             "[,partner_data_area_id][,amount_basis]"
         )
     problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
-    if problems:
+    if problems and not stored:
         raise ValueError("\n".join(problems))
-    if headers.count(PARTNER) > 1:
+    if stored:
+        # Read back, not re-judged: no header refusal applies to a file that
+        # already landed. A repeated column keeps csv.DictReader's last value.
+        pass
+    elif headers.count(PARTNER) > 1:
         raise ValueError(
             "Two partner columns: keep one of partner_data_area_id, "
             + ", ".join(PARTNER_ALIASES)
         )
-    if headers.count(BASIS) > 1:
+    if not stored and headers.count(BASIS) > 1:
         raise ValueError(
             "Two amount_basis columns: keep one of " + ", ".join(BASIS_ALIASES)
         )
@@ -173,7 +186,7 @@ def parse_tb_csv(text, declared_dimensions=()):
     repeated_dims = [h for i, h in enumerate(headers)
                      if h in accepted_dims and headers.index(h) == i
                      and headers.count(h) > 1]
-    if repeated_dims:
+    if repeated_dims and not stored:
         raise ValueError("\n".join(
             f"Two {h} columns: keep one" for h in repeated_dims))
 
@@ -424,6 +437,27 @@ def _sql_str(value):
 
 #: Claim tuples per control-table INSERT (the same size _land_rows uses).
 _CLAIM_BATCH = 1000
+
+
+def dimension_columns_problem(dims):
+    """The refusal for dim_* columns the raw table does not have yet, or None.
+
+    One rule for the submit (``_assert_dimension_columns``) and the check
+    screen (``konsol.close.tb_api.check_tb``), so the check never reports ok
+    for a file the submit then refuses (konsol#255). The columns are read
+    once, and only when the file carries a dimension.
+    """
+    if not dims:
+        return None
+    columns = _raw_table_columns()
+    missing = [d for d in dims if d not in columns]
+    if not missing:
+        return None
+    one = len(missing) == 1
+    return (f"The warehouse has no column for {', '.join(missing)} yet, so "
+            f"{'that dimension' if one else 'those dimensions'} would be lost. "
+            "Run Apply Schema to add "
+            f"{'it' if one else 'them'}, then submit this trial balance again.")
 
 
 def _raw_table_columns():
@@ -836,16 +870,9 @@ class TrialBalanceSubmission(Document):
         columns: a submission must never land rows into a table that is
         missing a column it writes.
         """
-        missing = [d for d in dims if d not in _raw_table_columns()]
-        if not missing:
-            return
-        one = len(missing) == 1
-        frappe.throw(
-            f"The warehouse has no column for {', '.join(missing)} yet, so "
-            f"{'that dimension' if one else 'those dimensions'} would be lost. "
-            "Run Apply Schema to add "
-            f"{'it' if one else 'them'}, then submit this trial balance again."
-        )
+        problem = dimension_columns_problem(dims)
+        if problem:
+            frappe.throw(problem)
 
     def _land_rows(self, rows):
         # The dim_* columns THIS file carries (konsol#255), sorted so the
