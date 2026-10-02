@@ -107,14 +107,14 @@ def ownership_cell(covering_rows, period_code):
 
 # --- Trial balance cell ------------------------------------------------------
 
-# Copied from tb_read_api.py:53-58; the drift guard below keeps the two in step.
+# Copied from tb_read_api.py:60-66; the drift guard below keeps the two in step.
 RECEIVED = "Received"
 EXCEPTION_DECLARED = "Exception declared"
 NOT_EXPECTED = "Not expected this period"
 MISSING = "Missing"
 FREQUENCY_NOT_DECLARED = "Frequency not declared"
 QUARTER_NOT_DECLARED = "Quarter not declared"
-NOT_CONSOLIDATED = "Not consolidated: no ownership"  # new here (W2-2)
+NOT_CONSOLIDATED = "Not consolidated: no ownership for this period"
 
 _TB_TONE = {
     RECEIVED: OK,

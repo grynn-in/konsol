@@ -339,7 +339,7 @@ def test_period_grid_three_in_scope_plus_one_unowned():
     assert set(by_entity) == {"ZZA", "ZZB", "ZZC", "ZZU"}
     unowned = by_entity["ZZU"]
     assert unowned["ownership"] == {"tone": M.BLOCKING, "label": "None for P08"}
-    assert unowned["tb"] == {"tone": M.BLOCKING, "label": "Not consolidated: no ownership"}
+    assert unowned["tb"] == {"tone": M.BLOCKING, "label": M.NOT_CONSOLIDATED}
     assert unowned["problem"] is True
 
 
