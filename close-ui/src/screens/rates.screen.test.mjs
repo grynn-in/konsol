@@ -67,9 +67,12 @@ test("Rates.vue calls the server through api.js and reads the period with route.
   assert.doesNotMatch(source, /\bfetch\(/, "all server calls go through api.js (CSRF on POST)");
 });
 
-test("No browser storage (D5): the period lives in the URL only", () => {
+// The Web Storage APIs are guarded for every file under close-ui/src by
+// route.test.mjs ("no file under close-ui/src reads or writes ..."), which
+// would also flag this file if it named them; this test covers the rest.
+test("No other browser storage (D5): the period lives in the URL only", () => {
   const source = read();
-  assert.doesNotMatch(source, /localStorage|sessionStorage|indexedDB|document\.cookie/);
+  assert.doesNotMatch(source, /indexedDB|document\.cookie|caches\./);
 });
 
 test("No v-html anywhere: server sentences are plain text", () => {
