@@ -43,15 +43,22 @@
  * same `approve(doctype, name, reason)` as the group-rates grid, so no
  * second APPROVE call site appears. `actionFor` therefore looks a document
  * up in whichever of the two loaded payloads carries it.
+ *
+ * E411: the "Ownership" tab lists the period's ownership gaps
+ * (OwnershipGaps.vue), fed by `get_ownership` and `ownershipView`
+ * (rates.js). It is period-keyed, like the grid, so it reloads on period
+ * change. It posts nothing: the "Record ownership" link opens the Desk URL
+ * the server built (E406), never one this screen constructs.
  */
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import RatesPending from "../sections/RatesPending.vue";
+import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, ownershipView } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
@@ -59,6 +66,7 @@ const GET_RATES = "konsol.close.rates_api.get_rates";
 const SAVE_RATE = "konsol.close.rates_api.save_rate";
 const APPROVE = "konsol.close.approval_api.approve";
 const GET_PENDING = "konsol.close.rates_api.get_pending";
+const GET_OWNERSHIP = "konsol.close.rates_api.get_ownership";
 const GER = "Group Exchange Rate";
 const RATE_TYPES = ["Closing", "Average"];
 /** Group Exchange Rate's own Select options (group_exchange_rate.json:97).
@@ -84,6 +92,10 @@ let seq = 0;
  * period-keyed (E4-P12), so it loads once on mount, not on period change. */
 const pending = reactive({ status: "loading", payload: null, error: null, busy: false });
 let pendingSeq = 0;
+/** E411: the "Ownership" tab's gaps for the period in the URL. Period-keyed
+ * (like `rates`, unlike `pending`), so it reloads on period change. */
+const ownership = reactive({ status: "loading", payload: null, error: null, busy: false });
+let ownershipSeq = 0;
 
 /** Unsaved edits, keyed `${from}|${to}|${rateType}`: `{quote, quotedPer, orig}`. */
 const drafts = reactive({});
@@ -146,6 +158,15 @@ const pendingLoadState = computed(() => {
 	return pendingViewData.value ? "ready" : "error";
 });
 const pendingLoadError = computed(() => pendingViewError.value || pending.error);
+
+// ownershipView never throws (E407: it only reshapes the payload), so this
+// needs no error-catching wrapper like `view`/`pendingViewData` above.
+const ownershipViewData = computed(() => {
+	if (ownership.status !== "ready" || !ownership.payload) return null;
+	return ownershipView(ownership.payload);
+});
+const ownershipLoadState = computed(() => ownership.status);
+const ownershipWhat = computed(() => `the ownership gaps for ${periodName.value}`);
 
 function editable(cell) {
 	return Boolean(view.value && view.value.canEnter) && (cell.status === "missing" || cell.status === "awaiting_approval");
@@ -236,6 +257,34 @@ async function loadPending({ quiet = false } = {}) {
 		pending.status = "error";
 	} finally {
 		if (mine === pendingSeq) pending.busy = false;
+	}
+}
+
+/** E411: the period's ownership gaps. Period-keyed, like `loadRates`. */
+async function loadOwnership({ quiet = false } = {}) {
+	if (!period.value) {
+		ownership.status = "error";
+		ownership.error = "This address names no period.";
+		return;
+	}
+	const mine = ++ownershipSeq;
+	if (!quiet) ownership.status = "loading";
+	ownership.busy = true;
+	try {
+		const payload = await get(GET_OWNERSHIP, {
+			fiscal_year: period.value.year,
+			fiscal_period: period.value.period,
+		});
+		if (mine !== ownershipSeq) return;
+		ownership.payload = payload;
+		ownership.error = null;
+		ownership.status = "ready";
+	} catch (e) {
+		if (mine !== ownershipSeq) return;
+		ownership.error = e.message;
+		ownership.status = "error";
+	} finally {
+		if (mine === ownershipSeq) ownership.busy = false;
 	}
 }
 
@@ -330,8 +379,10 @@ watch(
 	() => (period.value ? `${period.value.year}/${period.value.period}` : null),
 	() => {
 		rates.payload = null;
+		ownership.payload = null;
 		for (const obj of [drafts, reasons, reasonOpen, cellErrors, approveErrors, approveReasons, approveReasonOpen]) clear(obj);
 		loadRates();
+		loadOwnership();
 	},
 	{ immediate: true },
 );
@@ -344,6 +395,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
 	seq++;
 	pendingSeq++;
+	ownershipSeq++;
 });
 
 /** Each group currency the grid names, from the rows' to_currency: never assumed. */
@@ -393,13 +445,23 @@ const herPendingCount = computed(() => {
 	if (!pendingViewData.value) return null;
 	return pendingViewData.value.counts["Historical Equity Rate"];
 });
+/** E411: the "Ownership" tab label carries the blocking count (the
+ * wireframe's "N gap(s)"), from `view.blocking.length`; plain "Ownership"
+ * when there are none (or nothing has loaded yet). */
+const ownershipGapsCount = computed(() => {
+	if (!ownershipViewData.value) return null;
+	return ownershipViewData.value.blocking.length;
+});
 const TABS = computed(() => [
 	{ key: "group", label: "Group rates" },
 	{
 		key: "her",
 		label: herPendingCount.value != null ? `Historical equity rates · ${herPendingCount.value} pending` : "Historical equity rates",
 	},
-	{ key: "ownership", label: "Ownership" },
+	{
+		key: "ownership",
+		label: ownershipGapsCount.value ? `Ownership · ${ownershipGapsCount.value} gap(s)` : "Ownership",
+	},
 ]);
 </script>
 
@@ -635,9 +697,20 @@ const TABS = computed(() => [
 		</section>
 
 		<section v-else role="tabpanel" aria-label="Ownership" class="mt-4">
-			<p class="rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7">
-				Ownership gaps are not shown on this screen yet.
-			</p>
+			<LoadState
+				:state="ownershipLoadState"
+				:what="ownershipWhat"
+				:source="GET_OWNERSHIP"
+				:error="ownership.error"
+				:busy="ownership.busy"
+				@retry="loadOwnership"
+			>
+				<OwnershipGaps
+					v-if="ownershipViewData"
+					:view="ownershipViewData"
+					:out-of-scope="ownership.payload ? ownership.payload.out_of_scope || [] : []"
+				/>
+			</LoadState>
 		</section>
 	</div>
 </template>
