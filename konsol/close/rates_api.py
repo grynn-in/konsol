@@ -43,11 +43,23 @@ cut to ``entity_permissions.allowed_entity_codes()`` (#305-W2-10, W2-14),
 with a ``hidden`` count: a hidden entity's draft never appears in the
 response. Approving is the existing ``approval_api.approve``; this endpoint
 writes nothing.
+
+``get_ownership()`` (GET, E406) lists, for the period, the entities with a
+submitted trial balance but no ownership covering the period's start
+(blocking, #305-W2-2) and the Active leaf entities out of scope for
+information, using the one scope rule in ``scope_model`` (G01) and never
+re-deriving it. A Viewer reads it with ``can_record`` False (#305-W2-10).
+``blocking`` and ``out_of_scope`` are cut to ``allowed_entity_codes()``, with
+a ``hidden`` count (W2-10, W2-14). The query is keyed to the period's start
+date; moving it to the period's end waits on G09/G04 (W2-16, blocked).
 """
+from datetime import date, datetime
+from urllib.parse import quote
+
 import frappe
 
 from konsol import fiscal_calendar, group_rates
-from konsol.close import close_policy_model, rates_model, self_approval
+from konsol.close import close_policy_model, rates_model, scope_model, self_approval
 from konsol.entity_permissions import allowed_entity_codes
 
 #: Who reads the Rates screen (#305-W2-3, W2-10). The Entity Accountant does not.
@@ -311,4 +323,77 @@ def get_pending():
         "counts": {HER: len(her), OP: len(ops), "hidden": her_hidden + ops_hidden},
         "self_approval": policy or None,
         "can_approve": bool(set(roles) & set(close_policy_model.APPROVER_ROLES)),
+    }
+
+
+def _ownership_date(value):
+    """Mirror ``signoff_gate._date`` / ``mywork_api._date``: a period's
+    ``start_date`` may arrive as a ``date``, a ``datetime`` or an ISO string."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value:
+        return date.fromisoformat(value[:10])
+    return None
+
+
+def _cut(codes, allowed, key=lambda c: c):
+    """``(visible, hidden_count)``: ``codes`` cut to ``allowed`` (#305-W2-10,
+    W2-14; mirrors ``period_grid_model``'s cut, E2-6). ``allowed`` is None
+    for an unrestricted caller."""
+    if allowed is None:
+        return list(codes), 0
+    visible = [c for c in codes if key(c) in allowed]
+    return visible, len(codes) - len(visible)
+
+
+@frappe.whitelist(methods=["GET"])
+def get_ownership(fiscal_year, fiscal_period):
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    key = _period(fiscal_year, fiscal_period)
+    period = _period_row(key)
+    fy, fp = key
+    start = _ownership_date(period.get("start_date"))
+
+    leaves = frappe.get_all("Entity", filters={"is_group": 0, "status": "Active"},
+                            pluck="name", limit_page_length=0)
+    rows = frappe.get_all(
+        "Ownership Period",
+        filters={"docstatus": 1, "effective_date": ["<=", start], "data_area_id": ["is", "set"]},
+        fields=["data_area_id", "effective_date", "end_date"], limit_page_length=0)
+    tbs = frappe.get_all(
+        "Trial Balance Submission",
+        filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": 1},
+        pluck="data_area_id", limit_page_length=0)
+
+    cov = scope_model.covered(rows, start)
+    blocking_all = sorted(scope_model.uncovered_with_tb(tbs, cov))
+    scope = scope_model.in_scope(leaves, cov)
+    out_of_scope_all = sorted(set(leaves) - scope - set(blocking_all))
+
+    allowed = allowed_entity_codes()
+    blocking_visible, blocking_hidden = _cut(blocking_all, allowed)
+    out_of_scope_visible, out_of_scope_hidden = _cut(out_of_scope_all, allowed)
+    in_scope_count = len(scope) if allowed is None else len(scope & allowed)
+
+    start_iso = start.isoformat() if start else None
+    blocking = [
+        {"entity": e,
+         "message": (
+             f"{e} has a submitted trial balance for FY{fy} P{fp:02d} but no approved "
+             f"ownership period covering {start_iso}: it is not consolidated. Record its "
+             "ownership, or cancel the trial balance (#305-W2-2)."),
+         "desk": "/app/ownership-period/new?data_area_id=" + quote(e)}
+        for e in blocking_visible
+    ]
+
+    return {
+        "period": {"fiscal_year": fy, "fiscal_period": fp},
+        "start_date": start_iso,
+        "blocking": blocking,
+        "out_of_scope": out_of_scope_visible,
+        "in_scope_count": in_scope_count,
+        "can_record": bool(frappe.has_permission("Ownership Period", "create")),
+        "hidden": blocking_hidden + out_of_scope_hidden,
     }

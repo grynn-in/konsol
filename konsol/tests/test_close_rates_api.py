@@ -78,7 +78,10 @@ class _Site:
         ]
         self.versions = []  # {"ref_doctype", "docname", "owner", "data"}
         self.her = []  # Historical Equity Rate drafts (E405)
-        self.ops = []  # Ownership Period drafts (E405)
+        self.ops = []  # Ownership Period rows: drafts (E405) and submitted (E406 scope query)
+        self.entities = []  # Active leaf entities (E406): {"name"}
+        self.tbs = []  # Trial Balance Submission rows (E406): {"data_area_id", "fiscal_year", "fiscal_period", "docstatus"}
+        self.can_record = True  # frappe.has_permission("Ownership Period", "create") (E406)
         self.allowed = None  # allowed_entity_codes(): None = unrestricted (E405, W2-10)
         self.move_answer = None
         self.move_calls = []
@@ -108,16 +111,31 @@ def _op(name, data_area_id="ZZA", group="CG1", effective_date=None, end_date=Non
             "docstatus": docstatus}
 
 
+def _entity(name, status="Active", is_group=0):
+    return {"name": name, "status": status, "is_group": is_group}
+
+
+def _tb(data_area_id, fy=2025, fp=7, docstatus=1):
+    return {"data_area_id": data_area_id, "fiscal_year": fy, "fiscal_period": fp,
+            "docstatus": docstatus}
+
+
+def _match_value(value, cond):
+    if isinstance(cond, (list, tuple)):
+        op, arg = cond[0], cond[1]
+        if op == "in":
+            return value in arg
+        if op == "is":
+            assert arg in ("set", "not set"), cond
+            return (value not in (None, "")) == (arg == "set")
+        if op == "<=":
+            return value is not None and value <= arg
+        raise AssertionError("stub: unsupported operator %r" % (op,))
+    return value == cond
+
+
 def _match(row, filters):
-    for key, cond in (filters or {}).items():
-        if isinstance(cond, (list, tuple)):
-            op, values = cond
-            assert op == "in", op
-            if row.get(key) not in values:
-                return False
-        elif row.get(key) != cond:
-            return False
-    return True
+    return all(_match_value(row.get(key), cond) for key, cond in (filters or {}).items())
 
 
 def _frappe(site):
@@ -138,7 +156,7 @@ def _frappe(site):
         return lambda fn: fn
 
     def get_all(doctype, filters=None, fields=None, order_by=None, limit=None,
-                limit_page_length=None, **k):
+                limit_page_length=None, pluck=None, **k):
         site.reads.append(("get_all", doctype))
         if doctype == "Group Exchange Rate":
             rows = [r for r in site.docs if _match(r, filters)]
@@ -148,8 +166,14 @@ def _frappe(site):
             rows = [r for r in site.her if _match(r, filters)]
         elif doctype == "Ownership Period":
             rows = [r for r in site.ops if _match(r, filters)]
+        elif doctype == "Entity":
+            rows = [r for r in site.entities if _match(r, filters)]
+        elif doctype == "Trial Balance Submission":
+            rows = [r for r in site.tbs if _match(r, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
+        if pluck:
+            return [r.get(pluck) for r in rows]
         return [{f: r.get(f) for f in fields} for r in rows]
 
     def sql(query, values=None, as_dict=False, **k):
@@ -185,12 +209,17 @@ def _frappe(site):
             raise frappe.ValidationError("%s %s not found" % (arg, name))
         return site.named[name]
 
+    def has_permission(doctype, ptype="read", *a, **k):
+        assert (doctype, ptype) == ("Ownership Period", "create"), (doctype, ptype)
+        return site.can_record
+
     frappe.get_doc = get_doc
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.get_all = get_all
+    frappe.has_permission = has_permission
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.flags = {}
     frappe.db = types.SimpleNamespace(sql=sql, get_single_value=get_single_value,
@@ -311,7 +340,7 @@ def _invoke(site, run):
     konsol.entity_permissions = entity_permissions
     names = ["frappe", "konsol", "konsol.close", "konsol.group_rates", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.close_policy_model",
-             "konsol.close.rates_model", "konsol.close.self_approval",
+             "konsol.close.rates_model", "konsol.close.self_approval", "konsol.close.scope_model",
              "close_rates_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -325,6 +354,8 @@ def _invoke(site, run):
             "konsol.close.rates_model", os.path.join(CLOSE_DIR, "rates_model.py"))
         close.self_approval = _load_path(
             "konsol.close.self_approval", os.path.join(CLOSE_DIR, "self_approval.py"))
+        close.scope_model = _load_path(
+            "konsol.close.scope_model", os.path.join(CLOSE_DIR, "scope_model.py"))
         api = _load_path("close_rates_api_under_test", API_PY)
         site.frappe = frappe
         result = run(api)
@@ -351,6 +382,16 @@ def _call_pending(site):
 def _call_pending_raises(site):
     with pytest.raises(Exception) as info:
         _call_pending(site)
+    return info.value
+
+
+def _call_ownership(site, fy=2025, fp=7):
+    return _invoke(site, lambda api: api.get_ownership(fy, fp))
+
+
+def _call_ownership_raises(site, fy=2025, fp=7):
+    with pytest.raises(Exception) as info:
+        _call_ownership(site, fy, fp)
     return info.value
 
 
@@ -904,3 +945,90 @@ def test_the_w2_14_case_an_op_edited_by_the_lead_is_refused_under_blocked():
     op_item = result["items"][0]
     assert op_item["approve"]["mode"] == "refused"
     assert op_item["edited_by"] == [LEAD]
+
+
+# --- get_ownership (E406): ownership gaps for the period, from scope_model ---------
+
+def test_failure_path_a_tb_with_no_ownership_is_blocking_and_a_covered_entity_is_not():
+    site = _Site()
+    site.entities = [_entity("ZZA"), _entity("ZZB"), _entity("ZZC")]
+    site.ops = [_op("OP-A", data_area_id="ZZA", effective_date=date(2025, 1, 1), docstatus=1)]
+    site.tbs = [_tb("ZZA"), _tb("ZZB")]
+    result = _call_ownership(site)
+    assert result["blocking"] == [{
+        "entity": "ZZB",
+        "message": "ZZB has a submitted trial balance for FY2025 P07 but no approved ownership "
+                   "period covering 2025-07-01: it is not consolidated. Record its ownership, or "
+                   "cancel the trial balance (#305-W2-2).",
+        "desk": "/app/ownership-period/new?data_area_id=ZZB",
+    }]
+    # ZZA is covered and has a TB: not listed anywhere.
+    # ZZC is an Active leaf with no OP and no TB: out_of_scope only, never blocking.
+    assert result["out_of_scope"] == ["ZZC"]
+    assert result["in_scope_count"] == 1
+    assert result["start_date"] == "2025-07-01"
+    assert result["period"] == {"fiscal_year": 2025, "fiscal_period": 7}
+    assert result["can_record"] is True
+    assert result["hidden"] == 0
+
+
+def test_an_ownership_period_whose_end_date_is_before_start_does_not_cover():
+    site = _Site()
+    site.entities = [_entity("ZZA")]
+    site.ops = [_op("OP-A", data_area_id="ZZA", effective_date=date(2025, 1, 1),
+                    end_date=date(2025, 6, 30), docstatus=1)]
+    site.tbs = [_tb("ZZA")]
+    result = _call_ownership(site)
+    assert [b["entity"] for b in result["blocking"]] == ["ZZA"]
+    assert result["out_of_scope"] == []
+    assert result["in_scope_count"] == 0
+
+
+def test_failure_path_an_undeclared_period_is_refused_from_get_ownership():
+    site = _Site()
+    err = _call_ownership_raises(site, 2031, 9)
+    assert "not declared" in str(err), err
+    assert "FY2031 P09" in str(err), err
+
+
+def test_failure_path_the_entity_accountant_is_refused_from_get_ownership():
+    site = _Site()
+    site.roles = {"Entity Accountant"}
+    err = _call_ownership_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.only_for_calls == [RATES_ROLES]
+    assert site.reads == []
+
+
+def test_ownership_query_count_is_constant_in_the_number_of_leaves():
+    small = _Site()
+    small.entities = [_entity("ZZA"), _entity("ZZB"), _entity("ZZC")]
+    big = _Site()
+    big.entities = [_entity("ZZ%03d" % i) for i in range(30)]
+    _call_ownership(small)
+    _call_ownership(big)
+    assert len(small.reads) == 4, small.reads
+    assert len(big.reads) == 4, big.reads
+
+
+def test_an_epm_user_reads_ownership_with_can_record_false():
+    site = _Site()
+    site.entities = [_entity("ZZA")]
+    site.user = VIEWER
+    site.roles = {"EPM User"}
+    site.can_record = False
+    result = _call_ownership(site)
+    assert site.only_for_calls == [RATES_ROLES]
+    assert result["can_record"] is False
+
+
+def test_failure_path_a_leak_blocking_is_cut_to_the_callers_allowed_entities():
+    site = _Site()
+    site.entities = [_entity("ZZA"), _entity("ZZB")]
+    site.tbs = [_tb("ZZA"), _tb("ZZB")]
+    site.allowed = {"ZZA"}
+    result = _call_ownership(site)
+    assert [b["entity"] for b in result["blocking"]] == ["ZZA"]
+    assert result["hidden"] == 1
+    dumped = json.dumps(result)
+    assert "ZZB" not in dumped, dumped
