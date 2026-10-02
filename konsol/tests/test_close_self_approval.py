@@ -42,7 +42,13 @@ def _model():
     return m
 
 
-def _load(policy, user=ADMIN, flags=None):
+def _load(policy, user=ADMIN, flags=None, versions=None, state_fields=None):
+    """``versions``: Version rows as ``{"docname", "owner", "data"}`` (the
+    site's Version table). ``state_fields``: ``{doctype: workflow_state_field}``
+    for the doctypes with an active workflow. Every ``get_all`` and
+    ``db.get_value`` call is recorded in ``reads`` too."""
+    versions = list(versions or ())
+    state_fields = dict(state_fields or {})
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
     frappe.PermissionError = type("PermissionError", (Exception,), {})
@@ -57,10 +63,27 @@ def _load(policy, user=ADMIN, flags=None):
         assert (dt, field) == ("Close Settings", "self_approval"), (dt, field)
         return policy
 
+    def get_all(doctype, filters=None, fields=None, order_by=None, limit_page_length=None,
+                **k):
+        reads.append(("get_all", doctype, dict(filters or {}), tuple(fields or ()),
+                      order_by, limit_page_length))
+        assert doctype == "Version", doctype
+        assert filters["docname"][0] == "in", filters
+        names = set(filters["docname"][1])
+        return [dict(v) for v in versions if v["docname"] in names]
+
+    def get_value(doctype, filters=None, fieldname="name", *a, **k):
+        reads.append(("get_value", doctype, dict(filters or {}), fieldname))
+        assert doctype == "Workflow" and fieldname == "workflow_state_field", (doctype, fieldname)
+        if filters.get("is_active") != 1:
+            return None
+        return state_fields.get(filters.get("document_type"))
+
     frappe.throw = throw
     frappe.flags = _Flags(flags or {})
     frappe.session = types.SimpleNamespace(user=user)
-    frappe.db = types.SimpleNamespace(get_single_value=get_single_value)
+    frappe.get_all = get_all
+    frappe.db = types.SimpleNamespace(get_single_value=get_single_value, get_value=get_value)
 
     close_pkg = types.ModuleType("konsol.close")
     close_pkg.__path__ = [os.path.join(APP_DIR, "close")]
@@ -206,6 +229,104 @@ def test_patch_install_and_migrate_pass():
         doc = _doc()
         mod.check(doc, "before_submit")
         assert doc.comments == []
+
+
+# --- #305-W2-14 (P30b): a preparer is the owner, or anyone who edited the draft ---
+
+def _version(name, owner, changed=None, **data):
+    d = {"changed": changed or [], "added": [], "removed": [], "row_changed": []}
+    d.update(data)
+    return {"docname": name, "owner": owner, "data": json.dumps(d)}
+
+
+def test_the_close_lead_who_edited_an_analysts_draft_is_blocked():
+    # The failure path, the W2-14 case: red while ``user != owner`` returns early.
+    mod, frappe, _ = _load(policy="Blocked", versions=[
+        _version("ICB-1", ADMIN, [["ic_sales_amount", 100, 120]])])
+    doc = _doc(owner=OTHER)
+    msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
+    assert "blocks self-approval" in msg, msg
+    assert doc.comments == []
+
+
+def test_the_editor_approver_passes_with_a_flag_reason_under_allowed():
+    mod, frappe, _ = _load(policy="Allowed with reason", versions=[
+        _version("ICB-1", ADMIN, [["ic_sales_amount", 100, 120]])], flags={
+        "konsol_self_approval_reason": {("IC Balance", "ICB-1"): "ZZ reason"}})
+    doc = _doc(owner=OTHER)
+    mod.check(doc, "before_submit")
+    assert len(doc.comments) == 1, doc.comments
+    assert doc.comments[0] == (
+        "Comment",
+        "Self-approved by %s under Close Settings (Allowed with reason): ZZ reason" % ADMIN)
+
+
+def test_the_editor_approver_with_no_reason_is_refused_under_allowed():
+    mod, frappe, _ = _load(policy="Allowed with reason", versions=[
+        _version("ICB-1", ADMIN, [["ic_sales_amount", 100, 120]])])
+    doc = _doc(owner=OTHER)
+    _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
+    assert doc.comments == []
+
+
+def test_a_journal_reject_alone_does_not_make_the_close_lead_a_preparer():
+    mod, frappe, reads = _load(policy="Blocked", versions=[
+        _version("CJ-1", ADMIN, [["status", "Pending Approval", "Draft"]])],
+        state_fields={"Consolidation Journal": "status"})
+    doc = _doc(doctype="Consolidation Journal", name="CJ-1", owner=OTHER)
+    mod.check(doc, "before_submit")
+    assert doc.comments == []
+    assert ("get_value", "Workflow", {"document_type": "Consolidation Journal", "is_active": 1},
+            "workflow_state_field") in reads, reads
+
+
+def test_a_journal_line_edit_makes_the_close_lead_a_preparer():
+    mod, frappe, _ = _load(policy="Blocked", versions=[
+        _version("CJ-1", ADMIN, row_changed=[["lines", 0, "row-1", [["debit", 1, 2]]]])],
+        state_fields={"Consolidation Journal": "status"})
+    doc = _doc(doctype="Consolidation Journal", name="CJ-1", owner=OTHER)
+    _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
+
+
+def test_another_documents_versions_do_not_count():
+    mod, frappe, _ = _load(policy="Blocked", versions=[
+        _version("ICB-2", ADMIN, [["ic_sales_amount", 100, 120]])])
+    doc = _doc(owner=OTHER)
+    mod.check(doc, "before_submit")
+    assert doc.comments == []
+
+
+def test_a_doctype_outside_the_list_reads_no_versions():
+    # Failure path: reading Versions on every submit of every doctype.
+    for dt in ("Trial Balance Submission", "ToDo"):
+        mod, frappe, reads = _load(policy="Blocked", versions=[
+            _version("ICB-1", ADMIN, [["x", 1, 2]])])
+        mod.check(_doc(doctype=dt, owner=OTHER), "before_submit")
+        assert [r for r in reads if r[0] in ("get_all", "get_value")] == [], reads
+
+
+def test_preparers_for_makes_two_reads_for_any_number_of_names():
+    mod, frappe, reads = _load(policy="Blocked", versions=[
+        _version("OP-1", ADMIN, [["ownership_pct", 50, 60]]),
+        _version("OP-2", OTHER, [["docstatus", 0, 1]]),
+        _version("OP-9", ADMIN, [["ownership_pct", 1, 2]])])
+    out = mod.preparers_for("Ownership Period", {"OP-1": OTHER, "OP-2": OTHER, "OP-3": ADMIN})
+    assert out == {"OP-1": frozenset((OTHER, ADMIN)), "OP-2": frozenset((OTHER,)),
+                   "OP-3": frozenset((ADMIN,))}, out
+    gets = [r for r in reads if r[0] == "get_all"]
+    assert gets == [("get_all", "Version",
+                     {"ref_doctype": "Ownership Period",
+                      "docname": ["in", ["OP-1", "OP-2", "OP-3"]]},
+                     ("docname", "owner", "data"), "creation asc", 0)], gets
+    assert [r for r in reads if r[0] == "get_value"] == [
+        ("get_value", "Workflow", {"document_type": "Ownership Period", "is_active": 1},
+         "workflow_state_field")], reads
+
+
+def test_preparers_for_no_names_reads_nothing():
+    mod, frappe, reads = _load(policy="Blocked")
+    assert mod.preparers_for("IC Balance", {}) == {}
+    assert reads == []
 
 
 # --- hooks.py ---------------------------------------------------------------
