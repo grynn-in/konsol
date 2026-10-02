@@ -88,8 +88,8 @@ test("Each item shows the preparer, the created date and its kind — OP drafts 
   assert.match(tpl, /item\.created\b/);
   assert.match(tpl, /item\.title\b/);
   assert.match(tpl, /item\.detail\b/);
-  assert.match(tpl, /Ownership Period/, "the OP doctype name is checked");
-  assert.match(tpl, /Ownership period/, "OP drafts are labelled 'Ownership period'");
+  assert.match(script(read()), /["']Ownership Period["']/, "the OP doctype name is checked");
+  assert.match(script(read()), /["']Ownership period["']/, "OP drafts are labelled 'Ownership period'");
 });
 
 test("No v-html, no browser dialogs, no browser storage", () => {
