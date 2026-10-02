@@ -138,18 +138,37 @@ def _real_model():
     return mod
 
 
+def _close_event_stub():
+    """konsol#305 T04a: a stub Close Event writer (T02a), so T04's lazy
+    `from konsol.close import close_event` resolves. `record` appends
+    `(kind, fiscal_year, fiscal_period)` to `.events`; it is not yet asserted
+    on here (that lands with T04 itself)."""
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+
+    def record(kind, fiscal_year, fiscal_period, *a, **k):
+        close_event.events.append((kind, fiscal_year, fiscal_period))
+
+    close_event.record = record
+    return close_event
+
+
 @contextlib.contextmanager
 def _gate_installed(gate, model=None):
     """The stub gate (and the real, or a spy, signoff_model) in sys.modules for
     one call; the real modules after."""
     model = model if model is not None else _real_model()
+    close_event = _close_event_stub()
     close = types.ModuleType("konsol.close")
     close.signoff_gate = gate
     close.signoff_model = model
-    names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
+    close.close_event = close_event
+    names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model",
+              "konsol.close.close_event")
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"konsol.close": close, "konsol.close.signoff_gate": gate,
-                        "konsol.close.signoff_model": model})
+                        "konsol.close.signoff_model": model,
+                        "konsol.close.close_event": close_event})
     try:
         yield
     finally:
@@ -745,3 +764,23 @@ def test_assert_close_signed_off_other_refusals_are_unchanged():
         raise AssertionError("no run passed assert_close_signed_off")
     except frappe.ValidationError as e:
         assert "No completed Assertion Run for 2099-1" in str(e), str(e)
+
+
+# --- konsol#305 T04a: the close_event stub does not leak between calls ------
+
+def test_the_close_event_stub_does_not_leak_into_sys_modules():
+    """Failure path: a close_event stub left out of _gate_installed's
+    restored-names tuple would leak into later tests. A signing call and a
+    blocked call must each leave sys.modules exactly as they found it."""
+    before = sys.modules.get("konsol.close.close_event")
+    module, frappe, doc, gate, calls = _load()
+    _sign(module, gate)
+    assert sys.modules.get("konsol.close.close_event") is before
+
+    module, frappe, doc, gate, calls = _load(gate_raises=True)
+    try:
+        _sign(module, gate)
+        raise AssertionError("a blocked gate signed off")
+    except GateBlocked:
+        pass
+    assert sys.modules.get("konsol.close.close_event") is before
