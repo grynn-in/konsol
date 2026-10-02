@@ -222,3 +222,50 @@ test("Status, previous rate, delta, flag and preparer come from the cell view", 
     assert.match(tpl, new RegExp(`\\.${field}\\b`), `renders ${field}`);
   }
 });
+
+// -- E410: pending HER/OP drafts, mounted in the "Historical equity rates" tab --
+
+test("Rates.vue names get_pending, and still has exactly one post(APPROVE call site", () => {
+  const js = script(read());
+  assert.match(js, /GET_PENDING\s*=\s*["']konsol\.close\.rates_api\.get_pending["']/);
+  assert.equal((js.match(/\bpost\(\s*APPROVE\b/g) || []).length, 1, "still one approve call site");
+  assert.equal((js.match(/\bpost\(/g) || []).length, 2, "no third POST (get_pending is a GET)");
+});
+
+test("Rates.vue mounts RatesPending in the Historical equity rates tab, fed by pendingView", () => {
+  const source = read();
+  assert.match(
+    source,
+    /import\s+RatesPending\s+from\s*["']\.\.\/sections\/RatesPending\.vue["']/,
+    "imports the section",
+  );
+  assert.match(source, /import\s*\{[^}]*\bpendingView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/, "imports pendingView");
+  const tpl = template(source);
+  assert.match(tpl, /<RatesPending\b/, "RatesPending is mounted");
+  // It is mounted inside the her tabpanel, not the group or ownership ones.
+  const herStart = tpl.indexOf('aria-label="Historical equity rates"');
+  const herEnd = tpl.indexOf("</section>", herStart);
+  assert.ok(herStart >= 0 && herEnd > herStart, "the her tabpanel exists");
+  assert.match(tpl.slice(herStart, herEnd), /<RatesPending\b/, "RatesPending renders inside the her tabpanel");
+});
+
+test("The Historical equity rates tab label carries the pending HER count", () => {
+  const source = read();
+  assert.match(source, /Historical equity rates.*pending/);
+  assert.match(script(source), /counts\[\s*["']Historical Equity Rate["']\s*\]/, "the count is counts['Historical Equity Rate']");
+});
+
+test("get_pending is loaded on mount and reloaded after a successful approve", () => {
+  const js = script(read());
+  assert.match(js, /\bloadPending\s*\(/, "a loadPending function is called");
+  const fn = js.match(/async function approve\(\s*doctype\s*,\s*name\s*,\s*reason\s*\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn);
+  assert.match(fn[1], /loadPending\(/, "approve() reloads the pending list");
+});
+
+test("Failure path: an HER or OP approve looks up its mode from the loaded pending payload, not only the grid", () => {
+  const js = script(read());
+  const fn = js.match(/function actionFor\(([^)]*)\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn, "actionFor(doctype, name) exists");
+  assert.match(fn[2], /pending\.payload/, "actionFor also searches the pending payload");
+});

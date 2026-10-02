@@ -36,20 +36,29 @@
  *
  * The period comes from the URL (route.js, D5); nothing is kept in the
  * browser. There is no Import from file (#305-W2-3).
+ *
+ * E410: the "Historical equity rates" tab lists every HER/OP draft awaiting
+ * approval (RatesPending.vue), fed by `get_pending` and `pendingView`
+ * (rates.js). It is presentational: it emits `approve`, which lands on the
+ * same `approve(doctype, name, reason)` as the group-rates grid, so no
+ * second APPROVE call site appears. `actionFor` therefore looks a document
+ * up in whichever of the two loaded payloads carries it.
  */
-import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
+import RatesPending from "../sections/RatesPending.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
 const GET_RATES = "konsol.close.rates_api.get_rates";
 const SAVE_RATE = "konsol.close.rates_api.save_rate";
 const APPROVE = "konsol.close.approval_api.approve";
+const GET_PENDING = "konsol.close.rates_api.get_pending";
 const GER = "Group Exchange Rate";
 const RATE_TYPES = ["Closing", "Average"];
 /** Group Exchange Rate's own Select options (group_exchange_rate.json:97).
@@ -71,6 +80,10 @@ const what = computed(() => `the group rates for ${periodName.value}`);
 const tab = ref("group");
 const rates = reactive({ status: "loading", payload: null, error: null, busy: false });
 let seq = 0;
+/** E410: the "Historical equity rates" tab's pending HER/OP drafts. Not
+ * period-keyed (E4-P12), so it loads once on mount, not on period change. */
+const pending = reactive({ status: "loading", payload: null, error: null, busy: false });
+let pendingSeq = 0;
 
 /** Unsaved edits, keyed `${from}|${to}|${rateType}`: `{quote, quotedPer, orig}`. */
 const drafts = reactive({});
@@ -115,6 +128,24 @@ const loadState = computed(() => {
 	return view.value ? "ready" : "error";
 });
 const loadError = computed(() => viewError.value || rates.error);
+
+// pendingView throws on an unknown approve mode: shown as the error, same rule as `view` above.
+const pendingViewError = ref(null);
+const pendingViewData = computed(() => {
+	if (pending.status !== "ready" || !pending.payload) return null;
+	try {
+		pendingViewError.value = null;
+		return pendingView(pending.payload);
+	} catch (e) {
+		pendingViewError.value = e.message;
+		return null;
+	}
+});
+const pendingLoadState = computed(() => {
+	if (pending.status !== "ready") return pending.status;
+	return pendingViewData.value ? "ready" : "error";
+});
+const pendingLoadError = computed(() => pendingViewError.value || pending.error);
 
 function editable(cell) {
 	return Boolean(view.value && view.value.canEnter) && (cell.status === "missing" || cell.status === "awaiting_approval");
@@ -188,6 +219,26 @@ async function loadRates({ quiet = false } = {}) {
 	}
 }
 
+/** E410: the pending HER/OP drafts. Site-wide, not period-keyed, so it takes no args. */
+async function loadPending({ quiet = false } = {}) {
+	const mine = ++pendingSeq;
+	if (!quiet) pending.status = "loading";
+	pending.busy = true;
+	try {
+		const payload = await get(GET_PENDING, {});
+		if (mine !== pendingSeq) return;
+		pending.payload = payload;
+		pending.error = null;
+		pending.status = "ready";
+	} catch (e) {
+		if (mine !== pendingSeq) return;
+		pending.error = e.message;
+		pending.status = "error";
+	} finally {
+		if (mine === pendingSeq) pending.busy = false;
+	}
+}
+
 async function saveRates() {
 	if (!period.value || !view.value || saving.value) return;
 	saving.value = true;
@@ -222,15 +273,21 @@ async function saveRates() {
 	await loadRates({ quiet: true });
 }
 
-/** The server's approve mode for a loaded document, read afresh from the payload. */
+/** The server's approve mode for a loaded document, read afresh from the
+ * payload that carries it: the grid (GER) or the pending list (HER, OP). */
 function actionFor(doctype, name) {
-	if (doctype !== GER || !rates.payload) return null;
-	for (const row of [...(rates.payload.rows || []), ...(rates.payload.unrequired || [])]) {
-		for (const cell of [row.closing, row.average]) {
-			if (cell && cell.name === name && cell.approve) return approveAction(cell.approve);
+	if (doctype === GER) {
+		if (!rates.payload) return null;
+		for (const row of [...(rates.payload.rows || []), ...(rates.payload.unrequired || [])]) {
+			for (const cell of [row.closing, row.average]) {
+				if (cell && cell.name === name && cell.approve) return approveAction(cell.approve);
+			}
 		}
+		return null;
 	}
-	return null;
+	if (!pending.payload) return null;
+	const item = (pending.payload.items || []).find((it) => it.doctype === doctype && it.name === name);
+	return item && item.approve ? approveAction(item.approve) : null;
 }
 
 async function approve(doctype, name, reason) {
@@ -257,7 +314,7 @@ async function approve(doctype, name, reason) {
 	}
 	delete approveReasons[name];
 	delete approveReasonOpen[name];
-	await loadRates({ quiet: true });
+	await Promise.all([loadRates({ quiet: true }), loadPending({ quiet: true })]);
 }
 
 /** A `reason` approve asks for the reason first; a `button` approve posts at once. */
@@ -279,8 +336,14 @@ watch(
 	{ immediate: true },
 );
 
+// Pending HER/OP drafts are not period-keyed (E4-P12): loaded once on mount.
+onMounted(() => {
+	loadPending();
+});
+
 onBeforeUnmount(() => {
 	seq++;
+	pendingSeq++;
 });
 
 /** Each group currency the grid names, from the rows' to_currency: never assumed. */
@@ -323,11 +386,21 @@ function rowNotes(row) {
 	return notes;
 }
 
-const TABS = [
+/** E410: the "Historical equity rates" tab label carries the pending HER
+ * count (the wireframe), from `counts["Historical Equity Rate"]`. The OP
+ * count is not folded in: the wireframe's "N pending" names HER only. */
+const herPendingCount = computed(() => {
+	if (!pendingViewData.value) return null;
+	return pendingViewData.value.counts["Historical Equity Rate"];
+});
+const TABS = computed(() => [
 	{ key: "group", label: "Group rates" },
-	{ key: "her", label: "Historical equity rates" },
+	{
+		key: "her",
+		label: herPendingCount.value != null ? `Historical equity rates · ${herPendingCount.value} pending` : "Historical equity rates",
+	},
 	{ key: "ownership", label: "Ownership" },
-];
+]);
 </script>
 
 <template>
@@ -543,9 +616,22 @@ const TABS = [
 		</section>
 
 		<section v-else-if="tab === 'her'" role="tabpanel" aria-label="Historical equity rates" class="mt-4">
-			<p class="rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7">
-				Historical equity rates awaiting approval are not shown on this screen yet.
-			</p>
+			<LoadState
+				:state="pendingLoadState"
+				:what="'the pending historical equity rates and ownership periods'"
+				:source="GET_PENDING"
+				:error="pendingLoadError"
+				:busy="pending.busy"
+				@retry="loadPending"
+			>
+				<RatesPending
+					v-if="pendingViewData"
+					:view="pendingViewData"
+					:errors="approveErrors"
+					:approving="approving"
+					@approve="approve"
+				/>
+			</LoadState>
 		</section>
 
 		<section v-else role="tabpanel" aria-label="Ownership" class="mt-4">
