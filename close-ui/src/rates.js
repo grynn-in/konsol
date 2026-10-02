@@ -29,6 +29,13 @@
 //   "test first" list (only gridView/saveBody/approveAction/approveBody do);
 //   this file adds one test each so neither exported function ships with
 //   zero coverage.
+// - R01k (SPA must-fix 2): `previousValue` was the bare true rate
+//   (`previous.rate`, always "per 1"), shown with no unit next to a quote
+//   that may be "per 100" or more — e.g. JPY 0.6673 per 100 beside a
+//   previous of 0.0066070000000000005. `previous` carries its own
+//   `quoted_per` (rates_model.py's `_previous_cell`), so it is re-expressed
+//   as a quote in that same unit, matching the wireframe (Rates.dc.html),
+//   which shows both sides as quotes, never a bare true rate.
 
 export const STATUS_LABELS = {
   missing: "Missing",
@@ -66,6 +73,27 @@ function previousLabel(previous) {
   return previous ? previous.label : "No previous approved rate";
 }
 
+/** Re-multiplying a division in plain float arithmetic can land one bit off
+ * the clean decimal (0.6607 / 100, then back, shows 0.6606999999999999).
+ * MariaDB keeps a quote to 9 decimal places (group_rates.py's own
+ * MIN_SIGNIFICANT_DIGITS comment), so rounding there removes exactly that
+ * noise without guessing a per-cell precision. */
+function roundToQuotePrecision(value) {
+  return Math.round(value * 1e9) / 1e9;
+}
+
+/** `previous` (server shape: `{rate, quoted_per, ...}`, `rate` always "per
+ * 1") -> `{value, quotedPer}` for display as a quote in its own unit, e.g.
+ * previous.rate 0.006607 with quoted_per "100" -> {value: 0.6607, quotedPer:
+ * 100}. `null` previous (no earlier approved rate) -> both null. */
+function previousQuote(previous) {
+  if (!previous) {
+    return { value: null, quotedPer: null };
+  }
+  const per = Number(previous.quoted_per) || 1;
+  return { value: roundToQuotePrecision(previous.rate * per), quotedPer: per };
+}
+
 /**
  * {kind, message}: kind is one of "button" (direct), "reason", "refused",
  * "none" (not_approver). Throws on an unknown server mode rather than
@@ -80,13 +108,15 @@ export function approveAction(approve) {
 }
 
 function cellView(cell) {
+  const prevQuote = previousQuote(cell.previous);
   return {
     name: cell.name,
     status: cell.status,
     statusLabel: statusLabel(cell.status),
     value: cell.quote,
     quotedPer: cell.quoted_per,
-    previousValue: cell.previous ? cell.previous.rate : null,
+    previousValue: prevQuote.value,
+    previousQuotedPer: prevQuote.quotedPer,
     previousLabel: previousLabel(cell.previous),
     deltaText: deltaText(cell.delta),
     flag: cell.flag,
