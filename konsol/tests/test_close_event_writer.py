@@ -431,6 +431,10 @@ ALLOWED = {
     "close/trail_api.py",
     "patches/backfill_close_events.py",
     "fiscal_calendar.py",
+    # R01g: they name the doctype only in a table_exists guard; the write
+    # patterns and the insert check below still apply to them.
+    "close/self_approval.py",
+    "close/cancel_event.py",
     "hooks.py",
 }
 WRITER = "close/close_event.py"

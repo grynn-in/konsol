@@ -36,6 +36,28 @@
 //   `quoted_per` (rates_model.py's `_previous_cell`), so it is re-expressed
 //   as a quote in that same unit, matching the wireframe (Rates.dc.html),
 //   which shows both sides as quotes, never a bare true rate.
+// - R01o (SPA should-fix 6): the cell view dropped `change_reason`,
+//   `edited_by` (#305-W2-14), `extra_drafts` and `source`, all already on
+//   every `rates_model` cell (and, for `edited_by`, set by `rates_api.py`
+//   alongside `approve`): an approver could not see why a rate moved, who
+//   else touched the draft besides its owner, that more than one draft
+//   exists for the same grain, or that a quote came from the ERP pre-fill
+//   rather than being typed. `extraDraftsText` turns the `extra_drafts`
+//   array into the count the approver needs ("and N more draft(s)"), not
+//   the names: those are internal doc IDs, not something to show.
+// - R01n (SPA should-fix 5): `Rates.vue`'s `resetDrafts` kept a cell's draft
+//   across a reload only when a save had just refused it (a key in
+//   `cellErrors`); any other unsaved, un-refused edit was silently
+//   overwritten by the server's current value on the next reload (the one
+//   `approve()` triggers for every grid cell, not only the one just
+//   approved). `mergeDrafts` is the pure decision this needs: keep the
+//   existing edit buffer whenever it still differs from its own baseline, or
+//   the cell currently carries a refusal, and only then fall back to a fresh
+//   baseline built from the server's cell. It is exported (not inlined in
+//   `resetDrafts`) because it has two independent reasons to keep an old
+//   draft (dirty, refused) and three input shapes (no old draft, a clean
+//   old draft, a dirty/refused one) worth covering with real inputs rather
+//   than asserting the source text names a variable.
 
 export const STATUS_LABELS = {
   missing: "Missing",
@@ -107,6 +129,17 @@ export function approveAction(approve) {
   return { kind, message: approve.message };
 }
 
+/** `["GER-10"]` (one extra draft besides the one shown) -> "and 1 more
+ * draft"; two or more -> "and N more drafts". `[]`/undefined -> null: no
+ * line to show. The names themselves are internal doc IDs and never shown. */
+function extraDraftsText(extraDrafts) {
+  const count = (extraDrafts || []).length;
+  if (!count) {
+    return null;
+  }
+  return count === 1 ? "and 1 more draft" : `and ${count} more drafts`;
+}
+
 function cellView(cell) {
   const prevQuote = previousQuote(cell.previous);
   return {
@@ -122,6 +155,10 @@ function cellView(cell) {
     flag: cell.flag,
     preparer: cell.owner,
     approve: cell.approve ? approveAction(cell.approve) : null,
+    changeReason: cell.change_reason ?? null,
+    editedBy: cell.edited_by ?? null,
+    extraDraftsText: extraDraftsText(cell.extra_drafts),
+    source: cell.source ?? null,
   };
 }
 
@@ -259,6 +296,33 @@ export function approveBody(doctype, name, action, reason) {
     default:
       throw new Error(`Unknown approve action kind: ${action.kind}`);
   }
+}
+
+/**
+ * Decide the edit-buffer entry for one cell after a reload (R01n).
+ * `old` is the draft currently in the buffer (`{quote, quotedPer, orig}`) or
+ * `undefined` when there is none yet; `fresh` is the cell's current view
+ * (`cellView`'s shape: `{value, quotedPer, ...}`); `hasError` is whether
+ * this cell currently holds a save refusal (a key in `cellErrors`).
+ *
+ * Keeps `old` unchanged whenever it still differs from its own `orig`
+ * baseline (the user has not saved it) or the cell is refused — a refusal
+ * can stand even when the typed value now equals `orig` again, because the
+ * server already said no to that attempt and the Reason for Change box it
+ * opened should stay. Otherwise returns a fresh, clean draft built from
+ * `fresh`, so an approved or otherwise-updated cell starts from the new
+ * server value rather than a stale one.
+ */
+export function mergeDrafts(old, fresh, hasError) {
+  const freshOrig = {
+    quote: fresh.value == null ? "" : String(fresh.value),
+    quotedPer: fresh.quotedPer == null ? "" : String(fresh.quotedPer),
+  };
+  const dirty = Boolean(old) && (old.quote !== old.orig.quote || old.quotedPer !== old.orig.quotedPer);
+  if (old && (hasError || dirty)) {
+    return old;
+  }
+  return { ...freshOrig, orig: freshOrig };
 }
 
 /** `get_pending` payload -> `{items, counts, selfApproval, canApprove}`,

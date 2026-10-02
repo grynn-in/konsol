@@ -58,7 +58,7 @@ import RatesPending from "../sections/RatesPending.vue";
 import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, ownershipView } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, ownershipView, mergeDrafts } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
@@ -173,26 +173,30 @@ function canApproveNow(cell) {
 	return Boolean(cell.approve) && (cell.approve.kind === "button" || cell.approve.kind === "reason");
 }
 
-/** Rebuilds the edit buffers from the server, keeping every refused cell's edit. */
+/** Rebuilds the edit buffers from the server (R01n): each cell's entry goes
+ * through mergeDrafts, which keeps a dirty or refused edit untouched and
+ * otherwise starts a clean draft from the server's current value. Without
+ * this, a reload (the one every approve() triggers for the whole grid, not
+ * only the cell just approved) silently threw away any other unsaved,
+ * un-refused edit. */
 function resetDrafts() {
 	const keep = new Set(Object.keys(cellErrors));
 	const keepRows = new Set([...keep].map((k) => k.split("|").slice(0, 2).join("|")));
-	for (const k of Object.keys(drafts)) if (!keep.has(k)) delete drafts[k];
 	for (const k of Object.keys(reasons)) if (!keepRows.has(k)) delete reasons[k];
 	for (const k of Object.keys(reasonOpen)) if (!keepRows.has(k)) delete reasonOpen[k];
-	if (!view.value) return;
+	if (!view.value) {
+		clear(drafts);
+		return;
+	}
+	const liveKeys = new Set();
 	for (const row of [...view.value.rows, ...view.value.unrequired]) {
 		for (const rateType of RATE_TYPES) {
 			const key = cellKey(row, rateType);
-			if (keep.has(key)) continue;
-			const cell = cellOf(row, rateType);
-			const orig = {
-				quote: cell.value == null ? "" : String(cell.value),
-				quotedPer: cell.quotedPer == null ? "" : String(cell.quotedPer),
-			};
-			drafts[key] = { ...orig, orig };
+			liveKeys.add(key);
+			drafts[key] = mergeDrafts(drafts[key], cellOf(row, rateType), keep.has(key));
 		}
 	}
+	for (const k of Object.keys(drafts)) if (!liveKeys.has(k)) delete drafts[k];
 }
 
 function dirty(row, rateType) {
@@ -287,6 +291,10 @@ async function loadOwnership({ quiet = false } = {}) {
 
 async function saveRates() {
 	if (!period.value || !view.value || saving.value) return;
+	// R01n: captured before any await, so a period change mid-save (the
+	// route watch increments seq and clears cellErrors/reasons for the new
+	// period) is detectable at every later write, not just assumed absent.
+	const mySeq = seq;
 	saving.value = true;
 	clear(cellErrors);
 	const periodKey = { fiscal_year: period.value.year, fiscal_period: period.value.period };
@@ -302,21 +310,26 @@ async function saveRates() {
 					changeReason: reasons[rowKey(row)],
 				});
 				if (built.error) {
-					cellErrors[key] = built.error;
+					if (mySeq === seq) cellErrors[key] = built.error;
 					continue;
 				}
 				try {
 					await post(SAVE_RATE, built.body);
 				} catch (e) {
-					cellErrors[key] = e.message;
-					reasonOpen[rowKey(row)] = true;
+					if (mySeq === seq) {
+						cellErrors[key] = e.message;
+						reasonOpen[rowKey(row)] = true;
+					}
 				}
 			}
 		}
 	} finally {
 		saving.value = false;
 	}
-	await loadRates({ quiet: true });
+	// A save whose period changed under it reloads nothing: the watch
+	// already loaded the new period, and reloading here would only redo
+	// that load for a period this save no longer concerns.
+	if (mySeq === seq) await loadRates({ quiet: true });
 }
 
 /** The server's approve mode for a loaded document, read afresh from the
@@ -578,6 +591,7 @@ const TABS = computed(() => [
 												<template v-if="cellOf(row, rateType).value != null">
 													{{ cellOf(row, rateType).value }}
 													<span class="text-xs text-ink-gray-5">per {{ cellOf(row, rateType).quotedPer }}</span>
+													<div v-if="cellOf(row, rateType).source" class="text-xs text-ink-gray-5">{{ cellOf(row, rateType).source }}</div>
 												</template>
 												<template v-else>—</template>
 											</span>
@@ -601,7 +615,12 @@ const TABS = computed(() => [
 												:class="statusClass(row, rateType)"
 											>{{ isDraft(row, rateType) ? "Draft" : cellOf(row, rateType).statusLabel }}</span>
 										</td>
-										<td class="px-3 py-2 text-ink-gray-7">{{ cellOf(row, rateType).preparer || "—" }}</td>
+										<td class="px-3 py-2 text-ink-gray-7">
+											{{ cellOf(row, rateType).preparer || "—" }}
+											<template v-if="cellOf(row, rateType).editedBy && cellOf(row, rateType).editedBy.length"> · edited by {{ cellOf(row, rateType).editedBy.join(", ") }}</template>
+											<div v-if="cellOf(row, rateType).changeReason" class="text-xs text-ink-gray-5">Reason: {{ cellOf(row, rateType).changeReason }}</div>
+											<div v-if="cellOf(row, rateType).extraDraftsText" class="text-xs text-ink-gray-5">{{ cellOf(row, rateType).extraDraftsText }}</div>
+										</td>
 										<td class="px-3 py-2">
 											<template v-if="cellOf(row, rateType).approve">
 												<div v-if="canApproveNow(cellOf(row, rateType))" class="flex flex-col gap-1">

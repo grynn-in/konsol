@@ -67,6 +67,17 @@ def _site_rows():
              "effective_date": datetime.date(2026, 7, 1)},
             {"name": "OP-BAD", "owner": "a@x", "data_area_id": "ZZE2",
              "effective_date": datetime.date(2099, 1, 1)},
+            # konsol#305 R01f: submitted by its own owner, same as OP-1, but
+            # a Business Combination's stored link names it -- the deal's
+            # own approval submitted it, so it is "approved", exempt
+            # "derived", never self_approved.
+            {"name": "OP-BC1", "owner": "a@x", "data_area_id": "ZZE3",
+             "effective_date": datetime.date(2026, 7, 1)},
+        ],
+        # konsol#305 R01f: only its stored link to OP-BC1 matters here; no
+        # Version or Comment names BC-1, so nothing else reads this row.
+        "Business Combination": [
+            {"name": "BC-1", "owner": "a@x", "ownership_period": "OP-BC1"},
         ],
         "Trial Balance Submission": [
             {"name": "TB-1", "owner": "acc@x", "data_area_id": "ZZE1", "uploaded_on_behalf": 0,
@@ -88,6 +99,7 @@ def _site_rows():
         _v("V4", "IC Balance", "ICB-1", "b@x", 5, changed=SUBMIT),
         _v("V5", "Ownership Period", "OP-1", "a@x", 6, changed=SUBMIT),
         _v("V6", "Ownership Period", "OP-BAD", "a@x", 6, changed=SUBMIT),
+        _v("V10", "Ownership Period", "OP-BC1", "a@x", 6, changed=SUBMIT),
         _v("V7", "Trial Balance Submission", "TB-1", "acc@x", 10, changed=SUBMIT),
         _v("V8", "EPM Fiscal Year", "2026", "lead@x", 20,
            row_changed=[["periods", 7, "row-p07", [["status", "Open", "Closed"]]]]),
@@ -115,7 +127,7 @@ def _site_rows():
 
 EXPECTED_KINDS = {
     "self_approved": 2,      # GER-1 (with the Comment's reason), OP-1
-    "approved": 2,           # GER-2, ICB-1
+    "approved": 3,           # GER-2, ICB-1, OP-BC1 (R01f: BC-derived, exempt)
     "rejected": 1,           # GER-2's Comment
     "tb_submitted": 1,
     "period_closed": 1,
@@ -404,6 +416,22 @@ def test_entity_and_placement_come_from_the_document():
     assert ger2["entity"] is None  # group-level (W2-9)
     tb = _one(site.inserted, "tb_submitted", "TB-1")
     assert tb["entity"] == "ZZE1"
+
+
+def test_bc_derived_ownership_period_is_approved_exempt_derived():
+    """konsol#305 R01f: OP-BC1 is submitted by its own owner, exactly like
+    OP-1 (self_approved), but Business Combination BC-1's stored
+    ``ownership_period`` names it -- the deal's own approval submitted it
+    (business_combination.py:426-465), so the backfill matches the live
+    writer (self_approval.py:111-115): approved, exempt derived, no reason."""
+    site = _Site()
+    _call(site, "execute", capture=[])
+    op_bc1 = _one(site.inserted, "approved", "OP-BC1")
+    assert op_bc1["detail"]["exempt"] == "derived"
+    assert op_bc1["reason"] is None
+    assert "reason_not_recorded" not in op_bc1["detail"]
+    assert (op_bc1["fiscal_year"], op_bc1["fiscal_period"], op_bc1["entity"]) == (
+        2026, 7, "ZZE3")
 
 
 def test_workflow_state_field_is_read_so_a_reject_is_not_an_edit():

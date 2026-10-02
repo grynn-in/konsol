@@ -1053,5 +1053,55 @@ def test_failure_path_a_leak_blocking_is_cut_to_the_callers_allowed_entities():
     result = _call_ownership(site)
     assert [b["entity"] for b in result["blocking"]] == ["ZZA"]
     assert result["hidden"] == 1
+    assert result["blocking_hidden"] == 1
     dumped = json.dumps(result)
     assert "ZZB" not in dumped, dumped
+
+
+def test_blocking_hidden_counts_only_hidden_blocking_entities_not_out_of_scope():
+    # ZZA, ZZB: submitted TB, no ownership -> blocking. ZZC: no TB, no ownership
+    # -> out_of_scope. allowed = {ZZA}: ZZB is a hidden blocker, ZZC is a hidden
+    # out-of-scope entity. blocking_hidden must count only ZZB, while the
+    # existing combined `hidden` field keeps counting both (N1).
+    site = _Site()
+    site.entities = [_entity("ZZA"), _entity("ZZB"), _entity("ZZC")]
+    site.tbs = [_tb("ZZA"), _tb("ZZB")]
+    site.allowed = {"ZZA"}
+    result = _call_ownership(site)
+    assert [b["entity"] for b in result["blocking"]] == ["ZZA"]
+    assert result["out_of_scope"] == []
+    assert result["blocking_hidden"] == 1
+    assert result["hidden"] == 2
+    dumped = json.dumps(result)
+    assert "ZZB" not in dumped and "ZZC" not in dumped, dumped
+
+
+def test_in_scope_count_is_cut_to_the_callers_allowed_entities_not_total_scope():
+    # Three entities are all covered by ownership (all in scope). allowed
+    # narrows to two of them: in_scope_count must be 2 (len(scope & allowed)),
+    # never 3 (len(scope)) — the cut a mutation to plain len(scope) would miss
+    # (N2).
+    site = _Site()
+    site.entities = [_entity("ZZA"), _entity("ZZB"), _entity("ZZC")]
+    site.ops = [
+        _op("OP-A", data_area_id="ZZA", effective_date=date(2025, 1, 1), docstatus=1),
+        _op("OP-B", data_area_id="ZZB", effective_date=date(2025, 1, 1), docstatus=1),
+        _op("OP-C", data_area_id="ZZC", effective_date=date(2025, 1, 1), docstatus=1),
+    ]
+    site.allowed = {"ZZA", "ZZB"}
+    result = _call_ownership(site)
+    assert result["in_scope_count"] == 2
+
+
+def test_a_non_regular_period_is_refused_from_get_ownership():
+    site = _Site()
+    site.periods.append({
+        "fiscal_year": 2025, "fiscal_period": 13, "period_code": "P13",
+        "period_label": "Closing", "period_type": "Closing",
+        "start_date": date(2025, 12, 31), "end_date": date(2025, 12, 31),
+        "quarter": "", "status": "Open",
+    })
+    err = _call_ownership_raises(site, 2025, 13)
+    assert type(err).__name__ == "ValidationError", err
+    assert "Regular" in str(err), err
+    assert "FY2025 P13" in str(err), err
