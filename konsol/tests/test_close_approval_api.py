@@ -111,6 +111,10 @@ def _frappe(site):
         def add_comment(self, comment_type, text):
             site.comments.append((self.doctype, self.name, text))
 
+        def get_doc_before_save(self):
+            # approve submits the draft as loaded: no edit rides on the submit (R01r).
+            return None
+
     def get_doc(doctype, name=None):
         site.get_doc_calls.append((doctype, name))
         return _Doc(doctype, name)
