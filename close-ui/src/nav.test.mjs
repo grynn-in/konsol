@@ -5,23 +5,23 @@ import { navFor } from "./nav.js";
 
 const NO_COUNTS = { by_screen: {} };
 
-test("close_lead sees all four screens", () => {
+test("close_lead sees all five screens", () => {
 	const nav = navFor("close_lead", ["EPM Admin"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "trial-balances", "checks", "sign-off"],
+		["my-work", "period", "trial-balances", "checks", "sign-off"],
 	);
 });
 
-test("group_accountant (Analyst) sees all four screens", () => {
+test("group_accountant (Analyst) sees all five screens", () => {
 	const nav = navFor("group_accountant", ["EPM Analyst"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "trial-balances", "checks", "sign-off"],
+		["my-work", "period", "trial-balances", "checks", "sign-off"],
 	);
 });
 
-test("entity_accountant sees My work and Trial balances only, never Checks or Sign-off", () => {
+test("entity_accountant sees My work and Trial balances only, never Checks, Sign-off or Period", () => {
 	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
@@ -29,18 +29,24 @@ test("entity_accountant sees My work and Trial balances only, never Checks or Si
 	);
 });
 
-test("viewer sees Trial balances, Checks and Sign-off, never My work", () => {
+test("viewer sees Trial balances, Period, Checks and Sign-off, never My work", () => {
 	const nav = navFor("viewer", ["EPM User"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["trial-balances", "checks", "sign-off"],
+		["trial-balances", "period", "checks", "sign-off"],
 	);
+});
+
+test("failure path: entity_accountant's nav never contains period", () => {
+	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
+	assert.ok(!nav.map((n) => n.screen).includes("period"));
 });
 
 test("each item carries its label", () => {
 	const nav = navFor("close_lead", ["EPM Admin"], NO_COUNTS);
 	const byScreen = Object.fromEntries(nav.map((n) => [n.screen, n.label]));
 	assert.equal(byScreen["my-work"], "My work");
+	assert.equal(byScreen["period"], "Period");
 	assert.equal(byScreen["trial-balances"], "Trial balances");
 	assert.equal(byScreen["checks"], "Checks");
 	assert.equal(byScreen["sign-off"], "Sign-off");
