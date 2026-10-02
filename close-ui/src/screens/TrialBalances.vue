@@ -41,10 +41,12 @@ const CONTEXT = "konsol.close.period_api.get_context";
 const NOT_RECORDED = "not recorded";
 const NO_ENTITIES_EA = "No entities are assigned to you. Ask the System Manager.";
 
-// One style per A25 status (all six, per the A25 note). Missing and the two
-// "not declared" gaps are the ones that need someone to act.
+// One style per A25 status (all seven, per the A25/E209a note). Missing, the
+// two "not declared" gaps, and the #289 "Not consolidated" gap are the ones
+// that need someone to act.
 const STATUS_TONE = {
 	"Missing": "bg-surface-red-1 text-ink-red-3",
+	"Not consolidated: no ownership for this period": "bg-surface-red-1 text-ink-red-3",
 	"Frequency not declared": "bg-surface-amber-1 text-ink-amber-3",
 	"Quarter not declared": "bg-surface-amber-1 text-ink-amber-3",
 	"Received": "bg-surface-green-1 text-ink-green-3",
