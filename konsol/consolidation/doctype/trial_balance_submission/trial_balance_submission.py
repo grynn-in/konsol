@@ -663,6 +663,16 @@ class TrialBalanceSubmission(Document):
     def on_submit(self):
         # A63: recorded before ClickHouse is touched (see _record_data_change).
         _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s submitted" % self.name)
+        # konsol#305 T05 (#305-W2-1): the Close Event joins this transaction and
+        # precedes every ClickHouse statement (which has none), so a failing
+        # event leaves no warehouse write to repair. Never caught.
+        from konsol.close import close_event
+
+        close_event.record(
+            "tb_submitted", self.fiscal_year, self.fiscal_period,
+            "Trial Balance Submission", self.name, entity=self.data_area_id,
+            detail={"on_behalf": self.uploaded_on_behalf or "",
+                    "replaces": self.amended_from or None})
         rows = self._parse_file()
         self._ensure_tables()
         # Idempotent landing: a failed claim rolls the document back to draft
@@ -689,6 +699,12 @@ class TrialBalanceSubmission(Document):
     def on_cancel(self):
         # A63: recorded before the claim is deleted (see _record_data_change).
         _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s cancelled" % self.name)
+        # konsol#305 T05: the event precedes the claim delete (see on_submit).
+        from konsol.close import close_event
+
+        close_event.record(
+            "tb_cancelled", self.fiscal_year, self.fiscal_period,
+            "Trial Balance Submission", self.name, entity=self.data_area_id)
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.
         # mutations_sync=1: the delete must be VISIBLE before this returns —
