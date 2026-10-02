@@ -232,10 +232,14 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
 
 def _mark_latest_signed(affected, affected_by):
     """Mark the latest signed terminal run of each period in ``affected``
-    "Re-sign Needed" with ``affected_by``; return the marked run names."""
+    "Re-sign Needed" with ``affected_by``; return the marked run names. Each
+    mark also records a ``signoff_voided`` Close Event in the caller's own
+    transaction (E10-P6a, konsol#305 T04b, my judgement): a reopen or a data
+    change voids a signature, and the trail should say why."""
     # Imported here: assertion_run imports this module's callers (A22).
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
         RE_SIGN_NEEDED, SIGNED_STATES, SIGNOFF_WRITER, TERMINAL_STATUSES, writing)
+    from konsol.close import close_event
 
     if not affected:
         return []
@@ -261,6 +265,11 @@ def _mark_latest_signed(affected, affected_by):
             # The reopener or uploader need not own the run; the mark is a
             # consequence of their action, not an edit of the run.
             run.save(ignore_permissions=True)
+        # The event joins the same transaction as the mark above (neither
+        # caller commits, :262-263 / :307-308 equivalents). A writer failure
+        # propagates uncaught, same as T04's signed_off event (E10-P11).
+        close_event.record("signoff_voided", run.fiscal_year, run.fiscal_period,
+                            "Assertion Run", name, reason=affected_by)
         marked.append(name)
     return marked
 
