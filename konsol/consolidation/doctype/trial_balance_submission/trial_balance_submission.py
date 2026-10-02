@@ -123,7 +123,9 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     the contract that an older intake silently ignored or a dimension the
     site has since un-declared, is ignored rather than refused. Its rows were
     accepted when they landed, and the close screens must stay able to show
-    them. Intake never passes it.
+    them. No header refusal applies (a repeated column keeps the last value),
+    and the caller passes no declared dimensions, so a read depends only on
+    the file. Intake never passes it (a test holds that).
     """
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
@@ -160,12 +162,16 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
     if problems and not stored:
         raise ValueError("\n".join(problems))
-    if headers.count(PARTNER) > 1:
+    if stored:
+        # Read back, not re-judged: no header refusal applies to a file that
+        # already landed. A repeated column keeps csv.DictReader's last value.
+        pass
+    elif headers.count(PARTNER) > 1:
         raise ValueError(
             "Two partner columns: keep one of partner_data_area_id, "
             + ", ".join(PARTNER_ALIASES)
         )
-    if headers.count(BASIS) > 1:
+    if not stored and headers.count(BASIS) > 1:
         raise ValueError(
             "Two amount_basis columns: keep one of " + ", ".join(BASIS_ALIASES)
         )
@@ -180,7 +186,7 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     repeated_dims = [h for i, h in enumerate(headers)
                      if h in accepted_dims and headers.index(h) == i
                      and headers.count(h) > 1]
-    if repeated_dims:
+    if repeated_dims and not stored:
         raise ValueError("\n".join(
             f"Two {h} columns: keep one" for h in repeated_dims))
 

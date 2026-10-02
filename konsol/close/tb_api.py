@@ -103,15 +103,26 @@ def check_tb(entity, fiscal_year, fiscal_period, amount_basis, content):
     result = check_rows(rows, chart_accounts(), entity, _partner_entities(rows),
                         amount_basis, BALANCE_TOLERANCE)
     # The submit refuses a dimension whose warehouse column Apply Schema has
-    # not added yet; the check says so first (konsol#255).
-    column_problem = dimension_columns_problem(_row_dimensions(rows))
-    for problem in (column_problem, read_problem):
-        if problem:
-            result["file_problems"].insert(0, problem)
-            result["ok"] = False
+    # not added yet; the check says so first (konsol#255). A file that did not
+    # parse has no rows, so it never gets this far with a dimension.
+    problem = read_problem or _column_problem(rows)
+    if problem:
+        result["file_problems"].insert(0, problem)
+        result["ok"] = False
     result["period_problem"] = period_problem
     result["replaces"] = _submitted(entity, year, number)
     return result
+
+
+def _column_problem(rows):
+    """dimension_columns_problem for these rows, as a sentence even when the
+    warehouse cannot be reached: the check reports, it does not throw."""
+    try:
+        return dimension_columns_problem(_row_dimensions(rows))
+    except Exception as e:  # noqa: BLE001 - any warehouse failure is reported, not raised
+        return ("Could not confirm the warehouse has a column for every dimension "
+                f"in this file ({type(e).__name__}: {e}); check again once ClickHouse "
+                "is reachable.")
 
 
 def _first_problems(result):
@@ -189,6 +200,11 @@ def submit_tb(entity, fiscal_year, fiscal_period, amount_basis, content, replace
                         amount_basis, BALANCE_TOLERANCE)
     if not result["ok"]:
         frappe.throw("The trial balance was not submitted: " + _first_problems(result))
+    # Before anything is written: the new TB's landing would refuse a dimension
+    # with no warehouse column, but only after the old TB is cancelled below.
+    column_problem = dimension_columns_problem(_row_dimensions(rows))
+    if column_problem:
+        frappe.throw("The trial balance was not submitted: " + column_problem)
 
     current = _submitted(entity, year, number)
     if (current or None) != (replaces or None):
