@@ -201,6 +201,17 @@ test("Unrequired rows render under their own heading, and the banner renders gri
   assert.match(tpl, /\.thresholdText\b/);
 });
 
+test("Quoted Per options come from the server's quotedPerOptions (E409c): no hand-copied list of quote units", () => {
+  const source = read();
+  assert.doesNotMatch(
+    script(source),
+    /\[\s*["']1["']\s*,\s*["']10["']\s*,\s*["']100["']\s*,\s*["']1000["']\s*,\s*["']10000["']\s*\]/,
+    "no literal array of quote units",
+  );
+  const tpl = template(source);
+  assert.match(tpl, /v-for="q in (view\.)?quotedPerOptions"/, "the select options iterate view.quotedPerOptions");
+});
+
 test("The subtitle names each group currency from the rows' to_currency, never assumed", () => {
   const source = read();
   assert.match(script(source), /\.toCurrency\b/);
