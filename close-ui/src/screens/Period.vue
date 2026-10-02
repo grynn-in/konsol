@@ -240,6 +240,20 @@ const signOffPath = computed(() =>
 				</button>
 			</div>
 
+			<p
+				v-if="gridViewResult && gridViewResult.hiddenNote"
+				class="mb-3 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
+			>
+				{{ gridViewResult.hiddenNote }}
+			</p>
+			<p
+				v-if="gridViewResult && gridViewResult.ratesNote"
+				role="alert"
+				class="mb-3 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-3 text-sm text-ink-amber-3"
+			>
+				{{ gridViewResult.ratesNote }}
+			</p>
+
 			<LoadState
 				:state="gridState"
 				:what="gridWhat"
@@ -249,20 +263,6 @@ const signOffPath = computed(() =>
 				:empty-text="gridViewResult && gridViewResult.empty"
 				@retry="retryGrid"
 			>
-				<p
-					v-if="gridViewResult && gridViewResult.hiddenNote"
-					class="mb-3 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
-				>
-					{{ gridViewResult.hiddenNote }}
-				</p>
-				<p
-					v-if="gridViewResult && gridViewResult.ratesNote"
-					role="alert"
-					class="mb-3 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-3 text-sm text-ink-amber-3"
-				>
-					{{ gridViewResult.ratesNote }}
-				</p>
-
 				<div v-if="gridViewResult" class="overflow-hidden rounded border border-outline-gray-2">
 					<table class="w-full text-left text-sm">
 						<thead class="bg-surface-gray-1 text-xs uppercase tracking-wide text-ink-gray-6">
