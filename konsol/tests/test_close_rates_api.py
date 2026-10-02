@@ -19,6 +19,7 @@ import decimal
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 from datetime import date, datetime
@@ -28,6 +29,9 @@ import pytest
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOSE_DIR = os.path.join(APP_DIR, "close")
 API_PY = os.path.join(CLOSE_DIR, "rates_api.py")
+TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
+#: The stub site's system time zone (A55, L01e): BST (+01:00) in July 2025.
+SITE_TZ = "Europe/London"
 
 RATES_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
 LEAD = "zz-lead@example.com"
@@ -233,6 +237,7 @@ def _frappe(site):
     frappe.db = types.SimpleNamespace(sql=sql, get_single_value=get_single_value,
                                       get_value=get_value)
     frappe.session = types.SimpleNamespace(user=site.user)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
 
 
@@ -332,7 +337,13 @@ def _call(site, fy=2025, fp=7):
     return _invoke(site, lambda api: api.get_rates(fy, fp))
 
 
-def _invoke(site, run):
+def _load_rates_api(site):
+    """The loaded ``rates_api`` module itself (for unit-testing ``_iso``
+    directly), not a JSON-safe endpoint result."""
+    return _invoke(site, lambda api: api, require_json_safe=False)
+
+
+def _invoke(site, run, require_json_safe=True):
     frappe = _frappe(site)
     konsol = types.ModuleType("konsol")
     konsol.__path__ = []
@@ -349,7 +360,7 @@ def _invoke(site, run):
     names = ["frappe", "konsol", "konsol.close", "konsol.group_rates", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.close_policy_model",
              "konsol.close.rates_model", "konsol.close.self_approval", "konsol.close.scope_model",
-             "close_rates_api_under_test"]
+             "konsol.close.timefmt", "close_rates_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
                         "konsol.group_rates": group_rates,
@@ -364,10 +375,12 @@ def _invoke(site, run):
             "konsol.close.self_approval", os.path.join(CLOSE_DIR, "self_approval.py"))
         close.scope_model = _load_path(
             "konsol.close.scope_model", os.path.join(CLOSE_DIR, "scope_model.py"))
+        close.timefmt = _load_path("konsol.close.timefmt", TIMEFMT_PY)
         api = _load_path("close_rates_api_under_test", API_PY)
         site.frappe = frappe
         result = run(api)
-        json.dumps(result)  # JSON-safe
+        if require_json_safe:
+            json.dumps(result)  # JSON-safe
         return result
     finally:
         for n, old in saved.items():
@@ -877,6 +890,56 @@ def test_get_pending_lists_her_direct_and_refuses_the_leads_own_op_under_blocked
     assert result["counts"]["Historical Equity Rate"] == 1
     assert result["counts"]["Ownership Period"] == 1
     assert isinstance(her_item["created"], str) and isinstance(op_item["created"], str)
+
+
+def test__iso_attaches_the_system_zone_to_a_naive_datetime():
+    """L01e: ``rates_api._iso`` is the same ``timefmt.zoned_iso`` wrapper
+    every sibling endpoint's ``_iso`` uses (tb_read_api.py, checks_api.py,
+    trail_api.py, freshness_api.py, signoff_api.py) — not a naive
+    ``isoformat()``."""
+    api = _load_rates_api(_Site())
+    # BST (+01:00) in July.
+    assert api._iso(datetime(2025, 7, 1, 9, 0, 0)) == "2025-07-01T09:00:00+01:00"
+    # GMT in January: +00:00, not the +01:00 of the summer.
+    assert api._iso(datetime(2025, 1, 10, 8, 0, 0)) == "2025-01-10T08:00:00+00:00"
+
+
+def test__iso_leaves_a_plain_date_alone_and_blank_stays_none():
+    api = _load_rates_api(_Site())
+    assert api._iso(date(2025, 10, 3)) == "2025-10-03"
+    assert api._iso(None) is None and api._iso("") is None
+
+
+# --- A55: every datetime get_pending sends carries the site's time zone -----------
+
+_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+_OFFSET = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+
+
+def _strings(value):
+    if isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _strings(v)
+    elif isinstance(value, str):
+        yield value
+
+
+def test_get_pending_payload_carries_no_naive_datetime():
+    # Found live 2 Oct via L01d: get_pending's created showed raw, e.g.
+    # '2026-09-16T18:13:05.213749' (no zone).
+    site = _Site()
+    site.her = [_her("HER-1", rate_date=date(2024, 1, 1),
+                      creation=datetime(2025, 7, 1, 9, 0, 0))]
+    site.ops = [_op("OP-1", effective_date=date(2025, 1, 1), end_date=date(2025, 12, 31),
+                     creation=datetime(2025, 7, 2, 9, 0, 0))]
+    result = _call_pending(site)
+    stamps = [s for s in _strings(result) if _DATETIME.match(s)]
+    naive = [s for s in stamps if not _OFFSET.search(s)]
+    assert not naive, "datetimes sent without a time zone: %r" % naive
+    assert sorted(stamps) == ["2025-07-01T09:00:00+01:00", "2025-07-02T09:00:00+01:00"], stamps
 
 
 def test_failure_path_seen_by_the_analyst_every_item_is_not_approver():
