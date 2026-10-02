@@ -463,7 +463,12 @@ def test_dry_run_writes_nothing_and_matches_execute():
     assert summary["unplaced"] == dry["unplaced"]
 
 
-def test_patch_is_the_last_line_of_patches_txt():
+def test_patch_is_registered_once_after_the_journal_retirement():
+    # The rule, not "mine is last": an append-only registry grows (lesson
+    # 16 Sep). The backfill reads Consolidation Journals, so it runs after
+    # retire_consolidation_adjustment; later patches may follow it.
     with open(PATCHES_TXT) as fh:
         lines = [ln.strip() for ln in fh if ln.strip() and not ln.strip().startswith("#")]
-    assert lines[-1] == "konsol.patches.backfill_close_events"
+    me = "konsol.patches.backfill_close_events"
+    assert lines.count(me) == 1
+    assert lines.index(me) > lines.index("konsol.patches.retire_consolidation_adjustment")
