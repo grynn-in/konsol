@@ -103,7 +103,7 @@ _FACT_WRITABLE_FIELDS = [
     "reroute_column",
 ]
 
-_SOURCE_TYPES = {"ERP GL", "Budget", "Statistical", "Sub-ledger"}
+_SOURCE_TYPES = {"ERP GL", "Budget", "Statistical", "Sub-ledger", "Consolidation"}
 _CONFIG_API_VERSION = "konsol/v1"
 
 
