@@ -20,15 +20,26 @@
  * the one Desk hop stays visible (0.4 is excepted here until story 4.2).
  * It renders only when `view.canRecord` (E406: a Viewer, or anyone with no
  * create permission on Ownership Period, sees no link).
+ *
+ * R01q: the empty-state sentence (no visible blocking entries) comes from
+ * `ownershipEmptyMessage(view)` (rates.js), not a hardcoded string here --
+ * a hidden blocking gap (`view.blockingHidden > 0`) must never read as "No
+ * ownership gaps", since the gap exists, just outside this viewer's scope.
  */
-defineProps({
+import { computed } from "vue";
+import { ownershipEmptyMessage } from "../rates.js";
+
+const props = defineProps({
 	/** `ownershipView(payload)` (rates.js): `{blocking, outOfScopeCount,
-	 * inScopeCount, canRecord, hiddenCount}`, or null while loading. */
+	 * inScopeCount, canRecord, hiddenCount, blockingHidden}`, or null while
+	 * loading. */
 	view: { type: Object, default: null },
 	/** The period's out-of-scope entity codes, from the raw `get_ownership`
 	 * payload (`out_of_scope`): the names `view` does not carry. */
 	outOfScope: { type: Array, default: () => [] },
 });
+
+const emptyMessage = computed(() => ownershipEmptyMessage(props.view));
 </script>
 
 <template>
@@ -44,7 +55,7 @@ defineProps({
 			v-if="!view || !view.blocking.length"
 			class="rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
 		>
-			No ownership gaps for this period.
+			{{ emptyMessage }}
 		</p>
 		<ul v-else class="divide-y divide-outline-gray-2 rounded border border-outline-gray-2">
 			<li v-for="item in view.blocking" :key="item.entity" class="flex flex-wrap items-start justify-between gap-3 px-4 py-3">

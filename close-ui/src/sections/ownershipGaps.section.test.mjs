@@ -118,6 +118,17 @@ test("A hiddenCount > 0 shows the same entity-scope note the other screens use",
   assert.match(tpl, /outside your scope are not shown/);
 });
 
+test("#305-R01q: the empty-state sentence comes from ownershipEmptyMessage(view) in rates.js, not a hardcoded string, so a hidden blocking gap is never read as 'no gaps'", () => {
+  const source = read(SECTION);
+  assert.match(
+    source,
+    /import\s*\{[^}]*\bownershipEmptyMessage\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+    "imports ownershipEmptyMessage from rates.js",
+  );
+  const tpl = template(source);
+  assert.doesNotMatch(tpl, /No ownership gaps for this period\./, "the sentence is not hardcoded in the template");
+});
+
 test("No v-html, no browser dialogs, no browser storage", () => {
   const source = read(SECTION);
   assert.doesNotMatch(source, /v-html/);
