@@ -19,10 +19,15 @@ back-link check) rolls the event back with it.
 A Business Combination cancel cancels its derived Ownership Period under the
 ``from_business_combination`` flag, so it records two events, the BC's and the
 OP's (``detail.exempt == "derived"``). A cancel exempt as ``"system"`` (a
-patch, install or migrate) is not recorded live: the backfill (T06b) recovers
-it from its Version (E10-P10). ``period_of`` refusing (no declared period,
-#305-W2-5) refuses the cancel.
+patch, install or migrate) records its ``approval_cancelled`` event live too
+(konsol#305 R01g, #305-W2-S4), with ``detail.exempt == "system"``. Only when
+the Close Event table does not exist yet (a patch that runs before migrate's
+schema sync creates it) is the event skipped, and logged; the backfill (T06b)
+recovers that one case from its Version (E10-P10). ``period_of`` refusing (no
+declared period, #305-W2-5) refuses the cancel.
 """
+import frappe
+
 from konsol.close import close_event, close_policy_model, self_approval
 
 
@@ -30,8 +35,11 @@ def record(doc, method=None):
     if doc.doctype not in close_policy_model.APPROVAL_DOCTYPES:
         return
     exempt = self_approval._exempt(doc)
-    if exempt == "system":
-        # E10-P10: not recorded live; the backfill recovers it from the Version.
+    if exempt == "system" and not frappe.db.table_exists("Close Event"):
+        frappe.logger().warning(
+            "konsol#305 R01g: Close Event table does not exist yet; %s %s's system cancel "
+            "is not recorded live (the backfill recovers it from its Version, E10-P10)."
+            % (doc.doctype, doc.name))
         return
     fiscal_year, fiscal_period = close_event.period_of(doc)
     close_event.record(

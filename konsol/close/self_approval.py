@@ -22,8 +22,15 @@ and the reason, through ``close_event.record``. The hook runs in
 ``before_submit``, so the event is in the submit's own transaction; the
 writer's exception is never caught, so a failing writer stops the approval.
 A refused approval records nothing. A submit exempt as ``"system"`` (a patch,
-install or migrate) is not recorded live: the backfill (T06b) recovers it from
-its Version (E10-P10).
+install or migrate) writes one ``"approved"`` event live too (konsol#305
+R01g, #305-W2-S4), with ``detail.exempt == "system"`` and no self-approval
+judgment: no policy read, no preparer lookup, so the actor (the session
+user -- Administrator, during a patch/install/migrate) is recorded exactly
+as submitted. Only when the Close Event table does not exist yet (a patch
+that runs before the doctype's own migrate-time schema sync -- every patch
+before ``backfill_close_events``, which reloads it) is the event skipped,
+and logged; the backfill (T06b) recovers that one case from its Version
+(E10-P10).
 """
 import frappe
 
@@ -42,6 +49,26 @@ def _exempt(doc):
             or frappe.flags.get("in_migrate")):
         return "system"
     return None
+
+
+def _record_system_submit(doc, close_event):
+    """R01g (#305-W2-S4): a patch/install/migrate submit records one
+    ``"approved"`` event live, unconditioned by self-approval policy. Skips
+    (and logs) only while the Close Event table does not exist yet -- a
+    patch that runs before migrate's schema sync creates it."""
+    if not frappe.db.table_exists("Close Event"):
+        frappe.logger().warning(
+            "konsol#305 R01g: Close Event table does not exist yet; %s %s's system submit "
+            "is not recorded live (the backfill recovers it from its Version, E10-P10)."
+            % (doc.doctype, doc.name))
+        return
+    fiscal_year, fiscal_period = close_event.period_of(doc)
+    entity = close_event.entity_of(doc)
+    close_event.record(
+        "approved", fiscal_year, fiscal_period, doc.doctype, doc.name,
+        entity=entity,
+        detail={"preparer": doc.owner, "preparers": [doc.owner],
+                "policy": None, "exempt": "system"})
 
 
 def _reason(doc):
@@ -110,7 +137,7 @@ def check(doc, method=None):
 
     exempt = _exempt(doc)
     if exempt == "system":
-        # E10-P10: not recorded live; the backfill recovers it from the Version.
+        _record_system_submit(doc, close_event)
         return
     user = frappe.session.user
     preparers = preparers_for(doc.doctype, {doc.name: doc.owner})[doc.name]
