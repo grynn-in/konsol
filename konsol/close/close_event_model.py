@@ -108,10 +108,18 @@ def event_problems(event):
     return problems
 
 
-def approval_kind(owner, approver):
-    """"self_approved" when the id that approved is the id that owns the
-    document, "approved" otherwise."""
-    return "self_approved" if owner == approver else "approved"
+def approval_kind(preparers, approver):
+    """"self_approved" when ``approver`` is in ``preparers`` (the document's
+    owner, plus everyone who edited the draft; see
+    close_policy_model.preparers), "approved" otherwise.
+
+    ``preparers`` must support membership by item, not by substring: a plain
+    ``str`` raises TypeError so a caller cannot pass a single id and get a
+    silent substring match.
+    """
+    if isinstance(preparers, str):
+        raise TypeError("preparers must be a set of ids, not a string")
+    return "self_approved" if approver in preparers else "approved"
 
 
 def detail_json(detail):
