@@ -388,67 +388,30 @@ export function mergeDrafts(old, fresh, hasError) {
   return { ...freshOrig, orig: freshOrig };
 }
 
-// L01d: rates_api.get_pending's `created` (HER/OP drafts) is the one close
-// API timestamp that still reaches the client naive (rates_api.py `_iso`
-// returns a bare `isoformat()`; every sibling endpoint's `_iso` calls
-// konsol/close/timefmt.py's `zoned_iso(value, get_system_timezone())`
-// first — logged as a backend gap, L01e, out of this row's files: only
-// close-ui/src/rates.js and sections/RatesPending.vue). This bridges that
-// gap on the client: a naive value is read as `systemZone` wall time
-// (Frappe's own storage convention — the same zone the server would have
-// attached, surfaced to the client as `frappe.boot.time_zone.system`, not
-// a guess at the browser's, which is exactly what parseZoned/B09b refuses
-// to do), then shown in `timeZone` (the viewer's own zone) exactly like
-// the TB list (tbTable.js's `timestampText`). Once L01e lands, `created`
-// arrives zoned and this falls straight through `parseZoned` unchanged.
-// Whether `created` is zoned is decided by trying `parseZoned` itself
-// (timefmt.js's own test, B09b) rather than a second zone-detecting regex
-// here: a source scan (timefmt.test.mjs) holds that regex to timefmt.js
-// alone, same as it holds parseZoned/formatTime/userTimeZone there.
-const NAIVE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/;
-
-/** A naive wall-clock ISO string (no zone) -> the Date instant it names in
- * `zoneName`. Deterministic: computed from `zoneName`'s own UTC offset at
- * that moment (via Intl), never the host machine's own zone. Mirrors, in
- * JS, what `konsol/close/timefmt.py`'s `zoned_iso` does in Python
- * (`naive_dt.replace(tzinfo=ZoneInfo(tz_name))`). */
-function naiveInZone(value, zoneName) {
-  const m = NAIVE.exec(value);
-  if (!m) {
-    throw new Error(`pendingCreatedText cannot read this timestamp: ${value}`);
-  }
-  const [, y, mo, d, h, mi, s, frac] = m;
-  const ms = frac ? Number(frac.slice(0, 3).padEnd(3, "0")) : 0;
-  const guessUtc = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s), ms);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: zoneName,
-    hourCycle: "h23",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  }).formatToParts(new Date(guessUtc)).reduce((acc, p) => {
-    acc[p.type] = p.value;
-    return acc;
-  }, {});
-  const hour = parts.hour === "24" ? 0 : Number(parts.hour);
-  const sameDigitsAsUtc = Date.UTC(
-    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-    hour, Number(parts.minute), Number(parts.second), ms,
-  );
-  const offsetMs = sameDigitsAsUtc - guessUtc; // zoneName's own UTC offset at that moment
-  return new Date(guessUtc - offsetMs);
-}
+// L01f: rates_api.get_pending's `created` now reaches the client zoned
+// (L01e: rates_api.py's `_iso` mirrors every sibling close API's and calls
+// `timefmt.py`'s `zoned_iso` first). L01d's client-side workaround for the
+// then-naive payload -- a private naive-wall-clock re-zoning helper and
+// this function's extra zone-name parameter -- is deleted along with it:
+// with the server fixed, a naive `created` can only mean a regression, and
+// this must not go on silently re-zoning it as if nothing had changed. It
+// is read only through
+// `parseZoned`, exactly as `tbTable.js`'s `timestampText` reads the TB
+// list's own timestamps, and left to throw `parseZoned`'s own "no time
+// zone" error on anything zone-less — the same text the TB screen would
+// show for the identical defect, not a message invented here, so a server
+// regression is visible rather than quietly worked around.
 
 /**
  * A pending item's `created` -> the same formatted text timefmt.js gives
- * the TB list: `formatTime` in `timeZone` (the viewer's own zone, e.g.
- * `userTimeZone()`), relative to `now`. `null`/`undefined` reads "not
- * recorded" (mirrors tbTable.js's missing-creation text). A zoned value is
- * read with `parseZoned`, unchanged; a naive one (the live defect, L01e)
- * is read as `systemZone` wall time first (see `naiveInZone` above).
- * Throws without a valid `timeZone`/`now`/`systemZone` or an unreadable
- * `created` — never a guessed display (B09b).
+ * the TB list: `formatTime(parseZoned(created), now, timeZone)`, mirroring
+ * `tbTable.js`'s `timestampText` exactly. `null`/`undefined` reads "not
+ * recorded" (mirrors tbTable.js's missing-creation text). Throws without a
+ * valid `timeZone`/`now`, and throws `parseZoned`'s own error for any
+ * `created` that carries no time zone — never a guessed display (B09b),
+ * and never a silent re-zoning of a value that should already be zoned.
  */
-export function pendingCreatedText(created, now, timeZone, systemZone) {
+export function pendingCreatedText(created, now, timeZone) {
   if (!timeZone) {
     throw new Error("pendingCreatedText requires a time zone");
   }
@@ -458,19 +421,7 @@ export function pendingCreatedText(created, now, timeZone, systemZone) {
   if (created === null || created === undefined) {
     return "not recorded";
   }
-  let zoned;
-  try {
-    zoned = parseZoned(created);
-  } catch {
-    zoned = null; // not a zoned string (B09b) — fall through to the naive case below
-  }
-  if (zoned) {
-    return formatTime(zoned, now, timeZone);
-  }
-  if (!systemZone) {
-    throw new Error("pendingCreatedText requires the system time zone to read a naive timestamp");
-  }
-  return formatTime(naiveInZone(created, systemZone), now, timeZone);
+  return formatTime(parseZoned(created), now, timeZone);
 }
 
 /** `get_pending` payload -> `{items, counts, selfApproval, canApprove}`,

@@ -17,14 +17,17 @@
  * came from the server through `approveAction` (rates.js), already applied
  * by `pendingView`.
  *
- * L01d: each item's `created` is formatted like the TB list
+ * L01d/L01f: each item's `created` is formatted like the TB list
  * (`pendingCreatedText`, rates.js — B29's one timefmt.js formatter, never a
  * second one here), in the viewer's own zone (`userTimeZone()`, same
- * lookup TrialBalances.vue uses). `rates_api.get_pending`'s `created` is
- * still naive for now (a backend gap logged as L01e, out of this section's
- * files); `pendingCreatedText` reads a naive value as the system zone
- * (`frappe.boot.time_zone.system` — Frappe's own storage convention, not a
- * guess at the browser's) rather than showing the server's raw ISO string.
+ * lookup TrialBalances.vue uses). `rates_api.get_pending`'s `created` now
+ * arrives zoned (L01e); `pendingCreatedText` no longer carries the L01d-era
+ * naive-time re-zoning helper, deleted in L01f — a `created` with no
+ * time zone can now only mean a server regression, so `createdText` below
+ * shows the same "no time zone" error `pendingCreatedText`/`parseZoned`
+ * throws for it (mirrors how the TB screen surfaces a timestamp it cannot
+ * parse, tbTable.js's `timestampText`) rather than silently re-zoning it or
+ * inventing different wording.
  */
 import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
@@ -60,22 +63,27 @@ function kindLabel(item) {
 	return item.doctype === "Ownership Period" ? "Ownership period" : "Historical equity rate";
 }
 
-// L01d: the zone the created time displays in (same lookup as the TB
-// screen, B29) and, separately, the zone a naive `created` is read as
-// (Frappe's own system zone -- the server's own storage convention, not a
-// guess at the browser's, see rates.js's `pendingCreatedText`/
-// `naiveInZone`). `now` is captured once per mount, same simplification
+// L01d/L01f: the zone the created time displays in (same lookup as the TB
+// screen, B29). `now` is captured once per mount, same simplification
 // TrialBalances.vue uses per load.
 const timeZone = userTimeZone();
-const systemTimeZone =
-	(typeof window !== "undefined" && window.frappe && window.frappe.boot
-		&& window.frappe.boot.time_zone && window.frappe.boot.time_zone.system) || null;
 const now = new Date();
 const NO_ZONE = "Your browser reported no time zone, so the created time cannot be shown.";
 
+/** `pendingCreatedText` throws `parseZoned`'s own "no time zone" error when
+ * `created` is not zoned (L01f: a server regression now that L01e sends it
+ * zoned). That error is shown as this item's created text, unchanged --
+ * the same text the TB screen would show for the identical defect
+ * (tbTable.js's `timestampText`), never an invented message, and never a
+ * silent re-zoning. One item's bad timestamp therefore shows its own
+ * error without hiding the rest of the list. */
 function createdText(created) {
 	if (!timeZone) return NO_ZONE;
-	return pendingCreatedText(created, now, timeZone, systemTimeZone);
+	try {
+		return pendingCreatedText(created, now, timeZone);
+	} catch (e) {
+		return e.message;
+	}
 }
 
 function start(item) {
