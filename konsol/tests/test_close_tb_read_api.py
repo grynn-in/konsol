@@ -619,6 +619,18 @@ def test_a_stored_tb_whose_dimension_is_no_longer_declared_is_still_compared():
     assert rows[("1010", "")]["previous"] == 60, rows
 
 
+def test_a_stored_tb_with_a_repeated_header_is_still_compared():
+    """Stored files are read back without any header refusal, repeated
+    columns included: an older intake that accepted the file decided what
+    landed, and the close screen only shows it."""
+    site = _compare_site()
+    site.files["/private/files/TB-A8.csv"] = (
+        "main_account,debit,credit,amount_basis,amount_basis\n"
+        "1010,60,0,,\n3000,0,60,,\n")
+    rows = _row_map(_tb_compare(site))
+    assert rows[("1010", "")]["previous"] == 60, rows
+
+
 # --- failure paths ---------------------------------------------------------------------
 
 def test_no_previous_tb_is_a_note_never_a_comparison_against_zero():
