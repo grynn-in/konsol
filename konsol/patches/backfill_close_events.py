@@ -31,6 +31,12 @@ Rules this patch keeps:
   otherwise raise "Unknown column" (S2, found by R01e, 2 Oct 2026). It is
   the last line of patches.txt, after ``lift_ownership_to_ownership_period``,
   whose system submits it recovers (E10-P10).
+- konsol#305 R01f: an Ownership Period a Business Combination submitted is
+  backfilled as the live writer records it -- ``approved``, exempt
+  ``"derived"``, never ``self_approved``. Ownership Period itself carries no
+  link back to the deal that created it, so the patch reads the stored link
+  the other way (``Business Combination.ownership_period``) and feeds the
+  resulting docnames to the model as ``derived_ownership_periods``.
 """
 import frappe
 
@@ -187,6 +193,17 @@ def _read():
         _JOURNAL, filters={"docstatus": 1},
         fields=["name", "owner", "approved_by", "approved_at", "fiscal_year", "fiscal_period"])
 
+    # konsol#305 R01f: the Business Combination's own stored link is the only
+    # record that an Ownership Period was derived (ownership_period.json has
+    # no field back to it). Any docstatus: _undo_ownership_period leaves the
+    # link set on a cancelled deal too (business_combination.py:475-498), and
+    # the deal's own cancel is unaffected by whether its period counts here.
+    derived_ownership_periods = {
+        row.ownership_period for row in frappe.get_all(
+            "Business Combination", filters={"ownership_period": ["is", "set"]},
+            fields=["ownership_period"])
+    }
+
     existing_rows = frappe.get_all(
         "Close Event", fields=["kind", "reference_doctype", "reference_name", "at", "source"])
     existing = [(e.kind, e.reference_doctype, e.reference_name, e.at) for e in existing_rows]
@@ -207,6 +224,7 @@ def _read():
         "journals": journals, "existing": existing, "cutoff": cutoff,
         "approval_doctypes": approval_doctypes, "state_fields": state_fields,
         "orphan_run_versions": orphan_run_versions,
+        "derived_ownership_periods": derived_ownership_periods,
     }
 
 

@@ -23,6 +23,15 @@ Decisions applied:
   under ``UNPLACED_DELETED``, never dropped silently. The patch passes those
   Versions in as ``orphan_versions``; the model never sees the deleted run
   itself (there is none).
+- konsol#305 R01f: an Ownership Period's 0->1 Version is backfilled as
+  ``approved`` with ``detail.exempt == "derived"``, never ``self_approved``,
+  when its docname is in ``derived_ownership_periods`` -- matching the live
+  writer's named exemption (self_approval.py:111-115) for an Ownership
+  Period a Business Combination submitted under
+  ``frappe.flags.from_business_combination``
+  (business_combination.py:426-465). The patch feeds the set from the
+  Business Combination's own stored link (``ownership_period``); nothing is
+  guessed from the Ownership Period side, which carries no such field.
 
 Inputs (all plain):
 - a Version: ``{name, ref_doctype, docname, owner, creation, data}``; ``data``
@@ -252,7 +261,7 @@ def _note_text(lines, used, subject, verb, date, user):
 # --- versions -----------------------------------------------------------
 
 def events_from_versions(versions, docs, periods, placements, approval_doctypes,
-                         state_fields=None, reasons=None):
+                         state_fields=None, reasons=None, derived_ownership_periods=None):
     """``(events, unplaced)`` from Versions:
 
     - 0->1 of an approval document: ``approval_kind(preparers, version.owner)``,
@@ -262,16 +271,25 @@ def events_from_versions(versions, docs, periods, placements, approval_doctypes,
       (``close_policy_model.submit_carries_edit``, konsol#305 R01a/R01b: the
       backfilled rule for a 0->1 Version matches the live rule for a
       submitting request); 1->2: ``approval_cancelled``;
+      an Ownership Period named in ``derived_ownership_periods`` is
+      ``approved`` with ``detail.exempt == "derived"`` instead, whatever its
+      preparers are (konsol#305 R01f, matching self_approval.py:111-115);
     - 0->1 / 1->2 of a Trial Balance Submission: ``tb_submitted`` /
       ``tb_cancelled``; of a TB Exception: ``tb_exception_declared`` /
       ``tb_exception_cancelled``;
     - an EPM Fiscal Year ``periods`` row's status change: ``period_<verb>``;
       the year's own: ``year_<verb>`` (period 0).
 
-    ``reasons`` is ``reasons_from_comments``'s map.
+    ``reasons`` is ``reasons_from_comments``'s map. ``derived_ownership_periods``
+    is a set/container of Ownership Period docnames (the patch's read of
+    ``Business Combination.ownership_period``); absent or empty, nothing is
+    exempted.
     """
     approval_doctypes = tuple(approval_doctypes)
     state_fields = state_fields or {}
+    derived_ownership_periods = derived_ownership_periods or ()
+    if isinstance(derived_ownership_periods, str):
+        raise TypeError("derived_ownership_periods must be a set of docnames, not a string")
     parsed = [(v, _data(v)) for v in versions or ()]
     by_doc = {}
     for v, data in sorted(parsed, key=lambda p: _at(p[0].get("creation"))):
@@ -305,8 +323,10 @@ def events_from_versions(versions, docs, periods, placements, approval_doctypes,
                     doc.get("owner"), earlier, state_fields.get(doctype))
                 if close_policy_model.submit_carries_edit(data, state_fields.get(doctype)):
                     preparers = preparers | {actor}
+                exempt = ("derived" if doctype == "Ownership Period"
+                          and key[1] in derived_ownership_periods else None)
                 events.append(_approval_event(
-                    key, doc, preparers, actor, at, period, reasons))
+                    key, doc, preparers, actor, at, period, reasons, exempt=exempt))
             elif kind == "approval_cancelled":
                 events.append(_event(kind, period, actor, at, key, entity=doc.get("entity"),
                                      detail={"preparer": doc.get("owner")}))
@@ -337,9 +357,17 @@ def _document_kind(doctype, pair, approval_doctypes):
     return None
 
 
-def _approval_event(key, doc, preparers, approver, at, period, reasons):
-    kind = close_event_model.approval_kind(preparers, approver)
+def _approval_event(key, doc, preparers, approver, at, period, reasons, exempt=None):
+    """``exempt`` (konsol#305 R01f): the named exemption the live writer would
+    have used (currently only ``"derived"``, self_approval.py:111-115). A set
+    ``exempt`` forces ``kind == "approved"`` and carries ``detail.exempt``,
+    whatever ``preparers``/``approver`` say -- the live hook never judges a
+    self-approval under a named exemption, so the backfill records no reason
+    and no ``reason_not_recorded`` flag either."""
+    kind = "approved" if exempt else close_event_model.approval_kind(preparers, approver)
     detail = {"preparer": doc.get("owner"), "preparers": sorted(preparers)}
+    if exempt:
+        detail["exempt"] = exempt
     reason = None
     if kind == "self_approved":
         reason = _reason_for(reasons, (key[0], key[1], approver), at)
@@ -533,12 +561,14 @@ def new_events(candidates, existing, cutoff):
 
 
 def backfill(versions, docs, periods, placements, comments, runs, journals, existing,
-             cutoff, approval_doctypes, state_fields=None, orphan_run_versions=None):
+             cutoff, approval_doctypes, state_fields=None, orphan_run_versions=None,
+             derived_ownership_periods=None):
     """``(events, unplaced)``: every source above, then ``new_events``."""
     reasons = reasons_from_comments(comments)
     unplaced = {}
     from_versions, u = events_from_versions(
-        versions, docs, periods, placements, approval_doctypes, state_fields, reasons)
+        versions, docs, periods, placements, approval_doctypes, state_fields, reasons,
+        derived_ownership_periods)
     _merge(unplaced, u)
     rejected, u = events_from_rejections(comments, docs, placements)
     _merge(unplaced, u)
