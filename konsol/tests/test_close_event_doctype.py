@@ -266,6 +266,26 @@ def test_delete_is_refused_for_everyone():
             _raises(mod.CloseEvent(new=False).on_trash, frappe.PermissionError)
 
 
+def test_after_delete_is_refused_for_everyone():
+    # ignore_on_trash skips on_trash, but Frappe still runs after_delete once the
+    # row is gone (konsol#305 T01c, W2-6, E10-P2 / W2-P2). The refusal here only
+    # works through the request's rollback restoring the row.
+    for user in ("Administrator", "sm@example.com", "lead@example.com"):
+        mod, frappe, _ = _load(user=user)
+        for new in (False, True):
+            msg = _raises(mod.CloseEvent(new=new).after_delete, frappe.PermissionError)
+            assert "cannot be deleted" in msg
+        with mod.writing():
+            _raises(mod.CloseEvent(new=False).after_delete, frappe.PermissionError)
+
+
+def test_on_trash_and_after_delete_share_the_same_sentence():
+    mod, frappe, _ = _load()
+    on_trash_msg = _raises(mod.CloseEvent(new=False).on_trash, frappe.PermissionError)
+    after_delete_msg = _raises(mod.CloseEvent(new=False).after_delete, frappe.PermissionError)
+    assert on_trash_msg == after_delete_msg
+
+
 def test_controller_imports_nothing_from_konsol_close():
     with open(CONTROLLER_PY) as f:
         src = f.read()
