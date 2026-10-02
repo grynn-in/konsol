@@ -431,6 +431,7 @@ ALLOWED = {
     "close/trail_api.py",
     "patches/backfill_close_events.py",
     "fiscal_calendar.py",
+    "hooks.py",
 }
 WRITER = "close/close_event.py"
 FORBIDDEN = (

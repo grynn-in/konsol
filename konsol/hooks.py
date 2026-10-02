@@ -187,6 +187,8 @@ has_permission = {
     dt: "konsol.entity_permissions.has_entity_permission" for dt in _ENTITY_SCOPED
 }
 has_permission["Entity"] = "konsol.entity_permissions.has_entity_doc_permission"
+permission_query_conditions["Close Event"] = "konsol.entity_permissions.close_event_conditions"
+has_permission["Close Event"] = "konsol.entity_permissions.has_close_event_permission"
 
 # A bulk trial balance upload holds every entity's figures (its report and
 # its file, whose read permission follows the upload): visible only to its

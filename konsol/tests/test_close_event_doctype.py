@@ -7,7 +7,10 @@ An append-only audit log:
   of a saved row, and every delete, Administrator included (E10-P2,
   decision #305-W2-6, Deepak Pai 2 Oct 2026);
 - no Link / Dynamic Link field and no ``data_area_id`` (E10-P8): a rename
-  must never edit an immutable row, and the trail is not entity-scoped.
+  must never edit an immutable row. The trail IS entity-scoped (#305-W2-9),
+  but by its own ``entity`` field and its own hooks (konsol#305 R01c), not by
+  the generic ``data_area_id`` tuple: a second entity field would be two
+  sources of truth for one event.
 
 The controller is loaded by path against a stub frappe (the pattern of
 test_close_self_approval.py:30-100, copied, not imported); the pure model is
@@ -93,7 +96,7 @@ def _link_problems(meta):
         if f["fieldtype"] in ("Link", "Dynamic Link"):
             bad.append("%s is a %s" % (f["fieldname"], f["fieldtype"]))
         if f["fieldname"] == "data_area_id":
-            bad.append("data_area_id would make the trail entity-scoped")
+            bad.append("data_area_id would be a second entity field beside `entity` (W2-9)")
     return bad
 
 
@@ -293,3 +296,142 @@ def test_controller_imports_nothing_from_konsol_close():
         s = line.strip()
         if s.startswith(("import ", "from ")):
             assert "konsol" not in s, s
+
+
+# --- entity scope outside the trail endpoint (konsol#305 R01c, M2, #305-W2-9) --
+#
+# The trail endpoint scopes events itself (get_all ignores permissions). A REST
+# or Desk read goes through Frappe's permission layer instead, so Close Event
+# needs its own query condition and has_permission hook keyed on `entity`.
+# W2-9: an event with a blank entity (group-level: rates, journals, IC) stays
+# visible; an event naming an entity is visible only inside the reader's scope.
+
+import re
+import sqlite3
+
+ENTITY_PERMISSIONS_PY = os.path.join(APP_DIR, "entity_permissions.py")
+HOOKS_PY = os.path.join(APP_DIR, "hooks.py")
+
+
+def _load_entity_permissions(user, roles, entities):
+    """entity_permissions against a stub frappe. ``entities`` is the user's
+    Entity User Permissions (codes); the tree has no descendants."""
+    frappe = types.ModuleType("frappe")
+    frappe.PermissionError = type("PermissionError", (Exception,), {})
+    frappe.session = types.SimpleNamespace(user=user)
+    frappe.get_roles = lambda u=None: list(roles)
+    perms = types.ModuleType("frappe.permissions")
+    perms.get_user_permissions = lambda u: {"Entity": [{"doc": c} for c in entities]} if entities else {}
+    frappe.permissions = perms
+    frappe.get_cached_value = lambda *a, **k: 0
+
+    def get_all(doctype, filters=None, fields=None, limit_page_length=None):
+        assert doctype == "Entity"
+        return [types.SimpleNamespace(lft=i * 2 + 1, rgt=i * 2 + 2) for i, _ in enumerate(entities)]
+
+    frappe.get_all = get_all
+    frappe.db = types.SimpleNamespace(
+        sql=lambda q, as_dict=False: [],
+        escape=lambda v: "'%s'" % str(v).replace("'", "''"),
+    )
+    mods = {"frappe": frappe, "frappe.permissions": perms}
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("entity_permissions_for_r01c", ENTITY_PERMISSIONS_PY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for n, old in saved.items():
+            if old is not None:
+                sys.modules[n] = old
+            else:
+                sys.modules.pop(n, None)
+    return module
+
+
+def _close_event_hook(table):
+    """The function hooks.py registers for Close Event in ``table``
+    (permission_query_conditions or has_permission), by its name in
+    konsol.entity_permissions — or None when there is no entry."""
+    with open(HOOKS_PY) as f:
+        src = f.read()
+    m = re.search(r'^%s\["Close Event"\]\s*=\s*"konsol\.entity_permissions\.(\w+)"\s*$' % table,
+                  src, re.M)
+    return m.group(1) if m else None
+
+
+def _hook(mod, table):
+    name = _close_event_hook(table)
+    assert name is not None, "hooks.py registers no %s for Close Event" % table
+    fn = getattr(mod, name, None)
+    assert callable(fn), "konsol.entity_permissions has no %s" % name
+    return fn
+
+
+EVENTS = [("CE-1", "ZZ_SEEN"), ("CE-2", "ZZ_HIDDEN"), ("CE-3", ""), ("CE-4", None)]
+
+
+def _visible(condition):
+    """Run the condition against a real SQL engine over EVENTS."""
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE `tabClose Event` (name TEXT, entity TEXT)")
+    con.executemany("INSERT INTO `tabClose Event` VALUES (?, ?)", EVENTS)
+    sql = "SELECT name FROM `tabClose Event`"
+    if condition:
+        sql += " WHERE " + condition
+    return {r[0] for r in con.execute(sql)}
+
+
+def _scoped():
+    return _load_entity_permissions("zz-viewer@example.com", ["EPM User"], ["ZZ_SEEN"])
+
+
+def test_hooks_register_close_event_query_condition_and_has_permission():
+    mod = _scoped()
+    _hook(mod, "permission_query_conditions")
+    _hook(mod, "has_permission")
+
+
+def test_scoped_viewer_list_hides_other_entities_and_keeps_blank_entity():
+    mod = _scoped()
+    cond = _hook(mod, "permission_query_conditions")("zz-viewer@example.com")
+    assert cond, "a scoped reader must get a condition"
+    assert "`tabClose Event`.`entity`" in cond
+    assert _visible(cond) == {"CE-1", "CE-3", "CE-4"}
+    # failure path: no condition at all would show the hidden entity's event
+    assert "CE-2" in _visible("")
+
+
+def test_scoped_viewer_cannot_open_a_hidden_entity_event():
+    mod = _scoped()
+    check = _hook(mod, "has_permission")
+    doc = lambda e: types.SimpleNamespace(doctype="Close Event", entity=e, data_area_id=None)
+    assert check(doc("ZZ_HIDDEN"), "zz-viewer@example.com", "read") is False
+    assert check(doc("ZZ_SEEN"), "zz-viewer@example.com", "read") is True
+    assert check(doc(""), "zz-viewer@example.com", "read") is True
+    assert check(doc(None), "zz-viewer@example.com", "read") is True
+
+
+def test_unscoped_reader_is_unaffected():
+    for user, roles, entities in (
+        ("zz-analyst@example.com", ["EPM Analyst"], []),
+        ("zz-viewer2@example.com", ["EPM User"], []),
+        ("zz-sm@example.com", ["System Manager", "EPM User"], ["ZZ_SEEN"]),
+        ("Administrator", ["Administrator"], []),
+    ):
+        mod = _load_entity_permissions(user, roles, entities)
+        cond = _hook(mod, "permission_query_conditions")(user)
+        assert cond == "", user
+        assert _visible(cond) == {"CE-1", "CE-2", "CE-3", "CE-4"}
+        check = _hook(mod, "has_permission")
+        assert check(types.SimpleNamespace(entity="ZZ_HIDDEN"), user, "read") is True
+
+
+def test_reader_with_an_empty_grant_sees_nothing_scoped():
+    # deny-by-default (an Entity Accountant with no entity) gets "1=0", even for
+    # blank-entity events: the same rule as every other scoped doctype.
+    mod = _load_entity_permissions("zz-ea@example.com", ["Entity Accountant"], [])
+    cond = _hook(mod, "permission_query_conditions")("zz-ea@example.com")
+    assert cond == "1=0"
+    assert _visible(cond) == set()
