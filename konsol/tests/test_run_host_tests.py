@@ -15,6 +15,7 @@ import importlib.util
 import io
 import os
 import tempfile
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RUNNER = os.path.join(ROOT, "scripts", "run-host-tests.py")
@@ -137,3 +138,43 @@ def test_importorskip_mid_body_is_still_a_skip_and_is_listed():
         code, out = _run(path)
     assert code == 0, out
     assert "1/1 passed" in out and "1 test(s) skipped" in out, out
+
+
+FIXTURE_TESTS = (
+    "def test_plain():\n    assert True\n\n\n"
+    "def test_fixture_passes(tmp_path):\n    assert tmp_path.exists()\n\n\n"
+    "def test_fixture_fails(tmp_path):\n    assert False, 'fixture boom'\n"
+)
+
+
+def test_a_test_that_takes_a_fixture_runs_through_pytest_and_counts():
+    """konsol#318: a test with pytest fixtures used to be listed as "needs
+    pytest" and left out of the total, so CI never ran any of them (60 on
+    main). The runner now hands them to pytest and counts the results: one
+    passes, one fails, and the failure fails the run."""
+    import pytest  # the runner needs it to run these; skip on a host without it
+    del pytest
+    with _test_file(FIXTURE_TESTS) as path:
+        code, out = _run(path)
+    assert code == 1, out
+    assert "2/3 passed" in out, out
+    assert "test_fixture_fails" in out and "fixture boom" in out, out
+
+
+def test_without_pytest_fixture_tests_are_listed_and_require_pytest_fails():
+    """Without pytest the fixture tests can't run. On a laptop they stay a
+    listed skip; under --require-pytest (what CI passes) that is a failure."""
+    runner = _runner()
+
+    def run(*argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = runner.main(["run-host-tests.py", *argv])
+        return code, out.getvalue()
+
+    with _test_file(FIXTURE_TESTS) as path, \
+            mock.patch.object(runner, "_pytest_available", lambda: False, create=True):
+        code, out = run(path)
+        assert code == 0 and "1/1 passed" in out and "2 test(s) skipped" in out, out
+        code, out = run("--require-pytest", path)
+        assert code == 1 and "pytest is required" in out, out
