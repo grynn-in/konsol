@@ -51,7 +51,6 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
 )
 from konsol.entity_permissions import allowed_entity_codes, assert_entity_access
 from konsol.tb_basis_model import AMOUNT_BASES
-from konsol.tb_dimension import declared_dimensions
 from konsol.period_status import PeriodNotDeclared
 
 REGULAR = "Regular"
@@ -263,8 +262,11 @@ def _tb_rows(tb):
     content = (content.decode("utf-8-sig") if isinstance(content, bytes)
                else content.lstrip("\ufeff"))
     try:
-        # The site's declared dimensions, as the submission parsed it (konsol#255).
-        return parse_tb_csv(content, declared_dimensions())
+        # Read back, not re-judged: a stored file stays readable whatever the
+        # site's dimensions or intake rules are today (konsol#255). No
+        # declared dimensions are passed, so the read depends only on the file;
+        # the compare keys on account and partner and reads no dimension.
+        return parse_tb_csv(content, (), stored=True)
     except ValueError as e:
         frappe.throw("Could not read the file of trial balance %s: %s" % (tb["name"], e))
 

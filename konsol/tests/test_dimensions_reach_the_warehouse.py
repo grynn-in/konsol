@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import types
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(_HERE)
@@ -118,6 +119,7 @@ class _Site:
         self.raw_columns = list(raw_columns)
         self.sent = []
         self.files = {}
+        self.data_changes = []   # what on_submit told the sign-off gate
         self.dimension_queries = []
         self._n = 0
 
@@ -317,6 +319,35 @@ def _load(site, with_bulk=False):
                 sys.modules[k] = v
 
 
+def _stubbed_modules(site, extra=None):
+    """A ``patch.dict`` over sys.modules for the length of one submit.
+
+    konsol#305 A63: on_submit records the data change against the period's
+    sign-off, importing the frappe-bound ``konsol.close.signoff_gate`` when it
+    runs, after ``_load`` has already restored ``sys.modules``. Both intakes
+    reach it, so both submit through this. What it was told is appended to
+    ``site.data_changes``. ``extra`` adds modules for one caller (rq).
+    patch.dict also removes any module first imported during the call.
+    """
+    signoff_gate = types.ModuleType("konsol.close.signoff_gate")
+    # konsol#305 R01d: on_submit now always passes entity=data_area_id.
+    signoff_gate.record_data_change = lambda fy, fp, text, user, entity=None: (
+        site.data_changes.append((fy, fp, text)))
+    close = types.ModuleType("konsol.close")
+    close.signoff_gate = signoff_gate
+    # konsol#305 T05a: a stub Close Event writer (T02a), so T05's lazy
+    # `from konsol.close import close_event` resolves during a submit. It keeps
+    # its own log, not site.data_changes.
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+    close_event.record = lambda *a, **k: close_event.events.append((a, k))
+    close.close_event = close_event
+    return mock.patch.dict(sys.modules, {"konsol.close": close,
+                                         "konsol.close.signoff_gate": signoff_gate,
+                                         "konsol.close.close_event": close_event,
+                                         **(extra or {})})
+
+
 def _submit_single(site, tbs, csv_text=SINGLE_CSV):
     """Upload `csv_text` and submit it, the way the form does."""
     doc = tbs.TrialBalanceSubmission()
@@ -324,7 +355,10 @@ def _submit_single(site, tbs, csv_text=SINGLE_CSV):
     doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "ZZA", 2099, 1
     doc.row_count, doc.amount_basis = 2, "Period movement"
     doc.tb_file = site.add_file(csv_text)
-    doc.on_submit()
+    # before_insert always sets these on a real document (T05b).
+    doc.uploaded_on_behalf, doc.amended_from = "No", None
+    with _stubbed_modules(site):
+        doc.on_submit()
     return doc
 
 
@@ -338,6 +372,8 @@ def test_a_declared_dimension_reaches_the_warehouse_from_the_form():
 
     _submit_single(site, tbs)   # red: refused, "create the Dimension ..."
 
+    # konsol#305 A63: the submit is recorded against the period's sign-off.
+    assert site.data_changes == [(2099, 1, "TB TBS-1 submitted")], site.data_changes
     sql = site.one_insert()
     assert f"submitted_at, {'partner_data_area_id'}, {DIM}) VALUES" in sql, sql
     assert f"'{VALUE}'" in sql, sql
@@ -436,37 +472,8 @@ def _run_bulk_load(site, bulk, csv_text=BULK_CSV, name="TBU-1"):
     timeouts = types.ModuleType("rq.timeouts")
     timeouts.BaseTimeoutException = type("BaseTimeoutException", (Exception,), {})
     rq.timeouts = timeouts
-    # konsol#305 A63: on_submit records the data change against the period's
-    # sign-off, importing the frappe-bound signoff_gate when it runs. Stubbed
-    # for the call, like rq; what it was told is kept on the site.
-    site.data_changes = []
-    signoff_gate = types.ModuleType("konsol.close.signoff_gate")
-    # konsol#305 R01d: on_submit now always passes entity=data_area_id.
-    signoff_gate.record_data_change = lambda fy, fp, text, user, entity=None: (
-        site.data_changes.append((fy, fp, text)))
-    close = types.ModuleType("konsol.close")
-    close.signoff_gate = signoff_gate
-    # konsol#305 T05a: a stub Close Event writer (T02a), so T05's lazy
-    # `from konsol.close import close_event` resolves during the bulk load.
-    # It keeps its own log, not site.data_changes.
-    close_event = types.ModuleType("konsol.close.close_event")
-    close_event.events = []
-    close_event.record = lambda *a, **k: close_event.events.append((a, k))
-    close.close_event = close_event
-    names = ("rq", "rq.timeouts", "konsol.close", "konsol.close.signoff_gate",
-             "konsol.close.close_event")
-    saved = {k: sys.modules.get(k) for k in names}
-    sys.modules["rq"], sys.modules["rq.timeouts"] = rq, timeouts
-    sys.modules["konsol.close"], sys.modules["konsol.close.signoff_gate"] = close, signoff_gate
-    sys.modules["konsol.close.close_event"] = close_event
-    try:
+    with _stubbed_modules(site, {"rq": rq, "rq.timeouts": timeouts}):
         bulk.run_load(upload.name)
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
     return site.progress[-1]
 
 

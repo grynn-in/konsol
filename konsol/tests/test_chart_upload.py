@@ -407,3 +407,53 @@ def test_a_chart_with_allow_ic_on_every_leaf_loads_and_publishes_cleanly():
     assert all(site.rows[f"ZZ1{n}00"]["allow_ic"] == 1 for n in range(4))
     assert len(call(site, "publish_chart", "ZZCOA")["published"]) == 5
 
+
+
+def test_a_file_that_clears_allow_ic_under_a_live_pairing_writes_nothing():
+    """Review finding 2 on konsol#293. MainAccount.validate refuses this too,
+    but inside load_chart's write loop: the save raises, the except rolls back
+    and re-raises, and the caller gets a ValidationError instead of the report
+    with loaded False. The pre-check keeps the all-or-nothing contract.
+
+    A blank cell in a present allow_ic column parses as 0, so this is the file
+    an admin actually produces by editing a chart export.
+    """
+    head = HEAD + ["allow_ic"]
+    existing = [row("ZZ9000", status="Published", is_group=1, is_posting=0, account_type="",
+                    statement_section="", normal_balance="", time_balance="", fx_method="",
+                    account_name="Heading", lft=1),
+                row("ZZ1000", status="Published", parent_account="ZZ9000", account_name="IC receivable",
+                    allow_ic=1, lft=2)]
+    table = [head,
+             ["ZZ9000", "Heading", "", "", "", "ZZCOA", ""],
+             ["ZZ1000", "IC receivable", "Asset", "BS", "ZZ9000", "ZZCOA", ""]]
+    site = Site(rows=existing, tables={"/clear.csv": table})
+    site.ic[:] = ["ICA-ZZ1000"]
+
+    out = call(site, "load_chart", "/clear.csv")
+    assert out["loaded"] is False and out["ok"] is False, out
+    msg = "\n".join(out["errors"])
+    assert "ZZ1000 is named by a Published Intercompany Account" in msg, msg
+    assert site.saved == [] and site.inserted == [] and site.rollbacks == 0, site.saved
+    assert site.rows["ZZ1000"]["allow_ic"] == 1, "the flag must be untouched"
+    # and check_chart_file says the same before any load
+    report = call(site, "check_chart_file", "/clear.csv")
+    assert report["ok"] is False and any("named by a Published Intercompany Account" in e
+                                         for e in report["errors"]), report
+
+
+def test_a_file_that_clears_allow_ic_on_an_unpaired_account_loads():
+    """The refusal is about the pairing, not the flag: no pairing, no problem."""
+    head = HEAD + ["allow_ic"]
+    existing = [row("ZZ9000", status="Published", is_group=1, is_posting=0, account_type="",
+                    statement_section="", normal_balance="", time_balance="", fx_method="",
+                    account_name="Heading", lft=1),
+                row("ZZ1000", status="Published", parent_account="ZZ9000", account_name="Cash",
+                    allow_ic=1, lft=2)]
+    table = [head,
+             ["ZZ9000", "Heading", "", "", "", "ZZCOA", ""],
+             ["ZZ1000", "Cash", "Asset", "BS", "ZZ9000", "ZZCOA", ""]]
+    site = Site(rows=existing, tables={"/clear.csv": table})
+    out = call(site, "load_chart", "/clear.csv")
+    assert out["loaded"] and out["errors"] == [], out
+    assert site.rows["ZZ1000"]["allow_ic"] == 0
