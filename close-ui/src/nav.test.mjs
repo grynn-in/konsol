@@ -5,23 +5,23 @@ import { navFor } from "./nav.js";
 
 const NO_COUNTS = { by_screen: {} };
 
-test("close_lead sees all six screens, rates right after trial-balances", () => {
+test("close_lead sees all seven screens, audit-trail last", () => {
 	const nav = navFor("close_lead", ["EPM Admin"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "period", "trial-balances", "rates", "checks", "sign-off"],
+		["my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"],
 	);
 });
 
-test("group_accountant (Analyst) sees all six screens, rates right after trial-balances", () => {
+test("group_accountant (Analyst) sees all seven screens, audit-trail last", () => {
 	const nav = navFor("group_accountant", ["EPM Analyst"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "period", "trial-balances", "rates", "checks", "sign-off"],
+		["my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"],
 	);
 });
 
-test("entity_accountant sees My work and Trial balances only, never Checks, Sign-off or Period", () => {
+test("entity_accountant sees My work and Trial balances only, never Checks, Sign-off, Period or Audit trail", () => {
 	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
@@ -29,17 +29,18 @@ test("entity_accountant sees My work and Trial balances only, never Checks, Sign
 	);
 });
 
-test("viewer sees Trial balances, Rates, Period, Checks and Sign-off, never My work; still lands on Trial balances", () => {
+test("viewer sees Trial balances, Rates, Period, Checks, Sign-off and Audit trail, never My work; still lands on Trial balances", () => {
 	const nav = navFor("viewer", ["EPM User"], NO_COUNTS);
 	const screens = nav.map((n) => n.screen);
-	assert.deepEqual(screens, ["trial-balances", "rates", "period", "checks", "sign-off"]);
+	assert.deepEqual(screens, ["trial-balances", "rates", "period", "checks", "sign-off", "audit-trail"]);
 	assert.equal(screens[0], "trial-balances"); // #305-W2-10: the landing is unchanged
 });
 
-test("failure path: entity_accountant's nav never contains period or rates", () => {
+test("failure path: entity_accountant's nav never contains period, rates or audit-trail", () => {
 	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
 	assert.ok(!nav.map((n) => n.screen).includes("period"));
 	assert.ok(!nav.map((n) => n.screen).includes("rates"));
+	assert.ok(!nav.map((n) => n.screen).includes("audit-trail"));
 });
 
 test("each item carries its label", () => {
@@ -51,6 +52,7 @@ test("each item carries its label", () => {
 	assert.equal(byScreen["rates"], "Rates & ownership");
 	assert.equal(byScreen["checks"], "Checks");
 	assert.equal(byScreen["sign-off"], "Sign-off");
+	assert.equal(byScreen["audit-trail"], "Audit trail");
 });
 
 test("counts attach to their screens, and a blocking count is flagged", () => {
