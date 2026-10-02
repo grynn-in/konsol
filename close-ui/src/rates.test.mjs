@@ -15,6 +15,8 @@ import {
   approveAction,
   approveBody,
   pendingView,
+  pendingCount,
+  pendingEmptyMessage,
   ownershipView,
   mergeDrafts,
 } from "./rates.js";
@@ -407,6 +409,53 @@ test("pendingView: each item's approve mode is run through approveAction", () =>
   assert.deepEqual(view.items[0].approve, { kind: "button", message: null });
   assert.equal(view.canApprove, true);
   assert.deepEqual(view.counts, { "Historical Equity Rate": 1, "Ownership Period": 0, hidden: 0 });
+});
+
+// -- pendingCount / pendingEmptyMessage (#305-R01p: SPA should-fix 7, 8) --------
+
+test("pendingCount: HER and OP together, the tab label counts every pending item", () => {
+  assert.equal(pendingCount({ "Historical Equity Rate": 2, "Ownership Period": 1, hidden: 0 }), 3);
+});
+
+test("pendingCount: zero when both doctypes are empty", () => {
+  assert.equal(pendingCount({ "Historical Equity Rate": 0, "Ownership Period": 0, hidden: 5 }), 0);
+});
+
+test("pendingEmptyMessage: a scoped user with hidden drafts sees the outside-scope note, not 'none awaiting'", () => {
+  const view = pendingView({
+    items: [],
+    counts: { "Historical Equity Rate": 0, "Ownership Period": 0, hidden: 2 },
+    self_approval: "Blocked",
+    can_approve: false,
+  });
+  assert.equal(pendingEmptyMessage(view), "2 awaiting outside your scope");
+});
+
+test("pendingEmptyMessage: no items and nothing hidden says none awaiting", () => {
+  const view = pendingView({
+    items: [],
+    counts: { "Historical Equity Rate": 0, "Ownership Period": 0, hidden: 0 },
+    self_approval: "Blocked",
+    can_approve: false,
+  });
+  assert.equal(
+    pendingEmptyMessage(view),
+    "No historical equity rates or ownership periods are awaiting approval.",
+  );
+});
+
+test("pendingEmptyMessage: null when there are visible items, regardless of hidden", () => {
+  const view = pendingView({
+    items: [
+      { doctype: "Historical Equity Rate", name: "HER-1", title: "t", detail: "d",
+        preparer: "analyst@example.com", edited_by: [], created: "2026-09-01T00:00:00",
+        approve: { mode: "direct", message: null } },
+    ],
+    counts: { "Historical Equity Rate": 1, "Ownership Period": 0, hidden: 2 },
+    self_approval: "Blocked",
+    can_approve: true,
+  });
+  assert.equal(pendingEmptyMessage(view), null);
 });
 
 // -- ownershipView (supplementary, same reason as pendingView) ------------------
