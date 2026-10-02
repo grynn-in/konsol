@@ -39,8 +39,6 @@ function event(overrides = {}) {
 		reason: null,
 		detail: null,
 		source: "live",
-		fiscal_year: 2026,
-		fiscal_period: 7,
 		...overrides,
 	};
 }
@@ -111,17 +109,34 @@ test("period_closed / period_locked / period_reopened labels and tones, with ite
 	assert.equal(reopened.rows[0].tone, "warn");
 });
 
-test("year_* labels and tones, with item FY<fiscal_year>", () => {
-	const closed = trailView(payload([event({ kind: "year_closed", fiscal_period: 0 })]), NOW, TZ);
+test("year_* labels and tones, with item FY<fiscal_year> taken from payload.period, not an event field", () => {
+	// The event carries no fiscal_year field at all -- _event_out never
+	// sends one (trail_api.py:116-137). The item's year must come from
+	// payload.period.fiscal_year (the server's period), here 2025, which
+	// differs from NOW's year so a stray "current year" guess would also
+	// be caught.
+	const closed = trailView(
+		payload([event({ kind: "year_closed" })], { period: { fiscal_year: 2025, fiscal_period: 0, code: "FY2025 P00", status: "Open" } }),
+		NOW,
+		TZ
+	);
 	assert.equal(closed.rows[0].label, "Year closed");
 	assert.equal(closed.rows[0].tone, "mute");
-	assert.equal(closed.rows[0].item, "FY2026");
+	assert.equal(closed.rows[0].item, "FY2025");
 
-	const locked = trailView(payload([event({ kind: "year_locked", fiscal_period: 0 })]), NOW, TZ);
+	const locked = trailView(
+		payload([event({ kind: "year_locked" })], { period: { fiscal_year: 2025, fiscal_period: 0, code: "FY2025 P00", status: "Open" } }),
+		NOW,
+		TZ
+	);
 	assert.equal(locked.rows[0].label, "Year locked");
 	assert.equal(locked.rows[0].tone, "mute");
 
-	const reopened = trailView(payload([event({ kind: "year_reopened", fiscal_period: 0 })]), NOW, TZ);
+	const reopened = trailView(
+		payload([event({ kind: "year_reopened" })], { period: { fiscal_year: 2025, fiscal_period: 0, code: "FY2025 P00", status: "Open" } }),
+		NOW,
+		TZ
+	);
 	assert.equal(reopened.rows[0].label, "Year reopened");
 	assert.equal(reopened.rows[0].tone, "warn");
 });
