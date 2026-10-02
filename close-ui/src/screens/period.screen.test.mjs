@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gridView } from "../periodGrid.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PERIOD = path.join(__dirname, "Period.vue");
@@ -105,6 +106,40 @@ test("hiddenNote and ratesNote are shown when the view sets them", () => {
   const tpl = template(read());
   assert.match(tpl, /\bhiddenNote\b/);
   assert.match(tpl, /\bratesNote\b/);
+});
+
+test("R01l: hiddenNote and ratesNote render outside the grid LoadState's default slot", () => {
+  const tpl = template(read());
+  const opens = [...tpl.matchAll(/<LoadState\b/g)];
+  assert.ok(opens.length >= 2, "at least two LoadState panels (readiness strip, entity grid)");
+  // The grid LoadState is the second one (the readiness strip is the first).
+  const gridOpenAt = opens[1].index;
+  const gridCloseAt = tpl.indexOf("</LoadState>", gridOpenAt);
+  assert.ok(gridCloseAt > gridOpenAt, "the grid LoadState has a matching closing tag");
+  const hiddenAt = tpl.indexOf("hiddenNote");
+  const ratesAt = tpl.indexOf("ratesNote");
+  assert.ok(hiddenAt >= 0, "hiddenNote appears in the template");
+  assert.ok(ratesAt >= 0, "ratesNote appears in the template");
+  assert.ok(
+    hiddenAt < gridOpenAt || hiddenAt > gridCloseAt,
+    "hiddenNote must not sit inside the grid LoadState's default slot (an empty grid never renders it there)",
+  );
+  assert.ok(
+    ratesAt < gridOpenAt || ratesAt > gridCloseAt,
+    "ratesNote must not sit inside the grid LoadState's default slot (an empty grid never renders it there)",
+  );
+});
+
+test("R01l: gridView keeps hiddenNote set when rows is empty (pure view model)", () => {
+  const payload = {
+    period: { fiscal_year: 2026, fiscal_period: 7, code: "FY2026 P07" },
+    rows: [],
+    counts: { rows: 0, problems: 0, hidden: 5 },
+    rates_error: null,
+  };
+  const view = gridView(payload, false);
+  assert.equal(view.rows.length, 0);
+  assert.equal(view.hiddenNote, "5 entities outside your scope are not shown");
 });
 
 test("Cells show cell.label in a chip with toneClass(cell.tone): text binding only, no v-html", () => {
