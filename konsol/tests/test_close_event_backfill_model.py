@@ -125,6 +125,22 @@ def test_draft_edited_by_b_then_submitted_by_b_is_self_approved():
     _assert_valid(events)
 
 
+def test_submitting_version_that_also_edits_a_field_is_self_approved():
+    """A 0->1 Version whose own ``data`` also changes a field (an edit made
+    in the same request as the submit) makes its owner a preparer too
+    (konsol#305 R01b), matching the live rule
+    (close_policy_model.submit_carries_edit, konsol#305 R01a)."""
+    versions = [_v("V1", *GER, B, "2025-03-05 10:00:00",
+                   {"changed": [["quote", 1.1, 1.5], ["docstatus", 0, 1]]})]
+    events, _ = _run(versions, GER_DOCS, placements=GER_PLACED)
+    assert len(events) == 1
+    e = events[0]
+    assert e["kind"] == "self_approved"
+    assert e["actor"] == B
+    assert e["detail"]["preparers"] == sorted([A, B])
+    _assert_valid(events)
+
+
 def test_an_edit_after_the_submit_does_not_count_as_preparing():
     versions = [
         _submit("V1", *GER, B, "2025-03-05 10:00:00"),
