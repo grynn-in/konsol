@@ -487,7 +487,7 @@ def test_both_transitions_of_a_deleted_runs_versions_count_separately():
            changed=[["signoff_status", "Signed Off", "Re-sign Needed"]]),
     ]
     dry = _call(site, "dry_run")
-    assert dry["unplaced"] == {"document deleted": 2}
+    assert dry["unplaced"] == {"document deleted": 2, "no declared period (#305-W2-5)": 1}
     assert dry["by_kind"] == EXPECTED_KINDS
     assert site.inserted == [], "dry_run writes nothing"
 

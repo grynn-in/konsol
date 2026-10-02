@@ -19,6 +19,9 @@ Rules this patch keeps:
   (a ``frappe.ValidationError``: no declared period) is counted under
   ``"no declared period (#305-W2-5)"`` and the rest still insert. Any other
   error is a bug and stops the patch.
+- An Assertion Run's Versions whose run no longer exists are not dropped
+  silently (T06c, found by this row, 2 Oct): they are passed to the model as
+  ``orphan_run_versions`` and counted under ``"document deleted"``.
 - Nothing commits here: the patch runner commits after ``execute`` returns,
   so a failure inserts nothing.
 - patches.txt has no sections, so this runs pre_model_sync: ``execute``
@@ -119,6 +122,16 @@ def _read():
         else:
             doc_versions.append(v)
 
+    # A run named by a Version may no longer exist (T06c): its Versions must
+    # not be silently dropped, so find which names are still real documents.
+    existing_run_names = set()
+    if run_versions:
+        existing_run_names = {
+            r.name for r in frappe.get_all(
+                _RUN, filters={"name": ["in", sorted(run_versions)]}, fields=["name"])}
+    orphan_run_versions = [
+        v for name, vs in run_versions.items() if name not in existing_run_names for v in vs]
+
     comments = []
     for prefix in _COMMENT_PREFIXES:
         comments += frappe.get_all(
@@ -171,6 +184,7 @@ def _read():
         "placements": _Placements(rows), "comments": comments, "runs": runs,
         "journals": journals, "existing": existing, "cutoff": cutoff,
         "approval_doctypes": approval_doctypes, "state_fields": state_fields,
+        "orphan_run_versions": orphan_run_versions,
     }
 
 
