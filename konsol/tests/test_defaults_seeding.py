@@ -216,3 +216,53 @@ def test_trial_balance_measures_refuse_rather_than_invent():
         "the silent fallback is still there"
     assert "frappe.throw" in seg or "raise" in seg, \
         "nothing refuses; it must name what is missing instead of inventing measures"
+
+
+def _doctype_fields(doctype):
+    """{fieldname: field} of a konsol doctype, read from its JSON."""
+    slug = doctype.lower().replace(" ", "_")
+    found = glob.glob(os.path.join(APP_DIR, "*", "doctype", slug, slug + ".json"))
+    assert len(found) == 1, (doctype, found)
+    with open(found[0], encoding="utf-8") as fh:
+        return {f["fieldname"]: f for f in json.load(fh)["fields"] if f.get("fieldname")}
+
+
+def _select_problems(doctype, row, where):
+    problems = []
+    for name, field in _doctype_fields(doctype).items():
+        value = row.get(name)
+        if field.get("fieldtype") == "Select" and value not in (None, ""):
+            allowed = [o for o in (field.get("options") or "").split("\n") if o]
+            if value not in allowed:
+                problems.append(f"{where}: {name}={value!r} not in {allowed}")
+        if field.get("fieldtype") == "Table" and isinstance(value, list):
+            for i, child in enumerate(value):
+                problems += _select_problems(field["options"], child, f"{where}.{name}[{i}]")
+    return problems
+
+
+def test_every_seeded_select_value_is_one_its_doctype_allows():
+    """install_defaults() inserts each seeded row through ``insert()``, which
+    validates every Select. A value the doctype does not list stops
+    ``install-app`` on a fresh site. Existing sites never notice: their rows
+    arrived through fixture sync, which did not validate. The Dataset
+    ``consolidated`` shipped ``source_type: Consolidation`` in July (#77) and
+    has broken every fresh install since #274 moved it to ``insert()``."""
+    problems = []
+    for path in sorted(glob.glob(os.path.join(DEFAULTS, "*.json"))):
+        with open(path, encoding="utf-8") as fh:
+            for row in json.load(fh):
+                where = f"{os.path.basename(path)}:{row.get('name')}"
+                problems += _select_problems(row["doctype"], row, where)
+    assert not problems, "\n".join(problems)
+
+
+def test_the_config_api_allows_exactly_the_dataset_source_types():
+    """config_service validates source_type against its own set. If it and the
+    doctype disagree, a value one accepts the other refuses."""
+    tree = ast.parse(open(os.path.join(APP_DIR, "config_service.py"), encoding="utf-8").read())
+    declared = next(ast.literal_eval(n.value) for n in tree.body
+                    if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", None) == "_SOURCE_TYPES" for t in n.targets))
+    options = [o for o in _doctype_fields("Dataset")["source_type"]["options"].split("\n") if o]
+    assert set(declared) == set(options), (sorted(declared), options)
