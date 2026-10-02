@@ -443,10 +443,19 @@ def _run_bulk_load(site, bulk, csv_text=BULK_CSV, name="TBU-1"):
         (fy, fp, text))
     close = types.ModuleType("konsol.close")
     close.signoff_gate = signoff_gate
-    names = ("rq", "rq.timeouts", "konsol.close", "konsol.close.signoff_gate")
+    # konsol#305 T05a: a stub Close Event writer (T02a), so T05's lazy
+    # `from konsol.close import close_event` resolves during the bulk load.
+    # It keeps its own log, not site.data_changes.
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+    close_event.record = lambda *a, **k: close_event.events.append((a, k))
+    close.close_event = close_event
+    names = ("rq", "rq.timeouts", "konsol.close", "konsol.close.signoff_gate",
+             "konsol.close.close_event")
     saved = {k: sys.modules.get(k) for k in names}
     sys.modules["rq"], sys.modules["rq.timeouts"] = rq, timeouts
     sys.modules["konsol.close"], sys.modules["konsol.close.signoff_gate"] = close, signoff_gate
+    sys.modules["konsol.close.close_event"] = close_event
     try:
         bulk.run_load(upload.name)
     finally:
@@ -491,3 +500,15 @@ def test_the_bulk_load_still_refuses_an_undeclared_dimension():
     last = _run_bulk_load(site, bulk, BULK_CSV.replace(DIM, "dim_made_up"), name="TBU-2")
     assert site.inserts == []
     assert "dim_made_up" in (last["error"] or ""), last
+
+
+# --- konsol#305 T05a: the close_event stub does not leak into sys.modules ---
+
+def test_bulk_load_close_event_stub_does_not_leak_into_sys_modules():
+    """Failure path: a close_event stub left out of _run_bulk_load's
+    saved/restored names would leak into later tests."""
+    before = sys.modules.get("konsol.close.close_event")
+    site = _Site()
+    tbs, bulk = _load(site, with_bulk=True)
+    _run_bulk_load(site, bulk)
+    assert sys.modules.get("konsol.close.close_event") is before
