@@ -110,6 +110,18 @@ def _date(value):
     return None
 
 
+def _aware(value):
+    """A naive database datetime placed in the site's zone, so it compares with
+    the zoned ``as_of`` ``current_freshness`` returns (L01a/A47: ``get_my_work``
+    500'd with 'can't compare offset-naive and offset-aware datetimes'; mirrors
+    checks_api._aware — the same conversion checks_api.py already uses, not a
+    second rule)."""
+    if value is None or not hasattr(value, "hour") or value.tzinfo is not None:
+        return value
+    from konsol.close.timefmt import zoned_iso
+    return datetime.fromisoformat(zoned_iso(value, frappe.utils.get_system_timezone()))
+
+
 def _first_close():
     return signoff_model.first_close_key((
         frappe.db.get_single_value("Close Settings", "first_close_fiscal_year"),
@@ -249,7 +261,10 @@ def _newest_run(key):
 
 
 def _checks(key, as_of):
-    state = checks_model.staleness(_newest_run(key), as_of)["state"]
+    run = _newest_run(key)
+    if run is not None:
+        run = dict(run, completed_at=_aware(run.get("completed_at")))
+    state = checks_model.staleness(run, as_of)["state"]
     terminal = latest_close_run(key[0], key[1])
     failed = 0
     signoff = None
@@ -279,7 +294,7 @@ def _rates_error_item(key, code, error, end_date):
 def _period_facts(first_close, allowed, today):
     """``(per_period, extra_items)``; extra items are the rate-gate errors."""
     as_of_text = current_freshness()["as_of"]
-    as_of = datetime.fromisoformat(as_of_text) if as_of_text else None
+    as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
     for key, row in _open_rows(first_close, today):
         code = row.get("period_code") or "FY%d P%02d" % key
