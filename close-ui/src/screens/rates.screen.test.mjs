@@ -269,10 +269,12 @@ test("Rates.vue mounts RatesPending in the Historical equity rates tab, fed by p
   assert.match(tpl.slice(herStart, herEnd), /<RatesPending\b/, "RatesPending renders inside the her tabpanel");
 });
 
-test("The Historical equity rates tab label carries the pending HER count", () => {
+test("The Historical equity rates tab label carries every pending item (HER and OP), via the pure pendingCount helper", () => {
   const source = read();
   assert.match(source, /Historical equity rates.*pending/);
-  assert.match(script(source), /counts\[\s*["']Historical Equity Rate["']\s*\]/, "the count is counts['Historical Equity Rate']");
+  const js = script(source);
+  assert.match(js, /import\s*\{[^}]*\bpendingCount\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/, "imports pendingCount");
+  assert.match(js, /\bpendingCount\(/, "the tab label is built from pendingCount, not counts['Historical Equity Rate'] alone");
 });
 
 test("get_pending is loaded on mount and reloaded after a successful approve", () => {

@@ -17,9 +17,10 @@
  * came from the server through `approveAction` (rates.js), already applied
  * by `pendingView`.
  */
-import { reactive } from "vue";
+import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
 import { messageLines } from "../signoff.js";
+import { pendingEmptyMessage } from "../rates.js";
 
 const props = defineProps({
 	/** `pendingView(payload)` (rates.js): `{items, counts, selfApproval, canApprove}`, or null while loading. */
@@ -30,6 +31,12 @@ const props = defineProps({
 	approving: { type: String, default: null },
 });
 const emit = defineEmits(["approve"]);
+
+/** #305-R01p: the empty-state text (pure helper, rates.js) -- "none
+ * awaiting" only when nothing is hidden; a scoped user with
+ * `view.counts.hidden > 0` sees the outside-scope count instead, never
+ * false reassurance that nothing is pending. */
+const emptyMessage = computed(() => pendingEmptyMessage(props.view || { items: [], counts: { hidden: 0 } }));
 
 /** A `reason` kind opens its input first; a `button` kind posts at once. */
 const reasonOpen = reactive({});
@@ -63,7 +70,7 @@ function lines(text) {
 			v-if="!view || !view.items.length"
 			class="rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
 		>
-			No historical equity rates or ownership periods are awaiting approval.
+			{{ emptyMessage }}
 		</p>
 		<ul v-else class="divide-y divide-outline-gray-2 rounded border border-outline-gray-2">
 			<li v-for="item in view.items" :key="item.name" class="flex flex-wrap items-start justify-between gap-3 px-4 py-3">

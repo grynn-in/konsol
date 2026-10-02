@@ -92,6 +92,23 @@ test("Each item shows the preparer, the created date and its kind — OP drafts 
   assert.match(script(read()), /["']Ownership period["']/, "OP drafts are labelled 'Ownership period'");
 });
 
+test("#305-R01p: the empty state is built by the pure pendingEmptyMessage(view) helper, not a hardcoded string", () => {
+  const source = read();
+  assert.match(
+    source,
+    /import\s*\{[^}]*\bpendingEmptyMessage\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+    "imports pendingEmptyMessage from rates.js",
+  );
+  const js = script(source);
+  assert.match(js, /\bpendingEmptyMessage\(/, "calls pendingEmptyMessage");
+  const tpl = template(source);
+  assert.doesNotMatch(
+    tpl,
+    /No historical equity rates or ownership periods are awaiting approval\./,
+    "the empty text is no longer hardcoded in the template",
+  );
+});
+
 test("No v-html, no browser dialogs, no browser storage", () => {
   const source = read();
   assert.doesNotMatch(source, /v-html/);

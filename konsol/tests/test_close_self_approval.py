@@ -103,7 +103,7 @@ def _writer(frappe, events, record_raises=None, period_raises=None):
 
 
 def _load(policy, user=ADMIN, flags=None, versions=None, state_fields=None,
-          record_raises=None, period_raises=None):
+          record_raises=None, period_raises=None, table_exists=True):
     """``versions``: Version rows as ``{"docname", "owner", "data"}`` (the
     site's Version table). ``state_fields``: ``{doctype: workflow_state_field}``
     for the doctypes with an active workflow. Every ``get_all`` and
@@ -141,11 +141,21 @@ def _load(policy, user=ADMIN, flags=None, versions=None, state_fields=None,
             return None
         return state_fields.get(filters.get("document_type"))
 
+    def table_exists_fn(doctype):
+        # Not tracked in reads: the self-approval judgment reads (Version,
+        # Workflow) are what "a system submit reads nothing" pins; the table
+        # guard is a separate, cheap check made only on the system path.
+        assert doctype == "Close Event", doctype
+        return table_exists
+
     frappe.throw = throw
     frappe.flags = _Flags(flags or {})
     frappe.session = types.SimpleNamespace(user=user)
     frappe.get_all = get_all
-    frappe.db = types.SimpleNamespace(get_single_value=get_single_value, get_value=get_value)
+    frappe.db = types.SimpleNamespace(get_single_value=get_single_value, get_value=get_value,
+                                      table_exists=table_exists_fn)
+    frappe.logger = lambda: types.SimpleNamespace(
+        warning=lambda *a, **k: None, info=lambda *a, **k: None)
 
     frappe.events = []
     writer = _writer(frappe, frappe.events, record_raises, period_raises)
@@ -649,13 +659,37 @@ def test_a_record_with_no_declared_period_refuses_the_approval_with_no_event_or_
         assert frappe.events == [] and doc.comments == []
 
 
-def test_system_submits_are_not_recorded_live_they_are_recovered_by_the_backfill_e10_p10():
+def test_a_system_submit_records_one_approved_event_with_exempt_system():
+    # R01g (#305-W2-S4): no self-approval judgment, no policy read, no
+    # preparer lookup -- the actor is whoever frappe.session.user is during
+    # the patch/install/migrate (Administrator, typically).
     for flag in ("in_patch", "in_install", "in_migrate"):
         mod, frappe, reads = _load(policy="Blocked", flags={flag: True})
+        doc_a = _doc()
+        doc_b = _doc(name="ICB-2", owner=OTHER)
+        mod.check(doc_a, "before_submit")
+        mod.check(doc_b, "before_submit")
+        assert doc_a.comments == [] and doc_b.comments == []
+        assert [e["kind"] for e in frappe.events] == ["approved", "approved"], frappe.events
+        assert [e["reference_name"] for e in frappe.events] == ["ICB-1", "ICB-2"], frappe.events
+        assert [e["reason"] for e in frappe.events] == [None, None], frappe.events
+        assert frappe.events[0]["detail"] == {
+            "preparer": ADMIN, "preparers": [ADMIN], "policy": None, "exempt": "system"
+        }, frappe.events[0]
+        assert frappe.events[1]["detail"] == {
+            "preparer": OTHER, "preparers": [OTHER], "policy": None, "exempt": "system"
+        }, frappe.events[1]
+        assert reads == [], "a system submit reads nothing (no self-approval judgment)"
+
+
+def test_a_system_submit_when_the_close_event_table_does_not_exist_writes_nothing():
+    # Guard: a patch that runs before migrate's schema sync creates the Close
+    # Event table. No crash, nothing written, nothing read.
+    for flag in ("in_patch", "in_install", "in_migrate"):
+        mod, frappe, reads = _load(policy="Blocked", flags={flag: True}, table_exists=False)
         mod.check(_doc(), "before_submit")
-        mod.check(_doc(owner=OTHER), "before_submit")
         assert frappe.events == [], frappe.events
-        assert reads == [], "a system submit reads nothing"
+        assert reads == [], reads
 
 
 def test_a_derived_ownership_period_under_blocked_records_approved_with_exempt_derived():
