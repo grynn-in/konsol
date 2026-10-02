@@ -315,6 +315,35 @@ def _load(site, with_bulk=False):
                 sys.modules[k] = v
 
 
+def _stubbed_modules(site, extra=None):
+    """Stub the modules an intake imports while it runs, then put them back.
+
+    konsol#305 A63: on_submit records the data change against the period's
+    sign-off, importing the frappe-bound ``konsol.close.signoff_gate`` when it
+    runs, after ``_load`` has already restored ``sys.modules``. Both intakes
+    reach it, so both submit through this. What it was told is kept on
+    ``site.data_changes``. ``extra`` adds modules for one caller (rq).
+    """
+    site.data_changes = []
+    signoff_gate = types.ModuleType("konsol.close.signoff_gate")
+    signoff_gate.record_data_change = lambda fy, fp, text, user: site.data_changes.append(
+        (fy, fp, text))
+    close = types.ModuleType("konsol.close")
+    close.signoff_gate = signoff_gate
+    mods = {"konsol.close": close, "konsol.close.signoff_gate": signoff_gate, **(extra or {})}
+    saved = {k: sys.modules.get(k) for k in mods}
+    sys.modules.update(mods)
+    return saved
+
+
+def _restore_modules(saved):
+    for k, v in saved.items():
+        if v is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = v
+
+
 def _submit_single(site, tbs, csv_text=SINGLE_CSV):
     """Upload `csv_text` and submit it, the way the form does."""
     doc = tbs.TrialBalanceSubmission()
@@ -322,7 +351,11 @@ def _submit_single(site, tbs, csv_text=SINGLE_CSV):
     doc.data_area_id, doc.fiscal_year, doc.fiscal_period = "ZZA", 2099, 1
     doc.row_count, doc.amount_basis = 2, "Period movement"
     doc.tb_file = site.add_file(csv_text)
-    doc.on_submit()
+    saved = _stubbed_modules(site)
+    try:
+        doc.on_submit()
+    finally:
+        _restore_modules(saved)
     return doc
 
 
@@ -434,27 +467,11 @@ def _run_bulk_load(site, bulk, csv_text=BULK_CSV, name="TBU-1"):
     timeouts = types.ModuleType("rq.timeouts")
     timeouts.BaseTimeoutException = type("BaseTimeoutException", (Exception,), {})
     rq.timeouts = timeouts
-    # konsol#305 A63: on_submit records the data change against the period's
-    # sign-off, importing the frappe-bound signoff_gate when it runs. Stubbed
-    # for the call, like rq; what it was told is kept on the site.
-    site.data_changes = []
-    signoff_gate = types.ModuleType("konsol.close.signoff_gate")
-    signoff_gate.record_data_change = lambda fy, fp, text, user: site.data_changes.append(
-        (fy, fp, text))
-    close = types.ModuleType("konsol.close")
-    close.signoff_gate = signoff_gate
-    names = ("rq", "rq.timeouts", "konsol.close", "konsol.close.signoff_gate")
-    saved = {k: sys.modules.get(k) for k in names}
-    sys.modules["rq"], sys.modules["rq.timeouts"] = rq, timeouts
-    sys.modules["konsol.close"], sys.modules["konsol.close.signoff_gate"] = close, signoff_gate
+    saved = _stubbed_modules(site, {"rq": rq, "rq.timeouts": timeouts})
     try:
         bulk.run_load(upload.name)
     finally:
-        for k, v in saved.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+        _restore_modules(saved)
     return site.progress[-1]
 
 

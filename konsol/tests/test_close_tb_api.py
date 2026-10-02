@@ -338,7 +338,9 @@ def test_an_undeclared_dimension_column_is_still_refused_by_the_check():
     site = _Site(allowed={"ZZOP"})
     result, _, _ = _check(site, content=SPLIT)
     assert result["ok"] is False
-    assert "dim_zzseg" in (result.get("read_problem") or str(result["file_problems"])), result
+    # check_tb puts a parse refusal first among the file problems.
+    first = result["file_problems"][0]
+    assert first.startswith("Could not read the trial balance file") and "dim_zzseg" in first, result
 
 
 # -- per-row problems -------------------------------------------------------------
