@@ -1,0 +1,357 @@
+"""Approvals model, pure: konsol/close/approvals_model.py (konsol#305 A08).
+
+Loaded by path; the module imports nothing from frappe or konsol. It loads
+``rates_model.py`` and ``close_policy_model.py`` as siblings (by path, like
+the module under test does), so these tests exercise the real
+``rates_model.pending_items`` / ``approve_mode`` and the real
+``close_policy_model.self_approval_problem`` / ``APPROVER_ROLES`` — never a
+copy of either rule.
+"""
+import ast
+import importlib.util
+import os
+
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(APP_DIR, filename))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+M = _load("test_close_approvals_model_under_test", os.path.join("close", "approvals_model.py"))
+RM = _load("test_close_approvals_model_rates_model", os.path.join("close", "rates_model.py"))
+CPM = _load("test_close_approvals_model_close_policy_model", os.path.join("close", "close_policy_model.py"))
+
+SELF_APPROVAL_PROBLEM = CPM.self_approval_problem
+APPROVER_ROLES = CPM.APPROVER_ROLES
+
+#: Mirrors close_event.ENTITY_FIELDS (close_event.py:53-61), injected.
+ENTITY_FIELDS = {
+    "Ownership Period": "data_area_id",
+    "Historical Equity Rate": "data_area_id",
+    "Business Combination": "acquired_entity",
+    "Business Disposal": "disposed_entity",
+    "Group Exchange Rate": None,
+    "Consolidation Journal": None,
+    "IC Balance": None,
+}
+
+
+def _journal(name, fy, fp, adjustment_type, description, duration, owner, created,
+             total_debit=18500.0, currency="USD", lines=None, effect=None):
+    return {
+        "name": name, "owner": owner, "created": created,
+        "fiscal_year": fy, "fiscal_period": fp,
+        "adjustment_type": adjustment_type, "description": description,
+        "total_debit": total_debit, "currency": currency,
+        "reverse_fiscal_year": 0, "reverse_fiscal_period": 0,
+        "duration": duration,
+        "lines": lines if lines is not None else [{"main_account": "6100", "debit_amount": total_debit}],
+        "effect": effect if effect is not None else {"headings": [], "sections": [], "no_heading": 0},
+    }
+
+
+def _ger(name, from_currency, to_currency, rate_type, fy, fp, quote_label, owner, created,
+          change_reason=None):
+    return {
+        "name": name, "owner": owner, "created": created,
+        "from_currency": from_currency, "to_currency": to_currency, "rate_type": rate_type,
+        "fiscal_year": fy, "fiscal_period": fp, "quote_label": quote_label,
+        "change_reason": change_reason,
+    }
+
+
+def _ic_balance(name, selling, buying, fy, fp, ic_sales_amount, owner, created,
+                  ending_inventory_from_ic=0):
+    return {
+        "name": name, "owner": owner, "created": created,
+        "selling_entity": selling, "buying_entity": buying,
+        "fiscal_year": fy, "fiscal_period": fp,
+        "ic_sales_amount": ic_sales_amount,
+        "ending_inventory_from_ic": ending_inventory_from_ic,
+    }
+
+
+def _bc(name, group, acquired_entity, date, pct, goodwill, owner, created):
+    return {
+        "name": name, "owner": owner, "created": created,
+        "consolidation_group": group, "acquired_entity": acquired_entity,
+        "acquisition_date": date, "share_acquired_pct": pct, "goodwill": goodwill,
+    }
+
+
+def _bd(name, group, disposed_entity, date, pct, total_proceeds, owner, created):
+    return {
+        "name": name, "owner": owner, "created": created,
+        "consolidation_group": group, "disposed_entity": disposed_entity,
+        "disposal_date": date, "share_disposed_pct": pct, "total_proceeds": total_proceeds,
+    }
+
+
+def _her(name, consolidation_group, data_area_id, main_account, rate_date, historical_rate,
+         owner, created):
+    return {
+        "name": name, "consolidation_group": consolidation_group, "data_area_id": data_area_id,
+        "main_account": main_account, "rate_date": rate_date, "historical_rate": historical_rate,
+        "owner": owner, "created": created,
+    }
+
+
+def _op(name, consolidation_group, data_area_id, effective_date, end_date, ownership_pct,
+        consolidation_method, owner, created):
+    return {
+        "name": name, "consolidation_group": consolidation_group, "data_area_id": data_area_id,
+        "effective_date": effective_date, "end_date": end_date, "ownership_pct": ownership_pct,
+        "consolidation_method": consolidation_method, "owner": owner, "created": created,
+    }
+
+
+def _all_seven_docs():
+    return {
+        "Ownership Period": [_op("OP-1", "G1", "DE02", "2026-01-01", None, 80, "Full",
+                                  "alice", "2026-10-01T06:30:00")],
+        "Historical Equity Rate": [_her("HER-1", "G1", "DE02", "4000 - Revenue", "2026-09-30",
+                                         1.2, "alice", "2026-10-01T07:00:00")],
+        "Business Combination": [_bc("BC-1", "G1", "DE02", "2026-01-15", 60, 1000,
+                                      "alice", "2026-10-01T08:00:00")],
+        "Consolidation Journal": [_journal("CJ-1", 2026, 7, "topside", "Accrue bonus\nmore detail",
+                                            "This period only, no reversal", "alice",
+                                            "2026-10-01T09:00:00")],
+        "Group Exchange Rate": [_ger("GER-1", "USD", "EUR", "Closing", 2026, 7,
+                                      "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")],
+        "IC Balance": [_ic_balance("ICB-1", "UK01", "DE02", 2026, 7, 1500.0,
+                                    "alice", "2026-10-01T11:00:00")],
+        "Business Disposal": [_bd("BD-1", "G1", "DE02", "2026-02-01", 40, 500,
+                                   "alice", "2026-10-01T12:00:00")],
+    }
+
+
+def _preparers_for(docs, preparer_sets_by_doctype=None):
+    """``{(doctype, name): frozenset}`` — owner-only unless overridden."""
+    preparer_sets_by_doctype = preparer_sets_by_doctype or {}
+    refs = {}
+    for doctype, rows in docs.items():
+        for doc in rows:
+            refs[(doctype, doc["name"])] = preparer_sets_by_doctype.get(
+                (doctype, doc["name"]), frozenset({doc["owner"]}))
+    return refs
+
+
+def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk():
+    docs = _all_seven_docs()
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None)
+    assert result["hidden"] == 0
+    names = [item["name"] for item in result["items"]]
+    assert names == ["OP-1", "HER-1", "BC-1", "CJ-1", "GER-1", "ICB-1", "BD-1"]
+
+    by_name = {item["name"]: item for item in result["items"]}
+
+    for bc_bd in ("BC-1", "BD-1"):
+        assert by_name[bc_bd]["inline"] is False
+    for other in ("OP-1", "HER-1", "CJ-1", "GER-1", "ICB-1"):
+        assert by_name[other]["inline"] is True
+        assert by_name[other]["desk"] is None
+    assert by_name["BC-1"]["desk"] == "/app/business-combination/BC-1"
+    assert by_name["BD-1"]["desk"] == "/app/business-disposal/BD-1"
+
+    cj = by_name["CJ-1"]
+    assert cj["kind_label"] == "Adjustment · CJ-1"
+    assert cj["title"] == "Accrue bonus"
+    assert cj["detail"] == "Topside · FY2026 P07 · This period only, no reversal"
+    assert cj["lines"] == docs["Consolidation Journal"][0]["lines"]
+    assert cj["effect"] == docs["Consolidation Journal"][0]["effect"]
+    assert cj["total_debit"] == 18500.0
+    assert cj["currency"] == "USD"
+
+    ger = by_name["GER-1"]
+    assert ger["kind_label"] == "Group rate · USD→EUR Closing"
+    assert ger["title"] == "1.10 EUR per USD"
+    assert ger["detail"] == "FY2026 P07"
+
+    icb = by_name["ICB-1"]
+    assert icb["kind_label"] == "IC balance · UK01 → DE02"
+    assert icb["title"] == icb["kind_label"]
+    assert icb["detail"] == "FY2026 P07 · IC sales 1500.00"
+
+    bc = by_name["BC-1"]
+    assert bc["kind_label"] == "Business combination · DE02"
+    assert bc["title"] == bc["kind_label"]
+    assert bc["detail"] == "G1 · 60% from 2026-01-15"
+
+    bd = by_name["BD-1"]
+    assert bd["kind_label"] == "Business disposal · DE02"
+    assert bd["title"] == bd["kind_label"]
+    assert bd["detail"] == "G1 · 40% from 2026-02-01"
+
+
+def test_ger_change_reason_is_appended_to_detail():
+    docs = {"Group Exchange Rate": [_ger("GER-2", "USD", "GBP", "Average", 2026, 7,
+                                          "0.80 GBP per USD", "alice", "2026-10-01T10:00:00",
+                                          change_reason="ERP quote moved")]}
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None)
+    assert result["items"][0]["detail"] == "FY2026 P07 · ERP quote moved"
+
+
+def test_journal_no_description_line_gives_no_description_title():
+    docs = {"Consolidation Journal": [_journal("CJ-2", 2026, 7, "reclassification", "   \n  ",
+                                                "Reverses in FY2026 P08", "alice",
+                                                "2026-10-01T09:00:00")]}
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None)
+    item = result["items"][0]
+    assert item["title"] == "(no description)"
+    assert item["detail"] == "Reclassification · FY2026 P07 · Reverses in FY2026 P08"
+
+
+def test_r2_analyst_roles_give_not_approver_on_every_item():
+    """Failure path, R2: only the Close Lead approves."""
+    docs = _all_seven_docs()
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Analyst",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None)
+    for item in result["items"]:
+        assert item["approve"]["mode"] == "not_approver", item
+
+
+def test_r5_blocked_self_prepared_is_refused():
+    """Failure path, R5."""
+    docs = {"Consolidation Journal": [_journal("CJ-3", 2026, 7, "topside", "Accrue",
+                                                "This period only, no reversal", "alice",
+                                                "2026-10-01T09:00:00")]}
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                            "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None)
+    approve = result["items"][0]["approve"]
+    assert approve["mode"] == "refused"
+    assert "blocks self-approval" in approve["message"]
+
+
+def test_allowed_with_reason_self_prepared_is_reason_others_direct():
+    docs = {"Consolidation Journal": [
+        _journal("CJ-4", 2026, 7, "topside", "Accrue", "This period only, no reversal",
+                 "alice", "2026-10-01T09:00:00"),
+        _journal("CJ-5", 2026, 7, "topside", "Accrue more", "This period only, no reversal",
+                 "bob", "2026-10-01T09:05:00"),
+    ]}
+    refs = _preparers_for(docs)
+    result = M.queue_items(docs, refs, "alice", ("EPM Admin",), "Allowed with reason",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+    by_name = {item["name"]: item for item in result["items"]}
+    assert by_name["CJ-4"]["approve"]["mode"] == "reason"
+    assert by_name["CJ-5"]["approve"]["mode"] == "direct"
+
+
+def test_w2_14_editor_approver_is_self_prepared_under_allowed_with_reason():
+    """#305-W2-14: a Close Lead who edited an Analyst's GER is self-prepared."""
+    docs = {"Group Exchange Rate": [_ger("GER-3", "USD", "EUR", "Closing", 2026, 7,
+                                          "1.10 EUR per USD", "bob", "2026-10-01T10:00:00")]}
+    refs = _preparers_for(docs, {("Group Exchange Rate", "GER-3"): frozenset({"bob", "lead"})})
+    result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+    assert result["items"][0]["approve"]["mode"] == "reason"
+
+
+def test_scope_hides_entity_items_outside_allowed():
+    """Failure path, scope (W2-9, W2-10)."""
+    docs = {
+        "Historical Equity Rate": [_her("HER-2", "G1", "DE02", "4000 - Revenue",
+                                         "2026-09-30", 1.2, "alice", "2026-10-01T07:00:00")],
+        "Business Combination": [_bc("BC-2", "G1", "DE02", "2026-01-15", 60, 1000,
+                                      "alice", "2026-10-01T08:00:00")],
+        "Group Exchange Rate": [_ger("GER-4", "USD", "EUR", "Closing", 2026, 7,
+                                      "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")],
+        "Consolidation Journal": [_journal("CJ-6", 2026, 7, "topside", "Accrue",
+                                            "This period only, no reversal", "alice",
+                                            "2026-10-01T09:00:00")],
+        "IC Balance": [_ic_balance("ICB-2", "UK01", "DE02", 2026, 7, 1500.0,
+                                    "alice", "2026-10-01T11:00:00")],
+    }
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, {"UK01"})
+    assert result["hidden"] == 2
+    names = {item["name"] for item in result["items"]}
+    assert names == {"GER-4", "CJ-6", "ICB-2"}
+
+
+def test_missing_preparers_ref_raises_key_error():
+    """Failure path: never treated as owner-only."""
+    docs = {"Consolidation Journal": [_journal("CJ-7", 2026, 7, "topside", "Accrue",
+                                                "This period only, no reversal", "alice",
+                                                "2026-10-01T09:00:00")]}
+    try:
+        M.queue_items(docs, {}, "alice", ("EPM Admin",), "Allowed with reason",
+                      APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+        raise AssertionError("expected KeyError")
+    except KeyError:
+        pass
+
+
+def test_unknown_doctype_raises_value_error_naming_it():
+    """Failure path: never shown as another kind."""
+    docs = {"Budget Cycle": [{"name": "BUD-1", "owner": "alice", "created": "2026-10-01T09:00:00"}]}
+    try:
+        M.queue_items(docs, {}, "alice", ("EPM Admin",), "Allowed with reason",
+                      APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "Budget Cycle" in str(exc)
+
+
+def test_her_and_op_titles_equal_rates_model_pending_items_own():
+    her = [_her("HER-3", "G1", "DE02", "4000 - Revenue", "2026-09-30", 1.2,
+                "alice", "2026-10-01T07:00:00")]
+    ops = [_op("OP-2", "G1", "DE02", "2026-01-01", None, 80, "Full",
+               "alice", "2026-10-01T06:30:00")]
+    docs = {"Historical Equity Rate": her, "Ownership Period": ops}
+    refs = _preparers_for(docs)
+    preparers_by_name = {"HER-3": frozenset({"alice"}), "OP-2": frozenset({"alice"})}
+    expected = RM.pending_items(her, ops, preparers_by_name, "lead", ("EPM Admin",),
+                                 "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    expected_titles = {item["name"]: item["title"] for item in expected}
+
+    result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Blocked",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+    actual_titles = {item["name"]: item["title"] for item in result["items"]}
+    assert actual_titles == expected_titles
+
+
+def test_journal_item_carries_lines_and_effect_unchanged():
+    lines = [{"main_account": "6100", "debit_amount": 18500.0, "credit_amount": 0}]
+    effect = {"headings": [{"section": "Profit and Loss", "heading": "6000",
+                             "heading_name": "Operating expenses", "net_debit": 18500.0}],
+              "sections": [{"section": "Profit and Loss", "net_debit": 18500.0}],
+              "no_heading": 0}
+    docs = {"Consolidation Journal": [_journal("CJ-8", 2026, 7, "topside", "Accrue",
+                                                "This period only, no reversal", "alice",
+                                                "2026-10-01T09:00:00", lines=lines, effect=effect)]}
+    result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None)
+    item = result["items"][0]
+    assert item["lines"] == lines
+    assert item["effect"] == effect
+
+
+def test_module_imports_no_frappe():
+    """Same contract as rates_model.py (test_close_rates_model.py), extended
+    to refuse a ``konsol`` import too: this module is loaded by path, like
+    the two siblings it loads itself."""
+    with open(M.__file__) as fh:
+        tree = ast.parse(fh.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not any(a.name.startswith("frappe") or a.name.startswith("konsol")
+                            for a in node.names)
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            assert not module.startswith("frappe")
+            assert not module.startswith("konsol")
