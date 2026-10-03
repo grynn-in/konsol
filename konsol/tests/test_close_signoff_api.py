@@ -136,6 +136,14 @@ class _Site:
         self.status_calls = []
         self.status_error = None
         self.admin_checks = 0
+        #: C09t: the stubbed `konsol.close.ic_api.signoff_summary`/`tolerance_gap`
+        #: read these. `ic_calls` records every `signoff_summary` call (C10, C21).
+        self.ic_summary = {"state": "checked", "message": None,
+                           "counts": {"pairs": 0, "matched": 0, "within_tolerance": 0,
+                                      "fx_difference": 0, "over_tolerance": 0, "unmatched": 0},
+                           "sent_back_open": 0}
+        self.ic_tolerance_gap = None
+        self.ic_calls = []
 
 
 def _match(value, cond):
@@ -309,12 +317,26 @@ def _load(site):
     ar_pkg = types.ModuleType("konsol.consolidation.doctype.assertion_run")
     ar_pkg.assertion_run = ar
 
+    # C09t: a stub `konsol.close.ic_api`, so `from konsol.close import ic_api`
+    # (C10 on) resolves to this rather than the real module, which would
+    # otherwise run against this fake frappe (whose frappe.db has no `count`).
+    ic_api = types.ModuleType("konsol.close.ic_api")
+
+    def signoff_summary(fiscal_year, fiscal_period):
+        site.ic_calls.append((fiscal_year, fiscal_period))
+        return dict(site.ic_summary)
+
+    ic_api.signoff_summary = signoff_summary
+    ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
+    close.ic_api = ic_api
+
     konsol.close, konsol.fiscal_calendar = close, calendar
     konsol.entity_permissions, konsol.period_status = perms, period_status
     konsol.schema_lifecycle = lifecycle
     konsol.consolidation = consolidation
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
+            "konsol.close.ic_api": ic_api,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle,
@@ -1110,3 +1132,14 @@ def test_get_signoff_offers_the_sign_to_a_run_that_started_after_the_change():
     site = _Site()
     _changed(site, datetime(2025, 10, 4, 11, 5))
     assert _get(site)["action"] == "acknowledge"
+
+
+# --- C09t: the loader carries a stub konsol.close.ic_api, for C10 ----------
+
+
+def test_the_ic_api_stub_is_installed():
+    site = _Site()
+    _module, mods, _frappe = _load(site)
+    assert mods["konsol.close.ic_api"].signoff_summary(2025, 7)["state"] == "checked"
+    assert site.ic_calls == [(2025, 7)]
+    assert mods["konsol.close.ic_api"].tolerance_gap() is site.ic_tolerance_gap
