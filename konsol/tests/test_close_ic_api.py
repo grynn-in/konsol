@@ -15,6 +15,7 @@ client is imported. The real ``ic_model.py``, ``close_policy_model.py`` and
 ``timefmt.py`` are loaded by path under their dotted names.
 """
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -114,6 +115,7 @@ class _Site:
         self.allowed = None
         self.reads = []
         self.only_for_calls = []
+        self.recorded = []  # close_event.record calls (send_back, C04)
 
 
 def _match_value(value, cond):
@@ -211,6 +213,12 @@ def _ch_read(site):
         if site.ch_error is not None:
             raise site.ch_error
         if "gold_ic_reconciliation" in sql:
+            keys = ("ea", "aa", "eb", "ab")
+            if params and any(k in params for k in keys):
+                # send_back's read binds the four pair keys (C04)
+                return [dict(r) for r in site.ic_rows
+                        if (r["entity_a"], r["account_a"], r["entity_b"], r["account_b"])
+                        == tuple(params[k] for k in keys)]
             return [dict(r) for r in site.ic_rows]
         if "gold_ic_unmatched" in sql:
             return [dict(r) for r in site.unmatched_rows]
@@ -233,6 +241,22 @@ def _fiscal_calendar(site):
     return fc
 
 
+def _close_event(site):
+    ce = types.ModuleType("konsol.close.close_event")
+
+    def record(kind, fiscal_year, fiscal_period, reference_doctype=None, reference_name=None,
+               reason=None, detail=None, entity=None):
+        site.recorded.append({"kind": kind, "fiscal_year": fiscal_year,
+                              "fiscal_period": fiscal_period,
+                              "reference_doctype": reference_doctype,
+                              "reference_name": reference_name, "reason": reason,
+                              "detail": detail, "entity": entity})
+        return "CE-NEW-%d" % len(site.recorded)
+
+    ce.record = record
+    return ce
+
+
 def _invoke(site, run):
     frappe = _frappe(site)
     konsol = types.ModuleType("konsol")
@@ -247,15 +271,19 @@ def _invoke(site, run):
     konsol.fiscal_calendar = fiscal_calendar
     konsol.entity_permissions = entity_permissions
     close.ch_read = ch_read
+    close_event = _close_event(site)
+    close.close_event = close_event
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
-             "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.ic_model",
+             "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.close_event",
+             "konsol.close.ic_model",
              "konsol.close.close_policy_model", "konsol.close.timefmt",
              "close_ic_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
                         "konsol.fiscal_calendar": fiscal_calendar,
                         "konsol.entity_permissions": entity_permissions,
-                        "konsol.close.ch_read": ch_read})
+                        "konsol.close.ch_read": ch_read,
+                        "konsol.close.close_event": close_event})
     try:
         close.ic_model = _load_path("konsol.close.ic_model", os.path.join(CLOSE_DIR, "ic_model.py"))
         close.close_policy_model = _load_path(
@@ -582,3 +610,302 @@ def test_group_node_filter_reads_only_group_rows():
                         "reporting_currency": "USD"})
     out = _call(site)
     assert out["groups"][1]["reporting_currency"] == "EUR"
+
+
+# --- send_back (C04): an ic_sent_back Close Event for an over-tolerance pair ---
+
+SEND_BACK_PARAMS = ["fiscal_year", "fiscal_period", "entity_a", "account_a", "entity_b",
+                    "account_b", "reason"]
+PAIR = {"entity_a": "UK01", "account_a": "1810", "entity_b": "DE01", "account_b": "2810"}
+
+
+def _send(site, fy=2025, fp=7, reason="Our side agrees to INV-5531", **pair):
+    args = dict(PAIR, **pair)
+
+    def run(api):
+        return api.send_back(fy, fp, args["entity_a"], args["account_a"], args["entity_b"],
+                             args["account_b"], reason)
+
+    result = _invoke(site, run)
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _send_refused(site, **kw):
+    """A refusal writes nothing: no record call, whatever the reason."""
+    with pytest.raises(Exception) as info:
+        _send(site, **kw)
+    assert site.recorded == []
+    return str(info.value)
+
+
+def _forge_problems(fn):
+    """Why a request could carry a forged key into ``fn``: Frappe drops any
+    request key the signature does not name, unless it takes **kwargs."""
+    params = inspect.signature(fn).parameters
+    problems = []
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        problems.append("takes **kwargs")
+    if list(params) != SEND_BACK_PARAMS:
+        problems.append("parameters are %s" % list(params))
+    return problems
+
+
+def test_send_back_records_one_event_with_the_servers_amounts():
+    site = _Site()
+    out = _send(site)
+    assert out == {"event": "CE-NEW-1", "fix_items_for": ["UK01", "DE01"]}
+    assert len(site.recorded) == 1
+    ev = site.recorded[0]
+    assert ev["kind"] == "ic_sent_back"
+    assert (ev["fiscal_year"], ev["fiscal_period"]) == (2025, 7)
+    assert ev["entity"] == "UK01"
+    assert ev["reason"] == "Our side agrees to INV-5531"
+    assert ev["reference_doctype"] is None and ev["reference_name"] is None
+    assert ev["detail"] == {"entity_a": "UK01", "account_a": "1810", "entity_b": "DE01",
+                            "account_b": "2810",
+                            "groups": [{"consolidation_group": "ROOT", "difference": 12.5,
+                                        "tolerance": 5.0, "match_status": "over_tolerance"}]}
+    # one warehouse read, the period and the four keys bound as parameters
+    assert len(site.ch_calls) == 1
+    sql, params = site.ch_calls[0]
+    assert "gold_ic_reconciliation" in sql
+    assert params == {"fy": 2025, "fp": 7, "ea": "UK01", "aa": "1810", "eb": "DE01",
+                      "ab": "2810"}
+    for name in ("{fy:UInt16}", "{fp:UInt16}", "{ea:String}", "{aa:String}", "{eb:String}",
+                 "{ab:String}"):
+        assert name in sql
+    assert "UK01" not in sql and "2810" not in sql  # bound, never interpolated
+
+
+def test_send_back_lists_every_group_row_of_the_pair():
+    """E5-P1: the event records each group's difference at send time."""
+    site = _Site()
+    site.ic_rows.append(_pair("SUB", "UK01", "1810", "DE01", "2810", "within_tolerance",
+                              difference="3", tolerance="4"))
+    _send(site)
+    groups = site.recorded[0]["detail"]["groups"]
+    assert groups == [
+        {"consolidation_group": "ROOT", "difference": 12.5, "tolerance": 5.0,
+         "match_status": "over_tolerance"},
+        {"consolidation_group": "SUB", "difference": 3.0, "tolerance": 4.0,
+         "match_status": "within_tolerance"}]
+
+
+def test_send_back_signature_takes_no_forged_keys():
+    """Forge: the parameters are exactly the seven named and there is no
+    **kwargs, so a forged actor, at, entity, difference, detail, kind or
+    source never reaches the function (get_newargs drops it)."""
+    site = _Site()
+    fn = _invoke(site, lambda api: api.send_back)
+    assert _forge_problems(fn) == []
+
+
+def test_forge_check_catches_kwargs_and_extra_parameters():
+    """Failure path: the forge check can fail."""
+    def with_kwargs(fiscal_year, fiscal_period, entity_a, account_a, entity_b, account_b,
+                    reason, **kwargs):
+        pass
+
+    def with_difference(fiscal_year, fiscal_period, entity_a, account_a, entity_b, account_b,
+                        reason, difference=None):
+        pass
+
+    def with_actor(fiscal_year, fiscal_period, entity_a, account_a, entity_b, account_b,
+                   reason, actor=None):
+        pass
+
+    assert "takes **kwargs" in _forge_problems(with_kwargs)
+    assert _forge_problems(with_difference)
+    assert _forge_problems(with_actor)
+
+
+def test_send_back_blank_reason_is_refused():
+    """Failure path (E5-P6)."""
+    site = _Site()
+    msg = _send_refused(site, reason="   ")
+    assert "Say why the difference is sent back: the entities read this reason." in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_closed_period_is_refused():
+    """Failure path."""
+    site = _Site()
+    msg = _send_refused(site, fp=6)
+    assert "FY2025 P06 is Closed: send a difference back only in an Open period." in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_undeclared_period_is_refused():
+    """Failure path."""
+    site = _Site()
+    msg = _send_refused(site, fp=9)
+    assert "FY2025 P09 is not declared" in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_not_configured_is_refused_without_a_warehouse_read():
+    """Failure path: 0 Published (live today)."""
+    site = _Site()
+    site.published = 0
+    msg = _send_refused(site)
+    assert IC_MODEL.NOT_CONFIGURED in msg
+    assert "Nothing can be sent back." in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_declared_none_is_refused_without_a_warehouse_read():
+    """Failure path (W3-7)."""
+    site = _Site()
+    site.published = 0
+    site.settings["intercompany_declaration"] = "None in this group"
+    msg = _send_refused(site)
+    assert "Close Settings declares no intercompany in this group: nothing can be sent back." \
+        in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_scoped_caller_with_neither_entity_is_refused():
+    """Failure path (E5-P7)."""
+    site = _Site()
+    site.allowed = {"FR01"}
+    msg = _send_refused(site)
+    assert "You can see neither entity of this pair." in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_scoped_caller_with_side_b_only_may_send():
+    site = _Site()
+    site.allowed = {"DE01"}
+    _send(site)
+    assert len(site.recorded) == 1
+    assert site.recorded[0]["entity"] == "UK01"  # side A (E5-P8)
+
+
+def test_send_back_warehouse_error_is_refused():
+    """Failure path."""
+    site = _Site()
+    site.ch_error = RuntimeError("boom")
+    msg = _send_refused(site)
+    assert "could not be checked" in msg and "RuntimeError" in msg
+    assert "Nothing was sent back." in msg
+
+
+def test_send_back_unbuilt_tables_are_refused():
+    """Failure path."""
+    site = _Site()
+    site.ch_error = RuntimeError("(UNKNOWN_TABLE)")
+    msg = _send_refused(site)
+    assert IC_MODEL.NOT_BUILT in msg and "Nothing was sent back." in msg
+
+
+def test_send_back_pair_not_in_the_build_is_refused():
+    """Failure path."""
+    site = _Site()
+    msg = _send_refused(site, account_b="9999")
+    assert "UK01 1810 ↔ DE01 9999 is not an intercompany pair in FY2025 P07's last build." \
+        in msg
+
+
+def test_send_back_within_tolerance_pair_is_refused():
+    """Failure path (E5-P2)."""
+    site = _Site()
+    site.ic_rows = [_pair("ROOT", "UK01", "1810", "DE01", "2810", "within_tolerance",
+                          difference="1")]
+    msg = _send_refused(site)
+    assert "Only a difference over tolerance can be sent back; this pair is within_tolerance." \
+        in msg
+
+
+def test_send_back_fx_difference_pair_is_refused():
+    """Failure path (E5-P2)."""
+    site = _Site()
+    site.ic_rows = [_pair("ROOT", "UK01", "1810", "DE01", "2810", "fx_difference")]
+    msg = _send_refused(site)
+    assert "Only a difference over tolerance can be sent back; this pair is fx_difference." \
+        in msg
+
+
+def test_send_back_movement_fx_pair_is_refused():
+    """Failure path (W3-5): a movement pair stays fx_difference and is refused."""
+    site = _Site()
+    row = _pair("ROOT", "UK01", "1810", "DE01", "2810", "fx_difference")
+    row["basis"] = "movement"
+    site.ic_rows = [row]
+    msg = _send_refused(site)
+    assert "Only a difference over tolerance can be sent back" in msg
+
+
+def test_send_back_cross_currency_balance_pair_over_tolerance_is_sent():
+    """W3-5: dbt judges a cross-currency balance pair against the tolerance
+    (V31); over tolerance it is sent like any other."""
+    site = _Site()
+    row = _pair("ROOT", "UK01", "1810", "DE01", "2810", "over_tolerance", tolerance="10")
+    row["difference_cause"], row["basis"] = "fx", "balance"
+    site.ic_rows = [row]
+    _send(site)
+    assert len(site.recorded) == 1
+
+
+def test_send_back_undeclared_tolerance_is_refused():
+    """Failure path (W3-6, W3-P1): the only over-tolerance row is in a group
+    whose tolerance is 0."""
+    site = _Site()
+    site.ic_rows = [_pair("ROOT", "UK01", "1810", "DE01", "2810", "over_tolerance",
+                          tolerance="0")]
+    msg = _send_refused(site)
+    assert ("ROOT has not declared an intercompany difference tolerance (0 is undeclared): "
+            "declare it on the Consolidation Group before sending a difference back.") in msg
+
+
+def test_send_back_undeclared_tolerance_names_every_group():
+    """Failure path: two undeclared groups are both named."""
+    site = _Site()
+    site.ic_rows = [
+        _pair("ROOT", "UK01", "1810", "DE01", "2810", "over_tolerance", tolerance="0"),
+        _pair("SUB", "UK01", "1810", "DE01", "2810", "over_tolerance", tolerance="0")]
+    msg = _send_refused(site)
+    assert "ROOT, SUB have not declared" in msg and "0 is undeclared" in msg
+
+
+def test_send_back_one_declared_over_tolerance_group_is_enough():
+    site = _Site()
+    site.ic_rows = [
+        _pair("ROOT", "UK01", "1810", "DE01", "2810", "over_tolerance", tolerance="5"),
+        _pair("SUB", "UK01", "1810", "DE01", "2810", "over_tolerance", tolerance="0")]
+    _send(site)
+    groups = site.recorded[0]["detail"]["groups"]
+    assert [g["consolidation_group"] for g in groups] == ["ROOT", "SUB"]
+
+
+def test_send_back_viewer_is_refused():
+    """Failure path — roles."""
+    site = _Site()
+    site.user, site.roles = VIEWER, {"EPM User"}
+    msg = _send_refused(site)
+    assert "Not permitted" in msg
+    assert site.only_for_calls[0] == ("EPM Analyst", "EPM Admin", "System Manager")
+    assert site.ch_calls == []
+
+
+def test_send_back_entity_accountant_is_refused():
+    """Failure path — roles."""
+    site = _Site()
+    site.user, site.roles = ENTITY_ACC, {"Entity Accountant"}
+    msg = _send_refused(site)
+    assert "Not permitted" in msg
+    assert site.ch_calls == []
+
+
+def test_send_back_close_lead_may_send():
+    site = _Site()
+    site.user, site.roles = LEAD, {"EPM Admin"}
+    _send(site)
+    assert len(site.recorded) == 1
+
+
+def test_send_back_twice_writes_two_events():
+    site = _Site()
+    _send(site)
+    _send(site, reason="Still open")
+    assert [e["reason"] for e in site.recorded] == ["Our side agrees to INV-5531", "Still open"]
