@@ -130,7 +130,8 @@ def _bd(name, owner=ANALYST, creation=None, modified=None, docstatus=0, status="
 
 
 def _line(parent, idx, data_area_id, main_account, debit_amount=0, credit_amount=0, description=""):
-    return {"parent": parent, "idx": idx, "data_area_id": data_area_id, "main_account": main_account,
+    return {"parent": parent, "parenttype": "Consolidation Journal", "idx": idx,
+            "data_area_id": data_area_id, "main_account": main_account,
             "debit_amount": debit_amount, "credit_amount": credit_amount, "description": description}
 
 
@@ -525,15 +526,17 @@ def test_read_count_is_the_same_for_1_and_6_pending_documents():
     site1.journals = [_journal("CJ-ONE")]
     site1.lines = [_line("CJ-ONE", 1, "DE02", "6100", debit_amount=10)]
     _call(site1)
-    accounts_reads_1 = len([r for r in site1.reads if r[1] == "Main Account"])
-    line_reads_1 = len([r for r in site1.reads if r[1] == "Consolidation Journal Line"])
+    accounts_reads_1 = len([r for r in site1.reads if r[0] == "get_all" and r[1] == "Main Account"])
+    line_reads_1 = len([r for r in site1.reads
+                         if r[0] == "get_all" and r[1] == "Consolidation Journal Line"])
 
     site6 = _Site()
     site6.journals = [_journal("CJ-%d" % i) for i in range(6)]
     site6.lines = [_line("CJ-%d" % i, 1, "DE02", "6100", debit_amount=10) for i in range(6)]
     _call(site6)
-    accounts_reads_6 = len([r for r in site6.reads if r[1] == "Main Account"])
-    line_reads_6 = len([r for r in site6.reads if r[1] == "Consolidation Journal Line"])
+    accounts_reads_6 = len([r for r in site6.reads if r[0] == "get_all" and r[1] == "Main Account"])
+    line_reads_6 = len([r for r in site6.reads
+                         if r[0] == "get_all" and r[1] == "Consolidation Journal Line"])
 
     assert accounts_reads_1 == accounts_reads_6 == 1
     assert line_reads_1 == line_reads_6 == 1
