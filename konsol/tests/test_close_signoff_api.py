@@ -433,7 +433,7 @@ def test_warned_count_is_read_so_the_acknowledgement_total_is_known():
     # latest_close_run does not return `warned`; the API must read it.
     result = _get(_Site())
     assert result["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 3,
-                                          "unlisted": 1}
+                                          "unlisted": 1, "intercompany": None}
 
 
 def test_on_behalf_flags_map_yes_no_blank_to_1_0_unknown():
@@ -574,6 +574,41 @@ def test_sign_never_reads_the_intercompany_summary():
     site = _Site()
     _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
     assert site.ic_calls == []
+
+
+# --- C21: get_signoff passes the one IC read into signoff_model.summary -----
+
+def _over_tolerance(site, n):
+    """A Green, unsigned RUN-09 (the Open P09 run) with ``n`` IC pairs over
+    tolerance -- Amber only because of intercompany, never a dbt warning."""
+    site.records["Assertion Run"][-1].update(status="Green", warned=0)
+    counts = dict(site.ic_summary["counts"], pairs=n, over_tolerance=n)
+    site.ic_summary = dict(site.ic_summary, counts=counts)
+
+
+def test_a_green_run_with_ic_over_tolerance_pairs_is_acknowledge():
+    site = _Site()
+    _over_tolerance(site, 2)
+    result = _get(site)
+    assert result["action"] == "acknowledge"
+    assert result["acknowledgements"]["intercompany"] == "Intercompany: 2 pairs over tolerance"
+    assert result["intercompany"]["counts"]["over_tolerance"] == 2
+    # One read of the IC line serves both signoff_model.summary and the
+    # result's own "intercompany" key (C21: "the same value, one read").
+    assert site.ic_calls == [(2025, 9)]
+
+
+def test_the_viewer_gets_the_same_ic_driven_amber_as_the_close_lead():
+    site = _Site()
+    _over_tolerance(site, 2)
+    base = _get(site)
+
+    viewer = _Site(roles=("EPM User",))
+    viewer.can_write = False
+    _over_tolerance(viewer, 2)
+    result = _get(viewer)
+    assert result["action"] == base["action"] == "acknowledge"
+    assert result["intercompany"] == base["intercompany"]
 
 
 # --- A49: the period's own status ----------------------------------------------

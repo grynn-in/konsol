@@ -267,6 +267,9 @@ def get_signoff(fiscal_year, fiscal_period):
                                         frequencies=_frequencies(key))
     roles = set(frappe.get_roles())
     can_override = bool(OVERRIDE_ROLES & roles)
+    # C21: one read of the IC line serves both the gate (summary) and the
+    # result's own "intercompany" key below.
+    ic = ic_api.signoff_summary(*key)
 
     result = signoff_model.summary(
         run, warned_names, on_behalf,
@@ -278,6 +281,7 @@ def get_signoff(fiscal_year, fiscal_period):
         period_status=row["status"],
         # A66: the same rule sign_off_close refuses with (the run's started_at).
         data_change={f: closed.get(f) for f in signoff_gate.DATA_CHANGE_FIELDS},
+        intercompany=ic,
     )
     # A55: when each exception was declared, with the site's offset. The A08
     # controller allows one submitted exception per entity-period.
@@ -293,10 +297,11 @@ def get_signoff(fiscal_year, fiscal_period):
         "data_changed_at": _iso(closed.get("data_changed_at")),
         "data_changed_by": closed.get("data_changed_by") or None,
         "data_change": closed.get("data_change") or None,
-        # C10: the intercompany line (state, message, counts only; E5-P13 —
-        # unscoped, every role sees the same counts). Not a gate (E5-P11):
-        # it changes no `action`.
-        "intercompany": ic_api.signoff_summary(*key),
+        # C10/C21: the intercompany line (state, message, counts only;
+        # E5-P13 — unscoped, every role sees the same counts). The same
+        # read that fed signoff_model.summary's Amber rule above (W3-P3,
+        # #305-W3-8), never a second one.
+        "intercompany": ic,
     })
     return result
 
