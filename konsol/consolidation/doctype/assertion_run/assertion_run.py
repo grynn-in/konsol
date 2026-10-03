@@ -607,9 +607,14 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
         # AND why it was signed anyway.
         ack = (acknowledgement or "").strip()
         if not ack:
+            # S2 (review-w3): a Green run with only the intercompany line
+            # over tolerance has doc.warned == 0; the count shown here must
+            # include that line, or the refusal claims "0 warning(s)" while
+            # naming one.
+            warning_count = (doc.warned or 0) + (1 if ic_text else 0)
             frappe.throw(
                 frappe._("This close has {0} warning(s): {1}. Acknowledge them to sign off.")
-                .format(doc.warned, warnings or "(see the run's results)"),
+                .format(warning_count, warnings or "(see the run's results)"),
                 title=frappe._("Acknowledgement required"))
         new_state = "Acknowledged"
         reason = None
