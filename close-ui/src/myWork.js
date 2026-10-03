@@ -61,23 +61,33 @@ export function sections(items) {
 }
 
 /**
- * `item` (A20's shape) → the in-app route path for a period item, or
+ * `item` (A20's shape) and `current` (`{year, period}`, the URL's period,
+ * or null/absent) → the in-app route path for a period item, or
  * `{external: "/app/..."}` for a setup-gap item (story 0.4). A period
  * item's route never depends on client-side "last viewed" state (D5): the
- * period comes from the item itself.
+ * period comes from the item itself, never from `current`.
+ *
+ * E6-P10 (A20): a screen item with no `period` (an approval or adjustment
+ * item that belongs to no single period) routes to `current` instead. With
+ * no `current` (nothing in the URL) it returns null — a period is never
+ * invented — and the caller (MyWork.vue) renders the item's title with no
+ * link.
  *
  * B18b: when the item's action names an entity (an Entity Accountant's
  * "Upload TB for <entity>" item), the route carries it as `?entity=<code>`,
  * so TrialBalances.vue can open that entity's detail area directly. An
  * action with no entity carries no query string — never an invented one.
  */
-export function itemRoute(item) {
+export function itemRoute(item, current) {
 	const action = item.action || {};
 	if (action.desk) {
 		return { external: action.desk };
 	}
 	const period = item.period;
-	const path = format({ year: period.fiscal_year, period: period.fiscal_period, screen: action.screen });
+	const year = period ? period.fiscal_year : current ? current.year : null;
+	const fiscalPeriod = period ? period.fiscal_period : current ? current.period : null;
+	if (year == null || fiscalPeriod == null) return null;
+	const path = format({ year, period: fiscalPeriod, screen: action.screen });
 	return action.entity ? `${path}?entity=${encodeURIComponent(action.entity)}` : path;
 }
 
