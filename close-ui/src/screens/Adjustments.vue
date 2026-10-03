@@ -56,6 +56,12 @@ import {
 	draftTotals,
 	saveJournalBody,
 	editable,
+	snapshotLines,
+	snapshotDraft,
+	draftDirty,
+	canOpenNew,
+	canSaveDraft,
+	canSendDraft,
 	NO_REVERSAL_NOTE,
 } from "../adjustments.js";
 import { messageLines } from "../signoff.js";
@@ -113,6 +119,10 @@ const draft = reactive({
 const draftError = ref(null);
 const saving = ref(false);
 const sending = ref(false);
+//: U3: everything on screen right after it was last saved — a successful
+//: save, or a journal `openEdit` just loaded (equally "last saved"). `null`
+//: before any save: a fresh "New" draft is never dirty against nothing.
+const savedSnapshot = ref(null);
 
 const totals = computed(() => draftTotals(draft.lines));
 
@@ -148,6 +158,7 @@ function openNew() {
 	draft.description = "";
 	draft.duration = { kind: "none" };
 	draft.lines = [blankLine()];
+	savedSnapshot.value = null;
 	editorOpen.value = true;
 	closePanel();
 }
@@ -161,15 +172,9 @@ function openEdit(journal) {
 	draft.duration = journal.reverse
 		? { kind: "reverses", fiscal_year: journal.reverse.fiscal_year, fiscal_period: journal.reverse.fiscal_period }
 		: { kind: "none" };
-	draft.lines = journal.lines.length
-		? journal.lines.map((l) => ({
-				data_area_id: l.data_area_id,
-				main_account: l.main_account,
-				debit_amount: l.debit_amount ?? "",
-				credit_amount: l.credit_amount ?? "",
-				description: l.description || "",
-			}))
-		: [blankLine()];
+	draft.lines = journal.lines.length ? snapshotLines(journal.lines) : [blankLine()];
+	//: U3: the just-loaded draft counts as "last saved" too.
+	savedSnapshot.value = snapshotDraft(draft);
 	editorOpen.value = true;
 }
 
@@ -193,12 +198,19 @@ async function saveDraft() {
 		return;
 	}
 	if (!period.value || saving.value) return;
+	if (!view.value || !view.value.canEditPeriod) return;
 	const periodKey = { fiscal_year: period.value.year, fiscal_period: period.value.period };
+	//: U11: a late save (started in an open period) must not set draft.name
+	//: from a now-stale result if the route's period changed meanwhile.
+	const startedPeriod = `${periodKey.fiscal_year}/${periodKey.fiscal_period}`;
 	saving.value = true;
 	try {
 		const body = saveJournalBody(periodKey, draft);
 		const result = await post(SAVE_JOURNAL, body);
+		const nowPeriod = period.value ? `${period.value.year}/${period.value.period}` : null;
+		if (nowPeriod !== startedPeriod) return;
 		draft.name = result.name;
+		savedSnapshot.value = snapshotDraft(draft);
 		reloadContext();
 		await loadJournals({ quiet: true });
 	} catch (e) {
@@ -210,6 +222,7 @@ async function saveDraft() {
 
 async function sendForApproval() {
 	if (!draft.name || sending.value) return;
+	if (!view.value || !view.value.canEditPeriod || !view.value.canSend || editorDirty.value) return;
 	draftError.value = null;
 	sending.value = true;
 	try {
@@ -256,24 +269,24 @@ const selectedJournal = computed(() => {
 	if (!selectedName.value || !view.value) return null;
 	return view.value.journals.find((j) => j.name === selectedName.value) || null;
 });
-//: E6-P8: while the editor holds an unsaved edit of the selected journal
-//: (its lines no longer match the saved snapshot), the effect panel shows
-//: `effectView(null).note` rather than the stale saved effect.
+//: E6-P8/U3: while the editor's state differs from `savedSnapshot` in any
+//: field (not lines alone), the effect panel shows `effectView(null).note`
+//: rather than the stale saved effect, and Send is disabled (`sendAllowed`
+//: below) — both read this one flag.
 const editorDirty = computed(() => {
-	if (!editorOpen.value || !selectedJournal.value || draft.name !== selectedJournal.value.name) return false;
-	const saved = (selectedJournal.value.lines || []).map((l) => ({
-		data_area_id: l.data_area_id,
-		main_account: l.main_account,
-		debit_amount: l.debit_amount ?? "",
-		credit_amount: l.credit_amount ?? "",
-		description: l.description || "",
-	}));
-	return JSON.stringify(saved) !== JSON.stringify(draft.lines);
+	if (!editorOpen.value) return false;
+	return draftDirty(savedSnapshot.value, draft);
 });
 const selectedEffect = computed(() => {
 	if (!selectedJournal.value) return null;
 	return effectView(editorDirty.value ? null : selectedJournal.value.effect);
 });
+
+//: U4: `can_draft`/`can_send` ignore period status; the screen gates New,
+//: Save and Send on `canEditPeriod` too (adjustments.js).
+const newAllowed = computed(() => canOpenNew(view.value));
+const saveAllowed = computed(() => canSaveDraft(view.value, totals.value));
+const sendAllowed = computed(() => canSendDraft(view.value, draft, editorDirty.value));
 
 //: Edit shown only on an `editable` journal (A13).
 const canEditSelected = computed(() => {
@@ -343,7 +356,7 @@ function lines(text) {
 				<h1 class="text-xl font-semibold text-ink-gray-9">Adjustments</h1>
 				<p class="mt-1 text-sm text-ink-gray-6">{{ periodName }} · {{ journalCountText }}</p>
 			</div>
-			<Button v-if="view && view.canDraft" theme="gray" variant="solid" :disabled="editorOpen" @click="openNew">New</Button>
+			<Button v-if="newAllowed" theme="gray" variant="solid" :disabled="editorOpen" @click="openNew">New</Button>
 		</header>
 
 		<p
@@ -452,8 +465,9 @@ function lines(text) {
 			<p v-if="totals.invalid.length" role="alert" class="mt-1 text-sm text-ink-red-4">{{ invalidLinesMessage(totals.invalid) }}</p>
 
 			<div class="mt-4 flex flex-wrap items-center gap-2">
-				<Button theme="gray" variant="solid" :loading="saving" :disabled="saving || totals.invalid.length > 0" @click="saveDraft">Save draft</Button>
-				<Button v-if="view && view.canSend && draft.name" variant="outline" :loading="sending" :disabled="sending" @click="sendForApproval">Send for approval</Button>
+				<Button theme="gray" variant="solid" :loading="saving" :disabled="saving || !saveAllowed" @click="saveDraft">Save draft</Button>
+				<Button v-if="sendAllowed" variant="outline" :loading="sending" :disabled="sending" @click="sendForApproval">Send for approval</Button>
+				<span v-else-if="draft.name && editorDirty" class="text-xs text-ink-gray-5">Save your changes before sending.</span>
 				<span class="text-xs text-ink-gray-5">The Close Lead approves. Only an open period accepts it.</span>
 			</div>
 		</section>
@@ -496,7 +510,7 @@ function lines(text) {
 								<td class="px-3 py-2">
 									<span class="inline-block rounded bg-surface-gray-2 px-2 py-0.5 text-xs font-medium text-ink-gray-7">{{ journal.status }}</span>
 								</td>
-								<td class="px-3 py-2 font-mono text-ink-gray-8">{{ journal.total_debit }} / {{ journal.total_credit }}</td>
+								<td class="px-3 py-2 font-mono text-ink-gray-8">{{ journal.totalsText }}</td>
 								<td class="px-3 py-2 text-ink-gray-7">{{ journal.preparer }}</td>
 							</tr>
 						</tbody>
