@@ -108,11 +108,13 @@ def _journal_title(description):
     return "(no description)"
 
 
-def _shape(doctype, doc):
-    """``(kind_label, title, detail, extra)`` for one of the 5 doctypes not
-    covered by ``rates_model.pending_items``. ``extra`` holds the keys a
-    kind carries beyond the common ones (the journal's lines/effect/
-    total_debit/currency).
+def _kind_label_and_title(doctype, doc):
+    """``(kind_label, title)`` for one of the 5 doctypes not covered by
+    ``rates_model.pending_items`` — the subset of ``_shape`` that never
+    touches a journal's ``lines``, ``effect`` or ``duration`` (A21:
+    ``sent_back_items`` calls this directly, since ``sent_back_for`` never
+    fetches those three — it needs only a label and a period, not the
+    posting detail).
 
     IC Balance, Business Combination and Business Disposal have no field
     that gives a title of their own (unlike the journal's description or
@@ -120,8 +122,31 @@ def _shape(doctype, doc):
     kind_label, which already names their identifying ref.
     """
     if doctype == JOURNAL:
-        kind_label = "Adjustment · %s" % doc["name"]
-        title = _journal_title(doc.get("description"))
+        return "Adjustment · %s" % doc["name"], _journal_title(doc.get("description"))
+    if doctype == GER:
+        kind_label = "Group rate · %s→%s %s" % (
+            doc["from_currency"], doc["to_currency"], doc["rate_type"])
+        return kind_label, doc["quote_label"]
+    if doctype == IC_BALANCE:
+        kind_label = "IC balance · %s → %s" % (doc["selling_entity"], doc["buying_entity"])
+        return kind_label, kind_label
+    if doctype == BC:
+        kind_label = "Business combination · %s" % doc["acquired_entity"]
+        return kind_label, kind_label
+    if doctype == BD:
+        kind_label = "Business disposal · %s" % doc["disposed_entity"]
+        return kind_label, kind_label
+    raise ValueError("%r is not one of the 7 approval doctypes." % (doctype,))
+
+
+def _shape(doctype, doc):
+    """``(kind_label, title, detail, extra)`` for one of the 5 doctypes not
+    covered by ``rates_model.pending_items``. ``extra`` holds the keys a
+    kind carries beyond the common ones (the journal's lines/effect/
+    total_debit/currency).
+    """
+    kind_label, title = _kind_label_and_title(doctype, doc)
+    if doctype == JOURNAL:
         detail = "%s · %s · %s" % (
             doc["adjustment_type"].capitalize(),
             _fy_p(doc["fiscal_year"], doc["fiscal_period"]),
@@ -135,25 +160,19 @@ def _shape(doctype, doc):
         }
         return kind_label, title, detail, extra
     if doctype == GER:
-        kind_label = "Group rate · %s→%s %s" % (
-            doc["from_currency"], doc["to_currency"], doc["rate_type"])
-        title = doc["quote_label"]
         detail = _fy_p(doc["fiscal_year"], doc["fiscal_period"])
         if doc.get("change_reason"):
             detail += " · %s" % doc["change_reason"]
         return kind_label, title, detail, {}
     if doctype == IC_BALANCE:
-        kind_label = "IC balance · %s → %s" % (doc["selling_entity"], doc["buying_entity"])
         detail = "%s · IC sales %.2f" % (
             _fy_p(doc["fiscal_year"], doc["fiscal_period"]), doc["ic_sales_amount"])
         return kind_label, kind_label, detail, {}
     if doctype == BC:
-        kind_label = "Business combination · %s" % doc["acquired_entity"]
         detail = "%s · %g%% from %s" % (
             doc["consolidation_group"], doc["share_acquired_pct"], doc["acquisition_date"])
         return kind_label, kind_label, detail, {}
     if doctype == BD:
-        kind_label = "Business disposal · %s" % doc["disposed_entity"]
         detail = "%s · %g%% from %s" % (
             doc["consolidation_group"], doc["share_disposed_pct"], doc["disposal_date"])
         return kind_label, kind_label, detail, {}
@@ -224,7 +243,7 @@ def queue_items(docs, preparers_by_ref, user, roles, policy, approver_roles,
         ref = (item["doctype"], item["name"])
         modified = modified_by_ref[ref]
         rejection = rejections.get(ref)
-        sent_back = rejection is not None and rejection["at"] > modified
+        sent_back = is_sent_back(rejection, modified)
         item["sent_back"] = sent_back
         item["rejection"] = rejection if sent_back else None
 
@@ -235,6 +254,105 @@ def queue_items(docs, preparers_by_ref, user, roles, policy, approver_roles,
     visible = [item for item in items if not item["entity"] or item["entity"] in allowed]
     hidden = len(items) - len(visible)
     return {"items": visible, "hidden": hidden}
+
+
+def is_sent_back(rejection, modified):
+    """The one rule for "sent back" (A09, A21; #305-D2-8, E6-P3): a Comment
+    insert does not touch ``modified`` (frappe comment.py:192-193), so a
+    document is sent back when its newest ``rejected`` event's ``at`` is
+    later than its own ``modified`` — the preparer's next save moves it
+    past the rejection. ``queue_items`` and ``sent_back_items`` both call
+    this; the comparison is never copied inline a second time.
+
+    ``rejection`` is None (never rejected) -> False. Otherwise both
+    ``rejection["at"]`` and ``modified`` must be given: either missing
+    raises ValueError, never guessed.
+    """
+    if rejection is None:
+        return False
+    at = rejection.get("at")
+    if at is None or modified is None:
+        raise ValueError(
+            "is_sent_back needs both rejection['at'] and modified; got at=%r modified=%r"
+            % (at, modified))
+    return at > modified
+
+
+def sent_back_items(docs, rejections):
+    """The caller's own pending documents whose newest rejection is later
+    than their own ``modified`` (A21; E6-P12, #305-D2-8): the preparer's
+    "sent back" My work item.
+
+    ``docs`` is ``{doctype: [rows with name, modified and the A08
+    fields]}``; ``rejections`` is ``{(doctype, name): {"reason", "actor",
+    "at"}}`` (close_event.latest_rejections, A03, re-keyed by the caller).
+    A doctype outside the 7 raises ValueError naming it — the same
+    contract as ``queue_items``. A row with no ``modified`` raises
+    ValueError naming the document: never guessed.
+
+    Returns ``[{"doctype", "name", "kind_label", "title", "fiscal_year",
+    "fiscal_period", "rejection"}]``, oldest rejection first. ``fiscal_year``
+    / ``fiscal_period`` come from the row for the journal, Group Exchange
+    Rate and IC Balance; they are None for Historical Equity Rate (not
+    period-keyed, E4-P12), Ownership Period, Business Combination and
+    Business Disposal (date-keyed).
+
+    Labels and titles reuse ``_shape`` and ``_RATE_KIND_LABELS`` (A08's own
+    code) rather than a copy. Historical Equity Rate and Ownership Period
+    titles come from ``rates_model.pending_items``, called with ``roles``
+    ``()`` so ``approve_mode`` short-circuits to ``not_approver`` before it
+    ever touches preparers or the self-approval policy — this function
+    never computes an approve mode of its own.
+    """
+    for doctype in docs:
+        if doctype not in close_policy_model.APPROVAL_DOCTYPES:
+            raise ValueError("%r is not one of the 7 approval doctypes." % (doctype,))
+
+    her_rows = [dict(d, owner=None, created=d["modified"]) for d in docs.get(HER, [])]
+    op_rows = [dict(d, owner=None, created=d["modified"]) for d in docs.get(OP, [])]
+    titles = {}
+    if her_rows or op_rows:
+        preparers_by_name = {d["name"]: frozenset() for d in her_rows + op_rows}
+        rate_items = rates_model.pending_items(
+            her_rows, op_rows, preparers_by_name, None, (), None,
+            close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem,
+        )
+        titles = {(item["doctype"], item["name"]): item["title"] for item in rate_items}
+
+    period_keyed = (JOURNAL, GER, IC_BALANCE)
+
+    out = []
+    for doctype, rows in docs.items():
+        for doc in rows:
+            name = doc["name"]
+            modified = doc.get("modified")
+            if modified is None:
+                raise ValueError("%s %s has no modified." % (doctype, name))
+            ref = (doctype, name)
+            rejection = rejections.get(ref)
+            if not is_sent_back(rejection, modified):
+                continue
+            if doctype in (HER, OP):
+                kind_label = _RATE_KIND_LABELS[doctype]
+                title = titles[ref]
+            else:
+                kind_label, title = _kind_label_and_title(doctype, doc)
+            if doctype in period_keyed:
+                fiscal_year, fiscal_period = doc["fiscal_year"], doc["fiscal_period"]
+            else:
+                fiscal_year = fiscal_period = None
+            out.append({
+                "doctype": doctype,
+                "name": name,
+                "kind_label": kind_label,
+                "title": title,
+                "fiscal_year": fiscal_year,
+                "fiscal_period": fiscal_period,
+                "rejection": rejection,
+            })
+
+    out.sort(key=lambda item: item["rejection"]["at"])
+    return out
 
 
 def waiting_for_me(items):
