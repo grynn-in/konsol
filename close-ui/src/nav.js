@@ -17,6 +17,7 @@
 export const SCREEN_MY_WORK = "my-work";
 export const SCREEN_PERIOD = "period";
 export const SCREEN_TRIAL_BALANCES = "trial-balances";
+export const SCREEN_INTERCOMPANY = "intercompany";
 export const SCREEN_RATES = "rates";
 export const SCREEN_CHECKS = "checks";
 export const SCREEN_SIGN_OFF = "sign-off";
@@ -26,6 +27,7 @@ const LABELS = {
 	[SCREEN_MY_WORK]: "My work",
 	[SCREEN_PERIOD]: "Period",
 	[SCREEN_TRIAL_BALANCES]: "Trial balances",
+	[SCREEN_INTERCOMPANY]: "Intercompany",
 	[SCREEN_RATES]: "Rates & ownership",
 	[SCREEN_CHECKS]: "Checks",
 	[SCREEN_SIGN_OFF]: "Sign-off",
@@ -37,17 +39,19 @@ const SCREENS_BY_PERSONA = {
 	// #305-W2-1: Audit trail is appended last for Close Lead, Group
 	// Accountant and Viewer. Never for Entity Accountant: get_trail (T07b)
 	// refuses that role.
-	close_lead: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_RATES, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
-	group_accountant: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_RATES, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
+	close_lead: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
+	group_accountant: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
 	// My work has no items for an Entity Accountant's own screens; Checks,
-	// Sign-off, Period, Rates & ownership and Audit trail are out of scope
-	// for Delivery 1 (E2-7).
+	// Sign-off, Period, Rates & ownership, Intercompany and Audit trail are
+	// out of scope for Delivery 1 (E2-7; the EA's IC work is a My work fix
+	// item, konsol#305-W3-1).
 	entity_accountant: [SCREEN_MY_WORK, SCREEN_TRIAL_BALANCES],
 	// A Viewer has nothing to action, so no My work; Sign-off is read-only.
 	// #305-W2-10: a Viewer can read Rates & ownership too, directly after
 	// Trial balances; the landing (first screen) stays Trial balances.
+	// konsol#305-W3-6/7: Intercompany sits directly after Trial balances too.
 	// #305-W2-1: Audit trail is appended last; the landing is unaffected.
-	viewer: [SCREEN_TRIAL_BALANCES, SCREEN_RATES, SCREEN_PERIOD, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
+	viewer: [SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_PERIOD, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
 };
 
 /**
