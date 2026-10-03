@@ -20,6 +20,7 @@ export const SCREEN_TRIAL_BALANCES = "trial-balances";
 export const SCREEN_INTERCOMPANY = "intercompany";
 export const SCREEN_RATES = "rates";
 export const SCREEN_ADJUSTMENTS = "adjustments";
+export const SCREEN_APPROVALS = "approvals";
 export const SCREEN_CHECKS = "checks";
 export const SCREEN_SIGN_OFF = "sign-off";
 export const SCREEN_AUDIT_TRAIL = "audit-trail";
@@ -31,6 +32,7 @@ const LABELS = {
 	[SCREEN_INTERCOMPANY]: "Intercompany",
 	[SCREEN_RATES]: "Rates & ownership",
 	[SCREEN_ADJUSTMENTS]: "Adjustments",
+	[SCREEN_APPROVALS]: "Approvals",
 	[SCREEN_CHECKS]: "Checks",
 	[SCREEN_SIGN_OFF]: "Sign-off",
 	[SCREEN_AUDIT_TRAIL]: "Audit trail",
@@ -41,8 +43,10 @@ const SCREENS_BY_PERSONA = {
 	// #305-W2-1: Audit trail is appended last for Close Lead, Group
 	// Accountant and Viewer. Never for Entity Accountant: get_trail (T07b)
 	// refuses that role.
-	close_lead: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_ADJUSTMENTS, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
-	group_accountant: [SCREEN_MY_WORK, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_ADJUSTMENTS, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
+	// konsol#305 A16: Approvals sits directly after My work (the wireframe's
+	// "Work" group), so the landing (My work) is unchanged.
+	close_lead: [SCREEN_MY_WORK, SCREEN_APPROVALS, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_ADJUSTMENTS, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
+	group_accountant: [SCREEN_MY_WORK, SCREEN_APPROVALS, SCREEN_PERIOD, SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_ADJUSTMENTS, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
 	// My work has no items for an Entity Accountant's own screens; Checks,
 	// Sign-off, Period, Rates & ownership, Intercompany and Audit trail are
 	// out of scope for Delivery 1 (E2-7; the EA's IC work is a My work fix
@@ -54,8 +58,9 @@ const SCREENS_BY_PERSONA = {
 	// konsol#305-W3-6/7: Intercompany sits directly after Trial balances too.
 	// konsol#305 A15: Adjustments sits directly before Checks, the same
 	// relative place as the other close roles.
+	// konsol#305 A16: Approvals sits directly after Adjustments.
 	// #305-W2-1: Audit trail is appended last; the landing is unaffected.
-	viewer: [SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_PERIOD, SCREEN_ADJUSTMENTS, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
+	viewer: [SCREEN_TRIAL_BALANCES, SCREEN_INTERCOMPANY, SCREEN_RATES, SCREEN_PERIOD, SCREEN_ADJUSTMENTS, SCREEN_APPROVALS, SCREEN_CHECKS, SCREEN_SIGN_OFF, SCREEN_AUDIT_TRAIL],
 };
 
 /**

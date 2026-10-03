@@ -51,16 +51,25 @@ test("approvals sits at index 1 for close_lead and group_accountant, directly af
 	assert.equal(viewerScreens[adjustmentsIdx + 1], "approvals");
 });
 
-test("adjustments sits directly before checks for close_lead, group_accountant and viewer", () => {
+test("adjustments sits directly before checks for close_lead and group_accountant", () => {
 	for (const [persona, roles] of [
 		["close_lead", ["EPM Admin"]],
 		["group_accountant", ["EPM Analyst"]],
-		["viewer", ["EPM User"]],
 	]) {
 		const screens = navFor(persona, roles, NO_COUNTS).map((n) => n.screen);
 		const checksIdx = screens.indexOf("checks");
 		assert.equal(screens[checksIdx - 1], "adjustments", persona);
 	}
+});
+
+// konsol#305 A16: for the viewer, approvals sits directly between adjustments
+// and checks (the viewer sees it directly after adjustments), so adjustments
+// no longer sits directly before checks there.
+test("for viewer, adjustments sits directly before approvals, which sits directly before checks", () => {
+	const screens = navFor("viewer", ["EPM User"], NO_COUNTS).map((n) => n.screen);
+	const checksIdx = screens.indexOf("checks");
+	assert.equal(screens[checksIdx - 1], "approvals");
+	assert.equal(screens[checksIdx - 2], "adjustments");
 });
 
 test("failure path: entity_accountant's nav never contains period, rates, audit-trail, intercompany, adjustments or approvals", () => {
