@@ -402,3 +402,101 @@ def test_statement_effect_ordering_sections_then_heading_name_then_heading_none_
         {"section": None, "net_debit": 1.0},
     ]
     assert result["no_heading"] == 1
+
+
+# --- A02: clean_lines, reversal_choices, duration_label
+
+def test_clean_lines_forge_extra_keys_give_a_problem_each_but_the_row_is_kept():
+    lines = [{
+        "main_account": "A", "debit_amount": 1,
+        "docstatus": 1, "parent": "X", "name": "Y", "idx": 9,
+    }]
+    rows, problems = M.clean_lines(lines)
+    assert len(problems) == 4
+    for forged in ("docstatus", "parent", "name", "idx"):
+        assert any(forged in p and "Line 1" in p for p in problems), problems
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row) == set(M.LINE_KEYS)
+    assert "docstatus" not in row and "parent" not in row
+    assert "name" not in row and "idx" not in row
+    assert row["main_account"] == "A"
+    assert row["debit_amount"] == 1
+
+
+def test_clean_lines_a_non_list_item_is_a_problem_not_an_exception():
+    rows, problems = M.clean_lines(["not a dict", None, {"main_account": "A"}])
+    assert len(problems) == 2
+    assert len(rows) == 1
+    assert rows[0]["main_account"] == "A"
+
+
+def test_clean_lines_lines_itself_not_a_list_is_a_problem():
+    rows, problems = M.clean_lines("not a list")
+    assert rows == []
+    assert len(problems) == 1
+
+
+def test_clean_lines_clean_input_keeps_every_key_missing_as_none_in_order():
+    lines = [{
+        "data_area_id": "E1", "main_account": "1000",
+        "debit_amount": 100, "credit_amount": 0, "description": "d",
+    }]
+    rows, problems = M.clean_lines(lines)
+    assert problems == []
+    assert rows == [{
+        "data_area_id": "E1", "main_account": "1000",
+        "debit_amount": 100, "credit_amount": 0, "description": "d",
+    }]
+    assert tuple(rows[0]) == M.LINE_KEYS
+
+
+def test_clean_lines_missing_keys_become_none():
+    rows, problems = M.clean_lines([{"main_account": "1000"}])
+    assert problems == []
+    assert rows == [{
+        "data_area_id": None, "main_account": "1000",
+        "debit_amount": None, "credit_amount": None, "description": None,
+    }]
+
+
+#: A02's own fixture (the row's stated case): the journal's own period is
+#: FY2024 P07. P08 Open Regular and P11 Open Regular qualify; P09 Closed and
+#: P10 Open Closing do not, nor does the own period or an earlier one.
+_A02_OWN = (2024, 7)
+_A02_ROWS = [
+    _period_row(2024, 6, "Regular", "Open"),     # earlier than own
+    _period_row(2024, 7, "Regular", "Open"),     # the journal's own period
+    _period_row(2024, 8, "Regular", "Open"),     # qualifies
+    _period_row(2024, 9, "Regular", "Closed"),   # not Open
+    _period_row(2024, 10, "Closing", "Open"),    # not Regular
+    _period_row(2024, 11, "Regular", "Open"),    # qualifies
+]
+
+
+def test_reversal_choices_lists_only_the_qualifying_periods_in_order():
+    choices = M.reversal_choices(*_A02_OWN, _A02_ROWS)
+    assert choices == [
+        {"fiscal_year": 2024, "fiscal_period": 8, "code": "P8"},
+        {"fiscal_year": 2024, "fiscal_period": 11, "code": "P11"},
+    ]
+
+
+def test_reversal_choices_never_offers_the_own_or_an_earlier_period():
+    choices = M.reversal_choices(*_A02_OWN, _A02_ROWS)
+    offered = {(c["fiscal_year"], c["fiscal_period"]) for c in choices}
+    assert (2024, 7) not in offered
+    assert (2024, 6) not in offered
+
+
+def test_duration_label_no_reversal():
+    assert M.duration_label(0, 0, _A02_ROWS) == "This period only, no reversal"
+
+
+def test_duration_label_a_declared_period():
+    assert M.duration_label(2024, 11, _A02_ROWS) == "Reverses in P11"
+
+
+def test_duration_label_an_undeclared_period_is_never_blank():
+    label = M.duration_label(2099, 3, _A02_ROWS)
+    assert label == "Reverses in FY2099 P03 (not a declared period)"
