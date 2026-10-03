@@ -117,3 +117,48 @@ export function ageText(since, today) {
 	if (days < 0) return null;
 	return days === 1 ? "1 day" : `${days} days`;
 }
+
+// --- U7 (review-w3.md): the item's badge ------------------------------------
+//
+// MyWork.vue:248 badged every period-less item orange "Setup", on the
+// (wrong) assumption that "no period" means "configuration gap". It does
+// not: mywork_model.py returns period-less items from three different
+// builders —
+// - `setup_gap_items`: a real configuration gap. Carries
+//   `since_reason: "configuration gap"`.
+// - `approvals_item`: the Close Lead's one-item approvals queue. Carries
+//   `since_reason: "oldest waiting"`.
+// - `sent_back_items`, for a doctype outside `_SENT_BACK_PERIOD_KEYED`
+//   (Historical Equity Rate, Ownership Period, Business Combination,
+//   Business Disposal): a sent-back draft. Carries
+//   `since_reason: "sent back"`.
+// Badging the last two "Setup" makes routine approval/rework look like a
+// setup defect. `since_reason` is the one field every period-less builder
+// sets, and only `setup_gap_items` sets it to "configuration gap" — so it,
+// not "no period", decides.
+//
+// A period item (it carries `period`, from `_period_item` or
+// `ic_fix_items`) always gets its period's code, themed by kind,
+// regardless of `since_reason`.
+//
+// An unknown kind throws (mirrors `sections`): a badge is never guessed,
+// and never defaults to "Setup".
+
+const BADGE_THEME = { blocking: "red", todo: "blue", waiting: "gray" };
+const BADGE_LABEL = { blocking: "Blocking", todo: "To do", waiting: "Waiting" };
+
+/**
+ * `item` (A20's shape) -> `{theme, label}` for the My work screen's badge.
+ */
+export function badgeFor(item) {
+	if (!Object.prototype.hasOwnProperty.call(BADGE_THEME, item.kind)) {
+		throw new Error(`unknown item kind: ${item.kind}`);
+	}
+	if (item.period) {
+		return { theme: BADGE_THEME[item.kind], label: item.period.code };
+	}
+	if (item.since_reason === "configuration gap") {
+		return { theme: "orange", label: "Setup" };
+	}
+	return { theme: BADGE_THEME[item.kind], label: BADGE_LABEL[item.kind] };
+}

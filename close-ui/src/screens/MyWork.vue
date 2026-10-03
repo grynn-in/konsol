@@ -33,7 +33,7 @@ import { RouterLink, useRoute } from "vue-router";
 import { Badge, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get } from "../api.js";
-import { ageText, itemRoute, sections } from "../myWork.js";
+import { ageText, badgeFor, itemRoute, sections } from "../myWork.js";
 import { parse } from "../route.js";
 
 const MY_WORK = "konsol.close.mywork_api.get_my_work";
@@ -54,9 +54,9 @@ const SCREEN_ACTIONS = {
 };
 
 const KIND_STYLES = {
-	blocking: { icon: "alert-octagon", tone: "text-ink-red-3", badge: "red" },
-	todo: { icon: "check-square", tone: "text-ink-gray-7", badge: "blue" },
-	waiting: { icon: "clock", tone: "text-ink-gray-5", badge: "gray" },
+	blocking: { icon: "alert-octagon", tone: "text-ink-red-3" },
+	todo: { icon: "check-square", tone: "text-ink-gray-7" },
+	waiting: { icon: "clock", tone: "text-ink-gray-5" },
 };
 
 const route = useRoute();
@@ -241,13 +241,9 @@ function ageOf(item) {
 						>
 							<div class="min-w-0">
 								<div class="flex flex-wrap items-center gap-2">
-									<Badge
-										v-if="item.period"
-										:theme="KIND_STYLES[section.kind].badge"
-										variant="subtle"
-										:label="item.period.code"
-									/>
-									<Badge v-else theme="orange" variant="subtle" label="Setup" />
+									<!-- U7: badgeFor(item) decides "Setup" vs the kind's own badge
+									     (myWork.js) — period-less is not the same as a setup gap. -->
+									<Badge :theme="badgeFor(item).theme" variant="subtle" :label="badgeFor(item).label" />
 									<span class="text-base font-medium text-ink-gray-9">{{ item.title }}</span>
 									<span v-if="ageOf(item)" class="text-xs text-ink-gray-5">{{ ageOf(item) }}</span>
 								</div>
