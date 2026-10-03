@@ -1,10 +1,11 @@
-"""Approvals model, pure (konsol#305 A08; story 6.3; R2, R5; #305-W2-14;
-W2-9, W2-10).
+"""Approvals model, pure (konsol#305 A08, A09; story 6.3; R2, R5; #305-W2-14;
+W2-9, W2-10; #305-D2-8; E6-P3, E6-P11).
 
 ``queue_items(docs, preparers_by_ref, user, roles, policy, approver_roles,
-self_approval_problem, entity_fields, allowed)`` turns the pending documents
-across the 7 approval doctypes (close_policy_model.APPROVAL_DOCTYPES) into
-one queue, oldest first. Returns ``{"items", "hidden"}``.
+self_approval_problem, entity_fields, allowed, rejections, modified_by_ref)``
+turns the pending documents across the 7 approval doctypes
+(close_policy_model.APPROVAL_DOCTYPES) into one queue, oldest first.
+Returns ``{"items", "hidden"}``.
 
 - ``docs``: ``{doctype: [row dicts]}``, already filtered to pending by the
   API (A10). Each row carries ``name``, ``owner``, ``created`` (an ISO
@@ -24,6 +25,21 @@ one queue, oldest first. Returns ``{"items", "hidden"}``.
   doctype's events. An item whose entity is set and not in ``allowed`` is
   hidden and counted; a group-level item (the field is None) is never
   hidden. ``allowed`` None means unrestricted.
+- ``rejections``: ``{(doctype, name): {"reason", "actor", "at"}}`` (A03's
+  ``close_event.latest_rejections``, re-keyed by the caller). A name with
+  no rejected event is absent, never a KeyError. An item whose rejection's
+  ``at`` is later than its ``modified`` (``modified_by_ref``) is
+  ``sent_back``, and carries that ``rejection``; otherwise ``sent_back`` is
+  False and ``rejection`` is None (#305-D2-8, E6-P3: a Comment insert does
+  not move ``modified``, so the preparer's next save is what clears it).
+- ``modified_by_ref``: ``{(doctype, name): <modified>}``, one entry per
+  pending document (every item needs it to decide ``sent_back``). A
+  missing ref raises KeyError, the same rule as ``preparers_by_ref``.
+- ``waiting_for_me(items)`` returns ``{"count", "oldest"}`` over the items
+  the caller may act on now: ``approve.mode`` ``direct`` or ``reason``, and
+  not sent back (inline and Desk items count alike, E6-P11: a refused item
+  is never counted). ``oldest`` is the earliest ``created`` among them, or
+  None when none are counted.
 
 Historical Equity Rate and Ownership Period items are not re-derived here:
 ``rates_model.pending_items`` (and the ``approve_mode`` it and every other
@@ -145,7 +161,8 @@ def _shape(doctype, doc):
 
 
 def queue_items(docs, preparers_by_ref, user, roles, policy, approver_roles,
-                 self_approval_problem, entity_fields, allowed):
+                 self_approval_problem, entity_fields, allowed, rejections,
+                 modified_by_ref):
     for doctype in docs:
         if doctype not in close_policy_model.APPROVAL_DOCTYPES:
             raise ValueError("%r is not one of the 7 approval doctypes." % (doctype,))
@@ -203,6 +220,14 @@ def queue_items(docs, preparers_by_ref, user, roles, policy, approver_roles,
             item.update(extra)
             items.append(item)
 
+    for item in items:
+        ref = (item["doctype"], item["name"])
+        modified = modified_by_ref[ref]
+        rejection = rejections.get(ref)
+        sent_back = rejection is not None and rejection["at"] > modified
+        item["sent_back"] = sent_back
+        item["rejection"] = rejection if sent_back else None
+
     items.sort(key=lambda item: item["created"])
 
     if allowed is None:
@@ -210,3 +235,17 @@ def queue_items(docs, preparers_by_ref, user, roles, policy, approver_roles,
     visible = [item for item in items if not item["entity"] or item["entity"] in allowed]
     hidden = len(items) - len(visible)
     return {"items": visible, "hidden": hidden}
+
+
+def waiting_for_me(items):
+    """The items the caller may act on now (story 6.2, 6.3; E6-P11):
+    ``approve.mode`` ``direct`` or ``reason``, and not ``sent_back`` —
+    inline and Desk items count alike. A refused or ``not_approver`` item
+    is never counted. Returns ``{"count", "oldest"}``; ``oldest`` is the
+    earliest ``created`` among the counted items, or None when none are
+    counted."""
+    counted = [item for item in items
+               if item["approve"]["mode"] in ("direct", "reason") and not item["sent_back"]]
+    if not counted:
+        return {"count": 0, "oldest": None}
+    return {"count": len(counted), "oldest": min(item["created"] for item in counted)}
