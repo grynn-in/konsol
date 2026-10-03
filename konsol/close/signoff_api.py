@@ -22,6 +22,8 @@ A21 ``signoff_model.summary``:
 - previous periods: the Regular period states from the first close period up
   to the one before the target. With the first close period undeclared there
   is no "previous" to name: the list is empty and the gap says why.
+- intercompany (C10): ``ic_api.signoff_summary`` — counts only, never a gate
+  (E5-P11), and unscoped so every role reads the same counts (E5-P13).
 
 It adds ``can_sign`` (write on Assertion Run, the test ``sign_off_close``
 applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
@@ -74,7 +76,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import period_model, signoff_gate, signoff_model
+from konsol.close import ic_api, period_model, signoff_gate, signoff_model
 from konsol.close.timefmt import zoned_iso
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
@@ -291,6 +293,10 @@ def get_signoff(fiscal_year, fiscal_period):
         "data_changed_at": _iso(closed.get("data_changed_at")),
         "data_changed_by": closed.get("data_changed_by") or None,
         "data_change": closed.get("data_change") or None,
+        # C10: the intercompany line (state, message, counts only; E5-P13 —
+        # unscoped, every role sees the same counts). Not a gate (E5-P11):
+        # it changes no `action`.
+        "intercompany": ic_api.signoff_summary(*key),
     })
     return result
 
