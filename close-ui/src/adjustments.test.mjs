@@ -13,6 +13,12 @@ import {
 	saveJournalBody,
 	effectView,
 	editable,
+	snapshotDraft,
+	draftDirty,
+	canOpenNew,
+	canSaveDraft,
+	canSendDraft,
+	formatAmount,
 } from "./adjustments.js";
 
 const NOW = new Date("2026-10-03T12:00:00Z");
@@ -361,4 +367,92 @@ test("editable: failure path, false for a Closed period", () => {
 test("editable: failure path, false when can_draft is false even for the journal's own preparer (U2 — no preparer-owns-it branch)", () => {
 	const view = journalsView(payload({ first_state: "Draft", can_edit_period: true, can_draft: false }), NOW, TZ);
 	assert.equal(editable(journal({ status: "Draft", docstatus: 0, preparer: "owner@example.com" }), view), false);
+});
+
+// --- journalsView: list totals (U6) ----------------------------------
+
+test("journalsView: list totals are formatted 2dp with grouping through the module, not a raw float (U6)", () => {
+	const view = journalsView(payload({ journals: [journal({ total_debit: 1234.5, total_credit: 1234.5 })] }), NOW, TZ);
+	assert.equal(view.journals[0].totalsText, "1,234.50 / 1,234.50");
+	assert.equal(formatAmount(1234.5), "1,234.50");
+});
+
+// --- snapshotDraft / draftDirty (U3, U9 — fed the editor's own draft shape) --
+
+function blankDraft(overrides = {}) {
+	return {
+		consolidation_group: "Demo Group",
+		adjustment_type: "topside",
+		description: "Reclass",
+		duration: { kind: "none" },
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 100, credit_amount: 0, description: "x" }],
+		...overrides,
+	};
+}
+
+test("draftDirty: an identical draft is never dirty against its own snapshot (U3)", () => {
+	const draft = blankDraft();
+	const snapshot = snapshotDraft(draft);
+	assert.equal(draftDirty(snapshot, draft), false);
+});
+
+test("draftDirty: a changed line amount is dirty (U3)", () => {
+	const draft = blankDraft();
+	const snapshot = snapshotDraft(draft);
+	draft.lines[0].debit_amount = 150;
+	assert.equal(draftDirty(snapshot, draft), true);
+});
+
+test("draftDirty: '100' typed on screen and 100 last saved compare equal in cents, never as strings (U3)", () => {
+	const draft = blankDraft({ lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 100, credit_amount: 0, description: "x" }] });
+	const snapshot = snapshotDraft(draft);
+	draft.lines[0].debit_amount = "100";
+	draft.lines[0].credit_amount = "0";
+	assert.equal(draftDirty(snapshot, draft), false);
+});
+
+test("draftDirty: a changed group, type, description or duration is dirty even with unchanged lines (U3)", () => {
+	const snapshot = snapshotDraft(blankDraft());
+	assert.equal(draftDirty(snapshot, blankDraft({ consolidation_group: "Other Group" })), true);
+	assert.equal(draftDirty(snapshot, blankDraft({ adjustment_type: "reclassification" })), true);
+	assert.equal(draftDirty(snapshot, blankDraft({ description: "Different" })), true);
+	assert.equal(draftDirty(snapshot, blankDraft({ duration: { kind: "reverses", fiscal_year: 2026, fiscal_period: 10 } })), true);
+});
+
+test("draftDirty: an added or removed line is dirty (U3)", () => {
+	const draft = blankDraft();
+	const snapshot = snapshotDraft(draft);
+	draft.lines.push({ data_area_id: "ZZ-B", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "" });
+	assert.equal(draftDirty(snapshot, draft), true);
+});
+
+test("draftDirty: failure path, no snapshot (nothing saved yet) is never dirty", () => {
+	assert.equal(draftDirty(null, blankDraft()), false);
+});
+
+// --- canOpenNew / canSaveDraft / canSendDraft (U4, U9 — fed journalsView's output) --
+
+test("canOpenNew: requires canDraft AND canEditPeriod — can_draft ignores period status, so the screen must still refuse a locked period (U4)", () => {
+	const open = journalsView(payload({ can_draft: true, can_edit_period: true }), NOW, TZ);
+	assert.equal(canOpenNew(open), true);
+	const locked = journalsView(payload({ can_draft: true, can_edit_period: false }), NOW, TZ);
+	assert.equal(canOpenNew(locked), false);
+	assert.equal(canOpenNew(null), false);
+});
+
+test("canSaveDraft: requires canEditPeriod and no invalid line (U4)", () => {
+	const open = journalsView(payload({ can_edit_period: true }), NOW, TZ);
+	assert.equal(canSaveDraft(open, { invalid: [] }), true);
+	assert.equal(canSaveDraft(open, { invalid: [1] }), false);
+	const locked = journalsView(payload({ can_edit_period: false }), NOW, TZ);
+	assert.equal(canSaveDraft(locked, { invalid: [] }), false);
+});
+
+test("canSendDraft: requires canSend, canEditPeriod, a saved name, and no unsaved change (U3, U4)", () => {
+	const view = journalsView(payload({ can_send: true, can_edit_period: true }), NOW, TZ);
+	assert.equal(canSendDraft(view, { name: "CJ-00001" }, false), true);
+	assert.equal(canSendDraft(view, { name: null }, false), false, "nothing saved yet");
+	assert.equal(canSendDraft(view, { name: "CJ-00001" }, true), false, "dirty (U3)");
+	const locked = journalsView(payload({ can_send: true, can_edit_period: false }), NOW, TZ);
+	assert.equal(canSendDraft(locked, { name: "CJ-00001" }, false), false, "locked period (U4)");
 });
