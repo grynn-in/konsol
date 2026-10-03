@@ -25,6 +25,13 @@ from konsol.schema_lifecycle import check_epm_admin
 DOCTYPE = "Intercompany Account"
 _PUBLISHED = "Published"
 
+#: konsol#305-W3-7 (C17, the reverse of C16). Must equal
+#: close_policy_model.INTERCOMPANY_NONE (konsol/close/close_policy_model.py);
+#: a parity test pins the two literals together because this module must not
+#: import from that package (five test files load it under stubs that don't
+#: know it; the REJECT_REASON_FLAG precedent, consolidation_journal.py:25-29).
+INTERCOMPANY_NONE = "None in this group"
+
 
 def pair_of(main_account, counterpart_account):
     """The unordered account pair a row declares: (a,) when both sides use
@@ -186,6 +193,20 @@ class IntercompanyAccount(GovernedReferenceDocument):
         # first (this doctype's tabDocType row, as _validate_one_pair does),
         # then read by equality on an indexed column with FOR UPDATE.
         frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", (DOCTYPE,))
+        # konsol#305-W3-7: Close Settings may declare "no intercompany in this
+        # group" (C16). Read raw from tabSingles, not get_single_value: the
+        # raw read locks (so a concurrent Close Settings save and this publish
+        # cannot both pass under REPEATABLE READ), and it does not throw on a
+        # site whose meta lacks the field yet (W3-P9) -- a missing row reads
+        # as blank there too.
+        declared = frappe.db.sql(
+            "SELECT `value` FROM `tabSingles` WHERE `doctype` = 'Close Settings' "
+            "AND `field` = 'intercompany_declaration' FOR UPDATE")
+        if declared and declared[0][0] == INTERCOMPANY_NONE:
+            frappe.throw(
+                "Close Settings declares no intercompany in this group "
+                "(Intercompany: None in this group). Clear that declaration "
+                "before publishing this pairing.")
         from konsol.group_chart import chart_accounts, posting_codes
 
         accounts = [a for a in checked if a]
