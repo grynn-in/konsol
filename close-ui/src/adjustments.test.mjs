@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
 	journalsView,
 	durationOptions,
+	durationIndex,
 	NO_REVERSAL_NOTE,
 	draftTotals,
 	saveJournalBody,
@@ -70,6 +71,12 @@ test("journalsView passes groups, accounts and flags through", () => {
 	assert.equal(view.canEditPeriod, true);
 });
 
+test("journalsView carries reversal_choices through as reversalChoices (U1)", () => {
+	const choices = [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }];
+	const view = journalsView(payload({ reversal_choices: choices }), NOW, TZ);
+	assert.deepEqual(view.reversalChoices, choices);
+});
+
 test("journalsView keeps journal order and formats last_rejection's time", () => {
 	const j1 = journal({ name: "CJ-00001" });
 	const j2 = journal({
@@ -96,31 +103,63 @@ test("journalsView requires a time zone and a valid now", () => {
 	assert.throws(() => journalsView(payload(), new Date("not a date"), TZ));
 });
 
-// --- durationOptions ----------------------------------------------------
+// --- durationOptions, durationIndex --------------------------------------
+//
+// U1/U9: fed exactly what the screen passes — `journalsView`'s output, not
+// the raw `get_journals` payload.
 
 test("durationOptions: with no reversal choices, only 'none' is offered", () => {
-	const options = durationOptions(payload({ reversal_choices: [] }));
+	const options = durationOptions(journalsView(payload({ reversal_choices: [] }), NOW, TZ));
 	assert.equal(options.length, 1);
 	assert.equal(options[0].kind, "none");
 	assert.equal(options[0].label, "This period only, no reversal");
 	assert.equal(NO_REVERSAL_NOTE, "No open Regular period after this one to reverse into");
 });
 
-test("durationOptions: a reversal choice is offered as 'reverses'", () => {
-	const options = durationOptions(
-		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }] })
+test("durationOptions: a reversal choice is offered as 'reverses' (U1, U9 — fed journalsView's output)", () => {
+	const view = journalsView(
+		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }] }),
+		NOW,
+		TZ,
 	);
+	const options = durationOptions(view);
 	assert.equal(options.length, 2);
 	assert.deepEqual(options[1], { kind: "reverses", fiscal_year: 2026, fiscal_period: 10, label: "Reverses in FY26 P10" });
 });
 
 test("durationOptions: failure path, never a 'stays until reversed' option", () => {
-	const options = durationOptions(
-		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }] })
+	const view = journalsView(
+		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }] }),
+		NOW,
+		TZ,
 	);
+	const options = durationOptions(view);
 	for (const option of options) {
 		assert.doesNotMatch(option.label, /until reversed/i);
 	}
+});
+
+test("durationIndex: a reversing journal's duration index is its option, not 0 (U1)", () => {
+	const view = journalsView(
+		payload({
+			reversal_choices: [
+				{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" },
+				{ fiscal_year: 2026, fiscal_period: 11, code: "FY26 P11" },
+			],
+		}),
+		NOW,
+		TZ,
+	);
+	const options = durationOptions(view);
+	const idx = durationIndex(options, { kind: "reverses", fiscal_year: 2026, fiscal_period: 11 });
+	assert.equal(idx, 2);
+	assert.notEqual(idx, 0);
+});
+
+test("durationIndex: failure path, throws on an unknown duration rather than falling back to 0 (U1)", () => {
+	const view = journalsView(payload({ reversal_choices: [] }), NOW, TZ);
+	const options = durationOptions(view);
+	assert.throws(() => durationIndex(options, { kind: "reverses", fiscal_year: 2026, fiscal_period: 10 }));
 });
 
 // --- draftTotals ----------------------------------------------------------
@@ -150,6 +189,24 @@ test("draftTotals: 18500 against 18499.99 shows a difference of 0.01", () => {
 test("draftTotals: a non-number ('abc') counts as 0 and is flagged invalid", () => {
 	const totals = draftTotals([
 		{ debit_amount: "abc", credit_amount: 0 },
+		{ debit_amount: 10, credit_amount: 0 },
+	]);
+	assert.equal(totals.debit, 10);
+	assert.deepEqual(totals.invalid, [1]);
+});
+
+test("draftTotals: failure path, 'Infinity' is invalid, not a huge valid amount (U12)", () => {
+	const totals = draftTotals([
+		{ debit_amount: "Infinity", credit_amount: 0 },
+		{ debit_amount: 10, credit_amount: 0 },
+	]);
+	assert.equal(totals.debit, 10);
+	assert.deepEqual(totals.invalid, [1]);
+});
+
+test("draftTotals: failure path, '0x10' is invalid, not hex 16 (U12)", () => {
+	const totals = draftTotals([
+		{ debit_amount: "0x10", credit_amount: 0 },
 		{ debit_amount: 10, credit_amount: 0 },
 	]);
 	assert.equal(totals.debit, 10);
@@ -277,29 +334,31 @@ test("effectView: 'no heading' for a null heading, never dropped", () => {
 });
 
 // --- editable -----------------------------------------------------------
+//
+// U2/U9: fed `journalsView`'s output (camelCase keys), the same object the
+// screen itself passes — never the raw snake_case payload.
 
-test("editable: true for a Draft journal, the first state, an open period, when drafting is allowed", () => {
-	const p = payload({ first_state: "Draft", can_edit_period: true, can_draft: true });
-	assert.equal(editable(journal({ status: "Draft", docstatus: 0 }), p, "someone@example.com"), true);
+test("editable: true for a Draft journal, the first state, an open period, when drafting is allowed (U9)", () => {
+	const view = journalsView(payload({ first_state: "Draft", can_edit_period: true, can_draft: true }), NOW, TZ);
+	assert.equal(editable(journal({ status: "Draft", docstatus: 0 }), view), true);
 });
 
 test("editable: failure path, false for 'Pending Approval'", () => {
-	const p = payload({ first_state: "Draft", can_edit_period: true, can_draft: true });
-	assert.equal(editable(journal({ status: "Pending Approval", docstatus: 0 }), p, "someone@example.com"), false);
+	const view = journalsView(payload({ first_state: "Draft", can_edit_period: true, can_draft: true }), NOW, TZ);
+	assert.equal(editable(journal({ status: "Pending Approval", docstatus: 0 }), view), false);
 });
 
 test("editable: failure path, false for docstatus 1", () => {
-	const p = payload({ first_state: "Draft", can_edit_period: true, can_draft: true });
-	assert.equal(editable(journal({ status: "Draft", docstatus: 1 }), p, "someone@example.com"), false);
+	const view = journalsView(payload({ first_state: "Draft", can_edit_period: true, can_draft: true }), NOW, TZ);
+	assert.equal(editable(journal({ status: "Draft", docstatus: 1 }), view), false);
 });
 
 test("editable: failure path, false for a Closed period", () => {
-	const p = payload({ first_state: "Draft", can_edit_period: false, can_draft: true });
-	assert.equal(editable(journal({ status: "Draft", docstatus: 0 }), p, "someone@example.com"), false);
+	const view = journalsView(payload({ first_state: "Draft", can_edit_period: false, can_draft: true }), NOW, TZ);
+	assert.equal(editable(journal({ status: "Draft", docstatus: 0 }), view), false);
 });
 
-test("editable: when can_draft is false, only the journal's own preparer may edit it", () => {
-	const p = payload({ first_state: "Draft", can_edit_period: true, can_draft: false });
-	assert.equal(editable(journal({ status: "Draft", docstatus: 0, preparer: "owner@example.com" }), p, "owner@example.com"), true);
-	assert.equal(editable(journal({ status: "Draft", docstatus: 0, preparer: "owner@example.com" }), p, "other@example.com"), false);
+test("editable: failure path, false when can_draft is false even for the journal's own preparer (U2 — no preparer-owns-it branch)", () => {
+	const view = journalsView(payload({ first_state: "Draft", can_edit_period: true, can_draft: false }), NOW, TZ);
+	assert.equal(editable(journal({ status: "Draft", docstatus: 0, preparer: "owner@example.com" }), view), false);
 });
