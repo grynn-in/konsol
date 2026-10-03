@@ -383,3 +383,43 @@ def save_journal(fiscal_year, fiscal_period, consolidation_group, adjustment_typ
         "total_debit": _number(doc.get("total_debit")),
         "total_credit": _number(doc.get("total_credit")),
     }
+
+
+#: E6-P15: the sentence ``send_for_approval`` refuses with on a site that has
+#: no active journal workflow (live on 3 Oct).
+NO_WORKFLOW = ("The journal workflow is not installed on this site (migrate installs it); "
+               "the Close Lead approves a draft directly from Approvals.")
+
+
+# Send the named Draft for approval (konsol#305 A07; story 6.1; R2; E6-P15).
+# The signature is exactly ``(name)``: a forged action, status or docstatus
+# never reaches it. Frappe's ``apply_workflow`` reloads the document, checks
+# the caller holds the transition's role, and saves it, so the doctype's
+# validate re-checks the balance; its refusal propagates uncaught. Sending is
+# not an approval and writes no event: self-approval is judged at Approve.
+# amended 3 Oct by the coordinator (E6-P1 option (c)): only ``DRAFT_ROLES``.
+@frappe.whitelist(methods=["POST"])
+def send_for_approval(name):
+    frappe.only_for(("EPM Analyst", "System Manager"))
+    wf = _workflow_info()
+    if not wf["installed"]:
+        frappe.throw(NO_WORKFLOW)
+    doc = frappe.get_doc(JOURNAL, name)
+    if int(doc.docstatus) != 0:
+        frappe.throw(f"{name} is {doc.status or 'submitted'}: an approved or reversed journal "
+                     "is not sent again; a correction is a new journal or a Reverse.")
+    first_state = wf["first_state"]
+    if doc.status and doc.status != first_state:
+        frappe.throw(f"{name} is {doc.status}: it was already sent; the Close Lead approves "
+                     f"it or rejects it back to {first_state}.")
+    key = (int(doc.fiscal_year), int(doc.fiscal_period))
+    period = _find_period(key, fiscal_calendar.fiscal_period_rows())
+    status = period.get("status")
+    if status != "Open":
+        frappe.throw("FY%d P%02d is %s: a journal is sent for approval in an open period."
+                     % (key + (status,)))
+
+    from frappe.model.workflow import apply_workflow
+
+    doc = apply_workflow(doc, "Send for Approval") or frappe.get_doc(JOURNAL, name)
+    return {"name": doc.name, "status": doc.status}
