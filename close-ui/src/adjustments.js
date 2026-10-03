@@ -66,6 +66,8 @@ export function journalsView(payload, now, timeZone) {
 			createdText: timeText(created, now, timeZone),
 			modifiedText: timeText(modified, now, timeZone),
 			approvedAtText: timeText(approved_at, now, timeZone),
+			//: U6: the list shows this, never the raw `total_debit`/`total_credit`.
+			totalsText: `${formatAmount(journal.total_debit)} / ${formatAmount(journal.total_credit)}`,
 			lastRejection: last_rejection
 				? {
 						reason: last_rejection.reason,
@@ -87,6 +89,17 @@ export function journalsView(payload, now, timeZone) {
 		canSend: Boolean(payload.can_send),
 		canEditPeriod: Boolean(payload.can_edit_period),
 	};
+}
+
+/**
+ * `AMOUNT_FORMAT`, exported (U6): the list's totals column must show the
+ * same 2dp-with-grouping text the effect panel already uses, not the raw
+ * float `journal_api.get_journals` sends (`total_debit`/`total_credit`,
+ * journal_model.py's `_totals` — a float rounded to 2dp, no grouping, no
+ * guaranteed trailing zero).
+ */
+export function formatAmount(value) {
+	return AMOUNT_FORMAT.format(value);
 }
 
 /**
@@ -136,23 +149,51 @@ export function durationIndex(options, duration) {
 }
 
 //: `Number("0x10")` parses as 16 and `Number("Infinity")` as Infinity;
-//: neither is a decimal amount, so toCents must reject both itself rather
-//: than rely on `Number.isNaN` (U12).
+//: neither is a decimal amount, so parseCents must reject both itself
+//: rather than rely on `Number.isNaN` (U12).
 const HEX_LIKE = /^\s*[+-]?0x/i;
 
-function toCents(value, pos, invalid) {
+//: A blank amount is 0 cents; anything that does not parse as a decimal
+//: amount (including the "0x10"/"Infinity" cases above) is `null`, never a
+//: guessed number. Shared by `toCents` (draftTotals' invalid-line tracking)
+//: and `amountsEqual` (draftDirty's in-cents comparison, U3) — one parse
+//: rule, not two.
+function parseCents(value) {
 	if (value === null || value === undefined || value === "") {
 		return 0;
 	}
 	const num = Number(value);
 	const invalidValue = !Number.isFinite(num) || (typeof value === "string" && HEX_LIKE.test(value));
 	if (invalidValue) {
+		return null;
+	}
+	return Math.round(num * 100);
+}
+
+function toCents(value, pos, invalid) {
+	const cents = parseCents(value);
+	if (cents === null) {
 		if (!invalid.includes(pos)) {
 			invalid.push(pos);
 		}
 		return 0;
 	}
-	return Math.round(num * 100);
+	return cents;
+}
+
+//: Two amounts are equal when they parse to the same cents (U3: "100"
+//: typed on screen and 100 last saved are the same amount, never a
+//: string/number mismatch). When either side does not parse as a decimal
+//: amount, fall back to a literal compare — two copies of the same invalid
+//: text ("abc") are still equal; a parsed amount against unparseable text
+//: never is.
+function amountsEqual(a, b) {
+	const ca = parseCents(a);
+	const cb = parseCents(b);
+	if (ca !== null && cb !== null) {
+		return ca === cb;
+	}
+	return a === b;
 }
 
 /**
@@ -289,4 +330,129 @@ export function editable(journal, view) {
 		return false;
 	}
 	return Boolean(view.canDraft);
+}
+
+/**
+ * A saved journal's or a draft's `lines` -> the editor's line shape: the
+ * exact fields the inputs bind to, with a blank amount/description never
+ * left `undefined`. Used both to seed the editor from a saved journal
+ * (`openEdit`) and, inside `snapshotDraft`/`draftDirty`, to compare the
+ * editor's current lines against what was last saved — one shape, so the
+ * two never drift apart (previously duplicated inline in Adjustments.vue).
+ */
+export function snapshotLines(lines) {
+	return (lines || []).map((line) => ({
+		data_area_id: line.data_area_id,
+		main_account: line.main_account,
+		debit_amount: line.debit_amount ?? "",
+		credit_amount: line.credit_amount ?? "",
+		description: line.description || "",
+	}));
+}
+
+function durationsEqual(a, b) {
+	a = a || { kind: "none" };
+	b = b || { kind: "none" };
+	if (a.kind !== b.kind) {
+		return false;
+	}
+	if (a.kind !== "reverses") {
+		return true;
+	}
+	return a.fiscal_year === b.fiscal_year && a.fiscal_period === b.fiscal_period;
+}
+
+/**
+ * The editor's state right after it was last saved (a successful
+ * `save_journal`, or a journal just loaded into the editor by `openEdit` —
+ * equally "last saved") -> a plain snapshot of every field Send gates on
+ * (U3): `consolidation_group`, `adjustment_type`, `description`,
+ * `duration` and `lines`. `draftDirty` compares a later editor state
+ * against this snapshot; previously only `lines` was ever compared, so a
+ * changed group, type, description or duration never disabled Send.
+ */
+export function snapshotDraft(draft) {
+	return {
+		consolidation_group: draft.consolidation_group,
+		adjustment_type: draft.adjustment_type,
+		description: draft.description || "",
+		duration: durationsEqual(draft.duration, { kind: "none" })
+			? { kind: "none" }
+			: { kind: "reverses", fiscal_year: draft.duration.fiscal_year, fiscal_period: draft.duration.fiscal_period },
+		lines: snapshotLines(draft.lines),
+	};
+}
+
+/**
+ * Whether the editor's current state differs from `snapshot` (U3: Send
+ * must be disabled, and the effect panel must show "save the draft to see
+ * its effect" rather than a stale saved effect, while anything on screen
+ * differs from what was last saved). `snapshot` is `null` before any save
+ * (a fresh "New" draft never saved) — nothing to be dirty against, so this
+ * returns `false`.
+ *
+ * Amounts compare in cents through `amountsEqual`, never as raw strings: a
+ * line typed as `"100"` against a saved `100` is not dirty.
+ */
+export function draftDirty(snapshot, draft) {
+	if (!snapshot) {
+		return false;
+	}
+	if (snapshot.consolidation_group !== draft.consolidation_group) {
+		return true;
+	}
+	if (snapshot.adjustment_type !== draft.adjustment_type) {
+		return true;
+	}
+	if ((snapshot.description || "") !== (draft.description || "")) {
+		return true;
+	}
+	if (!durationsEqual(snapshot.duration, draft.duration)) {
+		return true;
+	}
+	const current = snapshotLines(draft.lines);
+	if (snapshot.lines.length !== current.length) {
+		return true;
+	}
+	for (let i = 0; i < snapshot.lines.length; i++) {
+		const a = snapshot.lines[i];
+		const b = current[i];
+		if (a.data_area_id !== b.data_area_id) return true;
+		if (a.main_account !== b.main_account) return true;
+		if (a.description !== b.description) return true;
+		if (!amountsEqual(a.debit_amount, b.debit_amount)) return true;
+		if (!amountsEqual(a.credit_amount, b.credit_amount)) return true;
+	}
+	return false;
+}
+
+/**
+ * Whether the "New" control may be shown (U4). `journal_api.can_draft`
+ * (the server's `view.canDraft`) does not look at period status, so a
+ * locked period would otherwise let the whole journal be typed before
+ * `save_journal` refuses it. The screen gates on both itself.
+ */
+export function canOpenNew(view) {
+	return Boolean(view && view.canDraft && view.canEditPeriod);
+}
+
+/**
+ * Whether "Save draft" may run (U4): the period still accepts edits
+ * (`view.canEditPeriod`), and every line's amount parses (`draftTotals`'s
+ * `invalid` is empty — a line that does not parse never reaches the
+ * server as 0).
+ */
+export function canSaveDraft(view, totals) {
+	return Boolean(view && view.canEditPeriod && totals && totals.invalid.length === 0);
+}
+
+/**
+ * Whether "Send for approval" may run (U3, U4): the draft is saved
+ * (`draft.name` set), the caller may send (`view.canSend`), the period
+ * still accepts edits, and nothing on screen differs from what was last
+ * saved (`dirty`, from `draftDirty` against the save-time snapshot) —
+ * otherwise Send would send the last saved lines, not what is on screen.
+ */
+export function canSendDraft(view, draft, dirty) {
+	return Boolean(view && view.canSend && view.canEditPeriod && draft && draft.name && !dirty);
 }
