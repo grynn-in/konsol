@@ -442,6 +442,152 @@ def test_waiting_for_me_oldest_is_earliest_created_among_counted():
     assert waiting["oldest"] == "2026-10-01T06:00:00"
 
 
+# --- is_sent_back (A21): the one rule for "sent back" -------------------------------
+
+
+def test_is_sent_back_true_when_rejection_after_modified():
+    rejection = {"reason": "wrong rate", "actor": "lead",
+                 "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}
+    assert M.is_sent_back(rejection, datetime.datetime(2026, 10, 2, 8, 0, 0)) is True
+
+
+def test_is_sent_back_false_when_rejection_is_none():
+    """Failure path: a document with no rejection is never sent back."""
+    assert M.is_sent_back(None, datetime.datetime(2026, 10, 2, 8, 0, 0)) is False
+
+
+def test_is_sent_back_false_when_modified_after_rejection():
+    """Failure path: the preparer's next save moves it past the rejection."""
+    rejection = {"reason": "wrong rate", "actor": "lead",
+                 "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}
+    assert M.is_sent_back(rejection, datetime.datetime(2026, 10, 2, 10, 0, 0)) is False
+
+
+def test_is_sent_back_raises_when_modified_is_missing():
+    """Failure path: never guessed."""
+    rejection = {"reason": "wrong rate", "actor": "lead",
+                 "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}
+    try:
+        M.is_sent_back(rejection, None)
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+# --- sent_back_items (A21): the caller's own drafts that were sent back -------------
+
+
+def _sb_ger(name, modified, from_currency="USD", to_currency="EUR", rate_type="Closing",
+            fiscal_year=2026, fiscal_period=7, quote_label="1.10 EUR per USD", change_reason=None):
+    return {"name": name, "modified": modified, "from_currency": from_currency,
+            "to_currency": to_currency, "rate_type": rate_type, "fiscal_year": fiscal_year,
+            "fiscal_period": fiscal_period, "quote_label": quote_label,
+            "change_reason": change_reason}
+
+
+def _sb_journal(name, modified, fiscal_year=2026, fiscal_period=7, adjustment_type="topside",
+                 description="Accrue bonus", total_debit=100.0, currency="USD",
+                 reverse_fiscal_year=0, reverse_fiscal_period=0):
+    return {"name": name, "modified": modified, "fiscal_year": fiscal_year,
+            "fiscal_period": fiscal_period, "adjustment_type": adjustment_type,
+            "description": description, "total_debit": total_debit, "currency": currency,
+            "reverse_fiscal_year": reverse_fiscal_year, "reverse_fiscal_period": reverse_fiscal_period}
+
+
+def _sb_her(name, modified, consolidation_group="G1", data_area_id="DE02",
+            main_account="4000", rate_date="2026-09-30", historical_rate=1.2):
+    return {"name": name, "modified": modified, "consolidation_group": consolidation_group,
+            "data_area_id": data_area_id, "main_account": main_account, "rate_date": rate_date,
+            "historical_rate": historical_rate}
+
+
+def test_sent_back_items_ger_rejected_after_modified_carries_rejection():
+    docs = {"Group Exchange Rate": [_sb_ger("GER-20", datetime.datetime(2026, 10, 2, 8, 0, 0))]}
+    rejections = {("Group Exchange Rate", "GER-20"): {
+        "reason": "wrong rate", "actor": "lead", "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
+    items = M.sent_back_items(docs, rejections)
+    assert len(items) == 1
+    item = items[0]
+    assert item["doctype"] == "Group Exchange Rate"
+    assert item["name"] == "GER-20"
+    assert item["rejection"] == rejections[("Group Exchange Rate", "GER-20")]
+    assert item["fiscal_year"] == 2026
+    assert item["fiscal_period"] == 7
+    assert item["kind_label"] == "Group rate · USD→EUR Closing"
+
+
+def test_sent_back_items_modified_after_rejection_gives_no_item():
+    """Failure path."""
+    docs = {"Group Exchange Rate": [_sb_ger("GER-21", datetime.datetime(2026, 10, 2, 10, 0, 0))]}
+    rejections = {("Group Exchange Rate", "GER-21"): {
+        "reason": "wrong rate", "actor": "lead", "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
+    assert M.sent_back_items(docs, rejections) == []
+
+
+def test_sent_back_items_no_rejection_gives_no_item():
+    """Failure path."""
+    docs = {"Group Exchange Rate": [_sb_ger("GER-22", datetime.datetime(2026, 10, 2, 10, 0, 0))]}
+    assert M.sent_back_items(docs, {}) == []
+
+
+def test_sent_back_items_journal_carries_period_her_has_none():
+    docs = {
+        "Consolidation Journal": [_sb_journal("CJ-20", datetime.datetime(2026, 10, 1, 9, 0, 0))],
+        "Historical Equity Rate": [_sb_her("HER-20", datetime.datetime(2026, 10, 1, 7, 0, 0))],
+    }
+    rejections = {
+        ("Consolidation Journal", "CJ-20"): {
+            "reason": "fix", "actor": "lead", "at": datetime.datetime(2026, 10, 1, 10, 0, 0)},
+        ("Historical Equity Rate", "HER-20"): {
+            "reason": "fix2", "actor": "lead", "at": datetime.datetime(2026, 10, 1, 8, 0, 0)},
+    }
+    items = M.sent_back_items(docs, rejections)
+    by_name = {item["name"]: item for item in items}
+    assert by_name["CJ-20"]["fiscal_year"] == 2026
+    assert by_name["CJ-20"]["fiscal_period"] == 7
+    assert by_name["CJ-20"]["kind_label"] == "Adjustment · CJ-20"
+    assert by_name["HER-20"]["fiscal_year"] is None
+    assert by_name["HER-20"]["fiscal_period"] is None
+    assert by_name["HER-20"]["kind_label"] == "Historical equity rate"
+    assert by_name["HER-20"]["title"] == "DE02 · 4000 · 2026-09-30"
+
+
+def test_sent_back_items_missing_modified_raises_value_error_naming_document():
+    """Failure path: never guessed."""
+    docs = {"Group Exchange Rate": [_sb_ger("GER-23", None)]}
+    try:
+        M.sent_back_items(docs, {})
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "GER-23" in str(exc)
+
+
+def test_sent_back_items_unknown_doctype_raises_value_error_naming_it():
+    """Failure path: never shown as another kind, the same contract as
+    queue_items."""
+    docs = {"Budget Cycle": [{"name": "BUD-1", "modified": None}]}
+    try:
+        M.sent_back_items(docs, {})
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "Budget Cycle" in str(exc)
+
+
+def test_sent_back_items_oldest_rejection_first():
+    docs = {"Group Exchange Rate": [
+        _sb_ger("GER-30", datetime.datetime(2026, 10, 1, 5, 0, 0), to_currency="EUR"),
+        _sb_ger("GER-31", datetime.datetime(2026, 10, 1, 5, 0, 0), to_currency="GBP"),
+    ]}
+    rejections = {
+        ("Group Exchange Rate", "GER-30"): {
+            "reason": "a", "actor": "lead", "at": datetime.datetime(2026, 10, 1, 9, 0, 0)},
+        ("Group Exchange Rate", "GER-31"): {
+            "reason": "b", "actor": "lead", "at": datetime.datetime(2026, 10, 1, 6, 0, 0)},
+    }
+    items = M.sent_back_items(docs, rejections)
+    assert [item["name"] for item in items] == ["GER-31", "GER-30"]
+
+
 def test_module_imports_no_frappe():
     """Same contract as rates_model.py (test_close_rates_model.py), extended
     to refuse a ``konsol`` import too: this module is loaded by path, like

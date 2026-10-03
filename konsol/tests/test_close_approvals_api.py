@@ -542,6 +542,68 @@ def test_read_count_is_the_same_for_1_and_6_pending_documents():
     assert line_reads_1 == line_reads_6 == 1
 
 
+# --- sent_back_for (A21): the caller's own drafts that were sent back ----------------
+
+
+def _sent_back_for(site, user):
+    return _invoke(site, lambda api: api.sent_back_for(user))
+
+
+def test_sent_back_for_filters_every_get_all_by_owner_and_docstatus_zero():
+    site = _Site()
+    site.gers = [_ger("GER-40", owner=ANALYST, modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[GER] = {"GER-40": {
+        "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
+    items = _sent_back_for(site, ANALYST)
+    assert [i["name"] for i in items] == ["GER-40"]
+    # one get_all per doctype (the 7 APPROVAL_DOCTYPES), each filtered by
+    # owner + docstatus 0 (the stub's _match enforces the filter values).
+    get_all_calls = [r for r in site.reads if r[0] == "get_all"]
+    assert len(get_all_calls) == 7
+
+
+def test_sent_back_for_excludes_another_users_rejected_draft():
+    """Failure path: the stub holds one, and the owner filter excludes it."""
+    site = _Site()
+    site.gers = [_ger("GER-41", owner="zz-other@example.com",
+                       modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[GER] = {"GER-41": {
+        "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
+    assert _sent_back_for(site, ANALYST) == []
+
+
+def test_sent_back_for_calls_latest_rejections_only_for_doctypes_with_names():
+    site = _Site()
+    site.gers = [_ger("GER-42", owner=ANALYST)]
+    _sent_back_for(site, ANALYST)
+    doctypes_with_calls = {dt for dt, names in site.rejection_calls}
+    assert doctypes_with_calls == {GER}
+
+
+def test_sent_back_for_read_count_same_for_1_and_6_drafts():
+    site1 = _Site()
+    site1.gers = [_ger("GER-50", owner=ANALYST)]
+    _sent_back_for(site1, ANALYST)
+    reads_1 = len(site1.reads)
+
+    site6 = _Site()
+    site6.gers = [_ger("GER-%d" % i, owner=ANALYST) for i in range(6)]
+    _sent_back_for(site6, ANALYST)
+    reads_6 = len(site6.reads)
+
+    assert reads_1 == reads_6
+
+
+def test_sent_back_for_formats_rejection_at_with_the_zoned_iso_pattern():
+    site = _Site()
+    site.gers = [_ger("GER-51", owner=ANALYST, modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[GER] = {"GER-51": {
+        "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
+    items = _sent_back_for(site, ANALYST)
+    at = items[0]["rejection"]["at"]
+    assert "+" in at or "Z" in at, at
+
+
 # --- the source names no event-log doctype literal -------------------------------------
 
 
