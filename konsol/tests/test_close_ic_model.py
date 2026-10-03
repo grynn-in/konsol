@@ -222,6 +222,25 @@ def test_mask_partner_amount_never_leaks():
             assert v not in secret, "partner amount leaked in %s" % k
 
 
+def test_mask_blanks_matched_amount_and_net_balance_when_a_side_is_masked():
+    rows = _fixture()
+    kept, _ = M.mask(rows, {"UK01"})
+    ukde = [r for r in kept if r["entity_b"] == "DE01"][0]
+    assert ukde["masked_b"] is True
+    assert ukde["matched_amount"] is None
+    assert ukde["net_balance"] is None
+    assert ukde["difference"] == rows[0]["difference"]
+
+
+def test_mask_keeps_matched_amount_and_net_balance_when_neither_side_is_masked():
+    rows = _fixture()
+    kept, _ = M.mask(rows, {"UK01", "UK02"})
+    ukuk = [r for r in kept if r["entity_b"] == "UK02"][0]
+    assert ukuk["masked_a"] is False and ukuk["masked_b"] is False
+    assert ukuk["matched_amount"] == rows[2]["matched_amount"]
+    assert ukuk["net_balance"] == rows[2]["net_balance"]
+
+
 def test_mask_does_not_mutate_input():
     rows = _fixture()
     M.mask(rows, {"UK01"})
