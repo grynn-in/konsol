@@ -1021,6 +1021,7 @@ def _sb_row(doctype, name, kind_label, title, fiscal_year=None, fiscal_period=No
 
 def test_group_accountant_gets_one_sent_back_item_counted_under_rates():
     site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.rates = {}  # isolate: no base "Rates missing" item also on the rates screen
     site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
                                    "1.1000", fiscal_year=2025, fiscal_period=7)]
     result = _call(site)

@@ -459,3 +459,78 @@ def ic_fix_items(fixes_by_key, per_period, allowed):
                     continue
                 items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since))
     return items
+
+
+# --- A22: the preparer's "sent back" My work item -----------------------------
+#
+# ``sent_back_items(rows, persona, period_codes)`` turns A21's
+# ``approvals_api.sent_back_for`` rows into one ``todo`` item per sent-back
+# draft the caller owns, for every persona except the Viewer (the API never
+# asks the Viewer; a Viewer persona here raises). ``rows`` is that function's
+# own return shape: ``[{"doctype", "name", "kind_label", "title",
+# "fiscal_year", "fiscal_period", "rejection": {"reason", "actor", "at"}}]``.
+# ``period_codes`` is ``{(fiscal_year, fiscal_period): period_code}``; a row
+# naming a period missing from it raises ValueError — never an invented code.
+
+#: The screen or Desk path that fixes a sent-back draft, by doctype (the
+#: engineering call, 3 Oct: Adjustments for a journal, Rates & ownership for
+#: GER/HER/OP, the Desk for IC Balance, Business Combination and Business
+#: Disposal — the same 3 doctypes A08/A21 treat as Desk-only).
+_SENT_BACK_SCREEN = {
+    "Consolidation Journal": "adjustments",
+    "Group Exchange Rate": "rates",
+    "Historical Equity Rate": "rates",
+    "Ownership Period": "rates",
+}
+_SENT_BACK_DESK = {
+    "IC Balance": "/app/ic-balance/%s",
+    "Business Combination": "/app/business-combination/%s",
+    "Business Disposal": "/app/business-disposal/%s",
+}
+#: Doctypes whose row names a period (the journal, Group Exchange Rate and IC
+#: Balance; mirrors approvals_model.sent_back_items).
+_SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "Group Exchange Rate", "IC Balance")
+
+
+def _sent_back_action(doctype, name):
+    if doctype in _SENT_BACK_SCREEN:
+        return {"screen": _SENT_BACK_SCREEN[doctype]}
+    if doctype in _SENT_BACK_DESK:
+        return {"desk": _SENT_BACK_DESK[doctype] % name}
+    raise ValueError("sent_back_items: %r is not one of the 7 approval doctypes." % (doctype,))
+
+
+def sent_back_items(rows, persona, period_codes):
+    if persona == VIEWER:
+        raise ValueError("sent_back_items: the Viewer has no sent-back item")
+    if persona not in PERSONAS:
+        raise ValueError("sent_back_items: unknown persona %r" % (persona,))
+    owner = OWNERS[persona]
+
+    items = []
+    for row in rows or ():
+        doctype, name = row["doctype"], row["name"]
+        rejection = row["rejection"]
+        at = rejection["at"]
+        item = {
+            "id": "sent-back:%s:%s" % (doctype, name),
+            "kind": "todo",
+            "title": "Sent back: %s · %s" % (row["kind_label"], row["title"]),
+            "detail": "%s on %s: %s" % (rejection["actor"], at[:10], rejection["reason"]),
+            "owner": owner,
+            "action": _sent_back_action(doctype, name),
+        }
+        fy, fp = row.get("fiscal_year"), row.get("fiscal_period")
+        if doctype in _SENT_BACK_PERIOD_KEYED and fy is not None and fp is not None:
+            key = (int(fy), int(fp))
+            if key not in period_codes:
+                raise ValueError(
+                    "sent_back_items: %s %s names period %r, not in period_codes"
+                    % (doctype, name, key))
+            item["period"] = {"fiscal_year": key[0], "fiscal_period": key[1],
+                              "code": period_codes[key], "since": at[:10]}
+        else:
+            item["since"] = at[:10]
+            item["since_reason"] = "sent back"
+        items.append(item)
+    return items
