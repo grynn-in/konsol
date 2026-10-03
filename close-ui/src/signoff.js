@@ -114,11 +114,24 @@ function checksSection(checks) {
 	]);
 }
 
+/**
+ * C23: shows the server's intercompany acknowledgement sentence
+ * (`acknowledgements.intercompany`, set by signoff_model.summary, C21) as
+ * the first row, so the Close Lead sees why a Green run asks for an
+ * acknowledgement. The text is relayed verbatim — this module invents no
+ * wording of its own. A missing/null value (not configured, not applicable,
+ * or an older payload) adds no row.
+ */
 function acknowledgementsSection(ack) {
 	const names = (ack && ack.names) || [];
 	const total = ack ? ack.total : null;
 	const unlisted = ack ? ack.unlisted : null;
-	const rows = names.map((name) => `Acknowledged: ${name}`);
+	const intercompany = ack ? ack.intercompany : null;
+	const rows = [];
+	if (typeof intercompany === "string" && intercompany.length > 0) {
+		rows.push(intercompany);
+	}
+	rows.push(...names.map((name) => `Acknowledged: ${name}`));
 	if (names.length || total !== null && total !== undefined) {
 		rows.push(`Warned in total: ${unknownOr(total)}`);
 		rows.push(`Not listed above: ${unknownOr(unlisted)}`);
