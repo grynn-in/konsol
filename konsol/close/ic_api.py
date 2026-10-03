@@ -222,16 +222,19 @@ def open_fixes(keys):
             rows, error = [], _error_text(e)
         fixes = ic_model.open_fixes(key_events, rows, error=error)
         if fixes:
-            out[key] = fixes
+            # S1: sent_at leaves ic_model as a raw datetime; zone it here (the
+            # caller's My work detail slices it as an ISO string).
+            out[key] = [dict(fix, sent_at=_iso(fix["sent_at"])) for fix in fixes]
     return out
 
 
 def signoff_summary(fiscal_year, fiscal_period):
     """C05: the sign-off summary's intercompany line (stories 9.x; E5-P13: a
-    count only, unscoped — never an entity or an amount). Never raises: a
-    warehouse failure, or "not configured" / "not applicable" / the W3-7
-    conflict, reads as its own state with ``counts`` and ``sent_back_open``
-    None, never a guessed 0. Not whitelisted: the caller gates."""
+    count only, unscoped — never an entity or an amount). A warehouse
+    failure, or "not configured" / "not applicable" / the W3-7 conflict,
+    reads as its own state with ``counts`` and ``sent_back_open`` None,
+    never a guessed 0 (``ic_model.counts`` still raises on an unknown
+    ``match_status``: S9). Not whitelisted: the caller gates."""
     fy, fp = int(fiscal_year), int(fiscal_period)
     published = published_count()
     none = declared_none()

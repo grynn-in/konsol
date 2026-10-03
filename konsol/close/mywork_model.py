@@ -387,9 +387,12 @@ def approvals_item(waiting):
 # carries ``entity_a``, ``account_a``, ``entity_b``, ``account_b`` (the pair's
 # four-key grain), ``state`` (one of IC_FIX_STATES), ``sent_by``, ``sent_at``
 # (ISO datetime) and ``reason`` from the ``ic_sent_back`` event, and, by
-# state: ``over_tolerance`` -> ``difference``, ``tolerance``, ``group``,
-# ``balance_a``, ``balance_b``; ``cannot_check`` -> ``error``. An unknown
-# state raises ValueError: nothing is guessed.
+# state: ``over_tolerance`` -> ``groups`` (``ic_model.open_fixes``'s shape:
+# one dict per consolidation group, each with ``consolidation_group``,
+# ``difference``, ``tolerance``, ``balance_a``, ``balance_b`` — one sentence
+# per group, the own side's balance read from that group's own row);
+# ``cannot_check`` -> ``error``. An unknown state raises ValueError: nothing
+# is guessed.
 #
 # ``per_period`` is mywork_api's per-period facts; only ``code``, ``ended``
 # and (optionally) ``since`` are read. A fix whose key is absent from
@@ -400,11 +403,18 @@ def approvals_item(waiting):
 IC_FIX_STATES = ("over_tolerance", "not_in_build", "cannot_check")
 
 
-def _ic_state_sentence(fix, own_balance):
+def _ic_group_sentence(group, own_balance):
+    return ("Difference %s in %s (tolerance %s). Your side %s."
+            % (group["difference"], group["consolidation_group"], group["tolerance"],
+               own_balance))
+
+
+def _ic_state_sentence(fix, side):
     state = fix["state"]
     if state == "over_tolerance":
-        return ("Difference %s in %s (tolerance %s). Your side %s."
-                % (fix["difference"], fix["group"], fix["tolerance"], own_balance))
+        return " ".join(
+            _ic_group_sentence(group, group["balance_a"] if side == "a" else group["balance_b"])
+            for group in fix["groups"])
     if state == "not_in_build":
         return ("The pair is not in the last build; this stays until it is within "
                 "tolerance or the period closes.")
@@ -413,9 +423,9 @@ def _ic_state_sentence(fix, own_balance):
     raise ValueError("ic_fix_items: unknown fix state %r" % (state,))
 
 
-def _ic_detail(fix, own_balance):
+def _ic_detail(fix, side):
     prefix = "Sent back by %s on %s: %s." % (fix["sent_by"], fix["sent_at"][:10], fix["reason"])
-    return prefix + " " + _ic_state_sentence(fix, own_balance)
+    return prefix + " " + _ic_state_sentence(fix, side)
 
 
 def _ic_title(partner, own_account, partner_account):
@@ -425,11 +435,11 @@ def _ic_title(partner, own_account, partner_account):
 def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
     a, acct_a, b, acct_b = fix["entity_a"], fix["account_a"], fix["entity_b"], fix["account_b"]
     if entity == a:
-        partner, own_account, partner_account, own_balance = b, acct_a, acct_b, fix["balance_a"]
+        side, partner, own_account, partner_account = "a", b, acct_a, acct_b
     else:
-        partner, own_account, partner_account, own_balance = a, acct_b, acct_a, fix["balance_b"]
+        side, partner, own_account, partner_account = "b", a, acct_b, acct_a
     # Validate the state before writing any detail (fails closed on an unknown state).
-    detail = _ic_detail(fix, own_balance)
+    detail = _ic_detail(fix, side)
     return {
         "id": "ic:%d-%02d:%s:%s|%s|%s|%s" % (fy, fp, entity, a, acct_a, b, acct_b),
         "kind": kind,

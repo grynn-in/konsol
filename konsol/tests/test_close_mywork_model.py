@@ -15,6 +15,13 @@ _spec = importlib.util.spec_from_file_location("close_mywork_under_test", _PATH)
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
 
+# S1: real producer contract. ic_model is pure too, so ic_fix_items' test
+# input is built by calling it, never a hand-built dict.
+_IC_PATH = os.path.join(APP_DIR, "close", "ic_model.py")
+_ic_spec = importlib.util.spec_from_file_location("close_ic_under_test_for_mywork", _IC_PATH)
+IC = importlib.util.module_from_spec(_ic_spec)
+_ic_spec.loader.exec_module(IC)
+
 
 def _facts(**over):
     facts = {
@@ -601,21 +608,33 @@ IC_P07 = (2025, 7)
 IC_P08 = (2025, 8)
 
 
-def _ic_fix(**over):
-    fix = {
-        "entity_a": "UK01", "account_a": "140000",
-        "entity_b": "DE01", "account_b": "240000",
-        "group": "EMEA Group",
-        "state": "over_tolerance",
-        "difference": 360.65,
-        "tolerance": 5.0,
-        "balance_a": 1250.75,
-        "balance_b": 890.10,
-        "sent_by": "alice@example.com",
-        "sent_at": "2025-07-15T10:00:00",
-        "reason": "Please review the booking.",
-    }
-    fix.update(over)
+_IC_EVENT = {
+    "kind": "ic_sent_back", "name": "ZZ-EVT-1", "at": "2025-07-15T10:00:00",
+    "actor": "alice@example.com", "reason": "Please review the booking.",
+    "detail": {"entity_a": "UK01", "account_a": "140000",
+               "entity_b": "DE01", "account_b": "240000"},
+}
+
+_IC_ROW = {
+    "entity_a": "UK01", "account_a": "140000", "entity_b": "DE01", "account_b": "240000",
+    "consolidation_group": "EMEA Group", "match_status": "over_tolerance",
+    "difference": 360.65, "tolerance": 5.0, "balance_a": 1250.75, "balance_b": 890.10,
+}
+
+
+def _ic_fix(state="over_tolerance", error=None):
+    """S1: built through the real producer (``ic_model.open_fixes``), never
+    a hand-built dict. ``not_in_build`` and ``cannot_check`` are states the
+    real function emits; an unrecognised ``state`` (for the defensive
+    ValueError path, which the real function can never emit) is applied as
+    a targeted mutation of its real output, not a from-scratch dict."""
+    rows = [] if state == "not_in_build" else [dict(_IC_ROW)]
+    fixes = IC.open_fixes(
+        [dict(_IC_EVENT)], rows,
+        error=(error or "ClickHouse timeout") if state == "cannot_check" else None)
+    fix = fixes[0]
+    if state not in M.IC_FIX_STATES:
+        fix = dict(fix, state=state)
     return fix
 
 
@@ -650,12 +669,13 @@ def test_ic_fix_item_never_writes_the_partner_balance():
     # W3-2: the entity sees its own balance and the difference, never the partner's.
     per = {IC_P07: _ic_period()}
     fix = _ic_fix()
+    group = fix["groups"][0]
     items = M.ic_fix_items({IC_P07: [fix]}, per, {"UK01"})
     text = items[0]["title"] + " " + items[0]["detail"]
-    assert str(fix["balance_a"]) in text
-    assert str(fix["difference"]) in text
-    assert str(fix["balance_b"]) not in text
-    assert fix["group"] in text
+    assert str(group["balance_a"]) in text
+    assert str(group["difference"]) in text
+    assert str(group["balance_b"]) not in text
+    assert group["consolidation_group"] in text
 
 
 def test_ic_fix_items_one_per_allowed_entity_both_sides_when_allowed_is_none():
