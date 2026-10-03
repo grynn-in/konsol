@@ -138,6 +138,95 @@ def reversal_problem(fiscal_year, fiscal_period, reverse_year, reverse_period, p
     return None
 
 
+#: Section order (#305-W3-4 option A): Profit and Loss, then Balance Sheet,
+#: then None (no section, including any value that is not one of the two
+#: declared Main Account statement_section options).
+_SECTION_ORDER = {"Profit and Loss": 0, "Balance Sheet": 1}
+
+
+def statement_effect(lines, accounts):
+    """The journal's change per statement heading (#305 J01, stories 6.1/6.2).
+
+    ``lines`` are dicts with ``main_account``, ``debit_amount`` and
+    ``credit_amount``. ``accounts`` maps a line's ``main_account`` to
+    ``{"heading": <parent code, or None/"">, "heading_name": <parent's
+    account_name, or None>, "statement_section": <"Profit and
+    Loss"|"Balance Sheet"|""|None>}`` (the API, A05/A10, builds this from
+    each account's ``parent_account``, #305-D2-4).
+
+    An account missing from ``accounts``, or whose ``heading`` is None/"",
+    goes under heading None ("no heading"); no line is ever dropped, and a
+    heading whose lines net to zero (a reclass inside one heading) is kept.
+    It does not decide the sign by account type (E6-P6); the caller labels
+    Dr/Cr.
+
+    Returns ``{"headings": [...], "sections": [...], "no_heading": n}``:
+    - ``headings``: ``[{"section", "heading", "heading_name", "net_debit"}]``,
+      ``net_debit`` a float rounded to 2 dp, ordered by section
+      ("Profit and Loss", "Balance Sheet", then None), then within a
+      section by ``heading_name`` then ``heading``, with heading None last;
+    - ``sections``: ``[{"section", "net_debit"}]``, same section order;
+    - ``no_heading``: the number of distinct accounts with no heading.
+    """
+    groups = {}
+    no_heading_accounts = set()
+    for line in lines:
+        code = line.get("main_account")
+        entry = accounts.get(code) or {}
+        heading = entry.get("heading") or None
+        heading_name = entry.get("heading_name") or None if heading else None
+        section = entry.get("statement_section")
+        if section not in _SECTION_ORDER:
+            section = None
+        if heading is None:
+            no_heading_accounts.add(code)
+        key = (section, heading)
+        group = groups.setdefault(key, {"heading_name": heading_name, "net_debit": Decimal("0")})
+        if heading_name and not group["heading_name"]:
+            group["heading_name"] = heading_name
+        group["net_debit"] += _cents(line.get("debit_amount")) - _cents(line.get("credit_amount"))
+
+    def heading_sort_key(item):
+        (section, heading), group = item
+        return (
+            _SECTION_ORDER.get(section, 2),
+            0 if heading is not None else 1,
+            group["heading_name"] or "",
+            heading or "",
+        )
+
+    ordered = sorted(groups.items(), key=heading_sort_key)
+    headings = [
+        {
+            "section": section,
+            "heading": heading,
+            "heading_name": group["heading_name"],
+            "net_debit": float(group["net_debit"].quantize(_CENTS, rounding=ROUND_HALF_UP)),
+        }
+        for (section, heading), group in ordered
+    ]
+
+    section_totals = {}
+    section_present = []
+    for h in headings:
+        s = h["section"]
+        if s not in section_totals:
+            section_totals[s] = Decimal("0")
+            section_present.append(s)
+        section_totals[s] += _cents(h["net_debit"])
+    section_present.sort(key=lambda s: _SECTION_ORDER.get(s, 2))
+    sections = [
+        {"section": s, "net_debit": float(section_totals[s].quantize(_CENTS, rounding=ROUND_HALF_UP))}
+        for s in section_present
+    ]
+
+    return {
+        "headings": headings,
+        "sections": sections,
+        "no_heading": len(no_heading_accounts),
+    }
+
+
 #: The columns the journal writes to epm_staging.consolidation_adjustments:
 #: J05a's DDL order (clickhouse._REFERENCE_TABLE_DDL) without ``created_at``,
 #: which the column's DEFAULT now() fills (konsol#305 J05, #305-D2-11/12).
