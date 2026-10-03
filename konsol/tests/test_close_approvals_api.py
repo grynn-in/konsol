@@ -433,6 +433,58 @@ def test_ger_her_op_ic_balance_use_the_docstatus_fallback():
     assert names == {"GER-0", "HER-0", "OP-0", "IC-0"}
 
 
+# --- U8: a workflow reject (first-state docstatus 0) shows in sent_back -------------
+
+
+def test_u8_workflow_reject_to_first_state_is_sent_back_not_waiting():
+    """A reject returns a workflow doctype to its FIRST state (``states[0]``,
+    e.g. "Draft"), never into ``states[1:]`` — the only states
+    ``_pending_rows`` reads. Without the fix, this document never reaches
+    ``docs[doctype]`` at all, so it is invisible to the queue."""
+    site = _Site()
+    site.workflows[JOURNAL] = {"name": "Consolidation Journal Workflow", "workflow_state_field": "status"}
+    site.wf_states["Consolidation Journal Workflow"] = ["Draft", "Pending Approval", "Approved", "Reversed"]
+    site.journals = [_journal("CJ-REJECTED", status="Draft", modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[JOURNAL] = {"CJ-REJECTED": {
+        "reason": "wrong account", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
+    result = _call(site)
+    assert [i["name"] for i in result["items"]] == []
+    sent = next(i for i in result["sent_back"] if i["name"] == "CJ-REJECTED")
+    assert sent["rejection"]["reason"] == "wrong account"
+    # it never enters items/waiting (goal: U8).
+    assert result["waiting"]["count"] == 0
+    assert result["counts"][JOURNAL] == 1
+
+
+def test_u8_first_state_draft_never_rejected_is_not_in_the_queue_at_all():
+    """A brand-new first-state draft (never sent for approval, so no
+    rejection) must stay invisible, exactly like
+    test_workflow_doctype_lists_pending_approval_not_draft — the first-state
+    read only ever adds a document that is_sent_back says is sent back."""
+    site = _Site()
+    site.workflows[JOURNAL] = {"name": "Consolidation Journal Workflow", "workflow_state_field": "status"}
+    site.wf_states["Consolidation Journal Workflow"] = ["Draft", "Pending Approval", "Approved", "Reversed"]
+    site.journals = [_journal("CJ-DRAFT", status="Draft")]
+    result = _call(site)
+    assert _all_items(result) == []
+
+
+def test_u8_first_state_read_is_one_extra_get_all_only_when_workflow_active():
+    """Bounded reads: the first-state read costs exactly one extra
+    ``get_all`` per workflow doctype, whether 1 or 6 documents sit at the
+    first state, and none at all for a doctype with no active workflow."""
+    site = _Site()
+    site.workflows[JOURNAL] = {"name": "Consolidation Journal Workflow", "workflow_state_field": "status"}
+    site.wf_states["Consolidation Journal Workflow"] = ["Draft", "Pending Approval", "Approved", "Reversed"]
+    site.journals = [_journal("CJ-P", status="Pending Approval")]
+    site.gers = [_ger("GER-0")]  # no workflow installed for GER
+    _call(site)
+    journal_reads = [r for r in site.reads if r[0] == "get_all" and r[1] == JOURNAL]
+    ger_reads = [r for r in site.reads if r[0] == "get_all" and r[1] == GER]
+    assert len(journal_reads) == 2  # pending states + first state
+    assert len(ger_reads) == 1  # no workflow: no extra read
+
+
 # --- the journal item carries lines and effect ---------------------------------------
 
 
