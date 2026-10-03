@@ -28,6 +28,13 @@ comes before the write.
   Account table_exists + count, Close Event 1, Consolidation Group 1, User
   <= 1; ClickHouse 2 when configured, 0 otherwise. Constant in pairs.
 
+``setup_gap()``, ``tolerance_gap()``, ``open_fixes(keys)`` and
+``signoff_summary(fiscal_year, fiscal_period)`` (C05) are module-level
+helpers, not endpoints: not whitelisted, no ``only_for``, callers gate and
+apply scope. ``setup_gap``/``tolerance_gap`` read nothing once intercompany
+is configured; ``open_fixes`` and ``signoff_summary`` never raise on a
+warehouse failure (``cannot_check`` / ``"error"`` instead).
+
 Import warning: this module imports ``konsol.close.ch_read``,
 ``close_policy_model`` and ``ic_model`` at module level. Test loaders that
 build ``konsol.close`` as a stub package must stub ``konsol.close.ic_api``
@@ -140,6 +147,104 @@ def declared_none():
     Settings meta (W3-P9): its error is never caught. C05 reuses it."""
     value = frappe.db.get_single_value("Close Settings", "intercompany_declaration")
     return value == close_policy_model.INTERCOMPANY_NONE
+
+
+def setup_gap():
+    """C05: My work's "no intercompany accounts declared" setup gap (D2-7;
+    story 1.2). None once intercompany is configured (``published_count() >
+    0``) or Close Settings declares "none in this group" (W3-7): there is
+    then nothing to declare. Not whitelisted: the caller (My work) gates."""
+    if declared_none():
+        return None
+    if published_count() == 0:
+        return ic_model.SETUP_HELP
+    return None
+
+
+def tolerance_gap():
+    """C05: My work's W3-6 setup gap — a consolidation group node that has
+    not declared its intercompany difference tolerance (0 is undeclared).
+    None while intercompany is not configured or declared not applicable
+    (W3-P2): there is nothing yet to judge a tolerance against. Group nodes
+    are the Consolidation Group rows with no entity (W3-P13), the same
+    filter as ``_currencies``. Not whitelisted: the caller gates."""
+    published = published_count()
+    none = declared_none()
+    if published == 0 or none:
+        return None
+    groups = frappe.get_all(
+        "Consolidation Group", filters={"data_area_id": _BLANK},
+        fields=["consolidation_group", "ic_difference_tolerance"],
+        limit_page_length=0)
+    return ic_model.tolerance_gap(published, none, groups)
+
+
+def open_fixes(keys):
+    """C05: My work's open intercompany fix items, per open period (D2-7,
+    E5-P2, E5-P4). ``keys`` is a list of ``(fiscal_year, fiscal_period)`` —
+    My work's open periods. Returns ``{key: [fix, …]}`` (``ic_model.
+    open_fixes`` shape, unmasked); a key with no open fix is omitted. Not
+    whitelisted: the caller gates and applies scope."""
+    keys = [(int(fy), int(fp)) for fy, fp in keys]
+    if not keys or published_count() == 0 or declared_none():
+        return {}
+    key_set = set(keys)
+    years = sorted({fy for fy, _fp in keys})
+    events = frappe.get_all(
+        "Close Event",
+        filters={"kind": "ic_sent_back", "fiscal_year": ["in", years]},
+        fields=["name", "at", "actor", "reason", "detail", "fiscal_year", "fiscal_period"],
+        limit_page_length=0,
+    )
+    by_key = {}
+    for event in events:
+        key = (int(event["fiscal_year"]), int(event["fiscal_period"]))
+        if key not in key_set:
+            continue
+        event = dict(event)
+        event["kind"] = "ic_sent_back"
+        detail = event.get("detail")
+        event["detail"] = json.loads(detail) if isinstance(detail, str) and detail else (
+            detail or {})
+        by_key.setdefault(key, []).append(event)
+
+    out = {}
+    for key in keys:
+        key_events = by_key.get(key)
+        if not key_events:
+            continue
+        fy, fp = key
+        try:
+            rows = [_numbers(r, _PAIR_NUMBERS)
+                    for r in ch_read.rows(_RECONCILIATION_SQL, {"fy": fy, "fp": fp})]
+            error = None
+        except Exception as e:  # noqa: BLE001 — any failure to read means "can't say"
+            rows, error = [], _error_text(e)
+        fixes = ic_model.open_fixes(key_events, rows, error=error)
+        if fixes:
+            out[key] = fixes
+    return out
+
+
+def signoff_summary(fiscal_year, fiscal_period):
+    """C05: the sign-off summary's intercompany line (stories 9.x; E5-P13: a
+    count only, unscoped — never an entity or an amount). Never raises: a
+    warehouse failure, or "not configured" / "not applicable" / the W3-7
+    conflict, reads as its own state with ``counts`` and ``sent_back_open``
+    None, never a guessed 0. Not whitelisted: the caller gates."""
+    fy, fp = int(fiscal_year), int(fiscal_period)
+    published = published_count()
+    none = declared_none()
+    result = ic_model.state(published, declared_none=none)
+    if result["state"] == "checked":
+        rows, unmatched, error = _warehouse(fy, fp)
+        if error:
+            result = ic_model.state(published, error, declared_none=none)
+        else:
+            events = _sent_back_events(fy, fp)
+            return ic_model.signoff_line("checked", rows, unmatched, events)
+    return {"state": result["state"], "message": result["message"], "counts": None,
+            "sent_back_open": None}
 
 
 def _warehouse(fy, fp):
