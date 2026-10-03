@@ -1,8 +1,8 @@
 <script setup>
 /**
- * konsol#305 A17: the Adjustments screen, read-only (E6; stories 6.1, 6.2;
- * W2-10 Viewer reads). A18 adds the draft editor and the send controls on
- * this same file; this row has no write control of any kind.
+ * konsol#305 A17/A18: the Adjustments screen (E6; stories 6.1, 6.2; W2-10
+ * Viewer reads; R2). A18 adds the draft editor ("New" / Edit), "Save draft"
+ * and "Send for approval" on top of A17's read-only list and panel.
  *
  * Data:
  * - A05 GET `journal_api.get_journals(fiscal_year, fiscal_period)`, turned
@@ -15,29 +15,53 @@
  * - Selecting a journal opens a side panel: its lines, its effect per
  *   statement heading through `effectView` ("no heading" text comes from
  *   effectView itself, never a literal in this template), and the last
- *   rejection reason on a Draft.
+ *   rejection reason on a Draft. An `editable` journal (A13's `editable`)
+ *   also offers an Edit button there.
+ * - A06 POST `journal_api.save_journal`, through the one call site
+ *   `saveDraft()`; its body comes only from `saveJournalBody` (A13). A07
+ *   POST `journal_api.send_for_approval`, through the one call site
+ *   `sendForApproval()`, carrying only the journal's name. Both reload
+ *   `get_journals` once on success and call the injected `CONTEXT_RELOAD`
+ *   once (Rates.vue's pattern). "New" renders only when `canDraft`, "Send
+ *   for approval" only when `canSend` and the draft is saved.
+ * - E6-P8: the effect panel is the saved journal's `effect`; a dirty,
+ *   unsaved edit shows `effectView(null).note` instead.
+ * - Amended 3 Oct: while `draftTotals(draft.lines).invalid` is non-empty,
+ *   "Save draft" is disabled and the screen names the invalid line numbers;
+ *   no request is sent. A line whose amount does not parse never reaches
+ *   the server as 0 — the save is refused client-side before any POST.
  *
  * Who sees what (W2-10, #305-P21-1): the GET is open to every close role
  * (`JOURNAL_ROLES`, journal_api.py) except the Entity Accountant, who has no
  * journal permission; journals are not entity-scoped, so a Viewer reads
- * every journal.
+ * every journal. amended 3 Oct (E6-P1 option (c)): only the EPM Analyst and
+ * System Manager draft or send (`canDraft`/`canSend` already fold this in).
  *
  * The period comes from the URL (route.js, D5); nothing is kept in the
  * browser. Not built here, and not rendered as dead controls: the Partner
  * column, Evidence/attach, and "Still in force from earlier periods"
  * (engineering call) — all P2 or belong to a later row.
  */
-import { computed, reactive, ref, onBeforeUnmount, watch } from "vue";
+import { computed, inject, reactive, ref, onBeforeUnmount, watch } from "vue";
 import { useRoute } from "vue-router";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
-import { get } from "../api.js";
+import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { journalsView, effectView } from "../adjustments.js";
+import { journalsView, effectView, durationOptions, draftTotals, saveJournalBody, editable, NO_REVERSAL_NOTE } from "../adjustments.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
+import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
 const GET_JOURNALS = "konsol.close.journal_api.get_journals";
+const SAVE_JOURNAL = "konsol.close.journal_api.save_journal";
+const SEND = "konsol.close.journal_api.send_for_approval";
+
+//: the journal's Adjustment Type Select (journal_api.ADJUSTMENT_TYPES).
+const ADJUSTMENT_TYPE_OPTIONS = [
+	{ value: "topside", label: "Topside" },
+	{ value: "reclassification", label: "Reclassification" },
+];
 
 //: E6-P15: the sentence send_for_approval (A07) refuses with when no
 //: journal workflow is installed. Shown once, here, as a note — never
@@ -56,11 +80,151 @@ const periodName = computed(() =>
 );
 const what = computed(() => `the adjustments for ${periodName.value}`);
 const timeZone = userTimeZone();
+// No default: a screen outside the shell is a wiring bug, and Vue warns about it.
+const reloadContext = inject(CONTEXT_RELOAD);
 
 const journals = reactive({ status: "loading", payload: null, error: null, busy: false });
 let seq = 0;
 
 const selectedName = ref(null);
+
+//: the signed-in user's id (Frappe boot), for `editable`'s "own draft" rule (A13).
+const currentUser =
+	(typeof window !== "undefined" && window.frappe && window.frappe.boot && window.frappe.boot.user && window.frappe.boot.user.name) || null;
+
+function blankLine() {
+	return { data_area_id: "", main_account: "", debit_amount: "", credit_amount: "", description: "" };
+}
+
+const editorOpen = ref(false);
+const draft = reactive({
+	name: null,
+	consolidation_group: "",
+	adjustment_type: "topside",
+	description: "",
+	duration: { kind: "none" },
+	lines: [blankLine()],
+});
+const draftError = ref(null);
+const saving = ref(false);
+const sending = ref(false);
+
+const totals = computed(() => draftTotals(draft.lines));
+
+const durationChoices = computed(() => durationOptions(view.value || {}));
+const durationIndex = computed(() => {
+	const idx = durationChoices.value.findIndex(
+		(o) =>
+			o.kind === draft.duration.kind &&
+			(o.kind !== "reverses" || (o.fiscal_year === draft.duration.fiscal_year && o.fiscal_period === draft.duration.fiscal_period)),
+	);
+	return idx >= 0 ? idx : 0;
+});
+function setDuration(i) {
+	draft.duration = durationChoices.value[Number(i)] || { kind: "none" };
+}
+
+const selectedGroup = computed(() =>
+	view.value ? (view.value.groups || []).find((g) => g.consolidation_group === draft.consolidation_group) : null,
+);
+const entityOptions = computed(() => (selectedGroup.value ? selectedGroup.value.entities : []));
+const accountOptions = computed(() =>
+	Object.entries((view.value && view.value.accounts) || {})
+		.map(([code, acc]) => ({ code, label: `${code} — ${acc.account_name || code}` }))
+		.sort((a, b) => a.code.localeCompare(b.code)),
+);
+
+function invalidLinesMessage(invalid) {
+	if (!invalid.length) return null;
+	const noun = invalid.length > 1 ? "Lines" : "Line";
+	const verb = invalid.length > 1 ? "have" : "has";
+	return `${noun} ${invalid.join(", ")} ${verb} an amount that is not a number: fix it before saving.`;
+}
+
+function openNew() {
+	draftError.value = null;
+	const groups = view.value ? view.value.groups : [];
+	draft.name = null;
+	draft.consolidation_group = groups && groups.length === 1 ? groups[0].consolidation_group : "";
+	draft.adjustment_type = "topside";
+	draft.description = "";
+	draft.duration = { kind: "none" };
+	draft.lines = [blankLine()];
+	editorOpen.value = true;
+	closePanel();
+}
+
+function openEdit(journal) {
+	draftError.value = null;
+	draft.name = journal.name;
+	draft.consolidation_group = journal.consolidation_group;
+	draft.adjustment_type = journal.adjustment_type;
+	draft.description = journal.description || "";
+	draft.duration = journal.reverse
+		? { kind: "reverses", fiscal_year: journal.reverse.fiscal_year, fiscal_period: journal.reverse.fiscal_period }
+		: { kind: "none" };
+	draft.lines = journal.lines.length
+		? journal.lines.map((l) => ({
+				data_area_id: l.data_area_id,
+				main_account: l.main_account,
+				debit_amount: l.debit_amount ?? "",
+				credit_amount: l.credit_amount ?? "",
+				description: l.description || "",
+			}))
+		: [blankLine()];
+	editorOpen.value = true;
+}
+
+function closeEditor() {
+	editorOpen.value = false;
+	draftError.value = null;
+}
+
+function addLine() {
+	draft.lines.push(blankLine());
+}
+function removeLine(idx) {
+	if (draft.lines.length > 1) draft.lines.splice(idx, 1);
+}
+
+async function saveDraft() {
+	draftError.value = null;
+	const t = draftTotals(draft.lines);
+	if (t.invalid.length) {
+		draftError.value = invalidLinesMessage(t.invalid);
+		return;
+	}
+	if (!period.value || saving.value) return;
+	const periodKey = { fiscal_year: period.value.year, fiscal_period: period.value.period };
+	saving.value = true;
+	try {
+		const body = saveJournalBody(periodKey, draft);
+		const result = await post(SAVE_JOURNAL, body);
+		draft.name = result.name;
+		reloadContext();
+		await loadJournals({ quiet: true });
+	} catch (e) {
+		draftError.value = e.message;
+	} finally {
+		saving.value = false;
+	}
+}
+
+async function sendForApproval() {
+	if (!draft.name || sending.value) return;
+	draftError.value = null;
+	sending.value = true;
+	try {
+		await post(SEND, { name: draft.name });
+		reloadContext();
+		await loadJournals({ quiet: true });
+		closeEditor();
+	} catch (e) {
+		draftError.value = e.message;
+	} finally {
+		sending.value = false;
+	}
+}
 
 // journalsView throws when it is not given a time zone or a valid `now`
 // (mirrors Rates.vue's/Intercompany.vue's `view`, never swallowed).
@@ -94,7 +258,30 @@ const selectedJournal = computed(() => {
 	if (!selectedName.value || !view.value) return null;
 	return view.value.journals.find((j) => j.name === selectedName.value) || null;
 });
-const selectedEffect = computed(() => (selectedJournal.value ? effectView(selectedJournal.value.effect) : null));
+//: E6-P8: while the editor holds an unsaved edit of the selected journal
+//: (its lines no longer match the saved snapshot), the effect panel shows
+//: `effectView(null).note` rather than the stale saved effect.
+const editorDirty = computed(() => {
+	if (!editorOpen.value || !selectedJournal.value || draft.name !== selectedJournal.value.name) return false;
+	const saved = (selectedJournal.value.lines || []).map((l) => ({
+		data_area_id: l.data_area_id,
+		main_account: l.main_account,
+		debit_amount: l.debit_amount ?? "",
+		credit_amount: l.credit_amount ?? "",
+		description: l.description || "",
+	}));
+	return JSON.stringify(saved) !== JSON.stringify(draft.lines);
+});
+const selectedEffect = computed(() => {
+	if (!selectedJournal.value) return null;
+	return effectView(editorDirty.value ? null : selectedJournal.value.effect);
+});
+
+//: Edit shown only on an `editable` journal (A13), for the signed-in user.
+const canEditSelected = computed(() => {
+	if (!selectedJournal.value || !view.value) return false;
+	return editable(selectedJournal.value, view.value, currentUser);
+});
 
 function selectJournal(journal) {
 	selectedName.value = journal.name;
@@ -135,6 +322,7 @@ watch(
 	() => {
 		journals.payload = null;
 		closePanel();
+		closeEditor();
 		loadJournals();
 	},
 	{ immediate: true },
@@ -152,9 +340,12 @@ function lines(text) {
 
 <template>
 	<div class="mx-auto max-w-6xl px-6 py-6">
-		<header>
-			<h1 class="text-xl font-semibold text-ink-gray-9">Adjustments</h1>
-			<p class="mt-1 text-sm text-ink-gray-6">{{ periodName }} · {{ journalCountText }}</p>
+		<header class="flex flex-wrap items-start justify-between gap-3">
+			<div>
+				<h1 class="text-xl font-semibold text-ink-gray-9">Adjustments</h1>
+				<p class="mt-1 text-sm text-ink-gray-6">{{ periodName }} · {{ journalCountText }}</p>
+			</div>
+			<Button v-if="view && view.canDraft" theme="gray" variant="solid" :disabled="editorOpen" @click="openNew">New</Button>
 		</header>
 
 		<p
@@ -164,6 +355,110 @@ function lines(text) {
 		>
 			{{ NO_WORKFLOW_NOTE }}
 		</p>
+
+		<!-- Draft editor (A18): "New" above, or Edit from the side panel below. -->
+		<section
+			v-if="editorOpen"
+			class="mt-4 rounded border border-outline-gray-2 bg-surface-white p-4"
+		>
+			<div class="flex items-start justify-between gap-2">
+				<h2 class="text-base font-semibold text-ink-gray-9">{{ draft.name ? draft.name : "New adjustment" }}</h2>
+				<Button variant="ghost" size="sm" aria-label="Close editor" @click="closeEditor">
+					<FeatherIcon name="x" class="h-4 w-4" />
+				</Button>
+			</div>
+
+			<p v-if="draftError" role="alert" class="mt-2 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8">
+				<span v-for="(line, i) in lines(draftError)" :key="i" class="block">{{ line }}</span>
+			</p>
+
+			<div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+				<label class="flex flex-col gap-1 text-sm">
+					<span class="text-ink-gray-6">Type</span>
+					<select v-model="draft.adjustment_type" class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8">
+						<option v-for="opt in ADJUSTMENT_TYPE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+					</select>
+				</label>
+				<label class="flex flex-col gap-1 text-sm">
+					<span class="text-ink-gray-6">Group</span>
+					<select v-model="draft.consolidation_group" class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8">
+						<option value="" disabled>Choose a group</option>
+						<option v-for="g in (view ? view.groups : [])" :key="g.consolidation_group" :value="g.consolidation_group">{{ g.consolidation_group }}</option>
+					</select>
+				</label>
+				<label class="flex flex-col gap-1 text-sm sm:col-span-2">
+					<span class="text-ink-gray-6">Why</span>
+					<textarea v-model="draft.description" rows="2" class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"></textarea>
+				</label>
+				<label class="flex flex-col gap-1 text-sm">
+					<span class="text-ink-gray-6">Duration</span>
+					<select :value="durationIndex" class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8" @change="setDuration($event.target.value)">
+						<option v-for="(opt, i) in durationChoices" :key="i" :value="i">{{ opt.label }}</option>
+					</select>
+					<span v-if="durationChoices.length <= 1" class="text-xs text-ink-gray-5">{{ NO_REVERSAL_NOTE }}</span>
+				</label>
+			</div>
+
+			<div class="mt-4">
+				<h3 class="mb-2 text-sm font-semibold text-ink-gray-9">Lines</h3>
+				<table class="w-full text-left text-sm">
+					<thead class="text-xs uppercase tracking-wide text-ink-gray-6">
+						<tr>
+							<th class="py-1 font-medium">Entity</th>
+							<th class="py-1 font-medium">Account</th>
+							<th class="py-1 font-medium">Debit</th>
+							<th class="py-1 font-medium">Credit</th>
+							<th class="py-1 font-medium">Description</th>
+							<th class="py-1 font-medium"></th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr v-for="(line, idx) in draft.lines" :key="idx" class="border-t border-outline-gray-2">
+							<td class="py-1 pr-1">
+								<select v-model="line.data_area_id" :aria-label="`Entity, line ${idx + 1}`" class="w-full rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-ink-gray-8">
+									<option value="" disabled>Entity</option>
+									<option v-for="e in entityOptions" :key="e" :value="e">{{ e }}</option>
+								</select>
+							</td>
+							<td class="py-1 pr-1">
+								<select v-model="line.main_account" :aria-label="`Account, line ${idx + 1}`" class="w-full rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-ink-gray-8">
+									<option value="" disabled>Account</option>
+									<option v-for="a in accountOptions" :key="a.code" :value="a.code">{{ a.label }}</option>
+								</select>
+							</td>
+							<td class="py-1 pr-1">
+								<input v-model="line.debit_amount" type="text" inputmode="decimal" :aria-label="`Debit, line ${idx + 1}`" class="w-24 rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-right font-mono text-ink-gray-8" />
+							</td>
+							<td class="py-1 pr-1">
+								<input v-model="line.credit_amount" type="text" inputmode="decimal" :aria-label="`Credit, line ${idx + 1}`" class="w-24 rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-right font-mono text-ink-gray-8" />
+							</td>
+							<td class="py-1 pr-1">
+								<input v-model="line.description" type="text" :aria-label="`Description, line ${idx + 1}`" class="w-full rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-ink-gray-8" />
+							</td>
+							<td class="py-1">
+								<Button variant="ghost" size="sm" aria-label="Remove line" :disabled="draft.lines.length <= 1" @click="removeLine(idx)">
+									<FeatherIcon name="trash-2" class="h-4 w-4" />
+								</Button>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+				<Button class="mt-2" variant="outline" size="sm" @click="addLine">Add line</Button>
+			</div>
+
+			<p class="mt-3 text-sm text-ink-gray-7">
+				Dr {{ totals.debit.toFixed(2) }} · Cr {{ totals.credit.toFixed(2) }} ·
+				<span v-if="totals.balanced" class="font-medium text-ink-green-4">Balanced</span>
+				<span v-else class="font-medium text-ink-amber-4">Out of balance by {{ totals.difference.toFixed(2) }}</span>
+			</p>
+			<p v-if="totals.invalid.length" role="alert" class="mt-1 text-sm text-ink-red-4">{{ invalidLinesMessage(totals.invalid) }}</p>
+
+			<div class="mt-4 flex flex-wrap items-center gap-2">
+				<Button theme="gray" variant="solid" :loading="saving" :disabled="saving || totals.invalid.length > 0" @click="saveDraft">Save draft</Button>
+				<Button v-if="view && view.canSend && draft.name" variant="outline" :loading="sending" :disabled="sending" @click="sendForApproval">Send for approval</Button>
+				<span class="text-xs text-ink-gray-5">The Close Lead approves. Only an open period accepts it.</span>
+			</div>
+		</section>
 
 		<LoadState class="mt-4" :state="loadState" :what="what" :source="GET_JOURNALS" :error="loadError" :busy="journals.busy" @retry="loadJournals">
 			<template v-if="view">
@@ -221,9 +516,12 @@ function lines(text) {
 		>
 			<div class="flex items-start justify-between gap-2">
 				<h2 class="text-base font-semibold text-ink-gray-9">{{ selectedJournal.title }}</h2>
-				<Button variant="ghost" size="sm" aria-label="Close" @click="closePanel">
-					<FeatherIcon name="x" class="h-4 w-4" />
-				</Button>
+				<div class="flex items-center gap-1">
+					<Button v-if="canEditSelected" size="sm" @click="openEdit(selectedJournal)">Edit</Button>
+					<Button variant="ghost" size="sm" aria-label="Close" @click="closePanel">
+						<FeatherIcon name="x" class="h-4 w-4" />
+					</Button>
+				</div>
 			</div>
 			<p class="mt-1 text-sm text-ink-gray-6">{{ selectedJournal.status }} · {{ selectedJournal.duration }}</p>
 
@@ -261,14 +559,17 @@ function lines(text) {
 
 			<section v-if="selectedEffect" class="mt-4">
 				<h3 class="mb-2 text-sm font-semibold text-ink-gray-9">Effect</h3>
-				<div v-if="!selectedEffect.headings.length" class="text-sm text-ink-gray-6">No effect.</div>
-				<ul v-else class="space-y-1 text-sm">
-					<li v-for="(heading, i) in selectedEffect.headings" :key="i" class="flex items-center justify-between gap-2">
-						<span class="text-ink-gray-7">{{ heading.label }}</span>
-						<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
-					</li>
-				</ul>
-				<p v-if="selectedEffect.noHeading" class="mt-1 text-xs text-ink-gray-5">{{ selectedEffect.noHeading }} account(s) outside any heading.</p>
+				<p v-if="selectedEffect.note" class="text-sm text-ink-gray-6">{{ selectedEffect.note }}</p>
+				<template v-else>
+					<div v-if="!selectedEffect.headings.length" class="text-sm text-ink-gray-6">No effect.</div>
+					<ul v-else class="space-y-1 text-sm">
+						<li v-for="(heading, i) in selectedEffect.headings" :key="i" class="flex items-center justify-between gap-2">
+							<span class="text-ink-gray-7">{{ heading.label }}</span>
+							<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
+						</li>
+					</ul>
+					<p v-if="selectedEffect.noHeading" class="mt-1 text-xs text-ink-gray-5">{{ selectedEffect.noHeading }} account(s) outside any heading.</p>
+				</template>
 			</section>
 		</div>
 	</div>
