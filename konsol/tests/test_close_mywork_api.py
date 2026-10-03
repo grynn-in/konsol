@@ -116,6 +116,9 @@ class _Site:
         self.ic_fixes = {}
         self.ic_calls = []
         self.ic_tolerance_gap = None
+        self.approvals_waiting = {"count": 0}
+        self.approvals_calls = []
+        self.approvals_error = None
 
 
 def _frappe(site):
@@ -279,6 +282,18 @@ def _call(site):
 
     ic_api.open_fixes = open_fixes
 
+    # A12: a stub `konsol.close.approvals_api` with a recording `queue_for`, so
+    # My work reads the same queue A10 builds without running it for real.
+    approvals_api = types.ModuleType("konsol.close.approvals_api")
+
+    def queue_for(user, roles):
+        site.approvals_calls.append((user, tuple(roles)))
+        if site.approvals_error:
+            raise site.approvals_error
+        return {"waiting": dict(site.approvals_waiting)}
+
+    approvals_api.queue_for = queue_for
+
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.group_chart": group_chart,
@@ -288,6 +303,7 @@ def _call(site):
         "konsol.close.freshness_api": freshness_api,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
         "konsol.close.ic_api": ic_api,
+        "konsol.close.approvals_api": approvals_api,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -928,3 +944,51 @@ def test_viewer_reads_no_ic_facts():
     site.ic_fixes = {(2025, 7): [_ic_fix()]}
     result = _call(site)
     assert result["items"] == [] and site.ic_calls == []
+
+
+# --- A12: the Close Lead's "approvals" My work item -----------------------
+
+
+def test_close_lead_gets_the_approvals_item_from_the_queue():
+    site = _Site()
+    site.approvals_waiting = {"count": 2, "oldest": "2025-08-15T10:00:00+01:00"}
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "approvals")
+    assert item["title"] == "Approve 2 items"
+    assert item["action"] == {"screen": "approvals"}
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 1
+    assert site.approvals_calls == [(site.user, ("EPM Admin",))]
+    _assert_counts_add_up(result, "close_lead")
+
+
+def test_zero_waiting_gives_no_approvals_item():
+    site = _Site()
+    site.approvals_waiting = {"count": 0}
+    result = _call(site)
+    assert "approvals" not in _ids(result)
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 0
+
+
+def test_group_accountant_never_calls_the_approvals_queue():
+    site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.approvals_waiting = {"count": 2}
+    result = _call(site)
+    assert "approvals" not in _ids(result)
+    assert site.approvals_calls == []
+
+
+def test_a_queue_failure_is_not_swallowed():
+    site = _Site()
+    site.approvals_error = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        _call(site)
+
+
+def test_close_lead_gets_the_approvals_item_with_an_undeclared_first_close():
+    site = _Site()
+    site.first_close = (0, 0)
+    site.approvals_waiting = {"count": 1, "oldest": "2025-08-15T10:00:00+01:00"}
+    result = _call(site)
+    ids = _ids(result)
+    assert "approvals" in ids
+    assert all(i["id"] == "approvals" or i["id"].startswith("gap:") for i in result["items"]), ids
