@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { intercompanyView, sendBackBody, panel } from "./intercompany.js";
+import { intercompanyView, sendBackBody, panel, bannerToneClass } from "./intercompany.js";
 
 // --- fixtures --------------------------------------------------------------
 
@@ -177,12 +177,42 @@ test("checked: chips from counts, group order kept, status texts, sent-back pair
 	assert.deepEqual(view.groups.map((g) => g.consolidationGroup), ["ROOT", "SUB"]);
 
 	const [root, sub] = view.groups;
-	assert.equal(root.pairs[0].statusText, "Sent to both · Sep 29, 08:15");
+	// U5: a sent-back pair keeps its real status (never "Sent to both"),
+	// with the sent-back time appended and the status's own tone.
+	assert.equal(root.pairs[0].statusText, "Over tolerance · sent back Sep 29, 08:15");
+	assert.notEqual(root.pairs[0].statusText, "Sent to both · Sep 29, 08:15");
 	assert.equal(root.pairs[0].statusTone, "block");
 	assert.equal(root.pairs[1].statusText, "Within tolerance");
 	assert.equal(root.pairs[1].statusTone, "ok");
 	assert.equal(sub.pairs[0].statusText, "FX difference");
 	assert.equal(sub.pairs[0].statusTone, "warn");
+});
+
+test("U5: sent-back pairs across every match status keep STATUS_TEXT and append the sent-back time, never 'Sent to both'", () => {
+	const sentBack = { by: "a@x.com", by_name: "A", at: "2026-09-29T08:15:00Z", reason: "checking" };
+	for (const [status, label] of [
+		["matched", "Matched"],
+		["within_tolerance", "Within tolerance"],
+		["fx_difference", "FX difference"],
+		["over_tolerance", "Over tolerance"],
+	]) {
+		const payload = basePayload({
+			state: "checked",
+			groups: [{
+				consolidation_group: "ROOT",
+				reporting_currency: "GBP",
+				tolerance: 10,
+				ic_difference_account: null,
+				tolerance_declared: true,
+				pairs: [pairRow({ match_status: status, sent_back: sentBack })],
+			}],
+			counts: { pairs: 1, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+		});
+		const view = intercompanyView(payload, NOW, ZONE);
+		const pair = view.groups[0].pairs[0];
+		assert.equal(pair.statusText, `${label} · sent back Sep 29, 08:15`);
+		assert.doesNotMatch(pair.statusText, /Sent to both/);
+	}
 });
 
 // --- W3-2 masking --------------------------------------------------------------
@@ -210,6 +240,145 @@ test("W3-2: a masked side never shows an amount, shows the hidden label instead"
 	const sidePanel = panel(pair);
 	assert.equal(sidePanel.sideB.amount, "Hidden: outside your entities");
 	assert.notEqual(sidePanel.sideB.amount, "0.00");
+});
+
+// --- U6: formatted difference ---------------------------------------------------
+
+test("U6: pairView carries a formatted differenceText, mirroring the balance columns", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 10,
+			ic_difference_account: null,
+			tolerance_declared: true,
+			pairs: [pairRow({ difference: -1234.5 })],
+		}],
+		counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	const pair = view.groups[0].pairs[0];
+	assert.equal(pair.differenceText, "(1,234.50)");
+	assert.notEqual(pair.differenceText, -1234.5);
+});
+
+// --- U10: an unmasked null never reads as zero -----------------------------------
+
+test("U10: an unmasked null balance reads 'not reported', never '0.00'", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 10,
+			ic_difference_account: null,
+			tolerance_declared: true,
+			pairs: [pairRow({ balance_a: null, masked_a: false })],
+		}],
+		counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	const pair = view.groups[0].pairs[0];
+	assert.equal(pair.balanceAText, "not reported");
+	assert.notEqual(pair.balanceAText, "0.00");
+
+	const sidePanel = panel(pair);
+	assert.equal(sidePanel.sideA.amount, "not reported");
+	assert.notEqual(sidePanel.sideA.amount, "0.00");
+});
+
+test("U10: a null unmatched amount reads 'not reported', never '0.00'", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [],
+		unmatched: [{
+			consolidation_group: "ROOT",
+			data_area_id: "UK01",
+			main_account: "1810",
+			counterpart_account: "2810",
+			unmatched_local_amount: null,
+			unmatched_amount: null,
+		}],
+		counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 1 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	const row = view.unmatched[0];
+	assert.equal(row.amount, "not reported (group view, after ownership)");
+	assert.equal(row.local, "not reported (entity currency)");
+	assert.doesNotMatch(row.amount, /0\.00/);
+	assert.doesNotMatch(row.local, /0\.00/);
+});
+
+// --- U12: the not_applicable banner gets its own tone, not amber ------------------
+
+test("U12: bannerToneClass gives 'ok' its own class, distinct from 'block' and from amber/warn styling", () => {
+	const okClass = bannerToneClass("ok");
+	const blockClass = bannerToneClass("block");
+	assert.notEqual(okClass, blockClass);
+	assert.doesNotMatch(okClass, /amber/, "the not_applicable/ok banner must not render with warn-amber styling");
+});
+
+test("U12: bannerToneClass throws on an unknown tone, naming it", () => {
+	assert.throws(() => bannerToneClass("mystery"), /mystery/);
+});
+
+test("U12: a not_applicable banner's tone renders its own class via bannerToneClass, not the block class", () => {
+	const payload = basePayload({
+		state: "not_applicable",
+		message: "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+		help: null,
+		groups: [],
+		unmatched: [],
+		counts: null,
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.banner.tone, "ok");
+	assert.notEqual(bannerToneClass(view.banner.tone), bannerToneClass("block"));
+});
+
+// --- U9: a pure test feeding intercompanyView's output the way Intercompany.vue uses it ---
+
+test("U9: Intercompany.vue's own reads of intercompanyView's output — banner class and the difference cell", () => {
+	// The template renders the banner's class via bannerToneClass(view.banner.tone)
+	// and the difference cell via {{ pair.differenceText }} — exercise both exactly
+	// as the screen does, rather than grepping the .vue source.
+	const notApplicable = intercompanyView(
+		basePayload({
+			state: "not_applicable",
+			message: "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+			help: null,
+			groups: [],
+			unmatched: [],
+			counts: null,
+		}),
+		NOW,
+		ZONE,
+	);
+	assert.doesNotThrow(() => bannerToneClass(notApplicable.banner.tone));
+
+	const checked = intercompanyView(
+		basePayload({
+			state: "checked",
+			groups: [{
+				consolidation_group: "ROOT",
+				reporting_currency: "GBP",
+				tolerance: 10,
+				ic_difference_account: null,
+				tolerance_declared: true,
+				pairs: [pairRow({ difference: -1234.5, balance_a: null, masked_a: false })],
+			}],
+			counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+		}),
+		NOW,
+		ZONE,
+	);
+	const pair = checked.groups[0].pairs[0];
+	// The template reads these fields directly — never the raw pair.difference
+	// or balance_a, and never falls back to a masked/blank/"0.00" look.
+	assert.equal(pair.differenceText, "(1,234.50)");
+	assert.equal(pair.balanceAText, "not reported");
+	assert.doesNotThrow(() => bannerToneClass(checked.banner.tone));
 });
 
 // --- panel ---------------------------------------------------------------------

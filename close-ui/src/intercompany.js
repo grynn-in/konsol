@@ -20,9 +20,13 @@
 // A masked side (W3-2 option B) never renders "0.00" or blank: it shows
 // `HIDDEN_LABEL` in place of the amount, a display courtesy, not a
 // security control (the difference and the partner's code stay visible).
+// An unmasked null amount (not reported) is a different thing again: it
+// renders "not reported", never "0.00" (U10) — a missing amount is not a
+// zero balance.
 //
-// An unknown `state` or `match_status` throws, naming it: this view never
-// guesses a status for something it has not been told how to read.
+// An unknown `state`, `match_status` or banner tone throws, naming it: this
+// view never guesses a status, or a style, for something it has not been
+// told how to read.
 
 import { formatTime, parseZoned } from "./timefmt.js";
 import { messageLines } from "./signoff.js";
@@ -30,6 +34,7 @@ import { messageLines } from "./signoff.js";
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 
 const HIDDEN_LABEL = "Hidden: outside your entities";
+const NOT_REPORTED = "not reported";
 
 const STATUS_TEXT = {
 	matched: "Matched",
@@ -47,10 +52,30 @@ const STATUS_TONE = {
 
 const BLOCKING_STATES = new Set(["not_built", "error"]);
 
-/** A number -> "1,234.50" / "(1,234.50)"; null/undefined -> "0.00" is never produced from a mask — callers check masked_* first. */
+/** The banner's own border/background/text classes for its tone (U12).
+ * `block` and `ok` each get a style of their own — `ok` (e.g. the
+ * `not_applicable` banner) is a neutral notice, never folded into the
+ * amber "warn" styling nothing here produces. Throws on an unknown tone,
+ * naming it, the same as an unknown state or match_status. */
+const BANNER_TONE_CLASS = {
+	block: "border-outline-red-1 bg-surface-red-1 text-ink-gray-8",
+	ok: "border-outline-gray-2 bg-surface-gray-1 text-ink-gray-7",
+};
+
+export function bannerToneClass(tone) {
+	if (!Object.prototype.hasOwnProperty.call(BANNER_TONE_CLASS, tone)) {
+		throw new Error(`Unknown intercompany banner tone: ${tone}`);
+	}
+	return BANNER_TONE_CLASS[tone];
+}
+
+/** A number -> "1,234.50" / "(1,234.50)"; null/undefined -> "not reported"
+ * (U10) — never "0.00", which would read as an actual zero balance. A
+ * masked side never reaches this function with null: callers check
+ * masked_* first and use HIDDEN_LABEL instead. */
 function formatAmount(value) {
 	if (value === null || value === undefined) {
-		return AMOUNT_FORMAT.format(0);
+		return NOT_REPORTED;
 	}
 	const formatted = AMOUNT_FORMAT.format(Math.abs(value));
 	return value < 0 ? `(${formatted})` : formatted;
@@ -106,7 +131,10 @@ function statusFor(matchStatus, sentBack, toleranceDeclared) {
 	if (!(matchStatus in STATUS_TEXT)) {
 		throw new Error(`Unknown intercompany match status: ${matchStatus}`);
 	}
-	let text = sentBack ? `Sent to both · ${sentBack.at}` : STATUS_TEXT[matchStatus];
+	let text = STATUS_TEXT[matchStatus];
+	if (sentBack) {
+		text += ` · sent back ${sentBack.at}`;
+	}
 	if (!toleranceDeclared) {
 		text += " · tolerance not declared";
 	}
@@ -132,6 +160,7 @@ function pairView(pair, group, toleranceDeclared, now, timeZone) {
 		statusTone: status.tone,
 		balanceAText: pair.masked_a ? HIDDEN_LABEL : formatAmount(pair.balance_a),
 		balanceBText: pair.masked_b ? HIDDEN_LABEL : formatAmount(pair.balance_b),
+		differenceText: formatAmount(pair.difference),
 	};
 }
 
