@@ -83,7 +83,7 @@ test("journalsView keeps journal order and formats last_rejection's time", () =>
 	assert.equal(view.journals[1].lastRejection.reason, "Wrong account");
 	assert.equal(view.journals[1].lastRejection.actor, "lead@example.com");
 	assert.notEqual(view.journals[1].lastRejection.at, "2026-10-01T10:30:00+00:00");
-	assert.equal(view.journals[1].lastRejection.at, "10:30");
+	assert.equal(view.journals[1].lastRejection.at, "Oct 1, 10:30");
 });
 
 test("journalsView: a null approved_at reads 'not recorded'", () => {
