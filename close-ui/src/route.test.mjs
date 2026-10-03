@@ -32,7 +32,11 @@ function walk(dir) {
 }
 
 test("SCREENS is the declared screen list", () => {
-  assert.deepEqual(SCREENS, ["my-work", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"]);
+  assert.deepEqual(SCREENS, ["my-work", "period", "trial-balances", "intercompany", "rates", "adjustments", "approvals", "checks", "sign-off", "audit-trail"]);
+});
+
+test("the approvals slug parses", () => {
+  assert.deepEqual(parse("/close/2025/9/approvals"), { year: 2025, period: 9, screen: "approvals" });
 });
 
 test("the intercompany slug parses", () => {
