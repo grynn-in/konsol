@@ -757,6 +757,11 @@ def test_green_signoff_with_ic_over_tolerance_is_refused_without_an_acknowledgem
                 "a Green close with IC over tolerance signed with no acknowledgement")
         except frappe.ValidationError as e:
             assert "2 pairs over tolerance" in str(e), str(e)
+            # S2 (review-w3): doc.warned is 0 here — only the IC line makes
+            # this Amber — so the refusal must never claim "0 warning(s)".
+            # The IC line counts as one more warning on top of doc.warned.
+            assert "0 warning(s)" not in str(e), str(e)
+            assert "1 warning(s)" in str(e), str(e)
     assert doc.signoff_saved is False
     assert frappe.events == [], frappe.events
 
