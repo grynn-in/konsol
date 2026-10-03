@@ -278,3 +278,225 @@ def test_a_renamed_approved_state_still_reaches_the_warehouse_as_approved():
         _staging_line("CJ-00009", 2, "E2", "2000", credit=10),
     ])
     assert {dict(zip(_STAGING_COLUMNS, r))["status"] for r in rows} == {"Approved"}
+
+
+# --- A01: statement_effect — the journal's change per statement heading
+
+def _acct(heading, heading_name, section):
+    return {"heading": heading, "heading_name": heading_name, "statement_section": section}
+
+
+def _se_line(main_account, debit=0, credit=0):
+    return {"main_account": main_account, "debit_amount": debit, "credit_amount": credit}
+
+
+def test_statement_effect_the_wireframes_case():
+    lines = [
+        _se_line("6100", debit=18500),
+        _se_line("2310", credit=18500),
+    ]
+    accounts = {
+        "6100": _acct("6000", "Operating expenses", "Profit and Loss"),
+        "2310": _acct("2300", "Current liabilities", "Balance Sheet"),
+    }
+    result = M.statement_effect(lines, accounts)
+    assert result["headings"] == [
+        {"section": "Profit and Loss", "heading": "6000",
+         "heading_name": "Operating expenses", "net_debit": 18500.0},
+        {"section": "Balance Sheet", "heading": "2300",
+         "heading_name": "Current liabilities", "net_debit": -18500.0},
+    ]
+    assert result["sections"] == [
+        {"section": "Profit and Loss", "net_debit": 18500.0},
+        {"section": "Balance Sheet", "net_debit": -18500.0},
+    ]
+    assert result["no_heading"] == 0
+
+
+def test_statement_effect_a_reclass_inside_one_heading_nets_to_zero_but_is_not_dropped():
+    lines = [
+        _se_line("6100", debit=100),
+        _se_line("6150", credit=100),
+    ]
+    accounts = {
+        "6100": _acct("6000", "Operating expenses", "Profit and Loss"),
+        "6150": _acct("6000", "Operating expenses", "Profit and Loss"),
+    }
+    result = M.statement_effect(lines, accounts)
+    assert result["headings"] == [
+        {"section": "Profit and Loss", "heading": "6000",
+         "heading_name": "Operating expenses", "net_debit": 0.0},
+    ]
+
+
+def test_statement_effect_never_drops_heading_none_heading_blank_or_account_absent():
+    lines = [
+        _se_line("1000", debit=10),   # heading is None
+        _se_line("1100", debit=20),   # heading is ""
+        _se_line("1200", debit=30),   # absent from accounts entirely
+    ]
+    accounts = {
+        "1000": _acct(None, None, None),
+        "1100": _acct("", "", ""),
+    }
+    result = M.statement_effect(lines, accounts)
+    assert result["headings"] == [
+        {"section": None, "heading": None, "heading_name": None, "net_debit": 60.0},
+    ]
+    assert result["sections"] == [{"section": None, "net_debit": 60.0}]
+    assert result["no_heading"] == 3
+
+
+def test_statement_effect_two_accounts_under_one_heading_are_summed():
+    lines = [
+        _se_line("6100", debit=100),
+        _se_line("6110", debit=50),
+    ]
+    accounts = {
+        "6100": _acct("6000", "Operating expenses", "Profit and Loss"),
+        "6110": _acct("6000", "Operating expenses", "Profit and Loss"),
+    }
+    result = M.statement_effect(lines, accounts)
+    assert len(result["headings"]) == 1
+    assert result["headings"][0]["net_debit"] == 150.0
+
+
+def test_statement_effect_fractional_cents_net_to_zero_exactly():
+    """0.1 + 0.2 must balance against 0.3 — a plain float sum would not."""
+    lines = [
+        _se_line("6100", debit=0.10),
+        _se_line("6110", debit=0.20),
+        _se_line("6120", credit=0.30),
+    ]
+    accounts = {
+        "6100": _acct("6000", "Operating expenses", "Profit and Loss"),
+        "6110": _acct("6000", "Operating expenses", "Profit and Loss"),
+        "6120": _acct("6000", "Operating expenses", "Profit and Loss"),
+    }
+    result = M.statement_effect(lines, accounts)
+    assert result["headings"][0]["net_debit"] == 0.0
+
+
+def test_statement_effect_ordering_sections_then_heading_name_then_heading_none_last():
+    lines = [
+        _se_line("2310", credit=5),     # Balance Sheet, Current liabilities
+        _se_line("9999", debit=1),      # absent -> no heading, no section
+        _se_line("6200", credit=4),     # Profit and Loss, Revenue
+        _se_line("6100", debit=10),     # Profit and Loss, Operating expenses
+    ]
+    accounts = {
+        "2310": _acct("2300", "Current liabilities", "Balance Sheet"),
+        "6200": _acct("6500", "Revenue", "Profit and Loss"),
+        "6100": _acct("6000", "Operating expenses", "Profit and Loss"),
+    }
+    result = M.statement_effect(lines, accounts)
+    assert [(h["section"], h["heading"]) for h in result["headings"]] == [
+        ("Profit and Loss", "6000"),
+        ("Profit and Loss", "6500"),
+        ("Balance Sheet", "2300"),
+        (None, None),
+    ]
+    assert result["sections"] == [
+        {"section": "Profit and Loss", "net_debit": 6.0},
+        {"section": "Balance Sheet", "net_debit": -5.0},
+        {"section": None, "net_debit": 1.0},
+    ]
+    assert result["no_heading"] == 1
+
+
+# --- A02: clean_lines, reversal_choices, duration_label
+
+def test_clean_lines_forge_extra_keys_give_a_problem_each_but_the_row_is_kept():
+    lines = [{
+        "main_account": "A", "debit_amount": 1,
+        "docstatus": 1, "parent": "X", "name": "Y", "idx": 9,
+    }]
+    rows, problems = M.clean_lines(lines)
+    assert len(problems) == 4
+    for forged in ("docstatus", "parent", "name", "idx"):
+        assert any(forged in p and "Line 1" in p for p in problems), problems
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row) == set(M.LINE_KEYS)
+    assert "docstatus" not in row and "parent" not in row
+    assert "name" not in row and "idx" not in row
+    assert row["main_account"] == "A"
+    assert row["debit_amount"] == 1
+
+
+def test_clean_lines_a_non_list_item_is_a_problem_not_an_exception():
+    rows, problems = M.clean_lines(["not a dict", None, {"main_account": "A"}])
+    assert len(problems) == 2
+    assert len(rows) == 1
+    assert rows[0]["main_account"] == "A"
+
+
+def test_clean_lines_lines_itself_not_a_list_is_a_problem():
+    rows, problems = M.clean_lines("not a list")
+    assert rows == []
+    assert len(problems) == 1
+
+
+def test_clean_lines_clean_input_keeps_every_key_missing_as_none_in_order():
+    lines = [{
+        "data_area_id": "E1", "main_account": "1000",
+        "debit_amount": 100, "credit_amount": 0, "description": "d",
+    }]
+    rows, problems = M.clean_lines(lines)
+    assert problems == []
+    assert rows == [{
+        "data_area_id": "E1", "main_account": "1000",
+        "debit_amount": 100, "credit_amount": 0, "description": "d",
+    }]
+    assert tuple(rows[0]) == M.LINE_KEYS
+
+
+def test_clean_lines_missing_keys_become_none():
+    rows, problems = M.clean_lines([{"main_account": "1000"}])
+    assert problems == []
+    assert rows == [{
+        "data_area_id": None, "main_account": "1000",
+        "debit_amount": None, "credit_amount": None, "description": None,
+    }]
+
+
+#: A02's own fixture (the row's stated case): the journal's own period is
+#: FY2024 P07. P08 Open Regular and P11 Open Regular qualify; P09 Closed and
+#: P10 Open Closing do not, nor does the own period or an earlier one.
+_A02_OWN = (2024, 7)
+_A02_ROWS = [
+    _period_row(2024, 6, "Regular", "Open"),     # earlier than own
+    _period_row(2024, 7, "Regular", "Open"),     # the journal's own period
+    _period_row(2024, 8, "Regular", "Open"),     # qualifies
+    _period_row(2024, 9, "Regular", "Closed"),   # not Open
+    _period_row(2024, 10, "Closing", "Open"),    # not Regular
+    _period_row(2024, 11, "Regular", "Open"),    # qualifies
+]
+
+
+def test_reversal_choices_lists_only_the_qualifying_periods_in_order():
+    choices = M.reversal_choices(*_A02_OWN, _A02_ROWS)
+    assert choices == [
+        {"fiscal_year": 2024, "fiscal_period": 8, "code": "P8"},
+        {"fiscal_year": 2024, "fiscal_period": 11, "code": "P11"},
+    ]
+
+
+def test_reversal_choices_never_offers_the_own_or_an_earlier_period():
+    choices = M.reversal_choices(*_A02_OWN, _A02_ROWS)
+    offered = {(c["fiscal_year"], c["fiscal_period"]) for c in choices}
+    assert (2024, 7) not in offered
+    assert (2024, 6) not in offered
+
+
+def test_duration_label_no_reversal():
+    assert M.duration_label(0, 0, _A02_ROWS) == "This period only, no reversal"
+
+
+def test_duration_label_a_declared_period():
+    assert M.duration_label(2024, 11, _A02_ROWS) == "Reverses in P11"
+
+
+def test_duration_label_an_undeclared_period_is_never_blank():
+    label = M.duration_label(2099, 3, _A02_ROWS)
+    assert label == "Reverses in FY2099 P03 (not a declared period)"

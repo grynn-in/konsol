@@ -61,23 +61,33 @@ export function sections(items) {
 }
 
 /**
- * `item` (A20's shape) → the in-app route path for a period item, or
+ * `item` (A20's shape) and `current` (`{year, period}`, the URL's period,
+ * or null/absent) → the in-app route path for a period item, or
  * `{external: "/app/..."}` for a setup-gap item (story 0.4). A period
  * item's route never depends on client-side "last viewed" state (D5): the
- * period comes from the item itself.
+ * period comes from the item itself, never from `current`.
+ *
+ * E6-P10 (A20): a screen item with no `period` (an approval or adjustment
+ * item that belongs to no single period) routes to `current` instead. With
+ * no `current` (nothing in the URL) it returns null — a period is never
+ * invented — and the caller (MyWork.vue) renders the item's title with no
+ * link.
  *
  * B18b: when the item's action names an entity (an Entity Accountant's
  * "Upload TB for <entity>" item), the route carries it as `?entity=<code>`,
  * so TrialBalances.vue can open that entity's detail area directly. An
  * action with no entity carries no query string — never an invented one.
  */
-export function itemRoute(item) {
+export function itemRoute(item, current) {
 	const action = item.action || {};
 	if (action.desk) {
 		return { external: action.desk };
 	}
 	const period = item.period;
-	const path = format({ year: period.fiscal_year, period: period.fiscal_period, screen: action.screen });
+	const year = period ? period.fiscal_year : current ? current.year : null;
+	const fiscalPeriod = period ? period.fiscal_period : current ? current.period : null;
+	if (year == null || fiscalPeriod == null) return null;
+	const path = format({ year, period: fiscalPeriod, screen: action.screen });
 	return action.entity ? `${path}?entity=${encodeURIComponent(action.entity)}` : path;
 }
 
@@ -106,4 +116,49 @@ export function ageText(since, today) {
 	const days = Math.floor((todayUTC - sinceUTC) / MS_PER_DAY);
 	if (days < 0) return null;
 	return days === 1 ? "1 day" : `${days} days`;
+}
+
+// --- U7 (review-w3.md): the item's badge ------------------------------------
+//
+// MyWork.vue:248 badged every period-less item orange "Setup", on the
+// (wrong) assumption that "no period" means "configuration gap". It does
+// not: mywork_model.py returns period-less items from three different
+// builders —
+// - `setup_gap_items`: a real configuration gap. Carries
+//   `since_reason: "configuration gap"`.
+// - `approvals_item`: the Close Lead's one-item approvals queue. Carries
+//   `since_reason: "oldest waiting"`.
+// - `sent_back_items`, for a doctype outside `_SENT_BACK_PERIOD_KEYED`
+//   (Historical Equity Rate, Ownership Period, Business Combination,
+//   Business Disposal): a sent-back draft. Carries
+//   `since_reason: "sent back"`.
+// Badging the last two "Setup" makes routine approval/rework look like a
+// setup defect. `since_reason` is the one field every period-less builder
+// sets, and only `setup_gap_items` sets it to "configuration gap" — so it,
+// not "no period", decides.
+//
+// A period item (it carries `period`, from `_period_item` or
+// `ic_fix_items`) always gets its period's code, themed by kind,
+// regardless of `since_reason`.
+//
+// An unknown kind throws (mirrors `sections`): a badge is never guessed,
+// and never defaults to "Setup".
+
+const BADGE_THEME = { blocking: "red", todo: "blue", waiting: "gray" };
+const BADGE_LABEL = { blocking: "Blocking", todo: "To do", waiting: "Waiting" };
+
+/**
+ * `item` (A20's shape) -> `{theme, label}` for the My work screen's badge.
+ */
+export function badgeFor(item) {
+	if (!Object.prototype.hasOwnProperty.call(BADGE_THEME, item.kind)) {
+		throw new Error(`unknown item kind: ${item.kind}`);
+	}
+	if (item.period) {
+		return { theme: BADGE_THEME[item.kind], label: item.period.code };
+	}
+	if (item.since_reason === "configuration gap") {
+		return { theme: "orange", label: "Setup" };
+	}
+	return { theme: BADGE_THEME[item.kind], label: BADGE_LABEL[item.kind] };
 }

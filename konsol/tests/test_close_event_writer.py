@@ -61,6 +61,8 @@ class _Site:
         self.insert_raises = insert_raises
         self.inserted = []  # (event dict, writing active, ignore_permissions)
         self.sql_calls = []
+        self.get_all_calls = []  # A03: recorded (doctype, filters, fields, order_by, limit_page_length)
+        self.get_all_result = []
         self.commits = 0
         self.flags = _Flags()
 
@@ -120,9 +122,17 @@ def _frappe(site):
     def commit():
         site.commits += 1
 
+    def get_all(doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
+        site.get_all_calls.append({
+            "doctype": doctype, "filters": filters, "fields": fields,
+            "order_by": order_by, "limit_page_length": limit_page_length,
+        })
+        return site.get_all_result
+
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.get_doc = get_doc
+    frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.db = types.SimpleNamespace(sql=sql, commit=commit)
     frappe.session = types.SimpleNamespace(user=site.user)
@@ -423,6 +433,54 @@ def test_entity_of_any_other_doctype_raises_value_error():
     assert "Budget Cycle" in msg
 
 
+# -- latest_rejections (A03) --------------------------------------------------
+
+
+def test_latest_rejections_keeps_the_newest_per_document():
+    site = _Site()
+    writer, _ = _load(site)
+    # Newest first, as "at desc, name desc" would return it.
+    site.get_all_result = [
+        {"reference_name": "OP-1", "actor": "b@example.com", "at": datetime.datetime(2026, 10, 2), "reason": "newer"},
+        {"reference_name": "OP-2", "actor": "c@example.com", "at": datetime.datetime(2026, 10, 1), "reason": "only one"},
+        {"reference_name": "OP-1", "actor": "a@example.com", "at": datetime.datetime(2026, 9, 1), "reason": "older"},
+    ]
+    result = writer.latest_rejections("Ownership Period", ["OP-1", "OP-2"])
+    assert result == {
+        "OP-1": {"reason": "newer", "actor": "b@example.com", "at": datetime.datetime(2026, 10, 2)},
+        "OP-2": {"reason": "only one", "actor": "c@example.com", "at": datetime.datetime(2026, 10, 1)},
+    }
+    assert len(site.get_all_calls) == 1
+
+
+def test_latest_rejections_with_empty_names_makes_no_read():
+    """Failure path: empty ``names`` reads nothing and returns {}."""
+    site = _Site()
+    writer, _ = _load(site)
+    assert writer.latest_rejections("Ownership Period", []) == {}
+    assert site.get_all_calls == []
+
+
+def test_latest_rejections_reads_only_the_rejected_kind():
+    """Failure path: a name with only an approved event is absent. The
+    filter sent to get_all names the doctype, the kind and the names."""
+    site = _Site()
+    writer, _ = _load(site)
+    site.get_all_result = []  # the stub frappe does the filtering for real; this proves the call
+    result = writer.latest_rejections("Ownership Period", ["OP-3"])
+    assert result == {}
+    call = site.get_all_calls[0]
+    assert call["doctype"] == "Close Event"
+    assert call["filters"] == {
+        "kind": "rejected",
+        "reference_doctype": "Ownership Period",
+        "reference_name": ["in", ["OP-3"]],
+    }
+    assert call["fields"] == ["reference_name", "actor", "at", "reason"]
+    assert call["order_by"] == "at desc, name desc"
+    assert call["limit_page_length"] == 0
+
+
 # -- one writer (P12 lesson: two writers of one table) -----------------------
 
 ALLOWED = {
@@ -436,6 +494,8 @@ ALLOWED = {
     "close/self_approval.py",
     "close/cancel_event.py",
     "hooks.py",
+    # C03t (E5-P16): reads ic_sent_back events for the Intercompany screen.
+    "close/ic_api.py",
 }
 WRITER = "close/close_event.py"
 FORBIDDEN = (
@@ -509,3 +569,15 @@ def test_the_checker_catches_a_second_writer():
     assert writer_problems(source, WRITER) == []
     for pattern in FORBIDDEN:
         assert writer_problems(pattern + "\n", "fiscal_calendar.py"), pattern
+
+
+def test_ic_api_may_read_but_not_write_close_events():
+    """C03t (E5-P16): close/ic_api.py reads ic_sent_back events; it is an
+    allowed reader, but the write checks still apply to it."""
+    bad = writer_problems('rows = frappe.get_all("Close Event")\n', "close/ic_api.py")
+    assert bad == [], bad
+    # Failure path: the FORBIDDEN write pattern still catches it.
+    bad = writer_problems(
+        'frappe.db.set_value("Close Event", n, "reason", "x")\n', "close/ic_api.py"
+    )
+    assert bad, bad

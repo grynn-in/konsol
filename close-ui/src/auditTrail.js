@@ -57,6 +57,7 @@ const KIND_LABEL = {
 	tb_cancelled: { label: "Cancelled", tone: "mute" },
 	tb_exception_declared: { label: "No-TB exception", tone: "warn" },
 	tb_exception_cancelled: { label: "Exception cancelled", tone: "mute" },
+	ic_sent_back: { label: "Sent back", tone: "warn" },
 };
 
 const SIGNOFF_LABEL = {
@@ -115,6 +116,13 @@ function itemText(event, periodFiscalYear) {
 	}
 	if (YEAR_KINDS.has(event.kind)) {
 		return `FY${periodFiscalYear}`;
+	}
+	if (event.kind === "ic_sent_back") {
+		const { entity_a, account_a, entity_b, account_b } = event.detail || {};
+		if (!entity_a || !account_a || !entity_b || !account_b) {
+			return "Intercompany pair (not recorded)";
+		}
+		return `Intercompany · ${entity_a} ${account_a} ↔ ${entity_b} ${account_b}`;
 	}
 	return `${event.reference_doctype} ${event.reference_name}`;
 }

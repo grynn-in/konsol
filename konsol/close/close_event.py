@@ -136,6 +136,33 @@ def period_of(doc):
     raise ValueError(f"period_of does not know where a {doctype} event belongs")
 
 
+def latest_rejections(doctype, names):
+    """``{name: {"reason", "actor", "at"}}``: the newest ``rejected`` event
+    per document name in ``names`` (#305-A03, E6-P3, E6-P11). Empty
+    ``names`` makes no read and returns ``{}``."""
+    if not names:
+        return {}
+    rows = frappe.get_all(
+        "Close Event",
+        filters={
+            "kind": "rejected",
+            "reference_doctype": doctype,
+            "reference_name": ["in", sorted(names)],
+        },
+        fields=["reference_name", "actor", "at", "reason"],
+        order_by="at desc, name desc",
+        limit_page_length=0,
+    )
+    result = {}
+    for row in rows:
+        result.setdefault(row["reference_name"], {
+            "reason": row["reason"],
+            "actor": row["actor"],
+            "at": row["at"],
+        })
+    return result
+
+
 def entity_of(doc):
     """The entity the trail scopes an event about ``doc`` by, or None for a
     group-level document."""

@@ -116,6 +116,13 @@ class _Site:
         self.close_events = []
         #: T04b failure path: set to a message to make close_event.record raise.
         self.close_event_fail = None
+        #: C18t: the stubbed `konsol.close.ic_api.tolerance_gap`/`signoff_summary`
+        #: read these. `ic_calls` records every `signoff_summary` call (C19).
+        self.ic_tolerance_gap = None
+        self.ic_summary = {"state": "not_configured",
+                           "message": "Intercompany not configured — nothing was checked.",
+                           "counts": None, "sent_back_open": None}
+        self.ic_calls = []
 
 
 def _match(value, cond):
@@ -242,6 +249,20 @@ def _load(site):
 
     close_event.record = _record_event
     close.close_event = close_event
+
+    # C18t: a stub `konsol.close.ic_api`, so `from konsol.close import ic_api`
+    # (C19 on) resolves to this rather than the real module, which would
+    # otherwise run against this fake frappe.
+    ic_api = types.ModuleType("konsol.close.ic_api")
+
+    def signoff_summary(fiscal_year, fiscal_period):
+        site.ic_calls.append((fiscal_year, fiscal_period))
+        return dict(site.ic_summary)
+
+    ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
+    ic_api.signoff_summary = signoff_summary
+    close.ic_api = ic_api
+
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -317,6 +338,7 @@ def _load(site):
             "konsol.close.close_policy_model": close_policy_model,
             "konsol.close.scope_model": scope_model,
             "konsol.close.close_event": close_event,
+            "konsol.close.ic_api": ic_api,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -1078,3 +1100,62 @@ def test_the_period_trial_balances_are_read_once():
     _call(site, "sign_off_problems", 2025, 9)
     tb_reads = [c for c in site.get_all_calls if c[0] == "Trial Balance Submission"]
     assert len(tb_reads) == 1, tb_reads
+
+
+# --- C18t: the loader carries a stub konsol.close.ic_api, for C19 ----------
+
+
+def test_the_ic_api_stub_is_installed():
+    site = _Site()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "ic_tolerance_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+
+
+# --- C19: the undeclared tolerance blocks sign-off; intercompany(fy, fp) ----
+
+def test_an_undeclared_tolerance_blocks_sign_off():
+    site = _Site()
+    site.ic_tolerance_gap = {
+        "code": "ic_tolerance_undeclared", "groups": ["ZZG"],
+        "message": "Declare the intercompany difference tolerance for ZZG.",
+    }
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["ic_tolerance_undeclared"]
+    message = _blocked(site)
+    assert "Declare the intercompany difference tolerance for ZZG." in message, message
+
+
+def test_the_tolerance_gap_follows_both_policy_gaps():
+    site = _Site()
+    site.settings["self_approval"] = ""
+    site.ic_tolerance_gap = {
+        "code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>",
+    }
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["self_approval_undeclared", "ic_tolerance_undeclared"], codes
+
+
+def test_no_tolerance_gap_leaves_the_gate_as_before():
+    site = _Site()
+    assert site.ic_tolerance_gap is None
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+
+
+def test_sign_off_problems_never_reads_the_warehouse():
+    # Failure path: a gate check costs no ClickHouse read — sign_off_problems
+    # only calls tolerance_gap() (MariaDB via C05), never signoff_summary.
+    site = _Site()
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
+    _call(site, "sign_off_problems", 2025, 9)
+    assert site.ic_calls == [], site.ic_calls
+
+
+def test_intercompany_returns_the_stubbed_summary_and_records_the_call():
+    site = _Site()
+    site.ic_summary = {"state": "checked", "message": None,
+                       "counts": {"pairs": 3, "over_tolerance": 1}, "sent_back_open": 1}
+    result = _call(site, "intercompany", 2025, 10)
+    assert result == site.ic_summary
+    assert site.ic_calls == [(2025, 10)], site.ic_calls

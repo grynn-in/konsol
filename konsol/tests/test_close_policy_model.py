@@ -430,3 +430,46 @@ def test_a_child_row_change_in_the_submit_is_an_edit():
                       ("removed", [["lines", {"name": "CJL-1"}]])):
         diff = {"changed": [["docstatus", 0, 1]], key: rows}
         assert M.submit_carries_edit(diff, state_field="status") is True, key
+
+
+# --- intercompany_declaration_problems (konsol#305-W3-7, C16) ------------
+
+def test_intercompany_declarations_hold_only_none_in_this_group():
+    assert M.INTERCOMPANY_NONE == "None in this group"
+    assert M.INTERCOMPANY_DECLARATIONS == (M.INTERCOMPANY_NONE,)
+
+
+def test_blank_intercompany_declaration_has_no_problem():
+    assert M.intercompany_declaration_problems("", 0) == []
+    assert M.intercompany_declaration_problems(None, 0) == []
+    # Blank is undeclared: nothing to refuse, whatever is Published.
+    assert M.intercompany_declaration_problems("", 3) == []
+
+
+def test_none_in_this_group_with_nothing_published_has_no_problem():
+    assert M.intercompany_declaration_problems("None in this group", 0) == []
+
+
+def test_none_in_this_group_with_published_accounts_is_refused():
+    """Failure path: 3 Published Intercompany Accounts contradict 'none'."""
+    problems = M.intercompany_declaration_problems("None in this group", 3)
+    assert len(problems) == 1, problems
+    assert "3" in problems[0]
+    assert "Inactive" in problems[0]
+
+
+def test_unknown_intercompany_declaration_is_refused():
+    """Failure path: a value that is not declared is refused, naming it."""
+    problems = M.intercompany_declaration_problems("Some", 0)
+    assert problems == [
+        "Unknown intercompany declaration 'Some'; expected blank or None in this group."]
+
+
+def test_published_must_be_a_non_negative_int():
+    for declaration in ("None in this group", ""):
+        for bad in (-1, "2", None, 1.5, True):
+            try:
+                M.intercompany_declaration_problems(declaration, bad)
+            except ValueError:
+                continue
+            raise AssertionError("published=%r must raise ValueError" % (bad,))

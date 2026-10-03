@@ -348,3 +348,148 @@ def test_the_withdrawal_guard_locks_before_reading_the_pairing_table():
     assert body.index("FOR UPDATE") < body.index("intercompany_accounts(self._row"
                                                  ) if "intercompany_accounts(self._row" in body else True
     assert "`tabDocType`" in body, body
+
+
+# -- konsol#305-W3-7 (C17): the reverse of C16 -------------------------------
+
+def test_publish_is_refused_while_close_settings_declares_none():
+    """C16's declaration, read back here as a raw ``tabSingles`` value (never
+    ``get_single_value``, W3-P9), under the same lock C16's save takes, so a
+    concurrent Close Settings save and this publish cannot both pass."""
+    sent = []
+    chart_calls = []
+
+    def sql(query, values=None, as_dict=False):
+        sent.append((" ".join(query.split()), values))
+        if "`tabSingles`" in query:
+            return [("None in this group",)]
+        return []
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    chart = types.ModuleType("group_chart_stub")
+    chart.chart_accounts = lambda: chart_calls.append(1) or {}
+    chart.posting_codes = lambda c: chart_calls.append(1) or set()
+    chart.chart_codes = lambda: chart_calls.append(1) or set()
+    saved = sys.modules.get("konsol.group_chart")
+    sys.modules["konsol.group_chart"] = chart
+    M.frappe.db = types.SimpleNamespace(sql=sql)
+    M.frappe.throw = throw
+    try:
+        M.IntercompanyAccount._before_publish(_doc("Published", "Draft"))
+        assert False, "a declared none did not refuse the publish"
+    except _Refused as e:
+        assert str(e) == (
+            "Close Settings declares no intercompany in this group "
+            "(Intercompany: None in this group). Clear that declaration "
+            "before publishing this pairing.")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.group_chart", None)
+        else:
+            sys.modules["konsol.group_chart"] = saved
+    assert not chart_calls, "the chart was read after a refused publish"
+    assert sent[0] == ("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
+                        ("Intercompany Account",))
+    assert len(sent) == 2, sent   # the lock, then the Singles read only
+    query, values = sent[1]
+    assert query == ("SELECT `value` FROM `tabSingles` WHERE `doctype` = 'Close Settings' "
+                      "AND `field` = 'intercompany_declaration' FOR UPDATE")
+    assert query.endswith("FOR UPDATE")
+
+
+def test_a_blank_declaration_does_not_refuse_the_publish():
+    """Blank (never declared, or the meta lacks the field and the row reads
+    as missing): the publish checks continue exactly as before."""
+    for singles_rows in ([], [("",)]):
+        sent = []
+
+        def sql(query, values=None, as_dict=False, _rows=singles_rows):
+            sent.append((" ".join(query.split()), values))
+            if "`tabSingles`" in query:
+                return _rows
+            if "`tabConsolidation Group`" in query and values == ("5030",):
+                return [_Flags(name="CG-ZZGRP-")]
+            if "`tabMain Account`" in query:
+                return [{"name": "4030", "allow_ic": 1}, {"name": "5030", "allow_ic": 1}]
+            return []
+
+        def throw(msg, *a, **k):
+            raise _Refused(msg)
+
+        chart = types.ModuleType("group_chart_stub")
+        _accts = {c: {"main_account": c, "is_group": 0, "is_posting": 1, "allow_ic": 1}
+                  for c in ("4030", "5030")}
+        chart.chart_accounts = lambda: _accts
+        chart.posting_codes = lambda c: {k for k, a in c.items() if not a["is_group"] and a["is_posting"]}
+        chart.chart_codes = lambda: {"4030", "5030"}
+        saved = sys.modules.get("konsol.group_chart")
+        sys.modules["konsol.group_chart"] = chart
+        M.frappe.db = types.SimpleNamespace(sql=sql)
+        M.frappe.throw = throw
+        try:
+            M.IntercompanyAccount._before_publish(_doc("Published", "Draft"))
+            assert False, "the difference account was not refused"
+        except _Refused as e:
+            assert "CG-ZZGRP- books intercompany differences" in str(e)
+        finally:
+            if saved is None:
+                sys.modules.pop("konsol.group_chart", None)
+            else:
+                sys.modules["konsol.group_chart"] = saved
+        singles = [s for s in sent if "`tabSingles`" in s[0]]
+        assert len(singles) == 1, singles
+
+
+def test_the_singles_read_comes_after_the_doctype_lock():
+    sent = []
+
+    def sql(query, values=None, as_dict=False):
+        sent.append((" ".join(query.split()), values))
+        return []
+
+    chart = types.ModuleType("group_chart_stub")
+    chart.chart_accounts = lambda: {}
+    chart.posting_codes = lambda c: set()
+    chart.chart_codes = lambda: set()
+    saved = sys.modules.get("konsol.group_chart")
+    sys.modules["konsol.group_chart"] = chart
+    M.frappe.db = types.SimpleNamespace(sql=sql)
+    M.frappe.throw = lambda msg, *a, **k: (_ for _ in ()).throw(_Refused(msg))
+    try:
+        try:
+            M.IntercompanyAccount._before_publish(_doc("Published", "Draft"))
+        except Exception:
+            pass
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.group_chart", None)
+        else:
+            sys.modules["konsol.group_chart"] = saved
+    lock_i = sent.index(("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
+                          ("Intercompany Account",)))
+    singles_i = next(i for i, (q, _v) in enumerate(sent) if "`tabSingles`" in q)
+    assert singles_i > lock_i
+    assert sent[singles_i][0].endswith("FOR UPDATE")
+
+
+def test_intercompany_account_does_not_import_from_konsol_close():
+    """Five test files load this module under stubs that know nothing of
+    konsol.close: test_consolidation_group_ic_difference.py,
+    test_dimensions_reach_the_warehouse.py, test_group_chart.py,
+    test_tb_bulk_model.py and this file. The literal is pinned against
+    close_policy_model instead (the REJECT_REASON_FLAG precedent,
+    consolidation_journal.py:25-29)."""
+    with open(os.path.join(DT_DIR, "intercompany_account.py")) as f:
+        src = f.read()
+    assert "konsol.close" not in src
+
+
+def test_the_intercompany_none_literal_matches_close_policy_model():
+    spec = importlib.util.spec_from_file_location(
+        "close_policy_model_under_test_c17",
+        os.path.join(APP_DIR, "close", "close_policy_model.py"))
+    cpm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cpm)
+    assert M.INTERCOMPANY_NONE == cpm.INTERCOMPANY_NONE == "None in this group"

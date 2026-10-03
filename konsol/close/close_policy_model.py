@@ -98,6 +98,32 @@ def policy_gaps(self_approval, rate_move_threshold):
     return gaps
 
 
+# konsol#305-W3-7 (C16): Close Settings ``intercompany_declaration``. Blank
+# is undeclared (intercompany is expected, or not set up yet); the only
+# declared value says this group has no intercompany. No default.
+INTERCOMPANY_NONE = "None in this group"
+INTERCOMPANY_DECLARATIONS = (INTERCOMPANY_NONE,)
+
+
+def intercompany_declaration_problems(declaration, published):
+    """Problems that refuse a Close Settings save of ``declaration``, given
+    ``published``, the count of Published Intercompany Accounts (an int >= 0;
+    anything else raises ValueError). Blank or None is undeclared: ``[]``."""
+    if isinstance(published, bool) or not isinstance(published, int) or published < 0:
+        raise ValueError(
+            "The count of Published Intercompany Accounts must be an int >= 0, not %r."
+            % (published,))
+    if not declaration:
+        return []
+    if declaration not in INTERCOMPANY_DECLARATIONS:
+        return ["Unknown intercompany declaration %r; expected blank or %s."
+                % (declaration, " or ".join(INTERCOMPANY_DECLARATIONS))]
+    if declaration == INTERCOMPANY_NONE and published > 0:
+        return ["%d Intercompany Account(s) are Published, so this group has "
+                "intercompany: make them Inactive before declaring none." % published]
+    return []
+
+
 _CHILD_ROW_KEYS = ("added", "removed", "row_changed")
 
 

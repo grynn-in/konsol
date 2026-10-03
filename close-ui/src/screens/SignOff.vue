@@ -193,6 +193,7 @@ const errorLines = computed(() => messageLines(context.value.error));
 const SECTION_TITLES = [
 	["gates", "Gates"],
 	["checks", "Checks"],
+	["intercompany", "Intercompany"],
 	["acknowledgements", "Acknowledged warnings"],
 	["onBehalf", "Trial balances uploaded on behalf"],
 	["exceptions", "Trial balance exceptions"],

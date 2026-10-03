@@ -49,7 +49,9 @@ def test_signoff_api_exists():
 def test_signoff_blocks_red_without_override():
     src = _src(CR_PY)
     # Green signs off; Red/Error requires a reason AND an override role
-    assert 'doc.status == "Green"' in src
+    # (konsol#305 C22: the effective status, after the intercompany line,
+    # decides Green vs. Amber — `status`, not the run's own `doc.status`.)
+    assert 'status == "Green"' in src
     assert "OVERRIDE_ROLES" in src and "frappe.get_roles()" in src
     assert "Overridden" in src
     # can't sign off an in-flight run

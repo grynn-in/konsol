@@ -90,9 +90,14 @@ def test_a_group_carries_its_intercompany_difference_account_and_tolerance():
         assert f'"{f}": "{f}"' in content, f
     # a locking read of Published Intercompany Account rows (#173 re-review L5)
     assert "_validate_ic_difference" in content and "FROM `tabIntercompany Account`" in content
-    # decision 13 (13 Sep 2026): only booking differences count against the tolerance
-    assert "booking difference" in fields["ic_difference_tolerance"]["description"]
-    assert "never counts" in fields["ic_difference_tolerance"]["description"]
+    # konsol#305-W3-5, #305-W3-6: no default (0 is undeclared, a setup gap),
+    # and the description says which pairs the tolerance judges.
+    assert "default" not in fields["ic_difference_tolerance"]
+    description = fields["ic_difference_tolerance"]["description"]
+    for phrase in ("booking difference", "balance-sheet pair across currencies",
+                   "never judged", "No default", "0 is undeclared", "tiny positive"):
+        assert phrase in description, phrase
+    assert "never counts against it" not in description
 
 
 # --- IC Elimination Rule ---

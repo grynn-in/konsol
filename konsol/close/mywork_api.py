@@ -12,6 +12,11 @@
   permission. The Entity Accountant persona is shown none of the policy gaps:
   they cannot declare Close Settings, and neither policy touches a trial
   balance (mirrors ``accountants_without_entities``);
+- the intercompany setup gaps (C08; #305-D2-7, W3-6, W3-7), group personas
+  only: ``ic_api.setup_gap()`` ("No intercompany accounts declared") and
+  ``ic_api.tolerance_gap()`` (a group node whose IC tolerance is undeclared).
+  Both are None when "none in this group" is declared. The Entity Accountant
+  cannot declare either, so is shown neither;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -41,6 +46,16 @@ Per-period facts:
 - ``unowned`` (#289, E206): entities named by the sign-off gate's
   ``tb_without_ownership`` config gap — a submitted TB with no covering
   ownership. Only the Close Lead is shown the resulting blocking item.
+
+IC fix items (C08; #305-W3-1, W3-2, D2-7): for the Entity Accountant only, and
+only once the first close is declared, ``ic_api.open_fixes`` over the open
+periods' keys is turned into one item per (sent-back pair, allowed entity) by
+``mywork_model.ic_fix_items``, pointed at Trial balances. They are recomputed
+on every read; an uncheckable pair stays an item, never dropped.
+
+A22: every persona but the Viewer also gets one ``todo`` item per sent-back
+draft they own (``approvals_api.sent_back_for``, A21, turned into items by
+``mywork_model.sent_back_items``). It does not depend on the first close.
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -80,8 +95,8 @@ from datetime import date, datetime
 import frappe
 
 from konsol import entity_permissions, fiscal_calendar, group_chart, group_rates
-from konsol.close import (checks_model, close_policy_model, mywork_model, period_model,
-                          scope_model, signoff_gate, signoff_model)
+from konsol.close import (approvals_api, checks_model, close_policy_model, ic_api, mywork_model,
+                          period_model, scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
@@ -90,10 +105,10 @@ ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", 
 
 #: Screens each persona sees, in order; mirrors close-ui/src/nav.js SCREENS_BY_PERSONA.
 SCREENS = {
-    period_model.CLOSE_LEAD: ("my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"),
-    period_model.GROUP_ACCOUNTANT: ("my-work", "period", "trial-balances", "rates", "checks", "sign-off", "audit-trail"),
+    period_model.CLOSE_LEAD: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"),
+    period_model.GROUP_ACCOUNTANT: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"),
     period_model.ENTITY_ACCOUNTANT: ("my-work", "trial-balances"),
-    period_model.VIEWER: ("trial-balances", "rates", "period", "checks", "sign-off", "audit-trail"),
+    period_model.VIEWER: ("trial-balances", "intercompany", "rates", "period", "adjustments", "approvals", "checks", "sign-off", "audit-trail"),
 }
 MY_WORK = "my-work"
 REGULAR = "Regular"
@@ -224,6 +239,8 @@ def _gap_facts(first_close, persona, allowed):
         "ownership_missing": sorted(ownership_missing) if group else _mine(ownership_missing, allowed),
         "accountants_without_entities": _accountants_without_entities() if group else [],
         "policy_gaps": close_policy_model.policy_gaps(*_policies()) if group else [],
+        "ic_accounts_gap": ic_api.setup_gap() if group else None,
+        "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
     }, uncovered
 
 
@@ -248,6 +265,18 @@ def _open_rows(first_close, today):
                 and start is not None and start <= today and key >= first_close):
             rows.append((key, row))
     return sorted(rows, key=lambda kr: kr[0])
+
+
+def _period_codes():
+    """``{(fiscal_year, fiscal_period): period_code}`` of every fiscal period
+    row (A22), not only the open ones: a sent-back draft can name a closed or
+    history period. The row's own ``period_code``, falling back to
+    ``FY%d P%02d`` (mirrors ``_period_facts``'s ``code``)."""
+    codes = {}
+    for row in fiscal_calendar.fiscal_period_rows():
+        key = (int(row["fiscal_year"]), int(row["fiscal_period"]))
+        codes[key] = row.get("period_code") or "FY%d P%02d" % key
+    return codes
 
 
 def _newest_run(key):
@@ -373,7 +402,24 @@ def get_my_work():
     if first_close is not None:
         per_period, extra = _period_facts(first_close, allowed, today)
         items.extend(mywork_model.period_items(persona, per_period, first_close))
+        if persona == period_model.ENTITY_ACCOUNTANT:
+            items.extend(mywork_model.ic_fix_items(
+                ic_api.open_fixes(sorted(per_period)), per_period, allowed))
         if persona == period_model.CLOSE_LEAD:
             items.extend(extra)
+    if persona == period_model.CLOSE_LEAD:
+        # A12: the approvals queue does not depend on the first close, so this
+        # sits outside the block above. A queue failure is not swallowed.
+        waiting = approvals_api.queue_for(frappe.session.user, roles)["waiting"]
+        approvals_item = mywork_model.approvals_item(waiting)
+        if approvals_item is not None:
+            items.append(approvals_item)
+    # A22: the preparer's "sent back" item, for every persona but the Viewer
+    # (who already returned above). Does not depend on the first close, so it
+    # sits outside that block too. A queue failure is not swallowed.
+    sent_back_rows = approvals_api.sent_back_for(frappe.session.user)
+    codes = _period_codes() if any(row.get("fiscal_year") is not None
+                                   for row in sent_back_rows) else {}
+    items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}

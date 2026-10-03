@@ -41,10 +41,12 @@ class _Flags(dict):
 class _Site:
     def __init__(self, roles=("EPM Admin",), user=LEAD, owner=LEAD, policy=ALLOWED,
                  workflows=WORKFLOW_DOCTYPES, versions=(), run_hook=True, record_raises=None,
-                 fields=None):
+                 fields=None, period_raises=None):
         self.roles = set(roles)
         self.run_hook = run_hook  # False: submit() does not run the P07 hook
         self.record_raises = record_raises  # the stub writer raises this
+        self.period_raises = period_raises  # the stub period_of raises this
+        self.saved = []  # (doctype, name): stub doc.save() calls
         self.fields = dict(fields or {})  # extra fields on every stub doc
         self.events = []  # Close Events recorded (T02b)
         self.versions = list(versions)  # Version rows {"docname", "owner", "data"}
@@ -107,6 +109,9 @@ def _frappe(site):
                 hook["check"](self)  # the P07 before_submit hook, as Frappe runs it
             self.docstatus = 1
             site.submitted.append((self.doctype, self.name))
+
+        def save(self, *a, **k):
+            site.saved.append((self.doctype, self.name))
 
         def add_comment(self, comment_type, text):
             site.comments.append((self.doctype, self.name, text))
@@ -214,7 +219,12 @@ def _writer(site, frappe):
         return "CE-%09d" % len(site.events)
 
     writer.record = record
-    writer.period_of = lambda doc: (2025, 7)
+    def period_of(doc):
+        if site.period_raises:
+            raise site.period_raises
+        return (2025, 7)
+
+    writer.period_of = period_of
     return writer, close_pkg.close_event_model
 
 
@@ -406,8 +416,10 @@ def test_reject_by_an_analyst_is_refused_by_only_for():
     assert site.applied == [] and site.comments == []
 
 
-def test_reject_a_doctype_with_no_active_workflow_is_refused_naming_d2_8():
-    for doctype in ("IC Balance", "Trial Balance Submission", "User"):
+def test_reject_a_doctype_outside_the_approval_list_is_refused_naming_d2_8():
+    # A04 (#305-D2-8): an approval doctype with no workflow is now rejected in
+    # draft; only a doctype outside the approval list is still refused.
+    for doctype in ("Trial Balance Submission", "User"):
         site = _Site()
         msg = _raises(lambda: _call(site, "reject", doctype, "ZZ-1", reason="ZZ why"),
                       "ValidationError")
@@ -459,11 +471,88 @@ def test_reject_with_a_blank_reason_records_no_event():
         assert site.events == []
 
 
-def test_reject_of_a_doctype_with_no_workflow_records_no_event():
-    site = _Site()
-    _raises(lambda: _call(site, "reject", "IC Balance", "ZZ-1", reason="ZZ why"),
-            "ValidationError")
+def test_reject_of_a_doctype_outside_the_approval_list_records_no_event():
+    for doctype in ("Trial Balance Submission", "User"):
+        site = _Site()
+        _raises(lambda: _call(site, "reject", doctype, "ZZ-1", reason="ZZ why"),
+                "ValidationError")
+        assert site.events == [] and site.get_doc_calls == []
+
+
+# --- A04 (#305-D2-8): reject with no active workflow keeps the draft ---------------
+
+NO_WORKFLOW_ENTITY = {"Group Exchange Rate": None, "Historical Equity Rate": "ZZ01",
+                      "Ownership Period": "ZZ01", "IC Balance": None}
+
+
+def test_reject_without_a_workflow_keeps_the_draft_with_a_comment_and_an_event():
+    for doctype, entity in NO_WORKFLOW_ENTITY.items():
+        site = _Site(owner=ANALYST, fields={"data_area_id": "ZZ01"})
+        out, _ = _call(site, "reject", doctype, "ZZ-D-1", reason="  ZZ why ")
+        assert site.applied == [], (doctype, site.applied)
+        assert site.submitted == [] and site.saved == [], (doctype, site.saved)
+        assert site.comments == [(doctype, "ZZ-D-1", "Rejected: ZZ why")], site.comments
+        assert site.events == [{
+            "kind": "rejected", "fiscal_year": 2025, "fiscal_period": 7,
+            "reference_doctype": doctype, "reference_name": "ZZ-D-1",
+            "reason": "ZZ why", "detail": {"preparer": ANALYST}, "entity": entity,
+        }], (doctype, site.events)
+        assert out == {"name": "ZZ-D-1", "docstatus": 0, "status": None}, (doctype, out)
+        assert "konsol_reject_reason" not in site.flags, site.flags
+
+
+def test_reject_without_a_workflow_of_a_submitted_document_is_refused():
+    # Failure path: a submitted document is corrected by cancel and amendment.
+    site = _Site(owner=ANALYST, fields={"docstatus": 1})
+    msg = _raises(lambda: _call(site, "reject", "Group Exchange Rate", "ZZ-GER-1",
+                                reason="ZZ why"), "ValidationError")
+    assert "cancel and an amendment" in msg, msg
+    assert "Group Exchange Rate ZZ-GER-1" in msg, msg
+    assert site.comments == [] and site.events == [] and site.saved == []
+
+
+def test_reject_without_a_workflow_and_a_blank_reason_leaves_nothing():
+    for reason in (None, "", "   "):
+        site = _Site(owner=ANALYST)
+        _raises(lambda: _call(site, "reject", "IC Balance", "ZZ-IC-1", reason=reason),
+                "ValidationError")
+        assert site.comments == [] and site.events == [] and site.get_doc_calls == []
+
+
+def test_reject_without_a_workflow_reads_the_period_before_the_comment():
+    # Failure path: an undeclared period refuses before anything is written.
+    boom = ValueError("ZZ no declared period")
+    site = _Site(owner=ANALYST, period_raises=boom)
+    try:
+        _call(site, "reject", "Group Exchange Rate", "ZZ-GER-1", reason="ZZ why")
+    except ValueError as e:
+        assert e is boom
+    else:
+        raise AssertionError("expected the period refusal")
+    assert site.comments == [] and site.events == []
+
+
+def test_a_failing_writer_stops_the_reject_without_a_workflow():
+    # Failure path: the writer's exception propagates uncaught. The Comment was
+    # added first; the request's transaction rolls it back (the stub cannot
+    # show the rollback).
+    boom = RuntimeError("ZZ close event insert failed")
+    site = _Site(owner=ANALYST, record_raises=boom)
+    try:
+        _call(site, "reject", "IC Balance", "ZZ-IC-1", reason="ZZ why")
+    except RuntimeError as e:
+        assert e is boom
+    else:
+        raise AssertionError("the writer's exception was swallowed")
+    assert site.comments == [("IC Balance", "ZZ-IC-1", "Rejected: ZZ why")]
     assert site.events == []
+
+
+def test_reject_through_the_workflow_returns_the_same_shape():
+    site = _Site(owner=ANALYST)
+    out, _ = _call(site, "reject", "Consolidation Journal", "ZZ-CJ-1", reason="ZZ why")
+    assert site.applied == [("Consolidation Journal", "ZZ-CJ-1", "Reject")]
+    assert out == {"name": "ZZ-CJ-1", "docstatus": 0, "status": "Draft"}, out
 
 
 def test_a_failing_writer_stops_the_reject():
