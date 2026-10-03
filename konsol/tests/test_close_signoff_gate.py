@@ -1110,3 +1110,52 @@ def test_the_ic_api_stub_is_installed():
     problems = _call(site, "sign_off_problems", 2025, 9)
     assert not any(g["code"] == "ic_tolerance_undeclared" for g in problems["config_gaps"]), \
         problems["config_gaps"]
+
+
+# --- C19: the undeclared tolerance blocks sign-off; intercompany(fy, fp) ----
+
+def test_an_undeclared_tolerance_blocks_sign_off():
+    site = _Site()
+    site.ic_tolerance_gap = {
+        "code": "ic_tolerance_undeclared", "groups": ["ZZG"],
+        "message": "Declare the intercompany difference tolerance for ZZG.",
+    }
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["ic_tolerance_undeclared"]
+    message = _blocked(site)
+    assert "Declare the intercompany difference tolerance for ZZG." in message, message
+
+
+def test_the_tolerance_gap_follows_both_policy_gaps():
+    site = _Site()
+    site.settings["self_approval"] = ""
+    site.ic_tolerance_gap = {
+        "code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>",
+    }
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["self_approval_undeclared", "ic_tolerance_undeclared"], codes
+
+
+def test_no_tolerance_gap_leaves_the_gate_as_before():
+    site = _Site()
+    assert site.ic_tolerance_gap is None
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+
+
+def test_sign_off_problems_never_reads_the_warehouse():
+    # Failure path: a gate check costs no ClickHouse read — sign_off_problems
+    # only calls tolerance_gap() (MariaDB via C05), never signoff_summary.
+    site = _Site()
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
+    _call(site, "sign_off_problems", 2025, 9)
+    assert site.ic_calls == [], site.ic_calls
+
+
+def test_intercompany_returns_the_stubbed_summary_and_records_the_call():
+    site = _Site()
+    site.ic_summary = {"state": "checked", "message": None,
+                       "counts": {"pairs": 3, "over_tolerance": 1}, "sent_back_open": 1}
+    result = _call(site, "intercompany", 2025, 10)
+    assert result == site.ic_summary
+    assert site.ic_calls == [(2025, 10)], site.ic_calls
