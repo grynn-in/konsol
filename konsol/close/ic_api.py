@@ -8,6 +8,14 @@ the pairs grouped by consolidation group with their send-back state, the
 partnerless rows, the counts, the W3-2 mask for a scoped caller and whether
 the caller may send back. Read-only.
 
+``send_back(fiscal_year, fiscal_period, entity_a, account_a, entity_b,
+account_b, reason)`` (POST, C04; #305-W3-1 option A) re-reads the pair from
+the warehouse and writes one ``ic_sent_back`` Close Event through
+``close_event.record`` in the request's transaction. The amounts in the event
+come from that read, never from the request; the signature names no other key,
+so Frappe drops a forged ``actor``, ``difference``, ``detail`` … Every refusal
+comes before the write.
+
 - The state is decided before any warehouse read (``ic_model.state``): a
   Close Settings "None in this group" declaration (W3-7) or 0 Published
   Intercompany Accounts reads nothing from ClickHouse.
@@ -57,6 +65,16 @@ _RECONCILIATION_SQL = (
     "ic_difference_account, tolerance, match_status "
     "FROM epm_gold.gold_ic_reconciliation "
     "WHERE fiscal_year = {fy:UInt16} AND fiscal_period = {fp:UInt16}"
+)
+#: send_back's read: one pair in one period, every consolidation group.
+_PAIR_SQL = (
+    "SELECT consolidation_group, entity_a, account_a, entity_b, account_b, difference, "
+    "tolerance, match_status "
+    "FROM epm_gold.gold_ic_reconciliation "
+    "WHERE fiscal_year = {fy:UInt16} AND fiscal_period = {fp:UInt16} "
+    "AND entity_a = {ea:String} AND account_a = {aa:String} "
+    "AND entity_b = {eb:String} AND account_b = {ab:String} "
+    "ORDER BY consolidation_group"
 )
 _UNMATCHED_SQL = (
     "SELECT consolidation_group, data_area_id, main_account, counterpart_account, "
@@ -132,9 +150,7 @@ def _warehouse(fy, fp):
         unmatched = [_numbers(r, _UNMATCHED_NUMBERS)
                      for r in ch_read.rows(_UNMATCHED_SQL, params)]
     except Exception as e:  # noqa: BLE001 — any failure to read means "can't say"
-        names = sorted(ch_read.error_names(e))
-        text = type(e).__name__ + (f" {', '.join(names)}" if names else "")
-        return [], [], {"not_built": ch_read.not_built(e), "text": text}
+        return [], [], {"not_built": ch_read.not_built(e), "text": _error_text(e)}
     return rows, unmatched, None
 
 
@@ -232,3 +248,69 @@ def get_ic(fiscal_year, fiscal_period):
         "hidden": hidden,
         "can_send_back": can_send_back,
     }
+
+
+def _error_text(e):
+    names = sorted(ch_read.error_names(e))
+    return type(e).__name__ + (f" {', '.join(names)}" if names else "")
+
+
+@frappe.whitelist(methods=["POST"])
+def send_back(fiscal_year, fiscal_period, entity_a, account_a, entity_b, account_b, reason):
+    """Send an over-tolerance pair back to both entities (#305-W3-1): one
+    ``ic_sent_back`` Close Event, side A as its entity (E5-P8). Returns
+    ``{"event", "fix_items_for"}``. No **kwargs: a forged key never arrives."""
+    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
+    reason = (reason or "").strip()
+    if not reason:
+        frappe.throw("Say why the difference is sent back: the entities read this reason.")
+    key = _period(fiscal_year, fiscal_period)
+    row = _period_row(key)
+    fy, fp = key
+    status = row.get("status")
+    if status != "Open":
+        frappe.throw("FY%d P%02d is %s: send a difference back only in an Open period."
+                     % (fy, fp, status))
+    if declared_none():
+        frappe.throw("Close Settings declares no intercompany in this group: "
+                     "nothing can be sent back.")
+    published = published_count()
+    if published == 0:
+        frappe.throw(ic_model.NOT_CONFIGURED + " Nothing can be sent back.")
+    allowed = allowed_entity_codes()
+    if allowed is not None and entity_a not in allowed and entity_b not in allowed:
+        frappe.throw("You can see neither entity of this pair.")
+
+    params = {"fy": fy, "fp": fp, "ea": entity_a, "aa": account_a, "eb": entity_b,
+              "ab": account_b}
+    try:
+        rows = [_numbers(r, ("difference", "tolerance")) for r in ch_read.rows(_PAIR_SQL, params)]
+    except Exception as e:  # noqa: BLE001 — any failure to read means "can't say"
+        error = {"not_built": ch_read.not_built(e), "text": _error_text(e)}
+        frappe.throw(ic_model.state(published, error)["message"] + " Nothing was sent back.")
+
+    pair = "%s %s ↔ %s %s" % (entity_a, account_a, entity_b, account_b)
+    if not rows:
+        frappe.throw("%s is not an intercompany pair in FY%d P%02d's last build." % (pair, fy, fp))
+    over = [r for r in rows if r.get("match_status") == "over_tolerance"]
+    if not over:
+        statuses = ", ".join(sorted({str(r.get("match_status")) for r in rows}))
+        frappe.throw("Only a difference over tolerance can be sent back; this pair is %s."
+                     % statuses)
+    if all(float(r.get("tolerance") or 0) <= 0 for r in over):
+        groups = sorted({r["consolidation_group"] for r in over})
+        frappe.throw("%s ha%s not declared an intercompany difference tolerance "
+                     "(0 is undeclared): declare it on the Consolidation Group before sending "
+                     "a difference back." % (", ".join(groups), "s" if len(groups) == 1 else "ve"))
+
+    from konsol.close import close_event  # lazy: see the import warning above
+
+    name = close_event.record(
+        "ic_sent_back", fy, fp, reason=reason, entity=entity_a,
+        detail={"entity_a": entity_a, "account_a": account_a, "entity_b": entity_b,
+                "account_b": account_b,
+                "groups": [{"consolidation_group": r["consolidation_group"],
+                            "difference": r.get("difference"),
+                            "tolerance": r.get("tolerance"),
+                            "match_status": r.get("match_status")} for r in rows]})
+    return {"event": name, "fix_items_for": [entity_a, entity_b]}
