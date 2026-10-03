@@ -53,6 +53,160 @@ function summary(overrides = {}) {
   };
 }
 
+// --- konsol#305 C11: the sign-off screen's intercompany section -----------
+
+test("C11: no intercompany key reads as 'not reported', visible and never None", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany was not reported by the server — nothing was checked.",
+  ]);
+  assert.equal(view.intercompany.empty, false);
+});
+
+test("C11: failure path — intercompany null reads the same 'not reported' line", () => {
+  const view = summaryView(summary({ intercompany: null }));
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany was not reported by the server — nothing was checked.",
+  ]);
+});
+
+test("C11: failure path — not configured never reads as reconciled or matched", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "not_configured",
+        message: "Intercompany not configured — nothing was checked.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, ["Intercompany not configured — nothing was checked."]);
+  assert.equal(view.intercompany.empty, false);
+  for (const row of view.intercompany.rows) {
+    assert.doesNotMatch(row, /reconciled|matched|within tolerance|^None$/i);
+  }
+});
+
+test("C11: failure path — not applicable never reads as reconciled, matched or not configured", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "not_applicable",
+        message: "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+  ]);
+  assert.equal(view.intercompany.empty, false);
+  for (const row of view.intercompany.rows) {
+    assert.doesNotMatch(row, /reconciled|matched|within tolerance|not configured|^None$/i);
+  }
+});
+
+test("C11: not built and error show their sentence through messageLines", () => {
+  const notBuilt = summaryView(
+    summary({
+      intercompany: {
+        state: "not_built",
+        message: "The warehouse has not built the intercompany tables yet — nothing was checked.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(notBuilt.intercompany.rows, [
+    "The warehouse has not built the intercompany tables yet — nothing was checked.",
+  ]);
+
+  const error = summaryView(
+    summary({
+      intercompany: {
+        state: "error",
+        message: "Intercompany could not be checked: HTTPError (TIMEOUT_EXCEEDED). Rebuild the consolidation, then open this again.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(error.intercompany.rows, [
+    "Intercompany could not be checked: HTTPError (TIMEOUT_EXCEEDED). Rebuild the consolidation, then open this again.",
+  ]);
+});
+
+test("C11: checked with counts shows the pairs line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 10, matched: 5, within_tolerance: 2, fx_difference: 1, over_tolerance: 2, unmatched: 0 },
+        sent_back_open: 0,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "10 pairs: 5 matched, 2 within tolerance, 1 FX differences, 2 over tolerance",
+  ]);
+});
+
+test("C11: checked with sent_back_open adds the open send-backs line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 10, matched: 8, within_tolerance: 1, fx_difference: 0, over_tolerance: 1, unmatched: 0 },
+        sent_back_open: 2,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "10 pairs: 8 matched, 1 within tolerance, 0 FX differences, 1 over tolerance",
+    "2 sent back and still open",
+  ]);
+});
+
+test("C11: checked with unmatched rows adds the 'without a partner' line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 10, matched: 10, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 3 },
+        sent_back_open: 0,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "10 pairs: 10 matched, 0 within tolerance, 0 FX differences, 0 over tolerance",
+    "3 rows without a partner",
+  ]);
+});
+
+test("C11: checked with 0 pairs shows the dedicated message line, never a 0-pairs count line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+        sent_back_open: 0,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "0 intercompany pairs in the last build for this period.",
+  ]);
+});
+
+test("C11: failure path — an unknown intercompany state throws naming it", () => {
+  assert.throws(
+    () => summaryView(summary({ intercompany: { state: "fine", message: null, counts: null } })),
+    /fine/,
+  );
+});
+
 test("every section is rendered from a full summary", () => {
   const view = summaryView(
     summary({
@@ -107,6 +261,11 @@ test("every section is empty and says None on a bare summary", () => {
   assert.equal(view.covers.empty, true);
   assert.deepEqual(view.previous.rows, ["None"]);
   assert.equal(view.previous.empty, true);
+  // C11: the intercompany section is never ["None"] — a missing key is "not reported", visible.
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany was not reported by the server — nothing was checked.",
+  ]);
+  assert.equal(view.intercompany.empty, false);
 });
 
 test("configuration gaps are listed first, before order, before completeness", () => {

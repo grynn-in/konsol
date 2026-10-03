@@ -77,10 +77,27 @@ test("It renders through summaryView (B15), and the period comes from the URL (r
   assert.match(script(source), /summaryView\(/);
   assert.match(source, /from\s*["']\.\.\/route\.js["']/);
   const tpl = template(source);
-  for (const section of ["gates", "checks", "acknowledgements", "onBehalf", "exceptions", "covers", "previous"]) {
+  for (const section of ["gates", "checks", "intercompany", "acknowledgements", "onBehalf", "exceptions", "covers", "previous"]) {
     assert.match(source, new RegExp(`\\b${section}\\b`), `the ${section} section is rendered`);
   }
   assert.match(tpl, /\.rows\b/, "each section's rows (\"None\" when empty) come from summaryView");
+});
+
+// --- konsol#305 C11: the sign-off screen's intercompany section -----------
+
+test("C11: SECTION_TITLES carries intercompany right after checks", () => {
+  const src = script(read());
+  const m = src.match(/SECTION_TITLES\s*=\s*\[([\s\S]*?)\];/);
+  assert.ok(m, "SECTION_TITLES is declared");
+  const entries = m[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length);
+  const checksIdx = entries.findIndex((e) => e.includes('"checks"'));
+  const icIdx = entries.findIndex((e) => e.includes('"intercompany"'));
+  assert.ok(checksIdx >= 0, "checks is in SECTION_TITLES");
+  assert.ok(icIdx === checksIdx + 1, "intercompany comes right after checks");
+  assert.match(src, /\[\s*["']intercompany["']\s*,\s*["']Intercompany["']\s*\]/);
 });
 
 test("The action button's label comes from the summary's label", () => {
