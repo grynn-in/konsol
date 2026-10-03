@@ -20,6 +20,8 @@ import {
 	canSaveDraft,
 	canSendDraft,
 	formatAmount,
+	dimKeysOf,
+	dimValueText,
 } from "./adjustments.js";
 
 const NOW = new Date("2026-10-03T12:00:00Z");
@@ -31,6 +33,7 @@ function payload(overrides = {}) {
 		journals: [],
 		groups: [{ consolidation_group: "Demo Group", reporting_currency: "USD", entities: ["ZZ-A", "ZZ-B"] }],
 		accounts: {},
+		dimensions: [],
 		reversal_choices: [],
 		workflow_installed: true,
 		first_state: "Draft",
@@ -108,6 +111,15 @@ test("journalsView: a null approved_at reads 'not recorded'", () => {
 test("journalsView requires a time zone and a valid now", () => {
 	assert.throws(() => journalsView(payload(), NOW, null));
 	assert.throws(() => journalsView(payload(), new Date("not a date"), TZ));
+});
+
+// D04 correction to D03: get_journals (D02) always sends `dimensions`, even
+// as `[]`; a missing key is a bug in the caller (or a stale/forged
+// payload), never "zero dimensions" (no silent fallback).
+test("journalsView: failure path, a missing `dimensions` key throws rather than defaulting to []", () => {
+	const p = payload();
+	delete p.dimensions;
+	assert.throws(() => journalsView(p, NOW, TZ), /dimensions/);
 });
 
 // --- durationOptions, durationIndex --------------------------------------
@@ -585,4 +597,34 @@ test("saveJournalBody: failure path, zero declared dimensions sends no dim key a
 	const body = saveJournalBody(PERIOD, draft);
 	const line = JSON.parse(body.lines)[0];
 	assert.deepEqual(Object.keys(line).sort(), ["credit_amount", "data_area_id", "debit_amount", "description", "main_account"].sort());
+});
+
+// --- konsolidat#245 option D (D04): dimKeysOf, dimValueText (Adjustments.vue's
+// screen-level helpers) --------------------------------------------------
+//
+// Fed journalsView's real output, not a hand-built dict (coordinator
+// instruction: screen-source greps alone are not enough).
+
+test("dimKeysOf: the declared keys, in the server's order, from journalsView's output", () => {
+	const view = journalsView(payload({ dimensions: DIMENSIONS }), NOW, TZ);
+	assert.deepEqual(dimKeysOf(view), ["dim_cost_center"]);
+});
+
+test("dimKeysOf: failure path, zero declared dimensions gives [] (identical to today)", () => {
+	const view = journalsView(payload({ dimensions: [] }), NOW, TZ);
+	assert.deepEqual(dimKeysOf(view), []);
+});
+
+test("dimKeysOf: failure path, no view yet (not loaded) gives []", () => {
+	assert.deepEqual(dimKeysOf(null), []);
+});
+
+test("dimValueText: a missing, null or blank value reads as the explicit em dash", () => {
+	assert.equal(dimValueText({}, "dim_cost_center"), "—");
+	assert.equal(dimValueText({ dim_cost_center: null }, "dim_cost_center"), "—");
+	assert.equal(dimValueText({ dim_cost_center: "" }, "dim_cost_center"), "—");
+});
+
+test("dimValueText: a real typed value is shown verbatim, never refused (konsol#247)", () => {
+	assert.equal(dimValueText({ dim_cost_center: "CC-100" }, "dim_cost_center"), "CC-100");
 });
