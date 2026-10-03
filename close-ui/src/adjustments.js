@@ -48,6 +48,12 @@ function timeText(value, now, timeZone) {
  *
  * Requires a `timeZone` and a valid `now` (B09b): there is no guessed
  * display for a timestamp with no zone, or with no clock to compare it to.
+ *
+ * `dimensions` passes through unchanged (konsolidat#245 option D;
+ * `journal_api.get_journals`'s `dimensions: [{key, label, suggestions}]`):
+ * the declared journal dimensions, generated from the Published Dimension
+ * rows, never hard-coded (konsol#287). `[]` when none are declared — the
+ * screen then looks exactly as it did before option D.
  */
 export function journalsView(payload, now, timeZone) {
 	if (!timeZone) {
@@ -82,6 +88,7 @@ export function journalsView(payload, now, timeZone) {
 		journals,
 		groups: payload.groups,
 		accounts: payload.accounts,
+		dimensions: payload.dimensions || [],
 		reversalChoices: payload.reversal_choices || [],
 		workflowInstalled: Boolean(payload.workflow_installed),
 		firstState: payload.first_state,
@@ -238,14 +245,25 @@ export function draftTotals(lines) {
  * "none"}`); "none" always sends 0/0 (a blank Int reads as 0,
  * journal_model.reversal_pair_problem). `name` is sent only when editing
  * an existing draft.
+ *
+ * `dimKeys` (konsolidat#245 option D; default `[]`, the allow-list the
+ * server declared via `journal_api.get_journals`'s `dimensions`, never
+ * hard-coded, konsol#287): each line carries exactly these dim keys too,
+ * default `''` when missing. Any other dim-looking key on a draft line —
+ * undeclared, or belonging to a dimension no longer gated for journals —
+ * is dropped like every other key `LINE_KEYS` does not name; a typed value
+ * for a declared key is sent verbatim, never refused (konsol#247).
  */
-export function saveJournalBody(period, draft) {
+export function saveJournalBody(period, draft, dimKeys = []) {
 	const duration = draft.duration || { kind: "none" };
 	const reversing = duration.kind === "reverses";
 	const lines = (draft.lines || []).map((line) => {
 		const row = {};
 		for (const key of LINE_KEYS) {
 			row[key] = line[key];
+		}
+		for (const key of dimKeys) {
+			row[key] = line[key] ?? "";
 		}
 		return row;
 	});
@@ -339,15 +357,27 @@ export function editable(journal, view) {
  * (`openEdit`) and, inside `snapshotDraft`/`draftDirty`, to compare the
  * editor's current lines against what was last saved — one shape, so the
  * two never drift apart (previously duplicated inline in Adjustments.vue).
+ *
+ * `dimKeys` (konsolidat#245 option D; default `[]`, so a caller that never
+ * declares any dimension gets exactly today's five-field line shape): each
+ * declared key is carried, default `''` when the line has no value for it
+ * — never omitted, and never refused for carrying a value that is not
+ * among the dimension's suggestions (konsol#247, free text).
  */
-export function snapshotLines(lines) {
-	return (lines || []).map((line) => ({
-		data_area_id: line.data_area_id,
-		main_account: line.main_account,
-		debit_amount: line.debit_amount ?? "",
-		credit_amount: line.credit_amount ?? "",
-		description: line.description || "",
-	}));
+export function snapshotLines(lines, dimKeys = []) {
+	return (lines || []).map((line) => {
+		const out = {
+			data_area_id: line.data_area_id,
+			main_account: line.main_account,
+			debit_amount: line.debit_amount ?? "",
+			credit_amount: line.credit_amount ?? "",
+			description: line.description || "",
+		};
+		for (const key of dimKeys) {
+			out[key] = line[key] ?? "";
+		}
+		return out;
+	});
 }
 
 function durationsEqual(a, b) {
@@ -370,8 +400,12 @@ function durationsEqual(a, b) {
  * `duration` and `lines`. `draftDirty` compares a later editor state
  * against this snapshot; previously only `lines` was ever compared, so a
  * changed group, type, description or duration never disabled Send.
+ *
+ * `dimKeys` (konsolidat#245 option D; default `[]`) is passed straight to
+ * `snapshotLines`, so the declared dimension values are part of what
+ * "last saved" means too.
  */
-export function snapshotDraft(draft) {
+export function snapshotDraft(draft, dimKeys = []) {
 	return {
 		consolidation_group: draft.consolidation_group,
 		adjustment_type: draft.adjustment_type,
@@ -379,7 +413,7 @@ export function snapshotDraft(draft) {
 		duration: durationsEqual(draft.duration, { kind: "none" })
 			? { kind: "none" }
 			: { kind: "reverses", fiscal_year: draft.duration.fiscal_year, fiscal_period: draft.duration.fiscal_period },
-		lines: snapshotLines(draft.lines),
+		lines: snapshotLines(draft.lines, dimKeys),
 	};
 }
 
@@ -393,8 +427,12 @@ export function snapshotDraft(draft) {
  *
  * Amounts compare in cents through `amountsEqual`, never as raw strings: a
  * line typed as `"100"` against a saved `100` is not dirty.
+ *
+ * `dimKeys` (konsolidat#245 option D; default `[]`): a changed declared
+ * dimension value on any line is dirty too, compared as plain text (a
+ * dimension value is free text, konsol#247, never a number).
  */
-export function draftDirty(snapshot, draft) {
+export function draftDirty(snapshot, draft, dimKeys = []) {
 	if (!snapshot) {
 		return false;
 	}
@@ -410,7 +448,7 @@ export function draftDirty(snapshot, draft) {
 	if (!durationsEqual(snapshot.duration, draft.duration)) {
 		return true;
 	}
-	const current = snapshotLines(draft.lines);
+	const current = snapshotLines(draft.lines, dimKeys);
 	if (snapshot.lines.length !== current.length) {
 		return true;
 	}
@@ -422,6 +460,9 @@ export function draftDirty(snapshot, draft) {
 		if (a.description !== b.description) return true;
 		if (!amountsEqual(a.debit_amount, b.debit_amount)) return true;
 		if (!amountsEqual(a.credit_amount, b.credit_amount)) return true;
+		for (const key of dimKeys) {
+			if ((a[key] ?? "") !== (b[key] ?? "")) return true;
+		}
 	}
 	return false;
 }
