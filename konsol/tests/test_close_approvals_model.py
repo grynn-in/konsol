@@ -488,6 +488,8 @@ def _sb_ger(name, modified, from_currency="USD", to_currency="EUR", rate_type="C
 def _sb_journal(name, modified, fiscal_year=2026, fiscal_period=7, adjustment_type="topside",
                  description="Accrue bonus", total_debit=100.0, currency="USD",
                  reverse_fiscal_year=0, reverse_fiscal_period=0):
+    """A journal row shaped as ``sent_back_for`` fetches it (A21): no
+    ``duration``, ``lines`` or ``effect`` — those are never read here."""
     return {"name": name, "modified": modified, "fiscal_year": fiscal_year,
             "fiscal_period": fiscal_period, "adjustment_type": adjustment_type,
             "description": description, "total_debit": total_debit, "currency": currency,

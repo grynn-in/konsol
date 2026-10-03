@@ -230,6 +230,43 @@ def queue_for(user, roles):
     }
 
 
+def sent_back_for(user):
+    """The caller's own docstatus-0 drafts across the 7 approval doctypes
+    whose newest ``rejected`` event is later than their own ``modified``
+    (A21; E6-P12, #305-D2-8): the preparer's "sent back" My work item.
+    Module-level, not whitelisted — My work (A22) calls it.
+
+    The preparer is the document's ``owner`` (A04 records
+    ``{"preparer": doc.owner}`` on the event). W2-14's editors are not
+    included here: the owner drafted it, and an editor who is not the
+    owner is the Close Lead, never the preparer.
+
+    Reads are bounded by the 7 doctypes: one ``get_all`` per doctype
+    (``owner`` + ``docstatus 0``), and one ``close_event.latest_rejections``
+    per doctype that has pending names (A03; empty names reads nothing) —
+    at most 14 reads.
+    """
+    docs = {}
+    rejections = {}
+    for doctype in close_policy_model.APPROVAL_DOCTYPES:
+        fields = ["name", "modified"] + _FIELDS[doctype]
+        rows = frappe.get_all(
+            doctype, filters={"owner": user, "docstatus": 0}, fields=fields,
+            limit_page_length=0,
+        )
+        doc_rows = [dict(r) for r in rows]
+        names = [row["name"] for row in doc_rows]
+        if names:
+            for name, rejection in close_event.latest_rejections(doctype, names).items():
+                rejections[(doctype, name)] = rejection
+        docs[doctype] = doc_rows
+
+    items = approvals_model.sent_back_items(docs, rejections)
+    for item in items:
+        item["rejection"] = dict(item["rejection"], at=_iso(item["rejection"]["at"]))
+    return items
+
+
 @frappe.whitelist(methods=["GET"])
 def get_queue():
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
