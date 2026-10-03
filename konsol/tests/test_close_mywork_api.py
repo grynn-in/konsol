@@ -119,6 +119,9 @@ class _Site:
         self.approvals_waiting = {"count": 0}
         self.approvals_calls = []
         self.approvals_error = None
+        self.sent_back_rows = []
+        self.sent_back_calls = []
+        self.sent_back_error = None
 
 
 def _frappe(site):
@@ -293,6 +296,16 @@ def _call(site):
         return {"waiting": dict(site.approvals_waiting)}
 
     approvals_api.queue_for = queue_for
+
+    # A22: a stub `sent_back_for`, extending A12's `approvals_api` stub, so My
+    # work reads the same preparer-owned rows A21 builds without running it.
+    def sent_back_for(user):
+        site.sent_back_calls.append(user)
+        if site.sent_back_error:
+            raise site.sent_back_error
+        return [dict(r) for r in site.sent_back_rows]
+
+    approvals_api.sent_back_for = sent_back_for
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
@@ -992,3 +1005,62 @@ def test_close_lead_gets_the_approvals_item_with_an_undeclared_first_close():
     ids = _ids(result)
     assert "approvals" in ids
     assert all(i["id"] == "approvals" or i["id"].startswith("gap:") for i in result["items"]), ids
+
+
+# --- A22: the preparer's "sent back" My work item -----------------------------
+
+def _sb_row(doctype, name, kind_label, title, fiscal_year=None, fiscal_period=None,
+           actor="alice@example.com", at="2025-08-20T10:00:00+01:00",
+           reason="Fix the amount."):
+    return {
+        "doctype": doctype, "name": name, "kind_label": kind_label, "title": title,
+        "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+        "rejection": {"reason": reason, "actor": actor, "at": at},
+    }
+
+
+def test_group_accountant_gets_one_sent_back_item_counted_under_rates():
+    site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
+                                   "1.1000", fiscal_year=2025, fiscal_period=7)]
+    result = _call(site)
+    ids = _ids(result)
+    assert "sent-back:Group Exchange Rate:GER-1" in ids
+    assert result["counts"]["by_screen"]["rates"]["count"] == 1
+    assert site.sent_back_calls == [site.user]
+    _assert_counts_add_up(result, "group_accountant")
+
+
+def test_viewer_gets_no_sent_back_item_and_sent_back_for_is_not_called():
+    site = _Site(roles=("EPM User",))
+    site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "x", "x",
+                                   fiscal_year=2025, fiscal_period=7)]
+    result = _call(site)
+    assert result["items"] == []
+    assert site.sent_back_calls == []
+
+
+def test_a_sent_back_failure_is_not_swallowed():
+    site = _Site()
+    site.sent_back_error = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        _call(site)
+
+
+def test_sent_back_item_shown_with_an_undeclared_first_close():
+    site = _Site()
+    site.first_close = (0, 0)
+    site.sent_back_rows = [_sb_row("Historical Equity Rate", "HER-1", "Historical equity rate",
+                                   "UK01 2024-12-31")]
+    result = _call(site)
+    ids = _ids(result)
+    assert "sent-back:Historical Equity Rate:HER-1" in ids
+    assert all(i["id"].startswith(("sent-back:", "gap:")) for i in result["items"]), ids
+
+
+def test_entity_accountant_can_get_a_sent_back_item_too():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.sent_back_rows = [_sb_row("Historical Equity Rate", "HER-1", "Historical equity rate",
+                                   "UK01 2024-12-31")]
+    result = _call(site)
+    assert "sent-back:Historical Equity Rate:HER-1" in _ids(result)

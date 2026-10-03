@@ -709,3 +709,85 @@ def test_ic_fix_items_skips_a_key_not_in_per_period():
 def test_ic_fix_items_no_fixes_gives_no_items():
     assert M.ic_fix_items({}, {IC_P07: _ic_period()}, None) == []
     assert M.ic_fix_items({IC_P07: []}, {IC_P07: _ic_period()}, None) == []
+
+
+# --- A22: the preparer's "sent back" My work item -----------------------------
+# A21's ``approvals_api.sent_back_for`` row shape:
+# {"doctype", "name", "kind_label", "title", "fiscal_year", "fiscal_period",
+#  "rejection": {"reason", "actor", "at"}}.
+
+def _sb_row(doctype, name, kind_label, title, fiscal_year=None, fiscal_period=None,
+           actor="alice@example.com", at="2025-08-20T10:00:00+01:00",
+           reason="Fix the amount."):
+    return {
+        "doctype": doctype, "name": name, "kind_label": kind_label, "title": title,
+        "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+        "rejection": {"reason": reason, "actor": actor, "at": at},
+    }
+
+
+def test_sent_back_items_journal_routes_through_its_period():
+    row = _sb_row("Consolidation Journal", "CJ-00001", "Adjustment · CJ-00001",
+                 "Accrual reversal", fiscal_year=2025, fiscal_period=7)
+    items = M.sent_back_items([row], M.CLOSE_LEAD, {(2025, 7): "P07"})
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == "sent-back:Consolidation Journal:CJ-00001"
+    assert item["kind"] == "todo"
+    assert item["title"] == "Sent back: Adjustment · CJ-00001 · Accrual reversal"
+    assert item["detail"] == "alice@example.com on 2025-08-20: Fix the amount."
+    assert item["owner"] == M.OWNERS[M.CLOSE_LEAD]
+    assert item["action"] == {"screen": "adjustments"}
+    assert item["period"] == {"fiscal_year": 2025, "fiscal_period": 7, "code": "P07",
+                              "since": "2025-08-20"}
+    assert "since" not in item and "since_reason" not in item
+
+
+def test_sent_back_items_her_has_no_period():
+    row = _sb_row("Historical Equity Rate", "HER-00001", "Historical equity rate",
+                 "UK01 2024-12-31")
+    item = M.sent_back_items([row], M.GROUP_ACCOUNTANT, {})[0]
+    assert "period" not in item
+    assert item["since"] == "2025-08-20"
+    assert item["since_reason"] == "sent back"
+    assert item["action"] == {"screen": "rates"}
+
+
+def test_sent_back_items_ger_and_op_route_to_rates():
+    ger = _sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
+                 "1.1000", fiscal_year=2025, fiscal_period=7)
+    op = _sb_row("Ownership Period", "OP-1", "Ownership period", "UK01 100% from 2024-01-01")
+    items = M.sent_back_items([ger, op], M.ENTITY_ACCOUNTANT, {(2025, 7): "P07"})
+    assert items[0]["action"] == {"screen": "rates"}
+    assert items[1]["action"] == {"screen": "rates"}
+    assert "period" in items[0] and "period" not in items[1]
+
+
+def test_sent_back_items_desk_actions_for_ic_bc_bd():
+    ic = _sb_row("IC Balance", "ICB-1", "IC balance · UK01 → DE01", "IC balance · UK01 → DE01",
+                fiscal_year=2025, fiscal_period=7)
+    bc = _sb_row("Business Combination", "BC-1", "Business combination · UK01",
+                "Business combination · UK01")
+    bd = _sb_row("Business Disposal", "BD-1", "Business disposal · UK01",
+                "Business disposal · UK01")
+    items = M.sent_back_items([ic, bc, bd], M.CLOSE_LEAD, {(2025, 7): "P07"})
+    assert items[0]["action"] == {"desk": "/app/ic-balance/ICB-1"}
+    assert items[1]["action"] == {"desk": "/app/business-combination/BC-1"}
+    assert items[2]["action"] == {"desk": "/app/business-disposal/BD-1"}
+
+
+def test_sent_back_items_viewer_raises():
+    row = _sb_row("Historical Equity Rate", "HER-00001", "Historical equity rate", "x")
+    with pytest.raises(ValueError, match="[Vv]iewer"):
+        M.sent_back_items([row], M.VIEWER, {})
+
+
+def test_sent_back_items_period_missing_from_codes_raises():
+    row = _sb_row("Consolidation Journal", "CJ-00001", "Adjustment · CJ-00001", "x",
+                 fiscal_year=2025, fiscal_period=7)
+    with pytest.raises(ValueError, match="2025"):
+        M.sent_back_items([row], M.CLOSE_LEAD, {})
+
+
+def test_sent_back_items_empty_rows_gives_no_items():
+    assert M.sent_back_items([], M.CLOSE_LEAD, {}) == []
