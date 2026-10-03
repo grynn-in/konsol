@@ -436,6 +436,8 @@ ALLOWED = {
     "close/self_approval.py",
     "close/cancel_event.py",
     "hooks.py",
+    # C03t (E5-P16): reads ic_sent_back events for the Intercompany screen.
+    "close/ic_api.py",
 }
 WRITER = "close/close_event.py"
 FORBIDDEN = (
@@ -506,6 +508,9 @@ def test_the_checker_catches_a_second_writer():
     source = 'def f():\n    frappe.get_doc({"doctype": "Close Event"}).insert()\n'
     bad = writer_problems(source, "patches/backfill_close_events.py")
     assert len(bad) == 1 and "inserts a Close Event" in bad[0], bad
+    assert writer_problems(source, WRITER) == []
+    for pattern in FORBIDDEN:
+        assert writer_problems(pattern + "\n", "fiscal_calendar.py"), pattern
 
 
 def test_ic_api_may_read_but_not_write_close_events():
@@ -518,6 +523,3 @@ def test_ic_api_may_read_but_not_write_close_events():
         'frappe.db.set_value("Close Event", n, "reason", "x")\n', "close/ic_api.py"
     )
     assert bad, bad
-    assert writer_problems(source, WRITER) == []
-    for pattern in FORBIDDEN:
-        assert writer_problems(pattern + "\n", "fiscal_calendar.py"), pattern
