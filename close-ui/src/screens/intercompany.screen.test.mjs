@@ -30,6 +30,50 @@ function template(source) {
 	return source.slice(start, end);
 }
 
+/**
+ * From the `<` of an opening `tagName` tag at `openIdx`, finds the matching
+ * closing tag by counting nested opens/closes of the same tag name (a tiny
+ * balanced scan — the templates here nest plainly, with no self-closing
+ * `<div/>`). Returns `{start, end}` spanning the whole element, end
+ * exclusive of the closing tag's `>`.
+ */
+function blockFor(tpl, openIdx, tagName) {
+	const openRe = new RegExp(`<${tagName}(?=[\\s>])`, "g");
+	const closeRe = new RegExp(`</${tagName}>`, "g");
+	const tagEnd = tpl.indexOf(">", openIdx) + 1;
+	assert.ok(tagEnd > 0, `the opening <${tagName}> tag closes`);
+	let depth = 1;
+	let pos = tagEnd;
+	while (depth > 0) {
+		openRe.lastIndex = pos;
+		closeRe.lastIndex = pos;
+		const nextOpen = openRe.exec(tpl);
+		const nextClose = closeRe.exec(tpl);
+		assert.ok(nextClose, `a matching </${tagName}> exists`);
+		if (nextOpen && nextOpen.index < nextClose.index) {
+			depth++;
+			pos = nextOpen.index + nextOpen[0].length;
+		} else {
+			depth--;
+			pos = nextClose.index + nextClose[0].length;
+			if (depth === 0) return { start: openIdx, end: pos };
+		}
+	}
+}
+
+/** The span of the nearest `<tagName ... v-if="<pattern>">...</tagName>`
+ * element, found by its v-if attribute matching `pattern`. */
+function blockWithVIf(tpl, tagName, pattern) {
+	const re = new RegExp(`<${tagName}(?:(?!>)[\\s\\S])*?\\bv-if="([^"]*)"(?:(?!>)[\\s\\S])*?>`, "g");
+	let m;
+	while ((m = re.exec(tpl))) {
+		if (pattern.test(m[1])) {
+			return blockFor(tpl, m.index, tagName);
+		}
+	}
+	return null;
+}
+
 test("Red: Intercompany.vue is missing", () => {
 	assert.ok(fs.existsSync(INTERCOMPANY), "close-ui/src/screens/Intercompany.vue must exist");
 });
@@ -42,13 +86,12 @@ test("Intercompany.vue builds what it shows with intercompanyView/panel/sendBack
 	assert.match(script(source), /intercompanyView\(/);
 });
 
-test("Intercompany.vue calls the server through api.js and reads the period with route.js; no fetch/localStorage", () => {
+test("Intercompany.vue calls the server through api.js and reads the period with route.js; no fetch, no browser storage (D5; route.test.mjs scans the whole tree for that)", () => {
 	const source = read();
 	assert.match(source, /import\s*\{[^}]*\bget\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
 	assert.match(source, /import\s*\{[^}]*\bpost\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
 	assert.match(source, /from\s*["']\.\.\/route\.js["']/);
 	assert.doesNotMatch(source, /\bfetch\(/, "all server calls go through api.js");
-	assert.doesNotMatch(source, /\blocalStorage\b/, "D5: no localStorage");
 });
 
 test("Names konsol.close.ic_api.get_ic and konsol.close.ic_api.send_back; exactly one post(SEND_BACK call site", () => {
@@ -69,40 +112,28 @@ test("Failure path — no Remind", () => {
 
 test("Failure path — send back only when allowed: v-if tests both canSendBack and the pair's can_send_back", () => {
 	const tpl = template(read());
-	const i = tpl.indexOf("sendBack(");
-	assert.ok(i >= 0, "a sendBack( call site exists in the template");
-	// Walk outward to the nearest enclosing v-if on an ancestor tag.
-	const before = tpl.slice(0, i);
-	const vIfs = [...before.matchAll(/v-if="([^"]*)"/g)];
-	assert.ok(vIfs.length > 0, "an enclosing v-if exists");
-	const nearest = vIfs[vIfs.length - 1][1];
-	assert.match(nearest, /\bcanSendBack\b/, "tests canSendBack");
-	assert.match(nearest, /\bcan_send_back\b/, "tests the pair's can_send_back");
-	// No unconditional send-back control: canSendBack alone must gate render
-	// of the button area — check there is no other sendBack( site outside
-	// a v-if containing both terms.
 	const allSendBackCalls = [...tpl.matchAll(/sendBack\(/g)];
 	assert.equal(allSendBackCalls.length, 1, "exactly one sendBack( call site in the template");
+	const block = blockWithVIf(tpl, "div", /\bcanSendBack\b/);
+	assert.ok(block, "a div's v-if tests canSendBack");
+	const attr = tpl.slice(block.start, tpl.indexOf(">", block.start) + 1);
+	assert.match(attr, /\bcanSendBack\b/, "tests canSendBack");
+	assert.match(attr, /\bcan_send_back\b/, "tests the pair's can_send_back");
+	// The one send-back call site sits inside this element — not merely
+	// textually before it (a sibling's own v-if would otherwise pass).
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /sendBack\(/, "the send-back control is inside the gated element");
 });
 
 test("Failure path — not configured/not applicable/not built/error shows no tiles or table: both sit behind the same v-if on the checked state (no new branch)", () => {
 	const tpl = template(read());
-	const tilesAt = tpl.search(/\bchips\b/);
-	assert.ok(tilesAt >= 0, "tiles reference view.chips");
-	const tableAt = tpl.search(/\bgroups\b/);
-	assert.ok(tableAt >= 0, "the pairs table reads view.groups");
-	// Both the tiles block and the groups block must be inside a v-if that
-	// mentions "checked" (the one state that reads the warehouse) — a
-	// single check, reused for not_configured, not_applicable, not_built
-	// and error alike (W3-7 amendment: no new branch per state).
-	for (const marker of ["chips", "groups"]) {
-		const idx = tpl.indexOf(marker);
-		const before = tpl.slice(0, idx);
-		const vIfs = [...before.matchAll(/v-if="([^"]*)"/g)];
-		assert.ok(vIfs.length > 0, `an enclosing v-if exists before ${marker}`);
-		const nearest = vIfs[vIfs.length - 1][1];
-		assert.match(nearest, /checked/, `${marker} is gated on the checked state`);
-	}
+	assert.match(tpl, /\bview\.chips\b/, "tiles reference view.chips");
+	assert.match(tpl, /\bview\.groups\b/, "the pairs table reads view.groups");
+	const block = blockWithVIf(tpl, "template", /checked/);
+	assert.ok(block, "a template's v-if tests the checked state");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /\bview\.chips\b/, "the tiles sit inside the checked-state block");
+	assert.match(inner, /\bview\.groups\b/, "the pairs table sits inside the checked-state block");
 });
 
 test("Extra (W3-7 amendment): no literal 'not applicable' or 'not configured' text — both come from the view", () => {
@@ -130,7 +161,7 @@ test("Refusals are shown through messageLines, never as raw HTML", () => {
 	assert.doesNotMatch(source, /v-html/);
 });
 
-test("Reads the period from the URL via route.js parse, D5 (no localStorage, no last-viewed memory)", () => {
+test("Reads the period from the URL via route.js parse, D5 (nothing kept in the browser, no last-viewed memory)", () => {
 	const js = script(read());
 	assert.match(js, /\bparse\(/);
 	assert.match(js, /useRoute\(/);
