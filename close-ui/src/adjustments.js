@@ -80,6 +80,7 @@ export function journalsView(payload, now, timeZone) {
 		journals,
 		groups: payload.groups,
 		accounts: payload.accounts,
+		reversalChoices: payload.reversal_choices || [],
 		workflowInstalled: Boolean(payload.workflow_installed),
 		firstState: payload.first_state,
 		canDraft: Boolean(payload.can_draft),
@@ -90,14 +91,18 @@ export function journalsView(payload, now, timeZone) {
 
 /**
  * The draft editor's duration choices (W3-3 option A): "This period only,
- * no reversal", then one "Reverses in <code>" per
- * `payload.reversal_choices` (journal_model.reversal_choices), in the order
- * the server sent them. Never a third, "stays until reversed" option
+ * no reversal", then one "Reverses in <code>" per `view.reversalChoices`
+ * (journalsView's carry-through of journal_model.reversal_choices), in the
+ * order the server sent them. Never a third, "stays until reversed" option
  * (W3-3 rejected it). With no reversal choices, only "none" is offered;
  * the caller shows `NO_REVERSAL_NOTE` in that case.
+ *
+ * Takes `journalsView`'s output, not the raw payload (one key convention
+ * across this module: `durationOptions`, `editable` and `durationIndex` all
+ * read the view's camelCase keys).
  */
-export function durationOptions(payload) {
-	const choices = payload.reversal_choices || [];
+export function durationOptions(view) {
+	const choices = view.reversalChoices || [];
 	const options = [{ kind: "none", label: "This period only, no reversal" }];
 	for (const choice of choices) {
 		options.push({
@@ -110,18 +115,44 @@ export function durationOptions(payload) {
 	return options;
 }
 
+/**
+ * Which of `durationOptions`'s entries matches `duration` (`draft.duration`:
+ * `{kind: "none"}` or `{kind: "reverses", fiscal_year, fiscal_period}`).
+ * Throws when none matches — never falls back to index 0, which would show
+ * "This period only, no reversal" in the select while the draft still holds
+ * a real reversal pair (U1): a duration that is not among the offered
+ * options is a bug to surface, not a UI state to paper over.
+ */
+export function durationIndex(options, duration) {
+	const idx = options.findIndex(
+		(o) =>
+			o.kind === duration.kind &&
+			(o.kind !== "reverses" || (o.fiscal_year === duration.fiscal_year && o.fiscal_period === duration.fiscal_period)),
+	);
+	if (idx < 0) {
+		throw new Error(`durationIndex: no option matches duration ${JSON.stringify(duration)}`);
+	}
+	return idx;
+}
+
+//: `Number("0x10")` parses as 16 and `Number("Infinity")` as Infinity;
+//: neither is a decimal amount, so toCents must reject both itself rather
+//: than rely on `Number.isNaN` (U12).
+const HEX_LIKE = /^\s*[+-]?0x/i;
+
 function toCents(value, pos, invalid) {
 	if (value === null || value === undefined || value === "") {
 		return 0;
 	}
-	const cents = Math.round(Number(value) * 100);
-	if (Number.isNaN(cents)) {
+	const num = Number(value);
+	const invalidValue = !Number.isFinite(num) || (typeof value === "string" && HEX_LIKE.test(value));
+	if (invalidValue) {
 		if (!invalid.includes(pos)) {
 			invalid.push(pos);
 		}
 		return 0;
 	}
-	return cents;
+	return Math.round(num * 100);
 }
 
 /**
@@ -234,23 +265,28 @@ export function effectView(effect) {
 }
 
 /**
- * Whether `user` may edit `journal` on the Adjustments screen (A18): only a
+ * Whether `journal` may be edited on the Adjustments screen (A18): only a
  * Draft (`docstatus` 0, `status` the workflow's first state — "already
  * sent" otherwise), only in an editable (Open) period, and only when the
- * caller may draft at all (`payload.can_draft`, which already folds in
- * `journal_api`'s `DRAFT_ROLES` check) or the journal is their own
- * (`journal.preparer === user`) — A06's own save path still decides for
- * real; this only decides whether the screen offers the control.
+ * caller may draft at all (`view.canDraft`, which already folds in
+ * `journal_api`'s `DRAFT_ROLES` check) — A06's own save path still decides
+ * for real; this only decides whether the screen offers the control.
+ *
+ * No "journal is their own" branch: E6-P1 option (c) draws `save_journal`'s
+ * line at `DRAFT_ROLES`, not at ownership, so a preparer who has lost (or
+ * never had) a draft role gets no edit control here either (U2). Takes
+ * `journalsView`'s output (camelCase `firstState`/`canEditPeriod`/
+ * `canDraft`), not the raw payload.
  */
-export function editable(journal, payload, user) {
+export function editable(journal, view) {
 	if (journal.docstatus !== 0) {
 		return false;
 	}
-	if (journal.status !== payload.first_state) {
+	if (journal.status !== view.firstState) {
 		return false;
 	}
-	if (!payload.can_edit_period) {
+	if (!view.canEditPeriod) {
 		return false;
 	}
-	return Boolean(payload.can_draft) || journal.preparer === user;
+	return Boolean(view.canDraft);
 }
