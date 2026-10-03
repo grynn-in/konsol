@@ -128,6 +128,9 @@ class _Site:
         self.sql_calls = []
         self.insert_calls = []
         self.save_calls = []
+        #: A06: None for a GET (get_doc refuses); the POST tests set
+        #: ``_PostSite.get_doc``.
+        self.get_doc_impl = None
 
 
 def _match_value(value, cond):
@@ -214,6 +217,8 @@ def _frappe(site):
         return site.can_draft_permission
 
     def get_doc(*a, **k):
+        if site.get_doc_impl is not None:  # A06: the POST tests install one
+            return site.get_doc_impl(frappe, *a, **k)
         site.insert_calls.append(("get_doc", a, k))
         raise AssertionError("a GET never calls get_doc")
 
@@ -511,3 +516,336 @@ def test_journal_api_never_names_the_close_event_doctype():
     names = ('"Close Event"', "'Close Event'")
     assert not any(n in source for n in names), source
     ast.parse(source)  # also must parse cleanly
+
+
+# =====================================================================================
+# A06 — save_journal (POST): the Group Accountant saves a balanced draft (forge-tested)
+# =====================================================================================
+
+import inspect  # noqa: E402
+
+SAVE_PARAMS = ("fiscal_year", "fiscal_period", "consolidation_group", "adjustment_type",
+               "description", "lines", "reverse_fiscal_year", "reverse_fiscal_period", "name")
+DRAFT_ROLES = ("EPM Analyst", "System Manager")
+NEW_DOC_KEYS = {"doctype", "consolidation_group", "adjustment_type", "fiscal_year",
+                "fiscal_period", "description", "reverse_fiscal_year", "reverse_fiscal_period",
+                "lines"}
+LINE_KEYS = ("data_area_id", "main_account", "debit_amount", "credit_amount", "description")
+WIREFRAME_LINES = [
+    {"data_area_id": "ZZA", "main_account": "6100", "debit_amount": 18500,
+     "credit_amount": 0, "description": "ZZ accrual"},
+    {"data_area_id": "ZZB", "main_account": "2310", "debit_amount": 0,
+     "credit_amount": 18500, "description": "ZZ accrual"},
+]
+
+
+class _Doc:
+    """A Consolidation Journal document as the stub site hands it out: records
+    insert/save, and exposes ``flags`` so a test can prove no ``ignore_*`` was
+    set."""
+
+    def __init__(self, site, data):
+        self._site = site
+        self.flags = types.SimpleNamespace()
+        for key, value in data.items():
+            setattr(self, key, value)
+        self.lines = [dict(r) for r in data.get("lines", [])]
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def set(self, key, value):
+        setattr(self, key, value)
+
+    def append(self, field, row):
+        getattr(self, field).append(dict(row))
+
+    def _totals(self):
+        self.total_debit = float(sum(float(r.get("debit_amount") or 0) for r in self.lines))
+        self.total_credit = float(sum(float(r.get("credit_amount") or 0) for r in self.lines))
+
+    def insert(self):
+        self._site.insert_calls.append(self)
+        if self._site.insert_raises:
+            raise self._site.insert_raises
+        self.name = "CJ-NEW01"
+        self.status = "Draft"
+        self.docstatus = 0
+        self._totals()
+        return self
+
+    def save(self):
+        self._site.save_calls.append(self)
+        self._totals()
+        return self
+
+
+def _post_site(roles=("EPM Analyst",)):
+    site = _Site()
+    site.user = ANALYST
+    site.roles = set(roles)
+    site.insert_raises = None
+    site.get_doc_calls = []
+    site.existing = {
+        "CJ-00001": {"name": "CJ-00001", "doctype": "Consolidation Journal",
+                     "owner": ANALYST, "docstatus": 0, "status": "Draft",
+                     "fiscal_year": 2025, "fiscal_period": 7,
+                     "consolidation_group": "CG1", "adjustment_type": "topside",
+                     "description": "ZZ old", "reverse_fiscal_year": 0,
+                     "reverse_fiscal_period": 0, "approved_by": None,
+                     "currency": "EUR", "total_debit": 5.0, "total_credit": 5.0,
+                     "lines": [{"data_area_id": "ZZA", "main_account": "6100",
+                                "debit_amount": 5, "credit_amount": 0, "description": ""},
+                               {"data_area_id": "ZZB", "main_account": "2310",
+                                "debit_amount": 0, "credit_amount": 5, "description": ""}]},
+    }
+
+    def get_doc_impl(frappe, *a, **k):
+        site.get_doc_calls.append((a, k))
+        if len(a) == 1 and isinstance(a[0], dict):
+            return _Doc(site, a[0])
+        doctype, name = a
+        assert doctype == "Consolidation Journal", doctype
+        if name not in site.existing:
+            raise frappe.ValidationError(f"Consolidation Journal {name} not found")
+        return _Doc(site, site.existing[name])
+
+    site.get_doc_impl = get_doc_impl
+    return site
+
+
+def _save(site, **overrides):
+    kwargs = {"fiscal_year": 2025, "fiscal_period": 7, "consolidation_group": "CG1",
+              "adjustment_type": "topside", "description": "ZZ accrual\nWhy: cut-off",
+              "lines": json.dumps(WIREFRAME_LINES), "reverse_fiscal_year": 2025,
+              "reverse_fiscal_period": 10}
+    kwargs.update(overrides)
+    return _invoke(site, lambda api: api.save_journal(**kwargs))
+
+
+def _save_raises(site, **overrides):
+    with pytest.raises(Exception) as info:
+        _save(site, **overrides)
+    return info.value
+
+
+def _load_api_source():
+    with open(API_PY, encoding="utf-8") as f:
+        return f.read()
+
+
+def _only_for_literal(fn_name):
+    tree = ast.parse(_load_api_source())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+    first = fn.body[0]
+    call = first.value
+    assert isinstance(call, ast.Call) and ast.unparse(call.func) == "frappe.only_for", ast.unparse(first)
+    return ast.literal_eval(call.args[0])
+
+
+# --- forge: the signature ---------------------------------------------------------------
+
+
+def test_save_journal_signature_is_exactly_the_nine_names_and_has_no_kwargs():
+    site = _post_site()
+    params = _invoke(site, lambda api: list(inspect.signature(api.save_journal).parameters.values()),
+                     require_json_safe=False)
+    assert tuple(p.name for p in params) == SAVE_PARAMS
+    kinds = [p.kind for p in params]
+    assert inspect.Parameter.VAR_KEYWORD not in kinds
+    assert inspect.Parameter.VAR_POSITIONAL not in kinds
+    forged = ("status", "approved_by", "approved_at", "docstatus", "workflow_state", "owner",
+              "currency", "total_debit", "total_credit", "amended_from")
+    for name in forged:
+        assert name not in SAVE_PARAMS and name not in [p.name for p in params], name
+
+
+def test_forged_keyword_arguments_never_reach_save_journal():
+    """Frappe drops request keys a function does not name; a direct call with
+    a forged keyword raises TypeError and nothing is written."""
+    forged = {"status": "Approved", "approved_by": "Administrator", "approved_at": "2025-07-01",
+              "docstatus": 1, "workflow_state": "Approved", "owner": "Administrator"}
+    for key, value in forged.items():
+        site = _post_site()
+        with pytest.raises(TypeError):
+            _save(site, **{key: value})
+        assert site.get_doc_calls == [], key
+        assert site.insert_calls == [] and site.save_calls == [], key
+
+
+def test_the_only_for_literal_is_draft_roles():
+    """amended 3 Oct (E6-P1 option (c)): A05's DRAFT_ROLES and save_journal's
+    only_for literal are the same tuple."""
+    site = _post_site()
+    draft_roles = _invoke(site, lambda api: api.DRAFT_ROLES)
+    assert tuple(draft_roles) == DRAFT_ROLES
+    assert tuple(_only_for_literal("save_journal")) == tuple(draft_roles)
+
+
+# --- forge: inside a line ---------------------------------------------------------------
+
+
+def test_forge_a_line_carrying_docstatus_parent_or_name_is_refused_naming_each_key():
+    site = _post_site()
+    forged = [dict(WIREFRAME_LINES[0], docstatus=1, parent="CJ-99999"),
+              dict(WIREFRAME_LINES[1], name="row-1")]
+    err = _save_raises(site, lines=json.dumps(forged))
+    text = str(err)
+    for key in ("docstatus", "parent", "name"):
+        assert key in text, (key, text)
+    assert site.get_doc_calls == []
+
+
+# --- new draft --------------------------------------------------------------------------
+
+
+def test_a_new_draft_goes_through_get_doc_and_insert_with_exactly_the_nine_keys():
+    site = _post_site()
+    result = _save(site)
+    assert len(site.get_doc_calls) == 1
+    (payload,), _k = site.get_doc_calls[0]
+    assert set(payload) == NEW_DOC_KEYS, sorted(payload)
+    assert payload["doctype"] == "Consolidation Journal"
+    assert (payload["fiscal_year"], payload["fiscal_period"]) == (2025, 7)
+    assert (payload["reverse_fiscal_year"], payload["reverse_fiscal_period"]) == (2025, 10)
+    for line in payload["lines"]:
+        assert tuple(line) == LINE_KEYS, line
+    assert len(site.insert_calls) == 1 and site.save_calls == []
+    doc = site.insert_calls[0]
+    assert not [k for k in vars(doc.flags) if k.startswith("ignore")], vars(doc.flags)
+    assert result == {"name": "CJ-NEW01", "docstatus": 0, "status": "Draft",
+                      "total_debit": 18500.0, "total_credit": 18500.0}
+
+
+def test_a_new_draft_with_no_reversal_is_this_period_only():
+    for blank in ((None, None), ("", ""), (0, 0), ("0", "0")):
+        site = _post_site()
+        _save(site, reverse_fiscal_year=blank[0], reverse_fiscal_period=blank[1])
+        (payload,), _k = site.get_doc_calls[0]
+        assert (payload["reverse_fiscal_year"], payload["reverse_fiscal_period"]) == (0, 0), blank
+
+
+def test_lines_as_a_list_are_accepted_too():
+    site = _post_site()
+    _save(site, lines=list(WIREFRAME_LINES))
+    assert len(site.insert_calls) == 1
+
+
+# --- update -----------------------------------------------------------------------------
+
+
+def test_an_update_changes_only_the_header_fields_and_replaces_the_lines():
+    site = _post_site()
+    result = _save(site, name="CJ-00001", consolidation_group="CG1",
+                   adjustment_type="reclassification", description="ZZ new",
+                   reverse_fiscal_year=None, reverse_fiscal_period=None)
+    assert site.insert_calls == [] and len(site.save_calls) == 1
+    doc = site.save_calls[0]
+    assert doc.adjustment_type == "reclassification"
+    assert doc.description == "ZZ new"
+    assert (doc.reverse_fiscal_year, doc.reverse_fiscal_period) == (0, 0)
+    assert [tuple(l) for l in doc.lines] == [LINE_KEYS, LINE_KEYS]
+    assert [l["debit_amount"] for l in doc.lines] == [18500, 0]
+    # Untouched: owner, status, docstatus, approver, currency.
+    assert doc.owner == ANALYST and doc.status == "Draft" and doc.docstatus == 0
+    assert doc.approved_by is None and doc.currency == "EUR"
+    assert not [k for k in vars(doc.flags) if k.startswith("ignore")], vars(doc.flags)
+    assert result["name"] == "CJ-00001" and result["total_debit"] == 18500.0
+
+
+def test_failure_path_a_named_approved_or_pending_journal_is_refused_without_save():
+    cases = [({"docstatus": 1, "status": "Approved"}, "approved"),
+             ({"docstatus": 0, "status": "Pending Approval"}, "waiting for approval")]
+    for change, phrase in cases:
+        site = _post_site()
+        site.existing["CJ-00001"].update(change)
+        err = _save_raises(site, name="CJ-00001")
+        assert phrase in str(err), (change, str(err))
+        assert site.save_calls == [] and site.insert_calls == [], change
+
+
+def test_failure_path_a_named_journal_in_another_period_is_refused_naming_both():
+    site = _post_site()
+    site.existing["CJ-00001"]["fiscal_period"] = 10
+    err = _save_raises(site, name="CJ-00001")
+    text = str(err)
+    assert "P10" in text and "P07" in text, text
+    assert site.save_calls == []
+
+
+# --- failure paths before any get_doc ---------------------------------------------------
+
+
+def test_failure_path_a_closed_period_is_refused_before_any_get_doc():
+    site = _post_site()
+    err = _save_raises(site, fiscal_period=6)
+    assert "Closed" in str(err) and "open period" in str(err), err
+    assert site.get_doc_calls == []
+
+
+def test_failure_path_an_undeclared_period_is_refused_before_any_get_doc():
+    site = _post_site()
+    err = _save_raises(site, fiscal_year=2031, fiscal_period=9)
+    assert "not a declared period" in str(err), err
+    assert site.get_doc_calls == []
+
+
+def test_failure_path_a_reversal_into_a_closed_or_earlier_period_is_refused():
+    cases = [((2025, 9), "is Closed"), ((2025, 6), "is not after"),
+             ((2025, None), "Name both")]
+    for (ry, rp), phrase in cases:
+        site = _post_site()
+        err = _save_raises(site, reverse_fiscal_year=ry, reverse_fiscal_period=rp)
+        assert phrase in str(err), ((ry, rp), str(err))
+        assert site.get_doc_calls == [], (ry, rp)
+
+
+def test_failure_path_adjustment_type_other_is_refused_before_any_read():
+    site = _post_site()
+    err = _save_raises(site, adjustment_type="other")
+    assert "other" in str(err), err
+    assert site.reads == [] and site.get_doc_calls == []
+
+
+def test_failure_path_epm_user_and_entity_accountant_are_refused_by_only_for():
+    for role in ("EPM User", "Entity Accountant"):
+        site = _post_site(roles=(role,))
+        err = _save_raises(site)
+        assert type(err).__name__ == "PermissionError", (role, err)
+        assert site.only_for_calls == [DRAFT_ROLES], role
+        assert site.reads == [] and site.get_doc_calls == [], role
+
+
+def test_failure_path_an_epm_admin_only_user_is_refused_by_only_for():
+    """amended 3 Oct (E6-P1 option (c)): the Close Lead approves, never drafts."""
+    site = _post_site(roles=("EPM Admin",))
+    err = _save_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.only_for_calls == [DRAFT_ROLES]
+    assert site.get_doc_calls == [] and site.reads == []
+
+
+def test_failure_path_bad_json_in_lines_is_a_sentence_not_a_traceback():
+    for bad in ("[{not json", "{}", '"text"'):
+        site = _post_site()
+        err = _save_raises(site, lines=bad)
+        assert type(err).__name__ == "ValidationError", (bad, err)
+        assert "lines" in str(err).lower(), (bad, str(err))
+        assert site.get_doc_calls == [], bad
+
+
+def test_a_validate_error_from_insert_propagates_uncaught():
+    site = _post_site()
+    site.insert_raises = ValueError("Main Account 0000 is not a Published postable account")
+    lines = [dict(WIREFRAME_LINES[0], main_account="0000"), WIREFRAME_LINES[1]]
+    with pytest.raises(ValueError) as info:
+        _save(site, lines=json.dumps(lines))
+    assert "0000" in str(info.value)
+    assert len(site.insert_calls) == 1
+
+
+def test_save_journal_never_sets_ignore_flags_or_writes_around_the_document():
+    source = _load_api_source()
+    for banned in ("ignore_permissions", "ignore_validate", "ignore_mandatory", "db_set",
+                   "set_value", "db_insert"):
+        assert banned not in source, banned

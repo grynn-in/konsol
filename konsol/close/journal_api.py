@@ -29,6 +29,8 @@ This file never names the Close Event doctype (the one-writer check,
 test_close_event_writer.py): rejections are read through
 ``close_event.latest_rejections`` only.
 """
+import json
+
 import frappe
 
 from konsol import fiscal_calendar
@@ -56,6 +58,9 @@ LINE_FIELDS = ["parent", "idx", "data_area_id", "main_account",
                "debit_amount", "credit_amount", "description"]
 ACCOUNT_FIELDS = ["name", "account_name", "parent_account", "is_group", "statement_section"]
 GROUP_FIELDS = ["name", "consolidation_group", "data_area_id", "reporting_currency"]
+
+#: The journal's Adjustment Type Select (consolidation_journal.json).
+ADJUSTMENT_TYPES = ("topside", "reclassification")
 
 
 def _period_key(fiscal_year, fiscal_period):
@@ -281,4 +286,100 @@ def get_journals(fiscal_year, fiscal_period):
         "can_draft": can_draft,
         "can_send": can_send,
         "can_edit_period": period.get("status") == "Open",
+    }
+
+
+def _reversal_number(value, label):
+    """A reversal year or period from a form post: blank or None is 0 (a
+    blank Int reads as 0), anything else must be a whole number."""
+    if value in (None, ""):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        frappe.throw(f"The reversal {label} {value!r} is not a whole number: "
+                     "name the reversal year and period, or leave both blank.")
+
+
+def _request_lines(lines):
+    """The request's lines kept to ``journal_model.LINE_KEYS``; a forged key
+    in a line (``docstatus``, ``parent``, ``name`` ...) or bad JSON is
+    refused with a sentence, before any document is built."""
+    if isinstance(lines, str):
+        try:
+            lines = json.loads(lines)
+        except ValueError:
+            frappe.throw("The journal's lines are not valid JSON: send a list of lines, "
+                         "each with data_area_id, main_account, debit_amount, "
+                         "credit_amount and description.")
+    rows, problems = journal_model.clean_lines(lines)
+    if problems:
+        frappe.throw("<br>".join(problems))
+    return rows
+
+
+# Save a new draft, or the named Draft (konsol#305 A06; story 6.1; #305-W3-3
+# durations; E6-P14). No ``**kwargs``: Frappe drops request keys this function
+# does not name, so a forged status, approver, docstatus, workflow state or
+# owner never reaches it. The document goes through ``insert()`` / ``save()``
+# with no ignore flag, so the doctype decides balance, entities, accounts and
+# the reversal pair, and Frappe's create/write permission still applies.
+# amended 3 Oct by the coordinator (E6-P1 option (c)): only ``DRAFT_ROLES``.
+@frappe.whitelist(methods=["POST"])
+def save_journal(fiscal_year, fiscal_period, consolidation_group, adjustment_type, description,
+                 lines, reverse_fiscal_year=None, reverse_fiscal_period=None, name=None):
+    frappe.only_for(("EPM Analyst", "System Manager"))
+    if adjustment_type not in ADJUSTMENT_TYPES:
+        frappe.throw(f"Adjustment Type {adjustment_type} is not a journal type: "
+                     f"use one of {', '.join(ADJUSTMENT_TYPES)}.")
+    rows = _request_lines(lines)
+    key = _period_key(fiscal_year, fiscal_period)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    period = _find_period(key, period_rows)
+    fy, fp = key
+    status = period.get("status")
+    if status != "Open":
+        frappe.throw("FY%d P%02d is %s: a journal is drafted in an open period." % (fy, fp, status))
+    ry = _reversal_number(reverse_fiscal_year, "year")
+    rp = _reversal_number(reverse_fiscal_period, "period")
+    problem = journal_model.reversal_problem(fy, fp, ry, rp, period_rows)
+    if problem:
+        frappe.throw(problem)
+
+    header = {
+        "consolidation_group": consolidation_group,
+        "adjustment_type": adjustment_type,
+        "description": description,
+        "reverse_fiscal_year": ry,
+        "reverse_fiscal_period": rp,
+    }
+    if not name:
+        doc = frappe.get_doc(dict(header, doctype=JOURNAL, fiscal_year=fy, fiscal_period=fp,
+                                  lines=rows))
+        doc.insert()
+    else:
+        doc = frappe.get_doc(JOURNAL, name)
+        if int(doc.docstatus) != 0:
+            frappe.throw(f"{name} is approved; a correction is a new journal or a Reverse.")
+        first_state = _workflow_info()["first_state"]
+        if doc.status and doc.status != first_state:
+            frappe.throw(f"{name} is {doc.status}: it is waiting for approval: the Close Lead "
+                         f"rejects it back to {first_state} before it changes.")
+        theirs = (int(doc.fiscal_year), int(doc.fiscal_period))
+        if theirs != key:
+            frappe.throw("%s is in FY%d P%02d, not FY%d P%02d: a journal's period does not "
+                         "change; draft a new journal in FY%d P%02d." % ((name,) + theirs + key + key))
+        for field, value in header.items():
+            doc.set(field, value)
+        doc.set("lines", [])
+        for row in rows:
+            doc.append("lines", row)
+        doc.save()
+
+    return {
+        "name": doc.name,
+        "docstatus": int(doc.docstatus),
+        "status": doc.status,
+        "total_debit": _number(doc.get("total_debit")),
+        "total_credit": _number(doc.get("total_credit")),
     }
