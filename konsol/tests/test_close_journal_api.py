@@ -30,6 +30,10 @@ CLOSE_DIR = os.path.join(APP_DIR, "close")
 API_PY = os.path.join(CLOSE_DIR, "journal_api.py")
 JOURNAL_MODEL_PY = os.path.join(CLOSE_DIR, "journal_model.py")
 TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
+#: konsolidat#245 option D: journal_api.py imports the real, pure
+#: tb_dimension_model for ``_is_on`` / ``is_legal_dimension_name``, loaded by
+#: path under its dotted name like journal_model/timefmt.
+TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
 #: The stub site's system time zone (mirrors test_close_rates_api.py): BST
 #: (+01:00) in July 2025.
 SITE_TZ = "Europe/London"
@@ -110,6 +114,13 @@ class _Site:
         ]
         self.accounts = list(_ACCOUNTS)
         self.groups = list(_GROUPS)
+        #: konsolidat#245 option D, D02: declared journal dimensions. Empty by
+        #: default, so every pre-existing test (no dims declared) behaves
+        #: exactly as before.
+        self.dimensions = []
+        self.hierarchies = []
+        self.hierarchy_members = []
+        self.dimension_mappings = []
         #: None = no active workflow. Otherwise {"name", "workflow_state_field"}.
         self.workflow = {"name": "Consolidation Journal Workflow", "workflow_state_field": "status"}
         self.wf_states = [{"state": "Draft"}, {"state": "Pending Approval"},
@@ -184,6 +195,15 @@ def _frappe(site):
         elif doctype == "Consolidation Group":
             assert not filters, "groups: one unfiltered read, split in Python"
             rows = list(site.groups)
+        elif doctype == "Dimension":
+            rows = [r for r in site.dimensions if _match(r, filters)]
+            rows = sorted(rows, key=lambda r: r.get("dimension_name") or "")
+        elif doctype == "Reporting Hierarchy":
+            rows = [r for r in site.hierarchies if _match(r, filters)]
+        elif doctype == "Reporting Hierarchy Member":
+            rows = [r for r in site.hierarchy_members if _match(r, filters)]
+        elif doctype == "Dimension Mapping":
+            rows = [r for r in site.dimension_mappings if _match(r, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         if pluck:
@@ -313,7 +333,7 @@ def _invoke(site, run, require_json_safe=True):
     frappe_model.workflow = frappe_workflow
     frappe.model = frappe_model
     names = ["frappe", "frappe.model", "frappe.model.workflow", "konsol", "konsol.close",
-             "konsol.fiscal_calendar",
+             "konsol.fiscal_calendar", "konsol.tb_dimension_model",
              "konsol.close.close_event", "konsol.close.journal_model", "konsol.close.timefmt",
              "close_journal_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
@@ -326,6 +346,8 @@ def _invoke(site, run, require_json_safe=True):
         close.close_event = close_event
         close.journal_model = _load_path("konsol.close.journal_model", JOURNAL_MODEL_PY)
         close.timefmt = _load_path("konsol.close.timefmt", TIMEFMT_PY)
+        konsol.tb_dimension_model = _load_path(
+            "konsol.tb_dimension_model", TB_DIMENSION_MODEL_PY)
         api = _load_path("close_journal_api_under_test", API_PY)
         result = run(api)
         if require_json_safe:
@@ -539,6 +561,165 @@ def test_the_read_count_is_constant_in_the_number_of_journals():
     assert len(r1["journals"]) == 1 and len(r5["journals"]) == 5
     assert len(one.reads) == len(five.reads), (one.reads, five.reads)
     assert one.rejection_calls and five.rejection_calls
+
+
+# --- konsolidat#245 option D, D02: declared journal dimensions (get_journals) --------
+
+
+def _dim(name, label=None, in_journal=1, status="Published"):
+    return {"dimension_name": name, "label": label, "in_journal": in_journal, "status": status}
+
+
+def _rh(name, dimension, status="Published"):
+    return {"name": name, "dimension": dimension, "status": status}
+
+
+def _rhm(reporting_hierarchy, member_code, is_group=0):
+    return {"reporting_hierarchy": reporting_hierarchy, "member_code": member_code,
+            "is_group": is_group}
+
+
+def _dmap(dimension, canonical_value, status="Published"):
+    return {"dimension": dimension, "canonical_value": canonical_value, "status": status}
+
+
+def test_zero_declared_dimensions_leaves_dimensions_and_lines_unchanged():
+    site = _Site()
+    result = _call(site)
+    assert result["dimensions"] == []
+    journal = _by_name(result, "CJ-00001")
+    assert set(journal["lines"][0]) == {
+        "idx", "data_area_id", "main_account", "account_name",
+        "debit_amount", "credit_amount", "description",
+    }
+    assert ("get_all", "Dimension") in site.reads
+    assert ("get_all", "Reporting Hierarchy") not in site.reads
+    assert ("get_all", "Reporting Hierarchy Member") not in site.reads
+    assert ("get_all", "Dimension Mapping") not in site.reads
+
+
+def test_a_published_in_journal_dimension_is_declared_with_its_label():
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center", label="Cost Center")]
+    result = _call(site)
+    assert result["dimensions"] == [
+        {"key": "dim_cost_center", "label": "Cost Center", "suggestions": []}
+    ]
+
+
+def test_a_dimension_with_no_label_falls_back_to_its_name():
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center", label=None)]
+    result = _call(site)
+    assert result["dimensions"][0]["label"] == "dim_cost_center"
+
+
+def test_off_text_in_journal_values_are_off_not_truthy():
+    """``_is_on``'s off-text handling (tb_dimension_model._OFF_TEXT), reused
+    here rather than ``if doc.in_journal``."""
+    for off in ("0", "false", "No", "", 0, False):
+        site = _Site()
+        site.dimensions = [_dim("dim_x", in_journal=off)]
+        result = _call(site)
+        assert result["dimensions"] == [], off
+
+
+def test_on_values_declare_the_dimension():
+    for on in (1, True, "1", "yes"):
+        site = _Site()
+        site.dimensions = [_dim("dim_x", in_journal=on)]
+        result = _call(site)
+        assert len(result["dimensions"]) == 1, on
+
+
+def test_an_illegal_dimension_name_is_never_declared_even_in_journal_and_published():
+    site = _Site()
+    site.dimensions = [_dim("dim_x\n")]
+    result = _call(site)
+    assert result["dimensions"] == []
+
+
+def test_a_draft_dimension_is_not_declared_even_with_the_flag_on():
+    site = _Site()
+    site.dimensions = [_dim("dim_x", status="Draft")]
+    result = _call(site)
+    assert result["dimensions"] == []
+
+
+def test_declared_dimensions_are_ordered_by_dimension_name():
+    site = _Site()
+    site.dimensions = [_dim("dim_zzz"), _dim("dim_aaa")]
+    result = _call(site)
+    assert [d["key"] for d in result["dimensions"]] == ["dim_aaa", "dim_zzz"]
+
+
+def test_suggestions_combine_published_leaves_and_published_mappings_deduped_and_sorted():
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center")]
+    site.hierarchies = [_rh("RH-1", "dim_cost_center")]
+    site.hierarchy_members = [
+        _rhm("RH-1", "CC2"),
+        _rhm("RH-1", "CC1"),
+        _rhm("RH-1", "CC-GROUP", is_group=1),  # not a leaf: excluded
+    ]
+    site.dimension_mappings = [
+        _dmap("dim_cost_center", "CC1"),  # duplicate of the leaf: deduped
+        _dmap("dim_cost_center", "CC3"),
+    ]
+    result = _call(site)
+    assert result["dimensions"][0]["suggestions"] == ["CC1", "CC2", "CC3"]
+
+
+def test_suggestions_exclude_a_non_published_hierarchy_and_a_non_published_mapping():
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center")]
+    site.hierarchies = [_rh("RH-1", "dim_cost_center", status="Draft")]
+    site.hierarchy_members = [_rhm("RH-1", "CC1")]
+    site.dimension_mappings = [_dmap("dim_cost_center", "CC9", status="Draft")]
+    result = _call(site)
+    assert result["dimensions"][0]["suggestions"] == []
+
+
+def test_suggestions_for_one_dimension_never_leak_into_another():
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center"), _dim("dim_project")]
+    site.hierarchies = [_rh("RH-CC", "dim_cost_center"), _rh("RH-PR", "dim_project")]
+    site.hierarchy_members = [_rhm("RH-CC", "CC1"), _rhm("RH-PR", "P1")]
+    site.dimension_mappings = [_dmap("dim_cost_center", "CC2"), _dmap("dim_project", "P2")]
+    result = _call(site)
+    by_key = {d["key"]: d["suggestions"] for d in result["dimensions"]}
+    assert by_key == {"dim_cost_center": ["CC1", "CC2"], "dim_project": ["P1", "P2"]}
+
+
+def test_each_line_carries_its_declared_dimension_value_defaulting_blank():
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center")]
+    site.lines = [
+        _line("CJ-00001", 1, "ZZA", "6100", debit_amount=18500),
+        _line("CJ-00001", 2, "ZZB", "2310", credit_amount=18500),
+    ]
+    site.lines[0]["dim_cost_center"] = "CC1"
+    result = _call(site)
+    journal = _by_name(result, "CJ-00001")
+    assert journal["lines"][0]["dim_cost_center"] == "CC1"
+    assert journal["lines"][1]["dim_cost_center"] == ""
+
+
+def test_bounded_reads_dimension_reads_are_constant_in_the_number_of_journals():
+    """Suggestion reads do not scale with the number of journals or lines
+    (bounded reads, no N+1 per line)."""
+    one, five = _many_journals(1), _many_journals(5)
+    for site in (one, five):
+        site.dimensions = [_dim("dim_cost_center")]
+        site.hierarchies = [_rh("RH-1", "dim_cost_center")]
+        site.hierarchy_members = [_rhm("RH-1", "CC1")]
+        site.dimension_mappings = [_dmap("dim_cost_center", "CC2")]
+    r1, r5 = _call(one), _call(five)
+    assert len(r1["journals"]) == 1 and len(r5["journals"]) == 5
+    assert len(one.reads) == len(five.reads), (one.reads, five.reads)
+    assert r1["dimensions"] == r5["dimensions"] == [
+        {"key": "dim_cost_center", "label": "dim_cost_center", "suggestions": ["CC1", "CC2"]}
+    ]
 
 
 # --- the event-log doctype literal never appears here (the one-writer check) ---------
@@ -884,6 +1065,48 @@ def test_save_journal_never_sets_ignore_flags_or_writes_around_the_document():
     for banned in ("ignore_permissions", "ignore_validate", "ignore_mandatory", "db_set",
                    "set_value", "db_insert"):
         assert banned not in source, banned
+
+
+# --- konsolidat#245 option D, D02: declared dimension keys round-trip through save_journal ---
+
+
+def test_a_new_draft_carries_the_declared_dimension_value_on_each_line():
+    site = _post_site()
+    site.dimensions = [_dim("dim_cost_center")]
+    lines = [dict(WIREFRAME_LINES[0], dim_cost_center="CC1"),
+             dict(WIREFRAME_LINES[1], dim_cost_center="CC2")]
+    _save(site, lines=json.dumps(lines))
+    (payload,), _k = site.get_doc_calls[0]
+    for line in payload["lines"]:
+        assert tuple(line) == LINE_KEYS + ("dim_cost_center",), line
+    assert [l["dim_cost_center"] for l in payload["lines"]] == ["CC1", "CC2"]
+
+
+def test_a_new_draft_with_a_declared_dimension_and_no_value_is_blank_never_none():
+    site = _post_site()
+    site.dimensions = [_dim("dim_cost_center")]
+    _save(site, lines=json.dumps(WIREFRAME_LINES))
+    (payload,), _k = site.get_doc_calls[0]
+    for line in payload["lines"]:
+        assert line["dim_cost_center"] == ""
+
+
+def test_failure_path_an_undeclared_dimension_key_on_a_line_is_refused_like_a_forged_key():
+    site = _post_site()  # no dimensions declared
+    lines = [dict(WIREFRAME_LINES[0], dim_cost_center="CC1"), WIREFRAME_LINES[1]]
+    err = _save_raises(site, lines=json.dumps(lines))
+    assert "dim_cost_center" in str(err) and "Line 1" in str(err), err
+    assert site.get_doc_calls == []
+
+
+def test_an_update_replaces_the_lines_declared_dimension_values_too():
+    site = _post_site()
+    site.dimensions = [_dim("dim_cost_center")]
+    lines = [dict(WIREFRAME_LINES[0], dim_cost_center="CC9"), WIREFRAME_LINES[1]]
+    _save(site, name="CJ-00001", lines=json.dumps(lines))
+    doc = site.save_calls[0]
+    assert doc.lines[0]["dim_cost_center"] == "CC9"
+    assert doc.lines[1]["dim_cost_center"] == ""
 
 
 # =====================================================================================
