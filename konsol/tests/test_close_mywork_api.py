@@ -787,8 +787,144 @@ def test_no_leaves_still_answers_without_error():
 
 
 def test_the_ic_api_stub_is_installed():
+    # C08: only the Entity Accountant reads the open IC fixes; the group
+    # personas read the setup gaps only (no open_fixes call).
     site = _Site()
     _call(site)
-    # My work does not call ic_api yet. C08 changes this expectation in its
-    # own test once mywork_api reads the IC gap through it.
     assert site.ic_calls == []
+    ea = _Site(roles=("Entity Accountant",), allowed={"ZZA"})
+    _call(ea)
+    assert len(ea.ic_calls) == 1, ea.ic_calls
+
+
+# --- C08: the IC gaps for the group personas, IC fix items for the EA ------
+
+_GROUP_ROLES = (("EPM Admin",), ("System Manager",), ("EPM Analyst",))
+_OPEN_KEYS = [(2025, 7), (2025, 8), (2025, 9)]
+
+
+def _ic_fix(**over):
+    fix = {
+        "entity_a": "UK01", "account_a": "140000",
+        "entity_b": "DE01", "account_b": "240000",
+        "group": "EMEA Group", "state": "over_tolerance",
+        "difference": 360.65, "tolerance": 5.0,
+        "balance_a": 1250.75, "balance_b": 890.10,
+        "sent_by": "zz-lead@example.com", "sent_at": "2025-08-15T10:00:00",
+        "reason": "Please review the booking.",
+    }
+    fix.update(over)
+    return fix
+
+
+def _ic_items(result):
+    return [i for i in result["items"] if i["id"].startswith("ic:")]
+
+
+def test_ic_accounts_gap_reaches_the_close_lead_and_the_group_accountant():
+    # Failure path: "not configured" is never silent on My work.
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_gap = "No Published Intercompany Account: declare the pairings."
+        result = _call(site)
+        gap = _gap(result, "ic_accounts")
+        assert gap is not None, (roles, _ids(result))
+        assert gap["detail"] == site.ic_gap, gap
+        assert gap["kind"] == "blocking", gap
+        _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+def test_ic_accounts_gap_absent_when_ic_api_says_none():
+    for roles in _GROUP_ROLES:
+        result = _call(_Site(roles=roles))
+        assert _gap(result, "ic_accounts") is None, roles
+        assert _gap(result, "ic_tolerance") is None, roles
+
+
+def test_entity_accountant_never_gets_the_ic_setup_gaps():
+    # Failure path: the Entity Accountant cannot declare either, so neither is theirs.
+    site = _Site(roles=("Entity Accountant",), allowed={"ZZA"})
+    site.ic_gap = "No Published Intercompany Account: declare the pairings."
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["G"], "message": "m"}
+    result = _call(site)
+    assert _gap(result, "ic_accounts") is None, _ids(result)
+    assert _gap(result, "ic_tolerance") is None, _ids(result)
+
+
+def test_ic_tolerance_gap_reaches_the_group_personas():
+    # Failure path (W3-6): a tolerance of 0 is never silently "exact".
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["G"],
+                                 "message": "Declare the IC tolerance on G."}
+        result = _call(site)
+        gap = _gap(result, "ic_tolerance")
+        assert gap is not None, (roles, _ids(result))
+        assert gap["detail"] == "Declare the IC tolerance on G.", gap
+        assert gap["kind"] == "blocking", gap
+
+
+def test_entity_accountant_gets_an_ic_fix_item_on_trial_balances():
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    items = _ic_items(result)
+    assert len(items) == 1, items
+    item = items[0]
+    assert item["action"] == {"screen": "trial-balances", "entity": "UK01"}, item
+    assert item["kind"] == "blocking", item  # P07 has ended
+    assert item["period"]["since"] == "2025-07-31", item
+    assert "890.1" not in item["detail"], item["detail"]  # W3-2: no partner balance
+    assert site.ic_calls == [_OPEN_KEYS], site.ic_calls
+    by_screen = result["counts"]["by_screen"]["trial-balances"]
+    assert by_screen["count"] == sum(
+        1 for i in result["items"] if i["action"].get("screen") == "trial-balances")
+    assert by_screen["count"] >= 1 and by_screen["blocking"] >= 1, by_screen
+    _assert_counts_add_up(result, "entity_accountant")
+
+
+def test_entity_accountant_unrestricted_gets_both_sides():
+    site = _Site(roles=("Entity Accountant",), allowed=None)
+    site.ic_fixes = {(2025, 9): [_ic_fix()]}
+    items = _ic_items(_call(site))
+    assert sorted(i["action"]["entity"] for i in items) == ["DE01", "UK01"], items
+    assert all(i["kind"] == "todo" for i in items), items  # P09 has not ended
+
+
+def test_group_personas_never_get_ic_fix_items_and_never_read_them():
+    # Failure path: fix items are the Entity Accountant's (R1).
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_fixes = {(2025, 7): [_ic_fix()]}
+        result = _call(site)
+        assert _ic_items(result) == [], roles
+        assert site.ic_calls == [], (roles, site.ic_calls)
+
+
+def test_ic_fix_for_a_period_that_is_not_open_gives_no_item():
+    # Failure path: P07 closed -> not one of My work's open periods.
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    for row in site.rows:
+        if (row["fiscal_year"], row["fiscal_period"]) == (2025, 7):
+            row["status"] = "Closed"
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    assert _ic_items(result) == [], _ic_items(result)
+    assert site.ic_calls == [[(2025, 8), (2025, 9)]], site.ic_calls
+
+
+def test_entity_accountant_with_undeclared_first_close_reads_no_ic_fixes():
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    site.first_close = (0, 0)
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    assert _ic_items(result) == []
+    assert site.ic_calls == []
+
+
+def test_viewer_reads_no_ic_facts():
+    site = _Site(roles=("EPM User",))
+    site.ic_gap = "x"
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    assert result["items"] == [] and site.ic_calls == []

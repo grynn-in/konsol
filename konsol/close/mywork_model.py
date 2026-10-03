@@ -15,6 +15,12 @@ Imports nothing from frappe or konsol; the caller gathers ``facts``:
   period (in scope: Active, not a group).
 - ``accountants_without_entities``: enabled Entity Accountants with no Entity
   user permission.
+- ``ic_accounts_gap``: None, or the help text from ``ic_api.setup_gap()``
+  (konsol#305 D2-7; W3-1). The model never writes its own wording: a policy
+  gap carries its own message.
+- ``ic_tolerance_gap``: None, or ``ic_api.tolerance_gap()``'s
+  ``{"code", "groups", "message"}`` (konsol#305 W3-6): the group nodes whose
+  intercompany tolerance is undeclared (0 is indistinguishable from unset).
 
 Rules:
 
@@ -30,10 +36,10 @@ Rules:
   not sent, never an invented age.
 """
 
-GAPS = ("first_close", "self_approval", "rate_move", "chart", "frequency", "ownership",
-        "accountants")
+GAPS = ("first_close", "self_approval", "rate_move", "chart", "ic_accounts", "ic_tolerance",
+        "frequency", "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
-             "accountants_without_entities", "policy_gaps")
+             "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap")
 
 #: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
 _POLICY_GAPS = {
@@ -51,6 +57,10 @@ def _declared(first_close):
 
 def _entities(n):
     return f"{n} entity" if n == 1 else f"{n} entities"
+
+
+def _groups(n):
+    return f"{n} group" if n == 1 else f"{n} groups"
 
 
 def _item(gap, title, detail, owner, desk, entities=(), users=()):
@@ -87,6 +97,15 @@ def setup_gap_items(facts):
         items.append(_item("chart", "Group chart not published",
                            "Publish the Main Accounts of the group chart.", "EPM Admin",
                            "/app/main-account"))
+    if facts["ic_accounts_gap"]:
+        items.append(_item("ic_accounts", "No intercompany accounts declared",
+                           facts["ic_accounts_gap"], "EPM Admin", "/app/intercompany-account"))
+    if facts["ic_tolerance_gap"]:
+        tol_gap = facts["ic_tolerance_gap"]
+        groups = tol_gap["groups"]
+        title = "Intercompany tolerance not declared for %s" % _groups(len(groups))
+        items.append(_item("ic_tolerance", title, tol_gap["message"], "EPM Admin",
+                           "/app/consolidation-group"))
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:
         items.append(_item("frequency", f"Reporting frequency missing for {_entities(len(freq))}",
@@ -328,3 +347,89 @@ def rank(items):
     Setup-gap items (no period) come first within their kind, in their own
     order."""
     return sorted(items or (), key=_rank_key)
+
+
+# --- C07 (konsol#305 W3-1, W3-2): the Entity Accountant's IC fix items -------
+#
+# ``ic_fix_items(fixes_by_key, per_period, allowed)`` turns ic_api's open
+# intercompany fixes into one item per (fix, allowed entity of the pair), each
+# pointed at Trial balances for that entity (R1: the fix is on the entity's
+# own TB). A cleared pair gives no item (ic_api does not return one); an
+# uncheckable one stays until it can be judged (E5-P4).
+#
+# ``fixes_by_key`` is ``{(fiscal_year, fiscal_period): [fix, ...]}``. Each fix
+# carries ``entity_a``, ``account_a``, ``entity_b``, ``account_b`` (the pair's
+# four-key grain), ``state`` (one of IC_FIX_STATES), ``sent_by``, ``sent_at``
+# (ISO datetime) and ``reason`` from the ``ic_sent_back`` event, and, by
+# state: ``over_tolerance`` -> ``difference``, ``tolerance``, ``group``,
+# ``balance_a``, ``balance_b``; ``cannot_check`` -> ``error``. An unknown
+# state raises ValueError: nothing is guessed.
+#
+# ``per_period`` is mywork_api's per-period facts; only ``code``, ``ended``
+# and (optionally) ``since`` are read. A fix whose key is absent from
+# ``per_period`` is skipped: that period is not open, so it is not mine to
+# show. ``allowed`` is the caller's entity codes (None = both sides, as for
+# the EPM Admin and EPM Analyst personas who always see every entity).
+
+IC_FIX_STATES = ("over_tolerance", "not_in_build", "cannot_check")
+
+
+def _ic_state_sentence(fix, own_balance):
+    state = fix["state"]
+    if state == "over_tolerance":
+        return ("Difference %s in %s (tolerance %s). Your side %s."
+                % (fix["difference"], fix["group"], fix["tolerance"], own_balance))
+    if state == "not_in_build":
+        return ("The pair is not in the last build; this stays until it is within "
+                "tolerance or the period closes.")
+    if state == "cannot_check":
+        return "Intercompany could not be checked (%s); this stays until it can." % fix["error"]
+    raise ValueError("ic_fix_items: unknown fix state %r" % (state,))
+
+
+def _ic_detail(fix, own_balance):
+    prefix = "Sent back by %s on %s: %s." % (fix["sent_by"], fix["sent_at"][:10], fix["reason"])
+    return prefix + " " + _ic_state_sentence(fix, own_balance)
+
+
+def _ic_title(partner, own_account, partner_account):
+    return "Intercompany difference with %s (%s ↔ %s)" % (partner, own_account, partner_account)
+
+
+def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
+    a, acct_a, b, acct_b = fix["entity_a"], fix["account_a"], fix["entity_b"], fix["account_b"]
+    if entity == a:
+        partner, own_account, partner_account, own_balance = b, acct_a, acct_b, fix["balance_a"]
+    else:
+        partner, own_account, partner_account, own_balance = a, acct_b, acct_a, fix["balance_b"]
+    # Validate the state before writing any detail (fails closed on an unknown state).
+    detail = _ic_detail(fix, own_balance)
+    return {
+        "id": "ic:%d-%02d:%s:%s|%s|%s|%s" % (fy, fp, entity, a, acct_a, b, acct_b),
+        "kind": kind,
+        "title": _ic_title(partner, own_account, partner_account),
+        "detail": detail,
+        "period": {"fiscal_year": fy, "fiscal_period": fp, "code": code, "since": since},
+        "owner": "Entity Accountant",
+        "action": {"screen": "trial-balances", "entity": entity},
+    }
+
+
+def ic_fix_items(fixes_by_key, per_period, allowed):
+    """One item per (fix, allowed entity of the pair); R1, W3-1, W3-2."""
+    per_period = per_period or {}
+    items = []
+    for key, fixes in (fixes_by_key or {}).items():
+        if key not in per_period:
+            continue
+        fy, fp = int(key[0]), int(key[1])
+        period_facts = per_period[key]
+        kind = "blocking" if period_facts["ended"] else "todo"
+        code = period_facts["code"]
+        since = period_facts.get("since")
+        for fix in fixes or ():
+            for entity in (fix["entity_a"], fix["entity_b"]):
+                if allowed is not None and entity not in allowed:
+                    continue
+                items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since))
+    return items

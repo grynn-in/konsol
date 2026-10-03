@@ -24,6 +24,8 @@ def _facts(**over):
         "ownership_missing": [],
         "accountants_without_entities": [],
         "policy_gaps": [],
+        "ic_accounts_gap": None,
+        "ic_tolerance_gap": None,
     }
     facts.update(over)
     return facts
@@ -69,14 +71,20 @@ _BOTH_POLICY_GAPS = [
 ]
 
 
+_IC_ACCOUNTS_GAP = "Publish at least one Intercompany Account, or declare none in this group."
+_IC_TOLERANCE_GAP = {"code": "ic_tolerance_undeclared", "groups": ["EMEA Group"],
+                      "message": "Declare the intercompany tolerance for EMEA Group."}
+
+
 def test_every_gap_present_ids_stable_and_ordered():
     facts = _facts(first_close=None, chart_published=False, frequency_missing=["FR01"],
                    ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
-                   policy_gaps=_BOTH_POLICY_GAPS)
+                   policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
+                   ic_tolerance_gap=_IC_TOLERANCE_GAP)
     items = M.setup_gap_items(facts)
     assert [i["id"] for i in items] == [
-        "gap:first_close", "gap:self_approval", "gap:rate_move", "gap:chart", "gap:frequency",
-        "gap:ownership", "gap:accountants"]
+        "gap:first_close", "gap:self_approval", "gap:rate_move", "gap:chart", "gap:ic_accounts",
+        "gap:ic_tolerance", "gap:frequency", "gap:ownership", "gap:accountants"]
     # Same input, same output: ids never depend on order or content.
     assert M.setup_gap_items(dict(facts)) == items
 
@@ -85,11 +93,14 @@ def test_desk_actions_point_at_configuration():
     items = _by_id(M.setup_gap_items(_facts(
         first_close=None, chart_published=False, frequency_missing=["FR01"],
         ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
-        policy_gaps=_BOTH_POLICY_GAPS)))
+        policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
+        ic_tolerance_gap=_IC_TOLERANCE_GAP)))
     assert items["gap:first_close"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:self_approval"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:rate_move"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:chart"]["action"] == {"desk": "/app/main-account"}
+    assert items["gap:ic_accounts"]["action"] == {"desk": "/app/intercompany-account"}
+    assert items["gap:ic_tolerance"]["action"] == {"desk": "/app/consolidation-group"}
     assert items["gap:frequency"]["action"] == {"desk": "/app/entity"}
     assert items["gap:ownership"]["action"] == {"desk": "/app/ownership-period"}
     assert items["gap:accountants"]["action"] == {"desk": "/app/user"}
@@ -101,11 +112,62 @@ def test_every_gap_is_blocking_with_an_owner_role():
     items = M.setup_gap_items(_facts(
         first_close=None, chart_published=False, frequency_missing=["FR01"],
         ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
-        policy_gaps=_BOTH_POLICY_GAPS))
+        policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
+        ic_tolerance_gap=_IC_TOLERANCE_GAP))
     for item in items:
         assert item["kind"] == "blocking"
         assert item["owner"] in ("EPM Admin", "System Manager")
         assert item["title"] and item["detail"]
+
+
+def test_ic_accounts_gap_is_one_item_pointed_at_the_desk():
+    items = M.setup_gap_items(_facts(ic_accounts_gap=_IC_ACCOUNTS_GAP))
+    assert [i["id"] for i in items] == ["gap:ic_accounts"]
+    item = items[0]
+    assert item["title"] == "No intercompany accounts declared"
+    assert item["detail"] == _IC_ACCOUNTS_GAP
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/intercompany-account"}
+
+
+def test_ic_accounts_gap_none_gives_no_item():
+    assert M.setup_gap_items(_facts(ic_accounts_gap=None)) == []
+
+
+def test_missing_ic_accounts_gap_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["ic_accounts_gap"]
+    with pytest.raises(ValueError, match="ic_accounts_gap"):
+        M.setup_gap_items(facts)
+
+
+def test_ic_tolerance_gap_is_one_blocking_item():
+    items = M.setup_gap_items(_facts(ic_tolerance_gap=_IC_TOLERANCE_GAP))
+    assert [i["id"] for i in items] == ["gap:ic_tolerance"]
+    item = items[0]
+    assert item["detail"] == _IC_TOLERANCE_GAP["message"]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/consolidation-group"}
+    assert "1 group" in item["title"]
+    assert "groups" not in item["title"]
+
+
+def test_ic_tolerance_gap_title_is_plural_for_more_than_one_group():
+    gap = {"code": "ic_tolerance_undeclared", "groups": ["EMEA Group", "APAC Group"],
+           "message": "Declare the intercompany tolerance."}
+    item = M.setup_gap_items(_facts(ic_tolerance_gap=gap))[0]
+    assert "2 groups" in item["title"]
+
+
+def test_ic_tolerance_gap_none_gives_no_item():
+    assert M.setup_gap_items(_facts(ic_tolerance_gap=None)) == []
+
+
+def test_missing_ic_tolerance_gap_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["ic_tolerance_gap"]
+    with pytest.raises(ValueError, match="ic_tolerance_gap"):
+        M.setup_gap_items(facts)
 
 
 def test_a_policy_gap_is_one_item_with_owner_action_and_no_since():
@@ -489,3 +551,119 @@ def test_signed_states_match_the_assertion_run_controller():
 
 def test_re_sign_needed_is_not_a_signed_state():
     assert "Re-sign Needed" not in M.SIGNED_STATES
+
+
+# --- C07 (W3-1, W3-2): the Entity Accountant's intercompany fix items ---------
+
+IC_P07 = (2025, 7)
+IC_P08 = (2025, 8)
+
+
+def _ic_fix(**over):
+    fix = {
+        "entity_a": "UK01", "account_a": "140000",
+        "entity_b": "DE01", "account_b": "240000",
+        "group": "EMEA Group",
+        "state": "over_tolerance",
+        "difference": 360.65,
+        "tolerance": 5.0,
+        "balance_a": 1250.75,
+        "balance_b": 890.10,
+        "sent_by": "alice@example.com",
+        "sent_at": "2025-07-15T10:00:00",
+        "reason": "Please review the booking.",
+    }
+    fix.update(over)
+    return fix
+
+
+def _ic_period(code="FY2025 P07", ended=True, since=None):
+    facts = {"code": code, "ended": ended}
+    if since is not None:
+        facts["since"] = since
+    return facts
+
+
+def test_ic_fix_item_shape_for_the_allowed_entity_only():
+    per = {IC_P07: _ic_period()}
+    items = M.ic_fix_items({IC_P07: [_ic_fix()]}, per, {"UK01"})
+    assert len(items) == 1
+    item = items[0]
+    assert item["action"] == {"screen": "trial-balances", "entity": "UK01"}
+    assert item["owner"] == "Entity Accountant"
+    assert item["period"]["fiscal_year"] == 2025
+    assert item["period"]["fiscal_period"] == 7
+    assert item["period"]["code"] == "FY2025 P07"
+
+
+def test_ic_fix_item_kind_follows_whether_the_period_has_ended():
+    fix = _ic_fix()
+    blocking = M.ic_fix_items({IC_P07: [fix]}, {IC_P07: _ic_period(ended=True)}, {"UK01"})
+    assert blocking[0]["kind"] == "blocking"
+    todo = M.ic_fix_items({IC_P07: [fix]}, {IC_P07: _ic_period(ended=False)}, {"UK01"})
+    assert todo[0]["kind"] == "todo"
+
+
+def test_ic_fix_item_never_writes_the_partner_balance():
+    # W3-2: the entity sees its own balance and the difference, never the partner's.
+    per = {IC_P07: _ic_period()}
+    fix = _ic_fix()
+    items = M.ic_fix_items({IC_P07: [fix]}, per, {"UK01"})
+    text = items[0]["title"] + " " + items[0]["detail"]
+    assert str(fix["balance_a"]) in text
+    assert str(fix["difference"]) in text
+    assert str(fix["balance_b"]) not in text
+    assert fix["group"] in text
+
+
+def test_ic_fix_items_one_per_allowed_entity_both_sides_when_allowed_is_none():
+    # R1: with no scope restriction, both entities of the pair get their own item.
+    per = {IC_P07: _ic_period()}
+    items = M.ic_fix_items({IC_P07: [_ic_fix()]}, per, None)
+    entities = {i["action"]["entity"] for i in items}
+    assert entities == {"UK01", "DE01"}
+    assert len({i["id"] for i in items}) == 2
+
+
+def test_ic_fix_items_empty_when_neither_entity_is_allowed():
+    per = {IC_P07: _ic_period()}
+    assert M.ic_fix_items({IC_P07: [_ic_fix()]}, per, {"FR01"}) == []
+
+
+def test_ic_fix_items_not_in_build_and_cannot_check_sentences():
+    per = {IC_P07: _ic_period()}
+    nib = M.ic_fix_items({IC_P07: [_ic_fix(state="not_in_build")]}, per, {"UK01"})
+    assert nib[0]["detail"].endswith(
+        "The pair is not in the last build; this stays until it is within tolerance "
+        "or the period closes.")
+
+    cc = M.ic_fix_items({IC_P07: [_ic_fix(state="cannot_check", error="ClickHouse timeout")]},
+                        per, {"UK01"})
+    assert "ClickHouse timeout" in cc[0]["detail"]
+    assert cc[0]["detail"].endswith(
+        "Intercompany could not be checked (ClickHouse timeout); this stays until it can.")
+
+
+def test_ic_fix_item_detail_carries_the_send_back_reason():
+    per = {IC_P07: _ic_period()}
+    fix = _ic_fix()
+    item = M.ic_fix_items({IC_P07: [fix]}, per, {"UK01"})[0]
+    assert item["detail"].startswith("Sent back by alice@example.com on 2025-07-15: "
+                                     "Please review the booking.")
+
+
+def test_ic_fix_items_unknown_state_raises():
+    per = {IC_P07: _ic_period()}
+    with pytest.raises(ValueError, match="cleared"):
+        M.ic_fix_items({IC_P07: [_ic_fix(state="cleared")]}, per, {"UK01"})
+
+
+def test_ic_fix_items_skips_a_key_not_in_per_period():
+    # A fix for a period not among the caller's open periods is not mine to show.
+    items = M.ic_fix_items({IC_P08: [_ic_fix()]}, {IC_P07: _ic_period()}, None)
+    assert items == []
+
+
+def test_ic_fix_items_no_fixes_gives_no_items():
+    assert M.ic_fix_items({}, {IC_P07: _ic_period()}, None) == []
+    assert M.ic_fix_items({IC_P07: []}, {IC_P07: _ic_period()}, None) == []
