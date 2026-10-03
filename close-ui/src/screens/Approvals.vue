@@ -11,7 +11,10 @@
  *   approvals.js's `queueView` (A14). The screen never re-decides a status,
  *   an age or an approve mode: those come from the server through
  *   queueView, which throws when asked for a time zone or `now` it was not
- *   given (shown through LoadState, never rendered as current).
+ *   given (shown through LoadState, never rendered as current). A `reason`
+ *   item's inline label is `approve.message` alone, the server's own
+ *   no-reason-refusal sentence (U12): `queueView` throws if a `reason` item
+ *   ever carries none, rather than this screen inventing a label.
  * - P08 POST `approval_api.approve`, through the ONE function `approve`
  *   below; its body comes only from `approveBody` (rates.js, reused through
  *   approvals.js's re-export — the one-call-site rule). A `button` item
@@ -270,7 +273,7 @@ function balanceText(item) {
 							<template v-else-if="canAct(item)">
 								<template v-if="item.approve.kind === 'reason' && approveReasonOpen[refKey(item)]">
 									<label :for="`approve-reason-${refKey(item)}`" class="text-xs text-ink-gray-6">
-										{{ item.approve.message || "Reason for approving your own draft" }}
+										{{ item.approve.message }}
 									</label>
 									<input
 										:id="`approve-reason-${refKey(item)}`"

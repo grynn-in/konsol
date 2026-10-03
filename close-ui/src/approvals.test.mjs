@@ -121,6 +121,20 @@ test("queueView requires a time zone and a valid now", () => {
 	assert.throws(() => queueView(payload(), new Date("not a date"), TZ), /valid `now`/);
 });
 
+// --- U12: no invented fallback for a missing `waiting` or `hidden` ----------
+
+test("Failure path, U12: a payload with no `waiting` throws, never reading as nothing waiting", () => {
+	assert.throws(() => queueView(payload({ waiting: undefined }), NOW, TZ), /payload\.waiting/);
+	assert.throws(() => queueView(payload({ waiting: {} }), NOW, TZ), /payload\.waiting/);
+	assert.throws(() => queueView(payload({ waiting: null }), NOW, TZ), /payload\.waiting/);
+});
+
+test("Failure path, U12: a payload with no `hidden` throws, never reading as zero", () => {
+	assert.throws(() => queueView(payload({ hidden: undefined }), NOW, TZ), /payload\.hidden/);
+	assert.throws(() => queueView(payload({ hidden: null }), NOW, TZ), /payload\.hidden/);
+	assert.throws(() => queueView(payload({ hidden: "0" }), NOW, TZ), /payload\.hidden/);
+});
+
 // --- inline items: approve mode, effect --------------------------------------
 
 test("queueView: a direct item becomes an approve button, inline true", () => {
@@ -156,6 +170,58 @@ test("Under \"Allowed with reason\", a reason item's approveBody with a blank re
 	const view = queueView(payload({ items: [journalItem()] }), NOW, TZ);
 	const result = approveBody(view.items[0].doctype, view.items[0].name, view.items[0].approve, "   ");
 	assert.deepEqual(result, { error: "Give a reason: Close Settings allows self-approval only with a reason." });
+});
+
+test("Failure path, U12: a \"reason\" item with no server message throws, never an invented label", () => {
+	assert.throws(
+		() => queueView(payload({ items: [journalItem({ approve: { mode: "reason", message: null } })] }), NOW, TZ),
+		/needs the server's own message/,
+	);
+	assert.throws(
+		() => queueView(payload({ items: [journalItem({ approve: { mode: "reason", message: "" } })] }), NOW, TZ),
+		/needs the server's own message/,
+	);
+});
+
+// --- U9: a pure test feeding queueView's own output the way Approvals.vue --
+// uses it, rather than grepping the component's source (approvals.screen.
+// test.mjs still checks the wiring; this exercises the real decisions).
+
+test("U9: Approvals.vue's own gate (canAct) and reason label, fed queueView's real output", () => {
+	// Mirrors Approvals.vue's `canAct(item)` exactly (screens/Approvals.vue):
+	// only an inline item whose approve mode is one the caller may act on.
+	function canAct(item) {
+		return item.inline && (item.approve.kind === "button" || item.approve.kind === "reason");
+	}
+
+	const reasonMessage = "Give a reason: Close Settings allows self-approval only with a reason.";
+	const view = queueView(
+		payload({
+			items: [
+				journalItem({ approve: { mode: "reason", message: reasonMessage } }),
+				gerItem({ approve: { mode: "direct", message: null } }),
+				bcItem(),
+			],
+		}),
+		NOW, TZ,
+	);
+
+	const [reasonItem, directItem, deskItem] = view.items;
+
+	// A "reason" item: canAct is true, and the label the screen renders
+	// (`item.approve.message`, with no `||` fallback) is the server's own
+	// sentence, exactly.
+	assert.equal(canAct(reasonItem), true);
+	assert.equal(reasonItem.approve.message, reasonMessage);
+
+	// A "button" (direct) item: canAct is true, no reason label needed.
+	assert.equal(canAct(directItem), true);
+
+	// A Desk-only (BC/BD) item: never inline, so canAct's own `item.inline`
+	// check short-circuits false without ever reading `item.approve.kind` —
+	// consistent with `approve` being null for a desk item.
+	assert.equal(deskItem.inline, false);
+	assert.equal(deskItem.approve, null);
 });
 
 // --- Desk-only items (BC/BD) --------------------------------------------------

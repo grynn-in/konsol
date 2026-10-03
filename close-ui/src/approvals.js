@@ -57,25 +57,34 @@ function ageText(oldest, now) {
 	return days === 1 ? "1 day" : `${days} days`;
 }
 
-/** `payload.waiting` (`{count, oldest}`, approvals_model.waiting_for_me) ->
+/** `payload.waiting` (`{count, oldest}`, approvals_model.waiting_for_me,
+ * always present — `approvals_api.queue_for` sets it unconditionally) ->
  * "N waiting for you · oldest <age>", or "Nothing waiting for you" when the
- * count is 0. */
+ * count is 0. A missing `waiting`, or one with no numeric `count`, is a
+ * contract break with the server and throws rather than reading as "nothing
+ * waiting" (U12). */
 function headerText(waiting, now) {
-	const count = (waiting && waiting.count) || 0;
+	if (!waiting || typeof waiting.count !== "number") {
+		throw new Error("queueView requires payload.waiting ({count, oldest}).");
+	}
+	const count = waiting.count;
 	if (!count) {
 		return "Nothing waiting for you";
 	}
-	const age = ageText(waiting && waiting.oldest, now);
+	const age = ageText(waiting.oldest, now);
 	return age ? `${count} waiting for you · oldest ${age}` : `${count} waiting for you`;
 }
 
-/** `payload.hidden` (an entity-scoped count, A10) -> "N awaiting outside
- * your scope" when it is positive (mirrors rates.js's `pendingEmptyMessage`
- * / periodGrid.js's hiddenNote), else `null`: no note when nothing is
- * hidden. */
+/** `payload.hidden` (an entity-scoped count, A10, always present — the same
+ * guarantee as `waiting`) -> "N awaiting outside your scope" when it is
+ * positive (mirrors rates.js's `pendingEmptyMessage` / periodGrid.js's
+ * hiddenNote), else `null`: no note when nothing is hidden. A missing or
+ * non-numeric `hidden` throws rather than reading as zero (U12). */
 function hiddenNoteText(hidden) {
-	const count = hidden || 0;
-	return count > 0 ? `${count} awaiting outside your scope` : null;
+	if (typeof hidden !== "number") {
+		throw new Error("queueView requires payload.hidden (a number).");
+	}
+	return hidden > 0 ? `${hidden} awaiting outside your scope` : null;
 }
 
 /** The server's item (approvals_model.queue_items' shape, every field
@@ -108,6 +117,16 @@ function itemView(item, now, timeZone) {
 		return view;
 	}
 	view.approve = approveAction(item.approve);
+	// A "reason" item (Allowed with reason) shows `approve.message` as the
+	// label on the reason input (Approvals.vue). `rates_model.approve_mode`
+	// only ever returns "reason" with the no-reason refusal as `message`
+	// (rates_model.py:178-204: the "direct" branch returns before this one,
+	// so `problem` is never falsy here) — a reason item with no message is
+	// a contract break with the server, never papered over with an invented
+	// label (U12).
+	if (view.approve.kind === "reason" && !view.approve.message) {
+		throw new Error("A \"reason\" approve item needs the server's own message.");
+	}
 	view.deskLink = null;
 	return view;
 }
