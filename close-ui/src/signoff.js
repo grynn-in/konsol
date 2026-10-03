@@ -126,6 +126,57 @@ function acknowledgementsSection(ack) {
 	return section(rows);
 }
 
+// konsol#305 C11: the states ic_model (C01, amended W3-7) declares; the
+// sign-off summary's `intercompany` carries one of them, or is missing on an
+// older payload. Never reads as reconciled when it is not: a missing key, an
+// older payload, is shown, never dropped as empty.
+const IC_STATES = ["not_configured", "not_applicable", "not_built", "error", "checked"];
+const IC_NOT_REPORTED = "Intercompany was not reported by the server — nothing was checked.";
+
+function intercompanyCountsLine(counts) {
+	const pairs = counts ? counts.pairs : undefined;
+	if (pairs === 0) {
+		return "0 intercompany pairs in the last build for this period.";
+	}
+	return (
+		`${unknownOr(pairs)} pairs: ${unknownOr(counts && counts.matched)} matched, ` +
+		`${unknownOr(counts && counts.within_tolerance)} within tolerance, ` +
+		`${unknownOr(counts && counts.fx_difference)} FX differences, ` +
+		`${unknownOr(counts && counts.over_tolerance)} over tolerance`
+	);
+}
+
+/**
+ * C11: the sign-off screen's intercompany section, built from
+ * `summary.intercompany` (ic_api.signoff_summary, C10). Never `["None"]` and
+ * never reads as reconciled:
+ * - missing / null (an older payload) → the "not reported" sentence;
+ * - `not_configured` / `not_applicable` / `not_built` / `error` → the
+ *   server's message, split on <br> (messageLines);
+ * - `checked` → the counts line (or the dedicated 0-pairs sentence), then
+ *   open send-backs, then unmatched rows, each only when > 0.
+ * An unknown state throws, naming it (mirrors assertKnownAction).
+ */
+function intercompanySection(ic) {
+	if (ic === null || ic === undefined) {
+		return section([IC_NOT_REPORTED]);
+	}
+	if (!IC_STATES.includes(ic.state)) {
+		throw new Error(`Unknown intercompany state: ${ic.state}`);
+	}
+	if (ic.state !== "checked") {
+		return section(messageLines(ic.message));
+	}
+	const rows = [intercompanyCountsLine(ic.counts)];
+	if (ic.sent_back_open > 0) {
+		rows.push(`${ic.sent_back_open} sent back and still open`);
+	}
+	if (ic.counts && ic.counts.unmatched > 0) {
+		rows.push(`${ic.counts.unmatched} rows without a partner`);
+	}
+	return section(rows);
+}
+
 function onBehalfSection(onBehalf) {
 	const labels = (onBehalf && onBehalf.labels) || [];
 	const unknown = (onBehalf && onBehalf.unknown) || [];
@@ -149,11 +200,13 @@ function previousSection(previous) {
 }
 
 /**
- * A21's `summary()` output → `{action, label, gates, checks, acknowledgements,
- * onBehalf, exceptions, covers, previous}`. Every section is
+ * A21's `summary()` output → `{action, label, gates, checks, intercompany,
+ * acknowledgements, onBehalf, exceptions, covers, previous}`. Every section is
  * `{rows, empty, shown, hidden, moreText}`; an empty section's `rows` is
- * exactly `["None"]`.
- * Throws on an unknown `action`.
+ * exactly `["None"]` — except `intercompany` (C11), which is never `["None"]`
+ * and never reads as reconciled: a missing or unrecognised payload still
+ * shows a visible sentence.
+ * Throws on an unknown `action` or an unknown intercompany state.
  */
 export function summaryView(summary) {
 	assertKnownAction(summary.action);
@@ -162,6 +215,7 @@ export function summaryView(summary) {
 		label: summary.label,
 		gates: gatesSection(summary.gates),
 		checks: checksSection(summary.checks),
+		intercompany: intercompanySection(summary.intercompany),
 		acknowledgements: acknowledgementsSection(summary.acknowledgements),
 		onBehalf: onBehalfSection(summary.on_behalf),
 		exceptions: exceptionsSection(summary.exceptions),

@@ -89,12 +89,11 @@ test("C11: SECTION_TITLES carries intercompany right after checks", () => {
   const src = script(read());
   const m = src.match(/SECTION_TITLES\s*=\s*\[([\s\S]*?)\];/);
   assert.ok(m, "SECTION_TITLES is declared");
-  const entries = m[1]
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length);
-  const checksIdx = entries.findIndex((e) => e.includes('"checks"'));
-  const icIdx = entries.findIndex((e) => e.includes('"intercompany"'));
+  const entries = (m[1].match(/\[\s*["'][^"']+["']\s*,\s*["'][^"']+["']\s*\]/g) || []).map(
+    (e) => e.match(/["']([^"']+)["']/)[1],
+  );
+  const checksIdx = entries.indexOf("checks");
+  const icIdx = entries.indexOf("intercompany");
   assert.ok(checksIdx >= 0, "checks is in SECTION_TITLES");
   assert.ok(icIdx === checksIdx + 1, "intercompany comes right after checks");
   assert.match(src, /\[\s*["']intercompany["']\s*,\s*["']Intercompany["']\s*\]/);
