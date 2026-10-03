@@ -537,6 +537,45 @@ def test_can_sign_is_the_write_permission_and_can_override_the_role():
     assert _get(site)["can_sign"] is True
 
 
+# --- C10: the sign-off summary carries the intercompany line -----------------
+
+def test_intercompany_line_passes_through_unchanged():
+    site = _Site()
+    result = _get(site)
+    assert result["intercompany"] == site.ic_summary
+    assert site.ic_calls == [(2025, 9)]
+
+
+def test_intercompany_not_configured_does_not_change_the_action():
+    site = _Site()
+    site.ic_summary = {"state": "not_configured",
+                       "message": "Intercompany not configured — nothing was checked.",
+                       "counts": None, "sent_back_open": None}
+    result = _get(site)
+    assert result["intercompany"]["state"] == "not_configured"
+    # No gate change (E5-P11): the same site's action is unchanged from the
+    # known fixture value with intercompany "checked" (the test above, and
+    # test_summary_is_assembled_for_the_close_lead).
+    assert result["action"] == "acknowledge"
+
+
+def test_viewer_and_entity_accountant_get_the_same_intercompany_counts():
+    base = _get(_Site())["intercompany"]
+    viewer = _Site(roles=("EPM User",))
+    viewer.can_write = False
+    assert _get(viewer)["intercompany"] == base
+    entity = _Site(roles=("Entity Accountant",))
+    entity.can_write = False
+    entity.allowed = {"ZZD"}
+    assert _get(entity)["intercompany"] == base
+
+
+def test_sign_never_reads_the_intercompany_summary():
+    site = _Site()
+    _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
+    assert site.ic_calls == []
+
+
 # --- A49: the period's own status ----------------------------------------------
 
 def test_open_period_reports_open_and_no_closer():
