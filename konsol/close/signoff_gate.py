@@ -46,6 +46,17 @@ Reads the site and passes it through the pure models:
   did not start after ``data_changed_at`` (A65), through
   ``signoff_model.data_change_problem`` (A66).
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
+- ``sign_off_problems`` also appends ``ic_api.tolerance_gap()`` (C05) to
+  ``config_gaps``, right after the two policy gaps, when a consolidation
+  group node has not declared its intercompany difference tolerance
+  (#305-W3-6; W3-P2). It costs 1-3 extra MariaDB reads per call (none once
+  intercompany is not configured or declared not applicable), the same
+  shape as ``_policies``; My work calls this gate once per open period, so
+  the same multiple applies there.
+- ``intercompany(fy, fp)`` -> ``ic_api.signoff_summary(fy, fp)``: the IC line
+  for the sign-off signature (#305-W3-8). It never raises for a warehouse
+  failure; a read failure comes back as its own ``"error"`` / ``"not_built"``
+  state.
 
 The first close period is read from Close Settings; its Int fields read back
 as 0 when unset, which ``signoff_model.first_close_key`` maps to undeclared.
@@ -56,7 +67,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import close_policy_model, period_model, scope_model, signoff_model
+from konsol.close import close_policy_model, ic_api, period_model, scope_model, signoff_model
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
@@ -184,6 +195,9 @@ def sign_off_problems(fiscal_year, fiscal_period):
     expected = signoff_model.expected_entities(frequencies, key, rows)
     gaps.extend(expected["gaps"])
     gaps.extend(close_policy_model.policy_gaps(*_policies()))
+    tolerance = ic_api.tolerance_gap()
+    if tolerance:
+        gaps.append(tolerance)
     tbs = _submitted("Trial Balance Submission", key)
     # #289 (#305-W2-2): a submitted TB from an entity with no covering
     # ownership at the period start is consolidated nowhere; it blocks.
@@ -211,6 +225,13 @@ def assert_can_sign(fiscal_year, fiscal_period):
     messages = problem_messages(sign_off_problems(fiscal_year, fiscal_period))
     if messages:
         frappe.throw("<br>".join(messages), title=BLOCKED_TITLE)
+
+
+def intercompany(fiscal_year, fiscal_period):
+    """The intercompany line for the sign-off signature (#305-W3-8). Never
+    raises for a warehouse failure: that reads as its own ``"error"`` /
+    ``"not_built"`` state (``ic_api.signoff_summary``)."""
+    return ic_api.signoff_summary(fiscal_year, fiscal_period)
 
 
 def assert_period_closable(fiscal_year, fiscal_period, period_type):
