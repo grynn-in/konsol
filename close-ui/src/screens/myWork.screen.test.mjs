@@ -108,11 +108,25 @@ test("MyWork keeps the server's order and always shows all three groups (B10)", 
   assert.doesNotMatch(t, /v-if="[^"]*section\.items\.length/, "a group is never hidden for having no items");
 });
 
-test("each item shows its period tag, owner and one action", () => {
+test("each item shows its badge (U7: badgeFor, not a raw item.period.code/Setup choice), owner and one action", () => {
+  const s = script(read());
   const t = template(read());
-  assert.match(t, /item\.period\.code/);
+  assert.match(s, /import\s*\{[^}]*\bbadgeFor\b[^}]*\}\s*from\s*["']\.\.\/myWork\.js["']/,
+    "badgeFor comes from myWork.js, not a copy in the screen");
+  assert.match(t, /badgeFor\(item\)\.theme/);
+  assert.match(t, /badgeFor\(item\)\.label/);
   assert.match(t, /item\.owner/);
   assert.match(t, /itemRoute\(item\)|routeOf\(item\)/);
+});
+
+// U7 (review-w3.md): the screen must not decide "Setup" vs. the kind's
+// badge itself — that was the bug (every period-less item got "Setup",
+// including an approvals queue and a sent-back draft). The decision lives
+// in myWork.js's badgeFor, which the screen only calls.
+test("U7: MyWork does not hardcode the Setup/period choice itself", () => {
+  const t = template(read());
+  assert.doesNotMatch(t, /v-if="item\.period"/, "the period/gap choice is not re-implemented in the template");
+  assert.doesNotMatch(t, /theme="orange"\s+variant="subtle"\s+label="Setup"/, "Setup is not hardcoded in the template");
 });
 
 test("an Entity Accountant with no entities gets the explicit A25 message and no upload control (B18b: from entities_assigned, not my_tbs)", () => {

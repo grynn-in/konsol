@@ -1,7 +1,7 @@
 // konsol#305 B10: myWork.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sections, itemRoute, ageText } from "./myWork.js";
+import { sections, itemRoute, ageText, badgeFor } from "./myWork.js";
 
 function period(fiscal_year, fiscal_period, code) {
 	return { fiscal_year, fiscal_period, code };
@@ -129,4 +129,91 @@ test("a null since renders nothing", () => {
 
 test("failure path: a since that has not happened yet renders nothing, never a negative age", () => {
 	assert.equal(ageText("2026-10-01", new Date(2026, 8, 25)), null);
+});
+
+// --- U7 (review-w3.md): badgeFor ---------------------------------------
+//
+// MyWork.vue:248 badged every period-less item "Setup" (orange), including
+// the Close Lead's approvals queue and a sent-back draft — both real,
+// routine work, not a configuration gap. Only mywork_model.setup_gap_items'
+// output (since_reason "configuration gap") is a gap. The other item
+// builders that return a period-less item — mywork_model.approvals_item
+// (since_reason "oldest waiting") and mywork_model.sent_back_items for a
+// doctype outside _SENT_BACK_PERIOD_KEYED (since_reason "sent back") — get
+// the kind's own badge instead. A period item (it carries `period`) always
+// gets its period's code, themed by kind, regardless of since_reason.
+//
+// Fixtures below mirror the real shapes konsol/close/mywork_model.py
+// returns (read 3 Oct 2026), not invented ones.
+
+test("U7: a period item (mywork_model._period_item, e.g. Rates missing) gets the kind's color and the period code", () => {
+	const item = {
+		id: "rates:2026-08", kind: "blocking", title: "Rates missing (2)",
+		period: { fiscal_year: 2026, fiscal_period: 8, code: "P08", since: "2026-08-31" },
+		owner: "EPM Admin", action: { screen: "rates" },
+	};
+	assert.deepEqual(badgeFor(item), { theme: "red", label: "P08" });
+});
+
+test("U7: a configuration-gap item (mywork_model.setup_gap_items) gets Setup", () => {
+	const item = {
+		id: "gap:first_close", kind: "blocking", title: "First close period not declared",
+		detail: "Set the first close period in Close Settings.", owner: "EPM Admin",
+		entities: [], users: [], action: { desk: "/app/close-settings" },
+		since: null, since_reason: "configuration gap",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "orange", label: "Setup" });
+});
+
+test("U7: the Close Lead's approvals queue item (mywork_model.approvals_item) is period-less but is not a gap", () => {
+	const item = {
+		id: "approvals", kind: "todo", title: "Approve 3 items", owner: "EPM Admin",
+		action: { screen: "approvals" }, since: "2026-09-20", since_reason: "oldest waiting",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });
+});
+
+test("U7: a sent-back Historical Equity Rate (mywork_model.sent_back_items, no period for this doctype) is not a gap", () => {
+	const item = {
+		id: "sent-back:Historical Equity Rate:ZZHER-001", kind: "todo",
+		title: "Sent back: Historical rate · ZZE FY2025",
+		detail: "jane on 2026-09-18: wrong basis", owner: "EPM Admin",
+		action: { screen: "rates" }, since: "2026-09-18", since_reason: "sent back",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });
+});
+
+test("U7: a sent-back Business Disposal (mywork_model.sent_back_items, Desk action) is not a gap", () => {
+	const item = {
+		id: "sent-back:Business Disposal:ZZBD-001", kind: "todo",
+		title: "Sent back: Disposal · ZZE disposes ZZSub",
+		detail: "jane on 2026-09-18: wrong date", owner: "EPM Admin",
+		action: { desk: "/app/business-disposal/ZZBD-001" }, since: "2026-09-18",
+		since_reason: "sent back",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });
+});
+
+test("U7: an IC fix item (mywork_model.ic_fix_items) always carries a period, so it gets the period code, not Setup", () => {
+	const item = {
+		id: "ic:2026-08:ZZE:ZZE|1000|ZZF|2000", kind: "blocking",
+		title: "Intercompany difference with ZZF (1000 ↔ 2000)",
+		detail: "Sent back by jane on 2026-09-10: please fix. Difference 150.00 in Group A (tolerance 50.00). Your side 1200.00.",
+		period: { fiscal_year: 2026, fiscal_period: 8, code: "P08", since: "2026-08-31" },
+		owner: "Entity Accountant", action: { screen: "trial-balances", entity: "ZZE" },
+	};
+	assert.deepEqual(badgeFor(item), { theme: "red", label: "P08" });
+});
+
+test("U7: a waiting-kind period-less item gets the gray waiting badge, not Setup", () => {
+	const item = {
+		id: "approvals", kind: "waiting", title: "Waiting on something period-less",
+		owner: "EPM Admin", action: { screen: "approvals" },
+	};
+	assert.deepEqual(badgeFor(item), { theme: "gray", label: "Waiting" });
+});
+
+test("failure path: an unknown kind throws, and is never defaulted to Setup", () => {
+	const item = { id: "x", kind: "mystery", owner: "EPM Admin", action: {} };
+	assert.throws(() => badgeFor(item), /unknown item kind/);
 });
