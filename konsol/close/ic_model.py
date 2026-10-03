@@ -46,6 +46,12 @@ _ERROR = ("Intercompany could not be checked: %s. "
 # or currency; blanked for a side the caller may not see (W3-2).
 _SIDE_COLUMNS = ("balance", "local", "group_balance", "share", "residual", "currency")
 
+# Pair-level columns that can expose a masked side's amount indirectly (own
+# balance + difference = partner balance): blanked whenever either side is
+# masked, not per side (review-w3.md S3). ``difference`` itself stays —
+# Deepak's open call under W3-2 B.
+_PAIR_COLUMNS_MASKED_ON_EITHER_SIDE = ("matched_amount", "net_balance")
+
 
 def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
@@ -107,6 +113,9 @@ def mask(rows, allowed):
             _blank_side(copy, "a")
         if not b_ok:
             _blank_side(copy, "b")
+        if not a_ok or not b_ok:
+            for col in _PAIR_COLUMNS_MASKED_ON_EITHER_SIDE:
+                copy[col] = None
         out.append(copy)
     return out, hidden
 
