@@ -119,6 +119,214 @@ def mask_unmatched(rows, allowed):
     return kept, len(rows) - len(kept)
 
 
+def pair_key(row):
+    """The four-key identity of an intercompany pair (E5-P1).
+
+    Works on a gold_ic_reconciliation row and on an ``ic_sent_back``
+    event's ``detail`` dict: both carry ``entity_a``, ``account_a``,
+    ``entity_b``, ``account_b``.
+    """
+    return (row["entity_a"], row["account_a"], row["entity_b"], row["account_b"])
+
+
+_SENT_BACK_KEYS = ("entity_a", "account_a", "entity_b", "account_b")
+
+
+def sent_back(events):
+    """The latest ``ic_sent_back`` event per pair, by ``(at, name)``.
+
+    ``events`` are Close Event dicts with ``detail`` already parsed. A kind
+    other than ``ic_sent_back`` raises; a detail missing one of the four
+    pair keys raises naming the event (C04 always writes them).
+    """
+    latest = {}
+    for event in events:
+        if event.get("kind") != "ic_sent_back":
+            raise ValueError(
+                "sent_back expects only ic_sent_back events, got %r (%s)"
+                % (event.get("kind"), event.get("name")))
+        detail = event.get("detail") or {}
+        missing = [k for k in _SENT_BACK_KEYS if k not in detail]
+        if missing:
+            raise ValueError(
+                "ic_sent_back event %s detail is missing %s"
+                % (event.get("name"), ", ".join(missing)))
+        key = pair_key(detail)
+        candidate = (event.get("at"), event.get("name"))
+        current = latest.get(key)
+        if current is None or candidate > (current.get("at"), current.get("name")):
+            latest[key] = event
+    return latest
+
+
+def open_fixes(events, rows, error=None):
+    """Which sent-back pairs are still open, and why (E5-P2, E5-P4).
+
+    ``rows`` are the current period's gold_ic_reconciliation rows, any
+    consolidation group (E5-P1). ``error`` is None, or the warehouse
+    error text that makes every open pair ``cannot_check`` (fail closed).
+    Returns unmasked fix dicts sorted by pair key.
+    """
+    by_pair = {}
+    for row in rows:
+        by_pair.setdefault(pair_key(row), []).append(row)
+    fixes = []
+    for key, event in sent_back(events).items():
+        pair_rows = by_pair.get(key, [])
+        if error:
+            fix_state = "cannot_check"
+        elif not pair_rows:
+            fix_state = "not_in_build"
+        elif any(r.get("match_status") == "over_tolerance" for r in pair_rows):
+            fix_state = "over_tolerance"
+        else:
+            continue
+        entity_a, account_a, entity_b, account_b = key
+        fixes.append({
+            "entity_a": entity_a, "account_a": account_a,
+            "entity_b": entity_b, "account_b": account_b,
+            "state": fix_state,
+            "groups": [
+                {"consolidation_group": r.get("consolidation_group"),
+                 "difference": r.get("difference"),
+                 "tolerance": r.get("tolerance"),
+                 "balance_a": r.get("balance_a"),
+                 "balance_b": r.get("balance_b")}
+                for r in pair_rows
+            ],
+            "error": error,
+            "sent_by": event.get("actor"),
+            "sent_at": event.get("at"),
+            "reason": event.get("reason"),
+        })
+    fixes.sort(key=lambda f: (f["entity_a"], f["account_a"], f["entity_b"], f["account_b"]))
+    return fixes
+
+
+_MATCH_STATUS_ORDER = {"over_tolerance": 0, "fx_difference": 1, "within_tolerance": 2,
+                       "matched": 3}
+
+
+def group_view(rows, events, currencies):
+    """Pairs grouped per consolidation group, for the IC screen.
+
+    ``currencies`` is ``{consolidation_group: reporting_currency or None}``.
+    Each group's ``tolerance`` and ``ic_difference_account`` must agree
+    across its rows (one value per group in dbt); disagreement raises.
+    ``tolerance_declared`` is W3-6: 0 is undeclared, so
+    ``can_send_back`` is False for every pair in an undeclared group
+    (W3-P1), even one that is ``over_tolerance``.
+    """
+    sb = sent_back(events)
+    by_group = {}
+    for row in rows:
+        by_group.setdefault(row.get("consolidation_group"), []).append(row)
+    out = []
+    for group, group_rows in by_group.items():
+        tolerances = {r.get("tolerance") for r in group_rows}
+        if len(tolerances) > 1:
+            raise ValueError(
+                "consolidation group %r rows disagree on tolerance: %r" % (group, tolerances))
+        tolerance = next(iter(tolerances))
+        accounts = {r.get("ic_difference_account") for r in group_rows}
+        if len(accounts) > 1:
+            raise ValueError(
+                "consolidation group %r rows disagree on ic_difference_account: %r"
+                % (group, accounts))
+        ic_difference_account = next(iter(accounts))
+        tolerance_declared = float(tolerance or 0) > 0
+        pairs = []
+        for row in group_rows:
+            key = pair_key(row)
+            event = sb.get(key)
+            copy = dict(row)
+            copy["sent_back"] = (
+                {"by": event.get("actor"), "at": event.get("at"), "reason": event.get("reason")}
+                if event else None)
+            copy["can_send_back"] = (row.get("match_status") == "over_tolerance"
+                                     and tolerance_declared)
+            pairs.append(copy)
+        pairs.sort(key=lambda r: (_MATCH_STATUS_ORDER.get(r.get("match_status"), 99),
+                                  pair_key(r)))
+        out.append({
+            "consolidation_group": group,
+            "reporting_currency": currencies.get(group),
+            "tolerance": tolerance,
+            "ic_difference_account": ic_difference_account,
+            "tolerance_declared": tolerance_declared,
+            "pairs": pairs,
+        })
+    out.sort(key=lambda g: g["consolidation_group"])
+    return out
+
+
+_SIGNOFF_LINE_MESSAGE = {
+    "not_configured": NOT_CONFIGURED,
+    "not_applicable": NOT_APPLICABLE,
+    "not_built": NOT_BUILT,
+}
+
+
+def signoff_line(state, rows, unmatched, events):
+    """The counts-only sign-off summary line (E5-P13: no entity, no amount).
+
+    ``counts`` and ``sent_back_open`` are only populated for ``checked``;
+    every other state carries ``None`` for both, never a guessed 0.
+    """
+    if state not in STATES:
+        raise ValueError("unknown intercompany state %r" % (state,))
+    if state == "checked":
+        c = counts(rows, unmatched)
+        sent_back_open = len(open_fixes(events, rows))
+        if c["pairs"] == 0:
+            message = "0 intercompany pairs in the last build for this period."
+        else:
+            message = None
+        return {"state": state, "message": message, "counts": c,
+                "sent_back_open": sent_back_open}
+    return {"state": state, "message": _SIGNOFF_LINE_MESSAGE.get(state), "counts": None,
+            "sent_back_open": None}
+
+
+TOLERANCE_UNDECLARED = "ic_tolerance_undeclared"
+
+_TOLERANCE_GAP_MESSAGE = (
+    "Declare the intercompany difference tolerance on %d consolidation group(s): %s "
+    "(Consolidation Group → Intercompany Difference Tolerance, on the group's own row). "
+    "0 is undeclared; for an exact match declare a tiny positive amount such as 0.01."
+)
+
+
+def tolerance_gap(published, declared_none, groups):
+    """The W3-6 setup gap: which group nodes have not declared a tolerance.
+
+    ``groups`` are the consolidation group nodes (blank ``data_area_id``,
+    W3-P13): ``[{"consolidation_group", "ic_difference_tolerance"}]``.
+    None when intercompany is not configured or not applicable (W3-P2):
+    there is nothing yet to judge a tolerance against.
+    """
+    if published == 0 or declared_none:
+        return None
+    undeclared = []
+    for g in groups:
+        tolerance = g.get("ic_difference_tolerance")
+        value = float(tolerance or 0)
+        if value < 0:
+            raise ValueError(
+                "consolidation group %r has a negative intercompany difference tolerance: %r"
+                % (g.get("consolidation_group"), tolerance))
+        if value <= 0:
+            undeclared.append(g.get("consolidation_group"))
+    if not undeclared:
+        return None
+    undeclared.sort()
+    return {
+        "code": TOLERANCE_UNDECLARED,
+        "groups": undeclared,
+        "message": _TOLERANCE_GAP_MESSAGE % (len(undeclared), ", ".join(undeclared)),
+    }
+
+
 def counts(rows, unmatched):
     """Pairs per match_status plus the partnerless count.
 
