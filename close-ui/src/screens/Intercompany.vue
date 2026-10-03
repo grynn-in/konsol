@@ -38,7 +38,7 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { intercompanyView, panel, sendBackBody } from "../intercompany.js";
+import { intercompanyView, panel, sendBackBody, bannerToneClass } from "../intercompany.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
@@ -216,9 +216,7 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 					v-if="view.banner.lines.length"
 					role="alert"
 					class="mb-4 rounded border px-4 py-3 text-sm"
-					:class="view.banner.tone === 'block'
-						? 'border-outline-red-1 bg-surface-red-1 text-ink-gray-8'
-						: 'border-outline-amber-1 bg-surface-amber-1 text-ink-amber-3'"
+					:class="bannerToneClass(view.banner.tone)"
 				>
 					<p v-for="(line, i) in view.banner.lines" :key="i" :class="i ? 'mt-1' : ''">{{ line }}</p>
 				</div>
@@ -285,7 +283,7 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 										<td class="px-3 py-2 text-ink-gray-7">{{ pair.account_a }} / {{ pair.account_b }}</td>
 										<td class="px-3 py-2 font-mono text-ink-gray-8">{{ pair.balanceAText }}</td>
 										<td class="px-3 py-2 font-mono text-ink-gray-8">{{ pair.balanceBText }}</td>
-										<td class="px-3 py-2 font-mono text-ink-gray-8">{{ pair.difference != null ? pair.difference : "—" }}</td>
+										<td class="px-3 py-2 font-mono text-ink-gray-8">{{ pair.differenceText }}</td>
 										<td class="px-3 py-2">
 											<span
 												class="inline-block rounded px-2 py-0.5 text-xs font-medium"
