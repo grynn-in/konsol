@@ -47,6 +47,18 @@
    "fieldtype": "Percent",
    "label": "Rate Move Needing a Reason",
    "description": "A group rate that moves more than this from the previous approved rate or the ERP quote needs a Reason for Change. No default; 0 is undeclared (konsol#305-D2-9)."
+  },
+  {
+   "fieldname": "intercompany_section",
+   "fieldtype": "Section Break",
+   "label": "Intercompany"
+  },
+  {
+   "fieldname": "intercompany_declaration",
+   "fieldtype": "Select",
+   "label": "Intercompany",
+   "options": "\nNone in this group",
+   "description": "Blank: intercompany is expected, or not set up yet (My work shows 'No intercompany accounts declared' until an Intercompany Account is Published). None in this group: no intercompany is expected; the intercompany screen, My work and the sign-off read 'not applicable'. Refused while any Intercompany Account is Published. No default (konsol#305-W3-7)."
   }
  ],
  "field_order": [
@@ -56,7 +68,9 @@
   "approvals_section",
   "self_approval",
   "rates_section",
-  "rate_move_threshold"
+  "rate_move_threshold",
+  "intercompany_section",
+  "intercompany_declaration"
  ],
  "permissions": [
   {
