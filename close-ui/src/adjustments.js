@@ -54,6 +54,10 @@ function timeText(value, now, timeZone) {
  * the declared journal dimensions, generated from the Published Dimension
  * rows, never hard-coded (konsol#287). `[]` when none are declared — the
  * screen then looks exactly as it did before option D.
+ *
+ * D04 correction to D03: `get_journals` (D02) always sends `dimensions`,
+ * even as `[]`, so a missing key is a bug in the caller, not "zero
+ * dimensions" — this throws rather than silently defaulting to `[]`.
  */
 export function journalsView(payload, now, timeZone) {
 	if (!timeZone) {
@@ -61,6 +65,9 @@ export function journalsView(payload, now, timeZone) {
 	}
 	if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
 		throw new Error("journalsView requires a valid `now`");
+	}
+	if (payload.dimensions === undefined) {
+		throw new Error("journalsView requires `dimensions` (journal_api.get_journals always sends it, even as [])");
 	}
 	const journals = (payload.journals || []).map((journal) => {
 		const { last_rejection, created, modified, approved_at, ...rest } = journal;
@@ -88,7 +95,7 @@ export function journalsView(payload, now, timeZone) {
 		journals,
 		groups: payload.groups,
 		accounts: payload.accounts,
-		dimensions: payload.dimensions || [],
+		dimensions: payload.dimensions,
 		reversalChoices: payload.reversal_choices || [],
 		workflowInstalled: Boolean(payload.workflow_installed),
 		firstState: payload.first_state,
@@ -378,6 +385,32 @@ export function snapshotLines(lines, dimKeys = []) {
 		}
 		return out;
 	});
+}
+
+/**
+ * D04 (konsolidat#245 option D): the declared dimension keys, in the
+ * server's order (`view.dimensions`'s own order, `journalsView`'s output,
+ * never the raw payload) — the one place Adjustments.vue reads `dimKeys`
+ * from, so every `snapshotLines`/`snapshotDraft`/`draftDirty`/
+ * `saveJournalBody` call, and every new blank line, uses the same list.
+ * `null`/no view yet (the list hasn't loaded) gives `[]`, matching every
+ * other function in this module's zero-dimensions default.
+ */
+export function dimKeysOf(view) {
+	return view ? view.dimensions.map((d) => d.key) : [];
+}
+
+/**
+ * D04: a line's declared dimension value for display (the journal detail
+ * panel) — blank (missing, `null`, or `''`) reads as the explicit "—",
+ * never silently rendered as empty text indistinguishable from "no column
+ * here at all". A dimension value is free text (konsol#247), so any other
+ * typed value, including one that collides with other screens' blank
+ * marker, is shown verbatim.
+ */
+export function dimValueText(line, key) {
+	const value = line[key];
+	return value === undefined || value === null || value === "" ? "—" : value;
 }
 
 function durationsEqual(a, b) {

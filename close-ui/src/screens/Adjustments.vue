@@ -62,6 +62,8 @@ import {
 	canOpenNew,
 	canSaveDraft,
 	canSendDraft,
+	dimKeysOf,
+	dimValueText,
 	NO_REVERSAL_NOTE,
 } from "../adjustments.js";
 import { messageLines } from "../signoff.js";
@@ -101,10 +103,48 @@ const reloadContext = inject(CONTEXT_RELOAD);
 const journals = reactive({ status: "loading", payload: null, error: null, busy: false });
 let seq = 0;
 
+// journalsView throws when it is not given a time zone or a valid `now`
+// (mirrors Rates.vue's/Intercompany.vue's `view`, never swallowed). Moved
+// above the draft editor's state (D04) so `dimKeys`/`declaredDimensions`,
+// derived from it, exist before `blankLine()`'s first call.
+const viewError = ref(null);
+const view = computed(() => {
+	if (journals.status !== "ready" || !journals.payload) return null;
+	if (!timeZone) {
+		viewError.value = NO_ZONE;
+		return null;
+	}
+	try {
+		viewError.value = null;
+		return journalsView(journals.payload, new Date(), timeZone);
+	} catch (e) {
+		viewError.value = e.message;
+		return null;
+	}
+});
+const loadState = computed(() => {
+	if (journals.status !== "ready") return journals.status;
+	return view.value ? "ready" : "error";
+});
+const loadError = computed(() => viewError.value || journals.error);
+
+//: konsolidat#245 option D (D04). `dimKeys` (adjustments.js's `dimKeysOf`)
+//: is the one list every snapshot/dirty/save call and every new blank line
+//: reads; `declaredDimensions` keeps `{key, label, suggestions}` for the
+//: template (the picker's label and its datalist). Both are `[]` before the
+//: list loads or when zero dimensions are declared, so the editor and the
+//: panel render exactly as they did before option D (goal 4).
+const dimKeys = computed(() => dimKeysOf(view.value));
+const declaredDimensions = computed(() => (view.value ? view.value.dimensions : []));
+
 const selectedName = ref(null);
 
 function blankLine() {
-	return { data_area_id: "", main_account: "", debit_amount: "", credit_amount: "", description: "" };
+	const line = { data_area_id: "", main_account: "", debit_amount: "", credit_amount: "", description: "" };
+	for (const key of dimKeys.value) {
+		line[key] = "";
+	}
+	return line;
 }
 
 const editorOpen = ref(false);
@@ -172,9 +212,9 @@ function openEdit(journal) {
 	draft.duration = journal.reverse
 		? { kind: "reverses", fiscal_year: journal.reverse.fiscal_year, fiscal_period: journal.reverse.fiscal_period }
 		: { kind: "none" };
-	draft.lines = journal.lines.length ? snapshotLines(journal.lines) : [blankLine()];
+	draft.lines = journal.lines.length ? snapshotLines(journal.lines, dimKeys.value) : [blankLine()];
 	//: U3: the just-loaded draft counts as "last saved" too.
-	savedSnapshot.value = snapshotDraft(draft);
+	savedSnapshot.value = snapshotDraft(draft, dimKeys.value);
 	editorOpen.value = true;
 }
 
@@ -205,12 +245,12 @@ async function saveDraft() {
 	const startedPeriod = `${periodKey.fiscal_year}/${periodKey.fiscal_period}`;
 	saving.value = true;
 	try {
-		const body = saveJournalBody(periodKey, draft);
+		const body = saveJournalBody(periodKey, draft, dimKeys.value);
 		const result = await post(SAVE_JOURNAL, body);
 		const nowPeriod = period.value ? `${period.value.year}/${period.value.period}` : null;
 		if (nowPeriod !== startedPeriod) return;
 		draft.name = result.name;
-		savedSnapshot.value = snapshotDraft(draft);
+		savedSnapshot.value = snapshotDraft(draft, dimKeys.value);
 		reloadContext();
 		await loadJournals({ quiet: true });
 	} catch (e) {
@@ -237,29 +277,6 @@ async function sendForApproval() {
 	}
 }
 
-// journalsView throws when it is not given a time zone or a valid `now`
-// (mirrors Rates.vue's/Intercompany.vue's `view`, never swallowed).
-const viewError = ref(null);
-const view = computed(() => {
-	if (journals.status !== "ready" || !journals.payload) return null;
-	if (!timeZone) {
-		viewError.value = NO_ZONE;
-		return null;
-	}
-	try {
-		viewError.value = null;
-		return journalsView(journals.payload, new Date(), timeZone);
-	} catch (e) {
-		viewError.value = e.message;
-		return null;
-	}
-});
-const loadState = computed(() => {
-	if (journals.status !== "ready") return journals.status;
-	return view.value ? "ready" : "error";
-});
-const loadError = computed(() => viewError.value || journals.error);
-
 const journalCountText = computed(() => {
 	const n = view.value ? view.value.journals.length : 0;
 	return `${n} this period`;
@@ -275,7 +292,7 @@ const selectedJournal = computed(() => {
 //: below) — both read this one flag.
 const editorDirty = computed(() => {
 	if (!editorOpen.value) return false;
-	return draftDirty(savedSnapshot.value, draft);
+	return draftDirty(savedSnapshot.value, draft, dimKeys.value);
 });
 const selectedEffect = computed(() => {
 	if (!selectedJournal.value) return null;
@@ -420,6 +437,7 @@ function lines(text) {
 							<th class="py-1 font-medium">Debit</th>
 							<th class="py-1 font-medium">Credit</th>
 							<th class="py-1 font-medium">Description</th>
+							<th v-for="dim in declaredDimensions" :key="dim.key" class="py-1 font-medium">{{ dim.label }}</th>
 							<th class="py-1 font-medium"></th>
 						</tr>
 					</thead>
@@ -446,6 +464,15 @@ function lines(text) {
 							<td class="py-1 pr-1">
 								<input v-model="line.description" type="text" :aria-label="`Description, line ${idx + 1}`" class="w-full rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-ink-gray-8" />
 							</td>
+							<td v-for="dim in declaredDimensions" :key="dim.key" class="py-1 pr-1">
+								<input
+									v-model="line[dim.key]"
+									type="text"
+									:list="`dim-list-${dim.key}`"
+									:aria-label="`${dim.label}, line ${idx + 1}`"
+									class="w-full rounded border border-outline-gray-2 bg-surface-white px-1 py-1 text-ink-gray-8"
+								/>
+							</td>
 							<td class="py-1">
 								<Button variant="ghost" size="sm" aria-label="Remove line" :disabled="draft.lines.length <= 1" @click="removeLine(idx)">
 									<FeatherIcon name="trash-2" class="h-4 w-4" />
@@ -454,6 +481,11 @@ function lines(text) {
 						</tr>
 					</tbody>
 				</table>
+				<!-- D04: one shared <datalist> per declared dimension (suggestions only
+				     — never a refusal of a typed value outside the list, konsol#247). -->
+				<datalist v-for="dim in declaredDimensions" :key="dim.key" :id="`dim-list-${dim.key}`">
+					<option v-for="s in dim.suggestions" :key="s" :value="s" />
+				</datalist>
 				<Button class="mt-2" variant="outline" size="sm" @click="addLine">Add line</Button>
 			</div>
 
@@ -556,6 +588,7 @@ function lines(text) {
 							<th class="py-1 font-medium">Account</th>
 							<th class="py-1 font-medium">Dr</th>
 							<th class="py-1 font-medium">Cr</th>
+							<th v-for="dim in declaredDimensions" :key="dim.key" class="py-1 font-medium">{{ dim.label }}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -564,6 +597,7 @@ function lines(text) {
 							<td class="py-1 text-ink-gray-8">{{ line.account_name || line.main_account }}</td>
 							<td class="py-1 font-mono text-ink-gray-8">{{ line.debit_amount || "" }}</td>
 							<td class="py-1 font-mono text-ink-gray-8">{{ line.credit_amount || "" }}</td>
+							<td v-for="dim in declaredDimensions" :key="dim.key" class="py-1 text-ink-gray-8">{{ dimValueText(line, dim.key) }}</td>
 						</tr>
 					</tbody>
 				</table>
