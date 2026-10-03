@@ -142,6 +142,9 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         # konsol#255: another ClickHouse DDL step of _apply_schema_steps. Only
         # the named functions are compiled in, so its neighbours are stubbed.
         "_sync_tb_dimension_columns": lambda: [],
+        # konsolidat#245 option D: the journal staging table's dim columns,
+        # another ClickHouse DDL step of _apply_schema_steps.
+        "_sync_journal_dimension_columns": lambda: [],
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
     }
@@ -401,11 +404,15 @@ def test_publish_runs_only_schema_ddl_against_clickhouse():
         assert head.startswith(CH_INTROSPECTION) or head.startswith("ALTER TABLE "), (
             f"the publish said something other than schema DDL to ClickHouse: {head}")
 
-    # The one statement an empty declared set implies: the sync has to read
-    # back what is on the raw table before it can decide there is nothing to do.
-    selects = [s for s in ch if " ".join(s.split()).startswith(CH_INTROSPECTION)]
-    assert len(selects) == 1, ch
-    assert "trial_balance_submissions" in selects[0], selects
+    # The statements an empty declared set implies: each sync reads back what is
+    # on its table before it can decide there is nothing to do. Two tables carry
+    # per-site dimension columns now — the raw trial balance and the journal's
+    # staging table (konsolidat#245 option D) — so two read-backs and no more.
+    selects = [" ".join(s.split()) for s in ch
+               if " ".join(s.split()).startswith(CH_INTROSPECTION)]
+    assert len(selects) == 2, ch
+    assert sum("trial_balance_submissions" in s for s in selects) == 1, selects
+    assert sum("consolidation_adjustments" in s for s in selects) == 1, selects
 
     # Nothing is declared in this fixture, so no column may be added OR
     # dropped. A publish that altered the table on an empty declared set
@@ -532,12 +539,23 @@ class _Site:
 
     def get_all(self, doctype, filters=None, fields=None, limit_page_length=None):
         self._read(doctype)
+        # konsolidat#245 option D: the locked sync now runs for both line
+        # tables, Budget Line (in_budget) and Consolidation Journal Line
+        # (in_journal), through one shared body. Either flag is legal here; a
+        # third would be a mistake, so the set is closed.
         if doctype == "Dimension":
-            assert filters == {"in_budget": 1, "status": "Published"}
+            flag = next((k for k in filters if k != "status"), None)
+            assert flag in ("in_budget", "in_journal"), filters
+            assert filters == {flag: 1, "status": "Published"}, filters
             return [types.SimpleNamespace(dimension_name=n, label=d["label"])
                     for n, d in self.dimensions.items()
-                    if d["in_budget"] == 1 and d["status"] == "Published"]
-        assert doctype == "Custom Field" and filters == {"dt": "Budget Line", "fieldname": ("like", "dim_%")}
+                    if d.get(flag) == 1 and d["status"] == "Published"]
+        assert doctype == "Custom Field", doctype
+        dt = filters.get("dt")
+        assert dt in ("Budget Line", "Consolidation Journal Line"), filters
+        assert filters == {"dt": dt, "fieldname": ("like", "dim_%")}, filters
+        if dt != "Budget Line":
+            return []        # the journal's fields are tracked separately below
         return [types.SimpleNamespace(name=n, fieldname=r["fieldname"]) for n, r in self.visible().items()
                 if r["fieldname"].startswith("dim_")]
 
@@ -598,6 +616,7 @@ class _Site:
 
 def _sync(site):
     ns = _load({"_sync_budget_custom_fields", "_sync_budget_custom_fields_locked",
+                "_sync_dimension_custom_fields",
                 "_budget_field_sync_lock", "_created_elsewhere"}, {"frappe": site.frappe()})
     return ns["_sync_budget_custom_fields"]
 
@@ -605,7 +624,10 @@ def _sync(site):
 def _site_with(**dims):
     site = _Site()
     for name, status in dims.items():
-        site.dimensions[name] = {"label": name, "in_budget": 1, "status": status}
+        # in_journal off, so these tests keep asserting the Budget Line sync
+        # alone; the journal table has its own test below (konsolidat#245).
+        site.dimensions[name] = {"label": name, "in_budget": 1, "in_journal": 0,
+                                 "status": status}
     return site
 
 
@@ -619,7 +641,7 @@ def test_the_sync_is_idempotent_and_follows_publish_and_unpublish():
     site.seed("other_field")   # not a dimension field: left alone
     sync = _sync(site)
 
-    site.dimensions["dim_zz"] = {"label": "ZZ", "in_budget": 1, "status": "Published"}
+    site.dimensions["dim_zz"] = {"label": "ZZ", "in_budget": 1, "in_journal": 0, "status": "Published"}
     assert sync() == ["added dim_zz"]
     assert sync() == [], "a second run (a duplicate job, or after_migrate) changes nothing"
 

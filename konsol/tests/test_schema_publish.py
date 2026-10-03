@@ -266,9 +266,19 @@ def test_schema_apply_budget_fields_filter_published():
     path = os.path.join(APP_DIR, "schema_apply.py")
     with open(path) as f:
         content = f.read()
-    # The reads moved behind the sync's named lock (#135 review).
-    func = _extract_function(content, "_sync_budget_custom_fields_locked")
-    assert '"Published"' in func, "_sync_budget_custom_fields_locked missing Published filter"
+    # The reads moved behind the sync's named lock (#135 review), and then into
+    # one shared body for both line tables (konsolidat#245 option D), so the
+    # Published filter is asserted where it now lives.
+    shared = _extract_function(content, "_sync_dimension_custom_fields")
+    assert '"Published"' in shared, "_sync_dimension_custom_fields missing Published filter"
+    assert 'filters={flag: 1, "status": "Published"}' in shared, shared[:200]
+
+    # Both dimension-carrying line tables are synced, under the one lock, and
+    # each names its own flag. A table that lost its call would leave a
+    # declared dimension with nowhere to land.
+    locked = _extract_function(content, "_sync_budget_custom_fields_locked")
+    assert '"Budget Line", "in_budget"' in locked, locked
+    assert '"Consolidation Journal Line", "in_journal"' in locked, locked
 
 
 # ---------------------------------------------------------------------------

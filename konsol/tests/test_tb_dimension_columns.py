@@ -82,6 +82,13 @@ def _load(declared=(), columns=LIVE_COLUMNS):
     def get_all(doctype, **kwargs):
         queries.append((doctype, kwargs))
         if doctype == "Dimension":
+            # This file is about the trial-balance table. konsolidat#245 added a
+            # second per-site column set on the journal's staging table, read
+            # with filters={"in_journal": 1, ...}; answering that with the same
+            # declared list would make every DDL assertion here count two
+            # ALTERs. The journal path has its own coverage.
+            if "in_trial_balance" not in (kwargs.get("filters") or {}):
+                return []
             return [_D(d) for d in declared]
         return []
 
@@ -598,3 +605,16 @@ def test_the_publish_path_carries_the_key():
     module.queue_budget_custom_field_sync = lambda: ["queued after commit"]
     summary = module.apply_schema_for_publish()
     assert summary["tb_dimension_columns_synced"] == ["added dim_project"]
+
+
+def test_an_unsafe_table_name_is_refused_before_any_ddl():
+    """Self-review of PR #324: column names were validated before
+    interpolation and the table name was not. Both callers pass a module
+    constant, so this is a guard against the next caller, not a live defect."""
+    import re
+    src = open(os.path.join(APP_DIR, "schema_apply.py")).read()
+    start = src.index("def _sync_dimension_columns")
+    body = src[start:src.index("\ndef ", start + 10)]
+    assert "_SAFE_TABLE_NAME" in body, "the table name reaches DDL unvalidated"
+    assert body.index("_SAFE_TABLE_NAME") < body.index("ALTER TABLE"), \
+        "the check must come before the DDL"

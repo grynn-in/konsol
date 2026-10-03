@@ -315,7 +315,37 @@ STAGING_COLUMNS = (
 )
 
 
-def staging_rows(headers, lines):
+def journal_dimension_columns(declared, present):
+    """The declared journal dimensions that are actually fields, in order. Pure.
+
+    ``declared`` is the Published Dimensions ticked ``in_journal``; ``present``
+    the field names Consolidation Journal Line has. The intersection matters
+    because the Custom Field sync is queued after the commit (konsol#135): a
+    dimension is Published with the flag set before its field exists, and
+    selecting a field that does not exist makes ``frappe.get_all`` raise, which
+    would take out the whole resync rather than one column.
+
+    An orphan field the declared set no longer names is left out: the column
+    keeps its history and stays readable, and nothing new is written to it
+    (konsol#255, Deepak Pai's option A).
+    """
+    have = set(present or ())
+    return tuple(d for d in declared if d in have)
+
+
+def staging_columns(declared=()):
+    """``STAGING_COLUMNS`` plus one column per declared journal dimension.
+
+    The dimensions go LAST, because `epm_staging.consolidation_adjustments`
+    already exists and gains them through ``clickhouse._ADDED_COLUMNS`` — the
+    same reason `main_account`'s CH_FIELD_MAP keeps `is_retained_earnings` at
+    the end. ``declared`` is the caller's list of Published Dimensions ticked
+    ``in_journal``, in a stable order; this module reads no doctype.
+    """
+    return STAGING_COLUMNS + tuple(declared)
+
+
+def staging_rows(headers, lines, declared=()):
     """One tuple per journal line, in ``STAGING_COLUMNS`` order.
 
     ``headers`` are the submitted journals (dicts with ``name``,
@@ -365,5 +395,11 @@ def staging_rows(headers, lines):
             "",
             header.get("reverse_fiscal_year") or 0,
             header.get("reverse_fiscal_period") or 0,
+            # konsolidat#245 option D: only the dimensions the site declared,
+            # read by name off the line. A dim_* key the site has not declared
+            # is ignored rather than written — data never creates configuration
+            # (konsol#247). Absent or blank is '', the column's default: blank
+            # is a valid declaration, not a missing one.
+            *(line.get(d) or "" for d in declared),
         ))
     return rows

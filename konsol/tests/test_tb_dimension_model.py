@@ -222,3 +222,24 @@ def test_a_duplicated_bad_header_is_reported_once_per_column():
     rows = [declared("dim_project", in_trial_balance=0)]
     problems = M.dimension_problems(["dim_project", "dim_project"], rows)
     assert len(problems) == 1
+
+
+# -- konsolidat#245: the flag reader is shared, so make it public ----------------------
+
+def test_is_flag_on_is_public_and_handles_the_text_off_values():
+    """konsolidat#245 option D adds a second flag (Dimension.in_journal) read by
+    konsol#305's close app. Both readers need the same "0" handling — a Check
+    arriving as the string "0" through JSON, CSV or REST is truthy in Python —
+    so the helper is public rather than imported as _is_on across modules."""
+    assert M.is_flag_on(1) is True
+    assert M.is_flag_on(True) is True
+    assert M.is_flag_on("1") is True
+    assert M.is_flag_on("yes") is True
+    for off in (0, False, None, "", "0", "false", "False", "no", " 0 ", "NO"):
+        assert M.is_flag_on(off) is False, off
+
+
+def test_the_private_alias_still_resolves_to_the_public_helper():
+    """Nothing should import _is_on now, but anything that still does must get
+    the same function, not a divergent copy."""
+    assert M._is_on is M.is_flag_on

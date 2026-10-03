@@ -500,3 +500,82 @@ def test_duration_label_a_declared_period():
 def test_duration_label_an_undeclared_period_is_never_blank():
     label = M.duration_label(2099, 3, _A02_ROWS)
     assert label == "Reverses in FY2099 P03 (not a declared period)"
+
+# -- konsolidat#245 option D: declared dimensions on a journal line --------------------
+
+def test_staging_columns_appends_declared_dimensions_at_the_end():
+    """The table already exists, so new columns go LAST — the _ADDED_COLUMNS
+    convention (clickhouse.py), the same reason main_account's CH_FIELD_MAP
+    keeps is_retained_earnings last."""
+    assert M.staging_columns() == tuple(_STAGING_COLUMNS)
+    cols = M.staging_columns(("dim_cost_center", "dim_segment"))
+    assert cols[:len(_STAGING_COLUMNS)] == tuple(_STAGING_COLUMNS)
+    assert cols[len(_STAGING_COLUMNS):] == ("dim_cost_center", "dim_segment")
+
+
+def test_a_line_carries_its_declared_dimension_values():
+    headers = [{"name": "CJ-1", "consolidation_group": "G", "adjustment_type": "Topside",
+                "fiscal_year": 2026, "fiscal_period": 3, "description": "h",
+                "owner": "a@b.c", "status": "Approved", "approved_by": "a@b.c",
+                "approved_at": None, "reverse_fiscal_year": 0, "reverse_fiscal_period": 0}]
+    lines = [{"parent": "CJ-1", "idx": 1, "data_area_id": "E1", "main_account": "4000",
+              "debit_amount": 10, "credit_amount": 0, "description": "",
+              "dim_cost_center": "CC1", "dim_segment": "S1"},
+             {"parent": "CJ-1", "idx": 2, "data_area_id": "E1", "main_account": "5000",
+              "debit_amount": 0, "credit_amount": 10, "description": ""}]
+    declared = ("dim_cost_center", "dim_segment")
+    rows = M.staging_rows(headers, lines, declared=declared)
+    cols = M.staging_columns(declared)
+    as_dicts = [dict(zip(cols, r)) for r in rows]
+    assert all(len(r) == len(cols) for r in rows)
+    assert (as_dicts[0]["dim_cost_center"], as_dicts[0]["dim_segment"]) == ("CC1", "S1")
+    # blank stays valid and is stored as '' — never None, never absent
+    assert (as_dicts[1]["dim_cost_center"], as_dicts[1]["dim_segment"]) == ("", "")
+
+
+def test_a_dimension_the_site_has_not_declared_is_never_written():
+    """konsol#247's third clause: data does not create configuration. A stray
+    dim_* key on a line is ignored, not promoted into a column."""
+    headers = [{"name": "CJ-1", "consolidation_group": "G", "adjustment_type": "Topside",
+                "fiscal_year": 2026, "fiscal_period": 3, "description": "h",
+                "owner": "a@b.c", "status": "Approved", "approved_by": "", 
+                "approved_at": None, "reverse_fiscal_year": 0, "reverse_fiscal_period": 0}]
+    lines = [{"parent": "CJ-1", "idx": 1, "data_area_id": "E1", "main_account": "4000",
+              "debit_amount": 10, "credit_amount": 0, "description": "",
+              "dim_undeclared": "X", "dim_cost_center": "CC1"}]
+    rows = M.staging_rows(headers, lines, declared=("dim_cost_center",))
+    assert len(rows[0]) == len(_STAGING_COLUMNS) + 1
+    assert rows[0][-1] == "CC1"
+    assert "X" not in rows[0]
+
+
+def test_staging_rows_without_declared_dimensions_is_unchanged():
+    """A site with no journal dimensions writes exactly what it wrote before."""
+    headers = [{"name": "CJ-1", "consolidation_group": "G", "adjustment_type": "Topside",
+                "fiscal_year": 2026, "fiscal_period": 3, "description": "h",
+                "owner": "a@b.c", "status": "Approved", "approved_by": "",
+                "approved_at": None, "reverse_fiscal_year": 0, "reverse_fiscal_period": 0}]
+    lines = [{"parent": "CJ-1", "idx": 1, "data_area_id": "E1", "main_account": "4000",
+              "debit_amount": 10, "credit_amount": 0, "description": ""}]
+    assert len(M.staging_rows(headers, lines)[0]) == len(_STAGING_COLUMNS)
+
+
+def test_journal_dimension_columns_takes_only_the_declared_that_exist():
+    """The Custom Field sync is queued after the commit (konsol#135), so between
+    a Dimension publish and that job running, a dimension is Published with
+    in_journal set and its field does not exist yet. Selecting it would make
+    frappe.get_all raise and break the whole resync, so the window is handled
+    rather than risked: declared AND present, in declared order."""
+    declared = ["dim_cost_center", "dim_segment", "dim_brand_new"]
+    present = {"data_area_id", "main_account", "dim_cost_center", "dim_segment"}
+    assert M.journal_dimension_columns(declared, present) == ("dim_cost_center", "dim_segment")
+
+
+def test_journal_dimension_columns_is_empty_when_nothing_is_declared():
+    assert M.journal_dimension_columns([], {"dim_cost_center"}) == ()
+
+
+def test_journal_dimension_columns_ignores_a_field_that_is_not_declared():
+    """An orphan column from an un-ticked dimension stays on the table and
+    stays readable, but nothing new is written to it (konsol#255 option A)."""
+    assert M.journal_dimension_columns(["dim_a"], {"dim_a", "dim_orphan"}) == ("dim_a",)
