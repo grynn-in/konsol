@@ -427,6 +427,16 @@ def _sync_dimension_columns(table, flag):
     The reasoning for never dropping is on _sync_tb_dimension_columns and on
     konsol#255; do not add a cleanup here.
     """
+    # ``table`` is interpolated into DDL, so it is checked like every other
+    # interpolated name in this module (_apply_fact_tables does the same for a
+    # Dataset's clickhouse_table). Both callers pass a module constant today;
+    # this refuses the day one does not, rather than relying on that.
+    if not _SAFE_TABLE_NAME.fullmatch(table or ""):
+        frappe.log_error(
+            "schema_apply: refused a dimension-column table name",
+            f"{table!r} is not {_SAFE_TABLE_NAME.pattern}; no DDL was run.",
+        )
+        return [f"refused table {table}"]
     declared = frappe.get_all(
         "Dimension",
         filters={flag: 1, "status": "Published"},
