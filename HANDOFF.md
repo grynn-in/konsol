@@ -28,8 +28,7 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
   - The merged batch is hot-copied into `konsolidat_backend` and `konsolidat_worker`, and Consolidation Group is reloaded. Not migrated.
   - Five stale bundle chunks are left on disk, unreferenced.
   - Stray scripts in `/home/frappe/frappe-bench/` (`zz_a21_check.py`, `zz_e405_check.py`, `zz_r31a_probe.py`) and the stray `konsol/close/close/` directory: delete with Deepak's OK.
-- **Open for Deepak:**
-  - W3-2 scope: a scoped user still sees each pair's `difference`, in the grid and in the `ic_sent_back` audit detail. Own balance plus difference gives the partner's balance. `matched_amount` and `net_balance` are already masked.
+- **W3-2 scope, decided by Deepak 3 Oct:** a scoped user deliberately sees each pair's `difference` (grid and `ic_sent_back` audit); hiding it was rejected (#305 issuecomment-5967445225).
 - **Known, not fixed:**
   - S7: a reject on a doctype without a workflow doesn't stop a later approve from Desk.
   - The Approvals nav badge counts My work items, not queue entries.
