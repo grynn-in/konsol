@@ -53,6 +53,10 @@ periods' keys is turned into one item per (sent-back pair, allowed entity) by
 ``mywork_model.ic_fix_items``, pointed at Trial balances. They are recomputed
 on every read; an uncheckable pair stays an item, never dropped.
 
+A22: every persona but the Viewer also gets one ``todo`` item per sent-back
+draft they own (``approvals_api.sent_back_for``, A21, turned into items by
+``mywork_model.sent_back_items``). It does not depend on the first close.
+
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
 counts every item; another screen counts the items whose action opens it.
@@ -263,6 +267,18 @@ def _open_rows(first_close, today):
     return sorted(rows, key=lambda kr: kr[0])
 
 
+def _period_codes():
+    """``{(fiscal_year, fiscal_period): period_code}`` of every fiscal period
+    row (A22), not only the open ones: a sent-back draft can name a closed or
+    history period. The row's own ``period_code``, falling back to
+    ``FY%d P%02d`` (mirrors ``_period_facts``'s ``code``)."""
+    codes = {}
+    for row in fiscal_calendar.fiscal_period_rows():
+        key = (int(row["fiscal_year"]), int(row["fiscal_period"]))
+        codes[key] = row.get("period_code") or "FY%d P%02d" % key
+    return codes
+
+
 def _newest_run(key):
     rows = frappe.get_all(
         "Assertion Run",
@@ -398,5 +414,12 @@ def get_my_work():
         approvals_item = mywork_model.approvals_item(waiting)
         if approvals_item is not None:
             items.append(approvals_item)
+    # A22: the preparer's "sent back" item, for every persona but the Viewer
+    # (who already returned above). Does not depend on the first close, so it
+    # sits outside that block too. A queue failure is not swallowed.
+    sent_back_rows = approvals_api.sent_back_for(frappe.session.user)
+    codes = _period_codes() if any(row.get("fiscal_year") is not None
+                                   for row in sent_back_rows) else {}
+    items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}
