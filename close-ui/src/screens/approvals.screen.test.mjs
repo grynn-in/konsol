@@ -104,8 +104,8 @@ test("Failure path, R2: the Approve and Reject controls are v-if-gated on approv
 	const tpl = template(source);
 	const idx = tpl.indexOf('v-else-if="canAct(item)"');
 	assert.ok(idx >= 0, "a template branch gates the controls on canAct(item)");
-	const end = tpl.indexOf("</template>", idx);
-	assert.ok(end > idx);
+	const end = tpl.indexOf("<p v-else", idx);
+	assert.ok(end > idx, "a v-else fallback follows the gated branch");
 	const block = tpl.slice(idx, end);
 	assert.match(block, />\s*Approve\s*</, "an Approve control inside the gate");
 	assert.match(block, /Reject with reason/, "a Reject control inside the gate");
@@ -138,6 +138,6 @@ test("No fetch, and no Before/After columns (wave 4)", () => {
 
 test("Self-approval policy line is shown only when the caller is an approver", () => {
 	const tpl = template(read());
-	assert.match(tpl, /v-if="view\.canApprove\s*&&\s*view\.selfApproval"/);
+	assert.match(tpl, /v-if="view\s*&&\s*view\.canApprove\s*&&\s*view\.selfApproval"/);
 	assert.match(tpl, /Self-approval policy/);
 });
