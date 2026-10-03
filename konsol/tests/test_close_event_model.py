@@ -189,6 +189,60 @@ def test_detail_json_blank_is_none():
     assert M.detail_json(None) is None
 
 
+# --- ic_sent_back (konsol#305 X02, #305-W3-1) ---------------------------------------
+
+def _ic_sent_back_detail():
+    return {
+        "entity_a": "UK01",
+        "account_a": "1810",
+        "entity_b": "DE01",
+        "account_b": "2810",
+        "groups": [
+            {
+                "consolidation_group": "GRP",
+                "difference": 120.5,
+                "tolerance": 50,
+                "match_status": "over_tolerance",
+            }
+        ],
+    }
+
+
+def test_ic_sent_back_is_a_declared_kind_that_needs_a_reason():
+    assert "ic_sent_back" in M.KINDS
+    assert "ic_sent_back" in M.REASON_REQUIRED
+
+
+def test_a_clean_ic_sent_back_event_gives_no_problems():
+    event = _event(
+        kind="ic_sent_back",
+        entity="UK01",
+        reason="Our side agrees to INV-5531",
+        detail=_ic_sent_back_detail(),
+    )
+    assert M.event_problems(event) == []
+
+
+def test_ic_sent_back_without_a_reason_is_refused():
+    event = _event(
+        kind="ic_sent_back",
+        entity="UK01",
+        detail=_ic_sent_back_detail(),
+    )
+    assert M.event_problems(event) == ["reason is required for ic_sent_back."]
+
+
+def test_ic_sent_back_fiscal_period_zero_is_named():
+    event = _event(
+        kind="ic_sent_back",
+        entity="UK01",
+        reason="Our side agrees to INV-5531",
+        detail=_ic_sent_back_detail(),
+        fiscal_period=0,
+    )
+    _field_named(M.event_problems(event), "fiscal_period")
+
+
 # --- module hygiene ----------------------------------------------------------------
 
 def test_module_imports_no_frappe():
