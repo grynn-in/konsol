@@ -116,6 +116,13 @@ class _Site:
         self.close_events = []
         #: T04b failure path: set to a message to make close_event.record raise.
         self.close_event_fail = None
+        #: C18t: the stubbed `konsol.close.ic_api.tolerance_gap`/`signoff_summary`
+        #: read these. `ic_calls` records every `signoff_summary` call (C19).
+        self.ic_tolerance_gap = None
+        self.ic_summary = {"state": "not_configured",
+                           "message": "Intercompany not configured — nothing was checked.",
+                           "counts": None, "sent_back_open": None}
+        self.ic_calls = []
 
 
 def _match(value, cond):
@@ -242,6 +249,20 @@ def _load(site):
 
     close_event.record = _record_event
     close.close_event = close_event
+
+    # C18t: a stub `konsol.close.ic_api`, so `from konsol.close import ic_api`
+    # (C19 on) resolves to this rather than the real module, which would
+    # otherwise run against this fake frappe.
+    ic_api = types.ModuleType("konsol.close.ic_api")
+
+    def signoff_summary(fiscal_year, fiscal_period):
+        site.ic_calls.append((fiscal_year, fiscal_period))
+        return dict(site.ic_summary)
+
+    ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
+    ic_api.signoff_summary = signoff_summary
+    close.ic_api = ic_api
+
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -317,6 +338,7 @@ def _load(site):
             "konsol.close.close_policy_model": close_policy_model,
             "konsol.close.scope_model": scope_model,
             "konsol.close.close_event": close_event,
+            "konsol.close.ic_api": ic_api,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
