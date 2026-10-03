@@ -339,6 +339,81 @@ test("an unknown acknowledgement total is shown as unknown, never 0, even with n
   ]);
 });
 
+// --- konsol#305 C23: the acknowledgement section shows the IC line -------
+
+test("C23: the server's IC acknowledgement sentence is the first acknowledgements row", () => {
+  const view = summaryView(
+    summary({
+      acknowledgements: acknowledgements({
+        intercompany: "Intercompany: 2 pairs over tolerance",
+      }),
+    }),
+  );
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Intercompany: 2 pairs over tolerance",
+  ]);
+  assert.equal(view.acknowledgements.empty, false);
+});
+
+test("C23: the IC sentence leads, then the named acknowledgements and totals", () => {
+  const view = summaryView(
+    summary({
+      acknowledgements: acknowledgements({
+        intercompany: "Intercompany: 1 pair over tolerance",
+        names: ["assert_fx_balances"],
+        total: 3,
+        unlisted: 2,
+      }),
+    }),
+  );
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Intercompany: 1 pair over tolerance",
+    "Acknowledged: assert_fx_balances",
+    "Warned in total: 3",
+    "Not listed above: 2",
+  ]);
+});
+
+test("C23: failure path — a null intercompany line (not configured, not applicable, or an older payload) leaves today's rows untouched", () => {
+  const view = summaryView(
+    summary({
+      acknowledgements: acknowledgements({
+        intercompany: null,
+        names: ["assert_fx_balances"],
+        total: 3,
+        unlisted: 2,
+      }),
+    }),
+  );
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Acknowledged: assert_fx_balances",
+    "Warned in total: 3",
+    "Not listed above: 2",
+  ]);
+  for (const row of view.acknowledgements.rows) {
+    assert.doesNotMatch(row, /null|undefined/i);
+  }
+});
+
+test("C23: failure path — a missing intercompany key (an older payload) leaves today's bare-summary rows untouched", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.acknowledgements.rows, ["None"]);
+  assert.equal(view.acknowledgements.empty, true);
+});
+
+test("C23: the acknowledgements section defines no intercompany wording of its own — it only relays the server's sentence", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./signoff.js", import.meta.url), "utf8");
+  const fn = source.slice(
+    source.indexOf("function acknowledgementsSection"),
+    source.indexOf("function acknowledgementsSection") +
+      source.slice(source.indexOf("function acknowledgementsSection")).indexOf("\n}\n") +
+      3,
+  );
+  assert.ok(fn.length > 0, "acknowledgementsSection function not found");
+  assert.doesNotMatch(fn, /over tolerance/);
+});
+
 test("an on-behalf upload with no tracked flag shows as unknown, not silently dropped", () => {
   const view = summaryView(
     summary({
