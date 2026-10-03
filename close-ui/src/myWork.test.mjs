@@ -76,6 +76,29 @@ test("a gap item with action.desk gets an external Desk link, the only Desk link
 	assert.deepEqual(itemRoute(item), { external: "/app/close-settings" });
 });
 
+// --- A20: a period-less screen item routes to the URL's current period ----
+
+test("A20: a period-less screen item routes to current (the URL's period)", () => {
+	const item = { id: "gap:approvals", kind: "todo", title: "Approve the pending journal", owner: "EPM Admin", action: { screen: "approvals" } };
+	assert.equal(itemRoute(item, { year: 2025, period: 9 }), "/close/2025/9/approvals");
+});
+
+test("A20 failure path: a period-less item with no current returns null, and does not throw", () => {
+	const item = { id: "gap:approvals", kind: "todo", title: "Approve the pending journal", owner: "EPM Admin", action: { screen: "approvals" } };
+	assert.equal(itemRoute(item, null), null);
+	assert.equal(itemRoute(item), null);
+});
+
+test("A20 failure path: a period item still routes to its own period, never current's", () => {
+	const item = { id: "checks", kind: "todo", title: "Run checks", period: period(2026, 8, "P08"), owner: "EPM Analyst", action: { screen: "checks" } };
+	assert.equal(itemRoute(item, { year: 2025, period: 9 }), "/close/2026/8/checks");
+});
+
+test("A20: a Desk item still gives {external}, with a current supplied", () => {
+	const item = { id: "gap:first_close", kind: "blocking", title: "First close period not declared", owner: "EPM Admin", action: { desk: "/app/close-settings" } };
+	assert.deepEqual(itemRoute(item, { year: 2025, period: 9 }), { external: "/app/close-settings" });
+});
+
 test("failure path: an item with an unknown kind throws, and is not silently dropped", () => {
 	const items = [
 		{ id: "ok", kind: "blocking", title: "Rates missing (2)", period: period(2026, 8, "P08"), owner: "EPM Admin", action: { screen: "sign-off" } },

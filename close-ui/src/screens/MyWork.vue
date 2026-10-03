@@ -128,10 +128,15 @@ const loadState = computed(() => {
 });
 const loadError = computed(() => work.error || grouped.value.error);
 
-/** An item's action: `{to}` in-app, `{external}` for a gap, or `{error}`. */
+/**
+ * An item's action: `{to}` in-app, `{external}` for a gap, `{none: true}`
+ * for a period-less item with no current period (A20: never invent one —
+ * the item's title renders with no link), or `{error}`.
+ */
 function routeOf(item) {
 	try {
-		const r = itemRoute(item);
+		const r = itemRoute(item, current.value);
+		if (r == null) return { none: true };
 		if (r && typeof r === "object" && r.external) return { external: r.external };
 		return { to: String(r).replace(/^\/close/, "") };
 	} catch (e) {
@@ -268,6 +273,7 @@ function ageOf(item) {
 								<p v-else-if="routeOf(item).error" role="alert" class="max-w-xs text-sm text-ink-red-3">
 									{{ routeOf(item).error }}
 								</p>
+								<span v-else-if="routeOf(item).none" class="sr-only">No link: this item has no period to open.</span>
 								<RouterLink
 									v-else
 									:to="routeOf(item).to"
