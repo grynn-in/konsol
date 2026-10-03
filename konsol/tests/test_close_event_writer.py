@@ -494,6 +494,8 @@ ALLOWED = {
     "close/self_approval.py",
     "close/cancel_event.py",
     "hooks.py",
+    # C03t (E5-P16): reads ic_sent_back events for the Intercompany screen.
+    "close/ic_api.py",
 }
 WRITER = "close/close_event.py"
 FORBIDDEN = (
@@ -567,3 +569,15 @@ def test_the_checker_catches_a_second_writer():
     assert writer_problems(source, WRITER) == []
     for pattern in FORBIDDEN:
         assert writer_problems(pattern + "\n", "fiscal_calendar.py"), pattern
+
+
+def test_ic_api_may_read_but_not_write_close_events():
+    """C03t (E5-P16): close/ic_api.py reads ic_sent_back events; it is an
+    allowed reader, but the write checks still apply to it."""
+    bad = writer_problems('rows = frappe.get_all("Close Event")\n', "close/ic_api.py")
+    assert bad == [], bad
+    # Failure path: the FORBIDDEN write pattern still catches it.
+    bad = writer_problems(
+        'frappe.db.set_value("Close Event", n, "reason", "x")\n', "close/ic_api.py"
+    )
+    assert bad, bad
