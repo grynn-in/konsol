@@ -832,18 +832,28 @@ _GROUP_ROLES = (("EPM Admin",), ("System Manager",), ("EPM Analyst",))
 _OPEN_KEYS = [(2025, 7), (2025, 8), (2025, 9)]
 
 
-def _ic_fix(**over):
-    fix = {
-        "entity_a": "UK01", "account_a": "140000",
-        "entity_b": "DE01", "account_b": "240000",
-        "group": "EMEA Group", "state": "over_tolerance",
-        "difference": 360.65, "tolerance": 5.0,
-        "balance_a": 1250.75, "balance_b": 890.10,
-        "sent_by": "zz-lead@example.com", "sent_at": "2025-08-15T10:00:00",
-        "reason": "Please review the booking.",
-    }
-    fix.update(over)
-    return fix
+_IC_EVENT = {
+    "kind": "ic_sent_back", "name": "ZZ-EVT-1",
+    # Already zoned: this stub replaces ic_api.open_fixes, which is where
+    # the real _iso(sent_at) happens (S1); feeding a zoned string here
+    # stands in for that.
+    "at": "2025-08-15T10:00:00+01:00",
+    "actor": "zz-lead@example.com", "reason": "Please review the booking.",
+    "detail": {"entity_a": "UK01", "account_a": "140000",
+               "entity_b": "DE01", "account_b": "240000"},
+}
+
+_IC_ROW = {
+    "entity_a": "UK01", "account_a": "140000", "entity_b": "DE01", "account_b": "240000",
+    "consolidation_group": "EMEA Group", "match_status": "over_tolerance",
+    "difference": 360.65, "tolerance": 5.0, "balance_a": 1250.75, "balance_b": 890.10,
+}
+
+
+def _ic_fix():
+    """S1: built through the real producer (``ic_model.open_fixes``, loaded
+    by path), never a hand-built dict."""
+    return _model("ic_model").open_fixes([dict(_IC_EVENT)], [dict(_IC_ROW)])[0]
 
 
 def _ic_items(result):
