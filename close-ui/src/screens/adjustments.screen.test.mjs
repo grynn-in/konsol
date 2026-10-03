@@ -41,12 +41,11 @@ test("Adjustments.vue builds what it shows with journalsView/effectView (A13)", 
 	assert.match(script(source), /journalsView\(/);
 });
 
-test("Calls the server through api.js and reads the period with route.js; no fetch, no browser storage (D5)", () => {
+test("Calls the server through api.js and reads the period with route.js; no fetch (D5; route.test.mjs scans the whole tree for browser storage)", () => {
 	const source = read();
 	assert.match(source, /import\s*\{[^}]*\bget\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
 	assert.match(source, /from\s*["']\.\.\/route\.js["']/);
 	assert.doesNotMatch(source, /\bfetch\(/, "all server calls go through api.js");
-	assert.doesNotMatch(source, /localStorage|sessionStorage/, "D5: no browser-kept state");
 });
 
 test("Names konsol.close.journal_api.get_journals", () => {
