@@ -54,6 +54,30 @@ def _segment(src, start, end):
 # The wiring is not, and source-text assertions cannot catch a branch that is
 # present but wrong, so the functions that decide a close are exercised here.
 
+# konsol#305 C20t: sign_off_close will call signoff_gate.intercompany(fy, fp)
+# once C22 lands (the import warning at the top of the Wave 3 rows). IC_LINE
+# is module-level so a later test (C22's) can replace it before calling
+# sign_off_close, to exercise the IC-over-tolerance acknowledgement path.
+IC_LINE = {"state": "not_configured",
+           "message": "Intercompany not configured — nothing was checked.",
+           "counts": None, "sent_back_open": None}
+
+
+def _stub_signoff_gate():
+    """The no-op signoff_gate installed around every sign_off_close call in
+    this file. A fresh module each call, so mutating one test's gate (or its
+    returned line) never leaks into another."""
+    import types
+
+    gate = types.ModuleType("konsol.close.signoff_gate")
+    gate.assert_can_sign = lambda *a: None
+    # A63: no data change recorded, so the run is current.
+    gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
+                                   "data_change": None}
+    gate.intercompany = lambda fy, fp: dict(IC_LINE)
+    return gate
+
+
 def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None,
           record_raises=False):
     import importlib.util
@@ -143,12 +167,8 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None,
     # sign_off_close imports the period gate lazily (konsol#305 A22). The
     # gate is tested in test_close_signoff_wiring.py and
     # test_close_signoff_gate.py; here it is a no-op, installed only for the
-    # duration of each call.
-    gate = types.ModuleType("konsol.close.signoff_gate")
-    gate.assert_can_sign = lambda *a: None
-    # A63: no data change recorded, so the run is current.
-    gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
-                                   "data_change": None}
+    # duration of each call. (konsol#305 C20t: intercompany stubbed too.)
+    gate = _stub_signoff_gate()
     # A66: sign_off_close decides the data-change refusal through the real,
     # pure signoff_model (loaded by path).
     sm_spec = importlib.util.spec_from_file_location(
@@ -652,3 +672,32 @@ def test_a_failing_event_writer_stops_the_signoff_before_its_commit():
     except RuntimeError as e:
         assert "Close Event writer failed" in str(e)
     assert "commit" not in frappe.events, "the sign-off committed without its event"
+
+
+# --- konsol#305 C20t: the stub signoff_gate gains `intercompany` -------------
+# C22 adds a real `signoff_gate.intercompany(fy, fp)` call inside
+# sign_off_close (the import warning at the top of the Wave 3 rows); without
+# this stub every test in this file that calls sign_off_close would start
+# raising AttributeError the day C22 lands. No product code changes here.
+
+def test_the_stub_gate_intercompany_defaults_to_not_configured():
+    gate = _stub_signoff_gate()
+    line = gate.intercompany(2099, 1)
+    assert line == IC_LINE
+    assert line["state"] == "not_configured"
+    assert line["message"] == "Intercompany not configured — nothing was checked."
+    assert line["counts"] is None
+    assert line["sent_back_open"] is None
+
+
+def test_the_stub_gate_intercompany_never_leaks_a_mutation_between_calls():
+    """Failure path: a caller mutating the dict it got back must not corrupt
+    IC_LINE for the next call (or the next test)."""
+    gate = _stub_signoff_gate()
+    first = gate.intercompany(2099, 1)
+    first["state"] = "mutated"
+    first["counts"] = {"over_tolerance": 9}
+    second = gate.intercompany(2099, 1)
+    assert second["state"] == "not_configured"
+    assert second["counts"] is None
+    assert IC_LINE["state"] == "not_configured", "IC_LINE itself was corrupted"

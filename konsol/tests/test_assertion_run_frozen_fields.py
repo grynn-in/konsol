@@ -343,6 +343,12 @@ def test_sign_off_close_saves_as_the_signoff_writer():
     # A63: no data change recorded, so the run is current.
     gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
                                    "data_change": None}
+    # konsol#305 C20t: stub, so sign_off_close's coming signoff_gate.intercompany
+    # call (C22) does not raise AttributeError here.
+    gate.intercompany = lambda fy, fp: {
+        "state": "not_configured",
+        "message": "Intercompany not configured — nothing was checked.",
+        "counts": None, "sent_back_open": None}
     # A66: the data-change rule is the real, pure signoff_model (loaded by path).
     sm_spec = importlib.util.spec_from_file_location(
         "signoff_model_for_frozen_fields", os.path.join(APP_DIR, "close", "signoff_model.py"))
