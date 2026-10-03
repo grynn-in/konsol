@@ -568,28 +568,43 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
             title=frappe._("Sign-off blocked"))
     signoff_gate.assert_can_sign(doc.fiscal_year, doc.fiscal_period)
 
+    # #305-W3-8 option B: the period's intercompany line is re-read after the
+    # gates and decides, with the dbt result, what the signature actually
+    # covers. An IC line that could not be checked refuses the signature
+    # before anything is written (W3-P4): the stronger failure mode, since an
+    # unknown state must never be signed over silently.
+    ic = signoff_gate.intercompany(doc.fiscal_year, doc.fiscal_period)
+    unchecked = signoff_model.ic_problem(ic)
+    if unchecked:
+        frappe.throw(unchecked["message"], title=frappe._("Sign-off blocked"))
+    status = signoff_model.effective_status(doc.status, ic)
+    ic_text = signoff_model.ic_warning(ic)
+
     # Recorded on every path, not only the Amber one: a Red close overridden
     # with 12 warnings outstanding must say so too, or the stronger gate ends
     # up with the weaker record.
     warnings = _warning_summary(_warned_assertion_names(close_run) if doc.warned else [],
                                 doc.warned or 0)
+    warnings = "; ".join(w for w in (warnings, ic_text) if w) or None
 
     ack = None
-    if acknowledgement and doc.status != "Amber":
+    if acknowledgement and status != "Amber":
         # Refused rather than dropped: a whitelisted call that returns success
         # having stored nothing is exactly the silent fallback this issue is about.
         frappe.throw(
             frappe._("An acknowledgement applies only to an Amber close; run {0} is {1}.")
-            .format(close_run, doc.status), title=frappe._("Nothing to acknowledge"))
+            .format(close_run, status), title=frappe._("Nothing to acknowledge"))
 
-    if doc.status == "Green":
+    if status == "Green":
         new_state = "Signed Off"
         reason = None
-    elif doc.status == "Amber":
-        # konsol#265 option C. Warnings do not block the close and do not need
-        # the override role — that stays for Red, which must remain the
-        # stronger gate. They do need a written acknowledgement, so the close
-        # record carries what was outstanding AND why it was signed anyway.
+    elif status == "Amber":
+        # konsol#265 option C (and #305-W3-8: a Green run with intercompany
+        # pairs over tolerance is treated the same way). Warnings do not
+        # block the close and do not need the override role — that stays for
+        # Red, which must remain the stronger gate. They do need a written
+        # acknowledgement, so the close record carries what was outstanding
+        # AND why it was signed anyway.
         ack = (acknowledgement or "").strip()
         if not ack:
             frappe.throw(
@@ -629,7 +644,10 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     close_event.record("signed_off", doc.fiscal_year, doc.fiscal_period, "Assertion Run",
                         doc.name, reason=reason or ack,
                         detail={"signoff_status": new_state, "run_status": doc.status,
-                                "warnings": warnings or None})
+                                "warnings": warnings or None,
+                                "intercompany": {"state": ic["state"],
+                                                 "over_tolerance": signoff_model.ic_over_tolerance(ic),
+                                                 "sent_back_open": ic.get("sent_back_open")}})
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
 
