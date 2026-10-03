@@ -553,6 +553,48 @@ def test_re_sign_needed_is_not_a_signed_state():
     assert "Re-sign Needed" not in M.SIGNED_STATES
 
 
+# --- A11: the Close Lead's "waiting for your approval" item ------------------
+
+
+def test_approvals_item_singular():
+    item = M.approvals_item({"count": 1, "oldest": "2025-07-15T09:00:00+00:00"})
+    assert item == {
+        "id": "approvals",
+        "kind": "todo",
+        "title": "Approve 1 item",
+        "owner": M.OWNERS[M.CLOSE_LEAD],
+        "action": {"screen": "approvals"},
+        "since": "2025-07-15",
+        "since_reason": "oldest waiting",
+    }
+
+
+def test_approvals_item_plural():
+    item = M.approvals_item({"count": 3, "oldest": "2025-07-15T09:00:00+00:00"})
+    assert item["title"] == "Approve 3 items"
+    assert item["kind"] == "todo"
+    assert item["action"] == {"screen": "approvals"}
+
+
+def test_approvals_item_count_zero_gives_none():
+    assert M.approvals_item({"count": 0, "oldest": None}) is None
+
+
+def test_approvals_item_missing_count_raises_not_guessed():
+    with pytest.raises(ValueError, match="count"):
+        M.approvals_item({})
+
+
+def test_approvals_item_has_no_period_and_ranks_before_period_todo_items():
+    approvals = M.approvals_item({"count": 1, "oldest": "2025-07-15T09:00:00+00:00"})
+    assert "period" not in approvals
+    period_todo = {"id": "signoff:2025-07", "kind": "todo", "title": "Sign off P07",
+                   "period": {"fiscal_year": 2025, "fiscal_period": 7, "code": "P07"},
+                   "owner": "EPM Admin", "action": {"screen": "sign-off"}}
+    ranked = M.rank([period_todo, approvals])
+    assert ranked[0]["id"] == "approvals"
+
+
 # --- C07 (W3-1, W3-2): the Entity Accountant's intercompany fix items ---------
 
 IC_P07 = (2025, 7)
