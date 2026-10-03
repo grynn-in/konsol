@@ -1078,3 +1078,13 @@ def test_the_period_trial_balances_are_read_once():
     _call(site, "sign_off_problems", 2025, 9)
     tb_reads = [c for c in site.get_all_calls if c[0] == "Trial Balance Submission"]
     assert len(tb_reads) == 1, tb_reads
+
+
+# --- C18t: the loader carries a stub konsol.close.ic_api, for C19 ----------
+
+
+def test_the_ic_api_stub_is_installed():
+    site = _Site()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "ic_tolerance_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
