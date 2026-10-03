@@ -48,7 +48,16 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { journalsView, effectView, durationOptions, draftTotals, saveJournalBody, editable, NO_REVERSAL_NOTE } from "../adjustments.js";
+import {
+	journalsView,
+	effectView,
+	durationOptions,
+	durationIndex,
+	draftTotals,
+	saveJournalBody,
+	editable,
+	NO_REVERSAL_NOTE,
+} from "../adjustments.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
@@ -88,10 +97,6 @@ let seq = 0;
 
 const selectedName = ref(null);
 
-//: the signed-in user's id (Frappe boot), for `editable`'s "own draft" rule (A13).
-const currentUser =
-	(typeof window !== "undefined" && window.frappe && window.frappe.boot && window.frappe.boot.user && window.frappe.boot.user.name) || null;
-
 function blankLine() {
 	return { data_area_id: "", main_account: "", debit_amount: "", credit_amount: "", description: "" };
 }
@@ -111,15 +116,8 @@ const sending = ref(false);
 
 const totals = computed(() => draftTotals(draft.lines));
 
-const durationChoices = computed(() => durationOptions(view.value || {}));
-const durationIndex = computed(() => {
-	const idx = durationChoices.value.findIndex(
-		(o) =>
-			o.kind === draft.duration.kind &&
-			(o.kind !== "reverses" || (o.fiscal_year === draft.duration.fiscal_year && o.fiscal_period === draft.duration.fiscal_period)),
-	);
-	return idx >= 0 ? idx : 0;
-});
+const durationChoices = computed(() => durationOptions(view.value || { reversalChoices: [] }));
+const selectedDurationIndex = computed(() => durationIndex(durationChoices.value, draft.duration));
 function setDuration(i) {
 	draft.duration = durationChoices.value[Number(i)] || { kind: "none" };
 }
@@ -277,10 +275,10 @@ const selectedEffect = computed(() => {
 	return effectView(editorDirty.value ? null : selectedJournal.value.effect);
 });
 
-//: Edit shown only on an `editable` journal (A13), for the signed-in user.
+//: Edit shown only on an `editable` journal (A13).
 const canEditSelected = computed(() => {
 	if (!selectedJournal.value || !view.value) return false;
-	return editable(selectedJournal.value, view.value, currentUser);
+	return editable(selectedJournal.value, view.value);
 });
 
 function selectJournal(journal) {
@@ -392,7 +390,7 @@ function lines(text) {
 				</label>
 				<label class="flex flex-col gap-1 text-sm">
 					<span class="text-ink-gray-6">Duration</span>
-					<select :value="durationIndex" class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8" @change="setDuration($event.target.value)">
+					<select :value="selectedDurationIndex" class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8" @change="setDuration($event.target.value)">
 						<option v-for="(opt, i) in durationChoices" :key="i" :value="i">{{ opt.label }}</option>
 					</select>
 					<span v-if="durationChoices.length <= 1" class="text-xs text-ink-gray-5">{{ NO_REVERSAL_NOTE }}</span>
