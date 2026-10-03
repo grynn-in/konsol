@@ -909,3 +909,208 @@ def test_send_back_twice_writes_two_events():
     _send(site)
     _send(site, reason="Still open")
     assert [e["reason"] for e in site.recorded] == ["Our side agrees to INV-5531", "Still open"]
+
+
+# --- C05: setup_gap / tolerance_gap / open_fixes / signoff_summary ---
+# Not whitelisted, not endpoints: called by My work (C08) and the sign-off
+# summary (C21). The stub site's defaults (3 Published, no declaration) are
+# "configured"; each test sets up its own gap.
+
+def _h(site, fn_name, *args):
+    """Call a C05 helper by name against the stub site, JSON-safety checked
+    where the result is JSON-safe (dicts of plain values)."""
+    return _invoke(site, lambda api: getattr(api, fn_name)(*args))
+
+
+def test_setup_gap_not_configured_names_the_setup_help():
+    """Failure path — not configured: 0 Published (live today)."""
+    site = _Site()
+    site.published = 0
+    assert _h(site, "setup_gap") == IC_MODEL.SETUP_HELP
+
+
+def test_setup_gap_configured_is_none():
+    site = _Site()
+    assert _h(site, "setup_gap") is None
+
+
+def test_setup_gap_declared_none_is_none_even_with_zero_published():
+    """Failure path (W3-7): "none in this group" is not the "not configured"
+    gap — it is not a gap at all."""
+    site = _Site()
+    site.published = 0
+    site.settings["intercompany_declaration"] = "None in this group"
+    assert _h(site, "setup_gap") is None
+
+
+def test_setup_gap_declared_none_with_published_still_none():
+    """W3-6/W3-7 only define setup_gap by declared_none/published for the
+    "no intercompany" gap; the conflict itself is ic_model.state's job
+    (get_ic, signoff_summary), not setup_gap's."""
+    site = _Site()
+    site.settings["intercompany_declaration"] = "None in this group"
+    assert _h(site, "setup_gap") is None
+
+
+# --- tolerance_gap (W3-6) ---
+
+def test_tolerance_gap_not_configured_is_none_and_reads_no_groups():
+    """Failure path: 0 Published → None, no Consolidation Group read."""
+    site = _Site()
+    site.published = 0
+    assert _h(site, "tolerance_gap") is None
+    assert ("get_all", "Consolidation Group") not in site.reads
+
+
+def test_tolerance_gap_declared_none_is_none_and_reads_no_groups():
+    site = _Site()
+    site.settings["intercompany_declaration"] = "None in this group"
+    assert _h(site, "tolerance_gap") is None
+    assert ("get_all", "Consolidation Group") not in site.reads
+
+
+def test_tolerance_gap_undeclared_group_is_named():
+    """Failure path (W3-6): 1 Published, a group node with tolerance 0."""
+    site = _Site()
+    site.groups = [{"consolidation_group": "ROOT", "data_area_id": None,
+                    "reporting_currency": "GBP", "ic_difference_tolerance": 0}]
+    gap = _h(site, "tolerance_gap")
+    assert gap["code"] == IC_MODEL.TOLERANCE_UNDECLARED
+    assert gap["groups"] == ["ROOT"]
+
+
+def test_tolerance_gap_every_group_declared_is_none():
+    site = _Site()
+    site.groups = [{"consolidation_group": "ROOT", "data_area_id": None,
+                    "reporting_currency": "GBP", "ic_difference_tolerance": 0.01}]
+    assert _h(site, "tolerance_gap") is None
+
+
+def test_tolerance_gap_reads_group_nodes_only():
+    """The same blank-data_area_id filter as the currencies read."""
+    site = _Site()
+    site.groups = [
+        {"consolidation_group": "ROOT", "data_area_id": None, "reporting_currency": "GBP",
+         "ic_difference_tolerance": 0},
+        {"consolidation_group": "ROOT", "data_area_id": "UK01", "reporting_currency": "GBP",
+         "ic_difference_tolerance": 5},
+    ]
+    gap = _h(site, "tolerance_gap")
+    assert gap["groups"] == ["ROOT"]
+
+
+# --- open_fixes (D2-7, E5-P2, E5-P4) ---
+
+def test_open_fixes_not_configured_is_empty_and_reads_no_events():
+    """Failure path: 0 Published → {} with no Close Event read."""
+    site = _Site()
+    site.published = 0
+    assert _h(site, "open_fixes", [(2025, 7)]) == {}
+    assert ("get_all", "Close Event") not in site.reads
+    assert site.ch_calls == []
+
+
+def test_open_fixes_declared_none_is_empty():
+    """Failure path (W3-7): send_back refuses every event once declared."""
+    site = _Site()
+    site.settings["intercompany_declaration"] = "None in this group"
+    assert _h(site, "open_fixes", [(2025, 7)]) == {}
+    assert ("get_all", "Close Event") not in site.reads
+
+
+def test_open_fixes_over_tolerance_pair_is_open_only_one_clickhouse_call():
+    """P08 has no sent-back events, so only P07 is read from ClickHouse."""
+    site = _Site()
+    out = _h(site, "open_fixes", [(2025, 7), (2025, 8)])
+    assert list(out.keys()) == [(2025, 7)]
+    fixes = out[(2025, 7)]
+    assert len(fixes) == 1
+    assert fixes[0]["state"] == "over_tolerance"
+    assert fixes[0]["entity_a"] == "UK01" and fixes[0]["account_a"] == "1810"
+    assert len(site.ch_calls) == 1
+
+
+def test_open_fixes_warehouse_down_is_cannot_check_never_dropped():
+    """Failure path: a warehouse failure never drops the fix item."""
+    site = _Site()
+    site.ch_error = RuntimeError("boom")
+    out = _h(site, "open_fixes", [(2025, 7)])
+    fixes = out[(2025, 7)]
+    assert len(fixes) == 1
+    assert fixes[0]["state"] == "cannot_check"
+    assert "RuntimeError" in fixes[0]["error"]
+
+
+def test_open_fixes_cleared_pair_is_omitted():
+    """Failure path — cleared: the sent-back pair is now within tolerance, so
+    the key carries no open fix and is left out entirely."""
+    site = _Site()
+    site.ic_rows = [_pair("ROOT", "UK01", "1810", "DE01", "2810", "within_tolerance",
+                          difference="1")]
+    assert _h(site, "open_fixes", [(2025, 7)]) == {}
+
+
+def test_open_fixes_no_keys_reads_nothing():
+    site = _Site()
+    assert _h(site, "open_fixes", []) == {}
+    assert site.reads == []
+
+
+# --- signoff_summary (E5-P13: counts only, unscoped) ---
+
+def test_signoff_summary_not_configured():
+    """Failure path: 0 Published (live today)."""
+    site = _Site()
+    site.published = 0
+    out = _h(site, "signoff_summary", 2025, 7)
+    assert out["state"] == "not_configured"
+    assert out["counts"] is None
+    assert out["sent_back_open"] is None
+    assert site.ch_calls == []
+
+
+def test_signoff_summary_declared_none_is_not_applicable_no_clickhouse_read():
+    """Failure path (W3-7)."""
+    site = _Site()
+    site.published = 0
+    site.settings["intercompany_declaration"] = "None in this group"
+    out = _h(site, "signoff_summary", 2025, 7)
+    assert out["state"] == "not_applicable"
+    assert out["counts"] is None
+    assert site.ch_calls == []
+
+
+def test_signoff_summary_declared_none_with_published_is_an_error():
+    """Failure path (C01 conflict state)."""
+    site = _Site()
+    site.settings["intercompany_declaration"] = "None in this group"
+    out = _h(site, "signoff_summary", 2025, 7)
+    assert out["state"] == "error"
+
+
+def test_signoff_summary_configured_counts_every_pair_unscoped():
+    """No mask applied: a scoped caller still counts every pair (E5-P13)."""
+    site = _Site()
+    site.allowed = {"FR01"}  # would hide most pairs on the IC screen (W3-2)
+    out = _h(site, "signoff_summary", 2025, 7)
+    assert out["state"] == "checked"
+    assert out["counts"]["pairs"] == 3
+    assert out["sent_back_open"] == 1
+
+
+def test_signoff_summary_warehouse_down_is_error_never_raises():
+    """Failure path."""
+    site = _Site()
+    site.ch_error = RuntimeError("boom")
+    out = _h(site, "signoff_summary", 2025, 7)
+    assert out["state"] == "error"
+    assert out["counts"] is None
+    assert out["sent_back_open"] is None
+
+
+def test_signoff_summary_unbuilt_tables_never_raises():
+    """Failure path."""
+    site = _Site()
+    site.ch_error = RuntimeError("(UNKNOWN_TABLE)")
+    out = _h(site, "signoff_summary", 2025, 7)
+    assert out["state"] == "not_built"
