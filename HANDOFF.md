@@ -4,6 +4,39 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (3 Oct): konsol#305 Delivery 2, wave 3 (E5 intercompany, E6 adjustments and approvals), is merged: konsol #323 (062b421) and konsolidat #253 (bb0307e).** Deepak decided W3-1..8 on #305, all ★. Claude's own calls (W3-P1..P9, E5-P*, E6-P*, the A07 owner check, the A18 save block) are recorded on their rows in `archive/konsol-305-d2/tasks.md`.
+- **Intercompany** (`…/intercompany`):
+  - The screen shows pairs, a side panel and Send back, which writes an `ic_sent_back` Close Event.
+  - The sign-off summary and the signature carry an Intercompany line. Over tolerance turns a Green close Amber, and signing it needs an acknowledgement. If the IC model is unbuilt or unreadable, sign-off is blocked.
+  - My work gives the group roles the IC setup and tolerance gaps, and gives the Entity Accountant fix items.
+  - Close Settings has `intercompany_declaration`. While it says "None in this group", publishing an Intercompany Account is refused.
+  - Live today: 0 Published Intercompany Accounts, so every IC surface says "not configured".
+- **Adjustments** (`…/adjustments`):
+  - The Analyst drafts and edits journals: type, group, duration ("reverses in <period>" or "this period only"), the why, and the lines. Each journal shows its effect per statement heading.
+  - Send for approval refuses until the journal workflow is installed. Migrate installs it.
+- **Approvals** (`…/approvals`):
+  - One queue covers the 7 approval doctypes. Approve and reject are gated by R2/R5. Business Combination and Business Disposal open in the Desk.
+  - D2-8: a reject on a doctype without a workflow leaves the document a draft and records the reason.
+  - My work gives the Close Lead "Approve N items" and gives preparers their sent-back items.
+- **dbt (W3-5 C):** a cross-currency balance-sheet pair is judged against the tolerance instead of being called an fx difference.
+- **Upgrade, in this order:**
+  1. Declare each group's `ic_difference_tolerance` before publishing any Intercompany Account. A tolerance of 0 is undeclared and blocks sign-off (W3-6).
+  2. Migrate right after deploy. Until `Close Settings.intercompany_declaration` exists, My work and sign-off throw.
+  3. Migrate installs the Consolidation Journal workflow only if no journal workflow exists, inactive ones included.
+  4. Deploy the dbt change (#253) with it.
+- **Live stack (local), 3 Oct:**
+  - The merged batch is hot-copied into `konsolidat_backend` and `konsolidat_worker`, and Consolidation Group is reloaded. Not migrated.
+  - Five stale bundle chunks are left on disk, unreferenced.
+  - Stray scripts in `/home/frappe/frappe-bench/` (`zz_a21_check.py`, `zz_e405_check.py`, `zz_r31a_probe.py`) and the stray `konsol/close/close/` directory: delete with Deepak's OK.
+- **Open for Deepak:**
+  - W3-2 scope: a scoped user still sees each pair's `difference`, in the grid and in the `ic_sent_back` audit detail. Own balance plus difference gives the partner's balance. `matched_amount` and `net_balance` are already masked.
+- **Known, not fixed:**
+  - S7: a reject on a doctype without a workflow doesn't stop a later approve from Desk.
+  - The Approvals nav badge counts My work items, not queue entries.
+  - An item's age differs by one day between Approvals and My work.
+- Review findings: `archive/konsol-305-d2/review-w3.md`.
+- **Next:** Delivery 2 P2 stories (1.5 Remind, 5.4 IC Balance screen, 6.5 auto-reversals) and Delivery 1 rows A39/A44 — not planned yet.
+
 **Update (2 Oct): konsol#305 Delivery 2, wave 2 (E2 period grid, E4 rates and ownership, E10 audit trail), is built on konsol `close-d2`.** Decisions #305-W2-1..16 plus W2-P1/P2 are on #305. W2-16 (ownership overlap) was withdrawn; ownership must cover a period's first day, the same rule dbt uses.
 - **Period** (`/close/<y>/<p>/period`): a readiness strip (open, first close, previous signed, policies, configuration, ownership, trial balances, rates, checks) and an entity grid (Ownership, Trial balance, Closing rate) with a problems filter.
   - #289 is fixed: a submitted TB for an entity with no ownership on the period's first day blocks sign-off, shows in the grid and My work, and the Entity Accountant sees "Not consolidated: no ownership for this period".
