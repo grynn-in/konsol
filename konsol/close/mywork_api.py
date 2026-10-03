@@ -91,8 +91,8 @@ from datetime import date, datetime
 import frappe
 
 from konsol import entity_permissions, fiscal_calendar, group_chart, group_rates
-from konsol.close import (checks_model, close_policy_model, ic_api, mywork_model, period_model,
-                          scope_model, signoff_gate, signoff_model)
+from konsol.close import (approvals_api, checks_model, close_policy_model, ic_api, mywork_model,
+                          period_model, scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
@@ -391,5 +391,12 @@ def get_my_work():
                 ic_api.open_fixes(sorted(per_period)), per_period, allowed))
         if persona == period_model.CLOSE_LEAD:
             items.extend(extra)
+    if persona == period_model.CLOSE_LEAD:
+        # A12: the approvals queue does not depend on the first close, so this
+        # sits outside the block above. A queue failure is not swallowed.
+        waiting = approvals_api.queue_for(frappe.session.user, roles)["waiting"]
+        approvals_item = mywork_model.approvals_item(waiting)
+        if approvals_item is not None:
+            items.append(approvals_item)
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}
