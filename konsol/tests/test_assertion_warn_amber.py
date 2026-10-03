@@ -701,3 +701,148 @@ def test_the_stub_gate_intercompany_never_leaks_a_mutation_between_calls():
     assert second["state"] == "not_configured"
     assert second["counts"] is None
     assert IC_LINE["state"] == "not_configured", "IC_LINE itself was corrupted"
+
+
+# --- konsol#305 C22: sign_off_close reads signoff_gate.intercompany --------
+# #305-W3-8 option B: a Green run with intercompany pairs over tolerance
+# needs a typed acknowledgement and signs "Acknowledged", like a dbt Amber
+# (#265 option C); the run's own `status` stays "Green" (W3-P5). "not
+# configured" / "not applicable" are never Amber (W3-P2). An IC line that
+# could not be checked refuses the signature before anything is written
+# (W3-P4).
+
+import contextlib
+
+
+@contextlib.contextmanager
+def _ic_line(line):
+    """Replaces the module-level IC_LINE the stub gate's `intercompany`
+    reads, for the duration of the block, and restores it afterwards so one
+    test's intercompany line never leaks into the next."""
+    global IC_LINE
+    old = IC_LINE
+    IC_LINE = line
+    try:
+        yield
+    finally:
+        IC_LINE = old
+
+
+IC_CHECKED_2_OVER = {
+    "state": "checked", "message": None,
+    "counts": {"pairs": 3, "matched": 1, "within_tolerance": 0,
+               "over_tolerance": 2, "fx_difference": 0, "unmatched": 0},
+    "sent_back_open": 0,
+}
+
+IC_NOT_APPLICABLE = {
+    "state": "not_applicable",
+    "message": "Intercompany: none in this group — nothing was checked.",
+    "counts": None, "sent_back_open": None,
+}
+
+IC_ERROR = {
+    "state": "error",
+    "message": "Intercompany could not be checked: the warehouse is unreachable.",
+    "counts": None, "sent_back_open": None,
+}
+
+
+def test_green_signoff_with_ic_over_tolerance_is_refused_without_an_acknowledgement():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(IC_CHECKED_2_OVER):
+        try:
+            module.sign_off_close("AR-1")
+            raise AssertionError(
+                "a Green close with IC over tolerance signed with no acknowledgement")
+        except frappe.ValidationError as e:
+            assert "2 pairs over tolerance" in str(e), str(e)
+    assert doc.signoff_saved is False
+    assert frappe.events == [], frappe.events
+
+
+def test_green_signoff_with_ic_over_tolerance_is_acknowledged_and_recorded():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(IC_CHECKED_2_OVER):
+        module.sign_off_close("AR-1", acknowledgement="ZZ timing, booked in P08")
+    assert doc.signoff_status == "Acknowledged"
+    assert doc.status == "Green", "effective_status must not overwrite the run's own status"
+    assert "Intercompany: 2 pairs over tolerance" in doc.warnings_at_signoff
+    (e,) = _events(frappe)
+    assert e["kind"] == "signed_off"
+    assert e["reason"] == "ZZ timing, booked in P08"
+    assert e["detail"]["intercompany"]["over_tolerance"] == 2
+    assert e["detail"]["run_status"] == "Green"
+
+
+def test_amber_signoff_with_ic_over_tolerance_does_not_need_the_override_role():
+    """Mirrors test_amber_signoff_does_not_need_the_override_role (:444): the
+    EPM Admin role is not needed for the IC Amber either."""
+    module, frappe, doc, _ = _load(status="Green", warned=0, roles=())
+    with _ic_line(IC_CHECKED_2_OVER):
+        module.sign_off_close("AR-1", acknowledgement="reviewed")
+    assert doc.signoff_status == "Acknowledged"
+
+
+def test_green_signoff_not_configured_signs_off_with_no_acknowledgement():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(dict(IC_LINE)):  # the stub's own default: not_configured
+        module.sign_off_close("AR-1")
+    assert doc.signoff_status == "Signed Off"
+
+
+def test_an_acknowledgement_on_a_green_not_configured_close_is_still_refused():
+    """Failure path: not_configured is never Amber, so an acknowledgement
+    given anyway is refused exactly as it is for any other Green close."""
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(dict(IC_LINE)):
+        try:
+            module.sign_off_close("AR-1", acknowledgement="looks fine")
+            raise AssertionError(
+                "acknowledgement silently accepted on a not_configured Green close")
+        except frappe.ValidationError as e:
+            assert "applies only to an Amber close" in str(e)
+    assert doc.signoff_saved is False
+
+
+def test_green_signoff_not_applicable_signs_off():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(IC_NOT_APPLICABLE):
+        module.sign_off_close("AR-1")
+    assert doc.signoff_status == "Signed Off"
+
+
+def test_an_unchecked_intercompany_line_refuses_the_signature():
+    """W3-P4: the warehouse could not be read (or is not built); nothing can
+    be signed while it is unknown whether any pair is over tolerance, and
+    nothing is saved or recorded."""
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(IC_ERROR):
+        try:
+            module.sign_off_close("AR-1")
+            raise AssertionError("signed off although intercompany could not be checked")
+        except frappe.ValidationError as e:
+            assert "Nothing can be signed" in str(e), str(e)
+    assert doc.signoff_saved is False
+    assert frappe.events == [], frappe.events
+
+
+def test_amber_dbt_warning_and_ic_over_tolerance_need_one_acknowledgement_naming_both():
+    module, frappe, doc, _ = _load(status="Amber", warned=2,
+                                   warning_names=["assert_tb_balances", "assert_fx_sane"])
+    with _ic_line(IC_CHECKED_2_OVER):
+        module.sign_off_close("AR-1", acknowledgement="reviewed both")
+    assert doc.signoff_status == "Acknowledged"
+    assert "assert_tb_balances" in doc.warnings_at_signoff
+    assert "Intercompany: 2 pairs over tolerance" in doc.warnings_at_signoff
+
+
+def test_red_override_with_ic_over_tolerance_is_unchanged_and_names_the_ic_line():
+    module, frappe, doc, _ = _load(status="Red", warned=0, roles=("EPM Admin",))
+    with _ic_line(IC_CHECKED_2_OVER):
+        module.sign_off_close("AR-1", override_reason="known, fixing next period")
+    assert doc.signoff_status == "Overridden"
+    assert "Intercompany: 2 pairs over tolerance" in doc.warnings_at_signoff
+    (e,) = _events(frappe)
+    assert e["detail"]["run_status"] == "Red"
+    assert e["detail"]["intercompany"]["over_tolerance"] == 2
