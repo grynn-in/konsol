@@ -637,24 +637,48 @@ def _created_elsewhere(cf):
 
 
 def _sync_budget_custom_fields_locked():
-    # Plain reads: _sync_budget_custom_fields committed after taking the lock,
-    # so the snapshot is fresh.
-    budget_dims = frappe.get_all(
+    """Both dimension-carrying line tables, under the one lock already held.
+
+    Plain reads: _sync_budget_custom_fields committed after taking the lock, so
+    the snapshot is fresh. Consolidation Journal Line joined Budget Line here
+    for konsolidat#245 option D — one lock rather than a second named lock,
+    because both write Custom Fields and an ALTER from either commits.
+    """
+    actions = _sync_dimension_custom_fields("Budget Line", "in_budget", "main_account")
+    actions += _sync_dimension_custom_fields(
+        "Consolidation Journal Line", "in_journal", "main_account")
+    return actions
+
+
+def _sync_dimension_custom_fields(dt, flag, insert_after):
+    """Give ``dt`` a Data Custom Field per Published Dimension ticked ``flag``.
+
+    One body for both callers — Budget Line's ``in_budget`` and Consolidation
+    Journal Line's ``in_journal`` (konsolidat#245 option D) — because two copies
+    of this would drift, and the drift is silent in the worst direction: a
+    dimension that is declared and has nowhere to land. The same reason
+    ``tb_dimension_model.is_flag_on`` is one function.
+
+    Adds what is missing and removes what is orphaned. Removal takes the Frappe
+    field only: the warehouse column is never dropped (``_ADDED_COLUMNS`` adds
+    and never removes), so values already written stay readable and a dimension
+    unticked by mistake loses no history.
+
+    Callers hold the named lock; the reads here are plain because the caller
+    committed after taking it.
+    """
+    dims = frappe.get_all(
         "Dimension",
-        filters={"in_budget": 1, "status": "Published"},
+        filters={flag: 1, "status": "Published"},
         fields=["dimension_name", "label"],
         limit_page_length=0,
     )
-    wanted = {d.dimension_name for d in budget_dims}
-    label_map = {d.dimension_name: d.label for d in budget_dims}
+    wanted = {d.dimension_name for d in dims}
+    label_map = {d.dimension_name: d.label for d in dims}
 
-    # Existing custom fields for Budget Line that are dimension fields
     existing = frappe.get_all(
         "Custom Field",
-        filters={
-            "dt": "Budget Line",
-            "fieldname": ("like", "dim_%"),
-        },
+        filters={"dt": dt, "fieldname": ("like", "dim_%")},
         fields=["name", "fieldname"],
         limit_page_length=0,
     )
@@ -662,14 +686,13 @@ def _sync_budget_custom_fields_locked():
 
     actions = []
 
-    # Add missing
     for dim_name in sorted(wanted - existing_names):
         cf = frappe.new_doc("Custom Field")
-        cf.dt = "Budget Line"
+        cf.dt = dt
         cf.fieldname = dim_name
         cf.fieldtype = "Data"
         cf.label = label_map.get(dim_name, dim_name)
-        cf.insert_after = "main_account"
+        cf.insert_after = insert_after
         try:
             cf.insert()
         except Exception:
@@ -678,7 +701,6 @@ def _sync_budget_custom_fields_locked():
             raise
         actions.append(f"added {dim_name}")
 
-    # Remove orphaned
     for cf in existing:
         if cf.fieldname not in wanted:
             frappe.delete_doc("Custom Field", cf.name)

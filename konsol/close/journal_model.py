@@ -315,7 +315,19 @@ STAGING_COLUMNS = (
 )
 
 
-def staging_rows(headers, lines):
+def staging_columns(declared=()):
+    """``STAGING_COLUMNS`` plus one column per declared journal dimension.
+
+    The dimensions go LAST, because `epm_staging.consolidation_adjustments`
+    already exists and gains them through ``clickhouse._ADDED_COLUMNS`` — the
+    same reason `main_account`'s CH_FIELD_MAP keeps `is_retained_earnings` at
+    the end. ``declared`` is the caller's list of Published Dimensions ticked
+    ``in_journal``, in a stable order; this module reads no doctype.
+    """
+    return STAGING_COLUMNS + tuple(declared)
+
+
+def staging_rows(headers, lines, declared=()):
     """One tuple per journal line, in ``STAGING_COLUMNS`` order.
 
     ``headers`` are the submitted journals (dicts with ``name``,
@@ -365,5 +377,11 @@ def staging_rows(headers, lines):
             "",
             header.get("reverse_fiscal_year") or 0,
             header.get("reverse_fiscal_period") or 0,
+            # konsolidat#245 option D: only the dimensions the site declared,
+            # read by name off the line. A dim_* key the site has not declared
+            # is ignored rather than written — data never creates configuration
+            # (konsol#247). Absent or blank is '', the column's default: blank
+            # is a valid declaration, not a missing one.
+            *(line.get(d) or "" for d in declared),
         ))
     return rows
