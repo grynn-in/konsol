@@ -112,6 +112,10 @@ class _Site:
         self.problem_calls = []
         self.only_for_calls = []
         self.ownership_queries = 0
+        self.ic_gap = None
+        self.ic_fixes = {}
+        self.ic_calls = []
+        self.ic_tolerance_gap = None
 
 
 def _frappe(site):
@@ -261,6 +265,20 @@ def _call(site):
     assertion_run.latest_close_run = _latest_close_run(site)
     assertion_run.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
 
+    # C06t: a stub `konsol.close.ic_api`, unused by mywork_api until C08. It
+    # exists so C08's `from konsol.close import ic_api` resolves to this stub
+    # rather than a real module that would otherwise run against this fake
+    # frappe (and whose get_all would reject every doctype it does not know).
+    ic_api = types.ModuleType("konsol.close.ic_api")
+    ic_api.setup_gap = lambda: site.ic_gap
+    ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
+
+    def open_fixes(keys):
+        site.ic_calls.append(list(keys))
+        return dict(site.ic_fixes)
+
+    ic_api.open_fixes = open_fixes
+
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.group_chart": group_chart,
@@ -269,6 +287,7 @@ def _call(site):
         "konsol.close.signoff_gate": signoff_gate,
         "konsol.close.freshness_api": freshness_api,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
+        "konsol.close.ic_api": ic_api,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -762,3 +781,14 @@ def test_no_leaves_still_answers_without_error():
     result = _call(site)
     assert site.ownership_queries <= 3, site.ownership_queries
     assert _gap(result, "ownership") is None
+
+
+# --- C06t: the loader carries a stub konsol.close.ic_api, for C08 ----------
+
+
+def test_the_ic_api_stub_is_installed():
+    site = _Site()
+    _call(site)
+    # My work does not call ic_api yet. C08 changes this expectation in its
+    # own test once mywork_api reads the IC gap through it.
+    assert site.ic_calls == []

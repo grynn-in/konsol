@@ -30,6 +30,7 @@ class CloseSettings(Document):
         self.validate_first_close_period()
         self.validate_first_close_locked()
         self.validate_policies()
+        self.validate_intercompany_declaration()
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank
@@ -100,5 +101,32 @@ class CloseSettings(Document):
         (close_policy_model.policy_gaps), never guessed."""
         problems = close_policy_model.settings_problems(
             self.self_approval, self.rate_move_threshold)
+        if problems:
+            frappe.throw("<br>".join(problems))
+
+    def validate_intercompany_declaration(self):
+        """konsol#305-W3-7 (C16): "None in this group" is refused while any
+        Intercompany Account is Published. Blank (undeclared) reads nothing.
+        An unknown value is refused before any read.
+
+        The count runs under the lock an Intercompany Account publish takes
+        first (its tabDocType row, intercompany_account.py), then as a locking
+        read: MariaDB is REPEATABLE READ, so without both a publish and this
+        save in two requests could each pass (the #293 review finding 1
+        pattern)."""
+        declaration = self.intercompany_declaration
+        if not declaration:
+            return
+        if declaration not in close_policy_model.INTERCOMPANY_DECLARATIONS:
+            frappe.throw("<br>".join(
+                close_policy_model.intercompany_declaration_problems(declaration, 0)))
+        frappe.db.sql(
+            "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
+            ("Intercompany Account",))
+        published = frappe.db.sql(
+            "SELECT COUNT(*) FROM `tabIntercompany Account` "
+            "WHERE `status` = 'Published' FOR UPDATE")[0][0]
+        problems = close_policy_model.intercompany_declaration_problems(
+            declaration, int(published))
         if problems:
             frappe.throw("<br>".join(problems))

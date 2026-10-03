@@ -24,6 +24,9 @@ _CENTS = Decimal("0.01")
 
 MIN_LINES = 2
 
+#: Consolidation Journal Line fields a user may send (consolidation_journal_line.json).
+LINE_KEYS = ("data_area_id", "main_account", "debit_amount", "credit_amount", "description")
+
 
 def _cents(amount):
     """A line amount (int, float, str or None) as a Decimal rounded to 2 dp."""
@@ -33,6 +36,33 @@ def _cents(amount):
         return Decimal(str(amount)).quantize(_CENTS, rounding=ROUND_HALF_UP)
     except InvalidOperation:
         raise ValueError(f"'{amount}' is not a number")
+
+
+def clean_lines(lines):
+    """``(rows, problems)``: the request's lines, kept to ``LINE_KEYS`` only
+    (#305 A02).
+
+    ``lines`` must be a list of dicts (the API parses JSON first; a str is
+    not parsed here). A non-list ``lines``, or a non-dict item, is a single
+    problem and contributes no row — never an exception. A dict with any key
+    outside ``LINE_KEYS`` gives one problem per such key, naming the line and
+    the key; the row is still returned, carrying only ``LINE_KEYS`` (missing
+    ones as None). Amounts are passed through unvalidated: ``line_problems``
+    and ``balance_problem`` still decide.
+    """
+    problems = []
+    rows = []
+    if not isinstance(lines, list):
+        return [], ["The journal's lines must be a list."]
+    for pos, line in enumerate(lines, start=1):
+        if not isinstance(line, dict):
+            problems.append(f"Line {pos}: not a valid line.")
+            continue
+        for key in line:
+            if key not in LINE_KEYS:
+                problems.append(f"Line {pos}: {key} cannot be set here.")
+        rows.append({key: line.get(key) for key in LINE_KEYS})
+    return rows, problems
 
 
 def line_problems(lines):
@@ -136,6 +166,52 @@ def reversal_problem(fiscal_year, fiscal_period, reverse_year, reverse_period, p
     if row["status"] != "Open":
         return f"FY{ry} P{rp} is {row['status']}; name an Open period."
     return None
+
+
+def reversal_choices(fiscal_year, fiscal_period, period_rows):
+    """``[{"fiscal_year", "fiscal_period", "code"}]``: every period row a
+    reversal may name (#305 A02), in period order.
+
+    A row qualifies when ``reversal_problem(fiscal_year, fiscal_period,
+    row_fy, row_fp, period_rows) is None`` — Regular, after the journal's own
+    period, Open. The rule is reused, never copied. ``code`` is the row's own
+    ``period_code``.
+    """
+    choices = []
+    for row in period_rows:
+        row_fy = int(row["fiscal_year"])
+        row_fp = int(row["fiscal_period"])
+        if reversal_problem(fiscal_year, fiscal_period, row_fy, row_fp, period_rows) is None:
+            choices.append({
+                "fiscal_year": row_fy,
+                "fiscal_period": row_fp,
+                "code": row["period_code"],
+            })
+    choices.sort(key=lambda c: (c["fiscal_year"], c["fiscal_period"]))
+    return choices
+
+
+def duration_label(reverse_year, reverse_period, period_rows):
+    """The W3-3 duration text for a journal's reversal choice (#305-W3-3
+    option A). Never blank.
+
+    ``(0, 0)`` (a blank Int reads as 0) gives "This period only, no
+    reversal". Otherwise "Reverses in {period_code}" for the matching
+    ``period_rows`` row, or "Reverses in FY{y} P{p:02d} (not a declared
+    period)" when no row matches.
+    """
+    ry = reverse_year or 0
+    rp = reverse_period or 0
+    if ry == 0 and rp == 0:
+        return "This period only, no reversal"
+    row = next(
+        (r for r in period_rows
+         if int(r["fiscal_year"]) == ry and int(r["fiscal_period"]) == rp),
+        None,
+    )
+    if row is None:
+        return f"Reverses in FY{ry} P{rp:02d} (not a declared period)"
+    return f"Reverses in {row['period_code']}"
 
 
 #: Section order (#305-W3-4 option A): Profit and Loss, then Balance Sheet,
