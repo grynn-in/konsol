@@ -312,7 +312,9 @@ def _request_lines(lines):
             frappe.throw("The journal's lines are not valid JSON: send a list of lines, "
                          "each with data_area_id, main_account, debit_amount, "
                          "credit_amount and description.")
-    rows, problems = journal_model.clean_lines(lines)
+    # konsolidat#245 option D: D02 wires the declared dimension keys here;
+    # this row (D01) passes none, so behaviour is unchanged.
+    rows, problems = journal_model.clean_lines(lines, ())
     if problems:
         frappe.throw("<br>".join(problems))
     return rows
