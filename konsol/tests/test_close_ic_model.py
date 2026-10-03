@@ -284,6 +284,270 @@ def test_counts_refuses_an_unknown_status():
     assert "close_enough" in str(e)
 
 
+# --- pair_key, sent_back (C02) ------------------------------------------------
+
+def _event(name, at, actor="user@example.com", reason="because", detail=None, kind="ic_sent_back"):
+    return {"name": name, "kind": kind, "at": at, "actor": actor, "reason": reason,
+            "detail": detail or {}}
+
+
+def _detail(ea, aa, eb, ab, extra=None):
+    d = {"entity_a": ea, "account_a": aa, "entity_b": eb, "account_b": ab}
+    if extra:
+        d.update(extra)
+    return d
+
+
+def test_pair_key_from_row_and_from_detail():
+    row = _row("UK01", "1810", "DE01", "2810")
+    assert M.pair_key(row) == ("UK01", "1810", "DE01", "2810")
+    assert M.pair_key(_detail("UK01", "1810", "DE01", "2810")) == ("UK01", "1810", "DE01", "2810")
+
+
+def test_sent_back_keeps_the_later_event():
+    d = _detail("UK01", "1810", "DE01", "2810")
+    e1 = _event("CE-1", "2025-07-01 10:00:00", reason="first", detail=d)
+    e2 = _event("CE-2", "2025-07-02 10:00:00", reason="second", detail=d)
+    latest = M.sent_back([e1, e2])
+    assert len(latest) == 1
+    key = ("UK01", "1810", "DE01", "2810")
+    assert latest[key]["name"] == "CE-2"
+    assert latest[key]["reason"] == "second"
+
+
+def test_sent_back_order_independent():
+    d = _detail("UK01", "1810", "DE01", "2810")
+    e1 = _event("CE-1", "2025-07-01 10:00:00", detail=d)
+    e2 = _event("CE-2", "2025-07-02 10:00:00", detail=d)
+    assert M.sent_back([e2, e1])[("UK01", "1810", "DE01", "2810")]["name"] == "CE-2"
+
+
+def test_sent_back_refuses_a_non_sent_back_kind():
+    e = _event("CE-3", "2025-07-01 10:00:00", kind="rejected", detail=_detail("A", "1", "B", "2"))
+    _raises(ValueError, M.sent_back, [e])
+
+
+def test_sent_back_refuses_a_detail_missing_a_key():
+    bad = {"entity_a": "UK01", "account_a": "1810", "entity_b": "DE01"}
+    e = _event("CE-4", "2025-07-01 10:00:00", detail=bad)
+    err = _raises(ValueError, M.sent_back, [e])
+    assert "CE-4" in str(err)
+
+
+# --- open_fixes (C02) ----------------------------------------------------------
+
+def test_open_fixes_over_tolerance_in_any_group_is_enough():
+    pair = ("UK01", "1810", "DE01", "2810")
+    d = _detail(*pair)
+    events = [_event("CE-1", "2025-07-01 10:00:00", reason="chasing it", detail=d)]
+    rows = [
+        _row(*pair, status="over_tolerance"),
+        {**_row(*pair, status="within_tolerance"), "consolidation_group": "SUBGRP"},
+    ]
+    fixes = M.open_fixes(events, rows)
+    assert len(fixes) == 1
+    fix = fixes[0]
+    assert fix["entity_a"] == "UK01" and fix["account_a"] == "1810"
+    assert fix["entity_b"] == "DE01" and fix["account_b"] == "2810"
+    assert fix["state"] == "over_tolerance"
+    assert fix["sent_by"] == "user@example.com"
+    assert fix["sent_at"] == "2025-07-01 10:00:00"
+    assert fix["reason"] == "chasing it"
+    assert fix["error"] is None
+    assert {g["consolidation_group"] for g in fix["groups"]} == {"GRP", "SUBGRP"}
+
+
+def test_open_fixes_cleared_when_every_group_is_within_or_matched_or_fx():
+    pair = ("UK01", "1810", "DE01", "2810")
+    d = _detail(*pair)
+    events = [_event("CE-1", "2025-07-01 10:00:00", detail=d)]
+    for status in ("within_tolerance", "matched", "fx_difference"):
+        rows = [_row(*pair, status=status)]
+        assert M.open_fixes(events, rows) == []
+
+
+def test_open_fixes_not_in_build_on_empty_rows():
+    pair = ("UK01", "1810", "DE01", "2810")
+    events = [_event("CE-1", "2025-07-01 10:00:00", detail=_detail(*pair))]
+    fixes = M.open_fixes(events, [])
+    assert len(fixes) == 1
+    assert fixes[0]["state"] == "not_in_build"
+    assert fixes[0]["groups"] == []
+
+
+def test_open_fixes_cannot_check_on_error_whatever_rows_holds():
+    pair = ("UK01", "1810", "DE01", "2810")
+    events = [_event("CE-1", "2025-07-01 10:00:00", detail=_detail(*pair))]
+    for rows in ([], [_row(*pair, status="matched")], [_row(*pair, status="over_tolerance")]):
+        fixes = M.open_fixes(events, rows, error="HTTPError (TIMEOUT_EXCEEDED)")
+        assert len(fixes) == 1
+        assert fixes[0]["state"] == "cannot_check"
+        assert fixes[0]["error"] == "HTTPError (TIMEOUT_EXCEEDED)"
+
+
+def test_open_fixes_fx_difference_alone_does_not_hold_a_fix_open():
+    pair = ("UK01", "1810", "DE01", "2810")
+    events = [_event("CE-1", "2025-07-01 10:00:00", detail=_detail(*pair))]
+    rows = [_row(*pair, status="fx_difference")]
+    assert M.open_fixes(events, rows) == []
+
+
+def test_open_fixes_sorted_by_pair_key():
+    events = [
+        _event("CE-1", "2025-07-01 10:00:00", detail=_detail("UK02", "1", "DE01", "2")),
+        _event("CE-2", "2025-07-01 10:00:00", detail=_detail("UK01", "1", "DE01", "2")),
+    ]
+    rows = [
+        _row("UK02", "1", "DE01", "2", status="over_tolerance"),
+        _row("UK01", "1", "DE01", "2", status="over_tolerance"),
+    ]
+    fixes = M.open_fixes(events, rows)
+    assert [f["entity_a"] for f in fixes] == ["UK01", "UK02"]
+
+
+# --- group_view (C02) ----------------------------------------------------------
+
+def test_group_view_groups_sorts_and_flags_can_send_back():
+    pair_over = ("UK01", "1810", "DE01", "2810")
+    pair_fx = ("UK01", "1820", "DE01", "2820")
+    pair_within = ("UK01", "1830", "DE01", "2830")
+    pair_matched = ("UK01", "1840", "DE01", "2840")
+    rows = [
+        _row(*pair_matched, status="matched"),
+        _row(*pair_within, status="within_tolerance"),
+        _row(*pair_fx, status="fx_difference"),
+        _row(*pair_over, status="over_tolerance"),
+        {**_row("DE01", "1", "FR01", "2", status="over_tolerance"), "consolidation_group": "AGRP",
+         "tolerance": 5.0},
+    ]
+    events = [_event("CE-1", "2025-07-01 10:00:00", reason="holding it", detail=_detail(*pair_over))]
+    currencies = {"GRP": "GBP"}
+    groups = M.group_view(rows, events, currencies)
+    assert [g["consolidation_group"] for g in groups] == ["AGRP", "GRP"]
+    grp = groups[1]
+    assert grp["reporting_currency"] == "GBP"
+    assert grp["tolerance"] == 10.0
+    assert grp["tolerance_declared"] is True
+    order = [(r["entity_a"], r["account_a"]) for r in grp["pairs"]]
+    assert order == [("UK01", "1810"), ("UK01", "1820"), ("UK01", "1830"), ("UK01", "1840")]
+    over_row = grp["pairs"][0]
+    assert over_row["can_send_back"] is True
+    assert over_row["sent_back"] == {"by": "user@example.com", "at": "2025-07-01 10:00:00",
+                                     "reason": "holding it"}
+    assert grp["pairs"][1]["can_send_back"] is False
+    assert grp["pairs"][1]["sent_back"] is None
+    agrp = groups[0]
+    assert agrp["reporting_currency"] is None
+    assert agrp["ic_difference_account"] == ""
+
+
+def test_group_view_disagreeing_tolerance_raises():
+    rows = [
+        _row("UK01", "1", "DE01", "2"),
+        {**_row("UK01", "3", "DE01", "4"), "tolerance": 999.0},
+    ]
+    _raises(ValueError, M.group_view, rows, [], {})
+
+
+def test_group_view_disagreeing_ic_difference_account_raises():
+    rows = [
+        _row("UK01", "1", "DE01", "2"),
+        {**_row("UK01", "3", "DE01", "4"), "ic_difference_account": "9999"},
+    ]
+    _raises(ValueError, M.group_view, rows, [], {})
+
+
+def test_group_view_undeclared_tolerance_refuses_can_send_back_for_everyone():
+    rows = [
+        {**_row("UK01", "1", "DE01", "2", status="over_tolerance"), "tolerance": 0.0},
+        {**_row("UK01", "3", "DE01", "4", status="matched"), "tolerance": 0.0},
+    ]
+    groups = M.group_view(rows, [], {})
+    assert groups[0]["tolerance_declared"] is False
+    assert all(p["can_send_back"] is False for p in groups[0]["pairs"])
+
+
+# --- signoff_line (C02) ---------------------------------------------------------
+
+def test_signoff_line_not_configured_has_no_counts():
+    line = M.signoff_line("not_configured", [], [], [])
+    assert line == {"state": "not_configured", "message": M.NOT_CONFIGURED,
+                    "counts": None, "sent_back_open": None}
+    assert line["counts"] is None
+    for v in line.values():
+        assert v != "reconciled" and v != 0 and v != "0 pairs"
+
+
+def test_signoff_line_not_applicable_has_no_counts():
+    line = M.signoff_line("not_applicable", [], [], [])
+    assert line == {"state": "not_applicable", "message": M.NOT_APPLICABLE,
+                    "counts": None, "sent_back_open": None}
+
+
+def test_signoff_line_checked_zero_pairs():
+    line = M.signoff_line("checked", [], [], [])
+    assert line["counts"] == {"pairs": 0, "matched": 0, "within_tolerance": 0,
+                              "fx_difference": 0, "over_tolerance": 0, "unmatched": 0}
+    assert line["message"] == "0 intercompany pairs in the last build for this period."
+    assert line["sent_back_open"] == 0
+
+
+def test_signoff_line_checked_counts_sent_back_open():
+    pair = ("UK01", "1810", "DE01", "2810")
+    rows = [_row(*pair, status="over_tolerance")]
+    events = [_event("CE-1", "2025-07-01 10:00:00", detail=_detail(*pair))]
+    line = M.signoff_line("checked", rows, [], events)
+    assert line["counts"]["over_tolerance"] == 1
+    assert line["sent_back_open"] == 1
+    assert line["message"] is None
+
+
+def test_signoff_line_refuses_an_unknown_state():
+    _raises(ValueError, M.signoff_line, "reconciled", [], [], [])
+
+
+# --- tolerance_gap (C02, #305-W3-6) ---------------------------------------------
+
+def test_tolerance_gap_names_undeclared_groups():
+    groups = [{"consolidation_group": "GRP", "ic_difference_tolerance": 0},
+              {"consolidation_group": "SUBGRP", "ic_difference_tolerance": 5}]
+    gap = M.tolerance_gap(3, False, groups)
+    assert gap["code"] == M.TOLERANCE_UNDECLARED
+    assert gap["groups"] == ["GRP"]
+    assert "0 is undeclared" in gap["message"]
+    assert "tiny positive" in gap["message"]
+    assert "GRP" in gap["message"]
+
+
+def test_tolerance_gap_none_when_every_group_declared():
+    groups = [{"consolidation_group": "GRP", "ic_difference_tolerance": 0.01}]
+    assert M.tolerance_gap(3, False, groups) is None
+
+
+def test_tolerance_gap_none_when_not_published():
+    groups = [{"consolidation_group": "GRP", "ic_difference_tolerance": 0}]
+    assert M.tolerance_gap(0, False, groups) is None
+
+
+def test_tolerance_gap_none_when_declared_none():
+    groups = [{"consolidation_group": "GRP", "ic_difference_tolerance": 0}]
+    assert M.tolerance_gap(3, True, groups) is None
+
+
+def test_tolerance_gap_sorted_and_only_undeclared():
+    groups = [{"consolidation_group": "Z", "ic_difference_tolerance": 0},
+              {"consolidation_group": "A", "ic_difference_tolerance": 0},
+              {"consolidation_group": "M", "ic_difference_tolerance": 5}]
+    gap = M.tolerance_gap(3, False, groups)
+    assert gap["groups"] == ["A", "Z"]
+
+
+def test_tolerance_gap_refuses_a_negative_tolerance():
+    groups = [{"consolidation_group": "GRP", "ic_difference_tolerance": -1}]
+    err = _raises(ValueError, M.tolerance_gap, 3, False, groups)
+    assert "GRP" in str(err)
+
+
 # --- hygiene -----------------------------------------------------------------
 
 def test_module_imports_no_frappe():
