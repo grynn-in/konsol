@@ -349,6 +349,32 @@ def rank(items):
     return sorted(items or (), key=_rank_key)
 
 
+# --- A11: the Close Lead's "waiting for your approval" item -----------------
+#
+# ``approvals_item(waiting)`` turns A09's ``waiting_for_me`` summary
+# (``{"count", "oldest"}``) into one My work item for the Close Lead, or None
+# when nothing is waiting. The item carries no period (one item for the whole
+# approvals queue, not one per period), so ``rank`` places it first within
+# "todo" alongside the setup-gap items.
+
+def approvals_item(waiting):
+    if "count" not in waiting:
+        raise ValueError("approvals_item: missing count")
+    count = int(waiting["count"])
+    if not count:
+        return None
+    oldest = waiting.get("oldest")
+    return {
+        "id": "approvals",
+        "kind": "todo",
+        "title": "Approve %d item%s" % (count, "" if count == 1 else "s"),
+        "owner": OWNERS[CLOSE_LEAD],
+        "action": {"screen": "approvals"},
+        "since": oldest[:10] if oldest else None,
+        "since_reason": "oldest waiting",
+    }
+
+
 # --- C07 (konsol#305 W3-1, W3-2): the Entity Accountant's IC fix items -------
 #
 # ``ic_fix_items(fixes_by_key, per_period, allowed)`` turns ic_api's open
