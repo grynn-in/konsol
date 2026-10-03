@@ -60,6 +60,23 @@ test("MyWork groups with sections and routes with itemRoute (B10), not its own c
   assert.match(s, /itemRoute\(/);
 });
 
+// A20: a period-less screen item (E6-P10) routes to the URL's current
+// period, never an invented one. MyWork.vue must hand itemRoute its own
+// `current` (computed from the route, B18) so a period-less item can
+// resolve; a null route (no current) renders the title with no anchor.
+test("A20: MyWork passes current to itemRoute, so a period-less item routes to the URL's period", () => {
+  const s = script(read());
+  assert.match(s, /itemRoute\(\s*item\s*,\s*current(?:\.value)?\s*\)/, "itemRoute is called with (item, current)");
+});
+
+test("A20: a null route (no current) renders the item's title with no anchor, never a thrown error", () => {
+  const s = script(read());
+  assert.match(s, /routeOf\(item\)\.none|r\s*==\s*null|r\s*===\s*null/,
+    "routeOf must recognise itemRoute returning null and not read a property off it");
+  const t = template(read());
+  assert.match(t, /routeOf\(item\)\.none/, "the template has a branch for the no-route case, rendering no link");
+});
+
 test("MyWork renders LoadState (B17) for its data", () => {
   const source = read();
   assert.match(script(source), /import\s+LoadState\s+from\s*["']\.\.\/components\/LoadState\.vue["']/);
