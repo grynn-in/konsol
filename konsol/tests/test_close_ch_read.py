@@ -69,11 +69,45 @@ def test_rows_with_no_params_passes_empty_dict():
     assert calls[0][1] == {}
 
 
-def test_empty_body_is_no_rows():
+def test_empty_body_raises_naming_the_model():
     def fake_execute(sql, params=None):
         return ""
 
-    result = _with_fake_clickhouse(fake_execute, lambda: M.rows("SELECT 1"))
+    caught = None
+    try:
+        _with_fake_clickhouse(
+            fake_execute,
+            lambda: M.rows("SELECT 1 FROM epm_gold.gold_ic_reconciliation WHERE x = 1"))
+    except Exception as e:  # noqa: BLE001 — asserting on the raise itself
+        caught = e
+
+    assert caught is not None
+    assert "epm_gold.gold_ic_reconciliation" in str(caught)
+
+
+def test_json_without_data_key_raises_naming_the_model():
+    def fake_execute(sql, params=None):
+        return '{"meta":[],"rows":0}'
+
+    caught = None
+    try:
+        _with_fake_clickhouse(
+            fake_execute,
+            lambda: M.rows("SELECT 1 FROM epm_gold.gold_ic_unmatched WHERE x = 1"))
+    except Exception as e:  # noqa: BLE001 — asserting on the raise itself
+        caught = e
+
+    assert caught is not None
+    assert "epm_gold.gold_ic_unmatched" in str(caught)
+
+
+def test_real_empty_result_stays_empty_list():
+    def fake_execute(sql, params=None):
+        return '{"meta":[],"data":[],"rows":0}'
+
+    result = _with_fake_clickhouse(
+        fake_execute,
+        lambda: M.rows("SELECT 1 FROM epm_gold.gold_ic_reconciliation WHERE x = 1"))
     assert result == []
 
 
