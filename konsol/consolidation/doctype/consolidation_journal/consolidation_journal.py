@@ -257,6 +257,20 @@ class ConsolidationJournal(Document):
             ],
             limit_page_length=0,
         )
+        # konsolidat#245 option D: the dimensions this site declares on a
+        # journal line, and only those whose field exists — the Custom Field
+        # sync is queued after the commit (konsol#135), so there is a window
+        # where the flag is set and the field is not there yet, and selecting
+        # it would raise and take out the whole resync.
+        declared = frappe.get_all(
+            "Dimension",
+            filters={"in_journal": 1, "status": "Published"},
+            pluck="dimension_name",
+            order_by="dimension_name asc",
+            limit_page_length=0,
+        )
+        dims = journal_model.journal_dimension_columns(
+            declared, frappe.get_meta("Consolidation Journal Line").get_valid_columns())
         lines = []
         if headers:
             lines = frappe.get_all(
@@ -266,7 +280,7 @@ class ConsolidationJournal(Document):
                     "parent": ["in", [h["name"] for h in headers]],
                 },
                 fields=["parent", "idx", "data_area_id", "main_account",
-                        "debit_amount", "credit_amount", "description"],
+                        "debit_amount", "credit_amount", "description", *dims],
                 order_by="parent asc, idx asc",
                 limit_page_length=0,
             )
@@ -276,8 +290,8 @@ class ConsolidationJournal(Document):
         )
         return clickhouse.sync_table(
             cls.CH_STAGING_TABLE,
-            list(cls.CH_STAGING_COLUMNS),
-            journal_model.staging_rows(headers, lines),
+            list(journal_model.staging_columns(dims)),
+            journal_model.staging_rows(headers, lines, declared=dims),
             source_max_modified=source_max_modified,
             force=force,
         )

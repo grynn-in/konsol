@@ -142,6 +142,9 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         # konsol#255: another ClickHouse DDL step of _apply_schema_steps. Only
         # the named functions are compiled in, so its neighbours are stubbed.
         "_sync_tb_dimension_columns": lambda: [],
+        # konsolidat#245 option D: the journal staging table's dim columns,
+        # another ClickHouse DDL step of _apply_schema_steps.
+        "_sync_journal_dimension_columns": lambda: [],
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
     }
@@ -401,11 +404,15 @@ def test_publish_runs_only_schema_ddl_against_clickhouse():
         assert head.startswith(CH_INTROSPECTION) or head.startswith("ALTER TABLE "), (
             f"the publish said something other than schema DDL to ClickHouse: {head}")
 
-    # The one statement an empty declared set implies: the sync has to read
-    # back what is on the raw table before it can decide there is nothing to do.
-    selects = [s for s in ch if " ".join(s.split()).startswith(CH_INTROSPECTION)]
-    assert len(selects) == 1, ch
-    assert "trial_balance_submissions" in selects[0], selects
+    # The statements an empty declared set implies: each sync reads back what is
+    # on its table before it can decide there is nothing to do. Two tables carry
+    # per-site dimension columns now — the raw trial balance and the journal's
+    # staging table (konsolidat#245 option D) — so two read-backs and no more.
+    selects = [" ".join(s.split()) for s in ch
+               if " ".join(s.split()).startswith(CH_INTROSPECTION)]
+    assert len(selects) == 2, ch
+    assert sum("trial_balance_submissions" in s for s in selects) == 1, selects
+    assert sum("consolidation_adjustments" in s for s in selects) == 1, selects
 
     # Nothing is declared in this fixture, so no column may be added OR
     # dropped. A publish that altered the table on an empty declared set

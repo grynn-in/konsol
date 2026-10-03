@@ -315,6 +315,24 @@ STAGING_COLUMNS = (
 )
 
 
+def journal_dimension_columns(declared, present):
+    """The declared journal dimensions that are actually fields, in order. Pure.
+
+    ``declared`` is the Published Dimensions ticked ``in_journal``; ``present``
+    the field names Consolidation Journal Line has. The intersection matters
+    because the Custom Field sync is queued after the commit (konsol#135): a
+    dimension is Published with the flag set before its field exists, and
+    selecting a field that does not exist makes ``frappe.get_all`` raise, which
+    would take out the whole resync rather than one column.
+
+    An orphan field the declared set no longer names is left out: the column
+    keeps its history and stays readable, and nothing new is written to it
+    (konsol#255, Deepak Pai's option A).
+    """
+    have = set(present or ())
+    return tuple(d for d in declared if d in have)
+
+
 def staging_columns(declared=()):
     """``STAGING_COLUMNS`` plus one column per declared journal dimension.
 

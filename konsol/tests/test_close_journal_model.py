@@ -558,3 +558,24 @@ def test_staging_rows_without_declared_dimensions_is_unchanged():
     lines = [{"parent": "CJ-1", "idx": 1, "data_area_id": "E1", "main_account": "4000",
               "debit_amount": 10, "credit_amount": 0, "description": ""}]
     assert len(M.staging_rows(headers, lines)[0]) == len(_STAGING_COLUMNS)
+
+
+def test_journal_dimension_columns_takes_only_the_declared_that_exist():
+    """The Custom Field sync is queued after the commit (konsol#135), so between
+    a Dimension publish and that job running, a dimension is Published with
+    in_journal set and its field does not exist yet. Selecting it would make
+    frappe.get_all raise and break the whole resync, so the window is handled
+    rather than risked: declared AND present, in declared order."""
+    declared = ["dim_cost_center", "dim_segment", "dim_brand_new"]
+    present = {"data_area_id", "main_account", "dim_cost_center", "dim_segment"}
+    assert M.journal_dimension_columns(declared, present) == ("dim_cost_center", "dim_segment")
+
+
+def test_journal_dimension_columns_is_empty_when_nothing_is_declared():
+    assert M.journal_dimension_columns([], {"dim_cost_center"}) == ()
+
+
+def test_journal_dimension_columns_ignores_a_field_that_is_not_declared():
+    """An orphan column from an un-ticked dimension stays on the table and
+    stays readable, but nothing new is written to it (konsol#255 option A)."""
+    assert M.journal_dimension_columns(["dim_a"], {"dim_a", "dim_orphan"}) == ("dim_a",)

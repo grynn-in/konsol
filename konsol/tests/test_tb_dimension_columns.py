@@ -82,6 +82,13 @@ def _load(declared=(), columns=LIVE_COLUMNS):
     def get_all(doctype, **kwargs):
         queries.append((doctype, kwargs))
         if doctype == "Dimension":
+            # This file is about the trial-balance table. konsolidat#245 added a
+            # second per-site column set on the journal's staging table, read
+            # with filters={"in_journal": 1, ...}; answering that with the same
+            # declared list would make every DDL assertion here count two
+            # ALTERs. The journal path has its own coverage.
+            if "in_trial_balance" not in (kwargs.get("filters") or {}):
+                return []
             return [_D(d) for d in declared]
         return []
 
