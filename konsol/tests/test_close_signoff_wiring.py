@@ -123,6 +123,12 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
     # A63: the period's last recorded data change (blank: none recorded).
     gate.data_change = lambda fy, fp: dict(data_change or {
         "data_changed_at": None, "data_changed_by": None, "data_change": None})
+    # konsol#305 C20t: stub, so sign_off_close's coming signoff_gate.intercompany
+    # call (C22) does not raise AttributeError here.
+    gate.intercompany = lambda fy, fp: {
+        "state": "not_configured",
+        "message": "Intercompany not configured — nothing was checked.",
+        "counts": None, "sent_back_open": None}
     return module, frappe, saved_doc, gate, calls
 
 

@@ -74,6 +74,7 @@ def _stub_signoff_gate():
     # A63: no data change recorded, so the run is current.
     gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
                                    "data_change": None}
+    gate.intercompany = lambda fy, fp: dict(IC_LINE)
     return gate
 
 
