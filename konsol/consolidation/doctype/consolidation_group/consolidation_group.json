@@ -83,9 +83,8 @@
    "fieldname": "ic_difference_tolerance",
    "fieldtype": "Float",
    "label": "Intercompany Difference Tolerance",
-   "default": "0",
    "depends_on": "eval:!doc.data_area_id",
-   "description": "A booking difference (both sides in one functional currency) up to this amount, at 100% in reporting currency, is within tolerance; above it, over tolerance. An fx difference (sides in different currencies, or translation alone) is shown but never counts against it."
+   "description": "The largest intercompany difference, at 100% in reporting currency, that is within tolerance; above it a pair is over tolerance. It judges a booking difference (both sides in one functional currency) and a balance-sheet pair across currencies (both sides at the closing rate, konsol#305-W3-5). A P&L pair across currencies is an fx difference and is never judged. No default: 0 is undeclared and shows as a setup gap (konsol#305-W3-6); for an exact match declare a tiny positive amount such as 0.01."
   },
   {
    "fieldname": "tab_policy",
