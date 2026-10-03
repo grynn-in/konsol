@@ -177,7 +177,7 @@ test("checked: chips from counts, group order kept, status texts, sent-back pair
 	assert.deepEqual(view.groups.map((g) => g.consolidationGroup), ["ROOT", "SUB"]);
 
 	const [root, sub] = view.groups;
-	assert.equal(root.pairs[0].statusText, "Sent to both · 08:15");
+	assert.equal(root.pairs[0].statusText, "Sent to both · Sep 29, 08:15");
 	assert.equal(root.pairs[0].statusTone, "block");
 	assert.equal(root.pairs[1].statusText, "Within tolerance");
 	assert.equal(root.pairs[1].statusTone, "ok");
