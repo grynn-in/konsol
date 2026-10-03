@@ -220,6 +220,52 @@ test("tb_cancelled / tb_exception_declared / tb_exception_cancelled labels and t
 	assert.equal(excCancelled.rows[0].tone, "mute");
 });
 
+// --- ic_sent_back (konsol#305 X02, #305-W3-1) ---------------------------
+
+test('ic_sent_back -> "Sent back", warn, and the pair in item and reason in detail', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "ic_sent_back",
+				reference_doctype: null,
+				reference_name: null,
+				reason: 'Our side agrees to INV-5531',
+				detail: {
+					entity_a: "UK01",
+					account_a: "1810",
+					entity_b: "DE01",
+					account_b: "2810",
+					groups: [{ consolidation_group: "GRP", difference: 120.5, tolerance: 50, match_status: "over_tolerance" }],
+				},
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Sent back");
+	assert.equal(v.rows[0].tone, "warn");
+	assert.equal(v.rows[0].item, "Intercompany · UK01 1810 ↔ DE01 2810");
+	assert.equal(v.rows[0].detail, 'Reason: "Our side agrees to INV-5531"');
+});
+
+test('failure path: ic_sent_back item text never contains "null"; a detail missing a key reads "not recorded"', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "ic_sent_back",
+				reference_doctype: null,
+				reference_name: null,
+				reason: "partial detail",
+				detail: { entity_a: "UK01", account_a: "1810", entity_b: "DE01" },
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].item, "Intercompany pair (not recorded)");
+	assert.ok(!v.rows[0].item.includes("null"));
+});
+
 // --- failure paths -----------------------------------------------------
 
 test("failure path: an unknown kind throws, naming it", () => {
