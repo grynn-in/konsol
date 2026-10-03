@@ -1,4 +1,5 @@
-"""Approvals model, pure: konsol/close/approvals_model.py (konsol#305 A08).
+"""Approvals model, pure: konsol/close/approvals_model.py (konsol#305 A08,
+A09).
 
 Loaded by path; the module imports nothing from frappe or konsol. It loads
 ``rates_model.py`` and ``close_policy_model.py`` as siblings (by path, like
@@ -8,6 +9,7 @@ the module under test does), so these tests exercise the real
 copy of either rule.
 """
 import ast
+import datetime
 import importlib.util
 import os
 
@@ -140,11 +142,26 @@ def _preparers_for(docs, preparer_sets_by_doctype=None):
     return refs
 
 
+def _modified_for(docs, overrides=None):
+    """``{(doctype, name): <modified>}`` (A09) — defaults to the doc's own
+    ``created`` unless overridden. With no rejections this never matters
+    (``sent_back`` short-circuits on a missing rejection), but every
+    pending document still needs an entry: a missing ref raises KeyError,
+    the same rule as ``preparers_by_ref``."""
+    overrides = overrides or {}
+    out = {}
+    for doctype, rows in docs.items():
+        for doc in rows:
+            out[(doctype, doc["name"])] = overrides.get(
+                (doctype, doc["name"]), doc["created"])
+    return out
+
+
 def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk():
     docs = _all_seven_docs()
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, None)
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
     assert result["hidden"] == 0
     names = [item["name"] for item in result["items"]]
     assert names == ["OP-1", "HER-1", "BC-1", "CJ-1", "GER-1", "ICB-1", "BD-1"]
@@ -195,7 +212,7 @@ def test_ger_change_reason_is_appended_to_detail():
                                           change_reason="ERP quote moved")]}
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, None)
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
     assert result["items"][0]["detail"] == "FY2026 P07 · ERP quote moved"
 
 
@@ -205,7 +222,7 @@ def test_journal_no_description_line_gives_no_description_title():
                                                 "2026-10-01T09:00:00")]}
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, None)
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
     item = result["items"][0]
     assert item["title"] == "(no description)"
     assert item["detail"] == "Reclassification · FY2026 P07 · Reverses in FY2026 P08"
@@ -216,7 +233,7 @@ def test_r2_analyst_roles_give_not_approver_on_every_item():
     docs = _all_seven_docs()
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Analyst",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, None)
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
     for item in result["items"]:
         assert item["approve"]["mode"] == "not_approver", item
 
@@ -228,7 +245,7 @@ def test_r5_blocked_self_prepared_is_refused():
                                                 "2026-10-01T09:00:00")]}
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, None)
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
     approve = result["items"][0]["approve"]
     assert approve["mode"] == "refused"
     assert "blocks self-approval" in approve["message"]
@@ -243,7 +260,7 @@ def test_allowed_with_reason_self_prepared_is_reason_others_direct():
     ]}
     refs = _preparers_for(docs)
     result = M.queue_items(docs, refs, "alice", ("EPM Admin",), "Allowed with reason",
-                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None, {}, _modified_for(docs))
     by_name = {item["name"]: item for item in result["items"]}
     assert by_name["CJ-4"]["approve"]["mode"] == "reason"
     assert by_name["CJ-5"]["approve"]["mode"] == "direct"
@@ -255,7 +272,7 @@ def test_w2_14_editor_approver_is_self_prepared_under_allowed_with_reason():
                                           "1.10 EUR per USD", "bob", "2026-10-01T10:00:00")]}
     refs = _preparers_for(docs, {("Group Exchange Rate", "GER-3"): frozenset({"bob", "lead"})})
     result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
-                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None, {}, _modified_for(docs))
     assert result["items"][0]["approve"]["mode"] == "reason"
 
 
@@ -276,7 +293,7 @@ def test_scope_hides_entity_items_outside_allowed():
     }
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, {"UK01"})
+                            ENTITY_FIELDS, {"UK01"}, {}, _modified_for(docs))
     assert result["hidden"] == 2
     names = {item["name"] for item in result["items"]}
     assert names == {"GER-4", "CJ-6", "ICB-2"}
@@ -289,7 +306,7 @@ def test_missing_preparers_ref_raises_key_error():
                                                 "2026-10-01T09:00:00")]}
     try:
         M.queue_items(docs, {}, "alice", ("EPM Admin",), "Allowed with reason",
-                      APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+                      APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None, {}, _modified_for(docs))
         raise AssertionError("expected KeyError")
     except KeyError:
         pass
@@ -300,7 +317,7 @@ def test_unknown_doctype_raises_value_error_naming_it():
     docs = {"Budget Cycle": [{"name": "BUD-1", "owner": "alice", "created": "2026-10-01T09:00:00"}]}
     try:
         M.queue_items(docs, {}, "alice", ("EPM Admin",), "Allowed with reason",
-                      APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+                      APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None, {}, _modified_for(docs))
         raise AssertionError("expected ValueError")
     except ValueError as exc:
         assert "Budget Cycle" in str(exc)
@@ -319,7 +336,7 @@ def test_her_and_op_titles_equal_rates_model_pending_items_own():
     expected_titles = {item["name"]: item["title"] for item in expected}
 
     result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Blocked",
-                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None)
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None, {}, _modified_for(docs))
     actual_titles = {item["name"]: item["title"] for item in result["items"]}
     assert actual_titles == expected_titles
 
@@ -335,10 +352,94 @@ def test_journal_item_carries_lines_and_effect_unchanged():
                                                 "2026-10-01T09:00:00", lines=lines, effect=effect)]}
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
-                            ENTITY_FIELDS, None)
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
     item = result["items"][0]
     assert item["lines"] == lines
     assert item["effect"] == effect
+
+
+def test_rejection_after_modified_is_sent_back_and_excluded_from_waiting_for_me():
+    """A09: an item whose newest rejection is later than its modified is
+    sent_back and carries the rejection. Failure path: it is not counted
+    by waiting_for_me."""
+    docs = {"Group Exchange Rate": [_ger("GER-5", "USD", "EUR", "Closing", 2026, 7,
+                                          "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")]}
+    refs = _preparers_for(docs)
+    modified_by_ref = {("Group Exchange Rate", "GER-5"): datetime.datetime(2026, 10, 2, 8, 0, 0)}
+    rejections = {("Group Exchange Rate", "GER-5"): {
+        "reason": "wrong rate", "actor": "lead",
+        "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
+    result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None,
+                            rejections, modified_by_ref)
+    item = result["items"][0]
+    assert item["sent_back"] is True
+    assert item["rejection"]["reason"] == "wrong rate"
+    assert M.waiting_for_me(result["items"]) == {"count": 0, "oldest": None}
+
+
+def test_modified_after_rejection_is_pending_again_and_counted():
+    docs = {"Group Exchange Rate": [_ger("GER-6", "USD", "EUR", "Closing", 2026, 7,
+                                          "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")]}
+    refs = _preparers_for(docs)
+    modified_by_ref = {("Group Exchange Rate", "GER-6"): datetime.datetime(2026, 10, 2, 10, 0, 0)}
+    rejections = {("Group Exchange Rate", "GER-6"): {
+        "reason": "wrong rate", "actor": "lead",
+        "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
+    result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None,
+                            rejections, modified_by_ref)
+    item = result["items"][0]
+    assert item["sent_back"] is False
+    assert item["rejection"] is None
+    assert M.waiting_for_me(result["items"]) == {"count": 1, "oldest": item["created"]}
+
+
+def test_no_rejection_item_is_sent_back_false_rejection_none():
+    docs = {"Group Exchange Rate": [_ger("GER-7", "USD", "EUR", "Closing", 2026, 7,
+                                          "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")]}
+    refs = _preparers_for(docs)
+    result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
+                            APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None,
+                            {}, _modified_for(docs))
+    item = result["items"][0]
+    assert item["sent_back"] is False
+    assert item["rejection"] is None
+
+
+def test_refused_and_not_approver_items_never_counted_by_waiting_for_me():
+    """Failure path, E6-P11: a Blocked self-prepared item (refused) and an
+    EPM Analyst's items (not_approver) are never counted."""
+    docs = {"Consolidation Journal": [_journal("CJ-9", 2026, 7, "topside", "Accrue",
+                                                "This period only, no reversal", "alice",
+                                                "2026-10-01T09:00:00")]}
+    refused = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
+                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS,
+                             None, {}, _modified_for(docs))
+    assert refused["items"][0]["approve"]["mode"] == "refused"
+    assert M.waiting_for_me(refused["items"]) == {"count": 0, "oldest": None}
+
+    not_approver = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Analyst",),
+                                  "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                                  ENTITY_FIELDS, None, {}, _modified_for(docs))
+    assert not_approver["items"][0]["approve"]["mode"] == "not_approver"
+    assert M.waiting_for_me(not_approver["items"]) == {"count": 0, "oldest": None}
+
+
+def test_waiting_for_me_oldest_is_earliest_created_among_counted():
+    docs = {
+        "Group Exchange Rate": [_ger("GER-8", "USD", "EUR", "Closing", 2026, 7,
+                                      "1.10 EUR per USD", "bob", "2026-10-01T10:00:00")],
+        "Consolidation Journal": [_journal("CJ-10", 2026, 7, "topside", "Accrue",
+                                            "This period only, no reversal", "bob",
+                                            "2026-10-01T06:00:00")],
+    }
+    result = M.queue_items(docs, _preparers_for(docs), "lead", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
+    waiting = M.waiting_for_me(result["items"])
+    assert waiting["count"] == 2
+    assert waiting["oldest"] == "2026-10-01T06:00:00"
 
 
 def test_module_imports_no_frappe():
