@@ -262,6 +262,31 @@ def _close_event(site):
     return ce
 
 
+def _frappe_workflow(site, frappe):
+    """A07: a stub ``frappe.model.workflow`` whose ``apply_workflow`` records
+    ``(doc, action)`` in ``site.apply_calls`` and moves the doc to
+    ``site.apply_next_state``; ``site.apply_raises`` makes it raise instead
+    (Frappe's own refusal), ``site.apply_returns_none`` makes it return None."""
+    wf = types.ModuleType("frappe.model.workflow")
+
+    def apply_workflow(doc, action):
+        calls = getattr(site, "apply_calls", None)
+        if calls is None:
+            raise AssertionError("apply_workflow called on a site that does not expect it")
+        calls.append((doc, action))
+        if getattr(site, "apply_raises", None):
+            raise site.apply_raises
+        doc.status = site.apply_next_state
+        if getattr(site, "existing", None) is not None and doc.name in site.existing:
+            site.existing[doc.name]["status"] = site.apply_next_state
+        if getattr(site, "apply_returns_none", False):
+            return None
+        return doc
+
+    wf.apply_workflow = apply_workflow
+    return wf
+
+
 def _load_path(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -280,11 +305,21 @@ def _invoke(site, run, require_json_safe=True):
     close_event = _close_event(site)
     konsol.close = close
     konsol.fiscal_calendar = fiscal_calendar
-    names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
+    # A07: ``send_for_approval`` imports ``frappe.model.workflow.apply_workflow``
+    # inside the function; the stub records each call.
+    frappe_model = types.ModuleType("frappe.model")
+    frappe_model.__path__ = []
+    frappe_workflow = _frappe_workflow(site, frappe)
+    frappe_model.workflow = frappe_workflow
+    frappe.model = frappe_model
+    names = ["frappe", "frappe.model", "frappe.model.workflow", "konsol", "konsol.close",
+             "konsol.fiscal_calendar",
              "konsol.close.close_event", "konsol.close.journal_model", "konsol.close.timefmt",
              "close_journal_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
-    sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
+    sys.modules.update({"frappe": frappe, "frappe.model": frappe_model,
+                        "frappe.model.workflow": frappe_workflow,
+                        "konsol": konsol, "konsol.close": close,
                         "konsol.fiscal_calendar": fiscal_calendar,
                         "konsol.close.close_event": close_event})
     try:
@@ -849,3 +884,149 @@ def test_save_journal_never_sets_ignore_flags_or_writes_around_the_document():
     for banned in ("ignore_permissions", "ignore_validate", "ignore_mandatory", "db_set",
                    "set_value", "db_insert"):
         assert banned not in source, banned
+
+
+# =====================================================================================
+# A07 — send_for_approval (POST): Draft -> Pending Approval through the workflow
+# =====================================================================================
+
+NO_WORKFLOW_SENTENCE = ("The journal workflow is not installed on this site (migrate installs "
+                        "it); the Close Lead approves a draft directly from Approvals.")
+
+
+def _send_site(roles=("EPM Analyst",)):
+    site = _post_site(roles=roles)
+    site.apply_calls = []
+    site.apply_raises = None
+    site.apply_next_state = "Pending Approval"
+    site.apply_returns_none = False
+    return site
+
+
+def _send(site, name="CJ-00001"):
+    return _invoke(site, lambda api: api.send_for_approval(name))
+
+
+def _send_raises(site, name="CJ-00001"):
+    with pytest.raises(Exception) as info:
+        _send(site, name)
+    return info.value
+
+
+def test_send_for_approval_applies_the_send_action_once_and_returns_the_new_status():
+    site = _send_site()
+    result = _send(site)
+    assert [(doc.name, action) for doc, action in site.apply_calls] == [
+        ("CJ-00001", "Send for Approval")]
+    assert result == {"name": "CJ-00001", "status": "Pending Approval"}
+    assert site.only_for_calls == [DRAFT_ROLES]
+    assert site.insert_calls == [] and site.save_calls == []
+
+
+def test_send_for_approval_rereads_the_journal_when_apply_workflow_returns_nothing():
+    site = _send_site()
+    site.apply_returns_none = True
+    result = _send(site)
+    assert len(site.apply_calls) == 1
+    assert result == {"name": "CJ-00001", "status": "Pending Approval"}
+    assert len(site.get_doc_calls) == 2, site.get_doc_calls
+
+
+def test_failure_path_no_workflow_refuses_naming_the_fix_without_apply_workflow():
+    site = _send_site()
+    site.workflow = None
+    err = _send_raises(site)
+    assert str(err) == NO_WORKFLOW_SENTENCE, str(err)
+    assert type(err).__name__ == "ValidationError", err
+    assert site.apply_calls == [] and site.get_doc_calls == []
+
+
+def test_failure_path_an_approved_or_already_sent_journal_is_refused_without_apply_workflow():
+    cases = [({"docstatus": 1, "status": "Approved"}, "approved"),
+             ({"docstatus": 2, "status": "Reversed"}, "Reversed"),
+             ({"docstatus": 0, "status": "Pending Approval"}, "already sent")]
+    for change, phrase in cases:
+        site = _send_site()
+        site.existing["CJ-00001"].update(change)
+        err = _send_raises(site)
+        assert type(err).__name__ == "ValidationError", (change, err)
+        assert phrase in str(err), (change, str(err))
+        assert site.apply_calls == [], change
+
+
+def test_failure_path_a_journal_in_a_closed_period_is_refused_without_apply_workflow():
+    site = _send_site()
+    site.existing["CJ-00001"]["fiscal_period"] = 6
+    err = _send_raises(site)
+    assert "Closed" in str(err) and "open period" in str(err), str(err)
+    assert site.apply_calls == []
+
+
+def test_failure_path_a_journal_in_an_undeclared_period_is_refused():
+    site = _send_site()
+    site.existing["CJ-00001"]["fiscal_year"] = 2031
+    err = _send_raises(site)
+    assert "not a declared period" in str(err), str(err)
+    assert site.apply_calls == []
+
+
+def test_failure_path_epm_user_and_entity_accountant_are_refused_by_only_for():
+    for role in ("EPM User", "Entity Accountant"):
+        site = _send_site(roles=(role,))
+        err = _send_raises(site)
+        assert type(err).__name__ == "PermissionError", (role, err)
+        assert site.only_for_calls == [DRAFT_ROLES], role
+        assert site.reads == [] and site.get_doc_calls == [] and site.apply_calls == [], role
+
+
+def test_failure_path_an_epm_admin_only_user_is_refused_by_only_for_before_apply_workflow():
+    """amended 3 Oct (E6-P1 option (c)): the Close Lead approves, never sends."""
+    site = _send_site(roles=("EPM Admin",))
+    # Even with a transition that would admit EPM Admin, only_for refuses first.
+    site.wf_transitions = [dict(t, allowed="EPM Admin") for t in site.wf_transitions]
+    err = _send_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.only_for_calls == [DRAFT_ROLES]
+    assert site.apply_calls == [] and site.get_doc_calls == [] and site.reads == []
+
+
+def test_frappes_own_workflow_refusal_propagates_uncaught():
+    site = _send_site(roles=("System Manager",))
+    site.apply_raises = RuntimeError("Not a valid Workflow Action")
+    with pytest.raises(RuntimeError) as info:
+        _send(site)
+    assert "Not a valid Workflow Action" in str(info.value)
+    assert len(site.apply_calls) == 1
+
+
+def test_send_for_approval_signature_is_exactly_name_with_no_kwargs():
+    site = _send_site()
+    params = _invoke(site, lambda api: list(
+        inspect.signature(api.send_for_approval).parameters.values()), require_json_safe=False)
+    assert tuple(p.name for p in params) == ("name",)
+    kinds = [p.kind for p in params]
+    assert inspect.Parameter.VAR_KEYWORD not in kinds
+    assert inspect.Parameter.VAR_POSITIONAL not in kinds
+
+
+def test_forged_keyword_arguments_never_reach_send_for_approval():
+    for key, value in {"status": "Approved", "docstatus": 1, "workflow_state": "Approved",
+                       "action": "Approve", "owner": "Administrator"}.items():
+        site = _send_site()
+        with pytest.raises(TypeError):
+            _invoke(site, lambda api: api.send_for_approval("CJ-00001", **{key: value}))
+        assert site.apply_calls == [] and site.get_doc_calls == [], key
+
+
+def test_send_for_approval_only_for_literal_is_draft_roles():
+    site = _send_site()
+    draft_roles = _invoke(site, lambda api: api.DRAFT_ROLES)
+    assert tuple(_only_for_literal("send_for_approval")) == tuple(draft_roles) == DRAFT_ROLES
+
+
+def test_send_for_approval_is_a_post():
+    tree = ast.parse(_load_api_source())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "send_for_approval")
+    decorators = [ast.unparse(d) for d in fn.decorator_list]
+    assert decorators == ["frappe.whitelist(methods=['POST'])"], decorators
