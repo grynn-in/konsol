@@ -506,6 +506,18 @@ def test_the_checker_catches_a_second_writer():
     source = 'def f():\n    frappe.get_doc({"doctype": "Close Event"}).insert()\n'
     bad = writer_problems(source, "patches/backfill_close_events.py")
     assert len(bad) == 1 and "inserts a Close Event" in bad[0], bad
+
+
+def test_ic_api_may_read_but_not_write_close_events():
+    """C03t (E5-P16): close/ic_api.py reads ic_sent_back events; it is an
+    allowed reader, but the write checks still apply to it."""
+    bad = writer_problems('rows = frappe.get_all("Close Event")\n', "close/ic_api.py")
+    assert bad == [], bad
+    # Failure path: the FORBIDDEN write pattern still catches it.
+    bad = writer_problems(
+        'frappe.db.set_value("Close Event", n, "reason", "x")\n', "close/ic_api.py"
+    )
+    assert bad, bad
     assert writer_problems(source, WRITER) == []
     for pattern in FORBIDDEN:
         assert writer_problems(pattern + "\n", "fiscal_calendar.py"), pattern
