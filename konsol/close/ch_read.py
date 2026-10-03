@@ -7,7 +7,11 @@ app's own reads, returning dicts (``FORMAT JSON``) rather than
 ``_ch_rows``'s lists (``FORMAT JSONCompact``).
 
 Nothing here catches a failure: ``rows`` propagates whatever ``execute``
-raises, unchanged, so a caller decides what a failure shows.
+raises, unchanged, so a caller decides what a failure shows. An empty body
+or a reply with no ``"data"`` key is also treated as a failure (S4): it
+means ClickHouse did not answer the query, not that the query found
+nothing, so ``rows`` raises instead of silently reading it as 0 rows. A
+real empty result (``{"data": []}``) still comes back as ``[]``.
 """
 import json
 import re
@@ -18,6 +22,13 @@ import re
 #: matches 600-609).
 NOT_BUILT_ERRORS = frozenset({"UNKNOWN_TABLE", "UNKNOWN_DATABASE"})
 _ERROR_NAME = re.compile(r"\(([A-Z][A-Z0-9_]+)\)")
+#: The queried table, for the error sentence when the reply itself is bad.
+_FROM_TABLE = re.compile(r"\bFROM\s+(\S+)", re.IGNORECASE)
+
+
+def _queried_model(sql):
+    match = _FROM_TABLE.search(sql)
+    return match.group(1) if match else "the query"
 
 
 def rows(sql, params=None):
@@ -25,12 +36,22 @@ def rows(sql, params=None):
 
     Values are bound as HTTP query parameters (``{name:Type}`` in the SQL,
     ``param_<name>`` on the wire), never interpolated. Nothing is caught.
+
+    An empty body, or a parsed reply with no ``"data"`` key, raises
+    ``ValueError`` naming the queried model (S4): neither means "0 rows".
     """
     from konsol.clickhouse import execute
 
     raw = execute(sql + " FORMAT JSON",
                   {f"param_{k}": v for k, v in (params or {}).items()})
-    return json.loads(raw).get("data", []) if raw else []
+    if not raw:
+        raise ValueError(
+            "ClickHouse returned an empty reply for %s." % _queried_model(sql))
+    parsed = json.loads(raw)
+    if "data" not in parsed:
+        raise ValueError(
+            "ClickHouse's reply for %s has no \"data\"." % _queried_model(sql))
+    return parsed["data"]
 
 
 def error_names(exc):
