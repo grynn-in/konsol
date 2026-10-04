@@ -203,13 +203,17 @@ _MAIN_ACCOUNTS = [
     {"name": "3", "is_group": 1, "status": "Published",
      "statement_section": "Balance Sheet", "account_name": "EQUITY"},
     {"name": "3100", "is_group": 0, "status": "Published",
-     "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+     "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+     "parent_account": "3"},
     {"name": "3300", "is_group": 0, "status": "Published",
-     "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
+     "statement_section": "Balance Sheet", "account_name": "AOCI — CTA",
+     "parent_account": "3"},
     {"name": "3200", "is_group": 0, "status": "Draft",
-     "statement_section": "Balance Sheet", "account_name": "Draft account"},
+     "statement_section": "Balance Sheet", "account_name": "Draft account",
+     "parent_account": "3"},
     {"name": "4100", "is_group": 0, "status": "Published",
-     "statement_section": "Profit and Loss", "account_name": "Revenue"},
+     "statement_section": "Profit and Loss", "account_name": "Revenue",
+     "parent_account": "4"},
 ]
 
 
@@ -672,4 +676,5 @@ def test_valid_cta_and_result_accounts_save():
     doctype, filters, fields = ga_log[0]
     assert doctype == "Main Account"
     assert sorted(filters["name"][1]) == ["3100", "3300"]
-    assert set(fields) == {"name", "is_group", "status", "statement_section", "account_name"}
+    assert set(fields) == {"name", "is_group", "status", "statement_section", "account_name",
+                            "parent_account"}

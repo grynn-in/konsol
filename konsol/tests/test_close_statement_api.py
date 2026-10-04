@@ -183,9 +183,9 @@ def _accounts():
 
 _DECLARED_ROWS = {
     "3300": {"is_group": 0, "status": "Published", "statement_section": "Balance Sheet",
-              "account_name": "AOCI - CTA"},
+              "account_name": "AOCI - CTA", "parent_account": "3"},
     "3100": {"is_group": 0, "status": "Published", "statement_section": "Balance Sheet",
-              "account_name": "Retained earnings"},
+              "account_name": "Retained earnings", "parent_account": "3"},
 }
 
 
@@ -709,7 +709,8 @@ def _drill_site():
     site.cta_account = "1200"
     site.declared_rows["1200"] = {"is_group": 0, "status": "Published",
                                    "statement_section": "Balance Sheet",
-                                   "account_name": "CTA reserve"}
+                                   "account_name": "CTA reserve",
+                                   "parent_account": "1"}
     site.tb_rows = [
         _tb_row("1110", 590.0),
         _tb_row("CTA", -8.0, adjustment_type="cta"),

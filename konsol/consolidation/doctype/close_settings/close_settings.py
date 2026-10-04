@@ -151,7 +151,8 @@ class CloseSettings(Document):
             for r in frappe.get_all(
                 "Main Account",
                 filters={"name": ["in", codes]},
-                fields=["name", "is_group", "status", "statement_section", "account_name"],
+                fields=["name", "is_group", "status", "statement_section", "account_name",
+                        "parent_account"],
             )
         }
         problems = close_policy_model.statement_account_problems(cta, result, rows)

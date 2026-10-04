@@ -209,7 +209,7 @@ def statement_accounts():
         for r in frappe.get_all(
             "Main Account",
             fields=["name", "is_group", "status", "statement_section", "account_name",
-                    "normal_balance"],
+                    "normal_balance", "parent_account"],
             limit_page_length=0,
         )
     }

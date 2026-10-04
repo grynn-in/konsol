@@ -109,12 +109,15 @@ class _Site:
             "Connector": [],
             "Connector Legal Entity": [],
             #: N43t: the two statement accounts named by `self.settings` above,
-            #: both Published BS leaves (N41's rule). Until N45 nothing reads them.
+            #: both Published BS leaves under a heading (N41's rule, S3).
+            #: Until N45 nothing reads them.
             "Main Account": [
                 {"name": "3300", "is_group": 0, "status": "Published",
-                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
+                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA",
+                 "parent_account": "3"},
                 {"name": "3100", "is_group": 0, "status": "Published",
-                 "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+                 "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+                 "parent_account": "3"},
             ],
         }
         self.whitelisted = set()
@@ -1260,7 +1263,8 @@ def test_an_invalid_statement_account_is_a_gap_too():
         {"name": "3300", "is_group": 1, "status": "Published",
          "statement_section": "Balance Sheet", "account_name": "EQUITY"},
         {"name": "3100", "is_group": 0, "status": "Published",
-         "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+         "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+         "parent_account": "3300"},
     ]
     problems = _call(site, "sign_off_problems", 2025, 9)
     assert [g["code"] for g in problems["config_gaps"]] == ["statement_accounts_undeclared"], \

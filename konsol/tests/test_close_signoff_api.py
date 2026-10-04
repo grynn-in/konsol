@@ -132,9 +132,11 @@ class _Site:
             "TB Exception": [_exc("ZZE"), _exc("ZZD", fp=8, reason="Merged into P09")],
             "Main Account": [
                 {"name": "3300", "is_group": 0, "status": "Published",
-                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
+                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA",
+                 "parent_account": "3"},
                 {"name": "3100", "is_group": 0, "status": "Published",
-                 "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+                 "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+                 "parent_account": "3"},
                 #: M45t: two Published headings, so M46's import and reads
                 #: resolve (konsol.close.commentary_model is loaded below).
                 {"name": "4", "is_group": 1, "status": "Published",

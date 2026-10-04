@@ -270,9 +270,17 @@ _RESULT_UNDECLARED_MESSAGE = (
 
 def _statement_account_invalid_reason(row):
     """None when ``row`` (a Main Account's ``{"is_group", "status",
-    "statement_section", "account_name"}``) is usable as a statement account:
-    Published, a leaf (not a heading) and on the Balance Sheet. Otherwise the
-    short reason it is not."""
+    "statement_section", "account_name", "parent_account"}``) is usable as a
+    statement account: Published, a leaf (not a heading), on the Balance
+    Sheet, and sitting under a heading. Otherwise the short reason it is
+    not.
+
+    S3 (#305-W4-4): a leaf with a blank ``parent_account`` resolves to no BS
+    heading in the statement (``statement_model.py``), so a CTA or result
+    account placed there would balance the residual to zero while the
+    displayed BS lines are out by that amount — a silent imbalance. Every
+    caller's Main Account read must include ``parent_account`` or this check
+    always fires (a missing key reads the same as a blank one)."""
     if row is None:
         return "not a declared account"
     if row.get("is_group"):
@@ -281,6 +289,8 @@ def _statement_account_invalid_reason(row):
         return "not Published"
     if row.get("statement_section") != "Balance Sheet":
         return "a Profit and Loss account"
+    if not row.get("parent_account"):
+        return "not under a balance-sheet heading"
     return None
 
 
@@ -308,8 +318,11 @@ def statement_accounts(cta_account, result_account, rows):
     and it is reported, never guessed from ``rows``.
 
     ``rows`` is ``{code: {"is_group", "status", "statement_section",
-    "account_name"}}`` for the declared account codes (the caller reads the
-    Main Account rows it names).
+    "account_name", "parent_account"}}`` for the declared account codes (the
+    caller reads the Main Account rows it names). Every caller must read
+    ``parent_account``: a row missing that field reads as blank, so a
+    Published BS leaf with no heading (S3) is refused the same as one that
+    truly lacks a parent.
 
     Returns ``{"cta_account": code|None, "result_account": code|None, "gap":
     None | {"code", "message", "problems": [...]}}``. An account counts as
