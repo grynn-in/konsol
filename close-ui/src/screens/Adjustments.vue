@@ -26,6 +26,19 @@
  *   for approval" only when `canSend` and the draft is saved.
  * - E6-P8: the effect panel is the saved journal's `effect`; a dirty,
  *   unsaved edit shows `effectView(null).note` instead.
+ * - W43 (#305-W3-4, W4-E18): for a Draft/Pending journal (`docstatus === 0`,
+ *   and not dirty), the effect panel instead shows Before/Change/After per
+ *   heading from `beforeAfter(journal.effect, view)` (numbers.js, W42/N54):
+ *   `before` is the statement's current figure, `change` reuses the exact
+ *   display-sign multiplier the statement already computed for that
+ *   heading, `after` is their sum — all in the statement's own display
+ *   sign, never re-derived or hardcoded here. An approved or reversed
+ *   journal (`docstatus !== 0`) is already in the last build, so showing
+ *   before/after would double count: the panel shows "Included in the
+ *   statement" instead. The statement for the selected journal's period
+ *   and group is read once per selection (its own seq guard, separate from
+ *   the journals list's), and any of its non-ok states (or a GET failure)
+ *   shows the message, never blank or zero columns.
  * - Amended 3 Oct: while `draftTotals(draft.lines).invalid` is non-empty,
  *   "Save draft" is disabled and the screen names the invalid line numbers;
  *   no request is sent. A line whose amount does not parse never reaches
@@ -64,6 +77,7 @@ import {
 	canSendDraft,
 	NO_REVERSAL_NOTE,
 } from "../adjustments.js";
+import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
@@ -71,6 +85,7 @@ import { CONTEXT_RELOAD } from "../contextRefresh.js";
 const GET_JOURNALS = "konsol.close.journal_api.get_journals";
 const SAVE_JOURNAL = "konsol.close.journal_api.save_journal";
 const SEND = "konsol.close.journal_api.send_for_approval";
+const GET_STATEMENT = "konsol.close.statement_api.get_statement";
 
 //: the journal's Adjustment Type Select (journal_api.ADJUSTMENT_TYPES).
 const ADJUSTMENT_TYPE_OPTIONS = [
@@ -282,6 +297,112 @@ const selectedEffect = computed(() => {
 	return effectView(editorDirty.value ? null : selectedJournal.value.effect);
 });
 
+//: W43: the statement for the selected Draft/Pending journal's period and
+//: group (#305-W3-4, W4-E18) — a second, independent load from the
+//: journals list's own `journals`/`seq`, with its own stale-response guard
+//: (`statementSeq`). Only fetched while the side panel holds a journal
+//: with `docstatus === 0`: an approved/reversed journal shows "Included in
+//: the statement" instead and needs no GET at all.
+const statement = reactive({ status: "idle", payload: null, error: null, now: null });
+let statementSeq = 0;
+
+//: `null` while no fetch is needed (no selection, an approved/reversed
+//: journal, or no period/group to ask for) — the watch below treats `null`
+//: as "nothing to load" and resets `statement`.
+const statementRequestKey = computed(() => {
+	const j = selectedJournal.value;
+	if (!j || j.docstatus !== 0 || !period.value || !j.consolidation_group) return null;
+	return `${period.value.year}/${period.value.period}/${j.consolidation_group}`;
+});
+
+async function loadStatement(fiscalYear, fiscalPeriod, consolidationGroup) {
+	const mine = ++statementSeq;
+	statement.status = "loading";
+	try {
+		const payload = await get(GET_STATEMENT, {
+			fiscal_year: fiscalYear,
+			fiscal_period: fiscalPeriod,
+			consolidation_group: consolidationGroup,
+		});
+		if (mine !== statementSeq) return;
+		statement.payload = payload;
+		statement.error = null;
+		statement.now = new Date();
+		statement.status = "ready";
+	} catch (e) {
+		if (mine !== statementSeq) return;
+		statement.error = e.message;
+		statement.status = "error";
+	}
+}
+
+watch(
+	statementRequestKey,
+	(key) => {
+		statement.payload = null;
+		statement.error = null;
+		statement.now = null;
+		if (!key) {
+			statement.status = "idle";
+			statementSeq++; // drop any response still in flight
+			return;
+		}
+		statement.status = "loading";
+		loadStatement(period.value.year, period.value.period, selectedJournal.value.consolidation_group);
+	},
+	{ immediate: true },
+);
+
+//: statementView throws on anything it does not recognise (mirrors
+//: Rates.vue's/Intercompany.vue's/Numbers.vue's own `view`, never
+//: swallowed): recorded here and shown as the panel's message, same as a
+//: GET failure.
+const statementViewError = ref(null);
+const statementViewResult = computed(() => {
+	if (statement.status !== "ready" || !statement.payload) return null;
+	if (!timeZone) {
+		statementViewError.value = NO_ZONE;
+		return null;
+	}
+	try {
+		statementViewError.value = null;
+		return statementView(statement.payload, statement.now || new Date(), timeZone);
+	} catch (e) {
+		statementViewError.value = e.message;
+		return null;
+	}
+});
+
+//: The Before/After panel's one view: `{kind: "loading"}` while the GET is
+//: in flight, `{kind: "message", text}` for a GET failure, a thrown
+//: statementView, or the statement's own non-ok business state (never a
+//: guessed breakdown next to an error), or `{kind: "rows", rows}` once
+//: `beforeAfter` (numbers.js, W42/N54) has something real to show. `null`
+//: when Before/After does not apply here at all (no selection, or an
+//: approved/reversed journal — the template shows "Included in the
+//: statement" in that case, never this computed).
+const beforeAfterPanel = computed(() => {
+	const j = selectedJournal.value;
+	if (!j || j.docstatus !== 0) return null;
+	if (statement.status === "loading" || statement.status === "idle") {
+		return { kind: "loading" };
+	}
+	if (statement.status === "error") {
+		return { kind: "message", text: statement.error };
+	}
+	if (statementViewError.value) {
+		return { kind: "message", text: statementViewError.value };
+	}
+	const view = statementViewResult.value;
+	if (!view) {
+		return { kind: "loading" };
+	}
+	if (view.state) {
+		return { kind: "message", text: view.state.message };
+	}
+	return { kind: "rows", rows: beforeAfter(j.effect, view) };
+});
+
 //: U4: `can_draft`/`can_send` ignore period status; the screen gates New,
 //: Save and Send on `canEditPeriod` too (adjustments.js).
 const newAllowed = computed(() => canOpenNew(view.value));
@@ -341,6 +462,7 @@ watch(
 
 onBeforeUnmount(() => {
 	seq++;
+	statementSeq++;
 });
 
 function lines(text) {
@@ -573,13 +695,45 @@ function lines(text) {
 				<h3 class="mb-2 text-sm font-semibold text-ink-gray-9">Effect</h3>
 				<p v-if="selectedEffect.note" class="text-sm text-ink-gray-6">{{ selectedEffect.note }}</p>
 				<template v-else>
-					<div v-if="!selectedEffect.headings.length" class="text-sm text-ink-gray-6">No effect.</div>
-					<ul v-else class="space-y-1 text-sm">
-						<li v-for="(heading, i) in selectedEffect.headings" :key="i" class="flex items-center justify-between gap-2">
-							<span class="text-ink-gray-7">{{ heading.label }}</span>
-							<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
-						</li>
-					</ul>
+					<!-- W43: a Draft/Pending journal (not yet approved) shows
+					     Before/Change/After per heading, read off the real
+					     statement through beforeAfter (numbers.js, W42/N54); an
+					     approved or reversed journal is already in the last
+					     build, so before/after would double count (W4-E18). -->
+					<template v-if="selectedJournal.docstatus === 0">
+						<p v-if="beforeAfterPanel && beforeAfterPanel.kind === 'loading'" class="text-sm text-ink-gray-6">
+							Loading the statement…
+						</p>
+						<p v-else-if="beforeAfterPanel && beforeAfterPanel.kind === 'message'" class="text-sm text-ink-gray-6">
+							{{ beforeAfterPanel.text }}
+						</p>
+						<template v-else-if="beforeAfterPanel">
+							<div v-if="!beforeAfterPanel.rows.length" class="text-sm text-ink-gray-6">No effect.</div>
+							<table v-else class="w-full text-left text-sm">
+								<thead class="text-xs uppercase tracking-wide text-ink-gray-6">
+									<tr>
+										<th class="py-1 font-medium">Heading</th>
+										<th class="py-1 font-medium text-right">Before</th>
+										<th class="py-1 font-medium text-right">Change</th>
+										<th class="py-1 font-medium text-right">After</th>
+									</tr>
+								</thead>
+								<tbody>
+									<tr
+										v-for="(row, i) in beforeAfterPanel.rows"
+										:key="i"
+										class="border-t border-outline-gray-2"
+									>
+										<td class="py-1 text-ink-gray-7">{{ row.headingName }}</td>
+										<td class="py-1 text-right font-mono text-ink-gray-8">{{ row.before }}</td>
+										<td class="py-1 text-right font-mono text-ink-gray-8">{{ row.change ?? "—" }}</td>
+										<td class="py-1 text-right font-mono text-ink-gray-8">{{ row.after ?? "—" }}</td>
+									</tr>
+								</tbody>
+							</table>
+						</template>
+					</template>
+					<p v-else class="text-sm text-ink-gray-6">Included in the statement.</p>
 					<p v-if="selectedEffect.noHeading" class="mt-1 text-xs text-ink-gray-5">{{ selectedEffect.noHeading }} account(s) outside any heading.</p>
 				</template>
 			</section>
