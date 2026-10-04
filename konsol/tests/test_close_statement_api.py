@@ -594,16 +594,32 @@ def test_null_amount_is_an_error_state_naming_the_account():
 
 
 def test_bs_heading_with_no_normal_balance_is_a_visible_setup_gap_never_a_500():
-    """Requirement (1): a BS heading with a blank ``normal_balance`` never
-    crashes the endpoint and never silently flips a side — it comes back
-    as a named, visible error state."""
+    """S5: a BS heading with a blank ``normal_balance`` never crashes the
+    endpoint and never silently flips a side — it comes back as a named,
+    visible SETUP gap, never the same state as a warehouse failure (a
+    Close Lead's job, not an outage)."""
     site = _Site()
     site.accounts["2"]["normal_balance"] = ""
     result = _call(site)
-    assert result["state"] == "error"
+    assert result["state"] == "setup_gap"
     assert "statement_heading_side_undeclared" in result["message"]
     assert "2" in result["message"]
     assert result["statement"] is None
+
+
+# --- golden payload (S5, W4-E19): the real producer's setup_gap output ------
+
+FIXTURE_SETUP_GAP_PY = os.path.join(
+    APP_DIR, "tests", "fixtures", "close_statement_payload_setup_gap.json")
+
+
+def test_golden_setup_gap_payload_matches_the_committed_fixture():
+    site = _Site()
+    site.accounts["2"]["normal_balance"] = ""
+    result = json.loads(json.dumps(_call(site)))  # the wire shape: no tuples
+    with open(FIXTURE_SETUP_GAP_PY) as fh:
+        expected = json.load(fh)
+    assert result == expected
 
 
 # --- undeclared statement accounts: never silently balanced ----------------
