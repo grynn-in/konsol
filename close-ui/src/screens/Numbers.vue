@@ -50,7 +50,7 @@ import LoadState from "../components/LoadState.vue";
 import NumbersDrill from "../components/NumbersDrill.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
-import { statementView, tabRows, isDrillable } from "../numbers.js";
+import { statementView, tabRows, isDrillable, canComment } from "../numbers.js";
 import { userTimeZone } from "../timefmt.js";
 
 const GET_STATEMENT = "konsol.close.statement_api.get_statement";
@@ -224,6 +224,21 @@ function rowRowClass(row) {
 function openDrill(row) {
 	selectedHeading.value = row.heading;
 }
+
+//: U46: the drill panel's canComment/commentary props are fed from this
+//: screen's own real get_statement payload (U42's canComment; the raw
+//: `commentary` map), never invented inside the panel — get_drill carries
+//: no can_comment of its own (N52).
+const canCommentValue = computed(() => (numbers.payload ? canComment(numbers.payload) : false));
+const selectedCommentary = computed(() =>
+	numbers.payload && selectedHeading.value ? numbers.payload.commentary[selectedHeading.value] || null : null,
+);
+
+//: U46: a successful commentary save reloads the statement once, quietly
+//: (no loading flash), so the table's own row.commentary picks it up too.
+function onCommentarySaved() {
+	load({ quiet: true });
+}
 </script>
 
 <template>
@@ -333,7 +348,10 @@ function openDrill(row) {
 			:heading="selectedHeading"
 			:period="numbers.payload.period"
 			:consolidation-group="numbers.payload.consolidation_group"
+			:can-comment="canCommentValue"
+			:commentary="selectedCommentary"
 			@close="selectedHeading = null"
+			@saved="onCommentarySaved"
 		/>
 	</div>
 </template>

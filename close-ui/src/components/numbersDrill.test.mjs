@@ -120,14 +120,16 @@ test("Calls the server through api.js; no fetch, no browser storage of any kind"
 	assert.doesNotMatch(source, /\bfetch\(/, "all server calls go through api.js");
 });
 
-test("Names konsol.close.statement_api.get_drill exactly once; no post( — the panel only reads", () => {
+test("Names konsol.close.statement_api.get_drill exactly once; get_drill itself is never posted to", () => {
+	// U45's drill fetch stays read-only; U46 adds the one, separate
+	// commentary write (its own test below names SAVE_COMMENTARY exactly).
 	const source = readDrillVue();
 	const names = source.match(/konsol\.close\.statement_api\.get_drill/g) || [];
 	assert.equal(names.length, 1, "one endpoint constant for get_drill");
 	const js = script(source);
 	const gets = js.match(/\bget\(\s*GET_DRILL\b/g) || [];
 	assert.equal(gets.length, 1, "exactly one get(GET_DRILL call site");
-	assert.doesNotMatch(js, /\bpost\(/, "U45's panel is read-only: no post( anywhere");
+	assert.doesNotMatch(js, /\bpost\(\s*GET_DRILL\b/, "get_drill is a read, never posted to");
 });
 
 test("A seq guard exists, so a fast second click never shows the first heading's rows", () => {
@@ -176,8 +178,9 @@ test("A top-side row's journals and journalsBasis are shown", () => {
 });
 
 test("The panel can be closed, emitting close", () => {
+	// U46 adds a second emit (saved); close must still be one of them.
 	const source = readDrillVue();
-	assert.match(source, /defineEmits\(\s*\[\s*["']close["']\s*\]\s*\)/);
+	assert.match(source, /defineEmits\(\s*\[[^\]]*["']close["'][^\]]*\]\s*\)/);
 	const tpl = template(source);
 	assert.match(tpl, /emit\(\s*["']close["']\s*\)/);
 });
@@ -268,19 +271,23 @@ test("The commentary editor is v-if on the canComment prop — never rendered un
 	assert.match(tpl, /v-if="canComment"/, "an editor block is gated on canComment");
 });
 
-test("Red: save_commentary is not posted yet", () => {
-	const source = readDrillVue();
-	const names = source.match(/konsol\.close\.commentary_api\.save_commentary/g) || [];
-	assert.equal(names.length, 0, "this is the pre-U46 state: no save_commentary call yet");
-});
-
 test("Exactly one post(SAVE_COMMENTARY call site; the body comes from commentaryBody, never an object literal naming heading", () => {
 	const source = readDrillVue();
 	assert.match(source, new RegExp(SAVE_COMMENTARY.replace(/\./g, "\\.")));
 	const js = script(source);
 	const posts = js.match(/\bpost\(\s*SAVE_COMMENTARY\b/g) || [];
 	assert.equal(posts.length, 1, "exactly one post(SAVE_COMMENTARY call site");
-	assert.match(js, /post\(\s*SAVE_COMMENTARY\s*,\s*commentaryBody\(/, "the body is built by commentaryBody(...), not a hand-built object");
+	// the body passed to post(SAVE_COMMENTARY, ...) is whatever a
+	// `commentaryBody(...)` call was assigned to, never a hand-built
+	// object literal naming heading: directly.
+	const postArg = js.match(/post\(\s*SAVE_COMMENTARY\s*,\s*(\w+)\s*\)/);
+	assert.ok(postArg, "post(SAVE_COMMENTARY, <ident>) call site");
+	const bodyVar = postArg[1];
+	assert.match(
+		js,
+		new RegExp(`\\b${bodyVar}\\s*=\\s*commentaryBody\\(`),
+		`${bodyVar} is built by commentaryBody(...), not a hand-built object`,
+	);
 	assert.doesNotMatch(js, /post\(\s*SAVE_COMMENTARY\s*,\s*\{\s*heading\s*:/, "no object literal naming heading: built by hand for the post body");
 });
 

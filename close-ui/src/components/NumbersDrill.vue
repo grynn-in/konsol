@@ -28,15 +28,31 @@
  * A non-ok `state` (not_built/error) shows the server's message and no
  * rows — drillView already returns `rows: []` for that case, so the
  * template's row loop naturally renders nothing beside it.
+ *
+ * U46 (story 8.3; #305-W4-5 5b): the panel also shows the heading's
+ * commentary and, when `canComment` is true, an editor with Save.
+ * `canComment` and `commentary` are given by Numbers.vue, read from the
+ * REAL `get_statement` payload (`canComment(payload)`, U42) — `get_drill`
+ * carries no `can_comment` of its own (N52), so this panel never invents
+ * either value itself. Save posts `commentary_api.save_commentary` with
+ * `commentaryBody(...)` (U42); a refusal (a Closed period, a stale token)
+ * shows the server's own sentence through `messageLines` and keeps the
+ * typed text — the catch branch never resets the draft. A successful save
+ * replaces the heading's entry locally (from the endpoint's own return
+ * value) and emits `saved` once, so Numbers.vue reloads the statement
+ * exactly once rather than this panel re-deriving the new view itself.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
-import { FeatherIcon } from "frappe-ui";
+import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "./LoadState.vue";
-import { get } from "../api.js";
-import { drillView } from "../numbers.js";
+import { get, post } from "../api.js";
+import { drillView, commentaryBody, commentaryByText } from "../numbers.js";
+import { messageLines } from "../signoff.js";
+import { userTimeZone } from "../timefmt.js";
 
 const GET_DRILL = "konsol.close.statement_api.get_drill";
+const SAVE_COMMENTARY = "konsol.close.commentary_api.save_commentary";
 
 const props = defineProps({
 	/** The clicked heading's account code (N52's `heading`). */
@@ -46,8 +62,17 @@ const props = defineProps({
 	 * are read. */
 	period: { type: Object, required: true },
 	consolidationGroup: { type: String, required: true },
+	/** U46: `canComment(get_statement's payload)` (U42) — computed by
+	 * Numbers.vue from the real payload, never re-derived here. */
+	canComment: { type: Boolean, required: true },
+	/** U46: the heading's raw commentary entry from `get_statement`'s own
+	 * `commentary` map (`{name, text, by, at, modified}`), or `null` when
+	 * the heading has none yet. Carries the `modified` token the stale
+	 * check needs — `statementView`'s own rendered `{text, byText}` loses
+	 * it, so Numbers.vue passes the raw entry rather than the view's. */
+	commentary: { type: Object, default: null },
 });
-const emit = defineEmits(["close"]);
+const emit = defineEmits(["close", "saved"]);
 
 const drill = reactive({ status: "loading", payload: null, error: null, busy: false });
 let seq = 0;
@@ -56,6 +81,65 @@ let seq = 0;
  * cleared whenever the heading changes — never kept across a close/open
  * and never written anywhere that survives a reload. */
 const expanded = reactive(new Set());
+
+// --- U46: the commentary editor ---------------------------------------------
+//
+// `localCommentary` starts from the `commentary` prop and is replaced, in
+// place, by the endpoint's own return value on a successful save — so the
+// panel shows the just-saved text/byline immediately, without waiting for
+// Numbers.vue's reload (which still happens once, via `saved`, so the
+// statement table and any other open view pick it up too).
+const timeZone = userTimeZone();
+const localCommentary = ref(props.commentary);
+const draftText = ref(props.commentary ? props.commentary.text : "");
+const saveBusy = ref(false);
+const saveError = ref(null);
+
+watch(
+	() => props.heading,
+	() => {
+		localCommentary.value = props.commentary;
+		draftText.value = props.commentary ? props.commentary.text : "";
+		saveError.value = null;
+	},
+);
+
+const commentaryByline = computed(() => {
+	if (!localCommentary.value) return null;
+	if (!timeZone) return localCommentary.value.by;
+	return commentaryByText(localCommentary.value, new Date(), timeZone);
+});
+
+function lines(text) {
+	const out = messageLines(text);
+	return out.length ? out : ["The server gave no reason."];
+}
+
+/** The six-key body `commentary_api.save_commentary` names (M44), built by
+ * `commentaryBody` from this panel's own `period`/`consolidationGroup`
+ * props — the same values the drill itself was fetched with — plus
+ * whatever commentary entry is currently held (its `modified` token, or
+ * none for a first save). Never a hand-built object naming `heading`. */
+async function saveCommentary() {
+	saveError.value = null;
+	saveBusy.value = true;
+	try {
+		const body = commentaryBody(
+			{ period: props.period, consolidation_group: props.consolidationGroup },
+			props.heading,
+			draftText.value,
+			localCommentary.value,
+		);
+		const result = await post(SAVE_COMMENTARY, body);
+		localCommentary.value = result;
+		draftText.value = result.text;
+		emit("saved");
+	} catch (e) {
+		saveError.value = e.message;
+	} finally {
+		saveBusy.value = false;
+	}
+}
 
 async function load() {
 	const mine = ++seq;
@@ -137,6 +221,35 @@ function toggle(i) {
 				>
 					<FeatherIcon name="x" class="h-4 w-4" />
 				</button>
+			</div>
+
+			<!-- U46: the heading's commentary, and — when canComment — the
+			     editor. Shown regardless of the drill fetch's own load state:
+			     commentary is read from the statement payload Numbers.vue
+			     already holds, not from get_drill. -->
+			<div class="mt-4 border-b border-outline-gray-2 pb-4">
+				<p v-if="localCommentary" class="rounded bg-surface-gray-1 p-2 text-sm text-ink-gray-8">
+					{{ localCommentary.text }}
+					<span class="mt-1 block text-xs text-ink-gray-5">{{ commentaryByline }}</span>
+				</p>
+				<p v-else class="text-xs text-ink-gray-5">No commentary yet.</p>
+
+				<div v-if="canComment" class="mt-2">
+					<label class="flex flex-col gap-1 text-sm text-ink-gray-7">
+						<span>Commentary</span>
+						<textarea
+							v-model="draftText"
+							rows="3"
+							class="w-full rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-sm text-ink-gray-8"
+						/>
+					</label>
+					<div v-if="saveError" role="alert" class="mt-2 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8">
+						<p v-for="(line, i) in lines(saveError)" :key="i">{{ line }}</p>
+					</div>
+					<Button class="mt-2" theme="gray" variant="solid" :loading="saveBusy" :disabled="saveBusy" @click="saveCommentary">
+						Save
+					</Button>
+				</div>
 			</div>
 
 			<LoadState class="mt-4" compact :state="loadState" :what="what" :source="GET_DRILL" :error="loadError" :busy="drill.busy" @retry="load">
