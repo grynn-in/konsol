@@ -639,6 +639,39 @@ def test_an_illegal_dimension_name_is_never_declared_even_in_journal_and_publish
     assert result["dimensions"] == []
 
 
+def test_d05_journal_api_reads_the_flag_with_the_public_is_flag_on():
+    """D05 (konsol-50 made ``is_flag_on`` public in #324): journal_api reads
+    ``in_journal`` with tb_dimension_model's public ``is_flag_on``, never the
+    private ``_is_on`` alias, so a rename of the alias cannot break it."""
+    tree = ast.parse(open(API_PY, encoding="utf-8").read())
+    imported = {
+        alias.name
+        for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        and node.module == "konsol.tb_dimension_model"
+        for alias in node.names
+    }
+    assert "is_flag_on" in imported, imported
+    assert "_is_on" not in imported, imported
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    assert "_is_on" not in names
+
+
+def test_d05_a_ticked_dimension_without_the_dim_prefix_is_absent_not_an_error():
+    """The name rule (konsol-50, 4 Oct): schema_apply gives a ticked
+    in_journal Dimension whose name fails ``^dim_[a-z0-9_]+\\Z`` no Custom
+    Field. ``business_unit`` is legal on a Dimension outside the trial balance
+    (dimension.py's own example), so it is reachable: get_journals leaves it
+    out of ``dimensions`` and off every line, and does not raise."""
+    site = _Site()
+    site.dimensions = [_dim("business_unit", label="Business unit"),
+                       _dim("dim_cost_center", label="Cost Center")]
+    site.lines[0]["business_unit"] = "BU1"
+    result = _call(site)
+    assert [d["key"] for d in result["dimensions"]] == ["dim_cost_center"]
+    for line in _by_name(result, "CJ-00001")["lines"]:
+        assert "business_unit" not in line
+
+
 def test_a_draft_dimension_is_not_declared_even_with_the_flag_on():
     site = _Site()
     site.dimensions = [_dim("dim_x", status="Draft")]
