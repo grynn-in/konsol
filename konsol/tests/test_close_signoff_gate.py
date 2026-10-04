@@ -1057,6 +1057,199 @@ def test_data_change_reads_the_three_fields_and_blank_is_none():
         "data_change": CHANGED_TEXT}
 
 
+# --- #305 R41b (review-w4-server.md S2, coordinator call (a)): the hook ----
+# calls the REAL record_data_change exactly once, and that real call does
+# the whole later-period stamping, across >= 5 declared periods. The hook's
+# own stub-level "how many times did I call the stub" coverage lives in
+# test_close_data_change_hook.py; this loads the REAL data_change_hook.py
+# wired to the REAL signoff_gate.py (this file's own `_load`, unmodified),
+# so the double-marking S2 found -- hidden by a sparse-period, stubbed
+# record_data_change -- cannot hide here.
+
+HOOK_PY = os.path.join(APP_DIR, "close", "data_change_hook.py")
+DATA_CHANGE_MODEL_PY = os.path.join(APP_DIR, "close", "data_change_model.py")
+
+
+def _by_path_r41b(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _hook_on_real_gate(site, period, entity=None):
+    """The REAL data_change_hook, wired to the REAL signoff_gate (this
+    file's `_load`) and the REAL data_change_model (S41, pure). The only
+    stand-in is a counting wrapper AROUND the real record_data_change
+    (``_covered_spy``'s pattern, above) -- every call it counts still runs
+    the unmodified real function; this is not a stub of record_data_change,
+    it is a spy on it. ``close_event.period_of``/``entity_of`` are given
+    fixed answers (as every other hook test here does), since this file's
+    own close_event stub carries only ``.record``.
+
+    Returns ``(on_submit, on_cancel, calls, site)``, where ``calls`` is the
+    list of real record_data_change invocations
+    (``[((fiscal_year, fiscal_period, text, user), {"entity": entity}), ...]``).
+    """
+    gate_module, frappe, mods, _ps = _load(site)
+    frappe.db.table_exists = lambda dt: True
+    frappe.logger = lambda: types.SimpleNamespace(
+        warning=lambda *a, **k: None, info=lambda *a, **k: None)
+
+    calls = []
+    real_record_data_change = gate_module.record_data_change
+
+    def counting_record_data_change(*a, **k):
+        calls.append((a, k))
+        return real_record_data_change(*a, **k)
+
+    close_event = mods["konsol.close.close_event"]
+    close_event.period_of = lambda doc: period
+    close_event.entity_of = lambda doc: entity
+
+    data_change_model = _by_path_r41b("data_change_model_for_r41b", DATA_CHANGE_MODEL_PY)
+
+    mods2 = dict(mods)
+    mods2["konsol.close.signoff_gate"] = types.SimpleNamespace(
+        record_data_change=counting_record_data_change)
+    mods2["konsol.close.data_change_model"] = data_change_model
+    close_pkg = mods2["konsol.close"]
+    close_pkg.signoff_gate = mods2["konsol.close.signoff_gate"]
+    close_pkg.data_change_model = data_change_model
+
+    saved = {n: sys.modules.get(n) for n in mods2}
+    sys.modules.update(mods2)
+    try:
+        hook = _by_path_r41b("data_change_hook_for_r41b", HOOK_PY)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    # on_submit/on_cancel import frappe/fiscal_calendar/close_event/
+    # signoff_gate lazily, at call time (data_change_hook.py's own
+    # docstring): re-apply the stubs around every call, then restore.
+    real_on_submit, real_on_cancel = hook.on_submit, hook.on_cancel
+
+    def on_submit(doc, method=None):
+        now = {n: sys.modules.get(n) for n in mods2}
+        sys.modules.update(mods2)
+        try:
+            return real_on_submit(doc, method)
+        finally:
+            for n, old in now.items():
+                if old is None:
+                    sys.modules.pop(n, None)
+                else:
+                    sys.modules[n] = old
+
+    def on_cancel(doc, method=None):
+        now = {n: sys.modules.get(n) for n in mods2}
+        sys.modules.update(mods2)
+        try:
+            return real_on_cancel(doc, method)
+        finally:
+            for n, old in now.items():
+                if old is None:
+                    sys.modules.pop(n, None)
+                else:
+                    sys.modules[n] = old
+
+    return on_submit, on_cancel, calls, site
+
+
+class _HookDoc(dict):
+    """A Frappe document has every field; ``.get`` reads one back."""
+
+    def __getattr__(self, name):
+        return self.get(name)
+
+
+def _hook_doc(doctype, name, **fields):
+    return _HookDoc(doctype=doctype, name=name, **fields)
+
+
+def _five_period_site():
+    """FY2025 first close P07 (``_Site``'s default), with FIVE later-or-equal
+    Regular periods carrying a signed run: P07-P11 (P12 has none)."""
+    site = _Site()
+    for name, fp in (("RUN-9", 9), ("RUN-10", 10), ("RUN-11", 11)):
+        site.records["Assertion Run"].append(_run(name, 2025, fp))
+    return site
+
+
+def test_the_hook_calls_the_real_record_data_change_exactly_once():
+    """S2 Effect 1: the hook used to call record_data_change once PER period
+    changed_periods named. Across 5 signed later-or-equal periods (P07-P11)
+    it must still call the real record_data_change exactly once."""
+    site = _five_period_site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert len(calls) == 1, calls
+    args, kwargs = calls[0]
+    assert args[:2] == (2025, 7), args
+    assert args[2] == "Group Exchange Rate GER-1 approved", args
+    assert kwargs == {"entity": None}, kwargs
+
+
+def test_the_one_real_call_stamps_every_later_signed_period_with_one_void_event_each():
+    """S2 Effect 3 (and the coordinator's call (a)): the single real call
+    marks the changed period AND every later signed Regular period -- P07
+    through P11, five periods -- "Re-sign Needed", one signoff_voided Close
+    Event per marked run, not one combined event and not a second hook
+    call's worth of duplicates."""
+    site = _five_period_site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert len(calls) == 1, calls
+    for name in ("RUN-7", "RUN-8", "RUN-9", "RUN-10", "RUN-11"):
+        rec = _run_rec(site, name)
+        assert rec["signoff_status"] == "Re-sign Needed", (name, rec)
+        assert "Group Exchange Rate GER-1 approved" in rec["affected_by"], (name, rec)
+    assert sorted(e[4] for e in site.close_events) == [
+        "RUN-10", "RUN-11", "RUN-7", "RUN-8", "RUN-9"], site.close_events
+    assert len(site.close_events) == 5, site.close_events
+    for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
+        assert kind == "signoff_voided", kind
+        assert ref_dt == "Assertion Run", ref_dt
+        assert "Group Exchange Rate GER-1 approved" in reason, reason
+
+
+def test_only_the_changed_periods_own_row_gets_the_data_change_text():
+    """record_data_change's docstring: the later periods' balances move as
+    a consequence, through their own query, not because their own data
+    changed -- so only P07's row gets data_changed_at/by/data_change."""
+    site = _five_period_site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert set(site.data_changes) == {(2025, 7)}, site.data_changes
+
+
+def test_a_reversing_journals_single_call_still_stamps_the_later_period():
+    """A Consolidation Journal reversing P07's entry into P08 still calls
+    record_data_change once (for P07 -- the earlier of the two), and that
+    one real call marks P08 too."""
+    site = _Site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    doc = _hook_doc("Consolidation Journal", "CJ-1",
+                     reverse_fiscal_year=2025, reverse_fiscal_period=8)
+    on_submit(doc)
+    assert len(calls) == 1, calls
+    assert calls[0][0][:2] == (2025, 7), calls
+    for name in ("RUN-7", "RUN-8"):
+        assert _run_rec(site, name)["signoff_status"] == "Re-sign Needed", name
+
+
+def test_on_cancel_also_calls_the_real_record_data_change_exactly_once():
+    site = _five_period_site()
+    _on_submit, on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_cancel(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert len(calls) == 1, calls
+    assert calls[0][0][2] == "Group Exchange Rate GER-1 cancelled", calls
+
+
 def test_the_period_json_has_the_three_read_only_fields_in_the_close_section():
     import json
     with open(PERIOD_JSON) as f:

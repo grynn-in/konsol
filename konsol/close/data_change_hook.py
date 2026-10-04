@@ -1,8 +1,24 @@
 """The data-change hook: every submit and cancel of a NUMBER_DRIVING
-approval doctype calls ``signoff_gate.record_data_change`` for each period
-``data_change_model.changed_periods`` names (konsol#305 S42; #305-W4-4 4c,
-AMENDED 4 Oct — Deepak "all ★", #305 issuecomment-5978983396: all 7
-``close_policy_model.APPROVAL_DOCTYPES``, IC Balance included).
+approval doctype calls ``signoff_gate.record_data_change`` ONCE, for the
+EARLIEST period ``data_change_model.changed_periods`` names (konsol#305 S42;
+#305-W4-4 4c, AMENDED 4 Oct — Deepak "all ★", #305 issuecomment-5978983396:
+all 7 ``close_policy_model.APPROVAL_DOCTYPES``, IC Balance included; #305
+R41b / review-w4-server.md S2, coordinator call (a)).
+
+``record_data_change`` itself now stamps the changed period's own row AND
+marks every later Regular period's latest signed run "Re-sign Needed" (one
+rule, shared by this hook and the TB Submission / TB Exception callers — see
+its docstring in signoff_gate.py). Calling it once per period
+``changed_periods`` names — as this hook did before R41b — repeated that
+scan once per later period (O(N) full scans; a Historical Equity Rate dated
+FY2012 touches about 190) and, worse, overwrote every later period's own
+``data_changed_at`` / ``data_changed_by`` / ``data_change`` fields with text
+that names this approval, even though that later period's OWN data never
+changed — only its cumulative balance did. So the hook calls it once, for
+``min(changed_periods(...))`` (the earliest of the changed period and, for a
+Consolidation Journal, its reverse period — in practice always the changed
+period itself, since a reversal's own ``validate()`` refuses posting into an
+earlier period than the one it reverses).
 
 Wired in ``hooks.py`` as ``doc_events["*"]["on_submit"]`` and, second (after
 ``cancel_event.record``, so its ``approval_cancelled`` event precedes the
@@ -59,10 +75,15 @@ def _record(doc, action):
     entity = close_event.entity_of(doc)
     text = data_change_model.change_text(doc.doctype, doc.name, action)
     period_rows = fiscal_calendar.fiscal_period_rows()
-    for fiscal_year, fiscal_period in data_change_model.changed_periods(
-            doc.doctype, period, period_rows, reverse=reverse):
-        signoff_gate.record_data_change(
-            fiscal_year, fiscal_period, text, frappe.session.user, entity=entity)
+    changed = data_change_model.changed_periods(
+        doc.doctype, period, period_rows, reverse=reverse)
+    if not changed:
+        return
+    # S2: ONE call, for the earliest changed period — record_data_change
+    # itself marks every later Regular period's latest signed run.
+    fiscal_year, fiscal_period = min(changed)
+    signoff_gate.record_data_change(
+        fiscal_year, fiscal_period, text, frappe.session.user, entity=entity)
 
 
 def on_submit(doc, method=None):
