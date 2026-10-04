@@ -479,12 +479,14 @@ def test_published_must_be_a_non_negative_int():
 # (#305-W4-1 option 1c, N41): the declared CTA account and current-year result
 # account, and the one setup gap when either is missing or unusable.
 
-def _account(is_group=0, status="Published", statement_section="Balance Sheet", account_name="Acct"):
+def _account(is_group=0, status="Published", statement_section="Balance Sheet",
+             account_name="Acct", parent_account="3"):
     return {
         "is_group": is_group,
         "status": status,
         "statement_section": statement_section,
         "account_name": account_name,
+        "parent_account": parent_account,
     }
 
 
@@ -555,6 +557,37 @@ def test_statement_accounts_the_same_code_twice_gives_both_none_and_says_they_mu
     assert result["cta_account"] is None
     assert result["result_account"] is None
     assert "differ" in result["gap"]["message"]
+
+
+def test_statement_accounts_a_leaf_with_no_heading_is_refused():
+    """S3 (#305-W4-4): a Published BS leaf with a blank parent_account (live:
+    account 99) resolves to no heading in the statement, so it must be
+    refused rather than silently balancing the residual."""
+    chart = {"99": _account(parent_account=""), "3100": _account()}
+    result = M.statement_accounts("99", "3100", chart)
+    assert result["cta_account"] is None
+    assert result["result_account"] == "3100"
+    assert result["gap"] is not None
+    assert "99" in result["gap"]["message"]
+    assert "heading" in result["gap"]["message"]
+
+
+def test_statement_accounts_a_missing_parent_account_key_is_also_refused():
+    """A caller's Main Account read that omits the ``parent_account`` field
+    entirely must read the same as a blank one (fail closed, not open)."""
+    row = _account()
+    del row["parent_account"]
+    chart = {"99": row}
+    result = M.statement_accounts("99", "", chart)
+    assert result["cta_account"] is None
+    assert "heading" in result["gap"]["message"]
+
+
+def test_statement_account_problems_a_leaf_with_no_heading_is_one_problem():
+    chart = {"99": _account(parent_account="")}
+    problems = M.statement_account_problems("99", "", chart)
+    assert len(problems) == 1
+    assert "heading" in problems[0]
 
 
 def test_statement_account_problems_blank_is_allowed():
