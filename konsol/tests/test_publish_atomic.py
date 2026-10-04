@@ -898,9 +898,9 @@ def test_a_reported_removal_really_happened_across_both_tables():
     exists is dt-scoped the journal's duplicate is detected before its insert
     is staged, so the rollback finds nothing of the delete's to discard. The
     re-review's own red/green for this test was obtained against the dt-blind
-    stub it also asked to fix, so the two fixes cancel here. The ordering in
-    _sync_budget_custom_fields_locked is therefore STILL UNTESTED — see the
-    PR comment; it is argued from frappe's transaction semantics, not pinned.
+    stub it also asked to fix, so the two fixes cancel here. The ordering
+    itself is pinned by test_every_add_runs_before_every_delete_across_both_
+    tables, which asserts the phase order rather than the damage.
     """
     site = _Site()
     site.dimensions["dim_j"] = {"label": "J", "in_budget": 1, "in_journal": 1,
@@ -929,3 +929,39 @@ def test_a_dimension_the_sync_could_never_see_again_is_refused_not_created():
     actions = _sync(site)()
     assert actions == ["refused business_unit"], actions
     assert not site.committed, "no Custom Field may be created for it"
+
+
+def test_every_add_runs_before_every_delete_across_both_tables():
+    """PR #324 re-review, finding 1 — closed by pinning the CALL ORDER rather
+    than trying to reproduce the damage.
+
+    _created_elsewhere rolls back to discard a failed insert's own pending
+    work. That is safe only while every add precedes every delete: a Custom
+    Field delete carries no updatedb, so it is uncommitted DML, and a failed
+    add on a later table would roll back an earlier table's delete while the
+    action log still reported it removed.
+
+    Reproducing that needs a failure mode that stages its insert before
+    failing, which the dt-scoped exists now forecloses (see the test above).
+    What the fix actually changed is the order of the phases, so that is what
+    this asserts — and it goes red on the interleaved order by construction.
+    """
+    calls = []
+    ns = _load({"_sync_budget_custom_fields_locked"}, {
+        "frappe": _Site().frappe(),
+        "_plan_dimension_custom_fields": lambda dt, flag: (calls.append(("plan", dt)), (set(), {}, [], []))[1],
+        "_add_dimension_custom_fields": lambda dt, after, plan: (calls.append(("add", dt)), [])[1],
+        "_remove_orphan_dimension_custom_fields": lambda dt, plan: (calls.append(("remove", dt)), [])[1],
+    })
+    ns["_sync_budget_custom_fields_locked"]()
+
+    phases = [c[0] for c in calls]
+    assert phases.count("add") == 2 and phases.count("remove") == 2, calls
+    last_add = max(i for i, p in enumerate(phases) if p == "add")
+    first_remove = min(i for i, p in enumerate(phases) if p == "remove")
+    assert last_add < first_remove, (
+        "a delete runs before the last add: _created_elsewhere's rollback can "
+        f"then discard it. Order was {calls}")
+    # and both tables are still covered, each named once per phase
+    assert sorted(c[1] for c in calls if c[0] == "add") == \
+        ["Budget Line", "Consolidation Journal Line"], calls
