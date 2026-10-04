@@ -93,5 +93,8 @@ def save_commentary(fiscal_year, fiscal_period, consolidation_group, heading, te
         "text": doc.text,
         "modified": str(doc.modified),
         "by": full_name,
-        "at": zoned_iso(doc.modified, frappe.utils.get_system_timezone()),
+        # L42a: right after insert()/save(), doc.modified is a STRING
+        # (Frappe's own db_insert/db_update set it from frappe.utils.now(),
+        # not a datetime) — zoned_iso needs a real datetime first.
+        "at": zoned_iso(frappe.utils.get_datetime(doc.modified), frappe.utils.get_system_timezone()),
     }
