@@ -451,7 +451,10 @@ def test_comparison_not_loaded_names_the_period_never_shows_zero():
 
 
 def test_p1_compares_to_previous_fys_p12_w4_7():
-    rows = [_row("4100", -10.0), {**_row("4100", -20.0), "fiscal_year": 2024, "fiscal_period": 12}]
+    rows = [
+        {**_row("4100", -10.0), "fiscal_year": 2025, "fiscal_period": 1},
+        {**_row("4100", -20.0), "fiscal_year": 2024, "fiscal_period": 12},
+    ]
     result = M.statement(rows, _s_accounts(), _S_CALENDAR, (2025, 1), _s_declared())
     assert result["periods"]["comparison"] == (2024, 12)
     assert result["periods"]["comparison_note"] is None
