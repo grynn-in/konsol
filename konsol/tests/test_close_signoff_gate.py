@@ -93,7 +93,12 @@ class _Site:
     def __init__(self):
         self.rows = _year(2025, overrides={9: "Open", 10: "Open", 11: "Open", 12: "Open"})
         self.settings = {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 7,
-                         "self_approval": "Blocked", "rate_move_threshold": 50}
+                         "self_approval": "Blocked", "rate_move_threshold": 50,
+                         #: N43t: both declared and valid (N41's rule), so N45's
+                         #: new read finds them and every existing "no gap"
+                         #: assertion still holds. Until N45 nothing reads them.
+                         "statement_cta_account": "3300",
+                         "statement_result_account": "3100"}
         self.records = {
             "Entity": [_entity("ZZA"), _entity("ZZB", "Quarterly")],
             "Ownership Period": [_owner("ZZA"), _owner("ZZB")],
@@ -102,6 +107,14 @@ class _Site:
             "Assertion Run": [_run("RUN-7", 2025, 7), _run("RUN-8", 2025, 8)],
             "Connector": [],
             "Connector Legal Entity": [],
+            #: N43t: the two statement accounts named by `self.settings` above,
+            #: both Published BS leaves (N41's rule). Until N45 nothing reads them.
+            "Main Account": [
+                {"name": "3300", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
+                {"name": "3100", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+            ],
         }
         self.whitelisted = set()
         self.get_all_calls = []
@@ -1159,3 +1172,18 @@ def test_intercompany_returns_the_stubbed_summary_and_records_the_call():
     result = _call(site, "intercompany", 2025, 10)
     assert result == site.ic_summary
     assert site.ic_calls == [(2025, 10)], site.ic_calls
+
+
+# --- N43t: the stub site declares the two statement accounts, for N45 -------
+
+
+def test_statement_accounts_are_declared_on_the_stub_site():
+    site = _Site()
+    assert site.settings["statement_cta_account"] == "3300"
+    assert site.settings["statement_result_account"] == "3100"
+    accounts = {row["name"]: row for row in site.records["Main Account"]}
+    assert set(accounts) == {"3300", "3100"}
+    for code in ("3300", "3100"):
+        assert accounts[code]["is_group"] == 0, code
+        assert accounts[code]["status"] == "Published", code
+        assert accounts[code]["statement_section"] == "Balance Sheet", code
