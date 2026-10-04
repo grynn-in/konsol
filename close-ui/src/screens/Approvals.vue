@@ -175,14 +175,19 @@ async function loadDetailStatement(item) {
 }
 
 // W44: `beforeAfter`'s rows for the selected journal's effect, read against
-// the statement fetched above. `null` while nothing is selected or the item
-// carries no effect (Business Combination/Disposal never reach here — they
-// are never selectable). While the fetch is in flight: `{status:
-// "loading"}`. On a fetch failure, a non-ok payload state, or any thrown
-// statementView/beforeAfter contract break: `{status: "error", message}` —
+// the statement fetched above. Reads `selectedItem.value.rawEffect`
+// (approvals.js's `baseView`, konsol#305 U2), the server's own
+// `journal_model.statement_effect` shape — never `.effect`, which
+// `queueView` has already run through `effectView` for display and which
+// carries no `net_debit`/`heading_name` for `beforeAfter` to read. `null`
+// while nothing is selected or the item carries no effect (Business
+// Combination/Disposal never reach here — they are never selectable).
+// While the fetch is in flight: `{status: "loading"}`. On a fetch failure,
+// a non-ok payload state, or any thrown statementView/beforeAfter contract
+// break (including a non-finite amount): `{status: "error", message}` —
 // the server's or the thrown error's own text, never a blank or zero table.
 const detailBeforeAfter = computed(() => {
-	if (!selectedItem.value || !selectedItem.value.effect) return null;
+	if (!selectedItem.value || !selectedItem.value.rawEffect) return null;
 	if (detail.status === "loading" || detail.status === "idle") {
 		return { status: "loading" };
 	}
@@ -197,7 +202,7 @@ const detailBeforeAfter = computed(() => {
 		if (statement.state) {
 			return { status: "error", message: statement.state.message };
 		}
-		return { status: "ready", rows: beforeAfter(selectedItem.value.effect, statement) };
+		return { status: "ready", rows: beforeAfter(selectedItem.value.rawEffect, statement) };
 	} catch (e) {
 		return { status: "error", message: e.message };
 	}

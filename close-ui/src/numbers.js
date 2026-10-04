@@ -87,6 +87,9 @@ export function amountText(value) {
 	if (value === null || value === undefined) {
 		throw new Error("Numbers: missing amount — never shown as 0.00");
 	}
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		throw new Error(`Numbers: non-finite amount (${value}) — never shown as "NaN"`);
+	}
 	const formatted = AMOUNT_FORMAT.format(Math.abs(value));
 	return value < 0 ? `(${formatted})` : formatted;
 }
