@@ -375,16 +375,24 @@ function buildDrillState(payload) {
  * source carries none (`{"kind": "journals"}`, drill_model.py:275), so that
  * link uses the drill payload's own period. `null` source (eliminations,
  * equity method, acquisitions/disposals, current-year result: nothing to
- * open) -> no link. An unknown `source.kind` throws, naming it. */
+ * open) -> no link. An unknown `source.kind` throws, naming it.
+ *
+ * U1 (W4 review): the router's history base is already `/close`
+ * (router.js's `createWebHistory("/close")`), so a route's own path never
+ * repeats it — every other RouterLink in the app strips it with
+ * `.replace(/^\/close/, "")` (HeaderBar, AppShell, Period, MyWork) after
+ * building a full `/close/...` path with `format()`. This link is built
+ * directly, so it is built without the prefix in the first place rather
+ * than built-then-stripped. */
 function drillSourceLink(source, period) {
 	if (!source) {
 		return null;
 	}
 	if (source.kind === "tb") {
-		return `/close/${source.fiscal_year}/${source.fiscal_period}/trial-balances`;
+		return `/${source.fiscal_year}/${source.fiscal_period}/trial-balances`;
 	}
 	if (source.kind === "journals") {
-		return `/close/${period.fiscal_year}/${period.fiscal_period}/adjustments`;
+		return `/${period.fiscal_year}/${period.fiscal_period}/adjustments`;
 	}
 	throw new Error(`Numbers: unknown drill source kind: ${source.kind}`);
 }
