@@ -354,15 +354,6 @@ test("pure: beforeAfter(goldenEffect, statementView(golden)) — the exact rows 
 	});
 });
 
-test("Red: Adjustments.vue reads no statement — W43 not wired yet", () => {
-	const source = read();
-	assert.doesNotMatch(
-		source,
-		/konsol\.close\.statement_api\.get_statement/,
-		"this check goes red the moment W43 adds the GET_STATEMENT call",
-	);
-});
-
 test("W43: Adjustments.vue builds the panel with beforeAfter/statementView from ../numbers.js", () => {
 	const source = read();
 	assert.match(source, /import\s*\{[^}]*\bbeforeAfter\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
