@@ -324,6 +324,21 @@ def test_configuration_frequency_gap_with_no_scope_restriction_is_unchanged():
     assert gap["message"] in configuration["detail"]
 
 
+def test_statement_accounts_gap_blocks_configuration_and_its_absence_is_ok():
+    # N41: an unknown gap code (here, the statement-accounts setup gap) falls
+    # through to "configuration" (the existing generic rule above); this
+    # proves it for the real gap close_policy_model.statement_accounts gives,
+    # with no readiness_model edit.
+    gap = CPM.statement_accounts("", "", {})["gap"]
+    result = _readiness(problems=_problems(config_gaps=[gap]))
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert gap["message"] in configuration["detail"]
+
+    clean = _readiness(problems=_problems(config_gaps=[]))
+    assert _by_code(clean, "configuration")["state"] == "ok"
+
+
 def test_module_imports_no_frappe():
     tree = ast.parse(_src(M.__file__))
     for node in ast.walk(tree):

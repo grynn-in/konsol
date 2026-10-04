@@ -252,6 +252,112 @@ def self_approval_note(policy, user, reason):
     return "Self-approved by %s under Close Settings (%s): %s" % (user, policy, reason)
 
 
+STATEMENT_ACCOUNTS_UNDECLARED = "statement_accounts_undeclared"
+
+_CTA_LABEL = "the CTA"
+_RESULT_LABEL = "the current-year result account"
+
+_CTA_UNDECLARED_MESSAGE = (
+    "Declare the CTA account in Close Settings (the Close Lead): the balance "
+    "sheet cannot place currency translation, so it shows an unmatched residual."
+)
+_RESULT_UNDECLARED_MESSAGE = (
+    "Declare the current-year result account in Close Settings (the Close "
+    "Lead): the balance sheet cannot place the profit or loss to date, so it "
+    "shows an unmatched residual."
+)
+
+
+def _statement_account_invalid_reason(row):
+    """None when ``row`` (a Main Account's ``{"is_group", "status",
+    "statement_section", "account_name"}``) is usable as a statement account:
+    Published, a leaf (not a heading) and on the Balance Sheet. Otherwise the
+    short reason it is not."""
+    if row is None:
+        return "not a declared account"
+    if row.get("is_group"):
+        return "a heading"
+    if row.get("status") != "Published":
+        return "not Published"
+    if row.get("statement_section") != "Balance Sheet":
+        return "a Profit and Loss account"
+    return None
+
+
+def _resolve_statement_account(code, rows, label, undeclared_message, problems):
+    """One of the two statement accounts: ``code`` resolved against ``rows``,
+    or None with a problem appended to ``problems`` naming why (blank, or an
+    invalid account)."""
+    if not code:
+        problems.append(undeclared_message)
+        return None
+    reason = _statement_account_invalid_reason(rows.get(code))
+    if reason:
+        problems.append(
+            "%s cannot hold %s: it is %s. Declare a Published balance-sheet "
+            "account." % (code, label, reason)
+        )
+        return None
+    return code
+
+
+def statement_accounts(cta_account, result_account, rows):
+    """The declared CTA account and current-year result account
+    (konsol#305-W4-1 option 1c), and the one setup gap when either is missing
+    or unusable. Never defaults: a blank or invalid account is always None,
+    and it is reported, never guessed from ``rows``.
+
+    ``rows`` is ``{code: {"is_group", "status", "statement_section",
+    "account_name"}}`` for the declared account codes (the caller reads the
+    Main Account rows it names).
+
+    Returns ``{"cta_account": code|None, "result_account": code|None, "gap":
+    None | {"code", "message", "problems": [...]}}``. An account counts as
+    declared only when it is set AND is a Published, non-heading account with
+    ``statement_section == "Balance Sheet"``. Declaring the same code for
+    both roles refuses both, naming that they must differ, rather than
+    checking either one's validity.
+    """
+    rows = rows or {}
+    problems = []
+    if cta_account and result_account and cta_account == result_account:
+        problems.append(
+            "%s is declared as both the CTA account and the current-year "
+            "result account; they must differ." % cta_account
+        )
+        cta = None
+        result = None
+    else:
+        cta = _resolve_statement_account(
+            cta_account, rows, _CTA_LABEL, _CTA_UNDECLARED_MESSAGE, problems
+        )
+        result = _resolve_statement_account(
+            result_account, rows, _RESULT_LABEL, _RESULT_UNDECLARED_MESSAGE, problems
+        )
+    if not problems:
+        return {"cta_account": cta, "result_account": result, "gap": None}
+    gap = {
+        "code": STATEMENT_ACCOUNTS_UNDECLARED,
+        "message": " ".join(problems),
+        "problems": problems,
+    }
+    return {"cta_account": cta, "result_account": result, "gap": gap}
+
+
+_STATEMENT_ACCOUNT_UNDECLARED_MESSAGES = (_CTA_UNDECLARED_MESSAGE, _RESULT_UNDECLARED_MESSAGE)
+
+
+def statement_account_problems(cta_account, result_account, rows):
+    """Problems that refuse a Close Settings save of the two statement
+    accounts. Blank is allowed (undeclared, reported elsewhere by
+    ``statement_accounts`` as a gap, never defaulted); a set but invalid
+    account, or the same code twice, is refused."""
+    gap = statement_accounts(cta_account, result_account, rows)["gap"]
+    if not gap:
+        return []
+    return [p for p in gap["problems"] if p not in _STATEMENT_ACCOUNT_UNDECLARED_MESSAGES]
+
+
 def approval_build_reason(doctype, name, method, user, roles):
     """The sentence recorded on an auto-approved Build Approval when the
     trigger that requested the build was itself an approval (konsol#305-D2-10),
