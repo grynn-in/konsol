@@ -63,13 +63,16 @@ class _FakeDoc:
     def insert(self, ignore_permissions=False, **k):
         self.calls.append(("insert", ignore_permissions, k))
         self._data.setdefault("name", "SC-ZZGRP-2025-7-4")
-        self._data["modified"] = datetime.datetime(2025, 7, 15, 9, 0, 0)
+        # L42a: Frappe's own db_insert sets ``self.modified`` to a STRING
+        # (``frappe.utils.now()``), never a datetime — this is the real
+        # producer output, not a convenience double.
+        self._data["modified"] = "2025-07-15 09:00:00.123456"
         self._data["modified_by"] = LEAD
         return self
 
     def save(self, ignore_permissions=False, **k):
         self.calls.append(("save", ignore_permissions, k))
-        self._data["modified"] = datetime.datetime(2025, 7, 20, 11, 30, 0)
+        self._data["modified"] = "2025-07-20 11:30:00.654321"
         self._data["modified_by"] = LEAD
         return self
 
@@ -130,10 +133,19 @@ def _frappe(site):
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.exists = exists
+    def get_datetime(value):
+        """frappe.utils.get_datetime: a datetime stays, a string (L42a:
+        what ``doc.modified`` really is right after insert()/save()) is
+        parsed."""
+        if isinstance(value, datetime.datetime):
+            return value
+        return datetime.datetime.fromisoformat(str(value))
+
     frappe.get_doc = get_doc
     frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value)
     frappe.session = types.SimpleNamespace(user=site.user)
-    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ,
+                                          get_datetime=get_datetime)
     return frappe
 
 
@@ -190,16 +202,19 @@ def test_first_save_inserts_with_the_four_key_fields_and_the_text():
     assert dict(doc._data, name=doc.name) == {
         "doctype": "Statement Commentary", "consolidation_group": "ZZGRP",
         "fiscal_year": 2025, "fiscal_period": 7, "heading": "4",
-        "text": "Volume down 4%.", "modified": datetime.datetime(2025, 7, 15, 9, 0, 0),
+        "text": "Volume down 4%.", "modified": "2025-07-15 09:00:00.123456",
         "modified_by": LEAD, "name": "SC-ZZGRP-2025-7-4",
     }
     assert doc.calls == [("insert", False, {})]
     assert result["name"] == "SC-ZZGRP-2025-7-4"
     assert result["heading"] == "4"
     assert result["text"] == "Volume down 4%."
-    assert result["modified"] == "2025-07-15 09:00:00"
+    assert result["modified"] == "2025-07-15 09:00:00.123456"
     assert result["by"] == LEAD_FULL_NAME
-    assert result["at"] == "2025-07-15T09:00:00+01:00"
+    # L42a: doc.modified is a string here (Frappe's own post-save shape);
+    # this is the failure path that crashed with AttributeError
+    # ("str" has no "tzinfo") before the fix.
+    assert result["at"] == "2025-07-15T09:00:00.123456+01:00"
 
 
 def test_first_save_strips_the_text_and_a_blank_save_clears_it():
@@ -237,8 +252,9 @@ def test_update_with_the_matching_modified_saves():
     doc = site.docs["SC-ZZGRP-2025-7-4"]
     assert doc.calls == [("save", False, {})]
     assert doc.text == "Volume down 6%, see the IC note."
-    assert result["modified"] == "2025-07-20 11:30:00"
+    assert result["modified"] == "2025-07-20 11:30:00.654321"
     assert result["by"] == LEAD_FULL_NAME
+    assert result["at"] == "2025-07-20T11:30:00.654321+01:00"
 
 
 def test_a_different_modified_throws_naming_the_editor_and_saves_nothing():
