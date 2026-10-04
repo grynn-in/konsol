@@ -255,7 +255,13 @@ test("Numbers.vue feeds NumbersDrill canComment and commentary from the real sta
 
 test("A successful save tells Numbers.vue to reload the statement exactly once, through a 'saved' event", () => {
 	const drillSource = readDrillVue();
-	assert.match(drillSource, /defineEmits\(\s*\[\s*["']close["']\s*,\s*["']saved["']\s*\]\s*\)|defineEmits\(\s*\[\s*["']saved["']\s*,\s*["']close["']\s*\]\s*\)/);
+	// R41h adds a third emit ('stale'); this test only requires that 'close'
+	// and 'saved' are both still declared, in any order, alongside whatever
+	// else defineEmits names.
+	const emitsMatch = drillSource.match(/defineEmits\(\s*\[([^\]]*)\]\s*\)/);
+	assert.ok(emitsMatch, "defineEmits([...]) is declared");
+	assert.match(emitsMatch[1], /["']close["']/);
+	assert.match(emitsMatch[1], /["']saved["']/);
 	const js = script(drillSource);
 	assert.match(js, /emit\(\s*["']saved["']\s*\)/);
 
@@ -318,4 +324,55 @@ test("A Viewer (canComment false) sees the heading's commentary text read-only, 
 test("The panel shows the heading's commentary byline through commentaryByText, not re-derived", () => {
 	const js = script(readDrillVue());
 	assert.match(js, /commentaryByText\s*\(/);
+});
+
+// --- R41h (U3): a stale refusal recovers without a page reload --------------
+//
+// commentary_api.save_commentary refuses a stale save by throwing
+// commentary_model.stale_problem's sentence (commentary_model.py:42
+// `_STALE_SENTENCE`, pinned at its exact suffix by
+// test_close_commentary_model.py:118 "reload it and edit again."). Before
+// this row, the catch branch only set saveError — a second editor's every
+// later Save repeated the same refusal until a period change or Retry,
+// because nothing ever replaced the stale `modified` token it holds.
+
+test("U3: a stale refusal (commentary_model's exact sentence suffix) emits 'stale', not just a local error", () => {
+	const js = script(readDrillVue());
+	assert.match(js, /reload it and edit again\./, "the server's exact stale-refusal suffix is matched, pinned to commentary_model.py");
+	const fnMatch = js.match(/async function save\w*\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+	assert.ok(fnMatch, "a save function exists");
+	const catchMatch = fnMatch[0].match(/catch\s*\(e\)\s*\{([\s\S]*?)\}\s*finally/);
+	assert.ok(catchMatch, "the save function has a catch block");
+	assert.match(catchMatch[1], /emit\(\s*["']stale["']\s*\)/, "a detected stale refusal emits 'stale'");
+	assert.doesNotMatch(catchMatch[1], /draftText\.value\s*=/, "the catch branch still never resets the typed draft text");
+});
+
+test("U3: NumbersDrill.vue declares a 'stale' emit alongside close/saved", () => {
+	const source = readDrillVue();
+	const emitsMatch = source.match(/defineEmits\(\s*\[([^\]]*)\]\s*\)/);
+	assert.ok(emitsMatch);
+	assert.match(emitsMatch[1], /["']stale["']/);
+});
+
+test("U3: Numbers.vue reloads on the drill panel's 'stale' event too, same as 'saved'", () => {
+	const tpl = template(readNumbersVue());
+	const tag = tpl.match(/<NumbersDrill\b[\s\S]*?\/?>/)[0];
+	assert.match(tag, /@stale="[^"]+"/, "Numbers.vue listens for the stale event");
+});
+
+test("U3: a watch on props.commentary refreshes localCommentary's token without resetting the typed draft", () => {
+	const js = script(readDrillVue());
+	assert.match(js, /watch\(\s*\(\)\s*=>\s*props\.commentary\b/, "a watcher on the commentary prop exists");
+	const watchMatch = js.match(/watch\(\s*\(\)\s*=>\s*props\.commentary\b[\s\S]*?\n\t?\);/);
+	assert.ok(watchMatch, "the props.commentary watcher's body is found");
+	assert.doesNotMatch(watchMatch[0], /draftText\.value\s*=/, "recovering the token never overwrites the typed draft");
+	assert.match(watchMatch[0], /localCommentary\.value\s*=/, "the watcher replaces localCommentary with the fresh entry");
+});
+
+// --- R41h (U7): a cleared comment is not shown as a byline-less comment ----
+
+test("U7: blank commentary text renders 'No commentary yet', not an empty byline, in the drill panel too", () => {
+	const tpl = template(readDrillVue());
+	assert.match(tpl, /v-if="localCommentary\s*&&\s*localCommentary\.text"/, "the comment bubble is gated on non-blank text too, not just a truthy entry");
+	assert.match(tpl, /No commentary yet\./);
 });

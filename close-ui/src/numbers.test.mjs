@@ -218,6 +218,19 @@ test("comparisonNote is carried from the statement, and drives the not-loaded ce
 	assert.equal(view.comparisonNote, "No rows in the warehouse for FY2025 P06");
 });
 
+// R41h/U7: a cleared commentary record (text: "") is still a record — the
+// server keeps it (commentary_model.event_detail: a blank save is recorded,
+// never omitted). The statement row must not show it as a byline-less
+// comment ("" — Zz Analyst · 10:00"); it must read as having no commentary,
+// same as a heading with no record at all.
+test("U7: a cleared (blank-text) commentary entry renders as having no commentary — never an empty byline", () => {
+	const payload = golden();
+	payload.commentary["4"].text = "";
+	const view = statementView(payload, NOW, TZ);
+	const row = tabRows(view, "Profit and Loss").find((r) => r.kind === "heading");
+	assert.equal(row.commentary, null, "a blank-text entry must not produce a commentary row");
+});
+
 test("isDrillable: only heading rows", () => {
 	const view = statementView(golden(), NOW, TZ);
 	const rows = tabRows(view, "Profit and Loss");
