@@ -715,7 +715,7 @@ def _sync_budget_custom_fields_locked():
     tables = (("Budget Line", "in_budget", "main_account"),
               ("Consolidation Journal Line", "in_journal", "main_account"))
     plans = [_plan_dimension_custom_fields(dt, flag) for dt, flag, _ in tables]
-    actions = []
+    actions = [r for plan in plans for r in plan[3]]
     for (dt, _flag, insert_after), plan in zip(tables, plans):
         actions += _add_dimension_custom_fields(dt, insert_after, plan)
     for (dt, _flag, _after), plan in zip(tables, plans):
@@ -742,21 +742,33 @@ def _plan_dimension_custom_fields(dt, flag):
         fields=["dimension_name", "label"],
         limit_page_length=0,
     )
-    wanted = {d.dimension_name for d in dims}
-    label_map = {d.dimension_name: d.label for d in dims}
+    # Only names the sync can see again. ``existing`` below is queried
+    # ``fieldname like "dim_%"``, so a Custom Field named outside that shape
+    # could never be found as existing: every later run would try to recreate
+    # it, and un-ticking the flag could never remove it. A non-dim_ name is
+    # legal on a Dimension outside the trial balance, so this is reachable
+    # (PR #324 re-review, finding 6). Refused and reported, not silent.
+    wanted, label_map, refused = set(), {}, []
+    for d in dims:
+        name = d.dimension_name or ""
+        if not _SAFE_TB_DIM_COLUMN.fullmatch(name):
+            refused.append(_refuse_tb_dim_column(name, f"declared for {dt}"))
+            continue
+        wanted.add(name)
+        label_map[name] = d.label
     existing = frappe.get_all(
         "Custom Field",
         filters={"dt": dt, "fieldname": ("like", "dim_%")},
         fields=["name", "fieldname"],
         limit_page_length=0,
     )
-    return wanted, label_map, existing
+    return wanted, label_map, existing, refused
 
 
 def _add_dimension_custom_fields(dt, insert_after, plan):
     """Insert the Custom Fields ``dt`` is missing. Each insert commits
     (CustomField.on_update -> frappe.db.updatedb)."""
-    wanted, label_map, existing = plan
+    wanted, label_map, existing, _refused = plan
     existing_names = {cf.fieldname for cf in existing}
     actions = []
     for dim_name in sorted(wanted - existing_names):
@@ -783,7 +795,7 @@ def _remove_orphan_dimension_custom_fields(dt, plan):
     already written stay readable and a dimension unticked by mistake loses no
     history (konsol#255, Deepak Pai's option A).
     """
-    wanted, _label_map, existing = plan
+    wanted, _label_map, existing, _refused = plan
     actions = []
     for cf in existing:
         if cf.fieldname not in wanted:

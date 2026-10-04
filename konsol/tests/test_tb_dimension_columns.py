@@ -86,7 +86,10 @@ def _load(declared=(), columns=LIVE_COLUMNS):
             # second per-site column set on the journal's staging table, read
             # with filters={"in_journal": 1, ...}; answering that with the same
             # declared list would make every DDL assertion here count two
-            # ALTERs. The journal path has its own coverage.
+            # ALTERs. NOTE: _sync_journal_dimension_columns itself has no test
+            # (PR #324 re-review, finding 5) — the journal's coverage is its
+            # Custom Field sync and the pure journal_dimension_columns, not
+            # this ALTER. Do not read this guard as meaning otherwise.
             if "in_trial_balance" not in (kwargs.get("filters") or {}):
                 return []
             return [_D(d) for d in declared]

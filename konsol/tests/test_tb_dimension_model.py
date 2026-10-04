@@ -243,3 +243,24 @@ def test_the_private_alias_still_resolves_to_the_public_helper():
     """Nothing should import _is_on now, but anything that still does must get
     the same function, not a divergent copy."""
     assert M._is_on is M.is_flag_on
+
+
+def test_the_three_copies_of_the_column_name_rule_are_identical():
+    """PR #324 re-review, finding 7. The pattern is hand-copied into three
+    modules — here, schema_apply._SAFE_TB_DIM_COLUMN and
+    journal_model._LEGAL_DIM_COLUMN — because the other two import frappe or
+    would make a cycle. Each docstring says it MUST stay identical and nothing
+    enforced it. A drift is silent in the worst direction: one layer accepts a
+    name the next refuses, and values land nowhere."""
+    import os
+    import re as _re
+    app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    found = {}
+    for rel, const in (("schema_apply.py", "_SAFE_TB_DIM_COLUMN"),
+                       (os.path.join("close", "journal_model.py"), "_LEGAL_DIM_COLUMN")):
+        with open(os.path.join(app, rel)) as fh:
+            src = fh.read()
+        m = _re.search(const + r' = re\.compile\(r"([^"]+)"\)', src)
+        assert m, f"{const} not found in {rel} in the expected shape"
+        found[rel] = m.group(1)
+    assert set(found.values()) == {M._LEGAL_DIMENSION_NAME.pattern}, found

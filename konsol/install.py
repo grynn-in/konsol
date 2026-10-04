@@ -288,12 +288,17 @@ def after_migrate():
     # reconcile, which is the one call that carries rows seeded during a
     # migrate through to ClickHouse (sync_table no-ops while in_migrate).
     _seed_defaults()
+    # Before the reconcile, for the reason stated above: it provisions the
+    # dimension Custom Fields AND the journal's ClickHouse columns, and
+    # reconcile_all(force=True) writes the journal's rows through. Placed after
+    # it, the reconcile named a column the table did not have yet and logged
+    # the table as skipped, then the repair ran (PR #324 re-review, finding 2).
+    _sync_budget_line_custom_fields()
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()
     _setup_dashboard()
     _retire_konsol_control_page()
-    _sync_budget_line_custom_fields()
 
 
 def _restore_asset_manifest():

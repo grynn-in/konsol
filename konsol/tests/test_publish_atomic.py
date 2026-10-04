@@ -8,6 +8,7 @@ The publish now enqueues the sync as a job after the commit.
 Site-free: the code runs against a stub frappe.
 """
 import ast
+import re
 import importlib.util
 import os
 import sys
@@ -50,11 +51,15 @@ def _load(names, ns):
     tree = _tree(SCHEMA_APPLY)
     body = [n for n in tree.body
             if (isinstance(n, ast.FunctionDef) and n.name in names)
-            or (isinstance(n, ast.Assign) and all(isinstance(t, ast.Name) and t.id.startswith("_BUDGET")
-                                                   for t in n.targets))]
+            or (isinstance(n, ast.Assign) and all(
+                isinstance(t, ast.Name)
+                and (t.id.startswith("_BUDGET") or t.id == "_SAFE_TB_DIM_COLUMN")
+                for t in n.targets))]
     for node in body:   # drop @frappe.whitelist(): the stub has none
         if isinstance(node, ast.FunctionDef):
             node.decorator_list = []
+    # _SAFE_TB_DIM_COLUMN is compiled in for every caller, and it needs re.
+    ns.setdefault("re", re)
     exec(compile(ast.Module(body=body, type_ignores=[]), SCHEMA_APPLY, "exec"), ns)
     return ns
 
@@ -509,9 +514,15 @@ class _Site:
     def rollback(self):
         self._new_transaction()
 
-    def commit_elsewhere(self, fieldname):
-        """Another session commits the field: not in this snapshot."""
-        self.committed[f"Budget Line-{fieldname}"] = {"fieldname": fieldname, "creation": "theirs"}
+    def commit_elsewhere(self, fieldname, dt="Budget Line"):
+        """Another session commits the field: not in this snapshot.
+
+        dt-aware since konsolidat#245 gave a second table its own fields (PR
+        #324 re-review, finding 3's related note): hard-coded to Budget Line it
+        could only ever stage the wrong table's row.
+        """
+        self.committed[f"{dt}-{fieldname}"] = {"fieldname": fieldname, "creation": "theirs",
+                                               "dt": dt}
 
     # -- SQL --
     def sql(self, query, values=None, as_dict=False):
@@ -565,8 +576,14 @@ class _Site:
     def exists(self, doctype, filters):
         assert doctype == "Custom Field"
         creation = filters.get("creation")
+        # dt-scoped, like the real query in _created_elsewhere. Left dt-blind, a
+        # failed journal insert of dim_cc found Budget Line's dim_cc, decided
+        # "the goal is met" and left the journal field uncreated while
+        # reporting success — and under option D the same fieldname on both
+        # tables is the NORMAL case (PR #324 re-review, finding 3).
         return next((n for n, r in self.visible().items()
                      if r["fieldname"] == filters["fieldname"]
+                     and r.get("dt", "Budget Line") == filters.get("dt", "Budget Line")
                      and (creation is None or r["creation"] != creation[1])), None)
 
     def _stamp(self):
@@ -621,8 +638,9 @@ class _Site:
 def _sync(site):
     ns = _load({"_sync_budget_custom_fields", "_sync_budget_custom_fields_locked",
                 "_plan_dimension_custom_fields", "_add_dimension_custom_fields",
-                "_remove_orphan_dimension_custom_fields",
-                "_budget_field_sync_lock", "_created_elsewhere"}, {"frappe": site.frappe()})
+                "_remove_orphan_dimension_custom_fields", "_refuse_tb_dim_column",
+                "_budget_field_sync_lock", "_created_elsewhere"},
+               {"frappe": site.frappe()})
     return ns["_sync_budget_custom_fields"]
 
 
@@ -868,3 +886,46 @@ def test_a_dimension_on_both_tables_gets_a_field_on_each():
     assert sorted(sync()) == ["added dim_cc", "added dim_cc"]
     dts = sorted(r.get("dt") for r in site.committed.values())
     assert dts == ["Budget Line", "Consolidation Journal Line"], dts
+
+
+def test_a_reported_removal_really_happened_across_both_tables():
+    """A failed add on one table must not leave another table's reported
+    removal unapplied: the action log is the only record of what happened.
+
+    DOES NOT PIN THE PHASED ORDERING, and the name no longer claims to. The
+    re-review asked for a test that fails on the interleaved order; this
+    scenario passes under BOTH (measured), because once _created_elsewhere's
+    exists is dt-scoped the journal's duplicate is detected before its insert
+    is staged, so the rollback finds nothing of the delete's to discard. The
+    re-review's own red/green for this test was obtained against the dt-blind
+    stub it also asked to fix, so the two fixes cancel here. The ordering in
+    _sync_budget_custom_fields_locked is therefore STILL UNTESTED — see the
+    PR comment; it is argued from frappe's transaction semantics, not pinned.
+    """
+    site = _Site()
+    site.dimensions["dim_j"] = {"label": "J", "in_budget": 1, "in_journal": 1,
+                                "status": "Published"}
+    site.seed("dim_j", creation="old", dt="Budget Line")
+    site.seed("dim_old", creation="old", dt="Budget Line")   # the orphan to remove
+    # The journal's add fails AND another session already created that field,
+    # so _created_elsewhere judges the goal met and rolls back to discard its
+    # own pending work — taking any uncommitted delete with it.
+    site.commit_elsewhere("dim_j", dt="Consolidation Journal Line")
+    site.fail_insert = "db_table_validate"
+    assert _sync(site)() == ["removed dim_old"]
+    assert "Budget Line-dim_old" not in site.committed, (
+        "reported 'removed dim_old' while the row is still committed: a later "
+        "table's failed add rolled this delete back")
+
+
+def test_a_dimension_the_sync_could_never_see_again_is_refused_not_created():
+    """PR #324 re-review, finding 6. `existing` is queried `like dim_%`, so a
+    Custom Field outside that shape could never be found again: every run would
+    retry it and un-ticking the flag could never remove it. A non-dim_ name is
+    legal on a Dimension outside the trial balance, so this is reachable."""
+    site = _Site()
+    site.dimensions["business_unit"] = {"label": "BU", "in_budget": 1, "in_journal": 0,
+                                        "status": "Published"}
+    actions = _sync(site)()
+    assert actions == ["refused business_unit"], actions
+    assert not site.committed, "no Custom Field may be created for it"
