@@ -1,11 +1,14 @@
-// konsol#305 U41: numbers.js (part 1 of 2 — W42 adds the drill/commentary
-// helpers in the same file, U42)
+// konsol#305 U41/U42: numbers.js
 //
-// Turns statement_api.get_statement's payload (N51:
+// U41: turns statement_api.get_statement's payload (N51:
 // konsol/close/statement_api.py, konsol/close/statement_model.py) into
 // everything the Numbers screen shows (story 8.1). The screen re-derives
 // nothing: every label, tone, column set and cell text is decided here, so
 // the component only walks `view.tabs` and binds `tabRows`/`isDrillable`.
+// U42: turns statement_api.get_drill's payload (N52: drill_model.py) into
+// the drill panel's view (`drillView`), and builds the one commentary
+// request body (`commentaryBody`) and the one comment-permission check
+// (`canComment`) the drill panel's editor needs (stories 8.2, 8.3).
 // Takes no vue/frappe/xstate import; the period comes from the URL
 // (route.js), not from here or from browser storage.
 //
@@ -163,6 +166,15 @@ function includeRow(entry, comparisonNote) {
 	};
 }
 
+/** `entry` is one `statement_api._commentary` record (`{name, text, by, at,
+ * modified}`, N51/N52) -> "<by> · <formatted time>", the one commentary
+ * byline text for both the statement row (via `commentaryFor` below) and
+ * the drill panel's own commentary display (U42/U46), which reads the
+ * entry straight from the payload rather than through `statementView`. */
+export function commentaryByText(entry, now, timeZone) {
+	return `${entry.by} · ${formatTime(parseZoned(entry.at), now, timeZone)}`;
+}
+
 /** `commentary` is `statement_api`'s `{heading_code: {text, by, at, ...}}`
  * (N51 `_commentary`). `null` when the heading has none. */
 function commentaryFor(commentary, headingCode, now, timeZone) {
@@ -172,7 +184,7 @@ function commentaryFor(commentary, headingCode, now, timeZone) {
 	}
 	return {
 		text: entry.text,
-		byText: `${entry.by} · ${formatTime(parseZoned(entry.at), now, timeZone)}`,
+		byText: commentaryByText(entry, now, timeZone),
 	};
 }
 
@@ -319,4 +331,161 @@ export function tabRows(view, section) {
  * is never drillable. */
 export function isDrillable(row) {
 	return row.kind === "heading";
+}
+
+// --- U42: statement_api.get_drill's payload -> the drill panel's view ------
+//
+// `drillView` mirrors `statementView`'s conventions on `get_drill`'s own
+// payload (N52: konsol/close/statement_api.py, konsol/close/drill_model.py):
+// a missing top-level key throws naming it; an unknown `state` throws; a
+// non-ok `state` shows the server's message and no rows (never a guessed
+// breakdown). Unlike the statement, a drill row's `layer`/`label` are shown
+// exactly as the server sends them (drill_model.py already merged and
+// labelled every adjustment_type it knows, and a type it does not recognise
+// is still labelled — W4-E6) — this module does not re-map them.
+
+const DRILL_REQUIRED_KEYS = ["period", "consolidation_group", "heading", "state", "message", "drill"];
+
+// get_drill's own non-ok states (statement_api.py:473-476, :485-491): no
+// `choose_group`/`no_chart` here — the caller already has a group and a
+// chart by the time it can ask for a drill.
+const DRILL_SERVER_MESSAGE_STATES = new Set(["not_built", "error"]);
+
+function buildDrillState(payload) {
+	if (payload.state === "ok") {
+		return null;
+	}
+	if (DRILL_SERVER_MESSAGE_STATES.has(payload.state)) {
+		return { kind: payload.state, message: payload.message };
+	}
+	throw new Error(`Numbers: unknown drill state: ${payload.state}`);
+}
+
+/** D5: the TB screen and the Adjustments screen each carry the period in
+ * their own URL, not read from here. `tb`'s source already names its own
+ * `fiscal_year`/`fiscal_period` (an entity row and the CTA row may differ
+ * from the drill's own period in principle, though not today); `journals`'s
+ * source carries none (`{"kind": "journals"}`, drill_model.py:275), so that
+ * link uses the drill payload's own period. `null` source (eliminations,
+ * equity method, acquisitions/disposals, current-year result: nothing to
+ * open) -> no link. An unknown `source.kind` throws, naming it. */
+function drillSourceLink(source, period) {
+	if (!source) {
+		return null;
+	}
+	if (source.kind === "tb") {
+		return `/close/${source.fiscal_year}/${source.fiscal_period}/trial-balances`;
+	}
+	if (source.kind === "journals") {
+		return `/close/${period.fiscal_year}/${period.fiscal_period}/adjustments`;
+	}
+	throw new Error(`Numbers: unknown drill source kind: ${source.kind}`);
+}
+
+/** One `drill_model.drill` row -> one display row. `entity`/`label` are
+ * passed through unchanged (D2-5: the CTA, intercompany, top-side,
+ * equity-method and acquisition/disposal rows carry `entity: null` and are
+ * shown by `label` only; only a genuine per-entity row carries an entity
+ * code, so "no entity text" for the others falls out of the server's own
+ * shape rather than being decided again here). */
+function drillRow(row, period) {
+	const view = {
+		layer: row.layer,
+		entity: row.entity,
+		label: row.label,
+		amount: amountText(row.amount),
+		accounts: (row.accounts || []).map((account) => ({
+			mainAccount: account.main_account,
+			accountName: account.account_name,
+			amount: amountText(account.amount),
+		})),
+		link: drillSourceLink(row.source, period),
+	};
+	if (row.journals) {
+		view.journals = row.journals.map((journal) => ({
+			journalId: journal.journal_id,
+			description: journal.description,
+			amount: amountText(journal.amount),
+			postedBy: journal.posted_by,
+			approvedBy: journal.approved_by,
+		}));
+		view.journalsBasis = row.journals_basis;
+	}
+	return view;
+}
+
+/**
+ * `statement_api.get_drill`'s payload -> everything the drill panel shows:
+ * `{heading, headingName, section, dimensionsNote, state, rows}` (U42
+ * facts). `state` is `null` on an ok payload; otherwise `{kind, message}`
+ * and `rows` is `[]` — the panel never shows a guessed breakdown next to an
+ * error.
+ *
+ * Throws `"Numbers payload has no <key>."` on any missing top-level key,
+ * mirroring `statementView` — no silent default for a key the producer did
+ * not send.
+ */
+export function drillView(payload) {
+	for (const key of DRILL_REQUIRED_KEYS) {
+		if (!Object.prototype.hasOwnProperty.call(payload, key)) {
+			throw new Error(`Numbers payload has no ${key}.`);
+		}
+	}
+
+	const state = buildDrillState(payload);
+	const isOk = payload.state === "ok";
+	const drill = isOk ? payload.drill : null;
+
+	return {
+		heading: payload.heading,
+		headingName: drill ? drill.heading_name : null,
+		section: drill ? drill.section : null,
+		dimensionsNote: drill ? drill.dimensions_note : null,
+		state,
+		rows: isOk ? drill.rows.map((row) => drillRow(row, payload.period)) : [],
+	};
+}
+
+// --- U42: the commentary request/permission helpers -------------------------
+
+/**
+ * `commentaryBody(view, heading, text, modified)` -> exactly the six
+ * parameters `commentary_api.save_commentary` names (M44): `{fiscal_year,
+ * fiscal_period, consolidation_group, heading, text, modified}`. Nothing
+ * else — `view` may be either `get_statement`'s or `get_drill`'s payload
+ * (both carry `period`/`consolidation_group`), and `modified` may be the
+ * bare token or a whole draft/doc-like object (whatever the caller is
+ * holding, which may carry `owner`, `docstatus`, `name`, …): only its
+ * `modified` field is read, and nothing else from it ever reaches the
+ * request body. `text` is carried through unchanged, including blank or
+ * whitespace-only text: that is a clear, not a refusal, and the decision
+ * belongs to `commentary_api.save_commentary`'s own `.strip()`, not here.
+ */
+export function commentaryBody(view, heading, text, modified) {
+	let token = null;
+	if (modified !== null && modified !== undefined) {
+		token = typeof modified === "object" ? (modified.modified ?? null) : modified;
+	}
+	return {
+		fiscal_year: view.period.fiscal_year,
+		fiscal_period: view.period.fiscal_period,
+		consolidation_group: view.consolidation_group,
+		heading,
+		text,
+		modified: token,
+	};
+}
+
+/** `get_statement`'s own `can_comment` (statement_api.py: role and Open
+ * period, #305-W4-5 5b) — `true` only when the payload says so exactly.
+ * `get_drill`'s payload carries no `can_comment` of its own (N52): the
+ * drill panel is shown the statement's payload for this, not its own.
+ * A missing `can_comment` key throws rather than silently reading as
+ * `false` — the no-policy-default rule applies to a missing permission
+ * exactly as it does to a missing statement key. */
+export function canComment(payload) {
+	if (!Object.prototype.hasOwnProperty.call(payload, "can_comment")) {
+		throw new Error("Numbers: payload has no can_comment.");
+	}
+	return payload.can_comment === true;
 }
