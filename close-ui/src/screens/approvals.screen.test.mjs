@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAfter, statementView } from "../numbers.js";
+import { queueView } from "../approvals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APPROVALS = path.join(__dirname, "Approvals.vue");
@@ -204,17 +205,65 @@ test("Self-approval policy line is shown only when the caller is an approver", (
 
 // --- W44: Before/Change/After per heading in the journal detail panel ------
 
-test("pure: beforeAfter(item.effect, statementView(statement)) over the real golden fixtures gives the amended per-heading before/change/after (N54/W42)", () => {
+// konsol#305 R41g/U2: the screen never hands beforeAfter the raw fixture
+// directly — it selects a row off `queueView`'s own `items`, exactly as
+// Approvals.vue's template does (`v-for="item in view.items"`, then
+// `selectJournal(item)`). `queueView` has already run the journal's effect
+// through `effectView` for display (approvals.js's `baseView`), which drops
+// `net_debit`/`heading_name`; the raw effect for `beforeAfter` has to come
+// from a field that survives that, which is what `rawEffect` is for. Feeding
+// the OLD (view-shaped) `.effect` here reproduces U2's bug: "NaN" and
+// `headingName: undefined`, caught by the non-finite guard below.
+function queuePayloadFor(item) {
+	return {
+		waiting: { count: 1, oldest: item.created },
+		hidden: 0,
+		items: [item],
+		sent_back: [],
+		can_approve: true,
+		self_approval: null,
+	};
+}
+
+test("pure: Approvals' own path — queueView(...).items[0].rawEffect into beforeAfter — gives the amended per-heading before/change/after, never NaN (N54/W42/U2)", () => {
 	const item = golden(ITEM_FIXTURE);
 	const statement = golden(STATEMENT_FIXTURE);
-	const view = statementView(statement, new Date("2025-08-01T18:00:00Z"), "Europe/London");
-	const rows = beforeAfter(item.effect, view);
+	const now = new Date("2025-08-01T18:00:00Z");
+	const tz = "Europe/London";
+	const queue = queueView(queuePayloadFor(item), now, tz);
+	const queueItem = queue.items[0];
+	const view = statementView(statement, now, tz);
+	const rows = beforeAfter(queueItem.rawEffect, view);
 	assert.deepEqual(
 		rows.map((r) => [r.heading, r.before, r.change, r.after]),
 		[
 			["4", "241.43", "500.00", "741.43"],
 			["2", "803.70", "(500.00)", "303.70"],
 		],
+	);
+});
+
+test("failure path: feeding beforeAfter the queueView item's display-shaped .effect (U2's bug) throws instead of rendering \"NaN\"", () => {
+	const item = golden(ITEM_FIXTURE);
+	const statement = golden(STATEMENT_FIXTURE);
+	const now = new Date("2025-08-01T18:00:00Z");
+	const tz = "Europe/London";
+	const queue = queueView(queuePayloadFor(item), now, tz);
+	const queueItem = queue.items[0];
+	const view = statementView(statement, now, tz);
+	assert.throws(() => beforeAfter(queueItem.effect, view), /non-finite amount/);
+});
+
+// konsol#305 R41g/U2: beforeAfter is called with the raw effect
+// (`rawEffect`, approvals.js), never the display-shaped `.effect`
+// (`effectView`'s output, which has no `net_debit`/`heading_name`).
+test("beforeAfter is called with selectedItem.value.rawEffect, never .effect (U2)", () => {
+	const js = script(read());
+	assert.match(js, /beforeAfter\(\s*selectedItem\.value\.rawEffect\s*,/, "beforeAfter reads the raw effect, not the view-shaped one");
+	assert.doesNotMatch(
+		js.replace(/beforeAfter\(\s*selectedItem\.value\.rawEffect\s*,/g, ""),
+		/beforeAfter\(\s*selectedItem\.value\.effect\b/,
+		"no remaining call site still passes the display-shaped effect",
 	);
 });
 

@@ -367,6 +367,15 @@ test("amountText: null/undefined throws, never renders 0.00", () => {
 	assert.throws(() => amountText(undefined), /missing amount/);
 });
 
+// konsol#305 R41g/U2: amountText(NaN) used to return the string "NaN" — a
+// silent fallback. NaN/Infinity are never a real amount, so they throw,
+// naming the value, exactly like the null/undefined case above.
+test("amountText: NaN/Infinity throws, never renders \"NaN\"", () => {
+	assert.throws(() => amountText(NaN), /non-finite amount/);
+	assert.throws(() => amountText(Infinity), /non-finite amount/);
+	assert.throws(() => amountText(-Infinity), /non-finite amount/);
+});
+
 // --- drillView (U42) ---------------------------------------------------------
 //
 // Exercises drillView against statement_api.get_drill's real payload shape
@@ -631,6 +640,19 @@ test("failure path: a view in a non-ok state throws", () => {
 	const view = statementView(payload, NOW, TZ);
 	const item = goldenJournalItem();
 	assert.throws(() => beforeAfter(item.effect, view), /state/);
+});
+
+// konsol#305 R41g/U2: a heading whose net_debit is missing/non-finite (the
+// shape `approvals.js`'s `effectView` produces, which has no `net_debit` at
+// all) must throw through amountText rather than render "NaN" for change/
+// after. This is beforeAfter's own non-finite guard, exercised directly
+// (Approvals.vue's screen-level regression test lives in
+// screens/approvals.screen.test.mjs).
+test("failure path: beforeAfter throws (never \"NaN\") when a heading's net_debit is not a finite number", () => {
+	const view = statementView(golden(), NOW, TZ);
+	const item = goldenJournalItem();
+	item.effect.headings[0].net_debit = undefined;
+	assert.throws(() => beforeAfter(item.effect, view), /non-finite amount/);
 });
 
 // --- module hygiene ----------------------------------------------------------
