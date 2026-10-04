@@ -1,6 +1,12 @@
 """konsol#305 S42: every submit and cancel of a NUMBER_DRIVING approval
-doctype calls ``signoff_gate.record_data_change`` for each period
-``data_change_model.changed_periods`` names.
+doctype calls ``signoff_gate.record_data_change`` ONCE, for the EARLIEST
+period ``data_change_model.changed_periods`` names (#305 R41b / S2: it
+used to call once PER period that function named — one later-period call
+per period, repeating ``record_data_change``'s own later-period scan and
+overwriting that later period's OWN ``data_change`` text; fixed so the real
+``record_data_change`` does the later-period stamping alone, exercised
+against the REAL ``signoff_gate`` in test_close_signoff_gate.py's
+``test_the_hook_calls_record_data_change_exactly_once_*`` tests, not here).
 
 ``konsol.close.data_change_hook`` is wired in ``hooks.py`` as
 ``doc_events["*"]["on_submit"]`` and (after ``cancel_event.record``) as a
@@ -181,15 +187,32 @@ def test_an_ownership_period_on_submit_names_its_entity():
         (2025, 12, "Ownership Period OP-1 approved", USER, "ZZ01")], frappe.calls
 
 
-def test_a_journal_reversing_into_a_later_period_records_two_calls():
+def test_a_journal_reversing_into_a_later_period_records_one_call_for_the_earlier_period():
+    """S2: the hook calls record_data_change ONCE, for the earliest of the
+    changed period and the reverse period -- here the journal's own period,
+    2025 P07 (a reversal's validate() refuses posting into an earlier
+    period than the one it reverses, so the reverse key is never earlier).
+    The real record_data_change -- not this stub -- is what marks the
+    later P08 (test_close_signoff_gate.py)."""
     module, frappe = _load(
         period_rows=[_row(2025, 7), _row(2025, 8)], period_of=lambda d: (2025, 7))
     doc = _doc("Consolidation Journal", "CJ-1",
                 reverse_fiscal_year=2025, reverse_fiscal_period=8)
     module.on_submit(doc)
     assert frappe.calls == [
-        (2025, 7, "Consolidation Journal CJ-1 approved", USER, None),
-        (2025, 8, "Consolidation Journal CJ-1 approved", USER, None)], frappe.calls
+        (2025, 7, "Consolidation Journal CJ-1 approved", USER, None)], frappe.calls
+
+
+def test_a_later_declared_period_records_only_the_earliest_call():
+    """A later Regular period declared beyond the changed one must not turn
+    into its own extra call either (S2's Effect 1: repeated full scans)."""
+    module, frappe = _load(
+        period_rows=[_row(2025, 7), _row(2025, 8), _row(2025, 9), _row(2025, 10),
+                     _row(2025, 11)],
+        period_of=lambda d: (2025, 7))
+    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+    assert frappe.calls == [
+        (2025, 7, "Group Exchange Rate GER-1 approved", USER, None)], frappe.calls
 
 
 def test_an_ic_balance_is_number_driving_and_records_a_call():
