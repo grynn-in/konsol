@@ -22,6 +22,8 @@ A21 ``signoff_model.summary``:
 - previous periods: the Regular period states from the first close period up
   to the one before the target. With the first close period undeclared there
   is no "previous" to name: the list is empty and the gap says why.
+- intercompany (C10): ``ic_api.signoff_summary`` — counts only, never a gate
+  (E5-P11), and unscoped so every role reads the same counts (E5-P13).
 
 It adds ``can_sign`` (write on Assertion Run, the test ``sign_off_close``
 applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
@@ -74,7 +76,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import period_model, signoff_gate, signoff_model
+from konsol.close import ic_api, period_model, signoff_gate, signoff_model
 from konsol.close.timefmt import zoned_iso
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
@@ -177,7 +179,7 @@ def _names(visible, hidden):
     return ", ".join(parts)
 
 
-def _scoped_gap(gap, allowed, fiscal_year):
+def _scoped_gap(gap, allowed, key):
     entities = gap.get("entities")
     if entities is None:
         return gap
@@ -191,7 +193,11 @@ def _scoped_gap(gap, allowed, fiscal_year):
                    % names)
     elif gap["code"] == signoff_model.QUARTER_UNDECLARED:
         message = ("Declare the Quarter of every Regular period of FY%d in the fiscal year "
-                   "before signing off (quarterly: %s)." % (fiscal_year, names))
+                   "before signing off (quarterly: %s)." % (key[0], names))
+    elif gap["code"] == signoff_model.UNOWNED_TB:
+        message = ("Trial balances from %s have no ownership for FY%d P%02d: record the "
+                   "ownership or cancel the trial balance before signing off."
+                   % (names, key[0], key[1]))
     else:
         message = "%s (%s)." % (gap["code"], names)
     return dict(gap, entities=mine, hidden=hidden, message=message)
@@ -201,7 +207,7 @@ def _scoped(problems, allowed, key):
     """``problems`` with other entities' codes replaced by a count."""
     if allowed is None:
         return problems
-    gaps = [_scoped_gap(g, allowed, key[0]) for g in problems["config_gaps"]]
+    gaps = [_scoped_gap(g, allowed, key) for g in problems["config_gaps"]]
     completeness = problems["completeness"]
     if completeness:
         mine = [e for e in completeness["missing"] if e in allowed]
@@ -261,6 +267,9 @@ def get_signoff(fiscal_year, fiscal_period):
                                         frequencies=_frequencies(key))
     roles = set(frappe.get_roles())
     can_override = bool(OVERRIDE_ROLES & roles)
+    # C21: one read of the IC line serves both the gate (summary) and the
+    # result's own "intercompany" key below.
+    ic = ic_api.signoff_summary(*key)
 
     result = signoff_model.summary(
         run, warned_names, on_behalf,
@@ -272,6 +281,7 @@ def get_signoff(fiscal_year, fiscal_period):
         period_status=row["status"],
         # A66: the same rule sign_off_close refuses with (the run's started_at).
         data_change={f: closed.get(f) for f in signoff_gate.DATA_CHANGE_FIELDS},
+        intercompany=ic,
     )
     # A55: when each exception was declared, with the site's offset. The A08
     # controller allows one submitted exception per entity-period.
@@ -287,6 +297,11 @@ def get_signoff(fiscal_year, fiscal_period):
         "data_changed_at": _iso(closed.get("data_changed_at")),
         "data_changed_by": closed.get("data_changed_by") or None,
         "data_change": closed.get("data_change") or None,
+        # C10/C21: the intercompany line (state, message, counts only;
+        # E5-P13 — unscoped, every role sees the same counts). The same
+        # read that fed signoff_model.summary's Amber rule above (W3-P3,
+        # #305-W3-8), never a second one.
+        "intercompany": ic,
     })
     return result
 

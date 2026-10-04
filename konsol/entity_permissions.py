@@ -214,6 +214,22 @@ def has_entity_doc_permission(doc, user=None, permission_type=None):
     return may_see_entity(getattr(doc, "name", None), user)
 
 
+# Close Event (konsol#305 R01c, #305-W2-9). Its entity lives in `entity`, not
+# `data_area_id`, so it is not in ENTITY_SCOPED_DOCTYPES. An event with a blank
+# entity is group-level (rates, journals, IC balances) and stays visible; an
+# event naming an entity follows the reader's scope. The trail endpoint scopes
+# its own get_all; these cover REST and Desk reads.
+
+def close_event_conditions(user=None):
+    """permission_query_conditions for Close Event."""
+    return _condition_for("`tabClose Event`.`entity`", user)
+
+
+def has_close_event_permission(doc, user=None, permission_type=None):
+    """has_permission hook for Close Event: opening one event."""
+    return may_see_entity(getattr(doc, "entity", None), user)
+
+
 def entity_read_scope(entity, allowed, wildcard=False):
     """The one entity-access rule for a read that goes straight to ClickHouse.
 

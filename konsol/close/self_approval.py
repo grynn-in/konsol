@@ -3,7 +3,9 @@
 
 It acts only on ``close_policy_model.APPROVAL_DOCTYPES`` and applies
 ``close_policy_model.self_approval_problem`` to the submitting user and the
-document's owner (its preparer). Frappe runs it on every submit path: the Desk
+document's preparers: its owner, plus everyone who edited the draft
+(#305-W2-14, ``preparers_for``), plus the submitter when the submitting
+request itself edits the draft (review M1, ``_edits_in_this_submit``). Frappe runs it on every submit path: the Desk
 submit button, a workflow "Approve" (``apply_workflow`` ends in
 ``doc.submit()``), ``approval_api.approve`` and every programmatic submit.
 
@@ -13,6 +15,22 @@ Every user is held to the declared policy; there is no system-user exemption
 Frappe's own ``allow_self_approval`` stays 1 on every workflow transition: it
 cannot express "Allowed with reason", and 0 would also refuse the Analyst's own
 "Send for Approval". This hook is the one rule.
+
+Every approval it lets through writes its Close Event (konsol#305 T02b,
+#305-W2-1): ``approved`` or ``self_approved``, with the preparers, the policy
+and the reason, through ``close_event.record``. The hook runs in
+``before_submit``, so the event is in the submit's own transaction; the
+writer's exception is never caught, so a failing writer stops the approval.
+A refused approval records nothing. A submit exempt as ``"system"`` (a patch,
+install or migrate) writes one ``"approved"`` event live too (konsol#305
+R01g, #305-W2-S4), with ``detail.exempt == "system"`` and no self-approval
+judgment: no policy read, no preparer lookup, so the actor (the session
+user -- Administrator, during a patch/install/migrate) is recorded exactly
+as submitted. Only when the Close Event table does not exist yet (a patch
+that runs before the doctype's own migrate-time schema sync -- every patch
+before ``backfill_close_events``, which reloads it) is the event skipped,
+and logged; the backfill (T06b) recovers that one case from its Version
+(E10-P10).
 """
 import frappe
 
@@ -33,26 +51,125 @@ def _exempt(doc):
     return None
 
 
+def _record_system_submit(doc, close_event):
+    """R01g (#305-W2-S4): a patch/install/migrate submit records one
+    ``"approved"`` event live, unconditioned by self-approval policy. Skips
+    (and logs) only while the Close Event table does not exist yet -- a
+    patch that runs before migrate's schema sync creates it."""
+    if not frappe.db.table_exists("Close Event"):
+        frappe.logger().warning(
+            "konsol#305 R01g: Close Event table does not exist yet; %s %s's system submit "
+            "is not recorded live (the backfill recovers it from its Version, E10-P10)."
+            % (doc.doctype, doc.name))
+        return
+    fiscal_year, fiscal_period = close_event.period_of(doc)
+    entity = close_event.entity_of(doc)
+    close_event.record(
+        "approved", fiscal_year, fiscal_period, doc.doctype, doc.name,
+        entity=entity,
+        detail={"preparer": doc.owner, "preparers": [doc.owner],
+                "policy": None, "exempt": "system"})
+
+
 def _reason(doc):
     # A request-scoped flag, not doc.flags: apply_workflow reloads the doc
     # (frappe/model/workflow.py:101-102). konsol.close.approval_api sets it.
     return (frappe.flags.get(REASON_FLAG) or {}).get((doc.doctype, doc.name))
 
 
+def _state_field(doctype):
+    """The doctype's active workflow state field, or None without a workflow."""
+    return frappe.db.get_value(
+        "Workflow", {"document_type": doctype, "is_active": 1}, "workflow_state_field")
+
+
+def _edits_in_this_submit(doc):
+    """True when the submitting request itself changes the draft (review M1).
+
+    The submit's own Version is written after ``before_submit``
+    (frappe/model/document.py:1197), so ``preparers_for`` cannot see it. This
+    reads Frappe's diff of the pending save, the same ``get_diff`` that
+    Version will hold, against the saved draft. An insert-and-submit has no
+    saved draft; its submitter is its owner.
+    """
+    before = doc.get_doc_before_save()
+    if before is None:
+        return False
+    from frappe.core.doctype.version.version import get_diff
+    return close_policy_model.submit_carries_edit(
+        get_diff(before, doc), _state_field(doc.doctype))
+
+
+def preparers_for(doctype, owners):
+    """``{name: frozenset}`` of who prepared each document (#305-W2-14).
+
+    ``owners`` is ``{name: owner}``. Two reads, whatever the number of names:
+    the documents' Versions (``get_all`` ignores permissions, so an approver
+    without Version read is still judged) and the doctype's active workflow
+    state field (None without a workflow). Empty ``owners`` reads nothing.
+    """
+    if not owners:
+        return {}
+    rows = frappe.get_all(
+        "Version",
+        filters={"ref_doctype": doctype, "docname": ["in", sorted(owners)]},
+        fields=["docname", "owner", "data"],
+        order_by="creation asc",
+        limit_page_length=0,
+    )
+    state_field = _state_field(doctype)
+    by_name = {}
+    for row in rows:
+        by_name.setdefault(row["docname"], []).append(row)
+    return {
+        name: close_policy_model.preparers(owner, by_name.get(name, ()), state_field)
+        for name, owner in owners.items()
+    }
+
+
 def check(doc, method=None):
     if doc.doctype not in close_policy_model.APPROVAL_DOCTYPES:
         return
-    user = frappe.session.user
-    if user != doc.owner:
-        return
+    # Imported here, not at the top: rates_api imports this module only for
+    # preparers_for, and has no reason to load the Close Event writer and its
+    # controller.
+    from konsol.close import close_event, close_event_model
+
     exempt = _exempt(doc)
-    if exempt:
+    if exempt == "system":
+        _record_system_submit(doc, close_event)
         return
-    policy = frappe.db.get_single_value("Close Settings", "self_approval")
-    reason = _reason(doc)
-    problem = close_policy_model.self_approval_problem(
-        policy, doc.owner, user, doc.doctype, doc.name, reason, exempt)
-    if problem:
-        frappe.throw(problem, frappe.PermissionError)
-    doc.add_comment("Comment", close_policy_model.self_approval_note(
-        policy, user, reason.strip()))
+    user = frappe.session.user
+    preparers = preparers_for(doc.doctype, {doc.name: doc.owner})[doc.name]
+    if user not in preparers and _edits_in_this_submit(doc):
+        # Review M1: an approver who edits in the submitting request prepared it.
+        preparers = preparers | {user}
+    self_approved = user in preparers  # #305-W2-14
+    judged = self_approved and not exempt
+    policy = reason = None
+    if judged:
+        policy = frappe.db.get_single_value("Close Settings", "self_approval")
+        reason = _reason(doc)
+        problem = close_policy_model.self_approval_problem(
+            policy, preparers, user, doc.doctype, doc.name, reason, exempt)
+        if problem:
+            frappe.throw(problem, frappe.PermissionError)
+        reason = reason.strip()
+    # Read before the Comment: no declared period refuses the approval with
+    # nothing recorded (#305-W2-5).
+    fiscal_year, fiscal_period = close_event.period_of(doc)
+    entity = close_event.entity_of(doc)
+    if judged:
+        doc.add_comment("Comment", close_policy_model.self_approval_note(policy, user, reason))
+    if exempt == "derived":
+        # The Business Combination approved this Ownership Period; that is the
+        # BC's own event. approval_kind is not called for a derived exemption:
+        # a live self_approved event needs a reason this submit has none of.
+        kind = "approved"
+    else:
+        kind = close_event_model.approval_kind(preparers, user)
+    close_event.record(
+        kind, fiscal_year, fiscal_period, doc.doctype, doc.name,
+        reason=reason, entity=entity,
+        detail={"preparer": doc.owner, "preparers": sorted(preparers),
+                "policy": policy, "exempt": exempt})

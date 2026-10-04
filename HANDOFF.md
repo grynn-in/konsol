@@ -4,6 +4,59 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (3 Oct): konsol#305 Delivery 2, wave 3 (E5 intercompany, E6 adjustments and approvals), is merged: konsol #323 (062b421) and konsolidat #253 (bb0307e).** Deepak decided W3-1..8 on #305, all ★. Claude's own calls (W3-P1..P9, E5-P*, E6-P*, the A07 owner check, the A18 save block) are recorded on their rows in `archive/konsol-305-d2/tasks.md`.
+- **Intercompany** (`…/intercompany`):
+  - The screen shows pairs, a side panel and Send back, which writes an `ic_sent_back` Close Event.
+  - The sign-off summary and the signature carry an Intercompany line. Over tolerance turns a Green close Amber, and signing it needs an acknowledgement. If the IC model is unbuilt or unreadable, sign-off is blocked.
+  - My work gives the group roles the IC setup and tolerance gaps, and gives the Entity Accountant fix items.
+  - Close Settings has `intercompany_declaration`. While it says "None in this group", publishing an Intercompany Account is refused.
+  - Live today: 0 Published Intercompany Accounts, so every IC surface says "not configured".
+- **Adjustments** (`…/adjustments`):
+  - The Analyst drafts and edits journals: type, group, duration ("reverses in <period>" or "this period only"), the why, and the lines. Each journal shows its effect per statement heading.
+  - Send for approval refuses until the journal workflow is installed. Migrate installs it.
+- **Approvals** (`…/approvals`):
+  - One queue covers the 7 approval doctypes. Approve and reject are gated by R2/R5. Business Combination and Business Disposal open in the Desk.
+  - D2-8: a reject on a doctype without a workflow leaves the document a draft and records the reason.
+  - My work gives the Close Lead "Approve N items" and gives preparers their sent-back items.
+- **dbt (W3-5 C):** a cross-currency balance-sheet pair is judged against the tolerance instead of being called an fx difference.
+- **Upgrade, in this order:**
+  1. Declare each group's `ic_difference_tolerance` before publishing any Intercompany Account. A tolerance of 0 is undeclared and blocks sign-off (W3-6).
+  2. Migrate right after deploy. Until `Close Settings.intercompany_declaration` exists, My work and sign-off throw.
+  3. Migrate installs the Consolidation Journal workflow only if no journal workflow exists, inactive ones included.
+  4. Deploy the dbt change (#253) with it.
+- **Live stack (local), 3 Oct:**
+  - The merged batch is hot-copied into `konsolidat_backend` and `konsolidat_worker`, and Consolidation Group is reloaded. Not migrated.
+  - Five stale bundle chunks are left on disk, unreferenced.
+  - Stray scripts in `/home/frappe/frappe-bench/` (`zz_a21_check.py`, `zz_e405_check.py`, `zz_r31a_probe.py`) and the stray `konsol/close/close/` directory: delete with Deepak's OK.
+- **W3-2 scope, decided by Deepak 3 Oct:** a scoped user deliberately sees each pair's `difference` (grid and `ic_sent_back` audit); hiding it was rejected (#305 issuecomment-5967445225).
+- **Known, not fixed:**
+  - S7: a reject on a doctype without a workflow doesn't stop a later approve from Desk.
+  - The Approvals nav badge counts My work items, not queue entries.
+  - An item's age differs by one day between Approvals and My work.
+- Review findings: `archive/konsol-305-d2/review-w3.md`.
+- **Next:** Delivery 2 P2 stories (1.5 Remind, 5.4 IC Balance screen, 6.5 auto-reversals) and Delivery 1 rows A39/A44 — not planned yet.
+
+**Update (2 Oct): konsol#305 Delivery 2, wave 2 (E2 period grid, E4 rates and ownership, E10 audit trail), is built on konsol `close-d2`.** Decisions #305-W2-1..16 plus W2-P1/P2 are on #305. W2-16 (ownership overlap) was withdrawn; ownership must cover a period's first day, the same rule dbt uses.
+- **Period** (`/close/<y>/<p>/period`): a readiness strip (open, first close, previous signed, policies, configuration, ownership, trial balances, rates, checks) and an entity grid (Ownership, Trial balance, Closing rate) with a problems filter.
+  - #289 is fixed: a submitted TB for an entity with no ownership on the period's first day blocks sign-off, shows in the grid and My work, and the Entity Accountant sees "Not consolidated: no ownership for this period".
+  - Live, 2 Oct: 306 entities in scope plus 2 unowned (their ownership starts 2025-12-16), so FY2025 P07–P12 sign-off is blocked until those TBs are cancelled or ownership is recorded.
+- **Rates & ownership** (`…/rates`): the Analyst enters Closing/Average drafts (`rates_api.save_rate`); the Close Lead approves through `approval_api.approve`. Pending historical equity rates and ownership periods; ownership gaps link to the Desk. No import from file.
+- **Audit trail** (`…/audit-trail`): every approve, self-approve, reject, cancel, period/year close/lock/reopen, sign-off, sign-off void, TB submit/cancel and TB exception writes an append-only **Close Event** in the action's own transaction.
+  - Nobody can change or delete a Close Event through the app, Administrator included. A script that catches the refusal and commits, or raw SQL, still can (W2-P2, declared).
+  - Reads are scoped by entity for restricted users, through the trail API and through Desk/REST (`entity_permissions`).
+- **W2-14 changes R5:** an approver who edited the draft — earlier, or in the submitting request itself — counts as a preparer, so approving it is a self-approval.
+- **Upgrade, in this order:**
+  1. Before migrate, run `bench --site <site> execute konsol.patches.backfill_close_events.dry_run`. Live, 2 Oct: 1,789 events would be written — 950 historic approvals as `self_approved` with `reason_not_recorded` (all were submitted by their preparer), 836 TB submits, 2 sign-offs, 1 cancel; 2 sign-off Versions of a deleted run counted as unplaced.
+  2. Migrate. The patch `backfill_close_events` runs once, reloads every doctype it reads, and skips anything already recorded live.
+  3. Declare Close Settings. **Live has all four undeclared** (first close 0/0, `rate_move_threshold` 0, `self_approval` blank): sign-off stays blocked, every self-approval is refused, and every rate with a previous rate needs a Reason for Change until they are set.
+- **Known limits:**
+  - One amount-basis change that spans several entities in a period voids the sign-off once; that event names the first entity in sort order.
+  - The Close Lead's My work lists unowned entities unscoped (the existing group-persona convention).
+- **Filed:** konsol#310 (BC/BD Desk reject has no reason), #311 (the rate gate skips an entity with no functional currency; 21 on live), #312 (correct an approved rate in the app); konsolidat#251 (consolidate from the acquisition date), #252 (dbt treats fiscal P as calendar month P).
+- **Delivery 1 rows A39 and A44 are unblocked** (#288 merged 30 Sep); not yet built.
+- **Next:** wave 3 (E5 intercompany, E6 adjustments). E5's "No intercompany accounts declared" gap must name Main Account → Allow Intercompany, in #293's wording (PR #314).
+- Task file, prompt and plan: `bench-15/archive/konsol-305-d2/` (outside git).
+
 **Update (27 Sep): konsol#305 Delivery 2, wave 1 (prerequisites), is built.** It is on konsol `close-d2` and konsolidat `k305-d2`. The decisions are on #305: D2-1..12, P21-1 and P25.
 - **Consolidation Journal replaces Consolidation Adjustment** (#292, D2-1, D2-12). The journal is a header with lines. It must balance in total to the cent, and each line names its entity.
   - Only `konsol.close.approval_api.approve` and `reject` approve or reject it. A reject needs a reason.

@@ -109,10 +109,12 @@ class GroupExchangeRate(Document):
         assert_declared(year, int(period))
 
     def _guard_provenance(self):
-        """Source and ERP Quote are read-only in the form only; REST writes any
-        field. "Adoption" is set by the one-time adoption alone, "ERP pre-fill"
-        and the ERP Quote by prefill_from_erp alone (each sets its own flag), so
-        neither can be forged onto a rate a person typed."""
+        """Source, ERP Quote and Source Note are read-only in the form only;
+        REST writes any field. "Adoption" is set by the one-time adoption
+        alone, "ERP pre-fill" and the ERP Quote by prefill_from_erp alone
+        (each sets its own flag), and Source Note by either of them, so none
+        can be forged onto a rate a person typed (konsol#413: a Desk/REST
+        insert carrying source_note landed it verbatim for an Analyst)."""
         before = self._saved_version()
         was = before.source if before else None
         prefilling = bool(frappe.flags.get("konsol_prefilling_rates"))
@@ -124,6 +126,10 @@ class GroupExchangeRate(Document):
         erp_before = float(before.erp_quote or 0) if before else 0.0
         if abs(float(self.erp_quote or 0) - erp_before) > 1e-12 and not (prefilling or self._adopting()):
             frappe.throw("ERP Quote is recorded by Pre-fill from ERP only.", frappe.PermissionError)
+        note_before = (getattr(before, "source_note", None) or "") if before else ""
+        if (self.source_note or "") != note_before and not (prefilling or self._adopting()):
+            frappe.throw("Source Note is recorded by Pre-fill from ERP or the rate adoption only.",
+                         frappe.PermissionError)
 
     def _validate_quote(self):
         """A positive quote per a listed unit, that keeps its digits, whose true

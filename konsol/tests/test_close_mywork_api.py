@@ -31,7 +31,7 @@ REPO_DIR = os.path.dirname(APP_DIR)
 API_PY = os.path.join(APP_DIR, "close", "mywork_api.py")
 NAV_JS = os.path.join(REPO_DIR, "close-ui", "src", "nav.js")
 REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model",
-               "close_policy_model")
+               "close_policy_model", "scope_model")
 
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 TODAY = date(2025, 9, 15)
@@ -112,6 +112,16 @@ class _Site:
         self.problem_calls = []
         self.only_for_calls = []
         self.ownership_queries = 0
+        self.ic_gap = None
+        self.ic_fixes = {}
+        self.ic_calls = []
+        self.ic_tolerance_gap = None
+        self.approvals_waiting = {"count": 0}
+        self.approvals_calls = []
+        self.approvals_error = None
+        self.sent_back_rows = []
+        self.sent_back_calls = []
+        self.sent_back_error = None
 
 
 def _frappe(site):
@@ -177,7 +187,8 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
-    frappe.utils = types.SimpleNamespace(getdate=lambda *a: TODAY)
+    frappe.utils = types.SimpleNamespace(getdate=lambda *a: TODAY,
+                                         get_system_timezone=lambda: "Europe/London")
     frappe.db = types.SimpleNamespace(get_single_value=get_single_value, set_value=forbidden,
                                       commit=forbidden, sql=forbidden)
     frappe.get_doc = forbidden
@@ -214,6 +225,22 @@ def _call(site):
         mods["konsol.close." + name] = _model(name)
         setattr(mods["konsol.close"], name, mods["konsol.close." + name])
 
+    # L01a: _aware (A47) lazily imports timefmt (pure, mirrors checks_api).
+    tspec = importlib.util.spec_from_file_location(
+        "konsol.close.timefmt", os.path.join(APP_DIR, "close", "timefmt.py"))
+    timefmt = importlib.util.module_from_spec(tspec)
+    tspec.loader.exec_module(timefmt)
+    mods["konsol.close.timefmt"] = timefmt
+    mods["konsol.close"].timefmt = timefmt
+
+    real_covered = mods["konsol.close.scope_model"].covered
+
+    def _spy_covered(rows, start_date):
+        site.__dict__.setdefault("scope_calls", []).append(start_date)
+        return real_covered(rows, start_date)
+
+    mods["konsol.close.scope_model"].covered = _spy_covered
+
     fiscal_calendar = types.ModuleType("konsol.fiscal_calendar")
     fiscal_calendar.fiscal_period_rows = lambda *a, **k: [dict(r) for r in site.rows]
     group_chart = types.ModuleType("konsol.group_chart")
@@ -244,6 +271,42 @@ def _call(site):
     assertion_run.latest_close_run = _latest_close_run(site)
     assertion_run.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
 
+    # C06t: a stub `konsol.close.ic_api`, unused by mywork_api until C08. It
+    # exists so C08's `from konsol.close import ic_api` resolves to this stub
+    # rather than a real module that would otherwise run against this fake
+    # frappe (and whose get_all would reject every doctype it does not know).
+    ic_api = types.ModuleType("konsol.close.ic_api")
+    ic_api.setup_gap = lambda: site.ic_gap
+    ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
+
+    def open_fixes(keys):
+        site.ic_calls.append(list(keys))
+        return dict(site.ic_fixes)
+
+    ic_api.open_fixes = open_fixes
+
+    # A12: a stub `konsol.close.approvals_api` with a recording `queue_for`, so
+    # My work reads the same queue A10 builds without running it for real.
+    approvals_api = types.ModuleType("konsol.close.approvals_api")
+
+    def queue_for(user, roles):
+        site.approvals_calls.append((user, tuple(roles)))
+        if site.approvals_error:
+            raise site.approvals_error
+        return {"waiting": dict(site.approvals_waiting)}
+
+    approvals_api.queue_for = queue_for
+
+    # A22: a stub `sent_back_for`, extending A12's `approvals_api` stub, so My
+    # work reads the same preparer-owned rows A21 builds without running it.
+    def sent_back_for(user):
+        site.sent_back_calls.append(user)
+        if site.sent_back_error:
+            raise site.sent_back_error
+        return [dict(r) for r in site.sent_back_rows]
+
+    approvals_api.sent_back_for = sent_back_for
+
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.group_chart": group_chart,
@@ -252,6 +315,8 @@ def _call(site):
         "konsol.close.signoff_gate": signoff_gate,
         "konsol.close.freshness_api": freshness_api,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
+        "konsol.close.ic_api": ic_api,
+        "konsol.close.approvals_api": approvals_api,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -302,7 +367,10 @@ def _assert_counts_add_up(result, persona):
         assert set(entry) == {"count", "blocking"}, entry
         on = items if screen == "my-work" else [
             i for i in items if i["action"].get("screen") == screen]
-        assert entry["count"] == len(on), (screen, entry)
+        # F02: "approvals" is one My work item for the whole queue, so its
+        # displayed count is the queue's real size, not len(on) (always 0 or 1).
+        if screen != "approvals":
+            assert entry["count"] == len(on), (screen, entry)
         assert entry["blocking"] == sum(1 for i in on if i["kind"] == "blocking"), (screen, entry)
 
 
@@ -350,7 +418,10 @@ def test_group_accountant_runs_checks_and_sees_failures():
     assert "checks-run:2025-09" in ids  # never run
     assert "checks-run:2025-08" not in ids  # current Green run
     assert "tbs-waiting:2025-07" in ids
-    assert not any(i["id"].startswith("rates") for i in result["items"])
+    # konsol#305 E412 (#305-W2-11): the Analyst gets "Rates missing" too.
+    rates = next(i for i in result["items"] if i["id"] == "rates:2025-07")
+    assert rates["kind"] == "blocking" and rates["action"] == {"screen": "rates"}
+    assert not any(i["id"].startswith("rates-error") for i in result["items"])
     _assert_counts_add_up(result, "group_accountant")
 
 
@@ -358,6 +429,19 @@ def test_stale_run_asks_for_a_rerun():
     site = _Site(roles=("EPM Analyst",))
     site.as_of = "2025-09-12T00:00:00"  # rebuilt after P08's run
     assert "checks-run:2025-08" in _ids(_call(site))
+
+
+def test_a_zoned_as_of_and_a_naive_completed_at_compare_without_error():
+    """L01a (A47): freshness_api's as_of is zoned (A16b gives it the site's
+    UTC offset); the newest Assertion Run's completed_at is read back naive
+    from the database. get_my_work compared them directly and 500'd with
+    "can't compare offset-naive and offset-aware datetimes". Same fix
+    checks_api.py already applies (its own A47 test); same verdict as
+    test_stale_run_asks_for_a_rerun's all-naive pair for the same instant,
+    here written zoned."""
+    site = _Site(roles=("EPM Analyst",))
+    site.as_of = "2025-09-12T00:00:00+01:00"  # same instant as the naive pair above
+    assert "checks-run:2025-08" in _ids(_call(site))  # no TypeError, same verdict
 
 
 def test_entity_accountant_sees_only_its_own_entities():
@@ -446,7 +530,9 @@ def test_rate_blockers_count_as_missing_rates():
 def test_rate_gate_error_item_goes_to_the_close_lead_only():
     site = _Site(roles=("EPM Analyst",))
     site.rates[(2025, 8)] = (None, "ServerException UNKNOWN_TABLE", [])
-    assert not any(i.startswith("rates") for i in _ids(_call(site)))
+    # konsol#305 E412 (#305-W2-11): the Analyst still gets the P07 "Rates
+    # missing" item; only the rate-gate error item stays Close Lead only.
+    assert not any(i.startswith("rates-error") for i in _ids(_call(site)))
 
 
 def test_errored_run_is_failed_not_current():
@@ -456,6 +542,29 @@ def test_errored_run_is_failed_not_current():
     ids = _ids(_call(site))
     assert "signoff:2025-08" not in ids
     assert "checks-waiting:2025-08" in ids
+
+
+# --- konsol#305 E206, #289: a blocking item for a valid TB with no ownership ---
+
+
+def test_close_lead_gets_the_unowned_tb_item():
+    site = _Site()
+    site.problems[(2025, 9)]["config_gaps"] = [
+        {"code": "tb_without_ownership", "entities": ["ZZX"], "message": "…"}]
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "unowned:2025-09")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["entities"] == ["ZZX"]
+    _assert_counts_add_up(result, "close_lead")
+
+
+def test_entity_accountant_does_not_get_the_unowned_tb_item():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.problems[(2025, 9)]["config_gaps"] = [
+        {"code": "tb_without_ownership", "entities": ["ZZX"], "message": "…"}]
+    result = _call(site)
+    assert not any(i["id"].startswith("unowned:") for i in result["items"])
 
 
 # --- A53: items carry an age (`since` = the period's end date) -----------------
@@ -681,9 +790,302 @@ def test_ownership_is_queried_once_per_judged_period():
     assert gap["detail"] == "ZZC: FY2025 P07, FY2025 P08, FY2025 P09", gap["detail"]
 
 
+# --- G03: coverage is computed through scope_model, not a second copy -------
+
+
+def test_coverage_is_computed_by_scope_model():
+    site = _three_periods_five_leaves()
+    result = _call(site)
+    assert site.scope_calls == [date(2025, 7, 1), date(2025, 8, 1), date(2025, 9, 1)], \
+        site.scope_calls
+    gap = _gap(result, "ownership")
+    assert gap["entities"] == ["ZZC"], gap
+
+
+def test_the_inline_rule_is_gone():
+    with open(API_PY) as fh:
+        assert "end >= start" not in fh.read()
+
+
 def test_no_leaves_still_answers_without_error():
     site = _three_periods_five_leaves()
     site.entities = []
     result = _call(site)
     assert site.ownership_queries <= 3, site.ownership_queries
     assert _gap(result, "ownership") is None
+
+
+# --- C06t: the loader carries a stub konsol.close.ic_api, for C08 ----------
+
+
+def test_the_ic_api_stub_is_installed():
+    # C08: only the Entity Accountant reads the open IC fixes; the group
+    # personas read the setup gaps only (no open_fixes call).
+    site = _Site()
+    _call(site)
+    assert site.ic_calls == []
+    ea = _Site(roles=("Entity Accountant",), allowed={"ZZA"})
+    _call(ea)
+    assert len(ea.ic_calls) == 1, ea.ic_calls
+
+
+# --- C08: the IC gaps for the group personas, IC fix items for the EA ------
+
+_GROUP_ROLES = (("EPM Admin",), ("System Manager",), ("EPM Analyst",))
+_OPEN_KEYS = [(2025, 7), (2025, 8), (2025, 9)]
+
+
+_IC_EVENT = {
+    "kind": "ic_sent_back", "name": "ZZ-EVT-1",
+    # Already zoned: this stub replaces ic_api.open_fixes, which is where
+    # the real _iso(sent_at) happens (S1); feeding a zoned string here
+    # stands in for that.
+    "at": "2025-08-15T10:00:00+01:00",
+    "actor": "zz-lead@example.com", "reason": "Please review the booking.",
+    "detail": {"entity_a": "UK01", "account_a": "140000",
+               "entity_b": "DE01", "account_b": "240000"},
+}
+
+_IC_ROW = {
+    "entity_a": "UK01", "account_a": "140000", "entity_b": "DE01", "account_b": "240000",
+    "consolidation_group": "EMEA Group", "match_status": "over_tolerance",
+    "difference": 360.65, "tolerance": 5.0, "balance_a": 1250.75, "balance_b": 890.10,
+}
+
+
+def _ic_fix():
+    """S1: built through the real producer (``ic_model.open_fixes``, loaded
+    by path), never a hand-built dict."""
+    return _model("ic_model").open_fixes([dict(_IC_EVENT)], [dict(_IC_ROW)])[0]
+
+
+def _ic_items(result):
+    return [i for i in result["items"] if i["id"].startswith("ic:")]
+
+
+def test_ic_accounts_gap_reaches_the_close_lead_and_the_group_accountant():
+    # Failure path: "not configured" is never silent on My work.
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_gap = "No Published Intercompany Account: declare the pairings."
+        result = _call(site)
+        gap = _gap(result, "ic_accounts")
+        assert gap is not None, (roles, _ids(result))
+        assert gap["detail"] == site.ic_gap, gap
+        assert gap["kind"] == "blocking", gap
+        _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+def test_ic_accounts_gap_absent_when_ic_api_says_none():
+    for roles in _GROUP_ROLES:
+        result = _call(_Site(roles=roles))
+        assert _gap(result, "ic_accounts") is None, roles
+        assert _gap(result, "ic_tolerance") is None, roles
+
+
+def test_entity_accountant_never_gets_the_ic_setup_gaps():
+    # Failure path: the Entity Accountant cannot declare either, so neither is theirs.
+    site = _Site(roles=("Entity Accountant",), allowed={"ZZA"})
+    site.ic_gap = "No Published Intercompany Account: declare the pairings."
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["G"], "message": "m"}
+    result = _call(site)
+    assert _gap(result, "ic_accounts") is None, _ids(result)
+    assert _gap(result, "ic_tolerance") is None, _ids(result)
+
+
+def test_ic_tolerance_gap_reaches_the_group_personas():
+    # Failure path (W3-6): a tolerance of 0 is never silently "exact".
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["G"],
+                                 "message": "Declare the IC tolerance on G."}
+        result = _call(site)
+        gap = _gap(result, "ic_tolerance")
+        assert gap is not None, (roles, _ids(result))
+        assert gap["detail"] == "Declare the IC tolerance on G.", gap
+        assert gap["kind"] == "blocking", gap
+
+
+def test_entity_accountant_gets_an_ic_fix_item_on_trial_balances():
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    items = _ic_items(result)
+    assert len(items) == 1, items
+    item = items[0]
+    assert item["action"] == {"screen": "trial-balances", "entity": "UK01"}, item
+    assert item["kind"] == "blocking", item  # P07 has ended
+    assert item["period"]["since"] == "2025-07-31", item
+    assert "890.1" not in item["detail"], item["detail"]  # W3-2: no partner balance
+    assert site.ic_calls == [_OPEN_KEYS], site.ic_calls
+    by_screen = result["counts"]["by_screen"]["trial-balances"]
+    assert by_screen["count"] == sum(
+        1 for i in result["items"] if i["action"].get("screen") == "trial-balances")
+    assert by_screen["count"] >= 1 and by_screen["blocking"] >= 1, by_screen
+    _assert_counts_add_up(result, "entity_accountant")
+
+
+def test_entity_accountant_unrestricted_gets_both_sides():
+    site = _Site(roles=("Entity Accountant",), allowed=None)
+    site.ic_fixes = {(2025, 9): [_ic_fix()]}
+    items = _ic_items(_call(site))
+    assert sorted(i["action"]["entity"] for i in items) == ["DE01", "UK01"], items
+    assert all(i["kind"] == "todo" for i in items), items  # P09 has not ended
+
+
+def test_group_personas_never_get_ic_fix_items_and_never_read_them():
+    # Failure path: fix items are the Entity Accountant's (R1).
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_fixes = {(2025, 7): [_ic_fix()]}
+        result = _call(site)
+        assert _ic_items(result) == [], roles
+        assert site.ic_calls == [], (roles, site.ic_calls)
+
+
+def test_ic_fix_for_a_period_that_is_not_open_gives_no_item():
+    # Failure path: P07 closed -> not one of My work's open periods.
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    for row in site.rows:
+        if (row["fiscal_year"], row["fiscal_period"]) == (2025, 7):
+            row["status"] = "Closed"
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    assert _ic_items(result) == [], _ic_items(result)
+    assert site.ic_calls == [[(2025, 8), (2025, 9)]], site.ic_calls
+
+
+def test_entity_accountant_with_undeclared_first_close_reads_no_ic_fixes():
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    site.first_close = (0, 0)
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    assert _ic_items(result) == []
+    assert site.ic_calls == []
+
+
+def test_viewer_reads_no_ic_facts():
+    site = _Site(roles=("EPM User",))
+    site.ic_gap = "x"
+    site.ic_fixes = {(2025, 7): [_ic_fix()]}
+    result = _call(site)
+    assert result["items"] == [] and site.ic_calls == []
+
+
+# --- A12: the Close Lead's "approvals" My work item -----------------------
+
+
+def test_close_lead_gets_the_approvals_item_from_the_queue():
+    site = _Site()
+    site.approvals_waiting = {"count": 2, "oldest": "2025-08-15T10:00:00+01:00"}
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "approvals")
+    assert item["title"] == "Approve 2 items"
+    assert item["action"] == {"screen": "approvals"}
+    # F02: the approvals screen is one My work item for the whole queue, so
+    # its badge must read the queue's real count (waiting["count"]), never
+    # the number of My work items that point at it (always 1 or 0).
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 2
+    assert site.approvals_calls == [(site.user, ("EPM Admin",))]
+    _assert_counts_add_up(result, "close_lead")
+
+
+def test_close_lead_with_six_waiting_sees_badge_six():
+    """F02 (live: showed badge 1 against "6 waiting")."""
+    site = _Site()
+    site.approvals_waiting = {"count": 6, "oldest": "2025-08-15T10:00:00+01:00"}
+    result = _call(site)
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 6
+
+
+def test_zero_waiting_gives_no_approvals_item():
+    site = _Site()
+    site.approvals_waiting = {"count": 0}
+    result = _call(site)
+    assert "approvals" not in _ids(result)
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 0
+
+
+def test_group_accountant_never_calls_the_approvals_queue():
+    site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.approvals_waiting = {"count": 2}
+    result = _call(site)
+    assert "approvals" not in _ids(result)
+    assert site.approvals_calls == []
+
+
+def test_a_queue_failure_is_not_swallowed():
+    site = _Site()
+    site.approvals_error = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        _call(site)
+
+
+def test_close_lead_gets_the_approvals_item_with_an_undeclared_first_close():
+    site = _Site()
+    site.first_close = (0, 0)
+    site.approvals_waiting = {"count": 1, "oldest": "2025-08-15T10:00:00+01:00"}
+    result = _call(site)
+    ids = _ids(result)
+    assert "approvals" in ids
+    assert all(i["id"] == "approvals" or i["id"].startswith("gap:") for i in result["items"]), ids
+
+
+# --- A22: the preparer's "sent back" My work item -----------------------------
+
+def _sb_row(doctype, name, kind_label, title, fiscal_year=None, fiscal_period=None,
+           actor="alice@example.com", at="2025-08-20T10:00:00+01:00",
+           reason="Fix the amount."):
+    return {
+        "doctype": doctype, "name": name, "kind_label": kind_label, "title": title,
+        "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+        "rejection": {"reason": reason, "actor": actor, "at": at},
+    }
+
+
+def test_group_accountant_gets_one_sent_back_item_counted_under_rates():
+    site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.rates = {}  # isolate: no base "Rates missing" item also on the rates screen
+    site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
+                                   "1.1000", fiscal_year=2025, fiscal_period=7)]
+    result = _call(site)
+    ids = _ids(result)
+    assert "sent-back:Group Exchange Rate:GER-1" in ids
+    assert result["counts"]["by_screen"]["rates"]["count"] == 1
+    assert site.sent_back_calls == [site.user]
+    _assert_counts_add_up(result, "group_accountant")
+
+
+def test_viewer_gets_no_sent_back_item_and_sent_back_for_is_not_called():
+    site = _Site(roles=("EPM User",))
+    site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "x", "x",
+                                   fiscal_year=2025, fiscal_period=7)]
+    result = _call(site)
+    assert result["items"] == []
+    assert site.sent_back_calls == []
+
+
+def test_a_sent_back_failure_is_not_swallowed():
+    site = _Site()
+    site.sent_back_error = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        _call(site)
+
+
+def test_sent_back_item_shown_with_an_undeclared_first_close():
+    site = _Site()
+    site.first_close = (0, 0)
+    site.sent_back_rows = [_sb_row("Historical Equity Rate", "HER-1", "Historical equity rate",
+                                   "UK01 2024-12-31")]
+    result = _call(site)
+    ids = _ids(result)
+    assert "sent-back:Historical Equity Rate:HER-1" in ids
+    assert all(i["id"].startswith(("sent-back:", "gap:")) for i in result["items"]), ids
+
+
+def test_entity_accountant_can_get_a_sent_back_item_too():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.sent_back_rows = [_sb_row("Historical Equity Rate", "HER-1", "Historical equity rate",
+                                   "UK01 2024-12-31")]
+    result = _call(site)
+    assert "sent-back:Historical Equity Rate:HER-1" in _ids(result)

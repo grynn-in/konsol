@@ -53,6 +53,160 @@ function summary(overrides = {}) {
   };
 }
 
+// --- konsol#305 C11: the sign-off screen's intercompany section -----------
+
+test("C11: no intercompany key reads as 'not reported', visible and never None", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany was not reported by the server — nothing was checked.",
+  ]);
+  assert.equal(view.intercompany.empty, false);
+});
+
+test("C11: failure path — intercompany null reads the same 'not reported' line", () => {
+  const view = summaryView(summary({ intercompany: null }));
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany was not reported by the server — nothing was checked.",
+  ]);
+});
+
+test("C11: failure path — not configured never reads as reconciled or matched", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "not_configured",
+        message: "Intercompany not configured — nothing was checked.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, ["Intercompany not configured — nothing was checked."]);
+  assert.equal(view.intercompany.empty, false);
+  for (const row of view.intercompany.rows) {
+    assert.doesNotMatch(row, /reconciled|matched|within tolerance|^None$/i);
+  }
+});
+
+test("C11: failure path — not applicable never reads as reconciled, matched or not configured", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "not_applicable",
+        message: "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+  ]);
+  assert.equal(view.intercompany.empty, false);
+  for (const row of view.intercompany.rows) {
+    assert.doesNotMatch(row, /reconciled|matched|within tolerance|not configured|^None$/i);
+  }
+});
+
+test("C11: not built and error show their sentence through messageLines", () => {
+  const notBuilt = summaryView(
+    summary({
+      intercompany: {
+        state: "not_built",
+        message: "The warehouse has not built the intercompany tables yet — nothing was checked.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(notBuilt.intercompany.rows, [
+    "The warehouse has not built the intercompany tables yet — nothing was checked.",
+  ]);
+
+  const error = summaryView(
+    summary({
+      intercompany: {
+        state: "error",
+        message: "Intercompany could not be checked: HTTPError (TIMEOUT_EXCEEDED). Rebuild the consolidation, then open this again.",
+        counts: null,
+      },
+    }),
+  );
+  assert.deepEqual(error.intercompany.rows, [
+    "Intercompany could not be checked: HTTPError (TIMEOUT_EXCEEDED). Rebuild the consolidation, then open this again.",
+  ]);
+});
+
+test("C11: checked with counts shows the pairs line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 10, matched: 5, within_tolerance: 2, fx_difference: 1, over_tolerance: 2, unmatched: 0 },
+        sent_back_open: 0,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "10 pairs: 5 matched, 2 within tolerance, 1 FX differences, 2 over tolerance",
+  ]);
+});
+
+test("C11: checked with sent_back_open adds the open send-backs line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 10, matched: 8, within_tolerance: 1, fx_difference: 0, over_tolerance: 1, unmatched: 0 },
+        sent_back_open: 2,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "10 pairs: 8 matched, 1 within tolerance, 0 FX differences, 1 over tolerance",
+    "2 sent back and still open",
+  ]);
+});
+
+test("C11: checked with unmatched rows adds the 'without a partner' line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 10, matched: 10, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 3 },
+        sent_back_open: 0,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "10 pairs: 10 matched, 0 within tolerance, 0 FX differences, 0 over tolerance",
+    "3 rows without a partner",
+  ]);
+});
+
+test("C11: checked with 0 pairs shows the dedicated message line, never a 0-pairs count line", () => {
+  const view = summaryView(
+    summary({
+      intercompany: {
+        state: "checked",
+        message: null,
+        counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+        sent_back_open: 0,
+      },
+    }),
+  );
+  assert.deepEqual(view.intercompany.rows, [
+    "0 intercompany pairs in the last build for this period.",
+  ]);
+});
+
+test("C11: failure path — an unknown intercompany state throws naming it", () => {
+  assert.throws(
+    () => summaryView(summary({ intercompany: { state: "fine", message: null, counts: null } })),
+    /fine/,
+  );
+});
+
 test("every section is rendered from a full summary", () => {
   const view = summaryView(
     summary({
@@ -107,6 +261,11 @@ test("every section is empty and says None on a bare summary", () => {
   assert.equal(view.covers.empty, true);
   assert.deepEqual(view.previous.rows, ["None"]);
   assert.equal(view.previous.empty, true);
+  // C11: the intercompany section is never ["None"] — a missing key is "not reported", visible.
+  assert.deepEqual(view.intercompany.rows, [
+    "Intercompany was not reported by the server — nothing was checked.",
+  ]);
+  assert.equal(view.intercompany.empty, false);
 });
 
 test("configuration gaps are listed first, before order, before completeness", () => {
@@ -178,6 +337,81 @@ test("an unknown acknowledgement total is shown as unknown, never 0, even with n
     "Warned in total: unknown",
     "Not listed above: unknown",
   ]);
+});
+
+// --- konsol#305 C23: the acknowledgement section shows the IC line -------
+
+test("C23: the server's IC acknowledgement sentence is the first acknowledgements row", () => {
+  const view = summaryView(
+    summary({
+      acknowledgements: acknowledgements({
+        intercompany: "Intercompany: 2 pairs over tolerance",
+      }),
+    }),
+  );
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Intercompany: 2 pairs over tolerance",
+  ]);
+  assert.equal(view.acknowledgements.empty, false);
+});
+
+test("C23: the IC sentence leads, then the named acknowledgements and totals", () => {
+  const view = summaryView(
+    summary({
+      acknowledgements: acknowledgements({
+        intercompany: "Intercompany: 1 pair over tolerance",
+        names: ["assert_fx_balances"],
+        total: 3,
+        unlisted: 2,
+      }),
+    }),
+  );
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Intercompany: 1 pair over tolerance",
+    "Acknowledged: assert_fx_balances",
+    "Warned in total: 3",
+    "Not listed above: 2",
+  ]);
+});
+
+test("C23: failure path — a null intercompany line (not configured, not applicable, or an older payload) leaves today's rows untouched", () => {
+  const view = summaryView(
+    summary({
+      acknowledgements: acknowledgements({
+        intercompany: null,
+        names: ["assert_fx_balances"],
+        total: 3,
+        unlisted: 2,
+      }),
+    }),
+  );
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Acknowledged: assert_fx_balances",
+    "Warned in total: 3",
+    "Not listed above: 2",
+  ]);
+  for (const row of view.acknowledgements.rows) {
+    assert.doesNotMatch(row, /null|undefined/i);
+  }
+});
+
+test("C23: failure path — a missing intercompany key (an older payload) leaves today's bare-summary rows untouched", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.acknowledgements.rows, ["None"]);
+  assert.equal(view.acknowledgements.empty, true);
+});
+
+test("C23: the acknowledgements section defines no intercompany wording of its own — it only relays the server's sentence", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./signoff.js", import.meta.url), "utf8");
+  const fn = source.slice(
+    source.indexOf("function acknowledgementsSection"),
+    source.indexOf("function acknowledgementsSection") +
+      source.slice(source.indexOf("function acknowledgementsSection")).indexOf("\n}\n") +
+      3,
+  );
+  assert.ok(fn.length > 0, "acknowledgementsSection function not found");
+  assert.doesNotMatch(fn, /over tolerance/);
 });
 
 test("an on-behalf upload with no tracked flag shows as unknown, not silently dropped", () => {

@@ -1,0 +1,143 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "CE-.#########",
+ "creation": "2026-10-02 12:00:00.000000",
+ "description": "The close audit trail: one row per action on a period (approve, reject, close, lock, reopen, sign-off, trial balance). Append-only: written only by konsol.close.close_event, never changed, never deleted (konsol#305, #305-W2-1, #305-W2-6).",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "fiscal_year",
+  "fiscal_period",
+  "kind",
+  "entity",
+  "reference_doctype",
+  "reference_name",
+  "actor",
+  "at",
+  "reason",
+  "detail",
+  "source"
+ ],
+ "fields": [
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "label": "Fiscal Period",
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "0 = the whole year (Close Year, Lock Year, Reopen Year). Otherwise the period the action was on."
+  },
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "label": "Kind",
+   "options": "approved\nself_approved\nrejected\napproval_cancelled\nperiod_closed\nperiod_locked\nperiod_reopened\nyear_closed\nyear_locked\nyear_reopened\nsigned_off\nsignoff_voided\ntb_submitted\ntb_cancelled\ntb_exception_declared\ntb_exception_cancelled\nic_sent_back",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "What happened. The audit trail's labels, counts and summary key on it."
+  },
+  {
+   "fieldname": "entity",
+   "fieldtype": "Data",
+   "label": "Entity",
+   "description": "The entity, for trial balance and TB Exception events. Not a link: an audit row never follows or blocks an entity rename or delete."
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "label": "Reference DocType",
+   "description": "The type of the document acted on. Given together with Reference Name, or neither."
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Data",
+   "label": "Reference Name",
+   "description": "The document acted on, by the name it had. Not a link: a rename never edits an audit row."
+  },
+  {
+   "fieldname": "actor",
+   "fieldtype": "Data",
+   "label": "Actor",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The user id that acted, as it was at the time."
+  },
+  {
+   "fieldname": "at",
+   "fieldtype": "Datetime",
+   "label": "At",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "When the action happened. Set by the writer."
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason",
+   "description": "The typed reason, note, acknowledgement or override reason."
+  },
+  {
+   "fieldname": "detail",
+   "fieldtype": "Code",
+   "label": "Detail",
+   "options": "JSON",
+   "description": "The kind-specific facts, as JSON."
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "live\nbackfill",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "live: written when the action happened. backfill: recovered from existing records by the backfill patch (konsol#305 T06b)."
+  }
+ ],
+ "in_create": 1,
+ "is_submittable": 0,
+ "links": [],
+ "modified": "2026-10-02 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "Close Event",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "report": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "report": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "report": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1
+  }
+ ],
+ "sort_field": "at",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

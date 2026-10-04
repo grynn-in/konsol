@@ -1,0 +1,570 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { intercompanyView, sendBackBody, panel, bannerToneClass } from "./intercompany.js";
+
+// --- fixtures --------------------------------------------------------------
+
+const NOT_CONFIGURED = "Intercompany not configured — nothing was checked.";
+const SETUP_HELP = (
+	NOT_CONFIGURED +
+	" No Intercompany Account is Published. Publish each pairing in Intercompany Account." +
+	" Each account must first allow intercompany in the group chart" +
+	" (Main Account → Allow Intercompany); otherwise publishing is refused:" +
+	" \"The group chart has not declared allow_ic on <accounts>." +
+	" Set Allow Intercompany on those accounts before publishing this pairing.\""
+);
+const NOT_BUILT = "The warehouse has not built the intercompany tables yet — nothing was checked.";
+const NOT_APPLICABLE = "Intercompany: none in this group (declared in Close Settings) — not applicable.";
+
+const NOW = new Date("2026-10-03T12:00:00Z");
+const ZONE = "UTC";
+
+function pairRow(overrides) {
+	return {
+		consolidation_group: "ROOT",
+		entity_a: "UK01",
+		account_a: "1810",
+		entity_b: "DE01",
+		account_b: "2810",
+		currency_a: "GBP",
+		currency_b: "EUR",
+		local_a: 1000,
+		local_b: -950,
+		balance_a: 1200,
+		balance_b: -1200,
+		group_balance_a: 1200,
+		group_balance_b: -1200,
+		share_a: 1200,
+		share_b: -1200,
+		difference: 0,
+		difference_cause: null,
+		residual_a: 0,
+		residual_b: 0,
+		match_status: "matched",
+		masked_a: false,
+		masked_b: false,
+		sent_back: null,
+		can_send_back: false,
+		...overrides,
+	};
+}
+
+function basePayload(overrides) {
+	return {
+		period: { fiscal_year: 2025, fiscal_period: 7, period_code: "2025-P07", status: "Open" },
+		state: "checked",
+		message: null,
+		help: null,
+		published: 3,
+		declared_none: false,
+		groups: [],
+		unmatched: [],
+		counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+		hidden: { pairs: 0, unmatched: 0 },
+		can_send_back: false,
+		...overrides,
+	};
+}
+
+function walkStrings(value, out) {
+	if (typeof value === "string") {
+		out.push(value);
+	} else if (Array.isArray(value)) {
+		for (const v of value) walkStrings(v, out);
+	} else if (value && typeof value === "object") {
+		for (const v of Object.values(value)) walkStrings(v, out);
+	}
+	return out;
+}
+
+// --- not configured ---------------------------------------------------------
+
+test("not configured: block banner, help lines, no chips, no groups, never reads as reconciled", () => {
+	const payload = basePayload({
+		state: "not_configured",
+		message: NOT_CONFIGURED,
+		help: SETUP_HELP,
+		published: 0,
+		groups: [],
+		unmatched: [],
+		counts: null,
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+
+	assert.equal(view.banner.tone, "block");
+	assert.ok(view.banner.lines.includes(NOT_CONFIGURED));
+	assert.ok(view.banner.lines.some((line) => line.includes("Allow Intercompany")));
+	assert.equal(view.chips, null);
+	assert.deepEqual(view.groups, []);
+
+	const strings = walkStrings(view, []);
+	for (const s of strings) {
+		assert.doesNotMatch(s, /reconciled|within tolerance|matched/i);
+	}
+});
+
+// --- error / not_built -------------------------------------------------------
+
+test("not_built: no chips, the message shown, block tone", () => {
+	const payload = basePayload({
+		state: "not_built",
+		message: NOT_BUILT,
+		help: null,
+		groups: [],
+		unmatched: [],
+		counts: null,
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.chips, null);
+	assert.equal(view.banner.tone, "block");
+	assert.ok(view.banner.lines.includes(NOT_BUILT));
+});
+
+test("error: no chips, the message shown, block tone", () => {
+	const payload = basePayload({
+		state: "error",
+		message: "Intercompany could not be checked: RuntimeError. Rebuild the consolidation, then open this again.",
+		help: null,
+		groups: [],
+		unmatched: [],
+		counts: null,
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.chips, null);
+	assert.equal(view.banner.tone, "block");
+	assert.ok(view.banner.lines[0].includes("could not be checked"));
+});
+
+// --- checked ------------------------------------------------------------------
+
+test("checked: chips from counts, group order kept, status texts, sent-back pair text", () => {
+	const sentBackPair = pairRow({
+		account_a: "1811",
+		match_status: "over_tolerance",
+		sent_back: { by: "analyst@example.com", by_name: "Ana Lyst", at: "2026-09-29T08:15:00Z", reason: "checking" },
+	});
+	const payload = basePayload({
+		state: "checked",
+		groups: [
+			{
+				consolidation_group: "ROOT",
+				reporting_currency: "GBP",
+				tolerance: 10,
+				ic_difference_account: "7999",
+				tolerance_declared: true,
+				pairs: [sentBackPair, pairRow({ match_status: "within_tolerance" })],
+			},
+			{
+				consolidation_group: "SUB",
+				reporting_currency: "EUR",
+				tolerance: 5,
+				ic_difference_account: null,
+				tolerance_declared: true,
+				pairs: [pairRow({ consolidation_group: "SUB", match_status: "fx_difference" })],
+			},
+		],
+		unmatched: [],
+		counts: { pairs: 3, matched: 0, within_tolerance: 1, fx_difference: 1, over_tolerance: 1, unmatched: 0 },
+		hidden: { pairs: 0, unmatched: 0 },
+	});
+
+	const view = intercompanyView(payload, NOW, ZONE);
+
+	assert.deepEqual(view.chips, { pairs: 3, within: 1, differences: 1, fx: 1, unmatched: 0 });
+	assert.deepEqual(view.groups.map((g) => g.consolidationGroup), ["ROOT", "SUB"]);
+
+	const [root, sub] = view.groups;
+	// U5: a sent-back pair keeps its real status (never "Sent to both"),
+	// with the sent-back time appended and the status's own tone.
+	assert.equal(root.pairs[0].statusText, "Over tolerance · sent back Sep 29, 08:15");
+	assert.notEqual(root.pairs[0].statusText, "Sent to both · Sep 29, 08:15");
+	assert.equal(root.pairs[0].statusTone, "block");
+	assert.equal(root.pairs[1].statusText, "Within tolerance");
+	assert.equal(root.pairs[1].statusTone, "ok");
+	assert.equal(sub.pairs[0].statusText, "FX difference");
+	assert.equal(sub.pairs[0].statusTone, "warn");
+});
+
+test("U5: sent-back pairs across every match status keep STATUS_TEXT and append the sent-back time, never 'Sent to both'", () => {
+	const sentBack = { by: "a@x.com", by_name: "A", at: "2026-09-29T08:15:00Z", reason: "checking" };
+	for (const [status, label] of [
+		["matched", "Matched"],
+		["within_tolerance", "Within tolerance"],
+		["fx_difference", "FX difference"],
+		["over_tolerance", "Over tolerance"],
+	]) {
+		const payload = basePayload({
+			state: "checked",
+			groups: [{
+				consolidation_group: "ROOT",
+				reporting_currency: "GBP",
+				tolerance: 10,
+				ic_difference_account: null,
+				tolerance_declared: true,
+				pairs: [pairRow({ match_status: status, sent_back: sentBack })],
+			}],
+			counts: { pairs: 1, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+		});
+		const view = intercompanyView(payload, NOW, ZONE);
+		const pair = view.groups[0].pairs[0];
+		assert.equal(pair.statusText, `${label} · sent back Sep 29, 08:15`);
+		assert.doesNotMatch(pair.statusText, /Sent to both/);
+	}
+});
+
+// --- W3-2 masking --------------------------------------------------------------
+
+test("W3-2: a masked side never shows an amount, shows the hidden label instead", () => {
+	const masked = pairRow({ masked_b: true, balance_b: null, local_b: null, currency_b: null, group_balance_b: null, share_b: null, residual_b: null });
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 10,
+			ic_difference_account: "7999",
+			tolerance_declared: true,
+			pairs: [masked],
+		}],
+		counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+	});
+
+	const view = intercompanyView(payload, NOW, ZONE);
+	const pair = view.groups[0].pairs[0];
+	assert.equal(pair.balanceBText, "Hidden: outside your entities");
+	assert.notEqual(pair.balanceBText, "0.00");
+
+	const sidePanel = panel(pair);
+	assert.equal(sidePanel.sideB.amount, "Hidden: outside your entities");
+	assert.notEqual(sidePanel.sideB.amount, "0.00");
+});
+
+// --- U6: formatted difference ---------------------------------------------------
+
+test("U6: pairView carries a formatted differenceText, mirroring the balance columns", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 10,
+			ic_difference_account: null,
+			tolerance_declared: true,
+			pairs: [pairRow({ difference: -1234.5 })],
+		}],
+		counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	const pair = view.groups[0].pairs[0];
+	assert.equal(pair.differenceText, "(1,234.50)");
+	assert.notEqual(pair.differenceText, -1234.5);
+});
+
+// --- U10: an unmasked null never reads as zero -----------------------------------
+
+test("U10: an unmasked null balance reads 'not reported', never '0.00'", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 10,
+			ic_difference_account: null,
+			tolerance_declared: true,
+			pairs: [pairRow({ balance_a: null, masked_a: false })],
+		}],
+		counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	const pair = view.groups[0].pairs[0];
+	assert.equal(pair.balanceAText, "not reported");
+	assert.notEqual(pair.balanceAText, "0.00");
+
+	const sidePanel = panel(pair);
+	assert.equal(sidePanel.sideA.amount, "not reported");
+	assert.notEqual(sidePanel.sideA.amount, "0.00");
+});
+
+test("U10: a null unmatched amount reads 'not reported', never '0.00'", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [],
+		unmatched: [{
+			consolidation_group: "ROOT",
+			data_area_id: "UK01",
+			main_account: "1810",
+			counterpart_account: "2810",
+			unmatched_local_amount: null,
+			unmatched_amount: null,
+		}],
+		counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 1 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	const row = view.unmatched[0];
+	assert.equal(row.amount, "not reported (group view, after ownership)");
+	assert.equal(row.local, "not reported (entity currency)");
+	assert.doesNotMatch(row.amount, /0\.00/);
+	assert.doesNotMatch(row.local, /0\.00/);
+});
+
+// --- U12: the not_applicable banner gets its own tone, not amber ------------------
+
+test("U12: bannerToneClass gives 'ok' its own class, distinct from 'block' and from amber/warn styling", () => {
+	const okClass = bannerToneClass("ok");
+	const blockClass = bannerToneClass("block");
+	assert.notEqual(okClass, blockClass);
+	assert.doesNotMatch(okClass, /amber/, "the not_applicable/ok banner must not render with warn-amber styling");
+});
+
+test("U12: bannerToneClass throws on an unknown tone, naming it", () => {
+	assert.throws(() => bannerToneClass("mystery"), /mystery/);
+});
+
+test("U12: a not_applicable banner's tone renders its own class via bannerToneClass, not the block class", () => {
+	const payload = basePayload({
+		state: "not_applicable",
+		message: "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+		help: null,
+		groups: [],
+		unmatched: [],
+		counts: null,
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.banner.tone, "ok");
+	assert.notEqual(bannerToneClass(view.banner.tone), bannerToneClass("block"));
+});
+
+// --- U9: a pure test feeding intercompanyView's output the way Intercompany.vue uses it ---
+
+test("U9: Intercompany.vue's own reads of intercompanyView's output — banner class and the difference cell", () => {
+	// The template renders the banner's class via bannerToneClass(view.banner.tone)
+	// and the difference cell via {{ pair.differenceText }} — exercise both exactly
+	// as the screen does, rather than grepping the .vue source.
+	const notApplicable = intercompanyView(
+		basePayload({
+			state: "not_applicable",
+			message: "Intercompany: none in this group (declared in Close Settings) — not applicable.",
+			help: null,
+			groups: [],
+			unmatched: [],
+			counts: null,
+		}),
+		NOW,
+		ZONE,
+	);
+	assert.doesNotThrow(() => bannerToneClass(notApplicable.banner.tone));
+
+	const checked = intercompanyView(
+		basePayload({
+			state: "checked",
+			groups: [{
+				consolidation_group: "ROOT",
+				reporting_currency: "GBP",
+				tolerance: 10,
+				ic_difference_account: null,
+				tolerance_declared: true,
+				pairs: [pairRow({ difference: -1234.5, balance_a: null, masked_a: false })],
+			}],
+			counts: { pairs: 1, matched: 1, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+		}),
+		NOW,
+		ZONE,
+	);
+	const pair = checked.groups[0].pairs[0];
+	// The template reads these fields directly — never the raw pair.difference
+	// or balance_a, and never falls back to a masked/blank/"0.00" look.
+	assert.equal(pair.differenceText, "(1,234.50)");
+	assert.equal(pair.balanceAText, "not reported");
+	assert.doesNotThrow(() => bannerToneClass(checked.banner.tone));
+});
+
+// --- panel ---------------------------------------------------------------------
+
+test("panel: the difference-account sentence when an account is declared", () => {
+	const pair = pairRow({ ic_difference_account: "7999", difference: 50 });
+	const result = panel(pair);
+	assert.equal(result.accountSentence, "Booked to 7999 in the group view while it stays open.");
+});
+
+test("panel: the difference-account sentence when no account is declared", () => {
+	const pair = pairRow({ ic_difference_account: null, difference: 50 });
+	const result = panel(pair);
+	assert.equal(
+		result.accountSentence,
+		"No difference account is declared: the difference stays on the intercompany accounts.",
+	);
+});
+
+// --- sendBackBody ----------------------------------------------------------------
+
+test("sendBackBody: exactly the seven keys the server accepts", () => {
+	const period = { fiscal_year: 2025, fiscal_period: 7 };
+	const pair = pairRow({});
+	const out = sendBackBody(period, pair, "over tolerance, chasing DE01");
+	assert.deepEqual(Object.keys(out.body).sort(), [
+		"account_a", "account_b", "entity_a", "entity_b", "fiscal_period", "fiscal_year", "reason",
+	].sort());
+	assert.equal(out.body.entity_a, "UK01");
+	assert.equal(out.body.entity_b, "DE01");
+	assert.equal(out.body.fiscal_year, 2025);
+	assert.equal(out.body.fiscal_period, 7);
+	assert.equal(out.body.reason, "over tolerance, chasing DE01");
+	for (const key of ["difference", "actor", "entity", "kind"]) {
+		assert.ok(!(key in out.body), `unexpected key ${key}`);
+	}
+});
+
+test("sendBackBody: failure path — a blank reason is refused", () => {
+	const period = { fiscal_year: 2025, fiscal_period: 7 };
+	const pair = pairRow({});
+	const out = sendBackBody(period, pair, "");
+	assert.equal(out.body, undefined);
+	assert.equal(out.error, "Say why the difference is sent back: the entities read this reason.");
+});
+
+test("sendBackBody: failure path — a whitespace-only reason is refused", () => {
+	const period = { fiscal_year: 2025, fiscal_period: 7 };
+	const pair = pairRow({});
+	const out = sendBackBody(period, pair, "   ");
+	assert.equal(out.body, undefined);
+	assert.equal(out.error, "Say why the difference is sent back: the entities read this reason.");
+});
+
+// --- unknown values throw, naming them ----------------------------------------------
+
+test("failure path: an unknown state throws naming it", () => {
+	const payload = basePayload({ state: "mystery", message: "x" });
+	assert.throws(() => intercompanyView(payload, NOW, ZONE), /mystery/);
+});
+
+test("failure path: an unknown match_status throws naming it", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 10,
+			ic_difference_account: "7999",
+			tolerance_declared: true,
+			pairs: [pairRow({ match_status: "close_enough" })],
+		}],
+		counts: { pairs: 1, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
+	});
+	assert.throws(() => intercompanyView(payload, NOW, ZONE), /close_enough/);
+});
+
+// --- amended 3 Oct: not_applicable --------------------------------------------------
+
+test("not_applicable: ok banner, no chips, no groups, never reads as reconciled or not configured", () => {
+	const payload = basePayload({
+		state: "not_applicable",
+		message: NOT_APPLICABLE,
+		help: null,
+		published: 0,
+		declared_none: true,
+		groups: [],
+		unmatched: [],
+		counts: null,
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+
+	assert.equal(view.banner.tone, "ok");
+	assert.deepEqual(view.banner.lines, [NOT_APPLICABLE]);
+	assert.equal(view.chips, null);
+	assert.deepEqual(view.groups, []);
+
+	const strings = walkStrings(view, []);
+	for (const s of strings) {
+		assert.doesNotMatch(s, /reconciled|not configured|within tolerance|matched/i);
+	}
+});
+
+// --- amended 3 Oct: tolerance declared / undeclared ---------------------------------
+
+test("W3-6: a group's tolerance header, declared", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 25,
+			ic_difference_account: "7999",
+			tolerance_declared: true,
+			pairs: [pairRow({ match_status: "over_tolerance" })],
+		}],
+		counts: { pairs: 1, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 1, unmatched: 0 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.groups[0].toleranceText, "tolerance 25.00");
+	assert.equal(view.groups[0].pairs[0].statusText, "Over tolerance");
+});
+
+test("W3-6: a group's tolerance header, undeclared — never '0' and never 'tolerance 0.00'", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [{
+			consolidation_group: "ROOT",
+			reporting_currency: "GBP",
+			tolerance: 0,
+			ic_difference_account: "7999",
+			tolerance_declared: false,
+			pairs: [pairRow({ match_status: "over_tolerance" })],
+		}],
+		counts: { pairs: 1, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 1, unmatched: 0 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.groups[0].toleranceText, "Tolerance not declared (0 is undeclared)");
+	assert.notEqual(view.groups[0].toleranceText, "tolerance 0.00");
+	assert.equal(view.groups[0].pairs[0].statusText, "Over tolerance · tolerance not declared");
+});
+
+// --- unmatched rows and hidden note -------------------------------------------------
+
+test("unmatched rows: entity, account, group-view and local-currency amounts, and the ask line", () => {
+	const payload = basePayload({
+		state: "checked",
+		groups: [],
+		unmatched: [{
+			consolidation_group: "ROOT",
+			data_area_id: "UK01",
+			main_account: "1810",
+			counterpart_account: "2810",
+			unmatched_local_amount: -500,
+			unmatched_amount: -480,
+		}],
+		counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 1 },
+	});
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.unmatched.length, 1);
+	const row = view.unmatched[0];
+	assert.equal(row.entity, "UK01");
+	assert.equal(row.account, "1810");
+	assert.equal(row.amount, "(480.00) (group view, after ownership)");
+	assert.equal(row.local, "(500.00) (entity currency)");
+	assert.equal(row.note, "No partner · ask UK01");
+});
+
+test("hiddenNote: both counts > 0", () => {
+	const payload = basePayload({ hidden: { pairs: 2, unmatched: 3 } });
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.hiddenNote, "2 pairs and 3 partnerless rows for entities outside your scope are not shown");
+});
+
+test("hiddenNote: null when nothing is hidden", () => {
+	const payload = basePayload({ hidden: { pairs: 0, unmatched: 0 } });
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(view.hiddenNote, null);
+});
+
+// --- hygiene ---------------------------------------------------------------------
+
+test("the source imports no vue, frappe or xstate", () => {
+	const path = fileURLToPath(new URL("./intercompany.js", import.meta.url));
+	const source = readFileSync(path, "utf8");
+	for (const term of ["vue", "frappe", "xstate"]) {
+		assert.ok(!source.includes(`"${term}`) && !source.includes(`'${term}`), `unexpected import of ${term}`);
+	}
+});

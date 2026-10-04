@@ -343,21 +343,40 @@ def test_sign_off_close_saves_as_the_signoff_writer():
     # A63: no data change recorded, so the run is current.
     gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
                                    "data_change": None}
+    # konsol#305 C20t: stub, so sign_off_close's coming signoff_gate.intercompany
+    # call (C22) does not raise AttributeError here.
+    gate.intercompany = lambda fy, fp: {
+        "state": "not_configured",
+        "message": "Intercompany not configured — nothing was checked.",
+        "counts": None, "sent_back_open": None}
     # A66: the data-change rule is the real, pure signoff_model (loaded by path).
     sm_spec = importlib.util.spec_from_file_location(
         "signoff_model_for_frozen_fields", os.path.join(APP_DIR, "close", "signoff_model.py"))
     signoff_model = importlib.util.module_from_spec(sm_spec)
     sm_spec.loader.exec_module(signoff_model)
+    # konsol#305 T04a: a stub Close Event writer (T02a), so T04's lazy
+    # `from konsol.close import close_event` resolves. `record` appends
+    # `(kind, fiscal_year, fiscal_period)`; not yet asserted on (T04 does that).
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+
+    def record(kind, fiscal_year, fiscal_period, *a, **k):
+        close_event.events.append((kind, fiscal_year, fiscal_period))
+
+    close_event.record = record
     pkg = types.ModuleType("konsol.close")
     pkg.signoff_gate = gate
     pkg.signoff_model = signoff_model
-    names = ("konsol", "konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
+    pkg.close_event = close_event
+    names = ("konsol", "konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model",
+             "konsol.close.close_event")
     before = {n: sys.modules.get(n) for n in names}
     konsol_pkg = types.ModuleType("konsol")
     konsol_pkg.close = pkg
     sys.modules.update({"konsol": konsol_pkg, "konsol.close": pkg,
                         "konsol.close.signoff_gate": gate,
-                        "konsol.close.signoff_model": signoff_model})
+                        "konsol.close.signoff_model": signoff_model,
+                        "konsol.close.close_event": close_event})
     try:
         module.sign_off_close("AR-1")
     finally:
@@ -368,6 +387,9 @@ def test_sign_off_close_saves_as_the_signoff_writer():
                 sys.modules[n] = old
     assert seen == [(module.SIGNOFF_WRITER, "AR-1")], seen
     assert module.active_writer() is None
+    # konsol#305 T04a failure path: a close_event stub left out of the
+    # restored-names tuple would leak into later tests.
+    assert sys.modules.get("konsol.close.close_event") == before["konsol.close.close_event"]
 
 
 def test_worker_saves_as_the_worker_writer():

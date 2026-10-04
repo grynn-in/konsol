@@ -24,6 +24,9 @@ _CENTS = Decimal("0.01")
 
 MIN_LINES = 2
 
+#: Consolidation Journal Line fields a user may send (consolidation_journal_line.json).
+LINE_KEYS = ("data_area_id", "main_account", "debit_amount", "credit_amount", "description")
+
 
 def _cents(amount):
     """A line amount (int, float, str or None) as a Decimal rounded to 2 dp."""
@@ -33,6 +36,33 @@ def _cents(amount):
         return Decimal(str(amount)).quantize(_CENTS, rounding=ROUND_HALF_UP)
     except InvalidOperation:
         raise ValueError(f"'{amount}' is not a number")
+
+
+def clean_lines(lines):
+    """``(rows, problems)``: the request's lines, kept to ``LINE_KEYS`` only
+    (#305 A02).
+
+    ``lines`` must be a list of dicts (the API parses JSON first; a str is
+    not parsed here). A non-list ``lines``, or a non-dict item, is a single
+    problem and contributes no row — never an exception. A dict with any key
+    outside ``LINE_KEYS`` gives one problem per such key, naming the line and
+    the key; the row is still returned, carrying only ``LINE_KEYS`` (missing
+    ones as None). Amounts are passed through unvalidated: ``line_problems``
+    and ``balance_problem`` still decide.
+    """
+    problems = []
+    rows = []
+    if not isinstance(lines, list):
+        return [], ["The journal's lines must be a list."]
+    for pos, line in enumerate(lines, start=1):
+        if not isinstance(line, dict):
+            problems.append(f"Line {pos}: not a valid line.")
+            continue
+        for key in line:
+            if key not in LINE_KEYS:
+                problems.append(f"Line {pos}: {key} cannot be set here.")
+        rows.append({key: line.get(key) for key in LINE_KEYS})
+    return rows, problems
 
 
 def line_problems(lines):
@@ -136,6 +166,141 @@ def reversal_problem(fiscal_year, fiscal_period, reverse_year, reverse_period, p
     if row["status"] != "Open":
         return f"FY{ry} P{rp} is {row['status']}; name an Open period."
     return None
+
+
+def reversal_choices(fiscal_year, fiscal_period, period_rows):
+    """``[{"fiscal_year", "fiscal_period", "code"}]``: every period row a
+    reversal may name (#305 A02), in period order.
+
+    A row qualifies when ``reversal_problem(fiscal_year, fiscal_period,
+    row_fy, row_fp, period_rows) is None`` — Regular, after the journal's own
+    period, Open. The rule is reused, never copied. ``code`` is the row's own
+    ``period_code``.
+    """
+    choices = []
+    for row in period_rows:
+        row_fy = int(row["fiscal_year"])
+        row_fp = int(row["fiscal_period"])
+        if reversal_problem(fiscal_year, fiscal_period, row_fy, row_fp, period_rows) is None:
+            choices.append({
+                "fiscal_year": row_fy,
+                "fiscal_period": row_fp,
+                "code": row["period_code"],
+            })
+    choices.sort(key=lambda c: (c["fiscal_year"], c["fiscal_period"]))
+    return choices
+
+
+def duration_label(reverse_year, reverse_period, period_rows):
+    """The W3-3 duration text for a journal's reversal choice (#305-W3-3
+    option A). Never blank.
+
+    ``(0, 0)`` (a blank Int reads as 0) gives "This period only, no
+    reversal". Otherwise "Reverses in {period_code}" for the matching
+    ``period_rows`` row, or "Reverses in FY{y} P{p:02d} (not a declared
+    period)" when no row matches.
+    """
+    ry = reverse_year or 0
+    rp = reverse_period or 0
+    if ry == 0 and rp == 0:
+        return "This period only, no reversal"
+    row = next(
+        (r for r in period_rows
+         if int(r["fiscal_year"]) == ry and int(r["fiscal_period"]) == rp),
+        None,
+    )
+    if row is None:
+        return f"Reverses in FY{ry} P{rp:02d} (not a declared period)"
+    return f"Reverses in {row['period_code']}"
+
+
+#: Section order (#305-W3-4 option A): Profit and Loss, then Balance Sheet,
+#: then None (no section, including any value that is not one of the two
+#: declared Main Account statement_section options).
+_SECTION_ORDER = {"Profit and Loss": 0, "Balance Sheet": 1}
+
+
+def statement_effect(lines, accounts):
+    """The journal's change per statement heading (#305 J01, stories 6.1/6.2).
+
+    ``lines`` are dicts with ``main_account``, ``debit_amount`` and
+    ``credit_amount``. ``accounts`` maps a line's ``main_account`` to
+    ``{"heading": <parent code, or None/"">, "heading_name": <parent's
+    account_name, or None>, "statement_section": <"Profit and
+    Loss"|"Balance Sheet"|""|None>}`` (the API, A05/A10, builds this from
+    each account's ``parent_account``, #305-D2-4).
+
+    An account missing from ``accounts``, or whose ``heading`` is None/"",
+    goes under heading None ("no heading"); no line is ever dropped, and a
+    heading whose lines net to zero (a reclass inside one heading) is kept.
+    It does not decide the sign by account type (E6-P6); the caller labels
+    Dr/Cr.
+
+    Returns ``{"headings": [...], "sections": [...], "no_heading": n}``:
+    - ``headings``: ``[{"section", "heading", "heading_name", "net_debit"}]``,
+      ``net_debit`` a float rounded to 2 dp, ordered by section
+      ("Profit and Loss", "Balance Sheet", then None), then within a
+      section by ``heading_name`` then ``heading``, with heading None last;
+    - ``sections``: ``[{"section", "net_debit"}]``, same section order;
+    - ``no_heading``: the number of distinct accounts with no heading.
+    """
+    groups = {}
+    no_heading_accounts = set()
+    for line in lines:
+        code = line.get("main_account")
+        entry = accounts.get(code) or {}
+        heading = entry.get("heading") or None
+        heading_name = entry.get("heading_name") or None if heading else None
+        section = entry.get("statement_section")
+        if section not in _SECTION_ORDER:
+            section = None
+        if heading is None:
+            no_heading_accounts.add(code)
+        key = (section, heading)
+        group = groups.setdefault(key, {"heading_name": heading_name, "net_debit": Decimal("0")})
+        if heading_name and not group["heading_name"]:
+            group["heading_name"] = heading_name
+        group["net_debit"] += _cents(line.get("debit_amount")) - _cents(line.get("credit_amount"))
+
+    def heading_sort_key(item):
+        (section, heading), group = item
+        return (
+            _SECTION_ORDER.get(section, 2),
+            0 if heading is not None else 1,
+            group["heading_name"] or "",
+            heading or "",
+        )
+
+    ordered = sorted(groups.items(), key=heading_sort_key)
+    headings = [
+        {
+            "section": section,
+            "heading": heading,
+            "heading_name": group["heading_name"],
+            "net_debit": float(group["net_debit"].quantize(_CENTS, rounding=ROUND_HALF_UP)),
+        }
+        for (section, heading), group in ordered
+    ]
+
+    section_totals = {}
+    section_present = []
+    for h in headings:
+        s = h["section"]
+        if s not in section_totals:
+            section_totals[s] = Decimal("0")
+            section_present.append(s)
+        section_totals[s] += _cents(h["net_debit"])
+    section_present.sort(key=lambda s: _SECTION_ORDER.get(s, 2))
+    sections = [
+        {"section": s, "net_debit": float(section_totals[s].quantize(_CENTS, rounding=ROUND_HALF_UP))}
+        for s in section_present
+    ]
+
+    return {
+        "headings": headings,
+        "sections": sections,
+        "no_heading": len(no_heading_accounts),
+    }
 
 
 #: The columns the journal writes to epm_staging.consolidation_adjustments:

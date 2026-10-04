@@ -130,6 +130,22 @@ def test_rate_move_threshold_field_no_default_or_reqd():
     assert "No default" in field.get("description", "")
 
 
+def test_intercompany_declaration_field_no_default_or_reqd():
+    """konsol#305-W3-7 (C16): blank is undeclared; the only declared value is
+    'None in this group'. No default, so existing sites read blank."""
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    assert "intercompany_section" in by_name, "intercompany_section is missing"
+    assert by_name["intercompany_section"]["fieldtype"] == "Section Break"
+    assert "intercompany_declaration" in by_name, "intercompany_declaration is missing"
+    field = by_name["intercompany_declaration"]
+    assert field["fieldtype"] == "Select"
+    assert field["options"] == "\nNone in this group"
+    assert "default" not in field, "intercompany_declaration must have no default"
+    assert not field.get("reqd"), "intercompany_declaration must not be reqd"
+    assert not field.get("permlevel"), "intercompany_declaration must be permlevel 0"
+    assert "No default" in field.get("description", "")
+
+
 def test_field_order_lists_every_field():
     doc = _doc()
     assert doc["field_order"] == [f["fieldname"] for f in doc["fields"]]
@@ -180,25 +196,45 @@ class _Refused(Exception):
     """What the stubbed frappe.throw raises."""
 
 
-def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0):
+def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
+         intercompany_declaration="", published=0, sql_log=None):
+    """``published`` is what the stubbed locking count of Published
+    Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
+    to ``sql_log`` (when given) as ``(query, values)`` (C16, #305-W3-7)."""
     saved_throw = _m.frappe.throw
     saved_row = sys.modules["konsol.period_status"].period_row
+    log = [] if sql_log is None else sql_log
 
     def throw(msg, *a, **k):
         raise _Refused(msg)
 
+    def sql(query, values=None, *a, **k):
+        log.append((query, values))
+        if "COUNT(*)" in query:
+            return [[published]]
+        return [["Intercompany Account"]]
+
+    db = _m.frappe.db
+    had_sql = "sql" in vars(db)
+    saved_sql = vars(db).get("sql")
     _m.frappe.throw = throw
     sys.modules["konsol.period_status"].period_row = period_row_fn
+    db.sql = sql
     try:
         doc = _m.CloseSettings()
         doc.first_close_fiscal_year = year
         doc.first_close_fiscal_period = period
         doc.self_approval = self_approval
         doc.rate_move_threshold = rate_move_threshold
+        doc.intercompany_declaration = intercompany_declaration
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
         sys.modules["konsol.period_status"].period_row = saved_row
+        if had_sql:
+            db.sql = saved_sql
+        else:
+            del db.sql
 
 
 def test_both_blank_is_ok():
@@ -470,3 +506,54 @@ def test_clearing_a_used_first_close_is_refused():
 
 def test_clearing_an_unused_first_close_is_allowed():
     _move((2025, 7), (0, 0), _period_rows({3: "Closed"}))
+
+
+# ---------------------------------------------------------------------------
+# konsol#305-W3-7 (C16): intercompany_declaration. Blank reads nothing.
+# "None in this group" is refused while any Intercompany Account is Published,
+# checked under the lock an Intercompany Account publish takes first (its
+# tabDocType row), then a locking count.
+# ---------------------------------------------------------------------------
+
+_DOCTYPE_LOCK = "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE"
+
+
+def test_blank_intercompany_declaration_reads_nothing():
+    log = []
+    _run(None, None, _default_period_row, intercompany_declaration="", sql_log=log)
+    assert log == []
+
+
+def test_none_in_this_group_with_nothing_published_saves_after_lock_then_count():
+    log = []
+    _run(None, None, _default_period_row,
+         intercompany_declaration="None in this group", published=0, sql_log=log)
+    assert len(log) == 2, log
+    lock, count = log
+    assert lock == (_DOCTYPE_LOCK, ("Intercompany Account",)), lock
+    assert "COUNT(*)" in count[0] and "`tabIntercompany Account`" in count[0], count
+    assert "'Published'" in count[0], count
+    for query, _values in log:
+        assert query.rstrip().endswith("FOR UPDATE"), query
+
+
+def test_none_in_this_group_with_published_accounts_is_refused():
+    """Failure path: 2 Published Intercompany Accounts."""
+    try:
+        _run(None, None, _default_period_row,
+             intercompany_declaration="None in this group", published=2)
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "2 Intercompany Account(s) are Published" in str(e), str(e)
+
+
+def test_unknown_intercompany_declaration_is_refused_before_any_read():
+    """Failure path: an unknown value is refused before any sql."""
+    log = []
+    try:
+        _run(None, None, _default_period_row,
+             intercompany_declaration="Sometimes", sql_log=log)
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "Sometimes" in str(e)
+    assert log == []

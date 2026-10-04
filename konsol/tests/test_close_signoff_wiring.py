@@ -123,6 +123,12 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
     # A63: the period's last recorded data change (blank: none recorded).
     gate.data_change = lambda fy, fp: dict(data_change or {
         "data_changed_at": None, "data_changed_by": None, "data_change": None})
+    # konsol#305 C20t: stub, so sign_off_close's coming signoff_gate.intercompany
+    # call (C22) does not raise AttributeError here.
+    gate.intercompany = lambda fy, fp: {
+        "state": "not_configured",
+        "message": "Intercompany not configured — nothing was checked.",
+        "counts": None, "sent_back_open": None}
     return module, frappe, saved_doc, gate, calls
 
 
@@ -138,18 +144,37 @@ def _real_model():
     return mod
 
 
+def _close_event_stub():
+    """konsol#305 T04a: a stub Close Event writer (T02a), so T04's lazy
+    `from konsol.close import close_event` resolves. `record` appends
+    `(kind, fiscal_year, fiscal_period)` to `.events`; it is not yet asserted
+    on here (that lands with T04 itself)."""
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.events = []
+
+    def record(kind, fiscal_year, fiscal_period, *a, **k):
+        close_event.events.append((kind, fiscal_year, fiscal_period))
+
+    close_event.record = record
+    return close_event
+
+
 @contextlib.contextmanager
 def _gate_installed(gate, model=None):
     """The stub gate (and the real, or a spy, signoff_model) in sys.modules for
     one call; the real modules after."""
     model = model if model is not None else _real_model()
+    close_event = _close_event_stub()
     close = types.ModuleType("konsol.close")
     close.signoff_gate = gate
     close.signoff_model = model
-    names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model")
+    close.close_event = close_event
+    names = ("konsol.close", "konsol.close.signoff_gate", "konsol.close.signoff_model",
+              "konsol.close.close_event")
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"konsol.close": close, "konsol.close.signoff_gate": gate,
-                        "konsol.close.signoff_model": model})
+                        "konsol.close.signoff_model": model,
+                        "konsol.close.close_event": close_event})
     try:
         yield
     finally:
@@ -504,8 +529,8 @@ class _Hooks:
     def gate(self):
         gate = types.ModuleType("konsol.close.signoff_gate")
 
-        def record_data_change(fiscal_year, fiscal_period, text, user):
-            self.log.append(("record", fiscal_year, fiscal_period, text, user))
+        def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
+            self.log.append(("record", fiscal_year, fiscal_period, text, user, entity))
             if self.raise_on_record:
                 raise RuntimeError("record refused")
             return []
@@ -546,11 +571,18 @@ def _hook_modules(hooks):
     close = types.ModuleType("konsol.close")
     gate = hooks.gate()
     close.signoff_gate = gate
+    # konsol#305 T05a: a stub Close Event writer (T02a, pattern of T04a's
+    # _close_event_stub), so T05's lazy `from konsol.close import close_event`
+    # resolves here. It keeps its own log (`.events`), never hooks.log: the
+    # wiring tests pin hooks.log to exactly ["record", "ch"].
+    close_event = _close_event_stub()
+    close.close_event = close_event
     return {"frappe": frappe, "frappe.model": types.ModuleType("frappe.model"),
             "frappe.model.document": doc_mod, "konsol": konsol,
             "konsol.clickhouse": clickhouse, "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle, "konsol.close": close,
-            "konsol.close.signoff_gate": gate}
+            "konsol.close.signoff_gate": gate,
+            "konsol.close.close_event": close_event}
 
 
 @contextlib.contextmanager
@@ -580,7 +612,9 @@ def _hook_module(path, hooks):
 def _tbs(module, **over):
     doc = module.TrialBalanceSubmission(
         name="TBS-ZZOP-2099-P1-905", batch_id="b905", data_area_id="ZZOP", fiscal_year=2099,
-        fiscal_period=1, row_count=2, amount_basis="Period movement")
+        fiscal_period=1, row_count=2, amount_basis="Period movement",
+        # before_insert always sets these on a real document (T05b).
+        uploaded_on_behalf="No", amended_from=None)
     doc.__dict__.update(over)
     doc._parse_file = lambda: []
     doc._ensure_tables = lambda: None
@@ -597,7 +631,8 @@ def test_tb_submit_records_the_change_before_anything_reaches_clickhouse():
     module, mods = _hook_module(TBS_PY, hooks)
     with _installed(mods):
         _tbs(module).on_submit()
-    assert _records(hooks) == [(2099, 1, "TB TBS-ZZOP-2099-P1-905 submitted", UPLOADER)], hooks.log
+    assert _records(hooks) == [
+        (2099, 1, "TB TBS-ZZOP-2099-P1-905 submitted", UPLOADER, "ZZOP")], hooks.log
     assert hooks.log[0][0] == "record", "ClickHouse was written before the change was recorded"
     assert any(e[0] == "ch" for e in hooks.log), "the claim was not written"
 
@@ -607,7 +642,8 @@ def test_tb_cancel_records_the_change_before_the_claim_is_deleted():
     module, mods = _hook_module(TBS_PY, hooks)
     with _installed(mods):
         _tbs(module, fiscal_period=7).on_cancel()
-    assert _records(hooks) == [(2099, 7, "TB TBS-ZZOP-2099-P1-905 cancelled", UPLOADER)], hooks.log
+    assert _records(hooks) == [
+        (2099, 7, "TB TBS-ZZOP-2099-P1-905 cancelled", UPLOADER, "ZZOP")], hooks.log
     assert [e[0] for e in hooks.log] == ["record", "ch"], hooks.log
 
 
@@ -640,8 +676,8 @@ def test_tb_exception_submit_and_cancel_record_the_change():
         _tbx(module).on_submit()
         _tbx(module, docstatus=2).on_cancel()
     assert _records(hooks) == [
-        (2099, 3, "TB Exception TBX-00905 submitted", UPLOADER),
-        (2099, 3, "TB Exception TBX-00905 cancelled", UPLOADER)], hooks.log
+        (2099, 3, "TB Exception TBX-00905 submitted", UPLOADER, "ZZOP"),
+        (2099, 3, "TB Exception TBX-00905 cancelled", UPLOADER, "ZZOP")], hooks.log
 
 
 def _amount_rows():
@@ -665,8 +701,8 @@ def test_set_amount_basis_records_one_change_per_period_before_the_claim():
                                       "Period-end balance")
     assert out["updated"] == 3, out
     assert _records(hooks) == [
-        (2099, 3, "Amount basis of TB TBS-1, TBS-3 set to Period-end balance", UPLOADER),
-        (2099, 4, "Amount basis of TB TBS-2 set to Period-end balance", UPLOADER)], hooks.log
+        (2099, 3, "Amount basis of TB TBS-1, TBS-3 set to Period-end balance", UPLOADER, "ZZOP"),
+        (2099, 4, "Amount basis of TB TBS-2 set to Period-end balance", UPLOADER, "ZZOP")], hooks.log
     kinds = [e[0] for e in hooks.log]
     assert kinds == ["set", "set", "set", "record", "record", "ch"], kinds
 
@@ -745,3 +781,38 @@ def test_assert_close_signed_off_other_refusals_are_unchanged():
         raise AssertionError("no run passed assert_close_signed_off")
     except frappe.ValidationError as e:
         assert "No completed Assertion Run for 2099-1" in str(e), str(e)
+
+
+# --- konsol#305 T04a: the close_event stub does not leak between calls ------
+
+def test_the_close_event_stub_does_not_leak_into_sys_modules():
+    """Failure path: a close_event stub left out of _gate_installed's
+    restored-names tuple would leak into later tests. A signing call and a
+    blocked call must each leave sys.modules exactly as they found it."""
+    before = sys.modules.get("konsol.close.close_event")
+    module, frappe, doc, gate, calls = _load()
+    _sign(module, gate)
+    assert sys.modules.get("konsol.close.close_event") is before
+
+    module, frappe, doc, gate, calls = _load(gate_raises=True)
+    try:
+        _sign(module, gate)
+        raise AssertionError("a blocked gate signed off")
+    except GateBlocked:
+        pass
+    assert sys.modules.get("konsol.close.close_event") is before
+
+
+# --- konsol#305 T05a: _hook_modules' close_event stub does not leak ---------
+
+def test_hook_modules_close_event_stub_does_not_leak_into_sys_modules():
+    """Failure path: a close_event stub left out of _hook_modules' returned
+    map (or _installed's restore) would leak into later tests."""
+    before = sys.modules.get("konsol.close.close_event")
+    hooks = _Hooks()
+    module, mods = _hook_module(TBS_PY, hooks)
+    assert sys.modules.get("konsol.close.close_event") is before
+    with _installed(mods):
+        _tbs(module).on_submit()
+        assert sys.modules.get("konsol.close.close_event") is mods["konsol.close.close_event"]
+    assert sys.modules.get("konsol.close.close_event") is before

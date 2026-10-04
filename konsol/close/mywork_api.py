@@ -12,6 +12,11 @@
   permission. The Entity Accountant persona is shown none of the policy gaps:
   they cannot declare Close Settings, and neither policy touches a trial
   balance (mirrors ``accountants_without_entities``);
+- the intercompany setup gaps (C08; #305-D2-7, W3-6, W3-7), group personas
+  only: ``ic_api.setup_gap()`` ("No intercompany accounts declared") and
+  ``ic_api.tolerance_gap()`` (a group node whose IC tolerance is undeclared).
+  Both are None when "none in this group" is declared. The Entity Accountant
+  cannot declare either, so is shown neither;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -37,12 +42,32 @@ Per-period facts:
 - ``rates_missing``: ``group_rates.rate_gate`` missing keys plus groups with
   no reporting currency. When the warehouse cannot answer, the Close Lead
   gets a blocking item carrying the error, and the period counts as blocked,
-  so it is never offered for sign-off.
+  so it is never offered for sign-off;
+- ``unowned`` (#289, E206): entities named by the sign-off gate's
+  ``tb_without_ownership`` config gap — a submitted TB with no covering
+  ownership. Only the Close Lead is shown the resulting blocking item.
+
+IC fix items (C08; #305-W3-1, W3-2, D2-7): for the Entity Accountant only, and
+only once the first close is declared, ``ic_api.open_fixes`` over the open
+periods' keys is turned into one item per (sent-back pair, allowed entity) by
+``mywork_model.ic_fix_items``, pointed at Trial balances. They are recomputed
+on every read; an uncheckable pair stays an item, never dropped.
+
+A22: every persona but the Viewer also gets one ``todo`` item per sent-back
+draft they own (``approvals_api.sent_back_for``, A21, turned into items by
+``mywork_model.sent_back_items``). It does not depend on the first close.
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
 counts every item; another screen counts the items whose action opens it.
 Read-only.
+
+F02: the approvals screen is the one exception. ``approvals_item`` is a single
+My work item for the whole approvals queue (A11), so counting items whose
+action opens "approvals" always gives 0 or 1. The approvals badge instead
+carries the queue's own count (``approvals_api.queue_for(...)["waiting"]["count"]``),
+passed to ``_counts`` as a ``screen_counts`` override — the single source of
+truth the approvals screen itself reads.
 
 A53: every period item's ``period`` carries ``since`` — the ISO end date of
 that period ("how long this period has been over"), so the screen can show an
@@ -77,8 +102,8 @@ from datetime import date, datetime
 import frappe
 
 from konsol import entity_permissions, fiscal_calendar, group_chart, group_rates
-from konsol.close import (checks_model, close_policy_model, mywork_model, period_model,
-                          signoff_gate, signoff_model)
+from konsol.close import (approvals_api, checks_model, close_policy_model, ic_api, mywork_model,
+                          period_model, scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
@@ -87,10 +112,10 @@ ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", 
 
 #: Screens each persona sees, in order; mirrors close-ui/src/nav.js SCREENS_BY_PERSONA.
 SCREENS = {
-    period_model.CLOSE_LEAD: ("my-work", "trial-balances", "checks", "sign-off"),
-    period_model.GROUP_ACCOUNTANT: ("my-work", "trial-balances", "checks", "sign-off"),
+    period_model.CLOSE_LEAD: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"),
+    period_model.GROUP_ACCOUNTANT: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"),
     period_model.ENTITY_ACCOUNTANT: ("my-work", "trial-balances"),
-    period_model.VIEWER: ("trial-balances", "checks", "sign-off"),
+    period_model.VIEWER: ("trial-balances", "intercompany", "rates", "period", "adjustments", "approvals", "checks", "sign-off", "audit-trail"),
 }
 MY_WORK = "my-work"
 REGULAR = "Regular"
@@ -105,6 +130,18 @@ def _date(value):
     if isinstance(value, str) and value:
         return date.fromisoformat(value[:10])
     return None
+
+
+def _aware(value):
+    """A naive database datetime placed in the site's zone, so it compares with
+    the zoned ``as_of`` ``current_freshness`` returns (L01a/A47: ``get_my_work``
+    500'd with 'can't compare offset-naive and offset-aware datetimes'; mirrors
+    checks_api._aware — the same conversion checks_api.py already uses, not a
+    second rule)."""
+    if value is None or not hasattr(value, "hour") or value.tzinfo is not None:
+        return value
+    from konsol.close.timefmt import zoned_iso
+    return datetime.fromisoformat(zoned_iso(value, frappe.utils.get_system_timezone()))
 
 
 def _first_close():
@@ -134,16 +171,12 @@ def _leaves():
 
 def _covered(start):
     """Entities with a submitted ownership period covering ``start``."""
-    covered = set()
-    for o in frappe.get_all(
+    rows = frappe.get_all(
         "Ownership Period",
         filters={"docstatus": 1, "effective_date": ["<=", start], "data_area_id": ["is", "set"]},
-        fields=["data_area_id", "end_date"], limit_page_length=0,
-    ):
-        end = _date(o.get("end_date"))
-        if end is None or end >= start:
-            covered.add(o.get("data_area_id"))
-    return covered
+        fields=["data_area_id", "effective_date", "end_date"], limit_page_length=0,
+    )
+    return scope_model.covered(rows, start)
 
 
 def _accountants_without_entities():
@@ -194,7 +227,7 @@ def _ownership_scope(leaves, first_close):
     in_scope = set()
     for _, start in judged:
         covered = _covered(start)  # once per period, not once per leaf (A61)
-        in_scope.update(e for e in leaves if e in covered)
+        in_scope.update(scope_model.in_scope(leaves, covered))
     labels = [label for label, _ in judged]
     uncovered = {e: labels for e in leaves if e not in in_scope} if judged else {}
     return in_scope, uncovered
@@ -213,6 +246,8 @@ def _gap_facts(first_close, persona, allowed):
         "ownership_missing": sorted(ownership_missing) if group else _mine(ownership_missing, allowed),
         "accountants_without_entities": _accountants_without_entities() if group else [],
         "policy_gaps": close_policy_model.policy_gaps(*_policies()) if group else [],
+        "ic_accounts_gap": ic_api.setup_gap() if group else None,
+        "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
     }, uncovered
 
 
@@ -239,6 +274,18 @@ def _open_rows(first_close, today):
     return sorted(rows, key=lambda kr: kr[0])
 
 
+def _period_codes():
+    """``{(fiscal_year, fiscal_period): period_code}`` of every fiscal period
+    row (A22), not only the open ones: a sent-back draft can name a closed or
+    history period. The row's own ``period_code``, falling back to
+    ``FY%d P%02d`` (mirrors ``_period_facts``'s ``code``)."""
+    codes = {}
+    for row in fiscal_calendar.fiscal_period_rows():
+        key = (int(row["fiscal_year"]), int(row["fiscal_period"]))
+        codes[key] = row.get("period_code") or "FY%d P%02d" % key
+    return codes
+
+
 def _newest_run(key):
     rows = frappe.get_all(
         "Assertion Run",
@@ -250,7 +297,10 @@ def _newest_run(key):
 
 
 def _checks(key, as_of):
-    state = checks_model.staleness(_newest_run(key), as_of)["state"]
+    run = _newest_run(key)
+    if run is not None:
+        run = dict(run, completed_at=_aware(run.get("completed_at")))
+    state = checks_model.staleness(run, as_of)["state"]
     terminal = latest_close_run(key[0], key[1])
     failed = 0
     signoff = None
@@ -280,7 +330,7 @@ def _rates_error_item(key, code, error, end_date):
 def _period_facts(first_close, allowed, today):
     """``(per_period, extra_items)``; extra items are the rate-gate errors."""
     as_of_text = current_freshness()["as_of"]
-    as_of = datetime.fromisoformat(as_of_text) if as_of_text else None
+    as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
     for key, row in _open_rows(first_close, today):
         code = row.get("period_code") or "FY%d P%02d" % key
@@ -298,6 +348,8 @@ def _period_facts(first_close, allowed, today):
         if error:
             extra.append(_rates_error_item(key, code, error, end_date))
             blocked = True
+        unowned = sorted(e for g in problems["config_gaps"] if g["code"] == signoff_model.UNOWNED_TB
+                         for e in g.get("entities") or ())
         per_period[key] = {
             "code": code,
             "ended": end_date < today,
@@ -309,6 +361,7 @@ def _period_facts(first_close, allowed, today):
             "signoff": signoff,
             "gates_blocked": blocked,
             "rates_missing": len(rates_missing or ()) + len(blockers or ()),
+            "unowned": unowned,
             "since": end_date.isoformat(),
         }
     return per_period, extra
@@ -316,13 +369,18 @@ def _period_facts(first_close, allowed, today):
 
 # --- counts ----------------------------------------------------------------------
 
-def _counts(items, persona):
+def _counts(items, persona, screen_counts=None):
+    """``screen_counts`` overrides a screen's displayed ``count`` (F02: the
+    approvals screen is one My work item for the whole approvals queue, so
+    its badge must be the queue's real size, never the number of My work
+    items pointing at it — which is always 0 or 1)."""
     counts = {kind: sum(1 for i in items if i["kind"] == kind) for kind in mywork_model.KINDS}
+    screen_counts = screen_counts or {}
     by_screen = {}
     for screen in SCREENS[persona]:
         on = items if screen == MY_WORK else [
             i for i in items if (i.get("action") or {}).get("screen") == screen]
-        by_screen[screen] = {"count": len(on),
+        by_screen[screen] = {"count": screen_counts.get(screen, len(on)),
                              "blocking": sum(1 for i in on if i["kind"] == "blocking")}
     counts["by_screen"] = by_screen
     return counts
@@ -356,7 +414,28 @@ def get_my_work():
     if first_close is not None:
         per_period, extra = _period_facts(first_close, allowed, today)
         items.extend(mywork_model.period_items(persona, per_period, first_close))
+        if persona == period_model.ENTITY_ACCOUNTANT:
+            items.extend(mywork_model.ic_fix_items(
+                ic_api.open_fixes(sorted(per_period)), per_period, allowed))
         if persona == period_model.CLOSE_LEAD:
             items.extend(extra)
+    screen_counts = {}
+    if persona == period_model.CLOSE_LEAD:
+        # A12: the approvals queue does not depend on the first close, so this
+        # sits outside the block above. A queue failure is not swallowed.
+        waiting = approvals_api.queue_for(frappe.session.user, roles)["waiting"]
+        # F02: the badge is the queue's own count, not a count of My work items.
+        screen_counts["approvals"] = int(waiting["count"])
+        approvals_item = mywork_model.approvals_item(waiting)
+        if approvals_item is not None:
+            items.append(approvals_item)
+    # A22: the preparer's "sent back" item, for every persona but the Viewer
+    # (who already returned above). Does not depend on the first close, so it
+    # sits outside that block too. A queue failure is not swallowed.
+    sent_back_rows = approvals_api.sent_back_for(frappe.session.user)
+    codes = _period_codes() if any(row.get("fiscal_year") is not None
+                                   for row in sent_back_rows) else {}
+    items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
     items = mywork_model.rank(items)
-    return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}
+    return {"items": items, "counts": _counts(items, persona, screen_counts),
+            "entities_assigned": entities_assigned}

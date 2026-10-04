@@ -13,6 +13,8 @@ Reads the site and passes it through the pure models:
   the order gate is skipped (``order_problem`` needs a declared first close).
   Only Regular periods are gated (P5): a non-Regular target is refused, and
   Opening/Closing/Adjustment rows never block the order gate.
+  A submitted TB from an entity with no covering ownership at the period
+  start is a ``tb_without_ownership`` config gap (E205b, #289, #305-W2-2).
 - ``assert_can_sign(fy, fp)`` throws one message listing every problem,
   titled "Sign-off blocked".
 - ``assert_period_closable(fy, fp, period_type)`` (A23; story 9.3): closing
@@ -30,17 +32,31 @@ Reads the site and passes it through the pure models:
   errs toward re-signing). The mark is saved through
   ``assertion_run.writing(SIGNOFF_WRITER, run)``, so the frozen-field guard
   (A48) still applies to everything else; it never uses ``db.set_value``.
-- ``record_data_change(fy, fp, text, user)`` (A63, #305-R2b-3): a trial
-  balance or TB exception submitted or cancelled, or an amount basis set,
-  changes the data a period's checks read. The period row's
-  ``data_changed_at`` / ``data_changed_by`` / ``data_change`` are set (a
-  direct row update: no EPM Fiscal Year validate runs), and the period's
-  latest signed run is marked "Re-sign Needed" through the same writer, with
-  ``affected_by`` = "<text> at <time> by <user>". History periods (before the
-  first close) and non-Regular periods are recorded but never marked.
-  ``sign_off_close`` refuses a run that did not start after ``data_changed_at``
-  (A65), through ``signoff_model.data_change_problem`` (A66).
+- ``record_data_change(fy, fp, text, user, entity=None)`` (A63, #305-R2b-3;
+  entity: S1, E2-6): a trial balance or TB exception submitted or cancelled,
+  or an amount basis set, changes the data a period's checks read. The
+  period row's ``data_changed_at`` / ``data_changed_by`` / ``data_change``
+  are set (a direct row update: no EPM Fiscal Year validate runs), and the
+  period's latest signed run is marked "Re-sign Needed" through the same
+  writer, with ``affected_by`` = "<text> at <time> by <user>". History
+  periods (before the first close) and non-Regular periods are recorded but
+  never marked. ``entity``, when the caller names one, is passed to the
+  ``signoff_voided`` Close Event the mark writes, so trail scoping hides a
+  void whose reason names a hidden TB. ``sign_off_close`` refuses a run that
+  did not start after ``data_changed_at`` (A65), through
+  ``signoff_model.data_change_problem`` (A66).
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
+- ``sign_off_problems`` also appends ``ic_api.tolerance_gap()`` (C05) to
+  ``config_gaps``, right after the two policy gaps, when a consolidation
+  group node has not declared its intercompany difference tolerance
+  (#305-W3-6; W3-P2). It costs 1-3 extra MariaDB reads per call (none once
+  intercompany is not configured or declared not applicable), the same
+  shape as ``_policies``; My work calls this gate once per open period, so
+  the same multiple applies there.
+- ``intercompany(fy, fp)`` -> ``ic_api.signoff_summary(fy, fp)``: the IC line
+  for the sign-off signature (#305-W3-8). It never raises for a warehouse
+  failure; a read failure comes back as its own ``"error"`` / ``"not_built"``
+  state.
 
 The first close period is read from Close Settings; its Int fields read back
 as 0 when unset, which ``signoff_model.first_close_key`` maps to undeclared.
@@ -51,7 +67,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import close_policy_model, period_model, signoff_model
+from konsol.close import close_policy_model, ic_api, period_model, scope_model, signoff_model
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
@@ -92,28 +108,30 @@ def _regular_row(rows, key):
     return row
 
 
-def _frequencies(start):
-    """``{entity: reporting_frequency}`` for the entities in scope at ``start``."""
+def _scope(start):
+    """``({entity: reporting_frequency}, covered_set)`` for the entities in
+    scope at ``start``. The coverage rule itself lives in ``scope_model``
+    (G02): both callers here, and ``sign_off_problems``'s #289 caller (E205b),
+    read it from one place."""
     entities = frappe.get_all(
         "Entity", filters={"is_group": 0, "status": "Active"},
         fields=["name", "reporting_frequency"], limit_page_length=0,
     )
-    covered = set()
-    for o in frappe.get_all(
+    names = {e["name"]: e["reporting_frequency"] or "" for e in entities}
+    rows = frappe.get_all(
         "Ownership Period",
         filters={"docstatus": 1, "effective_date": ["<=", start], "data_area_id": ["is", "set"]},
-        fields=["data_area_id", "end_date"], limit_page_length=0,
-    ):
-        end = _date(o["end_date"])
-        if end is None or end >= start:
-            covered.add(o["data_area_id"])
-    return {e["name"]: e["reporting_frequency"] or "" for e in entities if e["name"] in covered}
+        fields=["data_area_id", "end_date", "effective_date"], limit_page_length=0,
+    )
+    covered = scope_model.covered(rows, start)
+    frequencies = {e: names[e] for e in scope_model.in_scope(names, covered)}
+    return frequencies, covered
 
 
 def in_scope_entities(fiscal_year, fiscal_period):
     """Names of the entities in scope for the period, sorted."""
     row = _row(fiscal_calendar.fiscal_period_rows(), _key(fiscal_year, fiscal_period))
-    return sorted(_frequencies(_date(row["start_date"])))
+    return sorted(_scope(_date(row["start_date"]))[0])
 
 
 def _first_close():
@@ -162,7 +180,7 @@ def sign_off_problems(fiscal_year, fiscal_period):
     key = _key(fiscal_year, fiscal_period)
     rows = fiscal_calendar.fiscal_period_rows()
     row = _regular_row(rows, key)
-    frequencies = _frequencies(_date(row["start_date"]))
+    frequencies, covered = _scope(_date(row["start_date"]))
     first = _first_close()
 
     gaps = signoff_model.config_gaps(first, key, frequencies)
@@ -177,10 +195,18 @@ def sign_off_problems(fiscal_year, fiscal_period):
     expected = signoff_model.expected_entities(frequencies, key, rows)
     gaps.extend(expected["gaps"])
     gaps.extend(close_policy_model.policy_gaps(*_policies()))
+    tolerance = ic_api.tolerance_gap()
+    if tolerance:
+        gaps.append(tolerance)
+    tbs = _submitted("Trial Balance Submission", key)
+    # #289 (#305-W2-2): a submitted TB from an entity with no covering
+    # ownership at the period start is consolidated nowhere; it blocks.
+    unowned = scope_model.uncovered_with_tb({r["data_area_id"] for r in tbs}, covered)
+    unowned_gap = signoff_model.unowned_tb_gap(sorted(unowned), key)
+    if unowned_gap:
+        gaps.append(unowned_gap)
     completeness = signoff_model.completeness_problem(
-        expected["expected"],
-        _submitted("Trial Balance Submission", key),
-        _submitted("TB Exception", key),
+        expected["expected"], tbs, _submitted("TB Exception", key),
     )
     return {"config_gaps": gaps, "order": order, "completeness": completeness}
 
@@ -199,6 +225,13 @@ def assert_can_sign(fiscal_year, fiscal_period):
     messages = problem_messages(sign_off_problems(fiscal_year, fiscal_period))
     if messages:
         frappe.throw("<br>".join(messages), title=BLOCKED_TITLE)
+
+
+def intercompany(fiscal_year, fiscal_period):
+    """The intercompany line for the sign-off signature (#305-W3-8). Never
+    raises for a warehouse failure: that reads as its own ``"error"`` /
+    ``"not_built"`` state (``ic_api.signoff_summary``)."""
+    return ic_api.signoff_summary(fiscal_year, fiscal_period)
 
 
 def assert_period_closable(fiscal_year, fiscal_period, period_type):
@@ -221,12 +254,20 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     return assert_close_signed_off(*key)
 
 
-def _mark_latest_signed(affected, affected_by):
+def _mark_latest_signed(affected, affected_by, entity=None):
     """Mark the latest signed terminal run of each period in ``affected``
-    "Re-sign Needed" with ``affected_by``; return the marked run names."""
+    "Re-sign Needed" with ``affected_by``; return the marked run names. Each
+    mark also records a ``signoff_voided`` Close Event in the caller's own
+    transaction (E10-P6a, konsol#305 T04b, my judgement): a reopen or a data
+    change voids a signature, and the trail should say why. ``entity``
+    (S1, E2-6) scopes that event: a reopen names none (every later Regular
+    period is affected, not one entity's data), while a data change caused
+    by one entity's TB names it, so trail scoping can hide the void from a
+    reader without access to that entity."""
     # Imported here: assertion_run imports this module's callers (A22).
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
         RE_SIGN_NEEDED, SIGNED_STATES, SIGNOFF_WRITER, TERMINAL_STATUSES, writing)
+    from konsol.close import close_event
 
     if not affected:
         return []
@@ -252,6 +293,11 @@ def _mark_latest_signed(affected, affected_by):
             # The reopener or uploader need not own the run; the mark is a
             # consequence of their action, not an edit of the run.
             run.save(ignore_permissions=True)
+        # The event joins the same transaction as the mark above (neither
+        # caller commits, :262-263 / :307-308 equivalents). A writer failure
+        # propagates uncaught, same as T04's signed_off event (E10-P11).
+        close_event.record("signoff_voided", run.fiscal_year, run.fiscal_period,
+                            "Assertion Run", name, reason=affected_by, entity=entity)
         marked.append(name)
     return marked
 
@@ -299,7 +345,7 @@ def data_change(fiscal_year, fiscal_period):
     return {f: row.get(f) or None for f in DATA_CHANGE_FIELDS}
 
 
-def record_data_change(fiscal_year, fiscal_period, text, user):
+def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     """Record that the period's data changed (``text``, by ``user``, now) on
     its EPM Fiscal Year Period row, and mark the period's latest signed run
     "Re-sign Needed". Returns the marked run names.
@@ -309,6 +355,13 @@ def record_data_change(fiscal_year, fiscal_period, text, user):
     A history period (before the first close) or a non-Regular period is
     recorded but nothing is marked; with no first close declared, a Regular
     period is marked (the mark errs toward re-signing, as on a reopen).
+
+    ``entity`` (S1, E2-6): the entity whose data changed, when the caller can
+    name one (a TB submit or cancel, a TB Exception, an amount basis set on
+    a TB). It is passed through to the ``signoff_voided`` Close Event, so a
+    reader scoped to other entities does not see why this period's signature
+    stopped counting. Blank (the default) when no single entity caused the
+    change.
     """
     key = _key(fiscal_year, fiscal_period)
     row = _period_row(key, ("name", "period_type"))
@@ -324,5 +377,5 @@ def record_data_change(fiscal_year, fiscal_period, text, user):
     if first is not None and key < first:
         return []
     affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
-    return _mark_latest_signed({key}, affected_by)
+    return _mark_latest_signed({key}, affected_by, entity=entity)
 

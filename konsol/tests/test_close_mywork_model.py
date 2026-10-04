@@ -15,6 +15,13 @@ _spec = importlib.util.spec_from_file_location("close_mywork_under_test", _PATH)
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
 
+# S1: real producer contract. ic_model is pure too, so ic_fix_items' test
+# input is built by calling it, never a hand-built dict.
+_IC_PATH = os.path.join(APP_DIR, "close", "ic_model.py")
+_ic_spec = importlib.util.spec_from_file_location("close_ic_under_test_for_mywork", _IC_PATH)
+IC = importlib.util.module_from_spec(_ic_spec)
+_ic_spec.loader.exec_module(IC)
+
 
 def _facts(**over):
     facts = {
@@ -24,6 +31,8 @@ def _facts(**over):
         "ownership_missing": [],
         "accountants_without_entities": [],
         "policy_gaps": [],
+        "ic_accounts_gap": None,
+        "ic_tolerance_gap": None,
     }
     facts.update(over)
     return facts
@@ -69,14 +78,20 @@ _BOTH_POLICY_GAPS = [
 ]
 
 
+_IC_ACCOUNTS_GAP = "Publish at least one Intercompany Account, or declare none in this group."
+_IC_TOLERANCE_GAP = {"code": "ic_tolerance_undeclared", "groups": ["EMEA Group"],
+                      "message": "Declare the intercompany tolerance for EMEA Group."}
+
+
 def test_every_gap_present_ids_stable_and_ordered():
     facts = _facts(first_close=None, chart_published=False, frequency_missing=["FR01"],
                    ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
-                   policy_gaps=_BOTH_POLICY_GAPS)
+                   policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
+                   ic_tolerance_gap=_IC_TOLERANCE_GAP)
     items = M.setup_gap_items(facts)
     assert [i["id"] for i in items] == [
-        "gap:first_close", "gap:self_approval", "gap:rate_move", "gap:chart", "gap:frequency",
-        "gap:ownership", "gap:accountants"]
+        "gap:first_close", "gap:self_approval", "gap:rate_move", "gap:chart", "gap:ic_accounts",
+        "gap:ic_tolerance", "gap:frequency", "gap:ownership", "gap:accountants"]
     # Same input, same output: ids never depend on order or content.
     assert M.setup_gap_items(dict(facts)) == items
 
@@ -85,11 +100,14 @@ def test_desk_actions_point_at_configuration():
     items = _by_id(M.setup_gap_items(_facts(
         first_close=None, chart_published=False, frequency_missing=["FR01"],
         ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
-        policy_gaps=_BOTH_POLICY_GAPS)))
+        policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
+        ic_tolerance_gap=_IC_TOLERANCE_GAP)))
     assert items["gap:first_close"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:self_approval"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:rate_move"]["action"] == {"desk": "/app/close-settings"}
     assert items["gap:chart"]["action"] == {"desk": "/app/main-account"}
+    assert items["gap:ic_accounts"]["action"] == {"desk": "/app/intercompany-account"}
+    assert items["gap:ic_tolerance"]["action"] == {"desk": "/app/consolidation-group"}
     assert items["gap:frequency"]["action"] == {"desk": "/app/entity"}
     assert items["gap:ownership"]["action"] == {"desk": "/app/ownership-period"}
     assert items["gap:accountants"]["action"] == {"desk": "/app/user"}
@@ -101,11 +119,62 @@ def test_every_gap_is_blocking_with_an_owner_role():
     items = M.setup_gap_items(_facts(
         first_close=None, chart_published=False, frequency_missing=["FR01"],
         ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
-        policy_gaps=_BOTH_POLICY_GAPS))
+        policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
+        ic_tolerance_gap=_IC_TOLERANCE_GAP))
     for item in items:
         assert item["kind"] == "blocking"
         assert item["owner"] in ("EPM Admin", "System Manager")
         assert item["title"] and item["detail"]
+
+
+def test_ic_accounts_gap_is_one_item_pointed_at_the_desk():
+    items = M.setup_gap_items(_facts(ic_accounts_gap=_IC_ACCOUNTS_GAP))
+    assert [i["id"] for i in items] == ["gap:ic_accounts"]
+    item = items[0]
+    assert item["title"] == "No intercompany accounts declared"
+    assert item["detail"] == _IC_ACCOUNTS_GAP
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/intercompany-account"}
+
+
+def test_ic_accounts_gap_none_gives_no_item():
+    assert M.setup_gap_items(_facts(ic_accounts_gap=None)) == []
+
+
+def test_missing_ic_accounts_gap_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["ic_accounts_gap"]
+    with pytest.raises(ValueError, match="ic_accounts_gap"):
+        M.setup_gap_items(facts)
+
+
+def test_ic_tolerance_gap_is_one_blocking_item():
+    items = M.setup_gap_items(_facts(ic_tolerance_gap=_IC_TOLERANCE_GAP))
+    assert [i["id"] for i in items] == ["gap:ic_tolerance"]
+    item = items[0]
+    assert item["detail"] == _IC_TOLERANCE_GAP["message"]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/consolidation-group"}
+    assert "1 group" in item["title"]
+    assert "groups" not in item["title"]
+
+
+def test_ic_tolerance_gap_title_is_plural_for_more_than_one_group():
+    gap = {"code": "ic_tolerance_undeclared", "groups": ["EMEA Group", "APAC Group"],
+           "message": "Declare the intercompany tolerance."}
+    item = M.setup_gap_items(_facts(ic_tolerance_gap=gap))[0]
+    assert "2 groups" in item["title"]
+
+
+def test_ic_tolerance_gap_none_gives_no_item():
+    assert M.setup_gap_items(_facts(ic_tolerance_gap=None)) == []
+
+
+def test_missing_ic_tolerance_gap_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["ic_tolerance_gap"]
+    with pytest.raises(ValueError, match="ic_tolerance_gap"):
+        M.setup_gap_items(facts)
 
 
 def test_a_policy_gap_is_one_item_with_owner_action_and_no_since():
@@ -189,6 +258,7 @@ def _period(code, **over):
         "gates_blocked": False,
         "rates_missing": 0,
         "status": "Open",
+        "unowned": [],
     }
     facts.update(over)
     return facts
@@ -220,7 +290,8 @@ def test_period_item_shape_and_period_tag():
         assert item["kind"] in ("blocking", "todo", "waiting")
         assert item["period"]["code"] in ("FY2025 P07", "FY2025 P08")
         assert (item["period"]["fiscal_year"], item["period"]["fiscal_period"]) in (P07, P08)
-        assert item["action"]["screen"] in ("my-work", "trial-balances", "checks", "sign-off")
+        assert item["action"]["screen"] in ("my-work", "trial-balances", "checks", "sign-off",
+                                            "rates")
         assert "desk" not in item["action"]
 
 
@@ -251,6 +322,7 @@ def test_group_accountant_items():
     items = M.period_items("group_accountant", _two_open(), FIRST)
     got = {(i["period"]["fiscal_period"], i["title"], i["kind"]) for i in items}
     assert got == {
+        (7, "Rates missing (2)", "blocking"),
         (7, "Run checks", "todo"),
         (7, "Waiting on 2 trial balances", "waiting"),
         (8, "3 checks failing", "blocking"),
@@ -262,6 +334,24 @@ def test_group_accountant_items():
     assert screens["Run checks"] == "checks"
     assert screens["3 checks failing"] == "checks"
     assert screens["Waiting on 2 trial balances"] == "trial-balances"
+    assert screens["Rates missing (2)"] == "rates"
+
+
+def test_group_accountant_rates_missing_item_id_and_shape():
+    # konsol#305 E412 (#305-W2-11): the Analyst gets "Rates missing" too,
+    # built by the same helper as the Close Lead's.
+    items = M.period_items("group_accountant", _two_open(), FIRST)
+    item = next(i for i in items if i["id"] == "rates:2025-07")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"screen": "rates"}
+
+
+def test_entity_accountant_and_viewer_get_no_rates_item():
+    # Failure path: the rates item leaks to an entity persona.
+    per = {P07: _period("FY2025 P07", my_missing=["ZZA"], missing=["ZZA"], rates_missing=4)}
+    for persona in ("entity_accountant", "viewer"):
+        items = M.period_items(persona, per, FIRST)
+        assert not any(i["id"].startswith("rates:") for i in items), persona
 
 
 def test_group_accountant_run_checks_when_not_run_and_nothing_when_current():
@@ -284,8 +374,33 @@ def test_close_lead_items():
     }
     for item in items:
         assert item["owner"] == "EPM Admin"
-    assert _titles(items)["Rates missing (2)"]["action"] == {"screen": "sign-off"}
+    assert _titles(items)["Rates missing (2)"]["action"] == {"screen": "rates"}
     assert _titles(items)["Re-sign needed"]["action"] == {"screen": "sign-off"}
+
+
+def test_close_lead_unowned_tb_is_one_blocking_item():
+    # konsol#305 E206, #289: a submitted TB with no covering ownership.
+    per = {P07: _period("FY2025 P07", unowned=["ZZX"])}
+    items = M.period_items("close_lead", per, FIRST)
+    item = next(i for i in items if i["id"] == "unowned:2025-07")
+    assert item["kind"] == "blocking"
+    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["entities"] == ["ZZX"]
+    assert item["title"] == "Trial balance with no ownership (1)"
+
+
+def test_only_the_close_lead_sees_the_unowned_tb_item():
+    per = {P07: _period("FY2025 P07", unowned=["ZZX"])}
+    for persona in ("group_accountant", "entity_accountant", "viewer"):
+        items = M.period_items(persona, per, FIRST)
+        assert not any(i["id"].startswith("unowned:") for i in items), persona
+
+
+def test_missing_unowned_fact_raises_not_guessed():
+    per = _two_open()
+    del per[P07]["unowned"]
+    with pytest.raises(ValueError, match="unowned"):
+        M.period_items("close_lead", per, FIRST)
 
 
 def test_close_lead_sign_off_todo_when_checks_current_and_no_gate_blocks():
@@ -443,3 +558,256 @@ def test_signed_states_match_the_assertion_run_controller():
 
 def test_re_sign_needed_is_not_a_signed_state():
     assert "Re-sign Needed" not in M.SIGNED_STATES
+
+
+# --- A11: the Close Lead's "waiting for your approval" item ------------------
+
+
+def test_approvals_item_singular():
+    item = M.approvals_item({"count": 1, "oldest": "2025-07-15T09:00:00+00:00"})
+    assert item == {
+        "id": "approvals",
+        "kind": "todo",
+        "title": "Approve 1 item",
+        "owner": M.OWNERS[M.CLOSE_LEAD],
+        "action": {"screen": "approvals"},
+        "since": "2025-07-15",
+        "since_reason": "oldest waiting",
+    }
+
+
+def test_approvals_item_plural():
+    item = M.approvals_item({"count": 3, "oldest": "2025-07-15T09:00:00+00:00"})
+    assert item["title"] == "Approve 3 items"
+    assert item["kind"] == "todo"
+    assert item["action"] == {"screen": "approvals"}
+
+
+def test_approvals_item_count_zero_gives_none():
+    assert M.approvals_item({"count": 0, "oldest": None}) is None
+
+
+def test_approvals_item_missing_count_raises_not_guessed():
+    with pytest.raises(ValueError, match="count"):
+        M.approvals_item({})
+
+
+def test_approvals_item_has_no_period_and_ranks_before_period_todo_items():
+    approvals = M.approvals_item({"count": 1, "oldest": "2025-07-15T09:00:00+00:00"})
+    assert "period" not in approvals
+    period_todo = {"id": "signoff:2025-07", "kind": "todo", "title": "Sign off P07",
+                   "period": {"fiscal_year": 2025, "fiscal_period": 7, "code": "P07"},
+                   "owner": "EPM Admin", "action": {"screen": "sign-off"}}
+    ranked = M.rank([period_todo, approvals])
+    assert ranked[0]["id"] == "approvals"
+
+
+# --- C07 (W3-1, W3-2): the Entity Accountant's intercompany fix items ---------
+
+IC_P07 = (2025, 7)
+IC_P08 = (2025, 8)
+
+
+_IC_EVENT = {
+    "kind": "ic_sent_back", "name": "ZZ-EVT-1", "at": "2025-07-15T10:00:00",
+    "actor": "alice@example.com", "reason": "Please review the booking.",
+    "detail": {"entity_a": "UK01", "account_a": "140000",
+               "entity_b": "DE01", "account_b": "240000"},
+}
+
+_IC_ROW = {
+    "entity_a": "UK01", "account_a": "140000", "entity_b": "DE01", "account_b": "240000",
+    "consolidation_group": "EMEA Group", "match_status": "over_tolerance",
+    "difference": 360.65, "tolerance": 5.0, "balance_a": 1250.75, "balance_b": 890.10,
+}
+
+
+def _ic_fix(state="over_tolerance", error=None):
+    """S1: built through the real producer (``ic_model.open_fixes``), never
+    a hand-built dict. ``not_in_build`` and ``cannot_check`` are states the
+    real function emits; an unrecognised ``state`` (for the defensive
+    ValueError path, which the real function can never emit) is applied as
+    a targeted mutation of its real output, not a from-scratch dict."""
+    rows = [] if state == "not_in_build" else [dict(_IC_ROW)]
+    fixes = IC.open_fixes(
+        [dict(_IC_EVENT)], rows,
+        error=(error or "ClickHouse timeout") if state == "cannot_check" else None)
+    fix = fixes[0]
+    if state not in M.IC_FIX_STATES:
+        fix = dict(fix, state=state)
+    return fix
+
+
+def _ic_period(code="FY2025 P07", ended=True, since=None):
+    facts = {"code": code, "ended": ended}
+    if since is not None:
+        facts["since"] = since
+    return facts
+
+
+def test_ic_fix_item_shape_for_the_allowed_entity_only():
+    per = {IC_P07: _ic_period()}
+    items = M.ic_fix_items({IC_P07: [_ic_fix()]}, per, {"UK01"})
+    assert len(items) == 1
+    item = items[0]
+    assert item["action"] == {"screen": "trial-balances", "entity": "UK01"}
+    assert item["owner"] == "Entity Accountant"
+    assert item["period"]["fiscal_year"] == 2025
+    assert item["period"]["fiscal_period"] == 7
+    assert item["period"]["code"] == "FY2025 P07"
+
+
+def test_ic_fix_item_kind_follows_whether_the_period_has_ended():
+    fix = _ic_fix()
+    blocking = M.ic_fix_items({IC_P07: [fix]}, {IC_P07: _ic_period(ended=True)}, {"UK01"})
+    assert blocking[0]["kind"] == "blocking"
+    todo = M.ic_fix_items({IC_P07: [fix]}, {IC_P07: _ic_period(ended=False)}, {"UK01"})
+    assert todo[0]["kind"] == "todo"
+
+
+def test_ic_fix_item_never_writes_the_partner_balance():
+    # W3-2: the entity sees its own balance and the difference, never the partner's.
+    per = {IC_P07: _ic_period()}
+    fix = _ic_fix()
+    group = fix["groups"][0]
+    items = M.ic_fix_items({IC_P07: [fix]}, per, {"UK01"})
+    text = items[0]["title"] + " " + items[0]["detail"]
+    assert str(group["balance_a"]) in text
+    assert str(group["difference"]) in text
+    assert str(group["balance_b"]) not in text
+    assert group["consolidation_group"] in text
+
+
+def test_ic_fix_items_one_per_allowed_entity_both_sides_when_allowed_is_none():
+    # R1: with no scope restriction, both entities of the pair get their own item.
+    per = {IC_P07: _ic_period()}
+    items = M.ic_fix_items({IC_P07: [_ic_fix()]}, per, None)
+    entities = {i["action"]["entity"] for i in items}
+    assert entities == {"UK01", "DE01"}
+    assert len({i["id"] for i in items}) == 2
+
+
+def test_ic_fix_items_empty_when_neither_entity_is_allowed():
+    per = {IC_P07: _ic_period()}
+    assert M.ic_fix_items({IC_P07: [_ic_fix()]}, per, {"FR01"}) == []
+
+
+def test_ic_fix_items_not_in_build_and_cannot_check_sentences():
+    per = {IC_P07: _ic_period()}
+    nib = M.ic_fix_items({IC_P07: [_ic_fix(state="not_in_build")]}, per, {"UK01"})
+    assert nib[0]["detail"].endswith(
+        "The pair is not in the last build; this stays until it is within tolerance "
+        "or the period closes.")
+
+    cc = M.ic_fix_items({IC_P07: [_ic_fix(state="cannot_check", error="ClickHouse timeout")]},
+                        per, {"UK01"})
+    assert "ClickHouse timeout" in cc[0]["detail"]
+    assert cc[0]["detail"].endswith(
+        "Intercompany could not be checked (ClickHouse timeout); this stays until it can.")
+
+
+def test_ic_fix_item_detail_carries_the_send_back_reason():
+    per = {IC_P07: _ic_period()}
+    fix = _ic_fix()
+    item = M.ic_fix_items({IC_P07: [fix]}, per, {"UK01"})[0]
+    assert item["detail"].startswith("Sent back by alice@example.com on 2025-07-15: "
+                                     "Please review the booking.")
+
+
+def test_ic_fix_items_unknown_state_raises():
+    per = {IC_P07: _ic_period()}
+    with pytest.raises(ValueError, match="cleared"):
+        M.ic_fix_items({IC_P07: [_ic_fix(state="cleared")]}, per, {"UK01"})
+
+
+def test_ic_fix_items_skips_a_key_not_in_per_period():
+    # A fix for a period not among the caller's open periods is not mine to show.
+    items = M.ic_fix_items({IC_P08: [_ic_fix()]}, {IC_P07: _ic_period()}, None)
+    assert items == []
+
+
+def test_ic_fix_items_no_fixes_gives_no_items():
+    assert M.ic_fix_items({}, {IC_P07: _ic_period()}, None) == []
+    assert M.ic_fix_items({IC_P07: []}, {IC_P07: _ic_period()}, None) == []
+
+
+# --- A22: the preparer's "sent back" My work item -----------------------------
+# A21's ``approvals_api.sent_back_for`` row shape:
+# {"doctype", "name", "kind_label", "title", "fiscal_year", "fiscal_period",
+#  "rejection": {"reason", "actor", "at"}}.
+
+def _sb_row(doctype, name, kind_label, title, fiscal_year=None, fiscal_period=None,
+           actor="alice@example.com", at="2025-08-20T10:00:00+01:00",
+           reason="Fix the amount."):
+    return {
+        "doctype": doctype, "name": name, "kind_label": kind_label, "title": title,
+        "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+        "rejection": {"reason": reason, "actor": actor, "at": at},
+    }
+
+
+def test_sent_back_items_journal_routes_through_its_period():
+    row = _sb_row("Consolidation Journal", "CJ-00001", "Adjustment · CJ-00001",
+                 "Accrual reversal", fiscal_year=2025, fiscal_period=7)
+    items = M.sent_back_items([row], M.CLOSE_LEAD, {(2025, 7): "P07"})
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == "sent-back:Consolidation Journal:CJ-00001"
+    assert item["kind"] == "todo"
+    assert item["title"] == "Sent back: Adjustment · CJ-00001 · Accrual reversal"
+    assert item["detail"] == "alice@example.com on 2025-08-20: Fix the amount."
+    assert item["owner"] == M.OWNERS[M.CLOSE_LEAD]
+    assert item["action"] == {"screen": "adjustments"}
+    assert item["period"] == {"fiscal_year": 2025, "fiscal_period": 7, "code": "P07",
+                              "since": "2025-08-20"}
+    assert "since" not in item and "since_reason" not in item
+
+
+def test_sent_back_items_her_has_no_period():
+    row = _sb_row("Historical Equity Rate", "HER-00001", "Historical equity rate",
+                 "UK01 2024-12-31")
+    item = M.sent_back_items([row], M.GROUP_ACCOUNTANT, {})[0]
+    assert "period" not in item
+    assert item["since"] == "2025-08-20"
+    assert item["since_reason"] == "sent back"
+    assert item["action"] == {"screen": "rates"}
+
+
+def test_sent_back_items_ger_and_op_route_to_rates():
+    ger = _sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
+                 "1.1000", fiscal_year=2025, fiscal_period=7)
+    op = _sb_row("Ownership Period", "OP-1", "Ownership period", "UK01 100% from 2024-01-01")
+    items = M.sent_back_items([ger, op], M.ENTITY_ACCOUNTANT, {(2025, 7): "P07"})
+    assert items[0]["action"] == {"screen": "rates"}
+    assert items[1]["action"] == {"screen": "rates"}
+    assert "period" in items[0] and "period" not in items[1]
+
+
+def test_sent_back_items_desk_actions_for_ic_bc_bd():
+    ic = _sb_row("IC Balance", "ICB-1", "IC balance · UK01 → DE01", "IC balance · UK01 → DE01",
+                fiscal_year=2025, fiscal_period=7)
+    bc = _sb_row("Business Combination", "BC-1", "Business combination · UK01",
+                "Business combination · UK01")
+    bd = _sb_row("Business Disposal", "BD-1", "Business disposal · UK01",
+                "Business disposal · UK01")
+    items = M.sent_back_items([ic, bc, bd], M.CLOSE_LEAD, {(2025, 7): "P07"})
+    assert items[0]["action"] == {"desk": "/app/ic-balance/ICB-1"}
+    assert items[1]["action"] == {"desk": "/app/business-combination/BC-1"}
+    assert items[2]["action"] == {"desk": "/app/business-disposal/BD-1"}
+
+
+def test_sent_back_items_viewer_raises():
+    row = _sb_row("Historical Equity Rate", "HER-00001", "Historical equity rate", "x")
+    with pytest.raises(ValueError, match="[Vv]iewer"):
+        M.sent_back_items([row], M.VIEWER, {})
+
+
+def test_sent_back_items_period_missing_from_codes_raises():
+    row = _sb_row("Consolidation Journal", "CJ-00001", "Adjustment · CJ-00001", "x",
+                 fiscal_year=2025, fiscal_period=7)
+    with pytest.raises(ValueError, match="2025"):
+        M.sent_back_items([row], M.CLOSE_LEAD, {})
+
+
+def test_sent_back_items_empty_rows_gives_no_items():
+    assert M.sent_back_items([], M.CLOSE_LEAD, {}) == []

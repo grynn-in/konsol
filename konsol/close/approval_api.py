@@ -10,11 +10,28 @@ This endpoint does not decide policy. The ``before_submit`` hook
 (``konsol.close.self_approval.check``) does: an "Allowed with reason"
 self-approval with no reason, or any Blocked self-approval, is refused there.
 
+On a doctype with no active workflow (#305-D2-8), a reject leaves the draft
+at docstatus 0 with no state change, so nothing else stops ``approve`` from
+submitting it unchanged. ``approve`` refuses that case itself (konsol#305
+F01, review S7, reversing the coordinator's E6-P3 judgement that only the
+screen need hide the buttons): it reads the document's newest ``rejected``
+Close Event (``close_event.latest_rejections``) and refuses when that
+rejection is later than the document's own ``modified`` —
+``approvals_model.is_sent_back``, the one comparison, not repeated here. A
+workflow doctype is unaffected: its reject already moves the document away
+from "awaiting approval".
+
 The close-ui approval screen (E6) is the intended caller.
+
+Close Events (konsol#305 T02b, E10-P11): ``approve`` writes none itself. A
+Desk submit and a workflow "Approve" never reach it, so the approval event is
+written by the hook alone, once, for every submit path. ``reject`` is not a
+submit, so it writes its own ``rejected`` event, in its own transaction; the
+writer's exception is never caught.
 """
 import frappe
 
-from konsol.close import close_policy_model
+from konsol.close import approvals_model, close_event, close_policy_model, self_approval
 from konsol.close.self_approval import REASON_FLAG
 
 
@@ -36,6 +53,9 @@ def approve(doctype, name, reason=None):
         # A request-scoped flag, not doc.flags: apply_workflow reloads the doc.
         frappe.flags[REASON_FLAG] = {(doctype, name): reason}
     doc = frappe.get_doc(doctype, name)
+    # The hook's own rule (#305-W2-14), read before the approve.
+    self_approved = frappe.session.user in self_approval.preparers_for(
+        doctype, {name: doc.owner})[name]
     if frappe.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}):
         from frappe.model.workflow import apply_workflow
 
@@ -43,35 +63,51 @@ def approve(doctype, name, reason=None):
         # read the doc back then.
         doc = apply_workflow(doc, "Approve") or frappe.get_doc(doctype, name)
     else:
+        # F01 (review S7): a no-workflow draft stays at docstatus 0 after a
+        # reject (#305-D2-8), so approve must refuse it itself when the
+        # preparer has not yet saved a change.
+        rejection = close_event.latest_rejections(doctype, [name]).get(name)
+        if approvals_model.is_sent_back(rejection, doc.modified):
+            frappe.throw(
+                "%s %s was rejected by %s on %s: \"%s\". The preparer must "
+                "save a change before it can be approved again."
+                % (doctype, name, rejection["actor"], rejection["at"], rejection["reason"]))
         doc.submit()
     return {
         "name": doc.name,
         "docstatus": int(doc.docstatus),
-        "self_approved": doc.owner == frappe.session.user,
+        "self_approved": self_approved,
     }
 
 
 @frappe.whitelist(methods=["POST"])
 def reject(doctype, name, reason=None):
-    """Reject a Pending Approval document back to its workflow's first state,
-    with a reason (konsol#305 J06a, the spirit of #305-D2-8).
+    """Reject a document awaiting approval, with a reason (konsol#305 J06a,
+    #305-D2-8).
 
-    The Desk workflow bar's own Reject has no place for a reason, so a direct
-    ``apply_workflow(doc, "Reject")`` is refused by the controller unless this
-    request-scoped flag is set. A doctype with no active workflow has no
-    Reject transition to apply; its Desk Reject/cancel screen ships with E6
-    (#305-D2-8).
+    With an active workflow, the document goes back to the workflow's first
+    state. The Desk workflow bar's own Reject has no place for a reason, so a
+    direct ``apply_workflow(doc, "Reject")`` is refused by the controller
+    unless this request-scoped flag is set.
+
+    With no active workflow (A04, #305-D2-8), there is no state to move: the
+    draft stays as it is (no save, no docstatus change), and the reason is a
+    Comment and a ``rejected`` Close Event. A submitted document is refused;
+    its correction is a cancel and an amendment.
+
+    Both paths return ``{"name", "docstatus", "status"}``.
     """
     frappe.only_for(("EPM Admin", "System Manager"))
     reason = (reason or "").strip()
     if not reason:
         frappe.throw("A rejection needs a reason.")
-    has_workflow = doctype in close_policy_model.APPROVAL_DOCTYPES and frappe.db.get_value(
-        "Workflow", {"document_type": doctype, "is_active": 1})
-    if not has_workflow:
+    if doctype not in close_policy_model.APPROVAL_DOCTYPES:
         frappe.throw(
-            "%s has no workflow to reject through. Reject a document without "
-            "a workflow from the approvals screen (konsol#305-D2-8)." % doctype)
+            "%s is not an approval document, so it has nothing to reject "
+            "(konsol#305-D2-8). Reject only one of: %s."
+            % (doctype, ", ".join(close_policy_model.APPROVAL_DOCTYPES)))
+    if not frappe.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}):
+        return _reject_draft(doctype, name, reason)
     # A request-scoped flag, not doc.flags: apply_workflow reloads the doc.
     frappe.flags[REJECT_REASON_FLAG] = {(doctype, name): reason}
     doc = frappe.get_doc(doctype, name)
@@ -79,4 +115,27 @@ def reject(doctype, name, reason=None):
 
     doc = apply_workflow(doc, "Reject") or frappe.get_doc(doctype, name)
     doc.add_comment("Comment", f"Rejected: {reason}")
-    return {"name": doc.name, "status": doc.status}
+    close_event.record(
+        "rejected", *close_event.period_of(doc), doctype, name, reason=reason,
+        entity=close_event.entity_of(doc), detail={"preparer": doc.owner})
+    return {"name": doc.name, "docstatus": int(doc.docstatus),
+            "status": getattr(doc, "status", None)}
+
+
+def _reject_draft(doctype, name, reason):
+    """#305-D2-8: a doctype with no active workflow keeps its draft; the
+    rejection is the Comment and the ``rejected`` event, in the request's
+    transaction. The document itself is not saved."""
+    doc = frappe.get_doc(doctype, name)
+    if int(doc.docstatus) != 0:
+        frappe.throw(
+            "%s %s is already approved; a correction is a cancel and an amendment."
+            % (doctype, name))
+    # Read the period first (it raises for an undeclared period), so a refusal
+    # leaves no Comment behind.
+    period = close_event.period_of(doc)
+    doc.add_comment("Comment", f"Rejected: {reason}")
+    close_event.record(
+        "rejected", *period, doctype, name, reason=reason,
+        entity=close_event.entity_of(doc), detail={"preparer": doc.owner})
+    return {"name": doc.name, "docstatus": 0, "status": None}

@@ -28,6 +28,7 @@ FIRST_CLOSE_UNDECLARED = "first_close_undeclared"
 HISTORY_PERIOD = "history_period"
 FREQUENCY_UNDECLARED = "frequency_undeclared"
 QUARTER_UNDECLARED = "quarter_undeclared"
+UNOWNED_TB = "tb_without_ownership"
 
 FREQUENCIES = ("Monthly", "Quarterly")
 RE_SIGN_NEEDED = "Re-sign Needed"
@@ -103,6 +104,36 @@ def config_gaps(first_close, target, frequencies):
             "message": message,
         })
     return gaps
+
+
+def unowned_tb_gap(entities, target):
+    """The #289 gap: ``entities`` submitted a trial balance for ``target`` with
+    no covering ownership. ``entities`` is sorted in the result. None when
+    ``entities`` is empty or None.
+    """
+    entities = sorted(entities or [])
+    if not entities:
+        return None
+    label = _label(_key(target))
+    if len(entities) > 5:
+        message = (
+            "%d entities submitted a trial balance but have no ownership for %s. "
+            "Record their Ownership Periods, or cancel the trial balances, before signing off."
+            % (len(entities), label)
+        )
+    elif len(entities) == 1:
+        message = (
+            "%s: %s submitted a trial balance but has no ownership for the period. "
+            "Record its Ownership Period, or cancel the trial balance, before signing off."
+            % (label, entities[0])
+        )
+    else:
+        message = (
+            "%s: %s submitted trial balances but have no ownership for the period. "
+            "Record their Ownership Periods, or cancel the trial balances, before signing off."
+            % (label, ", ".join(entities))
+        )
+    return {"code": UNOWNED_TB, "entities": entities, "message": message}
 
 
 def _blocks(state):
@@ -460,7 +491,72 @@ def data_change_problem(started_at, change):
     return None
 
 
-def _action(run, problems, can_override, period_status, data_change):
+IC_STATES = ("not_configured", "not_applicable", "not_built", "error", "checked")
+
+_IC_UNCHECKED_SUFFIX = " Nothing can be signed until intercompany can be checked."
+
+
+def ic_over_tolerance(ic):
+    """How many intercompany pairs are over tolerance, for the #305-W3-8
+    Amber rule.
+
+    ``ic`` is the IC line (``ic_api.signoff_summary`` / ``ic_model.state``
+    shape: ``state``, ``message``, ``counts``, ``sent_back_open``).
+    ``checked`` reads ``counts["over_tolerance"]`` (never guessed as 0 when
+    missing); ``not_configured``/``not_applicable`` are 0 (W3-P2: an
+    unconfigured or inapplicable group is never Amber); ``not_built``/
+    ``error`` are None (unknown -- ``ic_problem`` blocks those instead).
+    Raises ValueError when ``ic`` is None or not a dict, or its ``state`` is
+    outside IC_STATES: never guessed.
+    """
+    if not isinstance(ic, dict):
+        raise ValueError("the intercompany line was not read")
+    state = ic.get("state")
+    if state not in IC_STATES:
+        raise ValueError(
+            "unknown intercompany state %r; expected one of %s" % (state, ", ".join(IC_STATES)))
+    if state == "checked":
+        counts = ic.get("counts")
+        if not isinstance(counts, dict) or "over_tolerance" not in counts:
+            raise ValueError("the intercompany line's counts are missing over_tolerance")
+        return int(counts["over_tolerance"])
+    if state in ("not_configured", "not_applicable"):
+        return 0
+    return None  # not_built / error: unknown
+
+
+def ic_warning(ic):
+    """"Intercompany: N pair(s) over tolerance", or None when there are
+    none, the count is unknown (``not_built``/``error``), or the state is
+    never Amber (``not_configured``/``not_applicable``)."""
+    n = ic_over_tolerance(ic)
+    if not n:
+        return None
+    return "Intercompany: %d pair%s over tolerance" % (n, "" if n == 1 else "s")
+
+
+def effective_status(run_status, ic):
+    """``run_status``, except a Green run becomes "Amber" when the
+    intercompany line has pairs over tolerance (#305-W3-8 option B, the
+    #265 precedent). Amber, Red, Error, Queued and Running are unchanged:
+    only a Green run can be turned Amber by intercompany alone."""
+    if run_status == "Green" and (ic_over_tolerance(ic) or 0) > 0:
+        return "Amber"
+    return run_status
+
+
+def ic_problem(ic):
+    """None, or (W3-P4) the block for an intercompany line that could not
+    be checked at all (``not_built``/``error``): nothing can be signed
+    while it is unknown whether any pair is over tolerance. Raises
+    ValueError (via ``ic_over_tolerance``) for a malformed ``ic``."""
+    ic_over_tolerance(ic)  # validates ic; raises for an unknown state
+    if ic["state"] in ("not_built", "error"):
+        return {"code": "ic_unchecked", "message": ic["message"] + _IC_UNCHECKED_SUFFIX}
+    return None
+
+
+def _action(run, problems, can_override, period_status, data_change, intercompany):
     if period_status not in PERIOD_STATUSES:
         raise ValueError("Unknown period status %r; expected one of %s."
                          % (period_status, ", ".join(PERIOD_STATUSES)))
@@ -488,7 +584,10 @@ def _action(run, problems, can_override, period_status, data_change):
         return "run_checks", _LABELS["run_checks"]
     if run["signoff_status"] == RE_SIGN_NEEDED:
         return "rerun", _LABELS["rerun"]
-    status = run["status"]
+    unchecked = ic_problem(intercompany)
+    if unchecked:
+        return "blocked", unchecked["message"]
+    status = effective_status(run["status"], intercompany)
     if status in ("Queued", "Running"):
         return "wait", "The checks are %s; wait for them to finish" % status.lower()
     if status == "Green":
@@ -501,7 +600,7 @@ def _action(run, problems, can_override, period_status, data_change):
 
 
 def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override,
-            *, period_status, data_change):
+            *, period_status, data_change, intercompany):
     """The sign-off summary of story 9.1 and the next action.
 
     - ``run``: the latest terminal Assertion Run (``name``, ``status``,
@@ -522,15 +621,25 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
       the run's ``started_at`` it goes through ``data_change_problem``: a run
       that did not start after the change is ``blocked`` with
       "<what>, after these checks started; run the checks again".
+    - ``intercompany`` (required, #305-W3-8): the period's IC line
+      (``ic_api.signoff_summary`` shape). A Green run with pairs over
+      tolerance is offered ``acknowledge`` instead of ``sign`` (the #265
+      Amber path), and ``acknowledgements["intercompany"]`` carries the
+      warning text. "not configured" and "not applicable" never change the
+      action; an IC line that could not be checked (``not_built``/``error``)
+      blocks signing outright (W3-P4).
 
     ``action`` is one of signed, blocked, run_checks, rerun, wait, sign,
     acknowledge, override. A signed run stays signed; otherwise a Closed or
     Locked period blocks (reopen it: A59), then a data change after the run
     started (A66; a Re-sign Needed run keeps ``rerun``), then any gate blocks
-    (configuration first, then order, then completeness). An unknown run or
-    sign-off status raises ValueError.
+    (configuration first, then order, then completeness), then an
+    intercompany line that could not be checked (W3-P4). An unknown run,
+    sign-off status or intercompany state raises ValueError.
     """
-    action, label = _action(run, problems, can_override, period_status, data_change)
+    action, label = _action(run, problems, can_override, period_status, data_change, intercompany)
+    acknowledgements = _acknowledgements(run, warned_names)
+    acknowledgements["intercompany"] = ic_warning(intercompany)
     return {
         "action": action,
         "label": label,
@@ -541,7 +650,7 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
             "messages": _gate_messages(problems),
         },
         "checks": _checks(run),
-        "acknowledgements": _acknowledgements(run, warned_names),
+        "acknowledgements": acknowledgements,
         "on_behalf": _on_behalf(on_behalf),
         "exceptions": [
             {"entity": e["data_area_id"], "reason": e["reason"], "declared_by": e["declared_by"]}

@@ -15,6 +15,12 @@ Imports nothing from frappe or konsol; the caller gathers ``facts``:
   period (in scope: Active, not a group).
 - ``accountants_without_entities``: enabled Entity Accountants with no Entity
   user permission.
+- ``ic_accounts_gap``: None, or the help text from ``ic_api.setup_gap()``
+  (konsol#305 D2-7; W3-1). The model never writes its own wording: a policy
+  gap carries its own message.
+- ``ic_tolerance_gap``: None, or ``ic_api.tolerance_gap()``'s
+  ``{"code", "groups", "message"}`` (konsol#305 W3-6): the group nodes whose
+  intercompany tolerance is undeclared (0 is indistinguishable from unset).
 
 Rules:
 
@@ -30,10 +36,10 @@ Rules:
   not sent, never an invented age.
 """
 
-GAPS = ("first_close", "self_approval", "rate_move", "chart", "frequency", "ownership",
-        "accountants")
+GAPS = ("first_close", "self_approval", "rate_move", "chart", "ic_accounts", "ic_tolerance",
+        "frequency", "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
-             "accountants_without_entities", "policy_gaps")
+             "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap")
 
 #: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
 _POLICY_GAPS = {
@@ -51,6 +57,10 @@ def _declared(first_close):
 
 def _entities(n):
     return f"{n} entity" if n == 1 else f"{n} entities"
+
+
+def _groups(n):
+    return f"{n} group" if n == 1 else f"{n} groups"
 
 
 def _item(gap, title, detail, owner, desk, entities=(), users=()):
@@ -87,6 +97,15 @@ def setup_gap_items(facts):
         items.append(_item("chart", "Group chart not published",
                            "Publish the Main Accounts of the group chart.", "EPM Admin",
                            "/app/main-account"))
+    if facts["ic_accounts_gap"]:
+        items.append(_item("ic_accounts", "No intercompany accounts declared",
+                           facts["ic_accounts_gap"], "EPM Admin", "/app/intercompany-account"))
+    if facts["ic_tolerance_gap"]:
+        tol_gap = facts["ic_tolerance_gap"]
+        groups = tol_gap["groups"]
+        title = "Intercompany tolerance not declared for %s" % _groups(len(groups))
+        items.append(_item("ic_tolerance", title, tol_gap["message"], "EPM Admin",
+                           "/app/consolidation-group"))
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:
         items.append(_item("frequency", f"Reporting frequency missing for {_entities(len(freq))}",
@@ -120,7 +139,9 @@ def setup_gap_items(facts):
 #   ``my_missing`` is read, so another entity's item never reaches them.
 # - Group Accountant: "Run checks" (todo) when checks are not_run or stale;
 #   "N checks failing" (blocking); "Waiting on N trial balances" (waiting).
-# - Close Lead: "Rates missing (N)" and "Re-sign needed" (blocking); "Sign off
+# - Close Lead: "Rates missing (N)" and "Re-sign needed" (blocking); "Trial
+#   balance with no ownership (N)" (blocking, #289) when the sign-off gate
+#   reports a submitted TB with no covering ownership; "Sign off
 #   <code>" (todo) when checks are current, none fail, no rates are missing,
 #   the period is not signed and no gate blocks. When a gate blocks, the item
 #   is "Waiting on <earliest earlier open period>" instead, or "Waiting on the
@@ -140,7 +161,7 @@ VIEWER = "viewer"
 PERSONAS = (CLOSE_LEAD, GROUP_ACCOUNTANT, ENTITY_ACCOUNTANT, VIEWER)
 
 PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "signoff",
-               "gates_blocked", "rates_missing", "status")
+               "gates_blocked", "rates_missing", "status", "unowned")
 #: A53: ``since`` (the period's end date, ISO) is read from ``facts`` when the
 #: caller supplies it and carried on ``item["period"]["since"]`` for every
 #: period item, so B18 can show an age. It is not in PERIOD_KEYS: it is read
@@ -198,9 +219,24 @@ def _entity_accountant(key, facts):
     return items
 
 
+def _rates_item(p, key, facts):
+    """konsol#305 E412 (#305-W2-11): the Close Lead and the Group Accountant
+    both get "Rates missing (N)", pointed at the Rates screen. One builder,
+    called by both personas, so the id/kind/title/action cannot drift apart.
+    """
+    rates = int(facts["rates_missing"] or 0)
+    if not rates:
+        return None
+    return _period_item(p, key, facts, "rates", "blocking",
+                        "Rates missing (%d)" % rates, {"screen": "rates"})
+
+
 def _group_accountant(key, facts):
     items = []
     p = GROUP_ACCOUNTANT
+    rates_item = _rates_item(p, key, facts)
+    if rates_item:
+        items.append(rates_item)
     if facts["checks"] in ("not_run", "stale"):
         items.append(_period_item(p, key, facts, "checks-run", "todo", "Run checks",
                                   {"screen": "checks"}))
@@ -222,12 +258,20 @@ def _close_lead(key, facts, earlier_open):
     p = CLOSE_LEAD
     signoff = {"screen": "sign-off"}
     rates = int(facts["rates_missing"] or 0)
-    if rates:
-        items.append(_period_item(p, key, facts, "rates", "blocking",
-                                  "Rates missing (%d)" % rates, signoff))
+    rates_item = _rates_item(p, key, facts)
+    if rates_item:
+        items.append(rates_item)
     resign = facts["signoff"] == RE_SIGN_NEEDED
     if resign:
         items.append(_period_item(p, key, facts, "resign", "blocking", "Re-sign needed", signoff))
+    unowned = sorted(set(facts["unowned"] or ()))
+    if unowned:
+        item = _period_item(p, key, facts, "unowned", "blocking",
+                            "Trial balance with no ownership (%d)" % len(unowned),
+                            {"desk": "/app/ownership-period"})
+        item["detail"] = ", ".join(unowned)
+        item["entities"] = unowned
+        items.append(item)
     signed = facts["signoff"] in SIGNED_STATES
     if signed and facts["status"] == "Open":
         items.append(_period_item(p, key, facts, "close", "todo", "Close %s" % facts["code"],
@@ -303,3 +347,200 @@ def rank(items):
     Setup-gap items (no period) come first within their kind, in their own
     order."""
     return sorted(items or (), key=_rank_key)
+
+
+# --- A11: the Close Lead's "waiting for your approval" item -----------------
+#
+# ``approvals_item(waiting)`` turns A09's ``waiting_for_me`` summary
+# (``{"count", "oldest"}``) into one My work item for the Close Lead, or None
+# when nothing is waiting. The item carries no period (one item for the whole
+# approvals queue, not one per period), so ``rank`` places it first within
+# "todo" alongside the setup-gap items.
+
+def approvals_item(waiting):
+    if "count" not in waiting:
+        raise ValueError("approvals_item: missing count")
+    count = int(waiting["count"])
+    if not count:
+        return None
+    oldest = waiting.get("oldest")
+    return {
+        "id": "approvals",
+        "kind": "todo",
+        "title": "Approve %d item%s" % (count, "" if count == 1 else "s"),
+        "owner": OWNERS[CLOSE_LEAD],
+        "action": {"screen": "approvals"},
+        "since": oldest[:10] if oldest else None,
+        "since_reason": "oldest waiting",
+    }
+
+
+# --- C07 (konsol#305 W3-1, W3-2): the Entity Accountant's IC fix items -------
+#
+# ``ic_fix_items(fixes_by_key, per_period, allowed)`` turns ic_api's open
+# intercompany fixes into one item per (fix, allowed entity of the pair), each
+# pointed at Trial balances for that entity (R1: the fix is on the entity's
+# own TB). A cleared pair gives no item (ic_api does not return one); an
+# uncheckable one stays until it can be judged (E5-P4).
+#
+# ``fixes_by_key`` is ``{(fiscal_year, fiscal_period): [fix, ...]}``. Each fix
+# carries ``entity_a``, ``account_a``, ``entity_b``, ``account_b`` (the pair's
+# four-key grain), ``state`` (one of IC_FIX_STATES), ``sent_by``, ``sent_at``
+# (ISO datetime) and ``reason`` from the ``ic_sent_back`` event, and, by
+# state: ``over_tolerance`` -> ``groups`` (``ic_model.open_fixes``'s shape:
+# one dict per consolidation group, each with ``consolidation_group``,
+# ``difference``, ``tolerance``, ``balance_a``, ``balance_b`` — one sentence
+# per group, the own side's balance read from that group's own row);
+# ``cannot_check`` -> ``error``. An unknown state raises ValueError: nothing
+# is guessed.
+#
+# ``per_period`` is mywork_api's per-period facts; only ``code``, ``ended``
+# and (optionally) ``since`` are read. A fix whose key is absent from
+# ``per_period`` is skipped: that period is not open, so it is not mine to
+# show. ``allowed`` is the caller's entity codes (None = both sides, as for
+# the EPM Admin and EPM Analyst personas who always see every entity).
+
+IC_FIX_STATES = ("over_tolerance", "not_in_build", "cannot_check")
+
+
+def _ic_group_sentence(group, own_balance):
+    return ("Difference %s in %s (tolerance %s). Your side %s."
+            % (group["difference"], group["consolidation_group"], group["tolerance"],
+               own_balance))
+
+
+def _ic_state_sentence(fix, side):
+    state = fix["state"]
+    if state == "over_tolerance":
+        return " ".join(
+            _ic_group_sentence(group, group["balance_a"] if side == "a" else group["balance_b"])
+            for group in fix["groups"])
+    if state == "not_in_build":
+        return ("The pair is not in the last build; this stays until it is within "
+                "tolerance or the period closes.")
+    if state == "cannot_check":
+        return "Intercompany could not be checked (%s); this stays until it can." % fix["error"]
+    raise ValueError("ic_fix_items: unknown fix state %r" % (state,))
+
+
+def _ic_detail(fix, side):
+    prefix = "Sent back by %s on %s: %s." % (fix["sent_by"], fix["sent_at"][:10], fix["reason"])
+    return prefix + " " + _ic_state_sentence(fix, side)
+
+
+def _ic_title(partner, own_account, partner_account):
+    return "Intercompany difference with %s (%s ↔ %s)" % (partner, own_account, partner_account)
+
+
+def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
+    a, acct_a, b, acct_b = fix["entity_a"], fix["account_a"], fix["entity_b"], fix["account_b"]
+    if entity == a:
+        side, partner, own_account, partner_account = "a", b, acct_a, acct_b
+    else:
+        side, partner, own_account, partner_account = "b", a, acct_b, acct_a
+    # Validate the state before writing any detail (fails closed on an unknown state).
+    detail = _ic_detail(fix, side)
+    return {
+        "id": "ic:%d-%02d:%s:%s|%s|%s|%s" % (fy, fp, entity, a, acct_a, b, acct_b),
+        "kind": kind,
+        "title": _ic_title(partner, own_account, partner_account),
+        "detail": detail,
+        "period": {"fiscal_year": fy, "fiscal_period": fp, "code": code, "since": since},
+        "owner": "Entity Accountant",
+        "action": {"screen": "trial-balances", "entity": entity},
+    }
+
+
+def ic_fix_items(fixes_by_key, per_period, allowed):
+    """One item per (fix, allowed entity of the pair); R1, W3-1, W3-2."""
+    per_period = per_period or {}
+    items = []
+    for key, fixes in (fixes_by_key or {}).items():
+        if key not in per_period:
+            continue
+        fy, fp = int(key[0]), int(key[1])
+        period_facts = per_period[key]
+        kind = "blocking" if period_facts["ended"] else "todo"
+        code = period_facts["code"]
+        since = period_facts.get("since")
+        for fix in fixes or ():
+            for entity in (fix["entity_a"], fix["entity_b"]):
+                if allowed is not None and entity not in allowed:
+                    continue
+                items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since))
+    return items
+
+
+# --- A22: the preparer's "sent back" My work item -----------------------------
+#
+# ``sent_back_items(rows, persona, period_codes)`` turns A21's
+# ``approvals_api.sent_back_for`` rows into one ``todo`` item per sent-back
+# draft the caller owns, for every persona except the Viewer (the API never
+# asks the Viewer; a Viewer persona here raises). ``rows`` is that function's
+# own return shape: ``[{"doctype", "name", "kind_label", "title",
+# "fiscal_year", "fiscal_period", "rejection": {"reason", "actor", "at"}}]``.
+# ``period_codes`` is ``{(fiscal_year, fiscal_period): period_code}``; a row
+# naming a period missing from it raises ValueError — never an invented code.
+
+#: The screen or Desk path that fixes a sent-back draft, by doctype (the
+#: engineering call, 3 Oct: Adjustments for a journal, Rates & ownership for
+#: GER/HER/OP, the Desk for IC Balance, Business Combination and Business
+#: Disposal — the same 3 doctypes A08/A21 treat as Desk-only).
+_SENT_BACK_SCREEN = {
+    "Consolidation Journal": "adjustments",
+    "Group Exchange Rate": "rates",
+    "Historical Equity Rate": "rates",
+    "Ownership Period": "rates",
+}
+_SENT_BACK_DESK = {
+    "IC Balance": "/app/ic-balance/%s",
+    "Business Combination": "/app/business-combination/%s",
+    "Business Disposal": "/app/business-disposal/%s",
+}
+#: Doctypes whose row names a period (the journal, Group Exchange Rate and IC
+#: Balance; mirrors approvals_model.sent_back_items).
+_SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "Group Exchange Rate", "IC Balance")
+
+
+def _sent_back_action(doctype, name):
+    if doctype in _SENT_BACK_SCREEN:
+        return {"screen": _SENT_BACK_SCREEN[doctype]}
+    if doctype in _SENT_BACK_DESK:
+        return {"desk": _SENT_BACK_DESK[doctype] % name}
+    raise ValueError("sent_back_items: %r is not one of the 7 approval doctypes." % (doctype,))
+
+
+def sent_back_items(rows, persona, period_codes):
+    if persona == VIEWER:
+        raise ValueError("sent_back_items: the Viewer has no sent-back item")
+    if persona not in PERSONAS:
+        raise ValueError("sent_back_items: unknown persona %r" % (persona,))
+    owner = OWNERS[persona]
+
+    items = []
+    for row in rows or ():
+        doctype, name = row["doctype"], row["name"]
+        rejection = row["rejection"]
+        at = rejection["at"]
+        item = {
+            "id": "sent-back:%s:%s" % (doctype, name),
+            "kind": "todo",
+            "title": "Sent back: %s · %s" % (row["kind_label"], row["title"]),
+            "detail": "%s on %s: %s" % (rejection["actor"], at[:10], rejection["reason"]),
+            "owner": owner,
+            "action": _sent_back_action(doctype, name),
+        }
+        fy, fp = row.get("fiscal_year"), row.get("fiscal_period")
+        if doctype in _SENT_BACK_PERIOD_KEYED and fy is not None and fp is not None:
+            key = (int(fy), int(fp))
+            if key not in period_codes:
+                raise ValueError(
+                    "sent_back_items: %s %s names period %r, not in period_codes"
+                    % (doctype, name, key))
+            item["period"] = {"fiscal_year": key[0], "fiscal_period": key[1],
+                              "code": period_codes[key], "since": at[:10]}
+        else:
+            item["since"] = at[:10]
+            item["since_reason"] = "sent back"
+        items.append(item)
+    return items

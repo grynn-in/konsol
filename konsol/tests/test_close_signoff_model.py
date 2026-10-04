@@ -13,6 +13,13 @@ _spec = importlib.util.spec_from_file_location("close_signoff_model_under_test",
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
 
+# C21: IC_STATES must equal ic_model's STATES; ic_model loaded by path too.
+IC_MODEL_PATH = os.path.join(APP_DIR, "close", "ic_model.py")
+_ic_spec = importlib.util.spec_from_file_location(
+    "close_ic_model_for_signoff_model_test", IC_MODEL_PATH)
+IC = importlib.util.module_from_spec(_ic_spec)
+_ic_spec.loader.exec_module(IC)
+
 FIRST = (2025, 7)
 UNDECLARED = {
     "code": "first_close_undeclared",
@@ -114,6 +121,45 @@ def test_an_unknown_frequency_is_refused_not_skipped():
         assert "Weekly" in str(exc) and "ZZA" in str(exc)
     else:
         raise AssertionError("an unknown frequency must raise ValueError")
+
+
+# --- unowned_tb_gap ------------------------------------------------------------
+
+def test_no_entities_is_no_gap():
+    assert M.unowned_tb_gap([], (2025, 9)) is None
+    assert M.unowned_tb_gap(None, (2025, 9)) is None
+
+
+def test_one_entity_names_it():
+    gap = M.unowned_tb_gap(["ZZX"], (2025, 9))
+    assert gap["code"] == M.UNOWNED_TB
+    assert gap["entities"] == ["ZZX"]
+    assert "ZZX" in gap["message"]
+    assert "FY2025 P09" in gap["message"]
+    assert "Ownership Period" in gap["message"]
+    assert "cancel" in gap["message"]
+
+
+def test_entities_are_sorted_in_the_result():
+    gap = M.unowned_tb_gap(["ZZY", "ZZX"], (2025, 9))
+    assert gap["entities"] == ["ZZX", "ZZY"]
+    assert "ZZX, ZZY" in gap["message"]
+
+
+def test_more_than_five_are_counted_not_named():
+    entities = ["ZZ%d" % i for i in range(1, 7)]  # 6 entities
+    gap = M.unowned_tb_gap(entities, (2025, 9))
+    assert gap["entities"] == sorted(entities)
+    assert "6 entities" in gap["message"]
+    assert "FY2025 P09" in gap["message"]
+    for entity in entities:
+        assert entity not in gap["message"]
+
+
+def test_unowned_tb_is_a_new_code():
+    existing = {M.FIRST_CLOSE_UNDECLARED, M.HISTORY_PERIOD, M.FREQUENCY_UNDECLARED,
+                M.QUARTER_UNDECLARED}
+    assert M.UNOWNED_TB not in existing
 
 
 # --- order_problem ------------------------------------------------------------
@@ -463,13 +509,29 @@ def _run(status="Green", signoff="Not Signed Off", **extra):
 
 NO_CHANGE = {"data_changed_at": None, "data_changed_by": None, "data_change": None}
 
+# C21: the default intercompany line for every existing test that does not
+# pass its own -- "not configured" never changes the action (E5-P11).
+NOT_CONFIGURED_IC = {"state": "not_configured", "message": "not configured",
+                     "counts": None, "sent_back_open": None}
+
+
+def _ic_checked(over, pairs=None):
+    """A ``checked`` intercompany line with ``over`` pairs over tolerance."""
+    pairs = over if pairs is None else pairs
+    return {"state": "checked", "message": None,
+            "counts": {"pairs": pairs, "matched": 0, "within_tolerance": 0,
+                       "fx_difference": 0, "over_tolerance": over, "unmatched": 0},
+            "sent_back_open": 0}
+
 
 def _summary(run=None, warned=(), on_behalf=(), exceptions=(), covers=(), previous=(),
-             problems=None, can_override=False, period_status="Open", data_change=None):
+             problems=None, can_override=False, period_status="Open", data_change=None,
+             intercompany=None):
     return M.summary(run, list(warned), list(on_behalf), list(exceptions), list(covers),
                      list(previous), problems if problems is not None else NO_PROBLEMS, can_override,
                      period_status=period_status,
-                     data_change=data_change if data_change is not None else NO_CHANGE)
+                     data_change=data_change if data_change is not None else NO_CHANGE,
+                     intercompany=intercompany if intercompany is not None else NOT_CONFIGURED_IC)
 
 
 # --- A59: no checks and no signing on a Closed or Locked period ----------------
@@ -573,7 +635,8 @@ def test_green_means_sign():
 def test_amber_means_acknowledge_with_the_warned_names():
     s = _summary(run=_run("Amber", warned=2), warned=["assert_a", "assert_b"])
     assert s["action"] == "acknowledge"
-    assert s["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 2, "unlisted": 0}
+    assert s["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 2, "unlisted": 0,
+                                     "intercompany": None}
 
 
 def test_a_capped_name_list_says_how_many_more():
@@ -587,8 +650,10 @@ def test_an_unknown_warning_count_is_unknown_not_zero():
     # latest_close_run does not return `warned`; the summary must not claim 0.
     run = _run("Amber")
     s = _summary(run=run, warned=["assert_a"])
-    assert s["acknowledgements"] == {"names": ["assert_a"], "total": None, "unlisted": None}
-    assert _summary(run=None)["acknowledgements"] == {"names": [], "total": None, "unlisted": None}
+    assert s["acknowledgements"] == {"names": ["assert_a"], "total": None, "unlisted": None,
+                                     "intercompany": None}
+    assert _summary(run=None)["acknowledgements"] == {"names": [], "total": None, "unlisted": None,
+                                                       "intercompany": None}
 
 
 def test_red_or_error_means_override_for_the_close_lead():
@@ -774,3 +839,145 @@ def test_the_summary_calls_the_shared_rule():
     called = {c.func.id for n in (fns["_action"], fns["summary"]) for c in ast.walk(n)
               if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
     assert "data_change_problem" in called, sorted(called)
+
+
+# --- C21: over-tolerance intercompany pairs make the summary Amber ----------
+# (#305-W3-8 option B; the #265 precedent). ``ic_over_tolerance``/``ic_warning``/
+# ``effective_status``/``ic_problem`` are pure helpers over the IC line C10
+# already reads; ``summary`` takes it as a required keyword.
+
+IC_NOT_APPLICABLE = {"state": "not_applicable", "message": "not applicable",
+                     "counts": None, "sent_back_open": None}
+IC_ERROR = {"state": "error", "message": "Intercompany could not be checked: boom. "
+                                        "Rebuild the consolidation, then open this again.",
+           "counts": None, "sent_back_open": None}
+IC_NOT_BUILT = {"state": "not_built",
+               "message": "The warehouse has not built the intercompany tables yet "
+                          "— nothing was checked.",
+               "counts": None, "sent_back_open": None}
+
+
+def test_ic_states_equals_ic_models_states():
+    assert M.IC_STATES == IC.STATES
+
+
+def test_green_with_over_tolerance_pairs_is_acknowledge():
+    s = _summary(run=_run("Green"), intercompany=_ic_checked(2))
+    assert s["action"] == "acknowledge"
+    assert s["label"] == "Acknowledge the warnings and sign off"
+    assert s["acknowledgements"]["intercompany"] == "Intercompany: 2 pairs over tolerance"
+
+
+def test_not_configured_and_not_applicable_are_never_amber():
+    for ic in (NOT_CONFIGURED_IC, IC_NOT_APPLICABLE):
+        s = _summary(run=_run("Green"), intercompany=ic)
+        assert s["action"] == "sign", ic
+        assert s["acknowledgements"]["intercompany"] is None, ic
+
+
+def test_green_with_zero_over_tolerance_signs():
+    s = _summary(run=_run("Green"), intercompany=_ic_checked(0))
+    assert s["action"] == "sign"
+
+
+def test_amber_run_with_one_over_tolerance_pair_is_acknowledge():
+    s = _summary(run=_run("Amber", warned=1), intercompany=_ic_checked(1))
+    assert s["action"] == "acknowledge"
+    assert s["acknowledgements"]["intercompany"] == "Intercompany: 1 pair over tolerance"
+
+
+def test_red_with_over_tolerance_pairs_still_overrides():
+    s = _summary(run=_run("Red"), can_override=True, intercompany=_ic_checked(3))
+    assert s["action"] == "override"
+    assert s["acknowledgements"]["intercompany"] == "Intercompany: 3 pairs over tolerance"
+
+
+def test_intercompany_that_cannot_be_checked_blocks_signing():
+    """W3-P4: an error or not-built intercompany line refuses the signature,
+    whatever the run's own status."""
+    for ic in (IC_ERROR, IC_NOT_BUILT):
+        s = _summary(run=_run("Green"), intercompany=ic)
+        assert s["action"] == "blocked", ic
+        assert ic["message"] in s["label"], ic
+        assert "Nothing can be signed" in s["label"], ic
+
+
+def test_a_signed_run_with_ic_over_tolerance_stays_signed():
+    s = _summary(run=_run("Green", "Signed Off"), intercompany=_ic_checked(5))
+    assert s["action"] == "signed"
+
+
+def test_a_closed_period_with_ic_over_tolerance_blocks_with_a59_first():
+    s = _summary(run=_run("Green"), intercompany=_ic_checked(5), period_status="Closed")
+    assert s["action"] == "blocked"
+    assert s["label"].startswith("The period is Closed")
+
+
+def test_no_run_offers_run_checks_whatever_the_intercompany_line():
+    s = _summary(run=None, intercompany=_ic_checked(5))
+    assert s["action"] == "run_checks"
+
+
+def test_summary_requires_intercompany():
+    """Failure path: an omitted intercompany line is not read as "none"."""
+    try:
+        M.summary(_run("Green"), [], [], [], [], [], NO_PROBLEMS, False,
+                 period_status="Open", data_change=NO_CHANGE)
+        raise AssertionError("summary ran without being told the intercompany line")
+    except TypeError:
+        pass
+
+
+def test_an_unknown_intercompany_state_is_refused_not_guessed():
+    try:
+        _summary(run=_run("Green"), intercompany={"state": "fine"})
+    except ValueError as e:
+        assert "fine" in str(e), str(e)
+    else:
+        raise AssertionError("summary accepted an unknown intercompany state")
+
+
+def test_checked_with_no_counts_is_refused_not_guessed():
+    try:
+        M.ic_over_tolerance({"state": "checked", "counts": None})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ic_over_tolerance accepted counts=None")
+
+
+def test_ic_over_tolerance_rejects_none_and_non_dicts():
+    for bad in (None, "checked", 3, []):
+        try:
+            M.ic_over_tolerance(bad)
+        except ValueError as e:
+            assert "intercompany line was not read" in str(e), str(e)
+        else:
+            raise AssertionError("ic_over_tolerance accepted %r" % (bad,))
+
+
+def test_ic_warning_pluralises_correctly():
+    assert M.ic_warning(_ic_checked(0)) is None
+    assert M.ic_warning(_ic_checked(1)) == "Intercompany: 1 pair over tolerance"
+    assert M.ic_warning(_ic_checked(2)) == "Intercompany: 2 pairs over tolerance"
+    assert M.ic_warning(NOT_CONFIGURED_IC) is None
+    assert M.ic_warning(IC_ERROR) is None
+
+
+def test_effective_status_is_amber_only_for_a_green_run_with_over_tolerance_pairs():
+    assert M.effective_status("Green", _ic_checked(1)) == "Amber"
+    assert M.effective_status("Green", _ic_checked(0)) == "Green"
+    assert M.effective_status("Amber", _ic_checked(1)) == "Amber"
+    assert M.effective_status("Red", _ic_checked(1)) == "Red"
+    assert M.effective_status("Queued", _ic_checked(1)) == "Queued"
+
+
+def test_ic_problem_names_the_unchecked_states_only():
+    assert M.ic_problem(NOT_CONFIGURED_IC) is None
+    assert M.ic_problem(IC_NOT_APPLICABLE) is None
+    assert M.ic_problem(_ic_checked(0)) is None
+    for ic in (IC_ERROR, IC_NOT_BUILT):
+        problem = M.ic_problem(ic)
+        assert problem["code"] == "ic_unchecked"
+        assert problem["message"] == ic["message"] + (
+            " Nothing can be signed until intercompany can be checked.")

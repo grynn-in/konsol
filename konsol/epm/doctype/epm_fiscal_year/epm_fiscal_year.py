@@ -439,6 +439,15 @@ class EPMFiscalYear(Document):
         self._append_note(row.period_code, verb, text, now)
 
         self._save_as_status_action([row])
+        # konsol#305 T03 (#305-W2-1): the event is written after the save, in
+        # the request's transaction; the writer never commits or catches, so a
+        # failed insert fails the action and both roll back. _stamp overwrites
+        # closed_by, so these events are the history.
+        from konsol.close import close_event
+        close_event.record(
+            "period_" + verb, self.fiscal_year, row.fiscal_period,
+            "EPM Fiscal Year", self.name, reason=text or None,
+            detail={"period_code": row.period_code, "from": current})
         return {"fiscal_period": row.fiscal_period, "period_code": row.period_code, "status": new}
 
     @frappe.whitelist(methods=["POST"])
@@ -503,6 +512,8 @@ class EPMFiscalYear(Document):
                     f"{label} can't be {verb}: {' and '.join(reasons)}; nothing was changed.\n"
                     + "\n".join(failures + unsigned))
 
+        # konsol#305 T03: each row's status before the stamp, for its event.
+        before = {r.name: _status(r.status) for r in moving}
         now = frappe.utils.now_datetime()
         for r in moving:
             _stamp(r, new, now)
@@ -510,6 +521,18 @@ class EPMFiscalYear(Document):
         self._append_note(label, verb, text, now)
 
         self._save_as_status_action(moving, year=True)
+        # konsol#305 T03 (#305-W2-1): one event per row moved, then the year's
+        # own (fiscal_period 0), after the save and in its transaction.
+        from konsol.close import close_event
+        for r in moving:
+            close_event.record(
+                "period_" + verb, self.fiscal_year, r.fiscal_period,
+                "EPM Fiscal Year", self.name, reason=text or None,
+                detail={"period_code": r.period_code, "from": before[r.name], "via": "year"})
+        close_event.record(
+            "year_" + verb, self.fiscal_year, 0, "EPM Fiscal Year", self.name,
+            reason=text or None,
+            detail={"from": current, "periods_moved": [r.period_code for r in moving]})
         return {"fiscal_year": self.fiscal_year, "status": new,
                 "periods_moved": [r.period_code for r in moving]}
 

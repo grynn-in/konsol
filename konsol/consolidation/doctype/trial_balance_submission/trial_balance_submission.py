@@ -507,15 +507,18 @@ def _claim_insert(values):
 _NAMES_HELP = "names must be a JSON list of Trial Balance Submission names"
 
 
-def _record_data_change(fiscal_year, fiscal_period, text):
+def _record_data_change(fiscal_year, fiscal_period, text, entity=None):
     """konsol#305 A63 (#305-R2b-3): the period's data changed, so a signature
     over checks that ran before now stops counting. Called before any
     ClickHouse write, which has no transaction: a refusal here leaves the
-    warehouse untouched and MariaDB rolls back."""
+    warehouse untouched and MariaDB rolls back. ``entity`` (S1, E2-6) names
+    the TB whose submit, cancel or amount-basis change caused this, so the
+    signoff_voided event it may trigger is scoped to it."""
     # Imported here: signoff_gate is frappe-bound and reads the fiscal calendar.
     from konsol.close import signoff_gate
 
-    signoff_gate.record_data_change(fiscal_year, fiscal_period, text, frappe.session.user)
+    signoff_gate.record_data_change(
+        fiscal_year, fiscal_period, text, frappe.session.user, entity=entity)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -601,13 +604,16 @@ def set_amount_basis(names, amount_basis):
         # modified stamp is left alone: nothing the user wrote changed.
         frappe.db.set_value("Trial Balance Submission", row.name, "amount_basis", basis,
                             update_modified=False)
-    # A63: one data change per period, recorded in MariaDB before the claim.
+    # A63: one data change per period and entity, recorded in MariaDB before
+    # the claim. Grouped by entity too (S1, E2-6): a period may hold TBs for
+    # several entities, and each one's data-change call names its own.
     by_period = {}
     for row in rows:
-        by_period.setdefault((row.fiscal_year, row.fiscal_period), []).append(row.name)
-    for (fiscal_year, fiscal_period), changed in sorted(by_period.items()):
+        by_period.setdefault(
+            (row.fiscal_year, row.fiscal_period, row.data_area_id), []).append(row.name)
+    for (fiscal_year, fiscal_period, entity), changed in sorted(by_period.items()):
         _record_data_change(fiscal_year, fiscal_period, "Amount basis of TB %s set to %s"
-                            % (", ".join(changed), basis))
+                            % (", ".join(changed), basis), entity=entity)
     values = [_claim_values(row, basis) for row in rows]
     for i in range(0, len(values), _CLAIM_BATCH):
         execute(_claim_insert(values[i:i + _CLAIM_BATCH]))
@@ -696,7 +702,18 @@ class TrialBalanceSubmission(Document):
 
     def on_submit(self):
         # A63: recorded before ClickHouse is touched (see _record_data_change).
-        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s submitted" % self.name)
+        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s submitted" % self.name,
+                            entity=self.data_area_id)
+        # konsol#305 T05 (#305-W2-1): the Close Event joins this transaction and
+        # precedes every ClickHouse statement (which has none), so a failing
+        # event leaves no warehouse write to repair. Never caught.
+        from konsol.close import close_event
+
+        close_event.record(
+            "tb_submitted", self.fiscal_year, self.fiscal_period,
+            "Trial Balance Submission", self.name, entity=self.data_area_id,
+            detail={"on_behalf": self.uploaded_on_behalf or "",
+                    "replaces": self.amended_from or None})
         rows = self._parse_file()
         self._ensure_tables()
         # Idempotent landing: a failed claim rolls the document back to draft
@@ -722,7 +739,14 @@ class TrialBalanceSubmission(Document):
 
     def on_cancel(self):
         # A63: recorded before the claim is deleted (see _record_data_change).
-        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s cancelled" % self.name)
+        _record_data_change(self.fiscal_year, self.fiscal_period, "TB %s cancelled" % self.name,
+                            entity=self.data_area_id)
+        # konsol#305 T05: the event precedes the claim delete (see on_submit).
+        from konsol.close import close_event
+
+        close_event.record(
+            "tb_cancelled", self.fiscal_year, self.fiscal_period,
+            "Trial Balance Submission", self.name, entity=self.data_area_id)
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.
         # mutations_sync=1: the delete must be VISIBLE before this returns —

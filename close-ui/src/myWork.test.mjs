@@ -1,7 +1,7 @@
 // konsol#305 B10: myWork.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sections, itemRoute, ageText } from "./myWork.js";
+import { sections, itemRoute, ageText, badgeFor } from "./myWork.js";
 
 function period(fiscal_year, fiscal_period, code) {
 	return { fiscal_year, fiscal_period, code };
@@ -76,6 +76,29 @@ test("a gap item with action.desk gets an external Desk link, the only Desk link
 	assert.deepEqual(itemRoute(item), { external: "/app/close-settings" });
 });
 
+// --- A20: a period-less screen item routes to the URL's current period ----
+
+test("A20: a period-less screen item routes to current (the URL's period)", () => {
+	const item = { id: "gap:approvals", kind: "todo", title: "Approve the pending journal", owner: "EPM Admin", action: { screen: "approvals" } };
+	assert.equal(itemRoute(item, { year: 2025, period: 9 }), "/close/2025/9/approvals");
+});
+
+test("A20 failure path: a period-less item with no current returns null, and does not throw", () => {
+	const item = { id: "gap:approvals", kind: "todo", title: "Approve the pending journal", owner: "EPM Admin", action: { screen: "approvals" } };
+	assert.equal(itemRoute(item, null), null);
+	assert.equal(itemRoute(item), null);
+});
+
+test("A20 failure path: a period item still routes to its own period, never current's", () => {
+	const item = { id: "checks", kind: "todo", title: "Run checks", period: period(2026, 8, "P08"), owner: "EPM Analyst", action: { screen: "checks" } };
+	assert.equal(itemRoute(item, { year: 2025, period: 9 }), "/close/2026/8/checks");
+});
+
+test("A20: a Desk item still gives {external}, with a current supplied", () => {
+	const item = { id: "gap:first_close", kind: "blocking", title: "First close period not declared", owner: "EPM Admin", action: { desk: "/app/close-settings" } };
+	assert.deepEqual(itemRoute(item, { year: 2025, period: 9 }), { external: "/app/close-settings" });
+});
+
 test("failure path: an item with an unknown kind throws, and is not silently dropped", () => {
 	const items = [
 		{ id: "ok", kind: "blocking", title: "Rates missing (2)", period: period(2026, 8, "P08"), owner: "EPM Admin", action: { screen: "sign-off" } },
@@ -97,7 +120,9 @@ test("ageText renders an age from since and an injected today", () => {
 	const today = new Date(2026, 8, 25); // 25 Sep 2026
 	assert.equal(ageText("2026-09-13", today), "12 days");
 	assert.equal(ageText("2026-09-24", today), "1 day");
-	assert.equal(ageText("2026-09-25", today), "0 days");
+	// F03: same-day now reads "today", the one wording both screens share
+	// (konsol#305 F03; was "0 days" here and "today" on Approvals).
+	assert.equal(ageText("2026-09-25", today), "today");
 });
 
 test("a null since renders nothing", () => {
@@ -106,4 +131,130 @@ test("a null since renders nothing", () => {
 
 test("failure path: a since that has not happened yet renders nothing, never a negative age", () => {
 	assert.equal(ageText("2026-10-01", new Date(2026, 8, 25)), null);
+});
+
+// --- F03: the same waiting item ages identically on Approvals and My work --
+//
+// Live showed the Close Lead's one item 16 days old on My work and 17 on
+// Approvals (konsol#305 F03). Both read mywork_model.approvals_item /
+// approvals_model.waiting_for_me's own "oldest" moment: Approvals gets it
+// as the full zoned timestamp (A08), My work gets it truncated to its
+// first 10 characters (mywork_model.py:373, `oldest[:10]`) — already the
+// right calendar date in the site's zone (the timestamp itself is zoned
+// there before truncation), so feeding each screen its own real shape of
+// the same moment must still land on the same age.
+function withBootZone(timeZone, fn) {
+	const had = Object.prototype.hasOwnProperty.call(globalThis, "window");
+	const prev = globalThis.window;
+	globalThis.window = { frappe: { boot: { time_zone: { user: timeZone } } } };
+	try {
+		return fn();
+	} finally {
+		if (had) globalThis.window = prev;
+		else delete globalThis.window;
+	}
+}
+
+test("F03: Approvals' oldest and My work's since agree on the same item's age", async () => {
+	const { queueView } = await import("./approvals.js");
+	const timeZone = "Europe/London";
+	const now = new Date("2026-09-29T07:00:00Z");
+	// 23:50 local on the 13th: the case that drifted under elapsed-hours math.
+	const oldest = "2026-09-13T23:50:00+01:00";
+	const payload = {
+		items: [], sent_back: [], hidden: 0, self_approval: "Blocked", can_approve: true,
+		waiting: { count: 2, oldest },
+	};
+	const approvalsAge = queueView(payload, now, timeZone).header.match(/oldest (.+)$/)[1];
+	const myWorkAge = withBootZone(timeZone, () => ageText(oldest.slice(0, 10), now));
+	assert.equal(approvalsAge, "16 days");
+	assert.equal(myWorkAge, "16 days");
+	assert.equal(myWorkAge, approvalsAge);
+});
+
+// --- U7 (review-w3.md): badgeFor ---------------------------------------
+//
+// MyWork.vue:248 badged every period-less item "Setup" (orange), including
+// the Close Lead's approvals queue and a sent-back draft — both real,
+// routine work, not a configuration gap. Only mywork_model.setup_gap_items'
+// output (since_reason "configuration gap") is a gap. The other item
+// builders that return a period-less item — mywork_model.approvals_item
+// (since_reason "oldest waiting") and mywork_model.sent_back_items for a
+// doctype outside _SENT_BACK_PERIOD_KEYED (since_reason "sent back") — get
+// the kind's own badge instead. A period item (it carries `period`) always
+// gets its period's code, themed by kind, regardless of since_reason.
+//
+// Fixtures below mirror the real shapes konsol/close/mywork_model.py
+// returns (read 3 Oct 2026), not invented ones.
+
+test("U7: a period item (mywork_model._period_item, e.g. Rates missing) gets the kind's color and the period code", () => {
+	const item = {
+		id: "rates:2026-08", kind: "blocking", title: "Rates missing (2)",
+		period: { fiscal_year: 2026, fiscal_period: 8, code: "P08", since: "2026-08-31" },
+		owner: "EPM Admin", action: { screen: "rates" },
+	};
+	assert.deepEqual(badgeFor(item), { theme: "red", label: "P08" });
+});
+
+test("U7: a configuration-gap item (mywork_model.setup_gap_items) gets Setup", () => {
+	const item = {
+		id: "gap:first_close", kind: "blocking", title: "First close period not declared",
+		detail: "Set the first close period in Close Settings.", owner: "EPM Admin",
+		entities: [], users: [], action: { desk: "/app/close-settings" },
+		since: null, since_reason: "configuration gap",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "orange", label: "Setup" });
+});
+
+test("U7: the Close Lead's approvals queue item (mywork_model.approvals_item) is period-less but is not a gap", () => {
+	const item = {
+		id: "approvals", kind: "todo", title: "Approve 3 items", owner: "EPM Admin",
+		action: { screen: "approvals" }, since: "2026-09-20", since_reason: "oldest waiting",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });
+});
+
+test("U7: a sent-back Historical Equity Rate (mywork_model.sent_back_items, no period for this doctype) is not a gap", () => {
+	const item = {
+		id: "sent-back:Historical Equity Rate:ZZHER-001", kind: "todo",
+		title: "Sent back: Historical rate · ZZE FY2025",
+		detail: "jane on 2026-09-18: wrong basis", owner: "EPM Admin",
+		action: { screen: "rates" }, since: "2026-09-18", since_reason: "sent back",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });
+});
+
+test("U7: a sent-back Business Disposal (mywork_model.sent_back_items, Desk action) is not a gap", () => {
+	const item = {
+		id: "sent-back:Business Disposal:ZZBD-001", kind: "todo",
+		title: "Sent back: Disposal · ZZE disposes ZZSub",
+		detail: "jane on 2026-09-18: wrong date", owner: "EPM Admin",
+		action: { desk: "/app/business-disposal/ZZBD-001" }, since: "2026-09-18",
+		since_reason: "sent back",
+	};
+	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });
+});
+
+test("U7: an IC fix item (mywork_model.ic_fix_items) always carries a period, so it gets the period code, not Setup", () => {
+	const item = {
+		id: "ic:2026-08:ZZE:ZZE|1000|ZZF|2000", kind: "blocking",
+		title: "Intercompany difference with ZZF (1000 ↔ 2000)",
+		detail: "Sent back by jane on 2026-09-10: please fix. Difference 150.00 in Group A (tolerance 50.00). Your side 1200.00.",
+		period: { fiscal_year: 2026, fiscal_period: 8, code: "P08", since: "2026-08-31" },
+		owner: "Entity Accountant", action: { screen: "trial-balances", entity: "ZZE" },
+	};
+	assert.deepEqual(badgeFor(item), { theme: "red", label: "P08" });
+});
+
+test("U7: a waiting-kind period-less item gets the gray waiting badge, not Setup", () => {
+	const item = {
+		id: "approvals", kind: "waiting", title: "Waiting on something period-less",
+		owner: "EPM Admin", action: { screen: "approvals" },
+	};
+	assert.deepEqual(badgeFor(item), { theme: "gray", label: "Waiting" });
+});
+
+test("failure path: an unknown kind throws, and is never defaulted to Setup", () => {
+	const item = { id: "x", kind: "mystery", owner: "EPM Admin", action: {} };
+	assert.throws(() => badgeFor(item), /unknown item kind/);
 });

@@ -136,6 +136,14 @@ class _Site:
         self.status_calls = []
         self.status_error = None
         self.admin_checks = 0
+        #: C09t: the stubbed `konsol.close.ic_api.signoff_summary`/`tolerance_gap`
+        #: read these. `ic_calls` records every `signoff_summary` call (C10, C21).
+        self.ic_summary = {"state": "checked", "message": None,
+                           "counts": {"pairs": 0, "matched": 0, "within_tolerance": 0,
+                                      "fx_difference": 0, "over_tolerance": 0, "unmatched": 0},
+                           "sent_back_open": 0}
+        self.ic_tolerance_gap = None
+        self.ic_calls = []
 
 
 def _match(value, cond):
@@ -309,12 +317,26 @@ def _load(site):
     ar_pkg = types.ModuleType("konsol.consolidation.doctype.assertion_run")
     ar_pkg.assertion_run = ar
 
+    # C09t: a stub `konsol.close.ic_api`, so `from konsol.close import ic_api`
+    # (C10 on) resolves to this rather than the real module, which would
+    # otherwise run against this fake frappe (whose frappe.db has no `count`).
+    ic_api = types.ModuleType("konsol.close.ic_api")
+
+    def signoff_summary(fiscal_year, fiscal_period):
+        site.ic_calls.append((fiscal_year, fiscal_period))
+        return dict(site.ic_summary)
+
+    ic_api.signoff_summary = signoff_summary
+    ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
+    close.ic_api = ic_api
+
     konsol.close, konsol.fiscal_calendar = close, calendar
     konsol.entity_permissions, konsol.period_status = perms, period_status
     konsol.schema_lifecycle = lifecycle
     konsol.consolidation = consolidation
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
+            "konsol.close.ic_api": ic_api,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle,
@@ -324,10 +346,11 @@ def _load(site):
             "konsol.consolidation.doctype.assertion_run.assertion_run": ar}
     saved = {n: sys.modules.get(n) for n in list(mods) + [
         "konsol.close.signoff_model", "konsol.close.period_model", "konsol.close.signoff_gate",
-        "konsol.close.timefmt", "konsol.close.close_policy_model"]}
+        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model"]}
     sys.modules.update(mods)
     try:
-        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt", "signoff_gate"):
+        for name in ("close_policy_model", "signoff_model", "period_model", "timefmt",
+                      "scope_model", "signoff_gate"):
             mod = _by_path("konsol.close." + name, os.path.join(CLOSE_DIR, name + ".py"))
             sys.modules["konsol.close." + name] = mod
             setattr(close, name, mod)
@@ -410,7 +433,7 @@ def test_warned_count_is_read_so_the_acknowledgement_total_is_known():
     # latest_close_run does not return `warned`; the API must read it.
     result = _get(_Site())
     assert result["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 3,
-                                          "unlisted": 1}
+                                          "unlisted": 1, "intercompany": None}
 
 
 def test_on_behalf_flags_map_yes_no_blank_to_1_0_unknown():
@@ -512,6 +535,80 @@ def test_can_sign_is_the_write_permission_and_can_override_the_role():
     assert result["action"] == "blocked"
     site = _Site(roles=("EPM Analyst",))
     assert _get(site)["can_sign"] is True
+
+
+# --- C10: the sign-off summary carries the intercompany line -----------------
+
+def test_intercompany_line_passes_through_unchanged():
+    site = _Site()
+    result = _get(site)
+    assert result["intercompany"] == site.ic_summary
+    assert site.ic_calls == [(2025, 9)]
+
+
+def test_intercompany_not_configured_does_not_change_the_action():
+    site = _Site()
+    site.ic_summary = {"state": "not_configured",
+                       "message": "Intercompany not configured — nothing was checked.",
+                       "counts": None, "sent_back_open": None}
+    result = _get(site)
+    assert result["intercompany"]["state"] == "not_configured"
+    # No gate change (E5-P11): the same site's action is unchanged from the
+    # known fixture value with intercompany "checked" (the test above, and
+    # test_summary_is_assembled_for_the_close_lead).
+    assert result["action"] == "acknowledge"
+
+
+def test_viewer_and_entity_accountant_get_the_same_intercompany_counts():
+    base = _get(_Site())["intercompany"]
+    viewer = _Site(roles=("EPM User",))
+    viewer.can_write = False
+    assert _get(viewer)["intercompany"] == base
+    entity = _Site(roles=("Entity Accountant",))
+    entity.can_write = False
+    entity.allowed = {"ZZD"}
+    assert _get(entity)["intercompany"] == base
+
+
+def test_sign_never_reads_the_intercompany_summary():
+    site = _Site()
+    _call_sign(site, 2025, 9, run="RUN-09", acknowledgement="Seen")
+    assert site.ic_calls == []
+
+
+# --- C21: get_signoff passes the one IC read into signoff_model.summary -----
+
+def _over_tolerance(site, n):
+    """A Green, unsigned RUN-09 (the Open P09 run) with ``n`` IC pairs over
+    tolerance -- Amber only because of intercompany, never a dbt warning."""
+    site.records["Assertion Run"][-1].update(status="Green", warned=0)
+    counts = dict(site.ic_summary["counts"], pairs=n, over_tolerance=n)
+    site.ic_summary = dict(site.ic_summary, counts=counts)
+
+
+def test_a_green_run_with_ic_over_tolerance_pairs_is_acknowledge():
+    site = _Site()
+    _over_tolerance(site, 2)
+    result = _get(site)
+    assert result["action"] == "acknowledge"
+    assert result["acknowledgements"]["intercompany"] == "Intercompany: 2 pairs over tolerance"
+    assert result["intercompany"]["counts"]["over_tolerance"] == 2
+    # One read of the IC line serves both signoff_model.summary and the
+    # result's own "intercompany" key (C21: "the same value, one read").
+    assert site.ic_calls == [(2025, 9)]
+
+
+def test_the_viewer_gets_the_same_ic_driven_amber_as_the_close_lead():
+    site = _Site()
+    _over_tolerance(site, 2)
+    base = _get(site)
+
+    viewer = _Site(roles=("EPM User",))
+    viewer.can_write = False
+    _over_tolerance(viewer, 2)
+    result = _get(viewer)
+    assert result["action"] == base["action"] == "acknowledge"
+    assert result["intercompany"] == base["intercompany"]
 
 
 # --- A49: the period's own status ----------------------------------------------
@@ -650,6 +747,37 @@ def test_entity_accountant_with_no_entities_sees_no_entity():
     for other in ("ZZA", "ZZB", "ZZC", "ZZD", "ZZE", "ZZQ"):
         assert other not in text, other
     assert result["covers"] == []
+
+
+def test_unowned_tb_gap_is_scoped_to_the_callers_entities():
+    """E205c (#289): a scoped caller sees a count, not the generic fallback."""
+    site = _Site()
+    site.records["Entity"].append(_entity("ZZX"))
+    site.records["Trial Balance Submission"].append(_tb("ZZX"))
+    site.allowed = {"ZZA"}
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"] if g["code"] == "tb_without_ownership"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == []
+    assert gap["hidden"] == 1
+    assert "1 entity outside your scope" in gap["message"]
+    assert "record the ownership" in gap["message"]
+    assert "ZZX" not in gap["message"]
+    assert "tb_without_ownership (" not in gap["message"]
+
+
+def test_unowned_tb_gap_unscoped_names_the_entity():
+    """E205a's message, unmodified, when the caller is not scoped."""
+    site = _Site()
+    site.records["Entity"].append(_entity("ZZX"))
+    site.records["Trial Balance Submission"].append(_tb("ZZX"))
+    site.allowed = None
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"] if g["code"] == "tb_without_ownership"]
+    assert len(gaps) == 1
+    assert gaps[0]["entities"] == ["ZZX"]
+    assert "ZZX" in gaps[0]["message"]
 
 
 # --- A32: sign ---------------------------------------------------------------------
@@ -1078,3 +1206,14 @@ def test_get_signoff_offers_the_sign_to_a_run_that_started_after_the_change():
     site = _Site()
     _changed(site, datetime(2025, 10, 4, 11, 5))
     assert _get(site)["action"] == "acknowledge"
+
+
+# --- C09t: the loader carries a stub konsol.close.ic_api, for C10 ----------
+
+
+def test_the_ic_api_stub_is_installed():
+    site = _Site()
+    _module, mods, _frappe = _load(site)
+    assert mods["konsol.close.ic_api"].signoff_summary(2025, 7)["state"] == "checked"
+    assert site.ic_calls == [(2025, 7)]
+    assert mods["konsol.close.ic_api"].tolerance_gap() is site.ic_tolerance_gap

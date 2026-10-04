@@ -1,7 +1,7 @@
 // konsol#305 B12: tbTable.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkRows, entityRows, compareRows } from "./tbTable.js";
+import { checkRows, entityRows, compareRows, entityWord } from "./tbTable.js";
 import { freshnessView } from "./freshness.js";
 
 // B27: entityRows needs the user's zone and `now`, like freshnessView (B09).
@@ -151,17 +151,50 @@ test("compareRows: an intercompany row keeps its partner and is_ic flag", () => 
   assert.equal(view.rows[0].change, "0.00");
 });
 
-test("B12b: the known statuses are exactly the ones tb_read_api.py (A25) sends", async () => {
-  // Drift guard: A25 added "Quarter not declared"; a status the screen does not
-  // know throws, so a server status missing here breaks the TB screen on live.
+// E209b: the drift guard reads tb_read_api.py's own `TB_STATUSES` tuple
+// (every status `my_tbs` can emit) instead of guessing by keyword — a status
+// like "Not consolidated: no ownership for this period" matches no keyword,
+// so the old regex-filter guard would pass while the screen broke on it.
+function serverStatuses(src) {
+  const tuple = src.match(/TB_STATUSES = \(([\s\S]*?)\)/);
+  if (!tuple) {
+    throw new Error("tb_read_api.py has no TB_STATUSES tuple");
+  }
+  const names = [...tuple[1].matchAll(/[A-Z_]+/g)].map((m) => m[0]);
+  const values = Object.fromEntries(
+    [...src.matchAll(/^([A-Z_]+) = "([^"]+)"$/gm)].map((m) => [m[1], m[2]]),
+  );
+  return new Set(
+    names.map((name) => {
+      if (!(name in values)) {
+        throw new Error(`TB_STATUSES names ${name}, which has no NAME = "value" line`);
+      }
+      return values[name];
+    }),
+  );
+}
+
+test("B12b/E209b: the known statuses are exactly tb_read_api.py's TB_STATUSES (A25/E209a)", async () => {
+  // Drift guard: a status this module does not know throws, so a server
+  // status missing here breaks the TB screen on live.
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(new URL("../../konsol/close/tb_read_api.py", import.meta.url), "utf8");
-  const server = new Set([...src.matchAll(/^[A-Z_]+ = "([^"]+)"$/gm)]
-    .map((m) => m[1])
-    .filter((v) => ["Received", "Exception declared", "Not expected this period", "Missing",
-      "Frequency not declared", "Quarter not declared"].includes(v) || /declared|Missing|Received|expected/.test(v)));
+  const server = serverStatuses(src);
   const { KNOWN_STATUSES } = await import("./tbTable.js");
   assert.deepEqual([...KNOWN_STATUSES].sort(), [...server].sort());
+});
+
+test("the drift guard fails loudly, naming the tuple, when TB_STATUSES is missing", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("../../konsol/close/tb_read_api.py", import.meta.url), "utf8");
+  const mutated = src.replace(/TB_STATUSES = \([\s\S]*?\)/, "");
+  assert.throws(() => serverStatuses(mutated), /TB_STATUSES/);
+});
+
+test("entityRows: accepts the #289 'Not consolidated' status (E209a)", () => {
+  const myTbs = oneEntity({ entity: "ZZX", status: "Not consolidated: no ownership for this period" });
+  const [row] = entityRows(myTbs, NOW, TZ);
+  assert.equal(row.status, "Not consolidated: no ownership for this period");
 });
 
 // --- B27: no literal "None", and times in the user's zone ------------------
@@ -232,4 +265,12 @@ test("(B27) failure path: no time zone or no valid now is refused, never default
 test("(B27) a TB the server sent with no creation reads 'not recorded', never a guessed time", () => {
   const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation: null };
   assert.equal(entityRows(oneEntity({ tb }), NOW, TZ)[0].uploaded, "not recorded");
+});
+
+// E209c: the Trial balances summary word agrees in number with the count.
+test("entityWord: 1 is singular, every other count (including 0 and null) is plural", () => {
+  assert.equal(entityWord(1), "entity");
+  assert.equal(entityWord(2), "entities");
+  assert.equal(entityWord(0), "entities");
+  assert.equal(entityWord(null), "entities");
 });

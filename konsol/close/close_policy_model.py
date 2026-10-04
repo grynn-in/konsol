@@ -15,6 +15,7 @@ change behaviour, and reported as a setup gap, never defaulted.
 
 Imports nothing from frappe or konsol.
 """
+import json
 
 BLOCKED = "Blocked"
 ALLOWED_WITH_REASON = "Allowed with reason"
@@ -97,12 +98,112 @@ def policy_gaps(self_approval, rate_move_threshold):
     return gaps
 
 
-def self_approval_problem(policy, owner, user, doctype, name, reason=None, exempt=None):
-    """None, or the sentence that refuses ``user`` approving a document they
-    prepared (``owner``), under the declared ``self_approval`` ``policy``
-    (konsol#305-D2-3, R5). The rules, in order:
+# konsol#305-W3-7 (C16): Close Settings ``intercompany_declaration``. Blank
+# is undeclared (intercompany is expected, or not set up yet); the only
+# declared value says this group has no intercompany. No default.
+INTERCOMPANY_NONE = "None in this group"
+INTERCOMPANY_DECLARATIONS = (INTERCOMPANY_NONE,)
 
-    1. ``user != owner``, or a non-empty ``exempt`` reason (the caller's own,
+
+def intercompany_declaration_problems(declaration, published):
+    """Problems that refuse a Close Settings save of ``declaration``, given
+    ``published``, the count of Published Intercompany Accounts (an int >= 0;
+    anything else raises ValueError). Blank or None is undeclared: ``[]``."""
+    if isinstance(published, bool) or not isinstance(published, int) or published < 0:
+        raise ValueError(
+            "The count of Published Intercompany Accounts must be an int >= 0, not %r."
+            % (published,))
+    if not declaration:
+        return []
+    if declaration not in INTERCOMPANY_DECLARATIONS:
+        return ["Unknown intercompany declaration %r; expected blank or %s."
+                % (declaration, " or ".join(INTERCOMPANY_DECLARATIONS))]
+    if declaration == INTERCOMPANY_NONE and published > 0:
+        return ["%d Intercompany Account(s) are Published, so this group has "
+                "intercompany: make them Inactive before declaring none." % published]
+    return []
+
+
+_CHILD_ROW_KEYS = ("added", "removed", "row_changed")
+
+
+def _version_data(version):
+    data = version.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            raise ValueError(
+                "The Version by %s holds data that is not JSON; it cannot be "
+                "read to decide who prepared the document." % version.get("owner")
+            )
+    return data or {}
+
+
+def _is_edit(data, state_field):
+    """True when a Version's ``data`` is a draft edit (#305-W2-14, W2-P4):
+    no ``docstatus`` change, and either a change to a field other than the
+    workflow ``state_field`` or a child row added, removed or changed."""
+    changed = data.get("changed") or []
+    fields = [c[0] for c in changed]
+    if "docstatus" in fields:
+        return False
+    if any(f != state_field for f in fields):
+        return True
+    return any(data.get(k) for k in _CHILD_ROW_KEYS)
+
+
+def preparers(owner, versions, state_field=None):
+    """Who prepared a document (konsol#305-W2-14, which changes D2-3): its
+    ``owner``, plus the owner of every Version that edits the draft.
+
+    ``versions`` are the document's Version rows as ``{"owner", "data"}``;
+    ``data`` is a dict or the JSON text Frappe stores. ``state_field`` is the
+    doctype's workflow state field (``status`` on the journal, Business
+    Combination and Business Disposal workflows), or None without a workflow.
+
+    Not edits: a submit (0->1), a cancel (1->2), an amendment's first save
+    (2->0), and a change to the workflow state field alone (a Reject, a Send
+    for Approval). Order does not matter: anyone other than the owner edited
+    after the owner's insert. Returns a frozenset.
+    """
+    if not owner:
+        raise ValueError("A document's preparers need its owner; the owner is blank.")
+    result = {owner}
+    for version in versions or ():
+        if _is_edit(_version_data(version), state_field):
+            result.add(version.get("owner"))
+    return frozenset(result)
+
+
+def submit_carries_edit(diff, state_field=None):
+    """True when the submitting save itself edits the draft (#305-W2-14,
+    review M1, konsol#305 R01a), so its submitter is a preparer.
+
+    ``diff`` is Frappe's diff of the pending save
+    (``frappe.core.doctype.version.version.get_diff``: the dict the Version
+    written after the submit will hold), or None when nothing changed. Unlike
+    ``_is_edit`` on a saved Version, the ``docstatus`` change is expected here
+    and ignored, as is the workflow ``state_field`` (a workflow Approve sets
+    it). Any other field changed, or any child row added, removed or changed,
+    is an edit.
+    """
+    if not diff:
+        return False
+    for change in diff.get("changed") or ():
+        if change[0] != "docstatus" and change[0] != state_field:
+            return True
+    return any(diff.get(k) for k in _CHILD_ROW_KEYS)
+
+
+def self_approval_problem(policy, preparers, user, doctype, name, reason=None, exempt=None):
+    """None, or the sentence that refuses ``user`` approving a document they
+    prepared (``user`` is in ``preparers``, see ``preparers()``), under the
+    declared ``self_approval`` ``policy`` (konsol#305-D2-3, R5, #305-W2-14).
+    ``preparers`` is a set; a ``str`` raises TypeError, because membership in
+    a string would match a substring. The rules, in order:
+
+    1. ``user`` not in ``preparers``, or a non-empty ``exempt`` reason (the caller's own,
        e.g. "derived" for a Business Combination's Ownership Period, or
        "system" for a patch/install/migrate) — always passes.
     2. Undeclared policy (blank or None) refuses, naming the Close Settings
@@ -116,7 +217,12 @@ def self_approval_problem(policy, owner, user, doctype, name, reason=None, exemp
     This model does not read frappe flags; it only honours a non-empty
     ``exempt`` its caller already decided.
     """
-    if user != owner or exempt:
+    if isinstance(preparers, str):
+        raise TypeError(
+            "self_approval_problem: pass the set of preparers, not the string %r."
+            % preparers
+        )
+    if user not in preparers or exempt:
         return None
     if not policy:
         return "%s prepared %s %s; %s" % (user, doctype, name, _SELF_APPROVAL_MESSAGE)
