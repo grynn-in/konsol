@@ -443,9 +443,11 @@ def test_undeclared_first_close_blocks_and_skips_the_order_gate():
         site.rows = _year(2025, status="Open")  # every period Open: (0,0) would land on P01
         problems = _call(site, "sign_off_problems", 2025, 9)
         # P05: these settings dicts never declare the two policies either, so
-        # policy_gaps adds both codes after the first-close gap.
+        # policy_gaps adds both codes after the first-close gap. N45: nor the
+        # two statement accounts, so the statement gap follows them.
         assert [g["code"] for g in problems["config_gaps"]] == [
             "first_close_undeclared", "self_approval_undeclared", "rate_move_undeclared",
+            "statement_accounts_undeclared",
         ], settings
         assert problems["order"] is None, settings
         message = _blocked(site)

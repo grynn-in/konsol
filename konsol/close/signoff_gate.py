@@ -46,8 +46,15 @@ Reads the site and passes it through the pure models:
   did not start after ``data_changed_at`` (A65), through
   ``signoff_model.data_change_problem`` (A66).
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
+- ``statement_accounts()`` / ``statement_gap()`` (#305-W4-1 1c, N45): the
+  declared CTA account and current-year result account, read from Close
+  Settings and resolved through ``close_policy_model.statement_accounts``.
+  ``sign_off_problems`` appends ``statement_gap()`` to ``config_gaps``, right
+  after the two policy gaps and before the IC tolerance gap, when either
+  statement account is undeclared or unusable (never defaulted).
 - ``sign_off_problems`` also appends ``ic_api.tolerance_gap()`` (C05) to
-  ``config_gaps``, right after the two policy gaps, when a consolidation
+  ``config_gaps``, right after the two policy gaps and the statement gap,
+  when a consolidation
   group node has not declared its intercompany difference tolerance
   (#305-W3-6; W3-P2). It costs 1-3 extra MariaDB reads per call (none once
   intercompany is not configured or declared not applicable), the same
@@ -151,6 +158,35 @@ def _policies():
     )
 
 
+def statement_accounts():
+    """The declared CTA account and current-year result account
+    (konsol#305-W4-1 1c), read from Close Settings, resolved against their
+    Main Account rows through ``close_policy_model.statement_accounts``
+    (N41's rule; never defaulted). The Main Account read only runs when at
+    least one of the two is set. N51 reuses this reader."""
+    cta_account = frappe.db.get_single_value("Close Settings", "statement_cta_account")
+    result_account = frappe.db.get_single_value("Close Settings", "statement_result_account")
+    rows = {}
+    codes = [c for c in (cta_account, result_account) if c]
+    if codes:
+        rows = {
+            r["name"]: r
+            for r in frappe.get_all(
+                "Main Account",
+                filters={"name": ["in", codes]},
+                fields=["name", "is_group", "status", "statement_section", "account_name"],
+                limit_page_length=0,
+            )
+        }
+    return close_policy_model.statement_accounts(cta_account, result_account, rows)
+
+
+def statement_gap():
+    """The one setup gap from ``statement_accounts()``, or None when both
+    statement accounts are declared and usable."""
+    return statement_accounts()["gap"]
+
+
 def _latest_runs():
     """The latest terminal Assertion Run per period (mirrors assertion_run.latest_close_run)."""
     # Imported here: assertion_run's sign-off will call this gate (A22).
@@ -195,6 +231,9 @@ def sign_off_problems(fiscal_year, fiscal_period):
     expected = signoff_model.expected_entities(frequencies, key, rows)
     gaps.extend(expected["gaps"])
     gaps.extend(close_policy_model.policy_gaps(*_policies()))
+    statement_problem = statement_gap()
+    if statement_problem:
+        gaps.append(statement_problem)
     tolerance = ic_api.tolerance_gap()
     if tolerance:
         gaps.append(tolerance)
