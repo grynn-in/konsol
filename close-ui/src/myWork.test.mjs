@@ -120,7 +120,9 @@ test("ageText renders an age from since and an injected today", () => {
 	const today = new Date(2026, 8, 25); // 25 Sep 2026
 	assert.equal(ageText("2026-09-13", today), "12 days");
 	assert.equal(ageText("2026-09-24", today), "1 day");
-	assert.equal(ageText("2026-09-25", today), "0 days");
+	// F03: same-day now reads "today", the one wording both screens share
+	// (konsol#305 F03; was "0 days" here and "today" on Approvals).
+	assert.equal(ageText("2026-09-25", today), "today");
 });
 
 test("a null since renders nothing", () => {
@@ -129,6 +131,45 @@ test("a null since renders nothing", () => {
 
 test("failure path: a since that has not happened yet renders nothing, never a negative age", () => {
 	assert.equal(ageText("2026-10-01", new Date(2026, 8, 25)), null);
+});
+
+// --- F03: the same waiting item ages identically on Approvals and My work --
+//
+// Live showed the Close Lead's one item 16 days old on My work and 17 on
+// Approvals (konsol#305 F03). Both read mywork_model.approvals_item /
+// approvals_model.waiting_for_me's own "oldest" moment: Approvals gets it
+// as the full zoned timestamp (A08), My work gets it truncated to its
+// first 10 characters (mywork_model.py:373, `oldest[:10]`) — already the
+// right calendar date in the site's zone (the timestamp itself is zoned
+// there before truncation), so feeding each screen its own real shape of
+// the same moment must still land on the same age.
+function withBootZone(timeZone, fn) {
+	const had = Object.prototype.hasOwnProperty.call(globalThis, "window");
+	const prev = globalThis.window;
+	globalThis.window = { frappe: { boot: { time_zone: { user: timeZone } } } };
+	try {
+		return fn();
+	} finally {
+		if (had) globalThis.window = prev;
+		else delete globalThis.window;
+	}
+}
+
+test("F03: Approvals' oldest and My work's since agree on the same item's age", async () => {
+	const { queueView } = await import("./approvals.js");
+	const timeZone = "Europe/London";
+	const now = new Date("2026-09-29T07:00:00Z");
+	// 23:50 local on the 13th: the case that drifted under elapsed-hours math.
+	const oldest = "2026-09-13T23:50:00+01:00";
+	const payload = {
+		items: [], sent_back: [], hidden: 0, self_approval: "Blocked", can_approve: true,
+		waiting: { count: 2, oldest },
+	};
+	const approvalsAge = queueView(payload, now, timeZone).header.match(/oldest (.+)$/)[1];
+	const myWorkAge = withBootZone(timeZone, () => ageText(oldest.slice(0, 10), now));
+	assert.equal(approvalsAge, "16 days");
+	assert.equal(myWorkAge, "16 days");
+	assert.equal(myWorkAge, approvalsAge);
 });
 
 // --- U7 (review-w3.md): badgeFor ---------------------------------------
