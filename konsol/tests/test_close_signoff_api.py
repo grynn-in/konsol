@@ -146,6 +146,9 @@ class _Site:
             ],
             #: M45t: so M46's import and reads resolve.
             "Statement Commentary": [],
+            #: M46: the root group ic_api's filter finds (data_area_id not
+            #: set), so missing_commentary has a group to report against.
+            "Consolidation Group": [{"consolidation_group": "ZZGRP", "data_area_id": None}],
         }
         self.warned_names = {"RUN-09": ["assert_a", "assert_b"]}
         self.only_for = []
@@ -176,8 +179,8 @@ def _match(value, cond):
         if op == "<=":
             return value is not None and value <= arg
         if op == "is":
-            assert arg == "set", arg
-            return value not in (None, "")
+            assert arg in ("set", "not set"), arg
+            return (value not in (None, "")) == (arg == "set")
         raise AssertionError("stub: unsupported operator %r" % (op,))
     return value == cond
 
@@ -667,6 +670,51 @@ def test_the_viewer_gets_the_same_ic_driven_amber_as_the_close_lead():
     result = _get(viewer)
     assert result["action"] == base["action"] == "acknowledge"
     assert result["intercompany"] == base["intercompany"]
+
+
+# --- M46: the sign-off summary carries the missing-commentary line -----------
+
+COMMENTARY_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_signoff_commentary.json")
+
+
+def test_no_commentary_reports_both_headings_missing_in_lft_order():
+    result = _get(_Site())
+    assert result["commentary"] == [{
+        "consolidation_group": "ZZGRP", "headings": 2, "with_commentary": 0,
+        "missing": ["NET SALES", "OPERATING EXPENSES"],
+    }]
+
+
+def test_one_commented_heading_counts_one_with_commentary_one_missing():
+    site = _Site()
+    site.records["Statement Commentary"] = [
+        {"consolidation_group": "ZZGRP", "heading": "4", "fiscal_year": 2025, "fiscal_period": 9, "text": "Volume up 3% on FX."}]
+    result = _get(site)
+    assert result["commentary"] == [{
+        "consolidation_group": "ZZGRP", "headings": 2, "with_commentary": 1,
+        "missing": ["OPERATING EXPENSES"],
+    }]
+
+
+def test_commentary_never_changes_the_action_or_the_gates():
+    # story 9.1: commentary is informational only, never a gate.
+    site = _Site()
+    before = _get(site)
+    site.records["Statement Commentary"] = [
+        {"consolidation_group": "ZZGRP", "heading": "4", "fiscal_year": 2025, "fiscal_period": 9, "text": "Volume up 3% on FX."}]
+    after = _get(site)
+    assert before["action"] == after["action"]
+    assert before["gates"] == after["gates"]
+    assert before["commentary"] != after["commentary"]
+
+
+def test_commentary_matches_the_golden_fixture():
+    # U47 loads this same file: the committed golden value of this key.
+    result = _get(_Site())
+    with open(COMMENTARY_FIXTURE) as fh:
+        golden = json.load(fh)
+    assert result["commentary"] == golden
 
 
 # --- A49: the period's own status ----------------------------------------------

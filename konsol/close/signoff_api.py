@@ -24,6 +24,12 @@ A21 ``signoff_model.summary``:
   is no "previous" to name: the list is empty and the gap says why.
 - intercompany (C10): ``ic_api.signoff_summary`` — counts only, never a gate
   (E5-P11), and unscoped so every role reads the same counts (E5-P13).
+- commentary (M46, story 9.1, W4-6, W4-E16): per root Consolidation Group,
+  how many Published statement headings carry commentary for the period and
+  which don't (``commentary_model.missing_commentary``). Informational only
+  — ``signoff_model.summary`` is never called with it, so ``action`` cannot
+  depend on it — and unscoped, same as intercompany (every role sees the
+  same counts). 8.4's missing-commentary threshold is a later row.
 
 It adds ``can_sign`` (write on Assertion Run, the test ``sign_off_close``
 applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
@@ -76,7 +82,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import ic_api, period_model, signoff_gate, signoff_model
+from konsol.close import commentary_model, ic_api, period_model, signoff_gate, signoff_model
 from konsol.close.timefmt import zoned_iso
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
@@ -222,6 +228,28 @@ def _scoped(problems, allowed, key):
     return {"config_gaps": gaps, "order": problems["order"], "completeness": completeness}
 
 
+def _commentary(key):
+    """M46, story 9.1 (W4-6, W4-E16): per root Consolidation Group, the
+    Published statement headings with saved commentary for the period and
+    the ones still missing it. Informational only: never fed to
+    ``signoff_model.summary``, so ``action`` cannot depend on it; unscoped,
+    same as intercompany (every role sees the same counts)."""
+    headings = [
+        {"heading": h["name"], "heading_name": h["account_name"], "lft": h["lft"]}
+        for h in frappe.get_all("Main Account", filters={"status": "Published", "is_group": 1},
+                                fields=["name", "account_name", "lft"], limit_page_length=0)
+    ]
+    rows = frappe.get_all(
+        "Statement Commentary", filters={"fiscal_year": key[0], "fiscal_period": key[1]},
+        fields=["consolidation_group", "heading", "text"], limit_page_length=0)
+    # ic_api's root-group filter (ic_api.py:176, :284): a root Consolidation
+    # Group has no entity (``data_area_id`` not set).
+    groups = frappe.get_all("Consolidation Group", filters={"data_area_id": ["is", "not set"]},
+                            fields=["consolidation_group"], limit_page_length=0)
+    return commentary_model.missing_commentary(
+        headings, rows, [g["consolidation_group"] for g in groups])
+
+
 def _closed(key):
     return frappe.db.get_value(
         "EPM Fiscal Year Period",
@@ -302,6 +330,10 @@ def get_signoff(fiscal_year, fiscal_period):
         # read that fed signoff_model.summary's Amber rule above (W3-P3,
         # #305-W3-8), never a second one.
         "intercompany": ic,
+        # M46 (story 9.1, W4-6): per-root-group missing-commentary counts.
+        # Informational only — built after the summary, so it cannot affect
+        # "action" or "gates".
+        "commentary": _commentary(key),
     })
     return result
 
