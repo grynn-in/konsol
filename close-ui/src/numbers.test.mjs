@@ -283,25 +283,72 @@ test("gapText carries the declared-accounts setup gap's message", () => {
 	assert.equal(view.gapText, "Declare the CTA account…");
 });
 
-test("notIncluded: singular, with no hidden suffix on the golden payload", () => {
+test("notIncluded: singular, with no hidden suffix, all codes shown and no moreText on the golden payload", () => {
 	const view = statementView(golden(), NOW, TZ);
-	assert.equal(view.notIncluded, "1 entity in scope is not in these numbers: ZZB");
+	assert.equal(view.notIncluded.text, "1 entity in scope is not in these numbers");
+	assert.deepEqual(view.notIncluded.codes, ["ZZB"]);
+	assert.deepEqual(view.notIncluded.shown, ["ZZB"]);
+	assert.equal(view.notIncluded.moreText, null);
+	assert.equal(view.notIncluded.scopeText, null);
 });
 
-test("notIncluded: plural, and the hidden-count suffix", () => {
+test("notIncluded: plural, and the out-of-scope suffix as its own field", () => {
 	const payload = golden();
 	payload.not_included = { count: 2, entities: ["CA_OVIVO", "US_OVIVO"], hidden: 3 };
 	const view = statementView(payload, NOW, TZ);
-	assert.equal(
-		view.notIncluded,
-		"2 entities in scope are not in these numbers: CA_OVIVO, US_OVIVO, and 3 outside your scope",
-	);
+	assert.equal(view.notIncluded.text, "2 entities in scope are not in these numbers");
+	assert.deepEqual(view.notIncluded.shown, ["CA_OVIVO", "US_OVIVO"]);
+	assert.equal(view.notIncluded.moreText, null);
+	assert.equal(view.notIncluded.scopeText, "and 3 outside your scope");
 });
 
 test("notIncluded: null when nothing is missing", () => {
 	const payload = golden();
 	payload.not_included = { count: 0, entities: [], hidden: 0 };
 	assert.equal(statementView(payload, NOW, TZ).notIncluded, null);
+});
+
+// L42b: L41 live showed 265 not-included entities as one unreadable block of
+// codes. `codes` always carries the full list (never dropped); the screen
+// shows only the first 10 (`shown`) plus a local-state "show all" toggle.
+function notIncludedEntities(n) {
+	return Array.from({ length: n }, (_, i) => `ZZ${String(i).padStart(3, "0")}`);
+}
+
+test("L42b: 265 not-included entities (the real L41 live count) — count sentence, full list kept, first 10 shown, moreText for the rest", () => {
+	const payload = golden();
+	payload.not_included = { count: 265, entities: notIncludedEntities(265), hidden: 0 };
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(view.notIncluded.text, "265 entities in scope are not in these numbers");
+	assert.equal(view.notIncluded.codes.length, 265, "the full list is never dropped");
+	assert.deepEqual(view.notIncluded.shown, view.notIncluded.codes.slice(0, 10));
+	assert.equal(view.notIncluded.shown.length, 10);
+	assert.equal(view.notIncluded.moreText, "and 255 more");
+	assert.equal(view.notIncluded.scopeText, null);
+});
+
+test("L42b: exactly 10 not-included entities — all shown, no moreText", () => {
+	const payload = golden();
+	payload.not_included = { count: 10, entities: notIncludedEntities(10), hidden: 0 };
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(view.notIncluded.shown.length, 10);
+	assert.equal(view.notIncluded.moreText, null);
+});
+
+test("L42b: 11 not-included entities — 10 shown, 'and 1 more'", () => {
+	const payload = golden();
+	payload.not_included = { count: 11, entities: notIncludedEntities(11), hidden: 0 };
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(view.notIncluded.shown.length, 10);
+	assert.equal(view.notIncluded.moreText, "and 1 more");
+});
+
+test("L42b: 265 not-included entities AND out-of-scope hidden — both suffixes are independent", () => {
+	const payload = golden();
+	payload.not_included = { count: 265, entities: notIncludedEntities(265), hidden: 7 };
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(view.notIncluded.moreText, "and 255 more");
+	assert.equal(view.notIncluded.scopeText, "and 7 outside your scope");
 });
 
 // --- tabs: Profit and Loss --------------------------------------------------
