@@ -110,6 +110,10 @@ class _Site:
         #: P05 (#305-D2-3, #305-D2-9): both declared, so signoff_gate adds no
         #: policy gap by default; a test sets ``site.policies`` to probe a gap.
         self.policies = ("Blocked", 50)
+        #: W4-1 (N44t): the declared statement accounts (CTA, current-year
+        #: result), so signoff_gate's N45 read finds them. Until N45 nothing
+        #: reads them.
+        self.statement_accounts = ("3300", "3100")
         self.closed = {(2025, fp): (LEAD, CLOSED_ON) for fp in range(1, 9)}
         #: A63: the period rows' data-change fields, by (year, period).
         self.data_changed = {}
@@ -126,6 +130,12 @@ class _Site:
                 _tb("ZZA", fp=8), _tb("ZZB", fp=8), _tb("ZZC", fp=8), _tb("ZZE", fp=8),
             ],
             "TB Exception": [_exc("ZZE"), _exc("ZZD", fp=8, reason="Merged into P09")],
+            "Main Account": [
+                {"name": "3300", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
+                {"name": "3100", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+            ],
         }
         self.warned_names = {"RUN-09": ["assert_a", "assert_b"]}
         self.only_for = []
@@ -224,9 +234,12 @@ def _load(site):
         assert doctype == "Close Settings", doctype
         fy, fp = site.first_close or (0, 0)
         self_approval, rate_move_threshold = site.policies
+        cta_account, result_account = site.statement_accounts
         return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp,
                 "self_approval": self_approval,
-                "rate_move_threshold": rate_move_threshold}[field]
+                "rate_move_threshold": rate_move_threshold,
+                "statement_cta_account": cta_account,
+                "statement_result_account": result_account}[field]
 
     def _write(*a, **k):
         site.writes.append(a)
@@ -399,6 +412,22 @@ def _raises(site, fy, fp):
                 sys.modules.pop(n, None)
             else:
                 sys.modules[n] = old
+
+
+# --- N44t: the stub site declares the statement accounts (unblocks N45) -----
+
+def test_statement_accounts_are_declared_on_the_stub_site():
+    site = _Site()
+    _module, _mods, frappe = _load(site)
+    assert frappe.db.get_single_value("Close Settings", "statement_cta_account") == "3300"
+    assert frappe.db.get_single_value("Close Settings", "statement_result_account") == "3100"
+    rows = {r["name"]: r for r in site.records["Main Account"]}
+    assert rows["3300"]["is_group"] == 0
+    assert rows["3300"]["status"] == "Published"
+    assert rows["3300"]["statement_section"] == "Balance Sheet"
+    assert rows["3100"]["is_group"] == 0
+    assert rows["3100"]["status"] == "Published"
+    assert rows["3100"]["statement_section"] == "Balance Sheet"
 
 
 # --- contract ----------------------------------------------------------------
