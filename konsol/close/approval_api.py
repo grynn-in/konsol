@@ -10,6 +10,17 @@ This endpoint does not decide policy. The ``before_submit`` hook
 (``konsol.close.self_approval.check``) does: an "Allowed with reason"
 self-approval with no reason, or any Blocked self-approval, is refused there.
 
+On a doctype with no active workflow (#305-D2-8), a reject leaves the draft
+at docstatus 0 with no state change, so nothing else stops ``approve`` from
+submitting it unchanged. ``approve`` refuses that case itself (konsol#305
+F01, review S7, reversing the coordinator's E6-P3 judgement that only the
+screen need hide the buttons): it reads the document's newest ``rejected``
+Close Event (``close_event.latest_rejections``) and refuses when that
+rejection is later than the document's own ``modified`` —
+``approvals_model.is_sent_back``, the one comparison, not repeated here. A
+workflow doctype is unaffected: its reject already moves the document away
+from "awaiting approval".
+
 The close-ui approval screen (E6) is the intended caller.
 
 Close Events (konsol#305 T02b, E10-P11): ``approve`` writes none itself. A
@@ -20,7 +31,7 @@ writer's exception is never caught.
 """
 import frappe
 
-from konsol.close import close_event, close_policy_model, self_approval
+from konsol.close import approvals_model, close_event, close_policy_model, self_approval
 from konsol.close.self_approval import REASON_FLAG
 
 
@@ -52,6 +63,15 @@ def approve(doctype, name, reason=None):
         # read the doc back then.
         doc = apply_workflow(doc, "Approve") or frappe.get_doc(doctype, name)
     else:
+        # F01 (review S7): a no-workflow draft stays at docstatus 0 after a
+        # reject (#305-D2-8), so approve must refuse it itself when the
+        # preparer has not yet saved a change.
+        rejection = close_event.latest_rejections(doctype, [name]).get(name)
+        if approvals_model.is_sent_back(rejection, doc.modified):
+            frappe.throw(
+                "%s %s was rejected by %s on %s: \"%s\". The preparer must "
+                "save a change before it can be approved again."
+                % (doctype, name, rejection["actor"], rejection["at"], rejection["reason"]))
         doc.submit()
     return {
         "name": doc.name,

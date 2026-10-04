@@ -143,7 +143,9 @@ def _shape(doctype, doc):
     """``(kind_label, title, detail, extra)`` for one of the 5 doctypes not
     covered by ``rates_model.pending_items``. ``extra`` holds the keys a
     kind carries beyond the common ones (the journal's lines/effect/
-    total_debit/currency).
+    total_debit/currency, plus fiscal_year/fiscal_period/consolidation_group,
+    #305-W3-4/W41, so the screen can read the statement for that period and
+    group).
     """
     kind_label, title = _kind_label_and_title(doctype, doc)
     if doctype == JOURNAL:
@@ -157,6 +159,9 @@ def _shape(doctype, doc):
             "effect": doc["effect"],
             "total_debit": doc["total_debit"],
             "currency": doc["currency"],
+            "fiscal_year": doc["fiscal_year"],
+            "fiscal_period": doc["fiscal_period"],
+            "consolidation_group": doc["consolidation_group"],
         }
         return kind_label, title, detail, extra
     if doctype == GER:

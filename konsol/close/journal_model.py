@@ -23,6 +23,14 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 _CENTS = Decimal("0.01")
 
+#: What a dimension column may be named, to be written at all. MUST stay
+#: identical to schema_apply._SAFE_TB_DIM_COLUMN and
+#: tb_dimension_model._LEGAL_DIMENSION_NAME — it is copied, not imported,
+#: because this module is pure and those bring frappe or a cycle. \Z not $:
+#: `$` also matches before a trailing newline. See
+#: journal_dimension_columns for what a drift here would cost.
+_LEGAL_DIM_COLUMN = re.compile(r"^dim_[a-z0-9_]+\Z")
+
 MIN_LINES = 2
 
 #: Consolidation Journal Line fields a user may send (consolidation_journal_line.json).
@@ -344,7 +352,52 @@ STAGING_COLUMNS = (
 )
 
 
-def staging_rows(headers, lines):
+def journal_dimension_columns(declared, present):
+    """The declared journal dimensions that are actually fields, in order. Pure.
+
+    ``declared`` is the Published Dimensions ticked ``in_journal``; ``present``
+    the field names Consolidation Journal Line has. The intersection matters
+    because the Custom Field sync is queued after the commit (konsol#135): a
+    dimension is Published with the flag set before its field exists, and
+    selecting a field that does not exist makes ``frappe.get_all`` raise, which
+    would take out the whole resync rather than one column.
+
+    An orphan field the declared set no longer names is left out: the column
+    keeps its history and stays readable, and nothing new is written to it
+    (konsol#255, Deepak Pai's option A).
+
+    A name the warehouse cannot spell is left out too, and this is the one that
+    bites (PR #324 review, finding 2). schema_apply refuses a declared name
+    failing ``^dim_[a-z0-9_]+$`` and creates no ClickHouse column — but the
+    Custom Field sync has no prefix rule, so the Frappe field exists, and a
+    non-``dim_`` name is legal on a Dimension outside the trial balance
+    (``business_unit`` is the example dimension.py itself gives). Naming such a
+    column in the INSERT would hit a table that does not have it, and
+    ``clickhouse.sync_table`` swallows that with ``force=False``: every later
+    submit, cancel and delete would leave the staging table frozen with no
+    visible error. ``get_valid_columns()`` also returns ``name``, ``parent``,
+    ``idx``, ``description`` and ``main_account``, so the same rule stops a
+    Dimension called ``description`` putting a duplicate column in the list.
+    """
+    have = set(present or ())
+    return tuple(d for d in declared
+                 if d in have and _LEGAL_DIM_COLUMN.fullmatch(d or ""))
+
+
+def staging_columns(declared=()):
+    """``STAGING_COLUMNS`` plus one column per declared journal dimension.
+
+    The dimensions go LAST, because `epm_staging.consolidation_adjustments`
+    already exists and gains them per-site through
+    ``schema_apply._sync_journal_dimension_columns`` — the
+    same reason `main_account`'s CH_FIELD_MAP keeps `is_retained_earnings` at
+    the end. ``declared`` is the caller's list of Published Dimensions ticked
+    ``in_journal``, in a stable order; this module reads no doctype.
+    """
+    return STAGING_COLUMNS + tuple(declared)
+
+
+def staging_rows(headers, lines, declared=()):
     """One tuple per journal line, in ``STAGING_COLUMNS`` order.
 
     ``headers`` are the submitted journals (dicts with ``name``,
@@ -394,5 +447,11 @@ def staging_rows(headers, lines):
             "",
             header.get("reverse_fiscal_year") or 0,
             header.get("reverse_fiscal_period") or 0,
+            # konsolidat#245 option D: only the dimensions the site declared,
+            # read by name off the line. A dim_* key the site has not declared
+            # is ignored rather than written — data never creates configuration
+            # (konsol#247). Absent or blank is '', the column's default: blank
+            # is a valid declaration, not a missing one.
+            *(line.get(d) or "" for d in declared),
         ))
     return rows

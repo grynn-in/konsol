@@ -369,5 +369,9 @@ def test_hooks_wire_the_cancel_event_as_the_star_on_cancel():
             if (isinstance(t, ast.Subscript) and getattr(t.value, "id", None) == "doc_events"
                     and ast.literal_eval(t.slice) == "*"):
                 found.append(ast.literal_eval(n.value))
+    # S42 (#305-W4-4 4c): the data-change hook joins the star on_submit and
+    # (second, after this event) the star on_cancel.
     assert found == [{"before_submit": "konsol.close.self_approval.check",
-                      "on_cancel": "konsol.close.cancel_event.record"}], found
+                      "on_submit": "konsol.close.data_change_hook.on_submit",
+                      "on_cancel": ["konsol.close.cancel_event.record",
+                                    "konsol.close.data_change_hook.on_cancel"]}], found

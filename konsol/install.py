@@ -288,12 +288,17 @@ def after_migrate():
     # reconcile, which is the one call that carries rows seeded during a
     # migrate through to ClickHouse (sync_table no-ops while in_migrate).
     _seed_defaults()
+    # Before the reconcile, for the reason stated above: it provisions the
+    # dimension Custom Fields AND the journal's ClickHouse columns, and
+    # reconcile_all(force=True) writes the journal's rows through. Placed after
+    # it, the reconcile named a column the table did not have yet and logged
+    # the table as skipped, then the repair ran (PR #324 re-review, finding 2).
+    _sync_budget_line_custom_fields()
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()
     _setup_dashboard()
     _retire_konsol_control_page()
-    _sync_budget_line_custom_fields()
 
 
 def _restore_asset_manifest():
@@ -355,6 +360,19 @@ def _sync_budget_line_custom_fields():
     except Exception:
         frappe.logger().warning(
             "budget line custom field sync skipped after migrate", exc_info=True)
+    # konsolidat#245 option D, PR #324 review finding 6: the journal's
+    # ClickHouse columns need the same repair path as its Custom Fields. The
+    # fields are provisioned above whatever happened earlier; without this, a
+    # Dimension published while ClickHouse was unreachable leaves the field
+    # created and the column missing, and the write-through then names a column
+    # the table has not got — which clickhouse.sync_table swallows, freezing
+    # epm_staging.consolidation_adjustments with no visible error.
+    try:
+        from konsol.schema_apply import _sync_journal_dimension_columns
+        _sync_journal_dimension_columns()
+    except Exception:
+        frappe.logger().warning(
+            "journal dimension column sync skipped after migrate", exc_info=True)
 
 
 def _retire_konsol_control_page():

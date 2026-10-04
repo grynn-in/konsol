@@ -12,7 +12,7 @@ import importlib.util
 import os
 import sys
 import types
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -22,6 +22,7 @@ PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 SCOPE_MODEL_PY = os.path.join(APP_DIR, "close", "scope_model.py")
+STATEMENT_MODEL_PY = os.path.join(APP_DIR, "close", "statement_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -93,7 +94,12 @@ class _Site:
     def __init__(self):
         self.rows = _year(2025, overrides={9: "Open", 10: "Open", 11: "Open", 12: "Open"})
         self.settings = {"first_close_fiscal_year": 2025, "first_close_fiscal_period": 7,
-                         "self_approval": "Blocked", "rate_move_threshold": 50}
+                         "self_approval": "Blocked", "rate_move_threshold": 50,
+                         #: N43t: both declared and valid (N41's rule), so N45's
+                         #: new read finds them and every existing "no gap"
+                         #: assertion still holds. Until N45 nothing reads them.
+                         "statement_cta_account": "3300",
+                         "statement_result_account": "3100"}
         self.records = {
             "Entity": [_entity("ZZA"), _entity("ZZB", "Quarterly")],
             "Ownership Period": [_owner("ZZA"), _owner("ZZB")],
@@ -102,6 +108,17 @@ class _Site:
             "Assertion Run": [_run("RUN-7", 2025, 7), _run("RUN-8", 2025, 8)],
             "Connector": [],
             "Connector Legal Entity": [],
+            #: N43t: the two statement accounts named by `self.settings` above,
+            #: both Published BS leaves under a heading (N41's rule, S3).
+            #: Until N45 nothing reads them.
+            "Main Account": [
+                {"name": "3300", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA",
+                 "parent_account": "3"},
+                {"name": "3100", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+                 "parent_account": "3"},
+            ],
         }
         self.whitelisted = set()
         self.get_all_calls = []
@@ -225,6 +242,7 @@ def _load(site):
     signoff_model = _by_path("konsol.close.signoff_model", SIGNOFF_MODEL_PY)
     close_policy_model = _by_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
     scope_model = _by_path("konsol.close.scope_model", SCOPE_MODEL_PY)
+    statement_model = _by_path("konsol.close.statement_model", STATEMENT_MODEL_PY)
     _real_covered = scope_model.covered
 
     def _covered_spy(rows, start_date):
@@ -235,6 +253,7 @@ def _load(site):
     close.period_model, close.signoff_model = period_model, signoff_model
     close.close_policy_model = close_policy_model
     close.scope_model = scope_model
+    close.statement_model = statement_model
 
     # T04b: a stub Close Event writer (T02a's konsol/close/close_event.py),
     # so the gate's lazy `from konsol.close import close_event` resolves.
@@ -337,6 +356,7 @@ def _load(site):
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.close_policy_model": close_policy_model,
             "konsol.close.scope_model": scope_model,
+            "konsol.close.statement_model": statement_model,
             "konsol.close.close_event": close_event,
             "konsol.close.ic_api": ic_api,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
@@ -430,9 +450,11 @@ def test_undeclared_first_close_blocks_and_skips_the_order_gate():
         site.rows = _year(2025, status="Open")  # every period Open: (0,0) would land on P01
         problems = _call(site, "sign_off_problems", 2025, 9)
         # P05: these settings dicts never declare the two policies either, so
-        # policy_gaps adds both codes after the first-close gap.
+        # policy_gaps adds both codes after the first-close gap. N45: nor the
+        # two statement accounts, so the statement gap follows them.
         assert [g["code"] for g in problems["config_gaps"]] == [
             "first_close_undeclared", "self_approval_undeclared", "rate_move_undeclared",
+            "statement_accounts_undeclared",
         ], settings
         assert problems["order"] is None, settings
         message = _blocked(site)
@@ -891,9 +913,11 @@ def _record(site, fy, fp, text=CHANGED_TEXT, user=CHANGED_BY):
 def test_a_data_change_is_recorded_on_the_period_row():
     site = _Site()
     _record(site, 2025, 8)
-    assert site.period_writes == [
-        ("ROW-2025-8", {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
-                        "data_change": CHANGED_TEXT}, False)], site.period_writes
+    # The changed period's own row is written first, with the real text
+    # (R41k adds further, carried writes to later rows -- see below).
+    assert site.period_writes[0] == (
+        "ROW-2025-8", {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
+                        "data_change": CHANGED_TEXT}, False), site.period_writes
 
 
 def test_a_data_change_marks_the_periods_signed_run_re_sign_needed_with_the_text():
@@ -909,6 +933,34 @@ def test_a_data_change_marks_the_periods_signed_run_re_sign_needed_with_the_text
     # Through the sign-off writer, never a raw field write.
     assert [(s[0], s[1]) for s in site.saves] == [("RUN-8", ("sign-off", "RUN-8"))], site.saves
     assert site.saves[0][3] is True, "the uploader need not own the run"
+
+
+def test_a_data_change_also_marks_a_later_signed_period():
+    """AMENDED 4 Oct (#305-W4-4, Deepak "all ★", #305 issuecomment-5978983396):
+    a cumulative balance sheet means a data change also voids every LATER
+    signed period's signature, not only the changed period's own — for every
+    existing record_data_change caller (a TB submit/cancel too, not only
+    S42's new hook). A TB change in P07 marks the already-signed P09."""
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9))
+    marked = _record(site, 2025, 7, text="TB TBS-ZZA-2025-7 cancelled")
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
+    for name in ("RUN-7", "RUN-8", "RUN-9"):
+        assert _run_rec(site, name)["signoff_status"] == "Re-sign Needed", name
+    # One Close Event per period marked (T04b), not one combined event.
+    assert sorted(e[4] for e in site.close_events) == ["RUN-7", "RUN-8", "RUN-9"], site.close_events
+    for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
+        assert kind == "signoff_voided", kind
+        assert ref_dt == "Assertion Run", ref_dt
+        assert "TB TBS-ZZA-2025-7 cancelled" in reason, reason
+
+
+def test_a_data_change_does_not_mark_an_earlier_signed_period():
+    """The earlier period's signature covered data that has not changed."""
+    site = _Site()
+    marked = _record(site, 2025, 8)
+    assert "RUN-7" not in marked, marked
+    assert _run_rec(site, "RUN-7")["signoff_status"] == "Signed Off"
 
 
 def test_only_the_latest_signed_run_of_the_period_is_marked():
@@ -1005,6 +1057,286 @@ def test_data_change_reads_the_three_fields_and_blank_is_none():
     assert _call(site, "data_change", 2025, 9) == {
         "data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
         "data_change": CHANGED_TEXT}
+
+
+# --- #305 R41b (review-w4-server.md S2, coordinator call (a)): the hook ----
+# calls the REAL record_data_change exactly once, and that real call does
+# the whole later-period stamping, across >= 5 declared periods. The hook's
+# own stub-level "how many times did I call the stub" coverage lives in
+# test_close_data_change_hook.py; this loads the REAL data_change_hook.py
+# wired to the REAL signoff_gate.py (this file's own `_load`, unmodified),
+# so the double-marking S2 found -- hidden by a sparse-period, stubbed
+# record_data_change -- cannot hide here.
+
+HOOK_PY = os.path.join(APP_DIR, "close", "data_change_hook.py")
+DATA_CHANGE_MODEL_PY = os.path.join(APP_DIR, "close", "data_change_model.py")
+
+
+def _by_path_r41b(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _hook_on_real_gate(site, period, entity=None):
+    """The REAL data_change_hook, wired to the REAL signoff_gate (this
+    file's `_load`) and the REAL data_change_model (S41, pure). The only
+    stand-in is a counting wrapper AROUND the real record_data_change
+    (``_covered_spy``'s pattern, above) -- every call it counts still runs
+    the unmodified real function; this is not a stub of record_data_change,
+    it is a spy on it. ``close_event.period_of``/``entity_of`` are given
+    fixed answers (as every other hook test here does), since this file's
+    own close_event stub carries only ``.record``.
+
+    Returns ``(on_submit, on_cancel, calls, site)``, where ``calls`` is the
+    list of real record_data_change invocations
+    (``[((fiscal_year, fiscal_period, text, user), {"entity": entity}), ...]``).
+    """
+    gate_module, frappe, mods, _ps = _load(site)
+    frappe.db.table_exists = lambda dt: True
+    frappe.logger = lambda: types.SimpleNamespace(
+        warning=lambda *a, **k: None, info=lambda *a, **k: None)
+
+    calls = []
+    real_record_data_change = gate_module.record_data_change
+
+    def counting_record_data_change(*a, **k):
+        calls.append((a, k))
+        return real_record_data_change(*a, **k)
+
+    close_event = mods["konsol.close.close_event"]
+    close_event.period_of = lambda doc: period
+    close_event.entity_of = lambda doc: entity
+
+    data_change_model = _by_path_r41b("data_change_model_for_r41b", DATA_CHANGE_MODEL_PY)
+
+    mods2 = dict(mods)
+    mods2["konsol.close.signoff_gate"] = types.SimpleNamespace(
+        record_data_change=counting_record_data_change)
+    mods2["konsol.close.data_change_model"] = data_change_model
+    close_pkg = mods2["konsol.close"]
+    close_pkg.signoff_gate = mods2["konsol.close.signoff_gate"]
+    close_pkg.data_change_model = data_change_model
+
+    saved = {n: sys.modules.get(n) for n in mods2}
+    sys.modules.update(mods2)
+    try:
+        hook = _by_path_r41b("data_change_hook_for_r41b", HOOK_PY)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    # on_submit/on_cancel import frappe/fiscal_calendar/close_event/
+    # signoff_gate lazily, at call time (data_change_hook.py's own
+    # docstring): re-apply the stubs around every call, then restore.
+    real_on_submit, real_on_cancel = hook.on_submit, hook.on_cancel
+
+    def on_submit(doc, method=None):
+        now = {n: sys.modules.get(n) for n in mods2}
+        sys.modules.update(mods2)
+        try:
+            return real_on_submit(doc, method)
+        finally:
+            for n, old in now.items():
+                if old is None:
+                    sys.modules.pop(n, None)
+                else:
+                    sys.modules[n] = old
+
+    def on_cancel(doc, method=None):
+        now = {n: sys.modules.get(n) for n in mods2}
+        sys.modules.update(mods2)
+        try:
+            return real_on_cancel(doc, method)
+        finally:
+            for n, old in now.items():
+                if old is None:
+                    sys.modules.pop(n, None)
+                else:
+                    sys.modules[n] = old
+
+    return on_submit, on_cancel, calls, site
+
+
+class _HookDoc(dict):
+    """A Frappe document has every field; ``.get`` reads one back."""
+
+    def __getattr__(self, name):
+        return self.get(name)
+
+
+def _hook_doc(doctype, name, **fields):
+    return _HookDoc(doctype=doctype, name=name, **fields)
+
+
+def _five_period_site():
+    """FY2025 first close P07 (``_Site``'s default), with FIVE later-or-equal
+    Regular periods carrying a signed run: P07-P11 (P12 has none)."""
+    site = _Site()
+    for name, fp in (("RUN-9", 9), ("RUN-10", 10), ("RUN-11", 11)):
+        site.records["Assertion Run"].append(_run(name, 2025, fp))
+    return site
+
+
+def test_the_hook_calls_the_real_record_data_change_exactly_once():
+    """S2 Effect 1: the hook used to call record_data_change once PER period
+    changed_periods named. Across 5 signed later-or-equal periods (P07-P11)
+    it must still call the real record_data_change exactly once."""
+    site = _five_period_site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert len(calls) == 1, calls
+    args, kwargs = calls[0]
+    assert args[:2] == (2025, 7), args
+    assert args[2] == "Group Exchange Rate GER-1 approved", args
+    assert kwargs == {"entity": None}, kwargs
+
+
+def test_the_one_real_call_stamps_every_later_signed_period_with_one_void_event_each():
+    """S2 Effect 3 (and the coordinator's call (a)): the single real call
+    marks the changed period AND every later signed Regular period -- P07
+    through P11, five periods -- "Re-sign Needed", one signoff_voided Close
+    Event per marked run, not one combined event and not a second hook
+    call's worth of duplicates."""
+    site = _five_period_site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert len(calls) == 1, calls
+    for name in ("RUN-7", "RUN-8", "RUN-9", "RUN-10", "RUN-11"):
+        rec = _run_rec(site, name)
+        assert rec["signoff_status"] == "Re-sign Needed", (name, rec)
+        assert "Group Exchange Rate GER-1 approved" in rec["affected_by"], (name, rec)
+    assert sorted(e[4] for e in site.close_events) == [
+        "RUN-10", "RUN-11", "RUN-7", "RUN-8", "RUN-9"], site.close_events
+    assert len(site.close_events) == 5, site.close_events
+    for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
+        assert kind == "signoff_voided", kind
+        assert ref_dt == "Assertion Run", ref_dt
+        assert "Group Exchange Rate GER-1 approved" in reason, reason
+
+
+def test_the_changed_periods_own_row_gets_the_real_text_and_later_rows_carry_it():
+    """record_data_change's docstring (AMENDED #305 R41k, review-w4-server.md
+    S2 effect 3): only P07's row gets the REAL data_change text -- the later
+    periods' balances move as a consequence, through their own query, not
+    because their own data changed -- but every later declared Regular
+    period's row (P08-P12, including P12 which carries no signed run at
+    all) now carries P07's change, so each one's OWN data_change_problem
+    (A66) check can see it."""
+    site = _five_period_site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert set(site.data_changes) == {(2025, p) for p in range(7, 13)}, site.data_changes
+    assert site.data_changes[(2025, 7)]["data_change"] == (
+        "Group Exchange Rate GER-1 approved"), site.data_changes
+    for fp in range(8, 13):
+        assert site.data_changes[(2025, fp)]["data_change"] == (
+            "Balance carried from FY2025 P07: Group Exchange Rate GER-1 approved"), (
+            fp, site.data_changes)
+
+
+def test_a_reversing_journals_single_call_still_stamps_the_later_period():
+    """A Consolidation Journal reversing P07's entry into P08 still calls
+    record_data_change once (for P07 -- the earlier of the two), and that
+    one real call marks P08 too."""
+    site = _Site()
+    on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    doc = _hook_doc("Consolidation Journal", "CJ-1",
+                     reverse_fiscal_year=2025, reverse_fiscal_period=8)
+    on_submit(doc)
+    assert len(calls) == 1, calls
+    assert calls[0][0][:2] == (2025, 7), calls
+    for name in ("RUN-7", "RUN-8"):
+        assert _run_rec(site, name)["signoff_status"] == "Re-sign Needed", name
+
+
+def test_on_cancel_also_calls_the_real_record_data_change_exactly_once():
+    site = _five_period_site()
+    _on_submit, on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
+    on_cancel(_hook_doc("Group Exchange Rate", "GER-1"))
+    assert len(calls) == 1, calls
+    assert calls[0][0][2] == "Group Exchange Rate GER-1 cancelled", calls
+
+
+# --- #305 R41k (review-w4-server.md S2 effect 3; coordinator call (a),  ----
+# completes S2): record_data_change carries the change onto every LATER
+# Regular period's OWN row too -- not only voiding its already-signed run
+# (_mark_latest_signed, above, only ever touches signed runs). An UNSIGNED
+# later period's own data_change_problem (A66) check -- the rule
+# `_action` applies before offering "run_checks"/"rerun" -- needs its OWN
+# row's data_change fields to see an earlier period's change; voiding a
+# run that was never signed in the first place does nothing for it.
+
+def _pure_signoff_model():
+    """signoff_model.py imports nothing from frappe (its own header
+    comment): load it once by path -- the same file `_load` loads for the
+    stubbed gate -- to call `data_change_problem` (A66) directly, with no
+    stubbing needed."""
+    spec = importlib.util.spec_from_file_location(
+        "signoff_model_for_r41k", SIGNOFF_MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_a_data_change_carries_onto_every_later_regular_period_row():
+    """P07 change -> P08-P12 each carry it (``_Site``'s default declares
+    P01-P12; P12 has no Assertion Run at all, let alone a signed one, yet
+    still carries the text: the stamp follows every declared later Regular
+    period, not only the signed ones ``_mark_latest_signed`` reaches)."""
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9, signoff="Not Signed Off"))
+    text = "TB TBS-ZZA-2025-7 cancelled"
+    marked = _record(site, 2025, 7, text=text)
+    assert "RUN-9" not in marked, marked  # unsigned: never in _mark_latest_signed's reach
+    carried = "Balance carried from FY2025 P07: %s" % text
+    for fp in range(8, 13):
+        dc = _call(site, "data_change", 2025, fp)
+        assert dc == {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
+                      "data_change": carried}, (fp, dc)
+    # P07's own row keeps the real text, never the carried wording.
+    assert _call(site, "data_change", 2025, 7)["data_change"] == text
+
+
+def test_an_unsigned_later_period_with_a_stale_run_is_blocked_by_a66():
+    """The carried stamp above feeds straight into signoff_model's own A66
+    rule: a P09 check run that STARTED before the carried change is
+    blocked, naming the carried text -- even though P09 was never signed,
+    so _mark_latest_signed never touched it. A run that started AFTER the
+    change is not blocked."""
+    site = _Site()
+    text = "TB TBS-ZZA-2025-7 cancelled"
+    _record(site, 2025, 7, text=text)
+    change = _call(site, "data_change", 2025, 9)
+    data_change_problem = _pure_signoff_model().data_change_problem
+    problem = data_change_problem(CHANGED_AT - timedelta(minutes=5), change)
+    assert problem is not None, change
+    assert problem["code"] == "started_before_change", problem
+    assert "Balance carried from FY2025 P07" in problem["what"], problem
+    assert text in problem["what"], problem
+    assert data_change_problem(CHANGED_AT + timedelta(minutes=5), change) is None
+
+
+def test_a_later_periods_own_newer_change_is_never_overwritten_by_a_carried_one():
+    """record_data_change's docstring: write the carried text only when it
+    is NEWER than the row's own data_changed_at -- a later period's own,
+    newer change (its own data, not merely a carried balance) survives an
+    earlier period's carried stamp. A period with no change of its own
+    still carries it."""
+    site = _Site()
+    newer_at = CHANGED_AT + timedelta(days=1)
+    own_change = {"data_changed_at": newer_at, "data_changed_by": "other@example.com",
+                  "data_change": "TB TBS-ZZB-2025-10 cancelled"}
+    site.data_changes[(2025, 10)] = dict(own_change)
+    _record(site, 2025, 7, text="TB TBS-ZZA-2025-7 cancelled")
+    assert _call(site, "data_change", 2025, 10) == own_change, (
+        _call(site, "data_change", 2025, 10))
+    assert _call(site, "data_change", 2025, 11)["data_change"] == (
+        "Balance carried from FY2025 P07: TB TBS-ZZA-2025-7 cancelled")
 
 
 def test_the_period_json_has_the_three_read_only_fields_in_the_close_section():
@@ -1159,3 +1491,162 @@ def test_intercompany_returns_the_stubbed_summary_and_records_the_call():
     result = _call(site, "intercompany", 2025, 10)
     assert result == site.ic_summary
     assert site.ic_calls == [(2025, 10)], site.ic_calls
+
+
+# --- N43t: the stub site declares the two statement accounts, for N45 -------
+
+
+def test_statement_accounts_are_declared_on_the_stub_site():
+    site = _Site()
+    assert site.settings["statement_cta_account"] == "3300"
+    assert site.settings["statement_result_account"] == "3100"
+    accounts = {row["name"]: row for row in site.records["Main Account"]}
+    assert set(accounts) == {"3300", "3100"}
+    for code in ("3300", "3100"):
+        assert accounts[code]["is_group"] == 0, code
+        assert accounts[code]["status"] == "Published", code
+        assert accounts[code]["statement_section"] == "Balance Sheet", code
+
+
+# --- N45: an undeclared or invalid statement account is a setup gap --------
+
+
+def test_undeclared_statement_accounts_block_sign_off():
+    site = _Site()
+    site.settings["statement_cta_account"] = ""
+    site.settings["statement_result_account"] = ""
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    codes = [g["code"] for g in problems["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared"], codes
+    # N45b: the Main Account read now always runs once (not "only when a
+    # code is set") because the BS heading-side check needs the whole
+    # chart whatever the CTA/result state is.
+    main_account_reads = [c for c in site.get_all_calls if c[0] == "Main Account"]
+    assert len(main_account_reads) == 1, main_account_reads
+    message = _blocked(site)
+    assert "Declare the CTA account in Close Settings" in message, message
+    assert "Declare the current-year result account in Close Settings" in message, message
+
+
+def test_declared_valid_statement_accounts_are_no_gap_and_read_main_account_once():
+    site = _Site()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "statement_accounts_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+    main_account_reads = [c for c in site.get_all_calls if c[0] == "Main Account"]
+    assert len(main_account_reads) == 1, main_account_reads
+
+
+def test_an_invalid_statement_account_is_a_gap_too():
+    # N41's rule, not "set means declared": a heading cannot hold the CTA
+    # even though it is set.
+    site = _Site()
+    site.records["Main Account"] = [
+        {"name": "3300", "is_group": 1, "status": "Published",
+         "statement_section": "Balance Sheet", "account_name": "EQUITY"},
+        {"name": "3100", "is_group": 0, "status": "Published",
+         "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+         "parent_account": "3300"},
+    ]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["statement_accounts_undeclared"], \
+        problems["config_gaps"]
+    message = _blocked(site)
+    assert "3300 cannot hold the CTA: it is a heading." in message, message
+
+
+def test_the_statement_gap_follows_the_policy_gaps_and_precedes_the_tolerance_gap():
+    site = _Site()
+    site.settings["self_approval"] = ""
+    site.settings["statement_cta_account"] = ""
+    site.settings["statement_result_account"] = ""
+    site.ic_tolerance_gap = {
+        "code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>",
+    }
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["self_approval_undeclared", "statement_accounts_undeclared",
+                      "ic_tolerance_undeclared"], codes
+
+
+# --- N45b: an undeclared BS heading side is part of the statement setup gap --
+
+
+def _bs_heading(code, name, side=None):
+    row = {"name": code, "is_group": 1, "status": "Published",
+           "statement_section": "Balance Sheet", "account_name": name}
+    if side is not None:
+        row["normal_balance"] = side
+    return row
+
+
+def _pl_heading(code, name, side=None):
+    row = {"name": code, "is_group": 1, "status": "Published",
+           "statement_section": "Profit and Loss", "account_name": name}
+    if side is not None:
+        row["normal_balance"] = side
+    return row
+
+
+def test_undeclared_bs_heading_sides_are_part_of_the_statement_gap():
+    # Mirrors live: ASSETS/LIABILITIES/EQUITY all blank (coordinator call
+    # W4-E22, #305-W4-2 2a-ii) — same rule as statement_model._bs_heading_sides,
+    # never re-derived here.
+    site = _Site()
+    site.records["Main Account"] += [
+        _bs_heading("1000", "ASSETS"),
+        _bs_heading("2000", "LIABILITIES"),
+        _bs_heading("3000", "EQUITY"),
+    ]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    codes = [g["code"] for g in problems["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared"], codes
+    message = _blocked(site)
+    assert "statement_heading_side_undeclared" in message, message
+    assert "1000" in message and "2000" in message and "3000" in message, message
+
+
+def test_only_the_undeclared_bs_heading_sides_are_named():
+    site = _Site()
+    site.records["Main Account"] += [
+        _bs_heading("1000", "ASSETS", side="Debit"),
+        _bs_heading("2000", "LIABILITIES"),
+        _bs_heading("3000", "EQUITY"),
+    ]
+    message = _blocked(site)
+    assert "2000" in message and "3000" in message, message
+    assert "1000" not in message, message
+
+
+def test_pl_headings_are_never_checked_for_a_side():
+    site = _Site()
+    site.records["Main Account"] += [_pl_heading("9000", "INCOME")]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "statement_accounts_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+
+
+def test_declared_bs_heading_sides_are_no_gap():
+    site = _Site()
+    site.records["Main Account"] += [
+        _bs_heading("1000", "ASSETS", side="Debit"),
+        _bs_heading("2000", "LIABILITIES", side="Credit"),
+        _bs_heading("3000", "EQUITY", side="Credit"),
+    ]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "statement_accounts_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+    main_account_reads = [c for c in site.get_all_calls if c[0] == "Main Account"]
+    assert len(main_account_reads) == 1, main_account_reads
+
+
+def test_a_heading_side_problem_joins_an_existing_statement_accounts_problem():
+    # Both problems land in the SAME gap (one statement setup gap, not two).
+    site = _Site()
+    site.settings["statement_cta_account"] = ""
+    site.records["Main Account"] += [_bs_heading("2000", "LIABILITIES")]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    codes = [g["code"] for g in problems["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared"], codes
+    message = _blocked(site)
+    assert "Declare the CTA account in Close Settings" in message, message
+    assert "statement_heading_side_undeclared" in message and "2000" in message, message

@@ -62,6 +62,13 @@ sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
 counts every item; another screen counts the items whose action opens it.
 Read-only.
 
+F02: the approvals screen is the one exception. ``approvals_item`` is a single
+My work item for the whole approvals queue (A11), so counting items whose
+action opens "approvals" always gives 0 or 1. The approvals badge instead
+carries the queue's own count (``approvals_api.queue_for(...)["waiting"]["count"]``),
+passed to ``_counts`` as a ``screen_counts`` override — the single source of
+truth the approvals screen itself reads.
+
 A53: every period item's ``period`` carries ``since`` — the ISO end date of
 that period ("how long this period has been over"), so the screen can show an
 age. A period row with no end date is a configuration problem and raises;
@@ -105,10 +112,10 @@ ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", 
 
 #: Screens each persona sees, in order; mirrors close-ui/src/nav.js SCREENS_BY_PERSONA.
 SCREENS = {
-    period_model.CLOSE_LEAD: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"),
-    period_model.GROUP_ACCOUNTANT: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"),
+    period_model.CLOSE_LEAD: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "numbers", "sign-off", "audit-trail"),
+    period_model.GROUP_ACCOUNTANT: ("my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "numbers", "sign-off", "audit-trail"),
     period_model.ENTITY_ACCOUNTANT: ("my-work", "trial-balances"),
-    period_model.VIEWER: ("trial-balances", "intercompany", "rates", "period", "adjustments", "approvals", "checks", "sign-off", "audit-trail"),
+    period_model.VIEWER: ("trial-balances", "intercompany", "rates", "period", "adjustments", "approvals", "checks", "numbers", "sign-off", "audit-trail"),
 }
 MY_WORK = "my-work"
 REGULAR = "Regular"
@@ -232,13 +239,22 @@ def _gap_facts(first_close, persona, allowed):
     frequency_missing = [e for e, f in leaves.items() if e in in_scope and not f]
     ownership_missing = list(uncovered)
     group = persona != period_model.ENTITY_ACCOUNTANT
+    policy_gaps = close_policy_model.policy_gaps(*_policies()) if group else []
+    if group:
+        # konsol#305-W4-1 1c: an undeclared/invalid statement account is a
+        # setup gap, resolved through the same _POLICY_GAPS lookup as the
+        # other policy gaps (mywork_model). Entity Accountants never see it:
+        # they cannot declare Close Settings.
+        statement_gap = signoff_gate.statement_gap()
+        if statement_gap is not None:
+            policy_gaps = policy_gaps + [statement_gap]
     return {
         "first_close": first_close,
         "chart_published": bool(group_chart.chart_accounts()),
         "frequency_missing": sorted(frequency_missing) if group else _mine(frequency_missing, allowed),
         "ownership_missing": sorted(ownership_missing) if group else _mine(ownership_missing, allowed),
         "accountants_without_entities": _accountants_without_entities() if group else [],
-        "policy_gaps": close_policy_model.policy_gaps(*_policies()) if group else [],
+        "policy_gaps": policy_gaps,
         "ic_accounts_gap": ic_api.setup_gap() if group else None,
         "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
     }, uncovered
@@ -362,13 +378,18 @@ def _period_facts(first_close, allowed, today):
 
 # --- counts ----------------------------------------------------------------------
 
-def _counts(items, persona):
+def _counts(items, persona, screen_counts=None):
+    """``screen_counts`` overrides a screen's displayed ``count`` (F02: the
+    approvals screen is one My work item for the whole approvals queue, so
+    its badge must be the queue's real size, never the number of My work
+    items pointing at it — which is always 0 or 1)."""
     counts = {kind: sum(1 for i in items if i["kind"] == kind) for kind in mywork_model.KINDS}
+    screen_counts = screen_counts or {}
     by_screen = {}
     for screen in SCREENS[persona]:
         on = items if screen == MY_WORK else [
             i for i in items if (i.get("action") or {}).get("screen") == screen]
-        by_screen[screen] = {"count": len(on),
+        by_screen[screen] = {"count": screen_counts.get(screen, len(on)),
                              "blocking": sum(1 for i in on if i["kind"] == "blocking")}
     counts["by_screen"] = by_screen
     return counts
@@ -407,10 +428,13 @@ def get_my_work():
                 ic_api.open_fixes(sorted(per_period)), per_period, allowed))
         if persona == period_model.CLOSE_LEAD:
             items.extend(extra)
+    screen_counts = {}
     if persona == period_model.CLOSE_LEAD:
         # A12: the approvals queue does not depend on the first close, so this
         # sits outside the block above. A queue failure is not swallowed.
         waiting = approvals_api.queue_for(frappe.session.user, roles)["waiting"]
+        # F02: the badge is the queue's own count, not a count of My work items.
+        screen_counts["approvals"] = int(waiting["count"])
         approvals_item = mywork_model.approvals_item(waiting)
         if approvals_item is not None:
             items.append(approvals_item)
@@ -422,4 +446,5 @@ def get_my_work():
                                    for row in sent_back_rows) else {}
     items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
     items = mywork_model.rank(items)
-    return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}
+    return {"items": items, "counts": _counts(items, persona, screen_counts),
+            "entities_assigned": entities_assigned}

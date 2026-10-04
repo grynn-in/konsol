@@ -473,3 +473,136 @@ def test_published_must_be_a_non_negative_int():
             except ValueError:
                 continue
             raise AssertionError("published=%r must raise ValueError" % (bad,))
+
+
+# --- statement_accounts / statement_account_problems ------------------------
+# (#305-W4-1 option 1c, N41): the declared CTA account and current-year result
+# account, and the one setup gap when either is missing or unusable.
+
+def _account(is_group=0, status="Published", statement_section="Balance Sheet",
+             account_name="Acct", parent_account="3"):
+    return {
+        "is_group": is_group,
+        "status": status,
+        "statement_section": statement_section,
+        "account_name": account_name,
+        "parent_account": parent_account,
+    }
+
+
+def test_statement_accounts_both_blank_gives_both_none_and_one_gap():
+    chart = {
+        "3100": _account(account_name="Retained earnings"),
+        "3300": _account(account_name="AOCI — CTA"),
+    }
+    result = M.statement_accounts("", "", chart)
+    assert result["cta_account"] is None
+    assert result["result_account"] is None
+    assert result["gap"]["code"] == M.STATEMENT_ACCOUNTS_UNDECLARED
+    assert "unmatched residual" in result["gap"]["message"]
+
+
+def test_statement_accounts_blank_never_defaults_to_a_chart_account():
+    """Failure path: even though the fixture chart has 3100 and 3300, a blank
+    declaration is never guessed from the chart (no policy defaults)."""
+    import json
+    chart = {
+        "3100": _account(account_name="Retained earnings"),
+        "3300": _account(account_name="AOCI — CTA"),
+    }
+    result = M.statement_accounts("", "", chart)
+    assert result["cta_account"] is None and result["result_account"] is None
+    dumped = json.dumps(result)
+    assert "3100" not in dumped and "3300" not in dumped
+
+
+def test_statement_accounts_both_declared_and_valid_has_no_gap():
+    chart = {"3100": _account(), "3300": _account()}
+    result = M.statement_accounts("3300", "3100", chart)
+    assert result == {"cta_account": "3300", "result_account": "3100", "gap": None}
+
+
+def test_statement_accounts_a_heading_cta_is_refused_but_a_valid_result_still_counts():
+    """Failure path: partial is honoured — the valid result account still
+    resolves even though the CTA is invalid."""
+    chart = {"3": _account(is_group=1), "3100": _account()}
+    result = M.statement_accounts("3", "3100", chart)
+    assert result["cta_account"] is None
+    assert result["result_account"] == "3100"
+    assert result["gap"] is not None
+    assert "3" in result["gap"]["message"] and "heading" in result["gap"]["message"]
+
+
+def test_statement_accounts_a_draft_cta_is_refused():
+    """Failure path: a Draft (not Published) account is unusable."""
+    chart = {"3300": _account(status="Draft")}
+    result = M.statement_accounts("3300", "", chart)
+    assert result["cta_account"] is None
+    assert "not Published" in result["gap"]["message"]
+
+
+def test_statement_accounts_a_profit_and_loss_cta_is_refused():
+    """Failure path: a Profit and Loss account cannot hold a balance-sheet
+    plug."""
+    chart = {"4100": _account(statement_section="Profit and Loss")}
+    result = M.statement_accounts("4100", "", chart)
+    assert result["cta_account"] is None
+    assert "Profit and Loss" in result["gap"]["message"]
+
+
+def test_statement_accounts_the_same_code_twice_gives_both_none_and_says_they_must_differ():
+    """Failure path: declaring one account for both roles is refused."""
+    chart = {"3300": _account()}
+    result = M.statement_accounts("3300", "3300", chart)
+    assert result["cta_account"] is None
+    assert result["result_account"] is None
+    assert "differ" in result["gap"]["message"]
+
+
+def test_statement_accounts_a_leaf_with_no_heading_is_refused():
+    """S3 (#305-W4-4): a Published BS leaf with a blank parent_account (live:
+    account 99) resolves to no heading in the statement, so it must be
+    refused rather than silently balancing the residual."""
+    chart = {"99": _account(parent_account=""), "3100": _account()}
+    result = M.statement_accounts("99", "3100", chart)
+    assert result["cta_account"] is None
+    assert result["result_account"] == "3100"
+    assert result["gap"] is not None
+    assert "99" in result["gap"]["message"]
+    assert "heading" in result["gap"]["message"]
+
+
+def test_statement_accounts_a_missing_parent_account_key_is_also_refused():
+    """A caller's Main Account read that omits the ``parent_account`` field
+    entirely must read the same as a blank one (fail closed, not open)."""
+    row = _account()
+    del row["parent_account"]
+    chart = {"99": row}
+    result = M.statement_accounts("99", "", chart)
+    assert result["cta_account"] is None
+    assert "heading" in result["gap"]["message"]
+
+
+def test_statement_account_problems_a_leaf_with_no_heading_is_one_problem():
+    chart = {"99": _account(parent_account="")}
+    problems = M.statement_account_problems("99", "", chart)
+    assert len(problems) == 1
+    assert "heading" in problems[0]
+
+
+def test_statement_account_problems_blank_is_allowed():
+    """Blank is undeclared, reported elsewhere as a gap, never a SAVE
+    problem."""
+    assert M.statement_account_problems("", "", {}) == []
+
+
+def test_statement_account_problems_a_heading_is_one_problem():
+    chart = {"3": _account(is_group=1)}
+    problems = M.statement_account_problems("3", "", chart)
+    assert len(problems) == 1
+
+
+def test_statement_account_problems_the_same_code_twice_is_one_problem():
+    chart = {"3300": _account()}
+    problems = M.statement_account_problems("3300", "3300", chart)
+    assert len(problems) == 1

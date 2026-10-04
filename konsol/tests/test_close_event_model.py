@@ -243,6 +243,42 @@ def test_ic_sent_back_fiscal_period_zero_is_named():
     _field_named(M.event_problems(event), "fiscal_period")
 
 
+# --- commentary_saved (konsol#305 M41, #305-W4-6) -----------------------------------
+
+def _commentary_saved_detail():
+    return {
+        "consolidation_group": "GRP",
+        "heading": "4",
+        "heading_name": "NET SALES",
+        "text": "Volume down 4%",
+    }
+
+
+def test_commentary_saved_is_a_declared_kind_not_reason_required():
+    assert "commentary_saved" in M.KINDS
+    assert "commentary_saved" not in M.REASON_REQUIRED
+
+
+def test_a_clean_commentary_saved_event_with_no_reason_gives_no_problems():
+    event = _event(
+        kind="commentary_saved",
+        entity=None,
+        detail=_commentary_saved_detail(),
+    )
+    assert M.event_problems(event) == []
+
+
+def test_commentary_saved_fiscal_period_zero_is_named():
+    # Not a year kind: fiscal_period must not be 0.
+    event = _event(
+        kind="commentary_saved",
+        entity=None,
+        detail=_commentary_saved_detail(),
+        fiscal_period=0,
+    )
+    _field_named(M.event_problems(event), "fiscal_period")
+
+
 # --- module hygiene ----------------------------------------------------------------
 
 def test_module_imports_no_frappe():

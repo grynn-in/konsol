@@ -4,6 +4,34 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (4 Oct): konsol#305 Delivery 2 wave 4 (E8 Numbers & commentary) is merged as konsol #326 (249b10e). Post-wave-3 fixes merged as #325.** Deepak decided W4-1..8 plus three follow-ups, all ★, recorded on #305 (issuecomment-5978518120, -5978983396). Claude's own calls are recorded in `archive/konsol-305-d2/rows-w4.md` and `tasks.md`.
+- **Numbers** (`…/numbers`): a consolidated P&L and BS for a period.
+  - Signs: P&L shows income positive and costs in brackets; on the BS, assets, liabilities and equity all show positive. Each heading's side comes from Main Account `normal_balance`.
+  - CTA and the current-year result appear as "of which" lines under their declared accounts. An "Unmatched residual" line shows if the BS does not balance.
+  - A "not included" chip lists entities in scope that are missing from the warehouse.
+  - A heading opens a drill: entity, IC elimination, CTA, top-side and deal rows, then accounts, then the source TB or journals. Totals are compared unrounded, and any difference shows as a visible rounding row.
+  - Commentary is kept per heading per period (Statement Commentary doctype, versioned, cannot be deleted, writes a `commentary_saved` event). It is refused once a period is Closed. Sign-off lists the headings that have no commentary.
+- **Re-sign (R2b widened, W4-4):**
+  - Any approval, cancel or reversal of the 7 approval doctypes after sign-off voids that period's signature and every later signed one.
+  - Later period rows record "Balance carried from…", so a stale check run there cannot be signed.
+  - TB Submission and TB Exception follow the same rule.
+- **Before/after per heading** for unapproved journals, on Adjustments and in the Approvals detail.
+- **Upgrade, in this order:**
+  1. Migrate. Until then `get_signoff` returns 500 and the sign-off gate throws, because the new table and Close Settings fields do not exist yet.
+  2. Set `normal_balance` on each BS heading: Debit for assets, Credit for liabilities and equity.
+  3. Declare the CTA account and the current-year result account in Close Settings. Each must be a Published BS leaf under a heading.
+  4. Expect voiding: Closed or Locked later periods need a reopen to re-sign, and a submit dated after the last declared period now fails.
+- **Local test stack, 4 Oct.**
+  - Deepak authorised (memory local-test-stack-authority): on this test site Claude may change almost anything.
+  - What is now in place: merged code hot-copied, Statement Commentary table created, headings 1 Debit and 2/3 Credit, CTA 3300 and result 3100 declared, stray zz_* scripts and `konsol/close/close/` deleted.
+  - Left in the containers (not ours): old bundle chunks, konsol_exec files, and the allocation doctype in the worker.
+- **Data (konsolidat#254):**
+  - FY2025 movements on live are not credible.
+  - Every FY2010–2024 P13 is the exact negation of P12, so a cumulative BS resets each year.
+  - 265 in-scope entities are missing from the warehouse entity layer.
+- **Also pending:** konsolidat#245 option D is with konsol-50. My half (journal-line dimensions UI) is on branch `k245-journal-ui`; it must merge after konsol-50's `k245-journal-dimensions`, and D05 is still owed.
+- **Next, not planned:** D2 P2 stories (1.5 Remind, 5.4 IC Balance screen, 6.5 auto-reversals, 8.6 budget) and D1 A39/A44.
+
 **Update (3 Oct): konsol#305 Delivery 2, wave 3 (E5 intercompany, E6 adjustments and approvals), is merged: konsol #323 (062b421) and konsolidat #253 (bb0307e).** Deepak decided W3-1..8 on #305, all ★. Claude's own calls (W3-P1..P9, E5-P*, E6-P*, the A07 owner check, the A18 save block) are recorded on their rows in `archive/konsol-305-d2/tasks.md`.
 - **Intercompany** (`…/intercompany`):
   - The screen shows pairs, a side panel and Send back, which writes an `ic_sent_back` Close Event.

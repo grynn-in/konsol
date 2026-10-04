@@ -31,6 +31,7 @@ class CloseSettings(Document):
         self.validate_first_close_locked()
         self.validate_policies()
         self.validate_intercompany_declaration()
+        self.validate_statement_accounts()
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank
@@ -128,5 +129,32 @@ class CloseSettings(Document):
             "WHERE `status` = 'Published' FOR UPDATE")[0][0]
         problems = close_policy_model.intercompany_declaration_problems(
             declaration, int(published))
+        if problems:
+            frappe.throw("<br>".join(problems))
+
+    def validate_statement_accounts(self):
+        """konsol#305-W4-1 option 1c: no default. Blank stays undeclared
+        (reported elsewhere as close_policy_model.statement_accounts' one
+        setup gap, never defaulted). A save naming an account that cannot
+        hold the role, or the same account for both roles, is refused with
+        close_policy_model's sentence. Not locked after a signed period
+        (unlike validate_first_close_locked): these fields change
+        presentation, not numbers, and the Single's track_changes is the
+        record."""
+        cta = self.statement_cta_account
+        result = self.statement_result_account
+        if not cta and not result:
+            return
+        codes = [c for c in (cta, result) if c]
+        rows = {
+            r["name"]: r
+            for r in frappe.get_all(
+                "Main Account",
+                filters={"name": ["in", codes]},
+                fields=["name", "is_group", "status", "statement_section", "account_name",
+                        "parent_account"],
+            )
+        }
+        problems = close_policy_model.statement_account_problems(cta, result, rows)
         if problems:
             frappe.throw("<br>".join(problems))

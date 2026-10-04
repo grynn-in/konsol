@@ -162,7 +162,15 @@ doc_events = {
 # konsol#305-D2-3 (R5): the self-approval policy on every approval doctype.
 # "*" because the doctype list lives in one place,
 # close_policy_model.APPROVAL_DOCTYPES; the hook ignores every other doctype.
-doc_events["*"] = {"before_submit": "konsol.close.self_approval.check", "on_cancel": "konsol.close.cancel_event.record"}
+# S42 (#305-W4-4 4c): the data-change hook runs on every submit, and (second,
+# after the cancel event, so its approval_cancelled event precedes the void)
+# on every cancel. Frappe runs a list of handlers per event, in order
+# (frappe.append_hook).
+doc_events["*"] = {
+    "before_submit": "konsol.close.self_approval.check",
+    "on_submit": "konsol.close.data_change_hook.on_submit",
+    "on_cancel": ["konsol.close.cancel_event.record", "konsol.close.data_change_hook.on_cancel"],
+}
 
 # ---------------------------------------------------------------------------
 # Entity-scoped access (#91)

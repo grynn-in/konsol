@@ -12,6 +12,7 @@ test_close_checks_api.py, copied, not imported). The real P07 hook
 `submit()` runs the hook, so "Allowed with reason" with and without a reason is
 decided by the product's code, not by a copy.
 """
+import datetime
 import importlib.util
 import os
 import sys
@@ -23,6 +24,7 @@ HOOK_PY = os.path.join(APP_DIR, "close", "self_approval.py")
 MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 EVENT_MODEL_PY = os.path.join(APP_DIR, "close", "close_event_model.py")
 WRITER_PY = os.path.join(APP_DIR, "close", "close_event.py")
+APPROVALS_MODEL_PY = os.path.join(APP_DIR, "close", "approvals_model.py")
 
 LEAD = "zz-lead@example.com"
 ANALYST = "zz-analyst@example.com"
@@ -41,7 +43,7 @@ class _Flags(dict):
 class _Site:
     def __init__(self, roles=("EPM Admin",), user=LEAD, owner=LEAD, policy=ALLOWED,
                  workflows=WORKFLOW_DOCTYPES, versions=(), run_hook=True, record_raises=None,
-                 fields=None, period_raises=None):
+                 fields=None, period_raises=None, modified=None, rejections=()):
         self.roles = set(roles)
         self.run_hook = run_hook  # False: submit() does not run the P07 hook
         self.record_raises = record_raises  # the stub writer raises this
@@ -56,6 +58,9 @@ class _Site:
         self.owner = owner
         self.policy = policy
         self.workflows = set(workflows)
+        self.modified = modified  # F01: doc.modified, read by approve's sent-back check
+        self.rejections = list(rejections)  # F01: canned Close Event rows latest_rejections reads
+        self.close_event_reads = []  # F01: (filters,) recorded by get_all("Close Event", ...)
         self.only_for_calls = []
         self.get_doc_calls = []
         self.workflow_reads = []
@@ -98,6 +103,7 @@ def _frappe(site):
             self.owner = site.owner
             self.docstatus = 0
             self.status = None
+            self.modified = site.modified
             self.flags = types.SimpleNamespace()
             # A Frappe document has every field of its doctype; blank unless given.
             self.data_area_id = self.acquired_entity = self.disposed_entity = None
@@ -125,6 +131,12 @@ def _frappe(site):
         return _Doc(doctype, name)
 
     def get_all(doctype, filters=None, fields=None, **k):
+        if doctype == "Close Event":
+            # F01: close_event.latest_rejections's own read; the stub returns
+            # the canned rows as-is (the real function keeps the newest per
+            # name), proving the filter sent rather than re-filtering here.
+            site.close_event_reads.append(dict(filters))
+            return [dict(r) for r in site.rejections]
         assert doctype == "Version", doctype
         names = list(filters["docname"][1])
         site.version_reads.append((filters["ref_doctype"], names))
@@ -238,7 +250,8 @@ def _call(site, fn, *args, **kwargs):
     saved = {n: sys.modules.get(n) for n in
              names + ["frappe", "frappe.model", "frappe.model.workflow",
                       "konsol.close.close_policy_model", "konsol.close.self_approval",
-                      "konsol.close.close_event", "konsol.close.close_event_model"]}
+                      "konsol.close.close_event", "konsol.close.close_event_model",
+                      "konsol.close.approvals_model"]}
     sys.modules.update(mods)
     try:
         sys.modules["konsol.close.close_event"] = writer
@@ -252,6 +265,11 @@ def _call(site, fn, *args, **kwargs):
         sys.modules["konsol.close.self_approval"] = self_approval
         mods["konsol.close"].self_approval = self_approval
         hook["check"] = self_approval.check
+        # F01: the real, pure approvals_model (its own is_sent_back), loaded
+        # by path like the others above.
+        approvals_model = _load_by_path("konsol.close.approvals_model", APPROVALS_MODEL_PY)
+        sys.modules["konsol.close.approvals_model"] = approvals_model
+        mods["konsol.close"].approvals_model = approvals_model
         module = _load_by_path("close_approval_api_under_test", API_PY)
         return getattr(module, fn)(*args, **kwargs), frappe
     finally:
@@ -606,7 +624,63 @@ def test_approve_does_not_call_the_writer_in_its_source():
     approve = next(n for n in tree.body
                    if isinstance(n, ast.FunctionDef) and n.name == "approve")
     calls = [ast.unparse(n.func) for n in ast.walk(approve) if isinstance(n, ast.Call)]
-    assert not [c for c in calls if "close_event" in c or c.endswith("record")], calls
+    # F01 reads close_event.latest_rejections (a read); it must still never
+    # call the writer, close_event.record.
+    assert "close_event.record" not in calls, calls
     reject = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "reject")
     calls = [ast.unparse(n.func) for n in ast.walk(reject) if isinstance(n, ast.Call)]
     assert "close_event.record" in calls, calls
+
+
+# --- F01 (S7): approve refuses a sent-back draft with no active workflow ----------
+
+def test_approve_refuses_a_rejected_unchanged_draft_with_no_workflow():
+    # The failure path: nothing is submitted and no Close Event is written.
+    rejected_at = datetime.datetime(2026, 10, 1, 9, 0, 0)
+    modified = datetime.datetime(2026, 9, 30, 8, 0, 0)  # before the rejection
+    site = _Site(owner=ANALYST, modified=modified,
+                 rejections=[{"reference_name": "ZZ-GER-1", "actor": LEAD,
+                              "at": rejected_at, "reason": "ZZ wrong rate"}])
+    msg = _raises(lambda: _call(site, "approve", "Group Exchange Rate", "ZZ-GER-1"),
+                  "ValidationError")
+    assert "ZZ wrong rate" in msg, msg
+    assert "save a change" in msg.lower(), msg
+    assert site.submitted == [] and site.applied == [] and site.events == []
+    call = site.close_event_reads[0]
+    assert call == {
+        "kind": "rejected",
+        "reference_doctype": "Group Exchange Rate",
+        "reference_name": ["in", ["ZZ-GER-1"]],
+    }, call
+
+
+def test_approve_works_once_the_preparer_has_edited_past_the_rejection():
+    rejected_at = datetime.datetime(2026, 10, 1, 9, 0, 0)
+    modified = datetime.datetime(2026, 10, 2, 8, 0, 0)  # after the rejection
+    site = _Site(owner=ANALYST, modified=modified,
+                 rejections=[{"reference_name": "ZZ-GER-1", "actor": LEAD,
+                              "at": rejected_at, "reason": "ZZ wrong rate"}])
+    out, _ = _call(site, "approve", "Group Exchange Rate", "ZZ-GER-1")
+    assert site.submitted == [("Group Exchange Rate", "ZZ-GER-1")]
+    assert out["docstatus"] == 1
+
+
+def test_approve_with_no_rejection_is_unaffected():
+    site = _Site(owner=ANALYST, modified=datetime.datetime(2026, 9, 1), rejections=[])
+    out, _ = _call(site, "approve", "Group Exchange Rate", "ZZ-GER-1")
+    assert site.submitted == [("Group Exchange Rate", "ZZ-GER-1")]
+    assert out["docstatus"] == 1
+
+
+def test_approve_of_a_workflow_doctype_ignores_rejection_timing():
+    # Workflow doctypes move the document to Draft on reject (A04); the
+    # sent-back refusal applies only where D2-8 leaves the draft in place.
+    rejected_at = datetime.datetime(2026, 10, 1, 9, 0, 0)
+    modified = datetime.datetime(2026, 9, 1, 8, 0, 0)  # before the rejection
+    site = _Site(owner=ANALYST, modified=modified,
+                 rejections=[{"reference_name": "ZZ-CJ-1", "actor": LEAD,
+                              "at": rejected_at, "reason": "ZZ wrong account"}])
+    out, _ = _call(site, "approve", "Consolidation Journal", "ZZ-CJ-1", reason="ZZ cover")
+    assert site.applied == [("Consolidation Journal", "ZZ-CJ-1", "Approve")]
+    assert site.close_event_reads == []
+    assert out["docstatus"] == 1

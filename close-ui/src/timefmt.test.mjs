@@ -21,11 +21,46 @@ async function load() {
   return import("./timefmt.js");
 }
 
-test("timefmt exports parseZoned, formatTime and userTimeZone", async () => {
+test("timefmt exports parseZoned, formatTime, userTimeZone and ageText", async () => {
   const m = await load();
-  for (const name of ["parseZoned", "formatTime", "userTimeZone"]) {
+  for (const name of ["parseZoned", "formatTime", "userTimeZone", "ageText"]) {
     assert.equal(typeof m[name], "function", `${name} is exported`);
   }
+});
+
+// --- F03: ageText — the one age rule for Approvals and My work -------------
+//
+// konsol#305 F03 (live: the same waiting item showed "16 days" on one
+// screen and "17 days" on the other). Age is the whole-calendar-day
+// difference in `timeZone`, never a floor of raw elapsed milliseconds —
+// that drifts by a day depending on what time of day `now` lands on.
+
+test("ageText: whole calendar days in the zone, not a floor of elapsed hours", async () => {
+  const { ageText } = await load();
+  // 23:50 on the 13th in London is still "the 13th" there. Flooring the raw
+  // elapsed milliseconds between this instant and 07:00 on the 29th gives
+  // only 15 full 24h periods; the calendar dates are 16 days apart.
+  assert.equal(
+    ageText("2026-09-13T23:50:00+01:00", new Date("2026-09-29T07:00:00Z"), "Europe/London"),
+    "16 days",
+  );
+});
+
+test("ageText: a bare YYYY-MM-DD date is read as a calendar date, no zone conversion", async () => {
+  const { ageText } = await load();
+  assert.equal(ageText("2026-09-13", new Date("2026-09-29T12:00:00Z"), "Europe/London"), "16 days");
+});
+
+test("ageText: today, 1 day, null and no negative age", async () => {
+  const { ageText } = await load();
+  assert.equal(ageText(null, new Date("2026-09-25T12:00:00Z"), "UTC"), null);
+  assert.equal(ageText(undefined, new Date("2026-09-25T12:00:00Z"), "UTC"), null);
+  assert.equal(ageText("2026-09-25T00:30:00Z", new Date("2026-09-25T23:00:00Z"), "UTC"), "today");
+  assert.equal(ageText("2026-09-24T23:50:00Z", new Date("2026-09-25T00:10:00Z"), "UTC"), "1 day");
+  // a value later than now's calendar date (clock skew, or a not-yet-ended
+  // period) renders nothing — never a negative count.
+  assert.equal(ageText("2026-09-26T00:00:00Z", new Date("2026-09-25T00:00:00Z"), "UTC"), null);
+  assert.equal(ageText("2026-10-01", new Date("2026-09-25T12:00:00Z"), "UTC"), null);
 });
 
 test("parseZoned accepts Z and +hh:mm / +hhmm offsets", async () => {
@@ -152,3 +187,19 @@ for (const [what, found] of DEFINITIONS) {
     assert.deepEqual(rel, ["timefmt.js"]);
   });
 }
+
+// --- F03: approvals.js and myWork.js both go through timefmt.js's ageText --
+//
+// Neither screen may keep its own copy of the day-math (that is how they
+// drifted apart: approvals.js floored elapsed milliseconds, myWork.js
+// diffed calendar dates). Both now import the one function from here.
+
+test("approvals.js imports ageText from timefmt.js", () => {
+  const source = fs.readFileSync(path.join(SRC_DIR, "approvals.js"), "utf8");
+  assert.match(source, /import\s*\{[^}]*\bageText\b[^}]*\}\s*from\s*["']\.\/timefmt\.js["']/);
+});
+
+test("myWork.js imports ageText from timefmt.js", () => {
+  const source = fs.readFileSync(path.join(SRC_DIR, "myWork.js"), "utf8");
+  assert.match(source, /import\s*\{[^}]*\bageText\b[^}]*\}\s*from\s*["']\.\/timefmt\.js["']/);
+});

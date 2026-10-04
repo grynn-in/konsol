@@ -36,15 +36,19 @@ Rules:
   not sent, never an invented age.
 """
 
-GAPS = ("first_close", "self_approval", "rate_move", "chart", "ic_accounts", "ic_tolerance",
-        "frequency", "ownership", "accountants")
+GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "chart", "ic_accounts",
+        "ic_tolerance", "frequency", "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
              "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap")
 
 #: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
+#: konsol#305-W4-1: the signoff_gate.statement_gap() result is appended to
+#: ``policy_gaps`` by the API layer (group personas only) and resolved here
+#: the same way, so one undeclared/invalid statement account is one item.
 _POLICY_GAPS = {
     "self_approval_undeclared": ("self_approval", "Self-approval policy not declared"),
     "rate_move_undeclared": ("rate_move", "Rate move threshold not declared"),
+    "statement_accounts_undeclared": ("statement_accounts", "Statement setup incomplete"),
 }
 
 

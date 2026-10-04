@@ -5,9 +5,23 @@
 // `gates{config_gaps, order, completeness, messages}`, `checks`,
 // `acknowledgements{names, total, unlisted}`, `on_behalf{labels, unknown}`,
 // `exceptions[]`, `covers`, `previous[]`.
+// U47: `commentary[]` (M46's key, story 9.1).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { summaryView, messageLines } from "./signoff.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// U47: M46's golden `commentary` payload — the real producer's output
+// (wave-4 lesson), never a hand-built dict.
+const GOLDEN_COMMENTARY = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "..", "..", "konsol", "tests", "fixtures", "close_signoff_commentary.json"),
+    "utf8",
+  ),
+);
 
 function gates(overrides = {}) {
   return {
@@ -49,6 +63,7 @@ function summary(overrides = {}) {
     exceptions: [],
     covers: [],
     previous: [],
+    commentary: [],
     ...overrides,
   };
 }
@@ -545,4 +560,53 @@ test("B33: failure path — no user zone is refused, never the machine's zone", 
   for (const zone of [null, undefined, ""]) {
     assert.throws(() => closedOnText("2026-09-25T20:28:32Z", now, zone), /time zone/);
   }
+});
+
+// --- konsol#305 U47: the sign-off summary's missing-commentary section ----
+
+test("U47: commentary section reads M46's golden payload, one row per group", () => {
+  const view = summaryView(summary({ commentary: GOLDEN_COMMENTARY }));
+  assert.deepEqual(view.commentary.rows, [
+    "ZZGRP: 0 of 2 headings commented · missing: NET SALES, OPERATING EXPENSES",
+  ]);
+  assert.equal(view.commentary.empty, false);
+});
+
+test("U47: a group with nothing missing reads with no · missing clause", () => {
+  const view = summaryView(
+    summary({ commentary: [{ consolidation_group: "ZZGRP", headings: 2, with_commentary: 2, missing: [] }] }),
+  );
+  assert.deepEqual(view.commentary.rows, ["ZZGRP: 2 of 2 headings commented"]);
+});
+
+test("U47: no groups reads as the section's own None row", () => {
+  const view = summaryView(summary({ commentary: [] }));
+  assert.deepEqual(view.commentary.rows, ["None"]);
+  assert.equal(view.commentary.empty, true);
+});
+
+test("U47: failure path — a missing commentary key throws (an older payload, never defaulted)", () => {
+  const s = summary({ commentary: GOLDEN_COMMENTARY });
+  delete s.commentary;
+  assert.throws(() => summaryView(s), /commentary/);
+});
+
+// R41j (U8): `signoff_api.py`'s `_commentary` always returns a list, never
+// null, and `result.update({..., "commentary": _commentary(key)})` sets it
+// unconditionally on every call — a literal `null` is as much a broken
+// contract as the key being absent, so it must throw too, never silently
+// read as an empty ("None") section.
+test("U47: failure path — a null commentary value throws, never reading as an empty section", () => {
+  assert.throws(() => summaryView(summary({ commentary: null })), /commentary/);
+});
+
+test("U47: failure path — commentary never changes the summary's action", () => {
+  const withGaps = summaryView(summary({ commentary: GOLDEN_COMMENTARY })).action;
+  const allCommented = summaryView(
+    summary({ commentary: [{ consolidation_group: "ZZGRP", headings: 2, with_commentary: 2, missing: [] }] }),
+  ).action;
+  const none = summaryView(summary({ commentary: [] })).action;
+  assert.equal(withGaps, "run_checks");
+  assert.equal(allCommented, "run_checks");
+  assert.equal(none, "run_checks");
 });

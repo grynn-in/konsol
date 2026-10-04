@@ -22,6 +22,15 @@ _ic_spec = importlib.util.spec_from_file_location("close_ic_under_test_for_mywor
 IC = importlib.util.module_from_spec(_ic_spec)
 _ic_spec.loader.exec_module(IC)
 
+# N47: close_policy_model is pure too; the statement-accounts gap fed into
+# policy_gaps is the REAL gap it returns, never a hand-built dict.
+_CPM_PATH = os.path.join(APP_DIR, "close", "close_policy_model.py")
+_cpm_spec = importlib.util.spec_from_file_location("close_policy_model_under_test_for_mywork", _CPM_PATH)
+CPM = importlib.util.module_from_spec(_cpm_spec)
+_cpm_spec.loader.exec_module(CPM)
+
+_STATEMENT_GAP = CPM.statement_accounts("", "", {})["gap"]
+
 
 def _facts(**over):
     facts = {
@@ -202,6 +211,32 @@ def test_missing_policy_gaps_fact_raises_not_guessed():
     del facts["policy_gaps"]
     with pytest.raises(ValueError, match="policy_gaps"):
         M.setup_gap_items(facts)
+
+
+# --- N47: the statement-accounts gap (konsol#305-W4-1 1c) ---------------------
+#
+# The API layer appends signoff_gate.statement_gap() to policy_gaps (group
+# personas only); this model resolves it through the same _POLICY_GAPS
+# lookup as self-approval and rate-move, so it is one item.
+
+
+def test_statement_accounts_gap_is_one_blocking_item_with_no_since():
+    items = M.setup_gap_items(_facts(policy_gaps=[_STATEMENT_GAP]))
+    assert [i["id"] for i in items] == ["gap:statement_accounts"]
+    item = items[0]
+    assert item["kind"] == "blocking"
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["since"] is None
+    assert item["detail"] == _STATEMENT_GAP["message"]
+    assert item["title"] == "Statement setup incomplete"
+
+
+def test_unknown_policy_gap_code_still_raises_not_silently_dropped():
+    # Failure path (the import/stub rule's sibling for product code): a code
+    # _POLICY_GAPS does not know is never swallowed.
+    with pytest.raises(KeyError):
+        M.setup_gap_items(_facts(policy_gaps=[{"code": "nonexistent_gap_code", "message": "x"}]))
 
 
 def test_first_close_missing_is_an_item_even_when_everything_else_is_fine():

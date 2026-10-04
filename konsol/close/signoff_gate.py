@@ -36,18 +36,40 @@ Reads the site and passes it through the pure models:
   entity: S1, E2-6): a trial balance or TB exception submitted or cancelled,
   or an amount basis set, changes the data a period's checks read. The
   period row's ``data_changed_at`` / ``data_changed_by`` / ``data_change``
-  are set (a direct row update: no EPM Fiscal Year validate runs), and the
-  period's latest signed run is marked "Re-sign Needed" through the same
-  writer, with ``affected_by`` = "<text> at <time> by <user>". History
-  periods (before the first close) and non-Regular periods are recorded but
-  never marked. ``entity``, when the caller names one, is passed to the
+  are set (a direct row update: no EPM Fiscal Year validate runs); every
+  LATER declared Regular period's own row is also stamped, with a carried
+  marker naming the source period, UNLESS that row already carries its own
+  newer change (R41k, review-w4-server.md S2 effect 3 — ``_stamp_carried_change``);
+  and the changed period's AND every later Regular period's latest signed
+  run is marked "Re-sign Needed" through the same writer, with
+  ``affected_by`` = "<text> at <time> by <user>". History periods (before
+  the first close) and non-Regular periods are recorded but never marked or
+  carried. ``entity``, when the caller names one, is passed to the
   ``signoff_voided`` Close Event the mark writes, so trail scoping hides a
   void whose reason names a hidden TB. ``sign_off_close`` refuses a run that
   did not start after ``data_changed_at`` (A65), through
-  ``signoff_model.data_change_problem`` (A66).
+  ``signoff_model.data_change_problem`` (A66) — which now also blocks an
+  UNSIGNED later period's stale check run, not only a signed one.
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
+- ``statement_accounts()`` / ``statement_gap()`` (#305-W4-1 1c, N45): the
+  declared CTA account and current-year result account, read from Close
+  Settings and resolved through ``close_policy_model.statement_accounts``;
+  plus, since N45b (#305-W4-2 2a-ii, coordinator call W4-E22), every
+  Published Balance Sheet heading whose ``normal_balance`` side is
+  undeclared, found through ``statement_model._bs_heading_sides`` — the
+  same rule the statement itself and the drill use, never re-derived here.
+  Both checks share one Main Account read (every row, not only the two
+  declared codes: the heading-side check must run whatever the CTA/result
+  state is). Either problem lands in the SAME gap
+  (``close_policy_model.STATEMENT_ACCOUNTS_UNDECLARED``), so My work and
+  readiness need no new gap label — they already show this one.
+  ``sign_off_problems`` appends ``statement_gap()`` to ``config_gaps``, right
+  after the two policy gaps and before the IC tolerance gap, when either
+  statement account is undeclared or unusable, or a BS heading's side is
+  undeclared (never defaulted).
 - ``sign_off_problems`` also appends ``ic_api.tolerance_gap()`` (C05) to
-  ``config_gaps``, right after the two policy gaps, when a consolidation
+  ``config_gaps``, right after the two policy gaps and the statement gap,
+  when a consolidation
   group node has not declared its intercompany difference tolerance
   (#305-W3-6; W3-P2). It costs 1-3 extra MariaDB reads per call (none once
   intercompany is not configured or declared not applicable), the same
@@ -67,7 +89,8 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import close_policy_model, ic_api, period_model, scope_model, signoff_model
+from konsol.close import (
+    close_policy_model, ic_api, period_model, scope_model, signoff_model, statement_model)
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
@@ -151,6 +174,71 @@ def _policies():
     )
 
 
+def _undeclared_bs_heading_sides(accounts):
+    """Every Published Balance Sheet heading in ``accounts`` (``{code:
+    {"is_group", "status", "statement_section", "normal_balance", ...}}``)
+    whose ``normal_balance`` is blank, or None when every one is declared.
+    Reuses ``statement_model._bs_heading_sides`` (N45b, #305-W4-2 2a-ii) —
+    the same rule the statement and the drill use for a BS heading's side —
+    rather than re-checking ``normal_balance`` here."""
+    bs_headings = sorted(
+        code for code, row in accounts.items()
+        if row.get("is_group") and row.get("status") == "Published"
+        and row.get("statement_section") == statement_model.BS
+    )
+    if not bs_headings:
+        return None
+    try:
+        statement_model._bs_heading_sides(bs_headings, accounts)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def statement_accounts():
+    """The declared CTA account and current-year result account
+    (konsol#305-W4-1 1c), read from Close Settings, resolved against their
+    Main Account rows through ``close_policy_model.statement_accounts``
+    (N41's rule; never defaulted); plus (N45b) every Published Balance Sheet
+    heading whose ``normal_balance`` side is undeclared
+    (``_undeclared_bs_heading_sides``). One Main Account read — every row,
+    not filtered to the two declared codes, since the heading-side check
+    must run whatever the CTA/result state is — serves both checks. A
+    heading-side problem lands in the SAME gap as an undeclared/invalid
+    CTA or result account (``close_policy_model.STATEMENT_ACCOUNTS_UNDECLARED``):
+    one statement setup gap, not two. N51 reuses this reader."""
+    cta_account = frappe.db.get_single_value("Close Settings", "statement_cta_account")
+    result_account = frappe.db.get_single_value("Close Settings", "statement_result_account")
+    accounts = {
+        r["name"]: r
+        for r in frappe.get_all(
+            "Main Account",
+            fields=["name", "is_group", "status", "statement_section", "account_name",
+                    "normal_balance", "parent_account"],
+            limit_page_length=0,
+        )
+    }
+    codes = [c for c in (cta_account, result_account) if c]
+    rows = {code: accounts[code] for code in codes if code in accounts}
+    declared = close_policy_model.statement_accounts(cta_account, result_account, rows)
+    heading_problem = _undeclared_bs_heading_sides(accounts)
+    if heading_problem:
+        gap = declared["gap"]
+        if gap is None:
+            gap = {"code": close_policy_model.STATEMENT_ACCOUNTS_UNDECLARED,
+                   "message": "", "problems": []}
+            declared["gap"] = gap
+        gap["problems"].append(heading_problem)
+        gap["message"] = " ".join(gap["problems"])
+    return declared
+
+
+def statement_gap():
+    """The one setup gap from ``statement_accounts()``, or None when both
+    statement accounts are declared and usable."""
+    return statement_accounts()["gap"]
+
+
 def _latest_runs():
     """The latest terminal Assertion Run per period (mirrors assertion_run.latest_close_run)."""
     # Imported here: assertion_run's sign-off will call this gate (A22).
@@ -195,6 +283,9 @@ def sign_off_problems(fiscal_year, fiscal_period):
     expected = signoff_model.expected_entities(frequencies, key, rows)
     gaps.extend(expected["gaps"])
     gaps.extend(close_policy_model.policy_gaps(*_policies()))
+    statement_problem = statement_gap()
+    if statement_problem:
+        gaps.append(statement_problem)
     tolerance = ic_api.tolerance_gap()
     if tolerance:
         gaps.append(tolerance)
@@ -302,6 +393,23 @@ def _mark_latest_signed(affected, affected_by, entity=None):
     return marked
 
 
+def _regular_periods_from(target, first):
+    """Every declared Regular period at or after ``target`` (a ``_key()``),
+    and at or after ``first`` (the first close key, or None) when it is
+    declared. Shared by a reopen (every later period, whatever its signoff
+    state — ``_mark_latest_signed`` only marks the signed ones) and a data
+    change (#305-W4-4 AMENDED 4 Oct: a cumulative balance sheet means a
+    change also affects every later signed period, not only the changed
+    one)."""
+    return {
+        _key(r["fiscal_year"], r["fiscal_period"])
+        for r in fiscal_calendar.fiscal_period_rows()
+        if r.get("period_type") == REGULAR
+        and _key(r["fiscal_year"], r["fiscal_period"]) >= target
+        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
+    }
+
+
 def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason, user):
     """Mark the latest signed run of the reopened Regular period
     (``fiscal_year``, ``fiscal_period``) and of every Regular period after it
@@ -309,13 +417,7 @@ def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason
     request commits or rolls back."""
     target = _key(fiscal_year, fiscal_period)
     first = _first_close()
-    affected = {
-        _key(r["fiscal_year"], r["fiscal_period"])
-        for r in fiscal_calendar.fiscal_period_rows()
-        if r.get("period_type") == REGULAR
-        and _key(r["fiscal_year"], r["fiscal_period"]) >= target
-        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
-    }
+    affected = _regular_periods_from(target, first)
     affected_by = "FY%d %s reopened on %s by %s: %s" % (
         target[0], period_code, frappe.utils.nowdate(), user, reason)
     return _mark_latest_signed(affected, affected_by)
@@ -345,23 +447,72 @@ def data_change(fiscal_year, fiscal_period):
     return {f: row.get(f) or None for f in DATA_CHANGE_FIELDS}
 
 
+def _stamp_carried_change(source_key, affected, text, user, at):
+    """Carry the data change onto every period in ``affected`` OTHER than
+    ``source_key`` (#305 R41k, review-w4-server.md S2 effect 3): a cumulative
+    balance sheet means ``data_change_problem`` (A66) must see the change on
+    a LATER period's own row too, whether or not that period has a signed
+    run for ``_mark_latest_signed`` (above) to void -- an unsigned later
+    period's own check run can start before the change and still be
+    refused only if its own row carries it.
+
+    Written as ``"Balance carried from FY<y> P<p>: <text>"``, so a reader of
+    that later period's own ``data_change`` never mistakes it for its own
+    data changing. Skipped for a period whose OWN ``data_changed_at`` is
+    already newer than ``at`` -- that period's own, real change (not a
+    carried balance) is never overwritten by an earlier period's carry."""
+    carried = "Balance carried from FY%d P%02d: %s" % (source_key[0], source_key[1], text)
+    for key in sorted(affected):
+        if key == source_key:
+            continue
+        row = _period_row(key, ("name",) + DATA_CHANGE_FIELDS)
+        existing_at = signoff_model._as_datetime(row.get("data_changed_at"))
+        if existing_at is not None and existing_at >= at:
+            continue
+        frappe.db.set_value(
+            "EPM Fiscal Year Period", row["name"],
+            {"data_changed_at": at, "data_changed_by": user, "data_change": carried},
+            update_modified=False,
+        )
+
+
 def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     """Record that the period's data changed (``text``, by ``user``, now) on
-    its EPM Fiscal Year Period row, and mark the period's latest signed run
-    "Re-sign Needed". Returns the marked run names.
+    its EPM Fiscal Year Period row, carry that change onto every LATER
+    Regular period's own row too, and mark the changed period's AND every
+    later Regular period's latest signed run "Re-sign Needed" (#305-W4-4
+    AMENDED 4 Oct, Deepak "all ★", #305 issuecomment-5978983396: a balance
+    sheet is cumulative, so a change to one period's data moves every later
+    period's balances too — not only the changed period's). Returns the
+    marked run names, one ``signoff_voided`` Close Event each
+    (``_mark_latest_signed``).
 
     A direct row update (``db.set_value`` on the child row), so no EPM Fiscal
     Year validate runs. No commit: the caller's request commits or rolls back.
-    A history period (before the first close) or a non-Regular period is
-    recorded but nothing is marked; with no first close declared, a Regular
-    period is marked (the mark errs toward re-signing, as on a reopen).
+    Only the changed period's own row gets the real ``text`` / ``data_change``
+    fields — that is the period whose data actually changed. Every LATER
+    declared Regular period's row (R41k, review-w4-server.md S2 effect 3 —
+    not only the ones ``_mark_latest_signed`` reaches, i.e. not only the
+    already-signed ones) instead gets a carried marker naming the source
+    period and the same text (``_stamp_carried_change``), UNLESS that later
+    row already carries its own newer ``data_changed_at`` — its own, real
+    change is never overwritten by an earlier period's carried balance. A
+    history period (before the first close) or a non-Regular period is
+    recorded but nothing is marked or carried, for the changed period or any
+    later one; with no first close declared, every later Regular period is
+    marked and carried (the mark errs toward re-signing, as on a reopen —
+    ``_regular_periods_from``). Shared by every caller: an approval doctype's
+    submit/cancel (S42) and the existing TB Submission / TB Exception callers
+    inherit the later-period marking and carrying with no change on their
+    side.
 
     ``entity`` (S1, E2-6): the entity whose data changed, when the caller can
     name one (a TB submit or cancel, a TB Exception, an amount basis set on
-    a TB). It is passed through to the ``signoff_voided`` Close Event, so a
-    reader scoped to other entities does not see why this period's signature
-    stopped counting. Blank (the default) when no single entity caused the
-    change.
+    a TB, or a NUMBER_DRIVING approval, S42). It is passed through to every
+    ``signoff_voided`` Close Event this call writes (the changed period's and
+    every later one's), so a reader scoped to other entities does not see
+    why a signature stopped counting. Blank (the default) when no single
+    entity caused the change.
     """
     key = _key(fiscal_year, fiscal_period)
     row = _period_row(key, ("name", "period_type"))
@@ -377,5 +528,7 @@ def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     if first is not None and key < first:
         return []
     affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
-    return _mark_latest_signed({key}, affected_by, entity=entity)
+    affected = _regular_periods_from(key, first)
+    _stamp_carried_change(key, affected, text, user, at)
+    return _mark_latest_signed(affected, affected_by, entity=entity)
 

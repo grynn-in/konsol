@@ -36,6 +36,9 @@ _SAFE_TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
 # `$`; that is pre-existing and filed separately.
 _TB_RAW_TABLE = "epm_raw.trial_balance_submissions"
 _TB_DIM_PREFIX = "dim_"
+#: The journal writes one row per line here (konsol#305 J05); option D gives
+#: it a column per Published Dimension ticked in_journal (konsolidat#245).
+_JOURNAL_STAGING_TABLE = "epm_staging.consolidation_adjustments"
 _SAFE_TB_DIM_COLUMN = re.compile(r"^dim_[a-z0-9_]+\Z")
 
 # ClickHouse type mapping for Cube types
@@ -201,6 +204,9 @@ def _apply_schema_steps():
         "vars_updated": False,
         "columns_added": [],
         "tb_dimension_columns_synced": [],
+        # Pre-seeded like its sibling: when step 2c raises, the key is present
+        # and empty rather than missing (PR #324 review, finding 7).
+        "journal_dimension_columns_synced": [],
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
@@ -234,6 +240,17 @@ def _apply_schema_steps():
         summary["errors"].append(f"TB dimension columns: {str(e)}")
         frappe.log_error(
             "schema_apply: TB dimension columns failed", frappe.get_traceback()
+        )
+
+    # 2c. The same for the journal's staging table (konsolidat#245 option D).
+    # Its own try: a failure here must not hide the trial balance's columns or
+    # stop the fact tables, and each reports under its own key.
+    try:
+        summary["journal_dimension_columns_synced"] = _sync_journal_dimension_columns()
+    except Exception as e:
+        summary["errors"].append(f"Journal dimension columns: {str(e)}")
+        frappe.log_error(
+            "schema_apply: journal dimension columns failed", frappe.get_traceback()
         )
 
     # 3. Create ClickHouse tables + dbt sources for write-back facts
@@ -300,18 +317,18 @@ def _apply_clickhouse_columns():
     return added
 
 
-def _tb_table_columns():
-    """Every column ClickHouse reports on the raw trial-balance table.
+def _table_columns(table):
+    """Every column ClickHouse reports on ``table``.
 
-    The table is created by static DDL (clickhouse._RAW_TABLE_DDL, and
-    init-db.sql) which runs once against an empty volume and cannot know a
-    customer's dimensions, so what is actually on the table has to be read
-    back rather than assumed.
+    The tables are created by static DDL (clickhouse._RAW_TABLE_DDL and
+    _REFERENCE_TABLE_DDL, and init-db.sql) which runs once against an empty
+    volume and cannot know a customer's dimensions, so what is actually on a
+    table has to be read back rather than assumed.
     """
-    database, _, table = _TB_RAW_TABLE.partition(".")
+    database, _, name = table.partition(".")
     text = ch_execute(
         "SELECT name FROM system.columns "
-        f"WHERE database = '{database}' AND table = '{table}' ORDER BY name"
+        f"WHERE database = '{database}' AND table = '{name}'"
     )
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
@@ -319,7 +336,7 @@ def _tb_table_columns():
 def _refuse_tb_dim_column(name, where):
     """Log a dimension column name that may not be interpolated into DDL."""
     frappe.log_error(
-        "schema_apply: refused a trial-balance dimension column name",
+        "schema_apply: refused a dimension column name",
         f"{name!r} ({where}) is not {_SAFE_TB_DIM_COLUMN.pattern}; "
         "it was never put into SQL.",
     )
@@ -370,9 +387,52 @@ def _sync_tb_dimension_columns():
         List of "added <col>" / "refused <name>" strings for the caller to
         log. Never "removed <col>": this function removes nothing.
     """
+    return _sync_dimension_columns(_TB_RAW_TABLE, "in_trial_balance")
+
+
+def _sync_journal_dimension_columns():
+    """Add the declared dimension columns to the journal's staging table.
+
+    konsolidat#245 option D (Deepak Pai, 3 Oct 2026): a Consolidation Journal
+    line declares its dimension values, so `epm_staging.consolidation_adjustments`
+    — the table the journal writes, one row per line (konsol#305 J05) — needs a
+    column per Published Dimension ticked in_journal.
+
+    Nothing is dropped here either. Unlike `epm_raw`, this table is re-derivable
+    from the Frappe documents (the journal is the source of truth and resync
+    rewrites it), so a drop would be recoverable rather than fatal. It still
+    does not drop: one mechanism, one behaviour, and an orphan column is
+    `String DEFAULT ''` that costs nothing and keeps history readable for a
+    dimension someone un-ticked by mistake.
+    """
+    return _sync_dimension_columns(_JOURNAL_STAGING_TABLE, "in_journal")
+
+
+def _sync_dimension_columns(table, flag):
+    """One body for every per-site dimension column set (konsolidat#245).
+
+    ``table`` is the ClickHouse table, ``flag`` the Dimension Check that
+    declares membership. Adds what is declared and missing; **never drops**.
+    Names are validated against _SAFE_TB_DIM_COLUMN before they reach SQL,
+    because they are interpolated; one that fails is refused and logged, never
+    put into a statement. Idempotent.
+
+    The reasoning for never dropping is on _sync_tb_dimension_columns and on
+    konsol#255; do not add a cleanup here.
+    """
+    # ``table`` is interpolated into DDL, so it is checked like every other
+    # interpolated name in this module (_apply_fact_tables does the same for a
+    # Dataset's clickhouse_table). Both callers pass a module constant today;
+    # this refuses the day one does not, rather than relying on that.
+    if not _SAFE_TABLE_NAME.fullmatch(table or ""):
+        frappe.log_error(
+            "schema_apply: refused a dimension-column table name",
+            f"{table!r} is not {_SAFE_TABLE_NAME.pattern}; no DDL was run.",
+        )
+        return [f"refused table {table}"]
     declared = frappe.get_all(
         "Dimension",
-        filters={"in_trial_balance": 1, "status": "Published"},
+        filters={flag: 1, "status": "Published"},
         fields=["dimension_name"],
         limit_page_length=0,
     )
@@ -387,24 +447,23 @@ def _sync_tb_dimension_columns():
         wanted.add(name)
 
     existing = set()
-    for column in _tb_table_columns():
+    for column in _table_columns(table):
         if not column.startswith(_TB_DIM_PREFIX):
             continue  # a real column: not a dimension column
         if not _SAFE_TB_DIM_COLUMN.fullmatch(column):
-            actions.append(_refuse_tb_dim_column(column, f"on {_TB_RAW_TABLE}"))
+            actions.append(_refuse_tb_dim_column(column, f"on {table}"))
             continue
         existing.add(column)
 
     for name in sorted(wanted - existing):
         ch_execute(
-            f"ALTER TABLE {_TB_RAW_TABLE} ADD COLUMN IF NOT EXISTS "
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
             f"{name} String DEFAULT ''"
         )
         actions.append(f"added {name}")
 
-    # No second loop over `existing - wanted`. Those are the columns a
-    # customer stopped declaring, and they still hold what was uploaded into
-    # them; see this function's docstring and konsol#255.
+    # No second loop over `existing - wanted`: those columns still hold what
+    # was written into them (konsol#255, Deepak Pai's option A).
     return actions
 
 
@@ -637,39 +696,88 @@ def _created_elsewhere(cf):
 
 
 def _sync_budget_custom_fields_locked():
-    # Plain reads: _sync_budget_custom_fields committed after taking the lock,
-    # so the snapshot is fresh.
-    budget_dims = frappe.get_all(
+    """Both dimension-carrying line tables, under the one lock already held.
+
+    Plain reads: _sync_budget_custom_fields committed after taking the lock, so
+    the snapshot is fresh. Consolidation Journal Line joined Budget Line here
+    for konsolidat#245 option D — one lock rather than a second named lock,
+    because both write Custom Fields and an ALTER from either commits.
+
+    EVERY ADD RUNS BEFORE ANY DELETE, across both tables. _created_elsewhere
+    rolls back to discard a failed insert's own pending work, and its docstring
+    states the premise that makes that safe: "the adds run before any delete and
+    each successful add has committed (updatedb), so only this failed add's own
+    work is pending". Running one table fully and then the other broke it (PR
+    #324 review, finding 3) — a Custom Field delete is pure DML with no
+    updatedb, so a failed add on the SECOND table rolled back the FIRST table's
+    uncommitted deletes while still reporting them as removed.
+    """
+    tables = (("Budget Line", "in_budget", "main_account"),
+              ("Consolidation Journal Line", "in_journal", "main_account"))
+    plans = [_plan_dimension_custom_fields(dt, flag) for dt, flag, _ in tables]
+    actions = [r for plan in plans for r in plan[3]]
+    for (dt, _flag, insert_after), plan in zip(tables, plans):
+        actions += _add_dimension_custom_fields(dt, insert_after, plan)
+    for (dt, _flag, _after), plan in zip(tables, plans):
+        actions += _remove_orphan_dimension_custom_fields(dt, plan)
+    return actions
+
+
+def _plan_dimension_custom_fields(dt, flag):
+    """What ``dt`` should have: ``(wanted, label_map, existing)``. Reads only.
+
+    Split from the add and remove phases so every add across every table runs
+    before any delete — see _sync_budget_custom_fields_locked (PR #324 review,
+    finding 3). One body for both callers, Budget Line's ``in_budget`` and
+    Consolidation Journal Line's ``in_journal`` (konsolidat#245 option D),
+    because two copies would drift and the drift is silent in the worst
+    direction: a dimension that is declared and has nowhere to land.
+
+    Callers hold the named lock; the reads are plain because the caller
+    committed after taking it.
+    """
+    dims = frappe.get_all(
         "Dimension",
-        filters={"in_budget": 1, "status": "Published"},
+        filters={flag: 1, "status": "Published"},
         fields=["dimension_name", "label"],
         limit_page_length=0,
     )
-    wanted = {d.dimension_name for d in budget_dims}
-    label_map = {d.dimension_name: d.label for d in budget_dims}
-
-    # Existing custom fields for Budget Line that are dimension fields
+    # Only names the sync can see again. ``existing`` below is queried
+    # ``fieldname like "dim_%"``, so a Custom Field named outside that shape
+    # could never be found as existing: every later run would try to recreate
+    # it, and un-ticking the flag could never remove it. A non-dim_ name is
+    # legal on a Dimension outside the trial balance, so this is reachable
+    # (PR #324 re-review, finding 6). Refused and reported, not silent.
+    wanted, label_map, refused = set(), {}, []
+    for d in dims:
+        name = d.dimension_name or ""
+        if not _SAFE_TB_DIM_COLUMN.fullmatch(name):
+            refused.append(_refuse_tb_dim_column(name, f"declared for {dt}"))
+            continue
+        wanted.add(name)
+        label_map[name] = d.label
     existing = frappe.get_all(
         "Custom Field",
-        filters={
-            "dt": "Budget Line",
-            "fieldname": ("like", "dim_%"),
-        },
+        filters={"dt": dt, "fieldname": ("like", "dim_%")},
         fields=["name", "fieldname"],
         limit_page_length=0,
     )
+    return wanted, label_map, existing, refused
+
+
+def _add_dimension_custom_fields(dt, insert_after, plan):
+    """Insert the Custom Fields ``dt`` is missing. Each insert commits
+    (CustomField.on_update -> frappe.db.updatedb)."""
+    wanted, label_map, existing, _refused = plan
     existing_names = {cf.fieldname for cf in existing}
-
     actions = []
-
-    # Add missing
     for dim_name in sorted(wanted - existing_names):
         cf = frappe.new_doc("Custom Field")
-        cf.dt = "Budget Line"
+        cf.dt = dt
         cf.fieldname = dim_name
         cf.fieldtype = "Data"
         cf.label = label_map.get(dim_name, dim_name)
-        cf.insert_after = "main_account"
+        cf.insert_after = insert_after
         try:
             cf.insert()
         except Exception:
@@ -677,11 +785,20 @@ def _sync_budget_custom_fields_locked():
                 continue  # the goal is met
             raise
         actions.append(f"added {dim_name}")
+    return actions
 
-    # Remove orphaned
+
+def _remove_orphan_dimension_custom_fields(dt, plan):
+    """Delete ``dt``'s Custom Fields the declared set no longer names.
+
+    The Frappe field only: the warehouse column is never dropped, so values
+    already written stay readable and a dimension unticked by mistake loses no
+    history (konsol#255, Deepak Pai's option A).
+    """
+    wanted, _label_map, existing, _refused = plan
+    actions = []
     for cf in existing:
         if cf.fieldname not in wanted:
             frappe.delete_doc("Custom Field", cf.name)
             actions.append(f"removed {cf.fieldname}")
-
     return actions

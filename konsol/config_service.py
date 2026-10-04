@@ -23,6 +23,7 @@ _DIMENSION_FIELDS = [
     "in_budget",
     "in_trial_balance",
     "survives_close",
+    "in_journal",
     "allocation_role",
     "permission_doctype",
     "status",
@@ -44,6 +45,7 @@ _DIMENSION_WRITABLE_FIELDS = [
     "in_budget",
     "in_trial_balance",
     "survives_close",
+    "in_journal",
     "allocation_role",
     "permission_doctype",
 ]

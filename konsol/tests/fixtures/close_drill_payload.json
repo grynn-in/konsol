@@ -1,0 +1,132 @@
+{
+  "consolidation_group": "G1",
+  "drill": {
+    "dimensions_note": "Not broken down by dimension yet (konsolidat#245).",
+    "heading": "1",
+    "heading_name": "ASSETS",
+    "rows": [
+      {
+        "accounts": [
+          {
+            "account_name": "Cash",
+            "amount": 300.0,
+            "main_account": "1110"
+          }
+        ],
+        "amount": 300.0,
+        "entity": "ZZA",
+        "label": null,
+        "layer": "entity",
+        "source": {
+          "entity": "ZZA",
+          "fiscal_period": 7,
+          "fiscal_year": 2025,
+          "kind": "tb"
+        }
+      },
+      {
+        "accounts": [
+          {
+            "account_name": "Cash",
+            "amount": 200.0,
+            "main_account": "1110"
+          }
+        ],
+        "amount": 200.0,
+        "entity": "ZZB",
+        "label": null,
+        "layer": "entity",
+        "source": {
+          "entity": "ZZB",
+          "fiscal_period": 7,
+          "fiscal_year": 2025,
+          "kind": "tb"
+        }
+      },
+      {
+        "accounts": [
+          {
+            "account_name": "Cash",
+            "amount": 100.0,
+            "main_account": "1110"
+          }
+        ],
+        "amount": 100.0,
+        "entity": "ZZC",
+        "label": null,
+        "layer": "entity",
+        "source": {
+          "entity": "ZZC",
+          "fiscal_period": 7,
+          "fiscal_year": 2025,
+          "kind": "tb"
+        }
+      },
+      {
+        "accounts": [],
+        "amount": -8.0,
+        "entity": null,
+        "label": "Currency translation (CTA)",
+        "layer": "cta",
+        "source": {
+          "entity": null,
+          "fiscal_period": 7,
+          "fiscal_year": 2025,
+          "kind": "tb"
+        }
+      },
+      {
+        "accounts": [
+          {
+            "account_name": "Cash",
+            "amount": -50.0,
+            "main_account": "1110"
+          }
+        ],
+        "amount": -50.0,
+        "entity": null,
+        "label": "Intercompany eliminations",
+        "layer": "ic_elimination",
+        "source": null
+      },
+      {
+        "accounts": [
+          {
+            "account_name": "Cash",
+            "amount": 40.0,
+            "main_account": "1110"
+          }
+        ],
+        "amount": 40.0,
+        "entity": null,
+        "journals": [
+          {
+            "amount": 40.0,
+            "approved_by": "bob@example.com",
+            "description": "Reclass intercompany loan",
+            "journal_id": "J-1",
+            "posted_by": "alice@example.com"
+          }
+        ],
+        "journals_basis": "posted in this period (the heading's amount is cumulative)",
+        "label": "Top-side journals",
+        "layer": "topside",
+        "source": {
+          "kind": "journals"
+        }
+      }
+    ],
+    "section": "Balance Sheet",
+    "total": 582.0
+  },
+  "heading": "1",
+  "message": null,
+  "period": {
+    "code": "FY2025P07",
+    "fiscal_period": 7,
+    "fiscal_year": 2025,
+    "period_type": "Regular",
+    "status": "Open"
+  },
+  "state": "ok"
+}
