@@ -103,9 +103,18 @@ _ENTITY_SQL = (
 #: the heading's own leaf codes) is added only when the drilled heading
 #: holds the declared CTA account (D2-5: the CTA row is never under an
 #: entity, so it is never reached through ``main_account IN {accounts}``).
+#:
+#: The sum is aliased ``amt``, not ``amount`` (measured live 4 Oct):
+#: ``sum(amount) AS amount`` beside ``countIf(amount IS NULL)`` in the same
+#: SELECT list makes ClickHouse substitute the alias into the ``countIf``
+#: expression, raising ``Code: 184 ILLEGAL_AGGREGATION`` — the same
+#: alias/column collision CLAUDE.md's CYCLIC_ALIASES trap warns about,
+#: here surfacing as a different error. ``_drill_row`` renames it back to
+#: ``amount`` before ``_tb_row``. (N51's own ``_TB_SQL`` carries the same
+#: collision; out of this row's files to fix — flagged, N53.)
 _DRILL_SQL = (
     "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
-    "sum(amount) AS amount, countIf(amount IS NULL) AS null_rows "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
     "FROM epm_gold.gold_fully_consolidated_tb "
     "WHERE consolidation_group = {group:String} AND fiscal_year <= {fy:UInt32} "
     "AND (main_account IN {accounts:Array(String)}) "
@@ -113,7 +122,7 @@ _DRILL_SQL = (
 )
 _DRILL_SQL_WITH_CTA = (
     "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
-    "sum(amount) AS amount, countIf(amount IS NULL) AS null_rows "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
     "FROM epm_gold.gold_fully_consolidated_tb "
     "WHERE consolidation_group = {group:String} AND fiscal_year <= {fy:UInt32} "
     "AND (main_account IN {accounts:Array(String)} OR adjustment_type = 'cta') "
@@ -252,6 +261,22 @@ def _leaf_codes(heading, accounts):
         code for code, entry in accounts.items()
         if not entry.get("is_group") and entry.get("parent_account") == heading
     )
+
+
+def _sql_array(codes):
+    """ClickHouse's external representation of an ``Array(String)`` query
+    parameter: a literal array string (measured live 4 Oct — ``requests``
+    otherwise repeats the key once per element, which ClickHouse cannot
+    parse as an array: ``CANNOT_READ_ARRAY_FROM_TEXT``)."""
+    return "[" + ",".join("'%s'" % c.replace("\\", "\\\\").replace("'", "\\'") for c in codes) + "]"
+
+
+def _drill_row(row):
+    """``_DRILL_SQL``'s row, renamed from its ``amt`` alias (see the SQL's
+    own comment) to ``_tb_row``'s expected ``amount`` key."""
+    renamed = dict(row)
+    renamed["amount"] = renamed.pop("amt", None)
+    return _tb_row(renamed)
 
 
 def _journal_row(row):
@@ -431,18 +456,19 @@ def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
     }
 
     drill_sql = _DRILL_SQL_WITH_CTA if heading == cta_heading else _DRILL_SQL
+    accounts_param = _sql_array(leaf_codes)
     try:
         tb_rows = [
             _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": consolidation_group, "fy": key[0]})
         ]
         drill_rows = [
-            _tb_row(r) for r in ch_read.rows(
-                drill_sql, {"group": consolidation_group, "fy": key[0], "accounts": leaf_codes})
+            _drill_row(r) for r in ch_read.rows(
+                drill_sql, {"group": consolidation_group, "fy": key[0], "accounts": accounts_param})
         ]
         journal_rows = [
             _journal_row(r) for r in ch_read.rows(
                 _DRILL_JOURNALS_SQL,
-                {"group": consolidation_group, "fy": key[0], "fp": key[1], "accounts": leaf_codes})
+                {"group": consolidation_group, "fy": key[0], "fp": key[1], "accounts": accounts_param})
         ]
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
         result["state"] = "not_built" if ch_read.not_built(e) else "error"

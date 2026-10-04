@@ -121,10 +121,14 @@ def _tb_row(main_account, amount, adjustment_type=None, fy=2025, fp=7, null_rows
 
 
 def _drill_tb_row(main_account, amount, adjustment_type, data_area_id, fy=2025, fp=7, null_rows=0):
-    """N52's entity-grain read: like ``_tb_row`` but carrying ``data_area_id``."""
+    """N52's entity-grain read: like ``_tb_row`` but carrying
+    ``data_area_id``, and keyed ``amt`` (not ``amount``) — the real SQL's
+    own alias, chosen to avoid ClickHouse's alias/column collision with
+    ``countIf(amount IS NULL)`` (measured live 4 Oct, ILLEGAL_AGGREGATION);
+    the product's ``_drill_row`` renames it back before use."""
     return {"fiscal_year": fy, "fiscal_period": fp, "data_area_id": data_area_id,
             "main_account": main_account, "adjustment_type": adjustment_type,
-            "amount": amount, "null_rows": null_rows}
+            "amt": amount, "null_rows": null_rows}
 
 
 def _drill_journal_row(journal_id, main_account, amount, data_area_id, description,
