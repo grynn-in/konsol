@@ -85,9 +85,16 @@ _ROOT_FILTER = {"data_area_id": ["is", "not set"]}
 #: The two warehouse reads (through ``ch_read.rows`` only, X01). Neither
 #: ever names a ``dim_*`` column (konsolidat#245: the dimension columns
 #: are summed over, not broken out).
+#: The sum is aliased ``amt``, not ``amount`` (measured live 4 Oct, N52/N53):
+#: ``sum(amount) AS amount`` beside ``countIf(amount IS NULL)`` in the same
+#: SELECT list makes ClickHouse substitute the alias into the ``countIf``
+#: expression, raising ``Code: 184 ILLEGAL_AGGREGATION`` — the same
+#: alias/column collision CLAUDE.md's CYCLIC_ALIASES trap warns about, here
+#: surfacing as a different error. ``_tb_row`` renames ``amt`` back to
+#: ``amount`` before any caller sees the row (N52's ``_drill_row`` precedent).
 _TB_SQL = (
     "SELECT fiscal_year, fiscal_period, main_account, adjustment_type, "
-    "sum(amount) AS amount, countIf(amount IS NULL) AS null_rows "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
     "FROM epm_gold.gold_fully_consolidated_tb "
     "WHERE consolidation_group = {group:String} AND fiscal_year <= {fy:UInt32} "
     "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type"
@@ -104,14 +111,14 @@ _ENTITY_SQL = (
 #: holds the declared CTA account (D2-5: the CTA row is never under an
 #: entity, so it is never reached through ``main_account IN {accounts}``).
 #:
-#: The sum is aliased ``amt``, not ``amount`` (measured live 4 Oct):
-#: ``sum(amount) AS amount`` beside ``countIf(amount IS NULL)`` in the same
-#: SELECT list makes ClickHouse substitute the alias into the ``countIf``
-#: expression, raising ``Code: 184 ILLEGAL_AGGREGATION`` — the same
-#: alias/column collision CLAUDE.md's CYCLIC_ALIASES trap warns about,
-#: here surfacing as a different error. ``_drill_row`` renames it back to
-#: ``amount`` before ``_tb_row``. (N51's own ``_TB_SQL`` carries the same
-#: collision; out of this row's files to fix — flagged, N53.)
+#: The sum is aliased ``amt``, not ``amount`` (measured live 4 Oct, the
+#: same ``_TB_SQL`` collision N53 later fixed): ``sum(amount) AS amount``
+#: beside ``countIf(amount IS NULL)`` in the same SELECT list makes
+#: ClickHouse substitute the alias into the ``countIf`` expression, raising
+#: ``Code: 184 ILLEGAL_AGGREGATION`` — the same alias/column collision
+#: CLAUDE.md's CYCLIC_ALIASES trap warns about, here surfacing as a
+#: different error. ``_drill_row`` renames it back to ``amount`` before
+#: ``_tb_row`` (which, after N53, also accepts ``amt`` directly).
 _DRILL_SQL = (
     "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
     "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
@@ -160,8 +167,14 @@ def _find_period(key, period_rows):
 
 def _tb_row(row):
     """A ``gold_fully_consolidated_tb`` row, JSON-safe and int/float-typed
-    (ClickHouse's JSON format may hand back a numeric as a string, E5-P15)."""
+    (ClickHouse's JSON format may hand back a numeric as a string, E5-P15).
+    ``_TB_SQL`` sends the sum under the wire alias ``amt`` (N53: the alias
+    cannot be ``amount`` without colliding with the sibling ``countIf``);
+    rename it to ``amount`` here, the one place every caller reads from, so
+    nothing downstream needs to know the wire alias ever differed."""
     out = dict(row)
+    if "amt" in out:
+        out["amount"] = out.pop("amt")
     out["fiscal_year"] = int(out["fiscal_year"])
     out["fiscal_period"] = int(out["fiscal_period"])
     out["null_rows"] = int(out.get("null_rows") or 0)

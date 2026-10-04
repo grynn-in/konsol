@@ -9,9 +9,11 @@ is a stub whose ``statement_accounts`` calls the REAL ``close_policy_model``
 so the gap text is never hand-typed; ``konsol.close.statement_model`` is
 the real pure module, loaded by path.
 """
+import ast
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 from datetime import date, datetime
@@ -24,6 +26,103 @@ API_PY = os.path.join(CLOSE_DIR, "statement_api.py")
 FIXTURE_PY = os.path.join(APP_DIR, "tests", "fixtures", "close_statement_payload.json")
 FIXTURE_DRILL_PY = os.path.join(APP_DIR, "tests", "fixtures", "close_drill_payload.json")
 SITE_TZ = "Europe/London"
+
+
+# --- N53: a static alias/column-collision check over EVERY ``*_SQL``
+# constant in statement_api.py (konsol#305 N53; the family of bugs N52's
+# live check found: an aggregate's own output alias also names a raw
+# column referenced inside a SIBLING aggregate in the same SELECT list,
+# which ClickHouse substitutes textually and then refuses as a nested
+# aggregate — ``ILLEGAL_AGGREGATION`` or ``CYCLIC_ALIASES`` depending on
+# the shape, per CLAUDE.md's ClickHouse traps section. This never needs a
+# live ClickHouse or a stub frappe: it reads the SQL text straight from
+# the source file with ``ast``, so it also guards every ``*_SQL`` constant
+# added to this module later.)
+
+def _sql_constants(path=API_PY):
+    """``{name: sql}`` for every module-level ``..._SQL = (...)`` string
+    constant, read with ``ast.literal_eval`` (handles the implicit
+    string-literal concatenation each one uses) — no import required."""
+    with open(path) as f:
+        tree = ast.parse(f.read(), path)
+    out = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and "_SQL" in target.id:
+            out[target.id] = ast.literal_eval(node.value)
+    return out
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SQL_KEYWORDS = {"is", "null", "not", "and", "or", "distinct", "as"}
+_AGG_COL_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\((.*)\)(?:\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?$",
+    re.IGNORECASE | re.DOTALL)
+_PLAIN_COL_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)(?:\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?$", re.IGNORECASE)
+
+
+def _split_select_list(sql):
+    """The SELECT clause's top-level, comma-separated column expressions
+    (commas inside a function call's parens don't split)."""
+    upper = sql.upper()
+    start = upper.index("SELECT") + len("SELECT")
+    end = upper.index(" FROM ")
+    parts, depth, current = [], 0, ""
+    for ch in sql[start:end]:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+    if current.strip():
+        parts.append(current)
+    return [p.strip() for p in parts]
+
+
+def _column_entries(sql):
+    """One ``(alias, is_aggregate, raw_identifiers)`` per SELECT column:
+    ``raw_identifiers`` is what an aggregate call references by name
+    (its own alias is never in this set), the thing ClickHouse will
+    substitute another column's matching alias into."""
+    entries = []
+    for col in _split_select_list(sql):
+        m = _AGG_COL_RE.match(col)
+        if m:
+            func, args, alias = m.group(1), m.group(2), m.group(3)
+            idents = {t.lower() for t in _IDENT_RE.findall(args)}
+            idents -= _SQL_KEYWORDS
+            idents.discard(func.lower())
+            entries.append((alias, True, idents))
+            continue
+        m = _PLAIN_COL_RE.match(col)
+        if m:
+            name, alias = m.group(1), m.group(2)
+            entries.append((alias or name, False, set()))
+        else:
+            entries.append((None, False, set()))
+    return entries
+
+
+def _alias_collision(sql):
+    """The first alias (or ``None``) that also names a raw column used
+    inside a DIFFERENT aggregate's arguments in the same SELECT list —
+    the collision ClickHouse raises ILLEGAL_AGGREGATION/CYCLIC_ALIASES
+    over (measured live 4 Oct, N52/N53)."""
+    entries = _column_entries(sql)
+    for i, (alias, _is_agg, _idents) in enumerate(entries):
+        if not alias:
+            continue
+        for j, (_alias2, is_agg2, idents2) in enumerate(entries):
+            if j != i and is_agg2 and alias.lower() in idents2:
+                return alias
+    return None
 
 LEAD = "zz-lead@example.com"
 ANALYST = "zz-analyst@example.com"
@@ -412,6 +511,29 @@ def test_no_sql_names_a_dim_column():
     _call(site)
     for sql, _params in site.ch_calls:
         assert "dim_" not in sql
+
+
+def test_no_sql_constant_has_an_alias_column_collision():
+    """N53: every ``*_SQL`` constant in statement_api.py, read straight
+    from source — no alias may also name a raw column referenced inside
+    a sibling aggregate in the same SELECT list (the ILLEGAL_AGGREGATION/
+    CYCLIC_ALIASES family). Stub-based tests can never catch this:
+    ``ch_read`` is stubbed everywhere else in this file, so it never runs
+    real SQL against real ClickHouse."""
+    constants = _sql_constants()
+    assert set(constants) == {
+        "_TB_SQL", "_ENTITY_SQL", "_DRILL_SQL", "_DRILL_SQL_WITH_CTA",
+        "_DRILL_JOURNALS_SQL",
+    }, "a *_SQL constant was added or removed: update this test's expected set"
+    for name, sql in constants.items():
+        collision = _alias_collision(sql)
+        assert collision is None, (
+            "%s: alias %r collides with a raw column referenced inside a "
+            "sibling aggregate in the same SELECT list (measured live as "
+            "ILLEGAL_AGGREGATION/CYCLIC_ALIASES) — alias the aggregate "
+            "differently (e.g. AS amt) and remap it in Python before use."
+            % (name, collision)
+        )
 
 
 # --- choose a group / unknown group (W4-E8) --------------------------------
