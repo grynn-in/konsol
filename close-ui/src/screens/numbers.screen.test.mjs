@@ -186,6 +186,52 @@ test("The declared-accounts gap sentence (view.gapText) offers a Desk link to Cl
 	assert.match(inner, /Open Close Settings/);
 });
 
+// U5 "Related": once a group is resolved, the choice must not be a one-way
+// door — a second switcher, gated on view.groupChoice alone (not on being
+// in the choose_group state), lets the user pick a different one at any
+// time there is more than one group to pick from.
+test("U5: a group switcher is also offered outside the choose_group state, gated on view.groupChoice alone", () => {
+	const tpl = template(read());
+	const blocks = [];
+	const re = /<div(?:(?!>)[\s\S])*?>/g;
+	let m;
+	while ((m = re.exec(tpl))) {
+		if (/view\.groupChoice/.test(m[0]) && !/view\.state\.kind === 'choose_group'/.test(m[0])) {
+			blocks.push(blockFor(tpl, m.index, "div"));
+		}
+	}
+	assert.ok(blocks.length >= 1, "a div's v-if reads view.groupChoice without also requiring the choose_group state");
+	const inner = tpl.slice(blocks[0].start, blocks[0].end);
+	assert.match(inner, /<select\b/, "the switcher offers a select");
+	assert.match(inner, /v-for="g in view\.groupChoice"/);
+	assert.match(inner, /chooseGroup\(/, "it calls the same chooseGroup as the choose_group banner's own select");
+});
+
+test("setup_gap: the state banner shows the server's message and offers Open Close Settings (S5, R41d/R41i)", () => {
+	const tpl = template(read());
+	const block = blockMatching(tpl, "div", /v-if="view\.state\.kind === 'setup_gap'"/);
+	assert.ok(block, "a div's v-if tests view.state.kind === 'setup_gap'");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /href="\/app\/close-settings"/);
+	assert.match(inner, /Open Close Settings/);
+	// The message itself is the shared <p>{{ view.state.message }}</p> above
+	// every state banner, not a second, duplicated literal.
+	const stateBannerBlock = blockMatching(tpl, "div", /v-if="view\.state"/);
+	assert.ok(stateBannerBlock, "the outer state banner div exists");
+	const bannerInner = tpl.slice(stateBannerBlock.start, stateBannerBlock.end);
+	assert.match(bannerInner, /\{\{\s*view\.state\.message\s*\}\}/);
+});
+
+test("U6: comparisonNote is rendered above the tables, not just computed", () => {
+	const tpl = template(read());
+	const pos = tpl.search(/view\.comparisonNote/);
+	assert.ok(pos >= 0, "the template reads view.comparisonNote somewhere");
+	const tabsLoopPos = tpl.search(/v-for="tab in view\.tabs"/);
+	assert.ok(tabsLoopPos > 0, "the tabs loop exists");
+	assert.ok(pos < tabsLoopPos, "comparisonNote is rendered above (before) the tables");
+	assert.match(tpl.slice(Math.max(0, pos - 80), pos), /<p\b/, "it is rendered as visible text, not just read");
+});
+
 test("A seq guard exists so a stale response is dropped (mirrors Rates.vue/Intercompany.vue)", () => {
 	const js = script(read());
 	assert.match(js, /let\s+seq\s*=\s*0/);

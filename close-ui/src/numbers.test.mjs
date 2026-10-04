@@ -25,6 +25,12 @@ import {
 const FIXTURE_PATH = fileURLToPath(
 	new URL("../../konsol/tests/fixtures/close_statement_payload.json", import.meta.url),
 );
+// R41d's own golden fixture, generated from the real `_call(site)` producer
+// in test_close_statement_api.py: an undeclared BS heading side, state
+// "setup_gap" (S5). Used here to wire numbers.js up to it (R41i).
+const SETUP_GAP_FIXTURE_PATH = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_statement_payload_setup_gap.json", import.meta.url),
+);
 const DRILL_FIXTURE_PATH = fileURLToPath(
 	new URL("../../konsol/tests/fixtures/close_drill_payload.json", import.meta.url),
 );
@@ -35,6 +41,10 @@ const ROUTER_JS_PATH = fileURLToPath(new URL("./router.js", import.meta.url));
 
 function golden() {
 	return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
+}
+
+function goldenSetupGap() {
+	return JSON.parse(readFileSync(SETUP_GAP_FIXTURE_PATH, "utf8"));
 }
 
 function goldenDrill() {
@@ -124,26 +134,67 @@ test("state is null and no group choice when the payload is ok", () => {
 	assert.equal(view.state, null);
 	assert.equal(view.groupChoice, null);
 	assert.equal(view.gapText, null);
+	assert.equal(view.consolidationGroup, "G1");
 });
 
-test("choose_group: a fixed title plus the groups to pick from", () => {
+// U5: the fixed client-side title is gone — the banner shows
+// statement_api.get_statement's own two sentences verbatim
+// (statement_api.py:351/354-356), one per number of declared groups.
+test("choose_group, several groups declared: the server's own sentence, plus both to pick from", () => {
 	const payload = golden();
+	payload.groups = [
+		{ consolidation_group: "G1", reporting_currency: "USD" },
+		{ consolidation_group: "G2", reporting_currency: "EUR" },
+	];
 	payload.state = "choose_group";
 	payload.message = "Choose a consolidation group.";
 	payload.consolidation_group = null;
 	payload.reporting_currency = null;
 	payload.statement = null;
 	const view = statementView(payload, NOW, TZ);
-	assert.deepEqual(view.state, { kind: "choose_group", message: "Choose a consolidation group" });
-	assert.deepEqual(view.groupChoice, ["G1"]);
+	assert.deepEqual(view.state, { kind: "choose_group", message: "Choose a consolidation group." });
+	assert.deepEqual(view.groupChoice, ["G1", "G2"]);
+	assert.equal(view.consolidationGroup, null);
 	assert.deepEqual(view.tabs, []);
 });
 
-test("no_chart/not_built/error show the server's own message, never tabs", () => {
+test("choose_group, zero groups declared: the server's own 'create one' sentence, and nothing to pick from", () => {
+	const payload = golden();
+	payload.groups = [];
+	payload.state = "choose_group";
+	payload.message = "No consolidation group is declared yet: create one in Consolidation Group.";
+	payload.consolidation_group = null;
+	payload.reporting_currency = null;
+	payload.statement = null;
+	const view = statementView(payload, NOW, TZ);
+	assert.deepEqual(view.state, {
+		kind: "choose_group",
+		message: "No consolidation group is declared yet: create one in Consolidation Group.",
+	});
+	assert.equal(view.groupChoice, null, "nothing to switch to with zero declared groups");
+});
+
+// U5 "Related": once a group resolves (here, several groups exist but one
+// is already chosen — an ordinary "ok" payload), the choice must still be
+// offered — the fix is a switcher that is never one-way.
+test("ok, several groups declared: groupChoice still offers every group, even though one is already chosen", () => {
+	const payload = golden();
+	payload.groups = [
+		{ consolidation_group: "G1", reporting_currency: "USD" },
+		{ consolidation_group: "G2", reporting_currency: "EUR" },
+	];
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(view.state, null);
+	assert.deepEqual(view.groupChoice, ["G1", "G2"]);
+	assert.equal(view.consolidationGroup, "G1");
+});
+
+test("no_chart/not_built/error/setup_gap show the server's own message, never tabs", () => {
 	for (const [state, message] of [
 		["no_chart", "Publish the group chart (Main Account) first."],
 		["not_built", "ChRelationNotBuilt"],
 		["error", "OSError (timeout)"],
+		["setup_gap", "statement_heading_side_undeclared: 1 has no normal_balance declared."],
 	]) {
 		const payload = golden();
 		payload.state = state;
@@ -154,6 +205,24 @@ test("no_chart/not_built/error show the server's own message, never tabs", () =>
 		assert.deepEqual(view.tabs, []);
 		assert.equal(view.comparisonNote, null);
 	}
+});
+
+// R41d/R41i, S5: a real `setup_gap` payload (the golden fixture generated
+// from the real producer) — a known state, never a thrown "unknown payload
+// state", with the server's own message shown verbatim and no tabs.
+test("setup_gap: the real R41d fixture's own sentence, no tabs, no comparisonNote", () => {
+	const payload = goldenSetupGap();
+	assert.equal(payload.state, "setup_gap", "fixture sanity: it really is the setup_gap state");
+	const view = statementView(payload, NOW, TZ);
+	assert.deepEqual(view.state, { kind: "setup_gap", message: payload.message });
+	assert.match(view.state.message, /normal_balance/);
+	assert.deepEqual(view.tabs, []);
+	assert.equal(view.comparisonNote, null);
+	// The fixture already has a group chosen (one declared group) — setup_gap
+	// is a statement-building problem, not a group-choice one, so the group
+	// is still resolved and there is nothing to switch between.
+	assert.equal(view.consolidationGroup, "G1");
+	assert.equal(view.groupChoice, null);
 });
 
 test("gapText carries the declared-accounts setup gap's message", () => {

@@ -52,12 +52,15 @@ const SIGNOFF_LABEL = {
 	resign_needed: { text: "Re-sign needed — numbers changed after signing", tone: "block" },
 };
 
-// statement_api.py's own non-ok states (W4-E8, module docstring): choose_group
-// gets a fixed title (the groups to pick from are `groupChoice`, not this
-// text); the other three show the server's own message verbatim.
-const SERVER_MESSAGE_STATES = new Set(["no_chart", "not_built", "error"]);
-
-const CHOOSE_GROUP_TITLE = "Choose a consolidation group";
+// statement_api.py's own non-ok states (W4-E8, module docstring; `setup_gap`
+// added R41d/R41i, S5): every one of them shows the server's own `message`
+// verbatim — `choose_group`'s sentence differs depending on whether zero or
+// several groups are declared (statement_api.py:351-356), and this module
+// never replaces it with wording of its own (U5). The groups to pick from
+// are `groupChoice`, built separately below — and, since U5's "a chosen
+// group can be changed" fix, offered whenever more than one group exists,
+// not only while `state` is `choose_group`.
+const SERVER_MESSAGE_STATES = new Set(["choose_group", "no_chart", "not_built", "error", "setup_gap"]);
 
 const REQUIRED_KEYS = [
 	"period",
@@ -124,9 +127,6 @@ function buildLabel(signoff) {
 function buildState(payload) {
 	if (payload.state === "ok") {
 		return null;
-	}
-	if (payload.state === "choose_group") {
-		return { kind: "choose_group", message: CHOOSE_GROUP_TITLE };
 	}
 	if (SERVER_MESSAGE_STATES.has(payload.state)) {
 		return { kind: payload.state, message: payload.message };
@@ -288,10 +288,10 @@ function buildTabs(statement, commentary, now, timeZone) {
 
 /**
  * `statement_api.get_statement`'s payload -> everything the Numbers screen
- * shows: `{header, label, legend, state, groupChoice, notIncluded, gapText,
- * tabs, comparisonNote}` (U41 facts). `now`/`timeZone` are required for the
- * per-heading commentary's `byText` (mirrors timefmt.js's convention: no
- * reading of the machine's clock in here).
+ * shows: `{header, label, legend, state, groupChoice, consolidationGroup,
+ * notIncluded, gapText, tabs, comparisonNote}` (U41 facts). `now`/`timeZone`
+ * are required for the per-heading commentary's `byText` (mirrors
+ * timefmt.js's convention: no reading of the machine's clock in here).
  *
  * Throws `"Numbers payload has no <key>."` on any missing top-level key —
  * no silent default for a key the producer did not send.
@@ -315,7 +315,15 @@ export function statementView(payload, now, timeZone) {
 		label,
 		legend: LEGEND,
 		state,
-		groupChoice: payload.state === "choose_group" ? (payload.groups || []).map((g) => g.consolidation_group) : null,
+		// U5 "a chosen group can be changed": offered whenever more than one
+		// group is declared, in every state — not only while choosing. A
+		// single declared group (or none) has nothing to switch to.
+		groupChoice: (payload.groups || []).length > 1 ? payload.groups.map((g) => g.consolidation_group) : null,
+		// The group this payload actually resolved to (null only while
+		// `state` is `choose_group` and nothing is chosen yet) — the
+		// switcher's current value, read once here rather than re-derived
+		// from `payload` a second time in the component.
+		consolidationGroup: payload.consolidation_group,
 		notIncluded: notIncludedText(payload.not_included),
 		gapText: payload.gap ? payload.gap.message : null,
 		tabs,
