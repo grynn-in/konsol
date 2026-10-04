@@ -31,7 +31,7 @@ API_PY = os.path.join(CLOSE_DIR, "journal_api.py")
 JOURNAL_MODEL_PY = os.path.join(CLOSE_DIR, "journal_model.py")
 TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
 #: konsolidat#245 option D: journal_api.py imports the real, pure
-#: tb_dimension_model for ``_is_on`` / ``is_legal_dimension_name``, loaded by
+#: tb_dimension_model for ``is_flag_on`` / ``is_legal_dimension_name``, loaded by
 #: path under its dotted name like journal_model/timefmt.
 TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
 #: The stub site's system time zone (mirrors test_close_rates_api.py): BST
@@ -615,7 +615,7 @@ def test_a_dimension_with_no_label_falls_back_to_its_name():
 
 
 def test_off_text_in_journal_values_are_off_not_truthy():
-    """``_is_on``'s off-text handling (tb_dimension_model._OFF_TEXT), reused
+    """``is_flag_on``'s off-text handling (tb_dimension_model._OFF_TEXT), reused
     here rather than ``if doc.in_journal``."""
     for off in ("0", "false", "No", "", 0, False):
         site = _Site()

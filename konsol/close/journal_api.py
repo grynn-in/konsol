@@ -36,7 +36,7 @@ import frappe
 from konsol import fiscal_calendar
 from konsol.close import close_event, journal_model
 from konsol.close.timefmt import zoned_iso
-from konsol.tb_dimension_model import _is_on, is_legal_dimension_name
+from konsol.tb_dimension_model import is_flag_on, is_legal_dimension_name
 
 JOURNAL = "Consolidation Journal"
 LINE = "Consolidation Journal Line"
@@ -64,7 +64,7 @@ GROUP_FIELDS = ["name", "consolidation_group", "data_area_id", "reporting_curren
 ADJUSTMENT_TYPES = ("topside", "reclassification")
 
 #: konsolidat#245 option D, CONTRACT (konsol-50, 3 Oct): the gating flag on
-#: Dimension for journal lines. Read with ``_is_on`` (tb_dimension_model's
+#: Dimension for journal lines. Read with ``is_flag_on`` (tb_dimension_model's
 #: off-text handling), never ``if doc.in_journal`` — the same convention
 #: dimension.py itself uses for ``in_trial_balance``.
 JOURNAL_DIM_FLAG = "in_journal"
@@ -84,7 +84,7 @@ def _declared_dimensions():
     return [
         {"dimension_name": r["dimension_name"], "label": r.get("label") or r["dimension_name"]}
         for r in rows
-        if is_legal_dimension_name(r.get("dimension_name")) and _is_on(r.get(JOURNAL_DIM_FLAG))
+        if is_legal_dimension_name(r.get("dimension_name")) and is_flag_on(r.get(JOURNAL_DIM_FLAG))
     ]
 
 
