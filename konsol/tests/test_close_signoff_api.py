@@ -135,7 +135,17 @@ class _Site:
                  "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
                 {"name": "3100", "is_group": 0, "status": "Published",
                  "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+                #: M45t: two Published headings, so M46's import and reads
+                #: resolve (konsol.close.commentary_model is loaded below).
+                {"name": "4", "is_group": 1, "status": "Published",
+                 "statement_section": "Profit and Loss", "account_name": "NET SALES",
+                 "lft": 10},
+                {"name": "7", "is_group": 1, "status": "Published",
+                 "statement_section": "Profit and Loss", "account_name": "OPERATING EXPENSES",
+                 "lft": 20},
             ],
+            #: M45t: so M46's import and reads resolve.
+            "Statement Commentary": [],
         }
         self.warned_names = {"RUN-09": ["assert_a", "assert_b"]}
         self.only_for = []
@@ -359,11 +369,15 @@ def _load(site):
             "konsol.consolidation.doctype.assertion_run.assertion_run": ar}
     saved = {n: sys.modules.get(n) for n in list(mods) + [
         "konsol.close.signoff_model", "konsol.close.period_model", "konsol.close.signoff_gate",
-        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model"]}
+        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model",
+        "konsol.close.commentary_model"]}
     sys.modules.update(mods)
     try:
+        #: M45t: commentary_model loaded for real by path, like the other
+        #: pure modules, so M46's `from konsol.close import ... commentary_model`
+        #: resolves (unblocks M46).
         for name in ("close_policy_model", "signoff_model", "period_model", "timefmt",
-                      "scope_model", "signoff_gate"):
+                      "scope_model", "signoff_gate", "commentary_model"):
             mod = _by_path("konsol.close." + name, os.path.join(CLOSE_DIR, name + ".py"))
             sys.modules["konsol.close." + name] = mod
             setattr(close, name, mod)
@@ -428,6 +442,21 @@ def test_statement_accounts_are_declared_on_the_stub_site():
     assert rows["3100"]["is_group"] == 0
     assert rows["3100"]["status"] == "Published"
     assert rows["3100"]["statement_section"] == "Balance Sheet"
+
+
+# --- M45t: the stub site carries commentary_model and the commentary records -
+
+def test_commentary_model_is_installed_and_the_commentary_records_exist():
+    site = _Site()
+    _module, mods, _frappe = _load(site)
+    assert mods["konsol.close.commentary_model"].__name__ == "konsol.close.commentary_model"
+    assert hasattr(mods["konsol.close.commentary_model"], "missing_commentary")
+    assert site.records["Statement Commentary"] == []
+    headings = {r["name"]: r for r in site.records["Main Account"] if r.get("is_group")}
+    assert set(headings) == {"4", "7"}
+    for code in ("4", "7"):
+        assert headings[code]["status"] == "Published", code
+        assert "lft" in headings[code], code
 
 
 # --- contract ----------------------------------------------------------------
