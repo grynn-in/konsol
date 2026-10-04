@@ -18,6 +18,7 @@ import {
 	commentaryBody,
 	canComment,
 	commentaryByText,
+	beforeAfter,
 } from "./numbers.js";
 
 const FIXTURE_PATH = fileURLToPath(
@@ -26,6 +27,9 @@ const FIXTURE_PATH = fileURLToPath(
 const DRILL_FIXTURE_PATH = fileURLToPath(
 	new URL("../../konsol/tests/fixtures/close_drill_payload.json", import.meta.url),
 );
+const JOURNAL_ITEM_FIXTURE_PATH = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_approvals_journal_item.json", import.meta.url),
+);
 
 function golden() {
 	return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
@@ -33,6 +37,15 @@ function golden() {
 
 function goldenDrill() {
 	return JSON.parse(readFileSync(DRILL_FIXTURE_PATH, "utf8"));
+}
+
+// W41's golden journal item (test_close_approvals_api.py, built from the REAL
+// journal_model.statement_effect, never a JS port). Its two `effect.headings`
+// entries are PL heading "4" (net_debit -500) and BS heading "2" (net_debit
+// 500) — both present in the golden statement payload's chart (4100/2100,
+// W41's fixture note).
+function goldenJournalItem() {
+	return JSON.parse(readFileSync(JOURNAL_ITEM_FIXTURE_PATH, "utf8"));
 }
 
 // The fixture's one commentary entry is at 2025-08-01T10:00:00+01:00, which
@@ -498,6 +511,81 @@ test("commentaryByText: '<by> · <formatted time>', mirroring the statement row'
 	const entry = { text: "Strong quarter.", by: "Zz Analyst", at: "2025-08-01T10:00:00+01:00" };
 	const text = commentaryByText(entry, NOW, TZ);
 	assert.equal(text, "Zz Analyst · 10:00");
+});
+
+// --- beforeAfter (W42) -------------------------------------------------------
+//
+// W42 was blocked until N54 added each heading line's own display-sign
+// multiplier (`line.sign`) to statement_model's payload. beforeAfter reads
+// that sign straight off the matched heading row of the real statement
+// payload riding along on `view.statement` — it never re-derives the
+// Debit/Credit -> multiplier mapping and never hardcodes a heading code.
+// change = sign * net_debit (the 4 Oct amendment to #305-W4-2 2a-ii; the
+// pre-amendment "-net_debit for P&L, net_debit for BS" formula is stale).
+
+test("beforeAfter: BS liability heading — the amended per-heading sign turns a debit paydown into a reduction", () => {
+	const view = statementView(golden(), NOW, TZ);
+	const item = goldenJournalItem();
+	const rows = beforeAfter(item.effect, view);
+
+	const liability = rows.find((r) => r.heading === "2");
+	// golden statement: heading "2" LIABILITIES, current 803.70, sign -1
+	// (Credit-normal). net_debit +500 (a paydown) -> change = -1 * 500 =
+	// -500 -> after 303.70, never the stale formula's 1303.70.
+	assert.deepEqual(liability, {
+		section: "Balance Sheet",
+		heading: "2",
+		headingName: "Liabilities",
+		before: "803.70",
+		change: "(500.00)",
+		after: "303.70",
+	});
+});
+
+test("beforeAfter: P&L heading — reuses the section-wide -1 flip", () => {
+	const view = statementView(golden(), NOW, TZ);
+	const item = goldenJournalItem();
+	const rows = beforeAfter(item.effect, view);
+
+	const pl = rows.find((r) => r.heading === "4" && r.section === "Profit and Loss");
+	// golden statement: PL heading "4", current 241.43, sign -1. net_debit
+	// -500 -> change = -1 * -500 = 500 -> after 741.43.
+	assert.deepEqual(pl, {
+		section: "Profit and Loss",
+		heading: "4",
+		headingName: "Revenue",
+		before: "241.43",
+		change: "500.00",
+		after: "741.43",
+	});
+});
+
+test("failure path: a heading in the effect absent from the statement shows 'not in the statement', after null", () => {
+	const view = statementView(golden(), NOW, TZ);
+	const item = goldenJournalItem();
+	item.effect.headings[0].heading = "99";
+	item.effect.headings[0].heading_name = "Mystery";
+
+	const rows = beforeAfter(item.effect, view);
+	const missing = rows.find((r) => r.heading === "99");
+	assert.deepEqual(missing, {
+		section: "Profit and Loss",
+		heading: "99",
+		headingName: "Mystery",
+		before: "not in the statement",
+		change: null,
+		after: null,
+	});
+});
+
+test("failure path: a view in a non-ok state throws", () => {
+	const payload = golden();
+	payload.state = "error";
+	payload.message = "OSError (timeout)";
+	payload.statement = null;
+	const view = statementView(payload, NOW, TZ);
+	const item = goldenJournalItem();
+	assert.throws(() => beforeAfter(item.effect, view), /state/);
 });
 
 // --- module hygiene ----------------------------------------------------------
