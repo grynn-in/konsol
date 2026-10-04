@@ -57,6 +57,7 @@
   "fiscal_year": 2026,
   "fiscal_period": 7,
   "consolidation_group": "G1",
+  "dimensions": [],
   "sent_back": false,
   "rejection": null
 }

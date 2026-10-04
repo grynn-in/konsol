@@ -118,6 +118,12 @@ class _Site:
         #: default, so every pre-existing test (no dims declared) behaves
         #: exactly as before.
         self.dimensions = []
+        #: D06: the fields Consolidation Journal Line actually has
+        #: (``frappe.get_meta(...).get_valid_columns()``). None = the base
+        #: columns plus a field for every row in ``dimensions`` — the state
+        #: once schema_apply's queued Custom Field sync has run. A list models
+        #: the window before it runs (konsol#135).
+        self.line_columns = None
         self.hierarchies = []
         self.hierarchy_members = []
         self.dimension_mappings = []
@@ -156,6 +162,18 @@ def _match_value(value, cond):
     return value == cond
 
 
+#: Consolidation Journal Line's own columns, as get_valid_columns() lists them.
+_BASE_LINE_COLUMNS = ("name", "owner", "creation", "modified", "modified_by", "docstatus",
+                      "idx", "parent", "parentfield", "parenttype", "data_area_id",
+                      "main_account", "debit_amount", "credit_amount", "description")
+
+
+def _line_columns(site):
+    if site.line_columns is not None:
+        return site.line_columns
+    return _BASE_LINE_COLUMNS + tuple(d["dimension_name"] for d in site.dimensions)
+
+
 def _match(row, filters):
     return all(_match_value(row.get(key), cond) for key, cond in (filters or {}).items())
 
@@ -189,6 +207,10 @@ def _frappe(site):
         if doctype == "Consolidation Journal":
             rows = [r for r in site.journals if _match(r, filters)]
         elif doctype == "Consolidation Journal Line":
+            # Frappe raises on a field the table does not have; so does this.
+            missing = set(fields or ()) - set(_line_columns(site))
+            if missing:
+                raise AssertionError("Unknown column(s) %s" % sorted(missing))
             rows = [r for r in site.lines if _match(r, filters)]
         elif doctype == "Main Account":
             rows = [r for r in site.accounts if _match(r, filters)]
@@ -242,8 +264,14 @@ def _frappe(site):
         site.insert_calls.append(("get_doc", a, k))
         raise AssertionError("a GET never calls get_doc")
 
+    def get_meta(doctype):
+        site.reads.append(("get_meta", doctype))
+        assert doctype == "Consolidation Journal Line", doctype
+        return types.SimpleNamespace(get_valid_columns=lambda: list(_line_columns(site)))
+
     frappe.throw = throw
     frappe._ = lambda s: s
+    frappe.get_meta = get_meta
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.get_all = get_all
@@ -736,6 +764,51 @@ def test_each_line_carries_its_declared_dimension_value_defaulting_blank():
     journal = _by_name(result, "CJ-00001")
     assert journal["lines"][0]["dim_cost_center"] == "CC1"
     assert journal["lines"][1]["dim_cost_center"] == ""
+
+
+def test_d06_a_declared_dimension_whose_field_does_not_exist_yet_is_absent_not_an_error():
+    """D06: schema_apply's Custom Field sync is queued after the commit
+    (konsol#135), so a Dimension can be Published with ``in_journal`` ticked
+    before Consolidation Journal Line has its field. Selecting that field would
+    make frappe.get_all raise and take the whole Adjustments screen down; the
+    dimension is left out until its field exists (the same rule
+    consolidation_journal's resync uses: journal_model.journal_dimension_columns)."""
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center"), _dim("dim_brand_new")]
+    site.line_columns = _BASE_LINE_COLUMNS + ("dim_cost_center",)
+    site.lines[0]["dim_cost_center"] = "CC1"
+    result = _call(site)
+    assert [d["key"] for d in result["dimensions"]] == ["dim_cost_center"]
+    line = _by_name(result, "CJ-00001")["lines"][0]
+    assert line["dim_cost_center"] == "CC1"
+    assert "dim_brand_new" not in line
+
+
+def test_d06_the_line_read_names_exactly_the_declared_dimension_fields():
+    """D06: get_journals reads the declared dimension fields with the lines, so
+    a saved value comes back; an undeclared field the table still has (an
+    orphan from an un-ticked dimension) is not read."""
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center")]
+    site.line_columns = _BASE_LINE_COLUMNS + ("dim_cost_center", "dim_orphan")
+    site.lines[0]["dim_orphan"] = "OLD"
+    result = _call(site)
+    for line in _by_name(result, "CJ-00001")["lines"]:
+        assert "dim_orphan" not in line
+        assert "dim_cost_center" in line
+
+
+def test_d06_save_journal_refuses_a_dimension_whose_field_does_not_exist_yet():
+    """The save uses the same declared list as the read, so a value for a
+    dimension whose field is not there yet is refused with a sentence rather
+    than silently dropped by the document."""
+    site = _post_site()
+    site.dimensions = [_dim("dim_brand_new")]
+    site.line_columns = list(_BASE_LINE_COLUMNS)
+    lines = [dict(line, dim_brand_new="X") for line in WIREFRAME_LINES]
+    err = _save_raises(site, lines=json.dumps(lines))
+    assert "dim_brand_new" in str(err), err
+    assert site.insert_calls == []
 
 
 def test_bounded_reads_dimension_reads_are_constant_in_the_number_of_journals():

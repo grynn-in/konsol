@@ -44,7 +44,7 @@ ENTITY_FIELDS = {
 
 def _journal(name, fy, fp, adjustment_type, description, duration, owner, created,
              total_debit=18500.0, currency="USD", lines=None, effect=None,
-             consolidation_group="G1"):
+             consolidation_group="G1", dimensions=None):
     return {
         "name": name, "owner": owner, "created": created,
         "fiscal_year": fy, "fiscal_period": fp,
@@ -55,6 +55,7 @@ def _journal(name, fy, fp, adjustment_type, description, duration, owner, create
         "lines": lines if lines is not None else [{"main_account": "6100", "debit_amount": total_debit}],
         "effect": effect if effect is not None else {"headings": [], "sections": [], "no_heading": 0},
         "consolidation_group": consolidation_group,
+        "dimensions": dimensions if dimensions is not None else [],
     }
 
 
@@ -184,6 +185,7 @@ def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk()
     assert cj["detail"] == "Topside · FY2026 P07 · This period only, no reversal"
     assert cj["lines"] == docs["Consolidation Journal"][0]["lines"]
     assert cj["effect"] == docs["Consolidation Journal"][0]["effect"]
+    assert cj["dimensions"] == []  # D06: none declared
     assert cj["total_debit"] == 18500.0
     assert cj["currency"] == "USD"
 
@@ -636,3 +638,17 @@ def test_module_imports_no_frappe():
             module = node.module or ""
             assert not module.startswith("frappe")
             assert not module.startswith("konsol")
+
+
+def test_d06_a_journal_item_carries_its_declared_dimensions_through():
+    """D06 (konsolidat#245 option D): approvals_api puts the declared journal
+    dimensions on the journal doc; the item passes them through unchanged so
+    Approvals' detail panel can head one column per dimension."""
+    dims = [{"key": "dim_cost_center", "label": "Cost Center"}]
+    lines = [{"main_account": "6100", "debit_amount": 1.0, "dim_cost_center": "CC1"}]
+    doc = _journal("CJ-D6", 2026, 7, "topside", "ZZ", "This period only, no reversal",
+                   "zz-analyst@example.com", "2026-07-01T09:00:00+01:00",
+                   lines=lines, dimensions=dims)
+    shaped = M._shape("Consolidation Journal", doc)
+    assert shaped[3]["dimensions"] == dims
+    assert shaped[3]["lines"] == lines
