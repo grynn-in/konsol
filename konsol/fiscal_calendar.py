@@ -33,6 +33,7 @@ NOT_PERIOD_DATA = {
     "Period Status": "the period calendar itself: it declares open/closed periods, it does not use them",
     "Pipeline Run": "a build log: the period is a run parameter, the data it builds lives in the warehouse",
     "Close Event": "the audit log of actions on a period: it records what happened and posts nothing to it (konsol#305 T01b, E10-P9)",
+    "Statement Commentary": "a free-text note on a statement heading for the period: it records context for the numbers and posts nothing to it (konsol#305 M43)",
 }
 
 
