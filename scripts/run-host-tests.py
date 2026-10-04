@@ -258,7 +258,10 @@ def _run_fixture_tests(fixture_tests):
                 # a parametrized test reports one case per parameter set,
                 # "name[params]"; each counts, and all belong to its function
                 if name.split("[", 1)[0] not in wanted:
-                    if bad is not None:  # a collection error names the file
+                    # -k matches substrings, so pytest runs tests not asked
+                    # for; the in-process run already judged those. Only a
+                    # collection error, reported against the file, counts.
+                    if bad is not None and bad.get("message") == "collection failure":
                         file_errors.append(bad)
                     continue
                 skip = case.find("skipped")

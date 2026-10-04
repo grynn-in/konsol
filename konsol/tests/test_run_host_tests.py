@@ -258,3 +258,13 @@ def test_a_relative_path_resolves_from_where_the_runner_was_started():
         finally:
             os.chdir(here)
     assert (passed, total, failures) == (1, 1, []), failures
+
+
+def test_a_test_k_matched_but_not_asked_for_does_not_fail_the_file():
+    """-k matches substrings, file names included, so pytest also runs tests
+    nobody handed it. The runner already judged those in-process; one of them
+    failing must not turn the requested fixture tests into a file failure."""
+    body = ("def test_load(tmp_path):\n    assert tmp_path.exists()\n\n\n"
+            "def test_load_more():\n    assert False, 'plain fail'\n")
+    passed, total, failures, _ = _fixture_run(body, "test_load")
+    assert (passed, total, failures) == (1, 1, []), failures
