@@ -214,3 +214,101 @@ test("period change clears the open drill panel, same as the group choice (D5: n
 	const js = script(readNumbersVue());
 	assert.match(js, /selectedHeading\.value\s*=\s*null/);
 });
+
+// --- U46: the commentary editor in the drill panel -------------------------
+//
+// The panel shows the heading's commentary and, when canComment(view), an
+// editor with Save (story 8.3; #305-W4-5 5b). canComment itself is read
+// from get_statement's payload — get_drill carries no can_comment (U42
+// facts) — so Numbers.vue computes it with the real `canComment` helper
+// and passes it (and the heading's raw commentary entry) into the panel
+// rather than the panel inventing either.
+
+const SAVE_COMMENTARY = "konsol.close.commentary_api.save_commentary";
+
+test("NumbersDrill.vue declares canComment and commentary props (fed by Numbers.vue, not invented here)", () => {
+	const js = script(readDrillVue());
+	assert.match(js, /canComment\s*:\s*\{[^}]*type\s*:\s*Boolean[^}]*required\s*:\s*true/s, "canComment is a required Boolean prop");
+	assert.match(js, /commentary\s*:\s*\{[^}]*type\s*:\s*Object[^}]*default\s*:\s*null/s, "commentary is an Object prop, default null");
+});
+
+test("Numbers.vue feeds NumbersDrill canComment and commentary from the real statement payload, not a guess", () => {
+	const source = readNumbersVue();
+	assert.match(
+		source,
+		/import\s*\{[^}]*\bcanComment\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/,
+		"Numbers.vue imports the real canComment helper",
+	);
+	const tpl = template(source);
+	const tag = tpl.match(/<NumbersDrill\b[\s\S]*?\/?>/)[0];
+	assert.match(tag, /:can-comment="[^"]+"/, "the NumbersDrill tag passes :can-comment");
+	assert.match(tag, /:commentary="[^"]+"/, "the NumbersDrill tag passes :commentary");
+	const js = script(source);
+	// the value bound to :can-comment must come from calling canComment(...),
+	// never a hard-coded true/false and never numbers.payload.can_comment read
+	// a second time independently of the helper.
+	assert.match(js, /canComment\s*\(/, "canComment(...) is actually called in Numbers.vue");
+});
+
+test("A successful save tells Numbers.vue to reload the statement exactly once, through a 'saved' event", () => {
+	const drillSource = readDrillVue();
+	assert.match(drillSource, /defineEmits\(\s*\[\s*["']close["']\s*,\s*["']saved["']\s*\]\s*\)|defineEmits\(\s*\[\s*["']saved["']\s*,\s*["']close["']\s*\]\s*\)/);
+	const js = script(drillSource);
+	assert.match(js, /emit\(\s*["']saved["']\s*\)/);
+
+	const numbersSource = readNumbersVue();
+	const tpl = template(numbersSource);
+	const tag = tpl.match(/<NumbersDrill\b[\s\S]*?\/?>/)[0];
+	assert.match(tag, /@saved="[^"]+"/, "Numbers.vue listens for the saved event");
+});
+
+test("The commentary editor is v-if on the canComment prop — never rendered unconditionally", () => {
+	const tpl = template(readDrillVue());
+	// a save control (button/textarea) gated on canComment
+	assert.match(tpl, /v-if="canComment"/, "an editor block is gated on canComment");
+});
+
+test("Red: save_commentary is not posted yet", () => {
+	const source = readDrillVue();
+	const names = source.match(/konsol\.close\.commentary_api\.save_commentary/g) || [];
+	assert.equal(names.length, 0, "this is the pre-U46 state: no save_commentary call yet");
+});
+
+test("Exactly one post(SAVE_COMMENTARY call site; the body comes from commentaryBody, never an object literal naming heading", () => {
+	const source = readDrillVue();
+	assert.match(source, new RegExp(SAVE_COMMENTARY.replace(/\./g, "\\.")));
+	const js = script(source);
+	const posts = js.match(/\bpost\(\s*SAVE_COMMENTARY\b/g) || [];
+	assert.equal(posts.length, 1, "exactly one post(SAVE_COMMENTARY call site");
+	assert.match(js, /post\(\s*SAVE_COMMENTARY\s*,\s*commentaryBody\(/, "the body is built by commentaryBody(...), not a hand-built object");
+	assert.doesNotMatch(js, /post\(\s*SAVE_COMMENTARY\s*,\s*\{\s*heading\s*:/, "no object literal naming heading: built by hand for the post body");
+});
+
+test("commentaryBody and commentaryByText are imported from numbers.js (the real producer's helpers, not re-implemented)", () => {
+	const source = readDrillVue();
+	assert.match(source, /import\s*\{[^}]*\bcommentaryBody\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
+	assert.match(source, /import\s*\{[^}]*\bcommentaryByText\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
+});
+
+test("A refused save keeps the typed text: the catch branch sets only an error, never the draft text", () => {
+	const js = script(readDrillVue());
+	const fnMatch = js.match(/async function save\w*\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
+	assert.ok(fnMatch, "a save function exists");
+	const body = fnMatch[0];
+	const catchMatch = body.match(/catch\s*\(e\)\s*\{([\s\S]*?)\}\s*finally/);
+	assert.ok(catchMatch, "the save function has a catch block");
+	const catchBody = catchMatch[1];
+	assert.doesNotMatch(catchBody, /draftText\.value\s*=/, "the catch branch never resets the typed draft text");
+	assert.match(catchBody, /Error\.value\s*=\s*e\.message/, "the catch branch records the server's message");
+});
+
+test("A Viewer (canComment false) sees the heading's commentary text read-only, with no editor", () => {
+	const tpl = template(readDrillVue());
+	// the read-only display is not itself gated on canComment
+	assert.match(tpl, /localCommentary|commentary(?!View)/i);
+});
+
+test("The panel shows the heading's commentary byline through commentaryByText, not re-derived", () => {
+	const js = script(readDrillVue());
+	assert.match(js, /commentaryByText\s*\(/);
+});
