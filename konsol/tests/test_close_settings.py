@@ -196,14 +196,36 @@ class _Refused(Exception):
     """What the stubbed frappe.throw raises."""
 
 
+# N41's fixture chart: a heading, two Published balance-sheet leaves (the
+# ones the live chart actually carries: 3100 Retained earnings, 3300 AOCI —
+# CTA), a Draft leaf and a Profit and Loss leaf, for the failure paths.
+_MAIN_ACCOUNTS = [
+    {"name": "3", "is_group": 1, "status": "Published",
+     "statement_section": "Balance Sheet", "account_name": "EQUITY"},
+    {"name": "3100", "is_group": 0, "status": "Published",
+     "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+    {"name": "3300", "is_group": 0, "status": "Published",
+     "statement_section": "Balance Sheet", "account_name": "AOCI — CTA"},
+    {"name": "3200", "is_group": 0, "status": "Draft",
+     "statement_section": "Balance Sheet", "account_name": "Draft account"},
+    {"name": "4100", "is_group": 0, "status": "Published",
+     "statement_section": "Profit and Loss", "account_name": "Revenue"},
+]
+
+
 def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
-         intercompany_declaration="", published=0, sql_log=None):
+         intercompany_declaration="", published=0, sql_log=None,
+         statement_cta_account="", statement_result_account="", get_all_log=None):
     """``published`` is what the stubbed locking count of Published
     Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
-    to ``sql_log`` (when given) as ``(query, values)`` (C16, #305-W3-7)."""
+    to ``sql_log`` (when given) as ``(query, values)`` (C16, #305-W3-7).
+    ``frappe.get_all`` is stubbed against ``_MAIN_ACCOUNTS`` (N41); every call
+    is appended to ``get_all_log`` (when given) as ``(doctype, filters,
+    fields)`` so a test can assert blank/blank never reads Main Account."""
     saved_throw = _m.frappe.throw
     saved_row = sys.modules["konsol.period_status"].period_row
     log = [] if sql_log is None else sql_log
+    ga_log = [] if get_all_log is None else get_all_log
 
     def throw(msg, *a, **k):
         raise _Refused(msg)
@@ -214,10 +236,18 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
             return [[published]]
         return [["Intercompany Account"]]
 
+    def get_all(doctype, filters=None, fields=None, **k):
+        ga_log.append((doctype, filters, fields))
+        assert doctype == "Main Account", doctype
+        codes = filters["name"][1]
+        return [dict(r) for r in _MAIN_ACCOUNTS if r["name"] in codes]
+
     db = _m.frappe.db
     had_sql = "sql" in vars(db)
     saved_sql = vars(db).get("sql")
+    saved_get_all = getattr(_m.frappe, "get_all", None)
     _m.frappe.throw = throw
+    _m.frappe.get_all = get_all
     sys.modules["konsol.period_status"].period_row = period_row_fn
     db.sql = sql
     try:
@@ -227,9 +257,16 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
         doc.self_approval = self_approval
         doc.rate_move_threshold = rate_move_threshold
         doc.intercompany_declaration = intercompany_declaration
+        doc.statement_cta_account = statement_cta_account
+        doc.statement_result_account = statement_result_account
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
+        if saved_get_all is None:
+            if hasattr(_m.frappe, "get_all"):
+                delattr(_m.frappe, "get_all")
+        else:
+            _m.frappe.get_all = saved_get_all
         sys.modules["konsol.period_status"].period_row = saved_row
         if had_sql:
             db.sql = saved_sql
@@ -557,3 +594,82 @@ def test_unknown_intercompany_declaration_is_refused_before_any_read():
     except _Refused as e:
         assert "Sometimes" in str(e)
     assert log == []
+
+
+# ---------------------------------------------------------------------------
+# konsol#305-W4-1 option 1c (N41, N42): the declared CTA account and
+# current-year result account. No default — blank stays undeclared (N41's
+# gap, never defaulted); a save naming an unusable account, or the same
+# account for both roles, is refused with N41's sentence.
+# ---------------------------------------------------------------------------
+
+def test_statements_section_has_both_fields_as_links_to_main_account_no_default():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    order = [f["fieldname"] for f in _doc()["fields"]]
+    assert "statements_section" in by_name, "statements_section is missing"
+    assert by_name["statements_section"]["fieldtype"] == "Section Break"
+    assert by_name["statements_section"]["label"] == "Statements"
+    assert order.index("statements_section") > order.index("intercompany_declaration")
+    for fname in ("statement_cta_account", "statement_result_account"):
+        assert fname in by_name, f"{fname} is missing"
+        field = by_name[fname]
+        assert field["fieldtype"] == "Link", f"{fname} must be a Link"
+        assert field["options"] == "Main Account", f"{fname} must link Main Account"
+        assert "default" not in field, f"{fname} must have no default"
+        assert not field.get("reqd"), f"{fname} must not be reqd"
+        assert not field.get("permlevel"), f"{fname} must be permlevel 0"
+        assert order.index(fname) > order.index("statements_section")
+
+
+def test_blank_blank_saves_with_no_main_account_read():
+    ga_log = []
+    _run(None, None, _default_period_row, get_all_log=ga_log)
+    assert ga_log == []
+
+
+def test_cta_declared_as_a_heading_is_refused():
+    """Failure path: statement_cta_account = '3' (a heading)."""
+    try:
+        _run(None, None, _default_period_row, statement_cta_account="3")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "3 cannot hold the CTA" in str(e) and "a heading" in str(e), str(e)
+
+
+def test_cta_declared_as_a_draft_account_is_refused():
+    """Failure path: statement_cta_account = '3200' (Draft)."""
+    try:
+        _run(None, None, _default_period_row, statement_cta_account="3200")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "not Published" in str(e), str(e)
+
+
+def test_result_declared_as_a_profit_and_loss_account_is_refused():
+    """Failure path: statement_result_account = '4100' (Profit and Loss)."""
+    try:
+        _run(None, None, _default_period_row, statement_result_account="4100")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "a Profit and Loss account" in str(e), str(e)
+
+
+def test_same_code_in_both_fields_is_refused():
+    """Failure path: the same code declared for both roles."""
+    try:
+        _run(None, None, _default_period_row,
+             statement_cta_account="3300", statement_result_account="3300")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "must differ" in str(e), str(e)
+
+
+def test_valid_cta_and_result_accounts_save():
+    ga_log = []
+    _run(None, None, _default_period_row, statement_cta_account="3300",
+         statement_result_account="3100", get_all_log=ga_log)
+    assert len(ga_log) == 1, ga_log
+    doctype, filters, fields = ga_log[0]
+    assert doctype == "Main Account"
+    assert sorted(filters["name"][1]) == ["3100", "3300"]
+    assert set(fields) == {"name", "is_group", "status", "statement_section", "account_name"}

@@ -59,6 +59,25 @@
    "label": "Intercompany",
    "options": "\nNone in this group",
    "description": "Blank: intercompany is expected, or not set up yet (My work shows 'No intercompany accounts declared' until an Intercompany Account is Published). None in this group: no intercompany is expected; the intercompany screen, My work and the sign-off read 'not applicable'. Refused while any Intercompany Account is Published. No default (konsol#305-W3-7)."
+  },
+  {
+   "fieldname": "statements_section",
+   "fieldtype": "Section Break",
+   "label": "Statements"
+  },
+  {
+   "fieldname": "statement_cta_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "CTA account",
+   "description": "The balance-sheet account the consolidated balance sheet shows currency translation (CTA) under. No default: blank shows the CTA in the unmatched residual."
+  },
+  {
+   "fieldname": "statement_result_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Current-year result account",
+   "description": "The balance-sheet account the consolidated balance sheet shows the profit or loss to date under. No default."
   }
  ],
  "field_order": [
@@ -70,7 +89,10 @@
   "rates_section",
   "rate_move_threshold",
   "intercompany_section",
-  "intercompany_declaration"
+  "intercompany_declaration",
+  "statements_section",
+  "statement_cta_account",
+  "statement_result_account"
  ],
  "permissions": [
   {
