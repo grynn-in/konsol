@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAfter, statementView } from "../numbers.js";
+import { effectView } from "../adjustments.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ADJUSTMENTS = path.join(__dirname, "Adjustments.vue");
@@ -379,13 +380,65 @@ test("W43: a second seq guard exists for the statement load, so a stale response
 	assert.ok(new Set(names).size >= 2, "the two seq counters are distinct variables");
 });
 
-test("W43: Before/After is rendered only when selectedJournal.docstatus === 0; an approved/reversed journal shows 'Included in the statement'", () => {
+test("W43: Before/After is rendered only when selectedJournal.docstatus === 0; an Approved journal shows 'Included in the statement'", () => {
 	const tpl = template(read());
 	const draftBlock = blockMatching(tpl, "template", /v-if="[^"]*selectedJournal\.docstatus\s*===\s*0[^"]*"|v-else-if="[^"]*selectedJournal\.docstatus\s*===\s*0[^"]*"/);
 	assert.ok(draftBlock, "a template branch is gated on selectedJournal.docstatus === 0");
 	const inner = tpl.slice(draftBlock.start, draftBlock.end);
 	assert.match(inner, /beforeAfter|Before|Change|After/i, "the docstatus===0 branch renders the before/after data");
-	assert.match(tpl, /Included in the statement/i, "an approved/reversed journal shows this sentence");
+	assert.match(tpl, /Included in the statement/i, "an Approved journal shows this sentence");
+});
+
+// U4 (W4 review, verified): Adjustments.vue:703-736 treated every
+// docstatus !== 0 as "Included in the statement" — wrong for docstatus 2
+// (Cancelled/reversed-away: journal_api.py's get_journals returns docstatus
+// 0, 1 AND 2). A cancelled journal never reached a build, so it must read
+// differently from an approved one, with its own distinct branch.
+test("U4: docstatus 2 (Cancelled) reads 'Cancelled — not in the statement', distinct from docstatus 1's 'Included in the statement'", () => {
+	const tpl = template(read());
+	const cancelledBlock = blockMatching(tpl, "p", /selectedJournal\.docstatus\s*===\s*2/);
+	assert.ok(cancelledBlock, "a <p> is gated on selectedJournal.docstatus === 2");
+	const cancelledInner = tpl.slice(cancelledBlock.start, cancelledBlock.end);
+	assert.match(cancelledInner, /Cancelled.*not in the statement/i);
+	assert.doesNotMatch(cancelledInner, /Included in the statement/i, "docstatus 2 never shows the Approved sentence");
+
+	// The "Included in the statement" sentence must NOT sit in a branch
+	// that also matches docstatus 2 (the W43 bug: one `v-else` covered both
+	// docstatus 1 and 2).
+	const includedPos = tpl.search(/Included in the statement/i);
+	assert.ok(includedPos >= 0);
+	const nearbyTag = tpl.slice(Math.max(0, includedPos - 400), includedPos);
+	assert.doesNotMatch(nearbyTag, /docstatus\s*===\s*2/, "the Included-in-the-statement branch is not also the docstatus===2 branch");
+});
+
+// U4 "judgement" (verified): approved journals lost their per-heading
+// Effect list in W43 (only the bare "Included in the statement" sentence
+// remained) — restored here using the real effectView(effect).headings
+// shape (adjustments.js), the same list the Draft panel showed before W43.
+test("U4: an Approved journal's effect panel still lists each heading's amount (selectedEffect.headings), restored after W43 dropped it", () => {
+	const tpl = template(read());
+	const includedPos = tpl.search(/Included in the statement/i);
+	assert.ok(includedPos >= 0);
+	// The nearest enclosing <template> (or the whole v-else branch) around
+	// the sentence must also render the headings list.
+	const nearby = tpl.slice(includedPos, Math.min(tpl.length, includedPos + 700));
+	assert.match(nearby, /selectedEffect\.headings/, "the headings list is rendered near the Included sentence");
+	assert.match(nearby, /heading\.label/);
+	assert.match(nearby, /heading\.amountText/);
+});
+
+// pure: effectView(goldenJournalItem().effect) is the REAL producer's shape
+// (journal_model.statement_effect through adjustments.js's effectView) —
+// pins the exact headings this restored list must be able to show, so the
+// template-level test above is checked against real data, not an invented
+// shape.
+test("pure: effectView(goldenJournalItem().effect).headings — the real shape the restored list renders", () => {
+	const view = effectView(goldenJournalItem().effect);
+	assert.deepEqual(view.headings, [
+		{ section: "Profit and Loss", heading: "4", label: "Revenue", amountText: "Cr 500.00" },
+		{ section: "Balance Sheet", heading: "2", label: "Liabilities", amountText: "Dr 500.00" },
+	]);
+	assert.equal(view.noHeading, 0);
 });
 
 test("W43: a statement load error is shown as visible text in the panel, never swallowed", () => {
