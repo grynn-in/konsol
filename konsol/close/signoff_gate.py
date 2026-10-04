@@ -48,10 +48,20 @@ Reads the site and passes it through the pure models:
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
 - ``statement_accounts()`` / ``statement_gap()`` (#305-W4-1 1c, N45): the
   declared CTA account and current-year result account, read from Close
-  Settings and resolved through ``close_policy_model.statement_accounts``.
+  Settings and resolved through ``close_policy_model.statement_accounts``;
+  plus, since N45b (#305-W4-2 2a-ii, coordinator call W4-E22), every
+  Published Balance Sheet heading whose ``normal_balance`` side is
+  undeclared, found through ``statement_model._bs_heading_sides`` — the
+  same rule the statement itself and the drill use, never re-derived here.
+  Both checks share one Main Account read (every row, not only the two
+  declared codes: the heading-side check must run whatever the CTA/result
+  state is). Either problem lands in the SAME gap
+  (``close_policy_model.STATEMENT_ACCOUNTS_UNDECLARED``), so My work and
+  readiness need no new gap label — they already show this one.
   ``sign_off_problems`` appends ``statement_gap()`` to ``config_gaps``, right
   after the two policy gaps and before the IC tolerance gap, when either
-  statement account is undeclared or unusable (never defaulted).
+  statement account is undeclared or unusable, or a BS heading's side is
+  undeclared (never defaulted).
 - ``sign_off_problems`` also appends ``ic_api.tolerance_gap()`` (C05) to
   ``config_gaps``, right after the two policy gaps and the statement gap,
   when a consolidation
@@ -74,7 +84,8 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import close_policy_model, ic_api, period_model, scope_model, signoff_model
+from konsol.close import (
+    close_policy_model, ic_api, period_model, scope_model, signoff_model, statement_model)
 from konsol.period_status import PeriodNotDeclared
 
 BLOCKED_TITLE = "Sign-off blocked"
@@ -158,27 +169,63 @@ def _policies():
     )
 
 
+def _undeclared_bs_heading_sides(accounts):
+    """Every Published Balance Sheet heading in ``accounts`` (``{code:
+    {"is_group", "status", "statement_section", "normal_balance", ...}}``)
+    whose ``normal_balance`` is blank, or None when every one is declared.
+    Reuses ``statement_model._bs_heading_sides`` (N45b, #305-W4-2 2a-ii) —
+    the same rule the statement and the drill use for a BS heading's side —
+    rather than re-checking ``normal_balance`` here."""
+    bs_headings = sorted(
+        code for code, row in accounts.items()
+        if row.get("is_group") and row.get("status") == "Published"
+        and row.get("statement_section") == statement_model.BS
+    )
+    if not bs_headings:
+        return None
+    try:
+        statement_model._bs_heading_sides(bs_headings, accounts)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def statement_accounts():
     """The declared CTA account and current-year result account
     (konsol#305-W4-1 1c), read from Close Settings, resolved against their
     Main Account rows through ``close_policy_model.statement_accounts``
-    (N41's rule; never defaulted). The Main Account read only runs when at
-    least one of the two is set. N51 reuses this reader."""
+    (N41's rule; never defaulted); plus (N45b) every Published Balance Sheet
+    heading whose ``normal_balance`` side is undeclared
+    (``_undeclared_bs_heading_sides``). One Main Account read — every row,
+    not filtered to the two declared codes, since the heading-side check
+    must run whatever the CTA/result state is — serves both checks. A
+    heading-side problem lands in the SAME gap as an undeclared/invalid
+    CTA or result account (``close_policy_model.STATEMENT_ACCOUNTS_UNDECLARED``):
+    one statement setup gap, not two. N51 reuses this reader."""
     cta_account = frappe.db.get_single_value("Close Settings", "statement_cta_account")
     result_account = frappe.db.get_single_value("Close Settings", "statement_result_account")
-    rows = {}
+    accounts = {
+        r["name"]: r
+        for r in frappe.get_all(
+            "Main Account",
+            fields=["name", "is_group", "status", "statement_section", "account_name",
+                    "normal_balance"],
+            limit_page_length=0,
+        )
+    }
     codes = [c for c in (cta_account, result_account) if c]
-    if codes:
-        rows = {
-            r["name"]: r
-            for r in frappe.get_all(
-                "Main Account",
-                filters={"name": ["in", codes]},
-                fields=["name", "is_group", "status", "statement_section", "account_name"],
-                limit_page_length=0,
-            )
-        }
-    return close_policy_model.statement_accounts(cta_account, result_account, rows)
+    rows = {code: accounts[code] for code in codes if code in accounts}
+    declared = close_policy_model.statement_accounts(cta_account, result_account, rows)
+    heading_problem = _undeclared_bs_heading_sides(accounts)
+    if heading_problem:
+        gap = declared["gap"]
+        if gap is None:
+            gap = {"code": close_policy_model.STATEMENT_ACCOUNTS_UNDECLARED,
+                   "message": "", "problems": []}
+            declared["gap"] = gap
+        gap["problems"].append(heading_problem)
+        gap["message"] = " ".join(gap["problems"])
+    return declared
 
 
 def statement_gap():
