@@ -36,15 +36,20 @@ Reads the site and passes it through the pure models:
   entity: S1, E2-6): a trial balance or TB exception submitted or cancelled,
   or an amount basis set, changes the data a period's checks read. The
   period row's ``data_changed_at`` / ``data_changed_by`` / ``data_change``
-  are set (a direct row update: no EPM Fiscal Year validate runs), and the
-  period's latest signed run is marked "Re-sign Needed" through the same
-  writer, with ``affected_by`` = "<text> at <time> by <user>". History
-  periods (before the first close) and non-Regular periods are recorded but
-  never marked. ``entity``, when the caller names one, is passed to the
+  are set (a direct row update: no EPM Fiscal Year validate runs); every
+  LATER declared Regular period's own row is also stamped, with a carried
+  marker naming the source period, UNLESS that row already carries its own
+  newer change (R41k, review-w4-server.md S2 effect 3 — ``_stamp_carried_change``);
+  and the changed period's AND every later Regular period's latest signed
+  run is marked "Re-sign Needed" through the same writer, with
+  ``affected_by`` = "<text> at <time> by <user>". History periods (before
+  the first close) and non-Regular periods are recorded but never marked or
+  carried. ``entity``, when the caller names one, is passed to the
   ``signoff_voided`` Close Event the mark writes, so trail scoping hides a
   void whose reason names a hidden TB. ``sign_off_close`` refuses a run that
   did not start after ``data_changed_at`` (A65), through
-  ``signoff_model.data_change_problem`` (A66).
+  ``signoff_model.data_change_problem`` (A66) — which now also blocks an
+  UNSIGNED later period's stale check run, not only a signed one.
 - ``data_change(fy, fp)``: the period row's three fields, blanks as None.
 - ``statement_accounts()`` / ``statement_gap()`` (#305-W4-1 1c, N45): the
   declared CTA account and current-year result account, read from Close
@@ -442,9 +447,39 @@ def data_change(fiscal_year, fiscal_period):
     return {f: row.get(f) or None for f in DATA_CHANGE_FIELDS}
 
 
+def _stamp_carried_change(source_key, affected, text, user, at):
+    """Carry the data change onto every period in ``affected`` OTHER than
+    ``source_key`` (#305 R41k, review-w4-server.md S2 effect 3): a cumulative
+    balance sheet means ``data_change_problem`` (A66) must see the change on
+    a LATER period's own row too, whether or not that period has a signed
+    run for ``_mark_latest_signed`` (above) to void -- an unsigned later
+    period's own check run can start before the change and still be
+    refused only if its own row carries it.
+
+    Written as ``"Balance carried from FY<y> P<p>: <text>"``, so a reader of
+    that later period's own ``data_change`` never mistakes it for its own
+    data changing. Skipped for a period whose OWN ``data_changed_at`` is
+    already newer than ``at`` -- that period's own, real change (not a
+    carried balance) is never overwritten by an earlier period's carry."""
+    carried = "Balance carried from FY%d P%02d: %s" % (source_key[0], source_key[1], text)
+    for key in sorted(affected):
+        if key == source_key:
+            continue
+        row = _period_row(key, ("name",) + DATA_CHANGE_FIELDS)
+        existing_at = signoff_model._as_datetime(row.get("data_changed_at"))
+        if existing_at is not None and existing_at >= at:
+            continue
+        frappe.db.set_value(
+            "EPM Fiscal Year Period", row["name"],
+            {"data_changed_at": at, "data_changed_by": user, "data_change": carried},
+            update_modified=False,
+        )
+
+
 def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     """Record that the period's data changed (``text``, by ``user``, now) on
-    its EPM Fiscal Year Period row, and mark the changed period's AND every
+    its EPM Fiscal Year Period row, carry that change onto every LATER
+    Regular period's own row too, and mark the changed period's AND every
     later Regular period's latest signed run "Re-sign Needed" (#305-W4-4
     AMENDED 4 Oct, Deepak "all ★", #305 issuecomment-5978983396: a balance
     sheet is cumulative, so a change to one period's data moves every later
@@ -454,17 +489,22 @@ def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
 
     A direct row update (``db.set_value`` on the child row), so no EPM Fiscal
     Year validate runs. No commit: the caller's request commits or rolls back.
-    Only the changed period's own row gets the ``text`` / ``data_change``
-    fields — that is the period whose data actually changed; a later
-    period's balances move as a consequence, through its own query, not
-    because its own data changed. A history period (before the first close)
-    or a non-Regular period is recorded but nothing is marked, for the
-    changed period or any later one; with no first close declared, every
-    later Regular period is marked (the mark errs toward re-signing, as on a
-    reopen — ``_regular_periods_from``). Shared by every caller: an approval
-    doctype's submit/cancel (S42) and the existing TB Submission / TB
-    Exception callers inherit the later-period marking with no change on
-    their side.
+    Only the changed period's own row gets the real ``text`` / ``data_change``
+    fields — that is the period whose data actually changed. Every LATER
+    declared Regular period's row (R41k, review-w4-server.md S2 effect 3 —
+    not only the ones ``_mark_latest_signed`` reaches, i.e. not only the
+    already-signed ones) instead gets a carried marker naming the source
+    period and the same text (``_stamp_carried_change``), UNLESS that later
+    row already carries its own newer ``data_changed_at`` — its own, real
+    change is never overwritten by an earlier period's carried balance. A
+    history period (before the first close) or a non-Regular period is
+    recorded but nothing is marked or carried, for the changed period or any
+    later one; with no first close declared, every later Regular period is
+    marked and carried (the mark errs toward re-signing, as on a reopen —
+    ``_regular_periods_from``). Shared by every caller: an approval doctype's
+    submit/cancel (S42) and the existing TB Submission / TB Exception callers
+    inherit the later-period marking and carrying with no change on their
+    side.
 
     ``entity`` (S1, E2-6): the entity whose data changed, when the caller can
     name one (a TB submit or cancel, a TB Exception, an amount basis set on
@@ -489,5 +529,6 @@ def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
         return []
     affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
     affected = _regular_periods_from(key, first)
+    _stamp_carried_change(key, affected, text, user, at)
     return _mark_latest_signed(affected, affected_by, entity=entity)
 
