@@ -1,7 +1,9 @@
-"""Statement read endpoint for the close app (konsol#305 N51; stories 8.1
-— P&L and BS, Provisional or Signed; 8.3 — the commentary per line is in
-the payload; #305-W4-1, W4-4 (the sign-off label follows the run, never
-the statement itself), W4-5 (``can_comment``); W4-E8, W4-E10, W4-E19).
+"""Statement read endpoints for the close app (konsol#305 N51, N52;
+stories 8.1 — P&L and BS, Provisional or Signed; 8.2 — line -> entity ->
+account -> source in three clicks or fewer; 8.3 — the commentary per line
+is in the payload; #305-W4-1, W4-4 (the sign-off label follows the run,
+never the statement itself), W4-5 (``can_comment``); W4-E8, W4-E9, W4-E10,
+W4-E11, W4-E19).
 
 ``get_statement(fiscal_year, fiscal_period, consolidation_group=None)``
 (GET) returns one consolidation group's statement for a period: both
@@ -9,6 +11,19 @@ sections (``statement_model.statement``, N49), the sign-off label, the
 per-heading commentary (M43), the declared-accounts setup gap (N41/N45),
 the "entities not included" chip (W4-E10) and whether the caller may add
 commentary.
+
+``get_drill(fiscal_year, fiscal_period, consolidation_group, heading)``
+(GET, N52) returns one statement heading's amount broken into layers at
+entity grain (``drill_model.drill``, N50): the entity layer split by
+entity (cut to the caller's scope, W4-E9), and every other layer
+(eliminations, CTA, top-side journals, …) as its own row, never under an
+entity (D2-5). The top-side row carries the period's postings from
+``gold_consolidation_adjustments`` (W4-E11; the TB's own topside rows keep
+only ``any(journal_id)``, V03, so the per-journal breakdown comes from the
+adjustments table instead). ``consolidation_group`` is required (the
+Numbers screen has already chosen one) and ``heading`` must be a
+Published heading (``is_group``) of the chart; either failing throws, as
+does an unknown group.
 
 Nothing here is ever a silent empty statement:
 
@@ -44,7 +59,7 @@ and the chart is non-empty; otherwise 0.
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import ch_read, signoff_gate, statement_model
+from konsol.close import ch_read, drill_model, signoff_gate, statement_model
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
 
@@ -81,6 +96,49 @@ _ENTITY_SQL = (
     "SELECT DISTINCT data_area_id FROM epm_gold.gold_fully_consolidated_tb "
     "WHERE consolidation_group = {group:String} AND fiscal_year = {fy:UInt32} "
     "AND fiscal_period = {fp:UInt16} AND adjustment_type = 'entity'"
+)
+
+#: N52's entity-grain read for one heading's leaf accounts. The ``cta``
+#: branch (rows carrying the literal ``main_account 'CTA'``, never one of
+#: the heading's own leaf codes) is added only when the drilled heading
+#: holds the declared CTA account (D2-5: the CTA row is never under an
+#: entity, so it is never reached through ``main_account IN {accounts}``).
+#:
+#: The sum is aliased ``amt``, not ``amount`` (measured live 4 Oct):
+#: ``sum(amount) AS amount`` beside ``countIf(amount IS NULL)`` in the same
+#: SELECT list makes ClickHouse substitute the alias into the ``countIf``
+#: expression, raising ``Code: 184 ILLEGAL_AGGREGATION`` — the same
+#: alias/column collision CLAUDE.md's CYCLIC_ALIASES trap warns about,
+#: here surfacing as a different error. ``_drill_row`` renames it back to
+#: ``amount`` before ``_tb_row``. (N51's own ``_TB_SQL`` carries the same
+#: collision; out of this row's files to fix — flagged, N53.)
+_DRILL_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_tb "
+    "WHERE consolidation_group = {group:String} AND fiscal_year <= {fy:UInt32} "
+    "AND (main_account IN {accounts:Array(String)}) "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+_DRILL_SQL_WITH_CTA = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_tb "
+    "WHERE consolidation_group = {group:String} AND fiscal_year <= {fy:UInt32} "
+    "AND (main_account IN {accounts:Array(String)} OR adjustment_type = 'cta') "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+#: The period's own postings for the heading's accounts (W4-E11): the
+#: top-side drill row's ``journals`` list, never the row's amount (which
+#: still comes from ``_DRILL_SQL``'s TB rows, like every other layer).
+_DRILL_JOURNALS_SQL = (
+    "SELECT journal_id, adjustment_type, data_area_id, main_account, "
+    "sum(net_amount) AS amount, any(description) AS description, "
+    "any(posted_by) AS posted_by, any(approved_by) AS approved_by "
+    "FROM epm_gold.gold_consolidation_adjustments "
+    "WHERE consolidation_group = {group:String} AND fiscal_year = {fy:UInt32} "
+    "AND fiscal_period = {fp:UInt16} AND main_account IN {accounts:Array(String)} "
+    "GROUP BY journal_id, adjustment_type, data_area_id, main_account"
 )
 
 
@@ -186,6 +244,72 @@ def _error_message(exc):
     return type(exc).__name__ + (" (%s)" % ", ".join(names) if names else "")
 
 
+def _heading_of(code, accounts):
+    """The chart heading (``parent_account``) of a declared leaf code, or
+    ``None`` when undeclared — N52's own copy of drill_model's private
+    helper, since this module reads the chart to decide which SQL to run
+    before any drill row exists to call it on."""
+    if not code:
+        return None
+    return (accounts.get(code) or {}).get("parent_account")
+
+
+def _leaf_codes(heading, accounts):
+    """Every Published leaf under ``heading``, for the ``{accounts:
+    Array(String)}`` bind in N52's two heading-scoped ClickHouse reads."""
+    return sorted(
+        code for code, entry in accounts.items()
+        if not entry.get("is_group") and entry.get("parent_account") == heading
+    )
+
+
+def _sql_array(codes):
+    """ClickHouse's external representation of an ``Array(String)`` query
+    parameter: a literal array string (measured live 4 Oct — ``requests``
+    otherwise repeats the key once per element, which ClickHouse cannot
+    parse as an array: ``CANNOT_READ_ARRAY_FROM_TEXT``)."""
+    return "[" + ",".join("'%s'" % c.replace("\\", "\\\\").replace("'", "\\'") for c in codes) + "]"
+
+
+def _drill_row(row):
+    """``_DRILL_SQL``'s row, renamed from its ``amt`` alias (see the SQL's
+    own comment) to ``_tb_row``'s expected ``amount`` key."""
+    renamed = dict(row)
+    renamed["amount"] = renamed.pop("amt", None)
+    return _tb_row(renamed)
+
+
+def _journal_row(row):
+    """A ``gold_consolidation_adjustments`` row, JSON-safe and renamed to
+    ``drill_model.drill``'s expected ``net_amount`` key (the SQL sums
+    ``net_amount`` but aliases the column ``amount`` on the wire, the same
+    convention as every other ClickHouse read here)."""
+    out = dict(row)
+    amount = out.pop("amount", None)
+    out["net_amount"] = None if amount is None else float(amount)
+    return out
+
+
+def _line_for_heading(stmt, heading):
+    """The real statement line for ``heading`` (R31: the drill's total is
+    checked against this, never a hand-built number)."""
+    for section in stmt["sections"]:
+        for line in section["lines"]:
+            if line.get("heading") == heading:
+                return line
+    frappe.throw(f"{heading} has no statement line (a bug).")
+
+
+def _drill_keys(period_rows, key, section):
+    """The N48 key set for ``heading``'s basis: the current period alone
+    for Profit and Loss, every declared key up to it (cumulative, Opening
+    included) for a Balance Sheet heading — N49's own window, reused
+    (``statement_model._keys_up_to``) rather than re-derived."""
+    if section == statement_model.PL:
+        return {key}
+    return statement_model._keys_up_to(period_rows, key)
+
+
 @frappe.whitelist(methods=["GET"])
 def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
@@ -283,4 +407,88 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     result["statement"] = stmt
     result["not_included"] = _not_included(key, entity_rows)
     result["commentary"] = _commentary(chosen, key)
+    return result
+
+
+@frappe.whitelist(methods=["GET"])
+def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
+    # Literal tuple, not the STATEMENT_ROLES constant: the AST contract
+    # checker (test_close_api_contract.py) requires ast.literal_eval on
+    # only_for's argument, the same reason get_statement repeats it.
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    key = _period_key(fiscal_year, fiscal_period)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    period_row = _find_period(key, period_rows)
+
+    groups = frappe.get_all(
+        "Consolidation Group", filters=_ROOT_FILTER,
+        fields=["consolidation_group", "reporting_currency"], limit_page_length=0,
+    )
+    group_by_name = {g["consolidation_group"]: g for g in groups}
+    if not consolidation_group or consolidation_group not in group_by_name:
+        frappe.throw(f"{consolidation_group} is not a consolidation group.")
+
+    accounts = frappe.get_all(
+        "Main Account", filters={"status": "Published"},
+        fields=ACCOUNT_FIELDS, limit_page_length=0,
+    )
+    accounts_map = {a["name"]: a for a in accounts}
+
+    entry = accounts_map.get(heading)
+    if entry is None or not entry.get("is_group"):
+        frappe.throw(f"{heading} is not a statement heading of the group chart.")
+
+    declared = signoff_gate.statement_accounts()
+    cta_heading = _heading_of(declared.get("cta_account"), accounts_map)
+    leaf_codes = _leaf_codes(heading, accounts_map)
+
+    result = {
+        "period": {
+            "fiscal_year": key[0], "fiscal_period": key[1],
+            "code": period_row.get("period_code"), "status": period_row.get("status"),
+            "period_type": period_row.get("period_type"),
+        },
+        "consolidation_group": consolidation_group,
+        "heading": heading,
+        "state": "ok",
+        "message": None,
+        "drill": None,
+    }
+
+    drill_sql = _DRILL_SQL_WITH_CTA if heading == cta_heading else _DRILL_SQL
+    accounts_param = _sql_array(leaf_codes)
+    try:
+        tb_rows = [
+            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": consolidation_group, "fy": key[0]})
+        ]
+        drill_rows = [
+            _drill_row(r) for r in ch_read.rows(
+                drill_sql, {"group": consolidation_group, "fy": key[0], "accounts": accounts_param})
+        ]
+        journal_rows = [
+            _journal_row(r) for r in ch_read.rows(
+                _DRILL_JOURNALS_SQL,
+                {"group": consolidation_group, "fy": key[0], "fp": key[1], "accounts": accounts_param})
+        ]
+    except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
+        result["state"] = "not_built" if ch_read.not_built(e) else "error"
+        result["message"] = _error_message(e)
+        return result
+
+    try:
+        stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
+        line = _line_for_heading(stmt, heading)
+        keys = _drill_keys(period_rows, key, entry.get("statement_section"))
+        allowed = allowed_entity_codes()
+        drill = drill_model.drill(
+            drill_rows, journal_rows, accounts_map, heading, keys, declared, allowed, line)
+    except ValueError as e:
+        # A NULL warehouse amount, an undeclared BS heading side, or a
+        # drill/statement total mismatch: a visible error state, never a
+        # 500, never a silently wrong breakdown.
+        result["state"] = "error"
+        result["message"] = str(e)
+        return result
+
+    result["drill"] = drill
     return result

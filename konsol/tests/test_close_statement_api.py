@@ -22,6 +22,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOSE_DIR = os.path.join(APP_DIR, "close")
 API_PY = os.path.join(CLOSE_DIR, "statement_api.py")
 FIXTURE_PY = os.path.join(APP_DIR, "tests", "fixtures", "close_statement_payload.json")
+FIXTURE_DRILL_PY = os.path.join(APP_DIR, "tests", "fixtures", "close_drill_payload.json")
 SITE_TZ = "Europe/London"
 
 LEAD = "zz-lead@example.com"
@@ -119,6 +120,28 @@ def _tb_row(main_account, amount, adjustment_type=None, fy=2025, fp=7, null_rows
             "adjustment_type": adjustment_type, "amount": amount, "null_rows": null_rows}
 
 
+def _drill_tb_row(main_account, amount, adjustment_type, data_area_id, fy=2025, fp=7, null_rows=0):
+    """N52's entity-grain read: like ``_tb_row`` but carrying
+    ``data_area_id``, and keyed ``amt`` (not ``amount``) — the real SQL's
+    own alias, chosen to avoid ClickHouse's alias/column collision with
+    ``countIf(amount IS NULL)`` (measured live 4 Oct, ILLEGAL_AGGREGATION);
+    the product's ``_drill_row`` renames it back before use."""
+    return {"fiscal_year": fy, "fiscal_period": fp, "data_area_id": data_area_id,
+            "main_account": main_account, "adjustment_type": adjustment_type,
+            "amt": amount, "null_rows": null_rows}
+
+
+def _drill_journal_row(journal_id, main_account, amount, data_area_id, description,
+                        posted_by, approved_by, adjustment_type="topside"):
+    """N52's journals read: the ClickHouse column is aliased ``amount`` (the
+    SQL sums ``net_amount``); the product maps it to drill_model's
+    ``net_amount`` key before calling ``drill_model.drill``."""
+    return {"journal_id": journal_id, "adjustment_type": adjustment_type,
+            "data_area_id": data_area_id, "main_account": main_account,
+            "amount": amount, "description": description,
+            "posted_by": posted_by, "approved_by": approved_by}
+
+
 class _Site:
     def __init__(self):
         self.user = ANALYST
@@ -141,6 +164,8 @@ class _Site:
         self.allowed = None
         self.ch_error = None
         self.ch_calls = []
+        self.drill_tb_rows = []  # N52: get_drill's entity-grain read
+        self.journal_rows = []  # N52: get_drill's gold_consolidation_adjustments read
         self.commentary_rows = [
             {"name": "SC-G1-2025-7-4", "consolidation_group": "G1", "fiscal_year": 2025,
              "fiscal_period": 7, "heading": "4", "text": "Strong quarter.",
@@ -223,8 +248,12 @@ def _ch_read(site):
         site.ch_calls.append((sql, dict(params or {})))
         if site.ch_error is not None:
             raise site.ch_error
+        if "gold_consolidation_adjustments" in sql:
+            return [dict(r) for r in site.journal_rows]
         if "DISTINCT data_area_id" in sql:
             return [dict(r) for r in site.entity_rows]
+        if "data_area_id" in sql:  # N52: the entity-grain drill read
+            return [dict(r) for r in site.drill_tb_rows]
         return [dict(r) for r in site.tb_rows]
 
     ch.rows = rows
@@ -278,7 +307,7 @@ def _invoke(site, run):
 
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
-             "konsol.close.statement_model", "konsol.close.timefmt",
+             "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -298,6 +327,8 @@ def _invoke(site, run):
             "konsol.close.statement_model", os.path.join(CLOSE_DIR, "statement_model.py"))
         close.timefmt = _load_path(
             "konsol.close.timefmt", os.path.join(CLOSE_DIR, "timefmt.py"))
+        close.drill_model = _load_path(
+            "konsol.close.drill_model", os.path.join(CLOSE_DIR, "drill_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:
@@ -317,6 +348,18 @@ def _call(site, fy=2025, fp=7, group=None):
 def _call_raises(site, fy=2025, fp=7, group=None):
     with pytest.raises(Exception) as info:
         _call(site, fy, fp, group)
+    return info.value
+
+
+def _call_drill(site, fy=2025, fp=7, group="G1", heading="1"):
+    result = _invoke(site, lambda api: api.get_drill(fy, fp, group, heading))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _call_drill_raises(site, fy=2025, fp=7, group="G1", heading="1"):
+    with pytest.raises(Exception) as info:
+        _call_drill(site, fy, fp, group, heading)
     return info.value
 
 
@@ -516,5 +559,148 @@ def test_golden_payload_matches_the_committed_fixture():
     site = _Site()
     result = json.loads(json.dumps(_call(site)))  # the wire shape: no tuples
     with open(FIXTURE_PY) as fh:
+        expected = json.load(fh)
+    assert result == expected
+
+
+# =============================================================================
+# get_drill (konsol#305 N52): one heading's amount, entity grain, with
+# journals for the top-side row. Same stub site, extended with the
+# entity-grain read (``drill_tb_rows``) and the journals read
+# (``journal_rows``).
+# =============================================================================
+
+def _drill_site():
+    """Heading "1" (ASSETS, Debit) carries the CTA account for this test
+    (a leaf "1200" added under it), so one drill shows entity, IC, CTA and
+    top-side rows together, as the row's test-first bullet asks (N50's own
+    layer coverage, combined onto one heading here). The aggregate
+    (``tb_rows``) and entity-grain (``drill_tb_rows``) totals agree by
+    construction: 300 (ZZA) + 200 (ZZB) + 100 (ZZC) - 50 (IC) + 40
+    (topside) = 590 on 1110; CTA -5 + -3 = -8."""
+    site = _Site()
+    site.accounts["1200"] = {
+        "name": "1200", "status": "Published", "account_name": "CTA reserve",
+        "parent_account": "1", "is_group": 0, "statement_section": "Balance Sheet",
+        "lft": 3, "normal_balance": "",
+    }
+    site.cta_account = "1200"
+    site.declared_rows["1200"] = {"is_group": 0, "status": "Published",
+                                   "statement_section": "Balance Sheet",
+                                   "account_name": "CTA reserve"}
+    site.tb_rows = [
+        _tb_row("1110", 590.0),
+        _tb_row("CTA", -8.0, adjustment_type="cta"),
+        _tb_row("2100", -803.70),
+        _tb_row("3200", -684.90),
+        _tb_row("4100", -241.43),
+    ]
+    site.drill_tb_rows = [
+        _drill_tb_row("1110", 300.0, "entity", "ZZA"),
+        _drill_tb_row("1110", 200.0, "entity", "ZZB"),
+        _drill_tb_row("1110", 100.0, "entity", "ZZC"),
+        _drill_tb_row("1110", -50.0, "ic_elimination", ""),
+        _drill_tb_row("1110", 40.0, "topside", "ZZA"),
+        _drill_tb_row("CTA", -5.0, "cta", "ZZA"),
+        _drill_tb_row("CTA", -3.0, "cta", "ZZB"),
+    ]
+    site.journal_rows = [
+        _drill_journal_row("J-1", "1110", 40.0, "ZZA", "Reclass intercompany loan",
+                            "alice@example.com", "bob@example.com"),
+    ]
+    return site
+
+
+def test_get_drill_returns_entity_ic_cta_and_topside_rows_for_heading_1():
+    site = _drill_site()
+    result = _call_drill(site)
+    assert result["state"] == "ok"
+    assert result["heading"] == "1"
+    assert result["consolidation_group"] == "G1"
+    drill = result["drill"]
+    assert drill["heading"] == "1"
+    assert drill["total"] == 582.0  # 590 (leaf, incl. IC/topside) - 8 (CTA)
+
+    entity_rows = [r for r in drill["rows"] if r["layer"] == "entity" and r["entity"]]
+    assert {r["entity"]: r["amount"] for r in entity_rows} == {
+        "ZZA": 300.0, "ZZB": 200.0, "ZZC": 100.0}
+
+    ic_rows = [r for r in drill["rows"] if r["label"] == "Intercompany eliminations"]
+    assert len(ic_rows) == 1
+    assert ic_rows[0]["amount"] == -50.0
+    assert ic_rows[0]["entity"] is None
+
+    topside_rows = [r for r in drill["rows"] if r["label"] == "Top-side journals"]
+    assert len(topside_rows) == 1
+    assert topside_rows[0]["amount"] == 40.0
+    assert topside_rows[0]["source"] == {"kind": "journals"}
+    assert topside_rows[0]["journals"][0]["journal_id"] == "J-1"
+    assert topside_rows[0]["journals"][0]["amount"] == 40.0
+
+    cta_rows = [r for r in drill["rows"] if r["layer"] == "cta"]
+    assert len(cta_rows) == 1
+    assert cta_rows[0]["amount"] == -8.0
+    assert cta_rows[0]["entity"] is None
+
+
+# --- failure path: warehouse down -------------------------------------------
+
+def test_warehouse_error_in_drill_is_an_error_state_with_no_drill():
+    site = _drill_site()
+    site.ch_error = RuntimeError("boom")
+    result = _call_drill(site)
+    assert result["state"] == "error"
+    assert "RuntimeError" in result["message"]
+    assert result["drill"] is None
+
+
+# --- failure path: heading must be a Published group heading ----------------
+
+def test_a_leaf_code_as_heading_throws():
+    site = _drill_site()
+    _call_drill_raises(site, heading="1110")
+
+
+def test_an_unknown_code_as_heading_throws():
+    site = _drill_site()
+    _call_drill_raises(site, heading="ZZ-NOPE")
+
+
+def test_an_unknown_group_throws_for_get_drill():
+    site = _drill_site()
+    _call_drill_raises(site, group="ZZ-NOPE")
+
+
+# --- no dim_ column; exactly 3 ClickHouse calls ------------------------------
+
+def test_no_drill_sql_names_a_dim_column_and_exactly_three_calls_are_made():
+    site = _drill_site()
+    _call_drill(site)
+    assert len(site.ch_calls) == 3
+    for sql, _params in site.ch_calls:
+        assert "dim_" not in sql
+
+
+# --- scope (W4-E9): hidden entities are never named --------------------------
+
+def test_scoped_caller_sees_the_aggregated_outside_scope_row():
+    site = _drill_site()
+    site.allowed = ["ZZA"]
+    result = _call_drill(site)
+    rows = result["drill"]["rows"]
+    outside = next(r for r in rows if r["layer"] == "entity" and r["entity"] is None)
+    assert outside["label"] == "2 entities outside your scope"
+    assert outside["amount"] == 300.0  # 200 (ZZB) + 100 (ZZC)
+    assert outside["accounts"] == []
+    for row in rows:
+        assert row.get("entity") not in ("ZZB", "ZZC")
+
+
+# --- golden payload (W4-E19): the real producer's output --------------------
+
+def test_golden_drill_payload_matches_the_committed_fixture():
+    site = _drill_site()
+    result = json.loads(json.dumps(_call_drill(site)))  # the wire shape: no tuples
+    with open(FIXTURE_DRILL_PY) as fh:
         expected = json.load(fh)
     assert result == expected
