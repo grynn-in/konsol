@@ -9,13 +9,19 @@ live submission per entity-period, and the uploader may access the entity.
 File contract (header required, case-insensitive; CSV, or the first sheet of
 an .xlsx workbook):
 
-    data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description][, partner_data_area_id][, amount_basis]
+    data_area_id, fiscal_year, fiscal_period, main_account, debit, credit, currency[, description][, partner_data_area_id][, amount_basis]
 
 `entity`, `year`, `period` and `account` are accepted for the first four, and
 `partner`, `partner_entity`, `partner_id` or `counterparty` for the partner.
-Amounts are in each entity's own accounting currency, one row per account,
-partner and declared dimension values, debits and credits both positive (the same contract as a single
-upload). The partner is the other group entity an intercompany row is held
+One row per account, partner and declared dimension values, debits and
+credits both positive (the same contract as a single upload).
+
+currency (konsol#252) is the ISO code each row's amounts are in. It is a
+column, not a field on the upload, because one file holds entities with
+different currencies. Every row of one entity-period must give the same
+currency and it must be that entity's Functional Currency; check_group refuses
+the entity-period otherwise (konsol.tb_currency_model, the rule a single
+submission's validate() applies too). A file without the column is refused. The partner is the other group entity an intercompany row is held
 with; it is optional (konsol#159).
 
 amount_basis (konsolidat#199; `basis` and `amount basis` are accepted too)
@@ -31,10 +37,14 @@ import io
 import math
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
+from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems
 from konsol.tb_dimension_model import accepted_dimension_columns, dimension_problems, is_dimension_column
 
 PARTNER = "partner_data_area_id"
-REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit")
+REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", CURRENCY)
+#: The header as the refusals spell it.
+HEADER_HELP = ("data_area_id, fiscal_year, fiscal_period, main_account, debit, credit, currency"
+               "[, description][, partner_data_area_id][, amount_basis]")
 ALIASES = {
     "entity": "data_area_id",
     "entity_id": "data_area_id",
@@ -115,8 +125,9 @@ def split_table(table, declared_dimensions=()):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
     Keys keep the order they first appear in the file. Each row is
-    {main_account, debit, credit, description, partner_data_area_id,
-    amount_basis}, the shape a single submission parses; amount_basis is the
+    {main_account, debit, credit, currency, description, partner_data_area_id,
+    amount_basis}, the shape a single submission parses; currency is the
+    cell as written (check_group judges it, per entity-period); amount_basis is the
     exact basis string, or '' when the file has no such column or the cell is
     blank. Every row of one entity-period that gives a basis must give the
     same one (group_basis reads it). Raises ValueError listing every
@@ -141,9 +152,8 @@ def split_table(table, declared_dimensions=()):
     missing = [c for c in REQUIRED if c not in names]
     if missing:
         raise ValueError(
-            f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be "
-            "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit[, description]"
-            "[, partner_data_area_id][, amount_basis]"
+            f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be {HEADER_HELP}"
+            + (f". {MISSING_CURRENCY_HELP}" if CURRENCY in missing else "")
         )
     # An unrecognised header is refused, not ignored (konsol#255). This used
     # to check only that REQUIRED was present, so any other column was never
@@ -167,13 +177,14 @@ def split_table(table, declared_dimensions=()):
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} on line "
-            f"{head_line}. The header may be "
-            "data_area_id, fiscal_year, fiscal_period, main_account, debit, credit"
-            "[, description][, partner_data_area_id][, amount_basis]"
+            f"{head_line}. The header may be {HEADER_HELP}"
         )
     problems.extend(dimension_problems([n for n in names if n not in accepted_dims], declared))
     if problems:
         raise ValueError("\n".join(problems))
+    if names.count(CURRENCY) > 1:
+        # `col` reads the first of two, so the second would never be judged.
+        raise ValueError(f"Two currency columns on line {head_line}: keep one")
     if names.count(PARTNER) > 1:
         raise ValueError(f"Two partner columns on line {head_line}: keep one")
     if names.count(BASIS) > 1:
@@ -237,6 +248,7 @@ def split_table(table, declared_dimensions=()):
                               f'entity-period says "{first}"; one entity-period holds one amount basis')
         groups.setdefault(key, []).append({
             "main_account": account, "debit": debit, "credit": credit,
+            CURRENCY: cell(get(CURRENCY)),
             "description": cell(get("description")), PARTNER: cell(get(PARTNER)),
             BASIS: basis,
             **{d: cell(get(d)) for d in dim_names},
@@ -286,7 +298,11 @@ def resolve_basis(group_basis, form_basis):
 
 def group_csv(rows, source=None):
     """One entity-period as the single-submission CSV
-    (main_account,debit,credit,description,partner_data_area_id[,amount_basis]).
+    (main_account,debit,credit,currency,description,partner_data_area_id[,amount_basis]).
+
+    The currency column is always written, each row's cell as the bulk file
+    gave it, so the submission's validate() judges the same declaration
+    check_group did (konsol#252).
 
     `source` (the upload's name) is written as an extra column, which the
     single-upload parser ignores. It records where the file came from, and
@@ -306,11 +322,12 @@ def group_csv(rows, source=None):
     dim_names = sorted({k for r in rows for k in r if is_dimension_column(k)})
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
-    writer.writerow(["main_account", "debit", "credit", "description", PARTNER]
+    writer.writerow(["main_account", "debit", "credit", CURRENCY, "description", PARTNER]
                     + ([BASIS] if basis else []) + (["source_upload"] if source else [])
                     + dim_names)
     for r in rows:
-        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get("description", ""),
+        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get(CURRENCY, ""),
+                         r.get("description", ""),
                          r.get(PARTNER, "")] + ([r.get(BASIS, "")] if basis else [])
                         + ([source] if source else [])
                         + [r.get(d, "") for d in dim_names])
@@ -318,7 +335,7 @@ def group_csv(rows, source=None):
 
 
 def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_types, existing, validate_rows,
-                known_entities=None, warnings=(), partnerless_ic_rows=0):
+                functional_currency, known_entities=None, warnings=(), partnerless_ic_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
     The facts come from the caller; `validate_rows` is the single-submission
@@ -332,6 +349,12 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     `status` (the effective status: Open/Closed/Locked). `postable_types` is
     the set of period types this site accepts trial balances for (Regular is
     always in it).
+
+    `functional_currency` is the entity's Functional Currency ('' or None when
+    it has none). It has no default: the caller must read it, and an entity
+    without one is refused by name, never skipped (konsol#252). The rows'
+    currency is judged by konsol.tb_currency_model, the rule a single
+    submission's validate() applies.
     """
     entity, year, period_no = key
     errors = []
@@ -348,6 +371,7 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     if existing:
         errors.append(f"{existing} is already submitted for this entity and period; cancel or amend it first")
     errors.extend(validate_rows(rows, known_accounts=known_accounts, entity=entity, known_entities=known_entities))
+    errors.extend(currency_problems(entity, functional_currency, [(None, r.get(CURRENCY)) for r in rows]))
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
         "total_debit": round(sum(r["debit"] for r in rows), 2),

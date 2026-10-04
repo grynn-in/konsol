@@ -28,6 +28,7 @@ from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submiss
 from konsol.entity_permissions import assert_entity_access
 from konsol.group_chart import chart_accounts
 from konsol.period_status import OPEN, assert_open, assert_postable, period_row
+from konsol.tb_currency_model import COLUMN as CURRENCY, currency_problems
 from konsol.tb_dimension import declared_dimensions
 
 #: How many problems a refused submit names; the check screen shows them all.
@@ -51,6 +52,16 @@ def _partner_entities(rows):
         return None
     return set(frappe.get_all("Entity", filters={"is_group": 0}, pluck="name",
                               limit_page_length=0))
+
+
+def _currency_problems(entity, rows):
+    """konsol#252: the file's declared currency against the Entity's Functional
+    Currency, the rule TrialBalanceSubmission.validate() applies. A file that
+    did not parse has no rows and is already refused, so it is not judged."""
+    if not rows:
+        return []
+    functional = frappe.db.get_value("Entity", entity, "functional_currency") or ""
+    return currency_problems(entity, functional, [(r.get("line"), r.get(CURRENCY)) for r in rows])
 
 
 def _submitted(entity, fiscal_year, fiscal_period):
@@ -108,6 +119,12 @@ def check_tb(entity, fiscal_year, fiscal_period, amount_basis, content):
     problem = read_problem or _column_problem(rows)
     if problem:
         result["file_problems"].insert(0, problem)
+        result["ok"] = False
+    # The submit refuses a currency other than the Entity's (konsol#252); the
+    # check says so first.
+    currency = _currency_problems(entity, rows)
+    if currency:
+        result["file_problems"].extend(currency)
         result["ok"] = False
     result["period_problem"] = period_problem
     result["replaces"] = _submitted(entity, year, number)
@@ -198,7 +215,10 @@ def submit_tb(entity, fiscal_year, fiscal_period, amount_basis, content, replace
         frappe.throw(f"Could not read the trial balance file: {e}")
     result = check_rows(rows, chart_accounts(), entity, _partner_entities(rows),
                         amount_basis, BALANCE_TOLERANCE)
-    if not result["ok"]:
+    # konsol#252: refused here, before the old TB is cancelled below, though
+    # the new TB's validate() would refuse it too.
+    result["file_problems"].extend(_currency_problems(entity, rows))
+    if not result["ok"] or result["file_problems"]:
         frappe.throw("The trial balance was not submitted: " + _first_problems(result))
     # Before anything is written: the new TB's landing would refuse a dimension
     # with no warehouse column, but only after the old TB is cancelled below.
