@@ -243,9 +243,9 @@ _S_KEY = (2025, 7)
 #: Published Balance Sheet leaves under heading 3, EQUITY, N41 facts).
 _S_DECLARED_ROWS = {
     "3300": {"is_group": False, "status": "Published", "statement_section": M.BS,
-              "account_name": "AOCI - CTA"},
+              "account_name": "AOCI - CTA", "parent_account": "3"},
     "3100": {"is_group": False, "status": "Published", "statement_section": M.BS,
-              "account_name": "Retained earnings"},
+              "account_name": "Retained earnings", "parent_account": "3"},
 }
 
 

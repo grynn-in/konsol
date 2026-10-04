@@ -54,9 +54,9 @@ _KEYS = SM._keys_up_to(_CALENDAR, _KEY)  # the real BS cumulative window (N48/N4
 #: test_close_statement_model.py's ``_S_DECLARED_ROWS``.
 _DECLARED_ROWS = {
     "3300": {"is_group": False, "status": "Published", "statement_section": SM.BS,
-              "account_name": "AOCI - CTA"},
+              "account_name": "AOCI - CTA", "parent_account": "3"},
     "3100": {"is_group": False, "status": "Published", "statement_section": SM.BS,
-              "account_name": "Retained earnings"},
+              "account_name": "Retained earnings", "parent_account": "3"},
 }
 
 
