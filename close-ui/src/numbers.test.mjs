@@ -322,11 +322,13 @@ test("amountText: null/undefined throws, never renders 0.00", () => {
 
 // --- module hygiene ----------------------------------------------------------
 
-test("the source imports no vue, frappe or xstate, and no browser storage literal", () => {
+// route.test.mjs (B07) already scans every file under close-ui/src for the
+// browser-storage literal, this test file included — no copy of that check
+// (and no copy of the literal itself) belongs here.
+test("the source imports no vue, frappe or xstate", () => {
 	const path = fileURLToPath(new URL("./numbers.js", import.meta.url));
 	const source = readFileSync(path, "utf8");
 	for (const term of ["vue", "frappe", "xstate"]) {
 		assert.ok(!source.includes(`"${term}`) && !source.includes(`'${term}`), `unexpected import of ${term}`);
 	}
-	assert.doesNotMatch(source, /localStorage|sessionStorage/);
 });
