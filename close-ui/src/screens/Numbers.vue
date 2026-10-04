@@ -236,6 +236,10 @@ const selectedCommentary = computed(() =>
 
 //: U46: a successful commentary save reloads the statement once, quietly
 //: (no loading flash), so the table's own row.commentary picks it up too.
+//: R41h/U3: a STALE refusal (the drill panel's 'stale' event) reloads the
+//: same way — the fresh commentary entry it carries back down lets the
+//: panel recover the current `modified` token without the user reloading
+//: the page themselves.
 function onCommentarySaved() {
 	load({ quiet: true });
 }
@@ -352,6 +356,7 @@ function onCommentarySaved() {
 			:commentary="selectedCommentary"
 			@close="selectedHeading = null"
 			@saved="onCommentarySaved"
+			@stale="onCommentarySaved"
 		/>
 	</div>
 </template>
