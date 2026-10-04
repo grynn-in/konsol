@@ -926,6 +926,34 @@ def test_a_data_change_marks_the_periods_signed_run_re_sign_needed_with_the_text
     assert site.saves[0][3] is True, "the uploader need not own the run"
 
 
+def test_a_data_change_also_marks_a_later_signed_period():
+    """AMENDED 4 Oct (#305-W4-4, Deepak "all ★", #305 issuecomment-5978983396):
+    a cumulative balance sheet means a data change also voids every LATER
+    signed period's signature, not only the changed period's own — for every
+    existing record_data_change caller (a TB submit/cancel too, not only
+    S42's new hook). A TB change in P07 marks the already-signed P09."""
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9))
+    marked = _record(site, 2025, 7, text="TB TBS-ZZA-2025-7 cancelled")
+    assert sorted(marked) == ["RUN-7", "RUN-8", "RUN-9"], marked
+    for name in ("RUN-7", "RUN-8", "RUN-9"):
+        assert _run_rec(site, name)["signoff_status"] == "Re-sign Needed", name
+    # One Close Event per period marked (T04b), not one combined event.
+    assert sorted(e[4] for e in site.close_events) == ["RUN-7", "RUN-8", "RUN-9"], site.close_events
+    for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
+        assert kind == "signoff_voided", kind
+        assert ref_dt == "Assertion Run", ref_dt
+        assert "TB TBS-ZZA-2025-7 cancelled" in reason, reason
+
+
+def test_a_data_change_does_not_mark_an_earlier_signed_period():
+    """The earlier period's signature covered data that has not changed."""
+    site = _Site()
+    marked = _record(site, 2025, 8)
+    assert "RUN-7" not in marked, marked
+    assert _run_rec(site, "RUN-7")["signoff_status"] == "Signed Off"
+
+
 def test_only_the_latest_signed_run_of_the_period_is_marked():
     site = _Site()
     site.records["Assertion Run"].append(_run("RUN-8-OLD", 2025, 8, day=1))
