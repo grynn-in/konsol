@@ -1,0 +1,29 @@
+{
+  "can_comment": true,
+  "commentary": {},
+  "consolidation_group": "G1",
+  "gap": null,
+  "group_note": "The only consolidation group.",
+  "groups": [
+    {
+      "consolidation_group": "G1",
+      "reporting_currency": "USD"
+    }
+  ],
+  "message": "statement_heading_side_undeclared: 2 have no normal_balance declared; declare Debit or Credit on each before the balance sheet can show its side.",
+  "not_included": null,
+  "period": {
+    "code": "FY2025P07",
+    "fiscal_period": 7,
+    "fiscal_year": 2025,
+    "period_type": "Regular",
+    "status": "Open"
+  },
+  "reporting_currency": "USD",
+  "signoff": {
+    "run": null,
+    "state": "provisional"
+  },
+  "state": "setup_gap",
+  "statement": null
+}

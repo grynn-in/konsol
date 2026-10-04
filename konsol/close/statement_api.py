@@ -38,9 +38,11 @@ Nothing here is ever a silent empty statement:
   ``normal_balance`` (``statement_model.STATEMENT_HEADING_SIDE_UNDECLARED``,
   AMENDED 4 Oct #305-W4-2 2a-ii) — ``statement_model.statement`` raises
   ``ValueError`` naming the problem (the heading side error names every
-  undeclared heading and what to set). This module turns either failure
-  into ``state "error"`` carrying that sentence: never a 500, and never a
-  statement shown with a side or an amount silently guessed.
+  undeclared heading and what to set). A NULL amount is a warehouse
+  failure (``state "error"``); an undeclared heading side is a setup gap,
+  not an outage, so it is ``state "setup_gap"`` instead (S5, #305-W4-R41d).
+  Either way: never a 500, and never a statement shown with a side or an
+  amount silently guessed.
 
 The declared-accounts gap, the sign-off label and ``can_comment`` depend
 only on the period (not on the chosen group or the chart), so they are
@@ -410,11 +412,15 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     try:
         stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
     except ValueError as e:
-        # A NULL warehouse amount, or a BS heading with no declared
-        # normal_balance (STATEMENT_HEADING_SIDE_UNDECLARED): a visible
-        # setup-gap/error state, never a 500, never a guessed statement.
-        result["state"] = "error"
-        result["message"] = str(e)
+        # A NULL warehouse amount is a warehouse failure ("error"); a BS
+        # heading with no declared normal_balance
+        # (STATEMENT_HEADING_SIDE_UNDECLARED) is a setup gap, not an
+        # outage, so it gets its own state (S5) — never a 500, never a
+        # guessed statement either way.
+        message = str(e)
+        is_setup_gap = message.startswith(statement_model.STATEMENT_HEADING_SIDE_UNDECLARED)
+        result["state"] = "setup_gap" if is_setup_gap else "error"
+        result["message"] = message
         return result
 
     result["statement"] = stmt

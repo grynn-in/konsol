@@ -229,7 +229,7 @@ def test_statement_accounts_gap_is_one_blocking_item_with_no_since():
     assert item["action"] == {"desk": "/app/close-settings"}
     assert item["since"] is None
     assert item["detail"] == _STATEMENT_GAP["message"]
-    assert item["title"] == "Statement accounts not declared"
+    assert item["title"] == "Statement setup incomplete"
 
 
 def test_unknown_policy_gap_code_still_raises_not_silently_dropped():
