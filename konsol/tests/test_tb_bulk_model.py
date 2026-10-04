@@ -226,7 +226,7 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
 HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
 
 
-def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None):
+def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None):
     """Load konsol/tb_bulk.py with every non-model import stubbed.
 
     `period_lookup` maps (year, period) -> a period fact dict; a pair absent
@@ -247,7 +247,9 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None):
 
     def get_list(doctype, filters=None, pluck=None, limit_page_length=None):
         assert doctype == "Entity"
-        return list(entities)
+        # `visible`: the entities the uploader's scope lets get_list return
+        # (every one unless a test narrows it).
+        return list(entities if visible is None else visible)
 
     def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None):
         if doctype == "Entity" and fields:
@@ -739,3 +741,54 @@ def test_bulk_check_refuses_mixed_currencies_within_one_entity_period():
                            currencies={"ZZA": "EUR"})
     _, report = mod._check(table, PERIOD)
     assert not report[0]["ok"] and any("more than one currency" in e for e in report[0]["errors"]), report
+
+
+# --- PR #328 review L1: the currency rule never speaks for an entity the
+# uploader cannot see. "does not exist, or you have no access" is ambiguous on
+# purpose; a currency sentence would say the entity exists and what its
+# Functional Currency is (or that it has none).
+
+def test_check_group_says_nothing_about_the_currency_of_an_entity_it_cannot_see():
+    for functional in ("EUR", "", None):
+        r = _check(visible=False, functional_currency=functional,
+                   validate_rows=lambda rows, **kw: [])
+        assert r["errors"] == ["Entity AMDE does not exist, or you have no access to it"], (functional, r)
+
+
+def test_bulk_check_names_no_currency_for_an_out_of_scope_entity():
+    table = [HEADER_ROW,
+             ["ZZB", "2099", "1", "1010", "5", "0", "USD"],
+             ["ZZB", "2099", "1", "2010", "0", "5", "USD"],
+             ["ZZC", "2099", "1", "1010", "5", "0", "USD"],
+             ["ZZC", "2099", "1", "2010", "0", "5", "USD"]]
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["ZZB", "ZZC"], visible=[], postable={"Regular"},
+                           period_lookup=period_lookup, currencies={"ZZB": "EUR", "ZZC": ""})
+    _, report = mod._check(table, PERIOD)
+    for r in report:
+        assert not r["ok"], r
+        assert not any("urrency" in e for e in r["errors"]), r
+
+
+# --- PR #328 review L2: a bulk refusal names the file lines, as a single
+# upload does, so a blank or mixed currency in a big file can be found.
+
+def test_split_table_carries_each_rows_file_line():
+    rows = M.split_table([HEADER, [None] * 7,
+                          ["AMDE", "2025", "12", "1010", "5", "0", "EUR"],
+                          ["AMDE", "2025", "12", "2010", "0", "5", "EUR"]])[("AMDE", 2025, 12)]
+    assert [r["line"] for r in rows] == [3, 4]
+
+
+def test_bulk_check_names_the_lines_of_a_blank_or_mixed_currency():
+    table = [HEADER_ROW,
+             ["ZZA", "2099", "1", "1010", "5", "0", "EUR"],
+             ["ZZA", "2099", "1", "2010", "0", "5", "USD"],
+             ["ZZA", "2099", "1", "3010", "0", "0", ""]]
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["ZZA"], postable={"Regular"}, period_lookup=period_lookup,
+                           currencies={"ZZA": "EUR"})
+    _, report = mod._check(table, PERIOD)
+    errors = report[0]["errors"]
+    assert any("The currency is blank on line 4" in e for e in errors), errors
+    assert any("(EUR on line 2; USD on line 3)" in e for e in errors), errors
