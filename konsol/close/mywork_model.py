@@ -48,7 +48,7 @@ FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_m
 _POLICY_GAPS = {
     "self_approval_undeclared": ("self_approval", "Self-approval policy not declared"),
     "rate_move_undeclared": ("rate_move", "Rate move threshold not declared"),
-    "statement_accounts_undeclared": ("statement_accounts", "Statement accounts not declared"),
+    "statement_accounts_undeclared": ("statement_accounts", "Statement setup incomplete"),
 }
 
 
