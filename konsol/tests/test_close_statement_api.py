@@ -303,7 +303,7 @@ def _invoke(site, run):
 
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
-             "konsol.close.statement_model", "konsol.close.timefmt",
+             "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -323,6 +323,8 @@ def _invoke(site, run):
             "konsol.close.statement_model", os.path.join(CLOSE_DIR, "statement_model.py"))
         close.timefmt = _load_path(
             "konsol.close.timefmt", os.path.join(CLOSE_DIR, "timefmt.py"))
+        close.drill_model = _load_path(
+            "konsol.close.drill_model", os.path.join(CLOSE_DIR, "drill_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:
@@ -579,6 +581,9 @@ def _drill_site():
         "lft": 3, "normal_balance": "",
     }
     site.cta_account = "1200"
+    site.declared_rows["1200"] = {"is_group": 0, "status": "Published",
+                                   "statement_section": "Balance Sheet",
+                                   "account_name": "CTA reserve"}
     site.tb_rows = [
         _tb_row("1110", 590.0),
         _tb_row("CTA", -8.0, adjustment_type="cta"),
