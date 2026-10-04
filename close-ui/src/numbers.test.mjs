@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRouter, createMemoryHistory } from "vue-router";
 import {
 	statementView,
 	tabRows,
@@ -30,6 +31,7 @@ const DRILL_FIXTURE_PATH = fileURLToPath(
 const JOURNAL_ITEM_FIXTURE_PATH = fileURLToPath(
 	new URL("../../konsol/tests/fixtures/close_approvals_journal_item.json", import.meta.url),
 );
+const ROUTER_JS_PATH = fileURLToPath(new URL("./router.js", import.meta.url));
 
 function golden() {
 	return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
@@ -37,6 +39,27 @@ function golden() {
 
 function goldenDrill() {
 	return JSON.parse(readFileSync(DRILL_FIXTURE_PATH, "utf8"));
+}
+
+// U1 (W4 review): a router built from router.js's OWN base and route
+// pattern, read out of its source rather than copied by hand, so a change
+// to either one breaks this test instead of leaving it silently stale.
+// `createCloseRouter` itself can't run under plain `node --test`: it calls
+// `createWebHistory` (needs `window.history`, absent in Node) and
+// `import.meta.glob` (a Vite build-time macro) — router.test.mjs keeps the
+// same boundary for `landingPath`. `createMemoryHistory` needs neither, and
+// resolves through the identical route table vue-router would use at
+// runtime.
+function realRouteTable() {
+	const source = readFileSync(ROUTER_JS_PATH, "utf8");
+	const baseMatch = source.match(/createWebHistory\(\s*(["'])([^"']+)\1\s*\)/);
+	const pathMatch = source.match(/\{\s*path:\s*(["'])([^"']+)\1,\s*component:\s*ScreenLoader/);
+	assert.ok(baseMatch, "router.js: expected createWebHistory(\"...\") with a literal base");
+	assert.ok(pathMatch, "router.js: expected a { path: \"...\", component: ScreenLoader } route");
+	return createRouter({
+		history: createMemoryHistory(baseMatch[2]),
+		routes: [{ path: pathMatch[2], component: {} }],
+	});
 }
 
 // W41's golden journal item (test_close_approvals_api.py, built from the REAL
@@ -367,7 +390,12 @@ test("drillView: an entity row's amount, accounts and tb source link", () => {
 	const zza = view.rows.find((r) => r.layer === "entity" && r.entity === "ZZA");
 	assert.equal(zza.amount, "300.00");
 	assert.deepEqual(zza.accounts, [{ mainAccount: "1110", accountName: "Cash", amount: "300.00" }]);
-	assert.equal(zza.link, "/close/2025/7/trial-balances");
+	// U1 (W4 review): no `/close` prefix — the router's history base IS
+	// `/close` (router.js's createWebHistory("/close")), so a route's own
+	// path never repeats it. See "resolves through the real route table"
+	// below, which proves this against router.js itself, not just a pinned
+	// string.
+	assert.equal(zza.link, "/2025/7/trial-balances");
 });
 
 test("drillView: an IC elimination row has no source link and no entity text", () => {
@@ -383,7 +411,7 @@ test("drillView: a top-side row's journals link to Adjustments, in the payload's
 	const topside = view.rows.find((r) => r.layer === "topside");
 	assert.equal(topside.entity, null);
 	assert.equal(topside.label, "Top-side journals");
-	assert.equal(topside.link, "/close/2025/7/adjustments");
+	assert.equal(topside.link, "/2025/7/adjustments"); // U1 (W4 review): no `/close` prefix
 	assert.deepEqual(topside.journals, [
 		{
 			journalId: "J-1",
@@ -394,6 +422,23 @@ test("drillView: a top-side row's journals link to Adjustments, in the payload's
 		},
 	]);
 	assert.equal(topside.journalsBasis, "posted in this period (the heading's amount is cumulative)");
+});
+
+test("drillView: every drill source link resolves through router.js's REAL route table (U1)", () => {
+	const router = realRouteTable();
+	const view = drillView(goldenDrill());
+	const links = view.rows.map((r) => r.link).filter((link) => link != null);
+
+	assert.ok(links.length > 0, "fixture should produce at least one link to check");
+	for (const link of links) {
+		const resolved = router.resolve(link);
+		assert.ok(resolved.matched.length > 0, `${link} matched 0 routes`);
+		// The resolved href carries the router's own /close base exactly
+		// once — this is what a broken /close/... link in the source
+		// string would double up (U1's bug: matched: 0, href
+		// /close/close/2025/7/trial-balances).
+		assert.equal(resolved.href, `/close${link}`);
+	}
 });
 
 test("drillView: dimensionsNote and heading/section are passed through", () => {
