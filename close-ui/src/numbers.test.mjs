@@ -14,14 +14,25 @@ import {
 	tabRows,
 	isDrillable,
 	amountText,
+	drillView,
+	commentaryBody,
+	canComment,
+	commentaryByText,
 } from "./numbers.js";
 
 const FIXTURE_PATH = fileURLToPath(
 	new URL("../../konsol/tests/fixtures/close_statement_payload.json", import.meta.url),
 );
+const DRILL_FIXTURE_PATH = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_drill_payload.json", import.meta.url),
+);
 
 function golden() {
 	return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
+}
+
+function goldenDrill() {
+	return JSON.parse(readFileSync(DRILL_FIXTURE_PATH, "utf8"));
 }
 
 // The fixture's one commentary entry is at 2025-08-01T10:00:00+01:00, which
@@ -318,6 +329,175 @@ test("amountText: 2dp, thousands grouping, negatives in brackets", () => {
 test("amountText: null/undefined throws, never renders 0.00", () => {
 	assert.throws(() => amountText(null), /missing amount/);
 	assert.throws(() => amountText(undefined), /missing amount/);
+});
+
+// --- drillView (U42) ---------------------------------------------------------
+//
+// Exercises drillView against statement_api.get_drill's real payload shape
+// (N52: konsol/close/statement_api.py, konsol/close/drill_model.py). The "ok"
+// case loads the golden fixture (close_drill_payload.json, N52's own host
+// test commit); every other case is a mutation of it, never a hand-built
+// payload.
+
+test("drillView: entity rows carry entity codes, the CTA row has none", () => {
+	const view = drillView(goldenDrill());
+	const entityRows = view.rows.filter((r) => r.layer === "entity");
+	assert.deepEqual(entityRows.map((r) => r.entity), ["ZZA", "ZZB", "ZZC"]);
+
+	const cta = view.rows.find((r) => r.layer === "cta");
+	assert.equal(cta.entity, null);
+	assert.equal(cta.label, "Currency translation (CTA)");
+});
+
+test("drillView: an entity row's amount, accounts and tb source link", () => {
+	const view = drillView(goldenDrill());
+	const zza = view.rows.find((r) => r.layer === "entity" && r.entity === "ZZA");
+	assert.equal(zza.amount, "300.00");
+	assert.deepEqual(zza.accounts, [{ mainAccount: "1110", accountName: "Cash", amount: "300.00" }]);
+	assert.equal(zza.link, "/close/2025/7/trial-balances");
+});
+
+test("drillView: an IC elimination row has no source link and no entity text", () => {
+	const view = drillView(goldenDrill());
+	const ic = view.rows.find((r) => r.layer === "ic_elimination");
+	assert.equal(ic.entity, null);
+	assert.equal(ic.label, "Intercompany eliminations");
+	assert.equal(ic.link, null);
+});
+
+test("drillView: a top-side row's journals link to Adjustments, in the payload's own period", () => {
+	const view = drillView(goldenDrill());
+	const topside = view.rows.find((r) => r.layer === "topside");
+	assert.equal(topside.entity, null);
+	assert.equal(topside.label, "Top-side journals");
+	assert.equal(topside.link, "/close/2025/7/adjustments");
+	assert.deepEqual(topside.journals, [
+		{
+			journalId: "J-1",
+			description: "Reclass intercompany loan",
+			amount: "40.00",
+			postedBy: "alice@example.com",
+			approvedBy: "bob@example.com",
+		},
+	]);
+	assert.equal(topside.journalsBasis, "posted in this period (the heading's amount is cumulative)");
+});
+
+test("drillView: dimensionsNote and heading/section are passed through", () => {
+	const view = drillView(goldenDrill());
+	assert.equal(view.heading, "1");
+	assert.equal(view.headingName, "ASSETS");
+	assert.equal(view.section, "Balance Sheet");
+	assert.equal(view.dimensionsNote, "Not broken down by dimension yet (konsolidat#245).");
+	assert.equal(view.state, null);
+});
+
+test("drillView: unknown layer labels are shown as sent, not rewritten", () => {
+	const payload = goldenDrill();
+	payload.drill.rows.push({
+		layer: "some_future_adjustment_type",
+		label: "some_future_adjustment_type",
+		entity: null,
+		amount: 12.34,
+		accounts: [],
+		source: null,
+	});
+	const view = drillView(payload);
+	const row = view.rows.find((r) => r.layer === "some_future_adjustment_type");
+	assert.equal(row.label, "some_future_adjustment_type");
+	assert.equal(row.amount, "12.34");
+});
+
+test("failure path: a drill state other than ok shows the server message and no rows", () => {
+	const payload = goldenDrill();
+	payload.state = "error";
+	payload.message = "OSError (timeout)";
+	payload.drill = null;
+	const view = drillView(payload);
+	assert.deepEqual(view.state, { kind: "error", message: "OSError (timeout)" });
+	assert.deepEqual(view.rows, []);
+});
+
+test("failure path: an unknown drill state throws", () => {
+	const payload = goldenDrill();
+	payload.state = "mystery";
+	assert.throws(() => drillView(payload), /mystery/);
+});
+
+test("failure path: a missing top-level key throws, naming it", () => {
+	for (const key of ["period", "consolidation_group", "heading", "state", "message", "drill"]) {
+		const payload = goldenDrill();
+		delete payload[key];
+		assert.throws(
+			() => drillView(payload),
+			new RegExp(`Numbers payload has no ${key}\\.`),
+			`expected a throw for missing ${key}`,
+		);
+	}
+});
+
+test("failure path: an unknown drill source kind throws", () => {
+	const payload = goldenDrill();
+	payload.drill.rows[0].source.kind = "mystery_source";
+	assert.throws(() => drillView(payload), /mystery_source/);
+});
+
+// --- commentaryBody, canComment, commentaryByText (U42) -----------------------
+
+test("commentaryBody: exactly the six M44 parameters, from the view and the given heading/text", () => {
+	const body = commentaryBody(goldenDrill(), "1", "Strong quarter.", null);
+	assert.deepEqual(body, {
+		fiscal_year: 2025,
+		fiscal_period: 7,
+		consolidation_group: "G1",
+		heading: "1",
+		text: "Strong quarter.",
+		modified: null,
+	});
+});
+
+test("failure path: a body built from a draft carrying owner, docstatus, name has exactly the six keys", () => {
+	const draft = {
+		owner: "zz-analyst@example.com",
+		docstatus: 0,
+		name: "SC-G1-2025-7-1",
+		modified: "2025-08-01 09:00:00.000000",
+	};
+	const body = commentaryBody(goldenDrill(), "1", "text", draft);
+	assert.deepEqual(Object.keys(body).sort(), [
+		"consolidation_group",
+		"fiscal_period",
+		"fiscal_year",
+		"heading",
+		"modified",
+		"text",
+	]);
+	assert.equal(body.modified, "2025-08-01 09:00:00.000000");
+});
+
+test("commentaryBody: blank/whitespace text is carried through unchanged (a clear, not refused)", () => {
+	const body = commentaryBody(goldenDrill(), "1", "   ", null);
+	assert.equal(body.text, "   ");
+});
+
+test("canComment: true only when can_comment is exactly true", () => {
+	const payload = golden();
+	assert.equal(canComment(payload), true);
+
+	payload.can_comment = false;
+	assert.equal(canComment(payload), false);
+});
+
+test("failure path: canComment throws when can_comment is missing, never silently false", () => {
+	const payload = golden();
+	delete payload.can_comment;
+	assert.throws(() => canComment(payload), /can_comment/);
+});
+
+test("commentaryByText: '<by> · <formatted time>', mirroring the statement row's own commentary text", () => {
+	const entry = { text: "Strong quarter.", by: "Zz Analyst", at: "2025-08-01T10:00:00+01:00" };
+	const text = commentaryByText(entry, NOW, TZ);
+	assert.equal(text, "Zz Analyst · 10:00");
 });
 
 // --- module hygiene ----------------------------------------------------------
