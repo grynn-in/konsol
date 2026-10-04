@@ -1102,7 +1102,47 @@ def test_entity_accountant_can_get_a_sent_back_item_too():
 def test_the_statement_gap_stub_is_installed():
     site = _Site()
     assert site.statement_gap is None
-    # My work does not read statement_gap yet (N47 adds that call); _call
-    # must still build and tear down the stub without error.
+    # N47 now reads it (None here means no gap); _call must build and tear
+    # down the stub without error either way.
     _call(site)
     assert site.statement_gap is None
+
+
+# --- N47: the statement-accounts setup gap (konsol#305-W4-1 1c) ---------------
+#
+# signoff_gate.statement_gap() is appended to policy_gaps for group personas
+# only (mywork_api._gap_facts); mywork_model resolves it into one item. The
+# gap fed in is the REAL gap close_policy_model.statement_accounts returns,
+# never a hand-built dict.
+
+
+def test_statement_gap_reaches_the_group_personas():
+    gap = _model("close_policy_model").statement_accounts("", "", {})["gap"]
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.statement_gap = gap
+        result = _call(site)
+        item = _gap(result, "statement_accounts")
+        assert item is not None, (roles, _ids(result))
+        assert item["detail"] == gap["message"], item
+        assert item["kind"] == "blocking", item
+        assert item["action"] == {"desk": "/app/close-settings"}, item
+        _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+def test_entity_accountant_never_sees_the_statement_gap():
+    # Failure path: the Entity Accountant cannot declare Close Settings.
+    gap = _model("close_policy_model").statement_accounts("", "", {})["gap"]
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.statement_gap = gap
+    result = _call(site)
+    assert _gap(result, "statement_accounts") is None, _ids(result)
+
+
+def test_statement_gap_none_gives_no_item():
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.statement_gap = None
+        result = _call(site)
+        assert _gap(result, "statement_accounts") is None, (roles, _ids(result))
+        _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")

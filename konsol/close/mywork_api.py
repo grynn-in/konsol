@@ -239,13 +239,22 @@ def _gap_facts(first_close, persona, allowed):
     frequency_missing = [e for e, f in leaves.items() if e in in_scope and not f]
     ownership_missing = list(uncovered)
     group = persona != period_model.ENTITY_ACCOUNTANT
+    policy_gaps = close_policy_model.policy_gaps(*_policies()) if group else []
+    if group:
+        # konsol#305-W4-1 1c: an undeclared/invalid statement account is a
+        # setup gap, resolved through the same _POLICY_GAPS lookup as the
+        # other policy gaps (mywork_model). Entity Accountants never see it:
+        # they cannot declare Close Settings.
+        statement_gap = signoff_gate.statement_gap()
+        if statement_gap is not None:
+            policy_gaps = policy_gaps + [statement_gap]
     return {
         "first_close": first_close,
         "chart_published": bool(group_chart.chart_accounts()),
         "frequency_missing": sorted(frequency_missing) if group else _mine(frequency_missing, allowed),
         "ownership_missing": sorted(ownership_missing) if group else _mine(ownership_missing, allowed),
         "accountants_without_entities": _accountants_without_entities() if group else [],
-        "policy_gaps": close_policy_model.policy_gaps(*_policies()) if group else [],
+        "policy_gaps": policy_gaps,
         "ic_accounts_gap": ic_api.setup_gap() if group else None,
         "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
     }, uncovered
