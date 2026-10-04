@@ -9,9 +9,25 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { beforeAfter, statementView } from "../numbers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APPROVALS = path.join(__dirname, "Approvals.vue");
+
+// konsol#305 W44: the real golden fixtures (never a hand-built item or
+// statement) — W41's journal item (fiscal_year/fiscal_period/
+// consolidation_group, the three keys this row reads) and N51/N54's
+// statement payload (each heading line's own display `sign`).
+const ITEM_FIXTURE = fileURLToPath(
+	new URL("../../../konsol/tests/fixtures/close_approvals_journal_item.json", import.meta.url),
+);
+const STATEMENT_FIXTURE = fileURLToPath(
+	new URL("../../../konsol/tests/fixtures/close_statement_payload.json", import.meta.url),
+);
+
+function golden(fixturePath) {
+	return JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+}
 
 function read() {
 	return fs.readFileSync(APPROVALS, "utf8");
@@ -28,6 +44,50 @@ function template(source) {
 	const end = source.lastIndexOf("</template>");
 	assert.ok(start >= 0 && end > start, "the component has a <template>");
 	return source.slice(start, end);
+}
+
+/**
+ * From the `<` of an opening `tagName` tag at `openIdx`, finds the matching
+ * closing tag by counting nested opens/closes of the same tag name (mirrors
+ * numbers.screen.test.mjs's own helper — the templates here nest plainly,
+ * with no self-closing `<div/>`). Returns `{start, end}` spanning the whole
+ * element, end exclusive of the closing tag's `>`.
+ */
+function blockFor(tpl, openIdx, tagName) {
+	const openRe = new RegExp(`<${tagName}(?=[\\s>])`, "g");
+	const closeRe = new RegExp(`</${tagName}>`, "g");
+	const tagEnd = tpl.indexOf(">", openIdx) + 1;
+	assert.ok(tagEnd > 0, `the opening <${tagName}> tag closes`);
+	let depth = 1;
+	let pos = tagEnd;
+	while (depth > 0) {
+		openRe.lastIndex = pos;
+		closeRe.lastIndex = pos;
+		const nextOpen = openRe.exec(tpl);
+		const nextClose = closeRe.exec(tpl);
+		assert.ok(nextClose, `a matching </${tagName}> exists`);
+		if (nextOpen && nextOpen.index < nextClose.index) {
+			depth++;
+			pos = nextOpen.index + nextOpen[0].length;
+		} else {
+			depth--;
+			pos = nextClose.index + nextClose[0].length;
+			if (depth === 0) return { start: openIdx, end: pos };
+		}
+	}
+}
+
+/** The span of the nearest `<tagName ...>` element whose own opening tag
+ * (attributes included) matches `pattern`. */
+function blockMatching(tpl, tagName, pattern) {
+	const re = new RegExp(`<${tagName}(?:(?!>)[\\s\\S])*?>`, "g");
+	let m;
+	while ((m = re.exec(tpl))) {
+		if (pattern.test(m[0])) {
+			return blockFor(tpl, m.index, tagName);
+		}
+	}
+	return null;
 }
 
 test("Red: Approvals.vue is missing", () => {
@@ -131,13 +191,95 @@ test("Failure path: a sent-back item renders no Approve or Reject control", () =
 	assert.doesNotMatch(block, /canAct\(/, "no approve/reject gate reused in the sent-back list");
 });
 
-test("No fetch, and no Before/After columns (wave 4)", () => {
+test("No raw fetch( — W44 now builds Before/After columns (A19's wave-4 stub above), but every server call still goes through api.js", () => {
 	const source = read();
-	assert.doesNotMatch(template(source), /Before|After/, "Before/After columns are wave 4");
+	assert.doesNotMatch(source, /\bfetch\(/, "all server calls go through api.js");
 });
 
 test("Self-approval policy line is shown only when the caller is an approver", () => {
 	const tpl = template(read());
 	assert.match(tpl, /v-if="view\s*&&\s*view\.canApprove\s*&&\s*view\.selfApproval"/);
 	assert.match(tpl, /Self-approval policy/);
+});
+
+// --- W44: Before/Change/After per heading in the journal detail panel ------
+
+test("pure: beforeAfter(item.effect, statementView(statement)) over the real golden fixtures gives the amended per-heading before/change/after (N54/W42)", () => {
+	const item = golden(ITEM_FIXTURE);
+	const statement = golden(STATEMENT_FIXTURE);
+	const view = statementView(statement, new Date("2025-08-01T18:00:00Z"), "Europe/London");
+	const rows = beforeAfter(item.effect, view);
+	assert.deepEqual(
+		rows.map((r) => [r.heading, r.before, r.change, r.after]),
+		[
+			["4", "241.43", "500.00", "741.43"],
+			["2", "803.70", "(500.00)", "303.70"],
+		],
+	);
+});
+
+test("Imports beforeAfter and statementView from numbers.js (W44)", () => {
+	const source = read();
+	assert.match(source, /import\s*\{[^}]*\bbeforeAfter\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
+	assert.match(source, /import\s*\{[^}]*\bstatementView\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
+});
+
+test("Names konsol.close.statement_api.get_statement exactly once; exactly one get(GET_STATEMENT call site (W44)", () => {
+	const source = read();
+	const names = source.match(/konsol\.close\.statement_api\.get_statement/g) || [];
+	assert.equal(names.length, 1, "one endpoint constant for get_statement");
+	const js = script(source);
+	const gets = js.match(/\bget\(\s*GET_STATEMENT\b/g) || [];
+	assert.equal(gets.length, 1, "exactly one get(GET_STATEMENT call site");
+});
+
+test("The statement loads only for a journal item: loadDetailStatement is called from selectJournal, after its doctype !== JOURNAL return guard", () => {
+	const js = script(read());
+	const selectFn = js.match(/function selectJournal\(item\)\s*\{([\s\S]*?)\n\}/);
+	assert.ok(selectFn, "selectJournal(item) is defined");
+	const guardIdx = selectFn[1].search(/item\.doctype\s*!==\s*JOURNAL/);
+	assert.ok(guardIdx >= 0, "selectJournal still refuses a non-journal item first");
+	const loaderCallIdx = selectFn[1].search(/loadDetailStatement\(/);
+	assert.ok(loaderCallIdx > guardIdx, "the statement loader is only reached past the JOURNAL guard, so BC/BD items never load one");
+	const loaderFn = js.match(/async function loadDetailStatement\(item\)\s*\{([\s\S]*?)\n\}/);
+	assert.ok(loaderFn, "loadDetailStatement(item) is defined");
+	assert.match(loaderFn[1], /get\(\s*GET_STATEMENT\b/, "loadDetailStatement is the one get(GET_STATEMENT call site");
+	assert.match(
+		loaderFn[1],
+		/fiscal_year\s*:\s*item\.fiscal_year[\s\S]*?fiscal_period\s*:\s*item\.fiscal_period[\s\S]*?consolidation_group\s*:\s*item\.consolidation_group/,
+		"reads the item's own period/group (W41's keys), not the screen's",
+	);
+});
+
+test("Stale-guarded: a sequence counter distinct from the queue's own seq drops a late response", () => {
+	const js = script(read());
+	assert.match(js, /let\s+detailSeq\s*=\s*0/);
+	const loaderFn = js.match(/async function loadDetailStatement\(item\)\s*\{([\s\S]*?)\n\}/);
+	assert.ok(loaderFn, "loadDetailStatement(item) is defined");
+	assert.match(loaderFn[1], /\+\+detailSeq\b/, "a fresh call claims a new sequence number");
+	assert.match(loaderFn[1], /mine\s*!==\s*detailSeq/, "a stale response is dropped before it is applied");
+});
+
+test("Before/Change/After columns render for the selected journal's effect", () => {
+	const tpl = template(read());
+	assert.match(tpl, /Before/);
+	assert.match(tpl, /Change/);
+	assert.match(tpl, /After/);
+});
+
+test("Failure path: a non-ok or thrown statement shows its own message text, in a branch separate from the Before/After table — never blank or zero columns", () => {
+	const source = read();
+	const js = script(source);
+	assert.match(js, /detailBeforeAfter/, "a computed combines the fetched statement with beforeAfter/statementView");
+	const tpl = template(source);
+	const errBlock = blockMatching(tpl, "p", /detailBeforeAfter\.status === 'error'/);
+	assert.ok(errBlock, "an error branch renders detailBeforeAfter.message");
+	const inner = tpl.slice(errBlock.start, errBlock.end);
+	assert.match(inner, /detailBeforeAfter\.message/);
+	const tableBlock = blockMatching(tpl, "table", /<table\b/);
+	assert.ok(tableBlock, "a <table> renders the Before/Change/After rows, separate from the error paragraph");
+	assert.ok(
+		errBlock.end <= tableBlock.start || tableBlock.end <= errBlock.start,
+		"the error message and the table are sibling branches, never shown together",
+	);
 });
