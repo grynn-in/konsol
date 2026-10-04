@@ -282,11 +282,15 @@ def _pl_line(kind, label_or_heading_entry, cur_raw, comp_raw, ytd_raw, is_headin
         "comparison": comp,
         "variance": round(cur - comp, 2) if comp is not None else None,
         "ytd": ytd,
+        # Every P&L line (heading, no_heading, net_result) gets the same
+        # section-wide -1 flip applied above — declare it on every one of
+        # them, not only headings (S8: a consumer must never guess a line's
+        # sign from its kind).
+        "sign": -1,
     }
     if is_heading:
         line["heading"] = label_or_heading_entry[0]
         line["heading_name"] = label_or_heading_entry[1]
-        line["sign"] = -1
     else:
         line["label"] = label_or_heading_entry
     return line
@@ -425,21 +429,27 @@ def statement(rows, accounts, period_rows, key, declared):
         bs_lines.append(line)
 
     no_heading_bs_cur = ha_cum_current["no_heading"].get(BS, 0.0)
+    no_heading_bs_comp = ha_cum_comparison["no_heading"].get(BS, 0.0) if ha_cum_comparison else None
     if no_heading_bs_cur:
-        no_heading_bs_comp = ha_cum_comparison["no_heading"].get(BS, 0.0) if ha_cum_comparison else None
         bs_lines.append({
             "kind": "no_heading", "label": _NO_HEADING_LABEL,
             "current": round(no_heading_bs_cur, 2),
             "comparison": round(no_heading_bs_comp, 2) if no_heading_bs_comp is not None else None,
             "variance": (round(no_heading_bs_cur - no_heading_bs_comp, 2)
                          if no_heading_bs_comp is not None else None),
+            # Net-debit terms, unflipped (same convention as the residual,
+            # S8) — declared, not merely absent.
+            "sign": 1,
         })
 
     not_in_chart_cur = ha_cum_current["not_in_chart"]
+    # ``None`` only when the comparison period itself wasn't loaded; an
+    # empty dict (the comparison loaded but had no not-in-chart rows) is a
+    # real, loaded zero, never "not loaded" (S8).
+    not_in_chart_comp = ha_cum_comparison["not_in_chart"] if ha_cum_comparison else None
     if not_in_chart_cur:
-        not_in_chart_comp = ha_cum_comparison["not_in_chart"] if ha_cum_comparison else None
         total_cur = round(sum(not_in_chart_cur.values()), 2)
-        total_comp = round(sum(not_in_chart_comp.values()), 2) if not_in_chart_comp else None
+        total_comp = round(sum(not_in_chart_comp.values()), 2) if not_in_chart_comp is not None else None
         bs_lines.append({
             "kind": "not_in_chart", "label": _NOT_IN_CHART_LABEL,
             "codes": sorted(not_in_chart_cur),
@@ -462,7 +472,25 @@ def statement(rows, accounts, period_rows, key, declared):
         explained.append({"label": _NOT_IN_CHART_LABEL, "amount": round(sum(not_in_chart_cur.values()), 2)})
 
     residual_raw = round(residual_raw, 2)
-    residual_line = {"kind": "residual", "label": _RESIDUAL_LABEL, "current": residual_raw}
+
+    # The comparison residual, same formula, net-debit terms — ``None``
+    # only when the comparison period itself wasn't loaded (S8: the
+    # residual line carried no comparison at all).
+    residual_comp = None
+    if bs_raw_comp is not None:
+        residual_comp = sum(bs_raw_comp.values()) + (no_heading_bs_comp or 0.0)
+        if not_in_chart_comp:
+            residual_comp += sum(not_in_chart_comp.values())
+        if cta_account:
+            residual_comp += (cta_comp or 0.0)
+        if result_account:
+            residual_comp += (result_comp or 0.0)
+        residual_comp = round(residual_comp, 2)
+
+    residual_line = {
+        "kind": "residual", "label": _RESIDUAL_LABEL,
+        "current": residual_raw, "comparison": residual_comp,
+    }
     if residual_raw:
         residual_line["explained"] = explained
         residual_line["unexplained"] = round(residual_raw - sum(e["amount"] for e in explained), 2)

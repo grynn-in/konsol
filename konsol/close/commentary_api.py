@@ -39,9 +39,20 @@ DOCTYPE = "Statement Commentary"
 def _name(consolidation_group, fiscal_year, fiscal_period, heading):
     """The M43 autoname for this key (``format:SC-{consolidation_group}-
     {fiscal_year}-{fiscal_period}-{heading}``), built from the caller's own
-    inputs so the save targets exactly the record its own key would name."""
-    return "SC-%s-%d-%d-%s" % (
-        consolidation_group, int(fiscal_year), int(fiscal_period), heading)
+    inputs so the save targets exactly the record its own key would name.
+
+    ``fiscal_year``/``fiscal_period`` must be whole numbers: a non-numeric
+    value (a bad request, never a policy gap) is refused with a message
+    naming the bad input, never a raw ``ValueError``/``TypeError`` (U/S9:
+    that would surface as an unexplained 500)."""
+    try:
+        year, period = int(fiscal_year), int(fiscal_period)
+    except (TypeError, ValueError):
+        frappe.throw(
+            "fiscal_year and fiscal_period must be whole numbers: got "
+            f"fiscal_year={fiscal_year!r}, fiscal_period={fiscal_period!r}."
+        )
+    return "SC-%s-%d-%d-%s" % (consolidation_group, year, period, heading)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -72,11 +83,15 @@ def save_commentary(fiscal_year, fiscal_period, consolidation_group, heading, te
         })
         doc.insert(ignore_permissions=False)
 
+    # The same full-name read ``statement_api._commentary`` does (one
+    # ``User`` read) — ``by`` is never the bare email U9 found here.
+    full_name = frappe.db.get_value("User", doc.modified_by, "full_name") or doc.modified_by
+
     return {
         "name": doc.name,
         "heading": doc.heading,
         "text": doc.text,
         "modified": str(doc.modified),
-        "by": doc.modified_by,
+        "by": full_name,
         "at": zoned_iso(doc.modified, frappe.utils.get_system_timezone()),
     }
