@@ -15,7 +15,7 @@ _spec.loader.exec_module(M)
 
 TB_BULK_PATH = os.path.join(APP_DIR, "tb_bulk.py")
 
-HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit"]
+HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
 
 
 def _raises(fn, *args):
@@ -28,20 +28,20 @@ def _raises(fn, *args):
 
 def test_splits_into_entity_periods_in_file_order():
     table = [HEADER,
-             ["AMDE", "2025", "12", "1010", "100", ""],
-             ["AMUS", "2025", "12", "1010", "", "5"],
-             ["AMDE", "2025", "12", "2010", "", "100"],
-             ["AMDE", "2024", "12", "1010", "1", "0"]]
+             ["AMDE", "2025", "12", "1010", "100", "", "EUR"],
+             ["AMUS", "2025", "12", "1010", "", "5", "EUR"],
+             ["AMDE", "2025", "12", "2010", "", "100", "EUR"],
+             ["AMDE", "2024", "12", "1010", "1", "0", "EUR"]]
     groups = M.split_table(table)
     assert list(groups) == [("AMDE", 2025, 12), ("AMUS", 2025, 12), ("AMDE", 2024, 12)]
     assert [r["main_account"] for r in groups[("AMDE", 2025, 12)]] == ["1010", "2010"]
-    assert groups[("AMUS", 2025, 12)][0] == {"main_account": "1010", "debit": 0.0, "credit": 5.0, "description": "",
-                                             "partner_data_area_id": "", "amount_basis": ""}
+    assert groups[("AMUS", 2025, 12)][0] == {"main_account": "1010", "debit": 0.0, "credit": 5.0, "currency": "EUR",
+                                             "description": "", "partner_data_area_id": "", "amount_basis": ""}
 
 
 def test_header_is_forgiving_about_case_spaces_and_aliases():
-    table = [["Entity", "Year", "Period", "Account", "Debit", "Credit", "Description"],
-             ["AMDE", "2025", "1", "1010", "10.005", "0", "cash"]]
+    table = [["Entity", "Year", "Period", "Account", "Debit", "Credit", "Currency", "Description"],
+             ["AMDE", "2025", "1", "1010", "10.005", "0", "EUR", "cash"]]
     rows = M.split_table(table)[("AMDE", 2025, 1)]
     assert rows[0]["debit"] == 10.01 or rows[0]["debit"] == 10.0   # rounded to cents like a single upload
     assert rows[0]["description"] == "cash"
@@ -49,8 +49,8 @@ def test_header_is_forgiving_about_case_spaces_and_aliases():
 
 def test_excel_cells_numbers_and_blank_lines():
     table = [HEADER, [None] * 6,
-             ["AMDE", 2025.0, 12.0, 1010.0, 1234.5, None],
-             ["AMDE", 2025, 12, 2010, None, 1234.5, None, None]]   # trailing empty cells are fine
+             ["AMDE", 2025.0, 12.0, 1010.0, 1234.5, None, "EUR"],
+             ["AMDE", 2025, 12, 2010, None, 1234.5, "EUR", None, None]]   # trailing empty cells are fine
     rows = M.split_table(table)[("AMDE", 2025, 12)]
     assert [r["main_account"] for r in rows] == ["1010", "2010"]
     assert rows[0]["debit"] == 1234.5 and rows[1]["credit"] == 1234.5
@@ -58,11 +58,11 @@ def test_excel_cells_numbers_and_blank_lines():
 
 def test_structural_problems_are_reported_together_with_line_numbers():
     table = [HEADER,
-             ["", "2025", "12", "1010", "1", "0"],
-             ["AMDE", "twenty", "12", "1010", "1", "0"],
-             ["AMDE", "2025", "12", "1010", "abc", "0"],
-             ["AMDE", "2025", "12", "1010", "nan", "0"],
-             ["AMDE", "2025", "12", "1010", "1", "0", "extra"]]
+             ["", "2025", "12", "1010", "1", "0", "EUR"],
+             ["AMDE", "twenty", "12", "1010", "1", "0", "EUR"],
+             ["AMDE", "2025", "12", "1010", "abc", "0", "EUR"],
+             ["AMDE", "2025", "12", "1010", "nan", "0", "EUR"],
+             ["AMDE", "2025", "12", "1010", "1", "0", "EUR", "extra"]]
     msg = _raises(M.split_table, table)
     for expected in ("Line 2: data_area_id is blank", "Line 3: fiscal_year", "Line 4: debit must be a number",
                      "Line 5: debit must be a finite", "Line 6: more cells"):
@@ -70,24 +70,26 @@ def test_structural_problems_are_reported_together_with_line_numbers():
 
 
 def test_missing_columns_and_empty_files():
-    assert "Missing column(s) credit" in _raises(M.split_table, [HEADER[:-1], ["AMDE", "2025", "1", "1", "1"]])
+    no_credit = [h for h in HEADER if h != "credit"]
+    assert "Missing column(s) credit" in _raises(M.split_table, [no_credit, ["AMDE", "2025", "1", "1", "1", "EUR"]])
     assert "empty" in _raises(M.split_table, [])
     assert "no data rows" in _raises(M.split_table, [HEADER])
 
 
 def test_group_csv_is_the_single_upload_contract():
-    rows = [{"main_account": "1010", "debit": 1234.5, "credit": 0.0, "description": "cash, main"}]
+    rows = [{"main_account": "1010", "debit": 1234.5, "credit": 0.0, "currency": "EUR", "description": "cash, main"}]
     parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows))))
-    assert parsed == [{"main_account": "1010", "debit": "1234.50", "credit": "0.00", "description": "cash, main",
-                       "partner_data_area_id": ""}]
+    assert parsed == [{"main_account": "1010", "debit": "1234.50", "credit": "0.00", "currency": "EUR",
+                       "description": "cash, main", "partner_data_area_id": ""}]
 
 
 def _check(**over):
     facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True,
                  period={"code": "P12", "type": "Regular", "status": "Open"}, postable_types={"Regular"},
-                 existing=None, validate_rows=lambda rows, **kw: [])
+                 existing=None, validate_rows=lambda rows, **kw: [], functional_currency="EUR")
     facts.update(over)
-    rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0}, {"main_account": "2010", "debit": 0.0, "credit": 5.0}]
+    rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0, "currency": "EUR"},
+            {"main_account": "2010", "debit": 0.0, "credit": 5.0, "currency": "EUR"}]
     return M.check_group(("AMDE", 2025, 12), rows, **facts)
 
 
@@ -112,7 +114,8 @@ def test_closed_period_refused():
 
 def test_undeclared_period_refused():
     r = M.check_group(("AMDE", 2025, 14), [], known_accounts=set(), visible=True, leaf=True, period=None,
-                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [])
+                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [],
+                      functional_currency="EUR")
     assert r["errors"][0] == "FY2025 P14 is not declared"
 
 
@@ -129,8 +132,8 @@ def test_outcome():
 
 
 def test_a_byte_order_mark_before_the_header_is_ignored():
-    table = [["\ufeffdata_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit"],
-             ["AMDE", "2025", "12", "1010", "1", "0"]]
+    table = [["\ufeffdata_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"],
+             ["AMDE", "2025", "12", "1010", "1", "0", "EUR"]]
     assert list(M.split_table(table)) == [("AMDE", 2025, 12)]
 
 
@@ -185,8 +188,8 @@ def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
 def test_the_partner_column_and_its_aliases_are_carried_to_each_row():
     for name in ("partner_data_area_id", "Partner", "partner entity", "counterparty"):
         table = [HEADER + [name],
-                 ["ZZA", "2099", "1", "4030", "", "100", "ZZB"],
-                 ["ZZA", "2099", "1", "1010", "100", "", ""]]
+                 ["ZZA", "2099", "1", "4030", "", "100", "EUR", "ZZB"],
+                 ["ZZA", "2099", "1", "1010", "100", "", "EUR", ""]]
         rows = M.split_table(table)[("ZZA", 2099, 1)]
         assert [r["partner_data_area_id"] for r in rows] == ["ZZB", ""], name
     assert "Two partner columns" in _raises(M.split_table, [HEADER + ["partner", "counterparty"]])
@@ -220,16 +223,17 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
 # around the module load and the call to _check, then restored, so they never
 # leak into other test files sharing this process (scripts/run-host-tests.py).
 
-HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit"]
+HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
 
 
-def _load_tb_bulk(*, entities, postable, period_lookup):
+def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None):
     """Load konsol/tb_bulk.py with every non-model import stubbed.
 
     `period_lookup` maps (year, period) -> a period fact dict; a pair absent
     from it is undeclared, so the stand-in period_status.period_row raises
     PeriodNotDeclared for it, exactly as the real one does. `postable` is
-    what postable_types() returns. Returns (module, calls), where calls
+    what postable_types() returns. `currencies` maps an entity to its
+    Functional Currency ('' for none); an entity absent from it has EUR. Returns (module, calls), where calls
     counts how many times postable_types() was called.
     """
     frappe = types.ModuleType("frappe")
@@ -246,6 +250,10 @@ def _load_tb_bulk(*, entities, postable, period_lookup):
         return list(entities)
 
     def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None):
+        if doctype == "Entity" and fields:
+            # konsol#252: each entity's Functional Currency; EUR unless a test says otherwise.
+            return [types.SimpleNamespace(name=e, functional_currency=(currencies or {}).get(e, "EUR"))
+                    for e in entities]
         if doctype == "Entity":
             return list(entities)
         if doctype == "Trial Balance Submission":
@@ -331,12 +339,12 @@ def _load_tb_bulk(*, entities, postable, period_lookup):
 
 def test_bulk_check_uses_declared_period_facts():
     table = [HEADER_ROW,
-             ["AMDE", "2025", "14", "1010", "5", "0"],
-             ["AMDE", "2025", "14", "2010", "0", "5"],
-             ["AMDE", "2025", "13", "1010", "5", "0"],
-             ["AMDE", "2025", "13", "2010", "0", "5"],
-             ["AMDE", "2025", "3", "1010", "5", "0"],
-             ["AMDE", "2025", "3", "2010", "0", "5"]]
+             ["AMDE", "2025", "14", "1010", "5", "0", "EUR"],
+             ["AMDE", "2025", "14", "2010", "0", "5", "EUR"],
+             ["AMDE", "2025", "13", "1010", "5", "0", "EUR"],
+             ["AMDE", "2025", "13", "2010", "0", "5", "EUR"],
+             ["AMDE", "2025", "3", "1010", "5", "0", "EUR"],
+             ["AMDE", "2025", "3", "2010", "0", "5", "EUR"]]
     # P14 declared as Adjustment; P13 absent (undeclared); P03 declared Regular.
     period_lookup = {
         (2025, 14): {"code": "P14", "type": "Adjustment", "status": "Open"},
@@ -372,25 +380,25 @@ PERIOD, YTD, CLOSING = "Period movement", "Year-to-date movement", "Period-end b
 def test_the_basis_column_and_its_aliases_are_carried_to_each_row():
     for name in ("amount_basis", "Basis", "Amount Basis"):
         table = [HEADER + [name],
-                 ["ZZA", "2099", "1", "1010", "100", "", "period-end balance"],
-                 ["ZZA", "2099", "1", "2010", "", "100", " PERIOD-END BALANCE "]]
+                 ["ZZA", "2099", "1", "1010", "100", "", "EUR", "period-end balance"],
+                 ["ZZA", "2099", "1", "2010", "", "100", "EUR", " PERIOD-END BALANCE "]]
         rows = M.split_table(table)[("ZZA", 2099, 1)]
         assert [r["amount_basis"] for r in rows] == [CLOSING, CLOSING], name
     assert "Two amount_basis columns" in _raises(M.split_table, [HEADER + ["basis", "amount_basis"]])
 
 
 def test_without_the_column_rows_carry_no_basis():
-    rows = M.split_table([HEADER, ["ZZA", "2099", "1", "1010", "1", "0"]])[("ZZA", 2099, 1)]
+    rows = M.split_table([HEADER, ["ZZA", "2099", "1", "1010", "1", "0", "EUR"]])[("ZZA", 2099, 1)]
     assert rows[0]["amount_basis"] == ""
     assert M.group_basis(rows) == ""
 
 
 def test_each_group_carries_its_own_basis_and_a_blank_cell_is_not_given():
     table = [HEADER + ["amount_basis"],
-             ["ZZA", "2099", "1", "1010", "1", "0", YTD],
-             ["ZZA", "2099", "1", "2010", "0", "1", ""],          # blank: not given, so no conflict
-             ["ZZB", "2099", "1", "1010", "1", "0", PERIOD],
-             ["ZZC", "2099", "1", "1010", "1", "0", ""]]
+             ["ZZA", "2099", "1", "1010", "1", "0", "EUR", YTD],
+             ["ZZA", "2099", "1", "2010", "0", "1", "EUR", ""],          # blank: not given, so no conflict
+             ["ZZB", "2099", "1", "1010", "1", "0", "EUR", PERIOD],
+             ["ZZC", "2099", "1", "1010", "1", "0", "EUR", ""]]
     groups = M.split_table(table)
     assert M.group_basis(groups[("ZZA", 2099, 1)]) == YTD
     assert M.group_basis(groups[("ZZB", 2099, 1)]) == PERIOD
@@ -399,16 +407,16 @@ def test_each_group_carries_its_own_basis_and_a_blank_cell_is_not_given():
 
 def test_mixed_bases_in_one_entity_period_are_a_line_error_naming_both():
     table = [HEADER + ["amount_basis"],
-             ["ZZA", "2099", "1", "1010", "1", "0", PERIOD],
-             ["ZZA", "2099", "1", "2010", "0", "1", CLOSING],
-             ["ZZB", "2099", "1", "1010", "1", "0", CLOSING]]     # another entity may differ
+             ["ZZA", "2099", "1", "1010", "1", "0", "EUR", PERIOD],
+             ["ZZA", "2099", "1", "2010", "0", "1", "EUR", CLOSING],
+             ["ZZB", "2099", "1", "1010", "1", "0", "EUR", CLOSING]]     # another entity may differ
     msg = _raises(M.split_table, table)
     assert "Line 3" in msg and PERIOD in msg and CLOSING in msg
     assert "Line 4" not in msg
 
 
 def test_an_unknown_basis_value_is_a_line_error():
-    table = [HEADER + ["amount_basis"], ["ZZA", "2099", "1", "1010", "1", "0", "balances"]]
+    table = [HEADER + ["amount_basis"], ["ZZA", "2099", "1", "1010", "1", "0", "EUR", "balances"]]
     msg = _raises(M.split_table, table)
     assert "Line 2" in msg and "balances" in msg and PERIOD in msg
 
@@ -433,10 +441,10 @@ def test_group_csv_carries_the_basis_to_the_single_upload_only_when_given():
 
 def test_bulk_check_refuses_an_entity_period_without_a_basis_and_carries_the_resolved_one():
     table = [HEADER_ROW + ["amount_basis"],
-             ["AMDE", "2025", "3", "1010", "5", "0", CLOSING],
-             ["AMDE", "2025", "3", "2010", "0", "5", ""],
-             ["AMUS", "2025", "3", "1010", "5", "0", ""],
-             ["AMUS", "2025", "3", "2010", "0", "5", ""]]
+             ["AMDE", "2025", "3", "1010", "5", "0", "EUR", CLOSING],
+             ["AMDE", "2025", "3", "2010", "0", "5", "EUR", ""],
+             ["AMUS", "2025", "3", "1010", "5", "0", "EUR", ""],
+             ["AMUS", "2025", "3", "2010", "0", "5", "EUR", ""]]
     period_lookup = {(2025, 3): {"code": "P03", "type": "Regular", "status": "Open"}}
     mod, _ = _load_tb_bulk(entities=["AMDE", "AMUS"], postable={"Regular"}, period_lookup=period_lookup)
 
@@ -480,7 +488,7 @@ def test_temp_helper_is_gone():
 
 def test_an_unrecognised_header_is_refused_by_name():
     table = [HEADER + ["dim_cost_center"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC100"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC100"]]
     msg = _raises(M.split_table, table)
     assert "dim_cost_center" in msg, msg
 
@@ -488,7 +496,7 @@ def test_an_unrecognised_header_is_refused_by_name():
 def test_the_refusal_names_every_unrecognised_header_at_once():
     """A file is fixed in one pass, like the line errors above."""
     table = [HEADER + ["cost centre", "Region", "notes"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC1", "EMEA", "x"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC1", "EMEA", "x"]]
     msg = _raises(M.split_table, table)
     for expected in ("cost_centre", "region", "notes"):
         assert expected in msg, (expected, msg)
@@ -496,16 +504,16 @@ def test_the_refusal_names_every_unrecognised_header_at_once():
 
 def test_the_refusal_says_what_is_accepted():
     table = [HEADER + ["nonsense"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "x"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "x"]]
     msg = _raises(M.split_table, table)
     assert "main_account" in msg and "debit" in msg, msg
 
 
 def test_every_documented_header_still_loads():
     """The full accepted set, including the aliases, stays accepted."""
-    table = [["Entity", "Year", "Period", "Account", "Debit", "Credit",
+    table = [["Entity", "Year", "Period", "Account", "Debit", "Credit", "Currency",
               "Description", "Counterparty", "Amount Basis"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "cash", "AMUS",
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "cash", "AMUS",
               "Period movement"]]
     rows = M.split_table(table)[("AMDE", 2025, 12)]
     assert rows[0]["partner_data_area_id"] == "AMUS"
@@ -515,7 +523,7 @@ def test_every_documented_header_still_loads():
 def test_a_blank_trailing_header_is_not_an_unknown_column():
     """Excel writes a trailing comma; an empty header name is not a column."""
     table = [HEADER + [""],
-             ["AMDE", "2025", "12", "1010", "100", "0", ""]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", ""]]
     rows = M.split_table(table)[("AMDE", 2025, 12)]
     assert rows[0]["main_account"] == "1010"
 
@@ -537,7 +545,7 @@ def declared(name, status="Published", in_trial_balance=1):
 
 def test_a_declared_dimension_column_is_accepted_and_its_value_lands():
     table = [HEADER + ["dim_cost_center", "dim_department"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "D7"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC100", "D7"]]
     rows = M.split_table(table, [declared("dim_cost_center"),
                                  declared("dim_department")])[("AMDE", 2025, 12)]
     assert rows[0]["dim_cost_center"] == "CC100"
@@ -547,8 +555,8 @@ def test_a_declared_dimension_column_is_accepted_and_its_value_lands():
 def test_a_blank_dimension_cell_is_legal_and_lands_as_empty():
     """A dimension is optional per row: blank is a value, not a refusal."""
     table = [HEADER + ["dim_cost_center"],
-             ["AMDE", "2025", "12", "1010", "100", "0", ""],
-             ["AMDE", "2025", "12", "2010", "0", "100", "CC100"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", ""],
+             ["AMDE", "2025", "12", "2010", "0", "100", "EUR", "CC100"]]
     rows = M.split_table(table, [declared("dim_cost_center")])[("AMDE", 2025, 12)]
     assert rows[0]["dim_cost_center"] == ""
     assert rows[1]["dim_cost_center"] == "CC100"
@@ -556,7 +564,7 @@ def test_a_blank_dimension_cell_is_legal_and_lands_as_empty():
 
 def test_an_undeclared_dimension_column_is_refused_as_undeclared():
     table = [HEADER + ["dim_widget"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "W1"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "W1"]]
     msg = _raises(M.split_table, table, [declared("dim_cost_center")])
     assert "dim_widget" in msg, msg
     assert "not declared" in msg.lower(), msg
@@ -565,7 +573,7 @@ def test_an_undeclared_dimension_column_is_refused_as_undeclared():
 
 def test_a_flag_off_dimension_column_is_refused_saying_the_flag_is_off():
     table = [HEADER + ["dim_project"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "P1"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "P1"]]
     msg = _raises(M.split_table, table,
                   [declared("dim_project", in_trial_balance=0)])
     assert "dim_project" in msg, msg
@@ -575,7 +583,7 @@ def test_a_flag_off_dimension_column_is_refused_saying_the_flag_is_off():
 
 def test_a_draft_dimension_column_is_refused_as_not_published():
     table = [HEADER + ["dim_cost_center"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC1"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC1"]]
     msg = _raises(M.split_table, table,
                   [declared("dim_cost_center", status="Draft")])
     assert "dim_cost_center" in msg, msg
@@ -586,7 +594,7 @@ def test_a_draft_dimension_column_is_refused_as_not_published():
 def test_a_bad_dimension_header_and_a_bad_ordinary_header_are_reported_together():
     """One pass fixes the file: both kinds of problem in the one refusal."""
     table = [HEADER + ["dim_widget", "notes"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "W1", "x"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "W1", "x"]]
     msg = _raises(M.split_table, table, [declared("dim_cost_center")])
     assert "dim_widget" in msg, msg
     assert "notes" in msg, msg
@@ -595,12 +603,12 @@ def test_a_bad_dimension_header_and_a_bad_ordinary_header_are_reported_together(
 
 def test_group_csv_writes_the_dimension_columns_the_rows_carry():
     table = [HEADER + ["dim_cost_center", "dim_department"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", ""]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC100", ""]]
     rows = M.split_table(table, [declared("dim_cost_center"),
                                  declared("dim_department")])[("AMDE", 2025, 12)]
     text = M.group_csv(rows)
     header = next(csv.reader(io.StringIO(text)))
-    assert header[:5] == ["main_account", "debit", "credit", "description",
+    assert header[:6] == ["main_account", "debit", "credit", "currency", "description",
                           "partner_data_area_id"]
     assert header[-2:] == ["dim_cost_center", "dim_department"], header
     out = list(csv.DictReader(io.StringIO(text)))
@@ -609,10 +617,10 @@ def test_group_csv_writes_the_dimension_columns_the_rows_carry():
 
 
 def test_group_csv_writes_no_dimension_columns_when_the_rows_carry_none():
-    table = [HEADER, ["AMDE", "2025", "12", "1010", "100", "0"]]
+    table = [HEADER, ["AMDE", "2025", "12", "1010", "100", "0", "EUR"]]
     rows = M.split_table(table)[("AMDE", 2025, 12)]
     header = next(csv.reader(io.StringIO(M.group_csv(rows))))
-    assert header == ["main_account", "debit", "credit", "description",
+    assert header == ["main_account", "debit", "credit", "currency", "description",
                       "partner_data_area_id"]
 
 
@@ -620,12 +628,12 @@ def test_without_declared_dimensions_a_dim_column_is_still_refused():
     """Every existing caller passes nothing: a site declaring no dimensions
     carries no dim_* column, and the refusal still names the header."""
     table = [HEADER + ["dim_cost_center"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC100"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC100"]]
     msg = _raises(M.split_table, table)
     assert "dim_cost_center" in msg, msg
-    rows = M.split_table([HEADER, ["AMDE", "2025", "12", "1010", "100", "0"]])
+    rows = M.split_table([HEADER, ["AMDE", "2025", "12", "1010", "100", "0", "EUR"]])
     assert rows[("AMDE", 2025, 12)][0] == {
-        "main_account": "1010", "debit": 100.0, "credit": 0.0,
+        "main_account": "1010", "debit": 100.0, "credit": 0.0, "currency": "EUR",
         "description": "", "partner_data_area_id": "", "amount_basis": ""}
 
 
@@ -645,7 +653,7 @@ def test_without_declared_dimensions_a_dim_column_is_still_refused():
 
 def test_a_repeated_dimension_column_is_refused_naming_the_dimension():
     table = [HEADER + ["dim_cost_center", "dim_cost_center"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "CC999"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC100", "CC999"]]
     msg = _raises(M.split_table, table, [declared("dim_cost_center")])
     assert "dim_cost_center" in msg, msg
     assert "keep one" in msg, msg
@@ -655,7 +663,7 @@ def test_two_repeated_dimensions_are_both_named_in_one_refusal():
     """A file is fixed in one pass: every repeated dimension is named."""
     table = [HEADER + ["dim_cost_center", "dim_department",
                        "dim_cost_center", "dim_department"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC1", "D1", "CC2", "D2"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC1", "D1", "CC2", "D2"]]
     msg = _raises(M.split_table, table, [declared("dim_cost_center"),
                                          declared("dim_department")])
     assert "dim_cost_center" in msg, msg
@@ -664,7 +672,7 @@ def test_two_repeated_dimensions_are_both_named_in_one_refusal():
 
 def test_two_different_dimensions_each_appearing_once_still_load():
     table = [HEADER + ["dim_cost_center", "dim_department"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "CC100", "D7"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "CC100", "D7"]]
     rows = M.split_table(table, [declared("dim_cost_center"),
                                  declared("dim_department")])[("AMDE", 2025, 12)]
     assert rows[0]["dim_cost_center"] == "CC100"
@@ -675,7 +683,7 @@ def test_a_repeated_undeclared_dimension_column_is_refused_as_undeclared():
     """The undeclared refusal comes first and stands alone: the reader is told
     to declare the dimension, not confusingly told both things at once."""
     table = [HEADER + ["dim_widget", "dim_widget"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "W1", "W2"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "W1", "W2"]]
     msg = _raises(M.split_table, table, [declared("dim_cost_center")])
     assert "dim_widget" in msg, msg
     assert "not declared" in msg.lower(), msg
@@ -684,13 +692,50 @@ def test_a_repeated_undeclared_dimension_column_is_refused_as_undeclared():
 
 def test_the_partner_keep_one_refusal_is_unchanged():
     table = [HEADER + ["partner_data_area_id", "partner"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "AMUS", "AMUK"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "AMUS", "AMUK"]]
     msg = _raises(M.split_table, table)
     assert "Two partner columns" in msg, msg
 
 
 def test_the_amount_basis_keep_one_refusal_is_unchanged():
     table = [HEADER + ["amount_basis", "basis"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "Actual", "Actual"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "Actual", "Actual"]]
     msg = _raises(M.split_table, table)
     assert "Two amount_basis columns" in msg, msg
+
+
+# --- konsol#252: each entity-period's currency against its entity's -------------
+
+def test_bulk_check_reads_each_entitys_functional_currency_and_refuses_per_entity_period():
+    """One file, three entities: a match loads, a mismatch and an entity with no
+    Functional Currency are refused on their own report rows, naming the values."""
+    table = [HEADER_ROW,
+             ["ZZA", "2099", "1", "1010", "5", "0", "EUR"],
+             ["ZZA", "2099", "1", "2010", "0", "5", "EUR"],
+             ["ZZB", "2099", "1", "1010", "5", "0", "EUR"],
+             ["ZZB", "2099", "1", "2010", "0", "5", "EUR"],
+             ["ZZC", "2099", "1", "1010", "5", "0", "EUR"],
+             ["ZZC", "2099", "1", "2010", "0", "5", "EUR"]]
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["ZZA", "ZZB", "ZZC"], postable={"Regular"},
+                           period_lookup=period_lookup,
+                           currencies={"ZZA": "EUR", "ZZB": "JPY", "ZZC": ""})
+    _, report = mod._check(table, PERIOD)
+    by_entity = {r["entity"]: r for r in report}
+    assert by_entity["ZZA"]["ok"], by_entity["ZZA"]
+    assert not by_entity["ZZB"]["ok"]
+    assert any("The file declares EUR but Entity ZZB's Functional Currency is JPY" in e
+               for e in by_entity["ZZB"]["errors"]), by_entity["ZZB"]
+    assert not by_entity["ZZC"]["ok"]
+    assert any("Entity ZZC has no Functional Currency" in e for e in by_entity["ZZC"]["errors"]), by_entity["ZZC"]
+
+
+def test_bulk_check_refuses_mixed_currencies_within_one_entity_period():
+    table = [HEADER_ROW,
+             ["ZZA", "2099", "1", "1010", "5", "0", "EUR"],
+             ["ZZA", "2099", "1", "2010", "0", "5", "USD"]]
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["ZZA"], postable={"Regular"}, period_lookup=period_lookup,
+                           currencies={"ZZA": "EUR"})
+    _, report = mod._check(table, PERIOD)
+    assert not report[0]["ok"] and any("more than one currency" in e for e in report[0]["errors"]), report
