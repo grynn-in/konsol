@@ -116,6 +116,7 @@ class _Site:
         self.ic_fixes = {}
         self.ic_calls = []
         self.ic_tolerance_gap = None
+        self.statement_gap = None
         self.approvals_waiting = {"count": 0}
         self.approvals_calls = []
         self.approvals_error = None
@@ -263,6 +264,10 @@ def _call(site):
         return site.problems.get((fy, fp), {"config_gaps": [], "order": None, "completeness": None})
 
     signoff_gate.sign_off_problems = sign_off_problems
+    # N46t: a stub `statement_gap`, unused by mywork_api until N47. It exists
+    # so N47's `signoff_gate.statement_gap()` call resolves to this stub
+    # rather than the real frappe-bound function.
+    signoff_gate.statement_gap = lambda: site.statement_gap
     freshness_api = types.ModuleType("konsol.close.freshness_api")
     freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
                                                "pending": 0, "changed_since": [],
@@ -1089,3 +1094,15 @@ def test_entity_accountant_can_get_a_sent_back_item_too():
                                    "UK01 2024-12-31")]
     result = _call(site)
     assert "sent-back:Historical Equity Rate:HER-1" in _ids(result)
+
+
+# --- N46t: the loader carries a stub signoff_gate.statement_gap, for N47 ---
+
+
+def test_the_statement_gap_stub_is_installed():
+    site = _Site()
+    assert site.statement_gap is None
+    # My work does not read statement_gap yet (N47 adds that call); _call
+    # must still build and tear down the stub without error.
+    _call(site)
+    assert site.statement_gap is None
