@@ -31,7 +31,7 @@ API_PY = os.path.join(CLOSE_DIR, "journal_api.py")
 JOURNAL_MODEL_PY = os.path.join(CLOSE_DIR, "journal_model.py")
 TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
 #: konsolidat#245 option D: journal_api.py imports the real, pure
-#: tb_dimension_model for ``is_flag_on`` / ``is_legal_dimension_name``, loaded by
+#: tb_dimension_model for ``is_flag_on``, loaded by
 #: path under its dotted name like journal_model/timefmt.
 TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
 #: The stub site's system time zone (mirrors test_close_rates_api.py): BST

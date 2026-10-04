@@ -23,7 +23,9 @@ and ``can_send`` are each also False unless the caller holds one of
 The number of reads does not depend on the number of journals: one read
 each for the period rows, the journal headers, the lines, the accounts, the
 groups and the rejections, plus one (or two, when a workflow is installed)
-for the workflow.
+for the workflow, plus the declared journal dimensions (``declared_dimensions``:
+one Dimension read and the line doctype's cached meta) and, only when one is
+declared, at most three suggestion reads (konsolidat#245 option D).
 
 This file never names the Close Event doctype (the one-writer check,
 test_close_event_writer.py): rejections are read through
@@ -36,7 +38,7 @@ import frappe
 from konsol import fiscal_calendar
 from konsol.close import close_event, journal_model
 from konsol.close.timefmt import zoned_iso
-from konsol.tb_dimension_model import is_flag_on, is_legal_dimension_name
+from konsol.tb_dimension_model import is_flag_on
 
 JOURNAL = "Consolidation Journal"
 LINE = "Consolidation Journal Line"
@@ -70,22 +72,40 @@ ADJUSTMENT_TYPES = ("topside", "reclassification")
 JOURNAL_DIM_FLAG = "in_journal"
 
 
-def _declared_dimensions():
-    """``[{"dimension_name", "label"}]``: Published Dimension rows gated
-    ``in_journal`` on (konsolidat#245 CONTRACT), legal names only, ordered by
-    ``dimension_name`` (mirrors ``budget_grain.budget_dimension_names``).
-    One read. ``[]`` when none are declared — callers then behave exactly as
-    before option D (#305 D01)."""
+def declared_dimensions():
+    """``[{"dimension_name", "label"}]``: the dimensions a journal line
+    carries — Published Dimension rows gated ``in_journal`` on (konsolidat#245
+    CONTRACT, read with ``is_flag_on``), legal names only, and only those whose
+    field Consolidation Journal Line already has, ordered by
+    ``dimension_name``. ``[]`` when none are declared — callers then behave
+    exactly as before option D (#305 D01).
+
+    The one reader: ``get_journals``, ``save_journal`` and
+    ``approvals_api.queue_for`` all use it (D06), so the screens that draft a
+    line and the one that approves it never disagree about its dimensions.
+
+    - The name rule (konsol-50, 4 Oct): schema_apply gives a ticked
+      Dimension whose name fails ``^dim_[a-z0-9_]+\\Z`` no Custom Field, and
+      such a name is legal on a Dimension outside the trial balance
+      (``business_unit``). It is left out — absent, not an error.
+    - The field must exist (D06): the Custom Field sync is queued after the
+      commit (konsol#135), so a Dimension can be Published and ticked before
+      its field is there, and naming a missing field makes ``frappe.get_all``
+      raise. Both rules are ``journal_model.journal_dimension_columns``, the
+      same filter consolidation_journal's warehouse resync applies.
+
+    One Dimension read plus the line doctype's (cached) meta.
+    """
     rows = frappe.get_all(
         "Dimension", filters={"status": "Published"},
         fields=["dimension_name", "label", JOURNAL_DIM_FLAG],
         order_by="dimension_name asc", limit_page_length=0,
     )
-    return [
-        {"dimension_name": r["dimension_name"], "label": r.get("label") or r["dimension_name"]}
-        for r in rows
-        if is_legal_dimension_name(r.get("dimension_name")) and is_flag_on(r.get(JOURNAL_DIM_FLAG))
-    ]
+    ticked = {r["dimension_name"]: r for r in rows
+              if r.get("dimension_name") and is_flag_on(r.get(JOURNAL_DIM_FLAG))}
+    keys = journal_model.journal_dimension_columns(
+        list(ticked), frappe.get_meta(LINE).get_valid_columns())
+    return [{"dimension_name": k, "label": ticked[k].get("label") or k} for k in keys]
 
 
 def _dimension_suggestions(dim_names):
@@ -284,7 +304,7 @@ def get_journals(fiscal_year, fiscal_period):
         order_by="creation asc",
         limit_page_length=0,
     )
-    declared = _declared_dimensions()
+    declared = declared_dimensions()
     dim_keys = tuple(d["dimension_name"] for d in declared)
 
     names = [h["name"] for h in headers]
@@ -422,7 +442,7 @@ def save_journal(fiscal_year, fiscal_period, consolidation_group, adjustment_typ
     if adjustment_type not in ADJUSTMENT_TYPES:
         frappe.throw(f"Adjustment Type {adjustment_type} is not a journal type: "
                      f"use one of {', '.join(ADJUSTMENT_TYPES)}.")
-    dim_keys = tuple(d["dimension_name"] for d in _declared_dimensions())
+    dim_keys = tuple(d["dimension_name"] for d in declared_dimensions())
     rows = _request_lines(lines, dim_keys)
     key = _period_key(fiscal_year, fiscal_period)
     period_rows = fiscal_calendar.fiscal_period_rows()

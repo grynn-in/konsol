@@ -1,0 +1,85 @@
+{
+  "doctype": "Consolidation Journal",
+  "name": "CJ-W41",
+  "kind_label": "Adjustment · CJ-W41",
+  "title": "ZZ accrue sales commission",
+  "detail": "Topside · FY2026 P07 · This period only, no reversal",
+  "preparer": "zz-analyst@example.com",
+  "edited_by": [],
+  "created": "2026-07-01T09:00:00+01:00",
+  "approve": {
+    "mode": "direct",
+    "message": null
+  },
+  "inline": true,
+  "desk": null,
+  "entity": null,
+  "lines": [
+    {
+      "idx": 1,
+      "data_area_id": "DE02",
+      "main_account": "2100",
+      "account_name": "Accounts payable",
+      "debit_amount": 500.0,
+      "credit_amount": 0.0,
+      "description": "",
+      "dim_cost_center": "CC1",
+      "dim_project": ""
+    },
+    {
+      "idx": 2,
+      "data_area_id": "DE02",
+      "main_account": "4100",
+      "account_name": "Sales revenue",
+      "debit_amount": 0.0,
+      "credit_amount": 500.0,
+      "description": "",
+      "dim_cost_center": "",
+      "dim_project": ""
+    }
+  ],
+  "effect": {
+    "headings": [
+      {
+        "section": "Profit and Loss",
+        "heading": "4",
+        "heading_name": "Revenue",
+        "net_debit": -500.0
+      },
+      {
+        "section": "Balance Sheet",
+        "heading": "2",
+        "heading_name": "Liabilities",
+        "net_debit": 500.0
+      }
+    ],
+    "sections": [
+      {
+        "section": "Profit and Loss",
+        "net_debit": -500.0
+      },
+      {
+        "section": "Balance Sheet",
+        "net_debit": 500.0
+      }
+    ],
+    "no_heading": 0
+  },
+  "total_debit": 500.0,
+  "currency": "USD",
+  "fiscal_year": 2026,
+  "fiscal_period": 7,
+  "consolidation_group": "G1",
+  "dimensions": [
+    {
+      "key": "dim_cost_center",
+      "label": "Cost Center"
+    },
+    {
+      "key": "dim_project",
+      "label": "dim_project"
+    }
+  ],
+  "sent_back": false,
+  "rejection": null
+}
