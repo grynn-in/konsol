@@ -1,5 +1,9 @@
-"""Statement model part 1, pure: konsol/close/statement_model.py
-(konsol#305 Wave 4, N48).
+"""Statement model, pure: konsol/close/statement_model.py
+(konsol#305 Wave 4, N48 part 1 + N49 part 2: sign, columns, CTA,
+current-year result, residual — AMENDED 4 Oct, W4-2 2a-ii: BS display
+shows liabilities and equity POSITIVE, each BS heading's own side from
+Main Account ``normal_balance`` (Credit -> flip); W4-E3 debit-positive is
+WITHDRAWN).
 
 Loaded by path; the module imports nothing from frappe or konsol.
 """
@@ -14,6 +18,11 @@ _PATH = os.path.join(APP_DIR, "close", "statement_model.py")
 _spec = importlib.util.spec_from_file_location("statement_model_under_test", _PATH)
 M = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(M)
+
+_CPM_PATH = os.path.join(APP_DIR, "close", "close_policy_model.py")
+_cpm_spec = importlib.util.spec_from_file_location("close_policy_model_under_test", _CPM_PATH)
+CPM = importlib.util.module_from_spec(_cpm_spec)
+_cpm_spec.loader.exec_module(CPM)
 
 
 def _calendar(years):
@@ -214,6 +223,253 @@ def test_heading_with_no_statement_section_raises_naming_it():
     }
     with pytest.raises(ValueError, match="9"):
         M.heading_order(accounts)
+
+
+# --- statement (N49, sign/columns/CTA/current-year result/residual) -------
+#
+# W4-2 2a-ii (AMENDED 4 Oct): BS display shows liabilities and equity
+# POSITIVE. A BS heading's own side comes from Main Account
+# ``normal_balance`` on the heading (Credit -> flip; Debit -> unflipped).
+# P&L keeps the single section-wide flip (income positive, costs negative).
+# The residual line stays in net-debit terms (unflipped, by construction it
+# needs no extra sign to prove assets = liabilities + equity): verified
+# below by an explicit invariant on the balanced fixture.
+
+_S_CALENDAR = _calendar((2024, 2025))
+_S_KEY = (2025, 7)
+
+#: #305-W4-1: Main Account rows for the two declared statement accounts
+#: (3300 the CTA account, 3100 the current-year result account — both
+#: Published Balance Sheet leaves under heading 3, EQUITY, N41 facts).
+_S_DECLARED_ROWS = {
+    "3300": {"is_group": False, "status": "Published", "statement_section": M.BS,
+              "account_name": "AOCI - CTA"},
+    "3100": {"is_group": False, "status": "Published", "statement_section": M.BS,
+              "account_name": "Retained earnings"},
+}
+
+
+def _s_accounts():
+    """The live shape (recon, N41/N48/N49 facts): ASSETS (1, Debit),
+    LIABILITIES (2, Credit), EQUITY (3, Credit) on the Balance Sheet;
+    COST OF SALES (4) on the Profit and Loss; 3300/3100 are leaves under 3
+    so N49 places the CTA and the current-year result on EQUITY's line."""
+    return {
+        "1": {"account_name": "ASSETS", "parent_account": None, "is_group": True,
+              "statement_section": M.BS, "lft": 1, "normal_balance": "Debit"},
+        "2": {"account_name": "LIABILITIES", "parent_account": None, "is_group": True,
+              "statement_section": M.BS, "lft": 5, "normal_balance": "Credit"},
+        "3": {"account_name": "EQUITY", "parent_account": None, "is_group": True,
+              "statement_section": M.BS, "lft": 9, "normal_balance": "Credit"},
+        "4": {"account_name": "COST OF SALES", "parent_account": None, "is_group": True,
+              "statement_section": M.PL, "lft": 13},
+        "1110": {"account_name": "Cash", "parent_account": "1", "is_group": False,
+                  "statement_section": M.BS, "lft": 2},
+        "2100": {"account_name": "Payables", "parent_account": "2", "is_group": False,
+                  "statement_section": M.BS, "lft": 6},
+        "3200": {"account_name": "Share capital", "parent_account": "3", "is_group": False,
+                  "statement_section": M.BS, "lft": 10},
+        "3300": {"account_name": "AOCI - CTA", "parent_account": "3", "is_group": False,
+                  "statement_section": M.BS, "lft": 11},
+        "3100": {"account_name": "Retained earnings", "parent_account": "3", "is_group": False,
+                  "statement_section": M.BS, "lft": 12},
+        "4100": {"account_name": "Net sales", "parent_account": "4", "is_group": False,
+                  "statement_section": M.PL, "lft": 14},
+    }
+
+
+def _s_rows():
+    """The live shape (recon): assets 1,735.10, liabilities -803.70, equity
+    (own leaf) -684.90, CTA -5.07, FY P&L to date -241.43 — balanced."""
+    return [
+        _row("1110", 1735.10),
+        _row("2100", -803.70),
+        _row("3200", -684.90),
+        _row("CTA", -5.07, adjustment_type="cta"),
+        _row("4100", -241.43),
+    ]
+
+
+def _s_declared(cta_account="3300", result_account="3100"):
+    return CPM.statement_accounts(cta_account, result_account, _S_DECLARED_ROWS)
+
+
+def _bs_line(result, heading):
+    for line in result["sections"][1]["lines"]:
+        if line.get("heading") == heading:
+            return line
+    raise AssertionError(f"no BS line for heading {heading!r}")
+
+
+def _residual_line(result):
+    lines = result["sections"][1]["lines"]
+    assert lines[-1]["kind"] == "residual"
+    return lines[-1]
+
+
+def test_legend_text_is_the_amended_4_oct_text():
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    assert result["legend"] == (
+        "Profit and loss: income positive, costs in brackets. "
+        "Balance sheet: assets, liabilities and equity positive."
+    )
+
+
+def test_balanced_fixture_both_declared_residual_is_zero_and_bs_balances():
+    """W4-2 2a-ii: assets positive, liabilities and equity positive (not
+    bracketed); the equity line includes the CTA and the current-year
+    result; residual 0.00; P&L net result 241.43 (profit positive); and the
+    balance-sheet identity (assets = liabilities + equity incl. CTA/CYR)
+    holds exactly in display terms, proving the flip did not break it."""
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+
+    assets = _bs_line(result, "1")
+    liabilities = _bs_line(result, "2")
+    equity = _bs_line(result, "3")
+    residual = _residual_line(result)
+
+    assert assets["current"] == 1735.10
+    assert liabilities["current"] == 803.70          # positive, not bracketed (2a-ii)
+    assert equity["current"] == 931.40                # -684.9 -5.07 -241.43, flipped positive
+    assert residual["current"] == 0.0
+    assert "explained" not in residual
+
+    includes = {i["kind"]: i["current"] for i in equity["includes"]}
+    assert includes["cta"] == 5.07
+    assert includes["current_year_result"] == 241.43
+
+    net_result = result["sections"][0]["lines"][-1]
+    assert net_result["kind"] == "net_result"
+    assert net_result["current"] == 241.43
+
+    # The identity the row asks to prove after the flip: assets equal
+    # liabilities + equity (which already includes CTA and the
+    # current-year result).
+    assert round(assets["current"] - (liabilities["current"] + equity["current"]), 2) == 0.0
+
+
+def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
+    """Failure path: never silently balanced. Residual 246.50 =
+    241.43 + 5.07, explained naming both parts, unexplained 0.00."""
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared("", ""))
+    residual = _residual_line(result)
+    assert residual["current"] == 246.50
+    amounts = sorted(e["amount"] for e in residual["explained"])
+    assert amounts == [5.07, 241.43]
+    assert residual["unexplained"] == 0.0
+
+    equity = _bs_line(result, "3")
+    assert "includes" not in equity  # placed nowhere, never defaulted
+
+
+def test_cta_declared_only_residual_is_the_result_only():
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared("3300", ""))
+    residual = _residual_line(result)
+    assert residual["current"] == 241.43
+    assert len(residual["explained"]) == 1
+    assert residual["explained"][0]["amount"] == 241.43
+    assert residual["unexplained"] == 0.0
+
+    equity = _bs_line(result, "3")
+    kinds = {i["kind"] for i in equity["includes"]}
+    assert kinds == {"cta"}
+
+
+def test_not_in_chart_row_names_it_and_the_residual_explains_it():
+    """Failure path: a row outside the chart (other than CTA) never
+    vanishes — it is its own line, and the residual's ``explained``
+    names it."""
+    rows = _s_rows() + [_row("ZZ_UNMAPPED", 10.0)]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    lines = result["sections"][1]["lines"]
+    not_in_chart = next(l for l in lines if l["kind"] == "not_in_chart")
+    assert not_in_chart["codes"] == ["ZZ_UNMAPPED"]
+    assert not_in_chart["current"] == 10.0
+
+    residual = _residual_line(result)
+    assert residual["current"] == 10.0
+    assert residual["explained"] == [{"label": M._NOT_IN_CHART_LABEL, "amount": 10.0}]
+    assert residual["unexplained"] == 0.0
+
+
+def test_sign_revenue_positive_cost_negative_asset_positive_liability_positive():
+    """P&L: income positive, costs negative (unchanged). BS (2a-ii):
+    liabilities positive too (flipped from their net-credit raw amount)."""
+    accounts = _s_accounts()
+    rows = [
+        _row("4100", -100.0),   # a revenue row, net debit -100
+        _row("1110", 500.0),    # an asset, net debit +500
+        _row("2100", -300.0),   # a liability, net debit -300
+    ]
+    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared("", ""))
+    pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
+    assert pl_heading["current"] == 100.0           # revenue shows positive
+
+    assert _bs_line(result, "1")["current"] == 500.0    # asset positive
+    assert _bs_line(result, "2")["current"] == 300.0    # liability POSITIVE (2a-ii), not -300
+
+
+def test_a_cost_row_shows_negative_and_net_result_nets_correctly():
+    accounts = _s_accounts()
+    rows = [
+        _row("4100", 40.0),  # a cost, net debit +40
+    ]
+    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared("", ""))
+    pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
+    assert pl_heading["current"] == -40.0
+    net_result = result["sections"][0]["lines"][-1]
+    assert net_result["current"] == -40.0
+
+
+def test_no_subtotal_labels_are_present():
+    """#305-W4-3 3a: headings + section totals only."""
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    labels = [l.get("label", "") for section in result["sections"] for l in section["lines"]]
+    for label in labels:
+        assert "Gross profit" not in label
+        assert "EBITDA" not in label
+        assert "Operating profit" not in label
+
+
+def test_headings_are_in_lft_order_in_both_sections():
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    pl_headings = [l["heading"] for l in result["sections"][0]["lines"] if l["kind"] == "heading"]
+    bs_headings = [l["heading"] for l in result["sections"][1]["lines"] if l["kind"] == "heading"]
+    assert pl_headings == ["4"]
+    assert bs_headings == ["1", "2", "3"]
+
+
+def test_comparison_not_loaded_names_the_period_never_shows_zero():
+    """Failure path: FY2025 P7 with no P6 rows -> P&L comparison None,
+    variance None, the note names FY2025 P06 (never silently 0)."""
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    assert result["periods"]["comparison"] == (2025, 6)
+    assert result["periods"]["comparison_note"] == "No rows in the warehouse for FY2025 P06"
+    pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
+    assert pl_heading["comparison"] is None
+    assert pl_heading["variance"] is None
+
+
+def test_p1_compares_to_previous_fys_p12_w4_7():
+    rows = [_row("4100", -10.0), {**_row("4100", -20.0), "fiscal_year": 2024, "fiscal_period": 12}]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, (2025, 1), _s_declared())
+    assert result["periods"]["comparison"] == (2024, 12)
+    assert result["periods"]["comparison_note"] is None
+    pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
+    assert pl_heading["current"] == 10.0
+    assert pl_heading["comparison"] == 20.0
+    assert pl_heading["variance"] == -10.0
+
+
+def test_bs_heading_with_blank_normal_balance_is_a_setup_gap_never_defaulted():
+    """Failure path (AMENDED 4 Oct, W4-2 2a-ii): a BS heading with no
+    declared ``normal_balance`` is never silently defaulted to a side."""
+    accounts = _s_accounts()
+    accounts["2"]["normal_balance"] = ""
+    with pytest.raises(ValueError, match="statement_heading_side_undeclared"):
+        M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared())
+    with pytest.raises(ValueError, match=r"\b2\b"):
+        M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared())
 
 
 # --- module contract --------------------------------------------------------
