@@ -59,7 +59,8 @@ ACCOUNT_FIELDS = ["name", "account_name", "parent_account", "is_group", "stateme
 #: ``effect`` are filled in below, from A01/A02, not read from the doctype).
 _FIELDS = {
     JOURNAL: ["fiscal_year", "fiscal_period", "adjustment_type", "description",
-              "total_debit", "currency", "reverse_fiscal_year", "reverse_fiscal_period"],
+              "total_debit", "currency", "reverse_fiscal_year", "reverse_fiscal_period",
+              "consolidation_group"],
     GER: ["from_currency", "to_currency", "rate_type", "fiscal_year", "fiscal_period",
           "quote_label", "change_reason"],
     HER: ["consolidation_group", "data_area_id", "main_account", "rate_date", "historical_rate"],
