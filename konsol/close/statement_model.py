@@ -286,6 +286,7 @@ def _pl_line(kind, label_or_heading_entry, cur_raw, comp_raw, ytd_raw, is_headin
     if is_heading:
         line["heading"] = label_or_heading_entry[0]
         line["heading_name"] = label_or_heading_entry[1]
+        line["sign"] = -1
     else:
         line["label"] = label_or_heading_entry
     return line
@@ -417,6 +418,7 @@ def statement(rows, accounts, period_rows, key, declared):
             "kind": "heading", "heading": code, "heading_name": entry.get("account_name"),
             "current": cur, "comparison": comp,
             "variance": round(cur - comp, 2) if comp is not None else None,
+            "sign": mult,
         }
         if includes:
             line["includes"] = includes
