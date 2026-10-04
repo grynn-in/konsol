@@ -26,6 +26,7 @@ KINDS = (
     "tb_submitted", "tb_cancelled",
     "tb_exception_declared", "tb_exception_cancelled",
     "ic_sent_back",
+    "commentary_saved",
 )
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
 REASON_REQUIRED = (

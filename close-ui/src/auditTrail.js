@@ -58,6 +58,7 @@ const KIND_LABEL = {
 	tb_exception_declared: { label: "No-TB exception", tone: "warn" },
 	tb_exception_cancelled: { label: "Exception cancelled", tone: "mute" },
 	ic_sent_back: { label: "Sent back", tone: "warn" },
+	commentary_saved: { label: "Commentary", tone: "mute" },
 };
 
 const SIGNOFF_LABEL = {
@@ -124,6 +125,13 @@ function itemText(event, periodFiscalYear) {
 		}
 		return `Intercompany · ${entity_a} ${account_a} ↔ ${entity_b} ${account_b}`;
 	}
+	if (event.kind === "commentary_saved") {
+		const { heading, heading_name } = event.detail || {};
+		if (!heading || !heading_name) {
+			return "Commentary (heading not recorded)";
+		}
+		return `Commentary · ${heading_name} (${heading})`;
+	}
 	return `${event.reference_doctype} ${event.reference_name}`;
 }
 
@@ -162,6 +170,9 @@ function detailText(event) {
 	}
 	if (detail.reason_not_recorded) {
 		parts.push("Reason not recorded");
+	}
+	if (event.kind === "commentary_saved") {
+		parts.push(detail.text ? `Text: "${detail.text}"` : "Commentary cleared");
 	}
 	if (event.source === "backfill") {
 		parts.push("Recovered from records");
