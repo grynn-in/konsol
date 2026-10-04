@@ -475,6 +475,54 @@ def test_bs_heading_with_blank_normal_balance_is_a_setup_gap_never_defaulted():
         M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared())
 
 
+def test_sign_key_present_only_on_heading_lines_pl_and_bs():
+    """N54: ``statement()`` already applies a display-sign multiplier to
+    every heading line's raw amount (P&L: the section-wide -1; BS: the
+    heading's own ``_bs_heading_sides`` result). That exact multiplier
+    now rides along as ``"sign"`` on the line, so a JS consumer can reuse
+    it instead of re-deriving it from ``normal_balance`` (one sign rule,
+    never two). P&L headings always carry -1; BS headings carry +1
+    (Debit) or -1 (Credit). No other line kind — ``no_heading``,
+    ``net_result``, ``not_in_chart``, ``residual`` — carries a ``sign``
+    key at all."""
+    accounts = _s_accounts()
+    accounts["99"] = {"account_name": "SUSPENSE", "parent_account": "", "is_group": False,
+                       "statement_section": M.PL, "lft": 99}
+    accounts["98"] = {"account_name": "BS SUSPENSE", "parent_account": "", "is_group": False,
+                       "statement_section": M.BS, "lft": 98}
+    rows = _s_rows() + [_row("99", 15.0), _row("98", 25.0), _row("ZZ_UNMAPPED", 10.0)]
+    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared())
+
+    pl_lines = result["sections"][0]["lines"]
+    pl_kinds_seen = {line["kind"] for line in pl_lines}
+    assert {"heading", "no_heading", "net_result"} <= pl_kinds_seen
+    for line in pl_lines:
+        if line["kind"] == "heading":
+            assert line["sign"] == -1
+        else:
+            assert "sign" not in line
+
+    bs_sides = {"1": 1, "2": -1, "3": -1}  # ASSETS Debit, LIABILITIES/EQUITY Credit
+    bs_lines = result["sections"][1]["lines"]
+    bs_kinds_seen = {line["kind"] for line in bs_lines}
+    assert {"heading", "no_heading", "not_in_chart", "residual"} <= bs_kinds_seen
+    for line in bs_lines:
+        if line["kind"] == "heading":
+            assert line["sign"] == bs_sides[line["heading"]]
+        else:
+            assert "sign" not in line
+
+
+def test_bs_heading_sign_matches_debit_and_credit_declared_sides():
+    """A Debit-normal BS heading's line carries ``sign: 1``; a
+    Credit-normal one carries ``sign: -1`` — the exact
+    ``_bs_heading_sides`` result for that heading, not re-derived."""
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    assert _bs_line(result, "1")["sign"] == 1    # ASSETS, Debit
+    assert _bs_line(result, "2")["sign"] == -1   # LIABILITIES, Credit
+    assert _bs_line(result, "3")["sign"] == -1   # EQUITY, Credit
+
+
 # --- module contract --------------------------------------------------------
 
 def test_module_imports_no_frappe():
