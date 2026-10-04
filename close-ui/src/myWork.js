@@ -17,6 +17,7 @@
 // {desk: "/app/..."} (a configuration gap; story 0.4 — the only Desk link).
 
 import { format } from "./route.js";
+import { ageText as sharedAgeText, userTimeZone } from "./timefmt.js";
 
 const KIND_ORDER = ["blocking", "todo", "waiting"];
 
@@ -91,17 +92,23 @@ export function itemRoute(item, current) {
 	return action.entity ? `${path}?entity=${encodeURIComponent(action.entity)}` : path;
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 /**
- * `since` (an ISO date, e.g. "2026-09-13", or null) and `today` (a `Date`,
- * always supplied by the caller) → an age string such as "12 days" or
- * "1 day" for B18's My work screen (A53, story 1.1).
+ * `since` (an ISO date, e.g. "2026-09-13", a zoned timestamp for the
+ * Close Lead's approvals item, or null) and `today` (a `Date`, always
+ * supplied by the caller) → an age string such as "12 days", "1 day" or
+ * "today" for B18's My work screen (A53, story 1.1).
  *
- * This module never reads the clock: `today` is always an injected
- * parameter, the same rule the pure Python models follow — the age is
- * computed from `since` and a `today` that is injected, never read inside
- * a pure module.
+ * konsol#305 F03: the day-math itself is timefmt.js's `ageText`, the one
+ * shared rule Approvals (approvals.js) also uses — this file used to diff
+ * calendar dates while approvals.js floored raw elapsed milliseconds, so
+ * the same waiting item aged differently on the two screens (live: 16 vs
+ * 17 days). The age is read in the site's own time zone (`userTimeZone`,
+ * B29), the same zone Approvals.vue already passes in explicitly; this
+ * screen has no such parameter to thread through, so it resolves the zone
+ * here instead of reading the browser's raw local calendar.
+ *
+ * This module still never reads the clock: `today` is always an injected
+ * parameter, the same rule the pure Python models follow.
  *
  * `since === null` (a setup-gap item, A53's `since_reason:
  * "configuration gap"`) renders nothing: `null`. A `since` that is still in
@@ -109,13 +116,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * is no elapsed age to show, and a negative day count would be a lie.
  */
 export function ageText(since, today) {
-	if (!since) return null;
-	const [year, month, day] = since.split("-").map(Number);
-	const sinceUTC = Date.UTC(year, month - 1, day);
-	const todayUTC = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
-	const days = Math.floor((todayUTC - sinceUTC) / MS_PER_DAY);
-	if (days < 0) return null;
-	return days === 1 ? "1 day" : `${days} days`;
+	return sharedAgeText(since, today, userTimeZone());
 }
 
 // --- U7 (review-w3.md): the item's badge ------------------------------------
