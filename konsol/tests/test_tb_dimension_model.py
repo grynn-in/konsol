@@ -222,3 +222,45 @@ def test_a_duplicated_bad_header_is_reported_once_per_column():
     rows = [declared("dim_project", in_trial_balance=0)]
     problems = M.dimension_problems(["dim_project", "dim_project"], rows)
     assert len(problems) == 1
+
+
+# -- konsolidat#245: the flag reader is shared, so make it public ----------------------
+
+def test_is_flag_on_is_public_and_handles_the_text_off_values():
+    """konsolidat#245 option D adds a second flag (Dimension.in_journal) read by
+    konsol#305's close app. Both readers need the same "0" handling — a Check
+    arriving as the string "0" through JSON, CSV or REST is truthy in Python —
+    so the helper is public rather than imported as _is_on across modules."""
+    assert M.is_flag_on(1) is True
+    assert M.is_flag_on(True) is True
+    assert M.is_flag_on("1") is True
+    assert M.is_flag_on("yes") is True
+    for off in (0, False, None, "", "0", "false", "False", "no", " 0 ", "NO"):
+        assert M.is_flag_on(off) is False, off
+
+
+def test_the_private_alias_still_resolves_to_the_public_helper():
+    """Nothing should import _is_on now, but anything that still does must get
+    the same function, not a divergent copy."""
+    assert M._is_on is M.is_flag_on
+
+
+def test_the_three_copies_of_the_column_name_rule_are_identical():
+    """PR #324 re-review, finding 7. The pattern is hand-copied into three
+    modules — here, schema_apply._SAFE_TB_DIM_COLUMN and
+    journal_model._LEGAL_DIM_COLUMN — because the other two import frappe or
+    would make a cycle. Each docstring says it MUST stay identical and nothing
+    enforced it. A drift is silent in the worst direction: one layer accepts a
+    name the next refuses, and values land nowhere."""
+    import os
+    import re as _re
+    app = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    found = {}
+    for rel, const in (("schema_apply.py", "_SAFE_TB_DIM_COLUMN"),
+                       (os.path.join("close", "journal_model.py"), "_LEGAL_DIM_COLUMN")):
+        with open(os.path.join(app, rel)) as fh:
+            src = fh.read()
+        m = _re.search(const + r' = re\.compile\(r"([^"]+)"\)', src)
+        assert m, f"{const} not found in {rel} in the expected shape"
+        found[rel] = m.group(1)
+    assert set(found.values()) == {M._LEGAL_DIMENSION_NAME.pattern}, found

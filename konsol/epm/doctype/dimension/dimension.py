@@ -32,6 +32,13 @@ from konsol.tb_dimension_model import FLAG, _is_on, is_legal_dimension_name
 #: grep apart. See ``_refuse_unimplemented_survives_close``.
 SURVIVES_CLOSE = "survives_close"
 
+#: The journal's declare leg (konsolidat#245 option D). apply_schema_for_publish
+#: reads it twice — the ClickHouse columns on
+#: epm_staging.consolidation_adjustments and the Custom Fields on Consolidation
+#: Journal Line — so it is a SCHEMA_FLAG, and it is a Check, so it is in
+#: CHECK_FIELDS. Left out of either, ticking the box is a silent no-op.
+IN_JOURNAL = "in_journal"
+
 #: The field's label, as the form shows it. The message quotes this, not the
 #: fieldname: the label is the only name of this setting an admin has seen.
 SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
@@ -51,10 +58,10 @@ SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
 SCHEMA_FIELDS = ("source_column", "label", "cube_type", "allocation_role")
 #: The Check fields among them. Compared after ``before_validate`` has written
 #: them as 0 or 1, so they compare as stored.
-SCHEMA_FLAGS = ("in_budget", FLAG)
+SCHEMA_FLAGS = ("in_budget", FLAG, IN_JOURNAL)
 
 #: Every Check field on Dimension, normalised by ``before_validate``.
-CHECK_FIELDS = ("in_budget", FLAG, SURVIVES_CLOSE)
+CHECK_FIELDS = ("in_budget", FLAG, SURVIVES_CLOSE, IN_JOURNAL)
 
 
 class Dimension(Document):

@@ -97,11 +97,23 @@ def is_dimension_column(header):
     return name.startswith(PREFIX) and len(name) > len(PREFIX)
 
 
-def _is_on(value):
-    """Whether a Check-shaped value means ticked. See ``_OFF_TEXT``."""
+def is_flag_on(value):
+    """Whether a Check-shaped value means ticked. See ``_OFF_TEXT``.
+
+    Public because there is more than one such flag now: ``in_trial_balance``
+    here, ``in_budget`` in schema_apply, and ``in_journal`` read by konsol#305's
+    close app (konsolidat#245 option D). Each reader needs the same handling —
+    a Check arriving as the string "0" through JSON, CSV or a REST payload is
+    truthy in Python — and a second copy of this would drift silently in the
+    worst direction, switching a dimension on by accident.
+    """
     if isinstance(value, str):
         return value.strip().casefold() not in _OFF_TEXT
     return bool(value)
+
+
+#: Kept so nothing that still imports the private name gets a divergent copy.
+_is_on = is_flag_on
 
 
 def accepted_dimension_columns(declared_rows):
