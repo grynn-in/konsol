@@ -22,6 +22,7 @@ PERIOD_MODEL_PY = os.path.join(APP_DIR, "close", "period_model.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 SCOPE_MODEL_PY = os.path.join(APP_DIR, "close", "scope_model.py")
+STATEMENT_MODEL_PY = os.path.join(APP_DIR, "close", "statement_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -238,6 +239,7 @@ def _load(site):
     signoff_model = _by_path("konsol.close.signoff_model", SIGNOFF_MODEL_PY)
     close_policy_model = _by_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
     scope_model = _by_path("konsol.close.scope_model", SCOPE_MODEL_PY)
+    statement_model = _by_path("konsol.close.statement_model", STATEMENT_MODEL_PY)
     _real_covered = scope_model.covered
 
     def _covered_spy(rows, start_date):
@@ -248,6 +250,7 @@ def _load(site):
     close.period_model, close.signoff_model = period_model, signoff_model
     close.close_policy_model = close_policy_model
     close.scope_model = scope_model
+    close.statement_model = statement_model
 
     # T04b: a stub Close Event writer (T02a's konsol/close/close_event.py),
     # so the gate's lazy `from konsol.close import close_event` resolves.
@@ -350,6 +353,7 @@ def _load(site):
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.close_policy_model": close_policy_model,
             "konsol.close.scope_model": scope_model,
+            "konsol.close.statement_model": statement_model,
             "konsol.close.close_event": close_event,
             "konsol.close.ic_api": ic_api,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
@@ -1229,7 +1233,11 @@ def test_undeclared_statement_accounts_block_sign_off():
     problems = _call(site, "sign_off_problems", 2025, 9)
     codes = [g["code"] for g in problems["config_gaps"]]
     assert codes == ["statement_accounts_undeclared"], codes
-    assert not any(c[0] == "Main Account" for c in site.get_all_calls), site.get_all_calls
+    # N45b: the Main Account read now always runs once (not "only when a
+    # code is set") because the BS heading-side check needs the whole
+    # chart whatever the CTA/result state is.
+    main_account_reads = [c for c in site.get_all_calls if c[0] == "Main Account"]
+    assert len(main_account_reads) == 1, main_account_reads
     message = _blocked(site)
     assert "Declare the CTA account in Close Settings" in message, message
     assert "Declare the current-year result account in Close Settings" in message, message
@@ -1272,3 +1280,87 @@ def test_the_statement_gap_follows_the_policy_gaps_and_precedes_the_tolerance_ga
     codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
     assert codes == ["self_approval_undeclared", "statement_accounts_undeclared",
                       "ic_tolerance_undeclared"], codes
+
+
+# --- N45b: an undeclared BS heading side is part of the statement setup gap --
+
+
+def _bs_heading(code, name, side=None):
+    row = {"name": code, "is_group": 1, "status": "Published",
+           "statement_section": "Balance Sheet", "account_name": name}
+    if side is not None:
+        row["normal_balance"] = side
+    return row
+
+
+def _pl_heading(code, name, side=None):
+    row = {"name": code, "is_group": 1, "status": "Published",
+           "statement_section": "Profit and Loss", "account_name": name}
+    if side is not None:
+        row["normal_balance"] = side
+    return row
+
+
+def test_undeclared_bs_heading_sides_are_part_of_the_statement_gap():
+    # Mirrors live: ASSETS/LIABILITIES/EQUITY all blank (coordinator call
+    # W4-E22, #305-W4-2 2a-ii) — same rule as statement_model._bs_heading_sides,
+    # never re-derived here.
+    site = _Site()
+    site.records["Main Account"] += [
+        _bs_heading("1000", "ASSETS"),
+        _bs_heading("2000", "LIABILITIES"),
+        _bs_heading("3000", "EQUITY"),
+    ]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    codes = [g["code"] for g in problems["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared"], codes
+    message = _blocked(site)
+    assert "statement_heading_side_undeclared" in message, message
+    assert "1000" in message and "2000" in message and "3000" in message, message
+
+
+def test_only_the_undeclared_bs_heading_sides_are_named():
+    site = _Site()
+    site.records["Main Account"] += [
+        _bs_heading("1000", "ASSETS", side="Debit"),
+        _bs_heading("2000", "LIABILITIES"),
+        _bs_heading("3000", "EQUITY"),
+    ]
+    message = _blocked(site)
+    assert "2000" in message and "3000" in message, message
+    assert "1000" not in message, message
+
+
+def test_pl_headings_are_never_checked_for_a_side():
+    site = _Site()
+    site.records["Main Account"] += [_pl_heading("9000", "INCOME")]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "statement_accounts_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+
+
+def test_declared_bs_heading_sides_are_no_gap():
+    site = _Site()
+    site.records["Main Account"] += [
+        _bs_heading("1000", "ASSETS", side="Debit"),
+        _bs_heading("2000", "LIABILITIES", side="Credit"),
+        _bs_heading("3000", "EQUITY", side="Credit"),
+    ]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "statement_accounts_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+    main_account_reads = [c for c in site.get_all_calls if c[0] == "Main Account"]
+    assert len(main_account_reads) == 1, main_account_reads
+
+
+def test_a_heading_side_problem_joins_an_existing_statement_accounts_problem():
+    # Both problems land in the SAME gap (one statement setup gap, not two).
+    site = _Site()
+    site.settings["statement_cta_account"] = ""
+    site.records["Main Account"] += [_bs_heading("2000", "LIABILITIES")]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    codes = [g["code"] for g in problems["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared"], codes
+    message = _blocked(site)
+    assert "Declare the CTA account in Close Settings" in message, message
+    assert "statement_heading_side_undeclared" in message and "2000" in message, message
