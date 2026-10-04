@@ -204,6 +204,9 @@ def _apply_schema_steps():
         "vars_updated": False,
         "columns_added": [],
         "tb_dimension_columns_synced": [],
+        # Pre-seeded like its sibling: when step 2c raises, the key is present
+        # and empty rather than missing (PR #324 review, finding 7).
+        "journal_dimension_columns_synced": [],
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
@@ -315,7 +318,13 @@ def _apply_clickhouse_columns():
 
 
 def _table_columns(table):
-    """Every column ClickHouse reports on ``table``. See _tb_table_columns."""
+    """Every column ClickHouse reports on ``table``.
+
+    The tables are created by static DDL (clickhouse._RAW_TABLE_DDL and
+    _REFERENCE_TABLE_DDL, and init-db.sql) which runs once against an empty
+    volume and cannot know a customer's dimensions, so what is actually on a
+    table has to be read back rather than assumed.
+    """
     database, _, name = table.partition(".")
     text = ch_execute(
         "SELECT name FROM system.columns "
@@ -324,26 +333,10 @@ def _table_columns(table):
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
 
-def _tb_table_columns():
-    """Every column ClickHouse reports on the raw trial-balance table.
-
-    The table is created by static DDL (clickhouse._RAW_TABLE_DDL, and
-    init-db.sql) which runs once against an empty volume and cannot know a
-    customer's dimensions, so what is actually on the table has to be read
-    back rather than assumed.
-    """
-    database, _, table = _TB_RAW_TABLE.partition(".")
-    text = ch_execute(
-        "SELECT name FROM system.columns "
-        f"WHERE database = '{database}' AND table = '{table}' ORDER BY name"
-    )
-    return [line.strip() for line in (text or "").splitlines() if line.strip()]
-
-
 def _refuse_tb_dim_column(name, where):
     """Log a dimension column name that may not be interpolated into DDL."""
     frappe.log_error(
-        "schema_apply: refused a trial-balance dimension column name",
+        "schema_apply: refused a dimension column name",
         f"{name!r} ({where}) is not {_SAFE_TB_DIM_COLUMN.pattern}; "
         "it was never put into SQL.",
     )
@@ -709,28 +702,38 @@ def _sync_budget_custom_fields_locked():
     the snapshot is fresh. Consolidation Journal Line joined Budget Line here
     for konsolidat#245 option D — one lock rather than a second named lock,
     because both write Custom Fields and an ALTER from either commits.
+
+    EVERY ADD RUNS BEFORE ANY DELETE, across both tables. _created_elsewhere
+    rolls back to discard a failed insert's own pending work, and its docstring
+    states the premise that makes that safe: "the adds run before any delete and
+    each successful add has committed (updatedb), so only this failed add's own
+    work is pending". Running one table fully and then the other broke it (PR
+    #324 review, finding 3) — a Custom Field delete is pure DML with no
+    updatedb, so a failed add on the SECOND table rolled back the FIRST table's
+    uncommitted deletes while still reporting them as removed.
     """
-    actions = _sync_dimension_custom_fields("Budget Line", "in_budget", "main_account")
-    actions += _sync_dimension_custom_fields(
-        "Consolidation Journal Line", "in_journal", "main_account")
+    tables = (("Budget Line", "in_budget", "main_account"),
+              ("Consolidation Journal Line", "in_journal", "main_account"))
+    plans = [_plan_dimension_custom_fields(dt, flag) for dt, flag, _ in tables]
+    actions = []
+    for (dt, _flag, insert_after), plan in zip(tables, plans):
+        actions += _add_dimension_custom_fields(dt, insert_after, plan)
+    for (dt, _flag, _after), plan in zip(tables, plans):
+        actions += _remove_orphan_dimension_custom_fields(dt, plan)
     return actions
 
 
-def _sync_dimension_custom_fields(dt, flag, insert_after):
-    """Give ``dt`` a Data Custom Field per Published Dimension ticked ``flag``.
+def _plan_dimension_custom_fields(dt, flag):
+    """What ``dt`` should have: ``(wanted, label_map, existing)``. Reads only.
 
-    One body for both callers — Budget Line's ``in_budget`` and Consolidation
-    Journal Line's ``in_journal`` (konsolidat#245 option D) — because two copies
-    of this would drift, and the drift is silent in the worst direction: a
-    dimension that is declared and has nowhere to land. The same reason
-    ``tb_dimension_model.is_flag_on`` is one function.
+    Split from the add and remove phases so every add across every table runs
+    before any delete — see _sync_budget_custom_fields_locked (PR #324 review,
+    finding 3). One body for both callers, Budget Line's ``in_budget`` and
+    Consolidation Journal Line's ``in_journal`` (konsolidat#245 option D),
+    because two copies would drift and the drift is silent in the worst
+    direction: a dimension that is declared and has nowhere to land.
 
-    Adds what is missing and removes what is orphaned. Removal takes the Frappe
-    field only: the warehouse column is never dropped (``_ADDED_COLUMNS`` adds
-    and never removes), so values already written stay readable and a dimension
-    unticked by mistake loses no history.
-
-    Callers hold the named lock; the reads here are plain because the caller
+    Callers hold the named lock; the reads are plain because the caller
     committed after taking it.
     """
     dims = frappe.get_all(
@@ -741,17 +744,21 @@ def _sync_dimension_custom_fields(dt, flag, insert_after):
     )
     wanted = {d.dimension_name for d in dims}
     label_map = {d.dimension_name: d.label for d in dims}
-
     existing = frappe.get_all(
         "Custom Field",
         filters={"dt": dt, "fieldname": ("like", "dim_%")},
         fields=["name", "fieldname"],
         limit_page_length=0,
     )
+    return wanted, label_map, existing
+
+
+def _add_dimension_custom_fields(dt, insert_after, plan):
+    """Insert the Custom Fields ``dt`` is missing. Each insert commits
+    (CustomField.on_update -> frappe.db.updatedb)."""
+    wanted, label_map, existing = plan
     existing_names = {cf.fieldname for cf in existing}
-
     actions = []
-
     for dim_name in sorted(wanted - existing_names):
         cf = frappe.new_doc("Custom Field")
         cf.dt = dt
@@ -766,10 +773,20 @@ def _sync_dimension_custom_fields(dt, flag, insert_after):
                 continue  # the goal is met
             raise
         actions.append(f"added {dim_name}")
+    return actions
 
+
+def _remove_orphan_dimension_custom_fields(dt, plan):
+    """Delete ``dt``'s Custom Fields the declared set no longer names.
+
+    The Frappe field only: the warehouse column is never dropped, so values
+    already written stay readable and a dimension unticked by mistake loses no
+    history (konsol#255, Deepak Pai's option A).
+    """
+    wanted, _label_map, existing = plan
+    actions = []
     for cf in existing:
         if cf.fieldname not in wanted:
             frappe.delete_doc("Custom Field", cf.name)
             actions.append(f"removed {cf.fieldname}")
-
     return actions

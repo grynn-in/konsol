@@ -269,8 +269,8 @@ def test_schema_apply_budget_fields_filter_published():
     # The reads moved behind the sync's named lock (#135 review), and then into
     # one shared body for both line tables (konsolidat#245 option D), so the
     # Published filter is asserted where it now lives.
-    shared = _extract_function(content, "_sync_dimension_custom_fields")
-    assert '"Published"' in shared, "_sync_dimension_custom_fields missing Published filter"
+    shared = _extract_function(content, "_plan_dimension_custom_fields")
+    assert '"Published"' in shared, "_plan_dimension_custom_fields missing Published filter"
     assert 'filters={flag: 1, "status": "Published"}' in shared, shared[:200]
 
     # Both dimension-carrying line tables are synced, under the one lock, and

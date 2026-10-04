@@ -34,7 +34,6 @@ class ConsolidationJournal(Document):
     # konsol#305 J05 (#305-D2-11, #305-D2-12): one row per line, submitted
     # journals only. reconcile_all finds this through resync_staging.
     CH_STAGING_TABLE = "epm_staging.consolidation_adjustments"
-    CH_STAGING_COLUMNS = journal_model.STAGING_COLUMNS
 
     def before_insert(self):
         """Every new journal starts in the first state with no approver. An

@@ -19,7 +19,7 @@ LIFECYCLE = os.path.join(APP_DIR, "schema_lifecycle.py")
 INSTALL = os.path.join(APP_DIR, "install.py")
 JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
 DBT_JOB = "konsol.tasks.run_dbt_build_async"
-# schema_apply._tb_table_columns reads the raw table's columns back (konsol#255).
+# schema_apply._table_columns reads a table's columns back (konsol#255).
 CH_INTROSPECTION = "SELECT name FROM system.columns"
 
 # frappe.enqueue's own parameters: none of them may be a job kwarg.
@@ -478,8 +478,9 @@ class _Site:
         self.exceptions = []
 
     # -- transactions --
-    def seed(self, fieldname, creation="old"):
-        self.committed[f"Budget Line-{fieldname}"] = {"fieldname": fieldname, "creation": creation}
+    def seed(self, fieldname, creation="old", dt="Budget Line"):
+        self.committed[f"{dt}-{fieldname}"] = {"fieldname": fieldname, "creation": creation,
+                                               "dt": dt}
         self.snap = dict(self.committed)
 
     def visible(self):
@@ -554,10 +555,12 @@ class _Site:
         dt = filters.get("dt")
         assert dt in ("Budget Line", "Consolidation Journal Line"), filters
         assert filters == {"dt": dt, "fieldname": ("like", "dim_%")}, filters
-        if dt != "Budget Line":
-            return []        # the journal's fields are tracked separately below
-        return [types.SimpleNamespace(name=n, fieldname=r["fieldname"]) for n, r in self.visible().items()
-                if r["fieldname"].startswith("dim_")]
+        # Filtered by dt, like the real query. Without it a field on one table
+        # read as an orphan of the other and was removed on the next run — the
+        # new journal tests caught that in this stub.
+        return [types.SimpleNamespace(name=n, fieldname=r["fieldname"])
+                for n, r in self.visible().items()
+                if r["fieldname"].startswith("dim_") and r.get("dt", "Budget Line") == dt]
 
     def exists(self, doctype, filters):
         assert doctype == "Custom Field"
@@ -585,7 +588,8 @@ class _Site:
                 self.creation = self.creation or site._stamp()   # db_insert stamps it before the INSERT
                 if name in site.committed:                       # the INSERT hits the unique key
                     raise _Duplicate(name)
-                site.own.append(("insert", name, {"fieldname": self.fieldname, "creation": self.creation}))
+                site.own.append(("insert", name, {"fieldname": self.fieldname, "creation": self.creation,
+                                                  "dt": self.dt}))
                 # on_update -> updatedb: MariaDBTable.validate, then the ALTER through
                 # sql_ddl, which commits before it runs; then updatedb's own commit.
                 if site.fail_insert == "db_table_validate":
@@ -616,7 +620,8 @@ class _Site:
 
 def _sync(site):
     ns = _load({"_sync_budget_custom_fields", "_sync_budget_custom_fields_locked",
-                "_sync_dimension_custom_fields",
+                "_plan_dimension_custom_fields", "_add_dimension_custom_fields",
+                "_remove_orphan_dimension_custom_fields",
                 "_budget_field_sync_lock", "_created_elsewhere"}, {"frappe": site.frappe()})
     return ns["_sync_budget_custom_fields"]
 
@@ -821,3 +826,45 @@ def test_the_lock_name_is_per_database():
     site = _site_with(dim_zz="Published")
     _sync(site)()
     assert site.lock_names == ["konsol_budget_field_sync:_zzdb"] * 2
+
+
+# -- PR #324 review, finding 12: the journal table had no coverage at all -------------
+
+def _site_with_journal(**dims):
+    site = _Site()
+    for name, status in dims.items():
+        site.dimensions[name] = {"label": name, "in_budget": 0, "in_journal": 1,
+                                 "status": status}
+    return site
+
+
+def test_the_journal_line_gets_its_own_custom_fields():
+    """konsolidat#245 option D. Before this test the shared dt/flag/insert_after
+    parameterisation was exercised for Budget Line only — the stub returned []
+    for the journal table and every fixture dimension carried in_journal: 0."""
+    site = _site_with_journal(dim_cost_center="Published")
+    sync = _sync(site)
+    assert sync() == ["added dim_cost_center"]
+    assert sync() == [], "a second run changes nothing"
+    added = [r for r in site.committed.values() if r.get("dt") == "Consolidation Journal Line"]
+    assert [r["fieldname"] for r in added] == ["dim_cost_center"], site.committed
+    assert not [r for r in site.committed.values() if r.get("dt") == "Budget Line"], \
+        "in_budget is 0: Budget Line must not gain the field"
+
+
+def test_un_declaring_a_journal_dimension_removes_only_its_frappe_field():
+    site = _site_with_journal(dim_cost_center="Published")
+    sync = _sync(site)
+    sync()
+    site.dimensions["dim_cost_center"]["status"] = "Inactive"
+    assert sync() == ["removed dim_cost_center"]
+
+
+def test_a_dimension_on_both_tables_gets_a_field_on_each():
+    site = _Site()
+    site.dimensions["dim_cc"] = {"label": "CC", "in_budget": 1, "in_journal": 1,
+                                 "status": "Published"}
+    sync = _sync(site)
+    assert sorted(sync()) == ["added dim_cc", "added dim_cc"]
+    dts = sorted(r.get("dt") for r in site.committed.values())
+    assert dts == ["Budget Line", "Consolidation Journal Line"], dts

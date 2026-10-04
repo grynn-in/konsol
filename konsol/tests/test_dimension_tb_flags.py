@@ -140,3 +140,35 @@ def test_tb_flags_sit_next_to_in_budget():
 def test_dimension_json_has_no_field_order():
     """This doctype orders by the fields list alone — adding field_order would fork it."""
     assert "field_order" not in _load_dimension()
+
+
+# -- PR #324 independent review, findings 1, 2 and 4 -----------------------------------
+
+def _dimension_source():
+    import os
+    path = os.path.join(APP_DIR, "epm", "doctype", "dimension", "dimension.py")
+    with open(path) as f:
+        return f.read()
+
+
+def test_in_journal_is_a_schema_flag_so_ticking_it_applies_the_schema():
+    """Review finding 1. apply_schema_for_publish reads in_journal (the journal's
+    ClickHouse columns and its Custom Fields), so a save that changes it on a
+    Published Dimension must apply the schema. Left out, ticking the box creates
+    no column and no field and reports success: the declared-with-nowhere-to-land
+    state the whole change exists to prevent."""
+    src = _dimension_source()
+    assert 'IN_JOURNAL = "in_journal"' in src, "the constant is gone or renamed"
+    line = next(l for l in src.splitlines() if l.startswith("SCHEMA_FLAGS"))
+    assert "IN_JOURNAL" in line, \
+        f"in_journal is read by apply_schema_for_publish but is not a SCHEMA_FLAG: {line}"
+
+
+def test_in_journal_is_normalised_like_every_other_check():
+    """Review finding 4. Frappe stores a Check as `1 if cint(value) else 0`, and
+    cint("true") is 0, so a REST call, CSV import or config bundle carrying
+    "true" or "yes" would store the box UNTICKED and silently. before_validate
+    normalises every field in CHECK_FIELDS; in_journal must be one."""
+    src = _dimension_source()
+    line = next(l for l in src.splitlines() if l.startswith("CHECK_FIELDS"))
+    assert "IN_JOURNAL" in line, f"in_journal is not normalised by before_validate: {line}"

@@ -579,3 +579,28 @@ def test_journal_dimension_columns_ignores_a_field_that_is_not_declared():
     """An orphan column from an un-ticked dimension stays on the table and
     stays readable, but nothing new is written to it (konsol#255 option A)."""
     assert M.journal_dimension_columns(["dim_a"], {"dim_a", "dim_orphan"}) == ("dim_a",)
+
+
+def test_a_name_the_warehouse_cannot_spell_is_never_written():
+    """Review finding 2, the serious one. _sync_dimension_columns refuses a
+    declared name that fails ^dim_[a-z0-9_]+$ and creates NO ClickHouse column,
+    but the Custom Field sync has no prefix rule, so the Frappe field exists. A
+    name like `business_unit` is legal on a Dimension that is not in the trial
+    balance (dimension.py says so and names that very example).
+
+    Unfiltered, the writer would name a column the table does not have, the
+    INSERT would fail, and clickhouse.sync_table swallows that with force=False
+    — so every later submit, cancel and delete would leave the journal's staging
+    table frozen with no visible error.
+    """
+    present = {"data_area_id", "main_account", "business_unit", "dim_cost_center"}
+    assert M.journal_dimension_columns(["business_unit", "dim_cost_center"], present) == \
+        ("dim_cost_center",)
+
+
+def test_a_default_or_child_table_field_name_is_never_written():
+    """Same finding. get_valid_columns() also returns name, owner, parent, idx,
+    description and main_account, so a Dimension called `description` would put
+    a DUPLICATE column in the INSERT list — the same dead sync."""
+    present = {"name", "owner", "parent", "idx", "description", "main_account"}
+    assert M.journal_dimension_columns(["description", "main_account"], present) == ()

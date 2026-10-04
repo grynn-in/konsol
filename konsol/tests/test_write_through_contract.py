@@ -967,16 +967,18 @@ def test_the_journal_writes_only_declared_columns():
     cj_path = os.path.join(APP_DIR, "consolidation", "doctype",
                            "consolidation_journal", "consolidation_journal.py")
     with open(cj_path) as fh:
-        tree = ast.parse(fh.read())
-    assigned = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    assigned[t.id] = node.value
-    assert "CH_STAGING_COLUMNS" in assigned, "the journal declares CH_STAGING_COLUMNS"
-    assert ast.unparse(assigned["CH_STAGING_COLUMNS"]) == "journal_model.STAGING_COLUMNS", (
-        "one column list: the controller writes the rows journal_model.staging_rows builds")
+        ctrl = fh.read()
+    ast.parse(ctrl)
+    # konsolidat#245 option D: the column list is no longer a class attribute,
+    # because the declared dimensions are per-site. resync_staging builds it and
+    # the rows from ONE tuple (`dims`), which is what stops them diverging —
+    # PR #324 review, finding 8, caught that this assertion had gone vacuous
+    # when CH_STAGING_COLUMNS stopped being used.
+    assert "journal_model.staging_columns(dims)" in ctrl, ctrl[-400:]
+    assert "journal_model.staging_rows(headers, lines, declared=dims)" in ctrl, ctrl[-400:]
+    assert "CH_STAGING_COLUMNS" not in ctrl, (
+        "CH_STAGING_COLUMNS is dead: resync_staging builds the list from the "
+        "declared dimensions. Remove it rather than leaving two column lists.")
 
     jm_path = os.path.join(APP_DIR, "close", "journal_model.py")
     spec = importlib.util.spec_from_file_location("journal_model_for_contract", jm_path)

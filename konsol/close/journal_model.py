@@ -18,9 +18,18 @@ Rules (#292):
 Amounts are handled as Decimal, quantized to 2 dp, so 0.10 + 0.20 balances
 against 0.30 — a plain float sum would not.
 """
+import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 _CENTS = Decimal("0.01")
+
+#: What a dimension column may be named, to be written at all. MUST stay
+#: identical to schema_apply._SAFE_TB_DIM_COLUMN and
+#: tb_dimension_model._LEGAL_DIMENSION_NAME — it is copied, not imported,
+#: because this module is pure and those bring frappe or a cycle. \Z not $:
+#: `$` also matches before a trailing newline. See
+#: journal_dimension_columns for what a drift here would cost.
+_LEGAL_DIM_COLUMN = re.compile(r"^dim_[a-z0-9_]+\Z")
 
 MIN_LINES = 2
 
@@ -328,16 +337,31 @@ def journal_dimension_columns(declared, present):
     An orphan field the declared set no longer names is left out: the column
     keeps its history and stays readable, and nothing new is written to it
     (konsol#255, Deepak Pai's option A).
+
+    A name the warehouse cannot spell is left out too, and this is the one that
+    bites (PR #324 review, finding 2). schema_apply refuses a declared name
+    failing ``^dim_[a-z0-9_]+$`` and creates no ClickHouse column — but the
+    Custom Field sync has no prefix rule, so the Frappe field exists, and a
+    non-``dim_`` name is legal on a Dimension outside the trial balance
+    (``business_unit`` is the example dimension.py itself gives). Naming such a
+    column in the INSERT would hit a table that does not have it, and
+    ``clickhouse.sync_table`` swallows that with ``force=False``: every later
+    submit, cancel and delete would leave the staging table frozen with no
+    visible error. ``get_valid_columns()`` also returns ``name``, ``parent``,
+    ``idx``, ``description`` and ``main_account``, so the same rule stops a
+    Dimension called ``description`` putting a duplicate column in the list.
     """
     have = set(present or ())
-    return tuple(d for d in declared if d in have)
+    return tuple(d for d in declared
+                 if d in have and _LEGAL_DIM_COLUMN.fullmatch(d or ""))
 
 
 def staging_columns(declared=()):
     """``STAGING_COLUMNS`` plus one column per declared journal dimension.
 
     The dimensions go LAST, because `epm_staging.consolidation_adjustments`
-    already exists and gains them through ``clickhouse._ADDED_COLUMNS`` — the
+    already exists and gains them per-site through
+    ``schema_apply._sync_journal_dimension_columns`` — the
     same reason `main_account`'s CH_FIELD_MAP keeps `is_retained_earnings` at
     the end. ``declared`` is the caller's list of Published Dimensions ticked
     ``in_journal``, in a stable order; this module reads no doctype.
