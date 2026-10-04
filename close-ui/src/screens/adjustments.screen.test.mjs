@@ -402,13 +402,17 @@ test("U4: docstatus 2 (Cancelled) reads 'Cancelled — not in the statement', di
 	assert.match(cancelledInner, /Cancelled.*not in the statement/i);
 	assert.doesNotMatch(cancelledInner, /Included in the statement/i, "docstatus 2 never shows the Approved sentence");
 
-	// The "Included in the statement" sentence must NOT sit in a branch
-	// that also matches docstatus 2 (the W43 bug: one `v-else` covered both
-	// docstatus 1 and 2).
-	const includedPos = tpl.search(/Included in the statement/i);
-	assert.ok(includedPos >= 0);
-	const nearbyTag = tpl.slice(Math.max(0, includedPos - 400), includedPos);
-	assert.doesNotMatch(nearbyTag, /docstatus\s*===\s*2/, "the Included-in-the-statement branch is not also the docstatus===2 branch");
+	// The sibling element right after the docstatus===2 <p> (the "approved"
+	// branch) must carry the Included sentence, and its own opening tag
+	// must NOT also test docstatus === 2 — the W43 bug was one `v-else`
+	// covering both docstatus 1 and 2.
+	const afterCancelled = tpl.slice(cancelledBlock.end);
+	const nextTagMatch = afterCancelled.match(/<(template|p|div)(?:(?!>)[\s\S])*?>/);
+	assert.ok(nextTagMatch, "an element follows the docstatus===2 branch");
+	assert.doesNotMatch(nextTagMatch[0], /docstatus\s*===\s*2/, "the next branch is not also gated on docstatus === 2");
+	const siblingBlock = blockFor(afterCancelled, nextTagMatch.index, nextTagMatch[1]);
+	const siblingInner = afterCancelled.slice(siblingBlock.start, siblingBlock.end);
+	assert.match(siblingInner, /Included in the statement/i, "the branch right after docstatus===2 shows the Approved sentence");
 });
 
 // U4 "judgement" (verified): approved journals lost their per-heading

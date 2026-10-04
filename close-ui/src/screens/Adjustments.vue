@@ -32,10 +32,15 @@
  *   `before` is the statement's current figure, `change` reuses the exact
  *   display-sign multiplier the statement already computed for that
  *   heading, `after` is their sum — all in the statement's own display
- *   sign, never re-derived or hardcoded here. An approved or reversed
- *   journal (`docstatus !== 0`) is already in the last build, so showing
+ *   sign, never re-derived or hardcoded here. An Approved journal
+ *   (`docstatus === 1`) is already in the last build, so showing
  *   before/after would double count: the panel shows "Included in the
- *   statement" instead. The statement for the selected journal's period
+ *   statement" plus its own per-heading effect list (`selectedEffect.
+ *   headings`, same as the draft panel showed before W43 — U4) instead. A
+ *   Cancelled journal (`docstatus === 2`) never reached a build at all, so
+ *   it shows "Cancelled — not in the statement." instead, with no effect
+ *   list (U4: W43 had shown both docstatus 1 and 2 as "Included", which was
+ *   wrong for 2). The statement for the selected journal's period
  *   and group is read once per selection (its own seq guard, separate from
  *   the journals list's), and any of its non-ok states (or a GET failure)
  *   shows the message, never blank or zero columns.
@@ -733,8 +738,31 @@ function lines(text) {
 							</table>
 						</template>
 					</template>
-					<p v-else class="text-sm text-ink-gray-6">Included in the statement.</p>
-					<p v-if="selectedEffect.noHeading" class="mt-1 text-xs text-ink-gray-5">{{ selectedEffect.noHeading }} account(s) outside any heading.</p>
+					<!-- U4 (W4 review): docstatus 2 (cancelled/reversed-away) never
+					     reached the last build, so it is never "included" — distinct
+					     from docstatus 1 (approved), which is already in the last
+					     build and shows the per-heading effect list it showed before
+					     W43 (U4's "judgement" note), restored here rather than left
+					     as the bare sentence W43 left in its place. -->
+					<p v-else-if="selectedJournal.docstatus === 2" class="text-sm text-ink-gray-6">
+						Cancelled — not in the statement.
+					</p>
+					<template v-else>
+						<p class="text-sm text-ink-gray-6">Included in the statement.</p>
+						<div v-if="!selectedEffect.headings.length" class="text-sm text-ink-gray-6">No effect.</div>
+						<ul v-else class="mt-2 space-y-1 text-sm">
+							<li v-for="(heading, i) in selectedEffect.headings" :key="i" class="flex items-center justify-between gap-2">
+								<span class="text-ink-gray-7">{{ heading.label }}</span>
+								<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
+							</li>
+						</ul>
+					</template>
+					<p
+						v-if="selectedEffect.noHeading && selectedJournal.docstatus !== 2"
+						class="mt-1 text-xs text-ink-gray-5"
+					>
+						{{ selectedEffect.noHeading }} account(s) outside any heading.
+					</p>
 				</template>
 			</section>
 		</div>

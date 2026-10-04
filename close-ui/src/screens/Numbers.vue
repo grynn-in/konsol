@@ -7,22 +7,33 @@
  * Data:
  * - GET `statement_api.get_statement(fiscal_year, fiscal_period,
  *   consolidation_group=None)` (N51), turned into `{header, label, legend,
- *   state, groupChoice, notIncluded, gapText, tabs, comparisonNote}` by
- *   numbers.js's `statementView` (U41). The screen never decides a label,
- *   tone, column or amount itself: it walks `tabRows(view, section)` for
- *   each tab's rows (no second derivation off `view.tabs[i].rows`) and
- *   binds `isDrillable` (unused until U45 opens anything on a click).
+ *   state, groupChoice, consolidationGroup, notIncluded, gapText, tabs,
+ *   comparisonNote}` by numbers.js's `statementView` (U41). The screen never
+ *   decides a label, tone, column or amount itself: it walks `tabRows(view,
+ *   section)` for each tab's rows (no second derivation off
+ *   `view.tabs[i].rows`) and binds `isDrillable` (unused until U45 opens
+ *   anything on a click).
  * - `view.state` is a business state the server itself declared —
- *   `choose_group`, `no_chart`, `not_built` or `error` — distinct from
- *   LoadState's own fetch-level states: the GET can succeed while the
- *   payload still carries a non-ok `view.state`, and then `view.tabs` is
- *   empty (statementView never returns tabs for a non-ok state), so no
- *   table is shown.
+ *   `choose_group`, `no_chart`, `not_built`, `error` or `setup_gap`
+ *   (R41d/R41i, S5: an undeclared statement account or heading side) —
+ *   distinct from LoadState's own fetch-level states: the GET can succeed
+ *   while the payload still carries a non-ok `view.state`, and then
+ *   `view.tabs` is empty (statementView never returns tabs for a non-ok
+ *   state), so no table is shown. Every one of these states shows the
+ *   server's own `state.message` verbatim (U5) — this screen never
+ *   substitutes wording of its own.
  * - `choose_group`: the screen offers `view.groupChoice` in a plain select,
  *   held only as local component state (`chosenGroup`, never browser
  *   storage, never the URL) and re-sent as `consolidation_group` on the
  *   next GET. A period change (route.js, D5) clears it — the group is not
- *   part of the address.
+ *   part of the address. U5 "a chosen group can be changed": once a group
+ *   resolves (any other state), a second switcher — gated on
+ *   `view.groupChoice` alone, so it shows whenever more than one group is
+ *   declared — stays available so the choice is never a one-way door; both
+ *   selects call the same `chooseGroup`.
+ * - `setup_gap`: the configuration is missing (not a warehouse outage), so
+ *   the banner also offers the "Open Close Settings" Desk link, same as
+ *   `view.gapText` below.
  * - `view.gapText`: the declared-accounts setup gap's sentence (N41/N45),
  *   shown with a "Open Close Settings" Desk link (story 0.4's "Fix in
  *   Desk" pattern, MyWork.vue). Every close role that can open Numbers can
@@ -31,6 +42,11 @@
  *   Desk permissions decide what the visitor can do once there, so the
  *   link is not persona-gated client-side — this payload carries no
  *   persona signal to gate it with.
+ * - `view.comparisonNote` (U6): the statement's own note on why the
+ *   comparison column has no data (for example no rows yet for the prior
+ *   period) — rendered as plain text above the tabs, the one place the
+ *   screen explains the "not loaded" cells `comparisonCell` (numbers.js)
+ *   already shows instead of guessing a number.
  * - A thrown `statementView` error shows through LoadState as an error
  *   (never a blank table): the `view` computed mirrors Rates.vue's/
  *   Intercompany.vue's own pattern, and the table markup sits inside
@@ -75,11 +91,13 @@ const TONE_CLASS = {
 	block: "bg-surface-red-1 text-ink-red-4",
 };
 
-//: `view.state.kind` -> which tone its banner reads as. `choose_group`
-//: asks for input, not a failure; the other three are the server's own
-//: non-ok states (statement_api.py module docstring).
+//: `view.state.kind` -> which tone its banner reads as. `choose_group` and
+//: `setup_gap` (R41d/R41i, S5) ask for input/configuration, not a failure;
+//: the other two are the server's own warehouse-failure states
+//: (statement_api.py module docstring).
 const STATE_TONE = {
 	choose_group: "warn",
+	setup_gap: "warn",
 	no_chart: "block",
 	not_built: "block",
 	error: "block",
@@ -271,6 +289,26 @@ function onCommentarySaved() {
 			</a>
 		</div>
 
+		<!-- U5 "a chosen group can be changed": once a group is resolved
+		     (any state other than the initial choose_group ask), a switcher
+		     stays available whenever more than one group is declared
+		     (view.groupChoice, numbers.js). The choose_group banner below
+		     offers its own select while nothing is chosen yet; this one
+		     takes over afterwards so the user is never stuck on the first
+		     group the server picked. -->
+		<div v-if="view && view.groupChoice && (!view.state || view.state.kind !== 'choose_group')" class="mt-3">
+			<label class="flex items-center gap-2 text-sm text-ink-gray-7">
+				<span>Group</span>
+				<select
+					:value="chosenGroup || view.consolidationGroup || ''"
+					class="w-56 rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
+					@change="chooseGroup($event.target.value)"
+				>
+					<option v-for="g in view.groupChoice" :key="g" :value="g">{{ g }}</option>
+				</select>
+			</label>
+		</div>
+
 		<LoadState class="mt-4" :state="loadState" :what="what" :source="GET_STATEMENT" :error="loadError" :busy="numbers.busy" @retry="load">
 			<template v-if="view">
 				<div v-if="view.state" class="rounded border px-4 py-4 text-sm" :class="stateClass(view.state.kind)">
@@ -288,10 +326,23 @@ function onCommentarySaved() {
 							</select>
 						</label>
 					</div>
+					<div v-if="view.state.kind === 'setup_gap'" class="mt-3">
+						<a
+							href="/app/close-settings"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="inline-flex items-center gap-1.5 rounded border border-outline-gray-2 bg-surface-white px-3 py-1.5 text-sm text-ink-gray-8 hover:bg-surface-gray-2"
+							title="Opens Close Settings in the Desk, in a new tab"
+						>
+							Open Close Settings
+							<FeatherIcon name="external-link" class="h-3.5 w-3.5" />
+						</a>
+					</div>
 				</div>
 
 				<template v-else>
 					<p v-if="view.notIncluded" class="mb-3 text-xs text-ink-gray-5">{{ view.notIncluded }}</p>
+					<p v-if="view.comparisonNote" class="mb-3 text-xs text-ink-gray-5">{{ view.comparisonNote }}</p>
 
 					<section v-for="tab in view.tabs" :key="tab.section" class="mb-6">
 						<h2 class="mb-2 text-base font-semibold text-ink-gray-9">{{ tab.section }}</h2>
