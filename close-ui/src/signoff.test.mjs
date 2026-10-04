@@ -591,6 +591,15 @@ test("U47: failure path — a missing commentary key throws (an older payload, n
   assert.throws(() => summaryView(s), /commentary/);
 });
 
+// R41j (U8): `signoff_api.py`'s `_commentary` always returns a list, never
+// null, and `result.update({..., "commentary": _commentary(key)})` sets it
+// unconditionally on every call — a literal `null` is as much a broken
+// contract as the key being absent, so it must throw too, never silently
+// read as an empty ("None") section.
+test("U47: failure path — a null commentary value throws, never reading as an empty section", () => {
+  assert.throws(() => summaryView(summary({ commentary: null })), /commentary/);
+});
+
 test("U47: failure path — commentary never changes the summary's action", () => {
   const withGaps = summaryView(summary({ commentary: GOLDEN_COMMENTARY })).action;
   const allCommented = summaryView(

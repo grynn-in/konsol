@@ -127,6 +127,57 @@ test("legend is the AMENDED 4 Oct wording, shown on an ok payload", () => {
 	assert.equal(view.legend, golden().statement.legend);
 });
 
+// U11: the legend is READ from `payload.statement.legend` on `ok`, not
+// duplicated from this module's own constant — proven by mutating the
+// fixture's own legend and checking the view follows it, not the constant.
+test("U11: legend on an ok payload tracks payload.statement.legend, not this module's own constant", () => {
+	const payload = golden();
+	payload.statement.legend = "A changed legend from the server.";
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(view.legend, "A changed legend from the server.");
+});
+
+// The non-ok states carry no `statement` to read a legend from, so this
+// module's own constant is still shown there (the one declared exception).
+test("legend on a non-ok payload falls back to this module's own constant (no statement to read)", () => {
+	const payload = golden();
+	payload.state = "no_chart";
+	payload.message = "Publish the group chart (Main Account) first.";
+	payload.statement = null;
+	const view = statementView(payload, NOW, TZ);
+	assert.equal(
+		view.legend,
+		"Profit and loss: income positive, costs in brackets. Balance sheet: assets, liabilities and equity positive.",
+	);
+});
+
+// R41j (U8): `statement_api.get_statement` assigns `groups` unconditionally
+// from `frappe.get_all(...)` before any state branch — never null. A null
+// there is a broken contract.
+test("failure path: a null groups throws, naming it", () => {
+	const payload = golden();
+	payload.groups = null;
+	assert.throws(() => statementView(payload, NOW, TZ), /Numbers payload has no groups\./);
+});
+
+// R41j (U8): on `ok`, `_commentary(...)`'s dict is never null (see
+// statementView's own comment) — a null there is a broken contract.
+test("failure path: a null commentary on an ok payload throws, naming it", () => {
+	const payload = golden();
+	payload.commentary = null;
+	assert.throws(() => statementView(payload, NOW, TZ), /Numbers payload has no commentary\./);
+});
+
+// R41j (U8): on `ok`, `not_included` is always a `{count, ...}` dict (set
+// unconditionally by `get_statement`'s `ok` path, konsol/close/
+// statement_api.py:427) — a null there is a broken contract, never "zero
+// entities missing".
+test("failure path: a null not_included on an ok payload throws, naming it", () => {
+	const payload = golden();
+	payload.not_included = null;
+	assert.throws(() => statementView(payload, NOW, TZ), /Numbers: ok payload has no not_included\./);
+});
+
 // --- state, groupChoice, gapText, notIncluded -------------------------------
 
 test("state is null and no group choice when the payload is ok", () => {
@@ -282,6 +333,26 @@ test("P&L tab: columns include Year to date; two rows, heading row carries comme
 	]);
 });
 
+// R41j (U8): `statement_model._pl_line` sets `"ytd"` on every Profit and
+// Loss heading/no_heading/net_result line unconditionally
+// (konsol/close/statement_model.py:275-296) — confirmed against
+// close_statement_payload.json, where every P&L line carries it. A P&L
+// line missing it is a broken contract: it must throw, naming the
+// heading, never render "—" for a cell the server promised.
+test("failure path: a P&L heading line missing ytd throws, naming the heading", () => {
+	const payload = golden();
+	const pl = payload.statement.sections.find((s) => s.section === "Profit and Loss");
+	delete pl.lines.find((l) => l.kind === "heading").ytd;
+	assert.throws(() => statementView(payload, NOW, TZ), /heading 4 has no ytd/);
+});
+
+test("failure path: a P&L net_result line missing ytd throws", () => {
+	const payload = golden();
+	const pl = payload.statement.sections.find((s) => s.section === "Profit and Loss");
+	delete pl.lines.find((l) => l.kind === "net_result").ytd;
+	assert.throws(() => statementView(payload, NOW, TZ), /Net result.*has no ytd/);
+});
+
 test("comparisonNote is carried from the statement, and drives the not-loaded cells", () => {
 	const view = statementView(golden(), NOW, TZ);
 	assert.equal(view.comparisonNote, "No rows in the warehouse for FY2025 P06");
@@ -367,6 +438,22 @@ test("failure path: a non-zero residual is block tone and shows both not-placed 
 		},
 	]);
 	assert.equal(residual.unexplained, "0.00");
+});
+
+// R41j (U8): `statement_model.statement` sets `explained`/`unexplained` on
+// the residual line exactly when `residual_raw` is non-zero
+// (konsol/close/statement_model.py:491-493) — the same condition this
+// module uses for `tone === "block"`. So a block residual missing
+// `explained` is a broken contract: it must throw, never silently read as
+// "nothing to explain" via `|| []`.
+test("failure path: a block residual missing explained throws", () => {
+	const payload = golden();
+	const bsSection = payload.statement.sections.find((s) => s.section === "Balance Sheet");
+	const residualLine = bsSection.lines.find((l) => l.kind === "residual");
+	residualLine.current = 246.5;
+	residualLine.unexplained = 0;
+	// explained deliberately left unset — a broken contract, not an empty list.
+	assert.throws(() => statementView(payload, NOW, TZ), /block residual line has no explained/);
 });
 
 // --- failure paths that must throw -----------------------------------------

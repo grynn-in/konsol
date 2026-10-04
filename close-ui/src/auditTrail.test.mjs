@@ -325,6 +325,24 @@ test("failure path: commentary_saved with a blank text reads 'Commentary cleared
 	assert.equal(v.rows[0].detail, "Commentary cleared");
 });
 
+// R41j (U8): `commentary_model.event_detail` always sets `"text": text or
+// ""` (konsol/close/commentary_model.py:85-93) — the key is never omitted,
+// even for a clearing save. A `commentary_saved` event whose detail has no
+// `text` key at all is a broken contract, not a clear, and must throw
+// rather than silently reading as "Commentary cleared" (a blank STRING
+// still reads as cleared — tested above).
+test("failure path: commentary_saved with no detail.text key throws, never reading as cleared", () => {
+	const v = payload([
+		event({
+			kind: "commentary_saved",
+			reference_doctype: "Statement Commentary",
+			reference_name: "SC-GRP-2026-7-4",
+			detail: { consolidation_group: "GRP", heading: "4", heading_name: "NET SALES" },
+		}),
+	]);
+	assert.throws(() => trailView(v, NOW, TZ), /detail\.text/);
+});
+
 // --- failure paths -----------------------------------------------------
 
 test("failure path: an unknown kind throws, naming it", () => {
