@@ -13,6 +13,7 @@ is a recording fake (M43's controller is not loaded here: M44 only has to
 prove it drives the document's own insert/save with no override flag; M43's
 own tests prove the controller's rules and event).
 """
+import datetime
 import importlib.util
 import inspect
 import os
@@ -61,13 +62,13 @@ class _FakeDoc:
     def insert(self, ignore_permissions=False, **k):
         self.calls.append(("insert", ignore_permissions, k))
         self._data.setdefault("name", "SC-ZZGRP-2025-7-4")
-        self._data["modified"] = "2025-07-15 09:00:00.000000"
+        self._data["modified"] = datetime.datetime(2025, 7, 15, 9, 0, 0)
         self._data["modified_by"] = LEAD
         return self
 
     def save(self, ignore_permissions=False, **k):
         self.calls.append(("save", ignore_permissions, k))
-        self._data["modified"] = "2025-07-20 11:30:00.000000"
+        self._data["modified"] = datetime.datetime(2025, 7, 20, 11, 30, 0)
         self._data["modified_by"] = LEAD
         return self
 
@@ -178,14 +179,14 @@ def test_first_save_inserts_with_the_four_key_fields_and_the_text():
     assert dict(doc._data, name=doc.name) == {
         "doctype": "Statement Commentary", "consolidation_group": "ZZGRP",
         "fiscal_year": 2025, "fiscal_period": 7, "heading": "4",
-        "text": "Volume down 4%.", "modified": "2025-07-15 09:00:00.000000",
+        "text": "Volume down 4%.", "modified": datetime.datetime(2025, 7, 15, 9, 0, 0),
         "modified_by": LEAD, "name": "SC-ZZGRP-2025-7-4",
     }
     assert doc.calls == [("insert", False, {})]
     assert result["name"] == "SC-ZZGRP-2025-7-4"
     assert result["heading"] == "4"
     assert result["text"] == "Volume down 4%."
-    assert result["modified"] == "2025-07-15 09:00:00.000000"
+    assert result["modified"] == "2025-07-15 09:00:00"
     assert result["by"] == LEAD
     assert result["at"] == "2025-07-15T09:00:00+01:00"
 
@@ -207,11 +208,13 @@ def test_a_modified_token_on_a_first_save_is_stale_and_nothing_is_inserted():
 
 # ---- update (save) ----------------------------------------------------------
 
-def _existing(name="SC-ZZGRP-2025-7-4", modified="2025-07-10 08:00:00.000000", by=LEAD):
+def _existing(name="SC-ZZGRP-2025-7-4", modified=None, by=LEAD):
     return _FakeDoc({
         "doctype": "Statement Commentary", "consolidation_group": "ZZGRP",
         "fiscal_year": 2025, "fiscal_period": 7, "heading": "4",
-        "text": "Volume down 4%.", "modified": modified, "modified_by": by,
+        "text": "Volume down 4%.",
+        "modified": modified or datetime.datetime(2025, 7, 10, 8, 0, 0),
+        "modified_by": by,
     }, name=name)
 
 
@@ -219,20 +222,20 @@ def test_update_with_the_matching_modified_saves():
     site = _Site()
     site.docs["SC-ZZGRP-2025-7-4"] = _existing()
     result = _save(site, text="Volume down 6%, see the IC note.",
-                    modified="2025-07-10 08:00:00.000000")
+                    modified="2025-07-10 08:00:00")
     doc = site.docs["SC-ZZGRP-2025-7-4"]
     assert doc.calls == [("save", False, {})]
     assert doc.text == "Volume down 6%, see the IC note."
-    assert result["modified"] == "2025-07-20 11:30:00.000000"
+    assert result["modified"] == "2025-07-20 11:30:00"
     assert result["by"] == LEAD
 
 
 def test_a_different_modified_throws_naming_the_editor_and_saves_nothing():
     site = _Site()
     site.docs["SC-ZZGRP-2025-7-4"] = _existing(by="other.lead@example.com")
-    e = _save_raises(site, modified="2025-01-01 00:00:00.000000")
+    e = _save_raises(site, modified="2025-01-01 00:00:00")
     assert "other.lead@example.com" in str(e)
-    assert "2025-07-10 08:00:00.000000" in str(e)
+    assert "2025-07-10 08:00:00" in str(e)
     assert site.docs["SC-ZZGRP-2025-7-4"].calls == []
 
 
@@ -245,7 +248,7 @@ def test_no_modified_sent_for_an_existing_document_is_stale_too():
 
 def test_a_modified_for_a_missing_document_throws():
     site = _Site()
-    _save_raises(site, modified="2025-07-10 08:00:00.000000")
+    _save_raises(site, modified="2025-07-10 08:00:00")
     assert site.new_docs == []
 
 
