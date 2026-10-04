@@ -12,7 +12,7 @@ import importlib.util
 import os
 import sys
 import types
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -913,9 +913,11 @@ def _record(site, fy, fp, text=CHANGED_TEXT, user=CHANGED_BY):
 def test_a_data_change_is_recorded_on_the_period_row():
     site = _Site()
     _record(site, 2025, 8)
-    assert site.period_writes == [
-        ("ROW-2025-8", {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
-                        "data_change": CHANGED_TEXT}, False)], site.period_writes
+    # The changed period's own row is written first, with the real text
+    # (R41k adds further, carried writes to later rows -- see below).
+    assert site.period_writes[0] == (
+        "ROW-2025-8", {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
+                        "data_change": CHANGED_TEXT}, False), site.period_writes
 
 
 def test_a_data_change_marks_the_periods_signed_run_re_sign_needed_with_the_text():
@@ -1217,14 +1219,24 @@ def test_the_one_real_call_stamps_every_later_signed_period_with_one_void_event_
         assert "Group Exchange Rate GER-1 approved" in reason, reason
 
 
-def test_only_the_changed_periods_own_row_gets_the_data_change_text():
-    """record_data_change's docstring: the later periods' balances move as
-    a consequence, through their own query, not because their own data
-    changed -- so only P07's row gets data_changed_at/by/data_change."""
+def test_the_changed_periods_own_row_gets_the_real_text_and_later_rows_carry_it():
+    """record_data_change's docstring (AMENDED #305 R41k, review-w4-server.md
+    S2 effect 3): only P07's row gets the REAL data_change text -- the later
+    periods' balances move as a consequence, through their own query, not
+    because their own data changed -- but every later declared Regular
+    period's row (P08-P12, including P12 which carries no signed run at
+    all) now carries P07's change, so each one's OWN data_change_problem
+    (A66) check can see it."""
     site = _five_period_site()
     on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
     on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
-    assert set(site.data_changes) == {(2025, 7)}, site.data_changes
+    assert set(site.data_changes) == {(2025, p) for p in range(7, 13)}, site.data_changes
+    assert site.data_changes[(2025, 7)]["data_change"] == (
+        "Group Exchange Rate GER-1 approved"), site.data_changes
+    for fp in range(8, 13):
+        assert site.data_changes[(2025, fp)]["data_change"] == (
+            "Balance carried from FY2025 P07: Group Exchange Rate GER-1 approved"), (
+            fp, site.data_changes)
 
 
 def test_a_reversing_journals_single_call_still_stamps_the_later_period():
@@ -1248,6 +1260,83 @@ def test_on_cancel_also_calls_the_real_record_data_change_exactly_once():
     on_cancel(_hook_doc("Group Exchange Rate", "GER-1"))
     assert len(calls) == 1, calls
     assert calls[0][0][2] == "Group Exchange Rate GER-1 cancelled", calls
+
+
+# --- #305 R41k (review-w4-server.md S2 effect 3; coordinator call (a),  ----
+# completes S2): record_data_change carries the change onto every LATER
+# Regular period's OWN row too -- not only voiding its already-signed run
+# (_mark_latest_signed, above, only ever touches signed runs). An UNSIGNED
+# later period's own data_change_problem (A66) check -- the rule
+# `_action` applies before offering "run_checks"/"rerun" -- needs its OWN
+# row's data_change fields to see an earlier period's change; voiding a
+# run that was never signed in the first place does nothing for it.
+
+def _pure_signoff_model():
+    """signoff_model.py imports nothing from frappe (its own header
+    comment): load it once by path -- the same file `_load` loads for the
+    stubbed gate -- to call `data_change_problem` (A66) directly, with no
+    stubbing needed."""
+    spec = importlib.util.spec_from_file_location(
+        "signoff_model_for_r41k", SIGNOFF_MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_a_data_change_carries_onto_every_later_regular_period_row():
+    """P07 change -> P08-P12 each carry it (``_Site``'s default declares
+    P01-P12; P12 has no Assertion Run at all, let alone a signed one, yet
+    still carries the text: the stamp follows every declared later Regular
+    period, not only the signed ones ``_mark_latest_signed`` reaches)."""
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-9", 2025, 9, signoff="Not Signed Off"))
+    text = "TB TBS-ZZA-2025-7 cancelled"
+    marked = _record(site, 2025, 7, text=text)
+    assert "RUN-9" not in marked, marked  # unsigned: never in _mark_latest_signed's reach
+    carried = "Balance carried from FY2025 P07: %s" % text
+    for fp in range(8, 13):
+        dc = _call(site, "data_change", 2025, fp)
+        assert dc == {"data_changed_at": CHANGED_AT, "data_changed_by": CHANGED_BY,
+                      "data_change": carried}, (fp, dc)
+    # P07's own row keeps the real text, never the carried wording.
+    assert _call(site, "data_change", 2025, 7)["data_change"] == text
+
+
+def test_an_unsigned_later_period_with_a_stale_run_is_blocked_by_a66():
+    """The carried stamp above feeds straight into signoff_model's own A66
+    rule: a P09 check run that STARTED before the carried change is
+    blocked, naming the carried text -- even though P09 was never signed,
+    so _mark_latest_signed never touched it. A run that started AFTER the
+    change is not blocked."""
+    site = _Site()
+    text = "TB TBS-ZZA-2025-7 cancelled"
+    _record(site, 2025, 7, text=text)
+    change = _call(site, "data_change", 2025, 9)
+    data_change_problem = _pure_signoff_model().data_change_problem
+    problem = data_change_problem(CHANGED_AT - timedelta(minutes=5), change)
+    assert problem is not None, change
+    assert problem["code"] == "started_before_change", problem
+    assert "Balance carried from FY2025 P07" in problem["what"], problem
+    assert text in problem["what"], problem
+    assert data_change_problem(CHANGED_AT + timedelta(minutes=5), change) is None
+
+
+def test_a_later_periods_own_newer_change_is_never_overwritten_by_a_carried_one():
+    """record_data_change's docstring: write the carried text only when it
+    is NEWER than the row's own data_changed_at -- a later period's own,
+    newer change (its own data, not merely a carried balance) survives an
+    earlier period's carried stamp. A period with no change of its own
+    still carries it."""
+    site = _Site()
+    newer_at = CHANGED_AT + timedelta(days=1)
+    own_change = {"data_changed_at": newer_at, "data_changed_by": "other@example.com",
+                  "data_change": "TB TBS-ZZB-2025-10 cancelled"}
+    site.data_changes[(2025, 10)] = dict(own_change)
+    _record(site, 2025, 7, text="TB TBS-ZZA-2025-7 cancelled")
+    assert _call(site, "data_change", 2025, 10) == own_change, (
+        _call(site, "data_change", 2025, 10))
+    assert _call(site, "data_change", 2025, 11)["data_change"] == (
+        "Balance carried from FY2025 P07: TB TBS-ZZA-2025-7 cancelled")
 
 
 def test_the_period_json_has_the_three_read_only_fields_in_the_close_section():
