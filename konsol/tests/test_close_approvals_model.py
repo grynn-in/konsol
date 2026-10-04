@@ -43,7 +43,8 @@ ENTITY_FIELDS = {
 
 
 def _journal(name, fy, fp, adjustment_type, description, duration, owner, created,
-             total_debit=18500.0, currency="USD", lines=None, effect=None):
+             total_debit=18500.0, currency="USD", lines=None, effect=None,
+             consolidation_group="G1"):
     return {
         "name": name, "owner": owner, "created": created,
         "fiscal_year": fy, "fiscal_period": fp,
@@ -53,6 +54,7 @@ def _journal(name, fy, fp, adjustment_type, description, duration, owner, create
         "duration": duration,
         "lines": lines if lines is not None else [{"main_account": "6100", "debit_amount": total_debit}],
         "effect": effect if effect is not None else {"headings": [], "sections": [], "no_heading": 0},
+        "consolidation_group": consolidation_group,
     }
 
 
@@ -356,6 +358,36 @@ def test_journal_item_carries_lines_and_effect_unchanged():
     item = result["items"][0]
     assert item["lines"] == lines
     assert item["effect"] == effect
+
+
+def test_journal_item_carries_fiscal_year_fiscal_period_and_consolidation_group():
+    """W41: so the screen can read the statement for that period and group."""
+    docs = {"Consolidation Journal": [_journal("CJ-11", 2026, 7, "topside", "Accrue",
+                                                "This period only, no reversal", "alice",
+                                                "2026-10-01T09:00:00", consolidation_group="G2")]}
+    result = M.queue_items(docs, _preparers_for(docs), "lead", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
+    item = result["items"][0]
+    assert item["fiscal_year"] == 2026
+    assert item["fiscal_period"] == 7
+    assert item["consolidation_group"] == "G2"
+
+
+def test_journal_without_consolidation_group_raises_key_error_naming_it():
+    """Failure path: a journal doc without consolidation_group raises
+    KeyError naming it — never treated as None."""
+    doc = _journal("CJ-12", 2026, 7, "topside", "Accrue",
+                    "This period only, no reversal", "alice", "2026-10-01T09:00:00")
+    del doc["consolidation_group"]
+    docs = {"Consolidation Journal": [doc]}
+    try:
+        M.queue_items(docs, _preparers_for(docs), "lead", ("EPM Admin",),
+                       "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                       ENTITY_FIELDS, None, {}, _modified_for(docs))
+        raise AssertionError("expected KeyError")
+    except KeyError as exc:
+        assert "consolidation_group" in str(exc)
 
 
 def test_rejection_after_modified_is_sent_back_and_excluded_from_waiting_for_me():
