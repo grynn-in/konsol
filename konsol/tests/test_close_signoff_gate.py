@@ -443,9 +443,11 @@ def test_undeclared_first_close_blocks_and_skips_the_order_gate():
         site.rows = _year(2025, status="Open")  # every period Open: (0,0) would land on P01
         problems = _call(site, "sign_off_problems", 2025, 9)
         # P05: these settings dicts never declare the two policies either, so
-        # policy_gaps adds both codes after the first-close gap.
+        # policy_gaps adds both codes after the first-close gap. N45: nor the
+        # two statement accounts, so the statement gap follows them.
         assert [g["code"] for g in problems["config_gaps"]] == [
             "first_close_undeclared", "self_approval_undeclared", "rate_move_undeclared",
+            "statement_accounts_undeclared",
         ], settings
         assert problems["order"] is None, settings
         message = _blocked(site)
@@ -1187,3 +1189,58 @@ def test_statement_accounts_are_declared_on_the_stub_site():
         assert accounts[code]["is_group"] == 0, code
         assert accounts[code]["status"] == "Published", code
         assert accounts[code]["statement_section"] == "Balance Sheet", code
+
+
+# --- N45: an undeclared or invalid statement account is a setup gap --------
+
+
+def test_undeclared_statement_accounts_block_sign_off():
+    site = _Site()
+    site.settings["statement_cta_account"] = ""
+    site.settings["statement_result_account"] = ""
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    codes = [g["code"] for g in problems["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared"], codes
+    assert not any(c[0] == "Main Account" for c in site.get_all_calls), site.get_all_calls
+    message = _blocked(site)
+    assert "Declare the CTA account in Close Settings" in message, message
+    assert "Declare the current-year result account in Close Settings" in message, message
+
+
+def test_declared_valid_statement_accounts_are_no_gap_and_read_main_account_once():
+    site = _Site()
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert not any(g["code"] == "statement_accounts_undeclared" for g in problems["config_gaps"]), \
+        problems["config_gaps"]
+    main_account_reads = [c for c in site.get_all_calls if c[0] == "Main Account"]
+    assert len(main_account_reads) == 1, main_account_reads
+
+
+def test_an_invalid_statement_account_is_a_gap_too():
+    # N41's rule, not "set means declared": a heading cannot hold the CTA
+    # even though it is set.
+    site = _Site()
+    site.records["Main Account"] = [
+        {"name": "3300", "is_group": 1, "status": "Published",
+         "statement_section": "Balance Sheet", "account_name": "EQUITY"},
+        {"name": "3100", "is_group": 0, "status": "Published",
+         "statement_section": "Balance Sheet", "account_name": "Retained earnings"},
+    ]
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["statement_accounts_undeclared"], \
+        problems["config_gaps"]
+    message = _blocked(site)
+    assert "3300 cannot hold the CTA: it is a heading." in message, message
+
+
+def test_the_statement_gap_follows_the_policy_gaps_and_precedes_the_tolerance_gap():
+    site = _Site()
+    site.settings["self_approval"] = ""
+    site.settings["statement_cta_account"] = ""
+    site.settings["statement_result_account"] = ""
+    site.ic_tolerance_gap = {
+        "code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>",
+    }
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["self_approval_undeclared", "statement_accounts_undeclared",
+                      "ic_tolerance_undeclared"], codes
