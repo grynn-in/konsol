@@ -689,7 +689,7 @@ def test_no_commentary_reports_both_headings_missing_in_lft_order():
 def test_one_commented_heading_counts_one_with_commentary_one_missing():
     site = _Site()
     site.records["Statement Commentary"] = [
-        {"consolidation_group": "ZZGRP", "heading": "4", "text": "Volume up 3% on FX."}]
+        {"consolidation_group": "ZZGRP", "heading": "4", "fiscal_year": 2025, "fiscal_period": 9, "text": "Volume up 3% on FX."}]
     result = _get(site)
     assert result["commentary"] == [{
         "consolidation_group": "ZZGRP", "headings": 2, "with_commentary": 1,
@@ -702,7 +702,7 @@ def test_commentary_never_changes_the_action_or_the_gates():
     site = _Site()
     before = _get(site)
     site.records["Statement Commentary"] = [
-        {"consolidation_group": "ZZGRP", "heading": "4", "text": "Volume up 3% on FX."}]
+        {"consolidation_group": "ZZGRP", "heading": "4", "fiscal_year": 2025, "fiscal_period": 9, "text": "Volume up 3% on FX."}]
     after = _get(site)
     assert before["action"] == after["action"]
     assert before["gates"] == after["gates"]
