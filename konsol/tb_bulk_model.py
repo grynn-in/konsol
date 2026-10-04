@@ -126,7 +126,8 @@ def split_table(table, declared_dimensions=()):
 
     Keys keep the order they first appear in the file. Each row is
     {main_account, debit, credit, currency, description, partner_data_area_id,
-    amount_basis}, the shape a single submission parses; currency is the
+    amount_basis, line}, the shape a single submission parses (``line`` is
+    the row's line in this file); currency is the
     cell as written (check_group judges it, per entity-period); amount_basis is the
     exact basis string, or '' when the file has no such column or the cell is
     blank. Every row of one entity-period that gives a basis must give the
@@ -252,6 +253,9 @@ def split_table(table, declared_dimensions=()):
             "description": cell(get("description")), PARTNER: cell(get(PARTNER)),
             BASIS: basis,
             **{d: cell(get(d)) for d in dim_names},
+            # The file line, so a refusal can name it as a single upload does
+            # (PR #328 review L2). group_csv does not write it.
+            "line": lineno,
         })
 
     if errors:
@@ -371,7 +375,12 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     if existing:
         errors.append(f"{existing} is already submitted for this entity and period; cancel or amend it first")
     errors.extend(validate_rows(rows, known_accounts=known_accounts, entity=entity, known_entities=known_entities))
-    errors.extend(currency_problems(entity, functional_currency, [(None, r.get(CURRENCY)) for r in rows]))
+    # Only for an entity the uploader can see (PR #328 review L1): a currency
+    # sentence would say the entity exists and what its Functional Currency
+    # is, which "does not exist, or you have no access" deliberately does not.
+    if visible:
+        errors.extend(currency_problems(entity, functional_currency,
+                                        [(r.get("line"), r.get(CURRENCY)) for r in rows]))
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
         "total_debit": round(sum(r["debit"] for r in rows), 2),
