@@ -266,6 +266,65 @@ test('failure path: ic_sent_back item text never contains "null"; a detail missi
 	assert.ok(!v.rows[0].item.includes("null"));
 });
 
+// --- commentary_saved (konsol#305 M41, #305-W4-6) -----------------------
+
+test('commentary_saved -> "Commentary", mute, heading in item, text in detail', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "commentary_saved",
+				reference_doctype: "Statement Commentary",
+				reference_name: "SC-GRP-2026-7-4",
+				detail: {
+					consolidation_group: "GRP",
+					heading: "4",
+					heading_name: "NET SALES",
+					text: "Volume down 4%",
+				},
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Commentary");
+	assert.equal(v.rows[0].tone, "mute");
+	assert.equal(v.rows[0].item, "Commentary · NET SALES (4)");
+	assert.ok(v.rows[0].detail.includes('Text: "Volume down 4%"'));
+});
+
+test('failure path: commentary_saved with no heading_name reads "heading not recorded", never "null null"', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "commentary_saved",
+				reference_doctype: "Statement Commentary",
+				reference_name: "SC-GRP-2026-7-4",
+				detail: { consolidation_group: "GRP", heading: "4", text: "Volume down 4%" },
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].item, "Commentary (heading not recorded)");
+	assert.ok(!v.rows[0].item.includes("null"));
+});
+
+test("failure path: commentary_saved with a blank text reads 'Commentary cleared'", () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "commentary_saved",
+				reference_doctype: "Statement Commentary",
+				reference_name: "SC-GRP-2026-7-4",
+				detail: { consolidation_group: "GRP", heading: "4", heading_name: "NET SALES", text: "" },
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].detail, "Commentary cleared");
+});
+
 // --- failure paths -----------------------------------------------------
 
 test("failure path: an unknown kind throws, naming it", () => {
