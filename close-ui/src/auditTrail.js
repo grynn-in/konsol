@@ -172,6 +172,14 @@ function detailText(event) {
 		parts.push("Reason not recorded");
 	}
 	if (event.kind === "commentary_saved") {
+		// R41j (U8): `commentary_model.event_detail` always sets `"text":
+		// text or ""` (konsol/close/commentary_model.py:85-93) — never
+		// omits the key, even for a clearing save. So a missing key here is
+		// a broken contract, not a clear: only an actual blank string reads
+		// as "Commentary cleared".
+		if (!("text" in detail)) {
+			throw new Error("Audit trail: commentary_saved event has no detail.text.");
+		}
 		parts.push(detail.text ? `Text: "${detail.text}"` : "Commentary cleared");
 	}
 	if (event.source === "backfill") {

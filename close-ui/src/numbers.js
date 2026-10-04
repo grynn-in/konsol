@@ -21,6 +21,14 @@
 //   0.00. The one declared exception is a comparison/variance cell when
 //   the statement's `comparison_note` is set (no comparison period
 //   available) — those read "not loaded", never a number and never blank.
+// - R41j (U8): on an `ok` payload, a line's `ytd` (Profit and Loss only — a
+//   Balance Sheet line never carries one), a block residual's `explained`,
+//   `not_included`, and `groups` are never defaulted with `|| []`/`|| {}` —
+//   each is guaranteed by the server (checked against statement_model.py
+//   and statement_api.py, and against close_statement_payload.json) and a
+//   missing one throws, naming it. The legend is read from
+//   `payload.statement.legend` on `ok` (U11), not duplicated from this
+//   module's own constant, which is kept only for the non-ok states.
 //
 // Amounts: two decimals with thousands grouping; a negative amount renders
 // in brackets, "(1,234.50)" (mirrors tbTable.js's/adjustments.js's
@@ -124,6 +132,19 @@ function buildLabel(signoff) {
 	return found;
 }
 
+/** `payload.groups` (every state: `statement_api.get_statement` assigns it
+ * unconditionally, before any state branch, from a plain `frappe.get_all`
+ * list) and `payload.commentary` on `ok` (always a dict, never null — see
+ * `statementView`) are guaranteed non-null by the server; a null there is a
+ * broken contract and throws, naming the key, rather than silently reading
+ * as "nothing" via `|| []`/`|| {}` (U8). */
+function requireNotNull(value, key) {
+	if (value === null || value === undefined) {
+		throw new Error(`Numbers payload has no ${key}.`);
+	}
+	return value;
+}
+
 function buildState(payload) {
 	if (payload.state === "ok") {
 		return null;
@@ -135,9 +156,16 @@ function buildState(payload) {
 }
 
 /** W4-E10's "entities not included" chip text. `null` when nothing is
- * missing (count 0) — never an empty sentence. */
+ * missing (count 0) — never an empty sentence. Only called on an `ok`
+ * payload (statement_api.get_statement sets `not_included` exactly there,
+ * always a `{count, entities, hidden}` dict, never null) — a null/missing
+ * value there is a broken contract, not "nothing missing", so it throws
+ * naming the key rather than silently reading as zero. */
 function notIncludedText(notIncluded) {
-	if (!notIncluded || !notIncluded.count) {
+	if (!notIncluded) {
+		throw new Error("Numbers: ok payload has no not_included.");
+	}
+	if (!notIncluded.count) {
 		return null;
 	}
 	const noun = notIncluded.count === 1 ? "entity" : "entities";
@@ -200,8 +228,18 @@ function commentaryFor(commentary, headingCode, now, timeZone) {
 /** One `statement_model.statement` line -> one or more display rows (a
  * heading line also yields its `includes` rows, indented, right after it).
  * Unknown line kinds throw, naming the kind — a statement line is never
- * shown blank or guessed at. */
-function rowsForLine(line, commentary, comparisonNote, now, timeZone) {
+ * shown blank or guessed at.
+ *
+ * `hasYtd` says whether THIS section carries a "Year to date" column
+ * (`COLUMNS[section]` — Profit and Loss only). `statement_model._pl_line`
+ * sets `"ytd"` on every Profit and Loss heading/no_heading/net_result line
+ * unconditionally (konsol/close/statement_model.py:275-296), and the
+ * Balance Sheet builder never sets it at all (same file, lines 394-460) —
+ * confirmed against both the source and `close_statement_payload.json`
+ * (every P&L line has `ytd`, every B/S line does not). So within a
+ * `hasYtd` section a missing `ytd` is a broken contract, not an optional
+ * field: it throws, naming the heading, instead of silently reading "—" (U8). */
+function rowsForLine(line, commentary, comparisonNote, now, timeZone, hasYtd) {
 	switch (line.kind) {
 		case "heading": {
 			const row = {
@@ -214,7 +252,10 @@ function rowsForLine(line, commentary, comparisonNote, now, timeZone) {
 				commentary: commentaryFor(commentary, line.heading, now, timeZone),
 				commentable: true,
 			};
-			if ("ytd" in line) {
+			if (hasYtd) {
+				if (!("ytd" in line)) {
+					throw new Error(`Numbers: statement heading ${line.heading} has no ytd.`);
+				}
 				row.ytd = amountText(line.ytd);
 			}
 			const rows = [row];
@@ -232,7 +273,10 @@ function rowsForLine(line, commentary, comparisonNote, now, timeZone) {
 				comparison: comparisonCell(line.comparison, comparisonNote),
 				variance: comparisonCell(line.variance, comparisonNote),
 			};
-			if ("ytd" in line) {
+			if (hasYtd) {
+				if (!("ytd" in line)) {
+					throw new Error(`Numbers: statement line "${line.label}" has no ytd.`);
+				}
 				row.ytd = amountText(line.ytd);
 			}
 			return [row];
@@ -257,8 +301,18 @@ function rowsForLine(line, commentary, comparisonNote, now, timeZone) {
 				tone,
 				current: amountText(line.current),
 			};
+			// statement_model.statement sets `explained`/`unexplained` on the
+			// residual line exactly when `residual_raw` is non-zero
+			// (konsol/close/statement_model.py:491-493) — the same condition
+			// this module uses for `tone === "block"`. So on a block residual
+			// both keys are always sent; a missing one is a broken contract
+			// and throws, naming it, instead of silently reading as "nothing
+			// to explain" (U8).
 			if (tone === "block") {
-				row.explained = (line.explained || []).map((item) => ({
+				if (!line.explained) {
+					throw new Error("Numbers: block residual line has no explained.");
+				}
+				row.explained = line.explained.map((item) => ({
 					label: item.label,
 					amount: amountText(item.amount),
 				}));
@@ -278,9 +332,10 @@ function buildTabs(statement, commentary, now, timeZone) {
 		if (!columns) {
 			throw new Error(`Numbers: unknown statement section: ${section.section}`);
 		}
+		const hasYtd = columns.includes("Year to date");
 		const rows = [];
 		for (const line of section.lines) {
-			rows.push(...rowsForLine(line, commentary, comparisonNote, now, timeZone));
+			rows.push(...rowsForLine(line, commentary, comparisonNote, now, timeZone, hasYtd));
 		}
 		return { section: section.section, columns, rows };
 	});
@@ -307,24 +362,48 @@ export function statementView(payload, now, timeZone) {
 	const state = buildState(payload);
 	const isOk = payload.state === "ok";
 
-	const tabs = isOk ? buildTabs(payload.statement, payload.commentary || {}, now, timeZone) : [];
+	// On `ok`, `get_statement` always sends `commentary` as a dict (never
+	// null — statement_api.py's default is `{}` and the `ok` path
+	// overwrites it with `_commentary(...)`'s own dict, also never null);
+	// no fallback needed, and a null there would be a broken contract
+	// (U8), not "no commentary yet".
+	const tabs = isOk
+		? buildTabs(payload.statement, requireNotNull(payload.commentary, "commentary"), now, timeZone)
+		: [];
 	const comparisonNote = isOk ? payload.statement.periods.comparison_note : null;
 
 	return {
 		header: header(payload),
 		label,
-		legend: LEGEND,
+		// U11: read the server's own legend on `ok` (statement_model.statement
+		// always sends it — konsol/close/statement_model.py:207-209 — the
+		// exact text this module's own `LEGEND` constant duplicates), so a
+		// future wording change can't drift silently between the two. The
+		// constant is kept only for the non-ok states, which carry no
+		// `statement` to read a legend from.
+		legend: isOk ? payload.statement.legend : LEGEND,
 		state,
 		// U5 "a chosen group can be changed": offered whenever more than one
 		// group is declared, in every state — not only while choosing. A
 		// single declared group (or none) has nothing to switch to.
-		groupChoice: (payload.groups || []).length > 1 ? payload.groups.map((g) => g.consolidation_group) : null,
+		// `groups` is always an array (statement_api.py's `frappe.get_all`
+		// result, assigned unconditionally before any state branch) — no
+		// fallback needed.
+		groupChoice:
+			requireNotNull(payload.groups, "groups").length > 1
+				? payload.groups.map((g) => g.consolidation_group)
+				: null,
 		// The group this payload actually resolved to (null only while
 		// `state` is `choose_group` and nothing is chosen yet) — the
 		// switcher's current value, read once here rather than re-derived
 		// from `payload` a second time in the component.
 		consolidationGroup: payload.consolidation_group,
-		notIncluded: notIncludedText(payload.not_included),
+		// `not_included` is only ever set (to a real `{count, ...}` dict, on
+		// `ok`; it stays `None` on every other state (statement_api.py's
+		// default), which is a legitimate "not computed yet", not a broken
+		// contract — so this is gated on `isOk`, and `notIncludedText` itself
+		// throws if an `ok` payload's value is missing (U8).
+		notIncluded: isOk ? notIncludedText(payload.not_included) : null,
 		gapText: payload.gap ? payload.gap.message : null,
 		tabs,
 		comparisonNote,

@@ -223,13 +223,19 @@ function previousSection(previous) {
  * never changes `action` or any gate, so a group with every heading
  * commented reads the same as one missing all of them except for its text.
  * A missing `commentary` key (an older payload) throws: M46 always sends
- * it, so there is no default to guess.
+ * it, so there is no default to guess. R41j (U8): `signoff_api.py`'s
+ * `_commentary` always returns a list (never null — `commentary_model.
+ * missing_commentary` starts `result = []` and only appends) and
+ * `result.update({... "commentary": _commentary(key) ...})` sets it
+ * unconditionally on every call, so a `null` is as much a broken contract
+ * as `undefined` — both throw here, naming the key, instead of a bare
+ * `null` silently reading as an empty section.
  */
 function commentarySection(list) {
-	if (list === undefined) {
+	if (list === null || list === undefined) {
 		throw new Error("Sign-off summary has no commentary.");
 	}
-	const rows = (list || []).map((g) => {
+	const rows = list.map((g) => {
 		const missing = g.missing && g.missing.length ? ` · missing: ${g.missing.join(", ")}` : "";
 		return `${g.consolidation_group}: ${g.with_commentary} of ${g.headings} headings commented${missing}`;
 	});
