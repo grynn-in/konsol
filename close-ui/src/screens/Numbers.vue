@@ -47,6 +47,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
+import NumbersDrill from "../components/NumbersDrill.vue";
 import { get } from "../api.js";
 import { parse } from "../route.js";
 import { statementView, tabRows, isDrillable } from "../numbers.js";
@@ -102,6 +103,11 @@ let seq = 0;
 //: persistence, no URL). Cleared on every period change.
 const chosenGroup = ref(null);
 
+//: U45: the heading whose drill panel is open, local state only (never
+//: stored, never the URL). Cleared on every period change, same as
+//: chosenGroup — the panel belongs to this load, not to the address.
+const selectedHeading = ref(null);
+
 async function load({ quiet = false } = {}) {
 	if (!period.value) {
 		numbers.status = "error";
@@ -140,6 +146,7 @@ watch(
 	() => {
 		numbers.payload = null;
 		chosenGroup.value = null;
+		selectedHeading.value = null;
 		load();
 	},
 	{ immediate: true },
@@ -199,6 +206,23 @@ function cellClass(row, column) {
 		return row.tone === "ok" ? "text-ink-green-4" : "font-semibold text-ink-red-4";
 	}
 	return "text-ink-gray-8";
+}
+
+//: U45: a drillable (heading) row gets a visual cursor hint on top of the
+//: residual's own tone class; every other row kind gets neither.
+function rowRowClass(row) {
+	const classes = [];
+	if (row.kind === "residual" && row.tone === "block") classes.push("bg-surface-red-1");
+	if (isDrillable(row)) classes.push("cursor-pointer hover:bg-surface-gray-1");
+	return classes.join(" ");
+}
+
+//: U45: opens the drill panel for a heading row. Numbers.vue never calls
+//: this unconditionally from the template — the @click binding itself
+//: tests isDrillable(row) first (U41: residual, not-in-chart, no-heading
+//: and "of which" rows are never clickable).
+function openDrill(row) {
+	selectedHeading.value = row.heading;
 }
 </script>
 
@@ -262,7 +286,11 @@ function cellClass(row, column) {
 								</thead>
 								<tbody>
 									<template v-for="(row, i) in tabRows(view, tab.section)" :key="i">
-										<tr class="border-t border-outline-gray-2" :class="row.kind === 'residual' && row.tone === 'block' ? 'bg-surface-red-1' : ''">
+										<tr
+											class="border-t border-outline-gray-2"
+											:class="rowRowClass(row)"
+											@click="isDrillable(row) ? openDrill(row) : undefined"
+										>
 											<td class="px-3 py-2" :class="rowLabelClass(row)">
 												{{ row.label }}
 												<span v-if="row.kind === 'not_in_chart' && row.codes && row.codes.length" class="text-xs text-ink-gray-5">
@@ -271,7 +299,7 @@ function cellClass(row, column) {
 												<span
 													v-if="row.kind === 'heading'"
 													class="ml-1 rounded bg-surface-gray-2 px-1.5 py-0.5 text-xs font-normal text-ink-gray-6"
-													:title="isDrillable(row) ? 'Opens a drill panel in U45' : ''"
+													:title="isDrillable(row) ? 'Opens the drill panel' : ''"
 												>
 													{{ row.heading }}
 												</span>
@@ -299,5 +327,13 @@ function cellClass(row, column) {
 				</template>
 			</template>
 		</LoadState>
+
+		<NumbersDrill
+			v-if="selectedHeading"
+			:heading="selectedHeading"
+			:period="numbers.payload.period"
+			:consolidation-group="numbers.payload.consolidation_group"
+			@close="selectedHeading = null"
+		/>
 	</div>
 </template>
