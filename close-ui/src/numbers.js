@@ -311,6 +311,13 @@ export function statementView(payload, now, timeZone) {
 		gapText: payload.gap ? payload.gap.message : null,
 		tabs,
 		comparisonNote,
+		// The real `statement_model.statement()` payload, unchanged, riding
+		// along for `beforeAfter` (W42/N54): it carries each heading line's
+		// own `sign` (the exact multiplier `statement()` already applied —
+		// `-1` for every P&L heading, the per-heading Debit/Credit result
+		// for a BS heading). `null` on a non-ok payload, mirroring `tabs`/
+		// `comparisonNote` — never a guess at a statement that wasn't built.
+		statement: isOk ? payload.statement : null,
 	};
 }
 
@@ -474,6 +481,82 @@ export function commentaryBody(view, heading, text, modified) {
 		text,
 		modified: token,
 	};
+}
+
+// --- W42: before/after per heading for an unapproved journal ---------------
+//
+// `journal_model.statement_effect`'s own per-heading net-debit amounts
+// (`effect.headings`) are not yet in the built statement (the journal is
+// docstatus 0). `beforeAfter` shows what each heading would read if this
+// journal were approved, without re-building the statement: `before` is the
+// statement's own figure for that heading today; `change` reuses the exact
+// display-sign multiplier the statement already computed for that heading
+// (N54's `line.sign`, read off the matched heading row of the real
+// `statement_model.statement()` payload carried on `view.statement` — never
+// re-derived from `normal_balance` and never a hardcoded heading code, #305-
+// W4-2 2a-ii / drill_model.py's "one sign rule, not two"); `after` is their
+// sum. All three are shown in the statement's own display sign, via
+// `amountText`.
+
+/** The one heading line (kind `"heading"`) of `statement`'s given section
+ * whose own `heading` code matches — `undefined` when the statement has no
+ * such section or no matching heading line (the "not in the statement" /
+ * "no heading" bucket case). */
+function matchingHeadingLine(statement, section, heading) {
+	const found = statement.sections.find((s) => s.section === section);
+	if (!found) {
+		return undefined;
+	}
+	return found.lines.find((line) => line.kind === "heading" && line.heading === heading);
+}
+
+/**
+ * `beforeAfter(effect, view)` -> one row per heading of a journal's effect
+ * (`effect` is `journal_model.statement_effect`'s output: `{headings: [
+ * {section, heading, heading_name, net_debit}]}`), for a journal that is not
+ * yet approved (W4-E18; the caller shows "Included in the statement" instead
+ * once the journal is approved — this function is never called for one).
+ * `view` is this module's own `statementView(payload, now, timeZone)`.
+ *
+ * Each row is `{section, heading, headingName, before, change, after}`.
+ * `before` is the statement's current figure for that heading (P&L this
+ * period, BS balance); `change` = `line.sign * net_debit`, reusing the
+ * statement's own sign; `after` = `before + change`. A heading the
+ * statement does not carry (wrong code, or the journal posts outside the
+ * chart) -> `before: "not in the statement"`, `change: null`, `after: null`
+ * — shown, never guessed at and never 0.
+ *
+ * Throws when `view` is not in the `ok` state: there is no built statement
+ * to read a sign or a balance from.
+ */
+export function beforeAfter(effect, view) {
+	if (!view.statement) {
+		const kind = view.state ? view.state.kind : "unknown";
+		throw new Error(`Numbers: cannot show before/after — statement state is "${kind}", not ok.`);
+	}
+
+	return effect.headings.map((heading) => {
+		const line = matchingHeadingLine(view.statement, heading.section, heading.heading);
+		if (!line) {
+			return {
+				section: heading.section,
+				heading: heading.heading,
+				headingName: heading.heading_name,
+				before: "not in the statement",
+				change: null,
+				after: null,
+			};
+		}
+		const change = line.sign * heading.net_debit;
+		return {
+			section: heading.section,
+			heading: heading.heading,
+			headingName: heading.heading_name,
+			before: amountText(line.current),
+			change: amountText(change),
+			after: amountText(line.current + change),
+		};
+	});
 }
 
 /** `get_statement`'s own `can_comment` (statement_api.py: role and Open
