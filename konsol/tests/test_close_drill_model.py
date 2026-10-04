@@ -209,6 +209,54 @@ def test_tampering_a_row_after_the_statement_was_built_raises():
         M.drill(tampered, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
 
 
+def _heading1_subcent_rows():
+    """S1 (W4 server review): 5 entities with 3-decimal sub-cent tails, the
+    live shape (ClickHouse Float64 sums leave a sub-cent tail). Each
+    entity's own amount rounds DOWN individually (100.004 -> 100.00,
+    losing 0.004 each, 0.02 over the 5), but the statement line's total is
+    rounded once, from the raw 500.02 — so the per-row-rounded sum (500.00)
+    must never be compared to the statement's figure directly."""
+    return [
+        _row("1110", 100.004, "entity", "ZZA"),
+        _row("1110", 100.004, "entity", "ZZB"),
+        _row("1110", 100.004, "entity", "ZZC"),
+        _row("1110", 100.004, "entity", "ZZD"),
+        _row("1110", 100.004, "entity", "ZZE"),
+    ]
+
+
+def test_drill_total_matches_statement_despite_per_entity_sub_cent_rounding():
+    """S1: the drill must compare at the raw (unrounded) level, quantized
+    once, against the statement line's own once-rounded total — never sum
+    each already-rounded display row and compare that. The cents lost to
+    per-row rounding show up as a visible "rounding" row, never an error."""
+    rows = _heading1_subcent_rows()
+    line = _statement_line(rows, "1")
+    assert line["current"] == 500.02  # the real producer, rounded once
+
+    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line)
+
+    assert result["total"] == line["current"] == 500.02
+
+    entity_rows = _by_layer(result, "entity")
+    assert len(entity_rows) == 5
+    assert sum(r["amount"] for r in entity_rows) == 500.00  # each rounds to 100.00
+
+    rounding_rows = _by_layer(result, "rounding")
+    assert len(rounding_rows) == 1
+    assert rounding_rows[0]["amount"] == 0.02
+    assert rounding_rows[0]["entity"] is None
+    assert rounding_rows[0]["accounts"] == []
+    assert rounding_rows[0]["source"] is None
+
+
+def test_no_rounding_row_when_display_rows_already_sum_exactly():
+    rows = _heading1_rows()
+    line = _statement_line(rows, "1")
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    assert _by_layer(result, "rounding") == []
+
+
 def test_scope_aggregates_entities_outside_allowed_with_no_codes_or_accounts():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
