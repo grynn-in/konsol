@@ -278,15 +278,49 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
         out_rows.append(row)
 
     # -- current-year result: no accounts, amount from the statement line --
+    result_amount = None
     if heading == result_heading:
+        result_amount = _find_include(statement_line, "current_year_result", heading)
         out_rows.append({
             "layer": "current_year_result", "label": _RESULT_LAYER_LABEL,
             "entity": None,
-            "amount": _find_include(statement_line, "current_year_result", heading),
+            "amount": result_amount,
             "accounts": [], "source": None,
         })
 
-    total = _round(sum(_dec(row["amount"]) for row in out_rows))
+    # -- compare at the raw level (S1, W4 server review) --------------------
+    # Each display row above is rounded to cents on its own (one row per
+    # entity/layer), so their sum can drift a cent or two from the true
+    # total: the warehouse sums sub-cent tails (Float64) and
+    # ``statement_model`` rounds its heading total only ONCE, from the same
+    # raw rows (statement_model.py docstring; heading_amounts/statement).
+    # Summing already-rounded rows and comparing THAT to the statement
+    # line raised on almost every live heading for no real discrepancy.
+    # The fix: sum the unrounded Decimal buckets (the same raw inputs
+    # statement_model summed), quantize once, and compare that to the
+    # statement line. ``result_amount`` is itself already the statement's
+    # own once-rounded figure, so adding it in directly (not re-deriving
+    # it) keeps the two sides built from the identical computation.
+    entity_raw_total = sum(
+        (bucket["amount"] for bucket in entity_buckets.values()), Decimal("0"))
+    other_raw_total = sum(
+        (bucket["amount"] for bucket in other_buckets.values()), Decimal("0"))
+    raw_total = mult * (entity_raw_total + other_raw_total + cta_amount)
+    if result_amount is not None:
+        raw_total += _dec(result_amount)
+    true_total = _round(raw_total)
+
+    displayed_total = _round(sum(_dec(row["amount"]) for row in out_rows))
+    if displayed_total != true_total:
+        # The per-row rounding above lost (or gained) a few cents against
+        # the true, once-rounded total. Show it, never hide it.
+        out_rows.append({
+            "layer": "rounding", "label": "Rounding", "entity": None,
+            "amount": _round(_dec(true_total) - _dec(displayed_total)),
+            "accounts": [], "source": None,
+        })
+
+    total = true_total
     expected = _round(_dec(statement_line["current"]))
     if total != expected:
         raise ValueError(
