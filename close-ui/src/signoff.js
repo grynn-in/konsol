@@ -8,6 +8,10 @@
 // `action`, `label`, `gates{config_gaps, order, completeness, messages}`,
 // `checks`, `acknowledgements{names, total, unlisted}`,
 // `on_behalf{labels, unknown}`, `exceptions[]`, `covers`, `previous[]`.
+// U47 (M46): `commentary[]`, per-group heading commentary coverage
+// (`consolidation_group`, `headings`, `with_commentary`, `missing[]`) — a
+// missing key throws (M46 always sends it); the section never changes
+// `action`.
 // Unknown (null) counts are shown as "unknown", never 0 — a missing count
 // means the caller never read it, not that it is zero. Server messages may
 // contain a literal "<br>" (A17: `signoff_gate.assert_can_sign` joins its
@@ -213,6 +217,26 @@ function previousSection(previous) {
 }
 
 /**
+ * U47: the sign-off summary's commentary coverage (M46's `commentary` key,
+ * story 9.1): per consolidation group, how many statement headings have
+ * commentary for the period and which do not. Purely informational — it
+ * never changes `action` or any gate, so a group with every heading
+ * commented reads the same as one missing all of them except for its text.
+ * A missing `commentary` key (an older payload) throws: M46 always sends
+ * it, so there is no default to guess.
+ */
+function commentarySection(list) {
+	if (list === undefined) {
+		throw new Error("Sign-off summary has no commentary.");
+	}
+	const rows = (list || []).map((g) => {
+		const missing = g.missing && g.missing.length ? ` · missing: ${g.missing.join(", ")}` : "";
+		return `${g.consolidation_group}: ${g.with_commentary} of ${g.headings} headings commented${missing}`;
+	});
+	return section(rows);
+}
+
+/**
  * A21's `summary()` output → `{action, label, gates, checks, intercompany,
  * acknowledgements, onBehalf, exceptions, covers, previous}`. Every section is
  * `{rows, empty, shown, hidden, moreText}`; an empty section's `rows` is
@@ -234,6 +258,7 @@ export function summaryView(summary) {
 		exceptions: exceptionsSection(summary.exceptions),
 		covers: coversSection(summary.covers),
 		previous: previousSection(summary.previous),
+		commentary: commentarySection(summary.commentary),
 	};
 }
 
