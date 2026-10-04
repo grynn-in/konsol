@@ -392,6 +392,50 @@ def test_not_in_chart_row_names_it_and_the_residual_explains_it():
     assert residual["unexplained"] == 0.0
 
 
+def test_not_in_chart_comparison_is_zero_not_not_loaded_when_comparison_has_no_such_rows():
+    """S8: the comparison period IS loaded (it carries an ordinary row at
+    FY2025 P06), but has no not-in-chart rows of its own. The not-in-chart
+    line's comparison must read 0.00 — a real, loaded figure — never
+    ``None`` ("not loaded"), which is what a blank comparison means."""
+    rows = _s_rows() + [
+        _row("ZZ_UNMAPPED", 10.0),
+        {**_row("1110", 500.0), "fiscal_year": 2025, "fiscal_period": 6},
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    lines = result["sections"][1]["lines"]
+    not_in_chart = next(l for l in lines if l["kind"] == "not_in_chart")
+    assert not_in_chart["current"] == 10.0
+    assert not_in_chart["comparison"] == 0.0
+    assert not_in_chart["variance"] == 10.0
+
+
+def test_residual_carries_its_comparison_when_the_comparison_period_is_loaded():
+    """S8: the residual line had no comparison figure at all. A loaded,
+    balanced comparison period (FY2025 P06) must give the residual a
+    comparison figure too — 0.00 here, by the same identity as the
+    current period."""
+    comp_rows = [
+        {**_row("1110", 2000.0), "fiscal_year": 2025, "fiscal_period": 6},
+        {**_row("2100", -900.0), "fiscal_year": 2025, "fiscal_period": 6},
+        {**_row("3200", -1000.0), "fiscal_year": 2025, "fiscal_period": 6},
+        {**_row("CTA", -20.0, adjustment_type="cta"), "fiscal_year": 2025, "fiscal_period": 6},
+        {**_row("4100", -80.0), "fiscal_year": 2025, "fiscal_period": 6},
+    ]
+    result = M.statement(_s_rows() + comp_rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    residual = _residual_line(result)
+    assert "comparison" in residual
+    assert residual["comparison"] == 0.0
+
+
+def test_residual_comparison_is_none_when_no_comparison_period_is_loaded():
+    """The flip side: no FY2025 P06 rows at all -> the residual's own
+    comparison stays ``None`` (never defaulted to 0), same as every other
+    BS line's comparison."""
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    residual = _residual_line(result)
+    assert residual["comparison"] is None
+
+
 def test_sign_revenue_positive_cost_negative_asset_positive_liability_positive():
     """P&L: income positive, costs negative (unchanged). BS (2a-ii):
     liabilities positive too (flipped from their net-credit raw amount)."""
@@ -481,10 +525,13 @@ def test_sign_key_present_only_on_heading_lines_pl_and_bs():
     heading's own ``_bs_heading_sides`` result). That exact multiplier
     now rides along as ``"sign"`` on the line, so a JS consumer can reuse
     it instead of re-deriving it from ``normal_balance`` (one sign rule,
-    never two). P&L headings always carry -1; BS headings carry +1
-    (Debit) or -1 (Credit). No other line kind — ``no_heading``,
-    ``net_result``, ``not_in_chart``, ``residual`` — carries a ``sign``
-    key at all."""
+    never two). P&L headings, ``no_heading`` and ``net_result`` all carry
+    the section-wide -1 (S8: a P&L no-heading/net-result line is flipped
+    exactly like a heading, and must declare it too). BS headings carry
+    +1 (Debit) or -1 (Credit); a BS ``no_heading`` line is never flipped,
+    so it declares ``sign: 1`` (net-debit terms, S8). ``not_in_chart`` and
+    ``residual`` carry no ``sign`` key at all — they are not display-signed
+    heading amounts."""
     accounts = _s_accounts()
     accounts["99"] = {"account_name": "SUSPENSE", "parent_account": "", "is_group": False,
                        "statement_section": M.PL, "lft": 99}
@@ -497,10 +544,7 @@ def test_sign_key_present_only_on_heading_lines_pl_and_bs():
     pl_kinds_seen = {line["kind"] for line in pl_lines}
     assert {"heading", "no_heading", "net_result"} <= pl_kinds_seen
     for line in pl_lines:
-        if line["kind"] == "heading":
-            assert line["sign"] == -1
-        else:
-            assert "sign" not in line
+        assert line["sign"] == -1
 
     bs_sides = {"1": 1, "2": -1, "3": -1}  # ASSETS Debit, LIABILITIES/EQUITY Credit
     bs_lines = result["sections"][1]["lines"]
@@ -509,6 +553,8 @@ def test_sign_key_present_only_on_heading_lines_pl_and_bs():
     for line in bs_lines:
         if line["kind"] == "heading":
             assert line["sign"] == bs_sides[line["heading"]]
+        elif line["kind"] == "no_heading":
+            assert line["sign"] == 1
         else:
             assert "sign" not in line
 

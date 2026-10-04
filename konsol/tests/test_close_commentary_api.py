@@ -34,6 +34,7 @@ SITE_TZ = "Europe/London"
 LEAD = "zz-lead@example.com"
 ANALYST = "zz-analyst@example.com"
 VIEWER = "zz-viewer@example.com"
+LEAD_FULL_NAME = "Zz Lead"
 
 SAVE_PARAMS = ["fiscal_year", "fiscal_period", "consolidation_group", "heading", "text", "modified"]
 
@@ -82,6 +83,10 @@ class _Site:
         self.get_doc_calls = []
         self.docs = {}  # name -> _FakeDoc (pre-existing records)
         self.new_docs = []  # every _FakeDoc created from a dict
+        self.get_value_calls = []
+        # User -> full_name, the one read `save_commentary` does on the
+        # saved doc's `modified_by` (U9: mirrors `statement_api._commentary`).
+        self.full_names = {LEAD: LEAD_FULL_NAME}
 
 
 def _frappe(site):
@@ -115,12 +120,18 @@ def _frappe(site):
         assert arg == "Statement Commentary", arg
         return site.docs[name]
 
+    def get_value(doctype, name, fieldname):
+        site.get_value_calls.append((doctype, name, fieldname))
+        assert doctype == "User", doctype
+        assert fieldname == "full_name", fieldname
+        return site.full_names.get(name)
+
     frappe.throw = throw
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.exists = exists
     frappe.get_doc = get_doc
-    frappe.db = types.SimpleNamespace(exists=exists)
+    frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value)
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
@@ -187,7 +198,7 @@ def test_first_save_inserts_with_the_four_key_fields_and_the_text():
     assert result["heading"] == "4"
     assert result["text"] == "Volume down 4%."
     assert result["modified"] == "2025-07-15 09:00:00"
-    assert result["by"] == LEAD
+    assert result["by"] == LEAD_FULL_NAME
     assert result["at"] == "2025-07-15T09:00:00+01:00"
 
 
@@ -227,7 +238,7 @@ def test_update_with_the_matching_modified_saves():
     assert doc.calls == [("save", False, {})]
     assert doc.text == "Volume down 6%, see the IC note."
     assert result["modified"] == "2025-07-20 11:30:00"
-    assert result["by"] == LEAD
+    assert result["by"] == LEAD_FULL_NAME
 
 
 def test_a_different_modified_throws_naming_the_editor_and_saves_nothing():
@@ -249,6 +260,54 @@ def test_no_modified_sent_for_an_existing_document_is_stale_too():
 def test_a_modified_for_a_missing_document_throws():
     site = _Site()
     _save_raises(site, modified="2025-07-10 08:00:00")
+    assert site.new_docs == []
+
+
+# ---- by: the user's full name, not the bare email (U9) ---------------------
+
+def test_by_is_the_users_full_name_not_the_bare_email():
+    """U9: ``save_commentary`` returned ``doc.modified_by`` (an email) as
+    ``by``; ``get_statement`` already resolves the full name. One ``User``
+    read closes the gap."""
+    site = _Site()
+    result = _save(site)
+    assert result["by"] == LEAD_FULL_NAME
+    assert site.get_value_calls == [("User", LEAD, "full_name")]
+
+
+def test_by_falls_back_to_the_email_when_the_user_has_no_full_name():
+    """Failure path: a blank/missing ``full_name`` is never a blank byline."""
+    site = _Site()
+    site.full_names = {}
+    result = _save(site)
+    assert result["by"] == LEAD
+
+
+# ---- bad input: a non-numeric year/period (S9) ------------------------------
+
+def test_a_non_numeric_fiscal_year_is_refused_with_a_message_not_a_500():
+    """Failure path: ``_name`` called ``int(fiscal_year)`` directly, so a
+    bad request (never a policy gap) raised a raw ``ValueError`` — an
+    unexplained 500, not a message naming the fix."""
+    site = _Site()
+    e = _save_raises(site, fy="not-a-year")
+    assert "fiscal_year" in str(e)
+    assert site.new_docs == []
+
+
+def test_a_non_numeric_fiscal_period_is_refused_with_a_message_not_a_500():
+    site = _Site()
+    e = _save_raises(site, fp="not-a-period")
+    assert "fiscal_period" in str(e)
+    assert site.new_docs == []
+
+
+def test_a_none_fiscal_year_is_refused_too():
+    """Failure path: ``int(None)`` raises ``TypeError``, not ``ValueError``
+    — both must be caught, never only one."""
+    site = _Site()
+    e = _save_raises(site, fy=None)
+    assert "fiscal_year" in str(e)
     assert site.new_docs == []
 
 
