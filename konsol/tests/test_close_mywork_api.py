@@ -367,7 +367,10 @@ def _assert_counts_add_up(result, persona):
         assert set(entry) == {"count", "blocking"}, entry
         on = items if screen == "my-work" else [
             i for i in items if i["action"].get("screen") == screen]
-        assert entry["count"] == len(on), (screen, entry)
+        # F02: "approvals" is one My work item for the whole queue, so its
+        # displayed count is the queue's real size, not len(on) (always 0 or 1).
+        if screen != "approvals":
+            assert entry["count"] == len(on), (screen, entry)
         assert entry["blocking"] == sum(1 for i in on if i["kind"] == "blocking"), (screen, entry)
 
 
@@ -979,9 +982,20 @@ def test_close_lead_gets_the_approvals_item_from_the_queue():
     item = next(i for i in result["items"] if i["id"] == "approvals")
     assert item["title"] == "Approve 2 items"
     assert item["action"] == {"screen": "approvals"}
-    assert result["counts"]["by_screen"]["approvals"]["count"] == 1
+    # F02: the approvals screen is one My work item for the whole queue, so
+    # its badge must read the queue's real count (waiting["count"]), never
+    # the number of My work items that point at it (always 1 or 0).
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 2
     assert site.approvals_calls == [(site.user, ("EPM Admin",))]
     _assert_counts_add_up(result, "close_lead")
+
+
+def test_close_lead_with_six_waiting_sees_badge_six():
+    """F02 (live: showed badge 1 against "6 waiting")."""
+    site = _Site()
+    site.approvals_waiting = {"count": 6, "oldest": "2025-08-15T10:00:00+01:00"}
+    result = _call(site)
+    assert result["counts"]["by_screen"]["approvals"]["count"] == 6
 
 
 def test_zero_waiting_gives_no_approvals_item():

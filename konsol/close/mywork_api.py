@@ -62,6 +62,13 @@ sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
 counts every item; another screen counts the items whose action opens it.
 Read-only.
 
+F02: the approvals screen is the one exception. ``approvals_item`` is a single
+My work item for the whole approvals queue (A11), so counting items whose
+action opens "approvals" always gives 0 or 1. The approvals badge instead
+carries the queue's own count (``approvals_api.queue_for(...)["waiting"]["count"]``),
+passed to ``_counts`` as a ``screen_counts`` override — the single source of
+truth the approvals screen itself reads.
+
 A53: every period item's ``period`` carries ``since`` — the ISO end date of
 that period ("how long this period has been over"), so the screen can show an
 age. A period row with no end date is a configuration problem and raises;
@@ -362,13 +369,18 @@ def _period_facts(first_close, allowed, today):
 
 # --- counts ----------------------------------------------------------------------
 
-def _counts(items, persona):
+def _counts(items, persona, screen_counts=None):
+    """``screen_counts`` overrides a screen's displayed ``count`` (F02: the
+    approvals screen is one My work item for the whole approvals queue, so
+    its badge must be the queue's real size, never the number of My work
+    items pointing at it — which is always 0 or 1)."""
     counts = {kind: sum(1 for i in items if i["kind"] == kind) for kind in mywork_model.KINDS}
+    screen_counts = screen_counts or {}
     by_screen = {}
     for screen in SCREENS[persona]:
         on = items if screen == MY_WORK else [
             i for i in items if (i.get("action") or {}).get("screen") == screen]
-        by_screen[screen] = {"count": len(on),
+        by_screen[screen] = {"count": screen_counts.get(screen, len(on)),
                              "blocking": sum(1 for i in on if i["kind"] == "blocking")}
     counts["by_screen"] = by_screen
     return counts
@@ -407,10 +419,13 @@ def get_my_work():
                 ic_api.open_fixes(sorted(per_period)), per_period, allowed))
         if persona == period_model.CLOSE_LEAD:
             items.extend(extra)
+    screen_counts = {}
     if persona == period_model.CLOSE_LEAD:
         # A12: the approvals queue does not depend on the first close, so this
         # sits outside the block above. A queue failure is not swallowed.
         waiting = approvals_api.queue_for(frappe.session.user, roles)["waiting"]
+        # F02: the badge is the queue's own count, not a count of My work items.
+        screen_counts["approvals"] = int(waiting["count"])
         approvals_item = mywork_model.approvals_item(waiting)
         if approvals_item is not None:
             items.append(approvals_item)
@@ -422,4 +437,5 @@ def get_my_work():
                                    for row in sent_back_rows) else {}
     items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
     items = mywork_model.rank(items)
-    return {"items": items, "counts": _counts(items, persona), "entities_assigned": entities_assigned}
+    return {"items": items, "counts": _counts(items, persona, screen_counts),
+            "entities_assigned": entities_assigned}

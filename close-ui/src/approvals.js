@@ -16,24 +16,23 @@
 // is present, never guessed into existence for a non-journal item.
 //
 // `queueView`'s "oldest <age>" is computed from `waiting.oldest`, a zoned
-// datetime (approvals_model.waiting_for_me's `created`, A08/A10's `_iso`),
-// not a bare date — so this does not reuse myWork.js's `ageText`, which
-// takes a date-only `since` string (My work's own convention) and would
-// misparse a full zoned timestamp. The age here is computed the same way
-// rates.js's `pendingCreatedText` reads a zoned value: through
-// `parseZoned`, never a guessed re-zoning.
+// datetime (approvals_model.waiting_for_me's `created`, A08/A10's `_iso`).
+// konsol#305 F03: the age itself comes from timefmt.js's `ageText`, the one
+// shared rule My work (myWork.js) also uses — the two screens used to
+// disagree on the same item's age (live: 16 vs 17 days) because this file
+// floored raw elapsed milliseconds while myWork.js diffed calendar dates.
+// `ageText` takes either a zoned timestamp or a bare date, so it reads
+// `waiting.oldest` here the same way it reads My work's date-only `since`.
 
 import { effectView } from "./adjustments.js";
 import { approveAction, approveBody } from "./rates.js";
-import { formatTime, parseZoned } from "./timefmt.js";
+import { ageText, formatTime, parseZoned } from "./timefmt.js";
 
 export { approveAction, approveBody };
 
 //: approval_api.reject's own refusal sentence (approval_api.py:76-77),
 //: shown here before the request is ever sent.
 export const REJECT_REASON_ERROR = "A rejection needs a reason.";
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function timeText(value, now, timeZone) {
 	if (value === null || value === undefined) {
@@ -42,28 +41,13 @@ function timeText(value, now, timeZone) {
 	return formatTime(parseZoned(value), now, timeZone);
 }
 
-/** A zoned `oldest` timestamp, elapsed against `now`, as "today", "1 day" or
- * "N days". `null`/`undefined` (nothing waiting) gives `null`: no age to
- * show. A timestamp that reads later than `now` (clock skew, not expected
- * from the server) floors at "today" rather than showing a negative count. */
-function ageText(oldest, now) {
-	if (!oldest) {
-		return null;
-	}
-	const days = Math.floor((now.getTime() - parseZoned(oldest).getTime()) / MS_PER_DAY);
-	if (days <= 0) {
-		return "today";
-	}
-	return days === 1 ? "1 day" : `${days} days`;
-}
-
 /** `payload.waiting` (`{count, oldest}`, approvals_model.waiting_for_me,
  * always present — `approvals_api.queue_for` sets it unconditionally) ->
  * "N waiting for you · oldest <age>", or "Nothing waiting for you" when the
  * count is 0. A missing `waiting`, or one with no numeric `count`, is a
  * contract break with the server and throws rather than reading as "nothing
  * waiting" (U12). */
-function headerText(waiting, now) {
+function headerText(waiting, now, timeZone) {
 	if (!waiting || typeof waiting.count !== "number") {
 		throw new Error("queueView requires payload.waiting ({count, oldest}).");
 	}
@@ -71,7 +55,7 @@ function headerText(waiting, now) {
 	if (!count) {
 		return "Nothing waiting for you";
 	}
-	const age = ageText(waiting.oldest, now);
+	const age = ageText(waiting.oldest, now, timeZone);
 	return age ? `${count} waiting for you · oldest ${age}` : `${count} waiting for you`;
 }
 
@@ -170,7 +154,7 @@ export function queueView(payload, now, timeZone) {
 	const items = (payload.items || []).map((item) => itemView(item, now, timeZone));
 	const sentBack = (payload.sent_back || []).map((item) => sentBackView(item, now, timeZone));
 	return {
-		header: headerText(payload.waiting, now),
+		header: headerText(payload.waiting, now, timeZone),
 		items,
 		sentBack,
 		hiddenNote: hiddenNoteText(payload.hidden),
