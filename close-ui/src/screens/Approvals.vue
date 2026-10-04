@@ -35,14 +35,26 @@
  * back and when, with no control at all (E6-P11): the preparer, not the
  * approver, acts next.
  *
- * Not built here: Before/After columns (wave 4), evidence attachments, and
- * the wireframe's role-suffix text, unless the payload sends it.
+ * W44: selecting a journal also loads the statement for that item's own
+ * period and group (W41's `fiscal_year`/`fiscal_period`/`consolidation_group`
+ * keys, one GET, stale-guarded by its own `detailSeq` — distinct from the
+ * queue's own `seq`) and shows Before / Change / After per heading, reusing
+ * numbers.js's `statementView`/`beforeAfter` (U41/W42/N54) rather than
+ * re-deriving a sign or a balance here. A non-ok payload state, or any
+ * thrown contract break, shows its own message text in place of the table
+ * — never blank or zero columns. Only a journal item can ever be selected
+ * (the `doctype !== JOURNAL` guard below), so Business Combination/
+ * Disposal items never fetch a statement.
+ *
+ * Not built here: evidence attachments, and the wireframe's role-suffix
+ * text, unless the payload sends it.
  */
 import { computed, inject, onMounted, reactive, ref } from "vue";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
 import { queueView, approveBody, rejectBody } from "../approvals.js";
+import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
@@ -50,6 +62,7 @@ import { CONTEXT_RELOAD } from "../contextRefresh.js";
 const GET_QUEUE = "konsol.close.approvals_api.get_queue";
 const APPROVE = "konsol.close.approval_api.approve";
 const REJECT = "konsol.close.approval_api.reject";
+const GET_STATEMENT = "konsol.close.statement_api.get_statement";
 const JOURNAL = "Consolidation Journal";
 
 const NO_ZONE = "Your browser reported no time zone, so times cannot be shown.";
@@ -133,14 +146,81 @@ onMounted(() => {
 	loadQueue();
 });
 
+// W44: the journal detail panel's own statement fetch — one GET per opened
+// journal, for that item's own period and group (W41's keys), guarded by
+// `detailSeq` (distinct from the queue's `seq`) so a fast second selection
+// never shows the first journal's statement.
+const detail = reactive({ status: "idle", payload: null, error: null });
+let detailSeq = 0;
+
+async function loadDetailStatement(item) {
+	const mine = ++detailSeq;
+	detail.status = "loading";
+	detail.payload = null;
+	detail.error = null;
+	try {
+		const payload = await get(GET_STATEMENT, {
+			fiscal_year: item.fiscal_year,
+			fiscal_period: item.fiscal_period,
+			consolidation_group: item.consolidation_group,
+		});
+		if (mine !== detailSeq) return;
+		detail.payload = payload;
+		detail.status = "ready";
+	} catch (e) {
+		if (mine !== detailSeq) return;
+		detail.error = e.message;
+		detail.status = "error";
+	}
+}
+
+// W44: `beforeAfter`'s rows for the selected journal's effect, read against
+// the statement fetched above. Reads `selectedItem.value.rawEffect`
+// (approvals.js's `baseView`, konsol#305 U2), the server's own
+// `journal_model.statement_effect` shape — never `.effect`, which
+// `queueView` has already run through `effectView` for display and which
+// carries no `net_debit`/`heading_name` for `beforeAfter` to read. `null`
+// while nothing is selected or the item carries no effect (Business
+// Combination/Disposal never reach here — they are never selectable).
+// While the fetch is in flight: `{status: "loading"}`. On a fetch failure,
+// a non-ok payload state, or any thrown statementView/beforeAfter contract
+// break (including a non-finite amount): `{status: "error", message}` —
+// the server's or the thrown error's own text, never a blank or zero table.
+const detailBeforeAfter = computed(() => {
+	if (!selectedItem.value || !selectedItem.value.rawEffect) return null;
+	if (detail.status === "loading" || detail.status === "idle") {
+		return { status: "loading" };
+	}
+	if (detail.status === "error") {
+		return { status: "error", message: detail.error };
+	}
+	if (!timeZone) {
+		return { status: "error", message: NO_ZONE };
+	}
+	try {
+		const statement = statementView(detail.payload, new Date(), timeZone);
+		if (statement.state) {
+			return { status: "error", message: statement.state.message };
+		}
+		return { status: "ready", rows: beforeAfter(selectedItem.value.rawEffect, statement) };
+	} catch (e) {
+		return { status: "error", message: e.message };
+	}
+});
+
 function selectJournal(item) {
 	if (item.doctype !== JOURNAL) return;
 	selectedName.value = item.name;
 	selectedItem.value = item;
+	loadDetailStatement(item);
 }
 function closePanel() {
 	selectedName.value = null;
 	selectedItem.value = null;
+	detailSeq++;
+	detail.status = "idle";
+	detail.payload = null;
+	detail.error = null;
 }
 
 async function approve(item) {
@@ -393,6 +473,36 @@ function balanceText(item) {
 					</li>
 				</ul>
 				<p v-if="selectedItem.effect.noHeading" class="mt-1 text-xs text-ink-gray-5">{{ selectedItem.effect.noHeading }} account(s) outside any heading.</p>
+			</section>
+
+			<!-- W44: Before/Change/After per heading, read against the statement
+			     for this item's own period and group. -->
+			<section v-if="selectedItem.effect" class="mt-4">
+				<h3 class="mb-2 text-sm font-semibold text-ink-gray-9">Before / Change / After</h3>
+				<p v-if="!detailBeforeAfter || detailBeforeAfter.status === 'loading'" class="text-sm text-ink-gray-6">
+					Loading the statement…
+				</p>
+				<p v-else-if="detailBeforeAfter.status === 'error'" role="alert" class="text-sm text-ink-red-4">
+					{{ detailBeforeAfter.message }}
+				</p>
+				<table v-else class="w-full text-left text-sm">
+					<thead class="text-xs uppercase tracking-wide text-ink-gray-6">
+						<tr>
+							<th class="py-1 font-medium">Heading</th>
+							<th class="py-1 font-medium">Before</th>
+							<th class="py-1 font-medium">Change</th>
+							<th class="py-1 font-medium">After</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr v-for="row in detailBeforeAfter.rows" :key="`${row.section}-${row.heading}`" class="border-t border-outline-gray-2">
+							<td class="py-1 text-ink-gray-8">{{ row.headingName }}</td>
+							<td class="py-1 font-mono text-ink-gray-8">{{ row.before }}</td>
+							<td class="py-1 font-mono text-ink-gray-8">{{ row.change ?? "—" }}</td>
+							<td class="py-1 font-mono text-ink-gray-8">{{ row.after ?? "—" }}</td>
+						</tr>
+					</tbody>
+				</table>
 			</section>
 		</div>
 	</div>

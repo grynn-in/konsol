@@ -74,10 +74,18 @@ function hiddenNoteText(hidden) {
 /** The server's item (approvals_model.queue_items' shape, every field
  * passed through unchanged except the ones below), formatted for display.
  * A journal's `effect` runs through `effectView` when the key is present;
- * no other doctype carries one. */
+ * no other doctype carries one. `rawEffect` keeps the server's own
+ * `journal_model.statement_effect` shape (`{headings: [{section, heading,
+ * heading_name, net_debit}]}`) alongside the display-shaped `effect`
+ * (konsol#305 U2): `beforeAfter` (numbers.js) needs `net_debit` and
+ * `heading_name`, which `effectView` has already dropped in favour of
+ * `amountText`/`label`. Without this, a caller that reaches for `.effect`
+ * instead of `.rawEffect` gets `undefined` net_debit amounts — "NaN" before
+ * `amountText` was made to throw on a non-finite number, and a throw now. */
 function baseView(item, now, timeZone) {
 	const view = { ...item, createdText: timeText(item.created, now, timeZone) };
 	if ("effect" in item) {
+		view.rawEffect = item.effect;
 		view.effect = effectView(item.effect);
 	}
 	return view;

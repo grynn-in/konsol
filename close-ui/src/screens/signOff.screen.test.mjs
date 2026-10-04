@@ -77,7 +77,7 @@ test("It renders through summaryView (B15), and the period comes from the URL (r
   assert.match(script(source), /summaryView\(/);
   assert.match(source, /from\s*["']\.\.\/route\.js["']/);
   const tpl = template(source);
-  for (const section of ["gates", "checks", "intercompany", "acknowledgements", "onBehalf", "exceptions", "covers", "previous"]) {
+  for (const section of ["gates", "checks", "intercompany", "acknowledgements", "onBehalf", "exceptions", "covers", "previous", "commentary"]) {
     assert.match(source, new RegExp(`\\b${section}\\b`), `the ${section} section is rendered`);
   }
   assert.match(tpl, /\.rows\b/, "each section's rows (\"None\" when empty) come from summaryView");
@@ -222,4 +222,31 @@ test("B33: failure path — a refused closed_on is shown, not swallowed", () => 
   const js = script(source);
   assert.match(js, /catch\s*\(/, "the refusal is caught so the page still renders");
   assert.match(template(source), /closedOn\.error/, "and its message is shown");
+});
+
+// --- konsol#305 U47: the sign-off summary's missing-commentary section ----
+
+test("U47: SECTION_TITLES carries commentary, titled 'Commentary'", () => {
+  const src = script(read());
+  const m = src.match(/SECTION_TITLES\s*=\s*\[([\s\S]*?)\];/);
+  assert.ok(m, "SECTION_TITLES is declared");
+  const entries = (m[1].match(/\[\s*["'][^"']+["']\s*,\s*["'][^"']+["']\s*\]/g) || []).map(
+    (e) => e.match(/["']([^"']+)["']/)[1],
+  );
+  assert.ok(entries.includes("commentary"), "commentary is in SECTION_TITLES");
+  assert.match(src, /\[\s*["']commentary["']\s*,\s*["']Commentary["']\s*\]/);
+});
+
+test("U47: failure path — commentary is rendered by the same generic section loop, never gating a button", () => {
+  const source = read();
+  const tpl = template(source);
+  // The section renders through the shared `sections` loop (s.key/s.title/s.rows),
+  // the same mechanism as every other section — no bespoke markup for it.
+  assert.doesNotMatch(tpl, /commentary/i, "no commentary-specific markup: it rides the shared section loop");
+  // No button's v-if, and no accepts()/send() call, names commentary or its rows:
+  // the action button comes from view.label/view.action only (B15), never this section.
+  const buttonBlocks = tpl.match(/<Button[\s\S]*?<\/Button>|<Button[^>]*\/>/g) || [];
+  for (const block of buttonBlocks) {
+    assert.doesNotMatch(block, /commentary/i, `no button is gated by commentary: ${block}`);
+  }
 });

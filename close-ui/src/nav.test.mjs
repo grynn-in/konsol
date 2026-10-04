@@ -5,25 +5,25 @@ import { navFor } from "./nav.js";
 
 const NO_COUNTS = { by_screen: {} };
 
-test("close_lead sees all ten screens, approvals directly after my-work, intercompany right after trial-balances, adjustments directly before checks, audit-trail last", () => {
+test("close_lead sees all eleven screens, approvals directly after my-work, intercompany right after trial-balances, adjustments directly before checks, numbers directly after checks and before sign-off, audit-trail last", () => {
 	const nav = navFor("close_lead", ["EPM Admin"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"],
+		["my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "numbers", "sign-off", "audit-trail"],
 	);
 	assert.equal(nav.map((n) => n.screen)[0], "my-work"); // the landing is unchanged
 });
 
-test("group_accountant (Analyst) sees all ten screens, approvals directly after my-work, intercompany right after trial-balances, adjustments directly before checks, audit-trail last", () => {
+test("group_accountant (Analyst) sees all eleven screens, approvals directly after my-work, intercompany right after trial-balances, adjustments directly before checks, numbers directly after checks and before sign-off, audit-trail last", () => {
 	const nav = navFor("group_accountant", ["EPM Analyst"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
-		["my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "sign-off", "audit-trail"],
+		["my-work", "approvals", "period", "trial-balances", "intercompany", "rates", "adjustments", "checks", "numbers", "sign-off", "audit-trail"],
 	);
 	assert.equal(nav.map((n) => n.screen)[0], "my-work"); // the landing is unchanged
 });
 
-test("entity_accountant sees My work and Trial balances only, never Checks, Sign-off, Period, Audit trail, Intercompany, Adjustments or Approvals", () => {
+test("entity_accountant sees My work and Trial balances only, never Checks, Sign-off, Period, Audit trail, Intercompany, Adjustments, Approvals or Numbers", () => {
 	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
 	assert.deepEqual(
 		nav.map((n) => n.screen),
@@ -31,11 +31,33 @@ test("entity_accountant sees My work and Trial balances only, never Checks, Sign
 	);
 });
 
-test("viewer sees Trial balances, Intercompany, Rates, Period, Adjustments, Approvals, Checks, Sign-off and Audit trail, never My work; still lands on Trial balances", () => {
+test("viewer sees Trial balances, Intercompany, Rates, Period, Adjustments, Approvals, Checks, Numbers, Sign-off and Audit trail, never My work; still lands on Trial balances", () => {
 	const nav = navFor("viewer", ["EPM User"], NO_COUNTS);
 	const screens = nav.map((n) => n.screen);
-	assert.deepEqual(screens, ["trial-balances", "intercompany", "rates", "period", "adjustments", "approvals", "checks", "sign-off", "audit-trail"]);
+	assert.deepEqual(screens, ["trial-balances", "intercompany", "rates", "period", "adjustments", "approvals", "checks", "numbers", "sign-off", "audit-trail"]);
 	assert.equal(screens[0], "trial-balances"); // #305-W2-10: the landing is unchanged
+});
+
+// konsol#305 U43 (story 8.1): the wireframe nav reads "Checks | Numbers,
+// Sign-off, Audit trail" — numbers sits directly after checks and directly
+// before sign-off, for every persona that has it.
+test("numbers sits directly after checks and directly before sign-off for close_lead, group_accountant and viewer", () => {
+	for (const [persona, roles] of [
+		["close_lead", ["EPM Admin"]],
+		["group_accountant", ["EPM Analyst"]],
+		["viewer", ["EPM User"]],
+	]) {
+		const screens = navFor(persona, roles, NO_COUNTS).map((n) => n.screen);
+		const numbersIdx = screens.indexOf("numbers");
+		assert.notEqual(numbersIdx, -1, persona);
+		assert.equal(screens[numbersIdx - 1], "checks", persona);
+		assert.equal(screens[numbersIdx + 1], "sign-off", persona);
+	}
+});
+
+test("failure path: entity_accountant never gets numbers", () => {
+	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
+	assert.ok(!nav.map((n) => n.screen).includes("numbers"));
 });
 
 test("approvals sits at index 1 for close_lead and group_accountant, directly after adjustments for viewer", () => {
@@ -72,7 +94,7 @@ test("for viewer, adjustments sits directly before approvals, which sits directl
 	assert.equal(screens[checksIdx - 2], "adjustments");
 });
 
-test("failure path: entity_accountant's nav never contains period, rates, audit-trail, intercompany, adjustments or approvals", () => {
+test("failure path: entity_accountant's nav never contains period, rates, audit-trail, intercompany, adjustments, approvals or numbers", () => {
 	const nav = navFor("entity_accountant", ["Entity Accountant"], NO_COUNTS);
 	assert.ok(!nav.map((n) => n.screen).includes("period"));
 	assert.ok(!nav.map((n) => n.screen).includes("rates"));
@@ -80,6 +102,7 @@ test("failure path: entity_accountant's nav never contains period, rates, audit-
 	assert.ok(!nav.map((n) => n.screen).includes("intercompany"));
 	assert.ok(!nav.map((n) => n.screen).includes("adjustments"));
 	assert.ok(!nav.map((n) => n.screen).includes("approvals"));
+	assert.ok(!nav.map((n) => n.screen).includes("numbers"));
 });
 
 test("each item carries its label", () => {
@@ -93,6 +116,7 @@ test("each item carries its label", () => {
 	assert.equal(byScreen["adjustments"], "Adjustments");
 	assert.equal(byScreen["approvals"], "Approvals");
 	assert.equal(byScreen["checks"], "Checks");
+	assert.equal(byScreen["numbers"], "Numbers");
 	assert.equal(byScreen["sign-off"], "Sign-off");
 	assert.equal(byScreen["audit-trail"], "Audit trail");
 });

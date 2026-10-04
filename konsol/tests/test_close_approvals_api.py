@@ -21,6 +21,7 @@ test_close_event_writer.py): rejections are read only through
 the source under test.
 """
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -60,13 +61,15 @@ def _period(fy, fp):
 
 def _journal(name, owner=ANALYST, creation=None, modified=None, docstatus=0, status="Pending Approval",
              fiscal_year=2026, fiscal_period=7, adjustment_type="topside", description="ZZ accrue",
-             total_debit=100.0, currency="USD", reverse_fiscal_year=0, reverse_fiscal_period=0):
+             total_debit=100.0, currency="USD", reverse_fiscal_year=0, reverse_fiscal_period=0,
+             consolidation_group="G1"):
     return {"name": name, "owner": owner, "creation": creation or datetime(2026, 7, 1, 9, 0, 0),
             "modified": modified or datetime(2026, 7, 1, 9, 0, 0), "docstatus": docstatus,
             "status": status, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
             "adjustment_type": adjustment_type, "description": description,
             "total_debit": total_debit, "currency": currency,
-            "reverse_fiscal_year": reverse_fiscal_year, "reverse_fiscal_period": reverse_fiscal_period}
+            "reverse_fiscal_year": reverse_fiscal_year, "reverse_fiscal_period": reverse_fiscal_period,
+            "consolidation_group": consolidation_group}
 
 
 def _ger(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
@@ -501,6 +504,57 @@ def test_journal_item_carries_lines_and_effect_no_heading_kept():
     assert item["effect"]["no_heading"] == 1
     no_heading = [h for h in item["effect"]["headings"] if h["heading"] is None]
     assert len(no_heading) == 1
+
+
+# --- W41: fiscal_year/fiscal_period/consolidation_group, golden fixture ------------
+
+#: N51's fixture headings have not landed (4 Oct: N51 is still `ready`), so this
+#: fixture uses the fallback codes the row names: 4100 under heading 4 (a P&L
+#: leaf) and 2100 under heading 2 (a BS leaf). N51 adopts these codes.
+_W41_ACCOUNTS = [
+    {"name": "2", "account_name": "Liabilities", "parent_account": None,
+     "is_group": 1, "statement_section": "", "status": "Published"},
+    {"name": "2100", "account_name": "Accounts payable", "parent_account": "2",
+     "is_group": 0, "statement_section": "Balance Sheet", "status": "Published"},
+    {"name": "4", "account_name": "Revenue", "parent_account": None,
+     "is_group": 1, "statement_section": "", "status": "Published"},
+    {"name": "4100", "account_name": "Sales revenue", "parent_account": "4",
+     "is_group": 0, "statement_section": "Profit and Loss", "status": "Published"},
+]
+
+_W41_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "fixtures", "close_approvals_journal_item.json")
+
+
+def test_journal_item_carries_period_and_group_matching_golden_fixture():
+    """W41 goal: a journal item carries fiscal_year, fiscal_period and
+    consolidation_group, so the screen can read the statement for that
+    period and group. The item's ``effect`` comes from the real
+    ``journal_model.statement_effect`` (W4-E19); the committed golden
+    fixture is what W42 (close-ui numbers.js) loads to test against a
+    real producer's output, never a hand-built dict."""
+    site = _Site()
+    site.accounts = list(_W41_ACCOUNTS)
+    site.journals = [_journal(
+        "CJ-W41", owner=ANALYST, creation=datetime(2026, 7, 1, 9, 0, 0),
+        modified=datetime(2026, 7, 1, 9, 0, 0), fiscal_year=2026, fiscal_period=7,
+        adjustment_type="topside", description="ZZ accrue sales commission",
+        total_debit=500.0, currency="USD", consolidation_group="G1",
+    )]
+    site.lines = [
+        _line("CJ-W41", 1, "DE02", "2100", debit_amount=500.0),
+        _line("CJ-W41", 2, "DE02", "4100", credit_amount=500.0),
+    ]
+    result = _call(site)
+    item = next(i for i in _all_items(result) if i["name"] == "CJ-W41")
+
+    assert item["fiscal_year"] == 2026
+    assert item["fiscal_period"] == 7
+    assert item["consolidation_group"] == "G1"
+
+    with open(_W41_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert item == golden
 
 
 # --- sent back (A09) --------------------------------------------------------------

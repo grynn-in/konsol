@@ -1,0 +1,135 @@
+{
+  "can_comment": true,
+  "commentary": {
+    "4": {
+      "at": "2025-08-01T10:00:00+01:00",
+      "by": "Zz Analyst",
+      "modified": "2025-08-01 10:00:00",
+      "name": "SC-G1-2025-7-4",
+      "text": "Strong quarter."
+    }
+  },
+  "consolidation_group": "G1",
+  "gap": null,
+  "group_note": "The only consolidation group.",
+  "groups": [
+    {
+      "consolidation_group": "G1",
+      "reporting_currency": "USD"
+    }
+  ],
+  "message": null,
+  "not_included": {
+    "count": 1,
+    "entities": [
+      "ZZB"
+    ],
+    "hidden": 0
+  },
+  "period": {
+    "code": "FY2025P07",
+    "fiscal_period": 7,
+    "fiscal_year": 2025,
+    "period_type": "Regular",
+    "status": "Open"
+  },
+  "reporting_currency": "USD",
+  "signoff": {
+    "run": null,
+    "state": "provisional"
+  },
+  "state": "ok",
+  "statement": {
+    "gap": null,
+    "legend": "Profit and loss: income positive, costs in brackets. Balance sheet: assets, liabilities and equity positive.",
+    "periods": {
+      "comparison": [
+        2025,
+        6
+      ],
+      "comparison_note": "No rows in the warehouse for FY2025 P06",
+      "current": [
+        2025,
+        7
+      ]
+    },
+    "sections": [
+      {
+        "lines": [
+          {
+            "comparison": null,
+            "current": 241.43,
+            "heading": "4",
+            "heading_name": "COST OF SALES",
+            "kind": "heading",
+            "sign": -1,
+            "variance": null,
+            "ytd": 241.43
+          },
+          {
+            "comparison": null,
+            "current": 241.43,
+            "kind": "net_result",
+            "label": "Net result",
+            "sign": -1,
+            "variance": null,
+            "ytd": 241.43
+          }
+        ],
+        "section": "Profit and Loss"
+      },
+      {
+        "lines": [
+          {
+            "comparison": null,
+            "current": 1735.1,
+            "heading": "1",
+            "heading_name": "ASSETS",
+            "kind": "heading",
+            "sign": 1,
+            "variance": null
+          },
+          {
+            "comparison": null,
+            "current": 803.7,
+            "heading": "2",
+            "heading_name": "LIABILITIES",
+            "kind": "heading",
+            "sign": -1,
+            "variance": null
+          },
+          {
+            "comparison": null,
+            "current": 931.4,
+            "heading": "3",
+            "heading_name": "EQUITY",
+            "includes": [
+              {
+                "comparison": null,
+                "current": 5.07,
+                "kind": "cta",
+                "label": "of which currency translation (CTA)"
+              },
+              {
+                "comparison": null,
+                "current": 241.43,
+                "kind": "current_year_result",
+                "label": "of which current-year result"
+              }
+            ],
+            "kind": "heading",
+            "sign": -1,
+            "variance": null
+          },
+          {
+            "comparison": null,
+            "current": -0.0,
+            "kind": "residual",
+            "label": "Unmatched residual"
+          }
+        ],
+        "section": "Balance Sheet"
+      }
+    ]
+  }
+}

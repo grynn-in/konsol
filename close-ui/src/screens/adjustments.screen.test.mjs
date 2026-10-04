@@ -1,22 +1,87 @@
-// konsol#305 A17/A18: adjustments.screen.test.mjs
+// konsol#305 A17/A18/W43: adjustments.screen.test.mjs
 //
 // Source-level checks on screens/Adjustments.vue (E6; stories 6.1, 6.2;
-// W2-10; R2). The component is read as text: a .vue file only compiles
-// inside the Vite build, which the row's gate runs separately (mirrors
-// rates.screen.test.mjs / intercompany.screen.test.mjs). A17's tests above
+// W2-10; R2; W43 adds Before/After, #305-W3-4, W4-E18). The component is
+// read as text: a .vue file only compiles inside the Vite build, which the
+// row's gate runs separately (mirrors rates.screen.test.mjs /
+// intercompany.screen.test.mjs / numbers.screen.test.mjs). A17's tests above
 // cover the read-only list and panel; A18 adds the draft editor, save and
-// send tests below.
+// send tests; W43 adds the Before/After tests at the bottom.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { beforeAfter, statementView } from "../numbers.js";
+import { effectView } from "../adjustments.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ADJUSTMENTS = path.join(__dirname, "Adjustments.vue");
 
+// W43: the same golden fixtures W42/N54 committed (W4-E19) — the real
+// statement_model.statement() payload and the real approvals_model journal
+// item built from the real journal_model.statement_effect. Loaded the same
+// way numbers.screen.test.mjs loads the statement fixture for Numbers.vue.
+const STATEMENT_FIXTURE_PATH = fileURLToPath(
+	new URL("../../../konsol/tests/fixtures/close_statement_payload.json", import.meta.url),
+);
+const JOURNAL_ITEM_FIXTURE_PATH = fileURLToPath(
+	new URL("../../../konsol/tests/fixtures/close_approvals_journal_item.json", import.meta.url),
+);
+const NOW = new Date("2025-08-01T18:00:00Z");
+const TZ = "Europe/London";
+
+function goldenStatement() {
+	return JSON.parse(fs.readFileSync(STATEMENT_FIXTURE_PATH, "utf8"));
+}
+
+function goldenJournalItem() {
+	return JSON.parse(fs.readFileSync(JOURNAL_ITEM_FIXTURE_PATH, "utf8"));
+}
+
 function read() {
 	return fs.readFileSync(ADJUSTMENTS, "utf8");
+}
+
+/** The opening tag that contains `tagName` starting at or after `openIdx`
+ * -> the whole balanced element (mirrors numbers.screen.test.mjs's
+ * blockFor/blockMatching — duplicated here since Adjustments.vue's own test
+ * file is outside that row's files). */
+function blockFor(tpl, openIdx, tagName) {
+	const openRe = new RegExp(`<${tagName}(?=[\\s>])`, "g");
+	const closeRe = new RegExp(`</${tagName}>`, "g");
+	const tagEnd = tpl.indexOf(">", openIdx) + 1;
+	assert.ok(tagEnd > 0, `the opening <${tagName}> tag closes`);
+	let depth = 1;
+	let pos = tagEnd;
+	while (depth > 0) {
+		openRe.lastIndex = pos;
+		closeRe.lastIndex = pos;
+		const nextOpen = openRe.exec(tpl);
+		const nextClose = closeRe.exec(tpl);
+		assert.ok(nextClose, `a matching </${tagName}> exists`);
+		if (nextOpen && nextOpen.index < nextClose.index) {
+			depth++;
+			pos = nextOpen.index + nextOpen[0].length;
+		} else {
+			depth--;
+			pos = nextClose.index + nextClose[0].length;
+			if (depth === 0) return { start: openIdx, end: pos };
+		}
+	}
+}
+
+/** The span of the nearest `<tagName ...>` element whose own opening tag
+ * matches `pattern` (mirrors numbers.screen.test.mjs). */
+function blockMatching(tpl, tagName, pattern) {
+	const re = new RegExp(`<${tagName}(?:(?!>)[\\s\\S])*?>`, "g");
+	let m;
+	while ((m = re.exec(tpl))) {
+		if (pattern.test(m[0])) {
+			return blockFor(tpl, m.index, tagName);
+		}
+	}
+	return null;
 }
 
 function script(source) {
@@ -254,4 +319,151 @@ test("E6-P15: the no-workflow note is shown once, gated on workflowInstalled bei
 	const tpl = template(source);
 	const noteOccurrences = (tpl.match(/NO_WORKFLOW_NOTE/g) || []).length;
 	assert.equal(noteOccurrences, 1, "the note is rendered exactly once");
+});
+
+// --- W43: Before/After in the journal effect panel (#305-W3-4, W4-E18) -----
+
+// pure: the panel's rows must equal beforeAfter(goldenEffect,
+// statementView(golden)) exactly — the REAL producers' output (W4-E19),
+// never a hand-built row. This pins the same two cases W42 already proved
+// in numbers.test.mjs (a BS paydown reducing the liability; a PL heading
+// reusing the section-wide -1 flip), as the concrete numbers this screen's
+// wiring must reproduce.
+test("pure: beforeAfter(goldenEffect, statementView(golden)) — the exact rows the panel must show", () => {
+	const view = statementView(goldenStatement(), NOW, TZ);
+	const item = goldenJournalItem();
+	const rows = beforeAfter(item.effect, view);
+
+	const liability = rows.find((r) => r.heading === "2");
+	assert.deepEqual(liability, {
+		section: "Balance Sheet",
+		heading: "2",
+		headingName: "Liabilities",
+		before: "803.70",
+		change: "(500.00)",
+		after: "303.70",
+	});
+
+	const pl = rows.find((r) => r.heading === "4" && r.section === "Profit and Loss");
+	assert.deepEqual(pl, {
+		section: "Profit and Loss",
+		heading: "4",
+		headingName: "Revenue",
+		before: "241.43",
+		change: "500.00",
+		after: "741.43",
+	});
+});
+
+test("W43: Adjustments.vue builds the panel with beforeAfter/statementView from ../numbers.js", () => {
+	const source = read();
+	assert.match(source, /import\s*\{[^}]*\bbeforeAfter\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
+	assert.match(source, /import\s*\{[^}]*\bstatementView\b[^}]*\}\s*from\s*["']\.\.\/numbers\.js["']/);
+	assert.match(script(source), /beforeAfter\(/);
+	assert.match(script(source), /statementView\(/);
+});
+
+test("W43: Names konsol.close.statement_api.get_statement exactly once; exactly one get(GET_STATEMENT call site", () => {
+	const source = read();
+	const names = source.match(/konsol\.close\.statement_api\.get_statement/g) || [];
+	assert.equal(names.length, 1, "one endpoint constant for get_statement");
+	const js = script(source);
+	const gets = js.match(/\bget\(\s*GET_STATEMENT\b/g) || [];
+	assert.equal(gets.length, 1, "exactly one get(GET_STATEMENT call site");
+});
+
+test("W43: a second seq guard exists for the statement load, so a stale response is dropped (distinct from the journals list's own seq)", () => {
+	const js = script(read());
+	const seqDecls = js.match(/let\s+(\w*[sS]eq\w*)\s*=\s*0/g) || [];
+	assert.ok(seqDecls.length >= 2, "a seq counter for the journals list AND one for the statement load");
+	const names = seqDecls.map((d) => d.match(/let\s+(\w+)\s*=\s*0/)[1]);
+	assert.ok(new Set(names).size >= 2, "the two seq counters are distinct variables");
+});
+
+test("W43: Before/After is rendered only when selectedJournal.docstatus === 0; an Approved journal shows 'Included in the statement'", () => {
+	const tpl = template(read());
+	const draftBlock = blockMatching(tpl, "template", /v-if="[^"]*selectedJournal\.docstatus\s*===\s*0[^"]*"|v-else-if="[^"]*selectedJournal\.docstatus\s*===\s*0[^"]*"/);
+	assert.ok(draftBlock, "a template branch is gated on selectedJournal.docstatus === 0");
+	const inner = tpl.slice(draftBlock.start, draftBlock.end);
+	assert.match(inner, /beforeAfter|Before|Change|After/i, "the docstatus===0 branch renders the before/after data");
+	assert.match(tpl, /Included in the statement/i, "an Approved journal shows this sentence");
+});
+
+// U4 (W4 review, verified): Adjustments.vue:703-736 treated every
+// docstatus !== 0 as "Included in the statement" — wrong for docstatus 2
+// (Cancelled/reversed-away: journal_api.py's get_journals returns docstatus
+// 0, 1 AND 2). A cancelled journal never reached a build, so it must read
+// differently from an approved one, with its own distinct branch.
+test("U4: docstatus 2 (Cancelled) reads 'Cancelled — not in the statement', distinct from docstatus 1's 'Included in the statement'", () => {
+	const tpl = template(read());
+	const cancelledBlock = blockMatching(tpl, "p", /selectedJournal\.docstatus\s*===\s*2/);
+	assert.ok(cancelledBlock, "a <p> is gated on selectedJournal.docstatus === 2");
+	const cancelledInner = tpl.slice(cancelledBlock.start, cancelledBlock.end);
+	assert.match(cancelledInner, /Cancelled.*not in the statement/i);
+	assert.doesNotMatch(cancelledInner, /Included in the statement/i, "docstatus 2 never shows the Approved sentence");
+
+	// The sibling element right after the docstatus===2 <p> (the "approved"
+	// branch) must carry the Included sentence, and its own opening tag
+	// must NOT also test docstatus === 2 — the W43 bug was one `v-else`
+	// covering both docstatus 1 and 2.
+	const afterCancelled = tpl.slice(cancelledBlock.end);
+	const nextTagMatch = afterCancelled.match(/<(template|p|div)(?:(?!>)[\s\S])*?>/);
+	assert.ok(nextTagMatch, "an element follows the docstatus===2 branch");
+	assert.doesNotMatch(nextTagMatch[0], /docstatus\s*===\s*2/, "the next branch is not also gated on docstatus === 2");
+	const siblingBlock = blockFor(afterCancelled, nextTagMatch.index, nextTagMatch[1]);
+	const siblingInner = afterCancelled.slice(siblingBlock.start, siblingBlock.end);
+	assert.match(siblingInner, /Included in the statement/i, "the branch right after docstatus===2 shows the Approved sentence");
+});
+
+// U4 "judgement" (verified): approved journals lost their per-heading
+// Effect list in W43 (only the bare "Included in the statement" sentence
+// remained) — restored here using the real effectView(effect).headings
+// shape (adjustments.js), the same list the Draft panel showed before W43.
+test("U4: an Approved journal's effect panel still lists each heading's amount (selectedEffect.headings), restored after W43 dropped it", () => {
+	const tpl = template(read());
+	const includedPos = tpl.search(/Included in the statement/i);
+	assert.ok(includedPos >= 0);
+	// The nearest enclosing <template> (or the whole v-else branch) around
+	// the sentence must also render the headings list.
+	const nearby = tpl.slice(includedPos, Math.min(tpl.length, includedPos + 700));
+	assert.match(nearby, /selectedEffect\.headings/, "the headings list is rendered near the Included sentence");
+	assert.match(nearby, /heading\.label/);
+	assert.match(nearby, /heading\.amountText/);
+});
+
+// pure: effectView(goldenJournalItem().effect) is the REAL producer's shape
+// (journal_model.statement_effect through adjustments.js's effectView) —
+// pins the exact headings this restored list must be able to show, so the
+// template-level test above is checked against real data, not an invented
+// shape.
+test("pure: effectView(goldenJournalItem().effect).headings — the real shape the restored list renders", () => {
+	const view = effectView(goldenJournalItem().effect);
+	assert.deepEqual(view.headings, [
+		{ section: "Profit and Loss", heading: "4", label: "Revenue", amountText: "Cr 500.00" },
+		{ section: "Balance Sheet", heading: "2", label: "Liabilities", amountText: "Dr 500.00" },
+	]);
+	assert.equal(view.noHeading, 0);
+});
+
+test("W43: a statement load error is shown as visible text in the panel, never swallowed", () => {
+	const js = script(read());
+	assert.match(
+		js,
+		/catch\s*\(\s*e\s*\)\s*\{[\s\S]*?\.(error|message)\s*=\s*e\.message/,
+		"the statement GET's catch block records the error for display",
+	);
+});
+
+test("W43: a non-ok statement state shows its own message, never a blank or zero before/after", () => {
+	const tpl = template(read());
+	// The non-ok-state message must appear somewhere in the Before/After
+	// branch, not just the journals-list LoadState error (which already has
+	// its own :error binding tested elsewhere) — grep the whole template for
+	// a second, distinct message/error binding feeding the side panel.
+	const panelSection = tpl.slice(tpl.indexOf("Journal detail") >= 0 ? tpl.indexOf("role=\"dialog\"") : 0);
+	assert.match(
+		panelSection,
+		/\.(message|text|error)\b/,
+		"the side panel reads a message/text/error field for the non-ok statement state",
+	);
 });

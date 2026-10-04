@@ -737,9 +737,13 @@ def test_hooks_wire_the_check_as_the_star_before_submit():
             if (isinstance(t, ast.Subscript) and getattr(t.value, "id", None) == "doc_events"
                     and ast.literal_eval(t.slice) == "*"):
                 found.append(ast.literal_eval(n.value))
-    # T02d (#305-W2-8) adds the cancel event beside the check.
+    # T02d (#305-W2-8) adds the cancel event beside the check; S42
+    # (#305-W4-4 4c) adds the data-change hook's on_submit and (second,
+    # after the cancel event) on_cancel.
     assert found == [{"before_submit": "konsol.close.self_approval.check",
-                      "on_cancel": "konsol.close.cancel_event.record"}], found
+                      "on_submit": "konsol.close.data_change_hook.on_submit",
+                      "on_cancel": ["konsol.close.cancel_event.record",
+                                    "konsol.close.data_change_hook.on_cancel"]}], found
 
 
 # --- workflows --------------------------------------------------------------

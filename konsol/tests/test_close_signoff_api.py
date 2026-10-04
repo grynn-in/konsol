@@ -110,6 +110,10 @@ class _Site:
         #: P05 (#305-D2-3, #305-D2-9): both declared, so signoff_gate adds no
         #: policy gap by default; a test sets ``site.policies`` to probe a gap.
         self.policies = ("Blocked", 50)
+        #: W4-1 (N44t): the declared statement accounts (CTA, current-year
+        #: result), so signoff_gate's N45 read finds them. Until N45 nothing
+        #: reads them.
+        self.statement_accounts = ("3300", "3100")
         self.closed = {(2025, fp): (LEAD, CLOSED_ON) for fp in range(1, 9)}
         #: A63: the period rows' data-change fields, by (year, period).
         self.data_changed = {}
@@ -126,6 +130,27 @@ class _Site:
                 _tb("ZZA", fp=8), _tb("ZZB", fp=8), _tb("ZZC", fp=8), _tb("ZZE", fp=8),
             ],
             "TB Exception": [_exc("ZZE"), _exc("ZZD", fp=8, reason="Merged into P09")],
+            "Main Account": [
+                {"name": "3300", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "AOCI — CTA",
+                 "parent_account": "3"},
+                {"name": "3100", "is_group": 0, "status": "Published",
+                 "statement_section": "Balance Sheet", "account_name": "Retained earnings",
+                 "parent_account": "3"},
+                #: M45t: two Published headings, so M46's import and reads
+                #: resolve (konsol.close.commentary_model is loaded below).
+                {"name": "4", "is_group": 1, "status": "Published",
+                 "statement_section": "Profit and Loss", "account_name": "NET SALES",
+                 "lft": 10},
+                {"name": "7", "is_group": 1, "status": "Published",
+                 "statement_section": "Profit and Loss", "account_name": "OPERATING EXPENSES",
+                 "lft": 20},
+            ],
+            #: M45t: so M46's import and reads resolve.
+            "Statement Commentary": [],
+            #: M46: the root group ic_api's filter finds (data_area_id not
+            #: set), so missing_commentary has a group to report against.
+            "Consolidation Group": [{"consolidation_group": "ZZGRP", "data_area_id": None}],
         }
         self.warned_names = {"RUN-09": ["assert_a", "assert_b"]}
         self.only_for = []
@@ -156,8 +181,8 @@ def _match(value, cond):
         if op == "<=":
             return value is not None and value <= arg
         if op == "is":
-            assert arg == "set", arg
-            return value not in (None, "")
+            assert arg in ("set", "not set"), arg
+            return (value not in (None, "")) == (arg == "set")
         raise AssertionError("stub: unsupported operator %r" % (op,))
     return value == cond
 
@@ -224,9 +249,12 @@ def _load(site):
         assert doctype == "Close Settings", doctype
         fy, fp = site.first_close or (0, 0)
         self_approval, rate_move_threshold = site.policies
+        cta_account, result_account = site.statement_accounts
         return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp,
                 "self_approval": self_approval,
-                "rate_move_threshold": rate_move_threshold}[field]
+                "rate_move_threshold": rate_move_threshold,
+                "statement_cta_account": cta_account,
+                "statement_result_account": result_account}[field]
 
     def _write(*a, **k):
         site.writes.append(a)
@@ -346,11 +374,15 @@ def _load(site):
             "konsol.consolidation.doctype.assertion_run.assertion_run": ar}
     saved = {n: sys.modules.get(n) for n in list(mods) + [
         "konsol.close.signoff_model", "konsol.close.period_model", "konsol.close.signoff_gate",
-        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model"]}
+        "konsol.close.timefmt", "konsol.close.close_policy_model", "konsol.close.scope_model",
+        "konsol.close.commentary_model"]}
     sys.modules.update(mods)
     try:
+        #: M45t: commentary_model loaded for real by path, like the other
+        #: pure modules, so M46's `from konsol.close import ... commentary_model`
+        #: resolves (unblocks M46).
         for name in ("close_policy_model", "signoff_model", "period_model", "timefmt",
-                      "scope_model", "signoff_gate"):
+                      "scope_model", "signoff_gate", "commentary_model"):
             mod = _by_path("konsol.close." + name, os.path.join(CLOSE_DIR, name + ".py"))
             sys.modules["konsol.close." + name] = mod
             setattr(close, name, mod)
@@ -399,6 +431,37 @@ def _raises(site, fy, fp):
                 sys.modules.pop(n, None)
             else:
                 sys.modules[n] = old
+
+
+# --- N44t: the stub site declares the statement accounts (unblocks N45) -----
+
+def test_statement_accounts_are_declared_on_the_stub_site():
+    site = _Site()
+    _module, _mods, frappe = _load(site)
+    assert frappe.db.get_single_value("Close Settings", "statement_cta_account") == "3300"
+    assert frappe.db.get_single_value("Close Settings", "statement_result_account") == "3100"
+    rows = {r["name"]: r for r in site.records["Main Account"]}
+    assert rows["3300"]["is_group"] == 0
+    assert rows["3300"]["status"] == "Published"
+    assert rows["3300"]["statement_section"] == "Balance Sheet"
+    assert rows["3100"]["is_group"] == 0
+    assert rows["3100"]["status"] == "Published"
+    assert rows["3100"]["statement_section"] == "Balance Sheet"
+
+
+# --- M45t: the stub site carries commentary_model and the commentary records -
+
+def test_commentary_model_is_installed_and_the_commentary_records_exist():
+    site = _Site()
+    _module, mods, _frappe = _load(site)
+    assert mods["konsol.close.commentary_model"].__name__ == "konsol.close.commentary_model"
+    assert hasattr(mods["konsol.close.commentary_model"], "missing_commentary")
+    assert site.records["Statement Commentary"] == []
+    headings = {r["name"]: r for r in site.records["Main Account"] if r.get("is_group")}
+    assert set(headings) == {"4", "7"}
+    for code in ("4", "7"):
+        assert headings[code]["status"] == "Published", code
+        assert "lft" in headings[code], code
 
 
 # --- contract ----------------------------------------------------------------
@@ -609,6 +672,51 @@ def test_the_viewer_gets_the_same_ic_driven_amber_as_the_close_lead():
     result = _get(viewer)
     assert result["action"] == base["action"] == "acknowledge"
     assert result["intercompany"] == base["intercompany"]
+
+
+# --- M46: the sign-off summary carries the missing-commentary line -----------
+
+COMMENTARY_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_signoff_commentary.json")
+
+
+def test_no_commentary_reports_both_headings_missing_in_lft_order():
+    result = _get(_Site())
+    assert result["commentary"] == [{
+        "consolidation_group": "ZZGRP", "headings": 2, "with_commentary": 0,
+        "missing": ["NET SALES", "OPERATING EXPENSES"],
+    }]
+
+
+def test_one_commented_heading_counts_one_with_commentary_one_missing():
+    site = _Site()
+    site.records["Statement Commentary"] = [
+        {"consolidation_group": "ZZGRP", "heading": "4", "fiscal_year": 2025, "fiscal_period": 9, "text": "Volume up 3% on FX."}]
+    result = _get(site)
+    assert result["commentary"] == [{
+        "consolidation_group": "ZZGRP", "headings": 2, "with_commentary": 1,
+        "missing": ["OPERATING EXPENSES"],
+    }]
+
+
+def test_commentary_never_changes_the_action_or_the_gates():
+    # story 9.1: commentary is informational only, never a gate.
+    site = _Site()
+    before = _get(site)
+    site.records["Statement Commentary"] = [
+        {"consolidation_group": "ZZGRP", "heading": "4", "fiscal_year": 2025, "fiscal_period": 9, "text": "Volume up 3% on FX."}]
+    after = _get(site)
+    assert before["action"] == after["action"]
+    assert before["gates"] == after["gates"]
+    assert before["commentary"] != after["commentary"]
+
+
+def test_commentary_matches_the_golden_fixture():
+    # U47 loads this same file: the committed golden value of this key.
+    result = _get(_Site())
+    with open(COMMENTARY_FIXTURE) as fh:
+        golden = json.load(fh)
+    assert result["commentary"] == golden
 
 
 # --- A49: the period's own status ----------------------------------------------
