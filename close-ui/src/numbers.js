@@ -179,10 +179,16 @@ export function commentaryByText(entry, now, timeZone) {
 }
 
 /** `commentary` is `statement_api`'s `{heading_code: {text, by, at, ...}}`
- * (N51 `_commentary`). `null` when the heading has none. */
+ * (N51 `_commentary`). `null` when the heading has none — including a
+ * CLEARED entry (R41h/U7): a blank save still keeps the record
+ * (commentary_model.event_detail records `text: ""` rather than deleting
+ * it), but the statement row must not show it as a byline-less comment. The
+ * drill panel (NumbersDrill.vue) reads the raw entry straight from the
+ * payload for its own display and its save token, independent of this
+ * function. */
 function commentaryFor(commentary, headingCode, now, timeZone) {
 	const entry = commentary[headingCode];
-	if (!entry) {
+	if (!entry || !entry.text) {
 		return null;
 	}
 	return {

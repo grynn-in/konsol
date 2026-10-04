@@ -41,6 +41,16 @@
  * replaces the heading's entry locally (from the endpoint's own return
  * value) and emits `saved` once, so Numbers.vue reloads the statement
  * exactly once rather than this panel re-deriving the new view itself.
+ *
+ * R41h/U3: a STALE refusal specifically (detected by the server's own
+ * sentence suffix, `isStaleCommentaryRefusal`) also emits `stale`, which
+ * Numbers.vue answers the same way as `saved` — a quiet reload. That
+ * reload's fresh `commentary` prop replaces `localCommentary`'s `modified`
+ * token (a `watch` on the prop, below), without touching the draft, so a
+ * second editor's next Save succeeds instead of repeating the same refusal
+ * forever. R41h/U7: a cleared record (blank `text`) still exists — the
+ * panel shows "No commentary yet.", never an empty byline, same as never
+ * having commented.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
@@ -72,7 +82,7 @@ const props = defineProps({
 	 * it, so Numbers.vue passes the raw entry rather than the view's. */
 	commentary: { type: Object, default: null },
 });
-const emit = defineEmits(["close", "saved"]);
+const emit = defineEmits(["close", "saved", "stale"]);
 
 const drill = reactive({ status: "loading", payload: null, error: null, busy: false });
 let seq = 0;
@@ -104,6 +114,22 @@ watch(
 	},
 );
 
+/** R41h/U3: a stale refusal (`saveCommentary`'s catch, below) emits
+ * `stale`, which Numbers.vue answers by reloading the statement (same as a
+ * successful save). When that reload lands, `commentary` carries the
+ * record's current `modified` token (someone else's later save) — this
+ * picks it up so the NEXT Save uses the live token instead of repeating
+ * the same refusal. Unlike the `props.heading` watch above, this is not a
+ * new heading, so `draftText` is left untouched: the typed text survives,
+ * exactly what the stale refusal already promised not to lose. */
+watch(
+	() => props.commentary,
+	(next) => {
+		localCommentary.value = next;
+		saveError.value = null;
+	},
+);
+
 const commentaryByline = computed(() => {
 	if (!localCommentary.value) return null;
 	if (!timeZone) return localCommentary.value.by;
@@ -113,6 +139,19 @@ const commentaryByline = computed(() => {
 function lines(text) {
 	const out = messageLines(text);
 	return out.length ? out : ["The server gave no reason."];
+}
+
+/** R41h/U3: the exact suffix of `commentary_model.stale_problem`'s refusal
+ * sentence (commentary_model.py:42 `_STALE_SENTENCE`, pinned at this exact
+ * wording by test_close_commentary_model.py:118
+ * "reload it and edit again."). Mirrors signoffMachine.js's own
+ * `isStaleRun`: a refusal this panel can recover from by reloading, rather
+ * than one the user must act on (a closed period, a heading no longer
+ * published). */
+const STALE_COMMENTARY_REFUSAL_SUFFIX = "reload it and edit again.";
+
+function isStaleCommentaryRefusal(message) {
+	return typeof message === "string" && message.endsWith(STALE_COMMENTARY_REFUSAL_SUFFIX);
 }
 
 /** The six-key body `commentary_api.save_commentary` names (M44), built by
@@ -136,6 +175,13 @@ async function saveCommentary() {
 		emit("saved");
 	} catch (e) {
 		saveError.value = e.message;
+		if (isStaleCommentaryRefusal(e.message)) {
+			// R41h/U3: tell Numbers.vue to reload so a fresh `modified` token
+			// comes back down through the `commentary` prop (the watch above
+			// picks it up) — the next Save then succeeds instead of repeating
+			// this same refusal. The typed draft is never touched here.
+			emit("stale");
+		}
 	} finally {
 		saveBusy.value = false;
 	}
@@ -228,7 +274,11 @@ function toggle(i) {
 			     commentary is read from the statement payload Numbers.vue
 			     already holds, not from get_drill. -->
 			<div class="mt-4 border-b border-outline-gray-2 pb-4">
-				<p v-if="localCommentary" class="rounded bg-surface-gray-1 p-2 text-sm text-ink-gray-8">
+				<!-- R41h/U7: a cleared record (text: "") still exists — this panel
+				     keeps it in localCommentary for its `modified` token — but it
+				     reads the same as never having commented: "No commentary yet.",
+				     never an empty byline. -->
+				<p v-if="localCommentary && localCommentary.text" class="rounded bg-surface-gray-1 p-2 text-sm text-ink-gray-8">
 					{{ localCommentary.text }}
 					<span class="mt-1 block text-xs text-ink-gray-5">{{ commentaryByline }}</span>
 				</p>
