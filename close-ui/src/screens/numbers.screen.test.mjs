@@ -248,3 +248,43 @@ test("statementView errors are never swallowed: caught, recorded, and shown — 
 	const js = script(read());
 	assert.match(js, /catch\s*\(\s*e\s*\)\s*\{[\s\S]*?viewError\.value\s*=\s*e\.message/);
 });
+
+// --- L42b: the not-included chip is readable --------------------------------
+
+test("L42b: notIncluded renders view.notIncluded.text plus the shown/full code list, never view.notIncluded itself as text", () => {
+	const tpl = template(read());
+	assert.match(tpl, /view\.notIncluded\.text/, "the count sentence is rendered");
+	assert.match(
+		tpl,
+		/notIncludedExpanded\s*\?\s*view\.notIncluded\.codes\s*:\s*view\.notIncluded\.shown/,
+		"the collapsed/expanded code list is picked by local state, not re-derived",
+	);
+	assert.doesNotMatch(
+		tpl,
+		/\{\{\s*view\.notIncluded\s*\}\}/,
+		"notIncluded is an object now (numbers.js L42b) — it is never interpolated directly",
+	);
+});
+
+test("L42b: a 'Show all N'/'Show fewer' toggle is offered, gated on view.notIncluded.moreText, local state only", () => {
+	const tpl = template(read());
+	assert.match(tpl, /view\.notIncluded\.moreText/, "the toggle/'and N more' line is gated on moreText");
+	assert.match(tpl, /Show all \$\{view\.notIncluded\.codes\.length\}/, "offers to show every code, not just the shown slice");
+	assert.match(tpl, /Show fewer/);
+	assert.match(tpl, /@click="toggleNotIncluded"/);
+});
+
+test("L42b: notIncludedExpanded is local component state only — a plain ref, never persisted, cleared on period change", () => {
+	const js = script(read());
+	assert.match(js, /const\s+notIncludedExpanded\s*=\s*ref\(false\)/);
+	assert.match(js, /function\s+toggleNotIncluded\s*\(\s*\)\s*\{[\s\S]*?notIncludedExpanded\.value\s*=\s*!notIncludedExpanded\.value/);
+	// The same watcher that clears chosenGroup/selectedHeading on a period
+	// change also clears this (D5: nothing survives a period change).
+	const watchBlock = js.slice(js.indexOf("watch("), js.indexOf("watch(") + 400);
+	assert.match(watchBlock, /notIncludedExpanded\.value\s*=\s*false/);
+});
+
+test("L42b: the out-of-scope scopeText is shown independently of the show-all toggle", () => {
+	const tpl = template(read());
+	assert.match(tpl, /view\.notIncluded\.scopeText/);
+});

@@ -61,7 +61,7 @@
  */
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
-import { FeatherIcon } from "frappe-ui";
+import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import NumbersDrill from "../components/NumbersDrill.vue";
 import { get } from "../api.js";
@@ -126,6 +126,15 @@ const chosenGroup = ref(null);
 //: chosenGroup — the panel belongs to this load, not to the address.
 const selectedHeading = ref(null);
 
+//: L42b: whether the "entities not included" chip shows every code or only
+//: the first view.notIncluded.shown (numbers.js's NOT_INCLUDED_LIMIT).
+//: Local state only (never stored, never the URL); cleared on every period
+//: change, same as chosenGroup/selectedHeading.
+const notIncludedExpanded = ref(false);
+function toggleNotIncluded() {
+	notIncludedExpanded.value = !notIncludedExpanded.value;
+}
+
 async function load({ quiet = false } = {}) {
 	if (!period.value) {
 		numbers.status = "error";
@@ -165,6 +174,7 @@ watch(
 		numbers.payload = null;
 		chosenGroup.value = null;
 		selectedHeading.value = null;
+		notIncludedExpanded.value = false;
 		load();
 	},
 	{ immediate: true },
@@ -341,7 +351,19 @@ function onCommentarySaved() {
 				</div>
 
 				<template v-else>
-					<p v-if="view.notIncluded" class="mb-3 text-xs text-ink-gray-5">{{ view.notIncluded }}</p>
+					<div v-if="view.notIncluded" class="mb-3 text-xs text-ink-gray-5">
+						<p>
+							{{ view.notIncluded.text }}:
+							{{ (notIncludedExpanded ? view.notIncluded.codes : view.notIncluded.shown).join(", ") }}
+							<span v-if="view.notIncluded.scopeText">, {{ view.notIncluded.scopeText }}</span>
+						</p>
+						<div v-if="view.notIncluded.moreText" class="mt-1 flex items-center gap-3">
+							<span v-if="!notIncludedExpanded">{{ view.notIncluded.moreText }}</span>
+							<Button variant="ghost" @click="toggleNotIncluded">
+								{{ notIncludedExpanded ? "Show fewer" : `Show all ${view.notIncluded.codes.length}` }}
+							</Button>
+						</div>
+					</div>
 					<p v-if="view.comparisonNote" class="mb-3 text-xs text-ink-gray-5">{{ view.comparisonNote }}</p>
 
 					<section v-for="tab in view.tabs" :key="tab.section" class="mb-6">

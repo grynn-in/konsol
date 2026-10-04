@@ -155,13 +155,36 @@ function buildState(payload) {
 	throw new Error(`Numbers: unknown payload state: ${payload.state}`);
 }
 
-/** W4-E10's "entities not included" chip text. `null` when nothing is
- * missing (count 0) — never an empty sentence. Only called on an `ok`
- * payload (statement_api.get_statement sets `not_included` exactly there,
- * always a `{count, entities, hidden}` dict, never null) — a null/missing
- * value there is a broken contract, not "nothing missing", so it throws
- * naming the key rather than silently reading as zero. */
-function notIncludedText(notIncluded) {
+/** L42b: how many not-included codes the chip shows before a "show all N"
+ * toggle takes over (L41 live: 265 codes rendered as one unreadable block).
+ * A display limit, not policy — `codes` below always carries the full
+ * list; this only decides `shown`'s length (mirrors signoff.js's own
+ * SECTION_LIMIT, B28). */
+const NOT_INCLUDED_LIMIT = 10;
+
+/** W4-E10's "entities not included" chip. `null` when nothing is missing
+ * (count 0) — never an empty sentence. Only called on an `ok` payload
+ * (statement_api.get_statement sets `not_included` exactly there, always a
+ * `{count, entities, hidden}` dict, never null) — a null/missing value
+ * there is a broken contract, not "nothing missing", so it throws naming
+ * the key rather than silently reading as zero.
+ *
+ * Returns `{text, codes, shown, moreText, scopeText}`:
+ * - `text`: the count sentence alone, no codes ("2 entities in scope are
+ *   not in these numbers").
+ * - `codes`: every in-scope-but-not-included entity code, never truncated
+ *   — the screen's "show all" toggle reads this, held only as local
+ *   component state (D5: never browser storage).
+ * - `shown`: the first `NOT_INCLUDED_LIMIT` codes, what renders collapsed.
+ * - `moreText`: "and N more" for the codes beyond the limit, null when
+ *   `codes.length <= NOT_INCLUDED_LIMIT` — the toggle itself only appears
+ *   when this is set.
+ * - `scopeText`: "and N outside your scope" from `notIncluded.hidden` —
+ *   entities the caller cannot see at all, never counted in `codes` or
+ *   `moreText` and never affected by the toggle (it is not a display
+ *   limit, the caller has no access to those codes at any size).
+ */
+function notIncludedView(notIncluded) {
 	if (!notIncluded) {
 		throw new Error("Numbers: ok payload has no not_included.");
 	}
@@ -170,12 +193,16 @@ function notIncludedText(notIncluded) {
 	}
 	const noun = notIncluded.count === 1 ? "entity" : "entities";
 	const verb = notIncluded.count === 1 ? "is" : "are";
-	const names = notIncluded.entities && notIncluded.entities.length ? `: ${notIncluded.entities.join(", ")}` : "";
-	let text = `${notIncluded.count} ${noun} in scope ${verb} not in these numbers${names}`;
-	if (notIncluded.hidden) {
-		text += `, and ${notIncluded.hidden} outside your scope`;
-	}
-	return text;
+	const codes = notIncluded.entities || [];
+	const shown = codes.slice(0, NOT_INCLUDED_LIMIT);
+	const hiddenByLimit = Math.max(0, codes.length - NOT_INCLUDED_LIMIT);
+	return {
+		text: `${notIncluded.count} ${noun} in scope ${verb} not in these numbers`,
+		codes,
+		shown,
+		moreText: hiddenByLimit ? `and ${hiddenByLimit} more` : null,
+		scopeText: notIncluded.hidden ? `and ${notIncluded.hidden} outside your scope` : null,
+	};
 }
 
 const INCLUDE_KINDS = new Set(["cta", "current_year_result"]);
@@ -401,9 +428,11 @@ export function statementView(payload, now, timeZone) {
 		// `not_included` is only ever set (to a real `{count, ...}` dict, on
 		// `ok`; it stays `None` on every other state (statement_api.py's
 		// default), which is a legitimate "not computed yet", not a broken
-		// contract — so this is gated on `isOk`, and `notIncludedText` itself
-		// throws if an `ok` payload's value is missing (U8).
-		notIncluded: isOk ? notIncludedText(payload.not_included) : null,
+		// contract — so this is gated on `isOk`, and `notIncludedView` itself
+		// throws if an `ok` payload's value is missing (U8). L42b: an object
+		// (`{text, codes, shown, moreText, scopeText}`), not a flattened
+		// string — see notIncludedView's own doc comment.
+		notIncluded: isOk ? notIncludedView(payload.not_included) : null,
 		gapText: payload.gap ? payload.gap.message : null,
 		tabs,
 		comparisonNote,
