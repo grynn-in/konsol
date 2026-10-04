@@ -493,6 +493,7 @@ ALLOWED = {
     # patterns and the insert check below still apply to them.
     "close/self_approval.py",
     "close/cancel_event.py",
+    "close/data_change_hook.py",
     "hooks.py",
     # C03t (E5-P16): reads ic_sent_back events for the Intercompany screen.
     "close/ic_api.py",

@@ -125,6 +125,31 @@ def _load(period_rows=(), period_of=None, entity_of=None, table_exists=True,
         module = _by_path("data_change_hook_under_test", HOOK_PY)
     finally:
         _restore(saved)
+
+    # on_submit/on_cancel import frappe, fiscal_calendar and close_event
+    # lazily, at CALL time, not at module load: re-apply the stubs around
+    # every call (pattern copied from test_close_cancel_event.py's record()
+    # wrapper), then restore, so no other test sees them.
+    real_on_submit, real_on_cancel = module.on_submit, module.on_cancel
+
+    def on_submit(doc, method=None):
+        now = {n: sys.modules.get(n) for n in mods}
+        sys.modules.update(mods)
+        try:
+            return real_on_submit(doc, method)
+        finally:
+            _restore(now)
+
+    def on_cancel(doc, method=None):
+        now = {n: sys.modules.get(n) for n in mods}
+        sys.modules.update(mods)
+        try:
+            return real_on_cancel(doc, method)
+        finally:
+            _restore(now)
+
+    module.on_submit = on_submit
+    module.on_cancel = on_cancel
     return module, frappe
 
 

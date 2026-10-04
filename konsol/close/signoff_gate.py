@@ -341,6 +341,23 @@ def _mark_latest_signed(affected, affected_by, entity=None):
     return marked
 
 
+def _regular_periods_from(target, first):
+    """Every declared Regular period at or after ``target`` (a ``_key()``),
+    and at or after ``first`` (the first close key, or None) when it is
+    declared. Shared by a reopen (every later period, whatever its signoff
+    state — ``_mark_latest_signed`` only marks the signed ones) and a data
+    change (#305-W4-4 AMENDED 4 Oct: a cumulative balance sheet means a
+    change also affects every later signed period, not only the changed
+    one)."""
+    return {
+        _key(r["fiscal_year"], r["fiscal_period"])
+        for r in fiscal_calendar.fiscal_period_rows()
+        if r.get("period_type") == REGULAR
+        and _key(r["fiscal_year"], r["fiscal_period"]) >= target
+        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
+    }
+
+
 def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason, user):
     """Mark the latest signed run of the reopened Regular period
     (``fiscal_year``, ``fiscal_period``) and of every Regular period after it
@@ -348,13 +365,7 @@ def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason
     request commits or rolls back."""
     target = _key(fiscal_year, fiscal_period)
     first = _first_close()
-    affected = {
-        _key(r["fiscal_year"], r["fiscal_period"])
-        for r in fiscal_calendar.fiscal_period_rows()
-        if r.get("period_type") == REGULAR
-        and _key(r["fiscal_year"], r["fiscal_period"]) >= target
-        and (first is None or _key(r["fiscal_year"], r["fiscal_period"]) >= first)
-    }
+    affected = _regular_periods_from(target, first)
     affected_by = "FY%d %s reopened on %s by %s: %s" % (
         target[0], period_code, frappe.utils.nowdate(), user, reason)
     return _mark_latest_signed(affected, affected_by)
@@ -386,21 +397,35 @@ def data_change(fiscal_year, fiscal_period):
 
 def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     """Record that the period's data changed (``text``, by ``user``, now) on
-    its EPM Fiscal Year Period row, and mark the period's latest signed run
-    "Re-sign Needed". Returns the marked run names.
+    its EPM Fiscal Year Period row, and mark the changed period's AND every
+    later Regular period's latest signed run "Re-sign Needed" (#305-W4-4
+    AMENDED 4 Oct, Deepak "all ★", #305 issuecomment-5978983396: a balance
+    sheet is cumulative, so a change to one period's data moves every later
+    period's balances too — not only the changed period's). Returns the
+    marked run names, one ``signoff_voided`` Close Event each
+    (``_mark_latest_signed``).
 
     A direct row update (``db.set_value`` on the child row), so no EPM Fiscal
     Year validate runs. No commit: the caller's request commits or rolls back.
-    A history period (before the first close) or a non-Regular period is
-    recorded but nothing is marked; with no first close declared, a Regular
-    period is marked (the mark errs toward re-signing, as on a reopen).
+    Only the changed period's own row gets the ``text`` / ``data_change``
+    fields — that is the period whose data actually changed; a later
+    period's balances move as a consequence, through its own query, not
+    because its own data changed. A history period (before the first close)
+    or a non-Regular period is recorded but nothing is marked, for the
+    changed period or any later one; with no first close declared, every
+    later Regular period is marked (the mark errs toward re-signing, as on a
+    reopen — ``_regular_periods_from``). Shared by every caller: an approval
+    doctype's submit/cancel (S42) and the existing TB Submission / TB
+    Exception callers inherit the later-period marking with no change on
+    their side.
 
     ``entity`` (S1, E2-6): the entity whose data changed, when the caller can
     name one (a TB submit or cancel, a TB Exception, an amount basis set on
-    a TB). It is passed through to the ``signoff_voided`` Close Event, so a
-    reader scoped to other entities does not see why this period's signature
-    stopped counting. Blank (the default) when no single entity caused the
-    change.
+    a TB, or a NUMBER_DRIVING approval, S42). It is passed through to every
+    ``signoff_voided`` Close Event this call writes (the changed period's and
+    every later one's), so a reader scoped to other entities does not see
+    why a signature stopped counting. Blank (the default) when no single
+    entity caused the change.
     """
     key = _key(fiscal_year, fiscal_period)
     row = _period_row(key, ("name", "period_type"))
@@ -416,5 +441,6 @@ def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     if first is not None and key < first:
         return []
     affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
-    return _mark_latest_signed({key}, affected_by, entity=entity)
+    affected = _regular_periods_from(key, first)
+    return _mark_latest_signed(affected, affected_by, entity=entity)
 
