@@ -84,7 +84,7 @@
    "fieldtype": "Link",
    "options": "ISO Currency",
    "label": "Functional Currency",
-   "description": "The currency this entity keeps its books in. Not the group's reporting currency \u2014 translation depends on the difference. Consolidation translates from this; left blank, it falls back to the ERP's accounting currency, and an entity with no connector cannot consolidate until it is set."
+   "description": "The currency this entity keeps its books in. Not the group's reporting currency \u2014 translation depends on the difference. Consolidation translates from this. Required to load a trial balance: while it is blank, every trial balance for this entity is refused by name, and the file's declared currency must equal it. Trial-balance intake never falls back to the ERP's accounting currency (konsol#252, decided 5 Oct 2026)."
   },
   {
    "fieldname": "country",

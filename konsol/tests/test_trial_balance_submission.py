@@ -53,7 +53,7 @@ _spec.loader.exec_module(_m)
 # in test_close_signoff_wiring.py; here it is a no-op.
 _m._record_data_change = lambda *a, **k: None
 
-GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
+GOOD = "main_account,debit,credit,currency\n1010,100.50,0,EUR\n2010,0,100.50,EUR\n"
 
 
 def test_parse_good_file():
@@ -61,13 +61,13 @@ def test_parse_good_file():
     assert len(rows) == 2
     # "line" is the physical CSV line the row came from (konsol#305 A38).
     assert rows[0] == {"main_account": "1010", "debit": 100.5,
-                       "credit": 0.0, "description": "", "partner_data_area_id": "",
+                       "credit": 0.0, "currency": "EUR", "description": "", "partner_data_area_id": "",
                        "amount_basis": "", "line": 2}
 
 
 def test_parse_accepts_description_and_case_insensitive_header():
     rows = _m.parse_tb_csv(
-        "Main_Account,DEBIT,Credit,Description\n1010,5,0,Cash\n2010,0,5,AP\n")
+        "Main_Account,DEBIT,Credit,Currency,Description\n1010,5,0,EUR,Cash\n2010,0,5,EUR,AP\n")
     assert rows[0]["description"] == "Cash"
 
 
@@ -81,16 +81,16 @@ def test_parse_rejects_missing_columns():
 
 def test_parse_rejects_non_numeric_amount():
     try:
-        _m.parse_tb_csv("main_account,debit,credit\n1010,abc,0\n")
+        _m.parse_tb_csv("main_account,debit,credit,currency\n1010,abc,0,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Line 2" in str(e)
 
 
 def test_parse_rejects_blank_account_and_empty_file():
-    for bad in ("main_account,debit,credit\n,1,0\n",
+    for bad in ("main_account,debit,credit,currency\n,1,0,EUR\n",
                 "",
-                "main_account,debit,credit\n"):
+                "main_account,debit,credit,currency\n"):
         try:
             _m.parse_tb_csv(bad)
             assert False, f"expected ValueError for {bad!r}"
@@ -99,7 +99,7 @@ def test_parse_rejects_blank_account_and_empty_file():
 
 
 def test_parse_treats_blank_amounts_as_zero():
-    rows = _m.parse_tb_csv("main_account,debit,credit\n1010,,\n2010,0,0\n")
+    rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,,,EUR\n2010,0,0,EUR\n")
     assert rows[0]["debit"] == 0.0 and rows[0]["credit"] == 0.0
 
 
@@ -154,7 +154,7 @@ def test_sql_str_escapes_quotes_and_backslashes():
 def test_parse_rejects_nan_and_inf():
     for bad in ("nan", "inf", "-inf"):
         try:
-            _m.parse_tb_csv(f"main_account,debit,credit\n1010,{bad},0\n")
+            _m.parse_tb_csv(f"main_account,debit,credit,currency\n1010,{bad},0,EUR\n")
             assert False, f"expected ValueError for {bad}"
         except ValueError as e:
             assert "finite" in str(e)
@@ -162,41 +162,41 @@ def test_parse_rejects_nan_and_inf():
 
 def test_parse_rejects_surplus_cells():
     try:
-        _m.parse_tb_csv("main_account,debit,credit\n1010,1,0,stray,extra\n")
+        _m.parse_tb_csv("main_account,debit,credit,currency\n1010,1,0,stray,extra,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         assert "more cells" in str(e)
 
 
 def test_parse_rounds_to_cents_so_stored_equals_validated():
-    rows = _m.parse_tb_csv("main_account,debit,credit\n1010,10.005,0\n2010,0,10.004\n")
+    rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,10.005,0,EUR\n2010,0,10.004,EUR\n")
     assert rows[0]["debit"] == 10.0 or rows[0]["debit"] == 10.01  # banker's rounding either way
     assert rows[1]["credit"] == 10.0
     # the point: balance is judged on the ROUNDED values — the same numbers
     # the warehouse will store — so post-rounding drift past the tolerance
     # fails here, not later in a dbt test
     errs = _m.validate_tb_rows(_m.parse_tb_csv(
-        "main_account,debit,credit\n1010,10.019,0\n2010,0,10.001\n"))
+        "main_account,debit,credit,currency\n1010,10.019,0,EUR\n2010,0,10.001,EUR\n"))
     assert any("do not equal" in e for e in errs)  # 10.02 vs 10.00 -> 0.02 > 0.01
 
 
 # --- konsol#159: the intercompany partner -----------------------------------
 
-IC = "main_account,debit,credit,description,partner_data_area_id\n"
+IC = "main_account,debit,credit,description,partner_data_area_id,currency\n"
 
 
 def test_parse_reads_the_partner_and_its_aliases():
-    rows = _m.parse_tb_csv(IC + "4030,0,100,IC sales,ZZB\n1010,100,0,,\n")
+    rows = _m.parse_tb_csv(IC + "4030,0,100,IC sales,ZZB,EUR\n1010,100,0,,,EUR\n")
     assert rows[0]["partner_data_area_id"] == "ZZB"
     assert rows[1]["partner_data_area_id"] == ""
     for alias in ("partner", "Partner_Entity", "PARTNER_ID", "counterparty"):
-        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias}\n4030,0,5, ZZB \n1010,5,0,\n")
+        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias},currency\n4030,0,5, ZZB ,EUR\n1010,5,0,,EUR\n")
         assert rows[0]["partner_data_area_id"] == "ZZB", alias
 
 
 def test_parse_refuses_two_partner_columns():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,partner,partner_data_area_id\n4030,0,5,ZZB,ZZB\n")
+        _m.parse_tb_csv("main_account,debit,credit,partner,partner_data_area_id,currency\n4030,0,5,ZZB,ZZB,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Two partner columns" in str(e)
@@ -543,11 +543,11 @@ CLOSING = "Period-end balance"
 
 
 def test_parse_reads_the_optional_amount_basis_column_and_its_aliases():
-    rows = _m.parse_tb_csv("main_account,debit,credit,amount_basis\n1010,5,0,Period-end balance\n2010,0,5,\n")
+    rows = _m.parse_tb_csv("main_account,debit,credit,amount_basis,currency\n1010,5,0,Period-end balance,EUR\n2010,0,5,,EUR\n")
     assert rows[0]["amount_basis"] == CLOSING
     assert rows[1]["amount_basis"] == ""  # a blank cell is "not given", the form decides
     for alias in ("basis", "Basis", "AMOUNT_BASIS", "amount basis"):
-        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias}\n1010,5,0, period movement \n2010,0,5,x\n")
+        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias},currency\n1010,5,0, period movement ,EUR\n2010,0,5,x,EUR\n")
         assert rows[0]["amount_basis"] == "period movement", alias  # as written; canonical() judges it
         assert rows[1]["amount_basis"] == "x", alias
     # no column at all: every row says ""
@@ -556,7 +556,7 @@ def test_parse_reads_the_optional_amount_basis_column_and_its_aliases():
 
 def test_parse_refuses_two_amount_basis_columns():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,basis,amount_basis\n1010,5,0,a,b\n")
+        _m.parse_tb_csv("main_account,debit,credit,basis,amount_basis,currency\n1010,5,0,a,b,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Two amount_basis columns" in str(e)
@@ -848,7 +848,7 @@ def test_list_view_offers_set_amount_basis():
 
 def test_parse_refuses_an_unrecognised_column_by_name():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n")
+        _m.parse_tb_csv("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         assert "dim_cost_center" in str(e), str(e)
@@ -856,7 +856,7 @@ def test_parse_refuses_an_unrecognised_column_by_name():
 
 def test_parse_names_every_unrecognised_column_at_once():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,Region,notes\n1010,5,0,EMEA,x\n")
+        _m.parse_tb_csv("main_account,debit,credit,Region,notes,currency\n1010,5,0,EMEA,x,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         msg = str(e)
@@ -868,16 +868,16 @@ def test_parse_still_accepts_source_upload():
     entity-period, so the single parser must go on accepting and ignoring it —
     refusing it would break the bulk path feeding its own output back in."""
     rows = _m.parse_tb_csv(
-        "main_account,debit,credit,description,partner_data_area_id,source_upload\n"
-        "1010,5,0,,,ZZ-UPLOAD\n")
+        "main_account,debit,credit,description,partner_data_area_id,source_upload,currency\n"
+        "1010,5,0,,,ZZ-UPLOAD,EUR\n")
     assert rows[0]["main_account"] == "1010"
     assert "source_upload" not in rows[0]
 
 
 def test_parse_still_accepts_every_documented_column():
     rows = _m.parse_tb_csv(
-        "Main_Account,Debit,Credit,Description,Counterparty,Amount Basis\n"
-        "1010,5,0,Cash,AMUS,Period movement\n")
+        "Main_Account,Debit,Credit,Currency,Description,Counterparty,Amount Basis\n"
+        "1010,5,0,EUR,Cash,AMUS,Period movement\n")
     assert rows[0]["partner_data_area_id"] == "AMUS"
     assert rows[0]["description"] == "Cash"
 
@@ -897,7 +897,7 @@ _bulk = importlib.util.module_from_spec(_BULK)
 _BULK.loader.exec_module(_bulk)
 
 _BULK_HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account",
-                "debit", "credit"]
+                "debit", "credit", "currency"]
 
 
 def declared(name, status="Published", in_trial_balance=1):
@@ -915,8 +915,8 @@ def _parse_raises(text, declared_dimensions=()):
 
 def test_parse_accepts_a_declared_dimension_column_and_carries_its_value():
     rows = _m.parse_tb_csv(
-        "main_account,debit,credit,dim_cost_center,dim_department\n"
-        "1010,5,0,CC100,D7\n",
+        "main_account,debit,credit,dim_cost_center,dim_department,currency\n"
+        "1010,5,0,CC100,D7,EUR\n",
         [declared("dim_cost_center"), declared("dim_department")])
     assert rows[0]["dim_cost_center"] == "CC100"
     assert rows[0]["dim_department"] == "D7"
@@ -924,14 +924,14 @@ def test_parse_accepts_a_declared_dimension_column_and_carries_its_value():
 
 def test_parse_accepts_a_blank_dimension_cell():
     rows = _m.parse_tb_csv(
-        "main_account,debit,credit,dim_cost_center\n1010,5,0,\n2010,0,5,CC100\n",
+        "main_account,debit,credit,dim_cost_center,currency\n1010,5,0,,EUR\n2010,0,5,CC100,EUR\n",
         [declared("dim_cost_center")])
     assert rows[0]["dim_cost_center"] == ""
     assert rows[1]["dim_cost_center"] == "CC100"
 
 
 def test_parse_refuses_an_undeclared_dimension_column_as_undeclared():
-    msg = _parse_raises("main_account,debit,credit,dim_widget\n1010,5,0,W1\n",
+    msg = _parse_raises("main_account,debit,credit,dim_widget,currency\n1010,5,0,W1,EUR\n",
                         [declared("dim_cost_center")])
     assert "dim_widget" in msg, msg
     assert "not declared" in msg.lower(), msg
@@ -939,7 +939,7 @@ def test_parse_refuses_an_undeclared_dimension_column_as_undeclared():
 
 
 def test_parse_refuses_a_flag_off_dimension_column_saying_the_flag_is_off():
-    msg = _parse_raises("main_account,debit,credit,dim_project\n1010,5,0,P1\n",
+    msg = _parse_raises("main_account,debit,credit,dim_project,currency\n1010,5,0,P1,EUR\n",
                         [declared("dim_project", in_trial_balance=0)])
     assert "dim_project" in msg, msg
     assert "in_trial_balance" in msg, msg
@@ -948,7 +948,7 @@ def test_parse_refuses_a_flag_off_dimension_column_saying_the_flag_is_off():
 
 def test_parse_refuses_a_draft_dimension_column_as_not_published():
     msg = _parse_raises(
-        "main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n",
+        "main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n",
         [declared("dim_cost_center", status="Draft")])
     assert "dim_cost_center" in msg, msg
     assert "not published" in msg.lower(), msg
@@ -957,7 +957,7 @@ def test_parse_refuses_a_draft_dimension_column_as_not_published():
 
 def test_parse_reports_a_bad_dimension_header_and_a_bad_ordinary_one_together():
     msg = _parse_raises(
-        "main_account,debit,credit,dim_widget,notes\n1010,5,0,W1,x\n",
+        "main_account,debit,credit,dim_widget,notes,currency\n1010,5,0,W1,x,EUR\n",
         [declared("dim_cost_center")])
     assert "dim_widget" in msg, msg
     assert "notes" in msg, msg
@@ -970,8 +970,8 @@ def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser()
     parsers is a dimension lost without a word."""
     dims = [declared("dim_cost_center"), declared("dim_department")]
     table = [_BULK_HEADER + ["description", "dim_cost_center", "dim_department"],
-             ["AMDE", "2025", "12", "1010", "100", "0", "cash", "CC100", "D7"],
-             ["AMDE", "2025", "12", "2010", "0", "100", "", "", "D9"]]
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "cash", "CC100", "D7"],
+             ["AMDE", "2025", "12", "2010", "0", "100", "EUR", "", "", "D9"]]
     rows = _bulk.split_table(table, dims)[("AMDE", 2025, 12)]
     text = _bulk.group_csv(rows, source="ZZ-UPLOAD")
     back = _m.parse_tb_csv(text, dims)
@@ -981,10 +981,10 @@ def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser()
 
 def test_parse_without_declared_dimensions_is_unchanged():
     """Every existing caller passes nothing and gets exactly what it got."""
-    msg = _parse_raises("main_account,debit,credit,dim_cost_center\n1010,5,0,CC1\n")
+    msg = _parse_raises("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n")
     assert "dim_cost_center" in msg, msg
     rows = _m.parse_tb_csv(GOOD)
-    assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0,
+    assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0, "currency": "EUR",
                        "description": "", "partner_data_area_id": "",
                        "amount_basis": "", "line": 2}
 
@@ -998,8 +998,8 @@ def test_parse_without_declared_dimensions_is_unchanged():
 
 def test_parse_refuses_a_repeated_dimension_column_naming_the_dimension():
     msg = _parse_raises(
-        "main_account,debit,credit,dim_cost_center,dim_cost_center\n"
-        "1010,100,0,CC100,CC999\n",
+        "main_account,debit,credit,dim_cost_center,dim_cost_center,currency\n"
+        "1010,100,0,CC100,CC999,EUR\n",
         [declared("dim_cost_center")])
     assert "dim_cost_center" in msg, msg
     assert "keep one" in msg, msg
@@ -1008,7 +1008,7 @@ def test_parse_refuses_a_repeated_dimension_column_naming_the_dimension():
 def test_parse_names_every_repeated_dimension_in_one_refusal():
     msg = _parse_raises(
         "main_account,debit,credit,dim_cost_center,dim_department,"
-        "dim_cost_center,dim_department\n1010,100,0,CC1,D1,CC2,D2\n",
+        "dim_cost_center,dim_department,currency\n1010,100,0,CC1,D1,CC2,D2,EUR\n",
         [declared("dim_cost_center"), declared("dim_department")])
     assert "dim_cost_center" in msg, msg
     assert "dim_department" in msg, msg
@@ -1016,8 +1016,8 @@ def test_parse_names_every_repeated_dimension_in_one_refusal():
 
 def test_parse_still_loads_two_different_dimensions_each_appearing_once():
     rows = _m.parse_tb_csv(
-        "main_account,debit,credit,dim_cost_center,dim_department\n"
-        "1010,100,0,CC100,D7\n",
+        "main_account,debit,credit,dim_cost_center,dim_department,currency\n"
+        "1010,100,0,CC100,D7,EUR\n",
         [declared("dim_cost_center"), declared("dim_department")])
     assert rows[0]["dim_cost_center"] == "CC100"
     assert rows[0]["dim_department"] == "D7"
@@ -1025,7 +1025,7 @@ def test_parse_still_loads_two_different_dimensions_each_appearing_once():
 
 def test_parse_refuses_a_repeated_undeclared_dimension_as_undeclared():
     msg = _parse_raises(
-        "main_account,debit,credit,dim_widget,dim_widget\n1010,100,0,W1,W2\n",
+        "main_account,debit,credit,dim_widget,dim_widget,currency\n1010,100,0,W1,W2,EUR\n",
         [declared("dim_cost_center")])
     assert "dim_widget" in msg, msg
     assert "not declared" in msg.lower(), msg
@@ -1034,15 +1034,15 @@ def test_parse_refuses_a_repeated_undeclared_dimension_as_undeclared():
 
 def test_parse_partner_keep_one_refusal_is_unchanged():
     msg = _parse_raises(
-        "main_account,debit,credit,partner_data_area_id,partner\n"
-        "1010,100,0,AMUS,AMUK\n")
+        "main_account,debit,credit,partner_data_area_id,partner,currency\n"
+        "1010,100,0,AMUS,AMUK,EUR\n")
     assert "Two partner columns" in msg, msg
 
 
 def test_parse_amount_basis_keep_one_refusal_is_unchanged():
     msg = _parse_raises(
-        "main_account,debit,credit,amount_basis,basis\n"
-        "1010,100,0,Actual,Actual\n")
+        "main_account,debit,credit,amount_basis,basis,currency\n"
+        "1010,100,0,Actual,Actual,EUR\n")
     assert "Two amount_basis columns" in msg, msg
 
 
@@ -1070,8 +1070,8 @@ def _dup_errors(errs):
 
 def test_one_account_split_across_two_values_of_a_declared_dimension_is_accepted_and_lands():
     rows = _m.parse_tb_csv(
-        f"main_account,debit,credit,{_SPLIT_DIM}\n"
-        "1000,700,0,ZZNORTH\n1000,250,0,ZZSOUTH\n2010,0,950,\n",
+        f"main_account,debit,credit,{_SPLIT_DIM},currency\n"
+        "1000,700,0,ZZNORTH,EUR\n1000,250,0,ZZSOUTH,EUR\n2010,0,950,,EUR\n",
         [declared(_SPLIT_DIM)])
     assert _m.validate_tb_rows(rows) == []
     insert = _land(rows, _SPLIT_COLUMNS)[-1]
@@ -1082,8 +1082,8 @@ def test_one_account_split_across_two_values_of_a_declared_dimension_is_accepted
 
 def test_same_account_same_dimension_values_same_partner_is_still_refused():
     rows = _m.parse_tb_csv(
-        f"main_account,debit,credit,partner_data_area_id,{_SPLIT_DIM}\n"
-        "1000,700,0,ZZB,ZZNORTH\n1000,250,0,ZZB,ZZNORTH\n1000,1,0,ZZC,ZZNORTH\n2010,0,951,,\n",
+        f"main_account,debit,credit,partner_data_area_id,{_SPLIT_DIM},currency\n"
+        "1000,700,0,ZZB,ZZNORTH,EUR\n1000,250,0,ZZB,ZZNORTH,EUR\n1000,1,0,ZZC,ZZNORTH,EUR\n2010,0,951,,,EUR\n",
         [declared(_SPLIT_DIM)])
     dup = _dup_errors(_m.validate_tb_rows(rows))
     assert len(dup) == 1, dup
@@ -1093,7 +1093,7 @@ def test_same_account_same_dimension_values_same_partner_is_still_refused():
 
 def test_the_duplicate_refusal_names_the_key_it_used_including_the_dimensions():
     rows = _m.parse_tb_csv(
-        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,5,0,ZZNORTH\n1000,5,0,ZZNORTH\n2010,0,10,\n",
+        f"main_account,debit,credit,{_SPLIT_DIM},currency\n1000,5,0,ZZNORTH,EUR\n1000,5,0,ZZNORTH,EUR\n2010,0,10,,EUR\n",
         [declared(_SPLIT_DIM)])
     dup = _dup_errors(_m.validate_tb_rows(rows))
     assert len(dup) == 1 and _SPLIT_DIM in dup[0], dup
@@ -1105,19 +1105,19 @@ def test_the_duplicate_refusal_names_the_key_it_used_including_the_dimensions():
 
 def test_a_blank_dimension_value_and_a_filled_one_on_the_same_account_are_distinct():
     rows = _m.parse_tb_csv(
-        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,100,0,\n1000,50,0,ZZNORTH\n2010,0,150,\n",
+        f"main_account,debit,credit,{_SPLIT_DIM},currency\n1000,100,0,,EUR\n1000,50,0,ZZNORTH,EUR\n2010,0,150,,EUR\n",
         [declared(_SPLIT_DIM)])
     assert _m.validate_tb_rows(rows) == []
     # ...but two blanks on one account are one slice, and refused.
     rows = _m.parse_tb_csv(
-        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,100,0,\n1000,50,0,\n2010,0,150,\n",
+        f"main_account,debit,credit,{_SPLIT_DIM},currency\n1000,100,0,,EUR\n1000,50,0,,EUR\n2010,0,150,,EUR\n",
         [declared(_SPLIT_DIM)])
     assert len(_dup_errors(_m.validate_tb_rows(rows))) == 1
 
 
 def test_two_dimensions_split_a_row_only_when_the_whole_tuple_differs():
     decl = [declared(_SPLIT_DIM), declared(_OTHER_DIM)]
-    head = f"main_account,debit,credit,{_SPLIT_DIM},{_OTHER_DIM}\n"
+    head = f"main_account,debit,credit,{_SPLIT_DIM},{_OTHER_DIM},currency\n"
     ok = _m.parse_tb_csv(head + "1000,5,0,ZZNORTH,ZZC1\n1000,5,0,ZZNORTH,ZZC2\n2010,0,10,,\n", decl)
     assert _m.validate_tb_rows(ok) == []
     bad = _m.parse_tb_csv(head + "1000,5,0,ZZNORTH,ZZC1\n1000,5,0,ZZNORTH,ZZC1\n2010,0,10,,\n", decl)
@@ -1128,15 +1128,15 @@ def test_two_dimensions_split_a_row_only_when_the_whole_tuple_differs():
 def test_an_undeclared_dimension_cannot_be_used_to_dodge_the_duplicate_check():
     """A column the site has not declared is refused at parse on both intakes,
     so no row ever reaches validate_tb_rows carrying it as a split key."""
-    msg = _parse_raises("main_account,debit,credit,dim_zz_undeclared\n"
-                        "1000,5,0,ZZA\n1000,5,0,ZZB\n2010,0,10,\n",
+    msg = _parse_raises("main_account,debit,credit,dim_zz_undeclared,currency\n"
+                        "1000,5,0,ZZA,EUR\n1000,5,0,ZZB,EUR\n2010,0,10,,EUR\n",
                         [declared(_SPLIT_DIM)])
     assert "dim_zz_undeclared" in msg and "not declared" in msg.lower(), msg
     try:
         _bulk.split_table([_BULK_HEADER + ["dim_zz_undeclared"],
-                           ["ZZA", "2025", "6", "1000", "5", "0", "ZZA"],
-                           ["ZZA", "2025", "6", "1000", "5", "0", "ZZB"],
-                           ["ZZA", "2025", "6", "2010", "0", "10", ""]],
+                           ["ZZA", "2025", "6", "1000", "5", "0", "EUR", "ZZA"],
+                           ["ZZA", "2025", "6", "1000", "5", "0", "EUR", "ZZB"],
+                           ["ZZA", "2025", "6", "2010", "0", "10", "EUR", ""]],
                           [declared(_SPLIT_DIM)])
         raise AssertionError("expected the bulk intake to refuse the undeclared column")
     except ValueError as e:
@@ -1150,16 +1150,17 @@ def _bulk_report(table, decl):
     report = _bulk.check_group(
         key, rows, known_accounts=None, visible=True, leaf=True,
         period={"code": "P06", "type": "Regular", "status": "Open"},
-        postable_types={"Regular"}, existing=None, validate_rows=_m.validate_tb_rows)
+        postable_types={"Regular"}, existing=None, validate_rows=_m.validate_tb_rows,
+        functional_currency="EUR")
     return rows, report
 
 
 def test_both_intakes_accept_the_split_and_refuse_the_same_duplicate():
     decl = [declared(_SPLIT_DIM)]
     split = [_BULK_HEADER + [_SPLIT_DIM],
-             ["ZZA", "2025", "6", "1000", "700", "0", "ZZNORTH"],
-             ["ZZA", "2025", "6", "1000", "250", "0", "ZZSOUTH"],
-             ["ZZA", "2025", "6", "2010", "0", "950", ""]]
+             ["ZZA", "2025", "6", "1000", "700", "0", "EUR", "ZZNORTH"],
+             ["ZZA", "2025", "6", "1000", "250", "0", "EUR", "ZZSOUTH"],
+             ["ZZA", "2025", "6", "2010", "0", "950", "EUR", ""]]
     rows, report = _bulk_report(split, decl)
     assert report["ok"] and report["errors"] == [], report
     # The bulk load feeds group_csv back through the single parser and
@@ -1170,11 +1171,11 @@ def test_both_intakes_accept_the_split_and_refuse_the_same_duplicate():
     insert = _land(again, _SPLIT_COLUMNS)[-1]
     assert "'ZZNORTH')" in insert and "'ZZSOUTH')" in insert, insert
 
-    dup = split[:2] + [["ZZA", "2025", "6", "1000", "250", "0", "ZZNORTH"],
-                       ["ZZA", "2025", "6", "2010", "0", "950", ""]]
+    dup = split[:2] + [["ZZA", "2025", "6", "1000", "250", "0", "EUR", "ZZNORTH"],
+                       ["ZZA", "2025", "6", "2010", "0", "950", "EUR", ""]]
     _, report = _bulk_report(dup, decl)
     single = _dup_errors(_m.validate_tb_rows(_m.parse_tb_csv(
-        f"main_account,debit,credit,{_SPLIT_DIM}\n1000,700,0,ZZNORTH\n1000,250,0,ZZNORTH\n2010,0,950,\n",
+        f"main_account,debit,credit,{_SPLIT_DIM},currency\n1000,700,0,ZZNORTH,EUR\n1000,250,0,ZZNORTH,EUR\n2010,0,950,,EUR\n",
         decl)))
     assert not report["ok"], report
     assert _dup_errors(report["errors"]) == single and len(single) == 1, (report, single)

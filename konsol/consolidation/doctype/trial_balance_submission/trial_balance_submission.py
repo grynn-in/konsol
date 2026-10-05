@@ -18,9 +18,14 @@ transactions, so correctness comes from ordering, not atomicity:
      gives this for free), never an edit of landed rows.
 
 CSV contract (header required, case-insensitive):
-    main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]
-Amounts are in the entity's accounting currency. One row per account,
-partner and declared dimension values (konsol#255).
+    main_account,debit,credit,currency[,description][,partner_data_area_id][,amount_basis]
+One row per account, partner and declared dimension values (konsol#255).
+
+currency (konsol#252) is the ISO code of the currency the row's amounts are in,
+on every row. The file declares it; konsol never assumes it. validate() refuses
+the file unless every row gives the same currency and it is the Entity's
+Functional Currency (konsol.tb_currency_model), and keeps the declared code on
+the document's ``currency`` field. A file without the column is refused.
 
 partner_data_area_id (konsol#159; `partner`, `partner_entity`, `partner_id`
 and `counterparty` are accepted too) is the OTHER group entity a row is held
@@ -54,6 +59,9 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
+from konsol.tb_currency_model import (
+    COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems, declared_currency,
+)
 from konsol.tb_dimension import declared_dimensions
 from konsol.tb_dimension_model import (
     accepted_dimension_columns, dimension_problems, is_dimension_column,
@@ -66,7 +74,10 @@ REAP_AFTER_DAYS = 7
 #: sum(debit) and sum(credit) may differ by at most this much (currency units).
 BALANCE_TOLERANCE = 0.01
 
-_REQUIRED_COLUMNS = ("main_account", "debit", "credit")
+_REQUIRED_COLUMNS = ("main_account", "debit", "credit", CURRENCY)
+
+#: The header as the refusals spell it.
+_HEADER_HELP = "main_account,debit,credit,currency[,description][,partner_data_area_id][,amount_basis]"
 
 #: The intercompany partner entity on a row (konsol#159).
 PARTNER = "partner_data_area_id"
@@ -96,9 +107,12 @@ def _column(header):
 def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
-    Returns a list of {main_account, debit, credit, description,
+    Returns a list of {main_account, debit, credit, currency, description,
     partner_data_area_id, amount_basis, line}; the partner and the basis are
-    '' when the file has no such column or the cell is blank. The basis is
+    '' when the file has no such column or the cell is blank. The currency
+    column is required (konsol#252) and returned as written, stripped:
+    currency_problems() judges it, since a blank or a mismatch is a refusal
+    of the entity-period, not a structural fault. The basis is
     returned as written: validate() judges it (konsol.tb_basis_model). ``line``
     is the physical line the row came from (``reader.line_num``, konsol#305
     A38): csv.DictReader skips blank lines and a quoted field can span lines,
@@ -125,17 +139,20 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     accepted when they landed, and the close screens must stay able to show
     them. No header refusal applies (a repeated column keeps the last value),
     and the caller passes no declared dimensions, so a read depends only on
-    the file. Intake never passes it (a test holds that).
+    the file. Intake never passes it (a test holds that). A stored file
+    need not carry the currency column: files that landed before konsol#252
+    have none, and their rows read back with currency ''.
     """
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise ValueError("The file is empty — expected a CSV header row")
     headers = [_column(h) for h in reader.fieldnames]
-    missing = [c for c in _REQUIRED_COLUMNS if c not in headers]
+    missing = [c for c in _REQUIRED_COLUMNS if c not in headers
+               and not (stored and c == CURRENCY)]
     if missing:
         raise ValueError(
-            f"Missing column(s) {', '.join(missing)} — the header must be "
-            "main_account,debit,credit[,description][,partner_data_area_id][,amount_basis]"
+            f"Missing column(s) {', '.join(missing)} — the header must be {_HEADER_HELP}"
+            + (f". {MISSING_CURRENCY_HELP}" if CURRENCY in missing else "")
         )
     # An unrecognised header is refused, not ignored (konsol#255). This used
     # to check only that _REQUIRED_COLUMNS were present, so every other column
@@ -156,8 +173,7 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} — the "
-            "header may be main_account,debit,credit[,description]"
-            "[,partner_data_area_id][,amount_basis]"
+            f"header may be {_HEADER_HELP}"
         )
     problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
     if problems and not stored:
@@ -166,6 +182,10 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
         # Read back, not re-judged: no header refusal applies to a file that
         # already landed. A repeated column keeps csv.DictReader's last value.
         pass
+    elif headers.count(CURRENCY) > 1:
+        # csv.DictReader keeps the last of two same-named columns, so the
+        # first would never be judged (konsol#252).
+        raise ValueError("Two currency columns: keep one")
     elif headers.count(PARTNER) > 1:
         raise ValueError(
             "Two partner columns: keep one of partner_data_area_id, "
@@ -237,6 +257,7 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
             "main_account": account,
             "debit": round(debit, 2),
             "credit": round(credit, 2),
+            CURRENCY: item.get(CURRENCY, ""),
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
             BASIS: item.get(BASIS, ""),
@@ -682,6 +703,13 @@ class TrialBalanceSubmission(Document):
         errors.extend(basis_problems(self.amount_basis, [
             (lineno, r[BASIS]) for lineno, r in enumerate(rows, start=2) if r[BASIS]
         ]))
+        # konsol#252: the file declares its currency and it must be the
+        # Entity's Functional Currency. An entity without one is refused, not
+        # skipped. The bulk upload runs the same check per entity-period
+        # (tb_bulk_model.check_group) and the close app's check and submit
+        # (konsol.close.tb_api) before anything is written.
+        declared = [(r.get("line"), r[CURRENCY]) for r in rows]
+        errors.extend(currency_problems(self.data_area_id, self._functional_currency(), declared))
 
         self.row_count = len(rows)
         self.total_debit = round(sum(r["debit"] for r in rows), 2)
@@ -692,6 +720,10 @@ class TrialBalanceSubmission(Document):
             # message IS the feedback.
             frappe.throw("Trial balance failed validation:\n" + "\n".join(errors))
         self.validation_status = "Valid"
+        # Kept on the document so the declaration is auditable after the fact,
+        # whatever the Entity says later. Not landed in epm_raw: the read side
+        # is konsol#253's.
+        self.currency = declared_currency(declared)
         # A warning, not an error (decision 2): kept on the document so the
         # submitter and the reviewer both see it.
         self.validation_message = partnerless_warning(
@@ -850,6 +882,10 @@ class TrialBalanceSubmission(Document):
             return parse_tb_csv(content, declared_dimensions())
         except ValueError as e:
             frappe.throw(f"Could not read the trial balance file: {e}")
+
+    def _functional_currency(self):
+        """The Entity's Functional Currency, '' when it has none (konsol#252)."""
+        return frappe.db.get_value("Entity", self.data_area_id, "functional_currency") or ""
 
     @staticmethod
     def _partner_entities(rows):

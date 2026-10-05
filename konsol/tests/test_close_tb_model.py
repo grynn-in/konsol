@@ -90,7 +90,7 @@ def _problems(result, line):
 # --- per-row problems ------------------------------------------------------------
 
 def test_good_file_is_ok_with_row_shape_and_totals():
-    r = _check(_rows("main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n1010,100.50,0,EUR\n2010,0,100.50,EUR\n"))
     assert r["ok"] is True
     assert r["file_problems"] == []
     assert r["rows"][0] == {"line": 2, "main_account": "1010", "partner": "",
@@ -104,7 +104,7 @@ def test_good_file_is_ok_with_row_shape_and_totals():
 def test_problem_line_survives_a_blank_line_in_the_file():
     """csv.DictReader skips blank lines, so a row problem after one must name
     the file's own line 4, not the row-count-based line 3."""
-    r = _check(_rows("main_account,debit,credit\n1010,1,0\n\n4001,0,1\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n1010,1,0,EUR\n\n4001,0,1,EUR\n"))
     assert [row["line"] for row in r["rows"]] == [2, 4]  # line 3 was blank; no row for it
     (p,) = _problems(r, 4)
     assert p["code"] == "UNKNOWN_ACCOUNT"
@@ -113,8 +113,8 @@ def test_problem_line_survives_a_blank_line_in_the_file():
 
 def test_duplicate_message_names_the_real_line_across_a_blank_line():
     r = _check(_rows(
-        "main_account,debit,credit,partner_data_area_id\n"
-        "1010,10,0,ZZB\n\n1010,10,0,ZZB\n2010,0,20,\n"
+        "main_account,debit,credit,partner_data_area_id,currency\n"
+        "1010,10,0,ZZB,EUR\n\n1010,10,0,ZZB,EUR\n2010,0,20,,EUR\n"
     ))
     assert [row["line"] for row in r["rows"]] == [2, 4, 5]
     assert "line 4" in _problems(r, 2)[0]["message"]
@@ -125,7 +125,7 @@ def test_parse_tb_csvs_own_errors_name_the_real_line_after_a_blank_line():
     """Failure path: the structural errors parse_tb_csv raises itself must use
     the same physical-line counting as the rows it returns."""
     try:
-        C.parse_tb_csv("main_account,debit,credit\n1010,1,0\n\n,0,1\n")
+        C.parse_tb_csv("main_account,debit,credit,currency\n1010,1,0,EUR\n\n,0,1,EUR\n")
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Line 4: main_account is blank" in str(e)
@@ -141,7 +141,7 @@ def test_a_row_with_no_line_key_falls_back_to_index_plus_two():
 
 
 def test_unknown_account_suggests_the_closest_posting_account():
-    r = _check(_rows("main_account,debit,credit\n4001,10,0\n1010,0,10\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n4001,10,0,EUR\n1010,0,10,EUR\n"))
     assert r["ok"] is False
     (p,) = _problems(r, 2)
     assert p["code"] == "UNKNOWN_ACCOUNT"
@@ -151,7 +151,7 @@ def test_unknown_account_suggests_the_closest_posting_account():
 
 
 def test_unknown_account_with_nothing_close_has_no_suggestion():
-    r = _check(_rows("main_account,debit,credit\nXYZ9,10,0\n1010,0,10\n"))
+    r = _check(_rows("main_account,debit,credit,currency\nXYZ9,10,0,EUR\n1010,0,10,EUR\n"))
     (p,) = _problems(r, 2)
     assert p["code"] == "UNKNOWN_ACCOUNT"
     assert p["suggestion"] == ""
@@ -168,7 +168,7 @@ def test_unknown_account_with_nothing_close_has_no_suggestion():
 
 def test_unknown_account_tie_break_prefers_the_longest_shared_prefix():
     chart = {c: _acct() for c in ("1000", "1010", "1100", "7100")}
-    r = _check(_rows("main_account,debit,credit\n1001,10,0\n1000,0,10\n"), chart=chart)
+    r = _check(_rows("main_account,debit,credit,currency\n1001,10,0,EUR\n1000,0,10,EUR\n"), chart=chart)
     (p,) = _problems(r, 2)
     assert p["code"] == "UNKNOWN_ACCOUNT"
     assert p["suggestion"] == "Did you mean 1000?"
@@ -176,7 +176,7 @@ def test_unknown_account_tie_break_prefers_the_longest_shared_prefix():
 
 def test_unknown_account_tie_break_prefers_the_longest_shared_prefix_over_the_last_string():
     chart = {c: _acct() for c in ("4010", "9400")}
-    r = _check(_rows("main_account,debit,credit\n4001,10,0\n4010,0,10\n"), chart=chart)
+    r = _check(_rows("main_account,debit,credit,currency\n4001,10,0,EUR\n4010,0,10,EUR\n"), chart=chart)
     (p,) = _problems(r, 2)
     assert p["code"] == "UNKNOWN_ACCOUNT"
     assert p["suggestion"] == "Did you mean 4010?"
@@ -185,13 +185,13 @@ def test_unknown_account_tie_break_prefers_the_longest_shared_prefix_over_the_la
 def test_unknown_account_suggestion_unchanged_with_a_single_near_match():
     """A11's own case is unaffected: a single candidate close enough needs no
     tie-break."""
-    r = _check(_rows("main_account,debit,credit\n4001,10,0\n1010,0,10\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n4001,10,0,EUR\n1010,0,10,EUR\n"))
     (p,) = _problems(r, 2)
     assert p["suggestion"] == "Did you mean 4010?"
 
 
 def test_heading_account_is_a_row_problem():
-    r = _check(_rows("main_account,debit,credit\n1000,10,0\n1010,0,10\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n1000,10,0,EUR\n1010,0,10,EUR\n"))
     (p,) = _problems(r, 2)
     assert p["code"] == "HEADING_ACCOUNT"
     assert "1000 is a heading in the group chart" in p["message"]
@@ -199,7 +199,7 @@ def test_heading_account_is_a_row_problem():
 
 
 def test_account_closed_for_posting_is_a_row_problem():
-    r = _check(_rows("main_account,debit,credit\n3010,10,0\n1010,0,10\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n3010,10,0,EUR\n1010,0,10,EUR\n"))
     (p,) = _problems(r, 2)
     assert p["code"] == "CLOSED_ACCOUNT"
     assert "3010" in p["message"] and "not open for posting" in p["message"]
@@ -207,7 +207,7 @@ def test_account_closed_for_posting_is_a_row_problem():
 
 
 def test_negative_debit_is_a_row_problem_with_the_opposite_column_suggested():
-    r = _check(_rows("main_account,debit,credit\n1010,-10,0\n2010,-10,0\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n1010,-10,0,EUR\n2010,-10,0,EUR\n"))
     (p,) = _problems(r, 2)
     assert p["code"] == "NEGATIVE_AMOUNT"
     assert "opposite column" in p["message"]
@@ -217,8 +217,8 @@ def test_negative_debit_is_a_row_problem_with_the_opposite_column_suggested():
 
 def test_duplicate_pair_flags_every_line_of_the_pair():
     r = _check(_rows(
-        "main_account,debit,credit,partner_data_area_id\n"
-        "1010,10,0,ZZB\n2010,0,20,\n1010,10,0,ZZB\n"
+        "main_account,debit,credit,partner_data_area_id,currency\n"
+        "1010,10,0,ZZB,EUR\n2010,0,20,,EUR\n1010,10,0,ZZB,EUR\n"
     ))
     assert [p["code"] for p in _problems(r, 2)] == ["DUPLICATE_ROW"]
     assert [p["code"] for p in _problems(r, 4)] == ["DUPLICATE_ROW"]
@@ -229,15 +229,15 @@ def test_duplicate_pair_flags_every_line_of_the_pair():
 
 def test_same_account_with_different_partners_is_not_a_duplicate():
     r = _check(_rows(
-        "main_account,debit,credit,partner_data_area_id\n"
-        "1010,10,0,ZZB\n1010,10,0,\n2010,0,20,\n"
+        "main_account,debit,credit,partner_data_area_id,currency\n"
+        "1010,10,0,ZZB,EUR\n1010,10,0,,EUR\n2010,0,20,,EUR\n"
     ))
     assert r["ok"] is True
 
 
 def test_partner_equal_to_the_entity_is_a_row_problem():
     r = _check(_rows(
-        "main_account,debit,credit,partner_data_area_id\n1010,10,0,zza\n2010,0,10,\n"
+        "main_account,debit,credit,partner_data_area_id,currency\n1010,10,0,zza,EUR\n2010,0,10,,EUR\n"
     ))
     (p,) = _problems(r, 2)
     assert p["code"] == "SELF_PARTNER"
@@ -247,7 +247,7 @@ def test_partner_equal_to_the_entity_is_a_row_problem():
 
 def test_unknown_partner_with_a_case_only_match_suggests_it():
     r = _check(_rows(
-        "main_account,debit,credit,partner_data_area_id\n1010,10,0,zzb\n2010,0,10,\n"
+        "main_account,debit,credit,partner_data_area_id,currency\n1010,10,0,zzb,EUR\n2010,0,10,,EUR\n"
     ))
     (p,) = _problems(r, 2)
     assert p["code"] == "UNKNOWN_PARTNER"
@@ -257,7 +257,7 @@ def test_unknown_partner_with_a_case_only_match_suggests_it():
 
 def test_unknown_partner_with_no_match_has_no_suggestion():
     r = _check(_rows(
-        "main_account,debit,credit,partner_data_area_id\n1010,10,0,QQQ\n2010,0,10,\n"
+        "main_account,debit,credit,partner_data_area_id,currency\n1010,10,0,QQQ,EUR\n2010,0,10,,EUR\n"
     ))
     (p,) = _problems(r, 2)
     assert p["code"] == "UNKNOWN_PARTNER"
@@ -265,14 +265,14 @@ def test_unknown_partner_with_no_match_has_no_suggestion():
 
 
 def test_partner_checks_are_skipped_when_not_given():
-    rows = _rows("main_account,debit,credit,partner_data_area_id\n1010,10,0,QQQ\n2010,0,10,\n")
+    rows = _rows("main_account,debit,credit,partner_data_area_id,currency\n1010,10,0,QQQ,EUR\n2010,0,10,,EUR\n")
     assert M.check_rows(rows, CHART, None, None, BASIS, TOL)["ok"] is True
 
 
 def test_basis_cell_contradicting_the_form_is_a_row_problem():
     r = _check(_rows(
-        "main_account,debit,credit,amount_basis\n"
-        "1010,10,0,Period movement\n2010,0,10,Period-end balance\n"
+        "main_account,debit,credit,amount_basis,currency\n"
+        "1010,10,0,Period movement,EUR\n2010,0,10,Period-end balance,EUR\n"
     ))
     assert _problems(r, 2) == []
     (p,) = _problems(r, 3)
@@ -282,7 +282,7 @@ def test_basis_cell_contradicting_the_form_is_a_row_problem():
 
 
 def test_missing_form_basis_is_a_file_problem_not_repeated_per_row():
-    r = _check(_rows("main_account,debit,credit,amount_basis\n1010,10,0,Period movement\n2010,0,10,\n"),
+    r = _check(_rows("main_account,debit,credit,amount_basis,currency\n1010,10,0,Period movement,EUR\n2010,0,10,,EUR\n"),
                form_basis="")
     assert any(p.startswith("Amount Basis is required") for p in r["file_problems"])
     assert _problems(r, 2) == [] and _problems(r, 3) == []
@@ -292,7 +292,7 @@ def test_missing_form_basis_is_a_file_problem_not_repeated_per_row():
 # --- file-level problems -----------------------------------------------------------
 
 def test_imbalance_is_a_file_problem_with_totals():
-    r = _check(_rows("main_account,debit,credit\n1010,100,0\n2010,0,90\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,90,EUR\n"))
     assert r["totals"] == {"debit": 100.0, "credit": 90.0, "difference": 10.0}
     assert len(r["file_problems"]) == 1
     assert "Debits (100.00) do not equal credits (90.00)" in r["file_problems"][0]
@@ -304,7 +304,7 @@ def test_imbalance_within_tolerance_is_ok():
     # 100.01 - 100 is 0.010000000000005 in raw floats, just over 0.01 (A37):
     # the comparison must round to cents first, since parse_tb_csv already
     # rounds every amount to cents. Default tolerance (0.01), no dodge.
-    rows = _rows("main_account,debit,credit\n1010,100.01,0\n2010,0,100\n")
+    rows = _rows("main_account,debit,credit,currency\n1010,100.01,0,EUR\n2010,0,100,EUR\n")
     r = _check(rows)
     assert r["ok"] is True
     assert r["totals"]["difference"] == 0.01
@@ -313,7 +313,7 @@ def test_imbalance_within_tolerance_is_ok():
 
 def test_imbalance_just_over_tolerance_is_still_refused():
     """Failure path: 0.02 is not the tolerance; it must still be refused."""
-    r = _check(_rows("main_account,debit,credit\n1010,100.02,0\n2010,0,100\n"))
+    r = _check(_rows("main_account,debit,credit,currency\n1010,100.02,0,EUR\n2010,0,100,EUR\n"))
     assert r["ok"] is False
     assert r["totals"]["difference"] == 0.02
 
@@ -355,7 +355,7 @@ def test_a_declared_tolerance_other_than_a_cent_is_exact_too():
 def test_no_chart_is_the_no_chart_file_problem():
     """Failure path: no published chart is one refusal, not every account listed."""
     for chart in (None, {}):
-        r = _check(_rows("main_account,debit,credit\n1010,10,0\n2010,0,10\n"), chart=chart)
+        r = _check(_rows("main_account,debit,credit,currency\n1010,10,0,EUR\n2010,0,10,EUR\n"), chart=chart)
         assert r["file_problems"] == [C.NO_CHART]
         assert all(row["problems"] == [] for row in r["rows"])
         assert r["ok"] is False
@@ -372,15 +372,15 @@ def test_tolerance_constant_matches_the_controller():
 # --- identity with validate_tb_rows (Problems 1, decision P1, A35) -------------------
 
 PARITY = {
-    "good": "main_account,debit,credit\n1010,100,0\n2010,0,100\n",
-    "unknown account": "main_account,debit,credit\n4001,100,0\n2010,0,100\n",
-    "heading": "main_account,debit,credit\n1000,100,0\n2010,0,100\n",
-    "closed": "main_account,debit,credit\n3010,100,0\n2010,0,100\n",
-    "negative": "main_account,debit,credit\n1010,-100,0\n2010,-100,0\n",
-    "duplicate": "main_account,debit,credit\n1010,50,0\n1010,50,0\n2010,0,100\n",
-    "self partner": ("main_account,debit,credit,partner_data_area_id\n"
-                     "1010,100,0,ZZA\n2010,0,100,\n"),
-    "imbalance": "main_account,debit,credit\n1010,100,0\n2010,0,50\n",
+    "good": "main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,100,EUR\n",
+    "unknown account": "main_account,debit,credit,currency\n4001,100,0,EUR\n2010,0,100,EUR\n",
+    "heading": "main_account,debit,credit,currency\n1000,100,0,EUR\n2010,0,100,EUR\n",
+    "closed": "main_account,debit,credit,currency\n3010,100,0,EUR\n2010,0,100,EUR\n",
+    "negative": "main_account,debit,credit,currency\n1010,-100,0,EUR\n2010,-100,0,EUR\n",
+    "duplicate": "main_account,debit,credit,currency\n1010,50,0,EUR\n1010,50,0,EUR\n2010,0,100,EUR\n",
+    "self partner": ("main_account,debit,credit,partner_data_area_id,currency\n"
+                     "1010,100,0,ZZA,EUR\n2010,0,100,,EUR\n"),
+    "imbalance": "main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,50,EUR\n",
 }
 
 

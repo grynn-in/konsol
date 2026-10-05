@@ -155,6 +155,11 @@ def _check(table, form_basis=""):
     visible = set(frappe.get_list("Entity", filters={"name": ["in", entities]}, pluck="name",
                                   limit_page_length=0))
     leaf = set(frappe.get_all("Entity", filters={"name": ["in", entities], "is_group": 0}, pluck="name"))
+    # konsol#252: each entity-period's declared currency is checked against
+    # its entity's Functional Currency; a blank one is refused, not skipped.
+    functional = {e.name: e.functional_currency or "" for e in frappe.get_all(
+        "Entity", filters={"name": ["in", entities]}, fields=["name", "functional_currency"],
+        limit_page_length=0)}
     periods = {(y, p): _period_fact(y, p) for (_, y, p) in groups}
     postable_types = period_status.postable_types()
     existing = {}
@@ -179,6 +184,7 @@ def _check(table, form_basis=""):
         item = M.check_group(key, rows, known_accounts=None, visible=key[0] in visible, leaf=key[0] in leaf,
                              period=periods.get((key[1], key[2])), postable_types=postable_types,
                              existing=found.name if found else None, validate_rows=validate_rows,
+                             functional_currency=functional.get(key[0], ""),
                              known_entities=partners,
                              warnings=[partnerless_warning(partnerless)] if partnerless else [],
                              partnerless_ic_rows=len(partnerless))

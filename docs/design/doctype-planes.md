@@ -398,6 +398,10 @@ operating doctypes plus the control gate that releases it.
                 │   movement / Period-end balance — NO default   │
                 │   (konsol#201; EPM Settings holds a site-wide  │
                 │    default, copied onto new docs only)         │
+                │  currency: declared by the file's currency     │
+                │   column on every row; must equal the Entity's │
+                │   Functional Currency or it is refused         │
+                │   (konsol#252); kept on the doc, not in raw    │
                 │  → epm_raw.trial_balance_submissions           │
                 │  → epm_raw.trial_balance_submission_control    │
                 │     (batch_id claim = the commit point)        │

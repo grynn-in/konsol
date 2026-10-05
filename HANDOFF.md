@@ -234,6 +234,7 @@ comment and listed here.
 
 | date | decision | record |
 |---|---|---|
+| 5 Oct | **An Entity with no Functional Currency is refused at TB intake**; no ERP fallback. | konsol#252 (issuecomment-5988966288) |
 | 18 Sep | **The DAG orchestrator is kept and layered on the governed build.** A multi-step close *requests* Build Approvals; Build Approval stays the only thing that invokes dbt. `Pipeline Run` splits into `Close Run`/`Close Step` (orchestration) and `Build Run`/`Build Step` (renamed). Deleting the DAG, making it primary, and running both in parallel were all rejected. | konsol#258 |
 | 18 Sep | **Materiality floor is group-declared, defaulting to half the currency's minor unit.** Its own field on the group root, not an overload of `ic_difference_tolerance`. A flat 0.005 default was rejected. | konsolidat#209 |
 | 18 Sep | **Partial-period treatment is declared per group** — `partial_period_treatment` = Whole period / Pro-rate by days / Stub trial balance, required once the group has a Business Combination, no default. Pro-rating for everyone was rejected: it assumes even accrual, invisibly. | konsolidat#171 |
@@ -664,7 +665,7 @@ Chart → `silver_main_accounts`: TB Submission validates accounts against it
 (`_chart_accounts`). Then Entities with `functional_currency` →
 Consolidation Group tree → Ownership Periods → FX → fiscal calendar and periods
 for 2010–2025 (raw FiscalCalendarYears had 1 row) → **Trial Balance
-Submissions**: one per entity-year, CSV `main_account,debit,credit`, sign split,
+Submissions**: one per entity-year, CSV `main_account,debit,credit,currency`, sign split,
 **559** of them (the entity-years with a TB), scripted from **09**, and only once
 they balance.
 
@@ -729,7 +730,7 @@ and one file per entity is not workable. **This is the path for loading
 Grok's corrected workbook** (sheet 09, local currency) once it balances.
 
 - One CSV or Excel file (first sheet): `data_area_id, fiscal_year,
-  fiscal_period, main_account, debit, credit[, description]`; `entity`,
+  fiscal_period, main_account, debit, credit, currency[, description]`; `entity`,
   `year`, `period`, `account` are accepted too. Amounts in each entity's own
   currency, both columns positive, periods 1–12.
 - konsol-exec **/konsol-exec/uploads** (navigator "Upload trial balances", and
