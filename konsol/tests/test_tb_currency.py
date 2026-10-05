@@ -187,17 +187,26 @@ class _Refused(Exception):
     pass
 
 
-def _validate(csv_text, functional_currency, entity="ZZA"):
+#: konsol#180: each currency's ISO Currency.minor_unit, as a site holds it.
+MINOR_UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
+
+
+def _validate(csv_text, functional_currency, entity="ZZA", minor_units=None):
     """Run validate() end to end on a draft for ``entity`` whose file is
     ``csv_text`` and whose Entity's Functional Currency is ``functional_currency``.
-    Every gate before the file is stubbed to pass. Returns the document."""
+    ``minor_units`` is each ISO Currency's minor_unit (MINOR_UNITS unless a test
+    says otherwise; konsol#180). Every gate before the file is stubbed to pass.
+    Returns the document."""
     c = _controller()
     reads = []
+    units = MINOR_UNITS if minor_units is None else minor_units
 
     def get_value(doctype, filters=None, fieldname=None, **k):
         reads.append((doctype, filters, fieldname))
         if doctype == "Entity" and fieldname == "functional_currency":
             return functional_currency
+        if doctype == "ISO Currency" and fieldname == "minor_unit":
+            return units.get(filters)
         return None   # no other submission, no TB Exception
 
     def throw(msg, *a, **k):
@@ -229,9 +238,9 @@ def _validate(csv_text, functional_currency, entity="ZZA"):
             sys.modules["konsol.group_chart"] = saved
 
 
-def _validate_refusal(csv_text, functional_currency, entity="ZZA"):
+def _validate_refusal(csv_text, functional_currency, entity="ZZA", minor_units=None):
     try:
-        _validate(csv_text, functional_currency, entity)
+        _validate(csv_text, functional_currency, entity, minor_units)
     except _Refused as e:
         return str(e)
     raise AssertionError("validate() accepted the file")
@@ -321,7 +330,8 @@ def _group(b, rows, functional_currency):
     return b.check_group(("ZZA", 2099, 1), rows, known_accounts=None, visible=True, leaf=True,
                          period={"code": "P01", "type": "Regular", "status": "Open"},
                          postable_types={"Regular"}, existing=None,
-                         validate_rows=lambda rows, **kw: [], functional_currency=functional_currency)
+                         validate_rows=lambda rows, **kw: [], functional_currency=functional_currency,
+                         minor_unit=MINOR_UNITS.get(functional_currency))
 
 
 def _rows(*currencies):
@@ -360,7 +370,8 @@ def test_the_bulk_check_has_no_default_functional_currency():
     try:
         b.check_group(("ZZA", 2099, 1), _rows("EUR"), known_accounts=None, visible=True, leaf=True,
                       period={"code": "P01", "type": "Regular", "status": "Open"},
-                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [])
+                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [],
+                      minor_unit=2)
     except TypeError as e:
         assert "functional_currency" in str(e), e
     else:

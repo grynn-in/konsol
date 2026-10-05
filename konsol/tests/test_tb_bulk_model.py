@@ -87,7 +87,8 @@ def test_group_csv_is_the_single_upload_contract():
 def _check(**over):
     facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True,
                  period={"code": "P12", "type": "Regular", "status": "Open"}, postable_types={"Regular"},
-                 existing=None, validate_rows=lambda rows, **kw: [], functional_currency="EUR")
+                 existing=None, validate_rows=lambda rows, **kw: [], functional_currency="EUR",
+                 minor_unit=2)
     facts.update(over)
     rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0, "currency": "EUR"},
             {"main_account": "2010", "debit": 0.0, "credit": 5.0, "currency": "EUR"}]
@@ -116,7 +117,7 @@ def test_closed_period_refused():
 def test_undeclared_period_refused():
     r = M.check_group(("AMDE", 2025, 14), [], known_accounts=set(), visible=True, leaf=True, period=None,
                       postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [],
-                      functional_currency="EUR")
+                      functional_currency="EUR", minor_unit=2)
     assert r["errors"][0] == "FY2025 P14 is not declared"
 
 
@@ -261,6 +262,10 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
             return list(entities)
         if doctype == "Trial Balance Submission":
             return []
+        if doctype == "ISO Currency":
+            # konsol#180: each currency's minor unit, as a site holds it.
+            units = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
+            return [types.SimpleNamespace(name=c, minor_unit=u) for c, u in units.items()]
         raise AssertionError(doctype)
 
     frappe.get_list, frappe.get_all = get_list, get_all
