@@ -335,7 +335,9 @@ def _group(b, rows, functional_currency):
 
 
 def _rows(*currencies):
-    return [{"main_account": "1010", "debit": 5.0, "credit": 0.0, "currency": cur} for cur in currencies]
+    # Each row balances itself, so only the currency is in question (konsol#180
+    # judges the balance once the currency is good).
+    return [{"main_account": "1010", "debit": 5.0, "credit": 5.0, "currency": cur} for cur in currencies]
 
 
 def test_the_bulk_check_accepts_a_match():

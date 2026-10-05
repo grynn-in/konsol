@@ -8,7 +8,8 @@ data row is line 2 when there is no blank line or multi-line quoted field
 to drift it.
 
 ``check_rows`` reports per line, with a suggestion where one can be made, so a
-screen can point at the line to fix. The rules and their wording mirror
+screen can point at the line to fix. It totals the balance but does not judge
+it: konsol.tb_balance_model does, after the declared currency (konsol#180). The rules and their wording mirror
 ``validate_tb_rows`` and ``chart_errors``, which report the same rules per file;
 a parity test holds the two together until A35 rebuilds ``validate_tb_rows``
 on top of this module (Problems 1, decision P1).
@@ -31,15 +32,6 @@ def _load_sibling(name, filename):
 _basis = _load_sibling("konsol_close_tb_basis_model", "tb_basis_model.py")
 #: konsol#255: which dim_* columns a row carries. Pure (imports only ``re``).
 _dims = _load_sibling("konsol_close_tb_dimension_model", "tb_dimension_model.py")
-
-#: sum(debit) and sum(credit) may differ by at most this much (currency units).
-#: The caller passes the tolerance; this mirrors the controller's constant, and a
-#: test asserts the two are equal.
-BALANCE_TOLERANCE = 0.01
-
-#: Float noise only, far below a cent: the balance comparison ignores differences
-#: from the tolerance smaller than this (konsol#305 A60).
-_FLOAT_EPSILON = 1e-9
 
 #: konsol#182: a site with no Published Main Account has no chart to post to.
 #: The same text as trial_balance_submission.NO_CHART (a test asserts it).
@@ -180,7 +172,7 @@ def row_grain(dims):
     return f"account, partner and {', '.join(dims)}" if dims else "account and partner"
 
 
-def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
+def check_rows(rows, chart, entity, known_entities, form_basis):
     """Per-line problems, file problems and totals for parsed trial-balance rows.
 
     ``chart`` is ``group_chart.chart_accounts()`` ({code: {"is_group", "is_posting", …}});
@@ -189,6 +181,10 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
     ``known_entities`` the non-group entities a partner may be (None skips it).
     ``form_basis`` is the declared amount basis. Returns
     ``{ok, rows:[{line, main_account, partner, debit, credit, problems}], file_problems, totals}``.
+
+    The balance is totalled here but not judged (konsol#180): it is judged
+    exactly, in the declared currency's minor unit and only after the
+    currency, by konsol.tb_balance_model, which every intake calls.
     """
     file_problems = []
     if not chart:
@@ -243,19 +239,9 @@ def check_rows(rows, chart, entity, known_entities, form_basis, tolerance):
             out["dimensions"] = {d: r.get(d) or "" for d in dims}
         out_rows.append(out)
 
+    # Shown, not judged: the balance is konsol.tb_balance_model's (konsol#180).
     total_debit = sum(r["debit"] for r in rows)
     total_credit = sum(r["credit"] for r in rows)
-    # Compare exactly, allowing only float noise: 100.01 - 100 is
-    # 0.010000000000005, which is still one cent and within 0.01. Rounding to
-    # cents first would loosen the rule (0.014 would pass 0.01), so it is not
-    # done (konsol#305 A60).
-    if abs(total_debit - total_credit) - tolerance > _FLOAT_EPSILON:
-        file_problems.append(
-            f"Debits ({total_debit:,.2f}) do not equal credits "
-            f"({total_credit:,.2f}); difference "
-            f"{total_debit - total_credit:,.2f} exceeds the "
-            f"{tolerance} tolerance"
-        )
 
     ok = not file_problems and not any(row["problems"] for row in out_rows)
     return {

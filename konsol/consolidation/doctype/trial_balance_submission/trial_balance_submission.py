@@ -59,8 +59,9 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
+from konsol.tb_balance_model import currency_and_balance_problems
 from konsol.tb_currency_model import (
-    COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems, declared_currency,
+    COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, declared_currency,
 )
 from konsol.tb_dimension import declared_dimensions
 from konsol.tb_dimension_model import (
@@ -70,9 +71,6 @@ from konsol.tb_dimension_model import (
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
 REAP_AFTER_DAYS = 7
-
-#: sum(debit) and sum(credit) may differ by at most this much (currency units).
-BALANCE_TOLERANCE = 0.01
 
 _REQUIRED_COLUMNS = ("main_account", "debit", "credit", CURRENCY)
 
@@ -332,12 +330,11 @@ def chart_errors(rows, chart):
     No chart at all is one refusal, not every account listed. A heading, and an
     account closed for posting, are refused with the reason. The rules are
     check_rows' (konsol#305 A35)."""
-    result = check_rows(rows, chart, None, None, None, BALANCE_TOLERANCE)
+    result = check_rows(rows, chart, None, None, None)
     return _chart_messages(result, chart)
 
 
-def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
-                     entity=None, known_entities=None, chart=None):
+def validate_tb_rows(rows, known_accounts=None, entity=None, known_entities=None, chart=None):
     """Business validation over parsed rows. Pure; host-testable.
 
     Returns a list of error strings — empty means valid. known_accounts is the
@@ -355,13 +352,15 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
 
     konsol#305 A35 (decision P1): every rule is konsol.close.tb_model.check_rows';
     this function only words its per-line problems per file. The amount basis
-    is left to validate() (basis_problems against the form).
+    is left to validate() (basis_problems against the form), and the balance
+    to konsol.tb_balance_model, which judges it exactly in the declared
+    currency after the currency itself (konsol#180).
     """
     judged = chart
     if chart is None and known_accounts is not None:
         # A bare list of codes is a chart of posting accounts.
         judged = {code: {"is_group": 0, "is_posting": 1} for code in known_accounts}
-    result = check_rows(rows, judged, entity, known_entities, None, tolerance)
+    result = check_rows(rows, judged, entity, known_entities, None)
     errors = []
 
     # One row per landed key (konsol#255): the rule and its key are
@@ -403,8 +402,8 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
             "the opposite column instead of using a sign"
         )
 
-    # The balance, and any file problem check_rows gains later. NO_CHART is
-    # worded with the chart below; the form's basis is validate()'s.
+    # Any file problem check_rows gains later. NO_CHART is worded with the
+    # chart below; the form's basis is validate()'s.
     not_here = {NO_CHART, *basis_problems(None, [])}
     errors.extend(p for p in result["file_problems"] if p not in not_here)
 
@@ -705,11 +704,15 @@ class TrialBalanceSubmission(Document):
         ]))
         # konsol#252: the file declares its currency and it must be the
         # Entity's Functional Currency. An entity without one is refused, not
-        # skipped. The bulk upload runs the same check per entity-period
+        # skipped. konsol#180: then, and only then, debits must equal credits
+        # exactly once each total is rounded to that currency's minor unit.
+        # The bulk upload runs the same rule per entity-period
         # (tb_bulk_model.check_group) and the close app's check and submit
         # (konsol.close.tb_api) before anything is written.
+        functional = self._functional_currency()
+        errors.extend(currency_and_balance_problems(
+            self.data_area_id, functional, self._minor_unit(functional), rows))
         declared = [(r.get("line"), r[CURRENCY]) for r in rows]
-        errors.extend(currency_problems(self.data_area_id, self._functional_currency(), declared))
 
         self.row_count = len(rows)
         self.total_debit = round(sum(r["debit"] for r in rows), 2)
@@ -886,6 +889,14 @@ class TrialBalanceSubmission(Document):
     def _functional_currency(self):
         """The Entity's Functional Currency, '' when it has none (konsol#252)."""
         return frappe.db.get_value("Entity", self.data_area_id, "functional_currency") or ""
+
+    @staticmethod
+    def _minor_unit(currency):
+        """``ISO Currency.minor_unit`` for ``currency`` as stored, None when
+        there is no currency to read it for (konsol#180). Never defaulted."""
+        if not currency:
+            return None
+        return frappe.db.get_value("ISO Currency", currency, "minor_unit")
 
     @staticmethod
     def _partner_entities(rows):

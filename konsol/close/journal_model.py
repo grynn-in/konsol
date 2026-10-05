@@ -12,8 +12,9 @@ Rules (#292):
   - at least two lines;
   - the journal balances exact to the cent — round(sum debit, 2) ==
     round(sum credit, 2). There is no declared materiality floor here
-    (Problems P7b); BALANCE_TOLERANCE in close/tb_model.py is the Trial
-    Balance's own rule, not the journal's.
+    (Problems P7b). The Trial Balance's rule is its own
+    (konsol/tb_balance_model.py, konsol#180: exact in the declared
+    currency's minor unit) and is not the journal's.
 
 Amounts are handled as Decimal, quantized to 2 dp, so 0.10 + 0.20 balances
 against 0.30 — a plain float sum would not.

@@ -134,16 +134,26 @@ def test_there_is_no_default_minor_unit_and_no_tolerance_parameter():
         assert not any("tolerance" in p for p in params), fn
 
 
+def _float_total(amounts):
+    """A running float total, as a ``+=`` loop (or a float column's SUM) adds.
+    Not ``sum()``: Python 3.12 compensates float sums, which hides the error."""
+    total = 0.0
+    for a in amounts:
+        total += a
+    return total
+
+
 def test_float_accumulation_does_not_make_a_false_difference():
-    """Ten 0.1s are 1.00 exactly; in floats they sum to 0.9999999999999999.
-    Ten 0.05 yen are 0.50, which rounds half up to 1 yen; in floats they sum to
-    0.49999999999999994, which rounds to 0 and would refuse a balanced file."""
+    """Ten 0.1s are 1.00 exactly; added up in floats they are 0.9999999999999999.
+    Ten 0.05 yen are 0.50, which rounds half up to 1 yen; added up in floats
+    they are 0.49999999999999994, which rounds to 0 and would refuse a
+    balanced file."""
     m = _model()
     tenths = [(0.1, 0)] * 10 + [(0, 1.0)]
-    assert sum(d for d, _ in tenths) != 1.0          # the float pitfall is real
+    assert _float_total(d for d, _ in tenths) != 1.0           # the float pitfall is real
     assert m.balance_problems("EUR", 2, _rows(*tenths)) == []
     nickels = [(0.05, 0)] * 10 + [(0, 1.0)]
-    assert round(sum(d for d, _ in nickels)) == 0    # float rounding gets it wrong
+    assert _float_total(d for d, _ in nickels) < 0.5            # so half up rounds it to 0
     assert m.balance_problems("JPY", 0, _rows(*nickels)) == []
     many = [(0.1, 0)] * 1000 + [(0, 100.0)]
     assert m.balance_problems("EUR", 2, _rows(*many)) == []

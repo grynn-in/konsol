@@ -3,7 +3,7 @@
 A group with hundreds of entities sends one file a month, not hundreds. The
 file is split into one ordinary Trial Balance Submission per entity and
 period, so every rule a single submission obeys still applies: debits equal
-credits, accounts are in the group chart, the period is open, there is one
+credits exactly in the declared currency's minor unit (konsol#180), accounts are in the group chart, the period is open, there is one
 live submission per entity-period, and the uploader may access the entity.
 
 File contract (header required, case-insensitive; CSV, or the first sheet of
@@ -37,7 +37,8 @@ import io
 import math
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
-from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems
+from konsol.tb_balance_model import currency_and_balance_problems
+from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP
 from konsol.tb_dimension_model import accepted_dimension_columns, dimension_problems, is_dimension_column
 
 PARTNER = "partner_data_area_id"
@@ -339,7 +340,7 @@ def group_csv(rows, source=None):
 
 
 def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_types, existing, validate_rows,
-                functional_currency, known_entities=None, warnings=(), partnerless_ic_rows=0):
+                functional_currency, minor_unit, known_entities=None, warnings=(), partnerless_ic_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
     The facts come from the caller; `validate_rows` is the single-submission
@@ -359,6 +360,11 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     without one is refused by name, never skipped (konsol#252). The rows'
     currency is judged by konsol.tb_currency_model, the rule a single
     submission's validate() applies.
+
+    `minor_unit` is that Functional Currency's ``ISO Currency.minor_unit`` as
+    stored (None when there is none). It has no default either (konsol#180):
+    once the currency is good, debits must equal credits exactly when each
+    total is rounded to it (konsol.tb_balance_model, the rule validate() applies).
     """
     entity, year, period_no = key
     errors = []
@@ -378,9 +384,10 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     # Only for an entity the uploader can see (PR #328 review L1): a currency
     # sentence would say the entity exists and what its Functional Currency
     # is, which "does not exist, or you have no access" deliberately does not.
+    # The balance is judged in that currency, so it is not judged either: the
+    # entity-period is already refused (konsol#180).
     if visible:
-        errors.extend(currency_problems(entity, functional_currency,
-                                        [(r.get("line"), r.get(CURRENCY)) for r in rows]))
+        errors.extend(currency_and_balance_problems(entity, functional_currency, minor_unit, rows))
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
         "total_debit": round(sum(r["debit"] for r in rows), 2),
