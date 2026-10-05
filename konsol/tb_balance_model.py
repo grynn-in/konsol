@@ -38,9 +38,16 @@ load, which inserts one submission per entity-period), the bulk check
 Journals keep their own rule (konsol/close/journal_model.py, Problems P7b);
 this module does not touch them.
 """
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_UP, Decimal, localcontext
 
 from konsol.tb_currency_model import COLUMN as CURRENCY, currency_problems, declared_currency
+
+
+#: The most digits a rounded total may need. Decimal's default context holds
+#: 28, so 1e26 rounded to cents raised InvalidOperation (konsol#180 review). The
+#: largest float amount, 1.8e308, needs 312 at 2 places; a total beyond this
+#: (only an absurd Minor Unit gets there) is refused by name, never attempted.
+MAX_DIGITS = 1000
 
 
 def _valid_minor_unit(minor_unit):
@@ -78,15 +85,33 @@ def balance_problems(currency, minor_unit, rows):
             f"be judged. Set its Minor Unit to the ISO 4217 number of decimal places for "
             f"{currency}, then submit again."
         ]
-    unit = Decimal(1).scaleb(-minor_unit)
-    debit = sum((_amount(r["debit"]) for r in rows), Decimal(0)).quantize(unit, ROUND_HALF_UP)
-    credit = sum((_amount(r["credit"]) for r in rows), Decimal(0)).quantize(unit, ROUND_HALF_UP)
-    if debit == credit:
-        return []
-    heavier = "debits exceed credits" if debit > credit else "credits exceed debits"
+    with localcontext() as ctx:
+        # Exact sums: addition at the largest precision allocates only the
+        # digits the amounts themselves have (konsol#180 review).
+        ctx.prec, ctx.Emax, ctx.Emin = MAX_PREC, MAX_EMAX, MIN_EMIN
+        debit = sum((_amount(r["debit"]) for r in rows), Decimal(0))
+        credit = sum((_amount(r["credit"]) for r in rows), Decimal(0))
+    # Rounding to the minor unit needs every digit left of the point, the
+    # minor unit's places, and one for a carry.
+    needed = max(debit.adjusted(), credit.adjusted(), 0) + 1 + minor_unit + 1
+    if needed > MAX_DIGITS:
+        return [
+            f"The totals of this trial balance cannot be rounded to the minor unit of {currency} "
+            f"({_places(minor_unit)}): that needs {needed} digits, more than {MAX_DIGITS}. "
+            f"Check the amounts and ISO Currency {currency}'s Minor Unit."
+        ]
+    with localcontext() as ctx:
+        ctx.prec, ctx.Emax, ctx.Emin = needed, MAX_EMAX, MIN_EMIN
+        unit = Decimal(1).scaleb(-minor_unit)
+        debit = debit.quantize(unit, ROUND_HALF_UP)
+        credit = credit.quantize(unit, ROUND_HALF_UP)
+        if debit == credit:
+            return []
+        heavier = "debits exceed credits" if debit > credit else "credits exceed debits"
+        difference = abs(debit - credit)
     return [
         f"Debits ({debit:,} {currency}) do not equal credits ({credit:,} {currency}): "
-        f"{heavier} by {abs(debit - credit):,} {currency}. A trial balance must balance "
+        f"{heavier} by {difference:,} {currency}. A trial balance must balance "
         f"exactly once each total is rounded to the minor unit of {currency} "
         f"({_places(minor_unit)})."
     ]

@@ -175,8 +175,9 @@ def test_huge_amounts_are_judged_exactly_never_raised():
     m = _model()
     assert m.balance_problems("EUR", 2, _rows((1e26, 0), (0, 1e26))) == []
     assert m.balance_problems("EUR", 2, _rows((1.7e308, 0), (0, 1.7e308))) == []
-    big = Decimal("100000000000000000000000000")
-    (p,) = m.balance_problems("EUR", 2, _rows((big + Decimal("0.01"), 0), (0, big)))
+    # written out, not big + 0.01: that sum would itself round at 28 digits
+    (p,) = m.balance_problems("EUR", 2, _rows((Decimal("100000000000000000000000000.01"), 0),
+                                              (0, Decimal("100000000000000000000000000"))))
     assert "debits exceed credits by 0.01 EUR" in p, p
     (p,) = m.balance_problems("EUR", 2, _rows((2e26, 0), (0, 1e26)))
     assert "debits exceed credits by 100,000,000,000,000,000,000,000,000.00 EUR" in p, p

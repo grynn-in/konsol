@@ -118,8 +118,9 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     numbers whenever either happens.
     Raises ValueError with a human-readable message on structural problems —
     a missing header, a non-numeric amount, a blank account. Business
-    validation (balance, duplicates, chart membership) is validate_tb_rows()'s
-    job, so a file can be parsed and then reported on as a whole.
+    validation (duplicates, chart membership) is validate_tb_rows()'s job,
+    and the currency and the balance are konsol.tb_balance_model's
+    (konsol#180), so a file can be parsed and then reported on as a whole.
 
     `declared_dimensions` are the site's Dimension rows (dimension_name,
     status, in_trial_balance); the default, no dimensions, means a site that
