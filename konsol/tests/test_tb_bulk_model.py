@@ -228,14 +228,21 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
 HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
 
 
-def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None):
+#: konsol#180: each ISO Currency's minor_unit, as a site holds it.
+MINOR_UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
+
+
+def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None, minor_units=None):
     """Load konsol/tb_bulk.py with every non-model import stubbed.
 
     `period_lookup` maps (year, period) -> a period fact dict; a pair absent
     from it is undeclared, so the stand-in period_status.period_row raises
     PeriodNotDeclared for it, exactly as the real one does. `postable` is
     what postable_types() returns. `currencies` maps an entity to its
-    Functional Currency ('' for none); an entity absent from it has EUR. Returns (module, calls), where calls
+    Functional Currency ('' for none); an entity absent from it has EUR.
+    `minor_units` maps a currency to its ISO Currency.minor_unit (MINOR_UNITS
+    unless a test says otherwise; None stands for a blank one); a currency
+    absent from it has no ISO Currency row. Returns (module, calls), where calls
     counts how many times postable_types() was called.
     """
     frappe = types.ModuleType("frappe")
@@ -263,9 +270,12 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
         if doctype == "Trial Balance Submission":
             return []
         if doctype == "ISO Currency":
-            # konsol#180: each currency's minor unit, as a site holds it.
-            units = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
-            return [types.SimpleNamespace(name=c, minor_unit=u) for c, u in units.items()]
+            # konsol#180: each currency's minor unit, as a site holds it. The
+            # filter is honoured, as get_all does: only the named currencies.
+            units = MINOR_UNITS if minor_units is None else minor_units
+            assert set(filters or {}) == {"name"} and filters["name"][0] == "in", filters
+            return [types.SimpleNamespace(name=c, minor_unit=units[c])
+                    for c in filters["name"][1] if c in units]
         raise AssertionError(doctype)
 
     frappe.get_list, frappe.get_all = get_list, get_all
@@ -798,3 +808,56 @@ def test_bulk_check_names_the_lines_of_a_blank_or_mixed_currency():
     errors = report[0]["errors"]
     assert any("The currency is blank on line 4" in e for e in errors), errors
     assert any("(EUR on line 2; USD on line 3)" in e for e in errors), errors
+
+
+# --- konsol#180: the bulk check reads each currency's minor unit -----------------
+
+def _bulk_balance_report(table, currencies, minor_units=None):
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    entities = sorted({row[0] for row in table[1:]})
+    mod, _ = _load_tb_bulk(entities=entities, postable={"Regular"}, period_lookup=period_lookup,
+                           currencies=currencies, minor_units=minor_units)
+    _, report = mod._check(table, PERIOD)
+    return {r["entity"]: r for r in report}
+
+
+def test_bulk_check_judges_a_jpy_entity_in_whole_yen():
+    """tb_bulk._check reads JPY's minor unit (0), not a cent: 0.4 yen off is
+    accepted, 1 yen off is refused, in the same file as an EUR entity."""
+    table = [HEADER_ROW,
+             ["ZZJ", "2099", "1", "1010", "1000.4", "0", "JPY"],
+             ["ZZJ", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZK", "2099", "1", "1010", "1001", "0", "JPY"],
+             ["ZZK", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZE", "2099", "1", "1010", "100", "0", "EUR"],
+             ["ZZE", "2099", "1", "2010", "0", "100", "EUR"]]
+    by = _bulk_balance_report(table, {"ZZJ": "JPY", "ZZK": "JPY", "ZZE": "EUR"})
+    assert by["ZZJ"]["ok"] and by["ZZJ"]["errors"] == [], by["ZZJ"]
+    assert by["ZZE"]["ok"], by["ZZE"]
+    assert not by["ZZK"]["ok"], by["ZZK"]
+    assert any("debits exceed credits by 1 JPY" in e for e in by["ZZK"]["errors"]), by["ZZK"]
+
+
+def test_bulk_check_refuses_an_entity_whose_currency_has_no_minor_unit():
+    table = [HEADER_ROW,
+             ["ZZB", "2099", "1", "1010", "100", "0", "XTS"],
+             ["ZZB", "2099", "1", "2010", "0", "100", "XTS"],
+             ["ZZE", "2099", "1", "1010", "100", "0", "EUR"],
+             ["ZZE", "2099", "1", "2010", "0", "100", "EUR"]]
+    for units in ({**MINOR_UNITS, "XTS": None}, dict(MINOR_UNITS)):   # blank, and no row at all
+        by = _bulk_balance_report(table, {"ZZB": "XTS", "ZZE": "EUR"}, units)
+        assert by["ZZE"]["ok"], by["ZZE"]
+        assert not by["ZZB"]["ok"], by["ZZB"]
+        assert any("ISO Currency XTS has no Minor Unit" in e for e in by["ZZB"]["errors"]), by["ZZB"]
+
+
+def test_bulk_check_takes_huge_amounts_without_raising():
+    """konsol#180 review: 1e26 or more must be judged, not crash the check."""
+    table = [HEADER_ROW,
+             ["ZZE", "2099", "1", "1010", "1e26", "0", "EUR"],
+             ["ZZE", "2099", "1", "2010", "0", "1e26", "EUR"],
+             ["ZZF", "2099", "1", "1010", "2e26", "0", "EUR"],
+             ["ZZF", "2099", "1", "2010", "0", "1e26", "EUR"]]
+    by = _bulk_balance_report(table, {"ZZE": "EUR", "ZZF": "EUR"})
+    assert by["ZZE"]["ok"], by["ZZE"]
+    assert not by["ZZF"]["ok"] and any("debits exceed credits by" in e for e in by["ZZF"]["errors"]), by["ZZF"]

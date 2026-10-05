@@ -159,6 +159,39 @@ def test_float_accumulation_does_not_make_a_false_difference():
     assert m.balance_problems("EUR", 2, _rows(*many)) == []
 
 
+def test_a_float_amount_is_taken_at_its_repr_not_its_binary_value():
+    """0.15 and 0.35 are 0.50 as written: half a yen, which rounds up to 1. As
+    exact binary values they are 0.1499999… and 0.3499999…, which sum below
+    0.5 and round to 0, refusing a file that balances."""
+    m = _model()
+    assert Decimal(0.15) + Decimal(0.35) < Decimal("0.5")    # the binary trap is real
+    assert m.balance_problems("JPY", 0, _rows((0.15, 0), (0.35, 0), (0, 1.0))) == []
+
+
+def test_huge_amounts_are_judged_exactly_never_raised():
+    """konsol#180 review: at 1e26 and above, rounding to the minor unit needs
+    more than the 28 digits of Decimal's default context. It must still be
+    judged exactly, never raise, and lose no cent."""
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((1e26, 0), (0, 1e26))) == []
+    assert m.balance_problems("EUR", 2, _rows((1.7e308, 0), (0, 1.7e308))) == []
+    big = Decimal("100000000000000000000000000")
+    (p,) = m.balance_problems("EUR", 2, _rows((big + Decimal("0.01"), 0), (0, big)))
+    assert "debits exceed credits by 0.01 EUR" in p, p
+    (p,) = m.balance_problems("EUR", 2, _rows((2e26, 0), (0, 1e26)))
+    assert "debits exceed credits by 100,000,000,000,000,000,000,000,000.00 EUR" in p, p
+    (p,) = m.balance_problems("KWD", 3, _rows((1.7e308, 0), (0, 1e308)))
+    assert "debits exceed credits by" in p and "KWD" in p, p
+
+
+def test_a_minor_unit_too_large_to_compute_is_refused_by_name():
+    """Rounding to a million decimal places would build a million-digit number;
+    it is refused naming the currency, not attempted and not raised."""
+    m = _model()
+    (p,) = m.balance_problems("EUR", 10 ** 6, _rows((100, 0), (0, 100)))
+    assert "EUR" in p and "1000000 decimal places" in p, p
+
+
 def test_decimal_amounts_are_taken_as_they_are():
     m = _model()
     assert m.balance_problems("EUR", 2, _rows((Decimal("0.10"), 0), (0, Decimal("0.1")))) == []
@@ -354,3 +387,24 @@ def test_all_intakes_agree():
             assert sentence in desk, (label, sentence, desk)
             assert close_sentence in check["file_problems"], (label, close_sentence, check["file_problems"])
             assert close_sentence in submit, (label, close_sentence, submit)
+
+
+HUGE_OK = "main_account,debit,credit,currency\n1010,1e26,0,EUR\n2010,0,1e26,EUR\n"
+HUGE_OFF = "main_account,debit,credit,currency\n1010,2e26,0,EUR\n2010,0,1e26,EUR\n"
+
+
+def test_huge_amounts_never_raise_on_any_intake():
+    """konsol#180 review: 1e26 crashed the quantize. Every intake now judges it:
+    a balanced file is accepted and an unbalanced one refused by sentence."""
+    t = _currency_tests()
+    assert t._validate(HUGE_OK, "EUR", minor_units=UNITS).validation_status == "Valid"
+    msg = t._validate_refusal(HUGE_OFF, "EUR", minor_units=UNITS)
+    assert "debits exceed credits by" in msg, msg
+    assert _bulk_errors(HUGE_OK, "EUR", UNITS) == []
+    assert any("debits exceed credits by" in e for e in _bulk_errors(HUGE_OFF, "EUR", UNITS))
+    assert _close_check(HUGE_OK, "EUR", UNITS)["ok"] is True
+    check = _close_check(HUGE_OFF, "EUR", UNITS)
+    assert not check["ok"] and any("debits exceed credits by" in p for p in check["file_problems"]), check
+    assert _close_submit_error(HUGE_OK, "EUR", UNITS) is None
+    msg = _close_submit_error(HUGE_OFF, "EUR", UNITS)
+    assert msg and "debits exceed credits by" in msg, msg
