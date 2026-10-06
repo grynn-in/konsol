@@ -55,6 +55,8 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
         override_reason=None, signed_off_by=None, signed_off_at=None,
         fiscal_year=fiscal_year, fiscal_period=fiscal_period, affected_by=affected_by,
         completed_at=completed_at, started_at=started_at,
+        # konsol#338: a run with no fingerprint of its numbers is not signed.
+        numbers_fingerprint="v1:" + "0" * 64, fingerprint_error=None,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 

@@ -952,8 +952,13 @@ class StartSite:
             if self.guard_error:
                 raise RuntimeError(self.guard_error)
         api_mod = types.SimpleNamespace(single_flight_lock=contextlib.nullcontext, _assert_no_active_run=guard)
+        # konsol#338: a Completed build checks the signed fingerprints; recorded here.
+        self.fingerprint_checks = []
+        fingerprint = types.SimpleNamespace(
+            check_after_build=lambda *a: self.fingerprint_checks.append(a) or [])
         mods = {"frappe": frappe, "konsol.airbyte_service": types.SimpleNamespace(AirbyteClient=object),
                 "konsol.orchestrator.reaper": reaper, "konsol.build_lock": build_lock,
+                "konsol.close.fingerprint": fingerprint,
                 "konsol.orchestrator.api": api_mod if api == "stub" else None}   # None: the import fails
         saved = {m: sys.modules.get(m) for m in mods}
         sys.modules.update(mods)
@@ -1033,6 +1038,11 @@ def test_every_move_off_running_is_marked_as_the_build_path():
         assert site.committed[("Build Approval", "BA-1")]["workflow_state"] == state
         assert site.moves_off_running == [True], (state, site.moves_off_running)
         assert not site.frappe.flags.get("konsol_build_writer"), "and the mark is gone afterwards"
+        # konsol#338: only the Completed build checks the signed fingerprints.
+        assert len(site.fingerprint_checks) == (1 if state == "Completed" else 0), (
+            state, site.fingerprint_checks)
+        if state == "Completed":
+            assert site.fingerprint_checks[0][1] == "BA-1" and site.fingerprint_checks[0][0]
 
 
 def test_a_terminal_run_is_never_made_active_again():

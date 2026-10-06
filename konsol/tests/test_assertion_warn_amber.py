@@ -98,6 +98,8 @@ def _load(status="Amber", warned=2, warning_names=None, roles=(), manifest=None,
         fiscal_year=2099, fiscal_period=1,
         # A66: sign_off_close always hands the run's start to the data-change rule.
         started_at=None,
+        # konsol#338: a run with no fingerprint of its numbers is not signed.
+        numbers_fingerprint="v1:" + "0" * 64, fingerprint_error=None,
     )
     saved_doc.save = lambda **k: setattr(saved_doc, "signoff_saved", True)
 

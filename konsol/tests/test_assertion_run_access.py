@@ -246,7 +246,10 @@ def test_every_read_only_result_field_is_reset_on_insert():
     meta = json.load(open(os.path.join(APP_DIR, "consolidation/doctype/assertion_run/assertion_run.json")))
     read_only = {f["fieldname"] for f in meta["fields"] if f.get("read_only")
                  and f["fieldtype"] not in ("Section Break", "Column Break", "Tab Break")}
-    assert read_only - {"title", "status", "signoff_status", "triggered_by"} == blanked
+    # konsol#338: trigger_close_run sets the fingerprint fields before the
+    # insert, like the title, so before_insert must not blank them.
+    assert read_only - {"title", "status", "signoff_status", "triggered_by",
+                        "numbers_fingerprint", "fingerprint_as_of", "fingerprint_error"} == blanked
 
 
 def test_a_run_is_only_created_through_trigger_close_run():

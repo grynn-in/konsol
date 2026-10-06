@@ -512,4 +512,11 @@ def run_pipeline(run_name: str, retry_step=None, resume_from=None) -> RunState:
     # values instead of "—"/0.
     final_status = "Completed" if state.is_success() else Status.FAILED
     _stamp_terminal_status(run_name, run_doc, final_status, state)
+    if final_status == "Completed":
+        # konsol#338 (#338-1): a completed run voids a signature only where
+        # the signed numbers changed. The check commits on its own and writes
+        # a failure on this run, never raising.
+        from konsol.close import fingerprint
+
+        fingerprint.check_after_build(run_name, _doc_get(run_doc, "build_approval"))
     return state
