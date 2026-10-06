@@ -114,6 +114,10 @@ class _Site:
         #: result), so signoff_gate's N45 read finds them. Until N45 nothing
         #: reads them.
         self.statement_accounts = ("3300", "3100")
+        #: W5-2 (8.4): Close Settings (amount, percent, combine) — an amount
+        #: declared, so signoff_gate adds no commentary-threshold gap by
+        #: default; a test clears it to probe the gap.
+        self.commentary_threshold = (5000, 0, "")
         self.closed = {(2025, fp): (LEAD, CLOSED_ON) for fp in range(1, 9)}
         #: A63: the period rows' data-change fields, by (year, period).
         self.data_changed = {}
@@ -250,7 +254,11 @@ def _load(site):
         fy, fp = site.first_close or (0, 0)
         self_approval, rate_move_threshold = site.policies
         cta_account, result_account = site.statement_accounts
+        amount, percent, combine = site.commentary_threshold
         return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp,
+                "commentary_threshold_amount": amount,
+                "commentary_threshold_percent": percent,
+                "commentary_threshold_combine": combine,
                 "self_approval": self_approval,
                 "rate_move_threshold": rate_move_threshold,
                 "statement_cta_account": cta_account,

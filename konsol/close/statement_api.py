@@ -61,7 +61,7 @@ and the chart is non-empty; otherwise 0.
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import ch_read, drill_model, signoff_gate, statement_model
+from konsol.close import ch_read, commentary_model, drill_model, signoff_gate, statement_model
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
 
@@ -388,26 +388,53 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     if state != "ok":
         return result
 
+    accounts_map = _chart()
+    built = _group_statement(key, period_rows, chosen, declared, accounts_map)
+    if built["state"] != "ok":
+        result["state"], result["message"] = built["state"], built["message"]
+        return result
+
+    result["statement"] = built["statement"]
+    result["not_included"] = _not_included(key, built["entity_rows"])
+    result["commentary"] = _commentary(chosen, key)
+    return result
+
+
+_NO_CHART_MESSAGE = "Publish the group chart (Main Account) first."
+
+
+def _chart():
+    """``{code: row}`` of the Published chart (``ACCOUNT_FIELDS``); empty
+    when nothing is Published."""
     accounts = frappe.get_all(
         "Main Account", filters={"status": "Published"},
         fields=ACCOUNT_FIELDS, limit_page_length=0,
     )
-    if not accounts:
-        result["state"] = "no_chart"
-        result["message"] = "Publish the group chart (Main Account) first."
-        return result
-    accounts_map = {a["name"]: a for a in accounts}
+    return {a["name"]: a for a in accounts}
+
+
+def _group_statement(key, period_rows, group, declared, accounts_map):
+    """One group's statement for ``key``: ``{"state", "message",
+    "statement", "entity_rows"}``. ``state`` is ``ok``, ``no_chart`` (no
+    ClickHouse read), ``not_built`` / ``error`` (the warehouse read failed,
+    or a NULL amount), or ``setup_gap`` (a BS heading's side undeclared).
+    Shared by ``get_statement`` and ``signoff_commentary`` so the sign-off
+    checks the statement the Numbers screen shows."""
+    out = {"state": "ok", "message": None, "statement": None, "entity_rows": None}
+    if not accounts_map:
+        out.update(state="no_chart", message=_NO_CHART_MESSAGE)
+        return out
 
     try:
         tb_rows = [
-            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": chosen, "fy": key[0]})
+            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": group, "fy": key[0]})
         ]
         entity_rows = ch_read.rows(
-            _ENTITY_SQL, {"group": chosen, "fy": key[0], "fp": key[1]})
+            _ENTITY_SQL, {"group": group, "fy": key[0], "fp": key[1]})
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
-        result["state"] = "not_built" if ch_read.not_built(e) else "error"
-        result["message"] = _error_message(e)
-        return result
+        out.update(state="not_built" if ch_read.not_built(e) else "error",
+                   message=_error_message(e))
+        return out
 
     try:
         stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
@@ -419,14 +446,54 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
         # guessed statement either way.
         message = str(e)
         is_setup_gap = message.startswith(statement_model.STATEMENT_HEADING_SIDE_UNDECLARED)
-        result["state"] = "setup_gap" if is_setup_gap else "error"
-        result["message"] = message
-        return result
+        out.update(state="setup_gap" if is_setup_gap else "error", message=message)
+        return out
 
-    result["statement"] = stmt
-    result["not_included"] = _not_included(key, entity_rows)
-    result["commentary"] = _commentary(chosen, key)
-    return result
+    out.update(statement=stmt, entity_rows=entity_rows)
+    return out
+
+
+def signoff_commentary(fiscal_year, fiscal_period):
+    """The sign-off's commentary-threshold line (konsol#305-W5-2, story
+    8.4): ``commentary_model.requirement`` over every root Consolidation
+    Group's statement for the period (``_group_statement``: the statement
+    the Numbers screen shows, variance against the previous Regular period)
+    and the period's saved commentary.
+
+    Not whitelisted: ``signoff_gate.commentary`` calls it for
+    ``get_signoff`` and ``sign_off_close``. No ``only_for`` here, so an
+    Entity Accountant reading the sign-off summary gets the same line as the
+    Close Lead (unscoped, like intercompany). An undeclared threshold reads
+    no statement (``state "undeclared"``). A group whose statement cannot be
+    read makes the line ``unknown`` (never 0).
+
+    Reads: Close Settings 3; then, when declared, periods 1, groups 1,
+    declared accounts (``signoff_gate.statement_accounts``), the chart 1,
+    commentary 1, and ClickHouse 2 per root group (none without a chart).
+    """
+    key = _period_key(fiscal_year, fiscal_period)
+    threshold = signoff_gate.commentary_threshold()
+    if threshold["gap"] is not None:
+        return commentary_model.requirement(threshold, None)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    _find_period(key, period_rows)
+    groups = frappe.get_all("Consolidation Group", filters=_ROOT_FILTER,
+                            fields=["consolidation_group"], limit_page_length=0)
+    declared = signoff_gate.statement_accounts()
+    accounts_map = _chart()
+    texts = {}
+    for row in frappe.get_all(
+            "Statement Commentary", filters={"fiscal_year": key[0], "fiscal_period": key[1]},
+            fields=["consolidation_group", "heading", "text"], limit_page_length=0):
+        texts.setdefault(row["consolidation_group"], {})[row["heading"]] = row.get("text") or ""
+    inputs = []
+    for g in groups:
+        name = g["consolidation_group"]
+        built = _group_statement(key, period_rows, name, declared, accounts_map)
+        inputs.append({"consolidation_group": name, "state": built["state"],
+                       "message": built["message"], "statement": built["statement"],
+                       "texts": texts.get(name, {})})
+    return commentary_model.requirement(threshold, inputs)
 
 
 @frappe.whitelist(methods=["GET"])
