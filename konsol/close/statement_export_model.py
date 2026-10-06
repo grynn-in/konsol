@@ -23,7 +23,8 @@ bytes of an .xlsx with three sheets:
 Amounts are written as numbers with a bracket format, the payload's own
 sign — never re-derived. A missing amount raises (never written as 0); a
 comparison the statement declared not loaded is the text ``NOT_LOADED``,
-as on the screen. A non-ok payload raises with its own message: the caller
+as on the screen. Every string cell is written as text, never a formula,
+whatever its first character. A non-ok payload raises with its own message: the caller
 refuses, it never sends an empty file.
 
 The label texts, the section columns and ``NOT_LOADED`` are shared with
@@ -99,8 +100,12 @@ def _cell(line, field, comparison_note, what):
 
 
 def _header_text(payload):
-    parts = [payload["period"].get("code"), payload.get("consolidation_group"),
-             payload.get("reporting_currency")]
+    """``Numbers · FY2025P07 · <group> · <currency>``: the period from
+    fiscal_year/fiscal_period, as ``statement_api._filename`` names the file
+    — never ``period.code``, which live is "P07" alone (review-w5 S4)."""
+    period = payload["period"]
+    parts = ["FY%dP%02d" % (int(period["fiscal_year"]), int(period["fiscal_period"])),
+             payload.get("consolidation_group"), payload.get("reporting_currency")]
     return " · ".join(["Numbers"] + [p for p in parts if p not in (None, "")])
 
 
@@ -149,6 +154,11 @@ class _Sheet:
             if value is None:
                 continue
             cell = self.ws.cell(row=self.row, column=col, value=value)
+            if isinstance(value, str):
+                # openpyxl stores a string starting with "=" as a formula;
+                # free text (commentary, descriptions, names) is always
+                # text, never a live formula (review-w5 S1).
+                cell.data_type = "s"
             if font is not None:
                 cell.font = font
             if col in amount_cols and isinstance(value, float):
