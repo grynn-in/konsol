@@ -310,7 +310,7 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
         raw_total += _dec(result_amount)
     true_total = _round(raw_total)
 
-    displayed_total = _round(sum(_dec(row["amount"]) for row in out_rows))
+    displayed_total = _round(sum((_dec(row["amount"]) for row in out_rows), Decimal("0")))
     if displayed_total != true_total:
         # The per-row rounding above lost (or gained) a few cents against
         # the true, once-rounded total. Show it, never hide it.
