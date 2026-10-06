@@ -2,8 +2,8 @@
 #297 R-decision "auditors are Viewers with audit trail"; amended 2 Oct by
 #305-W2-9; amended by T07c).
 
-``get_trail(fiscal_year, fiscal_period)`` (GET) is the one read endpoint
-behind the Audit trail board (board 8): the period, the summary
+``get_trail(fiscal_year, fiscal_period, ...filters)`` (GET) is the read
+endpoint behind the Audit trail board (board 8): the period, the summary
 (``trail_model.summary``) and the events (``trail_model.ordered``), each
 with its actor's full name resolved and its datetimes as ISO strings.
 
@@ -25,6 +25,12 @@ journals, period, year and sign-off events) is always visible. The response
 carries ``hidden``, the count the caller's scope dropped -- never the
 events themselves, so a count cannot reveal a hidden entity's activity
 beyond that number.
+
+Story 10.2: both endpoints take the filters (kind, actor, entity, date
+range; ``trail_model.parse_filters``) and apply them after the scope cut,
+so a filter only ever narrows. ``export_trail_csv`` (GET) returns the same
+filtered events as a CSV download (``trail_model.CSV_COLUMNS``), built from
+the same read as ``get_trail``.
 """
 import datetime
 import json
@@ -137,21 +143,35 @@ def _event_out(event, users):
     }
 
 
-@frappe.whitelist(methods=["GET"])
-def get_trail(fiscal_year, fiscal_period):
-    """The period's audit trail: ``{"period", "summary", "events",
-    "hidden"}``. Read-only.
+def _filters(kinds, actors, entities, date_from, date_to):
+    """``trail_model.parse_filters``, its ValueError refused loudly."""
+    try:
+        return trail_model.parse_filters(kinds, actors, entities, date_from, date_to)
+    except ValueError as e:
+        frappe.throw(str(e))
 
-    Refuses an undeclared period, or one that is not an integer
-    (PeriodNotDeclared, propagated from ``period_status.period_row``); the
-    Entity Accountant is refused by ``only_for`` (E10-P8).
-    """
-    # A01: a literal, so the endpoint contract test can read it; the Entity
-    # Accountant is excluded (E10-P8): the trail holds every entity's
-    # events, not only theirs.
-    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+
+def _filters_out(filters):
+    """The applied filters, echoed JSON-safe: sorted lists ([] = none) and
+    ISO dates (None = open)."""
+    return {
+        "kinds": sorted(filters["kinds"] or ()),
+        "actors": sorted(filters["actors"] or ()),
+        "entities": sorted(filters["entities"] or ()),
+        "date_from": filters["date_from"].isoformat() if filters["date_from"] else None,
+        "date_to": filters["date_to"].isoformat() if filters["date_to"] else None,
+    }
+
+
+def _scoped_trail(fiscal_year, fiscal_period, kinds, actors, entities, date_from, date_to):
+    """The one read behind both endpoints: the period row, the scoped
+    events (``trail_model.visible``) newest first, the hidden count, the
+    filtered events, the filters and the actors' User rows. The filters
+    run after the scope cut, so they can only narrow what the caller may
+    see."""
     row = period_status.period_row(fiscal_year, fiscal_period)
     fy, fp = row["fiscal_year"], row["fiscal_period"]
+    filters = _filters(kinds, actors, entities, date_from, date_to)
 
     rows = frappe.get_all(
         "Close Event",
@@ -165,24 +185,98 @@ def get_trail(fiscal_year, fiscal_period):
     allowed = allowed_entity_codes()
     events, hidden = trail_model.visible(events, allowed)
     events = trail_model.ordered(events)
+    shown = trail_model.filtered(events, filters)
 
-    actors = sorted({e["actor"] for e in events if e.get("actor")})
+    actors_seen = sorted({e["actor"] for e in events if e.get("actor")})
     users = {}
-    if actors:
+    if actors_seen:
         users = {
             u["name"]: u
-            for u in frappe.get_all("User", filters={"name": ["in", actors]},
+            for u in frappe.get_all("User", filters={"name": ["in", actors_seen]},
                                     fields=["name", "full_name"])
         }
+    return row, events, hidden, shown, filters, users
+
+
+def _options_out(events, users):
+    """``trail_model.options`` over the scoped events, each actor with its
+    resolved name (a deleted actor shows the id, ``actor_missing: True``)."""
+    opts = trail_model.options(events)
+    opts["actors"] = [
+        {
+            "actor": actor,
+            "actor_name": users[actor]["full_name"] if actor in users else actor,
+            "actor_missing": actor not in users,
+        }
+        for actor in opts["actors"]
+    ]
+    return opts
+
+
+@frappe.whitelist(methods=["GET"])
+def get_trail(fiscal_year, fiscal_period, kinds=None, actors=None, entities=None,
+              date_from=None, date_to=None):
+    """The period's audit trail: ``{"period", "summary", "events",
+    "hidden", "total", "options", "filters"}``. Read-only.
+
+    Story 10.2: ``kinds``, ``actors`` and ``entities`` (JSON lists; an
+    entity of ``trail_model.GROUP_LEVEL`` selects group-level events) and
+    ``date_from``/``date_to`` (inclusive ISO dates) cut ``events`` after the
+    entity scope. ``summary``, ``total`` (the scoped count), ``options``
+    (the scoped choices) and ``hidden`` describe the whole scoped period,
+    not the filtered view.
+
+    Refuses an undeclared period, or one that is not an integer
+    (PeriodNotDeclared, propagated from ``period_status.period_row``), and
+    a bad filter (ValidationError naming it); the Entity Accountant is
+    refused by ``only_for`` (E10-P8).
+    """
+    # A01: a literal, so the endpoint contract test can read it; the Entity
+    # Accountant is excluded (E10-P8): the trail holds every entity's
+    # events, not only theirs.
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    row, events, hidden, shown, filters, users = _scoped_trail(
+        fiscal_year, fiscal_period, kinds, actors, entities, date_from, date_to)
 
     return {
         "period": {
-            "fiscal_year": fy,
-            "fiscal_period": fp,
+            "fiscal_year": row["fiscal_year"],
+            "fiscal_period": row["fiscal_period"],
             "code": row["code"],
             "status": row["status"],
         },
         "summary": _iso_summary(trail_model.summary(events), users),
-        "events": [_event_out(e, users) for e in events],
+        "events": [_event_out(e, users) for e in shown],
         "hidden": hidden,
+        "total": len(events),
+        "options": _options_out(events, users),
+        "filters": _filters_out(filters),
     }
+
+
+@frappe.whitelist(methods=["GET"])
+def export_trail_csv(fiscal_year, fiscal_period, kinds=None, actors=None, entities=None,
+                     date_from=None, date_to=None):
+    """The filtered, scoped trail as a CSV download (story 10.2).
+
+    Takes ``get_trail``'s arguments and writes exactly the events
+    ``get_trail`` returns for them, in the same order -- built here from the
+    same read, so the file can never hold an event the caller's entity
+    scope hides. Columns: ``trail_model.CSV_COLUMNS`` (documented in
+    trail_model.py). Named ``audit-trail-FY<year>-P<period>.csv``. Read-only;
+    the same roles as ``get_trail``.
+    """
+    # A01: a literal, the same roles as get_trail (E10-P8).
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    row, _events, _hidden, shown, _filters, users = _scoped_trail(
+        fiscal_year, fiscal_period, kinds, actors, entities, date_from, date_to)
+
+    rows = [
+        dict(_event_out(e, users), fiscal_year=e["fiscal_year"], fiscal_period=e["fiscal_period"])
+        for e in shown
+    ]
+    frappe.response["filename"] = "audit-trail-FY%d-P%02d.csv" % (
+        int(row["fiscal_year"]), int(row["fiscal_period"]))
+    frappe.response["filecontent"] = trail_model.csv_text(rows)
+    frappe.response["content_type"] = "text/csv; charset=utf-8"
+    frappe.response["type"] = "download"
