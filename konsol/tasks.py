@@ -515,12 +515,19 @@ def run_governed_build(build_request):
             error_log=doc.error_message,
         )
 
-    _finish_governed_build(doc)
+    _finish_governed_build(doc, pipeline_run)
 
 
-def _finish_governed_build(doc):
+def _finish_governed_build(doc, pipeline_run=None):
     """Persist a governed build's terminal state, then request the follow-up
     that a change made during the build asked for (#129).
+
+    A Completed build then checks the signed periods' fingerprints (konsol#338,
+    #338-1): only a period whose signed numbers changed is voided, and the
+    void names this Build Approval and its Pipeline Run. Every scope is
+    checked: which scopes reach gold_fully_consolidated_tb is site
+    configuration (Build Model domains), and an unchanged fingerprint voids
+    nothing.
 
     The flag is re-read under the row lock. A request that flags this row
     holds the same lock (its debounce's FOR UPDATE) until it commits, so
@@ -549,6 +556,11 @@ def _finish_governed_build(doc):
             "duration": doc.duration_seconds,
         },
     )
+
+    if doc.workflow_state == "Completed":
+        from konsol.close import fingerprint
+
+        fingerprint.check_after_build(pipeline_run, doc.name)
 
     if flagged:
         # After the commit: the request takes the build lock, and must not
@@ -821,6 +833,10 @@ def _run_dbt_build_background(doctype=None, docname=None, pipeline_run=None):
             )
             _update_pipeline_run(pipeline_run, "Completed", dbt_result=summary,
                                  log=output, project_path=project_path)
+            # konsol#338: void only the signatures whose numbers changed.
+            from konsol.close import fingerprint
+
+            fingerprint.check_after_build(pipeline_run)
         else:
             frappe.logger().error(f"dbt build failed (rc={result.returncode}):\n{output[-2000:]}")
             frappe.publish_realtime(
@@ -965,6 +981,11 @@ def run_pipeline(pipeline_run):
             doctype="Pipeline Run",
             docname=doc.name,
         )
+        if doc.status == "Completed":
+            # konsol#338: void only the signatures whose numbers changed.
+            from konsol.close import fingerprint
+
+            fingerprint.check_after_build(doc.name)
 
     except Exception as e:
         doc.status = "Failed"

@@ -299,3 +299,18 @@ def test_a_failed_read_voids_nothing_and_says_so_on_the_build():
         assert text in log, text
         assert text in written[("Build Approval", "BAPR-1")]["error_message"], text
     assert site.errors and mod.SIGNATURE_CHECK_FAILED in site.errors[0][0]
+
+
+def test_a_build_with_no_pipeline_run_is_named_and_its_failure_logged():
+    """tasks._run_dbt_build_background (schema_apply) has no Pipeline Run."""
+    site = _Site()
+    _warehouse(site)
+    mod, model = _load(site)
+    _signed(site, model, 3, stale=(3,))
+    assert mod.check_after_build(None) == ["RUN-3"]
+    assert "a dbt build with no Pipeline Run" in site.marked[0][1]
+    site.marked.clear()
+    site.ch_fail = "boom"
+    assert mod.check_after_build(None) is None
+    assert site.marked == [] and site.set_values == []
+    assert "a dbt build with no Pipeline Run" in site.errors[0][0]

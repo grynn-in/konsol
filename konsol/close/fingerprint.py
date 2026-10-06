@@ -97,7 +97,10 @@ def stamp_new_run(doc):
 def _build_label(pipeline_run, build_approval):
     if build_approval:
         return "Build Approval %s (Pipeline Run %s)" % (build_approval, pipeline_run)
-    return "Pipeline Run %s" % pipeline_run
+    if pipeline_run:
+        return "Pipeline Run %s" % pipeline_run
+    # tasks._run_dbt_build_background, queued by schema_apply with no run.
+    return "a dbt build with no Pipeline Run"
 
 
 def void_changed_signatures(pipeline_run, build_approval=None):
