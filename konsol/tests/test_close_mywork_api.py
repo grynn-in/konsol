@@ -116,6 +116,9 @@ class _Site:
         self.ic_fixes = {}
         self.ic_calls = []
         self.ic_tolerance_gap = None
+        #: #305 5.4: the stubbed `ic_balance_api.open_rule_gap` returns this.
+        self.ic_rule_gap = None
+        self.ic_rule_gap_calls = 0
         self.statement_gap = None
         self.approvals_waiting = {"count": 0}
         self.approvals_calls = []
@@ -290,6 +293,15 @@ def _call(site):
 
     ic_api.open_fixes = open_fixes
 
+    # #305 5.4: mywork_api imports konsol.close.ic_balance_api lazily.
+    ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
+
+    def open_rule_gap():
+        site.ic_rule_gap_calls += 1
+        return site.ic_rule_gap
+
+    ic_balance_api.open_rule_gap = open_rule_gap
+
     # A12: a stub `konsol.close.approvals_api` with a recording `queue_for`, so
     # My work reads the same queue A10 builds without running it for real.
     approvals_api = types.ModuleType("konsol.close.approvals_api")
@@ -321,6 +333,7 @@ def _call(site):
         "konsol.close.freshness_api": freshness_api,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
         "konsol.close.ic_api": ic_api,
+        "konsol.close.ic_balance_api": ic_balance_api,
         "konsol.close.approvals_api": approvals_api,
     }
     mods.update(stubs)
@@ -909,6 +922,36 @@ def test_ic_tolerance_gap_reaches_the_group_personas():
         assert gap is not None, (roles, _ids(result))
         assert gap["detail"] == "Declare the IC tolerance on G.", gap
         assert gap["kind"] == "blocking", gap
+
+
+def _real_ic_rule_gap():
+    """#305 5.4: the real producer's gap (ic_balance_model.rule_gap)."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "close", "ic_balance_model.py")
+    spec = importlib.util.spec_from_file_location("ic_balance_model_for_mywork_api", path)
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    return model.rule_gap([{"name": "B", "selling_entity": "UK01", "buying_entity": "DE01",
+                            "docstatus": 0}], [])
+
+
+def test_ic_rule_gap_reaches_the_group_personas():
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_rule_gap = _real_ic_rule_gap()
+        result = _call(site)
+        gap = _gap(result, "ic_rule")
+        assert gap is not None, (roles, _ids(result))
+        assert "UK01 → DE01" in gap["detail"], gap
+        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
+
+
+def test_entity_accountant_never_gets_the_ic_rule_gap_and_it_is_not_read():
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    site.ic_rule_gap = _real_ic_rule_gap()
+    result = _call(site)
+    assert _gap(result, "ic_rule") is None, _ids(result)
+    assert site.ic_rule_gap_calls == 0
 
 
 def test_entity_accountant_gets_an_ic_fix_item_on_trial_balances():

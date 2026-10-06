@@ -31,6 +31,17 @@ _cpm_spec.loader.exec_module(CPM)
 
 _STATEMENT_GAP = CPM.statement_accounts("", "", {})["gap"]
 
+# #305 5.4: the missing-rule gap fed in is the REAL ic_balance_model gap.
+_IBM_PATH = os.path.join(APP_DIR, "close", "ic_balance_model.py")
+_ibm_spec = importlib.util.spec_from_file_location("ic_balance_model_for_mywork", _IBM_PATH)
+IBM = importlib.util.module_from_spec(_ibm_spec)
+_ibm_spec.loader.exec_module(IBM)
+
+
+def _ic_rule_gap(*pairs):
+    return IBM.rule_gap([{"name": "B%d" % i, "selling_entity": s, "buying_entity": b,
+                          "docstatus": 0} for i, (s, b) in enumerate(pairs)], [])
+
 
 def _facts(**over):
     facts = {
@@ -42,6 +53,7 @@ def _facts(**over):
         "policy_gaps": [],
         "ic_accounts_gap": None,
         "ic_tolerance_gap": None,
+        "ic_rule_gap": None,
     }
     facts.update(over)
     return facts
@@ -846,3 +858,38 @@ def test_sent_back_items_period_missing_from_codes_raises():
 
 def test_sent_back_items_empty_rows_gives_no_items():
     assert M.sent_back_items([], M.CLOSE_LEAD, {}) == []
+
+
+# --- #305 5.4 (W5-4): IC Balance pairs with no unrealised-profit rule --------
+
+def test_ic_rule_gap_is_one_blocking_item_naming_the_pairs():
+    gap = _ic_rule_gap(("UK01", "DE01"), ("FR01", "DE01"))
+    items = M.setup_gap_items(_facts(ic_rule_gap=gap))
+    assert [i["id"] for i in items] == ["gap:ic_rule"]
+    item = items[0]
+    assert item["kind"] == "blocking"
+    assert item["title"] == "Unrealised-profit rule missing for 2 IC Balance pairs"
+    assert item["detail"] == gap["message"]
+    assert "UK01 → DE01" in item["detail"] and "FR01 → DE01" in item["detail"]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/ic-elimination-rule"}
+    assert item["entities"] == ["DE01", "FR01", "UK01"]
+
+
+def test_ic_rule_gap_title_singular():
+    item = M.setup_gap_items(_facts(ic_rule_gap=_ic_rule_gap(("UK01", "DE01"))))[0]
+    assert item["title"] == "Unrealised-profit rule missing for 1 IC Balance pair"
+
+
+def test_ic_rule_gap_follows_the_tolerance_gap():
+    items = M.setup_gap_items(_facts(ic_tolerance_gap=_IC_TOLERANCE_GAP,
+                                     ic_rule_gap=_ic_rule_gap(("UK01", "DE01")),
+                                     frequency_missing=["FR01"]))
+    assert [i["id"] for i in items] == ["gap:ic_tolerance", "gap:ic_rule", "gap:frequency"]
+
+
+def test_missing_ic_rule_gap_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["ic_rule_gap"]
+    with pytest.raises(ValueError, match="ic_rule_gap"):
+        M.setup_gap_items(facts)
