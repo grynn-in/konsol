@@ -22,7 +22,8 @@ every row the caller reads is live in the warehouse.
 
 - ``matching_rules(balance, rules)``: the rules that eliminate the pair.
 - ``rule_gap(balances, rules)``: None, or ONE gap naming every uncovered
-  pair once (``{"code", "pairs", "entities", "message"}``). ``entities`` lets
+  pair once (a balance whose ending inventory is 0 or below is skipped: dbt
+  filters ``ending_inventory_from_ic > 0``) (``{"code", "pairs", "entities", "message"}``). ``entities`` lets
   the sign-off and readiness scoping cut other entities' codes.
 - ``balance_rows(balances, rules)``: the screen's rows.
 - ``visible(balances, allowed)``: entity scope (either side allowed).
@@ -90,11 +91,22 @@ def _pair(balance):
     return balance.get("selling_entity"), balance.get("buying_entity")
 
 
+def _nothing_to_eliminate(balance):
+    """dbt eliminates only where ``ending_inventory_from_ic > 0`` (F51b,
+    review S3). A value that is not a number is NOT nothing: it stays in the
+    gap, so an unreadable amount blocks instead of being guessed."""
+    number = _number(balance.get("ending_inventory_from_ic"))
+    return number is not None and math.isfinite(number) and number <= 0
+
+
 def rule_gap(balances, rules):
-    """None, or the one setup gap naming every uncovered pair once."""
+    """None, or the one setup gap naming every uncovered pair once. A
+    balance with nothing to eliminate (inventory 0 or below) needs no rule."""
     missing = set()
     for balance in balances:
         _status(balance)
+        if _nothing_to_eliminate(balance):
+            continue
         if not matching_rules(balance, rules):
             missing.add(_pair(balance))
     if not missing:
@@ -126,7 +138,7 @@ def balance_rows(balances, rules):
             "status": _status(balance),
             "rules": [{"rule_id": r.get("rule_id"), "rule_name": r.get("rule_name"),
                        "margin_pct": _number(r.get("margin_pct"))} for r in matched],
-            "missing_rule": not matched,
+            "missing_rule": not matched and not _nothing_to_eliminate(balance),
         })
     rows.sort(key=lambda r: (r["selling_entity"] or "", r["buying_entity"] or "", r["name"] or ""))
     return rows
