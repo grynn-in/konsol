@@ -644,6 +644,24 @@ test("drillView: a top-side row's journals link to Adjustments, in the payload's
 			amount: "40.00",
 			postedBy: "alice@example.com",
 			approvedBy: "bob@example.com",
+			autoReversal: false,
+		},
+		{
+			journalId: "J-2",
+			description: "Accrue audit fee",
+			amount: "10.00",
+			postedBy: "alice@example.com",
+			approvedBy: "bob@example.com",
+			autoReversal: false,
+		},
+		{
+			// #305 story 6.5: an earlier period's journal reversing here.
+			journalId: "J-P6",
+			description: "June bonus",
+			amount: "-10.00",
+			postedBy: "alice@example.com",
+			approvedBy: "bob@example.com",
+			autoReversal: true,
 		},
 	]);
 	assert.equal(topside.journalsBasis, "posted in this period (the heading's amount is cumulative)");
