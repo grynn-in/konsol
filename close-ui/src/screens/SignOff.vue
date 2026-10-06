@@ -6,6 +6,8 @@
  * - `load` is A30 GET `signoff_api.get_signoff`, `sign` is A32 POST
  *   `signoff_api.sign`; both are injected with machine.provide({actors}) and
  *   close over the period in the URL (route.js, D5).
+ * - Reject (#305-W5-1, story 9.4) is SignOffReject's: it exports
+ *   `rejectActors`, the machine's `reject` service, spread in the same way.
  * - Close and reopen are B24's: SignOffPeriodActions exports `periodActors`,
  *   the machine's `close` / `reopen` services (A34), which this screen spreads
  *   into provide({actors}), and it renders the Close / Reopen / declare TB
@@ -42,6 +44,7 @@ import { createActor, fromPromise } from "xstate";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import SignOffPeriodActions, { periodActors } from "../sections/SignOffPeriodActions.vue";
+import SignOffReject, { rejectActors } from "../sections/SignOffReject.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { summaryView, messageLines, closedOnText } from "../signoff.js";
@@ -91,6 +94,7 @@ function machineFor(p) {
 				}),
 			),
 			...periodActors(key),
+			...rejectActors(key),
 		},
 	});
 }
@@ -357,6 +361,14 @@ const unknownOr = (value) => (value === null || value === undefined || value ===
 					</div>
 				</div>
 			</div>
+
+			<SignOffReject
+				v-if="periodKey"
+				:snapshot="snap"
+				:period-key="periodKey"
+				:period-name="periodName"
+				@send="send"
+			/>
 
 			<SignOffPeriodActions
 				v-if="periodKey"

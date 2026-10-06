@@ -675,6 +675,83 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
 
 
+#: Who may reject a signature (#305-W5-1): the Close Lead, the roles that
+#: sign (signoff_api.sign's only_for).
+REJECT_ROLES = {"EPM Admin", "System Manager"}
+#: The signature fields a reject clears; signoff_status goes to "Not Signed Off".
+_SIGNATURE_FIELDS = ("signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
+                     "warnings_at_signoff")
+
+
+def _text(value):
+    return None if value in (None, "") else str(value)
+
+
+def reject_signoff(close_run, reason):
+    """Reject a signed run back to "Not Signed Off" (#305-W5-1, Deepak Pai
+    6 Oct 2026; story 9.4, #157).
+
+    The Close Lead sends the period back with a typed ``reason``. The run's
+    signature fields are cleared through the sign-off writer, and one
+    ``signoff_rejected`` Close Event is written in the same transaction. The
+    event keeps what was rejected (the signature's state, signer, time and
+    text) and names the preparer, the user who triggered the run: they get the
+    "sent back" My work item until a later signature
+    (``mywork_model.signoff_sent_back_items``). Rejected: a new "Rejected"
+    run state; a comment that changes nothing.
+
+    Refused before anything is written: a caller who is not the Close Lead, a
+    blank reason, a run that is not signed (Not Signed Off, Re-sign Needed),
+    and a period that is not Open (reopen it first: a closed period must not
+    hold an unsigned run).
+
+    Not whitelisted: ``signoff_api.reject`` is the only door, and it refuses a
+    run that is no longer the period's latest (A58).
+    """
+    if not (REJECT_ROLES & set(frappe.get_roles())):
+        frappe.throw(frappe._("Only the Close Lead may reject a sign-off.").format(),
+                     exc=frappe.PermissionError, title=frappe._("Reject refused").format())
+    reason = (reason or "").strip()
+    if not reason:
+        frappe.throw(frappe._("Give the reason the sign-off is rejected: the preparer reads "
+                              "it. Nothing was changed.").format(),
+                     title=frappe._("Reason required").format())
+    frappe.has_permission("Assertion Run", "write", doc=close_run, throw=True)
+
+    frappe.db.get_value("Assertion Run", close_run, "name", for_update=True)
+    doc = frappe.get_doc("Assertion Run", close_run)
+    if doc.signoff_status not in SIGNED_STATES:
+        frappe.throw(
+            frappe._("Assertion Run {0} is {1}; only a signed, acknowledged or overridden run "
+                     "can be rejected. Nothing was changed.").format(
+                         close_run, doc.signoff_status or "Not Signed Off"),
+            title=frappe._("Reject refused").format())
+    period = period_row(doc.fiscal_year, doc.fiscal_period)
+    if period["status"] != OPEN:
+        frappe.throw(
+            frappe._("FY{0} {1} is {2}; reopen it to reject its sign-off. Nothing was "
+                     "changed.").format(doc.fiscal_year, period["code"], period["status"]),
+            title=frappe._("Reject refused").format())
+
+    detail = {"signoff_status": doc.signoff_status, "run_status": doc.status,
+              "preparer": doc.triggered_by or None,
+              "numbers_fingerprint": doc.numbers_fingerprint or None}
+    for field in _SIGNATURE_FIELDS:
+        detail[field] = _text(getattr(doc, field))
+    doc.signoff_status = "Not Signed Off"
+    for field in _SIGNATURE_FIELDS:
+        setattr(doc, field, None)
+    with writing(SIGNOFF_WRITER, doc.name):
+        doc.save(ignore_permissions=True)
+    # Same transaction as the save, before the commit (#305-W2-1): never a
+    # reject without its event. A writer failure propagates uncaught.
+    from konsol.close import close_event
+    close_event.record("signoff_rejected", doc.fiscal_year, doc.fiscal_period, "Assertion Run",
+                       doc.name, reason=reason, detail=detail)
+    frappe.db.commit()
+    return {"signoff_status": doc.signoff_status}
+
+
 def assert_close_signed_off(fiscal_year, fiscal_period):
     """Gate hook: raise unless the period's latest Assertion Run is signed off
     (Green) or audited-overridden.

@@ -56,6 +56,9 @@ on every read; an uncheckable pair stays an item, never dropped.
 A22: every persona but the Viewer also gets one ``todo`` item per sent-back
 draft they own (``approvals_api.sent_back_for``, A21, turned into items by
 ``mywork_model.sent_back_items``). It does not depend on the first close.
+#305-W5-1 (story 9.4, #157): the preparer of a rejected sign-off (the run's
+``triggered_by``) also gets one ``todo`` item per period until it is signed
+again (``_signoff_events``, ``mywork_model.signoff_sent_back_items``).
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -97,6 +100,7 @@ missing ownership (coordinator, 25 Sep). A leaf is in scope for the frequency ga
 when it is covered at the start of at least one of them. No judged period
 means nothing to judge, so neither gap names anyone.
 """
+import json
 from datetime import date, datetime
 
 import frappe
@@ -295,6 +299,38 @@ def _period_codes():
     return codes
 
 
+_SIGNOFF_EVENT_FIELDS = ["name", "kind", "fiscal_year", "fiscal_period", "actor", "at",
+                         "reason", "detail"]
+
+
+def _signoff_event(row):
+    from konsol.close.timefmt import zoned_iso
+    row = dict(row)
+    row["at"] = zoned_iso(row["at"], frappe.utils.get_system_timezone())
+    row["detail"] = json.loads(row["detail"]) if row.get("detail") else None
+    return row
+
+
+def _signoff_events(user):
+    """#305-W5-1: every ``signoff_rejected`` Close Event, and, only when one
+    names ``user`` as the preparer, the ``signed_off`` events of those
+    periods' fiscal years (``mywork_model.signoff_sent_back_items`` decides
+    which periods are still sent back). ``[]`` when nothing names ``user``."""
+    rejected = [_signoff_event(r) for r in frappe.get_all(
+        "Close Event", filters={"kind": "signoff_rejected"}, fields=_SIGNOFF_EVENT_FIELDS,
+        limit_page_length=0)]
+    mine = {(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in rejected
+            if (r["detail"] or {}).get("preparer") == user}
+    if not mine:
+        return []
+    signed = [_signoff_event(r) for r in frappe.get_all(
+        "Close Event", filters={"kind": "signed_off",
+                                "fiscal_year": ["in", sorted({k[0] for k in mine})]},
+        fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)]
+    return [r for r in rejected + signed
+            if (int(r["fiscal_year"]), int(r["fiscal_period"])) in mine]
+
+
 def _newest_run(key):
     rows = frappe.get_all(
         "Assertion Run",
@@ -445,6 +481,12 @@ def get_my_work():
     codes = _period_codes() if any(row.get("fiscal_year") is not None
                                    for row in sent_back_rows) else {}
     items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
+    # #305-W5-1 (story 9.4): the preparer's "sent back" sign-off item, until
+    # the period is signed again. Does not depend on the first close either.
+    signoff_events = _signoff_events(frappe.session.user)
+    if signoff_events:
+        items.extend(mywork_model.signoff_sent_back_items(
+            signoff_events, frappe.session.user, persona, codes or _period_codes()))
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona, screen_counts),
             "entities_assigned": entities_assigned}

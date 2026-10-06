@@ -670,3 +670,42 @@ test("10.2: GROUP_LEVEL matches trail_model.py's", () => {
 	assert.ok(m, "trail_model.py declares GROUP_LEVEL");
 	assert.equal(GROUP_LEVEL, m[1]);
 });
+
+// --- signoff_rejected (konsol#305 story 9.4, #157, #305-W5-1) -------------
+
+test('signoff_rejected -> "Sign-off rejected", block, the run as item and the reason in detail', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "signoff_rejected",
+				reference_doctype: "Assertion Run",
+				reference_name: "AR-0007",
+				reason: "ZZA's TB is the draft",
+				detail: { signoff_status: "Signed Off", preparer: "ana@example.com" },
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Sign-off rejected");
+	assert.equal(v.rows[0].tone, "block");
+	assert.equal(v.rows[0].item, "Assertion Run AR-0007");
+	assert.equal(v.rows[0].detail, 'Reason: "ZZA\'s TB is the draft"');
+});
+
+test("a rejected summary gives Rejected — <reason> (#305-W5-1)", () => {
+	const v = trailView(
+		payload([], {
+			summary: {
+				signoff: { state: "rejected", by: "lead@example.com", at: "2026-09-20T09:00:00+00:00", reason: "ZZA's TB is the draft" },
+				closed: null,
+				locked: null,
+				counts: counts(),
+			},
+		}),
+		NOW,
+		TZ
+	);
+	assert.equal(v.signedOff, "Rejected — ZZA's TB is the draft");
+	assert.equal(v.result, null);
+});

@@ -290,3 +290,19 @@ def test_module_imports_no_frappe():
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith(("frappe", "konsol"))
             assert node.level == 0
+
+
+# --- KINDS: signoff_rejected (konsol#305 story 9.4, #157, #305-W5-1) -----------
+
+def test_signoff_rejected_is_a_declared_kind():
+    assert "signoff_rejected" in M.KINDS
+
+
+def test_signoff_rejected_with_no_reason_is_refused():
+    # #305-W5-1: the Close Lead rejects with a typed reason.
+    assert M.event_problems(_event(kind="signoff_rejected", reason="")) == [
+        "reason is required for signoff_rejected."]
+
+
+def test_signoff_rejected_with_a_reason_gives_no_problems():
+    assert M.event_problems(_event(kind="signoff_rejected", reason="TB for ZZA is wrong")) == []

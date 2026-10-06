@@ -17,7 +17,7 @@
 // - `summary` (trail_model.summary, with datetimes made ISO by
 //   trail_api._iso_summary) is `{signoff, closed, locked, counts}`.
 //   `signoff` is `{"state": "none"}`, or `{state: "signed", by, at,
-//   result, run_status, reason, warnings}`, or `{state: "voided", by, at,
+//   result, run_status, reason, warnings}`, or `{state: "voided" | "rejected", by, at,
 //   reason}`. `closed`/`locked` are `{by, at}` or null. `trail_api`
 //   (T07c) adds `by_name` and `by_missing` next to `by` on `signoff`,
 //   `closed` and `locked`, resolved from the same single User lookup
@@ -61,6 +61,8 @@ const KIND_LABEL = {
 	year_locked: { label: "Year locked", tone: "mute" },
 	year_reopened: { label: "Year reopened", tone: "warn" },
 	signoff_voided: { label: "Sign-off voided", tone: "warn" },
+	// #305-W5-1 (story 9.4, #157): the Close Lead sent the signed run back.
+	signoff_rejected: { label: "Sign-off rejected", tone: "block" },
 	tb_cancelled: { label: "Cancelled", tone: "mute" },
 	tb_exception_declared: { label: "No-TB exception", tone: "warn" },
 	tb_exception_cancelled: { label: "Exception cancelled", tone: "mute" },
@@ -231,6 +233,9 @@ function signedOffText(signoff, now, timeZone) {
 	}
 	if (signoff.state === "voided") {
 		return `Voided — ${signoff.reason}`;
+	}
+	if (signoff.state === "rejected") {
+		return `Rejected — ${signoff.reason}`;
 	}
 	if (signoff.state === "signed") {
 		return `${summaryBy(signoff)} · ${formatTime(parseZoned(signoff.at), now, timeZone)}`;

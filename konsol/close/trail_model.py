@@ -121,13 +121,15 @@ def _signoff(events):
     latest_signed = _latest(events, ("signed_off",))
     if latest_signed is None:
         return {"state": "none"}
-    latest_void = _latest(events, ("signoff_voided",))
-    if latest_void is not None and latest_void["at"] > latest_signed["at"]:
+    # A void (a reopen, a data change) or a reject (#305-W5-1, story 9.4)
+    # after the latest signature ends it; the later of the two is the state.
+    latest_end = _latest(events, ("signoff_voided", "signoff_rejected"))
+    if latest_end is not None and latest_end["at"] > latest_signed["at"]:
         return {
-            "state": "voided",
-            "by": latest_void.get("actor"),
-            "at": latest_void.get("at"),
-            "reason": latest_void.get("reason"),
+            "state": "voided" if latest_end["kind"] == "signoff_voided" else "rejected",
+            "by": latest_end.get("actor"),
+            "at": latest_end.get("at"),
+            "reason": latest_end.get("reason"),
         }
     detail = latest_signed.get("detail") or {}
     return {
