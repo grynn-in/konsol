@@ -5,7 +5,7 @@
 // the thing under test, and that is restored in a finally.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { get, post, errorMessage } from "./api.js";
+import { get, post, errorMessage, download } from "./api.js";
 
 function jsonResponse(status, body) {
   return {
@@ -152,4 +152,79 @@ test("errorMessage prefers _server_messages over a bare message", () => {
   const serverMessages = JSON.stringify([JSON.stringify({ message: "Declared reason." })]);
   const payload = { _server_messages: serverMessages, message: "generic error" };
   assert.equal(errorMessage(payload, 403), "Declared reason.");
+});
+
+
+// --- konsol#305 8.5: download (the Numbers xlsx export) -----------------------
+
+function fileResponse(status, bytes, disposition) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => (name.toLowerCase() === "content-disposition" ? disposition : null) },
+    blob: async () => ({ size: bytes.length, bytes }),
+    json: async () => {
+      throw new SyntaxError("Unexpected token P in JSON at position 0");
+    },
+  };
+}
+
+test("a download GETs the URL and returns the blob and the server's filename", async () => {
+  let calledUrl;
+  let calledOpts;
+  const fetchImpl = async (url, opts) => {
+    calledUrl = url;
+    calledOpts = opts;
+    return fileResponse(200, "PK..", 'attachment; filename="numbers-FY2025P07-G1.xlsx"');
+  };
+  const result = await download(
+    "konsol.close.statement_api.export_statement",
+    { fiscal_year: 2025, fiscal_period: 7, consolidation_group: "G1" },
+    { fetchImpl },
+  );
+  assert.equal(
+    calledUrl,
+    "/api/method/konsol.close.statement_api.export_statement?fiscal_year=2025&fiscal_period=7&consolidation_group=G1",
+  );
+  assert.equal(calledOpts.method, "GET");
+  assert.equal(calledOpts.credentials, "include");
+  assert.equal(result.filename, "numbers-FY2025P07-G1.xlsx");
+  assert.equal(result.blob.size, 4);
+});
+
+test("a refused download throws the server's own sentence, never a file", async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 417,
+    headers: { get: () => null },
+    blob: async () => {
+      throw new Error("blob must not be read");
+    },
+    json: async () => ({
+      exc_type: "ValidationError",
+      _server_messages: JSON.stringify([JSON.stringify({ message: "Choose a consolidation group." })]),
+    }),
+  });
+  await assert.rejects(
+    download("konsol.close.statement_api.export_statement", {}, { fetchImpl }),
+    { message: "Choose a consolidation group." },
+  );
+});
+
+test("a download with no filename in the reply throws rather than naming the file itself", async () => {
+  const fetchImpl = async () => fileResponse(200, "PK..", null);
+  await assert.rejects(
+    download("konsol.close.statement_api.export_statement", {}, { fetchImpl }),
+    /no file name/,
+  );
+});
+
+test("a download network failure names the error", async () => {
+  const fetchImpl = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+  await assert.rejects(
+    download("konsol.close.statement_api.export_statement", {}, { fetchImpl }),
+    { message: "Network error: Failed to fetch" },
+  );
 });

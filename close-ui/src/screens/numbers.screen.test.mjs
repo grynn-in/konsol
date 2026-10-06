@@ -288,3 +288,24 @@ test("L42b: the out-of-scope scopeText is shown independently of the show-all to
 	const tpl = template(read());
 	assert.match(tpl, /view\.notIncluded\.scopeText/);
 });
+
+
+// --- konsol#305 8.5: "Export to Excel" (decision #305-W5-3) -------------------
+
+test("8.5: the screen downloads export_statement through api.js's download", () => {
+	const src = script(read());
+	assert.match(src, /import \{[^}]*\bdownload\b[^}]*\} from "\.\.\/api\.js"/);
+	assert.match(src, /"konsol\.close\.statement_api\.export_statement"/);
+	// The export names the group this payload resolved to, so the file is
+	// the statement on screen, never the server's own pick.
+	assert.match(src, /consolidation_group:\s*view\.value\.consolidationGroup/);
+});
+
+test("8.5: the Export to Excel button shows only with an ok statement", () => {
+	const tpl = template(read());
+	const okBranch = tpl.indexOf("<template v-else>");
+	const button = tpl.indexOf("Export to Excel");
+	assert.ok(okBranch >= 0, "the ok branch exists");
+	assert.ok(button > okBranch, "the button sits inside the ok branch, after the state banner");
+	assert.match(tpl, /exporting\.error/, "a refused export shows the server's sentence");
+});
