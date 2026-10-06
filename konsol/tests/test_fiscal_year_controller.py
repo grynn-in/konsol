@@ -3,6 +3,7 @@
 The controller builds the year and row dicts from the doc and hands them to
 konsol.fiscal_structure_model; every error comes back in one throw. Loaded
 against a stub frappe, as in test_submit_period_gate.py."""
+import ast
 import contextlib
 import copy
 import importlib.util
@@ -712,3 +713,119 @@ def test_new_year_with_named_rows_not_foreign():
         doc = _year(module, rows)          # no saved version: a new year
         msg = _thrown(doc)
         assert msg is None or "another fiscal year" not in msg, msg
+
+
+# --- konsol#337: a calendar change requests a full build; a status move does not ---
+# epm_staging.fiscal_periods is TRUNCATE+INSERTed on every save, and dbt reads
+# it (measured 6 Oct 2026, konsolidat main e292abb): silver_tb_movements,
+# governed_rates.sql and seven gold models read it as a source, and the issue
+# counts 16 gold models downstream that +tag:domain:consolidation does not
+# reach. Every column they read is structural; none reads `status`
+# (_staging__sources.yml: "the warehouse does not filter on it"). So a
+# Close/Lock/Reopen republishes the table but changes nothing gold computes,
+# and must not ask an EPM Admin to approve a full rebuild.
+
+@contextlib.contextmanager
+def _requests():
+    """konsol.tasks and konsol.clickhouse stubbed for the hooks: yields the
+    list of (doctype, name, method) build requests made."""
+    made = []
+    tasks = types.ModuleType("konsol.tasks")
+    tasks.queue_consolidation_build = lambda doc, method: made.append(
+        (doc.doctype, doc.name, method))
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.after_commit_once = lambda key, fn: None
+    saved = {n: sys.modules.get(n) for n in ("konsol.tasks", "konsol.clickhouse")}
+    sys.modules.update({"konsol.tasks": tasks, "konsol.clickhouse": ch})
+    try:
+        yield made
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def test_a_calendar_change_requests_one_full_build_per_save():
+    """Declaring a year, re-typing, re-dating, relabelling or re-quartering a
+    period, adding an Opening or Closing period, and deleting a year each
+    request exactly one build (once per save, however many rows moved), as
+    EPM Fiscal Year, whose DOCTYPE_BUILD_MAP scope is "full"."""
+    def p03_type(doc):
+        doc.periods[3].period_type = "Adjustment"
+
+    def p03_label(doc):
+        doc.periods[3].period_label = "March (restated)"
+
+    def p03_quarter(doc):
+        doc.periods[3].quarter = "Q1"
+
+    def every_label(doc):
+        for r in doc.periods:
+            r.period_label = "x" + r.period_code
+
+    def add_closing(doc):
+        doc.periods.append(_row(14, "CL2", "Closing", "2025-12-31", "2025-12-31"))
+
+    def drop_opening(doc):
+        doc.periods.pop(0)
+
+    with _load() as module:
+        for change in (p03_type, p03_label, p03_quarter, every_label, add_closing,
+                       drop_opening, _move_p03_end):
+            doc = _edit(module, _saved(module))
+            change(doc)
+            with _requests() as made:
+                doc.on_update()
+            assert made == [("EPM Fiscal Year", "2025", "on_update")], (change.__name__, made)
+
+        with _requests() as made:
+            _year(module, _monthly_2025()).on_update()        # a new year, declared
+        assert made == [("EPM Fiscal Year", "2025", "on_update")], made
+
+        with _requests() as made:
+            _saved(module).after_delete()
+        assert made == [("EPM Fiscal Year", "2025", "after_delete")], made
+
+    tree = ast.parse(open(os.path.join(APP_DIR, "tasks.py")).read())
+    build_map = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                     and any(getattr(t, "id", None) == "DOCTYPE_BUILD_MAP" for t in n.targets))
+    assert build_map.get("EPM Fiscal Year") == {"scope": "full", "risk": "high"}, build_map
+
+
+def test_a_status_move_or_an_unchanged_save_requests_no_build():
+    """Close, Lock and Reopen move only `status` (and closed_by/on, not
+    published): no model reads it, so no build. Nor does a save that changes
+    nothing published once normalised as fiscal_period_rows() publishes it
+    (a date posted as a string, a blank label that falls back to the code, a
+    blank quarter), an empty year declared or deleted."""
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.status = "Closed"
+        doc.closed_by = "admin@example.com"
+        for r in doc.periods:
+            r.status = "Locked"
+        with _requests() as made:
+            doc.on_update()
+        assert made == [], made
+
+        saved = _saved(module)
+        for r in saved.periods:
+            r.start_date, r.end_date = _getdate(r.start_date), _getdate(r.end_date)
+        saved.periods[2].period_label = None
+        saved.periods[2].quarter = ""
+        doc = _edit(module, saved)
+        for r in doc.periods:
+            r.start_date, r.end_date = r.start_date.isoformat(), r.end_date.isoformat()
+        doc.periods[2].period_label = doc.periods[2].period_code
+        doc.periods[2].quarter = None
+        doc.closing_note = "a note"
+        with _requests() as made:
+            doc.on_update()
+        assert made == [], made
+
+        with _requests() as made:
+            _year(module, []).on_update()
+            _year(module, []).after_delete()
+        assert made == [], made
