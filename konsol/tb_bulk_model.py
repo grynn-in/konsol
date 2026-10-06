@@ -121,7 +121,7 @@ def _whole(value, what, lineno, errors):
         return None
 
 
-def split_table(table, declared_dimensions=()):
+def split_table(table, declared_dimensions):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
     Keys keep the order they first appear in the file. Each row is
@@ -136,8 +136,8 @@ def split_table(table, declared_dimensions=()):
     in one pass.
 
     `declared_dimensions` are the site's Dimension rows (dimension_name,
-    status, in_trial_balance); the default, no dimensions, means a site that
-    declares none and keeps every existing caller working. A dim_* column the
+    status, in_trial_balance). It has no default (konsol#319), as for
+    parse_tb_csv: a caller that means "no dimensions" passes (). A dim_* column the
     site has Published and ticked in_trial_balance is accepted and lands on
     each row under its own name, as a string, '' when the cell is blank — a
     dimension is optional per row. Any other dim_* header is refused saying

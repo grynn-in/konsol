@@ -55,8 +55,9 @@ def test_the_load_job_resolves_the_basis_before_creating_each_submission():
 
 
 def test_both_split_table_calls_pass_the_sites_declared_dimensions():
-    """konsol#255: split_table defaults declared_dimensions to none, so a call
-    that omits it refuses every dim_* header whatever the site declared. Both
+    """konsol#255: a call that passes no dimensions, or (), refuses every
+    dim_* header whatever the site declared (konsol#319 made omitting it a
+    TypeError; passing () still type-checks). Both
     calls are covered end to end in test_dimensions_reach_the_warehouse.py;
     this is the cheap guard that neither loses the argument again."""
     src = _source()
