@@ -344,3 +344,24 @@ def test_the_payload_is_not_mutated():
     before = copy.deepcopy(payload)
     M.workbook(payload, _drills())
     assert payload == before
+
+
+def test_account_lines_that_round_away_from_their_row_get_a_rounding_line():
+    """Measured live 6 Oct (FY2025 P07 ECL_GROUP): each account amount is
+    rounded on its own, so an entity row's account lines drifted up to
+    0.14 from the row amount and the Drill sheet did not foot to the
+    heading total. A rounding line per such row makes the column sum to
+    the total, and says so."""
+    drills = _drills()
+    entity_row = drills["1"]["rows"][0]
+    entity_row["accounts"] = [
+        {"main_account": "1110", "account_name": "Cash", "amount": 150.01},
+        {"main_account": "1120", "account_name": "Receivables", "amount": 150.0},
+    ]  # row amount stays 300.0
+    rows = _rows(_book(drills=drills)["Drill"])
+    body = [r for r in rows[2:] if r[1] == "1" and r[3] != "Total"]
+    rounding = [r for r in body if r[6] == "Rounding (accounts to row)"]
+    assert len(rounding) == 1
+    assert rounding[0][4] == entity_row["entity"]
+    assert rounding[0][7] == -0.01
+    assert round(sum(r[7] for r in body), 2) == drills["1"]["total"]

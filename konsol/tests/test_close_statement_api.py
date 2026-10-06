@@ -1021,3 +1021,13 @@ def test_export_scoped_caller_never_sees_hidden_entity_names():
             assert not any(isinstance(v, str) and "ZZB" in v for v in row), (sheet.title, row)
     layers = {r[3] for r in book["Drill"].iter_rows(values_only=True)}
     assert "1 entities outside your scope" in layers
+
+
+def test_export_filename_names_the_fiscal_year_even_when_the_period_code_does_not():
+    """Measured live 6 Oct: the live period_code is "P07", so a name built
+    from it ("numbers-P07-ECL_GROUP.xlsx") lost the fiscal year."""
+    site = _export_site()
+    for row in site.periods:
+        row["period_code"] = "P%02d" % row["fiscal_period"]
+    response = _call_export(site, group="G1")
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
