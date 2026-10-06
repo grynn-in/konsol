@@ -23,6 +23,7 @@ SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 SCOPE_MODEL_PY = os.path.join(APP_DIR, "close", "scope_model.py")
 STATEMENT_MODEL_PY = os.path.join(APP_DIR, "close", "statement_model.py")
+IC_BALANCE_MODEL_PY = os.path.join(APP_DIR, "close", "ic_balance_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -140,6 +141,10 @@ class _Site:
                            "message": "Intercompany not configured — nothing was checked.",
                            "counts": None, "sent_back_open": None}
         self.ic_calls = []
+        #: #305 5.4 (W5-4): the stubbed `konsol.close.ic_balance_api.rule_gap`
+        #: returns this; `ic_rule_gap_calls` records each (fy, fp) it is asked.
+        self.ic_rule_gap = None
+        self.ic_rule_gap_calls = []
 
 
 def _match(value, cond):
@@ -282,6 +287,17 @@ def _load(site):
     ic_api.signoff_summary = signoff_summary
     close.ic_api = ic_api
 
+    # #305 5.4: a stub `konsol.close.ic_balance_api` (imported lazily by the
+    # gate), so the real module never runs against this fake frappe.
+    ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
+
+    def rule_gap(fiscal_year, fiscal_period):
+        site.ic_rule_gap_calls.append((fiscal_year, fiscal_period))
+        return site.ic_rule_gap
+
+    ic_balance_api.rule_gap = rule_gap
+    close.ic_balance_api = ic_balance_api
+
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -359,6 +375,7 @@ def _load(site):
             "konsol.close.statement_model": statement_model,
             "konsol.close.close_event": close_event,
             "konsol.close.ic_api": ic_api,
+            "konsol.close.ic_balance_api": ic_balance_api,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -1650,3 +1667,47 @@ def test_a_heading_side_problem_joins_an_existing_statement_accounts_problem():
     message = _blocked(site)
     assert "Declare the CTA account in Close Settings" in message, message
     assert "statement_heading_side_undeclared" in message and "2000" in message, message
+
+
+# --- #305 5.4 (W5-4): an IC Balance with no unrealised-profit rule blocks -----
+
+def _real_rule_gap(balances, rules=()):
+    """The real producer (ic_balance_model.rule_gap), loaded by path."""
+    spec = importlib.util.spec_from_file_location("ic_balance_model_for_gate", IC_BALANCE_MODEL_PY)
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    return model.rule_gap(list(balances), list(rules))
+
+
+_ZZ_BALANCE = {"name": "ICB-ZZA-ZZB-2025-P9", "selling_entity": "ZZA", "buying_entity": "ZZB",
+               "fiscal_year": 2025, "fiscal_period": 9, "ic_sales_amount": 100.0,
+               "ending_inventory_from_ic": 40.0, "docstatus": 0}
+
+
+def test_a_draft_ic_balance_with_no_rule_blocks_sign_off_naming_the_pair():
+    site = _Site()
+    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["ic_unrealized_profit_rule_undeclared"]
+    assert site.ic_rule_gap_calls == [(2025, 9)]
+    message = _blocked(site)
+    assert "ZZA → ZZB" in message, message
+
+
+def test_the_rule_gap_follows_the_tolerance_gap():
+    site = _Site()
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
+    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["ic_tolerance_undeclared", "ic_unrealized_profit_rule_undeclared"], codes
+
+
+def test_a_covered_pair_leaves_the_gate_clear():
+    site = _Site()
+    rule = {"rule_id": "R", "rule_type": "unrealized_profit", "margin_pct": 10,
+            "debit_entity_pattern": "*", "credit_entity_pattern": "*"}
+    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE], [rule])
+    assert site.ic_rule_gap is None
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+    assert site.ic_rule_gap_calls == [(2025, 9)]

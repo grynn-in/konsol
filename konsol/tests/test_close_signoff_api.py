@@ -172,6 +172,8 @@ class _Site:
                                       "fx_difference": 0, "over_tolerance": 0, "unmatched": 0},
                            "sent_back_open": 0}
         self.ic_tolerance_gap = None
+        #: #305 5.4: the stubbed `konsol.close.ic_balance_api.rule_gap` returns this.
+        self.ic_rule_gap = None
         self.ic_calls = []
 
 
@@ -370,6 +372,11 @@ def _load(site):
     ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
     close.ic_api = ic_api
 
+    # #305 5.4: the gate imports konsol.close.ic_balance_api lazily.
+    ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
+    ic_balance_api.rule_gap = lambda fiscal_year, fiscal_period: site.ic_rule_gap
+    close.ic_balance_api = ic_balance_api
+
     konsol.close, konsol.fiscal_calendar = close, calendar
     konsol.entity_permissions, konsol.period_status = perms, period_status
     konsol.schema_lifecycle = lifecycle
@@ -377,6 +384,7 @@ def _load(site):
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.close.ic_api": ic_api,
+            "konsol.close.ic_balance_api": ic_balance_api,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle,
@@ -898,6 +906,48 @@ def test_unowned_tb_gap_unscoped_names_the_entity():
     assert len(gaps) == 1
     assert gaps[0]["entities"] == ["ZZX"]
     assert "ZZX" in gaps[0]["message"]
+
+
+def _real_rule_gap(*pairs):
+    """#305 5.4: the real producer's gap (ic_balance_model.rule_gap) for
+    draft IC Balances of ``pairs`` with no rule."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "close", "ic_balance_model.py")
+    spec = importlib.util.spec_from_file_location("ic_balance_model_for_signoff_api", path)
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    balances = [{"name": "B%d" % i, "selling_entity": s, "buying_entity": b, "docstatus": 0}
+                for i, (s, b) in enumerate(pairs)]
+    return model.rule_gap(balances, [])
+
+
+def test_ic_rule_gap_unscoped_names_the_pairs():
+    site = _Site()
+    site.ic_rule_gap = _real_rule_gap(("ZZA", "ZZX"))
+    gaps = [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_undeclared"]
+    assert len(gaps) == 1
+    assert "ZZA → ZZX" in gaps[0]["message"]
+
+
+def test_ic_rule_gap_is_scoped_to_the_callers_entities():
+    """#305 5.4: a scoped caller sees its own entity and a count; neither the
+    message nor the pairs name an entity outside its scope."""
+    site = _Site()
+    site.ic_rule_gap = _real_rule_gap(("ZZA", "ZZX"), ("ZZY", "ZZZ"))
+    site.allowed = {"ZZA"}
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_undeclared"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == ["ZZA"] and gap["hidden"] == 3
+    assert "ZZA" in gap["message"] and "3 entities outside your scope" in gap["message"]
+    assert "IC Elimination Rule" in gap["message"]
+    text = json.dumps(gap)
+    for other in ("ZZX", "ZZY", "ZZZ"):
+        assert other not in text, other
+    assert "ic_unrealized_profit_rule_undeclared (" not in gap["message"]
 
 
 # --- A32: sign ---------------------------------------------------------------------

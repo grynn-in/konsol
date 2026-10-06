@@ -102,6 +102,9 @@ from konsol.period_status import PeriodNotDeclared
 from konsol.schema_lifecycle import check_epm_admin
 
 REGULAR = "Regular"
+#: #305 5.4: ``ic_balance_model.RULE_UNDECLARED`` (not imported: test loaders
+#: stub konsol.close; test_close_signoff_api feeds the real producer's gap).
+IC_RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
 
 #: A18's Select, read for A21's summary: 1 labelled, 0 not, None unknown.
 _ON_BEHALF = {"Yes": 1, "No": 0, "": None, None: None}
@@ -210,6 +213,14 @@ def _scoped_gap(gap, allowed, key):
         message = ("Trial balances from %s have no ownership for FY%d P%02d: record the "
                    "ownership or cancel the trial balance before signing off."
                    % (names, key[0], key[1]))
+    elif gap["code"] == IC_RULE_UNDECLARED:
+        message = ("No unrealised-profit IC Elimination Rule (margin above 0) matches the IC "
+                   "Balances of %s for FY%d P%02d: declare the rule in Desk before signing off."
+                   % (names, key[0], key[1]))
+        # A pair names two entities: keep only the pairs this caller sees whole.
+        pairs = [p for p in gap.get("pairs") or ()
+                 if p["selling_entity"] in allowed and p["buying_entity"] in allowed]
+        return dict(gap, entities=mine, hidden=hidden, message=message, pairs=pairs)
     else:
         message = "%s (%s)." % (gap["code"], names)
     return dict(gap, entities=mine, hidden=hidden, message=message)

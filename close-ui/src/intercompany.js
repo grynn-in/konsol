@@ -269,3 +269,100 @@ export function sendBackBody(period, pair, reason) {
 		},
 	};
 }
+
+// --- konsol#305 5.4 (#305-W5-4): IC Balances (unrealised profit) ----------
+//
+// `ic_balance_api.get_ic_balances`'s payload -> the IC Balances section. The
+// margin is read-only (the rule is configured in Desk); a balance with no
+// matching unrealised-profit rule says that nothing is eliminated, and the
+// server's gap names each pair. An unknown status throws, naming it.
+
+const BALANCE_STATUS_TONE = { Draft: "warn", Approved: "ok" };
+
+function marginText(rules) {
+	if (!rules || !rules.length) {
+		return "No unrealised-profit rule: nothing is eliminated";
+	}
+	return rules.map((r) => `${r.margin_pct}% (${r.rule_name || r.rule_id})`).join(", ");
+}
+
+function balanceRow(row, canDraft) {
+	if (!(row.status in BALANCE_STATUS_TONE)) {
+		throw new Error(`Unknown IC Balance status: ${row.status}`);
+	}
+	return {
+		name: row.name,
+		sellingEntity: row.selling_entity,
+		buyingEntity: row.buying_entity,
+		pair: `${row.selling_entity} → ${row.buying_entity}`,
+		statusText: row.status,
+		statusTone: BALANCE_STATUS_TONE[row.status],
+		salesText: formatAmount(row.ic_sales_amount),
+		inventoryText: formatAmount(row.ending_inventory_from_ic),
+		salesValue: row.ic_sales_amount,
+		inventoryValue: row.ending_inventory_from_ic,
+		marginText: marginText(row.rules),
+		missingRule: !!row.missing_rule,
+		editable: canDraft && row.status === "Draft",
+	};
+}
+
+export function icBalancesView(payload) {
+	const canDraft = !!payload.can_draft;
+	const hidden = payload.hidden || 0;
+	return {
+		rows: (payload.balances || []).map((row) => balanceRow(row, canDraft)),
+		gap: payload.gap
+			? {
+					lines: messageLines(payload.gap.message),
+					pairs: (payload.gap.pairs || []).map((p) => `${p.selling_entity} → ${p.buying_entity}`),
+				}
+			: null,
+		hiddenNote: hidden > 0 ? `${hidden} IC Balances for entities outside your scope are not shown` : null,
+		canDraft,
+		entities: payload.entities || [],
+		rulesDesk: payload.rules_desk,
+	};
+}
+
+function amountProblem(value, label) {
+	const text = value === null || value === undefined ? "" : String(value).trim();
+	if (text === "" || !Number.isFinite(Number(text))) {
+		return `The ${label} must be a number.`;
+	}
+	if (Number(text) < 0) {
+		return `The ${label} cannot be negative.`;
+	}
+	return null;
+}
+
+/**
+ * `save_ic_balance`'s POST body: exactly the endpoint's keys, plus `name`
+ * when editing a draft. Refuses blank or equal entities and a missing,
+ * non-numeric or negative amount client-side (the server refuses them too).
+ */
+export function icBalanceBody(period, form) {
+	const problems = [];
+	if (!form.selling_entity) problems.push("Name the selling entity.");
+	if (!form.buying_entity) problems.push("Name the buying entity.");
+	if (form.selling_entity && form.selling_entity === form.buying_entity) {
+		problems.push("The selling and buying entity are the same entity: an IC Balance is between two entities.");
+	}
+	for (const [key, label] of [["ic_sales_amount", "IC sales amount"], ["ending_inventory_from_ic", "ending inventory from IC"]]) {
+		const problem = amountProblem(form[key], label);
+		if (problem) problems.push(problem);
+	}
+	if (problems.length) {
+		return { error: problems.join("<br>") };
+	}
+	const body = {
+		fiscal_year: period.fiscal_year,
+		fiscal_period: period.fiscal_period,
+		selling_entity: form.selling_entity,
+		buying_entity: form.buying_entity,
+		ic_sales_amount: String(form.ic_sales_amount).trim(),
+		ending_inventory_from_ic: String(form.ending_inventory_from_ic).trim(),
+	};
+	if (form.name) body.name = form.name;
+	return { body };
+}
