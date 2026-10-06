@@ -65,7 +65,10 @@ RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
 #: signed run, and latest_close_run / signoff_gate, which find a period's runs
 #: by fiscal_year/fiscal_period, then read that other period as signed.
 #: title (A62) is set by trigger_close_run at insert and names the run.
-SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title")
+#: The fingerprint of the numbers the run checked (konsol#338) is set there
+#: too: a changed fingerprint would hide a change from the build check.
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title",
+                "numbers_fingerprint", "fingerprint_as_of", "fingerprint_error")
 #: The fields of an Assertion Step row. The results table changes only inside
 #: the worker (A50): a save with edited rows could rewrite which checks failed.
 STEP_FIELDS = ("assertion", "dimension", "status", "rows_failed", "severity", "message",
@@ -348,6 +351,11 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
             "title": frappe.utils.now(),
         }
     )
+    # konsol#338: the fingerprint of the numbers these checks will read, so a
+    # later build voids the sign-off only if they changed. A failed read is
+    # written on the run (fingerprint_error); sign_off_close refuses it.
+    from konsol.close import fingerprint
+    fingerprint.stamp_new_run(doc)
     doc.flags.started_by_trigger = True
     doc.insert(ignore_permissions=True)
     frappe.db.commit()
@@ -544,6 +552,15 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
             frappe._("FY{0} {1} is {2}; reopen it to sign off. Nothing was signed.").format(
                 doc.fiscal_year, period["code"], period["status"]),
             title=frappe._("Sign-off blocked"))
+    # konsol#338: no signed run without the fingerprint of the numbers it
+    # checked, or a later build could not tell whether they changed.
+    if not doc.numbers_fingerprint:
+        frappe.throw(
+            frappe._("This run has no fingerprint of the numbers it checked: {0}. "
+                     "Run the checks again, then sign off the new run. Nothing was signed.").format(
+                         doc.fingerprint_error or frappe._("it started before fingerprints were "
+                                                            "recorded")),
+            title=frappe._("Sign-off blocked"))
     # Imported here: signoff_gate reads assertion_run's TERMINAL_STATUSES.
     from konsol.close import signoff_gate, signoff_model
     # A63 (#305-R2b-3): a signature covers only the data its run checked.
@@ -650,6 +667,7 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
                         doc.name, reason=reason or ack,
                         detail={"signoff_status": new_state, "run_status": doc.status,
                                 "warnings": warnings or None,
+                                "numbers_fingerprint": doc.numbers_fingerprint,
                                 "intercompany": {"state": ic["state"],
                                                  "over_tolerance": signoff_model.ic_over_tolerance(ic),
                                                  "sent_back_open": ic.get("sent_back_open")}})

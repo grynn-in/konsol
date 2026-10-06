@@ -215,8 +215,14 @@ def _call(site, fn, *args):
                                                    os.path.join(APP_DIR, "close", "timefmt.py"))
     timefmt = importlib.util.module_from_spec(tspec)
     tspec.loader.exec_module(timefmt)
+    # konsol#338: trigger_close_run stamps the new run's fingerprint; the
+    # warehouse read is tested in test_close_fingerprint.py.
+    fingerprint = types.ModuleType("konsol.close.fingerprint")
+    fingerprint.stamp_new_run = lambda doc: None
+    mods["konsol.close"].fingerprint = fingerprint
     mods.update({
         "frappe": frappe,
+        "konsol.close.fingerprint": fingerprint,
         "konsol.close.timefmt": timefmt,
         "konsol.close.checks_model": model,
         "konsol.close.freshness_api": freshness_api,

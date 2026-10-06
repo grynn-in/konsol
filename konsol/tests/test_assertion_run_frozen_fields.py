@@ -42,7 +42,8 @@ SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_
                   "acknowledgement", "warnings_at_signoff", "affected_by")
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
                  "started_at", "completed_at", "duration_seconds", "log")
-SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title")
+SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title",
+                "numbers_fingerprint", "fingerprint_as_of", "fingerprint_error")
 STEP_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_step",
                          "assertion_step.json")
 
@@ -59,6 +60,10 @@ FORGED = {
     "fiscal_year": 2098, "fiscal_period": 2, "pipeline_run": "PR-FORGED",
     "triggered_by": "forger@example.com",
     "log": "forged: all 131 assertions passed", "title": "forged title",
+    # konsol#338: the fingerprint is fixed at insert like the scope.
+    "numbers_fingerprint": "v1:" + "f" * 64,
+    "fingerprint_as_of": datetime.datetime(2026, 9, 25, 12, 0, 0),
+    "fingerprint_error": "forged",
 }
 
 
@@ -103,6 +108,8 @@ def _saved():
         "override_reason": None, "acknowledgement": None, "warnings_at_signoff": None,
         "affected_by": None, "pipeline_run": None, "triggered_by": "analyst@example.com", "results": _steps(),
         "log": "dbt test: 1 pass, 2 fail",
+        "numbers_fingerprint": "v1:" + "0" * 64,
+        "fingerprint_as_of": datetime.datetime(2026, 9, 1, 8, 0, 0), "fingerprint_error": None,
     }
 
 
@@ -335,7 +342,8 @@ def test_sign_off_close_saves_as_the_signoff_writer():
     seen = []
     doc = types.SimpleNamespace(name="AR-1", status="Green", warned=0, fiscal_year=2099,
                                 fiscal_period=1, signoff_status="Not Signed Off",
-                                started_at=None)
+                                started_at=None, numbers_fingerprint="v1:" + "0" * 64,
+                                fingerprint_error=None)
     doc.save = lambda **k: seen.append(module.active_writer())
     frappe.get_doc = lambda *a, **k: doc
     gate = types.ModuleType("konsol.close.signoff_gate")
