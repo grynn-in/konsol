@@ -34,6 +34,13 @@
 //   string. `detail` is the parsed object (or null).
 // - `hidden` is the count of entity-scoped events the caller's scope
 //   dropped (#305-W2-9); it is always present, 0 when nothing was hidden.
+// - Story 10.2: `total` is the scoped event count before the filters;
+//   `filters` echoes the applied filters (`{kinds, actors, entities}` as
+//   lists, [] = none; `date_from`/`date_to` ISO or null); `options` holds
+//   the scoped choices (`kinds`, `entities` with GROUP_LEVEL for
+//   group-level events, and `actors` as `{actor, actor_name,
+//   actor_missing}`). The server filters; this module only labels the
+//   choices and turns a filter state into query params.
 
 import { parseZoned, formatTime } from "./timefmt.js";
 
@@ -257,9 +264,80 @@ function exceptionsText(counts) {
 	return `${counts.self_approvals} self-approval(s) · ${counts.on_behalf_uploads} on-behalf upload(s) · ${counts.overrides} override(s)`;
 }
 
+/** Story 10.2: trail_model.GROUP_LEVEL, the entity choice that selects
+ * group-level (blank-entity) events. auditTrail.test.mjs pins it to the
+ * Python constant. */
+export const GROUP_LEVEL = "(group)";
+
+const DYNAMIC_KIND_LABEL = { signed_off: "Signed off", tb_submitted: "Submitted" };
+
+function kindChoiceLabel(kind) {
+	if (DYNAMIC_KIND_LABEL[kind]) return DYNAMIC_KIND_LABEL[kind];
+	const found = KIND_LABEL[kind];
+	if (!found) {
+		throw new Error(`Unknown Close Event kind: ${kind}`);
+	}
+	return found.label;
+}
+
+/** The empty filter state (every field unfiltered). */
+export function noFilters() {
+	return { kinds: [], actors: [], entities: [], date_from: null, date_to: null };
+}
+
+function anyFilter(filters) {
+	return Boolean(
+		filters && (
+			(filters.kinds && filters.kinds.length) ||
+			(filters.actors && filters.actors.length) ||
+			(filters.entities && filters.entities.length) ||
+			filters.date_from || filters.date_to
+		),
+	);
+}
+
+/** `list` with `value` added when absent, removed when present; a new array. */
+export function toggled(list, value) {
+	return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+}
+
+/** A filter state as get_trail / export_trail_csv query params: non-empty
+ * lists as JSON, dates as given; an empty field is left out. */
+export function filterParams(filters) {
+	const params = {};
+	for (const key of ["kinds", "actors", "entities"]) {
+		if (filters[key] && filters[key].length) params[key] = JSON.stringify(filters[key]);
+	}
+	for (const key of ["date_from", "date_to"]) {
+		if (filters[key]) params[key] = filters[key];
+	}
+	return params;
+}
+
+/** The labelled filter choices from `payload.options` (the scoped period's
+ * kinds, actors and entities, never a hidden entity's). Throws on a
+ * payload with no options and on an unknown kind. */
+export function filterChoices(payload) {
+	if (!payload || !payload.options) {
+		throw new Error("Audit trail payload has no filter options.");
+	}
+	const { kinds, actors, entities } = payload.options;
+	return {
+		kinds: kinds.map((kind) => ({ value: kind, label: kindChoiceLabel(kind) })),
+		actors: actors.map((a) => ({
+			value: a.actor,
+			label: a.actor_missing ? `${a.actor} (user deleted)` : a.actor_name,
+		})),
+		entities: entities.map((code) => ({
+			value: code,
+			label: code === GROUP_LEVEL ? "Group-level" : code,
+		})),
+	};
+}
+
 /**
  * `trailView(payload, now, timeZone)` -> `{signedOff, result, closedLocked,
- * exceptions, rows, hiddenNote}` for AuditTrail.vue (T08b).
+ * exceptions, rows, countNote, hiddenNote}` for AuditTrail.vue (T08b).
  *
  * `rows` are `payload.events` in the server's (newest-first) order, never
  * re-sorted. Every event's kind is resolved to a label and a tone eagerly;
@@ -267,7 +345,9 @@ function exceptionsText(counts) {
  * `hiddenNote` is "N events for entities outside your scope are not shown"
  * when `payload.hidden > 0`, else null (mirrors periodGrid.js's
  * `hiddenNote`). `payload.hidden` must be present -- it is never guessed
- * as 0.
+ * as 0. `countNote` (10.2) is "Showing N of M events" when the payload's
+ * echoed filters are not empty, else null; a filtered payload with no
+ * `total` throws.
  */
 export function trailView(payload, now, timeZone) {
 	if (!payload || !payload.summary) {
@@ -277,12 +357,20 @@ export function trailView(payload, now, timeZone) {
 		throw new Error("Audit trail payload has no hidden count.");
 	}
 	const { summary, events, period } = payload;
+	let countNote = null;
+	if (anyFilter(payload.filters)) {
+		if (!Object.prototype.hasOwnProperty.call(payload, "total")) {
+			throw new Error("Audit trail payload is filtered but has no total.");
+		}
+		countNote = `Showing ${events.length} of ${payload.total} events`;
+	}
 	return {
 		signedOff: signedOffText(summary.signoff, now, timeZone),
 		result: resultText(summary.signoff),
 		closedLocked: closedLockedText(summary, now, timeZone),
 		exceptions: exceptionsText(summary.counts),
 		rows: events.map((event) => eventRow(event, now, timeZone, period.fiscal_year)),
+		countNote,
 		hiddenNote: payload.hidden > 0
 			? `${payload.hidden} events for entities outside your scope are not shown`
 			: null,

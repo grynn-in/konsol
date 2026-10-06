@@ -84,9 +84,16 @@ async function request(method, url, opts, fetchImpl) {
 	return data ? data.message : undefined;
 }
 
+/** The URL a GET of `method` with `params` calls (blank params left out).
+ * Story 10.2: the Audit trail's Export CSV link is a plain link to it, so
+ * the browser downloads the server-built file. */
+export function methodUrl(method, params) {
+	return `/api/method/${method}${buildQuery(params)}`;
+}
+
 /** GET `konsol.close.<...>`. Never writes; a query string carries params. */
 export function get(method, params, { fetchImpl = fetch } = {}) {
-	const url = `/api/method/${method}${buildQuery(params)}`;
+	const url = methodUrl(method, params);
 	return request("GET", url, {
 		method: "GET",
 		credentials: "include",
