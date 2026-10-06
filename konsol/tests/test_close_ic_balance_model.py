@@ -310,3 +310,10 @@ def test_rows_flag_an_ambiguous_rule():
     assert row["ambiguous_rule"] is False
     [row] = M.balance_rows([_bal(inventory="0")], [_rule("R1"), _rule("R2")])
     assert row["ambiguous_rule"] is False
+
+
+def test_ambiguous_rule_ids_are_sorted_whatever_the_read_order():
+    # Live (F51b check): get_all returned the pair rule before the wildcard.
+    gap = M.ambiguous_gap([_bal()], [_rule("R-UK", debit="UK01"), _rule("R-ALL")])
+    assert gap["pairs"][0]["rule_ids"] == ["R-ALL", "R-UK"]
+    assert "UK01 → DE01 (R-ALL, R-UK)" in gap["message"]
