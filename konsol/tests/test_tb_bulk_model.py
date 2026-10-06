@@ -604,17 +604,18 @@ def test_a_bad_dimension_header_and_a_bad_ordinary_header_are_reported_together(
     assert "Unrecognised column" in msg, msg
 
 
-def test_the_unrecognised_column_refusal_names_the_declared_dimension_columns():
-    """konsol#255 A/B: the refusal listed the accepted header without the
+def test_every_header_refusal_names_the_dimension_columns_the_site_accepts():
+    """konsol#255 A/B: a header refusal showed the accepted header without the
     site's dimension columns, so an admin was not told dim_cost_center would
-    have been accepted. Only accepted ones are named: a declared but Draft
-    dimension is not a column the file may carry."""
-    table = [HEADER + ["notes"], ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "x"]]
-    msg = _raises(M.split_table, table, [declared("dim_cost_center"), declared("dim_region"),
-                                         declared("dim_draft", status="Draft")])
-    assert "dimension column(s) dim_cost_center, dim_region" in msg, msg
-    assert "dim_draft" not in msg, msg
-    msg = _raises(M.split_table, table, ())
+    have been taken, or was told to create dim_cost_centre. Each kind of
+    header refusal now ends with them, once; a Draft dimension is not one."""
+    dims = [declared("dim_cost_center"), declared("dim_region"), declared("dim_draft", status="Draft")]
+    row = ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "x"]
+    for header in (HEADER + ["notes"], HEADER + ["dim_cost_centre"], HEADER[:-1] + ["dim_region"]):
+        msg = _raises(M.split_table, [header, row[:len(header)]], dims)
+        assert msg.count("This site also accepts the optional dimension column(s) dim_cost_center, dim_region.") == 1, msg
+        assert "dim_draft" not in msg, msg
+    msg = _raises(M.split_table, [HEADER + ["notes"], row], ())
     assert "dimension column" not in msg, msg
 
 

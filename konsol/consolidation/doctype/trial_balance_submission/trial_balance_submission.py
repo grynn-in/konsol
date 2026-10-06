@@ -64,7 +64,7 @@ from konsol.tb_currency_model import (
 )
 from konsol.tb_dimension import declared_dimensions
 from konsol.tb_dimension_model import (
-    accepted_dimension_columns, dimension_header_help, dimension_problems,
+    accepted_dimension_columns, accepted_dimensions_sentence, dimension_problems,
     is_dimension_column,
 )
 
@@ -149,12 +149,16 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
     if not reader.fieldnames:
         raise ValueError("The file is empty — expected a CSV header row")
     headers = [_column(h) for h in reader.fieldnames]
+    declared = list(declared_dimensions)
+    accepted_dims = accepted_dimension_columns(declared)
+    dims_help = accepted_dimensions_sentence(accepted_dims)
     missing = [c for c in _REQUIRED_COLUMNS if c not in headers
                and not (stored and c == CURRENCY)]
     if missing:
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} — the header must be {_HEADER_HELP}"
             + (f". {MISSING_CURRENCY_HELP}" if CURRENCY in missing else "")
+            + (f"\n{dims_help}" if dims_help else "")
         )
     # An unrecognised header is refused, not ignored (konsol#255). This used
     # to check only that _REQUIRED_COLUMNS were present, so every other column
@@ -166,8 +170,6 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
     # sentence — declare it, publish it, or tick the flag — because the generic
     # line does not say which of the three to do. Both kinds are raised
     # together so one pass fixes the file (konsol#255).
-    declared = list(declared_dimensions)
-    accepted_dims = accepted_dimension_columns(declared)
     unknown = [h for h in headers
                if h and h not in _ACCEPTED_COLUMNS and h not in accepted_dims
                and not is_dimension_column(h)]
@@ -175,9 +177,11 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} — the "
-            f"header may be {_HEADER_HELP}{dimension_header_help(accepted_dims)}"
+            f"header may be {_HEADER_HELP}"
         )
     problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
+    if problems and dims_help:
+        problems.append(dims_help)
     if problems and not stored:
         raise ValueError("\n".join(problems))
     if stored:

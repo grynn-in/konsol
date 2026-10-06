@@ -264,3 +264,13 @@ def test_the_three_copies_of_the_column_name_rule_are_identical():
         assert m, f"{const} not found in {rel} in the expected shape"
         found[rel] = m.group(1)
     assert set(found.values()) == {M._LEGAL_DIMENSION_NAME.pattern}, found
+
+
+def test_the_accepted_dimensions_sentence_is_capped():
+    """A site with many dimensions gets a readable refusal: the first
+    MAX_NAMED_DIMENSIONS names, sorted, then a count of the rest."""
+    names = {f"dim_d{i:02}" for i in range(M.MAX_NAMED_DIMENSIONS + 3)}
+    sentence = M.accepted_dimensions_sentence(names)
+    assert sentence.endswith("dim_d09 and 3 more."), sentence
+    assert "dim_d10" not in sentence, sentence
+    assert M.accepted_dimensions_sentence(frozenset()) == ""

@@ -39,7 +39,8 @@ import math
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
 from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems
 from konsol.tb_dimension_model import (
-    accepted_dimension_columns, dimension_header_help, dimension_problems, is_dimension_column,
+    accepted_dimension_columns, accepted_dimensions_sentence, dimension_problems,
+    is_dimension_column,
 )
 
 PARTNER = "partner_data_area_id"
@@ -152,11 +153,15 @@ def split_table(table, declared_dimensions):
         raise ValueError("The file is empty: expected a header row")
     head_line, head = lines[0]
     names = [_header_name(h) for h in head]
+    declared = list(declared_dimensions)
+    accepted_dims = accepted_dimension_columns(declared)
+    dims_help = accepted_dimensions_sentence(accepted_dims)
     missing = [c for c in REQUIRED if c not in names]
     if missing:
         raise ValueError(
             f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be {HEADER_HELP}"
             + (f". {MISSING_CURRENCY_HELP}" if CURRENCY in missing else "")
+            + (f"\n{dims_help}" if dims_help else "")
         )
     # An unrecognised header is refused, not ignored (konsol#255). This used
     # to check only that REQUIRED was present, so any other column was never
@@ -171,8 +176,6 @@ def split_table(table, declared_dimensions):
     # flag — because the generic "here is the accepted header" line does not
     # tell the reader which of the three to do. Both kinds of problem are
     # raised together, as the line errors below are, so one pass fixes the file.
-    declared = list(declared_dimensions)
-    accepted_dims = accepted_dimension_columns(declared)
     unknown = [n for n in names
                if n and n not in ACCEPTED and n not in accepted_dims
                and not is_dimension_column(n)]
@@ -180,9 +183,11 @@ def split_table(table, declared_dimensions):
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} on line "
-            f"{head_line}. The header may be {HEADER_HELP}{dimension_header_help(accepted_dims)}"
+            f"{head_line}. The header may be {HEADER_HELP}"
         )
     problems.extend(dimension_problems([n for n in names if n not in accepted_dims], declared))
+    if problems and dims_help:
+        problems.append(dims_help)
     if problems:
         raise ValueError("\n".join(problems))
     if names.count(CURRENCY) > 1:

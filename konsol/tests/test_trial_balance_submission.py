@@ -964,15 +964,19 @@ def test_parse_reports_a_bad_dimension_header_and_a_bad_ordinary_one_together():
     assert "Unrecognised column" in msg, msg
 
 
-def test_parse_unrecognised_column_refusal_names_the_declared_dimension_columns():
-    """konsol#255 A/B: the refusal must say which dim_* columns the site
-    accepts, and only those (a Draft dimension is not one)."""
-    text = "main_account,debit,credit,notes,currency\n1010,5,0,x,EUR\n"
-    msg = _parse_raises(text, [declared("dim_cost_center"), declared("dim_region"),
-                               declared("dim_draft", status="Draft")])
-    assert "dimension column(s) dim_cost_center, dim_region" in msg, msg
-    assert "dim_draft" not in msg, msg
-    assert "dimension column" not in _parse_raises(text, ()), msg
+def test_every_parse_header_refusal_names_the_dimension_columns_the_site_accepts():
+    """konsol#255 A/B: unknown, misspelled-dimension and missing-column
+    refusals each end with the site's accepted dimension columns, once, and
+    only those (a Draft dimension is not one)."""
+    dims = [declared("dim_cost_center"), declared("dim_region"), declared("dim_draft", status="Draft")]
+    for text in ("main_account,debit,credit,notes,currency\n1010,5,0,x,EUR\n",
+                 "main_account,debit,credit,dim_cost_centre,currency\n1010,5,0,x,EUR\n",
+                 "main_account,debit,credit,dim_region\n1010,5,0,x\n"):
+        msg = _parse_raises(text, dims)
+        assert msg.count("This site also accepts the optional dimension column(s) dim_cost_center, dim_region.") == 1, msg
+        assert "dim_draft" not in msg, msg
+    msg = _parse_raises("main_account,debit,credit,notes,currency\n1010,5,0,x,EUR\n", ())
+    assert "dimension column" not in msg, msg
 
 
 def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser():
