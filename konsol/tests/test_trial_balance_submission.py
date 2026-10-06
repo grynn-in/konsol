@@ -769,7 +769,8 @@ def test_set_amount_basis_writes_mariadb_first_then_one_claim_insert_for_all():
     out = _m.set_amount_basis(["TBS-1", "TBS-2"], "Year-to-date movement")
     assert out["updated"] == 2
     kinds = [e[0] for e in log]
-    assert kinds == ["set", "set", "ch"], kinds
+    # konsol#334: then one rebuild request, after the claim
+    assert kinds == ["set", "set", "ch", "build"], kinds
     assert log[0][1:4] == ("TBS-1", "amount_basis", "Year-to-date movement")
     assert log[0][4].get("update_modified") is False
     claims = _claims(log)
