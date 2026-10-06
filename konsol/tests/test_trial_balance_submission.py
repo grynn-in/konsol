@@ -905,7 +905,7 @@ def declared(name, status="Published", in_trial_balance=1):
             "in_trial_balance": in_trial_balance}
 
 
-def _parse_raises(text, declared_dimensions=()):
+def _parse_raises(text, declared_dimensions):
     try:
         _m.parse_tb_csv(text, declared_dimensions)
     except ValueError as e:
@@ -979,9 +979,10 @@ def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser()
             for r in back] == [("1010", "CC100", "D7"), ("2010", "", "D9")]
 
 
-def test_parse_without_declared_dimensions_is_unchanged():
-    """Every existing caller passes nothing and gets exactly what it got."""
-    msg = _parse_raises("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n")
+def test_parse_with_no_declared_dimensions_refuses_dim_columns_only():
+    """A site that declares no dimensions, passed as (): a dim_* column is
+    refused, and a file without one parses exactly as before dimensions."""
+    msg = _parse_raises("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n", ())
     assert "dim_cost_center" in msg, msg
     rows = _m.parse_tb_csv(GOOD, ())
     assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0, "currency": "EUR",
@@ -1035,14 +1036,14 @@ def test_parse_refuses_a_repeated_undeclared_dimension_as_undeclared():
 def test_parse_partner_keep_one_refusal_is_unchanged():
     msg = _parse_raises(
         "main_account,debit,credit,partner_data_area_id,partner,currency\n"
-        "1010,100,0,AMUS,AMUK,EUR\n")
+        "1010,100,0,AMUS,AMUK,EUR\n", ())
     assert "Two partner columns" in msg, msg
 
 
 def test_parse_amount_basis_keep_one_refusal_is_unchanged():
     msg = _parse_raises(
         "main_account,debit,credit,amount_basis,basis,currency\n"
-        "1010,100,0,Actual,Actual,EUR\n")
+        "1010,100,0,Actual,Actual,EUR\n", ())
     assert "Two amount_basis columns" in msg, msg
 
 
