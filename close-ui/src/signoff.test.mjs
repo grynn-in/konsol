@@ -23,6 +23,17 @@ const GOLDEN_COMMENTARY = JSON.parse(
   ),
 );
 
+// W5-2 (story 8.4): the real statement_api.signoff_commentary output (3
+// headings required) and the real get_signoff acknowledgements for a Green
+// run with it — both committed by the Python host tests (golden).
+const FIXTURES = path.join(__dirname, "..", "..", "konsol", "tests", "fixtures");
+const GOLDEN_REQUIRED = JSON.parse(
+  fs.readFileSync(path.join(FIXTURES, "close_signoff_commentary_required.json"), "utf8"),
+);
+const GOLDEN_ACK_COMMENTARY = JSON.parse(
+  fs.readFileSync(path.join(FIXTURES, "close_signoff_acknowledgements_commentary.json"), "utf8"),
+);
+
 function gates(overrides = {}) {
   return {
     config_gaps: [],
@@ -64,6 +75,7 @@ function summary(overrides = {}) {
     covers: [],
     previous: [],
     commentary: [],
+    commentary_required: GOLDEN_REQUIRED,
     ...overrides,
   };
 }
@@ -609,4 +621,90 @@ test("U47: failure path — commentary never changes the summary's action", () =
   assert.equal(withGaps, "run_checks");
   assert.equal(allCommented, "run_checks");
   assert.equal(none, "run_checks");
+});
+
+
+// --- konsol#305-W5-2 (story 8.4): commentary required above the threshold ---
+
+test("8.4: the required section names the threshold, then each uncommented heading above it", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.commentaryRequired.rows, [
+    "Threshold: a heading needs commentary when its variance against the previous period is above 100.00",
+    "G1 · ASSETS: moved 1,735.10 (173.51%) from 1,000.00 — no commentary",
+    "G1 · LIABILITIES: moved 803.70 from 0.00 (no percentage on a zero base) — no commentary",
+    "G1 · EQUITY: moved 931.40 (118.66%) from 784.90 — no commentary",
+  ]);
+  assert.equal(view.commentaryRequired.empty, false);
+});
+
+test("8.4: the informational missing list stays its own section", () => {
+  const view = summaryView(summary({ commentary: GOLDEN_COMMENTARY }));
+  assert.deepEqual(view.commentary.rows, [
+    "ZZGRP: 0 of 2 headings commented · missing: NET SALES, OPERATING EXPENSES",
+  ]);
+  assert.ok(!view.commentary.rows.some((r) => r.startsWith("Threshold")));
+});
+
+test("8.4: the threshold reads amount, percent, either and both as declared", () => {
+  const line = (threshold) => summaryView(summary({
+    commentary_required: { ...GOLDEN_REQUIRED, threshold, groups: [], required_missing: 0 },
+  })).commentaryRequired.rows[0];
+  const lead = "Threshold: a heading needs commentary when its variance against the previous period is above ";
+  assert.equal(line({ amount: 5000, percent: null, combine: null }), `${lead}5,000.00`);
+  assert.equal(line({ amount: null, percent: 10, combine: null }), `${lead}10%`);
+  assert.equal(line({ amount: 5000, percent: 10, combine: "Either is exceeded" }), `${lead}5,000.00 or 10%`);
+  assert.equal(line({ amount: 5000, percent: 10, combine: "Both are exceeded" }), `${lead}5,000.00 and 10%`);
+});
+
+test("8.4: nothing required says so after the threshold", () => {
+  const view = summaryView(summary({
+    commentary_required: { ...GOLDEN_REQUIRED, groups: [], required_missing: 0 },
+  }));
+  assert.equal(view.commentaryRequired.rows[1], "Every heading above the threshold has commentary");
+});
+
+test("8.4: a group with no comparison names why it was not compared", () => {
+  const view = summaryView(summary({
+    commentary_required: {
+      ...GOLDEN_REQUIRED,
+      groups: [{ consolidation_group: "G1", state: "not_comparable",
+                 message: "No rows in the warehouse for FY2025 P06", over_threshold: 0, required: [] }],
+      required_missing: 0,
+    },
+  }));
+  assert.ok(view.commentaryRequired.rows.includes(
+    "G1: not compared — No rows in the warehouse for FY2025 P06"));
+});
+
+test("8.4: undeclared and unknown show the server's message, never a count", () => {
+  const undeclared = { state: "undeclared", threshold: null, message: "Declare the commentary threshold in Close Settings.", groups: [], required_missing: null };
+  assert.deepEqual(summaryView(summary({ commentary_required: undeclared })).commentaryRequired.rows,
+    ["Declare the commentary threshold in Close Settings."]);
+  const unknown = { ...GOLDEN_REQUIRED, state: "unknown", message: "The commentary threshold cannot be checked.", required_missing: null };
+  assert.deepEqual(summaryView(summary({ commentary_required: unknown })).commentaryRequired.rows,
+    ["The commentary threshold cannot be checked."]);
+});
+
+test("8.4: failure path — a missing or unknown-state commentary_required throws", () => {
+  const s = summary();
+  delete s.commentary_required;
+  assert.throws(() => summaryView(s), /commentary_required/);
+  assert.throws(() => summaryView(summary({ commentary_required: null })), /commentary_required/);
+  assert.throws(() => summaryView(summary({ commentary_required: { ...GOLDEN_REQUIRED, state: "bogus" } })), /bogus/);
+});
+
+test("8.4: the server's commentary acknowledgement sentence is shown, after intercompany", () => {
+  const view = summaryView(summary({ action: "acknowledge", acknowledgements: GOLDEN_ACK_COMMENTARY }));
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Commentary: 3 headings above the threshold without commentary",
+    "Warned in total: 0",
+    "Not listed above: 0",
+  ]);
+  const both = summaryView(summary({
+    acknowledgements: { ...GOLDEN_ACK_COMMENTARY, intercompany: "Intercompany: 1 pair over tolerance" },
+  }));
+  assert.deepEqual(both.acknowledgements.rows.slice(0, 2), [
+    "Intercompany: 1 pair over tolerance",
+    "Commentary: 3 headings above the threshold without commentary",
+  ]);
 });
