@@ -99,7 +99,7 @@ def _period(fiscal_year, fiscal_period):
     try:
         return int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
-        frappe.throw(f"FY{fiscal_year} P{fiscal_period} is not a period: "
+        frappe.throw(f"Fiscal year {fiscal_year!r}, period {fiscal_period!r} is not a period: "
                      "pass the fiscal year and period as whole numbers.")
 
 

@@ -26,6 +26,23 @@ sibling path, mirroring tb_view_model.py:25-29.
 import importlib.util
 import os
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -203,7 +220,7 @@ def _target_row(rows, key):
     for row in rows or ():
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
-    raise ValueError("FY%d P%02d is not in the calendar rows passed in." % key)
+    raise ValueError("%s is not in the calendar rows passed in." % period_name(*key))
 
 
 def period_grid(target, rows, entities, ownership_rows, tbs, exceptions, rates, allowed):

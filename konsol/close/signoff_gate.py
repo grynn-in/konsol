@@ -117,6 +117,23 @@ from konsol.close import (
     close_policy_model, ic_api, period_model, scope_model, signoff_model, statement_model)
 from konsol.period_status import PeriodNotDeclared
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 BLOCKED_TITLE = "Sign-off blocked"
 CLOSE_BLOCKED_TITLE = "Close blocked"
 REGULAR = "Regular"
@@ -141,7 +158,7 @@ def _row(rows, key):
         if _key(row["fiscal_year"], row["fiscal_period"]) == key:
             return row
     frappe.throw(
-        "FY%d P%02d is not declared: create it in EPM Fiscal Year." % key, PeriodNotDeclared
+        "%s is not declared: create it in EPM Fiscal Year." % period_name(*key), PeriodNotDeclared
     )
 
 
@@ -149,8 +166,8 @@ def _regular_row(rows, key):
     row = _row(rows, key)
     if row.get("period_type") != REGULAR:
         frappe.throw(
-            "FY%d P%02d is a %s period; only Regular periods are signed off."
-            % (key[0], key[1], row.get("period_type") or "blank-type")
+            "%s is a %s period; only Regular periods are signed off."
+            % (period_name(*key), row.get("period_type") or "blank-type")
         )
     return row
 
@@ -414,7 +431,7 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     if first is None:
         frappe.throw(
             "Declare the first close period in Close Settings before closing "
-            "FY%d P%02d." % key, title=CLOSE_BLOCKED_TITLE)
+            "%s." % period_name(*key), title=CLOSE_BLOCKED_TITLE)
     if key < first:
         return None
     # Imported here: assertion_run imports this module's callers (A22).
@@ -509,8 +526,9 @@ def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason
     target = _key(fiscal_year, fiscal_period)
     first = _first_close()
     affected = _regular_periods_from(target, first)
-    affected_by = "FY%d %s reopened on %s by %s: %s" % (
-        target[0], period_code, frappe.utils.nowdate(), user, reason)
+    # period_code is kept in the signature; the name carries the year (review-w5).
+    affected_by = "%s reopened on %s by %s: %s" % (
+        period_name(*target), frappe.utils.nowdate(), user, reason)
     return _mark_latest_signed(affected, affected_by)
 
 
@@ -527,7 +545,7 @@ def _period_row(key, fields):
     )
     if not row:
         frappe.throw(
-            "FY%d P%02d is not declared: create it in EPM Fiscal Year." % key, PeriodNotDeclared)
+            "%s is not declared: create it in EPM Fiscal Year." % period_name(*key), PeriodNotDeclared)
     return row
 
 
@@ -552,7 +570,7 @@ def _stamp_carried_change(source_key, affected, text, user, at):
     data changing. Skipped for a period whose OWN ``data_changed_at`` is
     already newer than ``at`` -- that period's own, real change (not a
     carried balance) is never overwritten by an earlier period's carry."""
-    carried = "Balance carried from FY%d P%02d: %s" % (source_key[0], source_key[1], text)
+    carried = "Balance carried from %s: %s" % (period_name(*source_key), text)
     for key in sorted(affected):
         if key == source_key:
             continue

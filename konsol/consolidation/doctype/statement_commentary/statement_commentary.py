@@ -29,6 +29,23 @@ from frappe.model.document import Document
 from konsol import fiscal_calendar
 from konsol.close import commentary_model
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", "close", "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 class StatementCommentary(Document):
 
@@ -67,5 +84,5 @@ def _period(fiscal_year, fiscal_period):
         if int(row["fiscal_year"]) == fiscal_year and int(row["fiscal_period"]) == fiscal_period:
             return row
     frappe.throw(
-        "FY%d P%02d is not a declared period: declare it in EPM Fiscal Year." % (
+        "%s is not a declared period: declare it in EPM Fiscal Year." % period_name(
             fiscal_year, fiscal_period))

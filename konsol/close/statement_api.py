@@ -72,6 +72,23 @@ from konsol.close import (
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 #: Who reads the Numbers screen (Close Lead, Group Accountant, Viewer;
 #: the Entity Accountant never gets the `numbers` slug, W4-E20).
 STATEMENT_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
@@ -162,7 +179,7 @@ def _period_key(fiscal_year, fiscal_period):
     try:
         return int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
-        frappe.throw(f"FY{fiscal_year} P{fiscal_period} is not a period: "
+        frappe.throw(f"Fiscal year {fiscal_year!r}, period {fiscal_period!r} is not a period: "
                      "pass the fiscal year and period as whole numbers.")
 
 
@@ -171,7 +188,7 @@ def _find_period(key, period_rows):
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
     frappe.throw(
-        "FY%d P%02d is not a declared period: declare it in EPM Fiscal Year." % key)
+        "%s is not a declared period: declare it in EPM Fiscal Year." % period_name(*key))
 
 
 def _tb_row(row):

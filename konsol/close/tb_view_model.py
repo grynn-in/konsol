@@ -18,6 +18,23 @@ are shown but every ``change`` is None and ``basis_note`` says why.
 import importlib.util
 import os
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -118,11 +135,11 @@ def previous_period(period_rows, fiscal_year, fiscal_period):
     current = [r for r in period_rows if (r["fiscal_year"], r["fiscal_period"]) == key]
     if not current:
         raise ValueError(
-            "FY%s P%02d is not declared in the fiscal calendar" % (fiscal_year, fiscal_period))
+            "%s is not declared in the fiscal calendar" % period_name(fiscal_year, fiscal_period))
     if current[0].get("period_type") != REGULAR:
         raise ValueError(
-            "FY%s P%02d is a %s period: only Regular periods are compared"
-            % (fiscal_year, fiscal_period, current[0].get("period_type")))
+            "%s is a %s period: only Regular periods are compared"
+            % (period_name(fiscal_year, fiscal_period), current[0].get("period_type")))
     earlier = [r for r in period_rows
                if r.get("period_type") == REGULAR
                and (r["fiscal_year"], r["fiscal_period"]) < key]
