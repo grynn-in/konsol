@@ -672,6 +672,9 @@ def _wire(rows):
     _m.frappe.get_doc = lambda doctype, name: rows[name]  # not for the lock read; see the test
     _m.frappe.throw = _raise
     _m.frappe.PermissionError = _PermissionError
+    # konsol#334: the rebuild request, recorded in the same log so its order
+    # after the claim is visible. The helper itself is tested on its own.
+    _m._request_basis_build = lambda name: log.append(("build", name))
     del _ADMIN_CHECKS[:]
     return log, gates, reads
 
@@ -1441,3 +1444,61 @@ def test_the_close_event_stub_does_not_leak():
     before = (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event"))
     _with_close_event([], _tb_doc().on_cancel)
     assert (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event")) == before
+
+
+# -- konsol#334: a basis change requests the rebuild ----------------------------------------------
+
+def test_set_amount_basis_requests_one_rebuild_after_the_claim():
+    """konsol#334: the claim changes how bronze normalises every row of the
+    batch, so the numbers move; a re-claim with no build left gold on the old
+    basis until someone asked by hand. One request per call, after the
+    ClickHouse claim (nothing is requested if the claim raises), and none when
+    nothing was updated."""
+    rows = {"TBS-1": _row("TBS-1", fiscal_period=3), "TBS-2": _row("TBS-2", fiscal_period=4)}
+    log, gates, reads = _wire(rows)
+    _m.set_amount_basis(["TBS-1", "TBS-2"], CLOSING)
+    builds = [e for e in log if e[0] == "build"]
+    assert builds == [("build", "TBS-1")], log
+    assert log[-1][0] == "build" and log[-2][0] == "ch", log
+
+    rows = {"TBS-2": _row("TBS-2", docstatus=0)}
+    log, gates, reads = _wire(rows)
+    _m.set_amount_basis(["TBS-2"], CLOSING)
+    assert [e for e in log if e[0] == "build"] == [], "nothing updated, nothing to rebuild"
+
+    rows = {"TBS-1": _row("TBS-1")}
+    log, gates, reads = _wire(rows)
+
+    def refuse(sql, *a, **k):
+        raise RuntimeError("clickhouse down")
+    _m.execute = refuse
+    try:
+        _m.set_amount_basis(["TBS-1"], CLOSING)
+        assert False, "the claim's error must reach the caller"
+    except RuntimeError as e:
+        assert str(e) == "clickhouse down"
+    assert [e for e in log if e[0] == "build"] == [], "a failed claim requests no build"
+
+
+def test_the_basis_rebuild_goes_through_the_one_enqueue_path():
+    """The helper hands the request to tasks.queue_consolidation_build (the
+    after-commit enqueue every TB submit and cancel uses), as an
+    on_update_after_submit of the named submission: the same doctype, so the
+    same DOCTYPE_BUILD_MAP scope."""
+    calls = []
+    fake = types.ModuleType("konsol.tasks")
+    fake.queue_consolidation_build = lambda doc, method: calls.append((doc.doctype, doc.name, method))
+    saved = sys.modules.get("konsol.tasks")
+    _m.frappe._dict = lambda **k: types.SimpleNamespace(**k)
+    sys.modules["konsol.tasks"] = fake
+    try:
+        _m.__dict__.pop("_request_basis_build", None)
+        _spec.loader.exec_module(_m)  # the real helper, not _wire's recorder
+        _m._record_data_change = lambda *a, **k: None
+        _m._request_basis_build("TBS-1")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    assert calls == [("Trial Balance Submission", "TBS-1", "on_update_after_submit")], calls
