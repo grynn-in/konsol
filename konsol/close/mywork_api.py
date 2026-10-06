@@ -17,6 +17,14 @@
   ``ic_api.tolerance_gap()`` (a group node whose IC tolerance is undeclared).
   Both are None when "none in this group" is declared. The Entity Accountant
   cannot declare either, so is shown neither;
+- the missing and (F51b) the ambiguous unrealised-profit rule gaps (#305
+  5.4, W5-4), group personas only: ``ic_balance_api.open_rule_gaps()`` over
+  the open periods' draft and approved IC Balances; the rule is declared in
+  Desk;
+- S9 (review-w5): ``signoff_gate.shared_reads()`` is called once per
+  request; the commentary-threshold gap, the rule gaps above and every
+  period's ``sign_off_problems`` read from it, so the threshold and the IC
+  Balances and rules are read once, not once per open period;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -56,6 +64,12 @@ on every read; an uncheckable pair stays an item, never dropped.
 A22: every persona but the Viewer also gets one ``todo`` item per sent-back
 draft they own (``approvals_api.sent_back_for``, A21, turned into items by
 ``mywork_model.sent_back_items``). It does not depend on the first close.
+#305-W5-1 (story 9.4, #157): the preparer of a rejected sign-off (the run's
+``triggered_by``) also gets one ``todo`` item per period until it is signed
+again (``_signoff_events``, ``mywork_model.signoff_sent_back_items``). Only
+the Open Regular periods' rejections are read, the latest event is the last
+written (its series number), and the rejecter is named by full name
+(review-w5 S13).
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -97,6 +111,9 @@ missing ownership (coordinator, 25 Sep). A leaf is in scope for the frequency ga
 when it is covered at the start of at least one of them. No judged period
 means nothing to judge, so neither gap names anyone.
 """
+import importlib.util as _importlib_util
+import os as _os
+import json
 from datetime import date, datetime
 
 import frappe
@@ -106,6 +123,21 @@ from konsol.close import (approvals_api, checks_model, close_policy_model, ic_ap
                           period_model, scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 #: The close roles; the gate spells them out (the A01 contract reads a literal).
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
@@ -208,7 +240,7 @@ def _judged_periods(first_close):
         start = _date(row.get("start_date"))
         if (row.get("period_type") == REGULAR and row.get("status") == "Open"
                 and start is not None and (first_close is None or key >= first_close)):
-            out.append((key, "FY%d P%02d" % key, start))
+            out.append((key, period_name(*key), start))
     return [(label, start) for _, label, start in sorted(out)]
 
 
@@ -233,7 +265,7 @@ def _ownership_scope(leaves, first_close):
     return in_scope, uncovered
 
 
-def _gap_facts(first_close, persona, allowed):
+def _gap_facts(first_close, persona, allowed, shared):
     leaves = _leaves()
     in_scope, uncovered = _ownership_scope(leaves, first_close)
     frequency_missing = [e for e, f in leaves.items() if e in in_scope and not f]
@@ -248,6 +280,12 @@ def _gap_facts(first_close, persona, allowed):
         statement_gap = signoff_gate.statement_gap()
         if statement_gap is not None:
             policy_gaps = policy_gaps + [statement_gap]
+        # #305-W5-2 (story 8.4): the undeclared commentary threshold, the
+        # same way (Close Settings only; no statement is read here).
+        # S9: read once per request (``shared``), not again here.
+        commentary_gap = shared["commentary_threshold"]["gap"]
+        if commentary_gap is not None:
+            policy_gaps = policy_gaps + [commentary_gap]
     return {
         "first_close": first_close,
         "chart_published": bool(group_chart.chart_accounts()),
@@ -257,7 +295,17 @@ def _gap_facts(first_close, persona, allowed):
         "policy_gaps": policy_gaps,
         "ic_accounts_gap": ic_api.setup_gap() if group else None,
         "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
+        "ic_rule_gaps": _ic_rule_gaps(shared) if group else [],
     }, uncovered
+
+
+def _ic_rule_gaps(shared):
+    """#305 5.4 (W5-4): IC Balance pairs of the open periods with no
+    unrealised-profit rule, and (F51b) pairs more than one rule matches,
+    from the request's shared reads (S9). Lazy: test loaders stub
+    konsol.close.ic_balance_api."""
+    from konsol.close import ic_balance_api
+    return ic_balance_api.open_rule_gaps(shared["ic_balances"])
 
 
 def _name_ownership_periods(items, uncovered):
@@ -286,13 +334,71 @@ def _open_rows(first_close, today):
 def _period_codes():
     """``{(fiscal_year, fiscal_period): period_code}`` of every fiscal period
     row (A22), not only the open ones: a sent-back draft can name a closed or
-    history period. The row's own ``period_code``, falling back to
-    ``FY%d P%02d`` (mirrors ``_period_facts``'s ``code``)."""
+    history period. Always ``period_name`` ("FY2025 P07"), never the bare
+    ``period_code`` ("P07" live; konsol#305 review-w5), as
+    ``_period_facts``'s ``code``."""
     codes = {}
     for row in fiscal_calendar.fiscal_period_rows():
         key = (int(row["fiscal_year"]), int(row["fiscal_period"]))
-        codes[key] = row.get("period_code") or "FY%d P%02d" % key
+        codes[key] = period_name(*key)
     return codes
+
+
+_SIGNOFF_EVENT_FIELDS = ["name", "kind", "fiscal_year", "fiscal_period", "actor", "at",
+                         "reason", "detail"]
+
+
+def _signoff_event(row):
+    from konsol.close.timefmt import zoned_iso
+    row = dict(row)
+    row["at"] = zoned_iso(row["at"], frappe.utils.get_system_timezone())
+    row["detail"] = json.loads(row["detail"]) if row.get("detail") else None
+    return row
+
+
+def _signoff_events(user):
+    """#305-W5-1: the ``signoff_rejected`` Close Events of the Open Regular
+    periods (review-w5 S13: a rejection can only land on an Open period, and
+    a closed one has nothing left to fix, so nothing else is read or
+    parsed), and, only when one names ``user`` as the preparer, the
+    ``signed_off`` events of those periods' fiscal years
+    (``mywork_model.signoff_sent_back_items`` decides which periods are still
+    sent back). ``[]`` when nothing names ``user``; no Open Regular period
+    reads nothing."""
+    open_keys = {(int(r["fiscal_year"]), int(r["fiscal_period"]))
+                 for r in fiscal_calendar.fiscal_period_rows()
+                 if r.get("period_type") == REGULAR and r.get("status") == "Open"}
+    if not open_keys:
+        return []
+    rejected = [_signoff_event(r) for r in frappe.get_all(
+        "Close Event", filters={"kind": "signoff_rejected",
+                                "fiscal_year": ["in", sorted({k[0] for k in open_keys})]},
+        fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)
+        if (int(r["fiscal_year"]), int(r["fiscal_period"])) in open_keys]
+    mine = {(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in rejected
+            if (r["detail"] or {}).get("preparer") == user}
+    if not mine:
+        return []
+    signed = [_signoff_event(r) for r in frappe.get_all(
+        "Close Event", filters={"kind": "signed_off",
+                                "fiscal_year": ["in", sorted({k[0] for k in mine})]},
+        fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)]
+    return [r for r in rejected + signed
+            if (int(r["fiscal_year"]), int(r["fiscal_period"])) in mine]
+
+
+def _user_names(events):
+    """``{user id: full name}`` of the rejecters in ``events`` that still
+    exist, in one User read (review-w5 S13; as ``statement_api`` names a
+    commentary's author). A user who no longer exists has no entry, so the
+    item names them by id."""
+    actors = sorted({e["actor"] for e in events
+                     if e["kind"] == "signoff_rejected" and e.get("actor")})
+    if not actors:
+        return {}
+    return {u["name"]: u.get("full_name") or u["name"]
+            for u in frappe.get_all("User", filters={"name": ["in", actors]},
+                                    fields=["name", "full_name"], limit_page_length=0)}
 
 
 def _newest_run(key):
@@ -336,19 +442,19 @@ def _rates_error_item(key, code, error, end_date):
     }
 
 
-def _period_facts(first_close, allowed, today):
+def _period_facts(first_close, allowed, today, shared):
     """``(per_period, extra_items)``; extra items are the rate-gate errors."""
     as_of_text = current_freshness()["as_of"]
     as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
     for key, row in _open_rows(first_close, today):
-        code = row.get("period_code") or "FY%d P%02d" % key
+        code = period_name(*key)
         end_date = _date(row.get("end_date"))
         if end_date is None:
             # A53: the age shown for a period is its end date. A period row with
             # no end date is a configuration problem, never silently today's date.
             frappe.throw("%s has no end date: fix its row in EPM Fiscal Year." % code)
-        problems = signoff_gate.sign_off_problems(key[0], key[1])
+        problems = signoff_gate.sign_off_problems(key[0], key[1], shared)
         completeness = problems.get("completeness") or {}
         missing = sorted(completeness.get("missing") or ())
         blocked = bool(problems.get("config_gaps") or problems.get("order") or completeness)
@@ -418,10 +524,13 @@ def get_my_work():
     # never asked of anyone else.
     entities_assigned = ((allowed is None or bool(allowed))
                          if persona == period_model.ENTITY_ACCOUNTANT else None)
-    facts, uncovered = _gap_facts(first_close, persona, allowed)
+    # S9 (review-w5): the commentary threshold and the open periods' IC
+    # Balances and rules, read once for the setup gaps and every period's gate.
+    shared = signoff_gate.shared_reads()
+    facts, uncovered = _gap_facts(first_close, persona, allowed, shared)
     items = _name_ownership_periods(mywork_model.setup_gap_items(facts), uncovered)
     if first_close is not None:
-        per_period, extra = _period_facts(first_close, allowed, today)
+        per_period, extra = _period_facts(first_close, allowed, today, shared)
         items.extend(mywork_model.period_items(persona, per_period, first_close))
         if persona == period_model.ENTITY_ACCOUNTANT:
             items.extend(mywork_model.ic_fix_items(
@@ -445,6 +554,13 @@ def get_my_work():
     codes = _period_codes() if any(row.get("fiscal_year") is not None
                                    for row in sent_back_rows) else {}
     items.extend(mywork_model.sent_back_items(sent_back_rows, persona, codes))
+    # #305-W5-1 (story 9.4): the preparer's "sent back" sign-off item, until
+    # the period is signed again. Does not depend on the first close either.
+    signoff_events = _signoff_events(frappe.session.user)
+    if signoff_events:
+        items.extend(mywork_model.signoff_sent_back_items(
+            signoff_events, frappe.session.user, persona, codes or _period_codes(),
+            _user_names(signoff_events)))
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona, screen_counts),
             "entities_assigned": entities_assigned}

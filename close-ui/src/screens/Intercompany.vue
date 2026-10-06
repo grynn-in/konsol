@@ -28,6 +28,19 @@
  *   `messageLines(error)` and keeps the typed reason; success reloads
  *   `get_ic` once and asks the shell to reload its context.
  *
+ * - konsol#305 5.4 (#305-W5-4): the IC Balances section. GET
+ *   `ic_balance_api.get_ic_balances`, turned into rows by `icBalancesView`
+ *   (status, amounts, the matching rule's margin READ-ONLY: the rule is
+ *   configured in Desk). A balance whose pair no unrealised-profit rule
+ *   matches shows the server's gap naming the pairs, with the Desk link the
+ *   server sends; it blocks sign-off (the gate, not this screen, decides).
+ *   F51b: a pair two or more rules match (dbt eliminates it once per rule)
+ *   shows the server's `ambiguous_gap` the same way, and its row is marked.
+ *   An Analyst drafts or edits a draft through the ONE function
+ *   `saveBalance()`, its body built by `icBalanceBody`; the form renders
+ *   only when the server says `can_draft`. There is no approve here: the
+ *   Admin approves in Approvals (R2).
+ *
  * The period comes from the URL (route.js, D5): nothing is kept in the
  * browser, and there is no "last viewed" memory. Not built here (P2 / no
  * story): Remind, replies in the trail, evidence.
@@ -38,13 +51,24 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { intercompanyView, panel, sendBackBody, bannerToneClass } from "../intercompany.js";
+import { whileCurrent } from "../stillCurrent.js";
+import {
+	intercompanyView,
+	panel,
+	sendBackBody,
+	bannerToneClass,
+	icBalancesView,
+	icBalanceBody,
+} from "../intercompany.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_IC = "konsol.close.ic_api.get_ic";
 const SEND_BACK = "konsol.close.ic_api.send_back";
+const GET_IC_BALANCES = "konsol.close.ic_balance_api.get_ic_balances";
+const SAVE_IC_BALANCE = "konsol.close.ic_balance_api.save_ic_balance";
 
 const NO_ZONE = "Your browser reported no time zone, so times cannot be shown.";
 
@@ -56,7 +80,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const what = computed(() => `the intercompany reconciliation for ${periodName.value}`);
 const timeZone = userTimeZone();
@@ -173,18 +197,126 @@ async function sendBack(pair, reason) {
 	reloadContext();
 }
 
+// --- IC Balances (5.4) ---------------------------------------------------
+
+const balances = reactive({ status: "loading", payload: null, error: null, busy: false });
+let balancesSeq = 0;
+const balancesWhat = computed(() => `the IC Balances for ${periodName.value}`);
+const balancesViewError = ref(null);
+const balancesView = computed(() => {
+	if (balances.status !== "ready" || !balances.payload) return null;
+	try {
+		balancesViewError.value = null;
+		return icBalancesView(balances.payload);
+	} catch (e) {
+		balancesViewError.value = e.message;
+		return null;
+	}
+});
+const balancesLoadState = computed(() => {
+	if (balances.status !== "ready") return balances.status;
+	return balancesView.value ? "ready" : "error";
+});
+const balancesLoadError = computed(() => balancesViewError.value || balances.error);
+const canDraft = computed(() => Boolean(balancesView.value && balancesView.value.canDraft));
+
+function emptyForm() {
+	return { name: null, selling_entity: "", buying_entity: "", ic_sales_amount: "", ending_inventory_from_ic: "" };
+}
+const balanceForm = reactive(emptyForm());
+const balanceError = ref(null);
+const balanceBusy = ref(false);
+
+function resetBalanceForm() {
+	Object.assign(balanceForm, emptyForm());
+	balanceError.value = null;
+}
+function editBalance(row) {
+	Object.assign(balanceForm, {
+		name: row.name,
+		selling_entity: row.sellingEntity,
+		buying_entity: row.buyingEntity,
+		ic_sales_amount: String(row.salesValue ?? ""),
+		ending_inventory_from_ic: String(row.inventoryValue ?? ""),
+	});
+	balanceError.value = null;
+}
+
+async function loadBalances({ quiet = false } = {}) {
+	if (!period.value) {
+		balances.status = "error";
+		balances.error = "This address names no period.";
+		return;
+	}
+	const mine = ++balancesSeq;
+	if (!quiet) balances.status = "loading";
+	balances.busy = true;
+	try {
+		const payload = await get(GET_IC_BALANCES, {
+			fiscal_year: period.value.year,
+			fiscal_period: period.value.period,
+		});
+		if (mine !== balancesSeq) return;
+		balances.payload = payload;
+		balances.error = null;
+		balances.status = "ready";
+	} catch (e) {
+		if (mine !== balancesSeq) return;
+		balances.error = e.message;
+		balances.status = "error";
+	} finally {
+		if (mine === balancesSeq) balances.busy = false;
+	}
+}
+
+/** The one save call site: a new draft, or the named draft's amounts. */
+async function saveBalance() {
+	balanceError.value = null;
+	if (!period.value) return;
+	const built = icBalanceBody({ fiscal_year: period.value.year, fiscal_period: period.value.period }, balanceForm);
+	if (built.error) {
+		balanceError.value = built.error;
+		return;
+	}
+	balanceBusy.value = true;
+	//: review-w5 U8: a save made in one period never writes its refusal (or
+	//: its reset) onto the form of the period the user moved to.
+	let result;
+	try {
+		result = await whileCurrent(periodKey, () => post(SAVE_IC_BALANCE, built.body));
+	} catch (e) {
+		balanceError.value = e.message;
+		return;
+	} finally {
+		if (!result || !result.stale) balanceBusy.value = false;
+	}
+	if (result.stale) return;
+	resetBalanceForm();
+	await loadBalances({ quiet: true });
+	reloadContext();
+}
+
+function periodKey() {
+	return period.value ? `${period.value.year}/${period.value.period}` : null;
+}
+
 watch(
-	() => (period.value ? `${period.value.year}/${period.value.period}` : null),
+	periodKey,
 	() => {
 		ic.payload = null;
 		closePanel();
 		loadIc();
+		balances.payload = null;
+		resetBalanceForm();
+		balanceBusy.value = false;
+		loadBalances();
 	},
 	{ immediate: true },
 );
 
 onBeforeUnmount(() => {
 	seq++;
+	balancesSeq++;
 });
 
 function lines(text) {
@@ -328,6 +460,163 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 				</template>
 			</template>
 		</LoadState>
+
+		<section class="mt-8">
+			<h2 class="mb-1 text-base font-semibold text-ink-gray-9">IC Balances (unrealised profit)</h2>
+			<p class="mb-3 text-sm text-ink-gray-6">
+				Intercompany sales and the buyer's ending inventory from them. The margin comes from the
+				IC Elimination Rule, set up in Desk; the Close Lead approves a draft in Approvals.
+			</p>
+			<LoadState
+				:state="balancesLoadState"
+				:what="balancesWhat"
+				:source="GET_IC_BALANCES"
+				:error="balancesLoadError"
+				:busy="balances.busy"
+				@retry="loadBalances"
+			>
+				<template v-if="balancesView">
+					<div
+						v-if="balancesView.gap"
+						role="alert"
+						class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-gray-8"
+					>
+						<p v-for="(line, i) in balancesView.gap.lines" :key="i">{{ line }}</p>
+						<ul class="mt-1 list-disc pl-5">
+							<li v-for="pair in balancesView.gap.pairs" :key="pair">{{ pair }}</li>
+						</ul>
+						<a
+							v-if="balancesView.rulesDesk"
+							:href="balancesView.rulesDesk"
+							class="mt-2 inline-block text-ink-gray-9 underline"
+						>Set up the rule in Desk</a>
+					</div>
+
+					<div
+						v-if="balancesView.ambiguousGap"
+						role="alert"
+						class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-gray-8"
+					>
+						<p v-for="(line, i) in balancesView.ambiguousGap.lines" :key="i">{{ line }}</p>
+						<ul class="mt-1 list-disc pl-5">
+							<li v-for="pair in balancesView.ambiguousGap.pairs" :key="pair">{{ pair }}</li>
+						</ul>
+						<a
+							v-if="balancesView.rulesDesk"
+							:href="balancesView.rulesDesk"
+							class="mt-2 inline-block text-ink-gray-9 underline"
+						>Keep one rule per pair in Desk</a>
+					</div>
+
+					<p v-if="balancesView.hiddenNote" class="mb-3 text-xs text-ink-gray-5">{{ balancesView.hiddenNote }}</p>
+
+					<p
+						v-if="!balancesView.rows.length"
+						class="mb-4 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
+					>
+						No IC Balances for {{ periodName }}.
+					</p>
+					<div v-else class="mb-4 overflow-x-auto rounded border border-outline-gray-2">
+						<table class="w-full text-left text-sm">
+							<thead class="bg-surface-gray-1 text-xs uppercase tracking-wide text-ink-gray-6">
+								<tr>
+									<th class="px-3 py-2 font-medium">Seller → buyer</th>
+									<th class="px-3 py-2 font-medium">IC sales</th>
+									<th class="px-3 py-2 font-medium">Ending inventory from IC</th>
+									<th class="px-3 py-2 font-medium">Margin (Desk)</th>
+									<th class="px-3 py-2 font-medium">Status</th>
+									<th class="px-3 py-2 font-medium"><span class="sr-only">Edit</span></th>
+								</tr>
+							</thead>
+							<tbody>
+								<tr v-for="row in balancesView.rows" :key="row.name" class="border-t border-outline-gray-2">
+									<td class="px-3 py-2 font-medium text-ink-gray-9">{{ row.pair }}</td>
+									<td class="px-3 py-2 font-mono text-ink-gray-8">{{ row.salesText }}</td>
+									<td class="px-3 py-2 font-mono text-ink-gray-8">{{ row.inventoryText }}</td>
+									<td class="px-3 py-2" :class="row.missingRule || row.ambiguousRule ? 'text-ink-red-4' : 'text-ink-gray-7'">{{ row.marginText }}</td>
+									<td class="px-3 py-2">
+										<span
+											class="inline-block rounded px-2 py-0.5 text-xs font-medium"
+											:class="row.statusTone === 'ok' ? 'bg-surface-green-2 text-ink-green-4' : 'bg-surface-amber-2 text-ink-amber-4'"
+										>{{ row.statusText }}</span>
+									</td>
+									<td class="px-3 py-2 text-right">
+										<Button v-if="row.editable" variant="ghost" size="sm" @click="editBalance(row)">Edit</Button>
+									</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+
+					<form
+						v-if="canDraft"
+						class="rounded border border-outline-gray-2 px-4 py-3"
+						@submit.prevent
+					>
+						<h3 class="mb-2 text-sm font-semibold text-ink-gray-9">
+							{{ balanceForm.name ? `Edit draft ${balanceForm.name}` : "Draft an IC Balance" }}
+						</h3>
+						<div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
+							<label class="flex flex-col gap-1">
+								<span class="text-sm text-ink-gray-6">Selling entity</span>
+								<select
+									v-model="balanceForm.selling_entity"
+									:disabled="!!balanceForm.name"
+									class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
+								>
+									<option value="">—</option>
+									<option v-for="e in balancesView.entities" :key="e" :value="e">{{ e }}</option>
+								</select>
+							</label>
+							<label class="flex flex-col gap-1">
+								<span class="text-sm text-ink-gray-6">Buying entity</span>
+								<select
+									v-model="balanceForm.buying_entity"
+									:disabled="!!balanceForm.name"
+									class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
+								>
+									<option value="">—</option>
+									<option v-for="e in balancesView.entities" :key="e" :value="e">{{ e }}</option>
+								</select>
+							</label>
+							<label class="flex flex-col gap-1">
+								<span class="text-sm text-ink-gray-6">IC sales amount</span>
+								<input
+									v-model="balanceForm.ic_sales_amount"
+									type="text"
+									inputmode="decimal"
+									class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 font-mono text-ink-gray-8"
+								/>
+							</label>
+							<label class="flex flex-col gap-1">
+								<span class="text-sm text-ink-gray-6">Ending inventory from IC</span>
+								<input
+									v-model="balanceForm.ending_inventory_from_ic"
+									type="text"
+									inputmode="decimal"
+									class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 font-mono text-ink-gray-8"
+								/>
+							</label>
+						</div>
+						<div v-if="balanceError" role="alert" class="mt-2 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8">
+							<p v-for="(line, i) in lines(balanceError)" :key="i">{{ line }}</p>
+						</div>
+						<div class="mt-3 flex gap-2">
+							<Button
+								theme="gray"
+								variant="solid"
+								:loading="balanceBusy"
+								:disabled="balanceBusy"
+								@click="saveBalance()"
+							>
+								Save draft
+							</Button>
+							<Button v-if="balanceForm.name" variant="subtle" @click="resetBalanceForm">Cancel edit</Button>
+						</div>
+					</form>
+				</template>
+			</LoadState>
+		</section>
 
 		<!-- Side panel for the selected pair -->
 		<div v-if="selectedPair" role="dialog" aria-label="Intercompany pair detail" class="fixed inset-y-0 right-0 z-10 w-full max-w-md overflow-y-auto border-l border-outline-gray-2 bg-surface-white p-5 shadow-lg">

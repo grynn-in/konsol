@@ -131,6 +131,11 @@ def _load(status="Green", signoff_status="Not Signed Off", fiscal_year=2099, fis
         "state": "not_configured",
         "message": "Intercompany not configured — nothing was checked.",
         "counts": None, "sent_back_open": None}
+    # W5-2 (story 8.4): sign_off_close reads signoff_gate.commentary too;
+    # checked, nothing required (commentary_model.requirement's shape).
+    gate.commentary = lambda fy, fp: {
+        "state": "checked", "threshold": {"amount": 5000.0, "percent": None, "combine": None},
+        "message": None, "groups": [], "required_missing": 0}
     return module, frappe, saved_doc, gate, calls
 
 

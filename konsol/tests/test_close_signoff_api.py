@@ -32,6 +32,18 @@ API_PY = os.path.join(CLOSE_DIR, "signoff_api.py")
 # P05: signoff_gate.py now imports close_policy_model; loaded for real below
 # alongside signoff_model/period_model/timefmt (real, by path).
 
+def _real_reject_roles():
+    """assertion_run.REJECT_ROLES, read from its source (S12): the stub
+    module carries the real definition, not a copy."""
+    import ast
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+    (value,) = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                and any(getattr(t, "id", None) == "REJECT_ROLES" for t in node.targets)]
+    return ast.literal_eval(value)
+
+
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 QUARTERS = {1: "Q1", 2: "Q1", 3: "Q1", 4: "Q2", 5: "Q2", 6: "Q2",
             7: "Q3", 8: "Q3", 9: "Q3", 10: "Q4", 11: "Q4", 12: "Q4"}
@@ -114,6 +126,10 @@ class _Site:
         #: result), so signoff_gate's N45 read finds them. Until N45 nothing
         #: reads them.
         self.statement_accounts = ("3300", "3100")
+        #: W5-2 (8.4): Close Settings (amount, percent, combine) — an amount
+        #: declared, so signoff_gate adds no commentary-threshold gap by
+        #: default; a test clears it to probe the gap.
+        self.commentary_threshold = (5000, 0, "")
         self.closed = {(2025, fp): (LEAD, CLOSED_ON) for fp in range(1, 9)}
         #: A63: the period rows' data-change fields, by (year, period).
         self.data_changed = {}
@@ -158,6 +174,10 @@ class _Site:
         self.writes = []
         self.signed = []
         self.sign_error = None
+        #: #305-W5-1 (story 9.4): the stubbed assertion_run.reject_signoff
+        #: records its arguments and raises ``reject_error`` when set.
+        self.rejected = []
+        self.reject_error = None
         self.status_calls = []
         self.status_error = None
         self.admin_checks = 0
@@ -168,7 +188,39 @@ class _Site:
                                       "fx_difference": 0, "over_tolerance": 0, "unmatched": 0},
                            "sent_back_open": 0}
         self.ic_tolerance_gap = None
+        #: #305 5.4: the stubbed `konsol.close.ic_balance_api.rule_gaps` returns this list.
+        self.ic_rule_gaps = []
         self.ic_calls = []
+        #: W5-2 (8.4): the stubbed `konsol.close.statement_api.signoff_commentary`
+        #: answer (default: checked, nothing required — the real
+        #: commentary_model.requirement over a declared threshold and no
+        #: group) and every call to it.
+        self.commentary_line = _commentary_none()
+        self.commentary_calls = []
+
+
+def _close_model(name):
+    spec = importlib.util.spec_from_file_location(
+        name + "_for_signoff_api_test", os.path.join(CLOSE_DIR, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _commentary_none():
+    return _close_model("commentary_model").requirement(
+        _close_model("close_policy_model").commentary_threshold(5000, 0, ""), [])
+
+
+#: The real statement_api.signoff_commentary output, committed by
+#: test_close_statement_api.py (golden; 3 headings required).
+COMMENTARY_REQUIRED_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_signoff_commentary_required.json")
+
+
+def _commentary_required():
+    with open(COMMENTARY_REQUIRED_FIXTURE) as fh:
+        return json.load(fh)
 
 
 def _match(value, cond):
@@ -250,7 +302,11 @@ def _load(site):
         fy, fp = site.first_close or (0, 0)
         self_approval, rate_move_threshold = site.policies
         cta_account, result_account = site.statement_accounts
+        amount, percent, combine = site.commentary_threshold
         return {"first_close_fiscal_year": fy, "first_close_fiscal_period": fp,
+                "commentary_threshold_amount": amount,
+                "commentary_threshold_percent": percent,
+                "commentary_threshold_combine": combine,
                 "self_approval": self_approval,
                 "rate_move_threshold": rate_move_threshold,
                 "statement_cta_account": cta_account,
@@ -319,6 +375,7 @@ def _load(site):
 
     ar = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     ar.OVERRIDE_ROLES = {"System Manager", "EPM Admin"}
+    ar.REJECT_ROLES = _real_reject_roles()
     ar.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
     ar.SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
 
@@ -339,6 +396,14 @@ def _load(site):
         return {"signoff_status": "Acknowledged", "signed_off_by": LEAD}
 
     ar.sign_off_close = sign_off_close
+
+    def reject_signoff(close_run, reason):
+        site.rejected.append((close_run, reason))
+        if site.reject_error is not None:
+            raise site.reject_error
+        return {"signoff_status": "Not Signed Off"}
+
+    ar.reject_signoff = reject_signoff
     ar._warned_assertion_names = lambda run, limit=50: list(site.warned_names.get(run, []))[:limit]
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
@@ -358,6 +423,23 @@ def _load(site):
     ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
     close.ic_api = ic_api
 
+    # #305 5.4: the gate imports konsol.close.ic_balance_api lazily.
+    ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
+    ic_balance_api.rule_gaps = (lambda fiscal_year, fiscal_period, reads=None:
+                                list(site.ic_rule_gaps))
+    close.ic_balance_api = ic_balance_api
+
+    # W5-2 (8.4): a stub `konsol.close.statement_api` (the real one reads
+    # ClickHouse), for signoff_gate.commentary's lazy import.
+    statement_api = types.ModuleType("konsol.close.statement_api")
+
+    def signoff_commentary(fiscal_year, fiscal_period):
+        site.commentary_calls.append((fiscal_year, fiscal_period))
+        return json.loads(json.dumps(site.commentary_line))
+
+    statement_api.signoff_commentary = signoff_commentary
+    close.statement_api = statement_api
+
     konsol.close, konsol.fiscal_calendar = close, calendar
     konsol.entity_permissions, konsol.period_status = perms, period_status
     konsol.schema_lifecycle = lifecycle
@@ -365,6 +447,8 @@ def _load(site):
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.close.ic_api": ic_api,
+            "konsol.close.ic_balance_api": ic_balance_api,
+            "konsol.close.statement_api": statement_api,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle,
@@ -496,7 +580,7 @@ def test_warned_count_is_read_so_the_acknowledgement_total_is_known():
     # latest_close_run does not return `warned`; the API must read it.
     result = _get(_Site())
     assert result["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 3,
-                                          "unlisted": 1, "intercompany": None}
+                                          "unlisted": 1, "intercompany": None, "commentary": None}
 
 
 def test_on_behalf_flags_map_yes_no_blank_to_1_0_unknown():
@@ -886,6 +970,63 @@ def test_unowned_tb_gap_unscoped_names_the_entity():
     assert len(gaps) == 1
     assert gaps[0]["entities"] == ["ZZX"]
     assert "ZZX" in gaps[0]["message"]
+
+
+def _ic_balance_model():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "close", "ic_balance_model.py")
+    spec = importlib.util.spec_from_file_location("ic_balance_model_for_signoff_api", path)
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    return model
+
+
+def _real_rule_gaps(*pairs):
+    """#305 5.4: the real producer's gaps (ic_balance_model.rule_gaps) for
+    draft IC Balances of ``pairs`` with no rule."""
+    model = _ic_balance_model()
+    balances = [{"name": "B%d" % i, "selling_entity": s, "buying_entity": b, "docstatus": 0}
+                for i, (s, b) in enumerate(pairs)]
+    return model.rule_gaps(balances, [])
+
+
+def _real_ambiguous_gaps(*pairs):
+    """F51b: the real producer's gaps for draft IC Balances of ``pairs``
+    that two wildcard rules both match."""
+    balances = [{"name": "B%d" % i, "selling_entity": s, "buying_entity": b, "docstatus": 0,
+                 "ending_inventory_from_ic": 40.0} for i, (s, b) in enumerate(pairs)]
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    return _ic_balance_model().rule_gaps(balances, rules)
+
+
+def test_ic_rule_gap_unscoped_names_the_pairs():
+    site = _Site()
+    site.ic_rule_gaps = _real_rule_gaps(("ZZA", "ZZX"))
+    gaps = [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_undeclared"]
+    assert len(gaps) == 1
+    assert "ZZA → ZZX" in gaps[0]["message"]
+
+
+def test_ic_rule_gap_is_scoped_to_the_callers_entities():
+    """#305 5.4: a scoped caller sees its own entity and a count; neither the
+    message nor the pairs name an entity outside its scope."""
+    site = _Site()
+    site.ic_rule_gaps = _real_rule_gaps(("ZZA", "ZZX"), ("ZZY", "ZZZ"))
+    site.allowed = {"ZZA"}
+    result = _get(site)
+    gaps = [g for g in result["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_undeclared"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == ["ZZA"] and gap["hidden"] == 3
+    assert "ZZA" in gap["message"] and "3 entities outside your scope" in gap["message"]
+    assert "IC Elimination Rule" in gap["message"]
+    text = json.dumps(gap)
+    for other in ("ZZX", "ZZY", "ZZZ"):
+        assert other not in text, other
+    assert "ic_unrealized_profit_rule_undeclared (" not in gap["message"]
 
 
 # --- A32: sign ---------------------------------------------------------------------
@@ -1325,3 +1466,260 @@ def test_the_ic_api_stub_is_installed():
     assert mods["konsol.close.ic_api"].signoff_summary(2025, 7)["state"] == "checked"
     assert site.ic_calls == [(2025, 7)]
     assert mods["konsol.close.ic_api"].tolerance_gap() is site.ic_tolerance_gap
+
+
+# --- #305-W5-1 (story 9.4, #157): reject a signature with a reason --------------
+
+def _signed_site(roles=("EPM Admin",)):
+    """P09's latest terminal run RUN-09 is Green and Signed Off."""
+    site = _Site(roles=roles)
+    site.records["Assertion Run"][-1].update(status="Green", warned=0,
+                                             signoff_status="Signed Off")
+    return site
+
+
+def _call_reject(site, *args, **kwargs):
+    """Call reject with the stubs installed. Returns (result, exception)."""
+    module, mods, _frappe = _load(site)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        try:
+            return module.reject(*args, **kwargs), None
+        except Exception as exc:  # noqa: BLE001 - the type is asserted by the caller
+            return None, exc
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def test_reject_is_post_only_and_gated_on_the_close_lead():
+    site = _signed_site()
+    _call_reject(site, 2025, 9, run="RUN-09", reason="ZZA's TB is the draft")
+    assert site.whitelisted["reject"] == ["POST"]
+    assert site.only_for[0] == ("EPM Admin", "System Manager")
+
+
+def test_reject_passes_the_latest_terminal_run_and_the_reason_through():
+    site = _signed_site()
+    result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="ZZA's TB is the draft")
+    assert exc is None, exc
+    assert site.rejected == [("RUN-09", "ZZA's TB is the draft")]
+    assert result == {"signoff_status": "Not Signed Off"}
+
+
+def test_a_blank_reject_reason_is_refused_before_anything():
+    for reason in (None, "", "  \n "):
+        site = _signed_site()
+        _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason=reason)
+        assert type(exc).__name__ == "ValidationError", (reason, exc)
+        assert str(exc) == ("Give the reason the sign-off of FY2025 P09 is rejected: "
+                            "the preparer reads it."), reason
+        assert site.rejected == [], reason
+
+
+def test_reject_without_a_run_name_is_refused():
+    for missing in (None, "", "   "):
+        site = _signed_site()
+        _result, exc = _call_reject(site, 2025, 9, run=missing, reason="rework")
+        assert type(exc).__name__ == "ValidationError", (missing, exc)
+        assert str(exc) == ("Reload the sign-off for FY2025 P09: the request did not say "
+                            "which checks run it rejects."), missing
+        assert site.rejected == [], missing
+
+
+def test_reject_with_a_stale_run_is_refused_and_rejects_nothing():
+    site = _signed_site()
+    _rerun(site)
+    _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+    assert type(exc).__name__ == "ValidationError", exc
+    # The prefix signoffMachine.STALE_RUN_REFUSAL reloads on.
+    assert str(exc) == ("The checks were re-run (now RUN-09-B, Red); "
+                        "review the new result before rejecting.")
+    assert site.rejected == []
+
+
+def test_reject_with_no_run_at_all_is_refused_naming_the_period():
+    site = _signed_site()
+    site.records["Assertion Run"] = [r for r in site.records["Assertion Run"]
+                                     if r["fiscal_period"] != 9]
+    _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+    assert str(exc) == "FY2025 P09 has no checks run to reject."
+    assert site.rejected == []
+
+
+def test_no_other_close_role_can_reject():
+    for role in ("EPM Analyst", "Entity Accountant", "EPM User", "Guest"):
+        site = _signed_site(roles=(role,))
+        _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+        assert type(exc).__name__ == "PermissionError", (role, exc)
+        assert site.rejected == [], role
+
+
+def test_a_refusal_from_reject_signoff_propagates_unchanged():
+    site = _signed_site()
+    refusal = RuntimeError("Assertion Run RUN-09 is Not Signed Off; ...")
+    site.reject_error = refusal
+    _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+    assert exc is refusal
+
+
+def test_reject_refuses_an_undeclared_period():
+    _result, exc = _call_reject(_signed_site(), 2031, 1, run="RUN-09", reason="rework")
+    assert type(exc).__name__ == "PeriodNotDeclared", exc
+
+
+def test_get_signoff_says_whether_the_caller_may_reject():
+    for roles, expected in ((("EPM Admin",), True), (("System Manager",), True),
+                            (("EPM Analyst",), False), (("EPM User",), False),
+                            (("Entity Accountant",), False)):
+        assert _get(_signed_site(roles=roles))["can_reject"] is expected, roles
+
+
+# --- W5-2 (story 8.4): the commentary-threshold line --------------------------
+#
+# get_signoff reads signoff_gate.commentary once, feeds it to
+# signoff_model.summary (Amber + acknowledgement, the #265 path) and returns
+# it as ``commentary_required``, beside the informational ``commentary``.
+
+ACK_COMMENTARY_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures",
+    "close_signoff_acknowledgements_commentary.json")
+
+
+def _green_site():
+    site = _Site()
+    site.records["Assertion Run"][-1].update(status="Green", warned=0)
+    site.warned_names = {}
+    return site
+
+
+def test_required_commentary_makes_a_green_run_acknowledge():
+    site = _green_site()
+    assert _get(site)["action"] == "sign"
+    site.commentary_line = _commentary_required()
+    result = _get(site)
+    assert result["action"] == "acknowledge"
+    assert result["acknowledgements"]["commentary"] == (
+        "Commentary: 3 headings above the threshold without commentary")
+
+
+def test_the_commentary_line_is_read_once_and_returned_as_commentary_required():
+    site = _green_site()
+    site.commentary_line = _commentary_required()
+    result = _get(site)
+    assert site.commentary_calls == [(2025, 9)]
+    assert result["commentary_required"] == _commentary_required()
+    # The informational per-group list is unchanged beside it.
+    assert result["commentary"][0]["missing"] == ["NET SALES", "OPERATING EXPENSES"]
+
+
+def test_a_commentary_line_that_cannot_be_checked_blocks():
+    site = _green_site()
+    cm = _close_model("commentary_model")
+    site.commentary_line = cm.requirement(
+        _close_model("close_policy_model").commentary_threshold(5000, 0, ""),
+        [{"consolidation_group": "ZZGRP", "state": "error", "message": "boom",
+          "statement": None, "texts": {}}])
+    result = _get(site)
+    assert result["action"] == "blocked"
+    assert "Nothing can be signed" in result["label"]
+
+
+def test_viewer_and_entity_accountant_get_the_same_commentary_line():
+    base = _get(_green_site())
+    for roles in (("EPM User",), ("Entity Accountant",)):
+        site = _green_site()
+        site.roles = list(roles)
+        site.can_write = False
+        assert _get(site)["commentary_required"] == base["commentary_required"], roles
+
+
+def test_an_undeclared_threshold_is_a_config_gap_that_blocks():
+    site = _green_site()
+    site.commentary_threshold = (0, 0, "")
+    site.commentary_line = _close_model("commentary_model").requirement(
+        _close_model("close_policy_model").commentary_threshold(0, 0, ""), None)
+    result = _get(site)
+    assert result["action"] == "blocked"
+    codes = [g["code"] for g in result["gates"]["config_gaps"]]
+    assert codes == ["commentary_threshold_undeclared"], codes
+    assert result["commentary_required"]["state"] == "undeclared"
+
+
+def test_commentary_acknowledgements_match_the_golden_fixture():
+    # close-ui's signoff test loads this same file: the real get_signoff
+    # acknowledgements for a Green run with 3 headings required.
+    site = _green_site()
+    site.commentary_line = _commentary_required()
+    result = _get(site)
+    with open(ACK_COMMENTARY_FIXTURE) as fh:
+        assert result["acknowledgements"] == json.load(fh)
+
+
+
+# --- F51b / review S2: the ambiguous-rule gap -----------------------------------
+
+def test_ic_rule_ambiguous_gap_unscoped_names_pair_and_rules():
+    site = _Site()
+    site.ic_rule_gaps = _real_ambiguous_gaps(("ZZA", "ZZX"))
+    gaps = [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_ambiguous"]
+    assert len(gaps) == 1
+    assert "ZZA → ZZX (R1, R2)" in gaps[0]["message"]
+
+
+def test_ic_rule_ambiguous_gap_is_scoped_to_the_callers_entities():
+    site = _Site()
+    site.ic_rule_gaps = _real_ambiguous_gaps(("ZZA", "ZZX"), ("ZZY", "ZZZ"))
+    site.allowed = {"ZZA"}
+    gaps = [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_ambiguous"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == ["ZZA"] and gap["hidden"] == 3 and gap["pairs"] == []
+    assert "ZZA" in gap["message"] and "3 entities outside your scope" in gap["message"]
+    assert "more than once" in gap["message"] and "IC Elimination Rule" in gap["message"]
+    text = json.dumps(gap)
+    for other in ("ZZX", "ZZY", "ZZZ"):
+        assert other not in text, other
+    assert "ic_unrealized_profit_rule_ambiguous (" not in gap["message"]
+
+
+# --- review-w5 S12: the reject roles are defined once -------------------------
+
+import ast  # noqa: E402
+
+ASSERTION_RUN_PY = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run",
+                                "assertion_run.py")
+
+
+def _tree(path):
+    with open(path) as fh:
+        return ast.parse(fh.read())
+
+
+def _module_assigns(tree, name):
+    return [node for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)]
+
+
+def test_reject_roles_are_defined_once_in_assertion_run_and_imported():
+    api = _tree(API_PY)
+    assert _module_assigns(api, "REJECT_ROLES") == [], "signoff_api redefines REJECT_ROLES"
+    imported = {alias.name for node in api.body if isinstance(node, ast.ImportFrom)
+                and node.module == "konsol.consolidation.doctype.assertion_run.assertion_run"
+                for alias in node.names}
+    assert "REJECT_ROLES" in imported, imported
+    (definition,) = _module_assigns(_tree(ASSERTION_RUN_PY), "REJECT_ROLES")
+    roles = ast.literal_eval(definition.value)
+    # The only_for literal stays (the endpoint contract test reads it); it
+    # must name exactly the roles reject_signoff checks.
+    reject = next(node for node in api.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "reject")
+    only_for = next(node for node in ast.walk(reject) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute) and node.func.attr == "only_for")
+    assert set(ast.literal_eval(only_for.args[0])) == set(roles)

@@ -250,3 +250,17 @@ test("U47: failure path — commentary is rendered by the same generic section l
     assert.doesNotMatch(block, /commentary/i, `no button is gated by commentary: ${block}`);
   }
 });
+
+
+// --- konsol#305-W5-2 (story 8.4): the required-commentary section ---------
+
+test("8.4: SECTION_TITLES carries commentaryRequired right before the informational commentary", () => {
+  const src = script(read());
+  const m = src.match(/SECTION_TITLES\s*=\s*\[([\s\S]*?)\];/);
+  assert.ok(m, "SECTION_TITLES is declared");
+  const entries = (m[1].match(/\[\s*["'][^"']+["']\s*,\s*["'][^"']+["']\s*\]/g) || []).map(
+    (e) => e.match(/["']([^"']+)["']/)[1],
+  );
+  assert.equal(entries.indexOf("commentaryRequired"), entries.indexOf("commentary") - 1);
+  assert.match(src, /\[\s*["']commentaryRequired["']\s*,\s*["']Commentary required["']\s*\]/);
+});

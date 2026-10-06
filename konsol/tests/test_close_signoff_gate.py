@@ -23,6 +23,7 @@ SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(APP_DIR, "close", "close_policy_model.py")
 SCOPE_MODEL_PY = os.path.join(APP_DIR, "close", "scope_model.py")
 STATEMENT_MODEL_PY = os.path.join(APP_DIR, "close", "statement_model.py")
+IC_BALANCE_MODEL_PY = os.path.join(APP_DIR, "close", "ic_balance_model.py")
 
 TERMINAL = ("Green", "Amber", "Red", "Error")
 #: A63: the time the stub site's clock reads when a data change is recorded.
@@ -99,7 +100,13 @@ class _Site:
                          #: new read finds them and every existing "no gap"
                          #: assertion still holds. Until N45 nothing reads them.
                          "statement_cta_account": "3300",
-                         "statement_result_account": "3100"}
+                         "statement_result_account": "3100",
+                         #: W5-2 (8.4): an amount declared, so the new
+                         #: commentary-threshold gap stays out of every
+                         #: existing "no gap" assertion.
+                         "commentary_threshold_amount": 5000,
+                         "commentary_threshold_percent": 0,
+                         "commentary_threshold_combine": ""}
         self.records = {
             "Entity": [_entity("ZZA"), _entity("ZZB", "Quarterly")],
             "Ownership Period": [_owner("ZZA"), _owner("ZZB")],
@@ -136,10 +143,16 @@ class _Site:
         #: C18t: the stubbed `konsol.close.ic_api.tolerance_gap`/`signoff_summary`
         #: read these. `ic_calls` records every `signoff_summary` call (C19).
         self.ic_tolerance_gap = None
+        #: W5-2: every stubbed statement_api.signoff_commentary call.
+        self.commentary_calls = []
         self.ic_summary = {"state": "not_configured",
                            "message": "Intercompany not configured — nothing was checked.",
                            "counts": None, "sent_back_open": None}
         self.ic_calls = []
+        #: #305 5.4 (W5-4): the stubbed `konsol.close.ic_balance_api.rule_gaps`
+        #: returns this list; `ic_rule_gap_calls` records each (fy, fp) asked.
+        self.ic_rule_gaps = []
+        self.ic_rule_gap_calls = []
 
 
 def _match(value, cond):
@@ -194,6 +207,7 @@ def _load(site):
 
     def get_single_value(doctype, field):
         assert doctype == "Close Settings", doctype
+        site.__dict__.setdefault("single_reads", []).append(field)
         return site.settings.get(field)
 
     frappe.throw = throw
@@ -282,6 +296,38 @@ def _load(site):
     ic_api.signoff_summary = signoff_summary
     close.ic_api = ic_api
 
+    # #305 5.4: a stub `konsol.close.ic_balance_api` (imported lazily by the
+    # gate), so the real module never runs against this fake frappe.
+    ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
+
+    def rule_gaps(fiscal_year, fiscal_period, reads=None):
+        site.ic_rule_gap_calls.append((fiscal_year, fiscal_period))
+        site.__dict__.setdefault("ic_rule_gap_reads", []).append(reads)
+        return list(site.ic_rule_gaps)
+
+    def open_reads():
+        # S9: the shape of the real ic_balance_api.open_reads (its own tests
+        # count its reads); one entry per call.
+        site.__dict__.setdefault("ic_open_reads", []).append(1)
+        return {"keys": frozenset(), "balances": [], "rules": []}
+
+    ic_balance_api.rule_gaps = rule_gaps
+    ic_balance_api.open_reads = open_reads
+    close.ic_balance_api = ic_balance_api
+
+    # W5-2 (8.4): a stub `konsol.close.statement_api`, so signoff_gate's lazy
+    # `from konsol.close import statement_api` resolves here (the real module
+    # reads ClickHouse). Records each signoff_commentary call.
+    statement_api = types.ModuleType("konsol.close.statement_api")
+
+    def signoff_commentary(fiscal_year, fiscal_period):
+        site.commentary_calls.append((fiscal_year, fiscal_period))
+        return {"state": "checked", "threshold": None, "message": None, "groups": [],
+                "required_missing": 0}
+
+    statement_api.signoff_commentary = signoff_commentary
+    close.statement_api = statement_api
+
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     period_status = types.ModuleType("konsol.period_status")
@@ -359,6 +405,8 @@ def _load(site):
             "konsol.close.statement_model": statement_model,
             "konsol.close.close_event": close_event,
             "konsol.close.ic_api": ic_api,
+            "konsol.close.ic_balance_api": ic_balance_api,
+            "konsol.close.statement_api": statement_api,
             "konsol.fiscal_calendar": calendar, "konsol.period_status": period_status,
             "konsol.consolidation": types.ModuleType("konsol.consolidation"),
             "konsol.consolidation.doctype": types.ModuleType("konsol.consolidation.doctype"),
@@ -451,10 +499,11 @@ def test_undeclared_first_close_blocks_and_skips_the_order_gate():
         problems = _call(site, "sign_off_problems", 2025, 9)
         # P05: these settings dicts never declare the two policies either, so
         # policy_gaps adds both codes after the first-close gap. N45: nor the
-        # two statement accounts, so the statement gap follows them.
+        # two statement accounts, so the statement gap follows them. W5-2:
+        # nor the commentary threshold, so its gap follows the statement gap.
         assert [g["code"] for g in problems["config_gaps"]] == [
             "first_close_undeclared", "self_approval_undeclared", "rate_move_undeclared",
-            "statement_accounts_undeclared",
+            "statement_accounts_undeclared", "commentary_threshold_undeclared",
         ], settings
         assert problems["order"] is None, settings
         message = _blocked(site)
@@ -1650,3 +1699,190 @@ def test_a_heading_side_problem_joins_an_existing_statement_accounts_problem():
     message = _blocked(site)
     assert "Declare the CTA account in Close Settings" in message, message
     assert "statement_heading_side_undeclared" in message and "2000" in message, message
+
+
+# --- #305 5.4 (W5-4): an IC Balance with no unrealised-profit rule blocks -----
+
+def _real_rule_gaps(balances, rules=()):
+    """The real producer (ic_balance_model.rule_gaps), loaded by path."""
+    spec = importlib.util.spec_from_file_location("ic_balance_model_for_gate", IC_BALANCE_MODEL_PY)
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    return model.rule_gaps(list(balances), list(rules))
+
+
+_ZZ_BALANCE = {"name": "ICB-ZZA-ZZB-2025-P9", "selling_entity": "ZZA", "buying_entity": "ZZB",
+               "fiscal_year": 2025, "fiscal_period": 9, "ic_sales_amount": 100.0,
+               "ending_inventory_from_ic": 40.0, "docstatus": 0}
+
+
+def test_a_draft_ic_balance_with_no_rule_blocks_sign_off_naming_the_pair():
+    site = _Site()
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["ic_unrealized_profit_rule_undeclared"]
+    assert site.ic_rule_gap_calls == [(2025, 9)]
+    message = _blocked(site)
+    assert "ZZA → ZZB" in message, message
+
+
+def test_the_rule_gap_follows_the_tolerance_gap():
+    site = _Site()
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["ic_tolerance_undeclared", "ic_unrealized_profit_rule_undeclared"], codes
+
+
+def test_a_covered_pair_leaves_the_gate_clear():
+    site = _Site()
+    rule = {"rule_id": "R", "rule_type": "unrealized_profit", "margin_pct": 10,
+            "debit_entity_pattern": "*", "credit_entity_pattern": "*"}
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE], [rule])
+    assert site.ic_rule_gaps == []
+    assert _call(site, "sign_off_problems", 2025, 9) == {
+        "config_gaps": [], "order": None, "completeness": None}
+    assert site.ic_rule_gap_calls == [(2025, 9)]
+
+
+# --- W5-2 (story 8.4): the commentary threshold -----------------------------
+
+
+def test_an_undeclared_commentary_threshold_blocks_sign_off_after_the_statement_gap():
+    site = _Site()
+    site.settings["commentary_threshold_amount"] = 0
+    site.settings["statement_cta_account"] = ""
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared", "commentary_threshold_undeclared",
+                     "ic_tolerance_undeclared"], codes
+    message = _blocked(site)
+    assert "Declare the commentary threshold in Close Settings" in message, message
+
+
+def test_both_threshold_values_without_a_rule_is_the_gap():
+    site = _Site()
+    site.settings["commentary_threshold_percent"] = 10
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["commentary_threshold_undeclared"], codes
+
+
+def test_a_declared_threshold_is_no_gap_and_reads_no_statement():
+    site = _Site()
+    assert _call(site, "sign_off_problems", 2025, 9)["config_gaps"] == []
+    assert site.commentary_calls == []
+
+
+def test_commentary_threshold_reads_close_settings_through_close_policy_model():
+    site = _Site()
+    site.settings.update(commentary_threshold_amount=5000, commentary_threshold_percent=10,
+                         commentary_threshold_combine="Both are exceeded")
+    assert _call(site, "commentary_threshold") == {
+        "threshold": {"amount": 5000.0, "percent": 10.0, "combine": "Both are exceeded"},
+        "gap": None}
+
+
+def test_commentary_gap_is_the_threshold_gap_or_none():
+    site = _Site()
+    assert _call(site, "commentary_gap") is None
+    site.settings["commentary_threshold_amount"] = 0
+    assert _call(site, "commentary_gap")["code"] == "commentary_threshold_undeclared"
+
+
+def test_commentary_delegates_to_statement_api_signoff_commentary():
+    site = _Site()
+    result = _call(site, "commentary", 2025, 10)
+    assert result["state"] == "checked"
+    assert site.commentary_calls == [(2025, 10)]
+
+
+# --- merge of 8.4 and 5.4: the full gap order --------------------------------
+
+
+def test_statement_commentary_tolerance_and_rule_gaps_keep_their_order():
+    site = _Site()
+    site.settings["commentary_threshold_amount"] = 0
+    site.settings["statement_cta_account"] = ""
+    site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["statement_accounts_undeclared", "commentary_threshold_undeclared",
+                     "ic_tolerance_undeclared", "ic_unrealized_profit_rule_undeclared"], codes
+
+
+
+# --- F51b / review S2: two rules on one pair block (dbt applies both) ----------
+
+def test_two_rules_on_one_pair_block_sign_off_naming_pair_and_rules():
+    site = _Site()
+    rules = [{"rule_id": "R-ALL", "rule_type": "unrealized_profit", "margin_pct": 20,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"},
+             {"rule_id": "R-ZZ", "rule_type": "unrealized_profit", "margin_pct": 25,
+              "debit_entity_pattern": "ZZA", "credit_entity_pattern": "ZZB"}]
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE], rules)
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["ic_unrealized_profit_rule_ambiguous"]
+    message = _blocked(site)
+    assert "ZZA → ZZB (R-ALL, R-ZZ)" in message, message
+
+
+def test_undeclared_and_ambiguous_rule_gaps_both_block_in_order():
+    site = _Site()
+    other = dict(_ZZ_BALANCE, name="ICB-ZZC-ZZB-2025-P9", selling_entity="ZZC")
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "ZZA", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE, other], rules)
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["ic_unrealized_profit_rule_undeclared",
+                     "ic_unrealized_profit_rule_ambiguous"], codes
+
+
+# --- review-w5 S9: a request reads the shared settings once, not per period ----
+
+
+def _session(site, run):
+    """``run(module)`` with the stub modules installed, so several gate calls
+    share one request (one stub site)."""
+    module, frappe, mods, _ps = _load(site)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        return run(module)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+_COMMENTARY_FIELDS = ["commentary_threshold_amount", "commentary_threshold_combine",
+                      "commentary_threshold_percent"]
+
+
+def test_shared_reads_serve_every_open_period_with_one_read_each():
+    site = _Site()  # P09-P12 Open
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
+
+    def run(gate):
+        shared = gate.shared_reads()
+        return shared, [gate.sign_off_problems(2025, fp, shared) for fp in (9, 10, 11, 12)]
+
+    shared, results = _session(site, run)
+    commentary = sorted(f for f in site.single_reads if f.startswith("commentary_threshold_"))
+    assert commentary == _COMMENTARY_FIELDS, commentary
+    assert site.ic_open_reads == [1]
+    assert site.ic_rule_gap_reads == [shared["ic_balances"]] * 4
+    for problems in results:
+        assert [g["code"] for g in problems["config_gaps"]] == [
+            "ic_unrealized_profit_rule_undeclared"]
+
+
+def test_shared_reads_give_the_same_problems_as_a_lone_call():
+    site = _Site()
+    site.settings["commentary_threshold_amount"] = 0
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
+    shared = _session(site, lambda gate: gate.sign_off_problems(2025, 9, gate.shared_reads()))
+    assert shared == _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in shared["config_gaps"]] == [
+        "commentary_threshold_undeclared", "ic_unrealized_profit_rule_undeclared"]

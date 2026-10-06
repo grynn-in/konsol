@@ -15,6 +15,7 @@
 // 100)`), never a float sum: 0.10 + 0.20 must equal 0.30 exactly.
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { periodName } from "./periodName.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 
@@ -55,6 +56,11 @@ function timeText(value, now, timeZone) {
  * rows, never hard-coded (konsol#287). `[]` when none are declared — the
  * screen then looks exactly as it did before option D.
  *
+ * `reversingIn` (#305 story 6.5) is `get_journals`'s `reversing_in`: the
+ * Approved journals of earlier periods that reverse into this one, each
+ * with `approvedAtText` and `totalsText` added. Missing `reversing_in`
+ * throws, like `dimensions`.
+ *
  * D04 correction to D03: `get_journals` (D02) always sends `dimensions`,
  * even as `[]`, so a missing key is a bug in the caller, not "zero
  * dimensions" — this throws rather than silently defaulting to `[]`.
@@ -68,6 +74,9 @@ export function journalsView(payload, now, timeZone) {
 	}
 	if (payload.dimensions === undefined) {
 		throw new Error("journalsView requires `dimensions` (journal_api.get_journals always sends it, even as [])");
+	}
+	if (payload.reversing_in === undefined) {
+		throw new Error("journalsView requires `reversing_in` (journal_api.get_journals always sends it, even as [])");
 	}
 	const journals = (payload.journals || []).map((journal) => {
 		const { last_rejection, created, modified, approved_at, ...rest } = journal;
@@ -90,9 +99,21 @@ export function journalsView(payload, now, timeZone) {
 				: null,
 		};
 	});
+	//: #305 story 6.5: Approved journals of earlier periods whose reversal
+	//: posts into this one — read-only; `label`, `origin`, `lines` (the
+	//: reversal posting) and `effect` pass through from the server.
+	//: U4 (review-w5): `effectView` is the same view the selected-journal
+	//: panel reads, so the outside-any-heading note is never dropped here.
+	const reversingIn = payload.reversing_in.map((item) => ({
+		...item,
+		approvedAtText: timeText(item.approved_at, now, timeZone),
+		totalsText: `${formatAmount(item.total_debit)} / ${formatAmount(item.total_credit)}`,
+		effectView: effectView(item.effect),
+	}));
 	return {
 		period: payload.period,
 		journals,
+		reversingIn,
 		groups: payload.groups,
 		accounts: payload.accounts,
 		dimensions: payload.dimensions,
@@ -118,7 +139,7 @@ export function formatAmount(value) {
 
 /**
  * The draft editor's duration choices (W3-3 option A): "This period only,
- * no reversal", then one "Reverses in <code>" per `view.reversalChoices`
+ * no reversal", then one "Reverses in FY2025 P07" (periodName) per `view.reversalChoices`
  * (journalsView's carry-through of journal_model.reversal_choices), in the
  * order the server sent them. Never a third, "stays until reversed" option
  * (W3-3 rejected it). With no reversal choices, only "none" is offered;
@@ -136,7 +157,8 @@ export function durationOptions(view) {
 			kind: "reverses",
 			fiscal_year: choice.fiscal_year,
 			fiscal_period: choice.fiscal_period,
-			label: "Reverses in " + choice.code,
+			//: review-w5: the live code is "P07" alone; name the year.
+			label: "Reverses in " + periodName(choice.fiscal_year, choice.fiscal_period),
 		});
 	}
 	return options;
@@ -310,6 +332,10 @@ function amountText(netDebit) {
  * `effectView(null)` — an unsaved edit, which has no saved `effect` yet —
  * gives `{note: "Save the draft to see its effect"}` (E6-P8), never a
  * guessed or stale amount.
+ *
+ * `noHeadingText` (review-w5 U4) is the one sentence for the accounts with
+ * no heading ("N account(s) outside any heading."), or null when there are
+ * none: the selected-journal panel and the reversing list both read it.
  */
 export function effectView(effect) {
 	if (effect === null || effect === undefined) {
@@ -327,6 +353,7 @@ export function effectView(effect) {
 			amountText: amountText(section.net_debit),
 		})),
 		noHeading: effect.no_heading || 0,
+		noHeadingText: effect.no_heading ? `${effect.no_heading} account(s) outside any heading.` : null,
 	};
 }
 

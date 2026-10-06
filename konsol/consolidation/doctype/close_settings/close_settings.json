@@ -78,6 +78,30 @@
    "options": "Main Account",
    "label": "Current-year result account",
    "description": "The balance-sheet account the consolidated balance sheet shows the profit or loss to date under. No default."
+  },
+  {
+   "fieldname": "commentary_section",
+   "fieldtype": "Section Break",
+   "label": "Commentary"
+  },
+  {
+   "fieldname": "commentary_threshold_amount",
+   "fieldtype": "Float",
+   "label": "Commentary Threshold (Amount)",
+   "description": "In each consolidation group's reporting currency. A statement heading whose variance against the previous period is above this needs commentary; without it the close is Amber and signing needs a typed acknowledgement. No default; 0 is undeclared, and the sign-off shows a setup gap until an amount or a percentage is declared (konsol#305-W5-2)."
+  },
+  {
+   "fieldname": "commentary_threshold_percent",
+   "fieldtype": "Percent",
+   "label": "Commentary Threshold (Percent)",
+   "description": "The variance as a percentage of the previous period's amount. No default; 0 is undeclared."
+  },
+  {
+   "fieldname": "commentary_threshold_combine",
+   "fieldtype": "Select",
+   "label": "When Both Are Declared",
+   "options": "\nEither is exceeded\nBoth are exceeded",
+   "description": "Only when both an amount and a percentage are declared: whether a heading needs commentary when either is exceeded or only when both are. No default: with both declared and this blank, the sign-off shows a setup gap."
   }
  ],
  "field_order": [
@@ -92,7 +116,11 @@
   "intercompany_declaration",
   "statements_section",
   "statement_cta_account",
-  "statement_result_account"
+  "statement_result_account",
+  "commentary_section",
+  "commentary_threshold_amount",
+  "commentary_threshold_percent",
+  "commentary_threshold_combine"
  ],
  "permissions": [
   {

@@ -23,6 +23,17 @@ const GOLDEN_COMMENTARY = JSON.parse(
   ),
 );
 
+// W5-2 (story 8.4): the real statement_api.signoff_commentary output (3
+// headings required) and the real get_signoff acknowledgements for a Green
+// run with it — both committed by the Python host tests (golden).
+const FIXTURES = path.join(__dirname, "..", "..", "konsol", "tests", "fixtures");
+const GOLDEN_REQUIRED = JSON.parse(
+  fs.readFileSync(path.join(FIXTURES, "close_signoff_commentary_required.json"), "utf8"),
+);
+const GOLDEN_ACK_COMMENTARY = JSON.parse(
+  fs.readFileSync(path.join(FIXTURES, "close_signoff_acknowledgements_commentary.json"), "utf8"),
+);
+
 function gates(overrides = {}) {
   return {
     config_gaps: [],
@@ -64,6 +75,7 @@ function summary(overrides = {}) {
     covers: [],
     previous: [],
     commentary: [],
+    commentary_required: GOLDEN_REQUIRED,
     ...overrides,
   };
 }
@@ -609,4 +621,284 @@ test("U47: failure path — commentary never changes the summary's action", () =
   assert.equal(withGaps, "run_checks");
   assert.equal(allCommented, "run_checks");
   assert.equal(none, "run_checks");
+});
+
+// --- #305-W5-1 (story 9.4, #157): the reject dialog follows the machine --------
+
+test("rejectDialogAfter: a refusal (rejecting → signed) keeps the text and shows the error", async () => {
+	const { rejectDialogAfter } = await import("./signoff.js");
+	assert.equal(rejectDialogAfter("rejecting", "signed"), "refused");
+});
+
+test("rejectDialogAfter: while signed or rejecting, the dialog and its text are kept", async () => {
+	const { rejectDialogAfter } = await import("./signoff.js");
+	assert.equal(rejectDialogAfter("signed", "rejecting"), "keep");
+	assert.equal(rejectDialogAfter("loading", "signed"), "keep");
+	assert.equal(rejectDialogAfter(null, "signed"), "keep");
+});
+
+test("rejectDialogAfter: any other state (an accepted reject reloads, a close, a refresh) resets it", async () => {
+	const { rejectDialogAfter } = await import("./signoff.js");
+	for (const [prev, state] of [["rejecting", "loading"], ["signed", "loading"], ["signed", "closing"],
+		["loading", "review"], ["loading", "closed"], ["loading", "loadFailed"],
+		["closing", "closed"], [null, "review"], ["rejecting", "loadFailed"]]) {
+		assert.equal(rejectDialogAfter(prev, state), "reset", `${prev} → ${state}`);
+	}
+});
+
+// --- konsol#305-W5-2 (story 8.4): commentary required above the threshold ---
+
+test("8.4: the required section names the threshold, then each uncommented heading above it", () => {
+  const view = summaryView(summary());
+  assert.deepEqual(view.commentaryRequired.rows, [
+    "Threshold: a heading needs commentary when its variance against the previous period is above 100.00",
+    "G1 · ASSETS: moved 1,735.10 (173.51%) from 1,000.00 — no commentary",
+    "G1 · LIABILITIES: moved 803.70 from 0.00 (no percentage on a zero base) — no commentary",
+    "G1 · EQUITY: moved 931.40 (118.66%) from 784.90 — no commentary",
+  ]);
+  assert.equal(view.commentaryRequired.empty, false);
+});
+
+test("8.4: the informational missing list stays its own section", () => {
+  const view = summaryView(summary({ commentary: GOLDEN_COMMENTARY }));
+  assert.deepEqual(view.commentary.rows, [
+    "ZZGRP: 0 of 2 headings commented · missing: NET SALES, OPERATING EXPENSES",
+  ]);
+  assert.ok(!view.commentary.rows.some((r) => r.startsWith("Threshold")));
+});
+
+test("8.4: the threshold reads amount, percent, either and both as declared", () => {
+  const line = (threshold) => summaryView(summary({
+    commentary_required: { ...GOLDEN_REQUIRED, threshold, groups: [], required_missing: 0 },
+  })).commentaryRequired.rows[0];
+  const lead = "Threshold: a heading needs commentary when its variance against the previous period is above ";
+  assert.equal(line({ amount: 5000, percent: null, combine: null }), `${lead}5,000.00`);
+  assert.equal(line({ amount: null, percent: 10, combine: null }), `${lead}10%`);
+  assert.equal(line({ amount: 5000, percent: 10, combine: "Either is exceeded" }), `${lead}5,000.00 or 10%`);
+  assert.equal(line({ amount: 5000, percent: 10, combine: "Both are exceeded" }), `${lead}5,000.00 and 10%`);
+});
+
+test("8.4: nothing required says so after the threshold", () => {
+  const view = summaryView(summary({
+    commentary_required: { ...GOLDEN_REQUIRED, groups: [], required_missing: 0 },
+  }));
+  assert.equal(view.commentaryRequired.rows[1], "Every heading above the threshold has commentary");
+});
+
+test("8.4: a group with no comparison names why it was not compared", () => {
+  const view = summaryView(summary({
+    commentary_required: {
+      ...GOLDEN_REQUIRED,
+      groups: [{ consolidation_group: "G1", state: "not_comparable",
+                 message: "No rows in the warehouse for FY2025 P06", over_threshold: 0, required: [] }],
+      required_missing: 0,
+    },
+  }));
+  assert.ok(view.commentaryRequired.rows.includes(
+    "G1: not compared — No rows in the warehouse for FY2025 P06"));
+});
+
+test("8.4: undeclared and unknown show the server's message, never a count", () => {
+  const undeclared = { state: "undeclared", threshold: null, message: "Declare the commentary threshold in Close Settings.", groups: [], required_missing: null };
+  assert.deepEqual(summaryView(summary({ commentary_required: undeclared })).commentaryRequired.rows,
+    ["Declare the commentary threshold in Close Settings."]);
+  const unknown = { ...GOLDEN_REQUIRED, state: "unknown", message: "The commentary threshold cannot be checked.", required_missing: null };
+  assert.deepEqual(summaryView(summary({ commentary_required: unknown })).commentaryRequired.rows,
+    ["The commentary threshold cannot be checked."]);
+});
+
+test("8.4: failure path — a missing or unknown-state commentary_required throws", () => {
+  const s = summary();
+  delete s.commentary_required;
+  assert.throws(() => summaryView(s), /commentary_required/);
+  assert.throws(() => summaryView(summary({ commentary_required: null })), /commentary_required/);
+  assert.throws(() => summaryView(summary({ commentary_required: { ...GOLDEN_REQUIRED, state: "bogus" } })), /bogus/);
+});
+
+test("8.4: the server's commentary acknowledgement sentence is shown, after intercompany", () => {
+  const view = summaryView(summary({ action: "acknowledge", acknowledgements: GOLDEN_ACK_COMMENTARY }));
+  assert.deepEqual(view.acknowledgements.rows, [
+    "Commentary: 3 headings above the threshold without commentary",
+    "Warned in total: 0",
+    "Not listed above: 0",
+  ]);
+  const both = summaryView(summary({
+    acknowledgements: { ...GOLDEN_ACK_COMMENTARY, intercompany: "Intercompany: 1 pair over tolerance" },
+  }));
+  assert.deepEqual(both.acknowledgements.rows.slice(0, 2), [
+    "Intercompany: 1 pair over tolerance",
+    "Commentary: 3 headings above the threshold without commentary",
+  ]);
+});
+
+// --- konsol#305 U3/U10: the Reject dialog's state, driven like the screen ----
+//
+// rejectDialogNext is the whole dialog: the section only applies it. These
+// drive it with the real signoffMachine (stale-run refusal) and with the
+// events the dialog receives (Esc/overlay/Cancel all close it).
+
+import { createActor, fromPromise } from "xstate";
+import { signoffMachine, STALE_RUN_REFUSAL } from "./machines/signoffMachine.js";
+import { rejectDialogAfter, rejectDialogNext, REJECT_DIALOG_CLOSED } from "./signoff.js";
+
+const STALE = `${STALE_RUN_REFUSAL} after this summary was loaded. Review the new results and sign again.`;
+
+function signedSummary(run) {
+	return { action: "signed", label: "Signed", can_sign: true, can_reject: true, period_status: "Open", checks: { run } };
+}
+
+/** A machine whose services are deferred promises the test settles, and a
+ * dialog driven by every snapshot change exactly as the section's watch does. */
+function harness() {
+	const calls = { load: [], reject: [] };
+	const deferred = (name) =>
+		fromPromise(({ input }) => new Promise((resolve, reject) => calls[name].push({ input, resolve, reject })));
+	const actor = createActor(signoffMachine.provide({ actors: { load: deferred("load"), reject: deferred("reject") } }));
+	let dialog = REJECT_DIALOG_CLOSED;
+	let prev = null;
+	actor.subscribe((snap) => {
+		if (snap.value !== prev) {
+			dialog = rejectDialogNext(dialog, { type: "MACHINE", prev, state: snap.value, error: snap.context.error });
+			prev = snap.value;
+		}
+	});
+	actor.start();
+	const flush = () => new Promise((r) => setTimeout(r, 0));
+	return {
+		actor,
+		calls,
+		flush,
+		get dialog() {
+			return dialog;
+		},
+		ui(event) {
+			dialog = rejectDialogNext(dialog, event);
+		},
+	};
+}
+
+test("U3: rejecting → loading with a message is a stale refusal; with none it is an accepted reject", () => {
+	assert.equal(rejectDialogAfter("rejecting", "loading", STALE), "refused");
+	assert.equal(rejectDialogAfter("rejecting", "loading", null), "reset");
+});
+
+test("U3: a stale-run refusal of Reject keeps the typed reason and shows the server's message while the summary reloads", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "signed");
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "TB for ZZA is the March file" });
+	h.ui({ type: "SENT" });
+	h.actor.send({ type: "REJECT", reason: h.dialog.reason });
+	assert.equal(h.calls.reject[0].input.run, "RUN-1");
+	h.calls.reject[0].reject(new Error(STALE));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "loading", "the summary reloads");
+	assert.deepEqual(h.dialog, { open: true, reason: "TB for ZZA is the March file", refused: [STALE] });
+
+	h.calls.load[1].resolve(signedSummary("RUN-2"));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "signed");
+	assert.deepEqual(h.dialog, { open: true, reason: "TB for ZZA is the March file", refused: [STALE] },
+		"still open with the text and the message: a fresh click is needed");
+	assert.equal(h.calls.reject.length, 1, "nothing is re-sent on its own");
+
+	h.ui({ type: "SENT" });
+	h.actor.send({ type: "REJECT", reason: h.dialog.reason });
+	assert.equal(h.calls.reject[1].input.run, "RUN-2", "the fresh click goes against the reloaded summary");
+	assert.equal(h.calls.reject[1].input.reason, "TB for ZZA is the March file");
+	h.actor.stop();
+});
+
+test("U3: a stale refusal whose reload no longer offers Reject closes the dialog", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "why" });
+	h.actor.send({ type: "REJECT", reason: "why" });
+	h.calls.reject[0].reject(new Error(STALE));
+	await h.flush();
+	assert.equal(h.dialog.open, true);
+	h.calls.load[1].resolve({ action: "rerun", label: "Re-run", can_sign: true, checks: { run: "RUN-2" } });
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "review");
+	assert.deepEqual(h.dialog, REJECT_DIALOG_CLOSED);
+	h.actor.stop();
+});
+
+test("U3: an accepted reject closes the dialog and drops the text", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "why" });
+	h.actor.send({ type: "REJECT", reason: "why" });
+	h.calls.reject[0].resolve({ ok: true });
+	await h.flush();
+	assert.deepEqual(h.dialog, REJECT_DIALOG_CLOSED);
+	h.actor.stop();
+});
+
+test("U3: a non-stale refusal keeps the text and shows the message (rejecting → signed)", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "why" });
+	h.actor.send({ type: "REJECT", reason: "why" });
+	h.calls.reject[0].reject(new Error("Only the Close Lead may reject."));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "signed");
+	assert.deepEqual(h.dialog, { open: true, reason: "why", refused: ["Only the Close Lead may reject."] });
+	h.actor.stop();
+});
+
+test("U10: closing the dialog any way (Esc, overlay, Cancel) resets the text and the message", () => {
+	let d = rejectDialogNext(REJECT_DIALOG_CLOSED, { type: "OPEN" });
+	d = rejectDialogNext(d, { type: "TYPE", text: "old reason" });
+	d = rejectDialogNext(d, { type: "MACHINE", prev: "rejecting", state: "signed", error: "Refused." });
+	assert.deepEqual(d, { open: true, reason: "old reason", refused: ["Refused."] });
+	d = rejectDialogNext(d, { type: "CLOSE" });
+	assert.deepEqual(d, REJECT_DIALOG_CLOSED);
+	d = rejectDialogNext(d, { type: "OPEN" });
+	assert.deepEqual(d, { open: true, reason: "", refused: [] }, "reopening shows neither the old text nor the old refusal");
+});
+
+test("U10: the dialog state is never shared: every step returns a new object", () => {
+	const d = rejectDialogNext(REJECT_DIALOG_CLOSED, { type: "OPEN" });
+	assert.notEqual(d, REJECT_DIALOG_CLOSED);
+	assert.equal(REJECT_DIALOG_CLOSED.open, false);
+	assert.throws(() => rejectDialogNext(d, { type: "NOPE" }), /NOPE/);
+});
+
+// --- konsol#305 review-w5 U9: every group's message shows; no guessed state ---
+
+test("U9: a checked group from no_chart shows its message (commentary_model.requirement)", () => {
+  const view = summaryView(summary({
+    commentary_required: {
+      ...GOLDEN_REQUIRED,
+      groups: [{ consolidation_group: "G2", state: "checked",
+                 message: "No chart of accounts is mapped for G2.", over_threshold: 0, required: [] }],
+      required_missing: 0,
+    },
+  }));
+  assert.ok(view.commentaryRequired.rows.includes("G2: No chart of accounts is mapped for G2."),
+    view.commentaryRequired.rows.join(" | "));
+});
+
+test("U9: a checked group with no message adds no line of its own", () => {
+  const view = summaryView(summary());
+  assert.ok(!view.commentaryRequired.rows.some((r) => r.startsWith("G1: ")));
+});
+
+test("U9: failure path — an unknown group state throws, naming it", () => {
+  assert.throws(() => summaryView(summary({
+    commentary_required: {
+      ...GOLDEN_REQUIRED,
+      groups: [{ consolidation_group: "G1", state: "maybe", message: null, over_threshold: 0, required: [] }],
+      required_missing: 0,
+    },
+  })), /maybe/);
 });

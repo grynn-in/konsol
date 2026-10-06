@@ -84,9 +84,15 @@ async function request(method, url, opts, fetchImpl) {
 	return data ? data.message : undefined;
 }
 
+/** The URL a GET of `method` with `params` calls (blank params left out);
+ * `get` and `download` both call it. */
+export function methodUrl(method, params) {
+	return `/api/method/${method}${buildQuery(params)}`;
+}
+
 /** GET `konsol.close.<...>`. Never writes; a query string carries params. */
 export function get(method, params, { fetchImpl = fetch } = {}) {
-	const url = `/api/method/${method}${buildQuery(params)}`;
+	const url = methodUrl(method, params);
 	return request("GET", url, {
 		method: "GET",
 		credentials: "include",
@@ -107,4 +113,43 @@ export function post(method, body, { fetchImpl = fetch } = {}) {
 		headers: { "Content-Type": "application/json", Accept: "application/json" },
 		body: JSON.stringify(payload),
 	}, fetchImpl);
+}
+
+/** The file name in a `Content-Disposition` header (`filename="…"` or a
+ * bare `filename=…`), or null. */
+function dispositionFilename(header) {
+	if (!header) return null;
+	const m = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+	if (!m) return null;
+	// A bare name may carry a literal "%" that is not an escape: decoding
+	// it would throw URIError, so such a name is kept as the server sent it.
+	try {
+		return decodeURIComponent(m[1]);
+	} catch {
+		return m[1];
+	}
+}
+
+/**
+ * GET a file from `konsol.close.<...>` (konsol#305 8.5): `{blob, filename}`.
+ * A refusal (a non-2xx reply) throws the server's own sentence, read from
+ * its JSON body like `get`'s — never a file. A reply with no file name
+ * throws too: the name is the server's, never made up here.
+ */
+export async function download(method, params, { fetchImpl = fetch } = {}) {
+	const url = methodUrl(method, params);
+	let res;
+	try {
+		res = await fetchImpl(url, { method: "GET", credentials: "include" });
+	} catch (err) {
+		throw new Error(`Network error: ${err.message}`);
+	}
+	if (!res.ok) {
+		throw new Error(errorMessage(await parseJsonBody(res), res.status));
+	}
+	const filename = dispositionFilename(res.headers.get("Content-Disposition"));
+	if (!filename) {
+		throw new Error(`The reply to ${method} carried no file name.`);
+	}
+	return { blob: await res.blob(), filename };
 }

@@ -186,3 +186,70 @@ test("The send-back reason is required: a blank submit is refused client-side vi
 	// it before posting.
 	assert.match(js, /\.error\b/);
 });
+
+// --- konsol#305 5.4 (W5-4): IC Balances on the Intercompany screen ---------
+
+test("5.4: names get_ic_balances and save_ic_balance; exactly one post(SAVE_IC_BALANCE call site, its body from icBalanceBody", () => {
+	const source = read();
+	const js = script(source);
+	assert.match(source, /konsol\.close\.ic_balance_api\.get_ic_balances/);
+	assert.equal((source.match(/konsol\.close\.ic_balance_api\.save_ic_balance/g) || []).length, 1);
+	assert.match(source, /import\s*\{[^}]*\bicBalancesView\b[^}]*\}\s*from\s*["']\.\.\/intercompany\.js["']/);
+	assert.match(source, /import\s*\{[^}]*\bicBalanceBody\b[^}]*\}\s*from\s*["']\.\.\/intercompany\.js["']/);
+	assert.equal((js.match(/\bpost\(\s*SAVE_IC_BALANCE\b/g) || []).length, 1);
+	assert.doesNotMatch(js, /post\(\s*SAVE_IC_BALANCE\s*,\s*\{/, "no inline body object");
+	assert.match(js, /icBalanceBody\(/);
+});
+
+test("5.4: the draft form sits behind canDraft (the server's can_draft)", () => {
+	const tpl = template(read());
+	const block = blockWithVIf(tpl, "form", /\bcanDraft\b/);
+	assert.ok(block, "a form's v-if tests canDraft");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /saveBalance\(/, "the save control is inside the gated form");
+	assert.equal([...tpl.matchAll(/saveBalance\(/g)].length, 1, "one save call site");
+});
+
+test("5.4: the missing-rule gap is shown naming the pairs, with the Desk link from the server", () => {
+	const tpl = template(read());
+	const block = blockWithVIf(tpl, "div", /balancesView\.gap/);
+	assert.ok(block, "a div's v-if tests balancesView.gap");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /balancesView\.gap\.pairs|balancesView\.gap\.lines/);
+	assert.match(inner, /rulesDesk/);
+});
+
+test("Failure path — 5.4: the margin is read-only and there is no approve/submit on this screen (R2: Approvals)", () => {
+	const tpl = template(read());
+	assert.doesNotMatch(tpl, /v-model[^>]*margin/i, "the margin is never an input");
+	assert.doesNotMatch(tpl, /\b(Approve|Submit)\b/, "approval stays in the Approvals queue");
+	assert.doesNotMatch(script(read()), /submit_ic_balance|approve_ic_balance|frappe\.client/);
+});
+
+test("5.4: the balances load has its own seq guard and LoadState", () => {
+	const source = read();
+	const js = script(source);
+	assert.match(js, /let\s+balancesSeq\s*=\s*0/);
+	assert.match(js, /\+\+balancesSeq\b/);
+	assert.ok((template(source).match(/<LoadState\b/g) || []).length >= 2, "a second LoadState for the balances");
+});
+
+test("F51b: the ambiguous-rule gap is shown naming the pairs, with the Desk link", () => {
+	const tpl = template(read());
+	const block = blockWithVIf(tpl, "div", /balancesView\.ambiguousGap/);
+	assert.ok(block, "a div's v-if tests balancesView.ambiguousGap");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /balancesView\.ambiguousGap\.lines/);
+	assert.match(inner, /balancesView\.ambiguousGap\.pairs/);
+	assert.match(inner, /rulesDesk/);
+	assert.match(tpl, /row\.ambiguousRule/, "a row two rules match is marked");
+});
+
+// --- konsol#305 review-w5 U8: the IC Balance save's period guard --------------
+
+test("U8: saveBalance ignores a result for a period the user has left (whileCurrent)", () => {
+	const src = script(read());
+	assert.match(src, /import \{[^}]*\bwhileCurrent\b[^}]*\} from "\.\.\/stillCurrent\.js"/);
+	const fn = src.slice(src.indexOf("async function saveBalance"));
+	assert.match(fn.slice(0, fn.indexOf("\n}\n")), /whileCurrent\(/);
+});

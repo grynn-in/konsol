@@ -1,0 +1,65 @@
+{
+  "adjustment_type": "topside",
+  "approved_at": "2025-06-30T16:00:00+01:00",
+  "approved_by": "zz-lead@example.com",
+  "consolidation_group": "CG1",
+  "currency": "EUR",
+  "description": "ZZ accrue June bonus\nsecond line",
+  "effect": {
+    "headings": [
+      {
+        "heading": "6000",
+        "heading_name": "Operating expenses",
+        "net_debit": -1200.0,
+        "section": "Profit and Loss"
+      },
+      {
+        "heading": "2300",
+        "heading_name": "Current liabilities",
+        "net_debit": 1200.0,
+        "section": "Balance Sheet"
+      }
+    ],
+    "no_heading": 0,
+    "sections": [
+      {
+        "net_debit": -1200.0,
+        "section": "Profit and Loss"
+      },
+      {
+        "net_debit": 1200.0,
+        "section": "Balance Sheet"
+      }
+    ]
+  },
+  "label": "Reverses here from FY2025 P06",
+  "lines": [
+    {
+      "account_name": "Office supplies",
+      "credit_amount": 1200.0,
+      "data_area_id": "ZZA",
+      "debit_amount": 0.0,
+      "description": "bonus",
+      "idx": 1,
+      "main_account": "6100"
+    },
+    {
+      "account_name": "Accounts payable",
+      "credit_amount": 0.0,
+      "data_area_id": "ZZA",
+      "debit_amount": 1200.0,
+      "description": "",
+      "idx": 2,
+      "main_account": "2310"
+    }
+  ],
+  "name": "CJ-P6-A",
+  "origin": {
+    "code": "P06",
+    "fiscal_period": 6,
+    "fiscal_year": 2025
+  },
+  "title": "ZZ accrue June bonus",
+  "total_credit": 1200.0,
+  "total_debit": 1200.0
+}

@@ -21,6 +21,12 @@ Imports nothing from frappe or konsol; the caller gathers ``facts``:
 - ``ic_tolerance_gap``: None, or ``ic_api.tolerance_gap()``'s
   ``{"code", "groups", "message"}`` (konsol#305 W3-6): the group nodes whose
   intercompany tolerance is undeclared (0 is indistinguishable from unset).
+- ``ic_rule_gaps``: ``ic_balance_api.open_rule_gaps()``, a list of
+  ``{"code", "pairs", "entities", "message"}`` (konsol#305 5.4, W5-4): the
+  IC Balance pairs of the open periods that no unrealised-profit IC
+  Elimination Rule matches (``ic_rule``), and (F51b) the pairs that more
+  than one rule matches, which dbt eliminates once per rule
+  (``ic_rule_ambiguous``). An unknown code raises.
 
 Rules:
 
@@ -35,11 +41,14 @@ Rules:
   ``since_reason: "configuration gap"`` — the screen shows nothing it was
   not sent, never an invented age.
 """
+import re
 
-GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "chart", "ic_accounts",
-        "ic_tolerance", "frequency", "ownership", "accountants")
+GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "commentary_threshold",
+        "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
+        "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
-             "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap")
+             "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap",
+             "ic_rule_gaps")
 
 #: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
 #: konsol#305-W4-1: the signoff_gate.statement_gap() result is appended to
@@ -49,6 +58,17 @@ _POLICY_GAPS = {
     "self_approval_undeclared": ("self_approval", "Self-approval policy not declared"),
     "rate_move_undeclared": ("rate_move", "Rate move threshold not declared"),
     "statement_accounts_undeclared": ("statement_accounts", "Statement setup incomplete"),
+    #: #305-W5-2 (story 8.4): appended by the API layer after the statement gap.
+    "commentary_threshold_undeclared": ("commentary_threshold", "Commentary threshold not declared"),
+}
+
+
+#: ``ic_balance_model`` rule-gap code -> (gap id, title stem), in item order.
+#: Literals, not imported: this module is pure; the tests feed the real gaps.
+_IC_RULE_GAPS = {
+    "ic_unrealized_profit_rule_undeclared": ("ic_rule", "Unrealised-profit rule missing for"),
+    "ic_unrealized_profit_rule_ambiguous": ("ic_rule_ambiguous",
+                                            "More than one unrealised-profit rule for"),
 }
 
 
@@ -110,6 +130,20 @@ def setup_gap_items(facts):
         title = "Intercompany tolerance not declared for %s" % _groups(len(groups))
         items.append(_item("ic_tolerance", title, tol_gap["message"], "EPM Admin",
                            "/app/consolidation-group"))
+    by_code = {}
+    for rule_gap in facts["ic_rule_gaps"] or ():
+        if rule_gap["code"] not in _IC_RULE_GAPS:
+            raise ValueError("Unknown IC rule gap code %r: My work has no item for it."
+                             % rule_gap["code"])
+        by_code[rule_gap["code"]] = rule_gap
+    for code, (gap_id, title_text) in _IC_RULE_GAPS.items():
+        rule_gap = by_code.get(code)
+        if not rule_gap:
+            continue
+        n = len(rule_gap["pairs"])
+        title = "%s %d IC Balance pair%s" % (title_text, n, "" if n == 1 else "s")
+        items.append(_item(gap_id, title, rule_gap["message"], "EPM Admin",
+                           "/app/ic-elimination-rule", entities=rule_gap["entities"]))
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:
         items.append(_item("frequency", f"Reporting frequency missing for {_entities(len(freq))}",
@@ -547,4 +581,77 @@ def sent_back_items(rows, persona, period_codes):
             item["since"] = at[:10]
             item["since_reason"] = "sent back"
         items.append(item)
+    return items
+
+
+# --- #305-W5-1 (story 9.4, #157): the preparer's "sent back" sign-off item -----
+#
+# ``signoff_sent_back_items(events, user, persona, period_codes, user_names)``: one ``todo``
+# item per period whose latest sign-off event is a ``signoff_rejected`` naming
+# ``user`` as the preparer (``detail.preparer``, the run's ``triggered_by``;
+# ``assertion_run.reject_signoff``). A later ``signed_off`` for the period
+# clears it: the item stays "until the period is signed". ``events`` are Close
+# Events of those two kinds, each ``{name, kind, fiscal_year, fiscal_period,
+# actor, at (ISO text), reason, detail (dict or None)}``. The latest is the
+# last WRITTEN: the Close Event series number at the end of ``name``
+# (``CE-#########``), compared as a number (review-w5 S13). ``at`` is never
+# compared: it is a naive local time, and when the clocks go back an hour
+# repeats, so a later event can carry an earlier time. A name with no series
+# number raises. ``user_names`` is ``{user id: full name}`` of the users that
+# exist; the item names the rejecter by full name, or by id when the user no
+# longer exists (as ``statement_api`` names a commentary's author). Another
+# kind, a Viewer or unknown persona, or a period missing from
+# ``period_codes`` raises ValueError: nothing is guessed. A reject with no
+# preparer recorded is nobody's item (the audit trail still shows it).
+
+SIGNOFF_EVENT_KINDS = ("signed_off", "signoff_rejected")
+
+
+def _series(event):
+    """The Close Event series number at the end of ``name``: the write order."""
+    match = re.search(r"(\d+)$", event.get("name") or "")
+    if match is None:
+        raise ValueError("signoff_sent_back_items: event name %r carries no series number"
+                         % (event.get("name"),))
+    return int(match.group(1))
+
+
+def signoff_sent_back_items(events, user, persona, period_codes, user_names):
+    if persona == VIEWER:
+        raise ValueError("signoff_sent_back_items: the Viewer has no sent-back item")
+    if persona not in PERSONAS:
+        raise ValueError("signoff_sent_back_items: unknown persona %r" % (persona,))
+    latest = {}
+    for event in events or ():
+        if event["kind"] not in SIGNOFF_EVENT_KINDS:
+            raise ValueError("signoff_sent_back_items: %r is not a sign-off event kind"
+                             % (event["kind"],))
+        key = (int(event["fiscal_year"]), int(event["fiscal_period"]))
+        series = _series(event)
+        if key not in latest or series > latest[key][0]:
+            latest[key] = (series, event)
+
+    items = []
+    for key in sorted(latest):
+        event = latest[key][1]
+        if event["kind"] != "signoff_rejected":
+            continue
+        if not user or (event.get("detail") or {}).get("preparer") != user:
+            continue
+        if key not in period_codes:
+            raise ValueError("signoff_sent_back_items: period %r is not in period_codes" % (key,))
+        at = event["at"]
+        items.append({
+            "id": "sent-back:signoff:%d-%02d" % key,
+            "kind": "todo",
+            "title": "Sent back: sign-off · %s" % period_codes[key],
+            "detail": "%s on %s: %s. Fix it and run the checks again; the item stays until "
+                      "the period is signed." % (user_names.get(event["actor"], event["actor"]),
+                                                   at[:10],
+                                                   (event["reason"] or "").rstrip(".")),
+            "owner": OWNERS[persona],
+            "action": {"screen": "checks"},
+            "period": {"fiscal_year": key[0], "fiscal_period": key[1],
+                       "code": period_codes[key], "since": at[:10]},
+        })
     return items

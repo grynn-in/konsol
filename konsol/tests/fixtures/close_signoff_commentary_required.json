@@ -1,0 +1,47 @@
+{
+ "state": "checked",
+ "threshold": {
+  "amount": 100.0,
+  "percent": null,
+  "combine": null
+ },
+ "message": null,
+ "groups": [
+  {
+   "consolidation_group": "G1",
+   "state": "checked",
+   "message": null,
+   "over_threshold": 4,
+   "required": [
+    {
+     "heading": "1",
+     "heading_name": "ASSETS",
+     "section": "Balance Sheet",
+     "current": 2735.1,
+     "comparison": 1000.0,
+     "variance": 1735.1,
+     "percent": 173.51
+    },
+    {
+     "heading": "2",
+     "heading_name": "LIABILITIES",
+     "section": "Balance Sheet",
+     "current": 803.7,
+     "comparison": -0.0,
+     "variance": 803.7,
+     "percent": null
+    },
+    {
+     "heading": "3",
+     "heading_name": "EQUITY",
+     "section": "Balance Sheet",
+     "current": 1716.3,
+     "comparison": 784.9,
+     "variance": 931.4,
+     "percent": 118.66
+    }
+   ]
+  }
+ ],
+ "required_missing": 3
+}

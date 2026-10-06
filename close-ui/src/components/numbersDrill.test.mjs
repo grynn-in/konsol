@@ -177,6 +177,11 @@ test("A top-side row's journals and journalsBasis are shown", () => {
 	assert.match(tpl, /row\.journalsBasis/);
 });
 
+test("6.5: an auto-reversal journal row carries a visible tag, only when journal.autoReversal", () => {
+	const tpl = template(readDrillVue());
+	assert.match(tpl, /<span\b[^>]*v-if="journal\.autoReversal"[^>]*>\s*Auto-reversal of an earlier period\s*<\/span>/);
+});
+
 test("The panel can be closed, emitting close", () => {
 	// U46 adds a second emit (saved); close must still be one of them.
 	const source = readDrillVue();
@@ -375,4 +380,22 @@ test("U7: blank commentary text renders 'No commentary yet', not an empty byline
 	const tpl = template(readDrillVue());
 	assert.match(tpl, /v-if="localCommentary\s*&&\s*localCommentary\.text"/, "the comment bubble is gated on non-blank text too, not just a truthy entry");
 	assert.match(tpl, /No commentary yet\./);
+});
+
+// --- konsol#305 review-w5 U6: auto_reversal is never guessed -----------------
+
+test("U6: drillView throws when a journal has no boolean auto_reversal (drill_model always sends it)", () => {
+	const payload = goldenDrill();
+	const row = payload.drill.rows.find((r) => r.journals && r.journals.length);
+	assert.ok(row, "the golden drill has a journals row");
+	delete row.journals[0].auto_reversal;
+	assert.throws(() => drillView(payload), /auto_reversal/);
+	row.journals[0].auto_reversal = "yes";
+	assert.throws(() => drillView(payload), /auto_reversal/);
+});
+
+test("U6: the golden drill's reversal journal reads as one, the others do not", () => {
+	const view = drillView(goldenDrill());
+	const journals = view.rows.flatMap((r) => r.journals || []);
+	assert.deepEqual(journals.map((j) => j.autoReversal), [false, false, true]);
 });

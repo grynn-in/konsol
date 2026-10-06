@@ -203,7 +203,9 @@ def _period_row(fy, fp, period_type, status):
     month = min(max(fp, 1), 12)
     return {
         "fiscal_year": fy, "fiscal_period": fp,
-        "period_code": "FY%dP%02d" % (fy, fp), "period_label": "FY%d P%02d" % (fy, fp),
+        # The live shape (measured 6 Oct): the period_code is "P07" alone, so
+        # nothing built from it can pass here by carrying the year (U1).
+        "period_code": "P%02d" % fp, "period_label": "FY%d P%02d" % (fy, fp),
         "period_type": period_type, "start_date": date(fy, month, 1),
         "end_date": date(fy, month, 28), "quarter": "Q%d" % ((month - 1) // 3 + 1),
         "status": status,
@@ -273,6 +275,8 @@ class _Site:
         self.users = [{"name": ANALYST, "full_name": "Zz Analyst"}]
         self.run = None  # latest_close_run: None -> "provisional"
         self.reads = []
+        #: W5-2 (8.4): Close Settings (amount, percent, combine) — undeclared.
+        self.commentary_threshold = (0, 0, "")
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -332,6 +336,8 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
+    site.response = {}
+    frappe.response = site.response
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
 
@@ -366,6 +372,9 @@ def _signoff_gate(site):
     sg.statement_accounts = lambda: CPM.statement_accounts(
         site.cta_account, site.result_account, site.declared_rows)
     sg.in_scope_entities = lambda fy, fp: sorted(site.in_scope)
+    #: W5-2 (8.4): the REAL close_policy_model over the site's three
+    #: Close Settings values, so the threshold/gap is never hand-typed.
+    sg.commentary_threshold = lambda: CPM.commentary_threshold(*site.commentary_threshold)
     return sg
 
 
@@ -407,6 +416,8 @@ def _invoke(site, run):
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
+             "konsol.close.statement_export_model",
+             "konsol.close.commentary_model",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -428,6 +439,11 @@ def _invoke(site, run):
             "konsol.close.timefmt", os.path.join(CLOSE_DIR, "timefmt.py"))
         close.drill_model = _load_path(
             "konsol.close.drill_model", os.path.join(CLOSE_DIR, "drill_model.py"))
+        close.statement_export_model = _load_path(
+            "konsol.close.statement_export_model",
+            os.path.join(CLOSE_DIR, "statement_export_model.py"))
+        close.commentary_model = _load_path(
+            "konsol.close.commentary_model", os.path.join(CLOSE_DIR, "commentary_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:
@@ -740,12 +756,21 @@ def _drill_site():
         _drill_tb_row("1110", 100.0, "entity", "ZZC"),
         _drill_tb_row("1110", -50.0, "ic_elimination", ""),
         _drill_tb_row("1110", 40.0, "topside", "ZZA"),
+        # #305 story 6.5: an earlier period's journal reversing here, and a
+        # topside of the same size, so every existing total stays as it was.
+        _drill_tb_row("1110", 10.0, "topside", "ZZB"),
+        _drill_tb_row("1110", -10.0, "auto_reversal", "ZZA"),
         _drill_tb_row("CTA", -5.0, "cta", "ZZA"),
         _drill_tb_row("CTA", -3.0, "cta", "ZZB"),
     ]
     site.journal_rows = [
         _drill_journal_row("J-1", "1110", 40.0, "ZZA", "Reclass intercompany loan",
                             "alice@example.com", "bob@example.com"),
+        _drill_journal_row("J-2", "1110", 10.0, "ZZB", "Accrue audit fee",
+                            "alice@example.com", "bob@example.com"),
+        _drill_journal_row("J-P6", "1110", -10.0, "ZZA", "June bonus",
+                            "alice@example.com", "bob@example.com",
+                            adjustment_type="auto_reversal"),
     ]
     return site
 
@@ -835,11 +860,309 @@ def test_scoped_caller_sees_the_aggregated_outside_scope_row():
         assert row.get("entity") not in ("ZZB", "ZZC")
 
 
+def test_the_drill_tags_the_auto_reversal_journal_row():
+    """#305 story 6.5: the auto-reversal row keeps its original journal_id
+    (V01), so the drill tags it."""
+    result = _call_drill(_drill_site())
+    topside = next(r for r in result["drill"]["rows"] if r["label"] == "Top-side journals")
+    assert [(j["journal_id"], j["auto_reversal"]) for j in topside["journals"]] == \
+        [("J-1", False), ("J-2", False), ("J-P6", True)]
+
+
 # --- golden payload (W4-E19): the real producer's output --------------------
 
 def test_golden_drill_payload_matches_the_committed_fixture():
     site = _drill_site()
     result = json.loads(json.dumps(_call_drill(site)))  # the wire shape: no tuples
     with open(FIXTURE_DRILL_PY) as fh:
+        expected = json.load(fh)
+    assert result == expected
+
+
+# =============================================================================
+# export_statement (konsol#305 story 8.5, decision #305-W5-3): the Numbers
+# statement as a downloaded .xlsx — same roles and scoping as get_statement,
+# a non-ok state refused with the server's own sentence, never an empty
+# file. The workbook is opened back and checked against the REAL golden
+# get_statement payload (close_statement_payload.json).
+# =============================================================================
+
+def _export_site():
+    """``_Site`` (whose get_statement output IS the golden fixture), plus an
+    entity-grain drill read that agrees with its aggregate TB rows, and one
+    top-side journal: 1110 = 1695.10 (ZZA) + 40 (topside) = 1735.10."""
+    site = _Site()
+    site.drill_tb_rows = [
+        _drill_tb_row("1110", 1695.10, "entity", "ZZA"),
+        _drill_tb_row("1110", 40.0, "topside", "ZZA"),
+        _drill_tb_row("2100", -803.70, "entity", "ZZA"),
+        _drill_tb_row("3200", -684.90, "entity", "ZZA"),
+        _drill_tb_row("CTA", -5.07, "cta", "ZZA"),
+        _drill_tb_row("4100", -241.43, "entity", "ZZA"),
+    ]
+    site.journal_rows = [
+        _drill_journal_row("J-1", "1110", 40.0, "ZZA", "Reclass intercompany loan",
+                            "alice@example.com", "bob@example.com"),
+    ]
+    return site
+
+
+def _call_export(site, fy=2025, fp=7, group=None):
+    _invoke(site, lambda api: api.export_statement(fy, fp, group))
+    return site.response
+
+
+def _export_refusal(site, group=None, kind="ValidationError"):
+    with pytest.raises(Exception) as info:
+        _call_export(site, group=group)
+    assert type(info.value).__name__ == kind, repr(info.value)
+    assert "filecontent" not in site.response  # never an empty file
+    return info.value
+
+
+def _export_book(site, group=None):
+    import io
+    from openpyxl import load_workbook
+
+    response = _call_export(site, group=group)
+    return load_workbook(io.BytesIO(response["filecontent"]))
+
+
+def _golden():
+    with open(FIXTURE_PY) as fh:
+        return json.load(fh)
+
+
+def test_export_site_statement_is_the_golden_payload():
+    site = _export_site()
+    assert json.loads(json.dumps(_call(site))) == _golden()
+
+
+def test_export_is_a_binary_xlsx_named_for_the_period_and_group():
+    site = _export_site()
+    response = _call_export(site)
+    assert response["type"] == "binary"
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+    assert response["filecontent"][:2] == b"PK"  # a zip container
+
+
+def test_export_statement_sheet_matches_the_golden_payload():
+    golden = _golden()
+    book = _export_book(_export_site())
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    assert rows[0][0] == "Numbers · FY2025 P07 · G1 · USD"
+    assert rows[1][0] == "Provisional"
+    assert rows[2][0] == golden["statement"]["legend"]
+    by_code = {r[1]: r for r in rows if r[1]}
+    for section in golden["statement"]["sections"]:
+        for line in section["lines"]:
+            if line["kind"] == "heading":
+                assert by_code[line["heading"]][0] == line["heading_name"]
+                assert by_code[line["heading"]][2] == line["current"]
+    assert by_code["4"][6] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][7].startswith(golden["commentary"]["4"]["by"] + " · ")
+
+
+def test_export_drill_sheet_totals_equal_every_golden_heading():
+    golden = _golden()
+    book = _export_book(_export_site())
+    rows = [list(r) for r in book["Drill"].iter_rows(values_only=True)]
+    totals = {r[1]: r[7] for r in rows if r[3] == "Total"}
+    expected = {line["heading"]: line["current"]
+                for section in golden["statement"]["sections"]
+                for line in section["lines"] if line["kind"] == "heading"}
+    assert totals == expected
+    journals = [list(r) for r in book["Journals"].iter_rows(values_only=True)]
+    assert journals[2][:5] == ["1", "ASSETS", "J-1", "Reclass intercompany loan", 40.0]
+
+
+def test_export_reads_clickhouse_four_times_whatever_the_heading_count():
+    site = _export_site()
+    _call_export(site)
+    assert len(site.ch_calls) == 4
+    for sql, _params in site.ch_calls:
+        assert "dim_" not in sql
+    site2 = _export_site()
+    for n in range(5, 9):
+        code = str(n)
+        site2.accounts[code] = {"name": code, "status": "Published", "account_name": "H%d" % n,
+                                "parent_account": None, "is_group": 1,
+                                "statement_section": "Balance Sheet", "lft": 100 + n,
+                                "normal_balance": "Debit"}
+    _call_export(site2)
+    assert len(site2.ch_calls) == 4
+
+
+def test_export_choose_group_is_refused_with_the_servers_sentence():
+    site = _export_site()
+    site.groups.append({"consolidation_group": "G2", "reporting_currency": "EUR"})
+    exc = _export_refusal(site)
+    assert str(exc) == "Choose a consolidation group."
+
+
+def test_export_setup_gap_is_refused_with_the_servers_sentence():
+    site = _export_site()
+    site.accounts["2"]["normal_balance"] = ""
+    expected = _call(site)["message"]
+    exc = _export_refusal(site)
+    assert str(exc) == expected
+    assert expected.startswith("statement_heading_side_undeclared")
+
+
+def test_export_not_built_and_error_are_refused_with_the_servers_sentence():
+    for error in (RuntimeError("Code: 60 (UNKNOWN_TABLE)"), RuntimeError("boom")):
+        site = _export_site()
+        site.ch_error = error
+        expected = _call(site)["message"]
+        exc = _export_refusal(site)
+        assert str(exc) == expected
+
+
+def test_export_no_chart_is_refused_with_the_servers_sentence():
+    site = _export_site()
+    site.accounts = {}
+    exc = _export_refusal(site)
+    assert str(exc) == "Publish the group chart (Main Account) first."
+
+
+def test_export_a_drill_that_disagrees_with_the_statement_is_refused():
+    site = _export_site()
+    site.drill_tb_rows[0] = _drill_tb_row("1110", 1.0, "entity", "ZZA")
+    exc = _export_refusal(site)
+    assert "does not match the statement" in str(exc)
+
+
+def test_export_entity_accountant_is_refused_by_only_for():
+    site = _export_site()
+    site.roles = {"EPM Entity Accountant"}
+    _export_refusal(site, kind="PermissionError")
+    assert site.ch_calls == []
+
+
+def test_export_scoped_caller_never_sees_hidden_entity_names():
+    site = _export_site()
+    site.drill_tb_rows.append(_drill_tb_row("1110", 0.0, "entity", "ZZB"))
+    site.allowed = ["ZZA"]
+    book = _export_book(site)
+    for sheet in book.worksheets:
+        for row in sheet.iter_rows(values_only=True):
+            assert not any(isinstance(v, str) and "ZZB" in v for v in row), (sheet.title, row)
+    layers = {r[3] for r in book["Drill"].iter_rows(values_only=True)}
+    assert "1 entities outside your scope" in layers
+
+
+def test_export_filename_names_the_fiscal_year_even_when_the_period_code_does_not():
+    """Measured live 6 Oct: the live period_code is "P07", so a name built
+    from it ("numbers-P07-ECL_GROUP.xlsx") lost the fiscal year."""
+    site = _export_site()
+    for row in site.periods:
+        row["period_code"] = "P%02d" % row["fiscal_period"]
+    response = _call_export(site, group="G1")
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+
+
+# =============================================================================
+# signoff_commentary (konsol#305-W5-2, story 8.4): the sign-off's
+# commentary-threshold line. Per root group, the REAL get_statement path's
+# statement (same reads, same states) through the REAL
+# commentary_model.requirement. Not whitelisted: signoff_gate.commentary
+# calls it for get_signoff and sign_off_close.
+# =============================================================================
+
+FIXTURE_COMMENTARY_REQUIRED = os.path.join(
+    APP_DIR, "tests", "fixtures", "close_signoff_commentary_required.json")
+
+
+def _comparison_site():
+    """_Site plus P06 rows, so P07 has a comparison: heading 4 (commented
+    "Strong quarter.") moves 141.43; ASSETS moves 735.10; LIABILITIES moves
+    803.70 on a zero base; EQUITY's movement comes from the producer."""
+    site = _Site()
+    site.tb_rows = site.tb_rows + [_tb_row("4100", -100.0, fp=6), _tb_row("1110", 1000.0, fp=6),
+                                   _tb_row("3200", -684.90, fp=6)]
+    site.commentary_threshold = (100, 0, "")
+    return site
+
+
+def _signoff_commentary(site, fy=2025, fp=7):
+    result = _invoke(site, lambda api: api.signoff_commentary(fy, fp))
+    json.dumps(result)
+    return result
+
+
+def test_signoff_commentary_is_not_whitelisted_for_any_role():
+    with open(API_PY) as fh:
+        tree = ast.parse(fh.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "signoff_commentary")
+    assert fn.decorator_list == []
+
+
+def test_signoff_commentary_undeclared_reads_no_statement():
+    site = _Site()
+    result = _signoff_commentary(site)
+    assert result["state"] == "undeclared"
+    assert result["required_missing"] is None
+    assert "Close Settings" in result["message"]
+    assert site.ch_calls == []
+
+
+def test_signoff_commentary_requires_the_uncommented_headings_above_the_threshold():
+    site = _comparison_site()
+    result = _signoff_commentary(site)
+    assert result["state"] == "checked"
+    (group,) = result["groups"]
+    assert group["consolidation_group"] == "G1"
+    names = [r["heading_name"] for r in group["required"]]
+    assert "COST OF SALES" not in names  # above it, but commented
+    assert names[:2] == ["ASSETS", "LIABILITIES"], names
+    assert result["required_missing"] == len(group["required"])
+    assert group["over_threshold"] == len(group["required"]) + 1
+
+
+def test_signoff_commentary_reads_every_root_group_whatever_the_caller_role():
+    # Entity Accountants read the sign-off summary (get_signoff) but are
+    # refused get_statement: the line must not go through only_for.
+    site = _comparison_site()
+    site.user, site.roles = ENTITY_ACC, {"Entity Accountant"}
+    site.groups = site.groups + [{"consolidation_group": "G2", "reporting_currency": "EUR"}]
+    result = _signoff_commentary(site)
+    assert [g["consolidation_group"] for g in result["groups"]] == ["G1", "G2"]
+
+
+def test_signoff_commentary_with_no_comparison_rows_is_not_comparable():
+    site = _Site()
+    site.commentary_threshold = (100, 0, "")
+    result = _signoff_commentary(site)
+    assert result["state"] == "checked"
+    assert result["required_missing"] == 0
+    assert result["groups"][0]["state"] == "not_comparable"
+    assert "P06" in result["groups"][0]["message"], result["groups"][0]["message"]
+
+
+def test_signoff_commentary_with_the_warehouse_down_is_unknown_never_zero():
+    site = _comparison_site()
+    site.ch_error = RuntimeError("Code: 60. (UNKNOWN_TABLE) gold_fully_consolidated_tb")
+    result = _signoff_commentary(site)
+    assert result["state"] == "unknown"
+    assert result["required_missing"] is None
+    assert result["groups"][0]["state"] == "not_built"
+    assert "G1" in result["message"]
+
+
+def test_signoff_commentary_with_no_chart_requires_nothing():
+    site = _comparison_site()
+    site.accounts = {}
+    result = _signoff_commentary(site)
+    assert result["state"] == "checked"
+    assert result["required_missing"] == 0
+    assert site.ch_calls == []
+
+
+def test_golden_signoff_commentary_matches_the_committed_fixture():
+    # U-row (close-ui signoff.js) and get_signoff's stub load this file:
+    # the real producer's output, never hand-built.
+    result = json.loads(json.dumps(_signoff_commentary(_comparison_site())))
+    with open(FIXTURE_COMMENTARY_REQUIRED) as fh:
         expected = json.load(fh)
     assert result == expected

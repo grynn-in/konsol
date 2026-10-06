@@ -1,0 +1,114 @@
+{
+ "events": [
+  {
+   "actor": "zz-b@example.com",
+   "actor_missing": false,
+   "actor_name": "B Lead",
+   "actor_persona": "close_lead",
+   "at": "2026-09-12T09:00:00+01:00",
+   "detail": {
+    "actor_persona": "close_lead",
+    "preparer": "zz-a@example.com"
+   },
+   "entity": null,
+   "kind": "approved",
+   "name": "CE-3",
+   "reason": null,
+   "reference_doctype": "Journal Entry",
+   "reference_name": "JE-1",
+   "source": "live"
+  },
+  {
+   "actor": "zz-a@example.com",
+   "actor_missing": false,
+   "actor_name": "A Accountant",
+   "actor_persona": "close_lead",
+   "at": "2026-09-10T09:00:00+01:00",
+   "detail": {
+    "actor_persona": "close_lead",
+    "on_behalf": "No"
+   },
+   "entity": "ZZA",
+   "kind": "tb_submitted",
+   "name": "CE-1",
+   "reason": null,
+   "reference_doctype": "Trial Balance Submission",
+   "reference_name": "TB-1",
+   "source": "live"
+  }
+ ],
+ "filters": {
+  "actors": [],
+  "date_from": "2026-09-01",
+  "date_to": null,
+  "entities": [],
+  "kinds": [
+   "approved",
+   "tb_submitted"
+  ]
+ },
+ "hidden": 2,
+ "options": {
+  "actors": [
+   {
+    "actor": "zz-a@example.com",
+    "actor_missing": false,
+    "actor_name": "A Accountant"
+   },
+   {
+    "actor": "zz-b@example.com",
+    "actor_missing": false,
+    "actor_name": "B Lead"
+   }
+  ],
+  "entities": [
+   "(group)",
+   "ZZA"
+  ],
+  "kinds": [
+   "approved",
+   "signed_off",
+   "tb_submitted",
+   "year_closed"
+  ]
+ },
+ "period": {
+  "code": "P09",
+  "fiscal_period": 9,
+  "fiscal_year": 2026,
+  "status": "Open"
+ },
+ "summary": {
+  "closed": {
+   "at": "2026-09-01T09:00:00+01:00",
+   "by": "zz-b@example.com",
+   "by_missing": false,
+   "by_name": "B Lead"
+  },
+  "counts": {
+   "acknowledgements": 0,
+   "approvals": 1,
+   "cancellations": 0,
+   "on_behalf_uploads": 0,
+   "overrides": 0,
+   "reasons_not_recorded": 0,
+   "recovered": 0,
+   "rejections": 0,
+   "reopenings": 0,
+   "self_approvals": 0
+  },
+  "locked": null,
+  "signoff": {
+   "at": "2026-09-15T09:00:00+01:00",
+   "by": "zz-b@example.com",
+   "by_missing": false,
+   "by_name": "B Lead",
+   "reason": null,
+   "result": "Signed Off",
+   "run_status": "Green",
+   "state": "signed",
+   "warnings": null
+  }
+ },
+ "total": 4
+}

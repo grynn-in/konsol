@@ -12,11 +12,14 @@
 //   status, start_date}, rows: [{entity, name, currency, in_scope, problem,
 //   ownership: {tone, label}, tb: {tone, label}, rate: {tone, label}}],
 //   counts: {rows, problems, hidden}, rates_error}. `counts` has no `all`
-//   key; the row's total count is `counts.rows`. The period code for the
-//   empty-state text is `payload.period.code`, not a top-level `code`.
+//   key; the row's total count is `counts.rows`. The header and the
+//   empty-state text name the period by `periodName(fiscal_year,
+//   fiscal_period)`, never the bare `payload.period.code` ("P07" live).
 // - `get_readiness(fy, fp)` -> `{ready, total, items}` directly (no wrapper
 //   key): `items` is `readiness_model.ITEMS`-ordered, each
 //   `{code, state: "ok"|"blocked"|"unknown", label, detail, entities, hidden}`.
+
+import { periodName } from "./periodName.js";
 
 export const COLUMNS = ["Ownership", "Trial balance", "Closing rate"];
 export const TONES = ["ok", "blocking", "none"];
@@ -58,7 +61,9 @@ function validateRow(row) {
  * rendering silently.
  */
 export function gridView(payload, problemsOnly) {
-	const code = payload.period && payload.period.code;
+	//: review-w5: the live period code is "P07" alone; the header and the
+	//: empty text name the year (periodName).
+	const code = periodName(payload.period.fiscal_year, payload.period.fiscal_period);
 	const counts = payload.counts || {};
 	const rows = (payload.rows || [])
 		.filter((row) => !problemsOnly || row.problem)
@@ -68,6 +73,7 @@ export function gridView(payload, problemsOnly) {
 	const ratesNote = payload.rates_error ? `Rates cannot be checked: ${payload.rates_error}` : null;
 	const empty = problemsOnly ? `No problems in ${code}` : `No entities in scope for ${code}`;
 	return {
+		title: `Period ${code}`,
 		rows,
 		all: counts.rows,
 		problems: counts.problems,

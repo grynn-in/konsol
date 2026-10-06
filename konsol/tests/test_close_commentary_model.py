@@ -219,3 +219,198 @@ def test_module_imports_no_frappe():
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith(("frappe", "konsol"))
             assert node.level == 0
+
+
+# =============================================================================
+# konsol#305-W5-2 (story 8.4): commentary required above the declared
+# threshold. The statements here are the REAL producer's output:
+# statement_model.statement over a small chart and TB rows for P06/P07, and
+# the threshold is close_policy_model.commentary_threshold's own result —
+# nothing below hand-builds a statement line or a threshold.
+# =============================================================================
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(APP_DIR, "close", filename))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+SM = _load("statement_model_for_commentary_test", "statement_model.py")
+CPM = _load("close_policy_model_for_commentary_test", "close_policy_model.py")
+
+
+def _calendar():
+    rows = []
+    for fy in (2024, 2025):
+        rows.append({"fiscal_year": fy, "fiscal_period": 0, "period_type": "Opening"})
+        for fp in range(1, 13):
+            rows.append({"fiscal_year": fy, "fiscal_period": fp, "period_type": "Regular"})
+        rows.append({"fiscal_year": fy, "fiscal_period": 13, "period_type": "Closing"})
+    return rows
+
+
+_CHART = {
+    "1": {"account_name": "ASSETS", "parent_account": None, "is_group": 1,
+          "statement_section": SM.BS, "lft": 1, "normal_balance": "Debit"},
+    "2": {"account_name": "LIABILITIES", "parent_account": None, "is_group": 1,
+          "statement_section": SM.BS, "lft": 5, "normal_balance": "Credit"},
+    "4": {"account_name": "REVENUE", "parent_account": None, "is_group": 1,
+          "statement_section": SM.PL, "lft": 13, "normal_balance": ""},
+    "6": {"account_name": "EXPENSES", "parent_account": None, "is_group": 1,
+          "statement_section": SM.PL, "lft": 17, "normal_balance": ""},
+    "1110": {"account_name": "Cash", "parent_account": "1", "is_group": 0,
+              "statement_section": SM.BS, "lft": 2, "normal_balance": ""},
+    "2100": {"account_name": "Payables", "parent_account": "2", "is_group": 0,
+              "statement_section": SM.BS, "lft": 6, "normal_balance": ""},
+    "4100": {"account_name": "Sales", "parent_account": "4", "is_group": 0,
+              "statement_section": SM.PL, "lft": 14, "normal_balance": ""},
+    "6100": {"account_name": "Opex", "parent_account": "6", "is_group": 0,
+              "statement_section": SM.PL, "lft": 18, "normal_balance": ""},
+}
+
+
+def _tb(main_account, amount, fp):
+    return {"fiscal_year": 2025, "fiscal_period": fp, "main_account": main_account,
+            "adjustment_type": "entity", "amount": amount, "null_rows": 0}
+
+
+#: P06 -> P07: REVENUE 10000 -> 16000 (+6000, 60%); EXPENSES -4000 -> -4100
+#: (-100, 2.5%); ASSETS 6000 -> 18000 (+12000, 200%); LIABILITIES 0 -> 500
+#: (+500 on a zero base: no percentage).
+_ROWS = [
+    _tb("4100", -10000, 6), _tb("6100", 4000, 6), _tb("1110", 6000, 6),
+    _tb("4100", -16000, 7), _tb("6100", 4100, 7), _tb("1110", 12000, 7), _tb("2100", -500, 7),
+]
+
+
+def _statement(rows=None, key=(2025, 7)):
+    return SM.statement(_ROWS if rows is None else rows, _CHART, _calendar(), key,
+                        CPM.statement_accounts("", "", {}))
+
+
+def _threshold(amount=0, percent=0, combine=""):
+    declared = CPM.commentary_threshold(amount, percent, combine)
+    assert declared["gap"] is None, declared
+    return declared["threshold"]
+
+
+def _required_names(result):
+    return [r["heading_name"] for r in result["required"]]
+
+
+def test_amount_threshold_requires_the_headings_above_it_in_statement_order():
+    result = M.group_requirement(_threshold(amount=1000), _statement(), {})
+    assert result["state"] == "checked"
+    assert result["over_threshold"] == 2
+    assert _required_names(result) == ["REVENUE", "ASSETS"]
+
+
+def test_a_required_heading_carries_its_variance_and_percentage():
+    result = M.group_requirement(_threshold(amount=1000), _statement(), {})
+    revenue = result["required"][0]
+    assert revenue == {"heading": "4", "heading_name": "REVENUE", "section": SM.PL,
+                       "current": 16000.0, "comparison": 10000.0, "variance": 6000.0,
+                       "percent": 60.0}
+
+
+def test_percent_threshold_counts_a_zero_base_movement_as_above_it():
+    result = M.group_requirement(_threshold(percent=50), _statement(), {})
+    assert _required_names(result) == ["REVENUE", "ASSETS", "LIABILITIES"]
+    liabilities = result["required"][2]
+    assert liabilities["comparison"] == 0.0 and liabilities["percent"] is None
+
+
+def test_both_values_with_both_exceeded_needs_both():
+    result = M.group_requirement(
+        _threshold(amount=1000, percent=50, combine="Both are exceeded"), _statement(), {})
+    assert _required_names(result) == ["REVENUE", "ASSETS"]
+
+
+def test_both_values_with_either_exceeded_needs_one():
+    result = M.group_requirement(
+        _threshold(amount=1000, percent=50, combine="Either is exceeded"), _statement(), {})
+    assert _required_names(result) == ["REVENUE", "ASSETS", "LIABILITIES"]
+
+
+def test_the_threshold_itself_is_not_above_it():
+    # EXPENSES moved exactly 100: "above" is strictly greater.
+    result = M.group_requirement(_threshold(amount=100), _statement(), {})
+    assert "EXPENSES" not in _required_names(result)
+    result = M.group_requirement(_threshold(amount=99.99), _statement(), {})
+    assert "EXPENSES" in _required_names(result)
+
+
+def test_commentary_on_a_heading_above_the_threshold_clears_it():
+    result = M.group_requirement(_threshold(amount=1000), _statement(),
+                                 {"4": "Price rise in July.", "1": "   "})
+    assert result["over_threshold"] == 2
+    assert _required_names(result) == ["ASSETS"]
+
+
+def test_no_comparison_rows_is_not_comparable_with_the_statement_note():
+    rows = [r for r in _ROWS if r["fiscal_period"] == 7]
+    stmt = _statement(rows)
+    result = M.group_requirement(_threshold(amount=1000), stmt, {})
+    assert result == {"state": "not_comparable",
+                      "message": stmt["periods"]["comparison_note"],
+                      "over_threshold": 0, "required": []}
+    assert result["message"]
+
+
+def test_requirement_undeclared_reads_no_group_and_carries_the_gap_message():
+    declared = CPM.commentary_threshold(0, 0, "")
+    result = M.requirement(declared, None)
+    assert result == {"state": "undeclared", "threshold": None,
+                      "message": declared["gap"]["message"], "groups": [],
+                      "required_missing": None}
+
+
+def test_requirement_sums_required_headings_across_groups():
+    declared = CPM.commentary_threshold(1000, 0, "")
+    groups = [
+        {"consolidation_group": "G1", "state": "ok", "message": None,
+         "statement": _statement(), "texts": {}},
+        {"consolidation_group": "G2", "state": "ok", "message": None,
+         "statement": _statement(), "texts": {"4": "Explained."}},
+        {"consolidation_group": "G3", "state": "no_chart",
+         "message": "Publish the group chart (Main Account) first.", "statement": None,
+         "texts": {}},
+    ]
+    result = M.requirement(declared, groups)
+    assert result["state"] == "checked"
+    assert result["threshold"] == declared["threshold"]
+    assert result["message"] is None
+    assert result["required_missing"] == 3
+    assert [g["consolidation_group"] for g in result["groups"]] == ["G1", "G2", "G3"]
+    assert _required_names(result["groups"][1]) == ["ASSETS"]
+    assert result["groups"][2] == {"consolidation_group": "G3", "state": "checked",
+                                   "message": "Publish the group chart (Main Account) first.",
+                                   "over_threshold": 0, "required": []}
+
+
+def test_requirement_with_an_unreadable_statement_is_unknown_naming_the_group():
+    declared = CPM.commentary_threshold(1000, 0, "")
+    groups = [
+        {"consolidation_group": "G1", "state": "ok", "message": None,
+         "statement": _statement(), "texts": {}},
+        {"consolidation_group": "G2", "state": "not_built",
+         "message": "ServerException (UNKNOWN_TABLE)", "statement": None, "texts": {}},
+    ]
+    result = M.requirement(declared, groups)
+    assert result["state"] == "unknown"
+    assert result["required_missing"] is None
+    assert "G2" in result["message"] and "UNKNOWN_TABLE" in result["message"]
+    assert result["groups"][1]["state"] == "not_built"
+    assert result["groups"][1]["required"] == []
+
+
+def test_requirement_refuses_an_unknown_group_state():
+    declared = CPM.commentary_threshold(1000, 0, "")
+    try:
+        M.requirement(declared, [{"consolidation_group": "G1", "state": "bogus",
+                                  "message": None, "statement": None, "texts": {}}])
+    except ValueError as e:
+        assert "bogus" in str(e)
+    else:
+        raise AssertionError("an unknown statement state was accepted")

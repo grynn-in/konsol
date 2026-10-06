@@ -467,3 +467,40 @@ test("W43: a non-ok statement state shows its own message, never a blank or zero
 		"the side panel reads a message/text/error field for the non-ok statement state",
 	);
 });
+
+// --- #305 story 6.5: journals reversing into this period ----------------
+
+function reversingSection(tpl) {
+	const span = blockMatching(tpl, "section", /aria-label="Reversing into this period"/);
+	assert.ok(span, 'a <section aria-label="Reversing into this period"> exists');
+	return tpl.slice(span.start, span.end);
+}
+
+test("6.5: a read-only list renders view.reversingIn with each item's server label", () => {
+	const tpl = template(read());
+	const section = reversingSection(tpl);
+	assert.match(section, /v-for="item in view\.reversingIn"/);
+	assert.match(section, /\{\{\s*item\.label\s*\}\}/);
+	assert.match(section, /\{\{\s*item\.totalsText\s*\}\}/);
+	assert.doesNotMatch(section, /Reverses here from/, "the label comes from the server, never a literal");
+});
+
+test("6.5: the reversing list offers no control that writes: no Edit, no Button, no post", () => {
+	const section = reversingSection(template(read()));
+	assert.doesNotMatch(section, /<Button\b/);
+	assert.doesNotMatch(section, /openEdit|saveDraft|sendForApproval|selectJournal/);
+});
+
+test("6.5 / U4: each reversing item shows journalsView's effectView, with the outside-any-heading note", () => {
+	const section = reversingSection(template(read()));
+	assert.match(section, /item\.effectView\.headings/);
+	assert.match(section, /item\.effectView\.noHeadingText/);
+	assert.doesNotMatch(section, /outside any heading/, "the sentence comes from effectView, never a literal");
+});
+
+// U12: "the reversing list renders even when the period has no journals of
+// its own" is a behaviour test on journalsView (adjustments.test.mjs).
+
+test("6.5: the original period's list still shows each journal's 'Reverses in' duration", () => {
+	assert.match(template(read()), /\{\{\s*journal\.duration\s*\}\}/);
+});

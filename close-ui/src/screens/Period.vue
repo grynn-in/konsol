@@ -22,6 +22,7 @@ import LoadState from "../components/LoadState.vue";
 import { get } from "../api.js";
 import { parse, format } from "../route.js";
 import { gridView, readinessView, toneClass, COLUMNS } from "../periodGrid.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_READINESS = "konsol.close.grid_api.get_readiness";
 const GET_PERIOD_GRID = "konsol.close.grid_api.get_period_grid";
@@ -32,7 +33,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const readinessWhat = computed(() => `the readiness of ${periodName.value}`);
 const gridWhat = computed(() => `the entity grid of ${periodName.value}`);
@@ -158,7 +159,9 @@ const gridState = computed(() => {
 });
 const gridError = computed(() => gridViewError.value || grid.error);
 
-const code = computed(() => (grid.payload && grid.payload.period && grid.payload.period.code) || periodName.value);
+//: review-w5: the header is gridView's title ("Period FY2025 P07"), never
+//: the bare payload period code ("P07" live).
+const title = computed(() => (gridViewResult.value ? gridViewResult.value.title : `Period ${periodName.value}`));
 
 function countText(n) {
 	return n == null ? "unknown" : String(n);
@@ -175,7 +178,7 @@ const signOffPath = computed(() =>
 	<div class="mx-auto max-w-5xl px-6 py-6">
 		<header class="mb-4 flex flex-wrap items-start justify-between gap-3">
 			<div>
-				<h1 class="text-xl font-semibold text-ink-gray-9">Period {{ code }}</h1>
+				<h1 class="text-xl font-semibold text-ink-gray-9">{{ title }}</h1>
 				<p class="mt-1 text-sm text-ink-gray-6">
 					{{ countText(gridViewResult && gridViewResult.all) }} entities in scope
 				</p>
