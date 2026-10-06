@@ -29,7 +29,12 @@ A21 ``signoff_model.summary``:
   which don't (``commentary_model.missing_commentary``). Informational only
   — ``signoff_model.summary`` is never called with it, so ``action`` cannot
   depend on it — and unscoped, same as intercompany (every role sees the
-  same counts). 8.4's missing-commentary threshold is a later row.
+  same counts).
+- commentary_required (#305-W5-2, story 8.4): ``signoff_gate.commentary``,
+  the headings above the Close Settings threshold with no commentary. This
+  one IS fed to ``signoff_model.summary``: a Green run with any is Amber
+  and needs a typed acknowledgement; a line that could not be checked
+  blocks. Unscoped, like intercompany.
 
 It adds ``can_sign`` (write on Assertion Run, the test ``sign_off_close``
 applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
@@ -298,6 +303,9 @@ def get_signoff(fiscal_year, fiscal_period):
     # C21: one read of the IC line serves both the gate (summary) and the
     # result's own "intercompany" key below.
     ic = ic_api.signoff_summary(*key)
+    # #305-W5-2 (story 8.4): one read of the commentary-threshold line
+    # serves the summary's Amber rule and the result's own key below.
+    commentary_line = signoff_gate.commentary(*key)
 
     result = signoff_model.summary(
         run, warned_names, on_behalf,
@@ -310,6 +318,7 @@ def get_signoff(fiscal_year, fiscal_period):
         # A66: the same rule sign_off_close refuses with (the run's started_at).
         data_change={f: closed.get(f) for f in signoff_gate.DATA_CHANGE_FIELDS},
         intercompany=ic,
+        commentary=commentary_line,
     )
     # A55: when each exception was declared, with the site's offset. The A08
     # controller allows one submitted exception per entity-period.
@@ -334,6 +343,10 @@ def get_signoff(fiscal_year, fiscal_period):
         # Informational only — built after the summary, so it cannot affect
         # "action" or "gates".
         "commentary": _commentary(key),
+        # #305-W5-2 (story 8.4): the headings above the declared threshold
+        # with no commentary, per root group — the same read that fed the
+        # summary's Amber rule above; unscoped, like intercompany.
+        "commentary_required": commentary_line,
     })
     return result
 

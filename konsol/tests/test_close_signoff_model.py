@@ -662,7 +662,7 @@ def test_amber_means_acknowledge_with_the_warned_names():
     s = _summary(run=_run("Amber", warned=2), warned=["assert_a", "assert_b"])
     assert s["action"] == "acknowledge"
     assert s["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 2, "unlisted": 0,
-                                     "intercompany": None}
+                                     "intercompany": None, "commentary": None}
 
 
 def test_a_capped_name_list_says_how_many_more():
@@ -677,9 +677,9 @@ def test_an_unknown_warning_count_is_unknown_not_zero():
     run = _run("Amber")
     s = _summary(run=run, warned=["assert_a"])
     assert s["acknowledgements"] == {"names": ["assert_a"], "total": None, "unlisted": None,
-                                     "intercompany": None}
+                                     "intercompany": None, "commentary": None}
     assert _summary(run=None)["acknowledgements"] == {"names": [], "total": None, "unlisted": None,
-                                                       "intercompany": None}
+                                                       "intercompany": None, "commentary": None}
 
 
 def test_red_or_error_means_override_for_the_close_lead():

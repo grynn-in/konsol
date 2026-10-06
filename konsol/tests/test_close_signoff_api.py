@@ -546,7 +546,7 @@ def test_warned_count_is_read_so_the_acknowledgement_total_is_known():
     # latest_close_run does not return `warned`; the API must read it.
     result = _get(_Site())
     assert result["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 3,
-                                          "unlisted": 1, "intercompany": None}
+                                          "unlisted": 1, "intercompany": None, "commentary": None}
 
 
 def test_on_behalf_flags_map_yes_no_blank_to_1_0_unknown():
