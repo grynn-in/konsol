@@ -14,7 +14,6 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
-from konsol.epm.budget_grain import budget_dimension_names
 
 #: The columns every annual budget row carries, whatever the site declares.
 FIXED_FIELD_MAP = {
@@ -29,16 +28,20 @@ FIXED_FIELD_MAP = {
 
 
 def budget_dimension_fields():
-    """The site's budget dimensions this doctype has a field for, in name order.
+    """The budget dimension fields this doctype carries, in name order.
 
-    konsol#287: the dimensions are the Published Dimensions ticked in_budget,
-    provisioned here as Custom Fields by schema_apply._sync_budget_custom_fields
-    (as on Budget Line), not two fixed fields named after one customer's cost
-    centres. A dimension whose field is not provisioned yet is left out rather
-    than named: every query below would fail on a column the table lacks.
+    konsol#287: they are the Published Dimensions ticked in_budget, provisioned
+    as Custom Fields by schema_apply._sync_budget_custom_fields (as on Budget
+    Line), not two fixed fields named after one customer's cost centres. Read
+    off the cached meta rather than the Dimension registry: what the doctype
+    can hold is what it can be asked about, a dimension declared but not yet
+    provisioned is left out instead of named in a query on a column the table
+    lacks, and reconcile reads this on discovery, where a query that could fail
+    would stop every other table's sync.
     """
     meta = frappe.get_meta("Budget Annual Input")
-    return [name for name in budget_dimension_names() if meta.has_field(name)]
+    return sorted(f.fieldname for f in meta.fields
+                  if (f.fieldname or "").startswith("dim_"))
 
 
 class _FieldMap:
@@ -91,9 +94,11 @@ class BudgetAnnualInput(Document):
             "main_account": self.main_account,
             "name": ["!=", self.name],
         }
-        # blank Data fields really are '' here, not NULL — these are Data, not
-        # Link, so the F3 ["is", "not set"] trap does not apply
-        grain.update({d: self.get(d) or "" for d in budget_dimension_fields()})
+        # A blank dimension matches NULL as well as '': a dimension field added
+        # after rows exist is NULL on every one of them, so an '' filter would
+        # miss the very row this would duplicate (the F3 trap).
+        grain.update({d: self.get(d) or ["is", "not set"]
+                      for d in budget_dimension_fields()})
         dupe = frappe.db.exists("Budget Annual Input", grain)
         if dupe:
             frappe.throw(

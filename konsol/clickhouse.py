@@ -1011,6 +1011,16 @@ def ensure_reference_tables():
     # that same run rather than the next one.
     for sql in _retired_database_cleanup():
         _run(sql)
+    # konsol#287: the budget input tables name no dimension, so the site's
+    # declared budget dimensions are added here, the moment the tables exist.
+    # reconcile_all calls this before it rewrites Budget Annual Input, so the
+    # columns that rewrite names are there even on a fresh site. Imported here:
+    # schema_apply imports this module.
+    try:
+        from konsol.schema_apply import _sync_budget_dimension_columns
+        _sync_budget_dimension_columns()
+    except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
+        frappe.logger().warning("budget dimension column sync skipped", exc_info=True)
     # konsol#159: the raw landing tables too, so a migrate adds the partner
     # column even on a stack where nobody has submitted a trial balance since
     # — bronze reads it.

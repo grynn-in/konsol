@@ -232,6 +232,12 @@ _SOURCE_COLUMN_PATCH = (
     "moment in a site's history rather than the product's shape; it goes when "
     "the patch is retired, not before."
 )
+_RETIRED_FIELD_PATCH = (
+    "konsol#287 — the patch that retires Budget Annual Input's two fixed "
+    "dimension columns names them, to keep, drop or report each per site. Like "
+    "the source-column patch it records a moment in a site's history; it goes "
+    "when the patch is retired."
+)
 _EXCEL_ADDIN = (
     "konsol#287 — the Excel add-in's budget write takes cost centre and "
     "department as fixed positional arguments and sends them as fixed data "
@@ -260,6 +266,14 @@ ALLOWED_DIMENSION_LITERALS = {
         2,
         _SOURCE_COLUMN_PATCH,
     ),
+    (
+        "konsol/patches/retire_budget_annual_input_fixed_dimensions.py",
+        "dim_cost_center",
+    ): (1, _RETIRED_FIELD_PATCH),
+    (
+        "konsol/patches/retire_budget_annual_input_fixed_dimensions.py",
+        "dim_department",
+    ): (1, _RETIRED_FIELD_PATCH),
     ("konsol/public/excel-addin/functions.js", "dim_cost_center"): (1, _EXCEL_ADDIN),
     ("konsol/public/excel-addin/functions.js", "dim_department"): (1, _EXCEL_ADDIN),
 }

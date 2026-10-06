@@ -164,20 +164,29 @@ def test_a_failing_budget_column_sync_is_reported_not_fatal():
 
 
 # --------------------------------------------------------------------------
-# Budget Annual Input: the field map and the grain follow the declared set
+# Budget Annual Input: the field map and the grain follow its dimension fields
 # --------------------------------------------------------------------------
-def _controller(declared, provisioned):
-    """The Budget Annual Input controller against a site declaring ``declared``
-    in_budget, whose doctype has Custom Fields for ``provisioned``."""
+def _controller(fields):
+    """The Budget Annual Input controller whose doctype meta has ``fields``
+    (a set, mutable by the caller) besides its standard ones."""
     exists_calls = []
 
     class Document:
         def get(self, key):
             return getattr(self, key, None)
 
-    meta = types.SimpleNamespace(has_field=lambda f: f in provisioned)
+    standard = ["scenario_id", "data_area_id", "fiscal_year", "main_account",
+                "annual_amount", "spread_profile_id", "submitted_by"]
+    class Meta:
+        @property
+        def fields(self):
+            return [types.SimpleNamespace(fieldname=f) for f in [*standard, *sorted(fields)]]
+
+    meta = Meta()
     fake = types.ModuleType("frappe")
     fake.get_meta = lambda doctype: meta
+    fake.get_all = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("no registry query: the field set is read off meta"))
     fake.db = types.SimpleNamespace(exists=lambda dt, f: exists_calls.append(f) or None)
     fake.throw = lambda msg, *a, **k: (_ for _ in ()).throw(ValueError(msg))
     fake.flags = types.SimpleNamespace(in_install=False, in_migrate=False, in_import=False)
@@ -188,85 +197,180 @@ def _controller(declared, provisioned):
         os.path.join(APP_DIR, "epm", "doctype", "budget_annual_input", "budget_annual_input.py"),
         "_host_budget_annual_input_k287",
         {"frappe": fake, "frappe.model": model, "frappe.model.document": document,
-         "konsol.clickhouse": types.SimpleNamespace(sync_doctype_after_commit=lambda *a: None),
-         "konsol.epm.budget_grain": types.SimpleNamespace(
-             budget_dimension_names=lambda: sorted(declared))})
+         "konsol.clickhouse": types.SimpleNamespace(sync_doctype_after_commit=lambda *a: None)})
     return module, exists_calls
 
 
-def test_the_field_map_carries_the_declared_budget_dimensions():
+def test_the_field_map_carries_the_doctypes_dimension_fields():
     """reconcile_all reads CH_FIELD_MAP off the class, so it is checked there."""
-    module, _ = _controller({"dim_region", "dim_product"}, {"dim_region", "dim_product"})
+    module, _ = _controller({"dim_region", "dim_product"})
     field_map = module.BudgetAnnualInput.CH_FIELD_MAP
     assert field_map == {**module.FIXED_FIELD_MAP, "dim_product": "dim_product",
                          "dim_region": "dim_region"}, field_map
 
 
-def test_the_field_map_follows_the_declared_set_when_it_changes():
-    declared = {"dim_region"}
-    module, _ = _controller(declared, {"dim_region", "dim_product"})
+def test_the_field_map_follows_the_fields_when_the_sync_changes_them():
+    fields = {"dim_region"}
+    module, _ = _controller(fields)
     assert "dim_product" not in module.BudgetAnnualInput.CH_FIELD_MAP
-    declared.add("dim_product")
+    fields.add("dim_product")   # the Custom Field sync provisioned it
     assert "dim_product" in module.BudgetAnnualInput.CH_FIELD_MAP
 
 
-def test_a_declared_dimension_without_its_field_yet_is_left_out():
-    """Named, every query on the doctype would fail on a missing column."""
-    module, _ = _controller({"dim_region", "dim_product"}, {"dim_region"})
-    assert "dim_product" not in module.BudgetAnnualInput.CH_FIELD_MAP
-    assert "dim_region" in module.BudgetAnnualInput.CH_FIELD_MAP
-
-
 def test_no_fixed_dimension_is_left_in_the_field_map():
-    module, _ = _controller(set(), set())
-    assert not [k for k in module.BudgetAnnualInput.CH_FIELD_MAP if k.startswith("dim_")]
+    module, _ = _controller(set())
+    assert module.BudgetAnnualInput.CH_FIELD_MAP == module.FIXED_FIELD_MAP
+    assert not [k for k in module.FIXED_FIELD_MAP if k.startswith("dim_")]
 
 
-def test_the_unique_grain_includes_the_declared_dimensions():
+def test_the_unique_grain_includes_the_dimension_fields():
     """Two rows differing only by a budget dimension are different budget lines."""
-    module, exists_calls = _controller({"dim_region"}, {"dim_region"})
+    module, exists_calls = _controller({"dim_region"})
     doc = module.BudgetAnnualInput()
     doc.__dict__.update(name="BAI-1", scenario_id="BUD", data_area_id="ZZA",
-                        fiscal_year=2026, main_account="ZZ1000", dim_region="")
-    doc._validate_unique_grain()
-    assert exists_calls[-1]["dim_region"] == "", exists_calls
-    doc.dim_region = "EMEA"
+                        fiscal_year=2026, main_account="ZZ1000", dim_region="EMEA")
     doc._validate_unique_grain()
     assert exists_calls[-1]["dim_region"] == "EMEA", exists_calls
 
 
+def test_a_blank_dimension_in_the_grain_matches_null_too():
+    """A dimension field added after rows exist is NULL on every one of them.
+    Filtered as '', the check missed the row it duplicates, and
+    gold_spread_budget (no dedup) doubled the annual budget."""
+    module, exists_calls = _controller({"dim_region"})
+    doc = module.BudgetAnnualInput()
+    doc.__dict__.update(name="BAI-1", scenario_id="BUD", data_area_id="ZZA",
+                        fiscal_year=2026, main_account="ZZ1000", dim_region=None)
+    doc._validate_unique_grain()
+    assert exists_calls[-1]["dim_region"] == ["is", "not set"], exists_calls
+
+
 # --------------------------------------------------------------------------
-# after_migrate: before the reconcile, and again after it
+# The columns are added where the tables are created
 # --------------------------------------------------------------------------
-def _after_migrate_calls():
-    with open(os.path.join(APP_DIR, "install.py"), encoding="utf-8") as fh:
-        tree = ast.parse(fh.read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "after_migrate")
-    return [n.value.func.id for n in fn.body
-            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
-            and isinstance(n.value.func, ast.Name)]
+def _ensure_reference_tables(sync):
+    """Run clickhouse.ensure_reference_tables with ``sync`` standing in for
+    schema_apply._sync_budget_dimension_columns; return the SQL it ran."""
+    sql = []
+    fake = types.ModuleType("frappe")
+    fake.logger = lambda: types.SimpleNamespace(warning=lambda *a, **k: None,
+                                                info=lambda *a, **k: None)
+    fake.flags = types.SimpleNamespace(in_install=False, in_import=False,
+                                       in_migrate=False, in_patch=False)
+    schema_apply = types.ModuleType("konsol.schema_apply")
+    schema_apply._sync_budget_dimension_columns = lambda: sync(list(sql))
+    module = _load_isolated(os.path.join(APP_DIR, "clickhouse.py"), "_host_clickhouse_k287",
+                            {"frappe": fake})
+    module.execute = lambda statement, params=None: sql.append(statement) or ""
+    saved = sys.modules.get("konsol.schema_apply")
+    sys.modules["konsol.schema_apply"] = schema_apply
+    try:
+        module.ensure_reference_tables()
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.schema_apply", None)
+        else:
+            sys.modules["konsol.schema_apply"] = saved
+    return sql
 
 
-def test_migrate_syncs_the_budget_columns_after_the_reconcile_creates_the_tables():
-    """On a fresh site the reconcile is what creates the two tables
-    (ensure_reference_tables), so a sync that only ran before it found nothing
-    to alter and the first budget write named a column the table lacked."""
-    calls = _after_migrate_calls()
-    reconcile = calls.index("_reconcile_clickhouse")
-    assert "_sync_budget_dimension_columns" in calls[reconcile + 1:], calls
+def test_the_budget_columns_are_synced_once_the_tables_exist():
+    """reconcile_all calls ensure_reference_tables before it rewrites Budget
+    Annual Input. On a fresh site that is where the two tables are created, so
+    the declared columns must be added there, after the CREATEs and before any
+    write names them."""
+    seen = []
+    _ensure_reference_tables(seen.append)
+    assert len(seen) == 1, "synced exactly once"
+    created_before = " ".join(seen[0])
+    for table in BUDGET_TABLES:
+        assert f"CREATE TABLE IF NOT EXISTS {table} " in created_before, table
 
 
-def test_migrate_also_syncs_them_before_the_reconcile_rewrites_the_rows():
-    """The reconcile rewrites Budget Annual Input's rows, naming the declared
-    columns; on an existing site they must be there first."""
-    calls = _after_migrate_calls()
-    reconcile = calls.index("_reconcile_clickhouse")
-    before = calls[:reconcile]
-    assert "_sync_budget_line_custom_fields" in before, calls
-    with open(os.path.join(APP_DIR, "install.py"), encoding="utf-8") as fh:
-        tree = ast.parse(fh.read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-              and n.name == "_sync_budget_line_custom_fields")
-    called = {n.func.id for n in ast.walk(fn)
-              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    assert "_sync_budget_dimension_columns" in called, called
+def test_a_failing_budget_column_sync_does_not_fail_the_bootstrap():
+    def boom(_sql):
+        raise RuntimeError("clickhouse down")
+
+    sql = _ensure_reference_tables(boom)
+    assert any("epm_raw" in s for s in sql), "the raw tables still bootstrap after it"
+
+
+# --------------------------------------------------------------------------
+# The patch that retires the two fixed columns, per site
+# --------------------------------------------------------------------------
+PATCH = os.path.join(APP_DIR, "patches", "retire_budget_annual_input_fixed_dimensions.py")
+
+
+def _run_patch(columns, declared=(), fail=()):
+    """Run the patch on a table with ``columns`` ({name: rows holding a value}),
+    a site declaring ``declared`` in_budget, and DDL failing for ``fail``.
+    Returns (columns left, DDL run, warnings)."""
+    ddl, warnings = [], []
+
+    def has_column(doctype, column):
+        assert doctype == "Budget Annual Input", doctype
+        return column in columns
+
+    def exists(doctype, filters):
+        assert doctype == "Dimension" and filters["in_budget"] == 1, filters
+        assert filters["status"] == "Published", filters
+        return filters["dimension_name"] in declared
+
+    def sql(query, *a, **k):
+        column = query.split("`")[3]
+        return [[columns[column]]]
+
+    def sql_ddl(query):
+        column = query.split("`")[3]
+        if column in fail:
+            raise RuntimeError("ddl refused")
+        ddl.append(query)
+        columns.pop(column)
+
+    fake = types.ModuleType("frappe")
+    fake.db = types.SimpleNamespace(has_column=has_column, exists=exists, sql=sql, sql_ddl=sql_ddl)
+    fake.logger = lambda: types.SimpleNamespace(
+        warning=lambda msg, **k: warnings.append(msg), info=lambda *a, **k: None)
+    module = _load_isolated(PATCH, "_host_retire_bai_dims_k287", {"frappe": fake})
+    module.execute()
+    return columns, ddl, warnings
+
+
+def test_the_patch_is_registered():
+    with open(os.path.join(APP_DIR, "patches.txt"), encoding="utf-8") as fh:
+        assert "konsol.patches.retire_budget_annual_input_fixed_dimensions" in fh.read().split()
+
+
+def test_an_empty_retired_column_is_dropped():
+    left, ddl, warnings = _run_patch({"dim_cost_center": 0, "dim_department": 0})
+    assert left == {} and len(ddl) == 2 and not warnings, (left, ddl, warnings)
+
+
+def test_a_retired_column_the_site_declares_is_kept_for_its_custom_field():
+    """The Custom Field sync creates the field of the same name over it, so the
+    values are read again unchanged."""
+    left, ddl, warnings = _run_patch({"dim_cost_center": 5, "dim_department": 0},
+                                     declared={"dim_cost_center"})
+    assert "dim_cost_center" in left and not warnings, (left, warnings)
+    assert [q for q in ddl if "dim_cost_center" in q] == []
+
+
+def test_a_retired_column_holding_values_is_kept_and_reported():
+    """Never destroyed: the values reach no number (dbt selected only declared
+    dimensions), and declaring the dimension brings them back."""
+    left, ddl, warnings = _run_patch({"dim_cost_center": 3, "dim_department": 0})
+    assert "dim_cost_center" in left, left
+    assert "dim_department" not in left, "the empty one is still dropped"
+    assert len(warnings) == 1 and "3 row(s)" in warnings[0], warnings
+
+
+def test_the_patch_is_a_no_op_when_the_columns_are_gone():
+    left, ddl, warnings = _run_patch({})
+    assert (left, ddl, warnings) == ({}, [], [])
+
+
+def test_a_failing_drop_is_logged_and_the_other_column_still_retires():
+    left, ddl, warnings = _run_patch({"dim_cost_center": 0, "dim_department": 0},
+                                     fail={"dim_cost_center"})
+    assert "dim_cost_center" in left and "dim_department" not in left, left
+    assert any("left in place" in w for w in warnings), warnings

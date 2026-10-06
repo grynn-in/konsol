@@ -43,3 +43,4 @@ konsol.patches.retire_consolidation_adjustment
 konsol.patches.declare_ytd_measure_as_last
 konsol.patches.declare_allow_ic_for_published_pairings
 konsol.patches.backfill_close_events
+konsol.patches.retire_budget_annual_input_fixed_dimensions
