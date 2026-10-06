@@ -34,6 +34,7 @@ import { get } from "../api.js";
 import { parse } from "../route.js";
 import { entityRows, entityWord } from "../tbTable.js";
 import { userTimeZone } from "../timefmt.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const MY_TBS = "konsol.close.tb_read_api.my_tbs";
 const CONTEXT = "konsol.close.period_api.get_context";
@@ -59,7 +60,7 @@ const route = useRoute();
 const period = computed(() => parse(`/close${route.path}`));
 
 function periodName(p) {
-	return `FY${p.year} P${String(p.period).padStart(2, "0")}`;
+	return formatPeriod(p.year, p.period);
 }
 const what = computed(() =>
 	period.value.error || period.value.year == null

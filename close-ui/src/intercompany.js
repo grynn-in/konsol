@@ -314,11 +314,29 @@ function balanceRow(row, canDraft) {
 	};
 }
 
+//: review-w5 U5: `get_ic_balances` always sends these keys, so a missing one
+//: is a bug to surface, never "no balances / nothing hidden" (the
+//: auditTrail.js `hidden` rule).
+const IC_BALANCES_KEYS = ["balances", "hidden", "entities", "can_draft"];
+//: F51b: `gap` and `ambiguous_gap` are always sent too, as null when there is
+//: no gap; so the key must be present, and null is the declared "no gap".
+const IC_BALANCES_NULLABLE_KEYS = ["gap", "ambiguous_gap"];
+
 export function icBalancesView(payload) {
-	const canDraft = !!payload.can_draft;
-	const hidden = payload.hidden || 0;
+	for (const key of IC_BALANCES_KEYS) {
+		if (payload[key] === undefined || payload[key] === null) {
+			throw new Error(`IC Balances payload has no \`${key}\` (get_ic_balances always sends it)`);
+		}
+	}
+	for (const key of IC_BALANCES_NULLABLE_KEYS) {
+		if (payload[key] === undefined) {
+			throw new Error(`IC Balances payload has no \`${key}\` (get_ic_balances always sends it, null when there is none)`);
+		}
+	}
+	const canDraft = payload.can_draft === true;
+	const hidden = payload.hidden;
 	return {
-		rows: (payload.balances || []).map((row) => balanceRow(row, canDraft)),
+		rows: payload.balances.map((row) => balanceRow(row, canDraft)),
 		gap: gapView(payload.gap, (p) => `${p.selling_entity} → ${p.buying_entity}`),
 		ambiguousGap: gapView(
 			payload.ambiguous_gap,
@@ -326,7 +344,7 @@ export function icBalancesView(payload) {
 		),
 		hiddenNote: hidden > 0 ? `${hidden} IC Balances for entities outside your scope are not shown` : null,
 		canDraft,
-		entities: payload.entities || [],
+		entities: payload.entities,
 		rulesDesk: payload.rules_desk,
 	};
 }

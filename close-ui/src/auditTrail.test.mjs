@@ -756,3 +756,14 @@ test("U2: exportCsv refuses a payload with no period rather than calling the ser
 	);
 	assert.equal(called, false);
 });
+
+// --- konsol#305 review-w5: the header names the year ------------------------
+
+test("trailView: the title is 'Audit trail · FY2025 P07' when the live code is 'P07' alone", () => {
+	const view = trailView(
+		payload([], { period: { fiscal_year: 2025, fiscal_period: 7, code: "P07", status: "Open" } }),
+		NOW,
+		TZ,
+	);
+	assert.equal(view.title, "Audit trail · FY2025 P07");
+});

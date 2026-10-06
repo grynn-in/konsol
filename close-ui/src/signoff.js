@@ -293,8 +293,17 @@ function commentaryRequiredSection(line) {
 			`is above ${thresholdText(line.threshold)}`,
 	];
 	for (const group of line.groups || []) {
+		//: review-w5 U9: a checked line's group is `checked` (its message, set
+		//: for a no_chart group, is shown) or `not_comparable`; any other
+		//: state is not guessed (commentary_model.requirement).
 		if (group.state === "not_comparable") {
 			rows.push(`${group.consolidation_group}: not compared — ${group.message}`);
+		} else if (group.state === "checked") {
+			if (group.message) {
+				rows.push(`${group.consolidation_group}: ${group.message}`);
+			}
+		} else {
+			throw new Error(`Unknown commentary_required group state for ${group.consolidation_group}: ${group.state}`);
 		}
 		for (const r of group.required || []) {
 			const pct = r.percent === null || r.percent === undefined

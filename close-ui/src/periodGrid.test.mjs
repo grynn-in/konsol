@@ -251,3 +251,13 @@ test("the source contains no local-storage or session-storage calls", () => {
 		assert.ok(!source.includes(term), `unexpected ${term}`);
 	}
 });
+
+// --- konsol#305 review-w5: the period is named with its year ---------------
+
+test("gridView: the header and the empty text name FY + period, not the live code 'P07' alone", () => {
+	const p = payload({ period: { fiscal_year: 2025, fiscal_period: 7, code: "P07", status: "Open" }, rows: [] });
+	const view = gridView(p, false);
+	assert.equal(view.title, "Period FY2025 P07");
+	assert.equal(view.empty, "No entities in scope for FY2025 P07");
+	assert.equal(gridView(p, true).empty, "No problems in FY2025 P07");
+});

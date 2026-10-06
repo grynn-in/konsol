@@ -36,6 +36,7 @@
 // row's files).
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { periodName } from "./periodName.js";
 
 const PL = "Profit and Loss";
 const BS = "Balance Sheet";
@@ -126,7 +127,7 @@ function periodText(period) {
 			throw new Error(`Numbers: the payload's period has no ${key}`);
 		}
 	}
-	return `FY${period.fiscal_year} P${String(period.fiscal_period).padStart(2, "0")}`;
+	return periodName(period.fiscal_year, period.fiscal_period);
 }
 
 function header(payload) {
@@ -455,6 +456,9 @@ export function statementView(payload, now, timeZone) {
 		// for a BS heading). `null` on a non-ok payload, mirroring `tabs`/
 		// `comparisonNote` — never a guess at a statement that wasn't built.
 		statement: isOk ? payload.statement : null,
+		// 8.5 / review-w5 U12: "Export to Excel" is offered for an ok
+		// statement only — the screen renders the button off this flag.
+		canExport: isOk,
 	};
 }
 
@@ -554,15 +558,22 @@ function drillRow(row, period) {
 		link: drillSourceLink(row.source, period),
 	};
 	if (row.journals) {
-		view.journals = row.journals.map((journal) => ({
-			journalId: journal.journal_id,
-			description: journal.description,
-			amount: amountText(journal.amount),
-			postedBy: journal.posted_by,
-			approvedBy: journal.approved_by,
-			//: #305 story 6.5: the reversal posting of an earlier period's journal.
-			autoReversal: journal.auto_reversal === true,
-		}));
+		view.journals = row.journals.map((journal) => {
+			//: review-w5 U6: drill_model always sends a boolean; a missing or
+			//: renamed key never shows a reversal as an ordinary journal.
+			if (typeof journal.auto_reversal !== "boolean") {
+				throw new Error(`Numbers: drill journal ${journal.journal_id} has no boolean auto_reversal`);
+			}
+			return {
+				journalId: journal.journal_id,
+				description: journal.description,
+				amount: amountText(journal.amount),
+				postedBy: journal.posted_by,
+				approvedBy: journal.approved_by,
+				//: #305 story 6.5: the reversal posting of an earlier period's journal.
+				autoReversal: journal.auto_reversal,
+			};
+		});
 		view.journalsBasis = row.journals_basis;
 	}
 	return view;

@@ -600,6 +600,7 @@ function balancesPayload(overrides) {
 			entities: ["DE01", "FR01"],
 			message: GAP_MESSAGE,
 		},
+		ambiguous_gap: null,
 		hidden: 0,
 		entities: ["DE01", "FR01", "UK01"],
 		can_draft: true,
@@ -716,3 +717,45 @@ test("icBalancesView: no ambiguous gap is null; a row two rules match is flagged
 	assert.equal(uk.ambiguousRule, true);
 	assert.equal(fr.ambiguousRule, false);
 });
+
+// --- konsol#305 review-w5 U5: no silent fallbacks; the real producer's shape --
+
+// The golden fixture is the real `ic_balance_api.get_ic_balances` payload
+// (test_close_ic_balance_api.py::test_get_matches_the_golden_fixture).
+const IC_BALANCES_FIXTURE_PATH = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_ic_balances_payload.json", import.meta.url),
+);
+function goldenBalances() {
+	return JSON.parse(readFileSync(IC_BALANCES_FIXTURE_PATH, "utf8"));
+}
+
+test("U5: icBalancesView reads the real get_ic_balances payload", () => {
+	const golden = goldenBalances();
+	const view = icBalancesView(golden);
+	assert.deepEqual(view.rows.map((r) => r.pair), golden.balances.map((b) => `${b.selling_entity} → ${b.buying_entity}`));
+	assert.ok(view.rows.length > 0, "the fixture carries at least one balance");
+	assert.equal(view.hiddenNote, `${golden.hidden} IC Balances for entities outside your scope are not shown`);
+	assert.ok(golden.hidden > 0, "the fixture hides at least one balance");
+	assert.deepEqual(view.entities, golden.entities);
+	assert.equal(view.canDraft, golden.can_draft);
+	assert.equal(view.rulesDesk, golden.rules_desk);
+});
+
+for (const key of ["hidden", "balances", "entities", "can_draft"]) {
+	test(`U5: icBalancesView throws naming \`${key}\` when it is missing (never guessed)`, () => {
+		const payload = goldenBalances();
+		delete payload[key];
+		assert.throws(() => icBalancesView(payload), new RegExp(key));
+	});
+}
+
+// F51b: `gap` and `ambiguous_gap` are always sent, null when there is none.
+for (const key of ["gap", "ambiguous_gap"]) {
+	test(`F51b: icBalancesView throws naming \`${key}\` when it is missing; null is "no gap"`, () => {
+		const payload = goldenBalances();
+		assert.ok(key in payload, `the golden fixture carries \`${key}\``);
+		delete payload[key];
+		assert.throws(() => icBalancesView(payload), new RegExp(key));
+		assert.doesNotThrow(() => icBalancesView({ ...goldenBalances(), [key]: null }));
+	});
+}

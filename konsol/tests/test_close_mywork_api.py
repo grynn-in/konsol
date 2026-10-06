@@ -1274,7 +1274,7 @@ def test_the_preparer_gets_the_sent_back_signoff_item_counted_under_checks():
     result = _call(site)
     item = next(i for i in result["items"] if i["id"] == "sent-back:signoff:2025-07")
     assert item["kind"] == "todo" and item["action"] == {"screen": "checks"}
-    assert item["period"]["code"] == "P07"
+    assert item["period"]["code"] == "FY2025 P07"
     assert item["period"]["since"] == "2025-08-20"
     assert "ZZA's TB is the draft" in item["detail"]
     checks = [i for i in result["items"] if (i.get("action") or {}).get("screen") == "checks"]
@@ -1414,3 +1414,14 @@ def test_a_rejecter_who_no_longer_exists_is_named_by_id():
     site.close_events = [row]
     item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
     assert item["detail"].startswith("%s on 2025-08-20: " % row["actor"]), item["detail"]
+
+
+def test_period_items_name_the_year_not_the_bare_period_code():
+    """Live ``period_code`` is "P08" alone (the site rows here carry it): a
+    My work title and its period code name the fiscal year (konsol#305
+    review-w5, period_name)."""
+    site = _Site()
+    site.problems[(2025, 8)] = {"config_gaps": [], "order": None, "completeness": None}
+    item = next(i for i in _call(site)["items"] if i["id"] == "signoff:2025-08")
+    assert item["title"] == "Sign off FY2025 P08"
+    assert item["period"]["code"] == "FY2025 P08"

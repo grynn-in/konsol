@@ -301,11 +301,30 @@ test("8.5: the screen downloads export_statement through api.js's download", () 
 	assert.match(src, /consolidation_group:\s*view\.value\.consolidationGroup/);
 });
 
-test("8.5: the Export to Excel button shows only with an ok statement", () => {
+//: U12: a behaviour test on statementView, not a grep of the template's
+//: position: the export is offered for an ok statement and for no other
+//: state, and the template renders the button off `view.canExport`.
+test("8.5 / U12: statementView offers the export only for an ok statement", () => {
+	const now = new Date("2026-10-06T12:00:00Z");
+	assert.equal(statementView(golden(), now, "UTC").canExport, true);
+	const setupGap = JSON.parse(
+		fs.readFileSync(
+			fileURLToPath(new URL("../../../konsol/tests/fixtures/close_statement_payload_setup_gap.json", import.meta.url)),
+			"utf8",
+		),
+	);
+	assert.equal(statementView(setupGap, now, "UTC").canExport, false);
 	const tpl = template(read());
-	const okBranch = tpl.indexOf("<template v-else>");
-	const button = tpl.indexOf("Export to Excel");
-	assert.ok(okBranch >= 0, "the ok branch exists");
-	assert.ok(button > okBranch, "the button sits inside the ok branch, after the state banner");
+	assert.match(tpl, /v-if="view\.canExport"/);
 	assert.match(tpl, /exporting\.error/, "a refused export shows the server's sentence");
+});
+
+// --- konsol#305 review-w5 U7: the export's stale guard ------------------------
+
+test("U7: Export to Excel captures the period and group at the click and ignores a late result (whileCurrent)", () => {
+	const src = script(read());
+	assert.match(src, /import \{[^}]*\bwhileCurrent\b[^}]*\} from "\.\.\/stillCurrent\.js"/);
+	const fn = src.slice(src.indexOf("async function exportExcel"));
+	assert.match(fn, /whileCurrent\(/);
+	assert.match(fn, /consolidationGroup/);
 });

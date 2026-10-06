@@ -491,21 +491,15 @@ test("6.5: the reversing list offers no control that writes: no Edit, no Button,
 	assert.doesNotMatch(section, /openEdit|saveDraft|sendForApproval|selectJournal/);
 });
 
-test("6.5: each reversing item shows its effect through effectView, not a literal", () => {
+test("6.5 / U4: each reversing item shows journalsView's effectView, with the outside-any-heading note", () => {
 	const section = reversingSection(template(read()));
-	assert.match(section, /effectView\(item\.effect\)/);
+	assert.match(section, /item\.effectView\.headings/);
+	assert.match(section, /item\.effectView\.noHeadingText/);
+	assert.doesNotMatch(section, /outside any heading/, "the sentence comes from effectView, never a literal");
 });
 
-test("6.5: the reversing list renders even when the period has no journals of its own", () => {
-	const tpl = template(read());
-	const span = blockMatching(tpl, "section", /aria-label="Reversing into this period"/);
-	const before = tpl.slice(0, span.start);
-	const emptyIdx = before.lastIndexOf("No journals for");
-	assert.ok(emptyIdx >= 0);
-	// The section is not inside the own-journals v-if/v-else pair: it carries
-	// its own v-if on view.reversingIn.length.
-	assert.match(tagAt(tpl, span.start + 1), /v-if="view\.reversingIn\.length"/);
-});
+// U12: "the reversing list renders even when the period has no journals of
+// its own" is a behaviour test on journalsView (adjustments.test.mjs).
 
 test("6.5: the original period's list still shows each journal's 'Reverses in' duration", () => {
 	assert.match(template(read()), /\{\{\s*journal\.duration\s*\}\}/);

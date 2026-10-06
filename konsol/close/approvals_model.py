@@ -67,6 +67,8 @@ def _load_sibling(name, filename):
 rates_model = _load_sibling("konsol_close_approvals_model_rates_model", "close/rates_model.py")
 close_policy_model = _load_sibling(
     "konsol_close_approvals_model_close_policy_model", "close/close_policy_model.py")
+period_name = _load_sibling(
+    "konsol_close_approvals_model_period_name", "close/period_name.py").period_name
 
 JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
@@ -95,7 +97,7 @@ _RATE_KIND_LABELS = {
 
 
 def _fy_p(fiscal_year, fiscal_period):
-    return "FY%s P%02d" % (fiscal_year, int(fiscal_period))
+    return period_name(fiscal_year, fiscal_period)
 
 
 def _journal_title(description):

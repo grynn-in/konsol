@@ -111,6 +111,8 @@ missing ownership (coordinator, 25 Sep). A leaf is in scope for the frequency ga
 when it is covered at the start of at least one of them. No judged period
 means nothing to judge, so neither gap names anyone.
 """
+import importlib.util as _importlib_util
+import os as _os
 import json
 from datetime import date, datetime
 
@@ -121,6 +123,21 @@ from konsol.close import (approvals_api, checks_model, close_policy_model, ic_ap
                           period_model, scope_model, signoff_gate, signoff_model)
 from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 #: The close roles; the gate spells them out (the A01 contract reads a literal).
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
@@ -223,7 +240,7 @@ def _judged_periods(first_close):
         start = _date(row.get("start_date"))
         if (row.get("period_type") == REGULAR and row.get("status") == "Open"
                 and start is not None and (first_close is None or key >= first_close)):
-            out.append((key, "FY%d P%02d" % key, start))
+            out.append((key, period_name(*key), start))
     return [(label, start) for _, label, start in sorted(out)]
 
 
@@ -317,12 +334,13 @@ def _open_rows(first_close, today):
 def _period_codes():
     """``{(fiscal_year, fiscal_period): period_code}`` of every fiscal period
     row (A22), not only the open ones: a sent-back draft can name a closed or
-    history period. The row's own ``period_code``, falling back to
-    ``FY%d P%02d`` (mirrors ``_period_facts``'s ``code``)."""
+    history period. Always ``period_name`` ("FY2025 P07"), never the bare
+    ``period_code`` ("P07" live; konsol#305 review-w5), as
+    ``_period_facts``'s ``code``."""
     codes = {}
     for row in fiscal_calendar.fiscal_period_rows():
         key = (int(row["fiscal_year"]), int(row["fiscal_period"]))
-        codes[key] = row.get("period_code") or "FY%d P%02d" % key
+        codes[key] = period_name(*key)
     return codes
 
 
@@ -430,7 +448,7 @@ def _period_facts(first_close, allowed, today, shared):
     as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
     for key, row in _open_rows(first_close, today):
-        code = row.get("period_code") or "FY%d P%02d" % key
+        code = period_name(*key)
         end_date = _date(row.get("end_date"))
         if end_date is None:
             # A53: the age shown for a period is its end date. A period row with

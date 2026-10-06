@@ -35,11 +35,29 @@ Import warning: test loaders that build ``konsol.close`` as a stub package
 and load the real ``signoff_gate`` or ``mywork_api`` must stub
 ``konsol.close.ic_balance_api``; both import it lazily.
 """
+import importlib.util as _importlib_util
+import os as _os
+
 import frappe
 
 from konsol import fiscal_calendar
 from konsol.close import ic_balance_model
 from konsol.entity_permissions import allowed_entity_codes
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 IC_BALANCE = "IC Balance"
 RULE = "IC Elimination Rule"
@@ -66,7 +84,7 @@ def _period_row(key):
     for row in fiscal_calendar.fiscal_period_rows():
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
-    frappe.throw("FY%d P%02d is not declared: declare it in EPM Fiscal Year." % key)
+    frappe.throw("%s is not declared: declare it in EPM Fiscal Year." % period_name(*key))
 
 
 def _balances(filters):
@@ -113,8 +131,8 @@ def rule_gaps(fiscal_year, fiscal_period, reads=None):
             return []
         return ic_balance_model.rule_gaps(balances, _rules())
     if key not in reads["keys"]:
-        raise ValueError("FY%d P%02d is not an Open period: the shared IC Balance reads "
-                         "cover the Open periods only." % key)
+        raise ValueError("%s is not an Open period: the shared IC Balance reads "
+                         "cover the Open periods only." % period_name(*key))
     balances = [b for b in reads["balances"] if _key_of(b) == key]
     if not balances:
         return []
@@ -171,7 +189,7 @@ def _in_scope(selling_entity, buying_entity, name=None):
 
 
 def _key_text(selling_entity, buying_entity, fy, fp):
-    return "%s → %s FY%d P%02d" % (selling_entity, buying_entity, fy, fp)
+    return "%s → %s %s" % (selling_entity, buying_entity, period_name(fy, fp))
 
 
 @frappe.whitelist(methods=["POST"])
@@ -185,8 +203,8 @@ def save_ic_balance(fiscal_year, fiscal_period, selling_entity, buying_entity, i
     fy, fp = key
     status = row.get("status")
     if status != "Open":
-        frappe.throw("FY%d P%02d is %s: an IC Balance is drafted in an open period."
-                     % (fy, fp, status))
+        frappe.throw("%s is %s: an IC Balance is drafted in an open period."
+                     % (period_name(fy, fp), status))
     problems = ic_balance_model.draft_problems(
         selling_entity, buying_entity, ic_sales_amount, ending_inventory_from_ic,
         set(_entity_codes()))

@@ -33,12 +33,29 @@ that file and fails when the two drift.
 
 Pure: no frappe and no konsol imports (openpyxl only).
 """
+import importlib.util as _importlib_util
+import os as _os
 import io
 from datetime import datetime
 from decimal import Decimal
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 PL = "Profit and Loss"
 BS = "Balance Sheet"
@@ -104,7 +121,7 @@ def _header_text(payload):
     period, never the bare ``period_code`` (live it is "P07" alone, measured
     6 Oct; konsol#305 U1 / review-w5 S4), the same as the screen's header."""
     period = payload["period"]
-    parts = ["FY%d P%02d" % (int(period["fiscal_year"]), int(period["fiscal_period"])),
+    parts = [period_name(period["fiscal_year"], period["fiscal_period"]),
              payload.get("consolidation_group"),
              payload.get("reporting_currency")]
     return " · ".join(["Numbers"] + [p for p in parts if p not in (None, "")])

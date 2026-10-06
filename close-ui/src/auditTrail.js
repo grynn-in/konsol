@@ -43,6 +43,7 @@
 //   choices and turns a filter state into query params.
 
 import { parseZoned, formatTime } from "./timefmt.js";
+import { periodName } from "./periodName.js";
 
 // The Close Event kinds whose label and tone do not depend on `detail`.
 // `signed_off` and `tb_submitted` are handled separately below -- their
@@ -370,6 +371,9 @@ export function trailView(payload, now, timeZone) {
 		countNote = `Showing ${events.length} of ${payload.total} events`;
 	}
 	return {
+		//: review-w5: the live period code is "P07" alone; the header names
+		//: the year (periodName).
+		title: `Audit trail · ${periodName(period.fiscal_year, period.fiscal_period)}`,
 		signedOff: signedOffText(summary.signoff, now, timeZone),
 		result: resultText(summary.signoff),
 		closedLocked: closedLockedText(summary, now, timeZone),

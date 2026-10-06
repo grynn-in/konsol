@@ -248,6 +248,32 @@ def _save_refused(site, **overrides):
 
 # --- get_ic_balances ------------------------------------------------------------
 
+#: The golden fixture close-ui's intercompany tests load (konsol#305
+#: review-w5 U5): the payload exactly as the real ``get_ic_balances`` returns
+#: it, never a hand-built dict.
+_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "fixtures", "close_ic_balances_payload.json")
+
+
+def _golden_site():
+    """The default site with the Analyst scoped to UK01: UK01 -> DE01 shows,
+    FR01 -> DE01 is hidden (hidden 1), and DE01 -> UK01 (no matching rule)
+    raises the missing-rule gap."""
+    site = _Site()
+    site.allowed = ["UK01"]
+    site.balances.append(_bal("ICB-DE01-UK01-2025-P7", "DE01", "UK01", sales=500.0,
+                              inventory=80.0))
+    return site
+
+
+def test_get_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_get(_golden_site())))
+    with open(_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert golden["hidden"] == 1 and golden["balances"]
+
+
 def test_get_lists_draft_and_approved_of_the_period_with_margin():
     out = _get(_Site())
     names = [b["name"] for b in out["balances"]]

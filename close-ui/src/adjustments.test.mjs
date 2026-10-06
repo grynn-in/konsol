@@ -140,13 +140,13 @@ test("durationOptions: with no reversal choices, only 'none' is offered", () => 
 
 test("durationOptions: a reversal choice is offered as 'reverses' (U1, U9 — fed journalsView's output)", () => {
 	const view = journalsView(
-		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }] }),
+		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "P10" }] }),
 		NOW,
 		TZ,
 	);
 	const options = durationOptions(view);
 	assert.equal(options.length, 2);
-	assert.deepEqual(options[1], { kind: "reverses", fiscal_year: 2026, fiscal_period: 10, label: "Reverses in FY26 P10" });
+	assert.deepEqual(options[1], { kind: "reverses", fiscal_year: 2026, fiscal_period: 10, label: "Reverses in FY2026 P10" });
 });
 
 test("durationOptions: failure path, never a 'stays until reversed' option", () => {
@@ -673,4 +673,54 @@ test("6.5: the reversing item's effect reads as the original's, signs flipped", 
 			["Current liabilities", "Dr 1,200.00"],
 		],
 	);
+});
+
+// --- konsol#305 review-w5 U4 / U12: the reversing item's effect, behaviour --
+
+function reversingWithNoHeading() {
+	const golden = goldenReversing();
+	golden.effect = {
+		headings: [
+			...golden.effect.headings,
+			{ heading: null, heading_name: null, net_debit: -50.0, section: null },
+		],
+		sections: golden.effect.sections,
+		no_heading: 1,
+	};
+	return golden;
+}
+
+test("U4: effectView names the accounts outside any heading in one shared sentence", () => {
+	assert.equal(effectView(reversingWithNoHeading().effect).noHeadingText, "1 account(s) outside any heading.");
+	assert.equal(effectView(goldenReversing().effect).noHeadingText, null);
+});
+
+test("U4: a reversing item's effect keeps the amount and the note for accounts outside any heading", () => {
+	const view = journalsView(payload({ reversing_in: [reversingWithNoHeading()] }), NOW, TZ);
+	const effect = view.reversingIn[0].effectView;
+	assert.deepEqual(effect.headings.at(-1), {
+		section: null,
+		heading: null,
+		label: "no heading",
+		amountText: "Cr 50.00",
+	});
+	assert.equal(effect.noHeadingText, "1 account(s) outside any heading.");
+});
+
+test("U12: the reversing list is built even when the period has no journals of its own", () => {
+	const view = journalsView(payload({ journals: [], reversing_in: [goldenReversing()] }), NOW, TZ);
+	assert.equal(view.journals.length, 0);
+	assert.equal(view.reversingIn.length, 1);
+	assert.deepEqual(view.reversingIn[0].effectView, effectView(goldenReversing().effect));
+});
+
+// --- konsol#305 review-w5: "Reverses in" names the year, not the bare code ----
+
+test("durationOptions: a choice whose live code is 'P07' reads 'Reverses in FY2025 P07'", () => {
+	const view = journalsView(
+		payload({ reversal_choices: [{ fiscal_year: 2025, fiscal_period: 7, code: "P07" }] }),
+		NOW,
+		TZ,
+	);
+	assert.equal(durationOptions(view)[1].label, "Reverses in FY2025 P07");
 });

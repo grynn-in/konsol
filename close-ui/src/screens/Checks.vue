@@ -40,6 +40,7 @@ import { parse } from "../route.js";
 import { checksView } from "../checks.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD, contextReloadNeeded } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_CHECKS = "konsol.close.checks_api.get_checks";
 const RUN_CHECKS = "konsol.close.checks_api.run_checks";
@@ -53,7 +54,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 
 const checks = reactive({ status: "loading", payload: null, view: null, error: null, busy: false });

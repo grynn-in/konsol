@@ -244,3 +244,12 @@ test("F51b: the ambiguous-rule gap is shown naming the pairs, with the Desk link
 	assert.match(inner, /rulesDesk/);
 	assert.match(tpl, /row\.ambiguousRule/, "a row two rules match is marked");
 });
+
+// --- konsol#305 review-w5 U8: the IC Balance save's period guard --------------
+
+test("U8: saveBalance ignores a result for a period the user has left (whileCurrent)", () => {
+	const src = script(read());
+	assert.match(src, /import \{[^}]*\bwhileCurrent\b[^}]*\} from "\.\.\/stillCurrent\.js"/);
+	const fn = src.slice(src.indexOf("async function saveBalance"));
+	assert.match(fn.slice(0, fn.indexOf("\n}\n")), /whileCurrent\(/);
+});

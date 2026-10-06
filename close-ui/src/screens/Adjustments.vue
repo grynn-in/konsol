@@ -59,7 +59,7 @@
  *   period whose reversal posts into this one) renders as a read-only
  *   "Reversing into this period" section with its server label ("Reverses
  *   here from <code>"), the reversal posting's lines and its effect through
- *   `effectView`. The original period's list shows "Reverses in <code>" in
+ *   `effectView`. The original period's list shows "Reverses in FY2025 P07" in
  *   the Duration column, as before.
  *
  * The period comes from the URL (route.js, D5); nothing is kept in the
@@ -95,6 +95,7 @@ import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_JOURNALS = "konsol.close.journal_api.get_journals";
 const SAVE_JOURNAL = "konsol.close.journal_api.save_journal";
@@ -120,7 +121,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const what = computed(() => `the adjustments for ${periodName.value}`);
 const timeZone = userTimeZone();
@@ -724,7 +725,7 @@ function lines(text) {
 						<h3 class="mt-2 text-xs font-semibold uppercase tracking-wide text-ink-gray-6">Effect</h3>
 						<ul class="mt-1 space-y-1">
 							<li
-								v-for="(heading, i) in effectView(item.effect).headings"
+								v-for="(heading, i) in item.effectView.headings"
 								:key="i"
 								class="flex items-center justify-between gap-2"
 							>
@@ -732,6 +733,9 @@ function lines(text) {
 								<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
 							</li>
 						</ul>
+						<p v-if="item.effectView.noHeadingText" class="mt-1 text-xs text-ink-gray-5">
+							{{ item.effectView.noHeadingText }}
+						</p>
 					</details>
 				</section>
 			</template>
@@ -851,10 +855,10 @@ function lines(text) {
 						</ul>
 					</template>
 					<p
-						v-if="selectedEffect.noHeading && selectedJournal.docstatus !== 2"
+						v-if="selectedEffect.noHeadingText && selectedJournal.docstatus !== 2"
 						class="mt-1 text-xs text-ink-gray-5"
 					>
-						{{ selectedEffect.noHeading }} account(s) outside any heading.
+						{{ selectedEffect.noHeadingText }}
 					</p>
 				</template>
 			</section>

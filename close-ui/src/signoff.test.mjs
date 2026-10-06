@@ -872,3 +872,33 @@ test("U10: the dialog state is never shared: every step returns a new object", (
 	assert.equal(REJECT_DIALOG_CLOSED.open, false);
 	assert.throws(() => rejectDialogNext(d, { type: "NOPE" }), /NOPE/);
 });
+
+// --- konsol#305 review-w5 U9: every group's message shows; no guessed state ---
+
+test("U9: a checked group from no_chart shows its message (commentary_model.requirement)", () => {
+  const view = summaryView(summary({
+    commentary_required: {
+      ...GOLDEN_REQUIRED,
+      groups: [{ consolidation_group: "G2", state: "checked",
+                 message: "No chart of accounts is mapped for G2.", over_threshold: 0, required: [] }],
+      required_missing: 0,
+    },
+  }));
+  assert.ok(view.commentaryRequired.rows.includes("G2: No chart of accounts is mapped for G2."),
+    view.commentaryRequired.rows.join(" | "));
+});
+
+test("U9: a checked group with no message adds no line of its own", () => {
+  const view = summaryView(summary());
+  assert.ok(!view.commentaryRequired.rows.some((r) => r.startsWith("G1: ")));
+});
+
+test("U9: failure path — an unknown group state throws, naming it", () => {
+  assert.throws(() => summaryView(summary({
+    commentary_required: {
+      ...GOLDEN_REQUIRED,
+      groups: [{ consolidation_group: "G1", state: "maybe", message: null, over_threshold: 0, required: [] }],
+      required_missing: 0,
+    },
+  })), /maybe/);
+});
