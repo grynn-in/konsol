@@ -104,7 +104,7 @@ def _column(header):
     return name
 
 
-def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
+def parse_tb_csv(text, declared_dimensions, *, stored=False):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, currency, description,
@@ -124,8 +124,9 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     job, so a file can be parsed and then reported on as a whole.
 
     `declared_dimensions` are the site's Dimension rows (dimension_name,
-    status, in_trial_balance); the default, no dimensions, means a site that
-    declares none and keeps every existing caller working. A dim_* column the
+    status, in_trial_balance). It has no default (konsol#319): a default of
+    none refused every dim_* column for a caller that forgot it, silently, so
+    a caller that means "no dimensions" passes () where it shows. A dim_* column the
     site has Published and ticked in_trial_balance is accepted and lands on
     each row under its own name, '' when the cell is blank — a dimension is
     optional per row. Any other dim_* header is refused saying WHICH of

@@ -75,7 +75,7 @@ TOL = 0.01
 
 
 def _rows(csv_text):
-    return C.parse_tb_csv(csv_text)
+    return C.parse_tb_csv(csv_text, ())
 
 
 def _check(rows, chart=CHART, entity=ENTITY, known=KNOWN, form_basis=BASIS, tolerance=TOL):
@@ -125,7 +125,7 @@ def test_parse_tb_csvs_own_errors_name_the_real_line_after_a_blank_line():
     """Failure path: the structural errors parse_tb_csv raises itself must use
     the same physical-line counting as the rows it returns."""
     try:
-        C.parse_tb_csv("main_account,debit,credit,currency\n1010,1,0,EUR\n\n,0,1,EUR\n")
+        C.parse_tb_csv("main_account,debit,credit,currency\n1010,1,0,EUR\n\n,0,1,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Line 4: main_account is blank" in str(e)
