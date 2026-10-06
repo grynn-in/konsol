@@ -57,7 +57,7 @@ GOOD = "main_account,debit,credit,currency\n1010,100.50,0,EUR\n2010,0,100.50,EUR
 
 
 def test_parse_good_file():
-    rows = _m.parse_tb_csv(GOOD)
+    rows = _m.parse_tb_csv(GOOD, ())
     assert len(rows) == 2
     # "line" is the physical CSV line the row came from (konsol#305 A38).
     assert rows[0] == {"main_account": "1010", "debit": 100.5,
@@ -67,13 +67,13 @@ def test_parse_good_file():
 
 def test_parse_accepts_description_and_case_insensitive_header():
     rows = _m.parse_tb_csv(
-        "Main_Account,DEBIT,Credit,Currency,Description\n1010,5,0,EUR,Cash\n2010,0,5,EUR,AP\n")
+        "Main_Account,DEBIT,Credit,Currency,Description\n1010,5,0,EUR,Cash\n2010,0,5,EUR,AP\n", ())
     assert rows[0]["description"] == "Cash"
 
 
 def test_parse_rejects_missing_columns():
     try:
-        _m.parse_tb_csv("account,dr,cr\n1010,1,0\n")
+        _m.parse_tb_csv("account,dr,cr\n1010,1,0\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "main_account" in str(e)
@@ -81,7 +81,7 @@ def test_parse_rejects_missing_columns():
 
 def test_parse_rejects_non_numeric_amount():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,currency\n1010,abc,0,EUR\n")
+        _m.parse_tb_csv("main_account,debit,credit,currency\n1010,abc,0,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Line 2" in str(e)
@@ -92,14 +92,14 @@ def test_parse_rejects_blank_account_and_empty_file():
                 "",
                 "main_account,debit,credit,currency\n"):
         try:
-            _m.parse_tb_csv(bad)
+            _m.parse_tb_csv(bad, ())
             assert False, f"expected ValueError for {bad!r}"
         except ValueError:
             pass
 
 
 def test_parse_treats_blank_amounts_as_zero():
-    rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,,,EUR\n2010,0,0,EUR\n")
+    rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,,,EUR\n2010,0,0,EUR\n", ())
     assert rows[0]["debit"] == 0.0 and rows[0]["credit"] == 0.0
 
 
@@ -153,7 +153,7 @@ def test_sql_str_escapes_quotes_and_backslashes():
 def test_parse_rejects_nan_and_inf():
     for bad in ("nan", "inf", "-inf"):
         try:
-            _m.parse_tb_csv(f"main_account,debit,credit,currency\n1010,{bad},0,EUR\n")
+            _m.parse_tb_csv(f"main_account,debit,credit,currency\n1010,{bad},0,EUR\n", ())
             assert False, f"expected ValueError for {bad}"
         except ValueError as e:
             assert "finite" in str(e)
@@ -161,7 +161,7 @@ def test_parse_rejects_nan_and_inf():
 
 def test_parse_rejects_surplus_cells():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,currency\n1010,1,0,stray,extra,EUR\n")
+        _m.parse_tb_csv("main_account,debit,credit,currency\n1010,1,0,stray,extra,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "more cells" in str(e)
@@ -173,14 +173,14 @@ def test_parse_reads_amounts_exactly_and_the_rule_refuses_extra_places():
     longer rounds each line to cents. It keeps the amount as written, and
     konsol.tb_balance_model refuses a line with more places than the
     currency has, by name, instead of judging a balance of rounded lines."""
-    rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,10.005,0,EUR\n2010,0,10.004,EUR\n")
+    rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,10.005,0,EUR\n2010,0,10.004,EUR\n", ())
     assert str(rows[0]["debit"]) == "10.005" and str(rows[1]["credit"]) == "10.004"
     spec = importlib.util.spec_from_file_location("tbs_balance_model", os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tb_balance_model.py"))
     balance = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(balance)
     errs = balance.balance_problems("EUR", 2, _m.parse_tb_csv(
-        "main_account,debit,credit,currency\n1010,10.019,0,EUR\n2010,0,10.001,EUR\n"))
+        "main_account,debit,credit,currency\n1010,10.019,0,EUR\n2010,0,10.001,EUR\n", ()))
     assert errs == ["Line 2: debit 10.019 has 3 decimal places; EUR has 2.",
                     "Line 3: credit 10.001 has 3 decimal places; EUR has 2."], errs
 
@@ -191,17 +191,17 @@ IC = "main_account,debit,credit,description,partner_data_area_id,currency\n"
 
 
 def test_parse_reads_the_partner_and_its_aliases():
-    rows = _m.parse_tb_csv(IC + "4030,0,100,IC sales,ZZB,EUR\n1010,100,0,,,EUR\n")
+    rows = _m.parse_tb_csv(IC + "4030,0,100,IC sales,ZZB,EUR\n1010,100,0,,,EUR\n", ())
     assert rows[0]["partner_data_area_id"] == "ZZB"
     assert rows[1]["partner_data_area_id"] == ""
     for alias in ("partner", "Partner_Entity", "PARTNER_ID", "counterparty"):
-        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias},currency\n4030,0,5, ZZB ,EUR\n1010,5,0,,EUR\n")
+        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias},currency\n4030,0,5, ZZB ,EUR\n1010,5,0,,EUR\n", ())
         assert rows[0]["partner_data_area_id"] == "ZZB", alias
 
 
 def test_parse_refuses_two_partner_columns():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,partner,partner_data_area_id,currency\n4030,0,5,ZZB,ZZB,EUR\n")
+        _m.parse_tb_csv("main_account,debit,credit,partner,partner_data_area_id,currency\n4030,0,5,ZZB,ZZB,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Two partner columns" in str(e)
@@ -548,20 +548,20 @@ CLOSING = "Period-end balance"
 
 
 def test_parse_reads_the_optional_amount_basis_column_and_its_aliases():
-    rows = _m.parse_tb_csv("main_account,debit,credit,amount_basis,currency\n1010,5,0,Period-end balance,EUR\n2010,0,5,,EUR\n")
+    rows = _m.parse_tb_csv("main_account,debit,credit,amount_basis,currency\n1010,5,0,Period-end balance,EUR\n2010,0,5,,EUR\n", ())
     assert rows[0]["amount_basis"] == CLOSING
     assert rows[1]["amount_basis"] == ""  # a blank cell is "not given", the form decides
     for alias in ("basis", "Basis", "AMOUNT_BASIS", "amount basis"):
-        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias},currency\n1010,5,0, period movement ,EUR\n2010,0,5,x,EUR\n")
+        rows = _m.parse_tb_csv(f"main_account,debit,credit,{alias},currency\n1010,5,0, period movement ,EUR\n2010,0,5,x,EUR\n", ())
         assert rows[0]["amount_basis"] == "period movement", alias  # as written; canonical() judges it
         assert rows[1]["amount_basis"] == "x", alias
     # no column at all: every row says ""
-    assert all(r["amount_basis"] == "" for r in _m.parse_tb_csv(GOOD))
+    assert all(r["amount_basis"] == "" for r in _m.parse_tb_csv(GOOD, ()))
 
 
 def test_parse_refuses_two_amount_basis_columns():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,basis,amount_basis,currency\n1010,5,0,a,b,EUR\n")
+        _m.parse_tb_csv("main_account,debit,credit,basis,amount_basis,currency\n1010,5,0,a,b,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Two amount_basis columns" in str(e)
@@ -677,6 +677,9 @@ def _wire(rows):
     _m.frappe.get_doc = lambda doctype, name: rows[name]  # not for the lock read; see the test
     _m.frappe.throw = _raise
     _m.frappe.PermissionError = _PermissionError
+    # konsol#334: the rebuild request, recorded in the same log so its order
+    # after the claim is visible. The helper itself is tested on its own.
+    _m._request_basis_build = lambda name: log.append(("build", name))
     del _ADMIN_CHECKS[:]
     return log, gates, reads
 
@@ -771,7 +774,8 @@ def test_set_amount_basis_writes_mariadb_first_then_one_claim_insert_for_all():
     out = _m.set_amount_basis(["TBS-1", "TBS-2"], "Year-to-date movement")
     assert out["updated"] == 2
     kinds = [e[0] for e in log]
-    assert kinds == ["set", "set", "ch"], kinds
+    # konsol#334: then one rebuild request, after the claim
+    assert kinds == ["set", "set", "ch", "build"], kinds
     assert log[0][1:4] == ("TBS-1", "amount_basis", "Year-to-date movement")
     assert log[0][4].get("update_modified") is False
     claims = _claims(log)
@@ -853,7 +857,7 @@ def test_list_view_offers_set_amount_basis():
 
 def test_parse_refuses_an_unrecognised_column_by_name():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n")
+        _m.parse_tb_csv("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         assert "dim_cost_center" in str(e), str(e)
@@ -861,7 +865,7 @@ def test_parse_refuses_an_unrecognised_column_by_name():
 
 def test_parse_names_every_unrecognised_column_at_once():
     try:
-        _m.parse_tb_csv("main_account,debit,credit,Region,notes,currency\n1010,5,0,EMEA,x,EUR\n")
+        _m.parse_tb_csv("main_account,debit,credit,Region,notes,currency\n1010,5,0,EMEA,x,EUR\n", ())
         assert False, "expected ValueError"
     except ValueError as e:
         msg = str(e)
@@ -874,7 +878,7 @@ def test_parse_still_accepts_source_upload():
     refusing it would break the bulk path feeding its own output back in."""
     rows = _m.parse_tb_csv(
         "main_account,debit,credit,description,partner_data_area_id,source_upload,currency\n"
-        "1010,5,0,,,ZZ-UPLOAD,EUR\n")
+        "1010,5,0,,,ZZ-UPLOAD,EUR\n", ())
     assert rows[0]["main_account"] == "1010"
     assert "source_upload" not in rows[0]
 
@@ -882,7 +886,7 @@ def test_parse_still_accepts_source_upload():
 def test_parse_still_accepts_every_documented_column():
     rows = _m.parse_tb_csv(
         "Main_Account,Debit,Credit,Currency,Description,Counterparty,Amount Basis\n"
-        "1010,5,0,EUR,Cash,AMUS,Period movement\n")
+        "1010,5,0,EUR,Cash,AMUS,Period movement\n", ())
     assert rows[0]["partner_data_area_id"] == "AMUS"
     assert rows[0]["description"] == "Cash"
 
@@ -910,7 +914,7 @@ def declared(name, status="Published", in_trial_balance=1):
             "in_trial_balance": in_trial_balance}
 
 
-def _parse_raises(text, declared_dimensions=()):
+def _parse_raises(text, declared_dimensions):
     try:
         _m.parse_tb_csv(text, declared_dimensions)
     except ValueError as e:
@@ -984,11 +988,12 @@ def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser()
             for r in back] == [("1010", "CC100", "D7"), ("2010", "", "D9")]
 
 
-def test_parse_without_declared_dimensions_is_unchanged():
-    """Every existing caller passes nothing and gets exactly what it got."""
-    msg = _parse_raises("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n")
+def test_parse_with_no_declared_dimensions_refuses_dim_columns_only():
+    """A site that declares no dimensions, passed as (): a dim_* column is
+    refused, and a file without one parses exactly as before dimensions."""
+    msg = _parse_raises("main_account,debit,credit,dim_cost_center,currency\n1010,5,0,CC1,EUR\n", ())
     assert "dim_cost_center" in msg, msg
-    rows = _m.parse_tb_csv(GOOD)
+    rows = _m.parse_tb_csv(GOOD, ())
     assert rows[0] == {"main_account": "1010", "debit": 100.5, "credit": 0.0, "currency": "EUR",
                        "description": "", "partner_data_area_id": "",
                        "amount_basis": "", "line": 2}
@@ -1040,14 +1045,14 @@ def test_parse_refuses_a_repeated_undeclared_dimension_as_undeclared():
 def test_parse_partner_keep_one_refusal_is_unchanged():
     msg = _parse_raises(
         "main_account,debit,credit,partner_data_area_id,partner,currency\n"
-        "1010,100,0,AMUS,AMUK,EUR\n")
+        "1010,100,0,AMUS,AMUK,EUR\n", ())
     assert "Two partner columns" in msg, msg
 
 
 def test_parse_amount_basis_keep_one_refusal_is_unchanged():
     msg = _parse_raises(
         "main_account,debit,credit,amount_basis,basis,currency\n"
-        "1010,100,0,Actual,Actual,EUR\n")
+        "1010,100,0,Actual,Actual,EUR\n", ())
     assert "Two amount_basis columns" in msg, msg
 
 
@@ -1445,3 +1450,61 @@ def test_the_close_event_stub_does_not_leak():
     before = (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event"))
     _with_close_event([], _tb_doc().on_cancel)
     assert (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event")) == before
+
+
+# -- konsol#334: a basis change requests the rebuild ----------------------------------------------
+
+def test_set_amount_basis_requests_one_rebuild_after_the_claim():
+    """konsol#334: the claim changes how bronze normalises every row of the
+    batch, so the numbers move; a re-claim with no build left gold on the old
+    basis until someone asked by hand. One request per call, after the
+    ClickHouse claim (nothing is requested if the claim raises), and none when
+    nothing was updated."""
+    rows = {"TBS-1": _row("TBS-1", fiscal_period=3), "TBS-2": _row("TBS-2", fiscal_period=4)}
+    log, gates, reads = _wire(rows)
+    _m.set_amount_basis(["TBS-1", "TBS-2"], CLOSING)
+    builds = [e for e in log if e[0] == "build"]
+    assert builds == [("build", "TBS-1")], log
+    assert log[-1][0] == "build" and log[-2][0] == "ch", log
+
+    rows = {"TBS-2": _row("TBS-2", docstatus=0)}
+    log, gates, reads = _wire(rows)
+    _m.set_amount_basis(["TBS-2"], CLOSING)
+    assert [e for e in log if e[0] == "build"] == [], "nothing updated, nothing to rebuild"
+
+    rows = {"TBS-1": _row("TBS-1")}
+    log, gates, reads = _wire(rows)
+
+    def refuse(sql, *a, **k):
+        raise RuntimeError("clickhouse down")
+    _m.execute = refuse
+    try:
+        _m.set_amount_basis(["TBS-1"], CLOSING)
+        assert False, "the claim's error must reach the caller"
+    except RuntimeError as e:
+        assert str(e) == "clickhouse down"
+    assert [e for e in log if e[0] == "build"] == [], "a failed claim requests no build"
+
+
+def test_the_basis_rebuild_goes_through_the_one_enqueue_path():
+    """The helper hands the request to tasks.queue_consolidation_build (the
+    after-commit enqueue every TB submit and cancel uses), as an
+    on_update_after_submit of the named submission: the same doctype, so the
+    same DOCTYPE_BUILD_MAP scope."""
+    calls = []
+    fake = types.ModuleType("konsol.tasks")
+    fake.queue_consolidation_build = lambda doc, method: calls.append((doc.doctype, doc.name, method))
+    saved = sys.modules.get("konsol.tasks")
+    _m.frappe._dict = lambda **k: types.SimpleNamespace(**k)
+    sys.modules["konsol.tasks"] = fake
+    try:
+        _m.__dict__.pop("_request_basis_build", None)
+        _spec.loader.exec_module(_m)  # the real helper, not _wire's recorder
+        _m._record_data_change = lambda *a, **k: None
+        _m._request_basis_build("TBS-1")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    assert calls == [("Trial Balance Submission", "TBS-1", "on_update_after_submit")], calls

@@ -23,7 +23,9 @@ and ``can_send`` are each also False unless the caller holds one of
 The number of reads does not depend on the number of journals: one read
 each for the period rows, the journal headers, the lines, the accounts, the
 groups and the rejections, plus one (or two, when a workflow is installed)
-for the workflow.
+for the workflow, plus the declared journal dimensions (``declared_dimensions``:
+one Dimension read and the line doctype's cached meta) and, only when one is
+declared, at most three suggestion reads (konsolidat#245 option D).
 
 This file never names the Close Event doctype (the one-writer check,
 test_close_event_writer.py): rejections are read through
@@ -36,6 +38,7 @@ import frappe
 from konsol import fiscal_calendar
 from konsol.close import close_event, journal_model
 from konsol.close.timefmt import zoned_iso
+from konsol.tb_dimension_model import is_flag_on
 
 JOURNAL = "Consolidation Journal"
 LINE = "Consolidation Journal Line"
@@ -61,6 +64,95 @@ GROUP_FIELDS = ["name", "consolidation_group", "data_area_id", "reporting_curren
 
 #: The journal's Adjustment Type Select (consolidation_journal.json).
 ADJUSTMENT_TYPES = ("topside", "reclassification")
+
+#: konsolidat#245 option D, CONTRACT (konsol-50, 3 Oct): the gating flag on
+#: Dimension for journal lines. Read with ``is_flag_on`` (tb_dimension_model's
+#: off-text handling), never ``if doc.in_journal`` — the same convention
+#: dimension.py itself uses for ``in_trial_balance``.
+JOURNAL_DIM_FLAG = "in_journal"
+
+
+def declared_dimensions():
+    """``[{"dimension_name", "label"}]``: the dimensions a journal line
+    carries — Published Dimension rows gated ``in_journal`` on (konsolidat#245
+    CONTRACT, read with ``is_flag_on``), legal names only, and only those whose
+    field Consolidation Journal Line already has, ordered by
+    ``dimension_name``. ``[]`` when none are declared — callers then behave
+    exactly as before option D (#305 D01).
+
+    The one reader: ``get_journals``, ``save_journal`` and
+    ``approvals_api.queue_for`` all use it (D06), so the screens that draft a
+    line and the one that approves it never disagree about its dimensions.
+
+    - The name rule (konsol-50, 4 Oct): schema_apply gives a ticked
+      Dimension whose name fails ``^dim_[a-z0-9_]+\\Z`` no Custom Field, and
+      such a name is legal on a Dimension outside the trial balance
+      (``business_unit``). It is left out — absent, not an error.
+    - The field must exist (D06): the Custom Field sync is queued after the
+      commit (konsol#135), so a Dimension can be Published and ticked before
+      its field is there, and naming a missing field makes ``frappe.get_all``
+      raise. Both rules are ``journal_model.journal_dimension_columns``, the
+      same filter consolidation_journal's warehouse resync applies.
+
+    One Dimension read plus the line doctype's (cached) meta.
+    """
+    rows = frappe.get_all(
+        "Dimension", filters={"status": "Published"},
+        fields=["dimension_name", "label", JOURNAL_DIM_FLAG],
+        order_by="dimension_name asc", limit_page_length=0,
+    )
+    ticked = {r["dimension_name"]: r for r in rows
+              if r.get("dimension_name") and is_flag_on(r.get(JOURNAL_DIM_FLAG))}
+    keys = journal_model.journal_dimension_columns(
+        list(ticked), frappe.get_meta(LINE).get_valid_columns())
+    return [{"dimension_name": k, "label": ticked[k].get("label") or k} for k in keys]
+
+
+def _dimension_suggestions(dim_names):
+    """``{dimension_name: [suggestion, ...]}`` for each name in ``dim_names``:
+    Published Reporting Hierarchy Member leaves (``is_group`` 0) under a
+    Published Reporting Hierarchy for that dimension, plus Published
+    Dimension Mapping ``canonical_value`` for that dimension; deduped,
+    sorted. Three reads total (never per dimension, never per line) — none at
+    all when ``dim_names`` is empty.
+
+    This list is a convenience only (konsolidat#247: never refuse a typed
+    value, never create a member or mapping from one), so it reads no
+    effective-dating: every Published leaf is offered, whichever tranche it
+    is effective in.
+    """
+    if not dim_names:
+        return {}
+    suggestions = {name: set() for name in dim_names}
+
+    hierarchies = frappe.get_all(
+        "Reporting Hierarchy", filters={"status": "Published", "dimension": ["in", list(dim_names)]},
+        fields=["name", "dimension"], limit_page_length=0,
+    )
+    dim_by_hierarchy = {h["name"]: h["dimension"] for h in hierarchies}
+    if dim_by_hierarchy:
+        members = frappe.get_all(
+            "Reporting Hierarchy Member",
+            filters={"reporting_hierarchy": ["in", list(dim_by_hierarchy)], "is_group": 0},
+            fields=["reporting_hierarchy", "member_code"], limit_page_length=0,
+        )
+        for member in members:
+            dim = dim_by_hierarchy.get(member["reporting_hierarchy"])
+            code = member.get("member_code")
+            if dim in suggestions and code:
+                suggestions[dim].add(code)
+
+    mappings = frappe.get_all(
+        "Dimension Mapping", filters={"status": "Published", "dimension": ["in", list(dim_names)]},
+        fields=["dimension", "canonical_value"], limit_page_length=0,
+    )
+    for mapping in mappings:
+        dim = mapping.get("dimension")
+        value = mapping.get("canonical_value")
+        if dim in suggestions and value:
+            suggestions[dim].add(value)
+
+    return {name: sorted(values) for name, values in suggestions.items()}
 
 
 def _period_key(fiscal_year, fiscal_period):
@@ -171,8 +263,8 @@ def _workflow_info():
     }
 
 
-def _line_out(line, accounts):
-    return {
+def _line_out(line, accounts, dim_keys=()):
+    out = {
         "idx": line.get("idx"),
         "data_area_id": line.get("data_area_id"),
         "main_account": line.get("main_account"),
@@ -181,6 +273,12 @@ def _line_out(line, accounts):
         "credit_amount": _number(line.get("credit_amount")),
         "description": line.get("description"),
     }
+    # konsolidat#245 option D: a declared dim key is always present on the
+    # line (D01 stores '' for a missing/None value); guard with `or ""` too,
+    # so a zero-declared-dimensions caller never sees a dim key at all.
+    for key in dim_keys:
+        out[key] = line.get(key) or ""
+    return out
 
 
 def _reverse(header):
@@ -206,13 +304,16 @@ def get_journals(fiscal_year, fiscal_period):
         order_by="creation asc",
         limit_page_length=0,
     )
+    declared = declared_dimensions()
+    dim_keys = tuple(d["dimension_name"] for d in declared)
+
     names = [h["name"] for h in headers]
     lines = []
     if names:
         lines = frappe.get_all(
             LINE,
             filters={"parenttype": JOURNAL, "parent": ["in", names]},
-            fields=LINE_FIELDS,
+            fields=LINE_FIELDS + list(dim_keys),
             order_by="parent asc, idx asc",
             limit_page_length=0,
         )
@@ -223,6 +324,12 @@ def get_journals(fiscal_year, fiscal_period):
     accounts = _accounts()
     groups = _groups()
     wf = _workflow_info()
+    suggestions_by_dim = _dimension_suggestions(dim_keys)
+    dimensions = [
+        {"key": d["dimension_name"], "label": d["label"],
+         "suggestions": suggestions_by_dim.get(d["dimension_name"], [])}
+        for d in declared
+    ]
 
     roles = set(frappe.get_roles(frappe.session.user))
     draft_capable = bool(roles & set(DRAFT_ROLES))
@@ -266,7 +373,7 @@ def get_journals(fiscal_year, fiscal_period):
             "modified": _iso(header.get("modified")),
             "approved_by": header.get("approved_by"),
             "approved_at": _iso(header.get("approved_at")),
-            "lines": [_line_out(line, accounts) for line in header_lines],
+            "lines": [_line_out(line, accounts, dim_keys) for line in header_lines],
             "effect": journal_model.statement_effect(header_lines, accounts),
             "last_rejection": last_rejection,
         })
@@ -280,6 +387,7 @@ def get_journals(fiscal_year, fiscal_period):
         "journals": journals,
         "groups": groups,
         "accounts": accounts,
+        "dimensions": dimensions,
         "reversal_choices": journal_model.reversal_choices(fy, fp, period_rows),
         "workflow_installed": wf["installed"],
         "first_state": wf["first_state"],
@@ -301,10 +409,12 @@ def _reversal_number(value, label):
                      "name the reversal year and period, or leave both blank.")
 
 
-def _request_lines(lines):
-    """The request's lines kept to ``journal_model.LINE_KEYS``; a forged key
-    in a line (``docstatus``, ``parent``, ``name`` ...) or bad JSON is
-    refused with a sentence, before any document is built."""
+def _request_lines(lines, dim_keys=()):
+    """The request's lines kept to ``journal_model.LINE_KEYS`` plus the
+    declared ``dim_keys`` (konsolidat#245 option D); a forged key in a line
+    (``docstatus``, ``parent``, ``name``, or an undeclared/illegal dimension
+    key) or bad JSON is refused with a sentence, before any document is
+    built."""
     if isinstance(lines, str):
         try:
             lines = json.loads(lines)
@@ -312,7 +422,7 @@ def _request_lines(lines):
             frappe.throw("The journal's lines are not valid JSON: send a list of lines, "
                          "each with data_area_id, main_account, debit_amount, "
                          "credit_amount and description.")
-    rows, problems = journal_model.clean_lines(lines)
+    rows, problems = journal_model.clean_lines(lines, dim_keys)
     if problems:
         frappe.throw("<br>".join(problems))
     return rows
@@ -332,7 +442,8 @@ def save_journal(fiscal_year, fiscal_period, consolidation_group, adjustment_typ
     if adjustment_type not in ADJUSTMENT_TYPES:
         frappe.throw(f"Adjustment Type {adjustment_type} is not a journal type: "
                      f"use one of {', '.join(ADJUSTMENT_TYPES)}.")
-    rows = _request_lines(lines)
+    dim_keys = tuple(d["dimension_name"] for d in declared_dimensions())
+    rows = _request_lines(lines, dim_keys)
     key = _period_key(fiscal_year, fiscal_period)
     period_rows = fiscal_calendar.fiscal_period_rows()
     period = _find_period(key, period_rows)

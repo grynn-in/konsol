@@ -122,7 +122,7 @@ def _whole(value, what, lineno, errors):
         return None
 
 
-def split_table(table, declared_dimensions=()):
+def split_table(table, declared_dimensions):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
     Keys keep the order they first appear in the file. Each row is
@@ -137,8 +137,8 @@ def split_table(table, declared_dimensions=()):
     in one pass.
 
     `declared_dimensions` are the site's Dimension rows (dimension_name,
-    status, in_trial_balance); the default, no dimensions, means a site that
-    declares none and keeps every existing caller working. A dim_* column the
+    status, in_trial_balance). It has no default (konsol#319), as for
+    parse_tb_csv: a caller that means "no dimensions" passes (). A dim_* column the
     site has Published and ticked in_trial_balance is accepted and lands on
     each row under its own name, as a string, '' when the cell is blank — a
     dimension is optional per row. Any other dim_* header is refused saying
@@ -428,6 +428,21 @@ def merge_loaded(report, previous, upload_name=None):
             r = {**r, "ok": False,
                  "errors": [f"Loaded earlier as {before}, which has since been cancelled. "
                             "Upload the file again if it should be loaded anew."]}
+        out.append(r)
+    return out
+
+
+def keep_submitted(report, submitted):
+    """The report with a row counted as loaded only while the submission it
+    names is in `submitted` (konsol#281). A row whose submission is gone is
+    a problem, as in merge_loaded: it is never quietly loaded again."""
+    out = []
+    for r in report:
+        name = r.get("loaded")
+        if name and name not in submitted:
+            r = {k: v for k, v in r.items() if k != "loaded"}
+            r.update(ok=False, errors=[f"Loaded earlier as {name}, which is no longer submitted. "
+                                       "Upload the file again if it should be loaded anew."])
         out.append(r)
     return out
 

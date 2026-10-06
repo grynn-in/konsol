@@ -361,7 +361,7 @@ def _bulk_table(csv_text, entity="ZZA"):
 def _bulk_errors(csv_text, functional, minor_units):
     t = _currency_tests()
     b, c = t._bulk(), t._controller()
-    ((key, rows),) = b.split_table(_bulk_table(csv_text)).items()
+    ((key, rows),) = b.split_table(_bulk_table(csv_text), ()).items()
     report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
                            period={"code": "P01", "type": "Regular", "status": "Open"},
                            postable_types={"Regular"}, existing=None,
@@ -443,7 +443,7 @@ def test_all_intakes_agree():
         (USD_OFF, "EUR", UNITS),
     ]
     for csv_text, functional, units in cases:
-        rows = t._controller().parse_tb_csv(csv_text)
+        rows = t._controller().parse_tb_csv(csv_text, ())
         expected = m.currency_and_balance_problems("ZZA", functional, units.get(functional), rows)
         try:
             t._validate(csv_text, functional, minor_units=units)
@@ -513,10 +513,10 @@ def test_desk_validate_refuses_a_fraction_of_a_yen():
 
 def test_the_parser_keeps_every_amount_exactly_as_written():
     c = _currency_tests()._controller()
-    rows = c.parse_tb_csv(EUR_4DP)
+    rows = c.parse_tb_csv(EUR_4DP, ())
     assert [str(r["debit"]) for r in rows] == ["0.3333", "0.3333", "0.3334", "0"], rows
     assert str(rows[3]["credit"]) == "1.0000"
-    assert str(c.parse_tb_csv(KWD_EXACT)[0]["debit"]) == "0.005"
+    assert str(c.parse_tb_csv(KWD_EXACT, ())[0]["debit"]) == "0.005"
 
 
 def test_the_bulk_parser_reads_xlsx_floats_at_their_repr():
@@ -528,7 +528,7 @@ def test_the_bulk_parser_reads_xlsx_floats_at_their_repr():
              ["ZZA", 2099, 1, "2010", 0.35, 0.0, "EUR"],
              ["ZZA", 2099, 1, "3010", 0, 0.5, "EUR"],
              ["ZZA", 2099, 1, "4010", 0.1, 0.1, "EUR"]]
-    ((key, rows),) = b.split_table(table).items()
+    ((key, rows),) = b.split_table(table, ()).items()
     assert [str(r["debit"]) for r in rows] == ["0.15", "0.35", "0", "0.1"], rows
     report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
                            period={"code": "P01", "type": "Regular", "status": "Open"},
@@ -536,11 +536,11 @@ def test_the_bulk_parser_reads_xlsx_floats_at_their_repr():
                            validate_rows=c.validate_tb_rows, functional_currency="EUR", minor_unit=2)
     assert report["ok"] and report["errors"] == [], report
     # the bulk load feeds group_csv back through the single parser: exact both ways
-    again = c.parse_tb_csv(b.group_csv(rows, source="TBU-ZZ"))
+    again = c.parse_tb_csv(b.group_csv(rows, source="TBU-ZZ"), ())
     assert [str(r["debit"]) for r in again] == ["0.15", "0.35", "0", "0.1"], again
-    kwd = b.split_table([table[0], ["ZZA", "2099", "1", "1010", "0.005", "0", "KWD"]])
+    kwd = b.split_table([table[0], ["ZZA", "2099", "1", "1010", "0.005", "0", "KWD"]], ())
     (krow,) = next(iter(kwd.values()))
-    assert c.parse_tb_csv(b.group_csv([krow]))[0]["debit"] == Decimal("0.005")
+    assert c.parse_tb_csv(b.group_csv([krow]), ())[0]["debit"] == Decimal("0.005")
 
 
 def test_a_stored_file_with_extra_decimals_still_reads_and_compares():
@@ -622,7 +622,7 @@ def test_the_review_files_on_every_intake():
     for csv_text, functional, accepted in ((JPY_ZEROS, "JPY", True), (EUR_ZEROS, "EUR", True),
                                            (IDR_UNSTORABLE, "IDR", False), (VND_UNSTORABLE, "VND", False),
                                            (INF_FLOAT, "EUR", False), (OVERFLOW, "EUR", False)):
-        rows = t._controller().parse_tb_csv(csv_text)
+        rows = t._controller().parse_tb_csv(csv_text, ())
         expected = m.currency_and_balance_problems("ZZA", functional, UNITS[functional], rows)
         assert (expected == []) is accepted, (csv_text, expected)
         try:
@@ -648,7 +648,7 @@ def test_stored_totals_are_exact_not_rounded_to_cents():
     doc = t._validate(KWD_FILS, "KWD", minor_units=UNITS)
     assert doc.total_debit == 1.005 and doc.total_credit == 1.005, (doc.total_debit, doc.total_credit)
     b, c = t._bulk(), t._controller()
-    ((key, rows),) = b.split_table(_bulk_table(KWD_FILS)).items()
+    ((key, rows),) = b.split_table(_bulk_table(KWD_FILS), ()).items()
     report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
                            period={"code": "P01", "type": "Regular", "status": "Open"},
                            postable_types={"Regular"}, existing=None, validate_rows=c.validate_tb_rows,

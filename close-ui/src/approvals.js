@@ -28,6 +28,9 @@ import { effectView } from "./adjustments.js";
 import { approveAction, approveBody } from "./rates.js";
 import { ageText, formatTime, parseZoned } from "./timefmt.js";
 
+/** The journal doctype (approvals_model.py's JOURNAL). */
+const JOURNAL = "Consolidation Journal";
+
 export { approveAction, approveBody };
 
 //: approval_api.reject's own refusal sentence (approval_api.py:76-77),
@@ -87,6 +90,14 @@ function baseView(item, now, timeZone) {
 	if ("effect" in item) {
 		view.rawEffect = item.effect;
 		view.effect = effectView(item.effect);
+	}
+	// D06 (konsolidat#245 option D): a journal item names its declared
+	// dimensions as `[{key, label}]` (approvals_api always sends it, `[]`
+	// when none are declared) and each line carries a value per key. A
+	// journal item without it is a contract break with the server, never
+	// read as "none declared".
+	if (item.doctype === JOURNAL && !Array.isArray(item.dimensions)) {
+		throw new Error(`queueView requires a journal item's dimensions (${item.name}).`);
 	}
 	return view;
 }

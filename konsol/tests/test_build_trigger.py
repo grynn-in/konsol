@@ -452,3 +452,37 @@ def test_an_absorbed_request_logs_that_its_auto_approve_was_not_applied():
     site = _RequestSite(pending="Pending Review")
     site.request()
     assert not any("auto-approve" in str(m) for m in site.logs), "no reason, nothing dropped"
+
+
+# ---------------------------------------------------------------------------
+# konsol#334: a trial balance reaches every gold domain, not only consolidation
+# ---------------------------------------------------------------------------
+# Measured 6 Oct 2026 from the dbt project (konsolidat main bb0307e, refs and
+# macro refs): bronze_trial_balance_submissions feeds 12 actuals, 17
+# consolidation, 4 scenarios and 3 reporting gold models. +tag:domain:
+# consolidation builds 21 of those 36; the other 15 (gold_balance_sheet,
+# gold_pnl_by_period, gold_variance_analysis, gold_tb_at_hierarchy_node, ...)
+# kept a cancelled TB's rows (BAPR-00076). Domains are site configuration
+# (Build Model), so no hand-kept list of scopes can be right everywhere: the
+# one scope that builds every model is "full".
+
+def _literal(name):
+    with open(TASKS) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == name for t in n.targets))
+
+
+def test_a_trial_balance_submit_or_cancel_requests_the_full_build():
+    for method, roles in (("on_submit", ["EPM Entity Accountant"]), ("on_cancel", ["EPM Admin"]),
+                          ("on_update_after_submit", ["EPM Admin"])):
+        requests = _trigger("Trial Balance Submission", method, "zz-user@example.com", roles)
+        assert [args[:3] for args, _ in requests] == [
+            ("full", "Trial Balance Submission", "ZZ-probe")], (method, requests)
+
+
+def test_the_full_scope_selects_every_model():
+    """"full" has no selector, so dbt builds the whole project; a selector
+    here would bring the #334 gap back under another name."""
+    assert "full" in _literal("SCOPE_SELECTOR") and _literal("SCOPE_SELECTOR")["full"] is None
+    assert "full" in _literal("RAW_DEPENDENT_SCOPES"), "the full build must keep the TB preflight"

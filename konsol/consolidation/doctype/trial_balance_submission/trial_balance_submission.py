@@ -101,7 +101,7 @@ def _column(header):
     return name
 
 
-def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
+def parse_tb_csv(text, declared_dimensions, *, stored=False):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, currency, description,
@@ -125,8 +125,9 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     (konsol#180), so a file can be parsed and then reported on as a whole.
 
     `declared_dimensions` are the site's Dimension rows (dimension_name,
-    status, in_trial_balance); the default, no dimensions, means a site that
-    declares none and keeps every existing caller working. A dim_* column the
+    status, in_trial_balance). It has no default (konsol#319): a default of
+    none refused every dim_* column for a caller that forgot it, silently, so
+    a caller that means "no dimensions" passes () where it shows. A dim_* column the
     site has Published and ticked in_trial_balance is accepted and lands on
     each row under its own name, '' when the cell is blank — a dimension is
     optional per row. Any other dim_* header is refused saying WHICH of
@@ -638,7 +639,23 @@ def set_amount_basis(names, amount_basis):
     values = [_claim_values(row, basis) for row in rows]
     for i in range(0, len(values), _CLAIM_BATCH):
         execute(_claim_insert(values[i:i + _CLAIM_BATCH]))
+    # konsol#334: the new basis changes how bronze reads every row of these
+    # batches, so gold must be rebuilt. One request covers the whole call.
+    if rows:
+        _request_basis_build(rows[0].name)
     return {"updated": len(rows), "skipped": skipped}
+
+
+def _request_basis_build(name):
+    """Request the rebuild after a basis change (konsol#334) through the
+    same after-commit enqueue a submit or cancel uses, as an
+    on_update_after_submit of ``name``: db.set_value fires no document hooks,
+    so nothing else would ask. The scope is DOCTYPE_BUILD_MAP's for Trial
+    Balance Submission. Imported here: tasks.py imports the Airbyte client."""
+    from konsol.tasks import queue_consolidation_build
+
+    queue_consolidation_build(
+        frappe._dict(doctype="Trial Balance Submission", name=name), "on_update_after_submit")
 
 
 class TrialBalanceSubmission(Document):

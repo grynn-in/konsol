@@ -156,7 +156,7 @@ def test_without_line_numbers_the_problems_name_no_line():
 
 def test_the_single_upload_refuses_a_file_without_the_currency_column():
     c = _controller()
-    msg = _raises(c.parse_tb_csv, "main_account,debit,credit\n1010,5,0\n2010,0,5\n")
+    msg = _raises(c.parse_tb_csv, "main_account,debit,credit\n1010,5,0\n2010,0,5\n", ())
     assert "Missing column(s) currency" in msg, msg
     assert "Add a currency column" in msg, msg
     assert "main_account,debit,credit,currency" in msg, msg
@@ -164,13 +164,13 @@ def test_the_single_upload_refuses_a_file_without_the_currency_column():
 
 def test_the_single_upload_carries_each_rows_currency():
     c = _controller()
-    rows = c.parse_tb_csv("main_account,Currency,debit,credit\n1010, EUR ,5,0\n2010,usd,0,5\n")
+    rows = c.parse_tb_csv("main_account,Currency,debit,credit\n1010, EUR ,5,0\n2010,usd,0,5\n", ())
     assert [r["currency"] for r in rows] == ["EUR", "usd"]
 
 
 def test_the_single_upload_refuses_two_currency_columns():
     c = _controller()
-    msg = _raises(c.parse_tb_csv, "main_account,debit,credit,currency,currency\n1010,5,0,EUR,USD\n")
+    msg = _raises(c.parse_tb_csv, "main_account,debit,credit,currency,currency\n1010,5,0,EUR,USD\n", ())
     assert "Two currency columns" in msg, msg
 
 
@@ -230,7 +230,7 @@ def _validate(csv_text, functional_currency, entity="ZZA", minor_units=None):
         doc.currency = None
         doc._check_entity_access = lambda: None
         doc._ic_accounts = lambda: []
-        doc._parse_file = lambda: c.parse_tb_csv(csv_text)
+        doc._parse_file = lambda: c.parse_tb_csv(csv_text, ())
         doc.validate()
         doc.reads = reads
         return doc
@@ -301,14 +301,14 @@ BULK_HEADER = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "
 
 def test_the_bulk_upload_refuses_a_file_without_the_currency_column():
     b = _bulk()
-    msg = _raises(b.split_table, [BULK_HEADER[:-1], ["ZZA", "2099", "1", "1010", "5", "0"]])
+    msg = _raises(b.split_table, [BULK_HEADER[:-1], ["ZZA", "2099", "1", "1010", "5", "0"]], ())
     assert "Missing column(s) currency" in msg, msg
     assert "Add a currency column" in msg, msg
 
 
 def test_the_bulk_upload_refuses_two_currency_columns():
     b = _bulk()
-    msg = _raises(b.split_table, [BULK_HEADER + ["Currency"], ["ZZA", "2099", "1", "1010", "5", "0", "EUR", "EUR"]])
+    msg = _raises(b.split_table, [BULK_HEADER + ["Currency"], ["ZZA", "2099", "1", "1010", "5", "0", "EUR", "EUR"]], ())
     assert "Two currency columns" in msg, msg
 
 
@@ -316,7 +316,7 @@ def test_one_bulk_file_carries_a_currency_per_entity():
     b = _bulk()
     groups = b.split_table([BULK_HEADER,
                             ["ZZA", "2099", "1", "1010", "5", "0", "EUR"],
-                            ["ZZB", "2099", "1", "1010", "5", "0", "JPY"]])
+                            ["ZZB", "2099", "1", "1010", "5", "0", "JPY"]], ())
     assert groups[("ZZA", 2099, 1)][0]["currency"] == "EUR"
     assert groups[("ZZB", 2099, 1)][0]["currency"] == "JPY"
 
@@ -324,8 +324,8 @@ def test_one_bulk_file_carries_a_currency_per_entity():
 def test_the_generated_single_file_carries_the_currency_through_the_single_parser():
     b, c = _bulk(), _controller()
     rows = b.split_table([BULK_HEADER, ["ZZA", "2099", "1", "1010", "5", "0", "eur"],
-                          ["ZZA", "2099", "1", "2010", "0", "5", "eur"]])[("ZZA", 2099, 1)]
-    again = c.parse_tb_csv(b.group_csv(rows, source="TBU-ZZ"))
+                          ["ZZA", "2099", "1", "2010", "0", "5", "eur"]], ())[("ZZA", 2099, 1)]
+    again = c.parse_tb_csv(b.group_csv(rows, source="TBU-ZZ"), ())
     assert [r["currency"] for r in again] == ["eur", "eur"]
 
 

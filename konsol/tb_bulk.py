@@ -146,9 +146,10 @@ def _check(table, form_basis=""):
     upload's Amount Basis; an entity-period whose rows give none takes it, and
     one with neither is refused on its own report row (konsolidat#199)."""
     # The site's Dimension records decide which dim_* columns the file may
-    # carry (konsol#255). split_table is pure and defaults them to none, so
-    # until this argument was passed every dim_* header was refused here with
-    # "create the Dimension ..." whatever the site had declared.
+    # carry (konsol#255). split_table is pure and takes them as an argument;
+    # until this one was passed every dim_* header was refused here with
+    # "create the Dimension ..." whatever the site had declared. It has no
+    # default (konsol#319), so leaving it out is a TypeError, not that refusal.
     groups = M.split_table(table, declared_dimensions())
     entities = sorted({k[0] for k in groups})
     # get_list applies the uploader's entity scope; get_all would not.
@@ -439,8 +440,14 @@ def run_load(upload):
     started = time.monotonic()
     doc = frappe.get_doc(DOCTYPE, upload)
     report = json.loads(doc.report or "[]")
+    # konsol#281: a name in the stored report is a claim, not a load. Count
+    # only submissions that are submitted now; a vanished one is a failure.
+    claimed = [r["loaded"] for r in report if r.get("loaded")]
+    report = M.keep_submitted(report, set(frappe.get_all(
+        "Trial Balance Submission", filters={"name": ["in", claimed], "docstatus": 1},
+        pluck="name", limit_page_length=0)) if claimed else set())
     loaded = sum(1 for r in report if r.get("loaded"))
-    failed = 0
+    failed = len(claimed) - loaded
     in_flight = None
     try:
         _release_orphan_claims(report)
