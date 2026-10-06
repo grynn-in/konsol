@@ -28,10 +28,12 @@ def _dbt_bin():
 # ---------------------------------------------------------------------------
 # Build scope mapping: doctype → (scope, risk)
 # ---------------------------------------------------------------------------
-# Every trigger doctype maps to "consolidation" (high risk): approving or
-# changing any of them is an input that gold_fully_consolidated_tb reads,
-# directly or through a parent (konsol#306, #305-D2-10). None stops at
-# "staging" — a staging-only build would leave the consolidated numbers stale.
+# Every trigger doctype maps to a scope that reaches the consolidated numbers
+# (high risk): approving or changing any of them is an input that
+# gold_fully_consolidated_tb reads, directly or through a parent (konsol#306,
+# #305-D2-10). None stops at "staging" — a staging-only build would leave the
+# consolidated numbers stale. Trial Balance Submission maps to "full": its rows
+# reach every gold domain, not only consolidation's (konsol#334).
 DOCTYPE_BUILD_MAP = {
     # konsol#306, #305-D2-10: was "staging" — staging rebuilds
     # gold_consolidation_adjustments etc. but not gold_fully_consolidated_tb
@@ -49,10 +51,16 @@ DOCTYPE_BUILD_MAP = {
     # Requested from Entity's controller, not from doc_events.
     "Entity": {"scope": "consolidation", "risk": "high"},
     # F8: a submitted trial balance must reach gold, and a cancelled one must
-    # leave it. Mapped only now that the trigger runs after the commit
-    # (konsol#126); consolidation reaches bronze_trial_balance_submissions ->
-    # silver_gl_entries -> gold_trial_balance -> the consolidated models.
-    "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
+    # leave it (konsol#126 runs the trigger after the commit).
+    # konsol#334: "full", not "consolidation". bronze_trial_balance_submissions
+    # feeds gold models in actuals, consolidation, scenarios and reporting (36
+    # measured 6 Oct 2026); +tag:domain:consolidation builds 21 of them, so a
+    # cancelled TB stayed in gold_balance_sheet, gold_pnl_by_period, the
+    # variance and hierarchy models (BAPR-00076). Domains are site
+    # configuration (Build Model), so a list of scopes here would be a rule
+    # kept by hand; full builds every model whatever the domains say. Submit,
+    # cancel and Set Amount Basis (on_update_after_submit) all land here.
+    "Trial Balance Submission": {"scope": "full", "risk": "high"},
     # konsol#103: the governed translation rates. `staging` would not reach
     # gold_consolidated_trial_balance, which is what reads them.
     "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},

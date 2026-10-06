@@ -639,7 +639,23 @@ def set_amount_basis(names, amount_basis):
     values = [_claim_values(row, basis) for row in rows]
     for i in range(0, len(values), _CLAIM_BATCH):
         execute(_claim_insert(values[i:i + _CLAIM_BATCH]))
+    # konsol#334: the new basis changes how bronze reads every row of these
+    # batches, so gold must be rebuilt. One request covers the whole call.
+    if rows:
+        _request_basis_build(rows[0].name)
     return {"updated": len(rows), "skipped": skipped}
+
+
+def _request_basis_build(name):
+    """Request the rebuild after a basis change (konsol#334) through the
+    same after-commit enqueue a submit or cancel uses, as an
+    on_update_after_submit of ``name``: db.set_value fires no document hooks,
+    so nothing else would ask. The scope is DOCTYPE_BUILD_MAP's for Trial
+    Balance Submission. Imported here: tasks.py imports the Airbyte client."""
+    from konsol.tasks import queue_consolidation_build
+
+    queue_consolidation_build(
+        frappe._dict(doctype="Trial Balance Submission", name=name), "on_update_after_submit")
 
 
 class TrialBalanceSubmission(Document):
