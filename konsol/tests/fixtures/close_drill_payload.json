@@ -103,8 +103,25 @@
           {
             "amount": 40.0,
             "approved_by": "bob@example.com",
+            "auto_reversal": false,
             "description": "Reclass intercompany loan",
             "journal_id": "J-1",
+            "posted_by": "alice@example.com"
+          },
+          {
+            "amount": 10.0,
+            "approved_by": "bob@example.com",
+            "auto_reversal": false,
+            "description": "Accrue audit fee",
+            "journal_id": "J-2",
+            "posted_by": "alice@example.com"
+          },
+          {
+            "amount": -10.0,
+            "approved_by": "bob@example.com",
+            "auto_reversal": true,
+            "description": "June bonus",
+            "journal_id": "J-P6",
             "posted_by": "alice@example.com"
           }
         ],

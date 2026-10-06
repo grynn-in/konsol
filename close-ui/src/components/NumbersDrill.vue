@@ -338,7 +338,9 @@ function toggle(i) {
 
 								<div v-if="row.journals && row.journals.length" class="mt-2 space-y-1 border-t border-outline-gray-2 pt-2 text-xs text-ink-gray-7">
 									<p v-for="journal in row.journals" :key="journal.journalId">
-										{{ journal.journalId }} — {{ journal.description }} — {{ journal.amount }}
+										{{ journal.journalId }}
+										<span v-if="journal.autoReversal" class="rounded bg-surface-gray-2 px-1 font-medium text-ink-gray-7">Auto-reversal of an earlier period</span>
+										— {{ journal.description }} — {{ journal.amount }}
 										(posted {{ journal.postedBy }}, approved {{ journal.approvedBy }})
 									</p>
 									<p class="text-ink-gray-5">{{ row.journalsBasis }}</p>
