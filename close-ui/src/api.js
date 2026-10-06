@@ -84,9 +84,8 @@ async function request(method, url, opts, fetchImpl) {
 	return data ? data.message : undefined;
 }
 
-/** The URL a GET of `method` with `params` calls (blank params left out).
- * Story 10.2: the Audit trail's Export CSV link is a plain link to it, so
- * the browser downloads the server-built file. */
+/** The URL a GET of `method` with `params` calls (blank params left out);
+ * `get` and `download` both call it. */
 export function methodUrl(method, params) {
 	return `/api/method/${method}${buildQuery(params)}`;
 }
@@ -121,7 +120,14 @@ export function post(method, body, { fetchImpl = fetch } = {}) {
 function dispositionFilename(header) {
 	if (!header) return null;
 	const m = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-	return m ? decodeURIComponent(m[1]) : null;
+	if (!m) return null;
+	// A bare name may carry a literal "%" that is not an escape: decoding
+	// it would throw URIError, so such a name is kept as the server sent it.
+	try {
+		return decodeURIComponent(m[1]);
+	} catch {
+		return m[1];
+	}
 }
 
 /**
@@ -131,7 +137,7 @@ function dispositionFilename(header) {
  * throws too: the name is the server's, never made up here.
  */
 export async function download(method, params, { fetchImpl = fetch } = {}) {
-	const url = `/api/method/${method}${buildQuery(params)}`;
+	const url = methodUrl(method, params);
 	let res;
 	try {
 		res = await fetchImpl(url, { method: "GET", credentials: "include" });

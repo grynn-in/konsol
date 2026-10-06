@@ -249,3 +249,28 @@ test("a download network failure names the error", async () => {
     { message: "Network error: Failed to fetch" },
   );
 });
+
+// --- konsol#305 U13: download decodes the name safely, URL from methodUrl ----
+
+test("a bare filename with a literal % is kept as sent, never a URIError", async () => {
+  const fetchImpl = async () => fileResponse(200, "a,b", 'attachment; filename="trail-100%-P07.csv"');
+  const result = await download("konsol.close.audit_api.export_trail_csv", {}, { fetchImpl });
+  assert.equal(result.filename, "trail-100%-P07.csv");
+});
+
+test("an encoded filename* is still decoded", async () => {
+  const fetchImpl = async () => fileResponse(200, "a,b", "attachment; filename*=UTF-8''trail%20P07.csv");
+  const result = await download("konsol.close.audit_api.export_trail_csv", {}, { fetchImpl });
+  assert.equal(result.filename, "trail P07.csv");
+});
+
+test("a download calls exactly the URL methodUrl builds for the same params", async () => {
+  let calledUrl;
+  const fetchImpl = async (url) => {
+    calledUrl = url;
+    return fileResponse(200, "a,b", 'attachment; filename="t.csv"');
+  };
+  const params = { fiscal_year: 2025, fiscal_period: 7, kind: null, actor: undefined, entity: "E 1&2" };
+  await download("konsol.close.audit_api.export_trail_csv", params, { fetchImpl });
+  assert.equal(calledUrl, methodUrl("konsol.close.audit_api.export_trail_csv", params));
+});

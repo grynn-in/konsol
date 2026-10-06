@@ -96,7 +96,7 @@ def test_sheets_are_statement_drill_and_journals():
 def test_header_label_and_legend_come_from_the_payload():
     payload = _payload()
     rows = _rows(_book()["Statement"])
-    assert rows[0][0] == "Numbers · FY2025P07 · G1 · USD"
+    assert rows[0][0] == "Numbers · FY2025 P07 · G1 · USD"
     assert rows[1][0] == "Provisional"
     assert rows[2][0] == payload["statement"]["legend"]
 
@@ -458,6 +458,6 @@ def test_header_names_the_fiscal_year_even_when_the_period_code_does_not():
     from fiscal_year/fiscal_period, the same as the API's filename."""
     payload = _payload()
     payload["period"]["code"] = "P07"
-    assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2025P07 · G1 · USD"
+    assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2025 P07 · G1 · USD"
     payload["period"]["fiscal_year"] = 2024
-    assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2024P07 · G1 · USD"
+    assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2024 P07 · G1 · USD"

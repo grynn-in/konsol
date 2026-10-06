@@ -57,8 +57,8 @@ test("Reject is offered only when the machine accepts REJECT, and sends the type
   const source = read();
   const tpl = template(source);
   assert.match(tpl, /v-if="accepts\(\{ type: 'REJECT', reason: ANY_REASON \}\)"/);
-  assert.match(tpl, /:disabled="[^"]*!accepts\(\{ type: 'REJECT', reason: reason \}\)[^"]*"/);
-  assert.match(source, /send\(\{ type: ["']REJECT["'], reason: reason\.value \}\)/);
+  assert.match(tpl, /:disabled="[^"]*!accepts\(\{ type: 'REJECT', reason: dialog\.reason \}\)[^"]*"/);
+  assert.match(source, /send\(\{ type: ["']REJECT["'], reason: dialog\.value\.reason \}\)/);
 });
 
 test("the reason is a labelled, required <textarea>", () => {
@@ -67,15 +67,27 @@ test("the reason is a labelled, required <textarea>", () => {
   const area = tpl.match(/<textarea\b[^>]*\bid="signoff-reject-reason"[^>]*>/);
   assert.ok(area, "a <textarea id=\"signoff-reject-reason\">");
   assert.match(area[0], /\brequired\b/);
-  assert.match(area[0], /v-model="reason"/);
+  assert.match(area[0], /:value="dialog\.reason"/);
+  assert.match(area[0], /@input="apply\(\{ type: 'TYPE', text: \$event\.target\.value \}\)"/);
 });
 
-test("refusal keeps the text: the dialog follows rejectDialogAfter, and shows the server's message", () => {
-  const src = scripts(read());
-  assert.match(src, /import\s*\{[^}]*\brejectDialogAfter\b[^}]*\}\s*from\s*["']\.\.\/signoff\.js["']/);
-  assert.match(src, /rejectDialogAfter\(/);
-  assert.match(src, /messageLines\(/);
-  assert.match(template(read()), /role="alert"/);
+// U3/U10: what the dialog does is rejectDialogNext's, driven against the real
+// machine in signoff.test.mjs. Here: the section applies it to every change.
+test("the dialog state is rejectDialogNext's alone: machine changes, typing, Esc/overlay and Cancel all go through it", () => {
+  const source = read();
+  const src = scripts(source);
+  const tpl = template(source);
+  assert.match(src, /import\s*\{[^}]*\brejectDialogNext\b[^}]*\}\s*from\s*["']\.\.\/signoff\.js["']/);
+  assert.match(src, /dialog\.value\s*=\s*rejectDialogNext\(\s*dialog\.value\s*,/);
+  assert.match(src, /type:\s*["']MACHINE["'][\s\S]*?error:\s*props\.snapshot\s*\?\s*props\.snapshot\.context\.error/);
+  // The Dialog's own close (Esc, overlay, its X) is an update:modelValue: it
+  // must CLOSE through the reducer, never just flip `open` (U10).
+  assert.match(tpl, /<Dialog\b[^>]*:model-value="dialog\.open"[^>]*@update:model-value="onDialogModel"/);
+  assert.doesNotMatch(tpl, /<Dialog\b[^>]*v-model=/);
+  assert.match(src, /function onDialogModel\(value\)\s*\{\s*apply\(\{\s*type:\s*value\s*\?\s*["']OPEN["']\s*:\s*["']CLOSE["']\s*\}\)/);
+  assert.match(tpl, /@click="apply\(\{ type: 'CLOSE' \}\)"[^>]*>|>\s*Cancel/);
+  assert.match(tpl, /v-for="\(line, i\) in dialog\.refused"/);
+  assert.match(tpl, /role="alert"/);
 });
 
 test("no machine guard is re-implemented, no browser dialog, nothing stored", () => {

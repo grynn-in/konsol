@@ -655,7 +655,7 @@ test("6.5: journalsView passes the real reversing item through with its label, t
 	assert.equal(view.reversingIn.length, 1);
 	const item = view.reversingIn[0];
 	assert.equal(item.name, golden.name);
-	assert.equal(item.label, "Reverses here from P06");
+	assert.equal(item.label, "Reverses here from FY2025 P06");
 	assert.deepEqual(item.origin, golden.origin);
 	assert.equal(item.totalsText, "1,200.00 / 1,200.00");
 	assert.notEqual(item.approvedAtText, "not recorded");

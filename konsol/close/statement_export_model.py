@@ -100,12 +100,13 @@ def _cell(line, field, comparison_note, what):
 
 
 def _header_text(payload):
-    """``Numbers · FY2025P07 · <group> · <currency>``: the period from
-    fiscal_year/fiscal_period, as ``statement_api._filename`` names the file
-    — never ``period.code``, which live is "P07" alone (review-w5 S4)."""
+    """``Numbers · FY2025 P07 · G1 · USD``: the period as its fiscal year and
+    period, never the bare ``period_code`` (live it is "P07" alone, measured
+    6 Oct; konsol#305 U1 / review-w5 S4), the same as the screen's header."""
     period = payload["period"]
-    parts = ["FY%dP%02d" % (int(period["fiscal_year"]), int(period["fiscal_period"])),
-             payload.get("consolidation_group"), payload.get("reporting_currency")]
+    parts = ["FY%d P%02d" % (int(period["fiscal_year"]), int(period["fiscal_period"])),
+             payload.get("consolidation_group"),
+             payload.get("reporting_currency")]
     return " · ".join(["Numbers"] + [p for p in parts if p not in (None, "")])
 
 

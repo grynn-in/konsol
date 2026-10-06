@@ -387,3 +387,29 @@ export function trailView(payload, now, timeZone) {
 // tb_submitted's on-behalf switch), or trailView throws.
 export const STATIC_KINDS = Object.keys(KIND_LABEL);
 export const DYNAMIC_KINDS = ["signed_off", "tb_submitted"];
+
+/** trail_api.export_trail_csv: the server builds the CSV, never the browser. */
+export const EXPORT_CSV = "konsol.close.trail_api.export_trail_csv";
+
+/**
+ * konsol#305 U2: Export CSV for the rows on screen. Downloads
+ * export_trail_csv for `payload`'s period with the filters the server
+ * echoed for it (not the possibly newer local state), so the file is the
+ * view, then hands the file to `save`. `download` is api.js's: a refusal
+ * (a role change, a period no longer declared, a bad filter, an expired
+ * session) rejects with the server's own sentence and nothing is saved —
+ * never a JSON error body saved as the file. A payload with no period is
+ * refused before any call.
+ */
+export async function exportCsv(payload, { download, save }) {
+	const period = payload && payload.period;
+	if (!period || period.fiscal_year == null || period.fiscal_period == null) {
+		throw new Error("Audit trail: no period to export.");
+	}
+	const { blob, filename } = await download(EXPORT_CSV, {
+		fiscal_year: period.fiscal_year,
+		fiscal_period: period.fiscal_period,
+		...filterParams(payload.filters),
+	});
+	save(blob, filename);
+}

@@ -203,7 +203,9 @@ def _period_row(fy, fp, period_type, status):
     month = min(max(fp, 1), 12)
     return {
         "fiscal_year": fy, "fiscal_period": fp,
-        "period_code": "FY%dP%02d" % (fy, fp), "period_label": "FY%d P%02d" % (fy, fp),
+        # The live shape (measured 6 Oct): the period_code is "P07" alone, so
+        # nothing built from it can pass here by carrying the year (U1).
+        "period_code": "P%02d" % fp, "period_label": "FY%d P%02d" % (fy, fp),
         "period_type": period_type, "start_date": date(fy, month, 1),
         "end_date": date(fy, month, 28), "quarter": "Q%d" % ((month - 1) // 3 + 1),
         "status": status,
@@ -948,7 +950,7 @@ def test_export_statement_sheet_matches_the_golden_payload():
     golden = _golden()
     book = _export_book(_export_site())
     rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
-    assert rows[0][0] == "Numbers · FY2025P07 · G1 · USD"
+    assert rows[0][0] == "Numbers · FY2025 P07 · G1 · USD"
     assert rows[1][0] == "Provisional"
     assert rows[2][0] == golden["statement"]["legend"]
     by_code = {r[1]: r for r in rows if r[1]}
