@@ -457,3 +457,20 @@ def test_save_refused_for_a_non_finite_amount():
     for text in ("nan", "inf", "-inf"):
         e = _save_refused(_Site(), ending_inventory_from_ic=text)
         assert "must be a number" in str(e), text
+
+
+def test_save_edit_forged_name_of_an_out_of_scope_balance_learns_nothing():
+    """F51b / review S6: a scoped Analyst who posts the name of an
+    out-of-scope balance is refused on scope before any state refusal, so
+    the reply says nothing about its state (approved, cancelled, draft) or
+    its stored pair beyond the name the caller sent."""
+    for name in ("ICB-FR01-DE01-2025-P7",   # approved
+                 "ICB-UK01-DE01-2025-P7"):  # draft
+        site = _Site()
+        site.allowed = {"ES01"}
+        e = _save_refused(site, fiscal_period=7, selling_entity="ES01", buying_entity="FR01",
+                          name=name)
+        text = str(e)
+        assert "neither entity" in text, text
+        for leak in ("approved", "cancelled", "not a draft", "own key", "UK01", "DE01"):
+            assert leak not in text.replace(name, ""), (leak, text)
