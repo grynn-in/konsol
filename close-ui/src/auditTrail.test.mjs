@@ -3,7 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { trailView, STATIC_KINDS, DYNAMIC_KINDS } from "./auditTrail.js";
+import {
+	trailView, STATIC_KINDS, DYNAMIC_KINDS,
+	filterChoices, filterParams, noFilters, toggled, GROUP_LEVEL,
+} from "./auditTrail.js";
 
 const NOW = new Date("2026-09-20T12:00:00Z");
 const TZ = "UTC";
@@ -561,4 +564,109 @@ test("the source imports no vue, frappe or xstate", () => {
 	for (const term of ["vue", "frappe", "xstate"]) {
 		assert.ok(!source.includes(`"${term}`) && !source.includes(`'${term}`), `unexpected import of ${term}`);
 	}
+});
+
+
+// --- story 10.2: filters ----------------------------------------------------
+//
+// FILTERED is the real producer's output: trail_api.get_trail for a Viewer
+// scoped to ZZA, filtered to approved + tb_submitted from 1 Sep
+// (test_close_trail_api.py asserts it equals the fixture).
+
+const FILTERED = JSON.parse(
+	readFileSync(
+		fileURLToPath(new URL("../../konsol/tests/fixtures/close_trail_filtered.json", import.meta.url)),
+		"utf8",
+	),
+);
+
+test("10.2: the producer's filtered payload renders its rows in the server's order", () => {
+	const v = trailView(FILTERED, NOW, TZ);
+	assert.deepEqual(v.rows.map((r) => r.name), FILTERED.events.map((e) => e.name));
+	assert.deepEqual(v.rows.map((r) => r.label), ["Approved", "Submitted"]);
+});
+
+test("10.2: a filtered payload says how many of the scoped events it shows", () => {
+	const v = trailView(FILTERED, NOW, TZ);
+	assert.equal(v.countNote, `Showing ${FILTERED.events.length} of ${FILTERED.total} events`);
+});
+
+test("10.2: an unfiltered payload has no count note", () => {
+	const v = trailView(payload([event()], { total: 1, filters: noFilters() }), NOW, TZ);
+	assert.equal(v.countNote, null);
+});
+
+test("10.2 failure path: a payload with filters but no total throws; the count is never guessed", () => {
+	const p = { ...FILTERED };
+	delete p.total;
+	assert.throws(() => trailView(p, NOW, TZ), /total/);
+});
+
+test("10.2: filterChoices labels the producer's options; the hidden entity is not among them", () => {
+	const c = filterChoices(FILTERED);
+	assert.deepEqual(c.kinds, [
+		{ value: "approved", label: "Approved" },
+		{ value: "signed_off", label: "Signed off" },
+		{ value: "tb_submitted", label: "Submitted" },
+		{ value: "year_closed", label: "Year closed" },
+	]);
+	assert.deepEqual(c.entities, [
+		{ value: GROUP_LEVEL, label: "Group-level" },
+		{ value: "ZZA", label: "ZZA" },
+	]);
+	assert.deepEqual(c.actors, [
+		{ value: "zz-a@example.com", label: "A Accountant" },
+		{ value: "zz-b@example.com", label: "B Lead" },
+	]);
+	assert.ok(!JSON.stringify(c).includes("ZZX"));
+});
+
+test("10.2: a deleted actor's choice shows the id and says so", () => {
+	const c = filterChoices({
+		...FILTERED,
+		options: { ...FILTERED.options, actors: [{ actor: "gone@example.com", actor_name: "gone@example.com", actor_missing: true }] },
+	});
+	assert.deepEqual(c.actors, [{ value: "gone@example.com", label: "gone@example.com (user deleted)" }]);
+});
+
+test("10.2 failure path: filterChoices throws on an unknown kind and on a payload with no options", () => {
+	assert.throws(
+		() => filterChoices({ ...FILTERED, options: { ...FILTERED.options, kinds: ["bogus"] } }),
+		/bogus/,
+	);
+	const p = { ...FILTERED };
+	delete p.options;
+	assert.throws(() => filterChoices(p), /options/);
+});
+
+test("10.2: filterParams sends lists as JSON and dates as given; an empty field is left out", () => {
+	assert.deepEqual(filterParams(noFilters()), {});
+	assert.deepEqual(
+		filterParams({ kinds: ["approved"], actors: [], entities: ["ZZA", GROUP_LEVEL], date_from: "2026-09-01", date_to: "" }),
+		{ kinds: '["approved"]', entities: '["ZZA","(group)"]', date_from: "2026-09-01" },
+	);
+});
+
+test("10.2: filterParams of the server's echoed filters reproduces the request", () => {
+	assert.deepEqual(filterParams(FILTERED.filters), {
+		kinds: '["approved","tb_submitted"]',
+		date_from: "2026-09-01",
+	});
+});
+
+test("10.2: toggled adds a missing value and removes a present one, never mutating", () => {
+	const list = ["a"];
+	assert.deepEqual(toggled(list, "b"), ["a", "b"]);
+	assert.deepEqual(toggled(list, "a"), []);
+	assert.deepEqual(list, ["a"]);
+});
+
+test("10.2: GROUP_LEVEL matches trail_model.py's", () => {
+	const source = readFileSync(
+		fileURLToPath(new URL("../../konsol/close/trail_model.py", import.meta.url)),
+		"utf8",
+	);
+	const m = source.match(/^GROUP_LEVEL = "([^"]*)"$/m);
+	assert.ok(m, "trail_model.py declares GROUP_LEVEL");
+	assert.equal(GROUP_LEVEL, m[1]);
 });

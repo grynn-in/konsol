@@ -5,7 +5,7 @@
 // the thing under test, and that is restored in a finally.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { get, post, errorMessage } from "./api.js";
+import { get, post, errorMessage, methodUrl } from "./api.js";
 
 function jsonResponse(status, body) {
   return {
@@ -152,4 +152,26 @@ test("errorMessage prefers _server_messages over a bare message", () => {
   const serverMessages = JSON.stringify([JSON.stringify({ message: "Declared reason." })]);
   const payload = { _server_messages: serverMessages, message: "generic error" };
   assert.equal(errorMessage(payload, 403), "Declared reason.");
+});
+
+
+// --- story 10.2: methodUrl (the CSV export link) ---------------------------------
+
+test("methodUrl is the URL get() would call, with blank params left out", () => {
+	assert.equal(
+		methodUrl("konsol.close.trail_api.export_trail_csv", { fiscal_year: 2026, fiscal_period: 9, kinds: '["approved"]', actors: undefined }),
+		"/api/method/konsol.close.trail_api.export_trail_csv?fiscal_year=2026&fiscal_period=9&kinds=%5B%22approved%22%5D",
+	);
+	assert.equal(methodUrl("konsol.x.y"), "/api/method/konsol.x.y");
+});
+
+test("methodUrl matches the URL get() fetches for the same params", async () => {
+	let seen = null;
+	const fetchImpl = async (url) => {
+		seen = url;
+		return { ok: true, status: 200, json: async () => ({ message: 1 }) };
+	};
+	const params = { fiscal_year: 2026, entities: '["ZZA"]' };
+	await get("konsol.close.trail_api.get_trail", params, { fetchImpl });
+	assert.equal(seen, methodUrl("konsol.close.trail_api.get_trail", params));
 });

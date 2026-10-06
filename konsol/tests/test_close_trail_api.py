@@ -579,3 +579,17 @@ def test_export_refuses_an_undeclared_period_and_a_bad_filter():
     site = _scoped_site()
     _raises(lambda: _export(site, 2026, 9, entities='"ZZA"'), "ValidationError")
     assert "filecontent" not in site.response
+
+
+# The golden payload close-ui's auditTrail.test.mjs reads: the real
+# get_trail output for a scoped Viewer with a kind and a date filter.
+TRAIL_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_trail_filtered.json")
+
+
+def test_the_filtered_trail_golden_fixture_is_the_producers_output():
+    site = _scoped_site()
+    out = _call(site, 2026, 9, kinds='["approved", "tb_submitted"]', date_from="2026-09-01")
+    with open(TRAIL_FIXTURE) as fh:
+        golden = json.load(fh)
+    assert json.loads(json.dumps(out)) == golden

@@ -66,14 +66,39 @@ test("Failure path: no browser storage of the period (D5: it lives in the URL on
 	assert.doesNotMatch(source, new RegExp("\\bsession" + "Storage\\b"));
 });
 
-test("Failure path: no Export CSV button — story 10.2 is P2, not built here", () => {
+test("10.2: an Export CSV link to trail_api.export_trail_csv, named once", () => {
 	const source = read();
-	assert.doesNotMatch(source, /Export CSV/);
+	assert.match(template(source), /Export CSV/);
+	const names = source.match(/konsol\.close\.trail_api\.export_trail_csv/g) || [];
+	assert.equal(names.length, 1, "one endpoint constant for export_trail_csv");
 });
 
-test("Failure path: no filter chips — story 10.2 is P2, not built here", () => {
+test("10.2: the export link is built by methodUrl from the server's echoed filters, so the file is the view", () => {
 	const source = read();
-	assert.doesNotMatch(source, /\ballowed\b.*filter|filterChips|problemsOnly/i);
+	assert.match(source, /import\s*\{[^}]*\bmethodUrl\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
+	assert.match(script(source), /methodUrl\(\s*EXPORT_CSV\s*,[\s\S]*?filterParams\(\s*trail\.payload\.filters\s*\)/);
+	assert.match(template(source), /<a[^>]*:href="exportHref"/);
+});
+
+test("10.2: the filters are sent to get_trail through filterParams and choices come from filterChoices", () => {
+	const js = script(read());
+	assert.match(js, /get\(GET_TRAIL,\s*\{[\s\S]*?\.\.\.filterParams\(/);
+	assert.match(js, /filterChoices\(/);
+});
+
+test("10.2: filter controls for kind, actor, entity and a date range", () => {
+	const tpl = template(read());
+	assert.match(tpl, /choices\.kinds/);
+	assert.match(tpl, /choices\.actors/);
+	assert.match(tpl, /choices\.entities/);
+	assert.match(tpl, /type="date"[\s\S]*?type="date"/);
+	assert.match(tpl, /countNote/);
+});
+
+test("10.2 failure path: no client-side filtering or CSV building — the server cuts both", () => {
+	const js = script(read());
+	assert.doesNotMatch(js, /\.filter\(/, "events are never filtered in the browser");
+	assert.doesNotMatch(js, /Blob|text\/csv|createObjectURL/);
 });
 
 test("No v-html anywhere", () => {
