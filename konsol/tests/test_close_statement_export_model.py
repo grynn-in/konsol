@@ -365,3 +365,99 @@ def test_account_lines_that_round_away_from_their_row_get_a_rounding_line():
     assert rounding[0][4] == entity_row["entity"]
     assert rounding[0][7] == -0.01
     assert round(sum(r[7] for r in body), 2) == drills["1"]["total"]
+
+
+# --- review-w5 S1: free text is never written as a formula --------------------
+
+_TRAIL_PATH = os.path.join(APP_DIR, "close", "trail_model.py")
+_trail_spec = importlib.util.spec_from_file_location("trail_model_for_export_test", _TRAIL_PATH)
+_TRAIL = importlib.util.module_from_spec(_trail_spec)
+_trail_spec.loader.exec_module(_TRAIL)
+
+
+def _poisoned(lead):
+    """The golden payload and drills with ``lead`` at the start of every
+    free-text column the export writes: commentary text and author,
+    heading/line/"of which" labels, the legend, the gap message, the drill's
+    layer label, entity, account and account name, and each journal's id,
+    description, posted/approved by and basis."""
+    payload, drills = _payload(), _drills()
+    payload["statement"]["legend"] = lead + "legend"
+    payload["gap"] = {"message": lead + "gap"}
+    payload["commentary"]["4"]["text"] = lead + 'HYPERLINK("http://evil","Click")'
+    payload["commentary"]["4"]["by"] = lead + "author"
+    for section in payload["statement"]["sections"]:
+        for line in section["lines"]:
+            if line.get("heading_name"):
+                line["heading_name"] = lead + line["heading_name"]
+            if line.get("label"):
+                line["label"] = lead + line["label"]
+            for include in line.get("includes") or []:
+                include["label"] = lead + include["label"]
+    drill = drills["1"]
+    drill["heading_name"] = lead + drill["heading_name"]
+    for row in drill["rows"]:
+        if row.get("label"):
+            row["label"] = lead + row["label"]
+        if row.get("entity"):
+            row["entity"] = lead + row["entity"]
+        if row.get("journals_basis"):
+            row["journals_basis"] = lead + row["journals_basis"]
+        for account in row.get("accounts") or []:
+            account["main_account"] = lead + account["main_account"]
+            account["account_name"] = lead + (account.get("account_name") or "name")
+        for journal in row.get("journals") or []:
+            for key in ("journal_id", "description", "posted_by", "approved_by"):
+                journal[key] = lead + journal[key]
+    return payload, drills
+
+
+@pytest.mark.parametrize("lead", list(_TRAIL._FORMULA_START), ids=repr)
+def test_no_free_text_cell_is_written_as_a_formula(lead):
+    """review-w5 S1 (must-fix): openpyxl stores a string starting with "="
+    as a formula, so a commentary ``=HYPERLINK(...)`` (or a journal
+    description, account name or user) became a live formula in the Close
+    Lead's export. Every string cell is text, for every leading character
+    trail_model's CSV guards (``_FORMULA_START``)."""
+    payload, drills = _poisoned(lead)
+    data = M.workbook(payload, drills)
+    book = load_workbook(io.BytesIO(data))
+    poisoned = 0
+    for sheet in book.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                assert cell.data_type != "f", (sheet.title, cell.coordinate, cell.value)
+                if isinstance(cell.value, str) and cell.value.endswith(
+                        ('HYPERLINK("http://evil","Click")', "Reclass intercompany loan")):
+                    poisoned += 1
+    # The raw sheet XML carries no formula element at all.
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for name in z.namelist():
+            if name.startswith("xl/worksheets/"):
+                assert b"<f>" not in z.read(name) and b"<f " not in z.read(name), name
+    assert poisoned == 2  # the commentary and the journal description were written
+
+
+def test_a_formula_commentary_reads_back_as_the_same_text():
+    payload, drills = _poisoned("=")
+    rows = _rows(_book(payload, drills)["Statement"])
+    texts = [v for r in rows for v in r if isinstance(v, str)]
+    assert '=HYPERLINK("http://evil","Click")' in texts
+    assert "=legend" in texts and "=gap" in texts
+    journals = [v for r in _rows(_book(payload, drills)["Journals"]) for v in r]
+    assert "=Reclass intercompany loan" in journals
+    assert "=alice@example.com" in journals and "=bob@example.com" in journals
+
+
+# --- review-w5 S4: the title row carries the fiscal year ----------------------
+
+def test_header_names_the_fiscal_year_even_when_the_period_code_does_not():
+    """review-w5 S4: live ``period_code`` is "P07" (measured 6 Oct), so a
+    header built from it could not tell FY2024 P07 from FY2025 P07. Built
+    from fiscal_year/fiscal_period, the same as the API's filename."""
+    payload = _payload()
+    payload["period"]["code"] = "P07"
+    assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2025P07 · G1 · USD"
+    payload["period"]["fiscal_year"] = 2024
+    assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2024P07 · G1 · USD"
