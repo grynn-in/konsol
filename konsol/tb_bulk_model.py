@@ -3,7 +3,7 @@
 A group with hundreds of entities sends one file a month, not hundreds. The
 file is split into one ordinary Trial Balance Submission per entity and
 period, so every rule a single submission obeys still applies: debits equal
-credits, accounts are in the group chart, the period is open, there is one
+credits exactly in the declared currency's minor unit (konsol#180), accounts are in the group chart, the period is open, there is one
 live submission per entity-period, and the uploader may access the entity.
 
 File contract (header required, case-insensitive; CSV, or the first sheet of
@@ -34,10 +34,11 @@ there is no default that does not guess.
 """
 import csv
 import io
-import math
+from decimal import Decimal
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
-from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems
+from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, exact_total, read_amount
+from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP
 from konsol.tb_dimension_model import (
     accepted_dimension_columns, accepted_dimensions_sentence, dimension_problems,
     is_dimension_column,
@@ -97,22 +98,23 @@ def _header_name(value):
 
 
 def _amount(value, what, lineno, errors):
-    if value is None or cell(value) == "":
-        return 0.0
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        number = float(value)
-    else:
-        try:
-            number = float(cell(value))
-        except ValueError:
-            errors.append(f"Line {lineno}: {what} must be a number (got {cell(value)!r})")
-            return 0.0
-    if not math.isfinite(number):
+    """The cell's amount, exactly as written (konsol#180-5): read_amount, the
+    reader every intake uses. An .xlsx float is read at Excel's 15
+    significant digits (#180-9), the one exception; otherwise nothing is
+    rounded; a line with more places than its currency has is refused later,
+    by name, when the currency is known (check_group)."""
+    try:
+        return read_amount(value)
+    except NotFinite:
         errors.append(f"Line {lineno}: {what} must be a finite number (got {cell(value)!r})")
-        return 0.0
-    # Cents, exactly as a single submission rounds them, so what is checked
-    # here is what lands.
-    return round(number, 2)
+    except ValueError:
+        errors.append(f"Line {lineno}: {what} must be a number (got {cell(value)!r})")
+    return Decimal(0)
+
+
+def _written(value):
+    """An amount in plain notation, exactly (1E+2 is written 100)."""
+    return format(read_amount(value), "f")
 
 
 def _whole(value, what, lineno, errors):
@@ -337,7 +339,9 @@ def group_csv(rows, source=None):
                     + ([BASIS] if basis else []) + (["source_upload"] if source else [])
                     + dim_names)
     for r in rows:
-        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get(CURRENCY, ""),
+        # Exactly as read, never rounded (konsol#180-5): the load feeds this
+        # file back through parse_tb_csv, which must see the same amounts.
+        writer.writerow([r["main_account"], _written(r["debit"]), _written(r["credit"]), r.get(CURRENCY, ""),
                          r.get("description", ""),
                          r.get(PARTNER, "")] + ([r.get(BASIS, "")] if basis else [])
                         + ([source] if source else [])
@@ -346,7 +350,7 @@ def group_csv(rows, source=None):
 
 
 def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_types, existing, validate_rows,
-                functional_currency, known_entities=None, warnings=(), partnerless_ic_rows=0):
+                functional_currency, minor_unit, known_entities=None, warnings=(), partnerless_ic_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
     The facts come from the caller; `validate_rows` is the single-submission
@@ -366,6 +370,12 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     without one is refused by name, never skipped (konsol#252). The rows'
     currency is judged by konsol.tb_currency_model, the rule a single
     submission's validate() applies.
+
+    `minor_unit` is that Functional Currency's ``ISO Currency.minor_unit`` as
+    stored (None when there is none). It has no default either (konsol#180):
+    once the currency is good, no line may have more decimal places than it
+    (#180-5) and debits must equal credits exactly (konsol.tb_balance_model,
+    the rule validate() applies).
     """
     entity, year, period_no = key
     errors = []
@@ -385,13 +395,16 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     # Only for an entity the uploader can see (PR #328 review L1): a currency
     # sentence would say the entity exists and what its Functional Currency
     # is, which "does not exist, or you have no access" deliberately does not.
+    # The balance is judged in that currency, so it is not judged either: the
+    # entity-period is already refused (konsol#180).
     if visible:
-        errors.extend(currency_problems(entity, functional_currency,
-                                        [(r.get("line"), r.get(CURRENCY)) for r in rows]))
+        errors.extend(currency_and_balance_problems(entity, functional_currency, minor_unit, rows))
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
-        "total_debit": round(sum(r["debit"] for r in rows), 2),
-        "total_credit": round(sum(r["credit"] for r in rows), 2),
+        # float: the report is stored with json.dumps; the rows stay exact.
+        # exact sums (never the default context: #180 review F3)
+        "total_debit": float(exact_total(rows, "debit")),
+        "total_credit": float(exact_total(rows, "credit")),
         "errors": errors, "ok": not errors, "existing": existing,
         "warnings": list(warnings), "partnerless_ic_rows": partnerless_ic_rows,
     }

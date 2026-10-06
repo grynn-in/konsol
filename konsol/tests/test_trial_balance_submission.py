@@ -112,14 +112,13 @@ def test_validate_balanced_clean():
     assert _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))) == []
 
 
-def test_validate_flags_imbalance():
+def test_validate_tb_rows_leaves_the_balance_to_the_currency_rule():
+    """konsol#180: the balance is judged once, in the declared currency's minor
+    unit (konsol.tb_balance_model, after the currency), never by a second rule
+    here. Was test_validate_flags_imbalance and, with the 0.01 slack,
+    test_validate_tolerates_rounding_within_tolerance."""
     errs = _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 9)))
-    assert any("do not equal" in e for e in errs)
-
-
-def test_validate_tolerates_rounding_within_tolerance():
-    assert _m.validate_tb_rows(
-        _rows(("1010", 10.004, 0), ("2010", 0, 10.0))) == []
+    assert not any("do not equal" in e for e in errs), errs
 
 
 def test_validate_flags_duplicates():
@@ -168,16 +167,22 @@ def test_parse_rejects_surplus_cells():
         assert "more cells" in str(e)
 
 
-def test_parse_rounds_to_cents_so_stored_equals_validated():
+def test_parse_reads_amounts_exactly_and_the_rule_refuses_extra_places():
+    """konsol#180-5 (Deepak Pai, 6 Oct 2026) replaces
+    test_parse_rounds_to_cents_so_stored_equals_validated: the parser no
+    longer rounds each line to cents. It keeps the amount as written, and
+    konsol.tb_balance_model refuses a line with more places than the
+    currency has, by name, instead of judging a balance of rounded lines."""
     rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,10.005,0,EUR\n2010,0,10.004,EUR\n", ())
-    assert rows[0]["debit"] == 10.0 or rows[0]["debit"] == 10.01  # banker's rounding either way
-    assert rows[1]["credit"] == 10.0
-    # the point: balance is judged on the ROUNDED values — the same numbers
-    # the warehouse will store — so post-rounding drift past the tolerance
-    # fails here, not later in a dbt test
-    errs = _m.validate_tb_rows(_m.parse_tb_csv(
+    assert str(rows[0]["debit"]) == "10.005" and str(rows[1]["credit"]) == "10.004"
+    spec = importlib.util.spec_from_file_location("tbs_balance_model", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tb_balance_model.py"))
+    balance = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(balance)
+    errs = balance.balance_problems("EUR", 2, _m.parse_tb_csv(
         "main_account,debit,credit,currency\n1010,10.019,0,EUR\n2010,0,10.001,EUR\n", ()))
-    assert any("do not equal" in e for e in errs)  # 10.02 vs 10.00 -> 0.02 > 0.01
+    assert errs == ["Line 2: debit 10.019 has 3 decimal places; EUR has 2.",
+                    "Line 3: credit 10.001 has 3 decimal places; EUR has 2."], errs
 
 
 # --- konsol#159: the intercompany partner -----------------------------------
@@ -672,6 +677,9 @@ def _wire(rows):
     _m.frappe.get_doc = lambda doctype, name: rows[name]  # not for the lock read; see the test
     _m.frappe.throw = _raise
     _m.frappe.PermissionError = _PermissionError
+    # konsol#334: the rebuild request, recorded in the same log so its order
+    # after the claim is visible. The helper itself is tested on its own.
+    _m._request_basis_build = lambda name: log.append(("build", name))
     del _ADMIN_CHECKS[:]
     return log, gates, reads
 
@@ -766,7 +774,8 @@ def test_set_amount_basis_writes_mariadb_first_then_one_claim_insert_for_all():
     out = _m.set_amount_basis(["TBS-1", "TBS-2"], "Year-to-date movement")
     assert out["updated"] == 2
     kinds = [e[0] for e in log]
-    assert kinds == ["set", "set", "ch"], kinds
+    # konsol#334: then one rebuild request, after the claim
+    assert kinds == ["set", "set", "ch", "build"], kinds
     assert log[0][1:4] == ("TBS-1", "amount_basis", "Year-to-date movement")
     assert log[0][4].get("update_modified") is False
     claims = _claims(log)
@@ -1167,7 +1176,7 @@ def _bulk_report(table, decl):
         key, rows, known_accounts=None, visible=True, leaf=True,
         period={"code": "P06", "type": "Regular", "status": "Open"},
         postable_types={"Regular"}, existing=None, validate_rows=_m.validate_tb_rows,
-        functional_currency="EUR")
+        functional_currency="EUR", minor_unit=2)
     return rows, report
 
 
@@ -1214,7 +1223,7 @@ def _with_check_rows(fake, fn):
 
 
 def _fake_result(file_problems=(), row_problems=()):
-    def fake(rows, chart, entity, known_entities, form_basis, tolerance):
+    def fake(rows, chart, entity, known_entities, form_basis):
         return {
             "ok": False,
             "rows": [{"line": 2, "main_account": "1010", "partner": "", "debit": 10.0,
@@ -1456,3 +1465,61 @@ def test_the_close_event_stub_does_not_leak():
     before = (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event"))
     _with_close_event([], _tb_doc().on_cancel)
     assert (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event")) == before
+
+
+# -- konsol#334: a basis change requests the rebuild ----------------------------------------------
+
+def test_set_amount_basis_requests_one_rebuild_after_the_claim():
+    """konsol#334: the claim changes how bronze normalises every row of the
+    batch, so the numbers move; a re-claim with no build left gold on the old
+    basis until someone asked by hand. One request per call, after the
+    ClickHouse claim (nothing is requested if the claim raises), and none when
+    nothing was updated."""
+    rows = {"TBS-1": _row("TBS-1", fiscal_period=3), "TBS-2": _row("TBS-2", fiscal_period=4)}
+    log, gates, reads = _wire(rows)
+    _m.set_amount_basis(["TBS-1", "TBS-2"], CLOSING)
+    builds = [e for e in log if e[0] == "build"]
+    assert builds == [("build", "TBS-1")], log
+    assert log[-1][0] == "build" and log[-2][0] == "ch", log
+
+    rows = {"TBS-2": _row("TBS-2", docstatus=0)}
+    log, gates, reads = _wire(rows)
+    _m.set_amount_basis(["TBS-2"], CLOSING)
+    assert [e for e in log if e[0] == "build"] == [], "nothing updated, nothing to rebuild"
+
+    rows = {"TBS-1": _row("TBS-1")}
+    log, gates, reads = _wire(rows)
+
+    def refuse(sql, *a, **k):
+        raise RuntimeError("clickhouse down")
+    _m.execute = refuse
+    try:
+        _m.set_amount_basis(["TBS-1"], CLOSING)
+        assert False, "the claim's error must reach the caller"
+    except RuntimeError as e:
+        assert str(e) == "clickhouse down"
+    assert [e for e in log if e[0] == "build"] == [], "a failed claim requests no build"
+
+
+def test_the_basis_rebuild_goes_through_the_one_enqueue_path():
+    """The helper hands the request to tasks.queue_consolidation_build (the
+    after-commit enqueue every TB submit and cancel uses), as an
+    on_update_after_submit of the named submission: the same doctype, so the
+    same DOCTYPE_BUILD_MAP scope."""
+    calls = []
+    fake = types.ModuleType("konsol.tasks")
+    fake.queue_consolidation_build = lambda doc, method: calls.append((doc.doctype, doc.name, method))
+    saved = sys.modules.get("konsol.tasks")
+    _m.frappe._dict = lambda **k: types.SimpleNamespace(**k)
+    sys.modules["konsol.tasks"] = fake
+    try:
+        _m.__dict__.pop("_request_basis_build", None)
+        _spec.loader.exec_module(_m)  # the real helper, not _wire's recorder
+        _m._record_data_change = lambda *a, **k: None
+        _m._request_basis_build("TBS-1")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    assert calls == [("Trial Balance Submission", "TBS-1", "on_update_after_submit")], calls

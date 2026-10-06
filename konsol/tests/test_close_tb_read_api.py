@@ -242,7 +242,8 @@ def _load(site):
                 types.ModuleType("konsol.consolidation.doctype.trial_balance_submission")}
     saved = {n: sys.modules.get(n) for n in list(mods) + ["konsol.tb_basis_model",
                                                           "konsol.tb_dimension_model",
-                                                          "konsol.tb_currency_model", CONTROLLER,
+                                                          "konsol.tb_currency_model",
+                                                          "konsol.tb_balance_model", CONTROLLER,
                                                           "konsol.close.tb_view_model"]}
     sys.modules.update(mods)
     try:
@@ -255,6 +256,10 @@ def _load(site):
         mods["konsol.tb_currency_model"] = _by_path(
             "konsol.tb_currency_model", os.path.join(APP_DIR, "tb_currency_model.py"))
         sys.modules["konsol.tb_currency_model"] = mods["konsol.tb_currency_model"]
+        # konsol#180: and the balance rule, which imports the currency rule.
+        mods["konsol.tb_balance_model"] = _by_path(
+            "konsol.tb_balance_model", os.path.join(APP_DIR, "tb_balance_model.py"))
+        sys.modules["konsol.tb_balance_model"] = mods["konsol.tb_balance_model"]
         mods[CONTROLLER] = _by_path(CONTROLLER, CONTROLLER_PY)
         sys.modules[CONTROLLER] = mods[CONTROLLER]
         close.tb_view_model = _by_path("konsol.close.tb_view_model", VIEW_MODEL_PY)

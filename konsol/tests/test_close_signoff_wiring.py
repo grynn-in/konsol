@@ -696,6 +696,8 @@ def test_set_amount_basis_records_one_change_per_period_before_the_claim():
     mods["frappe"].db = types.SimpleNamespace(
         get_value=lambda dt, name, fields, **k: rows.get(name),
         set_value=lambda dt, name, field, value, **k: hooks.log.append(("set", name)))
+    # konsol#334: the rebuild request comes last, after the claim.
+    module._request_basis_build = lambda name: hooks.log.append(("build", name))
     with _installed(mods):
         out = module.set_amount_basis(["TBS-1", "TBS-2", "TBS-3", "TBS-4"],
                                       "Period-end balance")
@@ -704,7 +706,7 @@ def test_set_amount_basis_records_one_change_per_period_before_the_claim():
         (2099, 3, "Amount basis of TB TBS-1, TBS-3 set to Period-end balance", UPLOADER, "ZZOP"),
         (2099, 4, "Amount basis of TB TBS-2 set to Period-end balance", UPLOADER, "ZZOP")], hooks.log
     kinds = [e[0] for e in hooks.log]
-    assert kinds == ["set", "set", "set", "record", "record", "ch"], kinds
+    assert kinds == ["set", "set", "set", "record", "record", "ch", "build"], kinds
 
 
 def test_set_amount_basis_with_nothing_updated_records_nothing():
@@ -714,6 +716,7 @@ def test_set_amount_basis_with_nothing_updated_records_nothing():
     mods["frappe"].db = types.SimpleNamespace(
         get_value=lambda dt, name, fields, **k: rows.get(name),
         set_value=lambda *a, **k: hooks.log.append(("set",)))
+    module._request_basis_build = lambda name: hooks.log.append(("build", name))
     with _installed(mods):
         out = module.set_amount_basis(["TBS-4", "TBS-9"], "Period-end balance")
     assert out["updated"] == 0

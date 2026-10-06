@@ -201,10 +201,12 @@ def _load(path, period_open):
 
     # konsolidat#199: the controller imports the real, frappe-free rule module
     # konsol.tb_basis_model; konsol#255 added konsol.tb_dimension_model beside
-    # it, and konsol#252 konsol.tb_currency_model. The stub package has no
-    # __path__, so load each from the repo and register it beside the stubs.
+    # it, konsol#252 konsol.tb_currency_model and konsol#180
+    # konsol.tb_balance_model (which imports the currency rule). The stub
+    # package has no __path__, so load each from the repo and register it
+    # beside the stubs.
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for pure in ("tb_basis_model", "tb_dimension_model", "tb_currency_model"):
+    for pure in ("tb_basis_model", "tb_dimension_model", "tb_currency_model", "tb_balance_model"):
         pure_spec = importlib.util.spec_from_file_location(
             f"konsol.{pure}", os.path.join(app_dir, f"{pure}.py"))
         pure_mod = importlib.util.module_from_spec(pure_spec)
