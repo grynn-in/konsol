@@ -412,19 +412,19 @@ def test_completeness_needs_a_docstatus_not_a_default():
 
 def test_exception_then_tb_covers_both_periods():
     notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], [_doc("ZZA", 8)])
-    assert notes == ["ZZA: covers P08–P09"]
+    assert notes == ["ZZA: covers FY2025 P08–FY2025 P09"]
 
 
 def test_a_run_of_exceptions_is_covered_from_its_first_period():
     exc = [_doc("ZZA", 7), _doc("ZZA", 8)]
     notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], exc)
-    assert notes == ["ZZA: covers P07–P09"]
+    assert notes == ["ZZA: covers FY2025 P07–FY2025 P09"]
 
 
 def test_the_run_stops_at_a_period_with_a_tb():
     exc = [_doc("ZZA", 6), _doc("ZZA", 8)]
     tbs = [_doc("ZZA", 7), _doc("ZZA", 9)]
-    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers P08–P09"]
+    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers FY2025 P08–FY2025 P09"]
 
 
 def test_no_note_without_a_tb_in_the_target_or_an_exception_before_it():
@@ -455,7 +455,7 @@ def test_covers_notes_are_sorted_by_entity():
     tbs = [_doc("ZZB", 9), _doc("ZZA", 9)]
     exc = [_doc("ZZB", 8), _doc("ZZA", 8)]
     assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == [
-        "ZZA: covers P08–P09", "ZZB: covers P08–P09"]
+        "ZZA: covers FY2025 P08–FY2025 P09", "ZZB: covers FY2025 P08–FY2025 P09"]
 
 
 # --- A41: a quarterly entity's quarter-end TB is labelled with its quarter -----
@@ -465,7 +465,7 @@ def test_quarterly_entity_quarter_end_tb_notes_the_full_quarter():
     # Q1 = P01-P03 (_monthly_year); ZZQ's single P03 TB covers the whole quarter.
     freq = {"ZZQ": "Quarterly"}
     notes = M.covers_notes((2025, 3), _monthly_year(), [_doc("ZZQ", 3)], [], frequencies=freq)
-    assert notes == ["ZZQ: quarterly — covers P01–P03"]
+    assert notes == ["ZZQ: quarterly — covers FY2025 P01–FY2025 P03"]
 
 
 def test_monthly_entity_gets_no_quarterly_note():
