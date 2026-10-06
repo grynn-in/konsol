@@ -58,7 +58,7 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
-from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, read_amount
+from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, exact_total, read_amount
 from konsol.tb_currency_model import (
     COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, declared_currency,
 )
@@ -718,8 +718,9 @@ class TrialBalanceSubmission(Document):
 
         self.row_count = len(rows)
         # Float fields shown to 2 places; the rows are exact (konsol#180-5).
-        self.total_debit = float(sum(r["debit"] for r in rows))
-        self.total_credit = float(sum(r["credit"] for r in rows))
+        # Exact sums, never in the default context (#180 review F3).
+        self.total_debit = float(exact_total(rows, "debit"))
+        self.total_credit = float(exact_total(rows, "credit"))
         if errors:
             # No "Invalid" status is persisted: frappe.throw rolls the save
             # back, so a stored Invalid state could never exist anyway — the

@@ -9,6 +9,7 @@ identity tests prove the controller calls this very file, and that on every
 fixture a file the submit path accepts is exactly a file check_rows calls ok.
 """
 import ast
+from decimal import Decimal
 import importlib.util
 import os
 import sys
@@ -380,4 +381,4 @@ def test_the_negative_suggestion_keeps_the_exact_amount():
 def test_totals_of_enormous_amounts_do_not_raise():
     """#180 review F3: 1E1000000 overflowed the default Decimal context."""
     r = _check(_rows("main_account,debit,credit,currency\n1010,1E1000000,0,EUR\n2010,0,1E1000000,EUR\n"))
-    assert str(r["totals"]["debit"]) == "1E+1000000", r["totals"]
+    assert r["totals"]["debit"] == Decimal("1E+1000000") and r["totals"]["difference"] == 0, r["totals"]

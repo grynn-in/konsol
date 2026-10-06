@@ -37,7 +37,7 @@ import io
 from decimal import Decimal
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
-from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, read_amount
+from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, exact_total, read_amount
 from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP
 from konsol.tb_dimension_model import accepted_dimension_columns, dimension_problems, is_dimension_column
 
@@ -394,8 +394,9 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
         # float: the report is stored with json.dumps; the rows stay exact.
-        "total_debit": float(sum(read_amount(r["debit"]) for r in rows)),
-        "total_credit": float(sum(read_amount(r["credit"]) for r in rows)),
+        # exact sums (never the default context: #180 review F3)
+        "total_debit": float(exact_total(rows, "debit")),
+        "total_credit": float(exact_total(rows, "credit")),
         "errors": errors, "ok": not errors, "existing": existing,
         "warnings": list(warnings), "partnerless_ic_rows": partnerless_ic_rows,
     }

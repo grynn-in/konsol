@@ -218,10 +218,12 @@ def test_huge_amounts_are_judged_exactly_never_raised():
     m = _model()
     assert m.balance_problems("EUR", 2, _rows((1e26, 0), (0, 1e26))) == []
     assert m.balance_problems("EUR", 2, _rows((1.7e308, 0), (0, 1.7e308))) == []
-    # written out, not big + 0.01: that sum would itself round at 28 digits
+    # A cent at 1e26 is judged exactly by the rule, but the warehouse's
+    # Float64 cannot hold it, so the line is refused by name (#180 review F2;
+    # this asserted "debits exceed credits by 0.01 EUR" before F2).
     (p,) = m.balance_problems("EUR", 2, _rows((Decimal("100000000000000000000000000.01"), 0),
                                               (0, Decimal("100000000000000000000000000"))))
-    assert "debits exceed credits by 0.01 EUR" in p, p
+    assert p.startswith("Line 2: debit 100000000000000000000000000.01 cannot be stored exactly"), p
     (p,) = m.balance_problems("EUR", 2, _rows((2e26, 0), (0, 1e26)))
     assert "debits exceed credits by 100,000,000,000,000,000,000,000,000.00 EUR" in p, p
     (p,) = m.balance_problems("KWD", 3, _rows((1.7e308, 0), (0, 1e308)))

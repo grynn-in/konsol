@@ -53,7 +53,7 @@ this module does not touch them.
 """
 from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Decimal, InvalidOperation, localcontext
 
-from konsol.tb_currency_model import COLUMN as CURRENCY, currency_problems, declared_currency
+from konsol.tb_currency_model import COLUMN as CURRENCY, code, currency_problems
 
 
 #: The most digits a total, written out in the minor unit, may need. Decimal's
@@ -73,8 +73,12 @@ def read_amount(value):
 
     Text is read as written, surrounding spaces stripped: "0.3333" stays
     0.3333 and "1.2300" keeps its zeros. A float (an xlsx cell) is read at its
-    shortest repr, the number the sheet shows: 0.1 is 0.1, never its binary
-    value 0.1000000000000000055…. None and blank are zero. Raises ValueError
+    shortest repr, the shortest decimal that round-trips to that float: 0.1
+    is 0.1, never its binary value 0.1000000000000000055…. That is the
+    cell's typed value; it is not always what the sheet displays. A formula
+    cell's cached value such as 110.00000000000001 is read as that, and is
+    refused line by line (review F4, open: Deepak is deciding it). None and
+    blank (including whitespace only) are zero. Raises ValueError
     for anything that is not a number (a bool is not one) and NotFinite for
     NaN or Infinity. Nothing is rounded.
     """
@@ -105,8 +109,8 @@ def decimal_places(amount):
     """The decimal places ``amount`` really has: trailing zeros do not count
     (1.2300 has 2, 100.00 has 0). Exact; never rounds."""
     _, digits, exponent = amount.as_tuple()
-    if exponent >= 0:
-        return 0
+    if exponent >= 0 or not any(digits):
+        return 0      # a whole number, or zero however written (0.00, 0E-10)
     places, end = -exponent, len(digits)
     while places and end and digits[end - 1] == 0:
         places, end = places - 1, end - 1
@@ -130,10 +134,36 @@ def _places(minor_unit):
     return f"{minor_unit} decimal place{'' if minor_unit == 1 else 's'}"
 
 
+def exact_total(rows, column):
+    """The exact sum of ``column`` over ``rows``, at the largest precision, so
+    no amount (1E+1000000 included) rounds or overflows (#180 review F3)."""
+    with localcontext() as ctx:
+        ctx.prec, ctx.Emax, ctx.Emin = MAX_PREC, MAX_EMAX, MIN_EMIN
+        return sum((read_amount(r.get(column)) for r in rows), Decimal(0))
+
+
+def exact_difference(debit, credit):
+    """``debit - credit`` exactly, at the largest precision."""
+    with localcontext() as ctx:
+        ctx.prec, ctx.Emax, ctx.Emin = MAX_PREC, MAX_EMAX, MIN_EMIN
+        return debit - credit
+
+
+def _stored(amount):
+    """What epm_raw's Float64 column would hold for ``amount``."""
+    return float(amount)
+
+
 def place_problems(currency, minor_unit, rows):
-    """konsol#180-5: one sentence per amount with more decimal places than
-    ``currency`` has, naming its line (or its account when the row carries no
-    line). ``minor_unit`` must already be valid."""
+    """One sentence per amount that cannot be taken, naming its line (or its
+    account when the row carries no line). ``minor_unit`` must already be valid.
+
+    - konsol#180-5: more decimal places than ``currency`` has;
+    - #180 review F3: too large for the warehouse's Float64 (it would be inf);
+    - #180 review F2: not held exactly by the warehouse's Float64, so it would
+      land changed (IDR 100000000000000.01 lands as .02). Refused until
+      konsolidat#256 stores decimals.
+    """
     problems = []
     for row in rows:
         line = row.get("line")
@@ -141,9 +171,16 @@ def place_problems(currency, minor_unit, rows):
         for column in ("debit", "credit"):
             amount = read_amount(row.get(column))
             places = decimal_places(amount)
+            stored = _stored(amount)
             if places > minor_unit:
                 problems.append(f"{where}: {column} {_written(amount)} has "
                                 f"{_places(places)}; {currency} has {minor_unit}.")
+            elif stored in (float("inf"), float("-inf")):
+                problems.append(f"{where}: {column} {_written(amount)} is too large to store.")
+            elif Decimal(repr(stored)) != amount:
+                problems.append(f"{where}: {column} {_written(amount)} cannot be stored exactly "
+                                f"until konsolidat#256 (the warehouse would hold "
+                                f"{_written(Decimal(repr(stored)).normalize())}).")
     return problems
 
 
@@ -168,12 +205,9 @@ def balance_problems(currency, minor_unit, rows):
     problems = place_problems(currency, minor_unit, rows)
     if problems:
         return problems
-    with localcontext() as ctx:
-        # Exact sums: addition at the largest precision allocates only the
-        # digits the amounts themselves have (konsol#180 review).
-        ctx.prec, ctx.Emax, ctx.Emin = MAX_PREC, MAX_EMAX, MIN_EMIN
-        debit = sum((read_amount(r.get("debit")) for r in rows), Decimal(0))
-        credit = sum((read_amount(r.get("credit")) for r in rows), Decimal(0))
+    # Exact sums: addition at the largest precision allocates only the
+    # digits the amounts themselves have (konsol#180 review).
+    debit, credit = exact_total(rows, "debit"), exact_total(rows, "credit")
     # Written out in the minor unit: every digit left of the point, the minor
     # unit's places, and one for the sign's side of a difference.
     needed = max(debit.adjusted(), credit.adjusted(), 0) + 1 + minor_unit + 1
@@ -214,4 +248,7 @@ def currency_and_balance_problems(entity, functional_currency, minor_unit, rows)
     problems = currency_problems(entity, functional_currency, declared)
     if problems:
         return problems
-    return balance_problems(declared_currency(declared), minor_unit, rows)
+    # No currency problem: the rows declare exactly the Functional Currency,
+    # or there are no rows. Named from the entity either way, so an empty
+    # file's sentence names a currency (#180 review F5).
+    return balance_problems(code(functional_currency), minor_unit, rows)

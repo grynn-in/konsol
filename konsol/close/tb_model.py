@@ -32,6 +32,8 @@ def _load_sibling(name, filename):
 _basis = _load_sibling("konsol_close_tb_basis_model", "tb_basis_model.py")
 #: konsol#255: which dim_* columns a row carries. Pure (imports only ``re``).
 _dims = _load_sibling("konsol_close_tb_dimension_model", "tb_dimension_model.py")
+#: konsol#180: exact amounts and their exact totals.
+_balance = _load_sibling("konsol_close_tb_balance_model", "tb_balance_model.py")
 
 #: konsol#182: a site with no Published Main Account has no chart to post to.
 #: The same text as trial_balance_submission.NO_CHART (a test asserts it).
@@ -116,7 +118,9 @@ def _negative_problems(row):
             out.append(_problem(
                 NEGATIVE_AMOUNT,
                 f"Negative {column} — post the value to the opposite column instead of using a sign",
-                f"Enter {abs(row[column]):,.2f} as a {opposite} instead",
+                # The amount as written, not reformatted to 2 places: -0.333 KWD
+                # is 0.333 as a credit (#180 review F5).
+                f"Enter {abs(_balance.read_amount(row[column])):,} as a {opposite} instead",
             ))
     return out
 
@@ -240,8 +244,8 @@ def check_rows(rows, chart, entity, known_entities, form_basis):
         out_rows.append(out)
 
     # Shown, not judged: the balance is konsol.tb_balance_model's (konsol#180).
-    total_debit = sum(r["debit"] for r in rows)
-    total_credit = sum(r["credit"] for r in rows)
+    total_debit = _balance.exact_total(rows, "debit")
+    total_credit = _balance.exact_total(rows, "credit")
 
     ok = not file_problems and not any(row["problems"] for row in out_rows)
     return {
@@ -252,7 +256,7 @@ def check_rows(rows, chart, entity, known_entities, form_basis):
         "totals": {
             "debit": total_debit,
             "credit": total_credit,
-            "difference": total_debit - total_credit,
+            "difference": _balance.exact_difference(total_debit, total_credit),
         },
     }
 
