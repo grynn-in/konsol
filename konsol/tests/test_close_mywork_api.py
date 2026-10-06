@@ -116,8 +116,8 @@ class _Site:
         self.ic_fixes = {}
         self.ic_calls = []
         self.ic_tolerance_gap = None
-        #: #305 5.4: the stubbed `ic_balance_api.open_rule_gap` returns this.
-        self.ic_rule_gap = None
+        #: #305 5.4: the stubbed `ic_balance_api.open_rule_gaps` returns this list.
+        self.ic_rule_gaps = []
         self.ic_rule_gap_calls = 0
         self.statement_gap = None
         #: W5-2 (8.4): the stubbed signoff_gate.commentary_gap() answer.
@@ -308,11 +308,11 @@ def _call(site):
     # #305 5.4: mywork_api imports konsol.close.ic_balance_api lazily.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
 
-    def open_rule_gap():
+    def open_rule_gaps():
         site.ic_rule_gap_calls += 1
-        return site.ic_rule_gap
+        return list(site.ic_rule_gaps)
 
-    ic_balance_api.open_rule_gap = open_rule_gap
+    ic_balance_api.open_rule_gaps = open_rule_gaps
 
     # A12: a stub `konsol.close.approvals_api` with a recording `queue_for`, so
     # My work reads the same queue A10 builds without running it for real.
@@ -936,21 +936,21 @@ def test_ic_tolerance_gap_reaches_the_group_personas():
         assert gap["kind"] == "blocking", gap
 
 
-def _real_ic_rule_gap():
-    """#305 5.4: the real producer's gap (ic_balance_model.rule_gap)."""
+def _real_ic_rule_gaps(rules=()):
+    """#305 5.4: the real producer's gaps (ic_balance_model.rule_gaps)."""
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "close", "ic_balance_model.py")
     spec = importlib.util.spec_from_file_location("ic_balance_model_for_mywork_api", path)
     model = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(model)
-    return model.rule_gap([{"name": "B", "selling_entity": "UK01", "buying_entity": "DE01",
-                            "docstatus": 0}], [])
+    return model.rule_gaps([{"name": "B", "selling_entity": "UK01", "buying_entity": "DE01",
+                             "docstatus": 0, "ending_inventory_from_ic": 40.0}], list(rules))
 
 
 def test_ic_rule_gap_reaches_the_group_personas():
     for roles in _GROUP_ROLES:
         site = _Site(roles=roles)
-        site.ic_rule_gap = _real_ic_rule_gap()
+        site.ic_rule_gaps = _real_ic_rule_gaps()
         result = _call(site)
         gap = _gap(result, "ic_rule")
         assert gap is not None, (roles, _ids(result))
@@ -960,7 +960,7 @@ def test_ic_rule_gap_reaches_the_group_personas():
 
 def test_entity_accountant_never_gets_the_ic_rule_gap_and_it_is_not_read():
     site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
-    site.ic_rule_gap = _real_ic_rule_gap()
+    site.ic_rule_gaps = _real_ic_rule_gaps()
     result = _call(site)
     assert _gap(result, "ic_rule") is None, _ids(result)
     assert site.ic_rule_gap_calls == 0
@@ -1302,3 +1302,19 @@ def test_entity_accountant_never_sees_the_commentary_gap():
     site.commentary_gap = gap
     result = _call(site)
     assert _gap(result, "commentary_threshold") is None, _ids(result)
+
+
+
+def test_ic_rule_ambiguous_gap_reaches_the_group_personas():
+    """F51b / review S2: two rules on one pair is its own blocking item."""
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_rule_gaps = _real_ic_rule_gaps(rules)
+        result = _call(site)
+        gap = _gap(result, "ic_rule_ambiguous")
+        assert gap is not None, (roles, _ids(result))
+        assert "UK01 → DE01 (R1, R2)" in gap["detail"], gap
+        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
+        assert _gap(result, "ic_rule") is None

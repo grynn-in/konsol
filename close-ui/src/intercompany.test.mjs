@@ -683,3 +683,36 @@ test("Failure path — icBalanceBody refuses blank/same entities and bad amounts
 	assert.match(icBalanceBody(period, { ...ok, ending_inventory_from_ic: "-3" }).error, /negative/);
 	assert.match(icBalanceBody(period, { ...ok, ending_inventory_from_ic: "" }).error, /ending inventory/);
 });
+
+// F51b / review S2: two rules on one pair are both applied by dbt, so the
+// pair is eliminated twice. The server sends that as `ambiguous_gap`.
+const AMBIGUOUS_MESSAGE =
+	"1 IC Balance pair matches more than one unrealised-profit IC Elimination Rule: " +
+	"UK01 → DE01 (R-ALL, R-UK). dbt applies every matching rule, so its unrealised profit " +
+	"is eliminated more than once: keep one rule per pair in Desk (IC Elimination Rule) " +
+	"before signing off.";
+
+test("icBalancesView: the ambiguous-rule gap names each pair with its rules", () => {
+	const view = icBalancesView(
+		balancesPayload({
+			ambiguous_gap: {
+				code: "ic_unrealized_profit_rule_ambiguous",
+				pairs: [{ selling_entity: "UK01", buying_entity: "DE01", rule_ids: ["R-ALL", "R-UK"] }],
+				entities: ["DE01", "UK01"],
+				message: AMBIGUOUS_MESSAGE,
+			},
+		}),
+	);
+	assert.deepEqual(view.ambiguousGap.pairs, ["UK01 → DE01 (R-ALL, R-UK)"]);
+	assert.deepEqual(view.ambiguousGap.lines, [AMBIGUOUS_MESSAGE]);
+});
+
+test("icBalancesView: no ambiguous gap is null; a row two rules match is flagged", () => {
+	assert.equal(icBalancesView(balancesPayload()).ambiguousGap, null);
+	assert.equal(icBalancesView(balancesPayload({ ambiguous_gap: null })).ambiguousGap, null);
+	const payload = balancesPayload();
+	payload.balances[1] = { ...payload.balances[1], ambiguous_rule: true };
+	const [fr, uk] = icBalancesView(payload).rows;
+	assert.equal(uk.ambiguousRule, true);
+	assert.equal(fr.ambiguousRule, false);
+});

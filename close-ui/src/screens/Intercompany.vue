@@ -34,6 +34,8 @@
  *   configured in Desk). A balance whose pair no unrealised-profit rule
  *   matches shows the server's gap naming the pairs, with the Desk link the
  *   server sends; it blocks sign-off (the gate, not this screen, decides).
+ *   F51b: a pair two or more rules match (dbt eliminates it once per rule)
+ *   shows the server's `ambiguous_gap` the same way, and its row is marked.
  *   An Analyst drafts or edits a draft through the ONE function
  *   `saveBalance()`, its body built by `icBalanceBody`; the form renders
  *   only when the server says `can_draft`. There is no approve here: the
@@ -479,6 +481,22 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 						>Set up the rule in Desk</a>
 					</div>
 
+					<div
+						v-if="balancesView.ambiguousGap"
+						role="alert"
+						class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-gray-8"
+					>
+						<p v-for="(line, i) in balancesView.ambiguousGap.lines" :key="i">{{ line }}</p>
+						<ul class="mt-1 list-disc pl-5">
+							<li v-for="pair in balancesView.ambiguousGap.pairs" :key="pair">{{ pair }}</li>
+						</ul>
+						<a
+							v-if="balancesView.rulesDesk"
+							:href="balancesView.rulesDesk"
+							class="mt-2 inline-block text-ink-gray-9 underline"
+						>Keep one rule per pair in Desk</a>
+					</div>
+
 					<p v-if="balancesView.hiddenNote" class="mb-3 text-xs text-ink-gray-5">{{ balancesView.hiddenNote }}</p>
 
 					<p
@@ -504,7 +522,7 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 									<td class="px-3 py-2 font-medium text-ink-gray-9">{{ row.pair }}</td>
 									<td class="px-3 py-2 font-mono text-ink-gray-8">{{ row.salesText }}</td>
 									<td class="px-3 py-2 font-mono text-ink-gray-8">{{ row.inventoryText }}</td>
-									<td class="px-3 py-2" :class="row.missingRule ? 'text-ink-red-4' : 'text-ink-gray-7'">{{ row.marginText }}</td>
+									<td class="px-3 py-2" :class="row.missingRule || row.ambiguousRule ? 'text-ink-red-4' : 'text-ink-gray-7'">{{ row.marginText }}</td>
 									<td class="px-3 py-2">
 										<span
 											class="inline-block rounded px-2 py-0.5 text-xs font-medium"

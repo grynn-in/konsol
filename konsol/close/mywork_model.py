@@ -21,10 +21,12 @@ Imports nothing from frappe or konsol; the caller gathers ``facts``:
 - ``ic_tolerance_gap``: None, or ``ic_api.tolerance_gap()``'s
   ``{"code", "groups", "message"}`` (konsol#305 W3-6): the group nodes whose
   intercompany tolerance is undeclared (0 is indistinguishable from unset).
-- ``ic_rule_gap``: None, or ``ic_balance_api.open_rule_gap()``'s
+- ``ic_rule_gaps``: ``ic_balance_api.open_rule_gaps()``, a list of
   ``{"code", "pairs", "entities", "message"}`` (konsol#305 5.4, W5-4): the
   IC Balance pairs of the open periods that no unrealised-profit IC
-  Elimination Rule matches.
+  Elimination Rule matches (``ic_rule``), and (F51b) the pairs that more
+  than one rule matches, which dbt eliminates once per rule
+  (``ic_rule_ambiguous``). An unknown code raises.
 
 Rules:
 
@@ -41,10 +43,11 @@ Rules:
 """
 
 GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "commentary_threshold",
-        "chart", "ic_accounts", "ic_tolerance", "ic_rule", "frequency", "ownership", "accountants")
+        "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
+        "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
              "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap",
-             "ic_rule_gap")
+             "ic_rule_gaps")
 
 #: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
 #: konsol#305-W4-1: the signoff_gate.statement_gap() result is appended to
@@ -56,6 +59,15 @@ _POLICY_GAPS = {
     "statement_accounts_undeclared": ("statement_accounts", "Statement setup incomplete"),
     #: #305-W5-2 (story 8.4): appended by the API layer after the statement gap.
     "commentary_threshold_undeclared": ("commentary_threshold", "Commentary threshold not declared"),
+}
+
+
+#: ``ic_balance_model`` rule-gap code -> (gap id, title stem), in item order.
+#: Literals, not imported: this module is pure; the tests feed the real gaps.
+_IC_RULE_GAPS = {
+    "ic_unrealized_profit_rule_undeclared": ("ic_rule", "Unrealised-profit rule missing for"),
+    "ic_unrealized_profit_rule_ambiguous": ("ic_rule_ambiguous",
+                                            "More than one unrealised-profit rule for"),
 }
 
 
@@ -117,12 +129,19 @@ def setup_gap_items(facts):
         title = "Intercompany tolerance not declared for %s" % _groups(len(groups))
         items.append(_item("ic_tolerance", title, tol_gap["message"], "EPM Admin",
                            "/app/consolidation-group"))
-    if facts["ic_rule_gap"]:
-        rule_gap = facts["ic_rule_gap"]
+    by_code = {}
+    for rule_gap in facts["ic_rule_gaps"] or ():
+        if rule_gap["code"] not in _IC_RULE_GAPS:
+            raise ValueError("Unknown IC rule gap code %r: My work has no item for it."
+                             % rule_gap["code"])
+        by_code[rule_gap["code"]] = rule_gap
+    for code, (gap_id, title_text) in _IC_RULE_GAPS.items():
+        rule_gap = by_code.get(code)
+        if not rule_gap:
+            continue
         n = len(rule_gap["pairs"])
-        title = "Unrealised-profit rule missing for %d IC Balance pair%s" % (
-            n, "" if n == 1 else "s")
-        items.append(_item("ic_rule", title, rule_gap["message"], "EPM Admin",
+        title = "%s %d IC Balance pair%s" % (title_text, n, "" if n == 1 else "s")
+        items.append(_item(gap_id, title, rule_gap["message"], "EPM Admin",
                            "/app/ic-elimination-rule", entities=rule_gap["entities"]))
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:

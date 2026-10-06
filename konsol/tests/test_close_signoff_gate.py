@@ -149,9 +149,9 @@ class _Site:
                            "message": "Intercompany not configured — nothing was checked.",
                            "counts": None, "sent_back_open": None}
         self.ic_calls = []
-        #: #305 5.4 (W5-4): the stubbed `konsol.close.ic_balance_api.rule_gap`
-        #: returns this; `ic_rule_gap_calls` records each (fy, fp) it is asked.
-        self.ic_rule_gap = None
+        #: #305 5.4 (W5-4): the stubbed `konsol.close.ic_balance_api.rule_gaps`
+        #: returns this list; `ic_rule_gap_calls` records each (fy, fp) asked.
+        self.ic_rule_gaps = []
         self.ic_rule_gap_calls = []
 
 
@@ -299,11 +299,11 @@ def _load(site):
     # gate), so the real module never runs against this fake frappe.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
 
-    def rule_gap(fiscal_year, fiscal_period):
+    def rule_gaps(fiscal_year, fiscal_period):
         site.ic_rule_gap_calls.append((fiscal_year, fiscal_period))
-        return site.ic_rule_gap
+        return list(site.ic_rule_gaps)
 
-    ic_balance_api.rule_gap = rule_gap
+    ic_balance_api.rule_gaps = rule_gaps
     close.ic_balance_api = ic_balance_api
 
     # W5-2 (8.4): a stub `konsol.close.statement_api`, so signoff_gate's lazy
@@ -1694,12 +1694,12 @@ def test_a_heading_side_problem_joins_an_existing_statement_accounts_problem():
 
 # --- #305 5.4 (W5-4): an IC Balance with no unrealised-profit rule blocks -----
 
-def _real_rule_gap(balances, rules=()):
-    """The real producer (ic_balance_model.rule_gap), loaded by path."""
+def _real_rule_gaps(balances, rules=()):
+    """The real producer (ic_balance_model.rule_gaps), loaded by path."""
     spec = importlib.util.spec_from_file_location("ic_balance_model_for_gate", IC_BALANCE_MODEL_PY)
     model = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(model)
-    return model.rule_gap(list(balances), list(rules))
+    return model.rule_gaps(list(balances), list(rules))
 
 
 _ZZ_BALANCE = {"name": "ICB-ZZA-ZZB-2025-P9", "selling_entity": "ZZA", "buying_entity": "ZZB",
@@ -1709,7 +1709,7 @@ _ZZ_BALANCE = {"name": "ICB-ZZA-ZZB-2025-P9", "selling_entity": "ZZA", "buying_e
 
 def test_a_draft_ic_balance_with_no_rule_blocks_sign_off_naming_the_pair():
     site = _Site()
-    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
     problems = _call(site, "sign_off_problems", 2025, 9)
     assert [g["code"] for g in problems["config_gaps"]] == ["ic_unrealized_profit_rule_undeclared"]
     assert site.ic_rule_gap_calls == [(2025, 9)]
@@ -1720,7 +1720,7 @@ def test_a_draft_ic_balance_with_no_rule_blocks_sign_off_naming_the_pair():
 def test_the_rule_gap_follows_the_tolerance_gap():
     site = _Site()
     site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
-    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
     codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
     assert codes == ["ic_tolerance_undeclared", "ic_unrealized_profit_rule_undeclared"], codes
 
@@ -1729,8 +1729,8 @@ def test_a_covered_pair_leaves_the_gate_clear():
     site = _Site()
     rule = {"rule_id": "R", "rule_type": "unrealized_profit", "margin_pct": 10,
             "debit_entity_pattern": "*", "credit_entity_pattern": "*"}
-    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE], [rule])
-    assert site.ic_rule_gap is None
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE], [rule])
+    assert site.ic_rule_gaps == []
     assert _call(site, "sign_off_problems", 2025, 9) == {
         "config_gaps": [], "order": None, "completeness": None}
     assert site.ic_rule_gap_calls == [(2025, 9)]
@@ -1795,7 +1795,34 @@ def test_statement_commentary_tolerance_and_rule_gaps_keep_their_order():
     site.settings["commentary_threshold_amount"] = 0
     site.settings["statement_cta_account"] = ""
     site.ic_tolerance_gap = {"code": "ic_tolerance_undeclared", "groups": ["ZZG"], "message": "<m>"}
-    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE])
     codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
     assert codes == ["statement_accounts_undeclared", "commentary_threshold_undeclared",
                      "ic_tolerance_undeclared", "ic_unrealized_profit_rule_undeclared"], codes
+
+
+
+# --- F51b / review S2: two rules on one pair block (dbt applies both) ----------
+
+def test_two_rules_on_one_pair_block_sign_off_naming_pair_and_rules():
+    site = _Site()
+    rules = [{"rule_id": "R-ALL", "rule_type": "unrealized_profit", "margin_pct": 20,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"},
+             {"rule_id": "R-ZZ", "rule_type": "unrealized_profit", "margin_pct": 25,
+              "debit_entity_pattern": "ZZA", "credit_entity_pattern": "ZZB"}]
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE], rules)
+    problems = _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in problems["config_gaps"]] == ["ic_unrealized_profit_rule_ambiguous"]
+    message = _blocked(site)
+    assert "ZZA → ZZB (R-ALL, R-ZZ)" in message, message
+
+
+def test_undeclared_and_ambiguous_rule_gaps_both_block_in_order():
+    site = _Site()
+    other = dict(_ZZ_BALANCE, name="ICB-ZZC-ZZB-2025-P9", selling_entity="ZZC")
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "ZZA", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    site.ic_rule_gaps = _real_rule_gaps([_ZZ_BALANCE, other], rules)
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["ic_unrealized_profit_rule_undeclared",
+                     "ic_unrealized_profit_rule_ambiguous"], codes

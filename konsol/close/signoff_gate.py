@@ -82,12 +82,15 @@ Reads the site and passes it through the pure models:
   ``statement_api.signoff_commentary(fy, fp)``: the headings above the
   threshold with no commentary, for the sign-off signature (Amber, the
   #265 path), read only by get_signoff and sign_off_close.
-- ``sign_off_problems`` then appends ``ic_balance_api.rule_gap(fy, fp)``
+- ``sign_off_problems`` then extends with ``ic_balance_api.rule_gaps(fy, fp)``
   (#305 5.4, W5-4): a draft or approved IC Balance of the period whose
   entity pair no unrealised-profit IC Elimination Rule (margin above 0)
   matches is an ``ic_unrealized_profit_rule_undeclared`` gap naming the
-  pairs and their ``entities``. One IC Balance read, plus one rule read
-  when a balance exists. Imported lazily.
+  pairs and their ``entities``; a pair that two or more rules match is an
+  ``ic_unrealized_profit_rule_ambiguous`` gap naming the pairs and rules
+  (F51b: dbt applies every matching rule, so it eliminates twice). A
+  balance with ending inventory 0 or below needs no rule. One IC Balance
+  read, plus one rule read when a balance exists. Imported lazily.
 - ``intercompany(fy, fp)`` -> ``ic_api.signoff_summary(fy, fp)``: the IC line
   for the sign-off signature (#305-W3-8). It never raises for a warehouse
   failure; a read failure comes back as its own ``"error"`` / ``"not_built"``
@@ -337,12 +340,11 @@ def sign_off_problems(fiscal_year, fiscal_period):
     if tolerance:
         gaps.append(tolerance)
     # #305 5.4 (W5-4): a draft or approved IC Balance whose pair no
-    # unrealised-profit rule matches eliminates nothing; it blocks. Lazy:
-    # test loaders stub konsol.close.ic_balance_api (see its docstring).
+    # unrealised-profit rule matches eliminates nothing; it blocks. F51b: a
+    # pair two rules match is eliminated twice; it blocks too. Lazy: test
+    # loaders stub konsol.close.ic_balance_api (see its docstring).
     from konsol.close import ic_balance_api
-    rule = ic_balance_api.rule_gap(*key)
-    if rule:
-        gaps.append(rule)
+    gaps.extend(ic_balance_api.rule_gaps(*key))
     tbs = _submitted("Trial Balance Submission", key)
     # #289 (#305-W2-2): a submitted TB from an entity with no covering
     # ownership at the period start is consolidated nowhere; it blocks.

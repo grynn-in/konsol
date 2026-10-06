@@ -22,14 +22,24 @@ every row the caller reads is live in the warehouse.
 
 - ``matching_rules(balance, rules)``: the rules that eliminate the pair.
 - ``rule_gap(balances, rules)``: None, or ONE gap naming every uncovered
-  pair once (``{"code", "pairs", "entities", "message"}``). ``entities`` lets
+  pair once (a balance whose ending inventory is 0 or below is skipped: dbt
+  filters ``ending_inventory_from_ic > 0``) (``{"code", "pairs", "entities", "message"}``). ``entities`` lets
   the sign-off and readiness scoping cut other entities' codes.
+- ``ambiguous_gap(balances, rules)``: None, or ONE gap naming every pair
+  that more than one rule matches, with its ``rule_ids`` (F51b, review
+  S2): dbt cross-joins every matching rule, so such a pair is eliminated
+  once per rule. Same shape and scoping as ``rule_gap``; it blocks too.
+- ``rule_gaps(balances, rules)``: ``[rule_gap, ambiguous_gap]`` without the
+  Nones, undeclared first: what the sign-off gate and My work append.
 - ``balance_rows(balances, rules)``: the screen's rows.
 - ``visible(balances, allowed)``: entity scope (either side allowed).
 - ``draft_problems(...)``: a draft's own refusals, before any write.
 """
 
+import math
+
 RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
+RULE_AMBIGUOUS = "ic_unrealized_profit_rule_ambiguous"
 RULE_TYPE = "unrealized_profit"
 WILDCARD = "*"
 #: Where the rule is configured (the brief: configuration stays in Desk).
@@ -41,6 +51,12 @@ _GAP_MESSAGE = (
     "No unrealised-profit IC Elimination Rule (rule type unrealized_profit, margin above 0) "
     "matches %d IC Balance pair%s: %s. Its unrealised profit is not eliminated: declare the "
     "rule in Desk (IC Elimination Rule) before signing off."
+)
+
+_AMBIGUOUS_MESSAGE = (
+    "%d IC Balance pair%s match%s more than one unrealised-profit IC Elimination Rule: %s. "
+    "dbt applies every matching rule, so its unrealised profit is eliminated more than once: "
+    "keep one rule per pair in Desk (IC Elimination Rule) before signing off."
 )
 
 
@@ -88,11 +104,22 @@ def _pair(balance):
     return balance.get("selling_entity"), balance.get("buying_entity")
 
 
+def _nothing_to_eliminate(balance):
+    """dbt eliminates only where ``ending_inventory_from_ic > 0`` (F51b,
+    review S3). A value that is not a number is NOT nothing: it stays in the
+    gap, so an unreadable amount blocks instead of being guessed."""
+    number = _number(balance.get("ending_inventory_from_ic"))
+    return number is not None and math.isfinite(number) and number <= 0
+
+
 def rule_gap(balances, rules):
-    """None, or the one setup gap naming every uncovered pair once."""
+    """None, or the one setup gap naming every uncovered pair once. A
+    balance with nothing to eliminate (inventory 0 or below) needs no rule."""
     missing = set()
     for balance in balances:
         _status(balance)
+        if _nothing_to_eliminate(balance):
+            continue
         if not matching_rules(balance, rules):
             missing.add(_pair(balance))
     if not missing:
@@ -105,6 +132,38 @@ def rule_gap(balances, rules):
         "entities": sorted({e for p in pairs for e in p}),
         "message": _GAP_MESSAGE % (len(pairs), "" if len(pairs) == 1 else "s", text),
     }
+
+
+def ambiguous_gap(balances, rules):
+    """None, or the one setup gap naming every pair more than one rule
+    matches, each with its ``rule_ids`` sorted (the read order is the
+    database's, so it is not relied on)."""
+    ambiguous = {}
+    for balance in balances:
+        _status(balance)
+        if _nothing_to_eliminate(balance):
+            continue
+        matched = matching_rules(balance, rules)
+        if len(matched) > 1:
+            ambiguous[_pair(balance)] = sorted(r.get("rule_id") for r in matched)
+    if not ambiguous:
+        return None
+    pairs = sorted(ambiguous)
+    text = "; ".join("%s → %s (%s)" % (s, b, ", ".join(ambiguous[(s, b)])) for s, b in pairs)
+    one = len(pairs) == 1
+    return {
+        "code": RULE_AMBIGUOUS,
+        "pairs": [{"selling_entity": s, "buying_entity": b, "rule_ids": ambiguous[(s, b)]}
+                  for s, b in pairs],
+        "entities": sorted({e for p in pairs for e in p}),
+        "message": _AMBIGUOUS_MESSAGE % (len(pairs), "" if one else "s", "es" if one else "",
+                                         text),
+    }
+
+
+def rule_gaps(balances, rules):
+    """Both rule gaps that apply, undeclared first; ``[]`` when none does."""
+    return [g for g in (rule_gap(balances, rules), ambiguous_gap(balances, rules)) if g]
 
 
 def balance_rows(balances, rules):
@@ -124,7 +183,8 @@ def balance_rows(balances, rules):
             "status": _status(balance),
             "rules": [{"rule_id": r.get("rule_id"), "rule_name": r.get("rule_name"),
                        "margin_pct": _number(r.get("margin_pct"))} for r in matched],
-            "missing_rule": not matched,
+            "missing_rule": not matched and not _nothing_to_eliminate(balance),
+            "ambiguous_rule": len(matched) > 1 and not _nothing_to_eliminate(balance),
         })
     rows.sort(key=lambda r: (r["selling_entity"] or "", r["buying_entity"] or "", r["name"] or ""))
     return rows
@@ -142,7 +202,8 @@ def visible(balances, allowed):
 
 def _amount_problem(value, label):
     number = _number(value)
-    if value in (None, "") or number is None:
+    # NaN and infinity are not amounts: "nan" < 0 is False (F51b, review S7).
+    if value in (None, "") or number is None or not math.isfinite(number):
         return "The %s must be a number." % label
     if number < 0:
         return "The %s cannot be negative." % label

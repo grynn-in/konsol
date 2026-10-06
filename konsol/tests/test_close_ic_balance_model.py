@@ -210,3 +210,110 @@ def test_draft_problems_amounts():
 def test_draft_problems_inventory_above_sales_is_allowed():
     # Ending inventory can carry earlier periods' purchases: no cross-check.
     assert M.draft_problems("UK01", "DE01", "10", "500", {"UK01", "DE01"}) == []
+
+
+def test_draft_problems_refuse_non_finite_amounts():
+    # F51b / review S7: float("nan") < 0 is False, so "nan" passed the old check.
+    for text in ("nan", "NaN", "inf", "-inf", "Infinity", float("nan"), float("inf")):
+        probs = M.draft_problems("UK01", "DE01", text, text, {"UK01", "DE01"})
+        assert any("IC sales amount" in p and "must be a number" in p for p in probs), text
+        assert any("ending inventory" in p and "must be a number" in p for p in probs), text
+
+
+# --- F51b / review S3: nothing to eliminate is no gap ----------------------------
+# dbt eliminates only where ``icb.ending_inventory_from_ic > 0``
+# (gold_ic_eliminations.sql, unrealized_profit_eliminations).
+
+def test_zero_or_negative_inventory_raises_no_gap():
+    for inventory in ("0", 0, 0.0, "-5"):
+        assert M.rule_gap([_bal(inventory=inventory)], []) is None, inventory
+
+
+def test_zero_inventory_pair_is_not_named_beside_an_uncovered_one():
+    gap = M.rule_gap([_bal("A", "UK01", "DE01", inventory="0"),
+                      _bal("B", "FR01", "DE01", inventory="1")], [])
+    assert gap["pairs"] == [{"selling_entity": "FR01", "buying_entity": "DE01"}]
+    assert "UK01" not in gap["message"]
+
+
+def test_unreadable_inventory_still_blocks():
+    # Not a number is not "nothing to eliminate": nothing is guessed.
+    for inventory in (None, "", "abc"):
+        assert M.rule_gap([_bal(inventory=inventory)], [])["code"] == M.RULE_UNDECLARED
+
+
+def test_zero_inventory_row_is_not_missing_a_rule():
+    [row] = M.balance_rows([_bal(inventory="0")], [])
+    assert row["rules"] == [] and row["missing_rule"] is False
+
+
+# --- F51b / review S2: two rules on one pair are eliminated twice -----------------
+# dbt cross-joins every matching rule (gold_ic_eliminations.sql
+# unrealized_profit_eliminations): a '*'/'*' 20% rule plus a 25% rule for
+# UK01 -> DE01 eliminate 45% of the inventory. That is a blocking gap.
+
+def test_one_rule_per_pair_is_not_ambiguous():
+    assert M.ambiguous_gap([_bal()], [_rule()]) is None
+    assert M.ambiguous_gap([_bal()], []) is None  # the undeclared gap's job
+    assert M.ambiguous_gap([], [_rule("R1"), _rule("R2")]) is None
+
+
+def test_two_matching_rules_are_an_ambiguous_gap_naming_pair_and_rules():
+    rules = [_rule("R-ALL", margin="20"), _rule("R-UK", debit="UK01", credit="DE01", margin="25"),
+             _rule("R-FR", debit="FR01", credit="DE01")]
+    balances = [_bal("A", "UK01", "DE01"), _bal("B", "UK01", "DE01", fp=8),
+                _bal("C", "ES01", "DE01")]
+    gap = M.ambiguous_gap(balances, rules)
+    assert gap["code"] == M.RULE_AMBIGUOUS == "ic_unrealized_profit_rule_ambiguous"
+    assert gap["pairs"] == [{"selling_entity": "UK01", "buying_entity": "DE01",
+                             "rule_ids": ["R-ALL", "R-UK"]}]
+    assert gap["entities"] == ["DE01", "UK01"]
+    msg = gap["message"]
+    assert "UK01 → DE01 (R-ALL, R-UK)" in msg
+    assert "ES01" not in msg and "R-FR" not in msg
+    assert "1 IC Balance pair" in msg and "more than once" in msg and "Desk" in msg
+
+
+def test_ambiguous_gap_plural_and_ordered():
+    rules = [_rule("R1"), _rule("R2")]
+    gap = M.ambiguous_gap([_bal("A", "UK01", "DE01"), _bal("B", "FR01", "DE01")], rules)
+    assert [(p["selling_entity"], p["buying_entity"]) for p in gap["pairs"]] == [
+        ("FR01", "DE01"), ("UK01", "DE01")]
+    assert "2 IC Balance pairs" in gap["message"]
+
+
+def test_ambiguous_ignores_rules_dbt_does_not_apply():
+    rules = [_rule("R1"), _rule("R0", margin="0"), _rule("RB", rule_type="balance")]
+    assert M.ambiguous_gap([_bal()], rules) is None
+
+
+def test_ambiguous_skips_a_balance_with_nothing_to_eliminate():
+    assert M.ambiguous_gap([_bal(inventory="0")], [_rule("R1"), _rule("R2")]) is None
+
+
+def test_ambiguous_cancelled_balance_raises():
+    _raises(ValueError, M.ambiguous_gap, [_bal(docstatus=2)], [_rule("R1"), _rule("R2")])
+
+
+def test_rule_gaps_is_both_gaps_undeclared_first():
+    rules = [_rule("R1", debit="UK01"), _rule("R2", debit="UK01")]
+    gaps = M.rule_gaps([_bal("A", "UK01", "DE01"), _bal("B", "FR01", "DE01")], rules)
+    assert [g["code"] for g in gaps] == [M.RULE_UNDECLARED, M.RULE_AMBIGUOUS]
+    assert M.rule_gaps([_bal()], [_rule()]) == []
+    assert [g["code"] for g in M.rule_gaps([_bal()], [])] == [M.RULE_UNDECLARED]
+
+
+def test_rows_flag_an_ambiguous_rule():
+    [row] = M.balance_rows([_bal()], [_rule("R1"), _rule("R2")])
+    assert row["ambiguous_rule"] is True and row["missing_rule"] is False
+    [row] = M.balance_rows([_bal()], [_rule("R1")])
+    assert row["ambiguous_rule"] is False
+    [row] = M.balance_rows([_bal(inventory="0")], [_rule("R1"), _rule("R2")])
+    assert row["ambiguous_rule"] is False
+
+
+def test_ambiguous_rule_ids_are_sorted_whatever_the_read_order():
+    # Live (F51b check): get_all returned the pair rule before the wildcard.
+    gap = M.ambiguous_gap([_bal()], [_rule("R-UK", debit="UK01"), _rule("R-ALL")])
+    assert gap["pairs"][0]["rule_ids"] == ["R-ALL", "R-UK"]
+    assert "UK01 → DE01 (R-ALL, R-UK)" in gap["message"]

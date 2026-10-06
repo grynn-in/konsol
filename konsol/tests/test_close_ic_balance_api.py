@@ -8,8 +8,9 @@ decision #305-W5-4, Deepak 6 Oct 2026).
 - ``save_ic_balance(...)`` (POST): an Analyst (or System Manager) drafts or
   edits a draft. Never an Admin (R2: the Admin approves in Approvals), never
   a submit: a forged status or docstatus never reaches it.
-- ``rule_gap(fy, fp)`` / ``open_rule_gap()``: the setup gap for the sign-off
-  gate and My work, produced by the real ``ic_balance_model``.
+- ``rule_gaps(fy, fp)`` / ``open_rule_gaps()``: the setup gaps (undeclared,
+  then ambiguous) for the sign-off gate and My work, produced by the real
+  ``ic_balance_model``.
 
 Loaded against a stub frappe (pattern: test_close_ic_api.py ``_Site`` /
 ``_frappe`` / ``_invoke``, copied, not imported). The real
@@ -423,30 +424,99 @@ def test_save_edit_scope_checks_the_stored_pair():
 
 # --- the gap readers (the real producer's output) ----------------------------------
 
-def test_rule_gap_reads_the_period_draft_and_approved_balances():
+def test_rule_gaps_read_the_period_draft_and_approved_balances():
     site = _Site()
-    gap = _invoke(site, lambda api: api.rule_gap(2025, 7))
+    [gap] = _invoke(site, lambda api: api.rule_gaps(2025, 7))
     assert gap["code"] == "ic_unrealized_profit_rule_undeclared"
     assert gap["pairs"] == [{"selling_entity": "FR01", "buying_entity": "DE01"}]
     assert gap["entities"] == ["DE01", "FR01"]
 
 
-def test_rule_gap_none_and_no_rule_read_without_balances():
+def test_rule_gaps_empty_and_no_rule_read_without_balances():
     site = _Site()
-    assert _invoke(site, lambda api: api.rule_gap(2025, 9)) is None
+    assert _invoke(site, lambda api: api.rule_gaps(2025, 9)) == []
     assert [r for r in site.reads if r[1] == "IC Elimination Rule"] == []
 
 
-def test_open_rule_gap_covers_open_periods_only():
+def test_open_rule_gaps_cover_open_periods_only():
     site = _Site()
     # P6 (Closed) UK01 → FR01 is covered by R-UK anyway; make it uncovered
     site.rules = []
-    gap = _invoke(site, lambda api: api.open_rule_gap())
+    [gap] = _invoke(site, lambda api: api.open_rule_gaps())
     pairs = [(p["selling_entity"], p["buying_entity"]) for p in gap["pairs"]]
     assert pairs == [("FR01", "DE01"), ("UK01", "DE01")]  # not UK01 → FR01 (P6 Closed)
 
 
-def test_open_rule_gap_none_when_covered():
+def test_open_rule_gaps_empty_when_covered():
     site = _Site()
     site.rules.append(_rule("R-FR", debit="FR01", credit="DE01"))
-    assert _invoke(site, lambda api: api.open_rule_gap()) is None
+    assert _invoke(site, lambda api: api.open_rule_gaps()) == []
+
+
+def test_save_refused_for_a_non_finite_amount():
+    # F51b / review S7: the refusal is a sentence before any write, never a SQL error.
+    for text in ("nan", "inf", "-inf"):
+        e = _save_refused(_Site(), ending_inventory_from_ic=text)
+        assert "must be a number" in str(e), text
+
+
+def test_save_edit_forged_name_of_an_out_of_scope_balance_learns_nothing():
+    """F51b / review S6: a scoped Analyst who posts the name of an
+    out-of-scope balance is refused on scope before any state refusal, so
+    the reply says nothing about its state (approved, cancelled, draft) or
+    its stored pair beyond the name the caller sent."""
+    for name in ("ICB-FR01-DE01-2025-P7",   # approved
+                 "ICB-UK01-DE01-2025-P7"):  # draft
+        site = _Site()
+        site.allowed = {"ES01"}
+        e = _save_refused(site, fiscal_period=7, selling_entity="ES01", buying_entity="FR01",
+                          name=name)
+        text = str(e)
+        assert "neither entity" in text, text
+        for leak in ("approved", "cancelled", "not a draft", "own key", "UK01", "DE01"):
+            assert leak not in text.replace(name, ""), (leak, text)
+
+
+def test_rule_gap_skips_a_balance_with_nothing_to_eliminate():
+    # F51b / review S3: dbt eliminates only ending_inventory_from_ic > 0.
+    site = _Site()
+    site.balances = [_bal("ICB-FR01-DE01-2025-P7", "FR01", "DE01", inventory=0.0)]
+    assert _invoke(site, lambda api: api.rule_gaps(2025, 7)) == []
+    out = _get(site)
+    assert out["gap"] is None and out["balances"][0]["missing_rule"] is False
+
+
+
+# --- F51b / review S2: two rules on one pair ---------------------------------------
+
+def test_rule_gaps_name_a_pair_two_rules_match():
+    site = _Site()
+    site.rules = [_rule("R-ALL"), _rule("R-UK", debit="UK01", credit="DE01", margin=25.0)]
+    gaps = _invoke(site, lambda api: api.rule_gaps(2025, 7))
+    assert [g["code"] for g in gaps] == ["ic_unrealized_profit_rule_ambiguous"]
+    assert gaps[0]["pairs"] == [{"selling_entity": "UK01", "buying_entity": "DE01",
+                                 "rule_ids": ["R-ALL", "R-UK"]}]
+    assert len([r for r in site.reads if r[1] == "IC Elimination Rule"]) == 1
+
+
+def test_open_rule_gaps_carry_both_gaps():
+    site = _Site()
+    site.rules = [_rule("R-UK", debit="UK01"), _rule("R-UK2", debit="UK01", credit="DE01")]
+    gaps = _invoke(site, lambda api: api.open_rule_gaps())
+    assert [g["code"] for g in gaps] == ["ic_unrealized_profit_rule_undeclared",
+                                         "ic_unrealized_profit_rule_ambiguous"]
+
+
+def test_get_carries_the_ambiguous_gap_over_the_shown_balances():
+    site = _Site()
+    site.rules = [_rule("R-ALL"), _rule("R-UK", debit="UK01", credit="DE01", margin=25.0)]
+    out = _get(site)
+    assert out["gap"] is None
+    gap = out["ambiguous_gap"]
+    assert gap["code"] == "ic_unrealized_profit_rule_ambiguous"
+    assert "UK01 → DE01 (R-ALL, R-UK)" in gap["message"]
+    uk = [b for b in out["balances"] if b["selling_entity"] == "UK01"][0]
+    assert uk["ambiguous_rule"] is True
+    site.allowed = {"ES01"}
+    assert _get(site)["ambiguous_gap"] is None
+    assert _get(_Site())["ambiguous_gap"] is None
