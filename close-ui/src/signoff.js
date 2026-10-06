@@ -12,6 +12,9 @@
 // (`consolidation_group`, `headings`, `with_commentary`, `missing[]`) — a
 // missing key throws (M46 always sends it); the section never changes
 // `action`.
+// #305-W5-2 (8.4): `commentary_required` — the headings above the declared
+// threshold with no commentary (their own section; the action's Amber comes
+// from the server's `action`, never from this module).
 // Unknown (null) counts are shown as "unknown", never 0 — a missing count
 // means the caller never read it, not that it is zero. Server messages may
 // contain a literal "<br>" (A17: `signoff_gate.assert_can_sign` joins its
@@ -31,6 +34,7 @@ const KNOWN_ACTIONS = [
 ];
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { amountText } from "./numbers.js";
 
 const NONE = "None";
 
@@ -131,9 +135,13 @@ function acknowledgementsSection(ack) {
 	const total = ack ? ack.total : null;
 	const unlisted = ack ? ack.unlisted : null;
 	const intercompany = ack ? ack.intercompany : null;
+	// #305-W5-2 (story 8.4): the server's commentary sentence, verbatim, after IC.
+	const commentary = ack ? ack.commentary : null;
 	const rows = [];
-	if (typeof intercompany === "string" && intercompany.length > 0) {
-		rows.push(intercompany);
+	for (const sentence of [intercompany, commentary]) {
+		if (typeof sentence === "string" && sentence.length > 0) {
+			rows.push(sentence);
+		}
 	}
 	rows.push(...names.map((name) => `Acknowledged: ${name}`));
 	if (names.length || total !== null && total !== undefined) {
@@ -242,6 +250,71 @@ function commentarySection(list) {
 	return section(rows);
 }
 
+const COMMENTARY_REQUIRED_STATES = ["undeclared", "checked", "unknown"];
+
+function thresholdText(threshold) {
+	const parts = [];
+	if (threshold.amount !== null && threshold.amount !== undefined) {
+		parts.push(amountText(threshold.amount));
+	}
+	if (threshold.percent !== null && threshold.percent !== undefined) {
+		parts.push(`${threshold.percent}%`);
+	}
+	if (parts.length === 2) {
+		if (threshold.combine === "Either is exceeded") return `${parts[0]} or ${parts[1]}`;
+		if (threshold.combine === "Both are exceeded") return `${parts[0]} and ${parts[1]}`;
+		throw new Error(`Unknown commentary threshold rule: ${threshold.combine}`);
+	}
+	if (parts.length === 1) return parts[0];
+	throw new Error("The commentary threshold has neither an amount nor a percentage.");
+}
+
+/**
+ * #305-W5-2 (story 8.4): `commentary_required` (signoff_api, the
+ * commentary_model.requirement line) — the headings above the declared
+ * Close Settings threshold that have no commentary, apart from the
+ * informational `commentary` list. Undeclared or unknown shows the server's
+ * own message (never a count); checked shows the threshold, then one row per
+ * required heading, and a group with no comparison says why it was not
+ * compared. A missing/null key or an unknown state throws (always sent).
+ */
+function commentaryRequiredSection(line) {
+	if (line === null || line === undefined) {
+		throw new Error("Sign-off summary has no commentary_required.");
+	}
+	if (!COMMENTARY_REQUIRED_STATES.includes(line.state)) {
+		throw new Error(`Unknown commentary_required state: ${line.state}`);
+	}
+	if (line.state !== "checked") {
+		return section(messageLines(line.message));
+	}
+	const rows = [
+		"Threshold: a heading needs commentary when its variance against the previous period " +
+			`is above ${thresholdText(line.threshold)}`,
+	];
+	for (const group of line.groups || []) {
+		if (group.state === "not_comparable") {
+			rows.push(`${group.consolidation_group}: not compared — ${group.message}`);
+		}
+		for (const r of group.required || []) {
+			const pct = r.percent === null || r.percent === undefined
+				? ""
+				: ` (${r.percent}%)`;
+			const base = r.percent === null || r.percent === undefined
+				? " (no percentage on a zero base)"
+				: "";
+			rows.push(
+				`${group.consolidation_group} · ${r.heading_name}: moved ${amountText(r.variance)}${pct} ` +
+					`from ${amountText(r.comparison)}${base} — no commentary`,
+			);
+		}
+	}
+	if (line.required_missing === 0) {
+		rows.push("Every heading above the threshold has commentary");
+	}
+	return section(rows);
+}
+
 /**
  * A21's `summary()` output → `{action, label, gates, checks, intercompany,
  * acknowledgements, onBehalf, exceptions, covers, previous}`. Every section is
@@ -264,6 +337,7 @@ export function summaryView(summary) {
 		exceptions: exceptionsSection(summary.exceptions),
 		covers: coversSection(summary.covers),
 		previous: previousSection(summary.previous),
+		commentaryRequired: commentaryRequiredSection(summary.commentary_required),
 		commentary: commentarySection(summary.commentary),
 	};
 }
