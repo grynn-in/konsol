@@ -391,3 +391,17 @@ def test_module_imports_no_frappe():
             assert not any(a.name.split(".")[0] in ("frappe", "konsol") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert (node.module or "").split(".")[0] not in ("frappe", "konsol")
+
+
+# --- a heading with no warehouse rows (konsol#305 8.5) ------------------------
+
+def test_a_heading_with_no_rows_drills_to_zero_with_no_rows():
+    """Found by the 8.5 export, which drills EVERY heading: a heading with
+    no balances made ``sum()`` over no rows return the int 0, and
+    ``_round`` raised AttributeError (a 500 from get_drill too)."""
+    rows = [_row("3200", -100.0, "entity", "ZZA")]
+    line = _statement_line(rows, "1")
+    assert line["current"] == 0.0
+    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line)
+    assert result["rows"] == []
+    assert result["total"] == 0.0
