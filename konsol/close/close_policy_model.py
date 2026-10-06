@@ -357,6 +357,75 @@ def statement_accounts(cta_account, result_account, rows):
     return {"cta_account": cta, "result_account": result, "gap": gap}
 
 
+# konsol#305-W5-2 (story 8.4): the commentary threshold. Close Settings
+# declares an amount (in each group's reporting currency), a percentage, or
+# both. With both, ``commentary_threshold_combine`` says whether a heading
+# needs commentary when EITHER is exceeded or only when BOTH are: never
+# guessed. 0 / blank is undeclared (the Float and Percent read back 0 when
+# unset), reported as one setup gap, never defaulted. Decision: Deepak,
+# 6 Oct 2026, option 8.4-1 (8.4-2 Red block and 8.4-3 every heading
+# required were rejected).
+COMMENTARY_THRESHOLD_UNDECLARED = "commentary_threshold_undeclared"
+COMMENTARY_EITHER = "Either is exceeded"
+COMMENTARY_BOTH = "Both are exceeded"
+COMMENTARY_COMBINES = (COMMENTARY_EITHER, COMMENTARY_BOTH)
+
+COMMENTARY_THRESHOLD_MESSAGE = (
+    "Declare the commentary threshold in Close Settings (the Close Lead): an "
+    "amount in reporting currency, a percentage, or both. A statement heading "
+    "whose variance against the previous period is above it needs commentary, "
+    "or the sign-off needs an acknowledgement."
+)
+_COMMENTARY_COMBINE_MESSAGE = (
+    "Close Settings declares both a commentary amount and a commentary "
+    "percentage: declare whether a heading needs commentary when either is "
+    "exceeded or only when both are."
+)
+
+
+def commentary_threshold_problems(amount, percent, combine):
+    """Problems that refuse a Close Settings save of the commentary
+    threshold. Blank / 0 is allowed (undeclared, a gap elsewhere). A
+    negative value, an unknown combine rule, or a combine rule without both
+    values declared (a dead field) is refused."""
+    problems = []
+    if amount and amount < 0:
+        problems.append("The commentary threshold amount cannot be negative.")
+    if percent and percent < 0:
+        problems.append("The commentary threshold percentage cannot be negative.")
+    if combine and combine not in COMMENTARY_COMBINES:
+        problems.append(
+            "Unknown commentary threshold rule %r; expected blank, %s."
+            % (combine, " or ".join(COMMENTARY_COMBINES)))
+    elif combine and not (amount and amount > 0 and percent and percent > 0):
+        problems.append(
+            "The commentary threshold rule (%s) applies only when both an amount "
+            "and a percentage are declared; declare both, or clear the rule." % combine)
+    return problems
+
+
+def commentary_threshold(amount, percent, combine):
+    """The declared commentary threshold, or the one setup gap.
+
+    Returns ``{"threshold": None | {"amount": float|None, "percent":
+    float|None, "combine": str|None}, "gap": None | {"code", "message"}}``.
+    Nothing declared, or both declared with no combine rule, is the gap
+    (``COMMENTARY_THRESHOLD_UNDECLARED``) and no threshold.
+    """
+    amount = float(amount) if amount and amount > 0 else None
+    percent = float(percent) if percent and percent > 0 else None
+    if amount is None and percent is None:
+        return {"threshold": None, "gap": {"code": COMMENTARY_THRESHOLD_UNDECLARED,
+                                           "message": COMMENTARY_THRESHOLD_MESSAGE}}
+    if amount is not None and percent is not None:
+        if combine not in COMMENTARY_COMBINES:
+            return {"threshold": None, "gap": {"code": COMMENTARY_THRESHOLD_UNDECLARED,
+                                               "message": _COMMENTARY_COMBINE_MESSAGE}}
+        return {"threshold": {"amount": amount, "percent": percent, "combine": combine},
+                "gap": None}
+    return {"threshold": {"amount": amount, "percent": percent, "combine": None}, "gap": None}
+
+
 _STATEMENT_ACCOUNT_UNDECLARED_MESSAGES = (_CTA_UNDECLARED_MESSAGE, _RESULT_UNDECLARED_MESSAGE)
 
 

@@ -32,6 +32,7 @@ class CloseSettings(Document):
         self.validate_policies()
         self.validate_intercompany_declaration()
         self.validate_statement_accounts()
+        self.validate_commentary_threshold()
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank
@@ -156,5 +157,18 @@ class CloseSettings(Document):
             )
         }
         problems = close_policy_model.statement_account_problems(cta, result, rows)
+        if problems:
+            frappe.throw("<br>".join(problems))
+
+    def validate_commentary_threshold(self):
+        """konsol#305-W5-2 (story 8.4): no default. Blank / 0 stays
+        undeclared (close_policy_model.commentary_threshold's setup gap,
+        never defaulted). A negative value, an unknown rule, or a rule
+        without both values is refused. Not locked after a signed period:
+        the threshold decides what the next sign-off asks for, and the
+        Single's track_changes is the record."""
+        problems = close_policy_model.commentary_threshold_problems(
+            self.commentary_threshold_amount, self.commentary_threshold_percent,
+            self.commentary_threshold_combine)
         if problems:
             frappe.throw("<br>".join(problems))
