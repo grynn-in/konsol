@@ -846,3 +846,120 @@ def test_sent_back_items_period_missing_from_codes_raises():
 
 def test_sent_back_items_empty_rows_gives_no_items():
     assert M.sent_back_items([], M.CLOSE_LEAD, {}) == []
+
+
+# --- #305-W5-1 (story 9.4, #157): the preparer's "sent back" sign-off item ------
+#
+# The events are the REAL producers' output: ``signoff_rejected`` from
+# ``assertion_run.reject_signoff`` and ``signed_off`` from ``sign_off_close``
+# (both run against their stub frappe in test_assertion_run_reject.py /
+# test_assertion_warn_amber.py). Only ``name`` and ``at`` are added: the
+# database assigns them, and mywork_api reads them back as ISO text.
+
+_REJ_SPEC = importlib.util.spec_from_file_location(
+    "assertion_run_reject_for_mywork", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                    "test_assertion_run_reject.py"))
+REJ = importlib.util.module_from_spec(_REJ_SPEC)
+_REJ_SPEC.loader.exec_module(REJ)
+
+PREPARER = REJ.PREPARER
+CODES = {(2099, 1): "P01", (2099, 2): "P02"}
+
+
+def _stored(event, name, at, fiscal_period=None):
+    out = {k: v for k, v in event.items() if k != "saved_before"}
+    out.update(name=name, at=at)
+    if fiscal_period is not None:
+        out["fiscal_period"] = fiscal_period
+    return out
+
+
+def _rejected_event(name="CE-2", at="2099-02-03T10:00:00+00:00", reason="ZZA's TB is the draft",
+                    fiscal_period=None):
+    reject, frappe, _doc = REJ.load()
+    reject("AR-1", reason)
+    return _stored(frappe.events[0], name, at, fiscal_period)
+
+
+def _signed_event(name="CE-1", at="2099-02-02T09:00:00+00:00", fiscal_period=None):
+    module, frappe, _doc, _ = REJ._amber._load(status="Green", warned=0)
+    module.sign_off_close("AR-1")
+    event = dict(frappe.events[0], actor="acct@example.com")
+    return _stored(event, name, at, fiscal_period)
+
+
+def test_the_real_producers_give_the_two_kinds():
+    assert _rejected_event()["kind"] == "signoff_rejected"
+    assert _signed_event()["kind"] == "signed_off"
+
+
+def test_a_rejected_signoff_gives_the_preparer_one_todo_item_on_checks():
+    events = [_signed_event(), _rejected_event()]
+    (item,) = M.signoff_sent_back_items(events, PREPARER, M.GROUP_ACCOUNTANT, CODES)
+    assert item == {
+        "id": "sent-back:signoff:2099-01",
+        "kind": "todo",
+        "title": "Sent back: sign-off · P01",
+        "detail": "acct@example.com on 2099-02-03: ZZA's TB is the draft. Fix it and run the "
+                  "checks again; the item stays until the period is signed.",
+        "owner": "EPM Analyst",
+        "action": {"screen": "checks"},
+        "period": {"fiscal_year": 2099, "fiscal_period": 1, "code": "P01",
+                   "since": "2099-02-03"},
+    }
+
+
+def test_someone_else_gets_no_item():
+    events = [_signed_event(), _rejected_event()]
+    assert M.signoff_sent_back_items(events, "other@example.com", M.CLOSE_LEAD, CODES) == []
+
+
+def test_a_signature_after_the_reject_clears_the_item():
+    events = [_signed_event("CE-1"), _rejected_event("CE-2"),
+              _signed_event("CE-3", at="2099-02-04T09:00:00+00:00")]
+    assert M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES) == []
+
+
+def test_each_period_is_judged_on_its_own():
+    events = [_rejected_event("CE-1"),
+              _rejected_event("CE-2", fiscal_period=2),
+              _signed_event("CE-3", at="2099-02-05T09:00:00+00:00", fiscal_period=2)]
+    items = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES)
+    assert [i["id"] for i in items] == ["sent-back:signoff:2099-01"]
+
+
+def test_the_latest_reject_gives_the_reason():
+    events = [_rejected_event("CE-1", at="2099-02-03T10:00:00+00:00", reason="first"),
+              _rejected_event("CE-2", at="2099-02-04T10:00:00+00:00", reason="second")]
+    (item,) = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES)
+    assert "second" in item["detail"] and "first" not in item["detail"]
+
+
+def test_the_same_time_is_ordered_by_name():
+    at = "2099-02-03T10:00:00+00:00"
+    events = [_rejected_event("CE-2", at=at), _signed_event("CE-1", at=at)]
+    assert len(M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES)) == 1
+
+
+def test_a_reject_with_no_preparer_is_nobodys_item():
+    event = _rejected_event()
+    event["detail"] = dict(event["detail"], preparer=None)
+    assert M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES) == []
+
+
+def test_the_viewer_and_an_unknown_persona_raise():
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.VIEWER, CODES)
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, "auditor", CODES)
+
+
+def test_a_period_missing_from_the_codes_raises():
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.CLOSE_LEAD, {})
+
+
+def test_an_unknown_kind_raises():
+    event = dict(_rejected_event(), kind="signoff_voided")
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES)

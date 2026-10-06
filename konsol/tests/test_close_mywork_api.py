@@ -123,6 +123,10 @@ class _Site:
         self.sent_back_rows = []
         self.sent_back_calls = []
         self.sent_back_error = None
+        #: #305-W5-1 (story 9.4): Close Event rows as the database holds them
+        #: (detail JSON text, a naive ``at``), and every Close Event read.
+        self.close_events = []
+        self.close_event_reads = []
 
 
 def _frappe(site):
@@ -163,6 +167,11 @@ def _frappe(site):
             rows = sorted([r for r in site.runs
                            if (r.fiscal_year, r.fiscal_period) == (fy, fp)],
                           key=lambda r: r.creation, reverse=True)
+        elif doctype == "Close Event":
+            site.close_event_reads.append(dict(filters))
+            rows = [e for e in site.close_events
+                    if all(e.get(f) == c if not isinstance(c, list) else e.get(f) in c[1]
+                           for f, c in filters.items())]
         else:
             raise AssertionError("unexpected get_all(%r)" % doctype)
         if pluck:
@@ -1146,3 +1155,76 @@ def test_statement_gap_none_gives_no_item():
         result = _call(site)
         assert _gap(result, "statement_accounts") is None, (roles, _ids(result))
         _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+# --- #305-W5-1 (story 9.4, #157): the preparer's "sent back" sign-off item ------
+#
+# The rows are the real producers' events (test_assertion_run_reject.py's
+# reject_signoff and sign_off_close), stored as the Close Event table holds
+# them: detail as JSON text (close_event_model.detail_json), a naive ``at``.
+
+_REJ_SPEC = importlib.util.spec_from_file_location(
+    "assertion_run_reject_for_mywork_api",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_assertion_run_reject.py"))
+_REJ = importlib.util.module_from_spec(_REJ_SPEC)
+_REJ_SPEC.loader.exec_module(_REJ)
+
+
+def _stored_event(event, name, at, fiscal_year=2025, fiscal_period=7):
+    return _D(name=name, kind=event["kind"], fiscal_year=fiscal_year,
+              fiscal_period=fiscal_period, actor=event.get("actor") or "acct@example.com",
+              at=at, reason=event["reason"],
+              detail=json.dumps(event["detail"], sort_keys=True))
+
+
+def _rejected_row(name="ZZ-CE-2", at=datetime(2025, 8, 20, 10, 0), **kw):
+    reject, frappe, _doc = _REJ.load()
+    reject("AR-1", "ZZA's TB is the draft")
+    return _stored_event(frappe.events[0], name, at, **kw)
+
+
+def _signed_row(name="ZZ-CE-3", at=datetime(2025, 8, 21, 9, 0), **kw):
+    module, frappe, _doc, _ = _REJ._amber._load(status="Green", warned=0)
+    module.sign_off_close("AR-1")
+    return _stored_event(frappe.events[0], name, at, **kw)
+
+
+def test_the_preparer_gets_the_sent_back_signoff_item_counted_under_checks():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row()]
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["kind"] == "todo" and item["action"] == {"screen": "checks"}
+    assert item["period"]["code"] == "P07"
+    assert item["period"]["since"] == "2025-08-20"
+    assert "ZZA's TB is the draft" in item["detail"]
+    checks = [i for i in result["items"] if (i.get("action") or {}).get("screen") == "checks"]
+    assert result["counts"]["by_screen"]["checks"]["count"] == len(checks)
+    _assert_counts_add_up(result, "group_accountant")
+
+
+def test_a_later_signature_clears_it():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row(), _signed_row()]
+    assert "sent-back:signoff:2025-07" not in _ids(_call(site))
+
+
+def test_another_user_does_not_get_it():
+    site = _Site(roles=("EPM Admin",), user="zz-lead@example.com")
+    site.close_events = [_rejected_row()]
+    assert "sent-back:signoff:2025-07" not in _ids(_call(site))
+
+
+def test_the_viewer_reads_no_close_events():
+    site = _Site(roles=("EPM User",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row()]
+    result = _call(site)
+    assert result["items"] == []
+    assert site.close_event_reads == []
+
+
+def test_signatures_are_read_only_when_the_caller_has_a_rejection():
+    site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.close_events = [_rejected_row()]
+    _call(site)
+    assert site.close_event_reads == [{"kind": "signoff_rejected"}]
