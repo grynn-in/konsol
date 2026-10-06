@@ -656,7 +656,7 @@ def test_covers_notes_include_the_quarterly_entity_and_the_exception_run():
 
 def test_previous_periods_from_the_first_close_up_to_the_target():
     result = _get(_Site())
-    assert [p["code"] for p in result["previous"]] == ["P%02d" % fp for fp in range(1, 9)]
+    assert [p["code"] for p in result["previous"]] == ["FY2025 P%02d" % fp for fp in range(1, 9)]
     assert all(p["status"] == "Closed" and p["signoff"] == "Signed Off"
                for p in result["previous"])
 
@@ -856,8 +856,8 @@ def test_an_open_earlier_period_blocks_with_its_name():
     site.records["Assertion Run"][6]["signoff_status"] = "Not Signed Off"
     result = _get(site)
     assert result["action"] == "blocked"
-    assert result["label"] == "Sign off P07 first"
-    assert result["gates"]["order"]["blocking"] == "P07"
+    assert result["label"] == "Sign off FY2025 P07 first"
+    assert result["gates"]["order"]["blocking"] == "FY2025 P07"
 
 
 def test_an_undeclared_period_is_refused_as_not_declared():

@@ -176,14 +176,17 @@ def order_problem(states, first_close, target):
     )
     if not blocking:
         return None
-    oldest = blocking[0][1]
+    # The state's ``code`` is the bare period_code ("P12"), the same in every
+    # year: the gate names each period from its key (review-w5).
+    oldest_key, oldest = blocking[0]
+    name = _label(oldest_key)
     if oldest.get("status") == "Open":
-        message = "Sign off and close %s first" % oldest["code"]
+        message = "Sign off and close %s first" % name
     else:
-        message = "Re-sign %s first" % oldest["code"]
+        message = "Re-sign %s first" % name
     return {
-        "blocking": oldest["code"],
-        "periods": [s["code"] for _key_, s in blocking],
+        "blocking": name,
+        "periods": [_label(k) for k, _s in blocking],
         "message": message,
     }
 
@@ -741,7 +744,7 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
         ],
         "covers": list(covers or ()),
         "previous": [
-            {"code": p["code"], "status": p["status"], "signoff": p["signoff"]}
+            {"code": _label(_key(p["key"])), "status": p["status"], "signoff": p["signoff"]}
             for p in sorted(previous or (), key=lambda p: _key(p["key"]))
         ],
     }

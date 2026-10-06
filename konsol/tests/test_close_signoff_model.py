@@ -169,18 +169,18 @@ def test_open_earlier_periods_block_and_the_oldest_is_named():
     states = _fy2025({7: ("Open", "Not signed off"), 8: ("Open", "Not signed off"),
                       9: ("Open", "Not signed off")})
     assert M.order_problem(states, FIRST, (2025, 9)) == {
-        "blocking": "P07",
-        "periods": ["P07", "P08"],
-        "message": "Sign off and close P07 first",
+        "blocking": "FY2025 P07",
+        "periods": ["FY2025 P07", "FY2025 P08"],
+        "message": "Sign off and close FY2025 P07 first",
     }
 
 
 def test_closed_but_re_sign_needed_blocks():
     states = _fy2025({8: ("Closed", "Re-sign Needed"), 9: ("Open", "Not signed off")})
     res = M.order_problem(states, FIRST, (2025, 9))
-    assert res["blocking"] == "P08"
-    assert res["periods"] == ["P08"]
-    assert res["message"] == "Re-sign P08 first"
+    assert res["blocking"] == "FY2025 P08"
+    assert res["periods"] == ["FY2025 P08"]
+    assert res["message"] == "Re-sign FY2025 P08 first"
 
 
 def test_history_periods_never_block():
@@ -207,8 +207,8 @@ def test_the_first_close_period_has_nothing_before_it():
 def test_open_p12_of_the_previous_year_blocks_p1_of_the_next():
     states = _fy2025({12: ("Open", "Not signed off")}) + [_state(2026, 1, "Open", "Not signed off")]
     res = M.order_problem(states, FIRST, (2026, 1))
-    assert res["blocking"] == "P12"
-    assert res["periods"] == ["P12"]
+    assert res["blocking"] == "FY2025 P12"
+    assert res["periods"] == ["FY2025 P12"]
 
 
 def test_previous_year_p12_before_first_close_does_not_block():
@@ -219,7 +219,7 @@ def test_previous_year_p12_before_first_close_does_not_block():
 def test_keys_as_lists_are_accepted():
     # States that went through JSON carry keys as lists.
     states = [dict(s, key=list(s["key"])) for s in _fy2025({8: ("Open", "Not signed off")})]
-    assert M.order_problem(states, FIRST, (2025, 9))["blocking"] == "P08"
+    assert M.order_problem(states, FIRST, (2025, 9))["blocking"] == "FY2025 P08"
 
 
 def test_order_with_undeclared_first_close_raises_not_guesses():
@@ -752,8 +752,8 @@ def test_exceptions_covers_and_previous_periods_are_listed():
     ]
     assert s["covers"] == ["ZZA: covers P08–P09"]
     assert s["previous"] == [
-        {"code": "P07", "status": "Closed", "signoff": "Acknowledged"},
-        {"code": "P08", "status": "Closed", "signoff": "Signed Off"},
+        {"code": "FY2025 P07", "status": "Closed", "signoff": "Acknowledged"},
+        {"code": "FY2025 P08", "status": "Closed", "signoff": "Signed Off"},
     ]
 
 
