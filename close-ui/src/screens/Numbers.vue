@@ -64,12 +64,13 @@ import { useRoute } from "vue-router";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import NumbersDrill from "../components/NumbersDrill.vue";
-import { get } from "../api.js";
+import { download, get } from "../api.js";
 import { parse } from "../route.js";
 import { statementView, tabRows, isDrillable, canComment } from "../numbers.js";
 import { userTimeZone } from "../timefmt.js";
 
 const GET_STATEMENT = "konsol.close.statement_api.get_statement";
+const EXPORT_STATEMENT = "konsol.close.statement_api.export_statement";
 
 const NO_ZONE = "Your browser reported no time zone, so times cannot be shown.";
 
@@ -115,6 +116,9 @@ const what = computed(() => `the numbers for ${periodName.value}`);
 const timeZone = userTimeZone();
 
 const numbers = reactive({ status: "loading", payload: null, error: null, busy: false, now: null });
+//: 8.5: the export's own busy flag and refusal sentence (cleared on a
+//: period change).
+const exporting = reactive({ busy: false, error: null });
 let seq = 0;
 
 //: U44 fact: a group choice is local state, never stored (no browser
@@ -172,6 +176,7 @@ watch(
 	() => (period.value ? `${period.value.year}/${period.value.period}` : null),
 	() => {
 		numbers.payload = null;
+		exporting.error = null;
 		chosenGroup.value = null;
 		selectedHeading.value = null;
 		notIncludedExpanded.value = false;
@@ -271,6 +276,35 @@ const selectedCommentary = computed(() =>
 function onCommentarySaved() {
 	load({ quiet: true });
 }
+
+//: 8.5 (decision #305-W5-3): "Export to Excel" downloads the statement on
+//: screen — this period and the group this payload resolved to — as the
+//: server's .xlsx. A refusal shows the server's own sentence; nothing is
+//: kept in the browser.
+async function exportExcel() {
+	if (!view.value || !period.value) return;
+	exporting.busy = true;
+	exporting.error = null;
+	try {
+		const { blob, filename } = await download(EXPORT_STATEMENT, {
+			fiscal_year: period.value.year,
+			fiscal_period: period.value.period,
+			consolidation_group: view.value.consolidationGroup,
+		});
+		const href = URL.createObjectURL(blob);
+		const link = document.createElement("a");
+		link.href = href;
+		link.download = filename;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(href);
+	} catch (e) {
+		exporting.error = e.message;
+	} finally {
+		exporting.busy = false;
+	}
+}
 </script>
 
 <template>
@@ -351,6 +385,13 @@ function onCommentarySaved() {
 				</div>
 
 				<template v-else>
+					<div class="mb-3 flex flex-wrap items-center justify-end gap-3">
+						<span v-if="exporting.error" role="alert" class="text-sm text-ink-red-4">{{ exporting.error }}</span>
+						<Button :loading="exporting.busy" @click="exportExcel">
+							<template #prefix><FeatherIcon name="download" class="h-4 w-4" /></template>
+							Export to Excel
+						</Button>
+					</div>
 					<div v-if="view.notIncluded" class="mb-3 text-xs text-ink-gray-5">
 						<p>
 							{{ view.notIncluded.text }}:

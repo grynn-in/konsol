@@ -108,3 +108,35 @@ export function post(method, body, { fetchImpl = fetch } = {}) {
 		body: JSON.stringify(payload),
 	}, fetchImpl);
 }
+
+/** The file name in a `Content-Disposition` header (`filename="…"` or a
+ * bare `filename=…`), or null. */
+function dispositionFilename(header) {
+	if (!header) return null;
+	const m = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+	return m ? decodeURIComponent(m[1]) : null;
+}
+
+/**
+ * GET a file from `konsol.close.<...>` (konsol#305 8.5): `{blob, filename}`.
+ * A refusal (a non-2xx reply) throws the server's own sentence, read from
+ * its JSON body like `get`'s — never a file. A reply with no file name
+ * throws too: the name is the server's, never made up here.
+ */
+export async function download(method, params, { fetchImpl = fetch } = {}) {
+	const url = `/api/method/${method}${buildQuery(params)}`;
+	let res;
+	try {
+		res = await fetchImpl(url, { method: "GET", credentials: "include" });
+	} catch (err) {
+		throw new Error(`Network error: ${err.message}`);
+	}
+	if (!res.ok) {
+		throw new Error(errorMessage(await parseJsonBody(res), res.status));
+	}
+	const filename = dispositionFilename(res.headers.get("Content-Disposition"));
+	if (!filename) {
+		throw new Error(`The reply to ${method} carried no file name.`);
+	}
+	return { blob: await res.blob(), filename };
+}
