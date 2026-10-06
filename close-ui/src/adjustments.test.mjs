@@ -4,6 +4,8 @@
 // shape (A05: konsol/close/journal_api.py, konsol/close/journal_model.py).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
 	journalsView,
 	durationOptions,
@@ -34,6 +36,7 @@ function payload(overrides = {}) {
 		groups: [{ consolidation_group: "Demo Group", reporting_currency: "USD", entities: ["ZZ-A", "ZZ-B"] }],
 		accounts: {},
 		dimensions: [],
+		reversing_in: [],
 		reversal_choices: [],
 		workflow_installed: true,
 		first_state: "Draft",
@@ -627,4 +630,47 @@ test("dimValueText: a missing, null or blank value reads as the explicit em dash
 
 test("dimValueText: a real typed value is shown verbatim, never refused (konsol#247)", () => {
 	assert.equal(dimValueText({ dim_cost_center: "CC-100" }, "dim_cost_center"), "CC-100");
+});
+
+// --- #305 story 6.5: journals reversing into this period ---------------
+
+// The golden fixture is the real `journal_api.get_journals` `reversing_in`
+// item (test_close_journal_api.py::test_reversing_item_matches_the_golden_fixture).
+const REVERSING_FIXTURE_PATH = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_journals_reversing_in.json", import.meta.url),
+);
+function goldenReversing() {
+	return JSON.parse(fs.readFileSync(REVERSING_FIXTURE_PATH, "utf8"));
+}
+
+test("6.5: journalsView throws when `reversing_in` is missing (get_journals always sends it, even as [])", () => {
+	const p = payload();
+	delete p.reversing_in;
+	assert.throws(() => journalsView(p, NOW, TZ), /reversing_in/);
+});
+
+test("6.5: journalsView passes the real reversing item through with its label, totals and approval time", () => {
+	const golden = goldenReversing();
+	const view = journalsView(payload({ reversing_in: [golden] }), NOW, TZ);
+	assert.equal(view.reversingIn.length, 1);
+	const item = view.reversingIn[0];
+	assert.equal(item.name, golden.name);
+	assert.equal(item.label, "Reverses here from P06");
+	assert.deepEqual(item.origin, golden.origin);
+	assert.equal(item.totalsText, "1,200.00 / 1,200.00");
+	assert.notEqual(item.approvedAtText, "not recorded");
+	assert.deepEqual(item.lines, golden.lines);
+	assert.deepEqual(item.effect, golden.effect);
+	assert.equal(view.journals.length, 0, "a reversing item never joins the period's own journals");
+});
+
+test("6.5: the reversing item's effect reads as the original's, signs flipped", () => {
+	const view = effectView(goldenReversing().effect);
+	assert.deepEqual(
+		view.headings.map((h) => [h.label, h.amountText]),
+		[
+			["Operating expenses", "Cr 1,200.00"],
+			["Current liabilities", "Dr 1,200.00"],
+		],
+	);
 });
