@@ -360,16 +360,61 @@ export function closedOnText(value, now, timeZone) {
 
 /**
  * #305-W5-1 (story 9.4, #157): what the Reject dialog does when the sign-off
- * machine moves from `prev` to `state`.
- * - "refused": rejecting → signed is the server refusing the reject; the
- *   dialog stays open with the typed reason, and shows the message.
- * - "keep": still signed, or the reject is in flight.
- * - "reset": anything else (an accepted reject reloads the summary, a stale
- *   run reloads it, a close, a refresh); the dialog closes and its text goes,
- *   so a reason typed against an old summary is never sent against a new one.
+ * machine moves from `prev` to `state`; `error` is the machine's
+ * context.error after the move.
+ * - "refused": the server refused the reject; the dialog stays open with the
+ *   typed reason and shows the message. Either rejecting → signed, or
+ *   (konsol#305 U3) rejecting → loading WITH a message: A58's stale-run
+ *   refusal, which reloads the summary. The reason is kept while it
+ *   reloads; nothing is re-sent, so the Close Lead clicks Reject again
+ *   against the new summary's run (the button is disabled until the
+ *   machine is back in `signed` and takes REJECT).
+ * - "keep": still signed (including a reload after a stale refusal landing
+ *   back in `signed`), or the reject is in flight.
+ * - "reset": anything else (an accepted reject reloads with no message, a
+ *   refresh from `signed`, a reload that lands outside `signed` so Reject is
+ *   no longer offered, a close, a load failure); the dialog closes and its
+ *   text goes.
  */
-export function rejectDialogAfter(prev, state) {
-	if (state === "signed" && prev === "rejecting") return "refused";
+export function rejectDialogAfter(prev, state, error) {
+	if (prev === "rejecting" && state === "signed") return "refused";
+	if (prev === "rejecting" && state === "loading") return error ? "refused" : "reset";
 	if (state === "signed" || state === "rejecting") return "keep";
 	return "reset";
+}
+
+/** The Reject dialog when it is closed: nothing typed, nothing refused. */
+export const REJECT_DIALOG_CLOSED = Object.freeze({ open: false, reason: "", refused: Object.freeze([]) });
+
+/**
+ * konsol#305 U3/U10: the Reject dialog's whole state ({open, reason,
+ * refused}) after `event`; always a new object. SignOffReject.vue applies it
+ * to every change, so no path changes the dialog any other way.
+ * - OPEN: opens it, keeping nothing from before (a close already reset it).
+ * - TYPE {text}: the reason as typed.
+ * - SENT: the confirm was clicked; the last refusal is cleared.
+ * - CLOSE: Cancel, Esc, the overlay or the dialog's own close (U10): back to
+ *   REJECT_DIALOG_CLOSED, so reopening never shows an old reason or refusal.
+ * - MACHINE {prev, state, error}: the sign-off machine moved
+ *   (rejectDialogAfter decides).
+ */
+export function rejectDialogNext(dialog, event) {
+	switch (event.type) {
+		case "OPEN":
+			return { open: true, reason: dialog.reason, refused: [...dialog.refused] };
+		case "TYPE":
+			return { ...dialog, refused: [...dialog.refused], reason: String(event.text ?? "") };
+		case "SENT":
+			return { ...dialog, refused: [] };
+		case "CLOSE":
+			return { open: false, reason: "", refused: [] };
+		case "MACHINE": {
+			const step = rejectDialogAfter(event.prev, event.state, event.error);
+			if (step === "refused") return { ...dialog, refused: messageLines(event.error) };
+			if (step === "reset") return { open: false, reason: "", refused: [] };
+			return { ...dialog, refused: [...dialog.refused] };
+		}
+		default:
+			throw new Error(`Reject dialog: unknown event ${event.type}`);
+	}
 }

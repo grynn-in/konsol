@@ -117,8 +117,20 @@ function comparisonCell(value, comparisonNote) {
 	return amountText(value);
 }
 
+/** "FY2025 P07": the period as its fiscal year and period, never the bare
+ * `period_code` (live it is "P07" alone, measured 6 Oct; konsol#305 U1),
+ * the same as the Excel export's header and file name. */
+function periodText(period) {
+	for (const key of ["fiscal_year", "fiscal_period"]) {
+		if (typeof period[key] !== "number") {
+			throw new Error(`Numbers: the payload's period has no ${key}`);
+		}
+	}
+	return `FY${period.fiscal_year} P${String(period.fiscal_period).padStart(2, "0")}`;
+}
+
 function header(payload) {
-	const parts = [payload.period.code, payload.consolidation_group, payload.reporting_currency].filter(
+	const parts = [periodText(payload.period), payload.consolidation_group, payload.reporting_currency].filter(
 		(part) => part !== null && part !== undefined && part !== "",
 	);
 	return ["Numbers", ...parts].join(" · ");

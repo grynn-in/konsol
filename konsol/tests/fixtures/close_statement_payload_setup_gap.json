@@ -13,7 +13,7 @@
   "message": "statement_heading_side_undeclared: 2 have no normal_balance declared; declare Debit or Credit on each before the balance sheet can show its side.",
   "not_included": null,
   "period": {
-    "code": "FY2025P07",
+    "code": "P07",
     "fiscal_period": 7,
     "fiscal_year": 2025,
     "period_type": "Regular",

@@ -99,7 +99,12 @@ def _cell(line, field, comparison_note, what):
 
 
 def _header_text(payload):
-    parts = [payload["period"].get("code"), payload.get("consolidation_group"),
+    """``Numbers · FY2025 P07 · G1 · USD``: the period as its fiscal year and
+    period, never the bare ``period_code`` (live it is "P07" alone, measured
+    6 Oct; konsol#305 U1), the same as the screen's header."""
+    period = payload["period"]
+    parts = ["FY%d P%02d" % (period["fiscal_year"], period["fiscal_period"]),
+             payload.get("consolidation_group"),
              payload.get("reporting_currency")]
     return " · ".join(["Numbers"] + [p for p in parts if p not in (None, "")])
 

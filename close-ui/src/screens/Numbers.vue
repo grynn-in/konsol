@@ -65,6 +65,7 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import NumbersDrill from "../components/NumbersDrill.vue";
 import { download, get } from "../api.js";
+import { saveFile } from "../saveFile.js";
 import { parse } from "../route.js";
 import { statementView, tabRows, isDrillable, canComment } from "../numbers.js";
 import { userTimeZone } from "../timefmt.js";
@@ -291,14 +292,7 @@ async function exportExcel() {
 			fiscal_period: period.value.period,
 			consolidation_group: view.value.consolidationGroup,
 		});
-		const href = URL.createObjectURL(blob);
-		const link = document.createElement("a");
-		link.href = href;
-		link.download = filename;
-		document.body.appendChild(link);
-		link.click();
-		link.remove();
-		URL.revokeObjectURL(href);
+		saveFile(blob, filename);
 	} catch (e) {
 		exporting.error = e.message;
 	} finally {

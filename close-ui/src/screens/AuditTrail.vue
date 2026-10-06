@@ -16,21 +16,23 @@
  * - Story 10.2: filter chips (kind, actor, entity) and a date range. The
  *   server filters (get_trail's params, from filterParams); the choices are
  *   the scoped period's (filterChoices), so a hidden entity is never
- *   offered. Export CSV is a plain link to trail_api.export_trail_csv with
- *   the filters the server echoed for the rows on screen, so the file holds
- *   exactly the view; the server builds it, never the browser. The filters
+ *   offered. Export CSV downloads trail_api.export_trail_csv through
+ *   api.js's download (auditTrail.js exportCsv, konsol#305 U2) with the
+ *   filters the server echoed for the rows on screen, so the file holds
+ *   exactly the view; the server builds it, never the browser. A refusal
+ *   shows the server's own sentence instead of saving an error as the file. The filters
  *   live in the component only and reset when the period changes.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import LoadState from "../components/LoadState.vue";
-import { get, methodUrl } from "../api.js";
+import { download, get } from "../api.js";
+import { saveFile } from "../saveFile.js";
 import { parse } from "../route.js";
-import { trailView, filterChoices, filterParams, noFilters, toggled } from "../auditTrail.js";
+import { trailView, filterChoices, filterParams, noFilters, toggled, exportCsv } from "../auditTrail.js";
 import { userTimeZone } from "../timefmt.js";
 
 const GET_TRAIL = "konsol.close.trail_api.get_trail";
-const EXPORT_CSV = "konsol.close.trail_api.export_trail_csv";
 
 // The four tones trailView hands back (ok, warn, block, mute); mirrors
 // periodGrid.js's toneClass — an unknown tone throws rather than rendering
@@ -115,6 +117,7 @@ const periodKey = computed(() => (period.value ? `${period.value.year}/${period.
 watch(periodKey, () => {
 	clearFilters();
 	trail.payload = null;
+	exporting.error = null;
 });
 
 // One load per (period, filters): the server applies the filters.
@@ -160,16 +163,22 @@ const choices = computed(() => {
 	}
 });
 
-// The CSV holds the rows on screen: the link carries the filters the server
-// echoed for this payload, not the (possibly newer) local state.
-const exportHref = computed(() => {
-	if (!trail.payload || !period.value) return null;
-	return methodUrl(EXPORT_CSV, {
-		fiscal_year: trail.payload.period.fiscal_year,
-		fiscal_period: trail.payload.period.fiscal_period,
-		...filterParams(trail.payload.filters),
-	});
-});
+// U2: the CSV holds the rows on screen (exportCsv sends the filters the
+// server echoed for this payload, not the possibly newer local state). A
+// refusal shows the server's sentence next to the button.
+const exporting = reactive({ busy: false, error: null });
+async function exportTrail() {
+	if (!trail.payload || exporting.busy) return;
+	exporting.busy = true;
+	exporting.error = null;
+	try {
+		await exportCsv(trail.payload, { download, save: saveFile });
+	} catch (e) {
+		exporting.error = e.message;
+	} finally {
+		exporting.busy = false;
+	}
+}
 
 function chipClass(on) {
 	return on
@@ -189,12 +198,15 @@ const code = computed(() => (trail.payload && trail.payload.period && trail.payl
 					Read-only · every approval, exception and status change for the period
 				</p>
 			</div>
-			<a
-				v-if="exportHref && trail.status === 'ready'"
-				:href="exportHref"
-				download
-				class="shrink-0 rounded border border-outline-gray-2 px-3 py-1.5 text-sm font-medium text-ink-gray-8 hover:bg-surface-gray-1"
-			>Export CSV</a>
+			<div v-if="trail.payload && trail.status === 'ready'" class="flex shrink-0 items-center gap-2">
+				<span v-if="exporting.error" role="alert" class="text-sm text-ink-red-4">{{ exporting.error }}</span>
+				<button
+					type="button"
+					:disabled="exporting.busy"
+					class="rounded border border-outline-gray-2 px-3 py-1.5 text-sm font-medium text-ink-gray-8 hover:bg-surface-gray-1 disabled:opacity-50"
+					@click="exportTrail"
+				>{{ exporting.busy ? "Exporting…" : "Export CSV" }}</button>
+			</div>
 		</header>
 
 		<section v-if="choices" class="mb-4 space-y-2 rounded border border-outline-gray-2 px-4 py-3 text-sm" aria-label="Filters">

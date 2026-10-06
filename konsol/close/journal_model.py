@@ -254,10 +254,12 @@ def duration_label(reverse_year, reverse_period, period_rows):
 
 def reverses_here_label(fiscal_year, fiscal_period, period_rows):
     """The text a reversal shows in the period it posts into (konsol#305
-    story 6.5): "Reverses here from {period_code}" naming the original
-    journal's period, the counterpart of ``duration_label``'s "Reverses in
-    {period_code}". Never blank: an undeclared original period reads
-    "Reverses here from FY{y} P{p:02d} (not a declared period)"."""
+    story 6.5): "Reverses here from FY{y} P{p:02d}" naming the original
+    journal's fiscal year and period. Never the bare ``period_code``: live it
+    is "P06" alone (measured 6 Oct), ambiguous across a year boundary where
+    P12 reverses into next year's P01 (konsol#305 U1). Never blank: an
+    undeclared original period reads "Reverses here from FY{y} P{p:02d} (not
+    a declared period)"."""
     fy = int(fiscal_year or 0)
     fp = int(fiscal_period or 0)
     row = next(
@@ -267,7 +269,7 @@ def reverses_here_label(fiscal_year, fiscal_period, period_rows):
     )
     if row is None:
         return f"Reverses here from FY{fy} P{fp:02d} (not a declared period)"
-    return f"Reverses here from {row['period_code']}"
+    return f"Reverses here from FY{fy} P{fp:02d}"
 
 
 def reversal_lines(lines):
