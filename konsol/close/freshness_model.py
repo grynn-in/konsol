@@ -13,11 +13,15 @@ Rules:
 
 - A build is successful only when ``workflow_state == "Completed"``;
   ``completed_at`` is written on failure too (tasks.py:399).
-- A change is covered by a Completed ``consolidation`` or ``full`` build whose
-  ``completed_at`` is at or after the change, whatever the doctype's own scope
-  (A05b: a ``staging`` build rebuilds gold_consolidation_adjustments but not
+- A change is covered by a Completed build whose ``completed_at`` is at or
+  after the change and whose scope reaches what the change feeds
+  (``covering_scopes``, konsol#344): a doctype mapped to ``full`` (the
+  calendar, trial balances) is covered only by a ``full`` build, since
+  ``+tag:domain:consolidation`` leaves gold models they feed stale (#334,
+  #337); any other doctype by a ``consolidation`` or ``full`` build (A05b: a
+  ``staging`` build rebuilds gold_consolidation_adjustments but not
   gold_fully_consolidated_tb, measured from the dbt manifest 25 Sep 2026).
-  ``scope_of`` still names every doctype that may be passed.
+  The one input is ``scope_of`` (tasks.DOCTYPE_BUILD_MAP); no second list.
 - ``as_of`` is the latest Completed ``completed_at`` over the scopes that
   reach the consolidated numbers: ``consolidation`` and ``full``.
 - ``last_failed`` is set when the latest terminal (Completed or Failed)
@@ -45,6 +49,13 @@ def _completed_at(build):
             "but has no completed_at; set it before freshness can be judged."
         )
     return at
+
+
+def covering_scopes(mapped_scope):
+    """The build scopes that make a change of a doctype mapped to
+    ``mapped_scope`` current (konsol#344): ``full`` only for a ``full``
+    trigger, else either numbers scope."""
+    return (FULL,) if mapped_scope == FULL else NUMBERS_SCOPES
 
 
 def freshness(builds, input_changes, scope_of, flagged_states):
@@ -90,7 +101,7 @@ def freshness(builds, input_changes, scope_of, flagged_states):
                 f"{dt} has no build scope declared; add it to tasks.DOCTYPE_BUILD_MAP "
                 "so its changes can be judged."
             )
-        covering = [last_ok[s] for s in NUMBERS_SCOPES if s in last_ok]
+        covering = [last_ok[s] for s in covering_scopes(scope_of[dt]) if s in last_ok]
         if not covering or change["modified"] > max(covering):
             changed.add(dt)
     changed_since = sorted(changed)

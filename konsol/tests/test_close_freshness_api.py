@@ -260,7 +260,7 @@ def test_cancelled_builds_are_not_read():
 
 def test_draft_only_tb_changes_do_not_count():
     site = _Site(
-        builds=[_build("BA-1", "consolidation", "Completed", _dt(10))],
+        builds=[_build("BA-1", "full", "Completed", _dt(10))],  # TB maps to full (#334)
         records={"Trial Balance Submission": [(1, _dt(9)), (0, _dt(15))]},
     )
     out = _call(site)
