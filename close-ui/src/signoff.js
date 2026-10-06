@@ -283,3 +283,19 @@ export function closedOnText(value, now, timeZone) {
 	}
 	return formatTime(parseZoned(value), now, timeZone);
 }
+
+/**
+ * #305-W5-1 (story 9.4, #157): what the Reject dialog does when the sign-off
+ * machine moves from `prev` to `state`.
+ * - "refused": rejecting → signed is the server refusing the reject; the
+ *   dialog stays open with the typed reason, and shows the message.
+ * - "keep": still signed, or the reject is in flight.
+ * - "reset": anything else (an accepted reject reloads the summary, a stale
+ *   run reloads it, a close, a refresh); the dialog closes and its text goes,
+ *   so a reason typed against an old summary is never sent against a new one.
+ */
+export function rejectDialogAfter(prev, state) {
+	if (state === "signed" && prev === "rejecting") return "refused";
+	if (state === "signed" || state === "rejecting") return "keep";
+	return "reset";
+}
