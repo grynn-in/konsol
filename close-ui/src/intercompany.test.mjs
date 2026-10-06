@@ -568,3 +568,118 @@ test("the source imports no vue, frappe or xstate", () => {
 		assert.ok(!source.includes(`"${term}`) && !source.includes(`'${term}`), `unexpected import of ${term}`);
 	}
 });
+
+// --- konsol#305 5.4 (W5-4): IC Balances (unrealised profit) ------------------
+
+import { icBalancesView, icBalanceBody } from "./intercompany.js";
+
+const GAP_MESSAGE =
+	"No unrealised-profit IC Elimination Rule (rule type unrealized_profit, margin above 0) " +
+	"matches 1 IC Balance pair: FR01 → DE01. Its unrealised profit is not eliminated: declare the " +
+	"rule in Desk (IC Elimination Rule) before signing off.";
+
+function balancesPayload(overrides) {
+	return {
+		period: { fiscal_year: 2025, fiscal_period: 7, period_code: "P07", status: "Open" },
+		balances: [
+			{
+				name: "ICB-FR01-DE01-2025-P7", selling_entity: "FR01", buying_entity: "DE01",
+				fiscal_year: 2025, fiscal_period: 7, ic_sales_amount: 1000, ending_inventory_from_ic: 250.5,
+				status: "Approved", rules: [], missing_rule: true,
+			},
+			{
+				name: "ICB-UK01-DE01-2025-P7", selling_entity: "UK01", buying_entity: "DE01",
+				fiscal_year: 2025, fiscal_period: 7, ic_sales_amount: 1234.5, ending_inventory_from_ic: 0,
+				status: "Draft", rules: [{ rule_id: "R-UK", rule_name: "UK margin", margin_pct: 12.5 }],
+				missing_rule: false,
+			},
+		],
+		gap: {
+			code: "ic_unrealized_profit_rule_undeclared",
+			pairs: [{ selling_entity: "FR01", buying_entity: "DE01" }],
+			entities: ["DE01", "FR01"],
+			message: GAP_MESSAGE,
+		},
+		hidden: 0,
+		entities: ["DE01", "FR01", "UK01"],
+		can_draft: true,
+		rules_desk: "/app/ic-elimination-rule",
+		...overrides,
+	};
+}
+
+test("icBalancesView: rows carry the pair, status, amounts and the rule's margin read-only", () => {
+	const view = icBalancesView(balancesPayload());
+	const [fr, uk] = view.rows;
+	assert.equal(fr.pair, "FR01 → DE01");
+	assert.equal(fr.statusText, "Approved");
+	assert.equal(fr.salesText, "1,000.00");
+	assert.equal(fr.inventoryText, "250.50");
+	assert.equal(fr.marginText, "No unrealised-profit rule: nothing is eliminated");
+	assert.equal(fr.missingRule, true);
+	assert.equal(fr.editable, false);
+	assert.equal(uk.statusText, "Draft");
+	assert.equal(uk.marginText, "12.5% (UK margin)");
+	assert.equal(uk.missingRule, false);
+	assert.equal(uk.editable, true);
+});
+
+test("icBalancesView: the gap is shown naming each pair, with the Desk link", () => {
+	const view = icBalancesView(balancesPayload());
+	assert.deepEqual(view.gap.pairs, ["FR01 → DE01"]);
+	assert.deepEqual(view.gap.lines, [GAP_MESSAGE]);
+	assert.equal(view.rulesDesk, "/app/ic-elimination-rule");
+});
+
+test("icBalancesView: no gap, no balances, hidden note", () => {
+	const view = icBalancesView(balancesPayload({ gap: null, balances: [], hidden: 2 }));
+	assert.equal(view.gap, null);
+	assert.deepEqual(view.rows, []);
+	assert.equal(view.hiddenNote, "2 IC Balances for entities outside your scope are not shown");
+	assert.equal(icBalancesView(balancesPayload()).hiddenNote, null);
+});
+
+test("icBalancesView: a draft is editable only when the caller can draft", () => {
+	const view = icBalancesView(balancesPayload({ can_draft: false }));
+	assert.equal(view.canDraft, false);
+	assert.ok(view.rows.every((r) => r.editable === false));
+});
+
+test("icBalancesView: more than one matching rule shows every margin", () => {
+	const payload = balancesPayload();
+	payload.balances[1].rules.push({ rule_id: "R-ALL", rule_name: "R-ALL", margin_pct: 5 });
+	assert.equal(icBalancesView(payload).rows[1].marginText, "12.5% (UK margin), 5% (R-ALL)");
+});
+
+test("Failure path — icBalancesView throws on an unknown status, naming it", () => {
+	const payload = balancesPayload();
+	payload.balances[0].status = "Cancelled";
+	assert.throws(() => icBalancesView(payload), /Unknown IC Balance status: Cancelled/);
+});
+
+test("icBalanceBody: exactly the endpoint's keys, amounts as typed, name only when editing", () => {
+	const period = { fiscal_year: 2025, fiscal_period: 7 };
+	const form = { selling_entity: "UK01", buying_entity: "DE01", ic_sales_amount: "1000", ending_inventory_from_ic: "250" };
+	assert.deepEqual(icBalanceBody(period, form), {
+		body: {
+			fiscal_year: 2025, fiscal_period: 7, selling_entity: "UK01", buying_entity: "DE01",
+			ic_sales_amount: "1000", ending_inventory_from_ic: "250",
+		},
+	});
+	const edit = icBalanceBody(period, { ...form, name: "ICB-UK01-DE01-2025-P7", docstatus: 1, status: "Approved" });
+	assert.deepEqual(Object.keys(edit.body).sort(), [
+		"buying_entity", "ending_inventory_from_ic", "fiscal_period", "fiscal_year",
+		"ic_sales_amount", "name", "selling_entity",
+	]);
+	assert.equal(edit.body.name, "ICB-UK01-DE01-2025-P7");
+});
+
+test("Failure path — icBalanceBody refuses blank/same entities and bad amounts before any request", () => {
+	const period = { fiscal_year: 2025, fiscal_period: 7 };
+	const ok = { selling_entity: "UK01", buying_entity: "DE01", ic_sales_amount: "1", ending_inventory_from_ic: "1" };
+	assert.match(icBalanceBody(period, { ...ok, selling_entity: "" }).error, /selling entity/);
+	assert.match(icBalanceBody(period, { ...ok, buying_entity: "UK01" }).error, /same entity/);
+	assert.match(icBalanceBody(period, { ...ok, ic_sales_amount: "abc" }).error, /IC sales amount/);
+	assert.match(icBalanceBody(period, { ...ok, ending_inventory_from_ic: "-3" }).error, /negative/);
+	assert.match(icBalanceBody(period, { ...ok, ending_inventory_from_ic: "" }).error, /ending inventory/);
+});
