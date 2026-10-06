@@ -57,6 +57,7 @@ BUILD_MAP.update({
     "IC Elimination Rule": {"scope": "consolidation", "risk": "high"},
     "IC Balance": {"scope": "consolidation", "risk": "high"},
     "Entity": {"scope": "consolidation", "risk": "high"},
+    "EPM Fiscal Year": {"scope": "full", "risk": "high"},
     "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
     "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
 })
@@ -73,7 +74,9 @@ class _Site:
     def __init__(self, builds=(), records=None, roles=("EPM User",),
                  triggers=None, build_map=None, deleted=None):
         self.builds = list(builds)
-        self.records = records or {}  # doctype -> [(docstatus, modified)]
+        # doctype -> [(docstatus, modified)], or for EPM Fiscal Year
+        # [(docstatus, modified, calendar_changed_at)] (konsol#340)
+        self.records = records or {}
         self.deleted = deleted or {}  # doctype -> [Deleted Document creation]
         self.roles = set(roles)
         self.triggers = list(TRIGGERS if triggers is None else triggers)
@@ -127,7 +130,12 @@ def _load(site):
         rows = site.records.get(dt, [])
         if re.search(r"docstatus\s+in\s*\(\s*1\s*,\s*2\s*\)", query, re.I):
             rows = [r for r in rows if r[0] in (1, 2)]
-        latest = max((r[1] for r in rows), default=None)
+        # konsol#340: the column the query takes MAX of. A row with no value
+        # in it is skipped, as SQL's MAX skips NULL.
+        col = re.search(r"MAX\((\w+)\)", query).group(1)
+        idx = {"modified": 1, "calendar_changed_at": 2}[col]
+        latest = max((r[idx] for r in rows if len(r) > idx and r[idx] is not None),
+                     default=None)
         return [[latest]]
 
     frappe.throw = throw
@@ -284,7 +292,7 @@ def test_entity_is_read_as_well_as_the_hook_triggers():
     assert _call(site)["changed_since"] == ["Entity"]
     queried = {re.search(r"`tab([^`]+)`", q).group(1) for q in site.sql_calls
                if "Deleted Document" not in q}
-    assert queried == set(TRIGGERS) | {"Entity"}
+    assert queried == set(TRIGGERS) | {"Entity", "EPM Fiscal Year"}
 
 
 def test_a_deleted_ic_elimination_rule_after_the_build_is_stale():
@@ -309,6 +317,48 @@ def test_a_deleted_draft_of_a_submittable_doctype_does_not_count():
     out = _call(site)
     assert out["state"] == "fresh", out
     assert out["changed_since"] == []
+
+
+# --- konsol#340: a structural calendar change, not a period close -------------
+# EPM Fiscal Year requests a full build from its controller only when the
+# published calendar changes (#337). Freshness reads calendar_changed_at, which
+# moves with that request; `modified` also moves on every Close, Lock and
+# Reopen, and no build would ever clear it.
+
+def test_a_period_close_after_the_build_does_not_make_the_numbers_stale():
+    site = _Site(
+        builds=[_build("BA-1", "full", "Completed", _dt(10))],
+        records={"EPM Fiscal Year": [(0, _dt(15), _dt(9))]},   # closed on the 15th
+    )
+    out = _call(site)
+    assert out["state"] == "fresh", out
+    assert out["changed_since"] == []
+
+
+def test_a_calendar_change_after_the_build_makes_the_numbers_stale():
+    site = _Site(
+        builds=[_build("BA-1", "full", "Completed", _dt(10))],
+        records={"EPM Fiscal Year": [(0, _dt(15), _dt(11))]},  # relabelled on the 11th
+    )
+    out = _call(site)
+    assert out["state"] == "stale", out
+    assert out["changed_since"] == ["EPM Fiscal Year"]
+    fy = [q for q in site.sql_calls if "`tabEPM Fiscal Year`" in q]
+    assert fy and all("calendar_changed_at" in q and "modified" not in q for q in fy), fy
+
+
+def test_a_deleted_fiscal_year_after_the_build_makes_the_numbers_stale():
+    # A deleted year has no calendar_changed_at; its Deleted Document row
+    # (A42) is the change. Every saved year has periods (`periods` is
+    # required), so every delete requested a full build (#337 after_delete).
+    site = _Site(
+        builds=[_build("BA-1", "full", "Completed", _dt(10))],
+        records={"EPM Fiscal Year": [(0, _dt(9), _dt(9))]},
+        deleted={"EPM Fiscal Year": [_dt(11)]},
+    )
+    out = _call(site)
+    assert out["state"] == "stale", out
+    assert out["changed_since"] == ["EPM Fiscal Year"]
 
 
 def test_an_undeclared_trigger_doctype_raises_not_skipped():
@@ -341,7 +391,9 @@ def _literal_assignment(path, name):
 def test_every_real_trigger_doctype_is_in_the_build_map():
     triggers = _literal_assignment(os.path.join(APP_DIR, "hooks.py"), "_dbt_trigger_doctypes")
     build_map = _literal_assignment(os.path.join(APP_DIR, "tasks.py"), "DOCTYPE_BUILD_MAP")
-    missing = [dt for dt in list(triggers) + ["Entity"] if dt not in build_map]
+    controller = _literal_assignment(API_PY, "CONTROLLER_TRIGGERS")
+    assert "EPM Fiscal Year" in controller, controller
+    missing = [dt for dt in list(triggers) + list(controller) if dt not in build_map]
     assert missing == []
 
 

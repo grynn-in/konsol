@@ -20,6 +20,10 @@ PATTERNS = os.path.join(APP_DIR, "fiscal_patterns_model.py")
 CALENDAR = os.path.join(APP_DIR, "fiscal_calendar.py")
 
 
+#: What the stub frappe.utils.now_datetime() returns.
+NOW = datetime(2026, 10, 6, 9, 15)
+
+
 class Thrown(Exception):
     """frappe.throw was called."""
 
@@ -69,6 +73,13 @@ def _load():
             """The saved version, set by a test as `_before_save`; None when new."""
             return self.__dict__.get("_before_save")
 
+        def db_set(self, field, value, update_modified=True, **kwargs):
+            """As Frappe's db_set: the field is set and written straight to
+            the row; recorded in frappe.events (konsol#340)."""
+            self.__dict__[field] = value
+            sys.modules["frappe"].events.append(
+                ("db_set", self.name, field, value, update_modified))
+
         def save(self, *args, **kwargs):
             """As Frappe's save: runs validate(), then writes the document
             back as its own saved version (deep-copied, so a later edit to
@@ -111,6 +122,7 @@ def _load():
     mods["frappe.utils"].getdate = _getdate
     mods["frappe.utils"].get_datetime = _get_datetime
     mods["frappe.utils"].cint = lambda v: int(v or 0)
+    mods["frappe.utils"].now_datetime = lambda: NOW
     mods["konsol"].__path__ = []
 
     pure_names = {"konsol.fiscal_structure_model": PURE, "konsol.fiscal_status_model": STATUS,
@@ -829,3 +841,68 @@ def test_a_status_move_or_an_unchanged_save_requests_no_build():
             _year(module, []).on_update()
             _year(module, []).after_delete()
         assert made == [], made
+
+
+# --- konsol#340: a calendar change stamps calendar_changed_at; a status move does not ---
+# Freshness reads EPM Fiscal Year's calendar_changed_at, not `modified`: every
+# Close, Lock and Reopen bumps `modified`, and no build would ever clear it.
+# The stamp is set where #337 decides to request the build, so the two agree:
+# a save that requests a full build moves the stamp, and only such a save.
+
+def _stamps():
+    return [e[1:] for e in sys.modules["frappe"].events if e[0] == "db_set"]
+
+
+def test_a_calendar_change_stamps_calendar_changed_at_once():
+    """The stamp is written straight to the row (db_set, without moving
+    `modified`), once per save that requests a build: a relabel, a new year,
+    a re-dated period."""
+    def p03_label(doc):
+        doc.periods[3].period_label = "March (restated)"
+
+    with _load() as module:
+        for change in (p03_label, _move_p03_end):
+            doc = _edit(module, _saved(module))
+            change(doc)
+            sys.modules["frappe"].events.clear()
+            with _requests() as made:
+                doc.on_update()
+            assert len(made) == 1, (change.__name__, made)
+            assert _stamps() == [("2025", "calendar_changed_at", NOW, False)], \
+                (change.__name__, _stamps())
+            assert doc.calendar_changed_at == NOW
+
+        sys.modules["frappe"].events.clear()
+        with _requests():
+            _year(module, _monthly_2025()).on_update()        # a new year, declared
+        assert _stamps() == [("2025", "calendar_changed_at", NOW, False)], _stamps()
+
+
+def test_a_status_move_or_an_unchanged_save_does_not_stamp():
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.status = "Closed"
+        doc.closed_by = "admin@example.com"
+        for r in doc.periods:
+            r.status = "Locked"
+        doc.closing_note = "closed"
+        sys.modules["frappe"].events.clear()
+        with _requests() as made:
+            doc.on_update()
+        assert made == [] and _stamps() == [], (made, _stamps())
+        assert doc.calendar_changed_at is None
+
+
+def test_calendar_changed_at_is_a_read_only_datetime_backfilled_on_upgrade():
+    """Only the controller writes it (read-only, not copied to a duplicate),
+    and the upgrade patch fills it for every existing year."""
+    import json
+    meta = json.load(open(os.path.join(APP_DIR, "epm", "doctype", "epm_fiscal_year",
+                                       "epm_fiscal_year.json")))
+    field = next((f for f in meta["fields"] if f["fieldname"] == "calendar_changed_at"), None)
+    assert field is not None, "EPM Fiscal Year has no calendar_changed_at"
+    assert field["fieldtype"] == "Datetime" and field.get("read_only") == 1, field
+    assert field.get("no_copy") == 1, field
+    assert "calendar_changed_at" in meta["field_order"]
+    patches = open(os.path.join(APP_DIR, "patches.txt")).read().split()
+    assert "konsol.patches.stamp_fiscal_year_calendar_changed_at" in patches
