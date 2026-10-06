@@ -219,6 +219,7 @@ YEAR_FIELD_ORDER = [
     "periods_tab",
     "periods_section",
     "periods",
+    "calendar_changed_at",
     "closing_tab",
     "closed_section",
     "closed_by",
@@ -333,6 +334,17 @@ YEAR_EXPECTED_FIELDS = {
             "Built by Generate Periods, then editable while the year is "
             "Open. A period that documents use cannot be removed, "
             "renumbered or re-dated."),
+    },
+    # konsol#340: stamped by the controller with the full build it requests.
+    "calendar_changed_at": {
+        "fieldtype": "Datetime",
+        "label": "Calendar Changed At",
+        "read_only": 1,
+        "description": (
+            "When the published calendar last changed: a period added, "
+            "removed, re-typed, re-dated, relabelled or re-quartered. Set by "
+            "the system with the full build it requests; a Close, Lock or "
+            "Reopen does not move it. The close freshness indicator reads it."),
     },
     "closing_tab": {
         "fieldtype": "Tab Break",
