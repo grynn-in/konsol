@@ -169,3 +169,14 @@ test("A trailView throw (unknown kind or sign-off state) is shown as the screen'
 	assert.match(js, /catch\s*\(\s*(\w+)\s*\)/);
 	assert.match(js, /\.message/, "the thrown error's message reaches LoadState");
 });
+
+// --- konsol#305 review-w5 U11: the filter chip rows are named groups ---------
+
+test("U11: each filter chip row is a role=group labelled by its visible name", () => {
+  const src = read();
+  for (const name of ["Kind", "Actor", "Entity"]) {
+    const id = `trail-filter-${name.toLowerCase()}`;
+    assert.match(src, new RegExp(`role="group"[^>]*aria-labelledby="${id}"`), name);
+    assert.match(src, new RegExp(`<span id="${id}"[^>]*>${name}</span>`), name);
+  }
+});

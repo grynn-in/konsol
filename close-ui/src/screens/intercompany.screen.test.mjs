@@ -233,3 +233,12 @@ test("5.4: the balances load has its own seq guard and LoadState", () => {
 	assert.match(js, /\+\+balancesSeq\b/);
 	assert.ok((template(source).match(/<LoadState\b/g) || []).length >= 2, "a second LoadState for the balances");
 });
+
+// --- konsol#305 review-w5 U8: the IC Balance save's period guard --------------
+
+test("U8: saveBalance ignores a result for a period the user has left (whileCurrent)", () => {
+	const src = script(read());
+	assert.match(src, /import \{[^}]*\bwhileCurrent\b[^}]*\} from "\.\.\/stillCurrent\.js"/);
+	const fn = src.slice(src.indexOf("async function saveBalance"));
+	assert.match(fn.slice(0, fn.indexOf("\n}\n")), /whileCurrent\(/);
+});

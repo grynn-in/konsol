@@ -29,15 +29,28 @@ function fakes() {
 
 test("saveFile clicks a link to the blob named with the server's filename, then cleans up", () => {
 	const { log, doc, urls } = fakes();
-	saveFile({ size: 9 }, "trail-FY2025P07.csv", { doc, urls });
+	const later = [];
+	saveFile({ size: 9 }, "trail-FY2025P07.csv", { doc, urls, defer: (fn) => later.push(fn) });
 	assert.deepEqual(log, [
 		["url", 9],
 		["create", "a"],
 		["append", true],
 		["click", "blob:1", "trail-FY2025P07.csv"],
 		["remove"],
-		["revoke", "blob:1"],
 	]);
+	// U7: the URL is revoked only after the click has handed the file to the
+	// browser (a later task), so the save is never aborted.
+	assert.equal(later.length, 1);
+	later[0]();
+	assert.deepEqual(log.at(-1), ["revoke", "blob:1"]);
+});
+
+test("U7: saveFile's default defers the revoke to a later task", async () => {
+	const { log, doc, urls } = fakes();
+	saveFile({ size: 9 }, "x.xlsx", { doc, urls });
+	assert.ok(!log.some((e) => e[0] === "revoke"), "not revoked synchronously after click");
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.deepEqual(log.at(-1), ["revoke", "blob:1"]);
 });
 
 test("saveFile refuses a blank filename: the name is the server's, never made up", () => {
