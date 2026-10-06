@@ -610,3 +610,25 @@ test("U47: failure path — commentary never changes the summary's action", () =
   assert.equal(allCommented, "run_checks");
   assert.equal(none, "run_checks");
 });
+
+// --- #305-W5-1 (story 9.4, #157): the reject dialog follows the machine --------
+
+test("rejectDialogAfter: a refusal (rejecting → signed) keeps the text and shows the error", async () => {
+	const { rejectDialogAfter } = await import("./signoff.js");
+	assert.equal(rejectDialogAfter("rejecting", "signed"), "refused");
+});
+
+test("rejectDialogAfter: while signed or rejecting, the dialog and its text are kept", async () => {
+	const { rejectDialogAfter } = await import("./signoff.js");
+	assert.equal(rejectDialogAfter("signed", "rejecting"), "keep");
+	assert.equal(rejectDialogAfter("loading", "signed"), "keep");
+	assert.equal(rejectDialogAfter(null, "signed"), "keep");
+});
+
+test("rejectDialogAfter: any other state (an accepted reject reloads, a close, a refresh) resets it", async () => {
+	const { rejectDialogAfter } = await import("./signoff.js");
+	for (const [prev, state] of [["rejecting", "loading"], ["signed", "loading"], ["signed", "closing"],
+		["closing", "closed"], [null, "review"], ["rejecting", "loadFailed"]]) {
+		assert.equal(rejectDialogAfter(prev, state), "reset", `${prev} → ${state}`);
+	}
+});
