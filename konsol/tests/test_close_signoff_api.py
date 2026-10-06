@@ -176,8 +176,8 @@ class _Site:
                                       "fx_difference": 0, "over_tolerance": 0, "unmatched": 0},
                            "sent_back_open": 0}
         self.ic_tolerance_gap = None
-        #: #305 5.4: the stubbed `konsol.close.ic_balance_api.rule_gap` returns this.
-        self.ic_rule_gap = None
+        #: #305 5.4: the stubbed `konsol.close.ic_balance_api.rule_gaps` returns this list.
+        self.ic_rule_gaps = []
         self.ic_calls = []
         #: W5-2 (8.4): the stubbed `konsol.close.statement_api.signoff_commentary`
         #: answer (default: checked, nothing required — the real
@@ -412,7 +412,7 @@ def _load(site):
 
     # #305 5.4: the gate imports konsol.close.ic_balance_api lazily.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
-    ic_balance_api.rule_gap = lambda fiscal_year, fiscal_period: site.ic_rule_gap
+    ic_balance_api.rule_gaps = lambda fiscal_year, fiscal_period: list(site.ic_rule_gaps)
     close.ic_balance_api = ic_balance_api
 
     # W5-2 (8.4): a stub `konsol.close.statement_api` (the real one reads
@@ -958,22 +958,37 @@ def test_unowned_tb_gap_unscoped_names_the_entity():
     assert "ZZX" in gaps[0]["message"]
 
 
-def _real_rule_gap(*pairs):
-    """#305 5.4: the real producer's gap (ic_balance_model.rule_gap) for
-    draft IC Balances of ``pairs`` with no rule."""
+def _ic_balance_model():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "close", "ic_balance_model.py")
     spec = importlib.util.spec_from_file_location("ic_balance_model_for_signoff_api", path)
     model = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(model)
+    return model
+
+
+def _real_rule_gaps(*pairs):
+    """#305 5.4: the real producer's gaps (ic_balance_model.rule_gaps) for
+    draft IC Balances of ``pairs`` with no rule."""
+    model = _ic_balance_model()
     balances = [{"name": "B%d" % i, "selling_entity": s, "buying_entity": b, "docstatus": 0}
                 for i, (s, b) in enumerate(pairs)]
-    return model.rule_gap(balances, [])
+    return model.rule_gaps(balances, [])
+
+
+def _real_ambiguous_gaps(*pairs):
+    """F51b: the real producer's gaps for draft IC Balances of ``pairs``
+    that two wildcard rules both match."""
+    balances = [{"name": "B%d" % i, "selling_entity": s, "buying_entity": b, "docstatus": 0,
+                 "ending_inventory_from_ic": 40.0} for i, (s, b) in enumerate(pairs)]
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    return _ic_balance_model().rule_gaps(balances, rules)
 
 
 def test_ic_rule_gap_unscoped_names_the_pairs():
     site = _Site()
-    site.ic_rule_gap = _real_rule_gap(("ZZA", "ZZX"))
+    site.ic_rule_gaps = _real_rule_gaps(("ZZA", "ZZX"))
     gaps = [g for g in _get(site)["gates"]["config_gaps"]
             if g["code"] == "ic_unrealized_profit_rule_undeclared"]
     assert len(gaps) == 1
@@ -984,7 +999,7 @@ def test_ic_rule_gap_is_scoped_to_the_callers_entities():
     """#305 5.4: a scoped caller sees its own entity and a count; neither the
     message nor the pairs name an entity outside its scope."""
     site = _Site()
-    site.ic_rule_gap = _real_rule_gap(("ZZA", "ZZX"), ("ZZY", "ZZZ"))
+    site.ic_rule_gaps = _real_rule_gaps(("ZZA", "ZZX"), ("ZZY", "ZZZ"))
     site.allowed = {"ZZA"}
     result = _get(site)
     gaps = [g for g in result["gates"]["config_gaps"]
@@ -1629,3 +1644,32 @@ def test_commentary_acknowledgements_match_the_golden_fixture():
     result = _get(site)
     with open(ACK_COMMENTARY_FIXTURE) as fh:
         assert result["acknowledgements"] == json.load(fh)
+
+
+
+# --- F51b / review S2: the ambiguous-rule gap -----------------------------------
+
+def test_ic_rule_ambiguous_gap_unscoped_names_pair_and_rules():
+    site = _Site()
+    site.ic_rule_gaps = _real_ambiguous_gaps(("ZZA", "ZZX"))
+    gaps = [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_ambiguous"]
+    assert len(gaps) == 1
+    assert "ZZA → ZZX (R1, R2)" in gaps[0]["message"]
+
+
+def test_ic_rule_ambiguous_gap_is_scoped_to_the_callers_entities():
+    site = _Site()
+    site.ic_rule_gaps = _real_ambiguous_gaps(("ZZA", "ZZX"), ("ZZY", "ZZZ"))
+    site.allowed = {"ZZA"}
+    gaps = [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_unrealized_profit_rule_ambiguous"]
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == ["ZZA"] and gap["hidden"] == 3 and gap["pairs"] == []
+    assert "ZZA" in gap["message"] and "3 entities outside your scope" in gap["message"]
+    assert "more than once" in gap["message"] and "IC Elimination Rule" in gap["message"]
+    text = json.dumps(gap)
+    for other in ("ZZX", "ZZY", "ZZZ"):
+        assert other not in text, other
+    assert "ic_unrealized_profit_rule_ambiguous (" not in gap["message"]

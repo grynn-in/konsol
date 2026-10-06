@@ -233,3 +233,14 @@ test("5.4: the balances load has its own seq guard and LoadState", () => {
 	assert.match(js, /\+\+balancesSeq\b/);
 	assert.ok((template(source).match(/<LoadState\b/g) || []).length >= 2, "a second LoadState for the balances");
 });
+
+test("F51b: the ambiguous-rule gap is shown naming the pairs, with the Desk link", () => {
+	const tpl = template(read());
+	const block = blockWithVIf(tpl, "div", /balancesView\.ambiguousGap/);
+	assert.ok(block, "a div's v-if tests balancesView.ambiguousGap");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /balancesView\.ambiguousGap\.lines/);
+	assert.match(inner, /balancesView\.ambiguousGap\.pairs/);
+	assert.match(inner, /rulesDesk/);
+	assert.match(tpl, /row\.ambiguousRule/, "a row two rules match is marked");
+});

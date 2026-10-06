@@ -245,3 +245,68 @@ def test_unreadable_inventory_still_blocks():
 def test_zero_inventory_row_is_not_missing_a_rule():
     [row] = M.balance_rows([_bal(inventory="0")], [])
     assert row["rules"] == [] and row["missing_rule"] is False
+
+
+# --- F51b / review S2: two rules on one pair are eliminated twice -----------------
+# dbt cross-joins every matching rule (gold_ic_eliminations.sql
+# unrealized_profit_eliminations): a '*'/'*' 20% rule plus a 25% rule for
+# UK01 -> DE01 eliminate 45% of the inventory. That is a blocking gap.
+
+def test_one_rule_per_pair_is_not_ambiguous():
+    assert M.ambiguous_gap([_bal()], [_rule()]) is None
+    assert M.ambiguous_gap([_bal()], []) is None  # the undeclared gap's job
+    assert M.ambiguous_gap([], [_rule("R1"), _rule("R2")]) is None
+
+
+def test_two_matching_rules_are_an_ambiguous_gap_naming_pair_and_rules():
+    rules = [_rule("R-ALL", margin="20"), _rule("R-UK", debit="UK01", credit="DE01", margin="25"),
+             _rule("R-FR", debit="FR01", credit="DE01")]
+    balances = [_bal("A", "UK01", "DE01"), _bal("B", "UK01", "DE01", fp=8),
+                _bal("C", "ES01", "DE01")]
+    gap = M.ambiguous_gap(balances, rules)
+    assert gap["code"] == M.RULE_AMBIGUOUS == "ic_unrealized_profit_rule_ambiguous"
+    assert gap["pairs"] == [{"selling_entity": "UK01", "buying_entity": "DE01",
+                             "rule_ids": ["R-ALL", "R-UK"]}]
+    assert gap["entities"] == ["DE01", "UK01"]
+    msg = gap["message"]
+    assert "UK01 → DE01 (R-ALL, R-UK)" in msg
+    assert "ES01" not in msg and "R-FR" not in msg
+    assert "1 IC Balance pair" in msg and "more than once" in msg and "Desk" in msg
+
+
+def test_ambiguous_gap_plural_and_ordered():
+    rules = [_rule("R1"), _rule("R2")]
+    gap = M.ambiguous_gap([_bal("A", "UK01", "DE01"), _bal("B", "FR01", "DE01")], rules)
+    assert [(p["selling_entity"], p["buying_entity"]) for p in gap["pairs"]] == [
+        ("FR01", "DE01"), ("UK01", "DE01")]
+    assert "2 IC Balance pairs" in gap["message"]
+
+
+def test_ambiguous_ignores_rules_dbt_does_not_apply():
+    rules = [_rule("R1"), _rule("R0", margin="0"), _rule("RB", rule_type="balance")]
+    assert M.ambiguous_gap([_bal()], rules) is None
+
+
+def test_ambiguous_skips_a_balance_with_nothing_to_eliminate():
+    assert M.ambiguous_gap([_bal(inventory="0")], [_rule("R1"), _rule("R2")]) is None
+
+
+def test_ambiguous_cancelled_balance_raises():
+    _raises(ValueError, M.ambiguous_gap, [_bal(docstatus=2)], [_rule("R1"), _rule("R2")])
+
+
+def test_rule_gaps_is_both_gaps_undeclared_first():
+    rules = [_rule("R1", debit="UK01"), _rule("R2", debit="UK01")]
+    gaps = M.rule_gaps([_bal("A", "UK01", "DE01"), _bal("B", "FR01", "DE01")], rules)
+    assert [g["code"] for g in gaps] == [M.RULE_UNDECLARED, M.RULE_AMBIGUOUS]
+    assert M.rule_gaps([_bal()], [_rule()]) == []
+    assert [g["code"] for g in M.rule_gaps([_bal()], [])] == [M.RULE_UNDECLARED]
+
+
+def test_rows_flag_an_ambiguous_rule():
+    [row] = M.balance_rows([_bal()], [_rule("R1"), _rule("R2")])
+    assert row["ambiguous_rule"] is True and row["missing_rule"] is False
+    [row] = M.balance_rows([_bal()], [_rule("R1")])
+    assert row["ambiguous_rule"] is False
+    [row] = M.balance_rows([_bal(inventory="0")], [_rule("R1"), _rule("R2")])
+    assert row["ambiguous_rule"] is False

@@ -43,6 +43,15 @@ def _ic_rule_gap(*pairs):
                           "docstatus": 0} for i, (s, b) in enumerate(pairs)], [])
 
 
+def _ic_rule_ambiguous_gap(*pairs):
+    """F51b: the real producer's gap for ``pairs`` two wildcard rules match."""
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    return IBM.ambiguous_gap([{"name": "B%d" % i, "selling_entity": s, "buying_entity": b,
+                               "docstatus": 0, "ending_inventory_from_ic": 40.0}
+                              for i, (s, b) in enumerate(pairs)], rules)
+
+
 def _facts(**over):
     facts = {
         "first_close": (2025, 7),
@@ -53,7 +62,7 @@ def _facts(**over):
         "policy_gaps": [],
         "ic_accounts_gap": None,
         "ic_tolerance_gap": None,
-        "ic_rule_gap": None,
+        "ic_rule_gaps": [],
     }
     facts.update(over)
     return facts
@@ -981,7 +990,7 @@ def test_an_unknown_kind_raises():
 
 def test_ic_rule_gap_is_one_blocking_item_naming_the_pairs():
     gap = _ic_rule_gap(("UK01", "DE01"), ("FR01", "DE01"))
-    items = M.setup_gap_items(_facts(ic_rule_gap=gap))
+    items = M.setup_gap_items(_facts(ic_rule_gaps=[gap]))
     assert [i["id"] for i in items] == ["gap:ic_rule"]
     item = items[0]
     assert item["kind"] == "blocking"
@@ -994,22 +1003,51 @@ def test_ic_rule_gap_is_one_blocking_item_naming_the_pairs():
 
 
 def test_ic_rule_gap_title_singular():
-    item = M.setup_gap_items(_facts(ic_rule_gap=_ic_rule_gap(("UK01", "DE01"))))[0]
+    item = M.setup_gap_items(_facts(ic_rule_gaps=[_ic_rule_gap(("UK01", "DE01"))]))[0]
     assert item["title"] == "Unrealised-profit rule missing for 1 IC Balance pair"
 
 
 def test_ic_rule_gap_follows_the_tolerance_gap():
     items = M.setup_gap_items(_facts(ic_tolerance_gap=_IC_TOLERANCE_GAP,
-                                     ic_rule_gap=_ic_rule_gap(("UK01", "DE01")),
+                                     ic_rule_gaps=[_ic_rule_gap(("UK01", "DE01"))],
                                      frequency_missing=["FR01"]))
     assert [i["id"] for i in items] == ["gap:ic_tolerance", "gap:ic_rule", "gap:frequency"]
 
 
-def test_missing_ic_rule_gap_fact_raises_not_guessed():
+def test_missing_ic_rule_gaps_fact_raises_not_guessed():
     facts = _facts()
-    del facts["ic_rule_gap"]
-    with pytest.raises(ValueError, match="ic_rule_gap"):
+    del facts["ic_rule_gaps"]
+    with pytest.raises(ValueError, match="ic_rule_gaps"):
         M.setup_gap_items(facts)
+
+
+def test_ic_rule_ambiguous_gap_is_one_blocking_item_naming_pairs_and_rules():
+    """F51b / review S2: two rules on one pair are eliminated twice by dbt."""
+    gap = _ic_rule_ambiguous_gap(("UK01", "DE01"), ("FR01", "DE01"))
+    items = M.setup_gap_items(_facts(ic_rule_gaps=[gap]))
+    assert [i["id"] for i in items] == ["gap:ic_rule_ambiguous"]
+    item = items[0]
+    assert item["kind"] == "blocking"
+    assert item["title"] == "More than one unrealised-profit rule for 2 IC Balance pairs"
+    assert item["detail"] == gap["message"]
+    assert "UK01 → DE01 (R1, R2)" in item["detail"]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/ic-elimination-rule"}
+    assert item["entities"] == ["DE01", "FR01", "UK01"]
+    one = M.setup_gap_items(_facts(ic_rule_gaps=[_ic_rule_ambiguous_gap(("UK01", "DE01"))]))[0]
+    assert one["title"] == "More than one unrealised-profit rule for 1 IC Balance pair"
+
+
+def test_ic_rule_ambiguous_item_follows_the_missing_rule_item():
+    items = M.setup_gap_items(_facts(ic_rule_gaps=[
+        _ic_rule_ambiguous_gap(("UK01", "DE01")), _ic_rule_gap(("FR01", "DE01"))]))
+    assert [i["id"] for i in items] == ["gap:ic_rule", "gap:ic_rule_ambiguous"]
+
+
+def test_unknown_ic_rule_gap_code_raises_not_guessed():
+    with pytest.raises(ValueError, match="ic_rule_other"):
+        M.setup_gap_items(_facts(ic_rule_gaps=[{"code": "ic_rule_other", "pairs": [],
+                                                "entities": [], "message": "m"}]))
 
 
 # --- W5-2 (story 8.4): the commentary-threshold gap ---------------------------
