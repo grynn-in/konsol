@@ -17,7 +17,7 @@
 // - `summary` (trail_model.summary, with datetimes made ISO by
 //   trail_api._iso_summary) is `{signoff, closed, locked, counts}`.
 //   `signoff` is `{"state": "none"}`, or `{state: "signed", by, at,
-//   result, run_status, reason, warnings}`, or `{state: "voided", by, at,
+//   result, run_status, reason, warnings}`, or `{state: "voided" | "rejected", by, at,
 //   reason}`. `closed`/`locked` are `{by, at}` or null. `trail_api`
 //   (T07c) adds `by_name` and `by_missing` next to `by` on `signoff`,
 //   `closed` and `locked`, resolved from the same single User lookup
@@ -226,6 +226,9 @@ function signedOffText(signoff, now, timeZone) {
 	}
 	if (signoff.state === "voided") {
 		return `Voided — ${signoff.reason}`;
+	}
+	if (signoff.state === "rejected") {
+		return `Rejected — ${signoff.reason}`;
 	}
 	if (signoff.state === "signed") {
 		return `${summaryBy(signoff)} · ${formatTime(parseZoned(signoff.at), now, timeZone)}`;
