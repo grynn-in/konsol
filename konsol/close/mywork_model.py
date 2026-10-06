@@ -548,3 +548,60 @@ def sent_back_items(rows, persona, period_codes):
             item["since_reason"] = "sent back"
         items.append(item)
     return items
+
+
+# --- #305-W5-1 (story 9.4, #157): the preparer's "sent back" sign-off item -----
+#
+# ``signoff_sent_back_items(events, user, persona, period_codes)``: one ``todo``
+# item per period whose latest sign-off event is a ``signoff_rejected`` naming
+# ``user`` as the preparer (``detail.preparer``, the run's ``triggered_by``;
+# ``assertion_run.reject_signoff``). A later ``signed_off`` for the period
+# clears it: the item stays "until the period is signed". ``events`` are Close
+# Events of those two kinds, each ``{name, kind, fiscal_year, fiscal_period,
+# actor, at (ISO text), reason, detail (dict or None)}``; the latest is by
+# ``(at, name)``. Another kind, a Viewer or unknown persona, or a period
+# missing from ``period_codes`` raises ValueError: nothing is guessed. A
+# reject with no preparer recorded is nobody's item (the audit trail still
+# shows it).
+
+SIGNOFF_EVENT_KINDS = ("signed_off", "signoff_rejected")
+
+
+def signoff_sent_back_items(events, user, persona, period_codes):
+    if persona == VIEWER:
+        raise ValueError("signoff_sent_back_items: the Viewer has no sent-back item")
+    if persona not in PERSONAS:
+        raise ValueError("signoff_sent_back_items: unknown persona %r" % (persona,))
+    latest = {}
+    for event in events or ():
+        if event["kind"] not in SIGNOFF_EVENT_KINDS:
+            raise ValueError("signoff_sent_back_items: %r is not a sign-off event kind"
+                             % (event["kind"],))
+        key = (int(event["fiscal_year"]), int(event["fiscal_period"]))
+        order = (event["at"], event["name"])
+        if key not in latest or order > (latest[key]["at"], latest[key]["name"]):
+            latest[key] = event
+
+    items = []
+    for key in sorted(latest):
+        event = latest[key]
+        if event["kind"] != "signoff_rejected":
+            continue
+        if not user or (event.get("detail") or {}).get("preparer") != user:
+            continue
+        if key not in period_codes:
+            raise ValueError("signoff_sent_back_items: period %r is not in period_codes" % (key,))
+        at = event["at"]
+        items.append({
+            "id": "sent-back:signoff:%d-%02d" % key,
+            "kind": "todo",
+            "title": "Sent back: sign-off · %s" % period_codes[key],
+            "detail": "%s on %s: %s. Fix it and run the checks again; the item stays until "
+                      "the period is signed." % (event["actor"], at[:10],
+                                                   (event["reason"] or "").rstrip(".")),
+            "owner": OWNERS[persona],
+            "action": {"screen": "checks"},
+            "period": {"fiscal_year": key[0], "fiscal_period": key[1],
+                       "code": period_codes[key], "since": at[:10]},
+        })
+    return items
