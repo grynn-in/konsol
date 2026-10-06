@@ -96,7 +96,7 @@ def test_sheets_are_statement_drill_and_journals():
 def test_header_label_and_legend_come_from_the_payload():
     payload = _payload()
     rows = _rows(_book()["Statement"])
-    assert rows[0][0] == "Numbers · FY2025P07 · G1 · USD"
+    assert rows[0][0] == "Numbers · FY2025 P07 · G1 · USD"
     assert rows[1][0] == "Provisional"
     assert rows[2][0] == payload["statement"]["legend"]
 

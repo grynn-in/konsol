@@ -640,6 +640,7 @@ test("rejectDialogAfter: while signed or rejecting, the dialog and its text are 
 test("rejectDialogAfter: any other state (an accepted reject reloads, a close, a refresh) resets it", async () => {
 	const { rejectDialogAfter } = await import("./signoff.js");
 	for (const [prev, state] of [["rejecting", "loading"], ["signed", "loading"], ["signed", "closing"],
+		["loading", "review"], ["loading", "closed"], ["loading", "loadFailed"],
 		["closing", "closed"], [null, "review"], ["rejecting", "loadFailed"]]) {
 		assert.equal(rejectDialogAfter(prev, state), "reset", `${prev} → ${state}`);
 	}
@@ -728,4 +729,146 @@ test("8.4: the server's commentary acknowledgement sentence is shown, after inte
     "Intercompany: 1 pair over tolerance",
     "Commentary: 3 headings above the threshold without commentary",
   ]);
+});
+
+// --- konsol#305 U3/U10: the Reject dialog's state, driven like the screen ----
+//
+// rejectDialogNext is the whole dialog: the section only applies it. These
+// drive it with the real signoffMachine (stale-run refusal) and with the
+// events the dialog receives (Esc/overlay/Cancel all close it).
+
+import { createActor, fromPromise } from "xstate";
+import { signoffMachine, STALE_RUN_REFUSAL } from "./machines/signoffMachine.js";
+import { rejectDialogAfter, rejectDialogNext, REJECT_DIALOG_CLOSED } from "./signoff.js";
+
+const STALE = `${STALE_RUN_REFUSAL} after this summary was loaded. Review the new results and sign again.`;
+
+function signedSummary(run) {
+	return { action: "signed", label: "Signed", can_sign: true, can_reject: true, period_status: "Open", checks: { run } };
+}
+
+/** A machine whose services are deferred promises the test settles, and a
+ * dialog driven by every snapshot change exactly as the section's watch does. */
+function harness() {
+	const calls = { load: [], reject: [] };
+	const deferred = (name) =>
+		fromPromise(({ input }) => new Promise((resolve, reject) => calls[name].push({ input, resolve, reject })));
+	const actor = createActor(signoffMachine.provide({ actors: { load: deferred("load"), reject: deferred("reject") } }));
+	let dialog = REJECT_DIALOG_CLOSED;
+	let prev = null;
+	actor.subscribe((snap) => {
+		if (snap.value !== prev) {
+			dialog = rejectDialogNext(dialog, { type: "MACHINE", prev, state: snap.value, error: snap.context.error });
+			prev = snap.value;
+		}
+	});
+	actor.start();
+	const flush = () => new Promise((r) => setTimeout(r, 0));
+	return {
+		actor,
+		calls,
+		flush,
+		get dialog() {
+			return dialog;
+		},
+		ui(event) {
+			dialog = rejectDialogNext(dialog, event);
+		},
+	};
+}
+
+test("U3: rejecting → loading with a message is a stale refusal; with none it is an accepted reject", () => {
+	assert.equal(rejectDialogAfter("rejecting", "loading", STALE), "refused");
+	assert.equal(rejectDialogAfter("rejecting", "loading", null), "reset");
+});
+
+test("U3: a stale-run refusal of Reject keeps the typed reason and shows the server's message while the summary reloads", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "signed");
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "TB for ZZA is the March file" });
+	h.ui({ type: "SENT" });
+	h.actor.send({ type: "REJECT", reason: h.dialog.reason });
+	assert.equal(h.calls.reject[0].input.run, "RUN-1");
+	h.calls.reject[0].reject(new Error(STALE));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "loading", "the summary reloads");
+	assert.deepEqual(h.dialog, { open: true, reason: "TB for ZZA is the March file", refused: [STALE] });
+
+	h.calls.load[1].resolve(signedSummary("RUN-2"));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "signed");
+	assert.deepEqual(h.dialog, { open: true, reason: "TB for ZZA is the March file", refused: [STALE] },
+		"still open with the text and the message: a fresh click is needed");
+	assert.equal(h.calls.reject.length, 1, "nothing is re-sent on its own");
+
+	h.ui({ type: "SENT" });
+	h.actor.send({ type: "REJECT", reason: h.dialog.reason });
+	assert.equal(h.calls.reject[1].input.run, "RUN-2", "the fresh click goes against the reloaded summary");
+	assert.equal(h.calls.reject[1].input.reason, "TB for ZZA is the March file");
+	h.actor.stop();
+});
+
+test("U3: a stale refusal whose reload no longer offers Reject closes the dialog", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "why" });
+	h.actor.send({ type: "REJECT", reason: "why" });
+	h.calls.reject[0].reject(new Error(STALE));
+	await h.flush();
+	assert.equal(h.dialog.open, true);
+	h.calls.load[1].resolve({ action: "rerun", label: "Re-run", can_sign: true, checks: { run: "RUN-2" } });
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "review");
+	assert.deepEqual(h.dialog, REJECT_DIALOG_CLOSED);
+	h.actor.stop();
+});
+
+test("U3: an accepted reject closes the dialog and drops the text", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "why" });
+	h.actor.send({ type: "REJECT", reason: "why" });
+	h.calls.reject[0].resolve({ ok: true });
+	await h.flush();
+	assert.deepEqual(h.dialog, REJECT_DIALOG_CLOSED);
+	h.actor.stop();
+});
+
+test("U3: a non-stale refusal keeps the text and shows the message (rejecting → signed)", async () => {
+	const h = harness();
+	h.calls.load[0].resolve(signedSummary("RUN-1"));
+	await h.flush();
+	h.ui({ type: "OPEN" });
+	h.ui({ type: "TYPE", text: "why" });
+	h.actor.send({ type: "REJECT", reason: "why" });
+	h.calls.reject[0].reject(new Error("Only the Close Lead may reject."));
+	await h.flush();
+	assert.equal(h.actor.getSnapshot().value, "signed");
+	assert.deepEqual(h.dialog, { open: true, reason: "why", refused: ["Only the Close Lead may reject."] });
+	h.actor.stop();
+});
+
+test("U10: closing the dialog any way (Esc, overlay, Cancel) resets the text and the message", () => {
+	let d = rejectDialogNext(REJECT_DIALOG_CLOSED, { type: "OPEN" });
+	d = rejectDialogNext(d, { type: "TYPE", text: "old reason" });
+	d = rejectDialogNext(d, { type: "MACHINE", prev: "rejecting", state: "signed", error: "Refused." });
+	assert.deepEqual(d, { open: true, reason: "old reason", refused: ["Refused."] });
+	d = rejectDialogNext(d, { type: "CLOSE" });
+	assert.deepEqual(d, REJECT_DIALOG_CLOSED);
+	d = rejectDialogNext(d, { type: "OPEN" });
+	assert.deepEqual(d, { open: true, reason: "", refused: [] }, "reopening shows neither the old text nor the old refusal");
+});
+
+test("U10: the dialog state is never shared: every step returns a new object", () => {
+	const d = rejectDialogNext(REJECT_DIALOG_CLOSED, { type: "OPEN" });
+	assert.notEqual(d, REJECT_DIALOG_CLOSED);
+	assert.equal(REJECT_DIALOG_CLOSED.open, false);
+	assert.throws(() => rejectDialogNext(d, { type: "NOPE" }), /NOPE/);
 });

@@ -673,8 +673,18 @@ def test_a_default_or_child_table_field_name_is_never_written():
 # -- konsol#305 story 6.5: auto-reversals visible ---------------------------------------
 
 
-def test_reverses_here_label_names_the_original_period_code():
-    assert M.reverses_here_label(2024, 8, _A02_ROWS) == "Reverses here from P8"
+def test_reverses_here_label_names_the_original_fiscal_year_and_period():
+    """konsol#305 U1: the live period_code is "P08" alone (measured 6 Oct), so
+    a label built from it is ambiguous across a year boundary (P12 reverses
+    into next year's P01). The label names the fiscal year."""
+    assert M.reverses_here_label(2024, 8, _A02_ROWS) == "Reverses here from FY2024 P08"
+
+
+def test_reverses_here_label_across_a_year_boundary_names_last_years_period():
+    rows = [_period_row(2024, 12, "Regular", "Closed"), _period_row(2025, 1, "Regular", "Open")]
+    for row in rows:
+        row["period_code"] = "P%02d" % row["fiscal_period"]
+    assert M.reverses_here_label(2024, 12, rows) == "Reverses here from FY2024 P12"
 
 
 def test_reverses_here_label_an_undeclared_original_period_is_never_blank():

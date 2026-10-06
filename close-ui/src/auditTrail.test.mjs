@@ -709,3 +709,50 @@ test("a rejected summary gives Rejected — <reason> (#305-W5-1)", () => {
 	assert.equal(v.signedOff, "Rejected — ZZA's TB is the draft");
 	assert.equal(v.result, null);
 });
+
+// --- konsol#305 U2: Export CSV goes through api.download, so a refusal shows ---
+
+import { exportCsv, EXPORT_CSV } from "./auditTrail.js";
+
+function trailPayload(filters) {
+	return { period: { fiscal_year: 2025, fiscal_period: 7, code: "P07" }, filters };
+}
+
+test("U2: exportCsv downloads export_trail_csv with the period and the server's echoed filters, then saves it", async () => {
+	const seen = [];
+	const download = async (method, params) => {
+		seen.push({ method, params });
+		return { blob: { size: 3 }, filename: "trail-FY2025P07.csv" };
+	};
+	const saved = [];
+	const save = (blob, filename) => saved.push({ blob, filename });
+	const echoed = { kinds: ["approved"], actors: [], entities: ["ZZA"], date_from: "2026-09-01", date_to: "" };
+	await exportCsv(trailPayload(echoed), { download, save });
+	assert.equal(EXPORT_CSV, "konsol.close.trail_api.export_trail_csv");
+	assert.deepEqual(seen, [{
+		method: EXPORT_CSV,
+		params: { fiscal_year: 2025, fiscal_period: 7, ...filterParams(echoed) },
+	}]);
+	assert.deepEqual(saved, [{ blob: { size: 3 }, filename: "trail-FY2025P07.csv" }]);
+});
+
+test("U2: a server refusal rejects with the server's own sentence and saves nothing", async () => {
+	const download = async () => {
+		throw new Error("You no longer have access to this period.");
+	};
+	const saved = [];
+	await assert.rejects(
+		exportCsv(trailPayload(noFilters()), { download, save: (...a) => saved.push(a) }),
+		{ message: "You no longer have access to this period." },
+	);
+	assert.deepEqual(saved, []);
+});
+
+test("U2: exportCsv refuses a payload with no period rather than calling the server", async () => {
+	let called = false;
+	await assert.rejects(
+		exportCsv({ filters: noFilters() }, { download: async () => { called = true; }, save: () => {} }),
+		/period/,
+	);
+	assert.equal(called, false);
+});

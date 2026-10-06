@@ -880,7 +880,7 @@ def test_an_approved_earlier_journal_reversing_here_is_listed_with_its_origin():
     assert [j["name"] for j in result["reversing_in"]] == ["CJ-P6-A"]
     item = result["reversing_in"][0]
     assert item["origin"] == {"fiscal_year": 2025, "fiscal_period": 6, "code": "P06"}
-    assert item["label"] == "Reverses here from P06"
+    assert item["label"] == "Reverses here from FY2025 P06"
     assert item["title"] == "ZZ accrue June bonus"
     assert item["approved_by"] == LEAD
     assert "+" in item["approved_at"] or "Z" in item["approved_at"]

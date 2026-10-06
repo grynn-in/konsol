@@ -66,18 +66,21 @@ test("Failure path: no browser storage of the period (D5: it lives in the URL on
 	assert.doesNotMatch(source, new RegExp("\\bsession" + "Storage\\b"));
 });
 
-test("10.2: an Export CSV link to trail_api.export_trail_csv, named once", () => {
+test("10.2: an Export CSV button; the endpoint is auditTrail.js's, never named here", () => {
 	const source = read();
 	assert.match(template(source), /Export CSV/);
-	const names = source.match(/konsol\.close\.trail_api\.export_trail_csv/g) || [];
-	assert.equal(names.length, 1, "one endpoint constant for export_trail_csv");
+	assert.doesNotMatch(source, /konsol\.close\.trail_api\.export_trail_csv/, "EXPORT_CSV lives in auditTrail.js");
 });
 
-test("10.2: the export link is built by methodUrl from the server's echoed filters, so the file is the view", () => {
+// U2: exportCsv's behaviour (params, refusal, save) is auditTrail.test.mjs's.
+test("U2: Export CSV goes through exportCsv with api.download and saveFile, and shows a refusal", () => {
 	const source = read();
-	assert.match(source, /import\s*\{[^}]*\bmethodUrl\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
-	assert.match(script(source), /methodUrl\(\s*EXPORT_CSV\s*,[\s\S]*?filterParams\(\s*trail\.payload\.filters\s*\)/);
-	assert.match(template(source), /<a[^>]*:href="exportHref"/);
+	const js = script(source);
+	assert.doesNotMatch(source, /<a\b[^>]*\bdownload\b/, "never a plain <a download>: a refusal would be saved as the file");
+	assert.match(js, /import\s*\{[^}]*\bdownload\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
+	assert.match(js, /import\s*\{\s*saveFile\s*\}\s*from\s*["']\.\.\/saveFile\.js["']/);
+	assert.match(js, /exportCsv\(\s*trail\.payload\s*,\s*\{\s*download\s*,\s*save:\s*saveFile\s*\}\s*\)/);
+	assert.match(template(source), /v-if="exporting\.error"[^>]*role="alert"|role="alert"[^>]*v-if="exporting\.error"/);
 });
 
 test("10.2: the filters are sent to get_trail through filterParams and choices come from filterChoices", () => {
