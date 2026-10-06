@@ -1,0 +1,740 @@
+"""konsol#180: a trial balance balances exactly in its declared currency's minor unit.
+
+Decided by Deepak Pai, 5 Oct 2026 (option #180-1): debits must equal credits
+once sum(debit) and sum(credit) are each rounded to the minor unit of the
+trial balance's declared currency (``ISO Currency.minor_unit``; the currency
+is declared under konsol#252). JPY compares whole yen, EUR whole cents, KWD
+whole fils. There is no tolerance to configure and none to default. Rejected:
+#180-2 (a per-group tolerance field), #180-3 (relative with a floor), #180-4
+(a per-Entity tolerance field).
+
+The rule is ``konsol/tb_balance_model.py`` (pure, loaded by path here). Every
+intake runs it through ``currency_and_balance_problems``: the single Trial
+Balance Submission's validate() (Desk, and the bulk load, which inserts one
+submission per entity-period), the bulk check (tb_bulk_model.check_group) and
+the close app's check_tb / submit_tb. The intake harnesses are the ones
+test_tb_currency.py and test_close_tb_api.py already use.
+"""
+import importlib.util
+import inspect
+import os
+import subprocess
+from decimal import Decimal
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_APP = os.path.dirname(_HERE)
+_ROOT = os.path.dirname(_APP)
+
+
+def _by_path(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _model():
+    """konsol/tb_balance_model.py, loaded per test so a missing module is one
+    failure per test rather than the whole file."""
+    return _by_path("tb_balance_model_under_test", os.path.join(_APP, "tb_balance_model.py"))
+
+
+def _currency_tests():
+    return _by_path("tb_balance_currency_harness", os.path.join(_HERE, "test_tb_currency.py"))
+
+
+def _api_tests():
+    return _by_path("tb_balance_api_harness", os.path.join(_HERE, "test_close_tb_api.py"))
+
+
+def _rows(*pairs, currency="EUR"):
+    """Rows as the parsers give them: one per (debit, credit), numbered from line 2."""
+    return [{"main_account": f"{1010 + i}", "debit": d, "credit": c, "currency": currency,
+             "line": i + 2} for i, (d, c) in enumerate(pairs)]
+
+
+# -- the rule (konsol/tb_balance_model.py) -------------------------------------------
+
+def test_an_exact_match_is_accepted():
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((100.5, 0), (0, 100.5))) == []
+    assert m.balance_problems("EUR", 2, _rows((1234.56, 0), (0, 1000), (0, 234.56))) == []
+
+
+def test_a_one_cent_eur_difference_is_refused_naming_it_in_the_currency():
+    """It passed before konsol#180: the 0.01 tolerance let one cent through."""
+    m = _model()
+    problems = m.balance_problems("EUR", 2, _rows((100.01, 0), (0, 100)))
+    assert len(problems) == 1, problems
+    assert "debits exceed credits by 0.01 EUR" in problems[0], problems
+    assert "Debits (100.01 EUR) do not equal credits (100.00 EUR)" in problems[0], problems
+
+
+def test_the_sentence_says_which_side_is_heavier():
+    m = _model()
+    (p,) = m.balance_problems("EUR", 2, _rows((1000, 0), (0, 1000.03)))
+    assert "credits exceed debits by 0.03 EUR" in p, p
+    (p,) = m.balance_problems("EUR", 2, _rows((1000.03, 0), (0, 1000)))
+    assert "debits exceed credits by 0.03 EUR" in p, p
+
+
+def test_jpy_a_fraction_of_a_yen_is_refused_naming_the_line():
+    """konsol#180-5 (Deepak Pai, 6 Oct 2026): a line with more decimal places
+    than its currency allows is refused, naming the line. JPY has 0, so 100.4
+    yen is refused as such, not rounded away. Was
+    test_jpy_compares_whole_yen_a_0_4_yen_difference_rounds_away (accepted
+    under #180-1, which rounded the totals)."""
+    m = _model()
+    assert m.balance_problems("JPY", 0, _rows((100.4, 0), (0, 100))) == [
+        "Line 2: debit 100.4 has 1 decimal place; JPY has 0."]
+    assert m.balance_problems("JPY", 0, _rows((1000, 0), (0, 1000.4))) == [
+        "Line 3: credit 1000.4 has 1 decimal place; JPY has 0."]
+    (p,) = m.balance_problems("JPY", 0, _rows((100.5, 0), (0, 100)))
+    assert p == "Line 2: debit 100.5 has 1 decimal place; JPY has 0.", p
+
+
+def test_jpy_a_one_yen_difference_is_refused_in_whole_yen():
+    m = _model()
+    (p,) = m.balance_problems("JPY", 0, _rows((101, 0), (0, 100)))
+    assert "debits exceed credits by 1 JPY" in p, p
+    assert "Debits (101 JPY) do not equal credits (100 JPY)" in p, p
+
+
+def test_kwd_compares_whole_fils_at_three_decimals():
+    m = _model()
+    assert m.balance_problems("KWD", 3, _rows((100.001, 0), (0, 100.001))) == []
+    (p,) = m.balance_problems("KWD", 3, _rows((1.001, 0), (0, 1.000)))
+    assert "debits exceed credits by 0.001 KWD" in p, p
+    # an exact file in fils: 0.005 + 0.005 is 0.010
+    assert m.balance_problems("KWD", 3, _rows((0.005, 0), (0.005, 0), (0, 0.010))) == []
+    # below a fil is refused naming the line, no longer rounded away (#180-5)
+    assert m.balance_problems("KWD", 3, _rows((100.0004, 0), (0, 100))) == [
+        "Line 2: debit 100.0004 has 4 decimal places; KWD has 3."]
+
+
+def test_a_line_with_more_places_than_its_currency_is_refused_not_rounded():
+    """The reviewer's file: it balances exactly at 4 places, and was refused
+    as 0.99 against 1.00 when the parser rounded each line to cents. Under
+    #180-5 each extra-decimal line is refused by name, and the balance is not
+    judged (it cannot be, in a currency the lines are not in). Replaces
+    test_each_total_is_rounded_half_up_before_the_compare: no line or total
+    is rounded any more."""
+    m = _model()
+    rows = _rows((0.3333, 0), (0.3333, 0), (0.3334, 0), (0, 1.0000))
+    assert m.balance_problems("EUR", 2, rows) == [
+        "Line 2: debit 0.3333 has 4 decimal places; EUR has 2.",
+        "Line 3: debit 0.3333 has 4 decimal places; EUR has 2.",
+        "Line 4: debit 0.3334 has 4 decimal places; EUR has 2.",
+    ]
+    # an unbalanced file with an extra-decimal line reports the line only
+    problems = m.balance_problems("EUR", 2, _rows((100.005, 0), (0, 90)))
+    assert problems == ["Line 2: debit 100.005 has 3 decimal places; EUR has 2."], problems
+
+
+def test_trailing_zeros_are_not_decimal_places():
+    """Decided here: 1.2300 is 1.23, two significant places, so EUR accepts it;
+    100.00 is a whole number, so JPY accepts it. Only a non-zero digit past the
+    currency's places is more precision than the currency has."""
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((Decimal("1.2300"), 0), (0, Decimal("1.23")))) == []
+    assert m.balance_problems("JPY", 0, _rows((Decimal("100.00"), 0), (0, Decimal("1E+2")))) == []
+    assert m.balance_problems("EUR", 2, _rows((Decimal("1.2310"), 0), (0, Decimal("1.231")))) == [
+        "Line 2: debit 1.2310 has 3 decimal places; EUR has 2.",
+        "Line 3: credit 1.231 has 3 decimal places; EUR has 2.",
+    ]
+
+
+def test_a_line_without_a_line_number_is_named_by_its_account():
+    m = _model()
+    rows = [{"main_account": "1010", "debit": Decimal("0.333"), "credit": Decimal(0)}]
+    assert m.balance_problems("EUR", 2, rows) == [
+        "Account 1010: debit 0.333 has 3 decimal places; EUR has 2."]
+
+
+def test_a_blank_minor_unit_is_refused_by_name_never_defaulted():
+    m = _model()
+    for blank in (None, ""):
+        problems = m.balance_problems("EUR", blank, _rows((100, 0), (0, 100)))
+        assert len(problems) == 1, (blank, problems)
+        assert "ISO Currency EUR has no Minor Unit" in problems[0], problems
+    # an unbalanced file says the same: the balance cannot be judged at all
+    (p,) = m.balance_problems("EUR", None, _rows((100.01, 0), (0, 100)))
+    assert "has no Minor Unit" in p and "exceed" not in p, p
+
+
+def test_a_minor_unit_that_is_not_a_whole_number_of_places_is_refused():
+    m = _model()
+    for bad in (-1, 2.5, "2", True):
+        (p,) = m.balance_problems("EUR", bad, _rows((100, 0), (0, 100)))
+        assert "ISO Currency EUR" in p and "Minor Unit" in p, (bad, p)
+
+
+def test_there_is_no_default_minor_unit_and_no_tolerance_parameter():
+    m = _model()
+    for fn in (m.balance_problems, m.currency_and_balance_problems):
+        params = inspect.signature(fn).parameters
+        assert "minor_unit" in params and params["minor_unit"].default is inspect.Parameter.empty, fn
+        assert not any("tolerance" in p for p in params), fn
+
+
+def _float_total(amounts):
+    """A running float total, as a ``+=`` loop (or a float column's SUM) adds.
+    Not ``sum()``: Python 3.12 compensates float sums, which hides the error."""
+    total = 0.0
+    for a in amounts:
+        total += a
+    return total
+
+
+def test_float_accumulation_does_not_make_a_false_difference():
+    """Ten 0.1s are 1.00 exactly; added up in floats they are 0.9999999999999999.
+    Ten 0.05s are 0.50; added up in floats they are 0.49999999999999994. Exact
+    decimals make neither a false difference. (Was a JPY 0.05 yen case: under
+    #180-5 a fraction of a yen is refused by its line, so the case is EUR.)"""
+    m = _model()
+    tenths = [(0.1, 0)] * 10 + [(0, 1.0)]
+    assert _float_total(d for d, _ in tenths) != 1.0           # the float pitfall is real
+    assert m.balance_problems("EUR", 2, _rows(*tenths)) == []
+    nickels = [(0.05, 0)] * 10 + [(0, 0.5)]
+    assert _float_total(d for d, _ in nickels) != 0.5
+    assert m.balance_problems("EUR", 2, _rows(*nickels)) == []
+    many = [(0.1, 0)] * 1000 + [(0, 100.0)]
+    assert m.balance_problems("EUR", 2, _rows(*many)) == []
+
+
+def test_a_float_amount_is_taken_at_its_repr_not_its_binary_value():
+    """An xlsx cell holding 0.15 arrives as a float. As written it has 2 places;
+    its exact binary value 0.1499999999999999944… has 55, and would refuse a
+    good EUR line. (Was a JPY 0.15 + 0.35 yen case, refused under #180-5.)"""
+    m = _model()
+    assert Decimal(0.15) != Decimal("0.15")                  # the binary trap is real
+    assert m.balance_problems("EUR", 2, _rows((0.15, 0), (0.35, 0), (0, 0.5))) == []
+
+
+def test_huge_amounts_are_judged_exactly_never_raised():
+    """konsol#180 review: at 1e26 and above, rounding to the minor unit needs
+    more than the 28 digits of Decimal's default context. It must still be
+    judged exactly, never raise, and lose no cent."""
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((1e26, 0), (0, 1e26))) == []
+    assert m.balance_problems("EUR", 2, _rows((1.7e308, 0), (0, 1.7e308))) == []
+    # A cent at 1e26 is judged exactly by the rule, but the warehouse's
+    # Float64 cannot hold it, so the line is refused by name (#180 review F2;
+    # this asserted "debits exceed credits by 0.01 EUR" before F2).
+    (p,) = m.balance_problems("EUR", 2, _rows((Decimal("100000000000000000000000000.01"), 0),
+                                              (0, Decimal("100000000000000000000000000"))))
+    assert p.startswith("Line 2: debit 100000000000000000000000000.01 cannot be stored exactly"), p
+    (p,) = m.balance_problems("EUR", 2, _rows((2e26, 0), (0, 1e26)))
+    assert "debits exceed credits by 100,000,000,000,000,000,000,000,000.00 EUR" in p, p
+    (p,) = m.balance_problems("KWD", 3, _rows((1.7e308, 0), (0, 1e308)))
+    assert "debits exceed credits by" in p and "KWD" in p, p
+
+
+def test_a_minor_unit_too_large_to_compute_is_refused_by_name():
+    """Rounding to a million decimal places would build a million-digit number;
+    it is refused naming the currency, not attempted and not raised."""
+    m = _model()
+    (p,) = m.balance_problems("EUR", 10 ** 6, _rows((100, 0), (0, 100)))
+    assert "EUR" in p and "1000000 decimal places" in p, p
+
+
+def test_an_amount_is_read_exactly_from_its_cell():
+    """konsol#180-5: one reader for every intake's amounts. Text is read as
+    written; an xlsx float at its repr (0.1, not 0.1000000000000000055…);
+    blank is zero; anything else that is not a finite number is refused."""
+    m = _model()
+    assert str(m.read_amount("0.3333")) == "0.3333"
+    assert str(m.read_amount(" 1.2300 ")) == "1.2300"
+    assert m.read_amount(0.1) == Decimal("0.1") and str(m.read_amount(0.1)) == "0.1"
+    assert m.read_amount(1000) == Decimal(1000)
+    assert m.read_amount(None) == 0 and m.read_amount("") == 0
+    assert m.read_amount("   ") == 0 and m.read_amount("\t") == 0     # whitespace-only is blank
+    assert m.read_amount(Decimal("0.005")) == Decimal("0.005")
+    for bad in ("abc", "1,000.50", "nan", "inf", "-Infinity", True, float("nan"), float("inf")):
+        try:
+            m.read_amount(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"read_amount accepted {bad!r}")
+
+
+def test_decimal_amounts_are_taken_as_they_are():
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((Decimal("0.10"), 0), (0, Decimal("0.1")))) == []
+
+
+def test_the_currency_is_judged_before_the_balance():
+    """A file with a currency problem reports that, not a misleading balance error."""
+    m = _model()
+    unbalanced_usd = _rows((100.01, 0), (0, 100), currency="USD")
+    problems = m.currency_and_balance_problems("ZZA", "EUR", 2, unbalanced_usd)
+    assert len(problems) == 1, problems
+    assert "The file declares USD but Entity ZZA's Functional Currency is EUR" in problems[0], problems
+    # no Functional Currency, so no minor unit either: one refusal, the currency's
+    problems = m.currency_and_balance_problems("ZZA", None, None, _rows((100.01, 0), (0, 100)))
+    assert len(problems) == 1 and "Entity ZZA has no Functional Currency" in problems[0], problems
+    # mixed currencies: the balance is not judged
+    mixed = _rows((100.01, 0), (0, 100))
+    mixed[1]["currency"] = "USD"
+    problems = m.currency_and_balance_problems("ZZA", "EUR", 2, mixed)
+    assert len(problems) == 1 and "more than one currency" in problems[0], problems
+
+
+def test_with_a_valid_currency_the_balance_is_judged():
+    m = _model()
+    assert m.currency_and_balance_problems("ZZA", "EUR", 2, _rows((100, 0), (0, 100))) == []
+    (p,) = m.currency_and_balance_problems("ZZA", "eur", 2, _rows((100, 0), (0, 100.01), currency=" eur "))
+    assert "credits exceed debits by 0.01 EUR" in p, p
+
+
+def test_the_module_imports_no_frappe():
+    with open(os.path.join(_APP, "tb_balance_model.py")) as f:
+        text = f.read()
+    assert "import frappe" not in text and "from frappe" not in text
+
+
+def test_no_balance_tolerance_is_left_in_the_app():
+    """Both BALANCE_TOLERANCE constants are deleted, with every importer."""
+    out = subprocess.run(
+        ["git", "grep", "-n", "-i", "BALANCE_TOLERANCE\\|balance tolerance", "--", "konsol",
+         ":!konsol/tests/test_tb_balance.py"],
+        cwd=_ROOT, capture_output=True, text=True)
+    assert out.stdout == "", out.stdout
+
+
+def test_check_rows_and_validate_tb_rows_take_no_tolerance():
+    c = _currency_tests()._controller()
+    for fn in (c.check_rows, c.validate_tb_rows):
+        assert not any("tolerance" in p for p in inspect.signature(fn).parameters), fn
+
+
+# -- the intakes ---------------------------------------------------------------------
+
+EXACT = "main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,100,EUR\n"
+CENT_OFF = "main_account,debit,credit,currency\n1010,100.01,0,EUR\n2010,0,100,EUR\n"
+JPY_04 = "main_account,debit,credit,currency\n1010,100.4,0,JPY\n2010,0,100,JPY\n"
+JPY_1 = "main_account,debit,credit,currency\n1010,101,0,JPY\n2010,0,100,JPY\n"
+USD_OFF = "main_account,debit,credit,currency\n1010,100.01,0,USD\n2010,0,100,USD\n"
+# konsol#180-5: the reviewer's files
+EUR_4DP = ("main_account,debit,credit,currency\n1010,0.3333,0,EUR\n2010,0.3333,0,EUR\n"
+           "3010,0.3334,0,EUR\n4010,0,1.0000,EUR\n")
+EUR_TRAILING = "main_account,debit,credit,currency\n1010,1.2300,0,EUR\n2010,0,1.23,EUR\n"
+KWD_EXACT = "main_account,debit,credit,currency\n1010,0.005,0,KWD\n2010,0.005,0,KWD\n3010,0,0.010,KWD\n"
+KWD_OFF = "main_account,debit,credit,currency\n1010,1.001,0,KWD\n2010,0,1.000,KWD\n"
+JPY_1005 = "main_account,debit,credit,currency\n1010,100.5,0,JPY\n2010,0,100.5,JPY\n"
+
+UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3, "IDR": 2, "VND": 0}
+
+
+def test_desk_validate_accepts_an_exact_file_and_reads_the_minor_unit():
+    t = _currency_tests()
+    doc = t._validate(EXACT, "EUR", minor_units=UNITS)
+    assert doc.validation_status == "Valid"
+    assert ("ISO Currency", "EUR", "minor_unit") in doc.reads, doc.reads
+
+
+def test_desk_validate_refuses_a_one_cent_eur_difference():
+    t = _currency_tests()
+    msg = t._validate_refusal(CENT_OFF, "EUR", minor_units=UNITS)
+    assert "debits exceed credits by 0.01 EUR" in msg, msg
+
+
+def test_desk_validate_refuses_a_blank_minor_unit():
+    t = _currency_tests()
+    msg = t._validate_refusal(EXACT, "EUR", minor_units={"EUR": None})
+    assert "ISO Currency EUR has no Minor Unit" in msg, msg
+
+
+def test_desk_validate_reports_the_currency_not_the_balance():
+    t = _currency_tests()
+    msg = t._validate_refusal(USD_OFF, "EUR", minor_units=UNITS)
+    assert "The file declares USD but Entity ZZA's Functional Currency is EUR" in msg, msg
+    assert "do not equal" not in msg and "exceed" not in msg, msg
+
+
+def _bulk_table(csv_text, entity="ZZA"):
+    lines = [line.split(",") for line in csv_text.strip().splitlines()]
+    header = ["data_area_id", "fiscal_year", "fiscal_period"] + lines[0]
+    return [header] + [[entity, "2099", "1"] + line for line in lines[1:]]
+
+
+def _bulk_errors(csv_text, functional, minor_units):
+    t = _currency_tests()
+    b, c = t._bulk(), t._controller()
+    ((key, rows),) = b.split_table(_bulk_table(csv_text), ()).items()
+    report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                           period={"code": "P01", "type": "Regular", "status": "Open"},
+                           postable_types={"Regular"}, existing=None,
+                           validate_rows=c.validate_tb_rows,
+                           functional_currency=functional,
+                           minor_unit=minor_units.get(functional))
+    return report["errors"]
+
+
+def test_the_bulk_check_refuses_a_one_cent_eur_difference():
+    errors = _bulk_errors(CENT_OFF, "EUR", UNITS)
+    assert any("debits exceed credits by 0.01 EUR" in e for e in errors), errors
+    assert _bulk_errors(EXACT, "EUR", UNITS) == []
+
+
+def test_the_bulk_check_has_no_default_minor_unit():
+    t = _currency_tests()
+    b = t._bulk()
+    try:
+        b.check_group(("ZZA", 2099, 1), [], known_accounts=None, visible=True, leaf=True,
+                      period={"code": "P01", "type": "Regular", "status": "Open"},
+                      postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [],
+                      functional_currency="EUR")
+    except TypeError as e:
+        assert "minor_unit" in str(e), e
+    else:
+        raise AssertionError("check_group ran without the currency's minor unit")
+
+
+def _close_check(csv_text, functional, minor_units):
+    a = _api_tests()
+    site = a._Site(currencies={"ZZOP": functional}, minor_units=minor_units)
+    result, _, _ = a._check(site, content=csv_text)
+    assert site.log == [], site.log
+    return result
+
+
+def _close_submit_error(csv_text, functional, minor_units):
+    """The submit's refusal, or None when it went through."""
+    a = _api_tests()
+    site = a._SubmitSite(currencies={"ZZOP": functional}, minor_units=minor_units)
+    try:
+        a._submit(site, content=csv_text)
+    except Exception as e:   # noqa: BLE001 - the message is compared
+        assert site.log == [], site.log
+        return str(e)
+    return None
+
+
+def test_the_close_check_refuses_a_one_cent_eur_difference_and_writes_nothing():
+    result = _close_check(CENT_OFF, "EUR", UNITS)
+    assert result["ok"] is False, result
+    assert any("debits exceed credits by 0.01 EUR" in p for p in result["file_problems"]), result
+
+
+def test_the_close_submit_refuses_a_one_cent_eur_difference_before_writing():
+    msg = _close_submit_error(CENT_OFF, "EUR", UNITS)
+    assert msg and "debits exceed credits by 0.01 EUR" in msg, msg
+
+
+def test_all_intakes_agree():
+    """Desk validate (and so the bulk load), the bulk check, the close check and
+    the close submit accept and refuse the same files with the same sentence,
+    the one tb_balance_model gives."""
+    m = _model()
+    t = _currency_tests()
+    cases = [
+        (EXACT, "EUR", UNITS),
+        (CENT_OFF, "EUR", UNITS),
+        ("main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,100.01,EUR\n", "EUR", UNITS),
+        (JPY_04, "JPY", UNITS),          # #180-5: was accepted (0.4 yen rounded away), now refused by line
+        (JPY_1, "JPY", UNITS),
+        (JPY_1005, "JPY", UNITS),
+        (EUR_4DP, "EUR", UNITS),
+        (EUR_TRAILING, "EUR", UNITS),
+        (KWD_EXACT, "KWD", UNITS),
+        (KWD_OFF, "KWD", UNITS),
+        (EXACT, "EUR", {"EUR": None}),
+        (USD_OFF, "EUR", UNITS),
+    ]
+    for csv_text, functional, units in cases:
+        rows = t._controller().parse_tb_csv(csv_text, ())
+        expected = m.currency_and_balance_problems("ZZA", functional, units.get(functional), rows)
+        try:
+            t._validate(csv_text, functional, minor_units=units)
+            desk = ""
+        except t._Refused as e:
+            desk = str(e)
+        bulk = _bulk_errors(csv_text, functional, units)
+        check = _close_check(csv_text, functional, units)
+        submit = _close_submit_error(csv_text, functional, units) or ""
+        label = (csv_text, functional, units)
+        if not expected:
+            assert desk == "" and bulk == [] and check["ok"] and submit == "", (label, desk, bulk, check, submit)
+            continue
+        assert bulk == expected, (label, bulk, expected)
+        assert not check["ok"], (label, check)
+        for sentence in expected:
+            # the close app names its own entity (ZZOP); the sentences are otherwise the same
+            close_sentence = sentence.replace("ZZA", "ZZOP")
+            assert sentence in desk, (label, sentence, desk)
+            assert close_sentence in check["file_problems"], (label, close_sentence, check["file_problems"])
+            assert close_sentence in submit, (label, close_sentence, submit)
+
+
+HUGE_OK = "main_account,debit,credit,currency\n1010,1e26,0,EUR\n2010,0,1e26,EUR\n"
+HUGE_OFF = "main_account,debit,credit,currency\n1010,2e26,0,EUR\n2010,0,1e26,EUR\n"
+
+
+def test_huge_amounts_never_raise_on_any_intake():
+    """konsol#180 review: 1e26 crashed the quantize. Every intake now judges it:
+    a balanced file is accepted and an unbalanced one refused by sentence."""
+    t = _currency_tests()
+    assert t._validate(HUGE_OK, "EUR", minor_units=UNITS).validation_status == "Valid"
+    msg = t._validate_refusal(HUGE_OFF, "EUR", minor_units=UNITS)
+    assert "debits exceed credits by" in msg, msg
+    assert _bulk_errors(HUGE_OK, "EUR", UNITS) == []
+    assert any("debits exceed credits by" in e for e in _bulk_errors(HUGE_OFF, "EUR", UNITS))
+    assert _close_check(HUGE_OK, "EUR", UNITS)["ok"] is True
+    check = _close_check(HUGE_OFF, "EUR", UNITS)
+    assert not check["ok"] and any("debits exceed credits by" in p for p in check["file_problems"]), check
+    assert _close_submit_error(HUGE_OK, "EUR", UNITS) is None
+    msg = _close_submit_error(HUGE_OFF, "EUR", UNITS)
+    assert msg and "debits exceed credits by" in msg, msg
+
+
+# -- konsol#180-5: lines are read exactly and judged against the minor unit ----------
+
+def test_desk_validate_refuses_extra_decimals_naming_the_lines_not_an_imbalance():
+    t = _currency_tests()
+    msg = t._validate_refusal(EUR_4DP, "EUR", minor_units=UNITS)
+    for line, amount in ((2, "0.3333"), (3, "0.3333"), (4, "0.3334")):
+        assert f"Line {line}: debit {amount} has 4 decimal places; EUR has 2." in msg, msg
+    assert "exceed" not in msg and "do not equal" not in msg, msg
+
+
+def test_desk_validate_judges_kwd_in_fils():
+    t = _currency_tests()
+    assert t._validate(KWD_EXACT, "KWD", minor_units=UNITS).validation_status == "Valid"
+    msg = t._validate_refusal(KWD_OFF, "KWD", minor_units=UNITS)
+    assert "debits exceed credits by 0.001 KWD" in msg, msg
+
+
+def test_desk_validate_refuses_a_fraction_of_a_yen():
+    t = _currency_tests()
+    msg = t._validate_refusal(JPY_1005, "JPY", minor_units=UNITS)
+    assert "Line 2: debit 100.5 has 1 decimal place; JPY has 0." in msg, msg
+
+
+def test_the_parser_keeps_every_amount_exactly_as_written():
+    c = _currency_tests()._controller()
+    rows = c.parse_tb_csv(EUR_4DP, ())
+    assert [str(r["debit"]) for r in rows] == ["0.3333", "0.3333", "0.3334", "0"], rows
+    assert str(rows[3]["credit"]) == "1.0000"
+    assert str(c.parse_tb_csv(KWD_EXACT, ())[0]["debit"]) == "0.005"
+
+
+def test_the_bulk_parser_reads_xlsx_floats_at_their_repr():
+    """An xlsx float 0.1 is 0.1, not 0.1000000000000000055…; 0.15 + 0.35 is 0.50."""
+    t = _currency_tests()
+    b, c = t._bulk(), t._controller()
+    table = [["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"],
+             ["ZZA", 2099, 1, "1010", 0.15, 0, "EUR"],
+             ["ZZA", 2099, 1, "2010", 0.35, 0.0, "EUR"],
+             ["ZZA", 2099, 1, "3010", 0, 0.5, "EUR"],
+             ["ZZA", 2099, 1, "4010", 0.1, 0.1, "EUR"]]
+    ((key, rows),) = b.split_table(table, ()).items()
+    assert [str(r["debit"]) for r in rows] == ["0.15", "0.35", "0", "0.1"], rows
+    report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                           period={"code": "P01", "type": "Regular", "status": "Open"},
+                           postable_types={"Regular"}, existing=None,
+                           validate_rows=c.validate_tb_rows, functional_currency="EUR", minor_unit=2)
+    assert report["ok"] and report["errors"] == [], report
+    # the bulk load feeds group_csv back through the single parser: exact both ways
+    again = c.parse_tb_csv(b.group_csv(rows, source="TBU-ZZ"), ())
+    assert [str(r["debit"]) for r in again] == ["0.15", "0.35", "0", "0.1"], again
+    kwd = b.split_table([table[0], ["ZZA", "2099", "1", "1010", "0.005", "0", "KWD"]], ())
+    (krow,) = next(iter(kwd.values()))
+    assert c.parse_tb_csv(b.group_csv([krow]), ())[0]["debit"] == Decimal("0.005")
+
+
+def test_a_stored_file_with_extra_decimals_still_reads_and_compares():
+    """Stored reads (tb_read_api, stored=True) never judge: a submission that
+    landed before #180-5 with 4-decimal lines reads back exactly and the
+    compare screen's model sums it without a float/Decimal TypeError."""
+    c = _currency_tests()._controller()
+    rows = c.parse_tb_csv("main_account,debit,credit\n1010,0.3333,0\n1010,0.3333,0\n2010,0,0.6666\n",
+                          (), stored=True)
+    assert [str(r["debit"]) for r in rows] == ["0.3333", "0.3333", "0"], rows
+    view = _by_path("tb_view_model_for_balance", os.path.join(_APP, "close", "tb_view_model.py"))
+    result = view.compare(rows, rows, "Period movement", "Period movement", "P01")
+    by_account = {r["account"]: r for r in result["rows"]}
+    assert by_account["1010"]["current"] == 0.6666, by_account     # summed exactly, sent as a number
+    assert by_account["2010"]["change"] == 0, by_account
+
+
+# -- #180 review: zero sides, storable amounts, enormous amounts, wording ---------------
+
+JPY_ZEROS = "main_account,debit,credit,currency\n1010,1000,0.00,JPY\n2010,0.00,1000,JPY\n"
+EUR_ZEROS = "main_account,debit,credit,currency\n1010,12.50,0.0000,EUR\n2010,0E-10,12.5,EUR\n"
+IDR_UNSTORABLE = ("main_account,debit,credit,currency\n1010,100000000000000.01,0,IDR\n"
+                  "2010,0,100000000000000.01,IDR\n")
+VND_UNSTORABLE = "main_account,debit,credit,currency\n1010,9007199254740993,0,VND\n2010,0,9007199254740993,VND\n"
+INF_FLOAT = "main_account,debit,credit,currency\n1010,1e400,0,EUR\n2010,0,1e400,EUR\n"
+OVERFLOW = "main_account,debit,credit,currency\n1010,1E1000000,0,EUR\n2010,0,1E1000000,EUR\n"
+KWD_FILS = "main_account,debit,credit,currency\n1010,1.005,0,KWD\n2010,0,1.005,KWD\n"
+
+
+def test_zero_has_no_decimal_places():
+    """F1: an ERP writes the empty side as 0.00; that is zero, not 1 place."""
+    m = _model()
+    for text in ("0.00", "0.0000", "0E-10", "-0.00", "0", "0E+3"):
+        assert m.decimal_places(Decimal(text)) == 0, text
+    assert m.balance_problems("JPY", 0, _rows(("1000", "0.00"), ("0.00", "1000"))) == []
+    assert m.balance_problems("EUR", 2, _rows(("12.50", "0.0000"), ("0E-10", "12.5"))) == []
+
+
+def test_an_amount_the_warehouse_cannot_hold_exactly_is_refused_by_line():
+    """F2: epm_raw holds amounts as Float64. IDR 100000000000000.01 lands as
+    .02 and VND 9007199254740993 as …992, so they are refused naming the line
+    until konsolidat#256 stores decimals."""
+    m = _model()
+    assert m.balance_problems("IDR", 2, _rows(("100000000000000.01", 0), (0, "100000000000000.01"))) == [
+        "Line 2: debit 100000000000000.01 cannot be stored exactly until konsolidat#256 "
+        "(the warehouse would hold 100000000000000.02).",
+        "Line 3: credit 100000000000000.01 cannot be stored exactly until konsolidat#256 "
+        "(the warehouse would hold 100000000000000.02).",
+    ]
+    (p, _) = m.balance_problems("VND", 0, _rows(("9007199254740993", 0), (0, "9007199254740993")))
+    assert p == ("Line 2: debit 9007199254740993 cannot be stored exactly until konsolidat#256 "
+                 "(the warehouse would hold 9007199254740992)."), p
+    # what a float holds exactly is fine, trailing zeros included
+    assert m.balance_problems("IDR", 2, _rows(("100000000000000.00", 0), (0, "1E+14"))) == []
+
+
+def test_an_amount_too_large_for_the_warehouse_is_refused_by_line():
+    """F3: 1e400 is a finite Decimal but an infinite float; it is refused by name."""
+    m = _model()
+    for text in ("1e400", "1E1000000"):
+        problems = m.balance_problems("EUR", 2, _rows((text, 0), (0, text)))
+        assert len(problems) == 2, (text, problems)
+        assert problems[0].startswith("Line 2: debit ") and problems[0].endswith(" is too large to store."), problems
+
+
+def test_a_blank_minor_unit_names_the_functional_currency_even_with_no_rows():
+    """F5: with no rows the declared currency is '', and the sentence read
+    "ISO Currency  has no Minor Unit"."""
+    m = _model()
+    (p,) = m.currency_and_balance_problems("ZZA", "eur", None, [])
+    assert p.startswith("ISO Currency EUR has no Minor Unit"), p
+
+
+def test_the_review_files_on_every_intake():
+    """F1, F2, F3 on Desk, bulk check, close check and close submit: zero sides
+    accepted, unstorable and enormous amounts refused by line, nothing raised."""
+    m = _model()
+    t = _currency_tests()
+    for csv_text, functional, accepted in ((JPY_ZEROS, "JPY", True), (EUR_ZEROS, "EUR", True),
+                                           (IDR_UNSTORABLE, "IDR", False), (VND_UNSTORABLE, "VND", False),
+                                           (INF_FLOAT, "EUR", False), (OVERFLOW, "EUR", False)):
+        rows = t._controller().parse_tb_csv(csv_text, ())
+        expected = m.currency_and_balance_problems("ZZA", functional, UNITS[functional], rows)
+        assert (expected == []) is accepted, (csv_text, expected)
+        try:
+            t._validate(csv_text, functional, minor_units=UNITS)
+            desk = ""
+        except t._Refused as e:
+            desk = str(e)
+        bulk = _bulk_errors(csv_text, functional, UNITS)
+        check = _close_check(csv_text, functional, UNITS)
+        submit = _close_submit_error(csv_text, functional, UNITS) or ""
+        if accepted:
+            assert desk == "" and bulk == [] and check["ok"] and submit == "", (csv_text, desk, bulk, check, submit)
+            continue
+        assert bulk == expected, (csv_text, bulk, expected)
+        for sentence in expected:
+            assert sentence in desk and sentence in check["file_problems"] and sentence in submit, (
+                csv_text, sentence)
+
+
+def test_stored_totals_are_exact_not_rounded_to_cents():
+    """Pins the totals the intakes store: KWD 1.005 is 1.005, not 1.0 or 1.01."""
+    t = _currency_tests()
+    doc = t._validate(KWD_FILS, "KWD", minor_units=UNITS)
+    assert doc.total_debit == 1.005 and doc.total_credit == 1.005, (doc.total_debit, doc.total_credit)
+    b, c = t._bulk(), t._controller()
+    ((key, rows),) = b.split_table(_bulk_table(KWD_FILS), ()).items()
+    report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                           period={"code": "P01", "type": "Regular", "status": "Open"},
+                           postable_types={"Regular"}, existing=None, validate_rows=c.validate_tb_rows,
+                           functional_currency="KWD", minor_unit=3)
+    assert report["ok"] and report["total_debit"] == 1.005 and report["total_credit"] == 1.005, report
+    check = _close_check(KWD_FILS, "KWD", UNITS)
+    assert check["totals"]["debit"] == Decimal("1.005"), check["totals"]
+
+
+# -- konsol#180-9 (Deepak Pai, 6 Oct 2026): an .xlsx number at Excel's 15 significant digits --
+
+def test_an_xlsx_number_is_read_at_15_significant_digits():
+    """A float is an .xlsx cell (CSV cells are text). A formula cell's cached
+    value carries binary noise past Excel's 15 digits; it is read at 15."""
+    m = _model()
+    assert m.read_amount(110.00000000000001) == Decimal("110")
+    assert m.read_amount(0.30000000000000004) == Decimal("0.3")
+    assert m.read_amount(-110.00000000000001) == Decimal("-110")
+    assert m.read_amount(0.1 + 0.2) == Decimal("0.3")
+    # tiny values keep their places: 1e-7 is 1E-7, still more than EUR has
+    assert m.read_amount(1e-7) == Decimal("1E-7")
+    assert m.decimal_places(m.read_amount(1e-7)) == 7
+
+
+def test_a_16_digit_xlsx_number_loses_its_16th_digit():
+    """The accepted trade-off of #180-9, pinned: 1234567890123456 in an .xlsx
+    cell is read as 1234567890123460 (Excel cannot hold the 16th digit
+    faithfully either). An int cell and CSV text keep every digit."""
+    m = _model()
+    assert m.read_amount(1234567890123456.0) == Decimal("1234567890123460")
+    assert m.read_amount(1234567890123456) == Decimal("1234567890123456")      # int cell: exact
+    assert m.read_amount("1234567890123456") == Decimal("1234567890123456")    # CSV text: exact
+    for bad in (True, False):
+        try:
+            m.read_amount(bad)
+        except ValueError:
+            continue
+        raise AssertionError("a bool cell was read as a number")
+
+
+def test_formula_noise_in_an_xlsx_cell_is_accepted():
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((110.00000000000001, 0), (0, 110.0))) == []
+    assert m.balance_problems("EUR", 2, _rows((0.30000000000000004, 0), (0, 0.3))) == []
+    assert m.balance_problems("JPY", 0, _rows((-110.00000000000001, 0), (0, -110.0))) == []
+
+
+def test_a_genuine_extra_place_in_an_xlsx_cell_is_still_refused():
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((0.333, 0), (0, 0.333))) == [
+        "Line 2: debit 0.333 has 3 decimal places; EUR has 2.",
+        "Line 3: credit 0.333 has 3 decimal places; EUR has 2."]
+    (p, _) = m.balance_problems("EUR", 2, _rows((1e-7, 0), (0, 1e-7)))
+    assert p == "Line 2: debit 0.0000001 has 7 decimal places; EUR has 2.", p
+
+
+def test_csv_text_with_formula_noise_is_still_refused():
+    """#180-9 is for .xlsx only: CSV text is read exactly as written."""
+    m = _model()
+    c = _currency_tests()._controller()
+    rows = c.parse_tb_csv("main_account,debit,credit,currency\n1010,110.00000000000001,0,EUR\n2010,0,110,EUR\n", ())
+    assert m.balance_problems("EUR", 2, rows) == [
+        "Line 2: debit 110.00000000000001 has 14 decimal places; EUR has 2."]
+
+
+def test_every_xlsx_intake_agrees_on_formula_noise():
+    """The bulk check reads .xlsx cells (floats); the bulk load feeds
+    group_csv's text of them to the single parser and validate(). Both accept
+    the noisy file and refuse the 0.333 one with the same sentence."""
+    t = _currency_tests()
+    b, c = t._bulk(), t._controller()
+    head = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
+    for cells, accepted in ((((110.00000000000001, 0), (0, 110.0)), True), (((0.333, 0), (0, 0.333)), False)):
+        table = [head] + [["ZZA", 2099, 1, acct, d, cr, "EUR"]
+                          for acct, (d, cr) in zip(("1010", "2010"), cells)]
+        ((key, rows),) = b.split_table(table, ()).items()
+        report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                               period={"code": "P01", "type": "Regular", "status": "Open"},
+                               postable_types={"Regular"}, existing=None, validate_rows=c.validate_tb_rows,
+                               functional_currency="EUR", minor_unit=2)
+        assert report["ok"] is accepted, report
+        text = b.group_csv(rows, source="TBU-ZZ")
+        if accepted:
+            assert "110," in text and "00000000000001" not in text, text
+            assert t._validate(text, "EUR", minor_units=UNITS).validation_status == "Valid"
+        else:
+            msg = t._validate_refusal(text, "EUR", minor_units=UNITS)
+            for sentence in report["errors"]:
+                assert sentence in msg, (sentence, msg)

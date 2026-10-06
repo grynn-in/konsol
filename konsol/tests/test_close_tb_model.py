@@ -9,6 +9,7 @@ identity tests prove the controller calls this very file, and that on every
 fixture a file the submit path accepts is exactly a file check_rows calls ok.
 """
 import ast
+from decimal import Decimal
 import importlib.util
 import os
 import sys
@@ -71,15 +72,14 @@ CHART = {
 ENTITY = "ZZA"
 KNOWN = ["ZZA", "ZZB"]
 BASIS = "Period movement"
-TOL = 0.01
 
 
 def _rows(csv_text):
     return C.parse_tb_csv(csv_text, ())
 
 
-def _check(rows, chart=CHART, entity=ENTITY, known=KNOWN, form_basis=BASIS, tolerance=TOL):
-    return M.check_rows(rows, chart, entity, known, form_basis, tolerance)
+def _check(rows, chart=CHART, entity=ENTITY, known=KNOWN, form_basis=BASIS):
+    return M.check_rows(rows, chart, entity, known, form_basis)
 
 
 def _problems(result, line):
@@ -211,7 +211,8 @@ def test_negative_debit_is_a_row_problem_with_the_opposite_column_suggested():
     (p,) = _problems(r, 2)
     assert p["code"] == "NEGATIVE_AMOUNT"
     assert "opposite column" in p["message"]
-    assert p["suggestion"] == "Enter 10.00 as a credit instead"
+    # the amount as written, not reformatted to 2 places (#180 review F5)
+    assert p["suggestion"] == "Enter 10 as a credit instead"
     assert r["ok"] is False
 
 
@@ -266,7 +267,7 @@ def test_unknown_partner_with_no_match_has_no_suggestion():
 
 def test_partner_checks_are_skipped_when_not_given():
     rows = _rows("main_account,debit,credit,partner_data_area_id,currency\n1010,10,0,QQQ,EUR\n2010,0,10,,EUR\n")
-    assert M.check_rows(rows, CHART, None, None, BASIS, TOL)["ok"] is True
+    assert M.check_rows(rows, CHART, None, None, BASIS)["ok"] is True
 
 
 def test_basis_cell_contradicting_the_form_is_a_row_problem():
@@ -291,64 +292,19 @@ def test_missing_form_basis_is_a_file_problem_not_repeated_per_row():
 
 # --- file-level problems -----------------------------------------------------------
 
-def test_imbalance_is_a_file_problem_with_totals():
+def test_an_imbalance_is_totalled_but_not_judged_here():
+    """konsol#180: the balance is judged once, exactly, in the declared
+    currency's minor unit, after the currency (konsol.tb_balance_model, tested
+    in test_tb_balance.py). check_rows only totals it. Replaces the tolerance
+    tests that lived here: test_imbalance_is_a_file_problem_with_totals,
+    test_imbalance_within_tolerance_is_ok, test_imbalance_just_over_tolerance_is_still_refused,
+    test_rounding_does_not_loosen_the_tolerance,
+    test_exactly_the_tolerance_is_accepted_despite_float_noise and
+    test_a_declared_tolerance_other_than_a_cent_is_exact_too."""
     r = _check(_rows("main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,90,EUR\n"))
     assert r["totals"] == {"debit": 100.0, "credit": 90.0, "difference": 10.0}
-    assert len(r["file_problems"]) == 1
-    assert "Debits (100.00) do not equal credits (90.00)" in r["file_problems"][0]
+    assert r["file_problems"] == []
     assert all(row["problems"] == [] for row in r["rows"])
-    assert r["ok"] is False
-
-
-def test_imbalance_within_tolerance_is_ok():
-    # 100.01 - 100 is 0.010000000000005 in raw floats, just over 0.01 (A37):
-    # the comparison must round to cents first, since parse_tb_csv already
-    # rounds every amount to cents. Default tolerance (0.01), no dodge.
-    rows = _rows("main_account,debit,credit,currency\n1010,100.01,0,EUR\n2010,0,100,EUR\n")
-    r = _check(rows)
-    assert r["ok"] is True
-    assert r["totals"]["difference"] == 0.01
-    assert C.validate_tb_rows(rows, chart=CHART, entity=ENTITY, known_entities=KNOWN) == []
-
-
-def test_imbalance_just_over_tolerance_is_still_refused():
-    """Failure path: 0.02 is not the tolerance; it must still be refused."""
-    r = _check(_rows("main_account,debit,credit,currency\n1010,100.02,0,EUR\n2010,0,100,EUR\n"))
-    assert r["ok"] is False
-    assert r["totals"]["difference"] == 0.02
-
-
-def _raw(debit, credit):
-    """Two rows whose totals differ by ``debit - credit``, not rounded by parse_tb_csv."""
-    return [
-        {"main_account": "1010", "debit": debit, "credit": 0.0, "line": 2},
-        {"main_account": "2010", "debit": 0.0, "credit": credit, "line": 3},
-    ]
-
-
-def test_rounding_does_not_loosen_the_tolerance():
-    """A60: round(dr - cr, 2) let 0.014 pass a 0.01 tolerance; the rule is exact."""
-    for debit, credit in ((100.014, 100.0), (100.011, 100.0), (0.014, 0.0)):
-        r = _check(_raw(debit, credit))
-        assert r["ok"] is False, (debit, credit)
-        assert len(r["file_problems"]) == 1, (debit, credit)
-        assert "exceeds the 0.01 tolerance" in r["file_problems"][0]
-
-
-def test_exactly_the_tolerance_is_accepted_despite_float_noise():
-    """100.01 - 100 == 0.010000000000005 in floats; it is still exactly one cent."""
-    for debit, credit in ((100.01, 100.0), (0.01, 0.0), (100.0, 100.01)):
-        r = _check(_raw(debit, credit))
-        assert r["ok"] is True, (debit, credit)
-        assert r["file_problems"] == [], (debit, credit)
-
-
-def test_a_declared_tolerance_other_than_a_cent_is_exact_too():
-    """Failure path: with a 0.012 tolerance, 0.014 is refused (rounding made it 0.01)
-    and 0.012 itself is accepted."""
-    r = _check(_raw(100.014, 100.0), tolerance=0.012)
-    assert r["ok"] is False
-    r = _check(_raw(100.012, 100.0), tolerance=0.012)
     assert r["ok"] is True
 
 
@@ -365,10 +321,6 @@ def test_no_chart_text_is_the_controllers():
     assert M.NO_CHART == C.NO_CHART
 
 
-def test_tolerance_constant_matches_the_controller():
-    assert M.BALANCE_TOLERANCE == C.BALANCE_TOLERANCE
-
-
 # --- identity with validate_tb_rows (Problems 1, decision P1, A35) -------------------
 
 PARITY = {
@@ -380,7 +332,6 @@ PARITY = {
     "duplicate": "main_account,debit,credit,currency\n1010,50,0,EUR\n1010,50,0,EUR\n2010,0,100,EUR\n",
     "self partner": ("main_account,debit,credit,partner_data_area_id,currency\n"
                      "1010,100,0,ZZA,EUR\n2010,0,100,,EUR\n"),
-    "imbalance": "main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,50,EUR\n",
 }
 
 
@@ -399,7 +350,7 @@ def test_identity_with_validate_tb_rows_on_every_fixture():
         assert submit_ok == check_ok, f"{name}: validate_tb_rows ok={submit_ok}, check_rows ok={check_ok}"
     # The fixtures are not all trivially one way.
     assert _check(_rows(PARITY["good"]))["ok"] is True
-    assert sum(1 for t in PARITY.values() if not _check(_rows(t))["ok"]) == 7
+    assert sum(1 for t in PARITY.values() if not _check(_rows(t))["ok"]) == 6
 
 
 def test_identity_with_no_chart():
@@ -416,3 +367,18 @@ def test_module_imports_no_frappe():
             assert not any(a.name.startswith("frappe") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("frappe")
+
+
+def test_the_negative_suggestion_keeps_the_exact_amount():
+    """#180 review F5: -0.333 KWD was told "Enter 0.33 as a credit"."""
+    r = _check(_rows("main_account,debit,credit,currency\n1010,-0.333,0,KWD\n2010,0,-0.333,KWD\n"))
+    (p,) = _problems(r, 2)
+    assert p["suggestion"] == "Enter 0.333 as a credit instead", p
+    (q,) = _problems(r, 3)
+    assert q["suggestion"] == "Enter 0.333 as a debit instead", q
+
+
+def test_totals_of_enormous_amounts_do_not_raise():
+    """#180 review F3: 1E1000000 overflowed the default Decimal context."""
+    r = _check(_rows("main_account,debit,credit,currency\n1010,1E1000000,0,EUR\n2010,0,1E1000000,EUR\n"))
+    assert r["totals"]["debit"] == Decimal("1E+1000000") and r["totals"]["difference"] == 0, r["totals"]

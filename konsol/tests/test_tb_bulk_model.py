@@ -44,7 +44,9 @@ def test_header_is_forgiving_about_case_spaces_and_aliases():
     table = [["Entity", "Year", "Period", "Account", "Debit", "Credit", "Currency", "Description"],
              ["AMDE", "2025", "1", "1010", "10.005", "0", "EUR", "cash"]]
     rows = M.split_table(table, ())[("AMDE", 2025, 1)]
-    assert rows[0]["debit"] == 10.01 or rows[0]["debit"] == 10.0   # rounded to cents like a single upload
+    # konsol#180-5: read exactly, never rounded; the extra place is refused
+    # by check_group once the currency is known
+    assert str(rows[0]["debit"]) == "10.005"
     assert rows[0]["description"] == "cash"
 
 
@@ -80,14 +82,17 @@ def test_missing_columns_and_empty_files():
 def test_group_csv_is_the_single_upload_contract():
     rows = [{"main_account": "1010", "debit": 1234.5, "credit": 0.0, "currency": "EUR", "description": "cash, main"}]
     parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows))))
-    assert parsed == [{"main_account": "1010", "debit": "1234.50", "credit": "0.00", "currency": "EUR",
+    # never padded or rounded to 2 places (konsol#180-5); a float is an .xlsx cell, read at 15
+    # significant digits (#180-9), so 0.0 is written 0
+    assert parsed == [{"main_account": "1010", "debit": "1234.5", "credit": "0", "currency": "EUR",
                        "description": "cash, main", "partner_data_area_id": ""}]
 
 
 def _check(**over):
     facts = dict(known_accounts={"1010", "2010"}, visible=True, leaf=True,
                  period={"code": "P12", "type": "Regular", "status": "Open"}, postable_types={"Regular"},
-                 existing=None, validate_rows=lambda rows, **kw: [], functional_currency="EUR")
+                 existing=None, validate_rows=lambda rows, **kw: [], functional_currency="EUR",
+                 minor_unit=2)
     facts.update(over)
     rows = [{"main_account": "1010", "debit": 5.0, "credit": 0.0, "currency": "EUR"},
             {"main_account": "2010", "debit": 0.0, "credit": 5.0, "currency": "EUR"}]
@@ -116,7 +121,7 @@ def test_closed_period_refused():
 def test_undeclared_period_refused():
     r = M.check_group(("AMDE", 2025, 14), [], known_accounts=set(), visible=True, leaf=True, period=None,
                       postable_types={"Regular"}, existing=None, validate_rows=lambda rows, **kw: [],
-                      functional_currency="EUR")
+                      functional_currency="EUR", minor_unit=2)
     assert r["errors"][0] == "FY2025 P14 is not declared"
 
 
@@ -179,7 +184,9 @@ def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
     text = M.group_csv(rows, source="TBU-00042")
     parsed = list(csv.DictReader(io.StringIO(text)))
     assert parsed[0]["source_upload"] == "TBU-00042"
-    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1.00", "credit": "0.00"}
+    # exactly as read (konsol#180-5); the float cells read at 15 significant
+    # digits (#180-9) are 1 and 0
+    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1", "credit": "0"}
     # two uploads of the same figures produce different files
     assert M.group_csv(rows, source="TBU-00001") != M.group_csv(rows, source="TBU-00002")
 
@@ -227,14 +234,21 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
 HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
 
 
-def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None):
+#: konsol#180: each ISO Currency's minor_unit, as a site holds it.
+MINOR_UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
+
+
+def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None, minor_units=None):
     """Load konsol/tb_bulk.py with every non-model import stubbed.
 
     `period_lookup` maps (year, period) -> a period fact dict; a pair absent
     from it is undeclared, so the stand-in period_status.period_row raises
     PeriodNotDeclared for it, exactly as the real one does. `postable` is
     what postable_types() returns. `currencies` maps an entity to its
-    Functional Currency ('' for none); an entity absent from it has EUR. Returns (module, calls), where calls
+    Functional Currency ('' for none); an entity absent from it has EUR.
+    `minor_units` maps a currency to its ISO Currency.minor_unit (MINOR_UNITS
+    unless a test says otherwise; None stands for a blank one); a currency
+    absent from it has no ISO Currency row. Returns (module, calls), where calls
     counts how many times postable_types() was called.
     """
     frappe = types.ModuleType("frappe")
@@ -261,6 +275,13 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
             return list(entities)
         if doctype == "Trial Balance Submission":
             return []
+        if doctype == "ISO Currency":
+            # konsol#180: each currency's minor unit, as a site holds it. The
+            # filter is honoured, as get_all does: only the named currencies.
+            units = MINOR_UNITS if minor_units is None else minor_units
+            assert set(filters or {}) == {"name"} and filters["name"][0] == "in", filters
+            return [types.SimpleNamespace(name=c, minor_unit=units[c])
+                    for c in filters["name"][1] if c in units]
         raise AssertionError(doctype)
 
     frappe.get_list, frappe.get_all = get_list, get_all
@@ -793,3 +814,122 @@ def test_bulk_check_names_the_lines_of_a_blank_or_mixed_currency():
     errors = report[0]["errors"]
     assert any("The currency is blank on line 4" in e for e in errors), errors
     assert any("(EUR on line 2; USD on line 3)" in e for e in errors), errors
+
+
+# --- konsol#180: the bulk check reads each currency's minor unit -----------------
+
+def _bulk_balance_report(table, currencies, minor_units=None):
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    entities = sorted({row[0] for row in table[1:]})
+    mod, _ = _load_tb_bulk(entities=entities, postable={"Regular"}, period_lookup=period_lookup,
+                           currencies=currencies, minor_units=minor_units)
+    _, report = mod._check(table, PERIOD)
+    return {r["entity"]: r for r in report}
+
+
+def test_bulk_check_judges_each_entity_in_its_own_minor_unit():
+    """tb_bulk._check reads each currency's minor unit. JPY has 0: a fraction
+    of a yen is refused by its line (konsol#180-5; this was "0.4 yen off is
+    accepted" under #180-1, which rounded totals), 1 yen off is refused as an
+    imbalance. KWD has 3: 0.005 + 0.005 against 0.010 is exact. EUR loads."""
+    table = [HEADER_ROW,
+             ["ZZH", "2099", "1", "1010", "1000.4", "0", "JPY"],
+             ["ZZH", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZJ", "2099", "1", "1010", "1000", "0", "JPY"],
+             ["ZZJ", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZK", "2099", "1", "1010", "1001", "0", "JPY"],
+             ["ZZK", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZW", "2099", "1", "1010", "0.005", "0", "KWD"],
+             ["ZZW", "2099", "1", "2010", "0.005", "0", "KWD"],
+             ["ZZW", "2099", "1", "3010", "0", "0.010", "KWD"],
+             ["ZZE", "2099", "1", "1010", "100", "0", "EUR"],
+             ["ZZE", "2099", "1", "2010", "0", "100", "EUR"]]
+    by = _bulk_balance_report(table, {"ZZH": "JPY", "ZZJ": "JPY", "ZZK": "JPY", "ZZW": "KWD", "ZZE": "EUR"})
+    assert not by["ZZH"]["ok"], by["ZZH"]
+    assert "Line 2: debit 1000.4 has 1 decimal place; JPY has 0." in by["ZZH"]["errors"], by["ZZH"]
+    assert by["ZZJ"]["ok"] and by["ZZJ"]["errors"] == [], by["ZZJ"]
+    assert by["ZZW"]["ok"] and by["ZZW"]["errors"] == [], by["ZZW"]
+    assert by["ZZE"]["ok"], by["ZZE"]
+    assert not by["ZZK"]["ok"], by["ZZK"]
+    assert any("debits exceed credits by 1 JPY" in e for e in by["ZZK"]["errors"]), by["ZZK"]
+
+
+def test_bulk_check_refuses_an_entity_whose_currency_has_no_minor_unit():
+    table = [HEADER_ROW,
+             ["ZZB", "2099", "1", "1010", "100", "0", "XTS"],
+             ["ZZB", "2099", "1", "2010", "0", "100", "XTS"],
+             ["ZZE", "2099", "1", "1010", "100", "0", "EUR"],
+             ["ZZE", "2099", "1", "2010", "0", "100", "EUR"]]
+    for units in ({**MINOR_UNITS, "XTS": None}, dict(MINOR_UNITS)):   # blank, and no row at all
+        by = _bulk_balance_report(table, {"ZZB": "XTS", "ZZE": "EUR"}, units)
+        assert by["ZZE"]["ok"], by["ZZE"]
+        assert not by["ZZB"]["ok"], by["ZZB"]
+        assert any("ISO Currency XTS has no Minor Unit" in e for e in by["ZZB"]["errors"]), by["ZZB"]
+
+
+def test_bulk_check_takes_huge_amounts_without_raising():
+    """konsol#180 review: 1e26 or more must be judged, not crash the check."""
+    table = [HEADER_ROW,
+             ["ZZE", "2099", "1", "1010", "1e26", "0", "EUR"],
+             ["ZZE", "2099", "1", "2010", "0", "1e26", "EUR"],
+             ["ZZF", "2099", "1", "1010", "2e26", "0", "EUR"],
+             ["ZZF", "2099", "1", "2010", "0", "1e26", "EUR"]]
+    by = _bulk_balance_report(table, {"ZZE": "EUR", "ZZF": "EUR"})
+    assert by["ZZE"]["ok"], by["ZZE"]
+    assert not by["ZZF"]["ok"] and any("debits exceed credits by" in e for e in by["ZZF"]["errors"]), by["ZZF"]
+
+
+# --- konsol#180-9: an .xlsx number at Excel's 15 significant digits ----------------
+
+def _xlsx_bytes(rows, cached=None):
+    """A workbook as Excel saves it. openpyxl writes floats at 16 significant
+    digits, so a formula's cached value with binary noise is written into the
+    sheet XML directly: ``cached`` maps a placeholder number to the text Excel
+    stores (e.g. 123.25 -> "110.00000000000001")."""
+    from openpyxl import Workbook
+    import io as _io
+    import zipfile
+    wb = Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    out = _io.BytesIO()
+    wb.save(out)
+    if not cached:
+        return out.getvalue()
+    src = zipfile.ZipFile(_io.BytesIO(out.getvalue()))
+    patched = _io.BytesIO()
+    with zipfile.ZipFile(patched, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                text = data.decode()
+                for placeholder, stored in cached.items():
+                    assert f"<v>{placeholder}</v>" in text, placeholder
+                    text = text.replace(f"<v>{placeholder}</v>", f"<v>{stored}</v>")
+                data = text.encode()
+            dst.writestr(item, data)
+    return patched.getvalue()
+
+
+def test_a_real_xlsx_with_a_formula_noise_cell_is_accepted_and_csv_text_is_not():
+    """Through tb_bulk._xlsx_rows (openpyxl, as the upload reads it) and _check.
+    A cached value 110.00000000000001 is a float cell: read at 15 significant
+    digits it is 110 and the entity-period is ready. The same digits typed
+    into a CSV are text, read exactly, and refused for their places."""
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["ZZX"], postable={"Regular"}, period_lookup=period_lookup,
+                           currencies={"ZZX": "EUR"})
+    content = _xlsx_bytes([HEADER_ROW,
+                           ["ZZX", 2099, 1, "1010", 123.25, 0, "EUR"],
+                           ["ZZX", 2099, 1, "2010", 0, 110, "EUR"]],
+                          cached={"123.25": "110.00000000000001"})
+    table = mod._xlsx_rows(content)
+    assert table[1][4] == 110.00000000000001     # openpyxl hands back the binary noise
+    _, report = mod._check(table, PERIOD)
+    assert report[0]["ok"] and report[0]["errors"] == [], report
+    csv_table = M.table_from_csv("data_area_id,fiscal_year,fiscal_period,main_account,debit,credit,currency\n"
+                                 "ZZX,2099,1,1010,110.00000000000001,0,EUR\nZZX,2099,1,2010,0,110,EUR\n")
+    _, report = mod._check(csv_table, PERIOD)
+    assert not report[0]["ok"], report
+    assert "Line 2: debit 110.00000000000001 has 14 decimal places; EUR has 2." in report[0]["errors"], report

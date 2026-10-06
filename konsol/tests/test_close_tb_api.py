@@ -33,6 +33,8 @@ ROLES = ("EPM Admin", "Entity Accountant", "System Manager")
 CHART = {
     "1010": {"main_account": "1010", "is_group": 0, "is_posting": 1},
     "2010": {"main_account": "2010", "is_group": 0, "is_posting": 1},
+    # konsol#180-5: files of three and four lines
+    "3010": {"main_account": "3010", "is_group": 0, "is_posting": 1},
     "4010": {"main_account": "4010", "is_group": 0, "is_posting": 1},
     "4000": {"main_account": "4000", "is_group": 1, "is_posting": 0},
 }
@@ -53,7 +55,7 @@ class _Site:
 
     def __init__(self, roles=("Entity Accountant",), allowed=None, entities=("ZZOP", "ZZB"),
                  groups=("ZZG",), period_status="Open", year_status="Open", declared=True,
-                 submitted=None, chart=CHART, currencies=None):
+                 submitted=None, chart=CHART, currencies=None, minor_units=None):
         self.roles = set(roles)
         self.allowed = None if allowed is None else set(allowed)
         self.entities = list(entities)
@@ -65,6 +67,9 @@ class _Site:
         self.chart = chart
         #: konsol#252: each entity's Functional Currency; EUR unless a test says otherwise.
         self.currencies = {e: "EUR" for e in self.entities} if currencies is None else dict(currencies)
+        #: konsol#180: each ISO Currency's minor_unit, as a site holds it.
+        self.minor_units = ({"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3} if minor_units is None
+                            else dict(minor_units))
         self.log = []
         self.access_checked = []
 
@@ -155,6 +160,8 @@ class _Site:
                 return site.submitted.get(key)
             if doctype == "Entity" and fieldname == "functional_currency":
                 return site.currencies.get(filters)
+            if doctype == "ISO Currency" and fieldname == "minor_unit":
+                return site.minor_units.get(filters)
             raise AssertionError(f"unexpected get_value({doctype!r})")
 
         def exists(doctype, filters=None, *a, **k):
@@ -202,6 +209,7 @@ _NAMES = (
     "konsol.schema_lifecycle", "konsol.group_chart", "konsol.entity_permissions",
     "konsol.close", "konsol.close.tb_model", CONTROLLER_NAME, "konsol.close.tb_api",
     "konsol.tb_dimension", "konsol.tb_dimension_model", "konsol.tb_currency_model",
+    "konsol.tb_balance_model",
 )
 
 
@@ -259,6 +267,7 @@ def _load(site):
         _load_path("konsol.tb_basis_model", os.path.join(APP_DIR, "tb_basis_model.py"))
         _load_path("konsol.tb_dimension_model", os.path.join(APP_DIR, "tb_dimension_model.py"))
         _load_path("konsol.tb_currency_model", os.path.join(APP_DIR, "tb_currency_model.py"))
+        _load_path("konsol.tb_balance_model", os.path.join(APP_DIR, "tb_balance_model.py"))
         _load_path("konsol.close.tb_model", os.path.join(APP_DIR, "close", "tb_model.py"))
         _load_path(CONTROLLER_NAME, CONTROLLER)
         api = _load_path("konsol.close.tb_api", TB_API)

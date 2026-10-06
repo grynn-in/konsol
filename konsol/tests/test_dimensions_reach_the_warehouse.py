@@ -194,6 +194,9 @@ def _frappe(site):
         if doctype == "Entity" and fields:
             # konsol#252: the bulk check reads each entity's Functional Currency.
             return [types.SimpleNamespace(name="ZZA", functional_currency="EUR")]
+        if doctype == "ISO Currency":
+            # konsol#180: the minor unit the balance is judged in.
+            return [types.SimpleNamespace(name="EUR", minor_unit=2)]
         if doctype == "Entity":
             return ["ZZA"] if pluck else [{"name": "ZZA"}]
         if doctype == "Trial Balance Submission":

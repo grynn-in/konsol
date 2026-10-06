@@ -47,7 +47,6 @@ import csv
 import importlib.util
 import io
 import json
-import math
 import os
 import uuid
 
@@ -59,8 +58,9 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
+from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, exact_total, read_amount
 from konsol.tb_currency_model import (
-    COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems, declared_currency,
+    COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, declared_currency,
 )
 from konsol.tb_dimension import declared_dimensions
 from konsol.tb_dimension_model import (
@@ -70,9 +70,6 @@ from konsol.tb_dimension_model import (
 RAW_TABLE = "epm_raw.trial_balance_submissions"
 CONTROL_TABLE = "epm_raw.trial_balance_submission_control"
 REAP_AFTER_DAYS = 7
-
-#: sum(debit) and sum(credit) may differ by at most this much (currency units).
-BALANCE_TOLERANCE = 0.01
 
 _REQUIRED_COLUMNS = ("main_account", "debit", "credit", CURRENCY)
 
@@ -108,7 +105,10 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, currency, description,
-    partner_data_area_id, amount_basis, line}; the partner and the basis are
+    partner_data_area_id, amount_basis, line}; debit and credit are exact
+    Decimals, as written (konsol#180-5: never rounded; a line with more places
+    than its currency has is refused by konsol.tb_balance_model, which needs
+    the currency first). The partner and the basis are
     '' when the file has no such column or the cell is blank. The currency
     column is required (konsol#252) and returned as written, stripped:
     currency_problems() judges it, since a blank or a mismatch is a refusal
@@ -120,8 +120,9 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
     numbers whenever either happens.
     Raises ValueError with a human-readable message on structural problems —
     a missing header, a non-numeric amount, a blank account. Business
-    validation (balance, duplicates, chart membership) is validate_tb_rows()'s
-    job, so a file can be parsed and then reported on as a whole.
+    validation (duplicates, chart membership) is validate_tb_rows()'s job,
+    and the currency and the balance are konsol.tb_balance_model's
+    (konsol#180), so a file can be parsed and then reported on as a whole.
 
     `declared_dimensions` are the site's Dimension rows (dimension_name,
     status, in_trial_balance). It has no default (konsol#319): a default of
@@ -233,31 +234,29 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
         account = item.get("main_account", "")
         if not account:
             raise ValueError(f"Line {lineno}: main_account is blank")
+        # konsol#180-5 (Deepak Pai, 6 Oct 2026): each amount is read exactly
+        # as written and never rounded. A line with more decimal places than
+        # the declared currency has is refused by name, by
+        # konsol.tb_balance_model, once the currency is known. NaN and
+        # Infinity are refused here: NaN sails through every comparison, so an
+        # unbalanced file would validate and land NaN in the warehouse.
         try:
-            debit = float(item.get("debit") or 0)
-            credit = float(item.get("credit") or 0)
+            debit = read_amount(item.get("debit"))
+            credit = read_amount(item.get("credit"))
+        except NotFinite:
+            raise ValueError(
+                f"Line {lineno}: debit/credit must be finite numbers "
+                f"(got {item.get('debit')!r} / {item.get('credit')!r})"
+            )
         except ValueError:
             raise ValueError(
                 f"Line {lineno}: debit/credit must be numbers "
                 f"(got {item.get('debit')!r} / {item.get('credit')!r})"
             )
-        # float() happily accepts 'nan' and 'inf', and NaN then sails through
-        # every comparison in validate_tb_rows (all NaN comparisons are False),
-        # so an arbitrarily unbalanced file would validate and land NaN in the
-        # warehouse. Refuse non-finite values outright.
-        if not (math.isfinite(debit) and math.isfinite(credit)):
-            raise ValueError(
-                f"Line {lineno}: debit/credit must be finite numbers "
-                f"(got {item.get('debit')!r} / {item.get('credit')!r})"
-            )
-        # Round to cents HERE so the amounts validated, landed, and cast by
-        # bronze (Decimal(38,2)) are all the same numbers — a file balanced
-        # only at 3+ decimals must fail validation, not drift past it and
-        # unbalance later in the warehouse.
         rows.append({
             "main_account": account,
-            "debit": round(debit, 2),
-            "credit": round(credit, 2),
+            "debit": debit,
+            "credit": credit,
             CURRENCY: item.get(CURRENCY, ""),
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
@@ -333,12 +332,11 @@ def chart_errors(rows, chart):
     No chart at all is one refusal, not every account listed. A heading, and an
     account closed for posting, are refused with the reason. The rules are
     check_rows' (konsol#305 A35)."""
-    result = check_rows(rows, chart, None, None, None, BALANCE_TOLERANCE)
+    result = check_rows(rows, chart, None, None, None)
     return _chart_messages(result, chart)
 
 
-def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
-                     entity=None, known_entities=None, chart=None):
+def validate_tb_rows(rows, known_accounts=None, entity=None, known_entities=None, chart=None):
     """Business validation over parsed rows. Pure; host-testable.
 
     Returns a list of error strings — empty means valid. known_accounts is the
@@ -356,13 +354,15 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
 
     konsol#305 A35 (decision P1): every rule is konsol.close.tb_model.check_rows';
     this function only words its per-line problems per file. The amount basis
-    is left to validate() (basis_problems against the form).
+    is left to validate() (basis_problems against the form), and the balance
+    to konsol.tb_balance_model, which judges it exactly in the declared
+    currency after the currency itself (konsol#180).
     """
     judged = chart
     if chart is None and known_accounts is not None:
         # A bare list of codes is a chart of posting accounts.
         judged = {code: {"is_group": 0, "is_posting": 1} for code in known_accounts}
-    result = check_rows(rows, judged, entity, known_entities, None, tolerance)
+    result = check_rows(rows, judged, entity, known_entities, None)
     errors = []
 
     # One row per landed key (konsol#255): the rule and its key are
@@ -404,8 +404,8 @@ def validate_tb_rows(rows, known_accounts=None, tolerance=BALANCE_TOLERANCE,
             "the opposite column instead of using a sign"
         )
 
-    # The balance, and any file problem check_rows gains later. NO_CHART is
-    # worded with the chart below; the form's basis is validate()'s.
+    # Any file problem check_rows gains later. NO_CHART is worded with the
+    # chart below; the form's basis is validate()'s.
     not_here = {NO_CHART, *basis_problems(None, [])}
     errors.extend(p for p in result["file_problems"] if p not in not_here)
 
@@ -722,15 +722,22 @@ class TrialBalanceSubmission(Document):
         ]))
         # konsol#252: the file declares its currency and it must be the
         # Entity's Functional Currency. An entity without one is refused, not
-        # skipped. The bulk upload runs the same check per entity-period
+        # skipped. konsol#180: then, and only then, no line may have more
+        # decimal places than that currency's minor unit (#180-5), and debits
+        # must equal credits exactly (#180-1).
+        # The bulk upload runs the same rule per entity-period
         # (tb_bulk_model.check_group) and the close app's check and submit
         # (konsol.close.tb_api) before anything is written.
+        functional = self._functional_currency()
+        errors.extend(currency_and_balance_problems(
+            self.data_area_id, functional, self._minor_unit(functional), rows))
         declared = [(r.get("line"), r[CURRENCY]) for r in rows]
-        errors.extend(currency_problems(self.data_area_id, self._functional_currency(), declared))
 
         self.row_count = len(rows)
-        self.total_debit = round(sum(r["debit"] for r in rows), 2)
-        self.total_credit = round(sum(r["credit"] for r in rows), 2)
+        # Float fields shown to 2 places; the rows are exact (konsol#180-5).
+        # Exact sums, never in the default context (#180 review F3).
+        self.total_debit = float(exact_total(rows, "debit"))
+        self.total_credit = float(exact_total(rows, "credit"))
         if errors:
             # No "Invalid" status is persisted: frappe.throw rolls the save
             # back, so a stored Invalid state could never exist anyway — the
@@ -903,6 +910,14 @@ class TrialBalanceSubmission(Document):
     def _functional_currency(self):
         """The Entity's Functional Currency, '' when it has none (konsol#252)."""
         return frappe.db.get_value("Entity", self.data_area_id, "functional_currency") or ""
+
+    @staticmethod
+    def _minor_unit(currency):
+        """``ISO Currency.minor_unit`` for ``currency`` as stored, None when
+        there is no currency to read it for (konsol#180). Never defaulted."""
+        if not currency:
+            return None
+        return frappe.db.get_value("ISO Currency", currency, "minor_unit")
 
     @staticmethod
     def _partner_entities(rows):

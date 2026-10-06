@@ -112,14 +112,13 @@ def test_validate_balanced_clean():
     assert _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 10))) == []
 
 
-def test_validate_flags_imbalance():
+def test_validate_tb_rows_leaves_the_balance_to_the_currency_rule():
+    """konsol#180: the balance is judged once, in the declared currency's minor
+    unit (konsol.tb_balance_model, after the currency), never by a second rule
+    here. Was test_validate_flags_imbalance and, with the 0.01 slack,
+    test_validate_tolerates_rounding_within_tolerance."""
     errs = _m.validate_tb_rows(_rows(("1010", 10, 0), ("2010", 0, 9)))
-    assert any("do not equal" in e for e in errs)
-
-
-def test_validate_tolerates_rounding_within_tolerance():
-    assert _m.validate_tb_rows(
-        _rows(("1010", 10.004, 0), ("2010", 0, 10.0))) == []
+    assert not any("do not equal" in e for e in errs), errs
 
 
 def test_validate_flags_duplicates():
@@ -168,16 +167,22 @@ def test_parse_rejects_surplus_cells():
         assert "more cells" in str(e)
 
 
-def test_parse_rounds_to_cents_so_stored_equals_validated():
+def test_parse_reads_amounts_exactly_and_the_rule_refuses_extra_places():
+    """konsol#180-5 (Deepak Pai, 6 Oct 2026) replaces
+    test_parse_rounds_to_cents_so_stored_equals_validated: the parser no
+    longer rounds each line to cents. It keeps the amount as written, and
+    konsol.tb_balance_model refuses a line with more places than the
+    currency has, by name, instead of judging a balance of rounded lines."""
     rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,10.005,0,EUR\n2010,0,10.004,EUR\n", ())
-    assert rows[0]["debit"] == 10.0 or rows[0]["debit"] == 10.01  # banker's rounding either way
-    assert rows[1]["credit"] == 10.0
-    # the point: balance is judged on the ROUNDED values — the same numbers
-    # the warehouse will store — so post-rounding drift past the tolerance
-    # fails here, not later in a dbt test
-    errs = _m.validate_tb_rows(_m.parse_tb_csv(
+    assert str(rows[0]["debit"]) == "10.005" and str(rows[1]["credit"]) == "10.004"
+    spec = importlib.util.spec_from_file_location("tbs_balance_model", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tb_balance_model.py"))
+    balance = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(balance)
+    errs = balance.balance_problems("EUR", 2, _m.parse_tb_csv(
         "main_account,debit,credit,currency\n1010,10.019,0,EUR\n2010,0,10.001,EUR\n", ()))
-    assert any("do not equal" in e for e in errs)  # 10.02 vs 10.00 -> 0.02 > 0.01
+    assert errs == ["Line 2: debit 10.019 has 3 decimal places; EUR has 2.",
+                    "Line 3: credit 10.001 has 3 decimal places; EUR has 2."], errs
 
 
 # --- konsol#159: the intercompany partner -----------------------------------
@@ -1156,7 +1161,7 @@ def _bulk_report(table, decl):
         key, rows, known_accounts=None, visible=True, leaf=True,
         period={"code": "P06", "type": "Regular", "status": "Open"},
         postable_types={"Regular"}, existing=None, validate_rows=_m.validate_tb_rows,
-        functional_currency="EUR")
+        functional_currency="EUR", minor_unit=2)
     return rows, report
 
 
@@ -1203,7 +1208,7 @@ def _with_check_rows(fake, fn):
 
 
 def _fake_result(file_problems=(), row_problems=()):
-    def fake(rows, chart, entity, known_entities, form_basis, tolerance):
+    def fake(rows, chart, entity, known_entities, form_basis):
         return {
             "ok": False,
             "rows": [{"line": 2, "main_account": "1010", "partner": "", "debit": 10.0,
