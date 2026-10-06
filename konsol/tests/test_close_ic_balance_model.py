@@ -149,7 +149,7 @@ def test_a_zero_margin_rule_is_still_a_gap():
 def test_rows_carry_status_amounts_and_matched_rule_margin():
     rows = M.balance_rows([_bal("A", docstatus=0), _bal("B", "FR01", "DE01", docstatus=1)],
                           [_rule("R1", debit="UK01", credit="*", margin="12.5", name="UK margin")])
-    a, b = rows
+    a, b = sorted(rows, key=lambda r: r["name"])
     assert a["name"] == "A" and a["status"] == "Draft"
     assert a["ic_sales_amount"] == 1000.0 and a["ending_inventory_from_ic"] == 250.0
     assert a["rules"] == [{"rule_id": "R1", "rule_name": "UK margin", "margin_pct": 12.5}]
