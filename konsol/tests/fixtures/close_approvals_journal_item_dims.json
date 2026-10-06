@@ -7,7 +7,10 @@
   "preparer": "zz-analyst@example.com",
   "edited_by": [],
   "created": "2026-07-01T09:00:00+01:00",
-  "approve": {"mode": "direct", "message": null},
+  "approve": {
+    "mode": "direct",
+    "message": null
+  },
   "inline": true,
   "desk": null,
   "entity": null,
@@ -19,7 +22,9 @@
       "account_name": "Accounts payable",
       "debit_amount": 500.0,
       "credit_amount": 0.0,
-      "description": ""
+      "description": "",
+      "dim_cost_center": "CC1",
+      "dim_project": ""
     },
     {
       "idx": 2,
@@ -28,7 +33,9 @@
       "account_name": "Sales revenue",
       "debit_amount": 0.0,
       "credit_amount": 500.0,
-      "description": ""
+      "description": "",
+      "dim_cost_center": "",
+      "dim_project": ""
     }
   ],
   "effect": {
@@ -47,8 +54,14 @@
       }
     ],
     "sections": [
-      {"section": "Profit and Loss", "net_debit": -500.0},
-      {"section": "Balance Sheet", "net_debit": 500.0}
+      {
+        "section": "Profit and Loss",
+        "net_debit": -500.0
+      },
+      {
+        "section": "Balance Sheet",
+        "net_debit": 500.0
+      }
     ],
     "no_heading": 0
   },
@@ -57,7 +70,16 @@
   "fiscal_year": 2026,
   "fiscal_period": 7,
   "consolidation_group": "G1",
-  "dimensions": [],
+  "dimensions": [
+    {
+      "key": "dim_cost_center",
+      "label": "Cost Center"
+    },
+    {
+      "key": "dim_project",
+      "label": "dim_project"
+    }
+  ],
   "sent_back": false,
   "rejection": null
 }

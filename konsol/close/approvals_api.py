@@ -25,8 +25,17 @@ one Workflow lookup (plus one cached doc, only when a workflow is active),
 one ``get_all`` per doctype (plus one more, only for a workflow doctype, for
 the first-state read above), one ``self_approval.preparers_for`` and one
 rejections read per doctype with pending or first-state names, and — only
-while a journal is pending — one read of its lines, the Published accounts
-and the fiscal period rows.
+while a journal is pending — one read of its lines, the Published accounts,
+the fiscal period rows and the declared journal dimensions
+(``journal_api.declared_dimensions``: one Dimension read plus the line
+doctype's cached meta; konsolidat#245 option D, #305 D06).
+
+A pending journal's lines carry each declared dimension's value ('' when
+blank) and the item names the dimensions as ``[{key, label}]`` (``[]`` when
+none are declared, and then the lines are exactly as before D06). Only the
+dimensions currently declared are read: a value written under a dimension
+since un-ticked stays in the warehouse but is not shown here (konsol#255
+option A).
 
 This file never names the event-log doctype (the one-writer check,
 test_close_event_writer.py): rejections are read only through
@@ -37,7 +46,8 @@ from datetime import date, datetime
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import approvals_model, close_event, close_policy_model, journal_model, self_approval
+from konsol.close import (approvals_model, close_event, close_policy_model, journal_api,
+                          journal_model, self_approval)
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
 
@@ -122,8 +132,8 @@ def _accounts():
     return accounts
 
 
-def _line_out(line, accounts):
-    return {
+def _line_out(line, accounts, dim_keys=()):
+    out = {
         "idx": line.get("idx"),
         "data_area_id": line.get("data_area_id"),
         "main_account": line.get("main_account"),
@@ -132,6 +142,10 @@ def _line_out(line, accounts):
         "credit_amount": _number(line.get("credit_amount")),
         "description": line.get("description"),
     }
+    # D06: each declared dimension, blank as '' (never None, never absent).
+    for key in dim_keys:
+        out[key] = line.get(key) or ""
+    return out
 
 
 def _workflow_states(doctype):
@@ -208,6 +222,8 @@ def queue_for(user, roles):
     rejections = {}
     period_rows = None
     accounts = None
+    dimensions = []
+    dim_keys = ()
 
     for doctype in close_policy_model.APPROVAL_DOCTYPES:
         wf_row, states = _workflow_states(doctype)
@@ -237,9 +253,13 @@ def queue_for(user, roles):
         if doctype == JOURNAL and names:
             period_rows = fiscal_calendar.fiscal_period_rows()
             accounts = _accounts()
+            dimensions = [{"key": d["dimension_name"], "label": d["label"]}
+                          for d in journal_api.declared_dimensions()]
+            dim_keys = tuple(d["key"] for d in dimensions)
             lines = frappe.get_all(
                 LINE, filters={"parenttype": JOURNAL, "parent": ["in", names]},
-                fields=LINE_FIELDS, order_by="parent asc, idx asc", limit_page_length=0,
+                fields=LINE_FIELDS + list(dim_keys), order_by="parent asc, idx asc",
+                limit_page_length=0,
             )
             for line in lines:
                 lines_by_parent.setdefault(line["parent"], []).append(line)
@@ -263,7 +283,8 @@ def queue_for(user, roles):
                 doc[field] = _iso(doc.get(field))
             if doctype == JOURNAL:
                 header_lines = lines_by_parent.get(name, [])
-                doc["lines"] = [_line_out(line, accounts) for line in header_lines]
+                doc["lines"] = [_line_out(line, accounts, dim_keys) for line in header_lines]
+                doc["dimensions"] = [dict(d) for d in dimensions]
                 doc["effect"] = journal_model.statement_effect(header_lines, accounts)
                 doc["duration"] = journal_model.duration_label(
                     doc.get("reverse_fiscal_year"), doc.get("reverse_fiscal_period"), period_rows)

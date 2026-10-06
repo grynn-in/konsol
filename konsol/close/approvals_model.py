@@ -162,6 +162,9 @@ def _shape(doctype, doc):
             "fiscal_year": doc["fiscal_year"],
             "fiscal_period": doc["fiscal_period"],
             "consolidation_group": doc["consolidation_group"],
+            # D06 (konsolidat#245 option D): [{key, label}], [] when none
+            # are declared; each line carries its value per key.
+            "dimensions": doc["dimensions"],
         }
         return kind_label, title, detail, extra
     if doctype == GER:
