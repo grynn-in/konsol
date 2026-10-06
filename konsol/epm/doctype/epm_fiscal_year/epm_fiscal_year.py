@@ -104,6 +104,24 @@ def _row_dicts(doc):
     ]
 
 
+def _published_calendar(doc):
+    """The period rows as epm_staging.fiscal_periods carries them, without
+    `status` (konsol#337): what dbt reads. Normalised as
+    fiscal_calendar.fiscal_period_rows() publishes them (a blank label falls
+    back to the code, a blank quarter is ''), so a value that only arrives in
+    another form (a date posted as a string) is no change. Order-free: the
+    table is ordered by period, not by child-row idx."""
+    year = _int(doc.fiscal_year)
+    return sorted(
+        (
+            (year, _int(r.fiscal_period), r.period_code, r.period_label or r.period_code,
+             r.period_type, _date(r.start_date), _date(r.end_date), r.quarter or "")
+            for r in (doc.periods or [])
+        ),
+        key=repr,
+    )
+
+
 def _stamp(target, new, now):
     """Set the year's or a row's status to `new`: closed_by/closed_on name the
     user and time, or are cleared when `new` is Open."""
@@ -171,12 +189,35 @@ class EPMFiscalYear(Document):
     def on_update(self):
         # Fires on insert, edit, Generate Periods and every status action.
         self._resync()
+        # konsol#337: a build only when a column dbt reads changed. `status`
+        # is published but no model reads it (measured 6 Oct 2026, konsolidat
+        # main e292abb: silver_tb_movements, governed_rates.sql and the gold
+        # readers use only the structural columns; _staging__sources.yml: "the
+        # warehouse does not filter on it"), so Close, Lock and Reopen
+        # republish the table and request nothing.
+        before = self.get_doc_before_save()
+        if _published_calendar(self) != (_published_calendar(before) if before else []):
+            self._request_rebuild("on_update")
 
     def after_delete(self):
         """after_delete, NOT on_trash: the sync re-reads every year, and
         on_trash runs before the row is gone (konsol#120). on_trash only
         refuses."""
         self._resync()
+        if self.periods:
+            self._request_rebuild("after_delete")
+
+    def _request_rebuild(self, method):
+        """konsol#337: the calendar changed, so request a build through the one
+        enqueue path every trigger uses (konsol.tasks.queue_consolidation_build:
+        a job after the commit, deduplicated per document, inert during
+        install / migrate / patch / import). One request per save, never per
+        row. The scope is DOCTYPE_BUILD_MAP's "full": fiscal_periods feeds gold
+        models outside every narrower scope. Imported here: tasks.py imports
+        the Airbyte client."""
+        from konsol.tasks import queue_consolidation_build
+
+        queue_consolidation_build(self, method)
 
     def _resync(self):
         """Queue the sync for after the commit, once per transaction

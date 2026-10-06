@@ -144,6 +144,8 @@ _dbt_trigger_doctypes = [
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed
     # country. DOCTYPE_BUILD_MAP still carries its scope.
+    # NOT "EPM Fiscal Year" either (konsol#337): its controller requests the
+    # build only when the published calendar changes, never for a status move.
 ]
 
 # queue_consolidation_build, NOT on_consolidation_doc_update: that one commits,
