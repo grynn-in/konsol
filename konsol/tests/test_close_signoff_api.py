@@ -158,6 +158,10 @@ class _Site:
         self.writes = []
         self.signed = []
         self.sign_error = None
+        #: #305-W5-1 (story 9.4): the stubbed assertion_run.reject_signoff
+        #: records its arguments and raises ``reject_error`` when set.
+        self.rejected = []
+        self.reject_error = None
         self.status_calls = []
         self.status_error = None
         self.admin_checks = 0
@@ -339,6 +343,14 @@ def _load(site):
         return {"signoff_status": "Acknowledged", "signed_off_by": LEAD}
 
     ar.sign_off_close = sign_off_close
+
+    def reject_signoff(close_run, reason):
+        site.rejected.append((close_run, reason))
+        if site.reject_error is not None:
+            raise site.reject_error
+        return {"signoff_status": "Not Signed Off"}
+
+    ar.reject_signoff = reject_signoff
     ar._warned_assertion_names = lambda run, limit=50: list(site.warned_names.get(run, []))[:limit]
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
@@ -1325,3 +1337,114 @@ def test_the_ic_api_stub_is_installed():
     assert mods["konsol.close.ic_api"].signoff_summary(2025, 7)["state"] == "checked"
     assert site.ic_calls == [(2025, 7)]
     assert mods["konsol.close.ic_api"].tolerance_gap() is site.ic_tolerance_gap
+
+
+# --- #305-W5-1 (story 9.4, #157): reject a signature with a reason --------------
+
+def _signed_site(roles=("EPM Admin",)):
+    """P09's latest terminal run RUN-09 is Green and Signed Off."""
+    site = _Site(roles=roles)
+    site.records["Assertion Run"][-1].update(status="Green", warned=0,
+                                             signoff_status="Signed Off")
+    return site
+
+
+def _call_reject(site, *args, **kwargs):
+    """Call reject with the stubs installed. Returns (result, exception)."""
+    module, mods, _frappe = _load(site)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        try:
+            return module.reject(*args, **kwargs), None
+        except Exception as exc:  # noqa: BLE001 - the type is asserted by the caller
+            return None, exc
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def test_reject_is_post_only_and_gated_on_the_close_lead():
+    site = _signed_site()
+    _call_reject(site, 2025, 9, run="RUN-09", reason="ZZA's TB is the draft")
+    assert site.whitelisted["reject"] == ["POST"]
+    assert site.only_for[0] == ("EPM Admin", "System Manager")
+
+
+def test_reject_passes_the_latest_terminal_run_and_the_reason_through():
+    site = _signed_site()
+    result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="ZZA's TB is the draft")
+    assert exc is None, exc
+    assert site.rejected == [("RUN-09", "ZZA's TB is the draft")]
+    assert result == {"signoff_status": "Not Signed Off"}
+
+
+def test_a_blank_reject_reason_is_refused_before_anything():
+    for reason in (None, "", "  \n "):
+        site = _signed_site()
+        _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason=reason)
+        assert type(exc).__name__ == "ValidationError", (reason, exc)
+        assert str(exc) == ("Give the reason the sign-off of FY2025 P09 is rejected: "
+                            "the preparer reads it."), reason
+        assert site.rejected == [], reason
+
+
+def test_reject_without_a_run_name_is_refused():
+    for missing in (None, "", "   "):
+        site = _signed_site()
+        _result, exc = _call_reject(site, 2025, 9, run=missing, reason="rework")
+        assert type(exc).__name__ == "ValidationError", (missing, exc)
+        assert str(exc) == ("Reload the sign-off for FY2025 P09: the request did not say "
+                            "which checks run it rejects."), missing
+        assert site.rejected == [], missing
+
+
+def test_reject_with_a_stale_run_is_refused_and_rejects_nothing():
+    site = _signed_site()
+    _rerun(site)
+    _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+    assert type(exc).__name__ == "ValidationError", exc
+    # The prefix signoffMachine.STALE_RUN_REFUSAL reloads on.
+    assert str(exc) == ("The checks were re-run (now RUN-09-B, Red); "
+                        "review the new result before rejecting.")
+    assert site.rejected == []
+
+
+def test_reject_with_no_run_at_all_is_refused_naming_the_period():
+    site = _signed_site()
+    site.records["Assertion Run"] = [r for r in site.records["Assertion Run"]
+                                     if r["fiscal_period"] != 9]
+    _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+    assert str(exc) == "FY2025 P09 has no checks run to reject."
+    assert site.rejected == []
+
+
+def test_no_other_close_role_can_reject():
+    for role in ("EPM Analyst", "Entity Accountant", "EPM User", "Guest"):
+        site = _signed_site(roles=(role,))
+        _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+        assert type(exc).__name__ == "PermissionError", (role, exc)
+        assert site.rejected == [], role
+
+
+def test_a_refusal_from_reject_signoff_propagates_unchanged():
+    site = _signed_site()
+    refusal = RuntimeError("Assertion Run RUN-09 is Not Signed Off; ...")
+    site.reject_error = refusal
+    _result, exc = _call_reject(site, 2025, 9, run="RUN-09", reason="rework")
+    assert exc is refusal
+
+
+def test_reject_refuses_an_undeclared_period():
+    _result, exc = _call_reject(_signed_site(), 2031, 1, run="RUN-09", reason="rework")
+    assert type(exc).__name__ == "PeriodNotDeclared", exc
+
+
+def test_get_signoff_says_whether_the_caller_may_reject():
+    for roles, expected in ((("EPM Admin",), True), (("System Manager",), True),
+                            (("EPM Analyst",), False), (("EPM User",), False),
+                            (("Entity Accountant",), False)):
+        assert _get(_signed_site(roles=roles))["can_reject"] is expected, roles
