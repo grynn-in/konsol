@@ -964,6 +964,17 @@ def test_parse_reports_a_bad_dimension_header_and_a_bad_ordinary_one_together():
     assert "Unrecognised column" in msg, msg
 
 
+def test_parse_unrecognised_column_refusal_names_the_declared_dimension_columns():
+    """konsol#255 A/B: the refusal must say which dim_* columns the site
+    accepts, and only those (a Draft dimension is not one)."""
+    text = "main_account,debit,credit,notes,currency\n1010,5,0,x,EUR\n"
+    msg = _parse_raises(text, [declared("dim_cost_center"), declared("dim_region"),
+                               declared("dim_draft", status="Draft")])
+    assert "dimension column(s) dim_cost_center, dim_region" in msg, msg
+    assert "dim_draft" not in msg, msg
+    assert "dimension column" not in _parse_raises(text, ()), msg
+
+
 def test_the_bulk_csv_round_trips_its_dimension_values_back_through_the_parser():
     """The regression that matters: the bulk path feeds group_csv's output
     back in as a single submission, so a dimension dropped between the two
