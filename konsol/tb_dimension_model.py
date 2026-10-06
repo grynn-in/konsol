@@ -116,6 +116,25 @@ def is_flag_on(value):
 _is_on = is_flag_on
 
 
+#: At most this many accepted dimension columns are named in one refusal.
+MAX_NAMED_DIMENSIONS = 10
+
+
+def accepted_dimensions_sentence(accepted):
+    """One sentence naming the dim_* columns this site accepts, or '' when it
+    accepts none. A header refusal ends with it, whatever the refusal was: a
+    file refused for a missing, unknown or misspelled column used to be shown
+    the header without them, so an admin was not told dim_cost_center would
+    have been taken, or was told to create dim_cost_centre (konsol#255 A/B)."""
+    if not accepted:
+        return ""
+    names = sorted(accepted)
+    shown = ", ".join(names[:MAX_NAMED_DIMENSIONS])
+    if len(names) > MAX_NAMED_DIMENSIONS:
+        shown += f" and {len(names) - MAX_NAMED_DIMENSIONS} more"
+    return f"This site also accepts the optional dimension column(s) {shown}."
+
+
 def accepted_dimension_columns(declared_rows):
     """The dim_* header names a trial-balance file may carry.
 
