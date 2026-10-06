@@ -4,6 +4,7 @@ Configuration gaps and the order gate. Loaded by path; the module imports
 nothing from frappe or konsol.
 """
 import ast
+import json
 import importlib.util
 import os
 
@@ -524,14 +525,39 @@ def _ic_checked(over, pairs=None):
             "sent_back_open": 0}
 
 
+def _load_close(name):
+    spec = importlib.util.spec_from_file_location(
+        name + "_for_signoff_model_test", os.path.join(os.path.dirname(MODEL_PATH), name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# W5-2 (story 8.4): the commentary-threshold lines are the REAL producers'
+# output — commentary_model.requirement over close_policy_model's threshold,
+# and the golden fixture statement_api.signoff_commentary wrote.
+CM = _load_close("commentary_model")
+CPM = _load_close("close_policy_model")
+_DECLARED = CPM.commentary_threshold(5000, 0, "")
+COMMENTARY_NONE = CM.requirement(_DECLARED, [])
+COMMENTARY_UNDECLARED = CM.requirement(CPM.commentary_threshold(0, 0, ""), None)
+COMMENTARY_UNKNOWN = CM.requirement(_DECLARED, [
+    {"consolidation_group": "ZZGRP", "state": "not_built",
+     "message": "ServerException (UNKNOWN_TABLE)", "statement": None, "texts": {}}])
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                       "close_signoff_commentary_required.json")) as _fh:
+    COMMENTARY_REQUIRED = json.load(_fh)
+
+
 def _summary(run=None, warned=(), on_behalf=(), exceptions=(), covers=(), previous=(),
              problems=None, can_override=False, period_status="Open", data_change=None,
-             intercompany=None):
+             intercompany=None, commentary=None):
     return M.summary(run, list(warned), list(on_behalf), list(exceptions), list(covers),
                      list(previous), problems if problems is not None else NO_PROBLEMS, can_override,
                      period_status=period_status,
                      data_change=data_change if data_change is not None else NO_CHANGE,
-                     intercompany=intercompany if intercompany is not None else NOT_CONFIGURED_IC)
+                     intercompany=intercompany if intercompany is not None else NOT_CONFIGURED_IC,
+                     commentary=commentary if commentary is not None else COMMENTARY_NONE)
 
 
 # --- A59: no checks and no signing on a Closed or Locked period ----------------
@@ -965,11 +991,11 @@ def test_ic_warning_pluralises_correctly():
 
 
 def test_effective_status_is_amber_only_for_a_green_run_with_over_tolerance_pairs():
-    assert M.effective_status("Green", _ic_checked(1)) == "Amber"
-    assert M.effective_status("Green", _ic_checked(0)) == "Green"
-    assert M.effective_status("Amber", _ic_checked(1)) == "Amber"
-    assert M.effective_status("Red", _ic_checked(1)) == "Red"
-    assert M.effective_status("Queued", _ic_checked(1)) == "Queued"
+    assert M.effective_status("Green", _ic_checked(1), COMMENTARY_NONE) == "Amber"
+    assert M.effective_status("Green", _ic_checked(0), COMMENTARY_NONE) == "Green"
+    assert M.effective_status("Amber", _ic_checked(1), COMMENTARY_NONE) == "Amber"
+    assert M.effective_status("Red", _ic_checked(1), COMMENTARY_NONE) == "Red"
+    assert M.effective_status("Queued", _ic_checked(1), COMMENTARY_NONE) == "Queued"
 
 
 def test_ic_problem_names_the_unchecked_states_only():
@@ -981,3 +1007,91 @@ def test_ic_problem_names_the_unchecked_states_only():
         assert problem["code"] == "ic_unchecked"
         assert problem["message"] == ic["message"] + (
             " Nothing can be signed until intercompany can be checked.")
+
+
+# --- W5-2 (story 8.4): headings above the commentary threshold make a Green
+# run Amber (Deepak, 6 Oct 2026, option 8.4-1; the #265 / #305-W3-8 path).
+# An undeclared threshold is never Amber (the setup gap blocks instead); a
+# line that could not be checked blocks signing, like intercompany (W3-P4).
+
+def test_commentary_required_reads_each_state():
+    assert COMMENTARY_REQUIRED["required_missing"] == 3
+    assert M.commentary_required(COMMENTARY_REQUIRED) == 3
+    assert M.commentary_required(COMMENTARY_NONE) == 0
+    assert M.commentary_required(COMMENTARY_UNDECLARED) == 0
+    assert M.commentary_required(COMMENTARY_UNKNOWN) is None
+
+
+def test_commentary_required_refuses_a_malformed_line():
+    bad = (None, "checked", {"state": "bogus"}, {"state": "checked"},
+           {"state": "checked", "required_missing": None})
+    for line in bad:
+        try:
+            M.commentary_required(line)
+        except ValueError:
+            continue
+        raise AssertionError("commentary_required accepted %r" % (line,))
+
+
+def test_commentary_states_are_commentary_models():
+    assert set(M.COMMENTARY_STATES) == {"undeclared", "checked", "unknown"}
+
+
+def test_commentary_warning_pluralises_and_is_none_at_zero():
+    assert M.commentary_warning(COMMENTARY_REQUIRED) == (
+        "Commentary: 3 headings above the threshold without commentary")
+    one = dict(COMMENTARY_REQUIRED, required_missing=1)
+    assert M.commentary_warning(one) == (
+        "Commentary: 1 heading above the threshold without commentary")
+    assert M.commentary_warning(COMMENTARY_NONE) is None
+    assert M.commentary_warning(COMMENTARY_UNDECLARED) is None
+    assert M.commentary_warning(COMMENTARY_UNKNOWN) is None
+
+
+def test_effective_status_is_amber_for_a_green_run_with_required_commentary():
+    assert M.effective_status("Green", NOT_CONFIGURED_IC, COMMENTARY_REQUIRED) == "Amber"
+    assert M.effective_status("Green", NOT_CONFIGURED_IC, COMMENTARY_NONE) == "Green"
+    assert M.effective_status("Green", NOT_CONFIGURED_IC, COMMENTARY_UNDECLARED) == "Green"
+    assert M.effective_status("Red", NOT_CONFIGURED_IC, COMMENTARY_REQUIRED) == "Red"
+
+
+def test_green_with_required_commentary_is_acknowledge():
+    s = _summary(run=_run("Green"), commentary=COMMENTARY_REQUIRED)
+    assert s["action"] == "acknowledge"
+    assert s["acknowledgements"]["commentary"] == (
+        "Commentary: 3 headings above the threshold without commentary")
+
+
+def test_green_with_nothing_required_signs_and_has_no_commentary_warning():
+    for line in (COMMENTARY_NONE, COMMENTARY_UNDECLARED):
+        s = _summary(run=_run("Green"), commentary=line)
+        assert s["action"] == "sign", line["state"]
+        assert s["acknowledgements"]["commentary"] is None
+
+
+def test_a_commentary_line_that_cannot_be_checked_blocks_signing():
+    s = _summary(run=_run("Green"), commentary=COMMENTARY_UNKNOWN)
+    assert s["action"] == "blocked"
+    assert COMMENTARY_UNKNOWN["message"] in s["label"]
+    assert "Nothing can be signed" in s["label"]
+
+
+def test_red_with_required_commentary_still_overrides_and_names_it():
+    s = _summary(run=_run("Red"), can_override=True, commentary=COMMENTARY_REQUIRED)
+    assert s["action"] == "override"
+    assert s["acknowledgements"]["commentary"].startswith("Commentary: 3 headings")
+
+
+def test_a_signed_run_with_required_commentary_stays_signed():
+    s = _summary(run=_run("Green", "Signed Off"), commentary=COMMENTARY_REQUIRED)
+    assert s["action"] == "signed"
+
+
+def test_summary_requires_the_commentary_line():
+    try:
+        M.summary(None, [], [], [], [], [], NO_PROBLEMS, False, period_status="Open",
+                  data_change=NO_CHANGE, intercompany=NOT_CONFIGURED_IC)
+    except TypeError as e:
+        assert "commentary" in str(e)
+    else:
+        raise AssertionError("summary ran without the commentary line")

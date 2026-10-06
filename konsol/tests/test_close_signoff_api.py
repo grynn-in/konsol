@@ -173,6 +173,36 @@ class _Site:
                            "sent_back_open": 0}
         self.ic_tolerance_gap = None
         self.ic_calls = []
+        #: W5-2 (8.4): the stubbed `konsol.close.statement_api.signoff_commentary`
+        #: answer (default: checked, nothing required — the real
+        #: commentary_model.requirement over a declared threshold and no
+        #: group) and every call to it.
+        self.commentary_line = _commentary_none()
+        self.commentary_calls = []
+
+
+def _close_model(name):
+    spec = importlib.util.spec_from_file_location(
+        name + "_for_signoff_api_test", os.path.join(CLOSE_DIR, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _commentary_none():
+    return _close_model("commentary_model").requirement(
+        _close_model("close_policy_model").commentary_threshold(5000, 0, ""), [])
+
+
+#: The real statement_api.signoff_commentary output, committed by
+#: test_close_statement_api.py (golden; 3 headings required).
+COMMENTARY_REQUIRED_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_signoff_commentary_required.json")
+
+
+def _commentary_required():
+    with open(COMMENTARY_REQUIRED_FIXTURE) as fh:
+        return json.load(fh)
 
 
 def _match(value, cond):
@@ -366,6 +396,17 @@ def _load(site):
     ic_api.tolerance_gap = lambda: site.ic_tolerance_gap
     close.ic_api = ic_api
 
+    # W5-2 (8.4): a stub `konsol.close.statement_api` (the real one reads
+    # ClickHouse), for signoff_gate.commentary's lazy import.
+    statement_api = types.ModuleType("konsol.close.statement_api")
+
+    def signoff_commentary(fiscal_year, fiscal_period):
+        site.commentary_calls.append((fiscal_year, fiscal_period))
+        return json.loads(json.dumps(site.commentary_line))
+
+    statement_api.signoff_commentary = signoff_commentary
+    close.statement_api = statement_api
+
     konsol.close, konsol.fiscal_calendar = close, calendar
     konsol.entity_permissions, konsol.period_status = perms, period_status
     konsol.schema_lifecycle = lifecycle
@@ -373,6 +414,7 @@ def _load(site):
 
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.close.ic_api": ic_api,
+            "konsol.close.statement_api": statement_api,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle,
@@ -1333,3 +1375,84 @@ def test_the_ic_api_stub_is_installed():
     assert mods["konsol.close.ic_api"].signoff_summary(2025, 7)["state"] == "checked"
     assert site.ic_calls == [(2025, 7)]
     assert mods["konsol.close.ic_api"].tolerance_gap() is site.ic_tolerance_gap
+
+
+# --- W5-2 (story 8.4): the commentary-threshold line --------------------------
+#
+# get_signoff reads signoff_gate.commentary once, feeds it to
+# signoff_model.summary (Amber + acknowledgement, the #265 path) and returns
+# it as ``commentary_required``, beside the informational ``commentary``.
+
+ACK_COMMENTARY_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures",
+    "close_signoff_acknowledgements_commentary.json")
+
+
+def _green_site():
+    site = _Site()
+    site.records["Assertion Run"][-1].update(status="Green", warned=0)
+    site.warned_names = {}
+    return site
+
+
+def test_required_commentary_makes_a_green_run_acknowledge():
+    site = _green_site()
+    assert _get(site)["action"] == "sign"
+    site.commentary_line = _commentary_required()
+    result = _get(site)
+    assert result["action"] == "acknowledge"
+    assert result["acknowledgements"]["commentary"] == (
+        "Commentary: 3 headings above the threshold without commentary")
+
+
+def test_the_commentary_line_is_read_once_and_returned_as_commentary_required():
+    site = _green_site()
+    site.commentary_line = _commentary_required()
+    result = _get(site)
+    assert site.commentary_calls == [(2025, 9)]
+    assert result["commentary_required"] == _commentary_required()
+    # The informational per-group list is unchanged beside it.
+    assert result["commentary"][0]["missing"] == ["NET SALES", "OPERATING EXPENSES"]
+
+
+def test_a_commentary_line_that_cannot_be_checked_blocks():
+    site = _green_site()
+    cm = _close_model("commentary_model")
+    site.commentary_line = cm.requirement(
+        _close_model("close_policy_model").commentary_threshold(5000, 0, ""),
+        [{"consolidation_group": "ZZGRP", "state": "error", "message": "boom",
+          "statement": None, "texts": {}}])
+    result = _get(site)
+    assert result["action"] == "blocked"
+    assert "Nothing can be signed" in result["label"]
+
+
+def test_viewer_and_entity_accountant_get_the_same_commentary_line():
+    base = _get(_green_site())
+    for roles in (("EPM User",), ("Entity Accountant",)):
+        site = _green_site()
+        site.roles = list(roles)
+        site.can_write = False
+        assert _get(site)["commentary_required"] == base["commentary_required"], roles
+
+
+def test_an_undeclared_threshold_is_a_config_gap_that_blocks():
+    site = _green_site()
+    site.commentary_threshold = (0, 0, "")
+    site.commentary_line = _close_model("commentary_model").requirement(
+        _close_model("close_policy_model").commentary_threshold(0, 0, ""), None)
+    result = _get(site)
+    assert result["action"] == "blocked"
+    codes = [g["code"] for g in result["gates"]["config_gaps"]]
+    assert codes == ["commentary_threshold_undeclared"], codes
+    assert result["commentary_required"]["state"] == "undeclared"
+
+
+def test_commentary_acknowledgements_match_the_golden_fixture():
+    # close-ui's signoff test loads this same file: the real get_signoff
+    # acknowledgements for a Green run with 3 headings required.
+    site = _green_site()
+    site.commentary_line = _commentary_required()
+    result = _get(site)
+    with open(ACK_COMMENTARY_FIXTURE) as fh:
+        assert result["acknowledgements"] == json.load(fh)
