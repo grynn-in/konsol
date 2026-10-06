@@ -1629,3 +1629,39 @@ def test_commentary_acknowledgements_match_the_golden_fixture():
     result = _get(site)
     with open(ACK_COMMENTARY_FIXTURE) as fh:
         assert result["acknowledgements"] == json.load(fh)
+
+
+# --- review-w5 S12: the reject roles are defined once -------------------------
+
+import ast  # noqa: E402
+
+ASSERTION_RUN_PY = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run",
+                                "assertion_run.py")
+
+
+def _tree(path):
+    with open(path) as fh:
+        return ast.parse(fh.read())
+
+
+def _module_assigns(tree, name):
+    return [node for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)]
+
+
+def test_reject_roles_are_defined_once_in_assertion_run_and_imported():
+    api = _tree(API_PY)
+    assert _module_assigns(api, "REJECT_ROLES") == [], "signoff_api redefines REJECT_ROLES"
+    imported = {alias.name for node in api.body if isinstance(node, ast.ImportFrom)
+                and node.module == "konsol.consolidation.doctype.assertion_run.assertion_run"
+                for alias in node.names}
+    assert "REJECT_ROLES" in imported, imported
+    (definition,) = _module_assigns(_tree(ASSERTION_RUN_PY), "REJECT_ROLES")
+    roles = ast.literal_eval(definition.value)
+    # The only_for literal stays (the endpoint contract test reads it); it
+    # must name exactly the roles reject_signoff checks.
+    reject = next(node for node in api.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "reject")
+    only_for = next(node for node in ast.walk(reject) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute) and node.func.attr == "only_for")
+    assert set(ast.literal_eval(only_for.args[0])) == set(roles)
