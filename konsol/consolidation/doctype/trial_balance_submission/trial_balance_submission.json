@@ -15,6 +15,7 @@
   "batch_id",
   "results_section",
   "validation_status",
+  "currency",
   "row_count",
   "col_break_2",
   "total_debit",
@@ -66,7 +67,7 @@
    "fieldtype": "Attach",
    "label": "Trial Balance CSV",
    "reqd": 1,
-   "description": "CSV with header: main_account,debit,credit[,description][,partner_data_area_id]. Amounts in the entity's accounting currency. partner_data_area_id is the other group entity an intercompany row is held with (optional; without it the row is never eliminated)."
+   "description": "CSV with header: main_account,debit,credit,currency[,description][,partner_data_area_id][,amount_basis]. currency is the ISO code the amounts are in, on every row, and must be the Entity's Functional Currency. partner_data_area_id is the other group entity an intercompany row is held with (optional; without it the row is never eliminated)."
   },
   {
    "fieldname": "batch_id",
@@ -89,6 +90,15 @@
    "label": "Validation Status",
    "read_only": 1,
    "in_list_view": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "options": "ISO Currency",
+   "label": "Currency",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The currency the file's currency column declares, set when the file is validated. It must be the Entity's Functional Currency: a file in another currency is refused (konsol#252)."
   },
   {
    "fieldname": "row_count",

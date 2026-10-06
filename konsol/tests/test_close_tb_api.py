@@ -37,11 +37,11 @@ CHART = {
     "4000": {"main_account": "4000", "is_group": 1, "is_posting": 0},
 }
 
-GOOD = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
+GOOD = "main_account,debit,credit,currency\n1010,100.50,0,EUR\n2010,0,100.50,EUR\n"
 # 4001 is not in the chart (did you mean 4010?), 4000 is a heading, and the file does not balance.
-BAD = "main_account,debit,credit\n4001,100,0\n4000,0,50\n"
+BAD = "main_account,debit,credit,currency\n4001,100,0,EUR\n4000,0,50,EUR\n"
 # A stray trailing cell: parse_tb_csv raises ValueError.
-MALFORMED = "main_account,debit,credit\n1010,100,0,oops\n"
+MALFORMED = "main_account,debit,credit,currency\n1010,100,0,EUR,oops\n"
 
 
 class _Row(dict):
@@ -53,7 +53,7 @@ class _Site:
 
     def __init__(self, roles=("Entity Accountant",), allowed=None, entities=("ZZOP", "ZZB"),
                  groups=("ZZG",), period_status="Open", year_status="Open", declared=True,
-                 submitted=None, chart=CHART):
+                 submitted=None, chart=CHART, currencies=None):
         self.roles = set(roles)
         self.allowed = None if allowed is None else set(allowed)
         self.entities = list(entities)
@@ -63,6 +63,8 @@ class _Site:
         self.declared = declared
         self.submitted = dict(submitted or {})   # {(entity, fy, fp): name}
         self.chart = chart
+        #: konsol#252: each entity's Functional Currency; EUR unless a test says otherwise.
+        self.currencies = {e: "EUR" for e in self.entities} if currencies is None else dict(currencies)
         self.log = []
         self.access_checked = []
 
@@ -151,6 +153,8 @@ class _Site:
                 key = (filters.get("data_area_id"), int(filters.get("fiscal_year")),
                        int(filters.get("fiscal_period")))
                 return site.submitted.get(key)
+            if doctype == "Entity" and fieldname == "functional_currency":
+                return site.currencies.get(filters)
             raise AssertionError(f"unexpected get_value({doctype!r})")
 
         def exists(doctype, filters=None, *a, **k):
@@ -197,7 +201,7 @@ _NAMES = (
     "konsol.fiscal_status_model", "konsol.period_status", "konsol.tb_basis_model",
     "konsol.schema_lifecycle", "konsol.group_chart", "konsol.entity_permissions",
     "konsol.close", "konsol.close.tb_model", CONTROLLER_NAME, "konsol.close.tb_api",
-    "konsol.tb_dimension", "konsol.tb_dimension_model",
+    "konsol.tb_dimension", "konsol.tb_dimension_model", "konsol.tb_currency_model",
 )
 
 
@@ -254,6 +258,7 @@ def _load(site):
         period_status = _load_path("konsol.period_status", os.path.join(APP_DIR, "period_status.py"))
         _load_path("konsol.tb_basis_model", os.path.join(APP_DIR, "tb_basis_model.py"))
         _load_path("konsol.tb_dimension_model", os.path.join(APP_DIR, "tb_dimension_model.py"))
+        _load_path("konsol.tb_currency_model", os.path.join(APP_DIR, "tb_currency_model.py"))
         _load_path("konsol.close.tb_model", os.path.join(APP_DIR, "close", "tb_model.py"))
         _load_path(CONTROLLER_NAME, CONTROLLER)
         api = _load_path("konsol.close.tb_api", TB_API)
@@ -316,8 +321,8 @@ def test_bytes_content_with_a_bom_is_decoded():
 # -- declared dimensions (konsol#255) ---------------------------------------------
 
 #: One account split across two values of a declared dimension, plus a blank one.
-SPLIT = ("main_account,debit,credit,dim_zzseg\n"
-         "1010,100,0,ZZA\n1010,50,0,ZZB\n2010,0,150,\n")
+SPLIT = ("main_account,debit,credit,dim_zzseg,currency\n"
+         "1010,100,0,ZZA,EUR\n1010,50,0,ZZB,EUR\n2010,0,150,,EUR\n")
 _DECLARED = [{"dimension_name": "dim_zzseg", "status": "Published", "in_trial_balance": 1}]
 
 
@@ -404,7 +409,7 @@ def test_a_bad_file_reports_per_row_problems_and_writes_nothing():
 
 def test_a_partner_is_checked_against_non_group_entities():
     site = _Site()
-    csv = "main_account,debit,credit,partner_data_area_id\n1010,10,0,zzb\n2010,0,10,ZZG\n"
+    csv = "main_account,debit,credit,partner_data_area_id,currency\n1010,10,0,zzb,EUR\n2010,0,10,ZZG,EUR\n"
     result, _, _ = _check(site, content=csv)
     assert result["ok"] is False
     first, second = result["rows"]
@@ -417,7 +422,7 @@ def test_a_partner_is_checked_against_non_group_entities():
 
 def test_a_basis_cell_that_contradicts_the_form_is_a_row_problem():
     site = _Site()
-    csv = "main_account,debit,credit,amount_basis\n1010,10,0,Period-end balance\n2010,0,10,\n"
+    csv = "main_account,debit,credit,amount_basis,currency\n1010,10,0,Period-end balance,EUR\n2010,0,10,,EUR\n"
     result, _, _ = _check(site, content=csv, basis="Period movement")
     assert result["ok"] is False
     assert result["rows"][0]["problems"][0]["code"] == "AMOUNT_BASIS"
@@ -899,3 +904,52 @@ def test_submit_tb_is_post_only_in_source():
     with open(TB_API) as fh:
         source = fh.read()
     assert '@frappe.whitelist(methods=["POST"])\ndef submit_tb(' in source
+
+
+# ================================================================================
+# konsol#252: the file declares its currency; the check and the submit refuse a
+# currency other than the Entity's Functional Currency, the rule the submission's
+# validate() applies, and the submit refuses it before the old TB is cancelled.
+# ================================================================================
+
+USD = "main_account,debit,credit,currency\n1010,100.50,0,USD\n2010,0,100.50,USD\n"
+NO_CURRENCY = "main_account,debit,credit\n1010,100.50,0\n2010,0,100.50\n"
+
+
+def test_the_check_refuses_a_currency_other_than_the_entitys_and_writes_nothing():
+    site = _Site(currencies={"ZZOP": "EUR"})
+    result, _, _ = _check(site, content=USD)
+    assert result["ok"] is False, result
+    assert any("The file declares USD but Entity ZZOP's Functional Currency is EUR" in p
+               for p in result["file_problems"]), result["file_problems"]
+    assert site.log == []
+
+
+def test_the_check_refuses_an_entity_without_a_functional_currency():
+    site = _Site(currencies={"ZZOP": None})
+    result, _, _ = _check(site)
+    assert result["ok"] is False, result
+    assert any("Entity ZZOP has no Functional Currency" in p for p in result["file_problems"]), result
+    assert site.log == []
+
+
+def test_the_check_refuses_a_file_without_the_currency_column():
+    site = _Site()
+    result, _, _ = _check(site, content=NO_CURRENCY)
+    assert result["ok"] is False, result
+    assert "Missing column(s) currency" in result["file_problems"][0], result["file_problems"]
+
+
+def test_the_submit_refuses_a_currency_mismatch_before_cancelling_anything():
+    site = _SubmitSite(submitted={("ZZOP", 2099, 8): OLD["name"]}, currencies={"ZZOP": "EUR"})
+    err = _submit_raises(site, content=USD, replaces=OLD["name"])
+    assert "The trial balance was not submitted" in str(err), err
+    assert "The file declares USD but Entity ZZOP's Functional Currency is EUR" in str(err), err
+    assert site.log == [], site.log
+
+
+def test_the_submit_refuses_an_entity_without_a_functional_currency_before_writing():
+    site = _SubmitSite(currencies={"ZZOP": ""})
+    err = _submit_raises(site)
+    assert "Entity ZZOP has no Functional Currency" in str(err), err
+    assert site.log == [], site.log

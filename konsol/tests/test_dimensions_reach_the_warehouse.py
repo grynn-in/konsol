@@ -59,15 +59,15 @@ DECLARED = [
 ]
 
 SINGLE_CSV = (
-    f"main_account,debit,credit,{DIM}\n"
-    f"1010,100,0,{VALUE}\n"
-    "2010,0,100,\n"
+    f"main_account,debit,credit,{DIM},currency\n"
+    f"1010,100,0,{VALUE},EUR\n"
+    "2010,0,100,,EUR\n"
 )
 
 BULK_CSV = (
-    f"data_area_id,fiscal_year,fiscal_period,main_account,debit,credit,{DIM}\n"
-    f"ZZA,2099,1,1010,100,0,{VALUE}\n"
-    "ZZA,2099,1,2010,0,100,\n"
+    f"data_area_id,fiscal_year,fiscal_period,main_account,debit,credit,currency,{DIM}\n"
+    f"ZZA,2099,1,1010,100,0,EUR,{VALUE}\n"
+    "ZZA,2099,1,2010,0,100,EUR,\n"
 )
 
 #: Columns a raw table that has had Apply Schema run on it carries.
@@ -191,6 +191,9 @@ def _frappe(site):
                 rows = [r for r in rows
                         if all(str(r.get(f)) == str(v) for f, v in filters.items())]
             return [dict(r) for r in rows]
+        if doctype == "Entity" and fields:
+            # konsol#252: the bulk check reads each entity's Functional Currency.
+            return [types.SimpleNamespace(name="ZZA", functional_currency="EUR")]
         if doctype == "Entity":
             return ["ZZA"] if pluck else [{"name": "ZZA"}]
         if doctype == "Trial Balance Submission":
@@ -225,7 +228,10 @@ def _frappe(site):
 
     db = types.SimpleNamespace()
     db.table_exists = lambda doctype: True
-    db.get_value = lambda *a, **k: None
+    # konsol#252: validate() reads the Entity's Functional Currency; every
+    # other read here answers None, as before.
+    db.get_value = lambda doctype, name=None, field=None, *a, **k: (
+        "EUR" if (doctype, field) == ("Entity", "functional_currency") else None)
     db.get_single_value = lambda *a, **k: ""
     db.set_value = lambda *a, **k: None
     db.sql = lambda *a, **k: []
@@ -439,7 +445,7 @@ def test_a_file_with_no_dimension_column_sends_no_extra_query():
     list is unchanged and the raw table is not interrogated."""
     site = _Site(declared=[])
     tbs = _load(site)
-    _submit_single(site, tbs, "main_account,debit,credit\n1010,100,0\n2010,0,100\n")
+    _submit_single(site, tbs, "main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,100,EUR\n")
     sql = site.one_insert()
     assert "submitted_at, partner_data_area_id) VALUES" in sql, sql
     assert not [s for s in site.sent if "system.columns" in s]
