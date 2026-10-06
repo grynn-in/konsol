@@ -234,6 +234,7 @@ comment and listed here.
 
 | date | decision | record |
 |---|---|---|
+| 6 Oct | **A TB line with more decimals than its currency allows is refused**, naming the line; amounts are never rounded at intake (option #180-5). | konsol#180 (issuecomment-6010973398) |
 | 5 Oct | **A trial balance balances exactly** in its declared currency's minor unit; no tolerance. | konsol#180 |
 | 5 Oct | **An Entity with no Functional Currency is refused at TB intake**; no ERP fallback. | konsol#252 (issuecomment-5988966288) |
 | 18 Sep | **The DAG orchestrator is kept and layered on the governed build.** A multi-step close *requests* Build Approvals; Build Approval stays the only thing that invokes dbt. `Pipeline Run` splits into `Close Run`/`Close Step` (orchestration) and `Build Run`/`Build Step` (renamed). Deleting the DAG, making it primary, and running both in parallel were all rejected. | konsol#258 |
