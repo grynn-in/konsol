@@ -821,18 +821,28 @@ def _bulk_balance_report(table, currencies, minor_units=None):
     return {r["entity"]: r for r in report}
 
 
-def test_bulk_check_judges_a_jpy_entity_in_whole_yen():
-    """tb_bulk._check reads JPY's minor unit (0), not a cent: 0.4 yen off is
-    accepted, 1 yen off is refused, in the same file as an EUR entity."""
+def test_bulk_check_judges_each_entity_in_its_own_minor_unit():
+    """tb_bulk._check reads each currency's minor unit. JPY has 0: a fraction
+    of a yen is refused by its line (konsol#180-5; this was "0.4 yen off is
+    accepted" under #180-1, which rounded totals), 1 yen off is refused as an
+    imbalance. KWD has 3: 0.005 + 0.005 against 0.010 is exact. EUR loads."""
     table = [HEADER_ROW,
-             ["ZZJ", "2099", "1", "1010", "1000.4", "0", "JPY"],
+             ["ZZH", "2099", "1", "1010", "1000.4", "0", "JPY"],
+             ["ZZH", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZJ", "2099", "1", "1010", "1000", "0", "JPY"],
              ["ZZJ", "2099", "1", "2010", "0", "1000", "JPY"],
              ["ZZK", "2099", "1", "1010", "1001", "0", "JPY"],
              ["ZZK", "2099", "1", "2010", "0", "1000", "JPY"],
+             ["ZZW", "2099", "1", "1010", "0.005", "0", "KWD"],
+             ["ZZW", "2099", "1", "2010", "0.005", "0", "KWD"],
+             ["ZZW", "2099", "1", "3010", "0", "0.010", "KWD"],
              ["ZZE", "2099", "1", "1010", "100", "0", "EUR"],
              ["ZZE", "2099", "1", "2010", "0", "100", "EUR"]]
-    by = _bulk_balance_report(table, {"ZZJ": "JPY", "ZZK": "JPY", "ZZE": "EUR"})
+    by = _bulk_balance_report(table, {"ZZH": "JPY", "ZZJ": "JPY", "ZZK": "JPY", "ZZW": "KWD", "ZZE": "EUR"})
+    assert not by["ZZH"]["ok"], by["ZZH"]
+    assert "Line 2: debit 1000.4 has 1 decimal place; JPY has 0." in by["ZZH"]["errors"], by["ZZH"]
     assert by["ZZJ"]["ok"] and by["ZZJ"]["errors"] == [], by["ZZJ"]
+    assert by["ZZW"]["ok"] and by["ZZW"]["errors"] == [], by["ZZW"]
     assert by["ZZE"]["ok"], by["ZZE"]
     assert not by["ZZK"]["ok"], by["ZZK"]
     assert any("debits exceed credits by 1 JPY" in e for e in by["ZZK"]["errors"]), by["ZZK"]

@@ -78,10 +78,19 @@ def test_the_sentence_says_which_side_is_heavier():
     assert "debits exceed credits by 0.03 EUR" in p, p
 
 
-def test_jpy_compares_whole_yen_a_0_4_yen_difference_rounds_away():
+def test_jpy_a_fraction_of_a_yen_is_refused_naming_the_line():
+    """konsol#180-5 (Deepak Pai, 6 Oct 2026): a line with more decimal places
+    than its currency allows is refused, naming the line. JPY has 0, so 100.4
+    yen is refused as such, not rounded away. Was
+    test_jpy_compares_whole_yen_a_0_4_yen_difference_rounds_away (accepted
+    under #180-1, which rounded the totals)."""
     m = _model()
-    assert m.balance_problems("JPY", 0, _rows((100.4, 0), (0, 100))) == []
-    assert m.balance_problems("JPY", 0, _rows((1000, 0), (0, 1000.4))) == []
+    assert m.balance_problems("JPY", 0, _rows((100.4, 0), (0, 100))) == [
+        "Line 2: debit 100.4 has 1 decimal place; JPY has 0."]
+    assert m.balance_problems("JPY", 0, _rows((1000, 0), (0, 1000.4))) == [
+        "Line 3: credit 1000.4 has 1 decimal place; JPY has 0."]
+    (p,) = m.balance_problems("JPY", 0, _rows((100.5, 0), (0, 100)))
+    assert p == "Line 2: debit 100.5 has 1 decimal place; JPY has 0.", p
 
 
 def test_jpy_a_one_yen_difference_is_refused_in_whole_yen():
@@ -94,18 +103,52 @@ def test_jpy_a_one_yen_difference_is_refused_in_whole_yen():
 def test_kwd_compares_whole_fils_at_three_decimals():
     m = _model()
     assert m.balance_problems("KWD", 3, _rows((100.001, 0), (0, 100.001))) == []
-    (p,) = m.balance_problems("KWD", 3, _rows((100.001, 0), (0, 100)))
+    (p,) = m.balance_problems("KWD", 3, _rows((1.001, 0), (0, 1.000)))
     assert "debits exceed credits by 0.001 KWD" in p, p
-    # below a fil rounds away, as below a yen does for JPY
-    assert m.balance_problems("KWD", 3, _rows((100.0004, 0), (0, 100))) == []
+    # an exact file in fils: 0.005 + 0.005 is 0.010
+    assert m.balance_problems("KWD", 3, _rows((0.005, 0), (0.005, 0), (0, 0.010))) == []
+    # below a fil is refused naming the line, no longer rounded away (#180-5)
+    assert m.balance_problems("KWD", 3, _rows((100.0004, 0), (0, 100))) == [
+        "Line 2: debit 100.0004 has 4 decimal places; KWD has 3."]
 
 
-def test_each_total_is_rounded_half_up_before_the_compare():
-    """The decision rounds sum(debit) and sum(credit) each, not the difference:
-    100.5 yen is 101 and 100.4 yen is 100, so they differ by 1 JPY."""
+def test_a_line_with_more_places_than_its_currency_is_refused_not_rounded():
+    """The reviewer's file: it balances exactly at 4 places, and was refused
+    as 0.99 against 1.00 when the parser rounded each line to cents. Under
+    #180-5 each extra-decimal line is refused by name, and the balance is not
+    judged (it cannot be, in a currency the lines are not in). Replaces
+    test_each_total_is_rounded_half_up_before_the_compare: no line or total
+    is rounded any more."""
     m = _model()
-    (p,) = m.balance_problems("JPY", 0, _rows((100.5, 0), (0, 100.4)))
-    assert "debits exceed credits by 1 JPY" in p, p
+    rows = _rows((0.3333, 0), (0.3333, 0), (0.3334, 0), (0, 1.0000))
+    assert m.balance_problems("EUR", 2, rows) == [
+        "Line 2: debit 0.3333 has 4 decimal places; EUR has 2.",
+        "Line 3: debit 0.3333 has 4 decimal places; EUR has 2.",
+        "Line 4: debit 0.3334 has 4 decimal places; EUR has 2.",
+    ]
+    # an unbalanced file with an extra-decimal line reports the line only
+    problems = m.balance_problems("EUR", 2, _rows((100.005, 0), (0, 90)))
+    assert problems == ["Line 2: debit 100.005 has 3 decimal places; EUR has 2."], problems
+
+
+def test_trailing_zeros_are_not_decimal_places():
+    """Decided here: 1.2300 is 1.23, two significant places, so EUR accepts it;
+    100.00 is a whole number, so JPY accepts it. Only a non-zero digit past the
+    currency's places is more precision than the currency has."""
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((Decimal("1.2300"), 0), (0, Decimal("1.23")))) == []
+    assert m.balance_problems("JPY", 0, _rows((Decimal("100.00"), 0), (0, Decimal("1E+2")))) == []
+    assert m.balance_problems("EUR", 2, _rows((Decimal("1.2310"), 0), (0, Decimal("1.231")))) == [
+        "Line 2: debit 1.2310 has 3 decimal places; EUR has 2.",
+        "Line 3: credit 1.231 has 3 decimal places; EUR has 2.",
+    ]
+
+
+def test_a_line_without_a_line_number_is_named_by_its_account():
+    m = _model()
+    rows = [{"main_account": "1010", "debit": Decimal("0.333"), "credit": Decimal(0)}]
+    assert m.balance_problems("EUR", 2, rows) == [
+        "Account 1010: debit 0.333 has 3 decimal places; EUR has 2."]
 
 
 def test_a_blank_minor_unit_is_refused_by_name_never_defaulted():
@@ -145,27 +188,27 @@ def _float_total(amounts):
 
 def test_float_accumulation_does_not_make_a_false_difference():
     """Ten 0.1s are 1.00 exactly; added up in floats they are 0.9999999999999999.
-    Ten 0.05 yen are 0.50, which rounds half up to 1 yen; added up in floats
-    they are 0.49999999999999994, which rounds to 0 and would refuse a
-    balanced file."""
+    Ten 0.05s are 0.50; added up in floats they are 0.49999999999999994. Exact
+    decimals make neither a false difference. (Was a JPY 0.05 yen case: under
+    #180-5 a fraction of a yen is refused by its line, so the case is EUR.)"""
     m = _model()
     tenths = [(0.1, 0)] * 10 + [(0, 1.0)]
     assert _float_total(d for d, _ in tenths) != 1.0           # the float pitfall is real
     assert m.balance_problems("EUR", 2, _rows(*tenths)) == []
-    nickels = [(0.05, 0)] * 10 + [(0, 1.0)]
-    assert _float_total(d for d, _ in nickels) < 0.5            # so half up rounds it to 0
-    assert m.balance_problems("JPY", 0, _rows(*nickels)) == []
+    nickels = [(0.05, 0)] * 10 + [(0, 0.5)]
+    assert _float_total(d for d, _ in nickels) != 0.5
+    assert m.balance_problems("EUR", 2, _rows(*nickels)) == []
     many = [(0.1, 0)] * 1000 + [(0, 100.0)]
     assert m.balance_problems("EUR", 2, _rows(*many)) == []
 
 
 def test_a_float_amount_is_taken_at_its_repr_not_its_binary_value():
-    """0.15 and 0.35 are 0.50 as written: half a yen, which rounds up to 1. As
-    exact binary values they are 0.1499999… and 0.3499999…, which sum below
-    0.5 and round to 0, refusing a file that balances."""
+    """An xlsx cell holding 0.15 arrives as a float. As written it has 2 places;
+    its exact binary value 0.1499999999999999944… has 55, and would refuse a
+    good EUR line. (Was a JPY 0.15 + 0.35 yen case, refused under #180-5.)"""
     m = _model()
-    assert Decimal(0.15) + Decimal(0.35) < Decimal("0.5")    # the binary trap is real
-    assert m.balance_problems("JPY", 0, _rows((0.15, 0), (0.35, 0), (0, 1.0))) == []
+    assert Decimal(0.15) != Decimal("0.15")                  # the binary trap is real
+    assert m.balance_problems("EUR", 2, _rows((0.15, 0), (0.35, 0), (0, 0.5))) == []
 
 
 def test_huge_amounts_are_judged_exactly_never_raised():
@@ -191,6 +234,25 @@ def test_a_minor_unit_too_large_to_compute_is_refused_by_name():
     m = _model()
     (p,) = m.balance_problems("EUR", 10 ** 6, _rows((100, 0), (0, 100)))
     assert "EUR" in p and "1000000 decimal places" in p, p
+
+
+def test_an_amount_is_read_exactly_from_its_cell():
+    """konsol#180-5: one reader for every intake's amounts. Text is read as
+    written; an xlsx float at its repr (0.1, not 0.1000000000000000055…);
+    blank is zero; anything else that is not a finite number is refused."""
+    m = _model()
+    assert str(m.read_amount("0.3333")) == "0.3333"
+    assert str(m.read_amount(" 1.2300 ")) == "1.2300"
+    assert m.read_amount(0.1) == Decimal("0.1") and str(m.read_amount(0.1)) == "0.1"
+    assert m.read_amount(1000) == Decimal(1000)
+    assert m.read_amount(None) == 0 and m.read_amount("") == 0
+    assert m.read_amount(Decimal("0.005")) == Decimal("0.005")
+    for bad in ("abc", "1,000.50", "nan", "inf", "-Infinity", True, float("nan"), float("inf")):
+        try:
+            m.read_amount(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"read_amount accepted {bad!r}")
 
 
 def test_decimal_amounts_are_taken_as_they_are():
@@ -250,6 +312,13 @@ CENT_OFF = "main_account,debit,credit,currency\n1010,100.01,0,EUR\n2010,0,100,EU
 JPY_04 = "main_account,debit,credit,currency\n1010,100.4,0,JPY\n2010,0,100,JPY\n"
 JPY_1 = "main_account,debit,credit,currency\n1010,101,0,JPY\n2010,0,100,JPY\n"
 USD_OFF = "main_account,debit,credit,currency\n1010,100.01,0,USD\n2010,0,100,USD\n"
+# konsol#180-5: the reviewer's files
+EUR_4DP = ("main_account,debit,credit,currency\n1010,0.3333,0,EUR\n2010,0.3333,0,EUR\n"
+           "3010,0.3334,0,EUR\n4010,0,1.0000,EUR\n")
+EUR_TRAILING = "main_account,debit,credit,currency\n1010,1.2300,0,EUR\n2010,0,1.23,EUR\n"
+KWD_EXACT = "main_account,debit,credit,currency\n1010,0.005,0,KWD\n2010,0.005,0,KWD\n3010,0,0.010,KWD\n"
+KWD_OFF = "main_account,debit,credit,currency\n1010,1.001,0,KWD\n2010,0,1.000,KWD\n"
+JPY_1005 = "main_account,debit,credit,currency\n1010,100.5,0,JPY\n2010,0,100.5,JPY\n"
 
 UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
 
@@ -360,8 +429,13 @@ def test_all_intakes_agree():
         (EXACT, "EUR", UNITS),
         (CENT_OFF, "EUR", UNITS),
         ("main_account,debit,credit,currency\n1010,100,0,EUR\n2010,0,100.01,EUR\n", "EUR", UNITS),
-        (JPY_04, "JPY", UNITS),
+        (JPY_04, "JPY", UNITS),          # #180-5: was accepted (0.4 yen rounded away), now refused by line
         (JPY_1, "JPY", UNITS),
+        (JPY_1005, "JPY", UNITS),
+        (EUR_4DP, "EUR", UNITS),
+        (EUR_TRAILING, "EUR", UNITS),
+        (KWD_EXACT, "KWD", UNITS),
+        (KWD_OFF, "KWD", UNITS),
         (EXACT, "EUR", {"EUR": None}),
         (USD_OFF, "EUR", UNITS),
     ]
@@ -409,3 +483,73 @@ def test_huge_amounts_never_raise_on_any_intake():
     assert _close_submit_error(HUGE_OK, "EUR", UNITS) is None
     msg = _close_submit_error(HUGE_OFF, "EUR", UNITS)
     assert msg and "debits exceed credits by" in msg, msg
+
+
+# -- konsol#180-5: lines are read exactly and judged against the minor unit ----------
+
+def test_desk_validate_refuses_extra_decimals_naming_the_lines_not_an_imbalance():
+    t = _currency_tests()
+    msg = t._validate_refusal(EUR_4DP, "EUR", minor_units=UNITS)
+    for line, amount in ((2, "0.3333"), (3, "0.3333"), (4, "0.3334")):
+        assert f"Line {line}: debit {amount} has 4 decimal places; EUR has 2." in msg, msg
+    assert "exceed" not in msg and "do not equal" not in msg, msg
+
+
+def test_desk_validate_judges_kwd_in_fils():
+    t = _currency_tests()
+    assert t._validate(KWD_EXACT, "KWD", minor_units=UNITS).validation_status == "Valid"
+    msg = t._validate_refusal(KWD_OFF, "KWD", minor_units=UNITS)
+    assert "debits exceed credits by 0.001 KWD" in msg, msg
+
+
+def test_desk_validate_refuses_a_fraction_of_a_yen():
+    t = _currency_tests()
+    msg = t._validate_refusal(JPY_1005, "JPY", minor_units=UNITS)
+    assert "Line 2: debit 100.5 has 1 decimal place; JPY has 0." in msg, msg
+
+
+def test_the_parser_keeps_every_amount_exactly_as_written():
+    c = _currency_tests()._controller()
+    rows = c.parse_tb_csv(EUR_4DP)
+    assert [str(r["debit"]) for r in rows] == ["0.3333", "0.3333", "0.3334", "0"], rows
+    assert str(rows[3]["credit"]) == "1.0000"
+    assert str(c.parse_tb_csv(KWD_EXACT)[0]["debit"]) == "0.005"
+
+
+def test_the_bulk_parser_reads_xlsx_floats_at_their_repr():
+    """An xlsx float 0.1 is 0.1, not 0.1000000000000000055…; 0.15 + 0.35 is 0.50."""
+    t = _currency_tests()
+    b, c = t._bulk(), t._controller()
+    table = [["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"],
+             ["ZZA", 2099, 1, "1010", 0.15, 0, "EUR"],
+             ["ZZA", 2099, 1, "2010", 0.35, 0.0, "EUR"],
+             ["ZZA", 2099, 1, "3010", 0, 0.5, "EUR"],
+             ["ZZA", 2099, 1, "4010", 0.1, 0.1, "EUR"]]
+    ((key, rows),) = b.split_table(table).items()
+    assert [str(r["debit"]) for r in rows] == ["0.15", "0.35", "0", "0.1"], rows
+    report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                           period={"code": "P01", "type": "Regular", "status": "Open"},
+                           postable_types={"Regular"}, existing=None,
+                           validate_rows=c.validate_tb_rows, functional_currency="EUR", minor_unit=2)
+    assert report["ok"] and report["errors"] == [], report
+    # the bulk load feeds group_csv back through the single parser: exact both ways
+    again = c.parse_tb_csv(b.group_csv(rows, source="TBU-ZZ"))
+    assert [str(r["debit"]) for r in again] == ["0.15", "0.35", "0", "0.1"], again
+    kwd = b.split_table([table[0], ["ZZA", "2099", "1", "1010", "0.005", "0", "KWD"]])
+    (krow,) = next(iter(kwd.values()))
+    assert c.parse_tb_csv(b.group_csv([krow]))[0]["debit"] == Decimal("0.005")
+
+
+def test_a_stored_file_with_extra_decimals_still_reads_and_compares():
+    """Stored reads (tb_read_api, stored=True) never judge: a submission that
+    landed before #180-5 with 4-decimal lines reads back exactly and the
+    compare screen's model sums it without a float/Decimal TypeError."""
+    c = _currency_tests()._controller()
+    rows = c.parse_tb_csv("main_account,debit,credit\n1010,0.3333,0\n1010,0.3333,0\n2010,0,0.6666\n",
+                          (), stored=True)
+    assert [str(r["debit"]) for r in rows] == ["0.3333", "0.3333", "0"], rows
+    view = _by_path("tb_view_model_for_balance", os.path.join(_APP, "close", "tb_view_model.py"))
+    result = view.compare(rows, rows, "Period movement", "Period movement", "P01")
+    by_account = {r["account"]: r for r in result["rows"]}
+    assert by_account["1010"]["current"] == Decimal("0.6666"), by_account
+    assert by_account["2010"]["change"] == 0, by_account
