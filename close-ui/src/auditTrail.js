@@ -54,6 +54,8 @@ const KIND_LABEL = {
 	year_locked: { label: "Year locked", tone: "mute" },
 	year_reopened: { label: "Year reopened", tone: "warn" },
 	signoff_voided: { label: "Sign-off voided", tone: "warn" },
+	// #305-W5-1 (story 9.4, #157): the Close Lead sent the signed run back.
+	signoff_rejected: { label: "Sign-off rejected", tone: "block" },
 	tb_cancelled: { label: "Cancelled", tone: "mute" },
 	tb_exception_declared: { label: "No-TB exception", tone: "warn" },
 	tb_exception_cancelled: { label: "Exception cancelled", tone: "mute" },
