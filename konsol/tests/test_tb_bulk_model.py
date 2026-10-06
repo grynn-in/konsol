@@ -875,3 +875,39 @@ def test_bulk_check_takes_huge_amounts_without_raising():
     by = _bulk_balance_report(table, {"ZZE": "EUR", "ZZF": "EUR"})
     assert by["ZZE"]["ok"], by["ZZE"]
     assert not by["ZZF"]["ok"] and any("debits exceed credits by" in e for e in by["ZZF"]["errors"]), by["ZZF"]
+
+
+# --- konsol#180-9: an .xlsx number at Excel's 15 significant digits ----------------
+
+def _xlsx_bytes(rows):
+    from openpyxl import Workbook
+    import io as _io
+    wb = Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    out = _io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_a_real_xlsx_with_a_formula_noise_cell_is_accepted_and_csv_text_is_not():
+    """Through tb_bulk._xlsx_rows (openpyxl, as the upload reads it) and _check.
+    A cached value 110.00000000000001 is a float cell: read at 15 significant
+    digits it is 110 and the entity-period is ready. The same digits typed
+    into a CSV are text, read exactly, and refused for their places."""
+    period_lookup = {(2099, 1): {"code": "P01", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["ZZX"], postable={"Regular"}, period_lookup=period_lookup,
+                           currencies={"ZZX": "EUR"})
+    content = _xlsx_bytes([HEADER_ROW,
+                           ["ZZX", 2099, 1, "1010", 110.00000000000001, 0, "EUR"],
+                           ["ZZX", 2099, 1, "2010", 0, 110, "EUR"]])
+    table = mod._xlsx_rows(content)
+    assert table[1][4] == 110.00000000000001     # openpyxl hands back the binary noise
+    _, report = mod._check(table, PERIOD)
+    assert report[0]["ok"] and report[0]["errors"] == [], report
+    csv_table = M.table_from_csv("data_area_id,fiscal_year,fiscal_period,main_account,debit,credit,currency\n"
+                                 "ZZX,2099,1,1010,110.00000000000001,0,EUR\nZZX,2099,1,2010,0,110,EUR\n")
+    _, report = mod._check(csv_table, PERIOD)
+    assert not report[0]["ok"], report
+    assert "Line 2: debit 110.00000000000001 has 14 decimal places; EUR has 2." in report[0]["errors"], report

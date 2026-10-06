@@ -656,3 +656,85 @@ def test_stored_totals_are_exact_not_rounded_to_cents():
     assert report["ok"] and report["total_debit"] == 1.005 and report["total_credit"] == 1.005, report
     check = _close_check(KWD_FILS, "KWD", UNITS)
     assert check["totals"]["debit"] == Decimal("1.005"), check["totals"]
+
+
+# -- konsol#180-9 (Deepak Pai, 6 Oct 2026): an .xlsx number at Excel's 15 significant digits --
+
+def test_an_xlsx_number_is_read_at_15_significant_digits():
+    """A float is an .xlsx cell (CSV cells are text). A formula cell's cached
+    value carries binary noise past Excel's 15 digits; it is read at 15."""
+    m = _model()
+    assert m.read_amount(110.00000000000001) == Decimal("110")
+    assert m.read_amount(0.30000000000000004) == Decimal("0.3")
+    assert m.read_amount(-110.00000000000001) == Decimal("-110")
+    assert m.read_amount(0.1 + 0.2) == Decimal("0.3")
+    # tiny values keep their places: 1e-7 is 1E-7, still more than EUR has
+    assert m.read_amount(1e-7) == Decimal("1E-7")
+    assert m.decimal_places(m.read_amount(1e-7)) == 7
+
+
+def test_a_16_digit_xlsx_number_loses_its_16th_digit():
+    """The accepted trade-off of #180-9, pinned: 1234567890123456 in an .xlsx
+    cell is read as 1234567890123460 (Excel cannot hold the 16th digit
+    faithfully either). An int cell and CSV text keep every digit."""
+    m = _model()
+    assert m.read_amount(1234567890123456.0) == Decimal("1234567890123460")
+    assert m.read_amount(1234567890123456) == Decimal("1234567890123456")      # int cell: exact
+    assert m.read_amount("1234567890123456") == Decimal("1234567890123456")    # CSV text: exact
+    for bad in (True, False):
+        try:
+            m.read_amount(bad)
+        except ValueError:
+            continue
+        raise AssertionError("a bool cell was read as a number")
+
+
+def test_formula_noise_in_an_xlsx_cell_is_accepted():
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((110.00000000000001, 0), (0, 110.0))) == []
+    assert m.balance_problems("EUR", 2, _rows((0.30000000000000004, 0), (0, 0.3))) == []
+    assert m.balance_problems("JPY", 0, _rows((-110.00000000000001, 0), (0, -110.0))) == []
+
+
+def test_a_genuine_extra_place_in_an_xlsx_cell_is_still_refused():
+    m = _model()
+    assert m.balance_problems("EUR", 2, _rows((0.333, 0), (0, 0.333))) == [
+        "Line 2: debit 0.333 has 3 decimal places; EUR has 2.",
+        "Line 3: credit 0.333 has 3 decimal places; EUR has 2."]
+    (p, _) = m.balance_problems("EUR", 2, _rows((1e-7, 0), (0, 1e-7)))
+    assert p == "Line 2: debit 0.0000001 has 7 decimal places; EUR has 2.", p
+
+
+def test_csv_text_with_formula_noise_is_still_refused():
+    """#180-9 is for .xlsx only: CSV text is read exactly as written."""
+    m = _model()
+    c = _currency_tests()._controller()
+    rows = c.parse_tb_csv("main_account,debit,credit,currency\n1010,110.00000000000001,0,EUR\n2010,0,110,EUR\n", ())
+    assert m.balance_problems("EUR", 2, rows) == [
+        "Line 2: debit 110.00000000000001 has 14 decimal places; EUR has 2."]
+
+
+def test_every_xlsx_intake_agrees_on_formula_noise():
+    """The bulk check reads .xlsx cells (floats); the bulk load feeds
+    group_csv's text of them to the single parser and validate(). Both accept
+    the noisy file and refuse the 0.333 one with the same sentence."""
+    t = _currency_tests()
+    b, c = t._bulk(), t._controller()
+    head = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", "currency"]
+    for cells, accepted in ((((110.00000000000001, 0), (0, 110.0)), True), (((0.333, 0), (0, 0.333)), False)):
+        table = [head] + [["ZZA", 2099, 1, acct, d, cr, "EUR"]
+                          for acct, (d, cr) in zip(("1010", "2010"), cells)]
+        ((key, rows),) = b.split_table(table, ()).items()
+        report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                               period={"code": "P01", "type": "Regular", "status": "Open"},
+                               postable_types={"Regular"}, existing=None, validate_rows=c.validate_tb_rows,
+                               functional_currency="EUR", minor_unit=2)
+        assert report["ok"] is accepted, report
+        text = b.group_csv(rows, source="TBU-ZZ")
+        if accepted:
+            assert "110," in text and "00000000000001" not in text, text
+            assert t._validate(text, "EUR", minor_units=UNITS).validation_status == "Valid"
+        else:
+            msg = t._validate_refusal(text, "EUR", minor_units=UNITS)
+            for sentence in report["errors"]:
+                assert sentence in msg, (sentence, msg)
