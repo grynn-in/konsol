@@ -68,6 +68,14 @@ DOCTYPE_BUILD_MAP = {
     # consolidated numbers just as an adjustment does.
     "Business Combination": {"scope": "consolidation", "risk": "high"},
     "Business Disposal": {"scope": "consolidation", "risk": "high"},
+    # konsol#337: the period calendar. epm_staging.fiscal_periods feeds
+    # silver_tb_movements, the governed rates and gold models in every domain
+    # (16 outside +tag:domain:consolidation, konsolidat main bb0307e), so
+    # "full", as for Trial Balance Submission (#334). Requested from the
+    # controller, and only when a column dbt reads changes: a Close, Lock or
+    # Reopen moves only `status`, which no model reads, and requests nothing
+    # (epm_fiscal_year.py on_update).
+    "EPM Fiscal Year": {"scope": "full", "risk": "high"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype

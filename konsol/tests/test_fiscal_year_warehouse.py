@@ -226,6 +226,9 @@ def _controller(clickhouse):
         def __init__(self, **fields):
             self.__dict__.update(fields)
 
+        def get_doc_before_save(self):   # konsol#337's build check: a new year
+            return None
+
     mods["frappe.model.document"].Document = Document
     konsol = mods["konsol"]
     konsol.__path__ = []
