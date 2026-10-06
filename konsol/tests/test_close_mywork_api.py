@@ -140,6 +140,9 @@ class _Site:
         #: (detail JSON text, a naive ``at``), and every Close Event read.
         self.close_events = []
         self.close_event_reads = []
+        #: S13: User full names that exist, and every full-name read.
+        self.full_names = {}
+        self.user_name_reads = []
 
 
 def _frappe(site):
@@ -170,6 +173,11 @@ def _frappe(site):
         elif doctype == "Has Role":
             assert filters.get("role") == "Entity Accountant", filters
             rows = [_D(parent=u) for u in site.accountants]
+        elif doctype == "User" and "full_name" in (fields or ()):
+            # S13: the rejecter's full name; a user who no longer exists has no row.
+            site.user_name_reads.append(dict(filters))
+            rows = [_D(name=u, full_name=n) for u, n in sorted(site.full_names.items())
+                    if u in filters["name"][1]]
         elif doctype == "User":
             rows = [_D(name=u) for u in site.accountants if u in filters["name"][1]]
         elif doctype == "User Permission":
@@ -1298,7 +1306,8 @@ def test_signatures_are_read_only_when_the_caller_has_a_rejection():
     site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
     site.close_events = [_rejected_row()]
     _call(site)
-    assert site.close_event_reads == [{"kind": "signoff_rejected"}]
+    assert site.close_event_reads == [
+        {"kind": "signoff_rejected", "fiscal_year": ["in", [2025]]}]
 
 
 # --- W5-2 (story 8.4): the commentary-threshold setup gap ---------------------
@@ -1349,3 +1358,43 @@ def test_the_commentary_gap_comes_from_the_shared_reads():
     item = _gap(_call(site), "commentary_threshold")
     assert item is not None and item["detail"] == gap["message"]
     assert site.commentary_gap_calls == 0 and site.shared_reads_calls == 1
+
+
+# --- review-w5 S13: bounded reads, the rejecter by full name -------------------
+
+
+def test_only_the_open_periods_rejections_are_read():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row("ZZ-CE-1", fiscal_period=5),          # Closed
+                         _rejected_row("ZZ-CE-2", fiscal_year=2024, fiscal_period=7),
+                         _rejected_row("ZZ-CE-3", fiscal_period=7)]
+    ids = _ids(_call(site))
+    assert site.close_event_reads[0] == {"kind": "signoff_rejected",
+                                         "fiscal_year": ["in", [2025]]}
+    assert [i for i in ids if i.startswith("sent-back:signoff")] == ["sent-back:signoff:2025-07"]
+
+
+def test_no_open_period_reads_no_close_event():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.rows = [dict(r, status="Closed") for r in site.rows]
+    site.close_events = [_rejected_row()]
+    _call(site)
+    assert site.close_event_reads == []
+
+
+def test_the_rejecter_is_named_by_full_name_with_one_user_read():
+    row = _rejected_row()
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [row]
+    site.full_names = {row["actor"]: "Zara Lead"}
+    item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["detail"].startswith("Zara Lead on 2025-08-20: "), item["detail"]
+    assert site.user_name_reads == [{"name": ["in", [row["actor"]]]}]
+
+
+def test_a_rejecter_who_no_longer_exists_is_named_by_id():
+    row = _rejected_row()
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [row]
+    item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["detail"].startswith("%s on 2025-08-20: " % row["actor"]), item["detail"]
