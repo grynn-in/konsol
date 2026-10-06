@@ -82,8 +82,9 @@ def test_missing_columns_and_empty_files():
 def test_group_csv_is_the_single_upload_contract():
     rows = [{"main_account": "1010", "debit": 1234.5, "credit": 0.0, "currency": "EUR", "description": "cash, main"}]
     parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows))))
-    # exactly as read (konsol#180-5), no longer padded or rounded to 2 places
-    assert parsed == [{"main_account": "1010", "debit": "1234.5", "credit": "0.0", "currency": "EUR",
+    # never padded or rounded to 2 places (konsol#180-5); a float is an .xlsx cell, read at 15
+    # significant digits (#180-9), so 0.0 is written 0
+    assert parsed == [{"main_account": "1010", "debit": "1234.5", "credit": "0", "currency": "EUR",
                        "description": "cash, main", "partner_data_area_id": ""}]
 
 
@@ -183,8 +184,9 @@ def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
     text = M.group_csv(rows, source="TBU-00042")
     parsed = list(csv.DictReader(io.StringIO(text)))
     assert parsed[0]["source_upload"] == "TBU-00042"
-    # exactly as read (konsol#180-5), no longer padded or rounded to 2 places
-    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1.0", "credit": "0.0"}
+    # exactly as read (konsol#180-5); the float cells read at 15 significant
+    # digits (#180-9) are 1 and 0
+    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1", "credit": "0"}
     # two uploads of the same figures produce different files
     assert M.group_csv(rows, source="TBU-00001") != M.group_csv(rows, source="TBU-00002")
 
@@ -879,16 +881,35 @@ def test_bulk_check_takes_huge_amounts_without_raising():
 
 # --- konsol#180-9: an .xlsx number at Excel's 15 significant digits ----------------
 
-def _xlsx_bytes(rows):
+def _xlsx_bytes(rows, cached=None):
+    """A workbook as Excel saves it. openpyxl writes floats at 16 significant
+    digits, so a formula's cached value with binary noise is written into the
+    sheet XML directly: ``cached`` maps a placeholder number to the text Excel
+    stores (e.g. 123.25 -> "110.00000000000001")."""
     from openpyxl import Workbook
     import io as _io
+    import zipfile
     wb = Workbook()
     ws = wb.active
     for row in rows:
         ws.append(row)
     out = _io.BytesIO()
     wb.save(out)
-    return out.getvalue()
+    if not cached:
+        return out.getvalue()
+    src = zipfile.ZipFile(_io.BytesIO(out.getvalue()))
+    patched = _io.BytesIO()
+    with zipfile.ZipFile(patched, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                text = data.decode()
+                for placeholder, stored in cached.items():
+                    assert f"<v>{placeholder}</v>" in text, placeholder
+                    text = text.replace(f"<v>{placeholder}</v>", f"<v>{stored}</v>")
+                data = text.encode()
+            dst.writestr(item, data)
+    return patched.getvalue()
 
 
 def test_a_real_xlsx_with_a_formula_noise_cell_is_accepted_and_csv_text_is_not():
@@ -900,8 +921,9 @@ def test_a_real_xlsx_with_a_formula_noise_cell_is_accepted_and_csv_text_is_not()
     mod, _ = _load_tb_bulk(entities=["ZZX"], postable={"Regular"}, period_lookup=period_lookup,
                            currencies={"ZZX": "EUR"})
     content = _xlsx_bytes([HEADER_ROW,
-                           ["ZZX", 2099, 1, "1010", 110.00000000000001, 0, "EUR"],
-                           ["ZZX", 2099, 1, "2010", 0, 110, "EUR"]])
+                           ["ZZX", 2099, 1, "1010", 123.25, 0, "EUR"],
+                           ["ZZX", 2099, 1, "2010", 0, 110, "EUR"]],
+                          cached={"123.25": "110.00000000000001"})
     table = mod._xlsx_rows(content)
     assert table[1][4] == 110.00000000000001     # openpyxl hands back the binary noise
     _, report = mod._check(table, PERIOD)

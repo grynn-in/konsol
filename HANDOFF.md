@@ -234,6 +234,7 @@ comment and listed here.
 
 | date | decision | record |
 |---|---|---|
+| 6 Oct | **An .xlsx number is read at Excel's 15 significant digits**; CSV stays exact (option #180-9). | konsol#180 |
 | 6 Oct | **A TB line with more decimals than its currency allows is refused**, naming the line; amounts are never rounded at intake (option #180-5). | konsol#180 (issuecomment-6010973398) |
 | 5 Oct | **A trial balance balances exactly** in its declared currency's minor unit; no tolerance. | konsol#180 |
 | 5 Oct | **An Entity with no Functional Currency is refused at TB intake**; no ERP fallback. | konsol#252 (issuecomment-5988966288) |

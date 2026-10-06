@@ -96,7 +96,8 @@ def _header_name(value):
 
 def _amount(value, what, lineno, errors):
     """The cell's amount, exactly as written (konsol#180-5): read_amount, the
-    reader every intake uses. An xlsx float is read at its repr. Nothing is
+    reader every intake uses. An .xlsx float is read at Excel's 15
+    significant digits (#180-9), the one exception; otherwise nothing is
     rounded; a line with more places than its currency has is refused later,
     by name, when the currency is known (check_group)."""
     try:

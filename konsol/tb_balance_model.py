@@ -10,7 +10,9 @@ imbalance is a defect to refuse, not a margin to allow. Rejected: #180-2 (a
 required per-group tolerance), #180-3 (relative with a floor), #180-4 (a
 per-Entity tolerance); each lets a declared amount of imbalance through.
 
-Decided by Deepak Pai, 6 Oct 2026 (option #180-5): lines are never rounded.
+Decided by Deepak Pai, 6 Oct 2026 (option #180-5): lines are never rounded
+(one exception, option #180-9 of the same day: a numeric .xlsx cell is read
+at Excel's 15 significant digits; see ``read_amount``).
 Each amount is read exactly as written (``read_amount``), and a line with more
 decimal places than its currency's minor unit is refused, naming the line
 ("Line 4: debit 0.3333 has 4 decimal places; EUR has 2."). Rejected: #180-6
@@ -69,18 +71,32 @@ class NotFinite(ValueError):
 
 
 def read_amount(value):
-    """A cell's amount as an exact Decimal, exactly as written (konsol#180-5).
+    """A cell's amount as an exact Decimal (konsol#180-5, #180-9).
 
-    Text is read as written, surrounding spaces stripped: "0.3333" stays
-    0.3333 and "1.2300" keeps its zeros. A float (an xlsx cell) is read at its
-    shortest repr, the shortest decimal that round-trips to that float: 0.1
-    is 0.1, never its binary value 0.1000000000000000055…. That is the
-    cell's typed value; it is not always what the sheet displays. A formula
-    cell's cached value such as 110.00000000000001 is read as that, and is
-    refused line by line (review F4, open: Deepak is deciding it). None and
-    blank (including whitespace only) are zero. Raises ValueError
-    for anything that is not a number (a bool is not one) and NotFinite for
-    NaN or Infinity. Nothing is rounded.
+    Text (every CSV cell) is read exactly as written, surrounding spaces
+    stripped: "0.3333" stays 0.3333, "1.2300" keeps its zeros, and
+    "110.00000000000001" is that. None and blank (whitespace only included)
+    are zero. An int (an .xlsx whole-number cell) is exact.
+
+    A float is an .xlsx numeric cell: the only intake that hands this function
+    floats is the bulk upload's openpyxl read (tb_bulk._xlsx_rows); CSV cells
+    are text. Decided by Deepak Pai, 6 Oct 2026 (option #180-9): it is read
+    at Excel's documented precision, 15 significant digits. A formula cell's
+    cached value carries binary noise past that, 110.00000000000001 for a
+    sheet showing 110.00, and is read as 110; 0.30000000000000004 is 0.3.
+    THIS IS THE ONE EXCEPTION to "never rounded at intake" (#180-5), and it
+    is for .xlsx cells only. Accepted trade-off: a 16th significant digit is
+    lost (1234567890123456 reads as 1234567890123460), which Excel cannot
+    hold faithfully either. Rejected: #180-8 (keep refusing such lines) and
+    #180-10 (refuse formula cells). The result is judged exactly like any
+    other amount: places, storable, balance.
+
+    How: ``format(value, ".15g")`` rounds the float's exact binary value once,
+    correctly, to 15 significant digits, and Decimal reads that text
+    exactly. Rounding the 17-digit repr instead would round twice.
+
+    Raises ValueError for anything that is not a number (a bool is not one)
+    and NotFinite for NaN or Infinity.
     """
     if value is None:
         return Decimal(0)
@@ -89,7 +105,7 @@ def read_amount(value):
     if isinstance(value, Decimal):
         amount = value
     elif isinstance(value, float):
-        amount = Decimal(repr(value))
+        amount = Decimal(format(value, ".15g"))      # an .xlsx cell (#180-9)
     elif isinstance(value, int):
         amount = Decimal(value)
     else:
