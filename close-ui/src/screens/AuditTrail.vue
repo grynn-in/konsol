@@ -11,20 +11,26 @@
  *   silently.
  * - The period comes from the URL (route.js, D5): nothing is remembered in
  *   browser storage.
- * - Read only: no write call, no raw-HTML rendering, no CSV export button
- *   and no filter chips (story 10.2, P2 — E10-P6(f)). Reached as the
- *   `audit-trail` slug through the router's glob (router.js); unreachable
- *   until T08c adds it to route.js and nav.js.
+ * - Read only: no write call, no raw-HTML rendering. Reached as the
+ *   `audit-trail` slug through the router's glob (router.js).
+ * - Story 10.2: filter chips (kind, actor, entity) and a date range. The
+ *   server filters (get_trail's params, from filterParams); the choices are
+ *   the scoped period's (filterChoices), so a hidden entity is never
+ *   offered. Export CSV is a plain link to trail_api.export_trail_csv with
+ *   the filters the server echoed for the rows on screen, so the file holds
+ *   exactly the view; the server builds it, never the browser. The filters
+ *   live in the component only and reset when the period changes.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import LoadState from "../components/LoadState.vue";
-import { get } from "../api.js";
+import { get, methodUrl } from "../api.js";
 import { parse } from "../route.js";
-import { trailView } from "../auditTrail.js";
+import { trailView, filterChoices, filterParams, noFilters, toggled } from "../auditTrail.js";
 import { userTimeZone } from "../timefmt.js";
 
 const GET_TRAIL = "konsol.close.trail_api.get_trail";
+const EXPORT_CSV = "konsol.close.trail_api.export_trail_csv";
 
 // The four tones trailView hands back (ok, warn, block, mute); mirrors
 // periodGrid.js's toneClass — an unknown tone throws rather than rendering
@@ -51,9 +57,24 @@ const periodName = computed(() =>
 	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
 );
 const trailWhat = computed(() => `the audit trail for ${periodName.value}`);
-const emptyText = computed(() => `No events recorded for ${periodName.value}.`);
-
 const trail = reactive({ status: "loading", payload: null, error: null, busy: false });
+
+// Story 10.2: the filter state. Dates are the inputs' "YYYY-MM-DD" strings
+// ("" = open); filterParams leaves an empty field out.
+const filters = reactive(noFilters());
+const filtering = computed(() => Object.keys(filterParams(filters)).length > 0);
+function toggleFilter(field, value) {
+	filters[field] = toggled(filters[field], value);
+}
+function clearFilters() {
+	Object.assign(filters, noFilters());
+}
+
+const emptyText = computed(() =>
+	filtering.value
+		? `No events for ${periodName.value} match these filters.`
+		: `No events recorded for ${periodName.value}.`,
+);
 let seq = 0;
 
 async function loadTrail() {
@@ -69,6 +90,7 @@ async function loadTrail() {
 		const payload = await get(GET_TRAIL, {
 			fiscal_year: period.value.year,
 			fiscal_period: period.value.period,
+			...filterParams(filters),
 		});
 		if (mine !== seq) return;
 		trail.payload = payload;
@@ -87,12 +109,18 @@ function retryTrail() {
 	loadTrail();
 }
 
+const periodKey = computed(() => (period.value ? `${period.value.year}/${period.value.period}` : null));
+
+// A new period starts unfiltered, with nothing of the old period shown.
+watch(periodKey, () => {
+	clearFilters();
+	trail.payload = null;
+});
+
+// One load per (period, filters): the server applies the filters.
 watch(
-	() => (period.value ? `${period.value.year}/${period.value.period}` : null),
-	() => {
-		trail.payload = null;
-		loadTrail();
-	},
+	() => `${periodKey.value}|${JSON.stringify(filterParams(filters))}`,
+	() => loadTrail(),
 	{ immediate: true },
 );
 
@@ -115,19 +143,113 @@ const trailState = computed(() => {
 	if (!trailViewResult.value) return "error";
 	return trailViewResult.value.rows.length === 0 ? "empty" : "ready";
 });
-const trailError = computed(() => trailViewError.value || trail.error);
+const trailError = computed(() => trailViewError.value || choicesError.value || trail.error);
+
+// The choices come from the last payload, so the chips stay put while a
+// filtered reload is in flight. filterChoices throws on an unknown kind:
+// shown as the screen's error, never rendered blank.
+const choicesError = ref(null);
+const choices = computed(() => {
+	if (!trail.payload) return null;
+	try {
+		choicesError.value = null;
+		return filterChoices(trail.payload);
+	} catch (e) {
+		choicesError.value = e.message;
+		return null;
+	}
+});
+
+// The CSV holds the rows on screen: the link carries the filters the server
+// echoed for this payload, not the (possibly newer) local state.
+const exportHref = computed(() => {
+	if (!trail.payload || !period.value) return null;
+	return methodUrl(EXPORT_CSV, {
+		fiscal_year: trail.payload.period.fiscal_year,
+		fiscal_period: trail.payload.period.fiscal_period,
+		...filterParams(trail.payload.filters),
+	});
+});
+
+function chipClass(on) {
+	return on
+		? "border-outline-gray-4 bg-surface-gray-7 text-ink-white"
+		: "border-outline-gray-2 bg-surface-white text-ink-gray-7";
+}
 
 const code = computed(() => (trail.payload && trail.payload.period && trail.payload.period.code) || periodName.value);
 </script>
 
 <template>
 	<div class="mx-auto max-w-5xl px-6 py-6">
-		<header class="mb-4">
-			<h1 class="text-xl font-semibold text-ink-gray-9">Audit trail · {{ code }}</h1>
-			<p class="mt-1 text-sm text-ink-gray-6">
-				Read-only · every approval, exception and status change for the period
-			</p>
+		<header class="mb-4 flex items-start justify-between gap-4">
+			<div>
+				<h1 class="text-xl font-semibold text-ink-gray-9">Audit trail · {{ code }}</h1>
+				<p class="mt-1 text-sm text-ink-gray-6">
+					Read-only · every approval, exception and status change for the period
+				</p>
+			</div>
+			<a
+				v-if="exportHref && trail.status === 'ready'"
+				:href="exportHref"
+				download
+				class="shrink-0 rounded border border-outline-gray-2 px-3 py-1.5 text-sm font-medium text-ink-gray-8 hover:bg-surface-gray-1"
+			>Export CSV</a>
 		</header>
+
+		<section v-if="choices" class="mb-4 space-y-2 rounded border border-outline-gray-2 px-4 py-3 text-sm" aria-label="Filters">
+			<div class="flex flex-wrap items-center gap-1.5">
+				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Kind</span>
+				<button
+					v-for="c in choices.kinds"
+					:key="c.value"
+					type="button"
+					class="rounded-full border px-2.5 py-0.5 text-xs"
+					:class="chipClass(filters.kinds.includes(c.value))"
+					:aria-pressed="filters.kinds.includes(c.value)"
+					@click="toggleFilter('kinds', c.value)"
+				>{{ c.label }}</button>
+			</div>
+			<div class="flex flex-wrap items-center gap-1.5">
+				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Actor</span>
+				<button
+					v-for="c in choices.actors"
+					:key="c.value"
+					type="button"
+					class="rounded-full border px-2.5 py-0.5 text-xs"
+					:class="chipClass(filters.actors.includes(c.value))"
+					:aria-pressed="filters.actors.includes(c.value)"
+					@click="toggleFilter('actors', c.value)"
+				>{{ c.label }}</button>
+			</div>
+			<div class="flex flex-wrap items-center gap-1.5">
+				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Entity</span>
+				<button
+					v-for="c in choices.entities"
+					:key="c.value"
+					type="button"
+					class="rounded-full border px-2.5 py-0.5 text-xs"
+					:class="chipClass(filters.entities.includes(c.value))"
+					:aria-pressed="filters.entities.includes(c.value)"
+					@click="toggleFilter('entities', c.value)"
+				>{{ c.label }}</button>
+			</div>
+			<div class="flex flex-wrap items-center gap-2">
+				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Dates</span>
+				<label class="text-xs text-ink-gray-6">From
+					<input v-model="filters.date_from" type="date" class="ml-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs" />
+				</label>
+				<label class="text-xs text-ink-gray-6">To
+					<input v-model="filters.date_to" type="date" class="ml-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs" />
+				</label>
+				<button
+					v-if="filtering"
+					type="button"
+					class="ml-auto text-xs text-ink-gray-6 underline"
+					@click="clearFilters"
+				>Clear filters</button>
+			</div>
+		</section>
 
 		<LoadState
 			:state="trailState"
@@ -158,6 +280,11 @@ const code = computed(() => (trail.payload && trail.payload.period && trail.payl
 					</div>
 				</div>
 			</section>
+
+			<p
+				v-if="trailViewResult && trailViewResult.countNote"
+				class="mb-3 text-sm text-ink-gray-6"
+			>{{ trailViewResult.countNote }}</p>
 
 			<p
 				v-if="trailViewResult && trailViewResult.hiddenNote"
