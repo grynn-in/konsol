@@ -21,6 +21,10 @@ Imports nothing from frappe or konsol; the caller gathers ``facts``:
 - ``ic_tolerance_gap``: None, or ``ic_api.tolerance_gap()``'s
   ``{"code", "groups", "message"}`` (konsol#305 W3-6): the group nodes whose
   intercompany tolerance is undeclared (0 is indistinguishable from unset).
+- ``ic_rule_gap``: None, or ``ic_balance_api.open_rule_gap()``'s
+  ``{"code", "pairs", "entities", "message"}`` (konsol#305 5.4, W5-4): the
+  IC Balance pairs of the open periods that no unrealised-profit IC
+  Elimination Rule matches.
 
 Rules:
 
@@ -37,9 +41,10 @@ Rules:
 """
 
 GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "chart", "ic_accounts",
-        "ic_tolerance", "frequency", "ownership", "accountants")
+        "ic_tolerance", "ic_rule", "frequency", "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
-             "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap")
+             "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap",
+             "ic_rule_gap")
 
 #: konsol#305 P02 policy-gap code -> (gap id, title). The message is the gap's own.
 #: konsol#305-W4-1: the signoff_gate.statement_gap() result is appended to
@@ -110,6 +115,13 @@ def setup_gap_items(facts):
         title = "Intercompany tolerance not declared for %s" % _groups(len(groups))
         items.append(_item("ic_tolerance", title, tol_gap["message"], "EPM Admin",
                            "/app/consolidation-group"))
+    if facts["ic_rule_gap"]:
+        rule_gap = facts["ic_rule_gap"]
+        n = len(rule_gap["pairs"])
+        title = "Unrealised-profit rule missing for %d IC Balance pair%s" % (
+            n, "" if n == 1 else "s")
+        items.append(_item("ic_rule", title, rule_gap["message"], "EPM Admin",
+                           "/app/ic-elimination-rule", entities=rule_gap["entities"]))
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:
         items.append(_item("frequency", f"Reporting frequency missing for {_entities(len(freq))}",
