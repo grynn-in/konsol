@@ -535,12 +535,68 @@ def ic_warning(ic):
     return "Intercompany: %d pair%s over tolerance" % (n, "" if n == 1 else "s")
 
 
-def effective_status(run_status, ic):
+COMMENTARY_STATES = ("undeclared", "checked", "unknown")  # commentary_model.requirement
+
+_COMMENTARY_UNCHECKED_SUFFIX = " Nothing can be signed until the commentary threshold can be checked."
+
+
+def commentary_required(commentary):
+    """How many statement headings are above the commentary threshold with
+    no commentary, for the #305-W5-2 Amber rule (story 8.4).
+
+    ``commentary`` is the ``commentary_model.requirement`` line
+    (``signoff_gate.commentary``). ``checked`` reads ``required_missing``
+    (never guessed as 0 when missing); ``undeclared`` is 0 (the
+    ``commentary_threshold_undeclared`` setup gap blocks instead, as an
+    unconfigured intercompany line is never Amber); ``unknown`` is None
+    (``commentary_problem`` blocks). Raises ValueError for anything else.
+    """
+    if not isinstance(commentary, dict):
+        raise ValueError("the commentary-threshold line was not read")
+    state = commentary.get("state")
+    if state not in COMMENTARY_STATES:
+        raise ValueError("unknown commentary-threshold state %r; expected one of %s"
+                         % (state, ", ".join(COMMENTARY_STATES)))
+    if state == "checked":
+        if commentary.get("required_missing") is None:
+            raise ValueError("the commentary-threshold line's required_missing is missing")
+        return int(commentary["required_missing"])
+    if state == "undeclared":
+        return 0
+    return None
+
+
+def commentary_warning(commentary):
+    """"Commentary: N heading(s) above the threshold without commentary",
+    or None when there are none or the count is unknown/undeclared."""
+    n = commentary_required(commentary)
+    if not n:
+        return None
+    return "Commentary: %d heading%s above the threshold without commentary" % (
+        n, "" if n == 1 else "s")
+
+
+def commentary_problem(commentary):
+    """None, or the block for a commentary-threshold line that could not be
+    checked (a group's statement could not be read): nothing is signed
+    while it is unknown whether a heading needs commentary (mirrors
+    ``ic_problem``, W3-P4)."""
+    commentary_required(commentary)  # validates; raises for an unknown state
+    if commentary["state"] == "unknown":
+        return {"code": "commentary_unchecked",
+                "message": commentary["message"] + _COMMENTARY_UNCHECKED_SUFFIX}
+    return None
+
+
+def effective_status(run_status, ic, commentary):
     """``run_status``, except a Green run becomes "Amber" when the
     intercompany line has pairs over tolerance (#305-W3-8 option B, the
-    #265 precedent). Amber, Red, Error, Queued and Running are unchanged:
-    only a Green run can be turned Amber by intercompany alone."""
-    if run_status == "Green" and (ic_over_tolerance(ic) or 0) > 0:
+    #265 precedent) or (#305-W5-2, story 8.4) statement headings are above
+    the commentary threshold with no commentary. Amber, Red, Error, Queued
+    and Running are unchanged: only a Green run can be turned Amber this
+    way."""
+    if run_status == "Green" and (
+            (ic_over_tolerance(ic) or 0) > 0 or (commentary_required(commentary) or 0) > 0):
         return "Amber"
     return run_status
 
@@ -556,7 +612,7 @@ def ic_problem(ic):
     return None
 
 
-def _action(run, problems, can_override, period_status, data_change, intercompany):
+def _action(run, problems, can_override, period_status, data_change, intercompany, commentary):
     if period_status not in PERIOD_STATUSES:
         raise ValueError("Unknown period status %r; expected one of %s."
                          % (period_status, ", ".join(PERIOD_STATUSES)))
@@ -584,10 +640,10 @@ def _action(run, problems, can_override, period_status, data_change, intercompan
         return "run_checks", _LABELS["run_checks"]
     if run["signoff_status"] == RE_SIGN_NEEDED:
         return "rerun", _LABELS["rerun"]
-    unchecked = ic_problem(intercompany)
+    unchecked = ic_problem(intercompany) or commentary_problem(commentary)
     if unchecked:
         return "blocked", unchecked["message"]
-    status = effective_status(run["status"], intercompany)
+    status = effective_status(run["status"], intercompany, commentary)
     if status in ("Queued", "Running"):
         return "wait", "The checks are %s; wait for them to finish" % status.lower()
     if status == "Green":
@@ -600,7 +656,7 @@ def _action(run, problems, can_override, period_status, data_change, intercompan
 
 
 def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override,
-            *, period_status, data_change, intercompany):
+            *, period_status, data_change, intercompany, commentary):
     """The sign-off summary of story 9.1 and the next action.
 
     - ``run``: the latest terminal Assertion Run (``name``, ``status``,
@@ -628,6 +684,14 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
       warning text. "not configured" and "not applicable" never change the
       action; an IC line that could not be checked (``not_built``/``error``)
       blocks signing outright (W3-P4).
+    - ``commentary`` (required, #305-W5-2, story 8.4): the
+      ``commentary_model.requirement`` line (``signoff_gate.commentary``).
+      A Green run with headings above the threshold and no commentary is
+      offered ``acknowledge`` (the same Amber path), and
+      ``acknowledgements["commentary"]`` carries the warning text. An
+      undeclared threshold never changes the action (its setup gap blocks);
+      a line that could not be checked (``unknown``) blocks, like
+      intercompany.
 
     ``action`` is one of signed, blocked, run_checks, rerun, wait, sign,
     acknowledge, override. A signed run stays signed; otherwise a Closed or
@@ -637,9 +701,11 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
     intercompany line that could not be checked (W3-P4). An unknown run,
     sign-off status or intercompany state raises ValueError.
     """
-    action, label = _action(run, problems, can_override, period_status, data_change, intercompany)
+    action, label = _action(run, problems, can_override, period_status, data_change, intercompany,
+                            commentary)
     acknowledgements = _acknowledgements(run, warned_names)
     acknowledgements["intercompany"] = ic_warning(intercompany)
+    acknowledgements["commentary"] = commentary_warning(commentary)
     return {
         "action": action,
         "label": label,

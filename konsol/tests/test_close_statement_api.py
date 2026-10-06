@@ -273,6 +273,8 @@ class _Site:
         self.users = [{"name": ANALYST, "full_name": "Zz Analyst"}]
         self.run = None  # latest_close_run: None -> "provisional"
         self.reads = []
+        #: W5-2 (8.4): Close Settings (amount, percent, combine) — undeclared.
+        self.commentary_threshold = (0, 0, "")
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -368,6 +370,9 @@ def _signoff_gate(site):
     sg.statement_accounts = lambda: CPM.statement_accounts(
         site.cta_account, site.result_account, site.declared_rows)
     sg.in_scope_entities = lambda fy, fp: sorted(site.in_scope)
+    #: W5-2 (8.4): the REAL close_policy_model over the site's three
+    #: Close Settings values, so the threshold/gap is never hand-typed.
+    sg.commentary_threshold = lambda: CPM.commentary_threshold(*site.commentary_threshold)
     return sg
 
 
@@ -410,6 +415,7 @@ def _invoke(site, run):
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
              "konsol.close.statement_export_model",
+             "konsol.close.commentary_model",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -434,6 +440,8 @@ def _invoke(site, run):
         close.statement_export_model = _load_path(
             "konsol.close.statement_export_model",
             os.path.join(CLOSE_DIR, "statement_export_model.py"))
+        close.commentary_model = _load_path(
+            "konsol.close.commentary_model", os.path.join(CLOSE_DIR, "commentary_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:
@@ -1049,3 +1057,110 @@ def test_export_filename_names_the_fiscal_year_even_when_the_period_code_does_no
         row["period_code"] = "P%02d" % row["fiscal_period"]
     response = _call_export(site, group="G1")
     assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+
+
+# =============================================================================
+# signoff_commentary (konsol#305-W5-2, story 8.4): the sign-off's
+# commentary-threshold line. Per root group, the REAL get_statement path's
+# statement (same reads, same states) through the REAL
+# commentary_model.requirement. Not whitelisted: signoff_gate.commentary
+# calls it for get_signoff and sign_off_close.
+# =============================================================================
+
+FIXTURE_COMMENTARY_REQUIRED = os.path.join(
+    APP_DIR, "tests", "fixtures", "close_signoff_commentary_required.json")
+
+
+def _comparison_site():
+    """_Site plus P06 rows, so P07 has a comparison: heading 4 (commented
+    "Strong quarter.") moves 141.43; ASSETS moves 735.10; LIABILITIES moves
+    803.70 on a zero base; EQUITY's movement comes from the producer."""
+    site = _Site()
+    site.tb_rows = site.tb_rows + [_tb_row("4100", -100.0, fp=6), _tb_row("1110", 1000.0, fp=6),
+                                   _tb_row("3200", -684.90, fp=6)]
+    site.commentary_threshold = (100, 0, "")
+    return site
+
+
+def _signoff_commentary(site, fy=2025, fp=7):
+    result = _invoke(site, lambda api: api.signoff_commentary(fy, fp))
+    json.dumps(result)
+    return result
+
+
+def test_signoff_commentary_is_not_whitelisted_for_any_role():
+    with open(API_PY) as fh:
+        tree = ast.parse(fh.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "signoff_commentary")
+    assert fn.decorator_list == []
+
+
+def test_signoff_commentary_undeclared_reads_no_statement():
+    site = _Site()
+    result = _signoff_commentary(site)
+    assert result["state"] == "undeclared"
+    assert result["required_missing"] is None
+    assert "Close Settings" in result["message"]
+    assert site.ch_calls == []
+
+
+def test_signoff_commentary_requires_the_uncommented_headings_above_the_threshold():
+    site = _comparison_site()
+    result = _signoff_commentary(site)
+    assert result["state"] == "checked"
+    (group,) = result["groups"]
+    assert group["consolidation_group"] == "G1"
+    names = [r["heading_name"] for r in group["required"]]
+    assert "COST OF SALES" not in names  # above it, but commented
+    assert names[:2] == ["ASSETS", "LIABILITIES"], names
+    assert result["required_missing"] == len(group["required"])
+    assert group["over_threshold"] == len(group["required"]) + 1
+
+
+def test_signoff_commentary_reads_every_root_group_whatever_the_caller_role():
+    # Entity Accountants read the sign-off summary (get_signoff) but are
+    # refused get_statement: the line must not go through only_for.
+    site = _comparison_site()
+    site.user, site.roles = ENTITY_ACC, {"Entity Accountant"}
+    site.groups = site.groups + [{"consolidation_group": "G2", "reporting_currency": "EUR"}]
+    result = _signoff_commentary(site)
+    assert [g["consolidation_group"] for g in result["groups"]] == ["G1", "G2"]
+
+
+def test_signoff_commentary_with_no_comparison_rows_is_not_comparable():
+    site = _Site()
+    site.commentary_threshold = (100, 0, "")
+    result = _signoff_commentary(site)
+    assert result["state"] == "checked"
+    assert result["required_missing"] == 0
+    assert result["groups"][0]["state"] == "not_comparable"
+    assert "P06" in result["groups"][0]["message"], result["groups"][0]["message"]
+
+
+def test_signoff_commentary_with_the_warehouse_down_is_unknown_never_zero():
+    site = _comparison_site()
+    site.ch_error = RuntimeError("Code: 60. (UNKNOWN_TABLE) gold_fully_consolidated_tb")
+    result = _signoff_commentary(site)
+    assert result["state"] == "unknown"
+    assert result["required_missing"] is None
+    assert result["groups"][0]["state"] == "not_built"
+    assert "G1" in result["message"]
+
+
+def test_signoff_commentary_with_no_chart_requires_nothing():
+    site = _comparison_site()
+    site.accounts = {}
+    result = _signoff_commentary(site)
+    assert result["state"] == "checked"
+    assert result["required_missing"] == 0
+    assert site.ch_calls == []
+
+
+def test_golden_signoff_commentary_matches_the_committed_fixture():
+    # U-row (close-ui signoff.js) and get_signoff's stub load this file:
+    # the real producer's output, never hand-built.
+    result = json.loads(json.dumps(_signoff_commentary(_comparison_site())))
+    with open(FIXTURE_COMMENTARY_REQUIRED) as fh:
+        expected = json.load(fh)
+    assert result == expected

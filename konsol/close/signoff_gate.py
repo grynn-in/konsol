@@ -75,6 +75,13 @@ Reads the site and passes it through the pure models:
   intercompany is not configured or declared not applicable), the same
   shape as ``_policies``; My work calls this gate once per open period, so
   the same multiple applies there.
+- ``commentary_threshold()`` / ``commentary_gap()`` (#305-W5-2, story
+  8.4): the Close Settings commentary threshold through
+  ``close_policy_model.commentary_threshold``; ``sign_off_problems``
+  appends its gap right after the statement gap. ``commentary(fy, fp)`` ->
+  ``statement_api.signoff_commentary(fy, fp)``: the headings above the
+  threshold with no commentary, for the sign-off signature (Amber, the
+  #265 path), read only by get_signoff and sign_off_close.
 - ``sign_off_problems`` then appends ``ic_balance_api.rule_gap(fy, fp)``
   (#305 5.4, W5-4): a draft or approved IC Balance of the period whose
   entity pair no unrealised-profit IC Elimination Rule (margin above 0)
@@ -245,6 +252,34 @@ def statement_gap():
     return statement_accounts()["gap"]
 
 
+def commentary_threshold():
+    """The declared commentary threshold, or its setup gap (#305-W5-2,
+    story 8.4): Close Settings' three fields through
+    ``close_policy_model.commentary_threshold``. 0 / blank is undeclared,
+    never defaulted."""
+    return close_policy_model.commentary_threshold(
+        frappe.db.get_single_value("Close Settings", "commentary_threshold_amount"),
+        frappe.db.get_single_value("Close Settings", "commentary_threshold_percent"),
+        frappe.db.get_single_value("Close Settings", "commentary_threshold_combine"),
+    )
+
+
+def commentary_gap():
+    """The commentary-threshold setup gap, or None when it is declared."""
+    return commentary_threshold()["gap"]
+
+
+def commentary(fiscal_year, fiscal_period):
+    """The commentary-threshold line for the sign-off signature
+    (#305-W5-2): ``statement_api.signoff_commentary``, the
+    ``commentary_model.requirement`` shape. Like ``intercompany``, a
+    warehouse failure comes back as its own ``"unknown"`` state, never a
+    raise and never 0."""
+    # Imported here: statement_api imports this module.
+    from konsol.close import statement_api
+    return statement_api.signoff_commentary(fiscal_year, fiscal_period)
+
+
 def _latest_runs():
     """The latest terminal Assertion Run per period (mirrors assertion_run.latest_close_run)."""
     # Imported here: assertion_run's sign-off will call this gate (A22).
@@ -292,6 +327,12 @@ def sign_off_problems(fiscal_year, fiscal_period):
     statement_problem = statement_gap()
     if statement_problem:
         gaps.append(statement_problem)
+    # #305-W5-2 (story 8.4): an undeclared commentary threshold is a setup
+    # gap, right after the statement gap. Only Close Settings is read here;
+    # the statement itself is read by ``commentary`` (sign-off only).
+    threshold_problem = commentary_gap()
+    if threshold_problem:
+        gaps.append(threshold_problem)
     tolerance = ic_api.tolerance_gap()
     if tolerance:
         gaps.append(tolerance)

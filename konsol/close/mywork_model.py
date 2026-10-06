@@ -40,8 +40,8 @@ Rules:
   not sent, never an invented age.
 """
 
-GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "chart", "ic_accounts",
-        "ic_tolerance", "ic_rule", "frequency", "ownership", "accountants")
+GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "commentary_threshold",
+        "chart", "ic_accounts", "ic_tolerance", "ic_rule", "frequency", "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
              "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap",
              "ic_rule_gap")
@@ -54,6 +54,8 @@ _POLICY_GAPS = {
     "self_approval_undeclared": ("self_approval", "Self-approval policy not declared"),
     "rate_move_undeclared": ("rate_move", "Rate move threshold not declared"),
     "statement_accounts_undeclared": ("statement_accounts", "Statement setup incomplete"),
+    #: #305-W5-2 (story 8.4): appended by the API layer after the statement gap.
+    "commentary_threshold_undeclared": ("commentary_threshold", "Commentary threshold not declared"),
 }
 
 

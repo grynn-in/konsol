@@ -255,6 +255,11 @@ def _gap_facts(first_close, persona, allowed):
         statement_gap = signoff_gate.statement_gap()
         if statement_gap is not None:
             policy_gaps = policy_gaps + [statement_gap]
+        # #305-W5-2 (story 8.4): the undeclared commentary threshold, the
+        # same way (Close Settings only; no statement is read here).
+        commentary_gap = signoff_gate.commentary_gap()
+        if commentary_gap is not None:
+            policy_gaps = policy_gaps + [commentary_gap]
     return {
         "first_close": first_close,
         "chart_published": bool(group_chart.chart_accounts()),

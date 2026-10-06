@@ -594,15 +594,23 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
     unchecked = signoff_model.ic_problem(ic)
     if unchecked:
         frappe.throw(unchecked["message"], title=frappe._("Sign-off blocked"))
-    status = signoff_model.effective_status(doc.status, ic)
+    # #305-W5-2 (story 8.4): the commentary-threshold line, re-read here the
+    # same way: a line that could not be checked refuses the signature; a
+    # Green run with headings above the threshold and no commentary is Amber.
+    commentary = signoff_gate.commentary(doc.fiscal_year, doc.fiscal_period)
+    unchecked = signoff_model.commentary_problem(commentary)
+    if unchecked:
+        frappe.throw(unchecked["message"], title=frappe._("Sign-off blocked"))
+    status = signoff_model.effective_status(doc.status, ic, commentary)
     ic_text = signoff_model.ic_warning(ic)
+    commentary_text = signoff_model.commentary_warning(commentary)
 
     # Recorded on every path, not only the Amber one: a Red close overridden
     # with 12 warnings outstanding must say so too, or the stronger gate ends
     # up with the weaker record.
     warnings = _warning_summary(_warned_assertion_names(close_run) if doc.warned else [],
                                 doc.warned or 0)
-    warnings = "; ".join(w for w in (warnings, ic_text) if w) or None
+    warnings = "; ".join(w for w in (warnings, ic_text, commentary_text) if w) or None
 
     ack = None
     if acknowledgement and status != "Amber":
@@ -628,7 +636,9 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
             # over tolerance has doc.warned == 0; the count shown here must
             # include that line, or the refusal claims "0 warning(s)" while
             # naming one.
-            warning_count = (doc.warned or 0) + (1 if ic_text else 0)
+            # #305-W5-2: the commentary line counts as one more, the same way.
+            warning_count = ((doc.warned or 0) + (1 if ic_text else 0)
+                             + (1 if commentary_text else 0))
             frappe.throw(
                 frappe._("This close has {0} warning(s): {1}. Acknowledge them to sign off.")
                 .format(warning_count, warnings or "(see the run's results)"),
@@ -670,7 +680,10 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
                                 "numbers_fingerprint": doc.numbers_fingerprint,
                                 "intercompany": {"state": ic["state"],
                                                  "over_tolerance": signoff_model.ic_over_tolerance(ic),
-                                                 "sent_back_open": ic.get("sent_back_open")}})
+                                                 "sent_back_open": ic.get("sent_back_open")},
+                                "commentary": {"state": commentary["state"],
+                                               "required_missing":
+                                                   commentary.get("required_missing")}})
     frappe.db.commit()
     return {"signoff_status": new_state, "signed_off_by": doc.signed_off_by}
 

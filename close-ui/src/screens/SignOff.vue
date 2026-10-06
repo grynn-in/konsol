@@ -203,6 +203,7 @@ const SECTION_TITLES = [
 	["exceptions", "Trial balance exceptions"],
 	["covers", "Covers"],
 	["previous", "Earlier periods"],
+	["commentaryRequired", "Commentary required"],
 	["commentary", "Commentary"],
 ];
 // B28: each section's rows, shown rows and "and N more" come from summaryView.
