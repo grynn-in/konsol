@@ -96,6 +96,7 @@ from konsol.close import commentary_model, ic_api, period_model, signoff_gate, s
 from konsol.close.timefmt import zoned_iso
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
+    REJECT_ROLES,
     _warned_assertion_names,
     latest_close_run,
     reject_signoff,
@@ -411,23 +412,21 @@ def sign(fiscal_year, fiscal_period, run=None, acknowledgement=None, override_re
                           acknowledgement=acknowledgement)
 
 
-#: Who may reject a signature (#305-W5-1): the literal ``reject`` gates on.
-REJECT_ROLES = {"EPM Admin", "System Manager"}
-
-
 @frappe.whitelist(methods=["POST"])
 def reject(fiscal_year, fiscal_period, run=None, reason=None):
     """Reject the period's signature with a reason (#305-W5-1, Deepak Pai 6 Oct
     2026; story 9.4, #157): the run goes back to Not signed and its preparer
     gets a "sent back" My work item.
 
-    A blank reason is refused before anything is read. ``run`` is the run the
+    Only the period's calendar row is read before a blank reason is refused
+    (the message names the period); no run is read. ``run`` is the run the
     summary showed (A58): a missing name, or one that is no longer the latest
     terminal run, is refused, so a reject never lands on a run the Close Lead
     did not review. Everything else (a signed run only, an Open period, the
     write) is ``assertion_run.reject_signoff``'s; its refusals pass through.
     """
-    # A literal: the endpoint contract test reads it.
+    # A literal: the endpoint contract test reads it. It names exactly
+    # assertion_run.REJECT_ROLES (imported above; held equal by a test).
     frappe.only_for(("EPM Admin", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     row = _declared_row(fiscal_calendar.fiscal_period_rows(), key)

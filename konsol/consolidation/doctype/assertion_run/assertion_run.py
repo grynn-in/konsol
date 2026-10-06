@@ -689,7 +689,8 @@ def sign_off_close(close_run, override_reason=None, acknowledgement=None):
 
 
 #: Who may reject a signature (#305-W5-1): the Close Lead, the roles that
-#: sign (signoff_api.sign's only_for).
+#: sign (signoff_api.sign's only_for). Defined here only: signoff_api imports it
+#: for can_reject, and its reject endpoint's only_for literal is held equal by a test.
 REJECT_ROLES = {"EPM Admin", "System Manager"}
 #: The signature fields a reject clears; signoff_status goes to "Not Signed Off".
 _SIGNATURE_FIELDS = ("signed_off_by", "signed_off_at", "override_reason", "acknowledgement",

@@ -32,6 +32,18 @@ API_PY = os.path.join(CLOSE_DIR, "signoff_api.py")
 # P05: signoff_gate.py now imports close_policy_model; loaded for real below
 # alongside signoff_model/period_model/timefmt (real, by path).
 
+def _real_reject_roles():
+    """assertion_run.REJECT_ROLES, read from its source (S12): the stub
+    module carries the real definition, not a copy."""
+    import ast
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+    (value,) = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                and any(getattr(t, "id", None) == "REJECT_ROLES" for t in node.targets)]
+    return ast.literal_eval(value)
+
+
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 QUARTERS = {1: "Q1", 2: "Q1", 3: "Q1", 4: "Q2", 5: "Q2", 6: "Q2",
             7: "Q3", 8: "Q3", 9: "Q3", 10: "Q4", 11: "Q4", 12: "Q4"}
@@ -363,6 +375,7 @@ def _load(site):
 
     ar = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     ar.OVERRIDE_ROLES = {"System Manager", "EPM Admin"}
+    ar.REJECT_ROLES = _real_reject_roles()
     ar.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
     ar.SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
 
@@ -412,7 +425,8 @@ def _load(site):
 
     # #305 5.4: the gate imports konsol.close.ic_balance_api lazily.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
-    ic_balance_api.rule_gaps = lambda fiscal_year, fiscal_period: list(site.ic_rule_gaps)
+    ic_balance_api.rule_gaps = (lambda fiscal_year, fiscal_period, reads=None:
+                                list(site.ic_rule_gaps))
     close.ic_balance_api = ic_balance_api
 
     # W5-2 (8.4): a stub `konsol.close.statement_api` (the real one reads
@@ -1673,3 +1687,39 @@ def test_ic_rule_ambiguous_gap_is_scoped_to_the_callers_entities():
     for other in ("ZZX", "ZZY", "ZZZ"):
         assert other not in text, other
     assert "ic_unrealized_profit_rule_ambiguous (" not in gap["message"]
+
+
+# --- review-w5 S12: the reject roles are defined once -------------------------
+
+import ast  # noqa: E402
+
+ASSERTION_RUN_PY = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run",
+                                "assertion_run.py")
+
+
+def _tree(path):
+    with open(path) as fh:
+        return ast.parse(fh.read())
+
+
+def _module_assigns(tree, name):
+    return [node for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)]
+
+
+def test_reject_roles_are_defined_once_in_assertion_run_and_imported():
+    api = _tree(API_PY)
+    assert _module_assigns(api, "REJECT_ROLES") == [], "signoff_api redefines REJECT_ROLES"
+    imported = {alias.name for node in api.body if isinstance(node, ast.ImportFrom)
+                and node.module == "konsol.consolidation.doctype.assertion_run.assertion_run"
+                for alias in node.names}
+    assert "REJECT_ROLES" in imported, imported
+    (definition,) = _module_assigns(_tree(ASSERTION_RUN_PY), "REJECT_ROLES")
+    roles = ast.literal_eval(definition.value)
+    # The only_for literal stays (the endpoint contract test reads it); it
+    # must name exactly the roles reject_signoff checks.
+    reject = next(node for node in api.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "reject")
+    only_for = next(node for node in ast.walk(reject) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute) and node.func.attr == "only_for")
+    assert set(ast.literal_eval(only_for.args[0])) == set(roles)

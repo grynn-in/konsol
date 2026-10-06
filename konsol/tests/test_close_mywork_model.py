@@ -885,6 +885,9 @@ _REJ_SPEC.loader.exec_module(REJ)
 
 PREPARER = REJ.PREPARER
 CODES = {(2099, 1): "P01", (2099, 2): "P02"}
+#: review-w5 S13: ``{user id: full name}`` of the users that exist; none here,
+#: so an actor is named by id (the user no longer exists).
+NAMES = {}
 
 
 def _stored(event, name, at, fiscal_period=None):
@@ -916,7 +919,7 @@ def test_the_real_producers_give_the_two_kinds():
 
 def test_a_rejected_signoff_gives_the_preparer_one_todo_item_on_checks():
     events = [_signed_event(), _rejected_event()]
-    (item,) = M.signoff_sent_back_items(events, PREPARER, M.GROUP_ACCOUNTANT, CODES)
+    (item,) = M.signoff_sent_back_items(events, PREPARER, M.GROUP_ACCOUNTANT, CODES, NAMES)
     assert item == {
         "id": "sent-back:signoff:2099-01",
         "kind": "todo",
@@ -932,59 +935,98 @@ def test_a_rejected_signoff_gives_the_preparer_one_todo_item_on_checks():
 
 def test_someone_else_gets_no_item():
     events = [_signed_event(), _rejected_event()]
-    assert M.signoff_sent_back_items(events, "other@example.com", M.CLOSE_LEAD, CODES) == []
+    assert M.signoff_sent_back_items(events, "other@example.com", M.CLOSE_LEAD, CODES, NAMES) == []
 
 
 def test_a_signature_after_the_reject_clears_the_item():
     events = [_signed_event("CE-1"), _rejected_event("CE-2"),
               _signed_event("CE-3", at="2099-02-04T09:00:00+00:00")]
-    assert M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES) == []
+    assert M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES) == []
 
 
 def test_each_period_is_judged_on_its_own():
     events = [_rejected_event("CE-1"),
               _rejected_event("CE-2", fiscal_period=2),
               _signed_event("CE-3", at="2099-02-05T09:00:00+00:00", fiscal_period=2)]
-    items = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES)
+    items = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)
     assert [i["id"] for i in items] == ["sent-back:signoff:2099-01"]
 
 
 def test_the_latest_reject_gives_the_reason():
     events = [_rejected_event("CE-1", at="2099-02-03T10:00:00+00:00", reason="first"),
               _rejected_event("CE-2", at="2099-02-04T10:00:00+00:00", reason="second")]
-    (item,) = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES)
+    (item,) = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)
     assert "second" in item["detail"] and "first" not in item["detail"]
 
 
 def test_the_same_time_is_ordered_by_name():
     at = "2099-02-03T10:00:00+00:00"
     events = [_rejected_event("CE-2", at=at), _signed_event("CE-1", at=at)]
-    assert len(M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES)) == 1
+    assert len(M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)) == 1
 
 
 def test_a_reject_with_no_preparer_is_nobodys_item():
     event = _rejected_event()
     event["detail"] = dict(event["detail"], preparer=None)
-    assert M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES) == []
+    assert M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES, NAMES) == []
 
 
 def test_the_viewer_and_an_unknown_persona_raise():
     with pytest.raises(ValueError):
-        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.VIEWER, CODES)
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.VIEWER, CODES, NAMES)
     with pytest.raises(ValueError):
-        M.signoff_sent_back_items([_rejected_event()], PREPARER, "auditor", CODES)
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, "auditor", CODES, NAMES)
 
 
 def test_a_period_missing_from_the_codes_raises():
     with pytest.raises(ValueError):
-        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.CLOSE_LEAD, {})
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.CLOSE_LEAD, {}, NAMES)
 
 
 def test_an_unknown_kind_raises():
     event = dict(_rejected_event(), kind="signoff_voided")
     with pytest.raises(ValueError):
-        M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES)
+        M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES, NAMES)
 
+
+
+# --- review-w5 S13: the rejecter by name, the latest by write order -------------
+
+
+def test_the_rejecter_is_named_by_full_name():
+    event = _rejected_event()
+    names = {event["actor"]: "Zara Lead"}
+    (item,) = M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES, names)
+    assert item["detail"].startswith("Zara Lead on 2099-02-03: "), item["detail"]
+
+
+def test_a_rejecter_who_no_longer_exists_is_named_by_id():
+    event = _rejected_event()
+    (item,) = M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES,
+                                        {"someone-else@example.com": "Someone"})
+    assert item["detail"].startswith("%s on " % event["actor"]), item["detail"]
+
+
+def test_the_latest_is_the_last_written_across_the_clocks_going_back():
+    # Europe/London, 25 Oct 2099: 01:00-02:00 happens twice. The reject is
+    # written at 01:50 BST, the signature 20 minutes later at 01:10 GMT. Both
+    # are stored as naive local times, so the later one reads earlier; the
+    # Close Event series (the name) is the write order.
+    events = [_rejected_event("CE-000000041", at="2099-10-25T01:50:00+01:00"),
+              _signed_event("CE-000000042", at="2099-10-25T01:10:00+01:00")]
+    assert M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES) == []
+
+
+def test_the_series_number_orders_past_a_digit_count():
+    events = [_signed_event("CE-9", at="2099-02-03T10:00:00+00:00"),
+              _rejected_event("CE-10", at="2099-02-03T10:00:00+00:00")]
+    assert len(M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)) == 1
+
+
+def test_an_event_name_without_a_series_number_raises():
+    with pytest.raises(ValueError, match="series"):
+        M.signoff_sent_back_items([_rejected_event("CE-X")], PREPARER, M.CLOSE_LEAD, CODES,
+                                  NAMES)
 
 # --- #305 5.4 (W5-4): IC Balance pairs with no unrealised-profit rule --------
 

@@ -122,6 +122,14 @@ class _Site:
         self.statement_gap = None
         #: W5-2 (8.4): the stubbed signoff_gate.commentary_gap() answer.
         self.commentary_gap = None
+        #: S9: every signoff_gate.commentary_gap / shared_reads call, the
+        #: shared reads each sign_off_problems call got, and each
+        #: open_rule_gap call's reads.
+        self.commentary_gap_calls = 0
+        self.shared_reads_calls = 0
+        self.shared = None
+        self.problem_shared = []
+        self.ic_rule_gap_reads = []
         self.approvals_waiting = {"count": 0}
         self.approvals_calls = []
         self.approvals_error = None
@@ -132,6 +140,9 @@ class _Site:
         #: (detail JSON text, a naive ``at``), and every Close Event read.
         self.close_events = []
         self.close_event_reads = []
+        #: S13: User full names that exist, and every full-name read.
+        self.full_names = {}
+        self.user_name_reads = []
 
 
 def _frappe(site):
@@ -162,6 +173,11 @@ def _frappe(site):
         elif doctype == "Has Role":
             assert filters.get("role") == "Entity Accountant", filters
             rows = [_D(parent=u) for u in site.accountants]
+        elif doctype == "User" and "full_name" in (fields or ()):
+            # S13: the rejecter's full name; a user who no longer exists has no row.
+            site.user_name_reads.append(dict(filters))
+            rows = [_D(name=u, full_name=n) for u, n in sorted(site.full_names.items())
+                    if u in filters["name"][1]]
         elif doctype == "User":
             rows = [_D(name=u) for u in site.accountants if u in filters["name"][1]]
         elif doctype == "User Permission":
@@ -271,10 +287,11 @@ def _call(site):
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
     signoff_gate = types.ModuleType("konsol.close.signoff_gate")
 
-    def sign_off_problems(fy, fp):
+    def sign_off_problems(fy, fp, shared=None):
         row = next(r for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) == (fy, fp))
         assert row["period_type"] == "Regular", "only Regular periods are gated"
         site.problem_calls.append((fy, fp))
+        site.problem_shared.append(shared)
         return site.problems.get((fy, fp), {"config_gaps": [], "order": None, "completeness": None})
 
     signoff_gate.sign_off_problems = sign_off_problems
@@ -282,7 +299,22 @@ def _call(site):
     # so N47's `signoff_gate.statement_gap()` call resolves to this stub
     # rather than the real frappe-bound function.
     signoff_gate.statement_gap = lambda: site.statement_gap
-    signoff_gate.commentary_gap = lambda: site.commentary_gap
+    def commentary_gap():
+        site.commentary_gap_calls += 1
+        return site.commentary_gap
+
+    signoff_gate.commentary_gap = commentary_gap
+
+    def shared_reads():
+        # S9: the real shape (signoff_gate.shared_reads): the commentary
+        # threshold as close_policy_model.commentary_threshold gives it, and
+        # ic_balance_api.open_reads' output (opaque here).
+        site.shared_reads_calls += 1
+        site.shared = {"commentary_threshold": {"threshold": None, "gap": site.commentary_gap},
+                       "ic_balances": {"keys": frozenset(), "balances": [], "rules": []}}
+        return site.shared
+
+    signoff_gate.shared_reads = shared_reads
     freshness_api = types.ModuleType("konsol.close.freshness_api")
     freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
                                                "pending": 0, "changed_since": [],
@@ -308,8 +340,9 @@ def _call(site):
     # #305 5.4: mywork_api imports konsol.close.ic_balance_api lazily.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
 
-    def open_rule_gaps():
+    def open_rule_gaps(reads=None):
         site.ic_rule_gap_calls += 1
+        site.ic_rule_gap_reads.append(reads)
         return list(site.ic_rule_gaps)
 
     ic_balance_api.open_rule_gaps = open_rule_gaps
@@ -1273,7 +1306,8 @@ def test_signatures_are_read_only_when_the_caller_has_a_rejection():
     site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
     site.close_events = [_rejected_row()]
     _call(site)
-    assert site.close_event_reads == [{"kind": "signoff_rejected"}]
+    assert site.close_event_reads == [
+        {"kind": "signoff_rejected", "fiscal_year": ["in", [2025]]}]
 
 
 # --- W5-2 (story 8.4): the commentary-threshold setup gap ---------------------
@@ -1318,3 +1352,65 @@ def test_ic_rule_ambiguous_gap_reaches_the_group_personas():
         assert "UK01 → DE01 (R1, R2)" in gap["detail"], gap
         assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
         assert _gap(result, "ic_rule") is None
+
+
+# --- review-w5 S9: the shared settings are read once per request -------------
+
+
+def test_one_request_reads_the_shared_settings_once_for_every_open_period():
+    site = _Site()  # P07-P09 Open and started
+    _call(site)
+    assert site.problem_calls == [(2025, 7), (2025, 8), (2025, 9)]
+    assert site.shared_reads_calls == 1
+    assert site.problem_shared == [site.shared] * 3
+    assert site.ic_rule_gap_reads == [site.shared["ic_balances"]]
+    assert site.commentary_gap_calls == 0
+
+
+def test_the_commentary_gap_comes_from_the_shared_reads():
+    gap = _model("close_policy_model").commentary_threshold(0, 0, "")["gap"]
+    site = _Site()
+    site.commentary_gap = gap
+    item = _gap(_call(site), "commentary_threshold")
+    assert item is not None and item["detail"] == gap["message"]
+    assert site.commentary_gap_calls == 0 and site.shared_reads_calls == 1
+
+
+# --- review-w5 S13: bounded reads, the rejecter by full name -------------------
+
+
+def test_only_the_open_periods_rejections_are_read():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row("ZZ-CE-1", fiscal_period=5),          # Closed
+                         _rejected_row("ZZ-CE-2", fiscal_year=2024, fiscal_period=7),
+                         _rejected_row("ZZ-CE-3", fiscal_period=7)]
+    ids = _ids(_call(site))
+    assert site.close_event_reads[0] == {"kind": "signoff_rejected",
+                                         "fiscal_year": ["in", [2025]]}
+    assert [i for i in ids if i.startswith("sent-back:signoff")] == ["sent-back:signoff:2025-07"]
+
+
+def test_no_open_period_reads_no_close_event():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.rows = [dict(r, status="Closed") for r in site.rows]
+    site.close_events = [_rejected_row()]
+    _call(site)
+    assert site.close_event_reads == []
+
+
+def test_the_rejecter_is_named_by_full_name_with_one_user_read():
+    row = _rejected_row()
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [row]
+    site.full_names = {row["actor"]: "Zara Lead"}
+    item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["detail"].startswith("Zara Lead on 2025-08-20: "), item["detail"]
+    assert site.user_name_reads == [{"name": ["in", [row["actor"]]]}]
+
+
+def test_a_rejecter_who_no_longer_exists_is_named_by_id():
+    row = _rejected_row()
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [row]
+    item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["detail"].startswith("%s on 2025-08-20: " % row["actor"]), item["detail"]

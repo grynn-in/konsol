@@ -21,6 +21,10 @@
   5.4, W5-4), group personas only: ``ic_balance_api.open_rule_gaps()`` over
   the open periods' draft and approved IC Balances; the rule is declared in
   Desk;
+- S9 (review-w5): ``signoff_gate.shared_reads()`` is called once per
+  request; the commentary-threshold gap, the rule gaps above and every
+  period's ``sign_off_problems`` read from it, so the threshold and the IC
+  Balances and rules are read once, not once per open period;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -62,7 +66,10 @@ draft they own (``approvals_api.sent_back_for``, A21, turned into items by
 ``mywork_model.sent_back_items``). It does not depend on the first close.
 #305-W5-1 (story 9.4, #157): the preparer of a rejected sign-off (the run's
 ``triggered_by``) also gets one ``todo`` item per period until it is signed
-again (``_signoff_events``, ``mywork_model.signoff_sent_back_items``).
+again (``_signoff_events``, ``mywork_model.signoff_sent_back_items``). Only
+the Open Regular periods' rejections are read, the latest event is the last
+written (its series number), and the rejecter is named by full name
+(review-w5 S13).
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -241,7 +248,7 @@ def _ownership_scope(leaves, first_close):
     return in_scope, uncovered
 
 
-def _gap_facts(first_close, persona, allowed):
+def _gap_facts(first_close, persona, allowed, shared):
     leaves = _leaves()
     in_scope, uncovered = _ownership_scope(leaves, first_close)
     frequency_missing = [e for e, f in leaves.items() if e in in_scope and not f]
@@ -258,7 +265,8 @@ def _gap_facts(first_close, persona, allowed):
             policy_gaps = policy_gaps + [statement_gap]
         # #305-W5-2 (story 8.4): the undeclared commentary threshold, the
         # same way (Close Settings only; no statement is read here).
-        commentary_gap = signoff_gate.commentary_gap()
+        # S9: read once per request (``shared``), not again here.
+        commentary_gap = shared["commentary_threshold"]["gap"]
         if commentary_gap is not None:
             policy_gaps = policy_gaps + [commentary_gap]
     return {
@@ -270,16 +278,17 @@ def _gap_facts(first_close, persona, allowed):
         "policy_gaps": policy_gaps,
         "ic_accounts_gap": ic_api.setup_gap() if group else None,
         "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
-        "ic_rule_gaps": _ic_rule_gaps() if group else [],
+        "ic_rule_gaps": _ic_rule_gaps(shared) if group else [],
     }, uncovered
 
 
-def _ic_rule_gaps():
+def _ic_rule_gaps(shared):
     """#305 5.4 (W5-4): IC Balance pairs of the open periods with no
-    unrealised-profit rule, and (F51b) pairs more than one rule matches.
-    Lazy: test loaders stub konsol.close.ic_balance_api."""
+    unrealised-profit rule, and (F51b) pairs more than one rule matches,
+    from the request's shared reads (S9). Lazy: test loaders stub
+    konsol.close.ic_balance_api."""
     from konsol.close import ic_balance_api
-    return ic_balance_api.open_rule_gaps()
+    return ic_balance_api.open_rule_gaps(shared["ic_balances"])
 
 
 def _name_ownership_periods(items, uncovered):
@@ -330,13 +339,24 @@ def _signoff_event(row):
 
 
 def _signoff_events(user):
-    """#305-W5-1: every ``signoff_rejected`` Close Event, and, only when one
-    names ``user`` as the preparer, the ``signed_off`` events of those
-    periods' fiscal years (``mywork_model.signoff_sent_back_items`` decides
-    which periods are still sent back). ``[]`` when nothing names ``user``."""
+    """#305-W5-1: the ``signoff_rejected`` Close Events of the Open Regular
+    periods (review-w5 S13: a rejection can only land on an Open period, and
+    a closed one has nothing left to fix, so nothing else is read or
+    parsed), and, only when one names ``user`` as the preparer, the
+    ``signed_off`` events of those periods' fiscal years
+    (``mywork_model.signoff_sent_back_items`` decides which periods are still
+    sent back). ``[]`` when nothing names ``user``; no Open Regular period
+    reads nothing."""
+    open_keys = {(int(r["fiscal_year"]), int(r["fiscal_period"]))
+                 for r in fiscal_calendar.fiscal_period_rows()
+                 if r.get("period_type") == REGULAR and r.get("status") == "Open"}
+    if not open_keys:
+        return []
     rejected = [_signoff_event(r) for r in frappe.get_all(
-        "Close Event", filters={"kind": "signoff_rejected"}, fields=_SIGNOFF_EVENT_FIELDS,
-        limit_page_length=0)]
+        "Close Event", filters={"kind": "signoff_rejected",
+                                "fiscal_year": ["in", sorted({k[0] for k in open_keys})]},
+        fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)
+        if (int(r["fiscal_year"]), int(r["fiscal_period"])) in open_keys]
     mine = {(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in rejected
             if (r["detail"] or {}).get("preparer") == user}
     if not mine:
@@ -347,6 +367,20 @@ def _signoff_events(user):
         fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)]
     return [r for r in rejected + signed
             if (int(r["fiscal_year"]), int(r["fiscal_period"])) in mine]
+
+
+def _user_names(events):
+    """``{user id: full name}`` of the rejecters in ``events`` that still
+    exist, in one User read (review-w5 S13; as ``statement_api`` names a
+    commentary's author). A user who no longer exists has no entry, so the
+    item names them by id."""
+    actors = sorted({e["actor"] for e in events
+                     if e["kind"] == "signoff_rejected" and e.get("actor")})
+    if not actors:
+        return {}
+    return {u["name"]: u.get("full_name") or u["name"]
+            for u in frappe.get_all("User", filters={"name": ["in", actors]},
+                                    fields=["name", "full_name"], limit_page_length=0)}
 
 
 def _newest_run(key):
@@ -390,7 +424,7 @@ def _rates_error_item(key, code, error, end_date):
     }
 
 
-def _period_facts(first_close, allowed, today):
+def _period_facts(first_close, allowed, today, shared):
     """``(per_period, extra_items)``; extra items are the rate-gate errors."""
     as_of_text = current_freshness()["as_of"]
     as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
@@ -402,7 +436,7 @@ def _period_facts(first_close, allowed, today):
             # A53: the age shown for a period is its end date. A period row with
             # no end date is a configuration problem, never silently today's date.
             frappe.throw("%s has no end date: fix its row in EPM Fiscal Year." % code)
-        problems = signoff_gate.sign_off_problems(key[0], key[1])
+        problems = signoff_gate.sign_off_problems(key[0], key[1], shared)
         completeness = problems.get("completeness") or {}
         missing = sorted(completeness.get("missing") or ())
         blocked = bool(problems.get("config_gaps") or problems.get("order") or completeness)
@@ -472,10 +506,13 @@ def get_my_work():
     # never asked of anyone else.
     entities_assigned = ((allowed is None or bool(allowed))
                          if persona == period_model.ENTITY_ACCOUNTANT else None)
-    facts, uncovered = _gap_facts(first_close, persona, allowed)
+    # S9 (review-w5): the commentary threshold and the open periods' IC
+    # Balances and rules, read once for the setup gaps and every period's gate.
+    shared = signoff_gate.shared_reads()
+    facts, uncovered = _gap_facts(first_close, persona, allowed, shared)
     items = _name_ownership_periods(mywork_model.setup_gap_items(facts), uncovered)
     if first_close is not None:
-        per_period, extra = _period_facts(first_close, allowed, today)
+        per_period, extra = _period_facts(first_close, allowed, today, shared)
         items.extend(mywork_model.period_items(persona, per_period, first_close))
         if persona == period_model.ENTITY_ACCOUNTANT:
             items.extend(mywork_model.ic_fix_items(
@@ -504,7 +541,8 @@ def get_my_work():
     signoff_events = _signoff_events(frappe.session.user)
     if signoff_events:
         items.extend(mywork_model.signoff_sent_back_items(
-            signoff_events, frappe.session.user, persona, codes or _period_codes()))
+            signoff_events, frappe.session.user, persona, codes or _period_codes(),
+            _user_names(signoff_events)))
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona, screen_counts),
             "entities_assigned": entities_assigned}
