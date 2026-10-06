@@ -831,6 +831,125 @@ def test_bounded_reads_dimension_reads_are_constant_in_the_number_of_journals():
 # --- the event-log doctype literal never appears here (the one-writer check) ---------
 
 
+# --- konsol#305 story 6.5: auto-reversals visible ------------------------------------
+
+#: The golden fixture close-ui's adjustments tests load: one ``reversing_in``
+#: item exactly as the real ``get_journals`` returns it.
+_REVERSING_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "fixtures", "close_journals_reversing_in.json")
+
+
+def _reversing_site():
+    """P7's own wireframe journal (reverses in P10) plus an Approved P6
+    journal that reverses into P7, a P6 Draft and a P6 Reversed journal that
+    also name P7, and an Approved P6 journal that reverses into P10."""
+    site = _Site()
+    site.journals = [
+        _journal("CJ-00001"),
+        _journal("CJ-P6-A", docstatus=1, status="Approved", fiscal_period=6,
+                 description="ZZ accrue June bonus\nsecond line", reverse_fiscal_period=7,
+                 total_debit=1200.0, total_credit=1200.0, approved_by=LEAD,
+                 approved_at=datetime(2025, 6, 30, 16, 0, 0),
+                 creation=datetime(2025, 6, 28, 9, 0, 0), modified=datetime(2025, 6, 30, 16, 0, 0)),
+        _journal("CJ-P6-D", docstatus=0, status="Draft", fiscal_period=6, reverse_fiscal_period=7),
+        _journal("CJ-P6-R", docstatus=2, status="Reversed", fiscal_period=6, reverse_fiscal_period=7),
+        _journal("CJ-P6-10", docstatus=1, status="Approved", fiscal_period=6, reverse_fiscal_period=10),
+    ]
+    site.lines = [
+        _line("CJ-00001", 1, "ZZA", "6100", debit_amount=18500),
+        _line("CJ-00001", 2, "ZZB", "2310", credit_amount=18500),
+        _line("CJ-P6-A", 1, "ZZA", "6100", debit_amount=1200, description="bonus"),
+        _line("CJ-P6-A", 2, "ZZA", "2310", credit_amount=1200),
+        _line("CJ-P6-D", 1, "ZZA", "6100", debit_amount=5),
+        _line("CJ-P6-D", 2, "ZZA", "2310", credit_amount=5),
+        _line("CJ-P6-R", 1, "ZZA", "6100", debit_amount=7),
+        _line("CJ-P6-R", 2, "ZZA", "2310", credit_amount=7),
+        _line("CJ-P6-10", 1, "ZZA", "6100", debit_amount=9),
+        _line("CJ-P6-10", 2, "ZZA", "2310", credit_amount=9),
+    ]
+    return site
+
+
+def test_reversing_in_is_always_sent_even_empty():
+    result = _call(_Site())
+    assert result["reversing_in"] == []
+
+
+def test_an_approved_earlier_journal_reversing_here_is_listed_with_its_origin():
+    result = _call(_reversing_site())
+    assert [j["name"] for j in result["reversing_in"]] == ["CJ-P6-A"]
+    item = result["reversing_in"][0]
+    assert item["origin"] == {"fiscal_year": 2025, "fiscal_period": 6, "code": "P06"}
+    assert item["label"] == "Reverses here from P06"
+    assert item["title"] == "ZZ accrue June bonus"
+    assert item["approved_by"] == LEAD
+    assert "+" in item["approved_at"] or "Z" in item["approved_at"]
+
+
+def test_the_reversing_item_is_read_only_and_never_in_the_periods_own_journals():
+    result = _call(_reversing_site())
+    assert [j["name"] for j in result["journals"]] == ["CJ-00001"]
+    item = result["reversing_in"][0]
+    for key in ("status", "docstatus", "preparer", "last_rejection", "reverse"):
+        assert key not in item, key
+
+
+def test_the_reversing_items_lines_are_the_reversal_posting_debit_and_credit_swapped():
+    item = _call(_reversing_site())["reversing_in"][0]
+    assert [(l["main_account"], l["debit_amount"], l["credit_amount"]) for l in item["lines"]] == \
+        [("6100", 0.0, 1200.0), ("2310", 1200.0, 0.0)]
+    assert item["total_debit"] == 1200.0 and item["total_credit"] == 1200.0
+
+
+def test_the_reversing_items_effect_is_the_original_effect_negated():
+    site = _reversing_site()
+    item = _call(site)["reversing_in"][0]
+    by_heading = {h["heading"]: h["net_debit"] for h in item["effect"]["headings"]}
+    assert by_heading == {"6000": -1200.0, "2300": 1200.0}
+
+
+def test_a_draft_or_reversed_journal_naming_this_period_does_not_reverse_here():
+    """Only a submitted journal is in the warehouse (resync_staging reads
+    docstatus 1), so only it posts a reversal; a cancelled one's reversal
+    rows vanish with it (#305-D2-2)."""
+    names = [j["name"] for j in _call(_reversing_site())["reversing_in"]]
+    assert "CJ-P6-D" not in names and "CJ-P6-R" not in names and "CJ-P6-10" not in names
+
+
+def test_the_original_period_still_says_reverses_in_the_target_period():
+    site = _reversing_site()
+    result = _call(site, 2025, 6)
+    by_name = {j["name"]: j for j in result["journals"]}
+    assert by_name["CJ-P6-A"]["duration"] == "Reverses in P07"
+    assert result["reversing_in"] == []
+
+
+def test_the_read_count_is_constant_in_the_number_of_reversing_journals():
+    def site_with(n):
+        site = _Site()
+        for i in range(n):
+            name = "CJ-R%05d" % i
+            site.journals.append(_journal(name, docstatus=1, status="Approved",
+                                          fiscal_period=6, reverse_fiscal_period=7))
+            site.lines.append(_line(name, 1, "ZZA", "6100", debit_amount=1))
+            site.lines.append(_line(name, 2, "ZZA", "2310", credit_amount=1))
+        return site
+    one, five = site_with(1), site_with(5)
+    assert len(_call(one)["reversing_in"]) == 1 and len(_call(five)["reversing_in"]) == 5
+    one.reads.clear(); five.reads.clear()
+    _call(one); _call(five)
+    assert len(one.reads) == len(five.reads), (one.reads, five.reads)
+
+
+def test_reversing_item_matches_the_golden_fixture():
+    """The committed fixture close-ui's adjustments tests load (a real
+    producer shape, never a hand-built dict)."""
+    item = _call(_reversing_site())["reversing_in"][0]
+    with open(_REVERSING_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert item == golden
+
+
 def test_journal_api_never_names_the_close_event_doctype():
     with open(API_PY, encoding="utf-8") as f:
         source = f.read()

@@ -668,3 +668,46 @@ def test_a_default_or_child_table_field_name_is_never_written():
     a DUPLICATE column in the INSERT list — the same dead sync."""
     present = {"name", "owner", "parent", "idx", "description", "main_account"}
     assert M.journal_dimension_columns(["description", "main_account"], present) == ()
+
+
+# -- konsol#305 story 6.5: auto-reversals visible ---------------------------------------
+
+
+def test_reverses_here_label_names_the_original_period_code():
+    assert M.reverses_here_label(2024, 8, _A02_ROWS) == "Reverses here from P8"
+
+
+def test_reverses_here_label_an_undeclared_original_period_is_never_blank():
+    label = M.reverses_here_label(2099, 3, _A02_ROWS)
+    assert label == "Reverses here from FY2099 P03 (not a declared period)"
+
+
+def test_reversal_lines_swap_debit_and_credit_like_the_warehouse_reversal():
+    """gold_consolidation_adjustments posts one auto_reversal row per line,
+    debit and credit swapped (#305-D2-11, V01); this is that posting."""
+    lines = [
+        {"idx": 1, "data_area_id": "ZZA", "main_account": "6100",
+         "debit_amount": 18500.0, "credit_amount": 0, "description": "x", "dim_cc": "C1"},
+        {"idx": 2, "data_area_id": "ZZB", "main_account": "2310",
+         "debit_amount": 0, "credit_amount": 18500.0, "description": "y", "dim_cc": ""},
+    ]
+    before = [dict(line) for line in lines]
+    out = M.reversal_lines(lines)
+    assert lines == before, "the input is not mutated"
+    assert out[0] == dict(lines[0], debit_amount=0, credit_amount=18500.0)
+    assert out[1] == dict(lines[1], debit_amount=18500.0, credit_amount=0)
+
+
+def test_the_reversal_effect_is_the_original_effect_negated():
+    accounts = {"6100": {"heading": "6000", "heading_name": "Opex",
+                         "statement_section": "Profit and Loss"},
+                "2310": {"heading": "2300", "heading_name": "Liabilities",
+                         "statement_section": "Balance Sheet"}}
+    lines = [
+        {"main_account": "6100", "debit_amount": 100.25, "credit_amount": 0},
+        {"main_account": "2310", "debit_amount": 0, "credit_amount": 100.25},
+    ]
+    original = M.statement_effect(lines, accounts)
+    reversal = M.statement_effect(M.reversal_lines(lines), accounts)
+    assert [h["net_debit"] for h in reversal["headings"]] == \
+        [-h["net_debit"] for h in original["headings"]]
