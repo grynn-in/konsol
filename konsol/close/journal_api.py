@@ -7,6 +7,11 @@ screen needs and writes nothing:
 - the period's journals (every docstatus: Draft, Pending Approval, Approved
   and Reversed), each with its lines, totals, duration label, status,
   preparer, statement effect and last rejection;
+- ``reversing_in`` (story 6.5): the Approved journals of earlier periods
+  whose reversal posts into this one, read-only — each with its origin
+  period, a "Reverses here from <code>" label, and the reversal posting's
+  lines (debit and credit swapped) and effect. One more header read; their
+  lines come in the same line read;
 - the drafting choices: the group(s) and their entities, the postable
   (Published, non-group) Main Accounts with their heading, and the reversal
   periods a new journal may name;
@@ -307,7 +312,19 @@ def get_journals(fiscal_year, fiscal_period):
     declared = declared_dimensions()
     dim_keys = tuple(d["dimension_name"] for d in declared)
 
-    names = [h["name"] for h in headers]
+    # konsol#305 story 6.5: the Approved journals of earlier periods whose
+    # reversal posts into this one. Only a submitted journal is in the
+    # warehouse (consolidation_journal.resync_staging reads docstatus 1), so
+    # only it reverses; a cancelled one's reversal vanishes with it (D2-2).
+    reversing_headers = frappe.get_all(
+        JOURNAL,
+        filters={"reverse_fiscal_year": fy, "reverse_fiscal_period": fp, "docstatus": 1},
+        fields=JOURNAL_FIELDS + ["fiscal_year", "fiscal_period"],
+        order_by="creation asc",
+        limit_page_length=0,
+    )
+
+    names = [h["name"] for h in headers] + [h["name"] for h in reversing_headers]
     lines = []
     if names:
         lines = frappe.get_all(
@@ -378,6 +395,31 @@ def get_journals(fiscal_year, fiscal_period):
             "last_rejection": last_rejection,
         })
 
+    reversing_in = []
+    for header in reversing_headers:
+        origin_fy, origin_fp = int(header["fiscal_year"]), int(header["fiscal_period"])
+        origin = next((r for r in period_rows
+                       if (int(r["fiscal_year"]), int(r["fiscal_period"])) == (origin_fy, origin_fp)),
+                      None)
+        posting = journal_model.reversal_lines(lines_by_parent.get(header["name"], []))
+        reversing_in.append({
+            "name": header["name"],
+            "title": _title(header.get("description")),
+            "description": header.get("description"),
+            "adjustment_type": header.get("adjustment_type"),
+            "consolidation_group": header.get("consolidation_group"),
+            "currency": header.get("currency"),
+            "total_debit": _number(header.get("total_credit")),
+            "total_credit": _number(header.get("total_debit")),
+            "origin": {"fiscal_year": origin_fy, "fiscal_period": origin_fp,
+                       "code": origin.get("period_code") if origin else None},
+            "label": journal_model.reverses_here_label(origin_fy, origin_fp, period_rows),
+            "approved_by": header.get("approved_by"),
+            "approved_at": _iso(header.get("approved_at")),
+            "lines": [_line_out(line, accounts, dim_keys) for line in posting],
+            "effect": journal_model.statement_effect(posting, accounts),
+        })
+
     return {
         "period": {
             "fiscal_year": fy, "fiscal_period": fp,
@@ -385,6 +427,7 @@ def get_journals(fiscal_year, fiscal_period):
             "period_type": period.get("period_type"),
         },
         "journals": journals,
+        "reversing_in": reversing_in,
         "groups": groups,
         "accounts": accounts,
         "dimensions": dimensions,

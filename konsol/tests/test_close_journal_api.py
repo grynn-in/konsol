@@ -846,7 +846,7 @@ def _reversing_site():
     site = _Site()
     site.journals = [
         _journal("CJ-00001"),
-        _journal("CJ-P6-A", docstatus=1, status="Approved", fiscal_period=6,
+        _journal("CJ-P6-A", docstatus=1, status="Approved", fiscal_period=6, adjustment_type="topside",
                  description="ZZ accrue June bonus\nsecond line", reverse_fiscal_period=7,
                  total_debit=1200.0, total_credit=1200.0, approved_by=LEAD,
                  approved_at=datetime(2025, 6, 30, 16, 0, 0),
