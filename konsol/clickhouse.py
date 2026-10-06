@@ -637,9 +637,16 @@ _REFERENCE_TABLE_DDL = {
     ),
     # konsolidat#146: the top-down annual budget, from the Budget Annual Input
     # doctype. It was seeds/budget_annual_input.csv.
+    #
+    # konsol#287: neither budget table names a dimension. Which dim_* columns
+    # they carry is the site's Published Dimensions ticked in_budget, added by
+    # schema_apply._sync_budget_dimension_columns. They used to be created
+    # with two customers' dimensions as literals, so a site budgeting by
+    # dim_region wrote a column the table did not have, and the write-through
+    # failed.
     "epm_gold.budget_annual_input": (
         "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, dim_cost_center String, dim_department String, "
+        "main_account String, "
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
@@ -650,7 +657,7 @@ _REFERENCE_TABLE_DDL = {
     # ("Unknown table expression identifier 'epm_gold.budget_monthly_input'").
     "epm_gold.budget_monthly_input": (
         "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, dim_cost_center String, dim_department String, "
+        "main_account String, "
         "fiscal_period UInt8, amount Decimal(18,2), layer String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, layer)"
     ),

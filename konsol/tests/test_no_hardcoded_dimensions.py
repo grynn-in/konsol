@@ -226,18 +226,6 @@ CUSTOMER_DIMENSION_ROOTS = ("cost_center", "cost_centre", "department", "busines
 #: Counts are exact on purpose. "One of these two got fixed" has to be visible,
 #: and so does a fourteenth occurrence appearing in a file that already had
 #: thirteen — otherwise the debt regrows inside its own licence.
-_BUDGET_TABLES = (
-    "konsol#287 — the epm_gold budget DDL hardcodes two customers' dimensions "
-    "as columns. Removed when the budget tables take their dimension columns "
-    "from the site's Dimension records, the way schema_apply.py already does "
-    "for the raw trial balance."
-)
-_BUDGET_ANNUAL_INPUT = (
-    "konsol#287 — Budget Annual Input has a fixed two-dimension grain: two "
-    "fieldnames in the doctype, the ClickHouse field map and the "
-    "unique-grain check. Removed with konsol#287, together with the DDL "
-    "those fields write into."
-)
 _SOURCE_COLUMN_PATCH = (
     "konsol#287 — a one-shot data migration that names all three dimensions "
     "to realign Dimension.source_column. It is a patch, so it describes a "
@@ -258,26 +246,8 @@ _LEGACY_REQUEST_KEYS = (
 )
 
 ALLOWED_DIMENSION_LITERALS = {
-    ("konsol/clickhouse.py", "dim_cost_center"): (2, _BUDGET_TABLES),
-    ("konsol/clickhouse.py", "dim_department"): (2, _BUDGET_TABLES),
     ("konsol/api.py", "dim_cost_center"): (1, _LEGACY_REQUEST_KEYS),
     ("konsol/api.py", "dim_department"): (1, _LEGACY_REQUEST_KEYS),
-    (
-        "konsol/epm/doctype/budget_annual_input/budget_annual_input.json",
-        "dim_cost_center",
-    ): (1, _BUDGET_ANNUAL_INPUT),
-    (
-        "konsol/epm/doctype/budget_annual_input/budget_annual_input.json",
-        "dim_department",
-    ): (1, _BUDGET_ANNUAL_INPUT),
-    (
-        "konsol/epm/doctype/budget_annual_input/budget_annual_input.py",
-        "dim_cost_center",
-    ): (3, _BUDGET_ANNUAL_INPUT),
-    (
-        "konsol/epm/doctype/budget_annual_input/budget_annual_input.py",
-        "dim_department",
-    ): (3, _BUDGET_ANNUAL_INPUT),
     ("konsol/patches/fix_dimension_source_column_drift.py", "dim_cost_center"): (
         2,
         _SOURCE_COLUMN_PATCH,

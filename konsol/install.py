@@ -295,6 +295,7 @@ def after_migrate():
     # the table as skipped, then the repair ran (PR #324 re-review, finding 2).
     _sync_budget_line_custom_fields()
     _reconcile_clickhouse()
+    _sync_budget_dimension_columns()
     _install_workflows()
     _ensure_indexes()
     _setup_dashboard()
@@ -373,6 +374,27 @@ def _sync_budget_line_custom_fields():
     except Exception:
         frappe.logger().warning(
             "journal dimension column sync skipped after migrate", exc_info=True)
+    # konsol#287: the budget input tables take their dimension columns the same
+    # way, and need the same repair path: Budget Sheet and Budget Annual Input
+    # write the declared columns, which a fresh table no longer has.
+    _sync_budget_dimension_columns()
+
+
+def _sync_budget_dimension_columns():
+    """Add the declared budget dimension columns to the budget input tables.
+
+    Best-effort, and run twice by after_migrate: before the reconcile, so its
+    rewrite of Budget Annual Input finds the columns it names, and after it,
+    because on a fresh site the reconcile is what creates the two tables
+    (ensure_reference_tables) and the first run found nothing to alter.
+    Idempotent, so the second run on an existing site emits no DDL.
+    """
+    try:
+        from konsol.schema_apply import _sync_budget_dimension_columns as sync
+        sync()
+    except Exception:
+        frappe.logger().warning(
+            "budget dimension column sync skipped after migrate", exc_info=True)
 
 
 def _retire_konsol_control_page():

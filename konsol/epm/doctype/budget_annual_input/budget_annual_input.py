@@ -14,21 +14,45 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.epm.budget_grain import budget_dimension_names
+
+#: The columns every annual budget row carries, whatever the site declares.
+FIXED_FIELD_MAP = {
+    "scenario_id": "scenario_id",
+    "data_area_id": "data_area_id",
+    "fiscal_year": "fiscal_year",
+    "main_account": "main_account",
+    "annual_amount": "annual_amount",
+    "spread_profile_id": "spread_profile_id",
+    "submitted_by": "submitted_by",
+}
+
+
+def budget_dimension_fields():
+    """The site's budget dimensions this doctype has a field for, in name order.
+
+    konsol#287: the dimensions are the Published Dimensions ticked in_budget,
+    provisioned here as Custom Fields by schema_apply._sync_budget_custom_fields
+    (as on Budget Line), not two fixed fields named after one customer's cost
+    centres. A dimension whose field is not provisioned yet is left out rather
+    than named: every query below would fail on a column the table lacks.
+    """
+    meta = frappe.get_meta("Budget Annual Input")
+    return [name for name in budget_dimension_names() if meta.has_field(name)]
+
+
+class _FieldMap:
+    """CH_FIELD_MAP, worked out when it is read: the fixed columns plus the
+    site's budget dimensions. reconcile_all reads it off the class, so it
+    cannot be a dict fixed at import."""
+
+    def __get__(self, instance, owner):
+        return {**FIXED_FIELD_MAP, **{d: d for d in budget_dimension_fields()}}
 
 
 class BudgetAnnualInput(Document):
     CH_TABLE = "epm_gold.budget_annual_input"
-    CH_FIELD_MAP = {
-        "scenario_id": "scenario_id",
-        "data_area_id": "data_area_id",
-        "fiscal_year": "fiscal_year",
-        "main_account": "main_account",
-        "dim_cost_center": "dim_cost_center",
-        "dim_department": "dim_department",
-        "annual_amount": "annual_amount",
-        "spread_profile_id": "spread_profile_id",
-        "submitted_by": "submitted_by",
-    }
+    CH_FIELD_MAP = _FieldMap()
 
     def validate(self):
         self._stamp_submitter()
@@ -52,6 +76,8 @@ class BudgetAnnualInput(Document):
     def _validate_unique_grain(self):
         """One annual figure per (scenario, entity, year, account, dimensions).
 
+        The dimensions are the site's declared budget dimensions (konsol#287).
+
         gold_spread_budget inner-joins the profile and unions the result with no
         dedup and no aggregation, so two rows at the same grain produce two sets
         of twelve monthly rows and the budget silently doubles. The CSV this
@@ -63,12 +89,11 @@ class BudgetAnnualInput(Document):
             "data_area_id": self.data_area_id,
             "fiscal_year": self.fiscal_year,
             "main_account": self.main_account,
-            # blank Data fields really are '' here, not NULL — these are Data,
-            # not Link, so the F3 ["is", "not set"] trap does not apply
-            "dim_cost_center": self.dim_cost_center or "",
-            "dim_department": self.dim_department or "",
             "name": ["!=", self.name],
         }
+        # blank Data fields really are '' here, not NULL — these are Data, not
+        # Link, so the F3 ["is", "not set"] trap does not apply
+        grain.update({d: self.get(d) or "" for d in budget_dimension_fields()})
         dupe = frappe.db.exists("Budget Annual Input", grain)
         if dupe:
             frappe.throw(

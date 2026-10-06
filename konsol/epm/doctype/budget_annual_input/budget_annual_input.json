@@ -44,16 +44,6 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "dim_cost_center",
-   "fieldtype": "Data",
-   "label": "Cost Center"
-  },
-  {
-   "fieldname": "dim_department",
-   "fieldtype": "Data",
-   "label": "Department"
-  },
-  {
    "fieldname": "annual_amount",
    "fieldtype": "Currency",
    "label": "Annual Amount",
