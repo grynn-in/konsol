@@ -217,7 +217,10 @@ def _validate(csv_text, functional_currency, entity="ZZA", minor_units=None):
         db=types.SimpleNamespace(sql=lambda *a, **k: None, get_value=get_value))
     chart = types.ModuleType("konsol.group_chart")
     chart.chart_accounts = lambda: {"1010": {"is_group": 0, "is_posting": 1},
-                                    "2010": {"is_group": 0, "is_posting": 1}}
+                                    "2010": {"is_group": 0, "is_posting": 1},
+                                    # konsol#180-5: files of three and four lines
+                                    "3010": {"is_group": 0, "is_posting": 1},
+                                    "4010": {"is_group": 0, "is_posting": 1}}
     saved = sys.modules.get("konsol.group_chart")
     sys.modules["konsol.group_chart"] = chart
     try:

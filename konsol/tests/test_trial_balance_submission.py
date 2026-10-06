@@ -167,20 +167,22 @@ def test_parse_rejects_surplus_cells():
         assert "more cells" in str(e)
 
 
-def test_parse_rounds_to_cents_so_stored_equals_validated():
+def test_parse_reads_amounts_exactly_and_the_rule_refuses_extra_places():
+    """konsol#180-5 (Deepak Pai, 6 Oct 2026) replaces
+    test_parse_rounds_to_cents_so_stored_equals_validated: the parser no
+    longer rounds each line to cents. It keeps the amount as written, and
+    konsol.tb_balance_model refuses a line with more places than the
+    currency has, by name, instead of judging a balance of rounded lines."""
     rows = _m.parse_tb_csv("main_account,debit,credit,currency\n1010,10.005,0,EUR\n2010,0,10.004,EUR\n")
-    assert rows[0]["debit"] == 10.0 or rows[0]["debit"] == 10.01  # banker's rounding either way
-    assert rows[1]["credit"] == 10.0
-    # the point: balance is judged on the ROUNDED values — the same numbers
-    # the warehouse will store — so post-rounding drift fails here, not later
-    # in a dbt test (konsol#180: the rule is konsol.tb_balance_model's)
+    assert str(rows[0]["debit"]) == "10.005" and str(rows[1]["credit"]) == "10.004"
     spec = importlib.util.spec_from_file_location("tbs_balance_model", os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tb_balance_model.py"))
     balance = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(balance)
     errs = balance.balance_problems("EUR", 2, _m.parse_tb_csv(
         "main_account,debit,credit,currency\n1010,10.019,0,EUR\n2010,0,10.001,EUR\n"))
-    assert any("debits exceed credits by 0.02 EUR" in e for e in errs), errs  # 10.02 vs 10.00
+    assert errs == ["Line 2: debit 10.019 has 3 decimal places; EUR has 2.",
+                    "Line 3: credit 10.001 has 3 decimal places; EUR has 2."], errs
 
 
 # --- konsol#159: the intercompany partner -----------------------------------

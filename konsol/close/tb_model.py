@@ -248,10 +248,11 @@ def check_rows(rows, chart, entity, known_entities, form_basis):
         "ok": ok,
         "rows": out_rows,
         "file_problems": file_problems,
+        # Exact, not rounded (konsol#180-5): a KWD total keeps its fils.
         "totals": {
-            "debit": round(total_debit, 2),
-            "credit": round(total_credit, 2),
-            "difference": round(total_debit - total_credit, 2),
+            "debit": total_debit,
+            "credit": total_credit,
+            "difference": total_debit - total_credit,
         },
     }
 

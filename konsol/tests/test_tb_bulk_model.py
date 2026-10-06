@@ -44,7 +44,9 @@ def test_header_is_forgiving_about_case_spaces_and_aliases():
     table = [["Entity", "Year", "Period", "Account", "Debit", "Credit", "Currency", "Description"],
              ["AMDE", "2025", "1", "1010", "10.005", "0", "EUR", "cash"]]
     rows = M.split_table(table)[("AMDE", 2025, 1)]
-    assert rows[0]["debit"] == 10.01 or rows[0]["debit"] == 10.0   # rounded to cents like a single upload
+    # konsol#180-5: read exactly, never rounded; the extra place is refused
+    # by check_group once the currency is known
+    assert str(rows[0]["debit"]) == "10.005"
     assert rows[0]["description"] == "cash"
 
 
@@ -80,7 +82,8 @@ def test_missing_columns_and_empty_files():
 def test_group_csv_is_the_single_upload_contract():
     rows = [{"main_account": "1010", "debit": 1234.5, "credit": 0.0, "currency": "EUR", "description": "cash, main"}]
     parsed = list(csv.DictReader(io.StringIO(M.group_csv(rows))))
-    assert parsed == [{"main_account": "1010", "debit": "1234.50", "credit": "0.00", "currency": "EUR",
+    # exactly as read (konsol#180-5), no longer padded or rounded to 2 places
+    assert parsed == [{"main_account": "1010", "debit": "1234.5", "credit": "0.0", "currency": "EUR",
                        "description": "cash, main", "partner_data_area_id": ""}]
 
 
@@ -180,7 +183,8 @@ def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
     text = M.group_csv(rows, source="TBU-00042")
     parsed = list(csv.DictReader(io.StringIO(text)))
     assert parsed[0]["source_upload"] == "TBU-00042"
-    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1.00", "credit": "0.00"}
+    # exactly as read (konsol#180-5), no longer padded or rounded to 2 places
+    assert {k: parsed[0][k] for k in ("main_account", "debit", "credit")} == {"main_account": "1010", "debit": "1.0", "credit": "0.0"}
     # two uploads of the same figures produce different files
     assert M.group_csv(rows, source="TBU-00001") != M.group_csv(rows, source="TBU-00002")
 

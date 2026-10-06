@@ -33,6 +33,8 @@ ROLES = ("EPM Admin", "Entity Accountant", "System Manager")
 CHART = {
     "1010": {"main_account": "1010", "is_group": 0, "is_posting": 1},
     "2010": {"main_account": "2010", "is_group": 0, "is_posting": 1},
+    # konsol#180-5: files of three and four lines
+    "3010": {"main_account": "3010", "is_group": 0, "is_posting": 1},
     "4010": {"main_account": "4010", "is_group": 0, "is_posting": 1},
     "4000": {"main_account": "4000", "is_group": 1, "is_posting": 0},
 }

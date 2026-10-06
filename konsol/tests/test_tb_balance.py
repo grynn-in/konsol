@@ -551,5 +551,5 @@ def test_a_stored_file_with_extra_decimals_still_reads_and_compares():
     view = _by_path("tb_view_model_for_balance", os.path.join(_APP, "close", "tb_view_model.py"))
     result = view.compare(rows, rows, "Period movement", "Period movement", "P01")
     by_account = {r["account"]: r for r in result["rows"]}
-    assert by_account["1010"]["current"] == Decimal("0.6666"), by_account
+    assert by_account["1010"]["current"] == 0.6666, by_account     # summed exactly, sent as a number
     assert by_account["2010"]["change"] == 0, by_account

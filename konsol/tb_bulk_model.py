@@ -34,10 +34,10 @@ there is no default that does not guess.
 """
 import csv
 import io
-import math
+from decimal import Decimal
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
-from konsol.tb_balance_model import currency_and_balance_problems
+from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, read_amount
 from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP
 from konsol.tb_dimension_model import accepted_dimension_columns, dimension_problems, is_dimension_column
 
@@ -95,22 +95,22 @@ def _header_name(value):
 
 
 def _amount(value, what, lineno, errors):
-    if value is None or cell(value) == "":
-        return 0.0
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        number = float(value)
-    else:
-        try:
-            number = float(cell(value))
-        except ValueError:
-            errors.append(f"Line {lineno}: {what} must be a number (got {cell(value)!r})")
-            return 0.0
-    if not math.isfinite(number):
+    """The cell's amount, exactly as written (konsol#180-5): read_amount, the
+    reader every intake uses. An xlsx float is read at its repr. Nothing is
+    rounded; a line with more places than its currency has is refused later,
+    by name, when the currency is known (check_group)."""
+    try:
+        return read_amount(value)
+    except NotFinite:
         errors.append(f"Line {lineno}: {what} must be a finite number (got {cell(value)!r})")
-        return 0.0
-    # Cents, exactly as a single submission rounds them, so what is checked
-    # here is what lands.
-    return round(number, 2)
+    except ValueError:
+        errors.append(f"Line {lineno}: {what} must be a number (got {cell(value)!r})")
+    return Decimal(0)
+
+
+def _written(value):
+    """An amount in plain notation, exactly (1E+2 is written 100)."""
+    return format(read_amount(value), "f")
 
 
 def _whole(value, what, lineno, errors):
@@ -331,7 +331,9 @@ def group_csv(rows, source=None):
                     + ([BASIS] if basis else []) + (["source_upload"] if source else [])
                     + dim_names)
     for r in rows:
-        writer.writerow([r["main_account"], f"{r['debit']:.2f}", f"{r['credit']:.2f}", r.get(CURRENCY, ""),
+        # Exactly as read, never rounded (konsol#180-5): the load feeds this
+        # file back through parse_tb_csv, which must see the same amounts.
+        writer.writerow([r["main_account"], _written(r["debit"]), _written(r["credit"]), r.get(CURRENCY, ""),
                          r.get("description", ""),
                          r.get(PARTNER, "")] + ([r.get(BASIS, "")] if basis else [])
                         + ([source] if source else [])
@@ -363,8 +365,9 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
 
     `minor_unit` is that Functional Currency's ``ISO Currency.minor_unit`` as
     stored (None when there is none). It has no default either (konsol#180):
-    once the currency is good, debits must equal credits exactly when each
-    total is rounded to it (konsol.tb_balance_model, the rule validate() applies).
+    once the currency is good, no line may have more decimal places than it
+    (#180-5) and debits must equal credits exactly (konsol.tb_balance_model,
+    the rule validate() applies).
     """
     entity, year, period_no = key
     errors = []
@@ -390,8 +393,9 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
         errors.extend(currency_and_balance_problems(entity, functional_currency, minor_unit, rows))
     return {
         "entity": entity, "fiscal_year": year, "fiscal_period": period_no, "rows": len(rows),
-        "total_debit": round(sum(r["debit"] for r in rows), 2),
-        "total_credit": round(sum(r["credit"] for r in rows), 2),
+        # float: the report is stored with json.dumps; the rows stay exact.
+        "total_debit": float(sum(read_amount(r["debit"]) for r in rows)),
+        "total_credit": float(sum(read_amount(r["credit"]) for r in rows)),
         "errors": errors, "ok": not errors, "existing": existing,
         "warnings": list(warnings), "partnerless_ic_rows": partnerless_ic_rows,
     }

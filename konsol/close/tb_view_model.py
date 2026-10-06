@@ -42,12 +42,19 @@ def _check_basis(basis):
             % (basis, ", ".join(_basis.AMOUNT_BASES)))
 
 
+def _number(value):
+    """A net amount for the screen: float, or None for none."""
+    return None if value is None else float(value)
+
+
 def _net_by_key(rows):
     """{(account, partner): debit - credit}; repeated keys are summed."""
     out = {}
     for row in rows:
         key = (row["main_account"], row.get(PARTNER) or "")
-        out[key] = out.get(key, 0.0) + (row.get("debit") or 0.0) - (row.get("credit") or 0.0)
+        # Rows are exact Decimals since konsol#180-5 (floats in older callers):
+        # start from int 0, which adds to either without a TypeError.
+        out[key] = out.get(key, 0) + (row.get("debit") or 0) - (row.get("credit") or 0)
     return out
 
 
@@ -93,7 +100,8 @@ def compare(current_rows, previous_rows, current_basis, previous_basis, previous
         change = c - p if comparable and c is not None and p is not None else None
         rows.append({
             "account": account, "partner": partner, "is_ic": bool(partner),
-            "current": c, "previous": p, "change": change,
+            # Summed exactly, handed to the screen as numbers (JSON floats).
+            "current": _number(c), "previous": _number(p), "change": _number(change),
         })
     return {"rows": rows, "basis_note": basis_note,
             "previous_note": previous_note, "previous_code": previous_code}

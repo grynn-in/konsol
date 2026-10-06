@@ -1,53 +1,124 @@
 """A trial balance balances exactly in its declared currency (konsol#180). Pure; host-tested.
 
 Decided by Deepak Pai, 5 Oct 2026 (option #180-1): debits must equal credits
-once sum(debit) and sum(credit) are EACH rounded to the minor unit of the trial
-balance's declared currency, ``ISO Currency.minor_unit`` (the ISO 4217
-exponent: 0 for JPY, 2 for EUR, 3 for KWD). The currency is the one the file
-declares under konsol#252 (konsol.tb_currency_model). There is no tolerance to
-configure and none to default: a trial balance exported from a ledger
-balances exactly, and an imbalance is a defect to refuse, not a margin to
-allow. Rejected: #180-2 (a required per-group tolerance), #180-3 (relative
-with a floor), #180-4 (a per-Entity tolerance); each lets a declared amount of
-imbalance through.
+in the minor unit of the trial balance's declared currency,
+``ISO Currency.minor_unit`` (the ISO 4217 exponent: 0 for JPY, 2 for EUR, 3
+for KWD). The currency is the one the file declares under konsol#252
+(konsol.tb_currency_model). There is no tolerance to configure and none to
+default: a trial balance exported from a ledger balances exactly, and an
+imbalance is a defect to refuse, not a margin to allow. Rejected: #180-2 (a
+required per-group tolerance), #180-3 (relative with a floor), #180-4 (a
+per-Entity tolerance); each lets a declared amount of imbalance through.
 
-Accepted trade-off: an ERP export that rounds lines separately is refused
-until the export is fixed.
+Decided by Deepak Pai, 6 Oct 2026 (option #180-5): lines are never rounded.
+Each amount is read exactly as written (``read_amount``), and a line with more
+decimal places than its currency's minor unit is refused, naming the line
+("Line 4: debit 0.3333 has 4 decimal places; EUR has 2."). Rejected: #180-6
+(round lines to cents, as the parsers did: it altered amounts silently and was
+wrong for 3-decimal currencies) and #180-7 (round lines half up to the
+currency's places: it still alters the data). Once every line is within the
+minor unit the totals are exact in it, so nothing is rounded anywhere.
 
-The rule:
+Accepted trade-offs: an ERP export that rounds lines separately is refused
+until the export is fixed (#180-1), and so is one with more decimals than its
+currency allows (#180-5).
 
-- the totals are exact decimals, never float sums (ten 0.05 yen are 0.50
-  yen and round to 1; in floats they are 0.49999999999999994 and round to 0);
-- each total is rounded half up (``ROUND_HALF_UP``, the convention the other
-  money models here use) to the minor unit, then the two are compared for
-  equality;
+The rule, in order:
+
 - a minor unit that is not a whole number of places (None, blank, negative,
   fractional, text) is refused naming the currency. It is never taken as 2:
-  a silent default would judge JPY in cents and KWD to the wrong place.
+  a silent default would judge JPY in cents and KWD to the wrong place;
+- each line's debit and credit may have at most ``minor_unit`` decimal places.
+  Trailing zeros are not places: 1.2300 is 1.23, two places, and EUR accepts
+  it; 100.00 is a whole number and JPY accepts it. Only a non-zero digit past
+  the currency's places is precision the currency does not have. When a line
+  is refused the balance is not judged: it cannot be stated in a currency the
+  lines are not in;
+- the totals are exact decimals, never float sums, and must be equal.
 
 The order (``currency_and_balance_problems``): the declared currency is judged
-first, and the balance only when the currency is good, because the balance
-cannot be judged without a valid currency. A file declaring the wrong currency
-reports that, not a misleading balance sentence.
+first, then the lines and the balance in it, because neither can be judged
+without a valid currency. A file declaring the wrong currency reports that,
+not a misleading sentence about decimals or the balance.
 
 Every intake calls ``currency_and_balance_problems``, so none can accept what
 another refuses: the Trial Balance Submission's validate() (Desk, and the bulk
 load, which inserts one submission per entity-period), the bulk check
-(tb_bulk_model.check_group) and the close app's check_tb / submit_tb.
+(tb_bulk_model.check_group) and the close app's check_tb / submit_tb. Every
+parser reads its amounts with ``read_amount``. Stored reads (a file that
+already landed) are read the same way and never judged.
 
 Journals keep their own rule (konsol/close/journal_model.py, Problems P7b);
 this module does not touch them.
 """
-from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, ROUND_HALF_UP, Decimal, localcontext
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Decimal, InvalidOperation, localcontext
 
 from konsol.tb_currency_model import COLUMN as CURRENCY, currency_problems, declared_currency
 
 
-#: The most digits a rounded total may need. Decimal's default context holds
-#: 28, so 1e26 rounded to cents raised InvalidOperation (konsol#180 review). The
-#: largest float amount, 1.8e308, needs 312 at 2 places; a total beyond this
-#: (only an absurd Minor Unit gets there) is refused by name, never attempted.
+#: The most digits a total, written out in the minor unit, may need. Decimal's
+#: default context holds 28, so 1e26 in cents raised InvalidOperation
+#: (konsol#180 review). The largest float amount, 1.8e308, needs 312 at 2
+#: places; a total beyond this (only an absurd Minor Unit gets there) is
+#: refused by name, never attempted.
 MAX_DIGITS = 1000
+
+
+class NotFinite(ValueError):
+    """An amount that is a number but not a finite one (NaN, Infinity)."""
+
+
+def read_amount(value):
+    """A cell's amount as an exact Decimal, exactly as written (konsol#180-5).
+
+    Text is read as written, surrounding spaces stripped: "0.3333" stays
+    0.3333 and "1.2300" keeps its zeros. A float (an xlsx cell) is read at its
+    shortest repr, the number the sheet shows: 0.1 is 0.1, never its binary
+    value 0.1000000000000000055…. None and blank are zero. Raises ValueError
+    for anything that is not a number (a bool is not one) and NotFinite for
+    NaN or Infinity. Nothing is rounded.
+    """
+    if value is None:
+        return Decimal(0)
+    if isinstance(value, bool):
+        raise ValueError(f"{value!r} is not a number")
+    if isinstance(value, Decimal):
+        amount = value
+    elif isinstance(value, float):
+        amount = Decimal(repr(value))
+    elif isinstance(value, int):
+        amount = Decimal(value)
+    else:
+        text = str(value).strip()
+        if not text:
+            return Decimal(0)
+        try:
+            amount = Decimal(text)
+        except InvalidOperation:
+            raise ValueError(f"{text!r} is not a number") from None
+    if not amount.is_finite():
+        raise NotFinite(f"{value!r} is not a finite number")
+    return amount
+
+
+def decimal_places(amount):
+    """The decimal places ``amount`` really has: trailing zeros do not count
+    (1.2300 has 2, 100.00 has 0). Exact; never rounds."""
+    _, digits, exponent = amount.as_tuple()
+    if exponent >= 0:
+        return 0
+    places, end = -exponent, len(digits)
+    while places and end and digits[end - 1] == 0:
+        places, end = places - 1, end - 1
+    return places
+
+
+def _written(amount):
+    """The amount as the file wrote it, in plain notation unless that would be
+    enormous (an exponent beyond MAX_DIGITS)."""
+    if amount.adjusted() > MAX_DIGITS or amount.as_tuple().exponent < -MAX_DIGITS:
+        return str(amount)
+    return format(amount, "f")
 
 
 def _valid_minor_unit(minor_unit):
@@ -55,23 +126,32 @@ def _valid_minor_unit(minor_unit):
     return isinstance(minor_unit, int) and not isinstance(minor_unit, bool) and minor_unit >= 0
 
 
-def _amount(value):
-    """A row amount as an exact Decimal. A float is taken at its shortest repr,
-    which is the number the file gave (the parsers round to cents first)."""
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, float):
-        return Decimal(repr(value))
-    return Decimal(value or 0)
-
-
 def _places(minor_unit):
     return f"{minor_unit} decimal place{'' if minor_unit == 1 else 's'}"
 
 
+def place_problems(currency, minor_unit, rows):
+    """konsol#180-5: one sentence per amount with more decimal places than
+    ``currency`` has, naming its line (or its account when the row carries no
+    line). ``minor_unit`` must already be valid."""
+    problems = []
+    for row in rows:
+        line = row.get("line")
+        where = f"Line {line}" if line is not None else f"Account {row.get('main_account', '?')}"
+        for column in ("debit", "credit"):
+            amount = read_amount(row.get(column))
+            places = decimal_places(amount)
+            if places > minor_unit:
+                problems.append(f"{where}: {column} {_written(amount)} has "
+                                f"{_places(places)}; {currency} has {minor_unit}.")
+    return problems
+
+
 def balance_problems(currency, minor_unit, rows):
     """Sentences saying why these rows do not balance in ``currency``; empty
-    means they balance exactly.
+    means they balance exactly. A line with more decimal places than the
+    currency has is refused by name first (``place_problems``), and then the
+    balance is not judged.
 
     ``currency`` is the declared ISO code, ``minor_unit`` its
     ``ISO Currency.minor_unit`` as stored (None when there is none). ``rows``
@@ -85,35 +165,38 @@ def balance_problems(currency, minor_unit, rows):
             f"be judged. Set its Minor Unit to the ISO 4217 number of decimal places for "
             f"{currency}, then submit again."
         ]
+    problems = place_problems(currency, minor_unit, rows)
+    if problems:
+        return problems
     with localcontext() as ctx:
         # Exact sums: addition at the largest precision allocates only the
         # digits the amounts themselves have (konsol#180 review).
         ctx.prec, ctx.Emax, ctx.Emin = MAX_PREC, MAX_EMAX, MIN_EMIN
-        debit = sum((_amount(r["debit"]) for r in rows), Decimal(0))
-        credit = sum((_amount(r["credit"]) for r in rows), Decimal(0))
-    # Rounding to the minor unit needs every digit left of the point, the
-    # minor unit's places, and one for a carry.
+        debit = sum((read_amount(r.get("debit")) for r in rows), Decimal(0))
+        credit = sum((read_amount(r.get("credit")) for r in rows), Decimal(0))
+    # Written out in the minor unit: every digit left of the point, the minor
+    # unit's places, and one for the sign's side of a difference.
     needed = max(debit.adjusted(), credit.adjusted(), 0) + 1 + minor_unit + 1
     if needed > MAX_DIGITS:
         return [
-            f"The totals of this trial balance cannot be rounded to the minor unit of {currency} "
-            f"({_places(minor_unit)}): that needs {needed} digits, more than {MAX_DIGITS}. "
-            f"Check the amounts and ISO Currency {currency}'s Minor Unit."
+            f"The totals of this trial balance cannot be written out to the minor unit of "
+            f"{currency} ({_places(minor_unit)}): that needs {needed} digits, more than "
+            f"{MAX_DIGITS}. Check the amounts and ISO Currency {currency}'s Minor Unit."
         ]
+    if debit == credit:
+        return []
     with localcontext() as ctx:
+        # Exact, not a rounding: every line is within the minor unit, so the
+        # totals are too, and quantize only writes out the places.
         ctx.prec, ctx.Emax, ctx.Emin = needed, MAX_EMAX, MIN_EMIN
         unit = Decimal(1).scaleb(-minor_unit)
-        debit = debit.quantize(unit, ROUND_HALF_UP)
-        credit = credit.quantize(unit, ROUND_HALF_UP)
-        if debit == credit:
-            return []
+        debit, credit = debit.quantize(unit), credit.quantize(unit)
         heavier = "debits exceed credits" if debit > credit else "credits exceed debits"
         difference = abs(debit - credit)
     return [
         f"Debits ({debit:,} {currency}) do not equal credits ({credit:,} {currency}): "
-        f"{heavier} by {difference:,} {currency}. A trial balance must balance "
-        f"exactly once each total is rounded to the minor unit of {currency} "
-        f"({_places(minor_unit)})."
+        f"{heavier} by {difference:,} {currency}. A trial balance must balance exactly in "
+        f"{currency} ({_places(minor_unit)})."
     ]
 
 

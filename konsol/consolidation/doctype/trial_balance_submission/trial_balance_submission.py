@@ -47,7 +47,6 @@ import csv
 import importlib.util
 import io
 import json
-import math
 import os
 import uuid
 
@@ -59,7 +58,7 @@ from konsol.period_status import assert_open, assert_postable
 from konsol.tb_basis_model import (
     ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, basis_problems, canonical,
 )
-from konsol.tb_balance_model import currency_and_balance_problems
+from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, read_amount
 from konsol.tb_currency_model import (
     COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, declared_currency,
 )
@@ -106,7 +105,10 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
     """Parse trial-balance CSV text into row dicts. Pure; host-testable.
 
     Returns a list of {main_account, debit, credit, currency, description,
-    partner_data_area_id, amount_basis, line}; the partner and the basis are
+    partner_data_area_id, amount_basis, line}; debit and credit are exact
+    Decimals, as written (konsol#180-5: never rounded; a line with more places
+    than its currency has is refused by konsol.tb_balance_model, which needs
+    the currency first). The partner and the basis are
     '' when the file has no such column or the cell is blank. The currency
     column is required (konsol#252) and returned as written, stripped:
     currency_problems() judges it, since a blank or a mismatch is a refusal
@@ -231,31 +233,29 @@ def parse_tb_csv(text, declared_dimensions=(), *, stored=False):
         account = item.get("main_account", "")
         if not account:
             raise ValueError(f"Line {lineno}: main_account is blank")
+        # konsol#180-5 (Deepak Pai, 6 Oct 2026): each amount is read exactly
+        # as written and never rounded. A line with more decimal places than
+        # the declared currency has is refused by name, by
+        # konsol.tb_balance_model, once the currency is known. NaN and
+        # Infinity are refused here: NaN sails through every comparison, so an
+        # unbalanced file would validate and land NaN in the warehouse.
         try:
-            debit = float(item.get("debit") or 0)
-            credit = float(item.get("credit") or 0)
+            debit = read_amount(item.get("debit"))
+            credit = read_amount(item.get("credit"))
+        except NotFinite:
+            raise ValueError(
+                f"Line {lineno}: debit/credit must be finite numbers "
+                f"(got {item.get('debit')!r} / {item.get('credit')!r})"
+            )
         except ValueError:
             raise ValueError(
                 f"Line {lineno}: debit/credit must be numbers "
                 f"(got {item.get('debit')!r} / {item.get('credit')!r})"
             )
-        # float() happily accepts 'nan' and 'inf', and NaN then sails through
-        # every comparison in validate_tb_rows (all NaN comparisons are False),
-        # so an arbitrarily unbalanced file would validate and land NaN in the
-        # warehouse. Refuse non-finite values outright.
-        if not (math.isfinite(debit) and math.isfinite(credit)):
-            raise ValueError(
-                f"Line {lineno}: debit/credit must be finite numbers "
-                f"(got {item.get('debit')!r} / {item.get('credit')!r})"
-            )
-        # Round to cents HERE so the amounts validated, landed, and cast by
-        # bronze (Decimal(38,2)) are all the same numbers — a file balanced
-        # only at 3+ decimals must fail validation, not drift past it and
-        # unbalance later in the warehouse.
         rows.append({
             "main_account": account,
-            "debit": round(debit, 2),
-            "credit": round(credit, 2),
+            "debit": debit,
+            "credit": credit,
             CURRENCY: item.get(CURRENCY, ""),
             "description": item.get("description", ""),
             PARTNER: item.get(PARTNER, ""),
@@ -705,8 +705,9 @@ class TrialBalanceSubmission(Document):
         ]))
         # konsol#252: the file declares its currency and it must be the
         # Entity's Functional Currency. An entity without one is refused, not
-        # skipped. konsol#180: then, and only then, debits must equal credits
-        # exactly once each total is rounded to that currency's minor unit.
+        # skipped. konsol#180: then, and only then, no line may have more
+        # decimal places than that currency's minor unit (#180-5), and debits
+        # must equal credits exactly (#180-1).
         # The bulk upload runs the same rule per entity-period
         # (tb_bulk_model.check_group) and the close app's check and submit
         # (konsol.close.tb_api) before anything is written.
@@ -716,8 +717,9 @@ class TrialBalanceSubmission(Document):
         declared = [(r.get("line"), r[CURRENCY]) for r in rows]
 
         self.row_count = len(rows)
-        self.total_debit = round(sum(r["debit"] for r in rows), 2)
-        self.total_credit = round(sum(r["credit"] for r in rows), 2)
+        # Float fields shown to 2 places; the rows are exact (konsol#180-5).
+        self.total_debit = float(sum(r["debit"] for r in rows))
+        self.total_credit = float(sum(r["credit"] for r in rows))
         if errors:
             # No "Invalid" status is persisted: frappe.throw rolls the save
             # back, so a stored Invalid state could never exist anyway — the
