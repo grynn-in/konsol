@@ -169,6 +169,36 @@
       "description": "Why this run's sign-off no longer counts: a reopen of this or an earlier period, or a data change after the run (#305-R2b-3)."
     },
     {
+      "fieldname": "fingerprint_section",
+      "fieldtype": "Section Break",
+      "label": "Numbers Checked"
+    },
+    {
+      "fieldname": "numbers_fingerprint",
+      "fieldtype": "Data",
+      "label": "Numbers Fingerprint",
+      "read_only": 1,
+      "description": "Fingerprint of the consolidated numbers up to this period when the checks started (konsol#338). A completed build that changes it voids this run's sign-off."
+    },
+    {
+      "fieldname": "fingerprint_as_of",
+      "fieldtype": "Datetime",
+      "label": "Fingerprint As Of",
+      "read_only": 1,
+      "description": "When the latest completed build before this run finished: the build whose numbers the fingerprint covers."
+    },
+    {
+      "fieldname": "col_break_fingerprint",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "fingerprint_error",
+      "fieldtype": "Small Text",
+      "label": "Fingerprint Error",
+      "read_only": 1,
+      "description": "Why this run has no fingerprint: the warehouse could not be read when it started. Such a run cannot be signed; run the checks again."
+    },
+    {
       "fieldname": "tab_timing",
       "fieldtype": "Tab Break",
       "label": "Timing"

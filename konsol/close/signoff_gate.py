@@ -345,7 +345,28 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     return assert_close_signed_off(*key)
 
 
-def _mark_latest_signed(affected, affected_by, entity=None):
+def latest_signed_runs(fields=()):
+    """{(fy, fp): run} — the latest signed terminal Assertion Run of each
+    period, the run ``_mark_latest_signed`` marks. ``fields`` adds columns
+    to name, fiscal_year and fiscal_period (konsol#338 reads
+    ``numbers_fingerprint``)."""
+    # Imported here: assertion_run imports this module's callers (A22).
+    from konsol.consolidation.doctype.assertion_run.assertion_run import (
+        SIGNED_STATES, TERMINAL_STATUSES)
+
+    latest = {}
+    for r in frappe.get_all(
+        "Assertion Run",
+        filters={"status": ["in", list(TERMINAL_STATUSES)],
+                 "signoff_status": ["in", list(SIGNED_STATES)]},
+        fields=["name", "fiscal_year", "fiscal_period"] + list(fields),
+        order_by="completed_at desc, creation desc", limit_page_length=0,
+    ):
+        latest.setdefault(_key(r["fiscal_year"], r["fiscal_period"]), r)
+    return latest
+
+
+def _mark_latest_signed(affected, affected_by, entity=None, detail=None):
     """Mark the latest signed terminal run of each period in ``affected``
     "Re-sign Needed" with ``affected_by``; return the marked run names. Each
     mark also records a ``signoff_voided`` Close Event in the caller's own
@@ -354,25 +375,16 @@ def _mark_latest_signed(affected, affected_by, entity=None):
     (S1, E2-6) scopes that event: a reopen names none (every later Regular
     period is affected, not one entity's data), while a data change caused
     by one entity's TB names it, so trail scoping can hide the void from a
-    reader without access to that entity."""
+    reader without access to that entity. ``detail`` (konsol#338) goes on
+    each event: a build's void names the build and both fingerprints."""
     # Imported here: assertion_run imports this module's callers (A22).
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
-        RE_SIGN_NEEDED, SIGNED_STATES, SIGNOFF_WRITER, TERMINAL_STATUSES, writing)
+        RE_SIGN_NEEDED, SIGNOFF_WRITER, writing)
     from konsol.close import close_event
 
     if not affected:
         return []
-    latest = {}
-    for r in frappe.get_all(
-        "Assertion Run",
-        filters={"status": ["in", list(TERMINAL_STATUSES)],
-                 "signoff_status": ["in", list(SIGNED_STATES)]},
-        fields=["name", "fiscal_year", "fiscal_period"],
-        order_by="completed_at desc, creation desc", limit_page_length=0,
-    ):
-        key = _key(r["fiscal_year"], r["fiscal_period"])
-        if key in affected:
-            latest.setdefault(key, r["name"])
+    latest = {key: r["name"] for key, r in latest_signed_runs().items() if key in affected}
 
     marked = []
     for key in sorted(latest):
@@ -388,7 +400,8 @@ def _mark_latest_signed(affected, affected_by, entity=None):
         # caller commits, :262-263 / :307-308 equivalents). A writer failure
         # propagates uncaught, same as T04's signed_off event (E10-P11).
         close_event.record("signoff_voided", run.fiscal_year, run.fiscal_period,
-                            "Assertion Run", name, reason=affected_by, entity=entity)
+                            "Assertion Run", name, reason=affected_by, entity=entity,
+                            detail=detail)
         marked.append(name)
     return marked
 
