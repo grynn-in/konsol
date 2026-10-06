@@ -14,7 +14,9 @@ bytes of an .xlsx with three sheets:
   heading's commentary text and byline.
 - **Drill**: every heading's drill rows in statement order, one line per
   account (a row with no accounts — CTA, outside scope, current-year
-  result, rounding — is one line), then the heading's total.
+  result, rounding — is one line; a row whose rounded account amounts do
+  not sum to it gets an ``ACCOUNT_ROUNDING`` line), then the heading's
+  total. The column foots to each heading's total.
 - **Journals**: the top-side journals behind each heading's "Top-side
   journals" drill row, with their basis (posted in this period).
 
@@ -32,6 +34,7 @@ Pure: no frappe and no konsol imports (openpyxl only).
 """
 import io
 from datetime import datetime
+from decimal import Decimal
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -62,6 +65,9 @@ NOT_LOADED = "not loaded"
 #: Negatives in brackets, as numbers.js ``amountText`` shows them.
 AMOUNT_FORMAT = "#,##0.00;(#,##0.00);0.00"
 
+#: The Drill sheet line that closes a row's account lines to the row amount.
+ACCOUNT_ROUNDING = "Rounding (accounts to row)"
+
 _INDENT = "    "
 _BOLD = Font(bold=True)
 _TITLE = Font(bold=True, size=14)
@@ -79,6 +85,10 @@ def _amount(value, what):
         raise ValueError(f"{what}: missing amount, never written as 0")
     value = float(value)
     return 0.0 if value == 0 else value
+
+
+def _cents(value):
+    return Decimal(str(value)).quantize(Decimal("0.01"))
 
 
 def _cell(line, field, comparison_note, what):
@@ -259,6 +269,15 @@ def _drill_sheets(drill_ws, journal_ws, statement, drills):
                         [section, code, name, layer, entity, account["main_account"],
                          account.get("account_name"), _amount(account["amount"], what)],
                         amount_cols=amount_col)
+                # Each account is rounded to cents on its own, so the lines
+                # can drift a few cents from their row (measured live 6 Oct:
+                # up to 0.14). Write the difference so the column foots.
+                drift = _cents(_amount(row["amount"], what)) - sum(
+                    (_cents(a["amount"]) for a in row["accounts"]), Decimal("0"))
+                if drift:
+                    drill_sheet.write(
+                        [section, code, name, layer, entity, None, ACCOUNT_ROUNDING,
+                         float(drift)], amount_cols=amount_col)
             else:
                 drill_sheet.write(
                     [section, code, name, layer, entity, None, None,

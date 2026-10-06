@@ -531,13 +531,15 @@ def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
 
 
 def _filename(period, group):
-    """``numbers-FY2025P07-G1.xlsx``: the period code and group, with any
-    character outside ``[A-Za-z0-9_-]`` replaced by ``_`` (a group name is
-    free text; a header value must not carry quotes or separators)."""
+    """``numbers-FY2025P07-G1.xlsx``: the fiscal year and period (never the
+    ``period_code``, which live is "P07" alone, measured 6 Oct) and the
+    group, any character outside ``[A-Za-z0-9_-]`` replaced by ``_`` (a
+    group name is free text; a header value must not carry quotes or
+    separators)."""
     import re
 
-    safe = lambda text: re.sub(r"[^A-Za-z0-9_-]", "_", str(text))  # noqa: E731
-    return "numbers-%s-%s.xlsx" % (safe(period.get("code")), safe(group))
+    group = re.sub(r"[^A-Za-z0-9_-]", "_", str(group))
+    return "numbers-FY%dP%02d-%s.xlsx" % (period["fiscal_year"], period["fiscal_period"], group)
 
 
 def _statement_headings(stmt):
