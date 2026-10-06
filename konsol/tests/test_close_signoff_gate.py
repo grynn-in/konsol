@@ -207,6 +207,7 @@ def _load(site):
 
     def get_single_value(doctype, field):
         assert doctype == "Close Settings", doctype
+        site.__dict__.setdefault("single_reads", []).append(field)
         return site.settings.get(field)
 
     frappe.throw = throw
@@ -299,11 +300,19 @@ def _load(site):
     # gate), so the real module never runs against this fake frappe.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
 
-    def rule_gap(fiscal_year, fiscal_period):
+    def rule_gap(fiscal_year, fiscal_period, reads=None):
         site.ic_rule_gap_calls.append((fiscal_year, fiscal_period))
+        site.__dict__.setdefault("ic_rule_gap_reads", []).append(reads)
         return site.ic_rule_gap
 
+    def open_reads():
+        # S9: the shape of the real ic_balance_api.open_reads (its own tests
+        # count its reads); one entry per call.
+        site.__dict__.setdefault("ic_open_reads", []).append(1)
+        return {"keys": frozenset(), "balances": [], "rules": []}
+
     ic_balance_api.rule_gap = rule_gap
+    ic_balance_api.open_reads = open_reads
     close.ic_balance_api = ic_balance_api
 
     # W5-2 (8.4): a stub `konsol.close.statement_api`, so signoff_gate's lazy
@@ -1799,3 +1808,54 @@ def test_statement_commentary_tolerance_and_rule_gaps_keep_their_order():
     codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
     assert codes == ["statement_accounts_undeclared", "commentary_threshold_undeclared",
                      "ic_tolerance_undeclared", "ic_unrealized_profit_rule_undeclared"], codes
+
+
+# --- review-w5 S9: a request reads the shared settings once, not per period ----
+
+
+def _session(site, run):
+    """``run(module)`` with the stub modules installed, so several gate calls
+    share one request (one stub site)."""
+    module, frappe, mods, _ps = _load(site)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        return run(module)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+_COMMENTARY_FIELDS = ["commentary_threshold_amount", "commentary_threshold_combine",
+                      "commentary_threshold_percent"]
+
+
+def test_shared_reads_serve_every_open_period_with_one_read_each():
+    site = _Site()  # P09-P12 Open
+    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+
+    def run(gate):
+        shared = gate.shared_reads()
+        return shared, [gate.sign_off_problems(2025, fp, shared) for fp in (9, 10, 11, 12)]
+
+    shared, results = _session(site, run)
+    commentary = sorted(f for f in site.single_reads if f.startswith("commentary_threshold_"))
+    assert commentary == _COMMENTARY_FIELDS, commentary
+    assert site.ic_open_reads == [1]
+    assert site.ic_rule_gap_reads == [shared["ic_balances"]] * 4
+    for problems in results:
+        assert [g["code"] for g in problems["config_gaps"]] == [
+            "ic_unrealized_profit_rule_undeclared"]
+
+
+def test_shared_reads_give_the_same_problems_as_a_lone_call():
+    site = _Site()
+    site.settings["commentary_threshold_amount"] = 0
+    site.ic_rule_gap = _real_rule_gap([_ZZ_BALANCE])
+    shared = _session(site, lambda gate: gate.sign_off_problems(2025, 9, gate.shared_reads()))
+    assert shared == _call(site, "sign_off_problems", 2025, 9)
+    assert [g["code"] for g in shared["config_gaps"]] == [
+        "commentary_threshold_undeclared", "ic_unrealized_profit_rule_undeclared"]

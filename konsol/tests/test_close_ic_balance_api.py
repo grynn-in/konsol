@@ -450,3 +450,49 @@ def test_open_rule_gap_none_when_covered():
     site = _Site()
     site.rules.append(_rule("R-FR", debit="FR01", credit="DE01"))
     assert _invoke(site, lambda api: api.open_rule_gap()) is None
+
+
+# --- review-w5 S9: one read per request, shared by every open period ---------------
+
+def _ic_reads(site):
+    return [r for r in site.reads if r[1] in ("IC Balance", "IC Elimination Rule")]
+
+
+def test_open_reads_serve_every_open_period_and_my_work_with_one_read_each():
+    site = _Site()
+    site.periods.append(_period(2025, 9, "Open"))
+    site.balances.append(_bal("ICB-ES01-DE01-2025-P8", "ES01", "DE01", fp=8))
+
+    def run(api):
+        reads = api.open_reads()
+        per_period = {fp: api.rule_gap(2025, fp, reads=reads) for fp in (7, 8, 9)}
+        return per_period, api.open_rule_gap(reads)
+
+    per_period, open_gap = _invoke(site, run)
+    assert [r[1] for r in _ic_reads(site)] == ["IC Balance", "IC Elimination Rule"]
+    # The same answers as the unshared readers give, read per call.
+    fresh = _Site()
+    fresh.periods, fresh.balances = site.periods, site.balances
+    for fp in (7, 8, 9):
+        assert per_period[fp] == _invoke(fresh, lambda api: api.rule_gap(2025, fp)), fp
+    assert open_gap == _invoke(fresh, lambda api: api.open_rule_gap())
+    assert per_period[9] is None and per_period[7]["pairs"]
+
+
+def test_open_reads_read_no_rule_without_a_balance():
+    site = _Site()
+    site.balances = []
+    reads = _invoke(site, lambda api: api.open_reads())
+    assert [r[1] for r in _ic_reads(site)] == ["IC Balance"]
+    assert _invoke(site, lambda api: api.open_rule_gap(reads)) is None
+
+
+def test_shared_reads_refuse_a_period_they_do_not_cover():
+    site = _Site()
+
+    def run(api):
+        reads = api.open_reads()
+        return api.rule_gap(2025, 6, reads=reads)  # P6 is Closed
+
+    with pytest.raises(ValueError, match="P06"):
+        _invoke(site, run)
