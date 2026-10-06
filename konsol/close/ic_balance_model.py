@@ -29,6 +29,8 @@ every row the caller reads is live in the warehouse.
 - ``draft_problems(...)``: a draft's own refusals, before any write.
 """
 
+import math
+
 RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
 RULE_TYPE = "unrealized_profit"
 WILDCARD = "*"
@@ -142,7 +144,8 @@ def visible(balances, allowed):
 
 def _amount_problem(value, label):
     number = _number(value)
-    if value in (None, "") or number is None:
+    # NaN and infinity are not amounts: "nan" < 0 is False (F51b, review S7).
+    if value in (None, "") or number is None or not math.isfinite(number):
         return "The %s must be a number." % label
     if number < 0:
         return "The %s cannot be negative." % label
