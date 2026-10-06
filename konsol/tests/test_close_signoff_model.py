@@ -1095,3 +1095,34 @@ def test_summary_requires_the_commentary_line():
         assert "commentary" in str(e)
     else:
         raise AssertionError("summary ran without the commentary line")
+
+
+# --- review-w5: the order gate and earlier periods name the year ---------------
+# The live period_code is "P12" alone: FY2024 P12 and FY2025 P12 share it.
+
+
+def test_order_gate_names_the_year_of_a_p12_across_the_year_boundary():
+    states = [_state(2024, 12, "Open", "Not signed off"),
+              _state(2025, 1, "Closed", "Re-sign Needed"),
+              _state(2025, 12, "Open", "Not signed off")]
+    res = M.order_problem(states, (2024, 12), (2026, 1))
+    assert res == {
+        "blocking": "FY2024 P12",
+        "periods": ["FY2024 P12", "FY2025 P01", "FY2025 P12"],
+        "message": "Sign off and close FY2024 P12 first",
+    }
+
+
+def test_re_sign_message_names_the_year():
+    states = [_state(2024, 12, "Closed", "Re-sign Needed"), _state(2025, 12, "Open", "Not signed off")]
+    res = M.order_problem(states, (2024, 12), (2025, 12))
+    assert res["message"] == "Re-sign FY2024 P12 first"
+
+
+def test_earlier_periods_name_the_year_of_each_p12():
+    previous = [_state(2025, 12, "Closed", "Signed Off"), _state(2024, 12, "Open", "Not signed off")]
+    s = _summary(run=_run(), previous=previous)
+    assert s["previous"] == [
+        {"code": "FY2024 P12", "status": "Open", "signoff": "Not signed off"},
+        {"code": "FY2025 P12", "status": "Closed", "signoff": "Signed Off"},
+    ]
