@@ -38,7 +38,9 @@ import math
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
 from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP, currency_problems
-from konsol.tb_dimension_model import accepted_dimension_columns, dimension_problems, is_dimension_column
+from konsol.tb_dimension_model import (
+    accepted_dimension_columns, dimension_header_help, dimension_problems, is_dimension_column,
+)
 
 PARTNER = "partner_data_area_id"
 REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", CURRENCY)
@@ -178,7 +180,7 @@ def split_table(table, declared_dimensions):
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} on line "
-            f"{head_line}. The header may be {HEADER_HELP}"
+            f"{head_line}. The header may be {HEADER_HELP}{dimension_header_help(accepted_dims)}"
         )
     problems.extend(dimension_problems([n for n in names if n not in accepted_dims], declared))
     if problems:

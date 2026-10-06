@@ -116,6 +116,15 @@ def is_flag_on(value):
 _is_on = is_flag_on
 
 
+def dimension_header_help(accepted):
+    """The header help's tail naming the dim_* columns this site accepts, or ''
+    when it accepts none. An admin whose file is refused for another column is
+    told which dimension columns would have been taken (konsol#255 A/B)."""
+    if not accepted:
+        return ""
+    return f", plus the dimension column(s) {', '.join(sorted(accepted))}"
+
+
 def accepted_dimension_columns(declared_rows):
     """The dim_* header names a trial-balance file may carry.
 

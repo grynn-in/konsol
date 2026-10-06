@@ -64,7 +64,8 @@ from konsol.tb_currency_model import (
 )
 from konsol.tb_dimension import declared_dimensions
 from konsol.tb_dimension_model import (
-    accepted_dimension_columns, dimension_problems, is_dimension_column,
+    accepted_dimension_columns, dimension_header_help, dimension_problems,
+    is_dimension_column,
 )
 
 RAW_TABLE = "epm_raw.trial_balance_submissions"
@@ -174,7 +175,7 @@ def parse_tb_csv(text, declared_dimensions, *, stored=False):
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} — the "
-            f"header may be {_HEADER_HELP}"
+            f"header may be {_HEADER_HELP}{dimension_header_help(accepted_dims)}"
         )
     problems.extend(dimension_problems([h for h in headers if h not in accepted_dims], declared))
     if problems and not stored:
