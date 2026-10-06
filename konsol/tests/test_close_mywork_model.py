@@ -846,3 +846,25 @@ def test_sent_back_items_period_missing_from_codes_raises():
 
 def test_sent_back_items_empty_rows_gives_no_items():
     assert M.sent_back_items([], M.CLOSE_LEAD, {}) == []
+
+
+# --- W5-2 (story 8.4): the commentary-threshold gap ---------------------------
+
+
+_COMMENTARY_GAP = CPM.commentary_threshold(0, 0, "")["gap"]
+
+
+def test_commentary_threshold_gap_is_one_blocking_item_after_the_statement_gap():
+    items = M.setup_gap_items(_facts(policy_gaps=[_STATEMENT_GAP, _COMMENTARY_GAP]))
+    assert [i["id"] for i in items] == ["gap:statement_accounts", "gap:commentary_threshold"]
+    item = items[1]
+    assert item["kind"] == "blocking"
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["since"] is None
+    assert item["detail"] == _COMMENTARY_GAP["message"]
+    assert item["title"] == "Commentary threshold not declared"
+
+
+def test_commentary_threshold_is_in_the_fixed_gap_order():
+    assert M.GAPS.index("commentary_threshold") == M.GAPS.index("statement_accounts") + 1

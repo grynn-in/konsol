@@ -117,6 +117,8 @@ class _Site:
         self.ic_calls = []
         self.ic_tolerance_gap = None
         self.statement_gap = None
+        #: W5-2 (8.4): the stubbed signoff_gate.commentary_gap() answer.
+        self.commentary_gap = None
         self.approvals_waiting = {"count": 0}
         self.approvals_calls = []
         self.approvals_error = None
@@ -268,6 +270,7 @@ def _call(site):
     # so N47's `signoff_gate.statement_gap()` call resolves to this stub
     # rather than the real frappe-bound function.
     signoff_gate.statement_gap = lambda: site.statement_gap
+    signoff_gate.commentary_gap = lambda: site.commentary_gap
     freshness_api = types.ModuleType("konsol.close.freshness_api")
     freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
                                                "pending": 0, "changed_since": [],
@@ -1146,3 +1149,31 @@ def test_statement_gap_none_gives_no_item():
         result = _call(site)
         assert _gap(result, "statement_accounts") is None, (roles, _ids(result))
         _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+# --- W5-2 (story 8.4): the commentary-threshold setup gap ---------------------
+#
+# signoff_gate.commentary_gap() is appended to policy_gaps for group personas
+# only, after the statement gap. The gap fed in is the REAL one
+# close_policy_model.commentary_threshold returns.
+
+
+def test_commentary_gap_reaches_the_group_personas():
+    gap = _model("close_policy_model").commentary_threshold(0, 0, "")["gap"]
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.commentary_gap = gap
+        result = _call(site)
+        item = _gap(result, "commentary_threshold")
+        assert item is not None, (roles, _ids(result))
+        assert item["detail"] == gap["message"], item
+        assert item["action"] == {"desk": "/app/close-settings"}, item
+        _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+def test_entity_accountant_never_sees_the_commentary_gap():
+    gap = _model("close_policy_model").commentary_threshold(0, 0, "")["gap"]
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.commentary_gap = gap
+    result = _call(site)
+    assert _gap(result, "commentary_threshold") is None, _ids(result)
