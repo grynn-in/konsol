@@ -1,0 +1,1 @@
+function s(t){setTimeout(t,0)}function i(t,o,{doc:n=document,urls:r=URL,defer:c=s}={}){if(typeof o!="string"||!o)throw new Error("No file name to save the download as.");const a=r.createObjectURL(t),e=n.createElement("a");e.href=a,e.download=o,n.body.appendChild(e),e.click(),e.remove(),c(()=>r.revokeObjectURL(a))}export{i as s};
