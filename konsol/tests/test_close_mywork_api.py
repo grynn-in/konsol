@@ -1302,3 +1302,14 @@ def test_entity_accountant_never_sees_the_commentary_gap():
     site.commentary_gap = gap
     result = _call(site)
     assert _gap(result, "commentary_threshold") is None, _ids(result)
+
+
+def test_period_items_name_the_year_not_the_bare_period_code():
+    """Live ``period_code`` is "P08" alone (the site rows here carry it): a
+    My work title and its period code name the fiscal year (konsol#305
+    review-w5, period_name)."""
+    site = _Site()
+    site.problems[(2025, 8)] = {"config_gaps": [], "order": None, "completeness": None}
+    item = next(i for i in _call(site)["items"] if i["id"] == "signoff:2025-08")
+    assert item["title"] == "Sign off FY2025 P08"
+    assert item["period"]["code"] == "FY2025 P08"

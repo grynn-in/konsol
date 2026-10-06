@@ -140,13 +140,13 @@ test("durationOptions: with no reversal choices, only 'none' is offered", () => 
 
 test("durationOptions: a reversal choice is offered as 'reverses' (U1, U9 — fed journalsView's output)", () => {
 	const view = journalsView(
-		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "FY26 P10" }] }),
+		payload({ reversal_choices: [{ fiscal_year: 2026, fiscal_period: 10, code: "P10" }] }),
 		NOW,
 		TZ,
 	);
 	const options = durationOptions(view);
 	assert.equal(options.length, 2);
-	assert.deepEqual(options[1], { kind: "reverses", fiscal_year: 2026, fiscal_period: 10, label: "Reverses in FY26 P10" });
+	assert.deepEqual(options[1], { kind: "reverses", fiscal_year: 2026, fiscal_period: 10, label: "Reverses in FY2026 P10" });
 });
 
 test("durationOptions: failure path, never a 'stays until reversed' option", () => {
@@ -712,4 +712,15 @@ test("U12: the reversing list is built even when the period has no journals of i
 	assert.equal(view.journals.length, 0);
 	assert.equal(view.reversingIn.length, 1);
 	assert.deepEqual(view.reversingIn[0].effectView, effectView(goldenReversing().effect));
+});
+
+// --- konsol#305 review-w5: "Reverses in" names the year, not the bare code ----
+
+test("durationOptions: a choice whose live code is 'P07' reads 'Reverses in FY2025 P07'", () => {
+	const view = journalsView(
+		payload({ reversal_choices: [{ fiscal_year: 2025, fiscal_period: 7, code: "P07" }] }),
+		NOW,
+		TZ,
+	);
+	assert.equal(durationOptions(view)[1].label, "Reverses in FY2025 P07");
 });

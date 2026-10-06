@@ -159,3 +159,11 @@ test("Period.vue offers Retry through LoadState on an error", () => {
   const tpl = template(read());
   assert.match(tpl, /@retry=/);
 });
+
+// --- konsol#305 review-w5: the header names the year (gridView.title) --------
+
+test("the header reads gridView's title, never the bare payload period.code", () => {
+  const src = fs.readFileSync(PERIOD, "utf8");
+  assert.doesNotMatch(src, /period\.code/);
+  assert.match(src, /<h1[^>]*>\{\{\s*title\s*\}\}<\/h1>/);
+});

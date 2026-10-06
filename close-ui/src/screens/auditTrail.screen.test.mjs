@@ -180,3 +180,11 @@ test("U11: each filter chip row is a role=group labelled by its visible name", (
     assert.match(src, new RegExp(`<span id="${id}"[^>]*>${name}</span>`), name);
   }
 });
+
+// --- konsol#305 review-w5: the header names the year (trailView.title) -------
+
+test("the header reads trailView's title, never the bare payload period.code", () => {
+  const src = read();
+  assert.doesNotMatch(src, /period\.code/);
+  assert.match(src, /<h1[^>]*>\{\{\s*title\s*\}\}<\/h1>/);
+});
