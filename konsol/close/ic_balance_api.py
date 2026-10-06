@@ -120,9 +120,14 @@ def get_ic_balances(fiscal_year, fiscal_period):
     }
 
 
-def _in_scope(selling_entity, buying_entity):
+def _in_scope(selling_entity, buying_entity, name=None):
+    """Refuse a pair with neither entity in scope. ``name``: a stored
+    balance, refused by the name the caller sent and never by its stored
+    pair (F51b, review S6: an out-of-scope balance tells nothing)."""
     allowed = allowed_entity_codes()
     if allowed is not None and selling_entity not in allowed and buying_entity not in allowed:
+        if name:
+            frappe.throw("You can see neither entity of %s." % name)
         frappe.throw("You can see neither entity of this pair (%s → %s)."
                      % (selling_entity, buying_entity))
 
@@ -175,10 +180,12 @@ def save_ic_balance(fiscal_year, fiscal_period, selling_entity, buying_entity, i
         doc.insert()
     else:
         doc = frappe.get_doc(IC_BALANCE, name)
+        # F51b (review S6): scope first, so an out-of-scope balance's state
+        # is never told to the caller.
+        _in_scope(doc.selling_entity, doc.buying_entity, name)
         if int(doc.docstatus) != 0:
             frappe.throw(f"{name} is {'approved' if int(doc.docstatus) == 1 else 'cancelled'}, "
                          "not a draft: a change is a cancel and an amendment (Desk).")
-        _in_scope(doc.selling_entity, doc.buying_entity)
         theirs = (doc.selling_entity, doc.buying_entity, int(doc.fiscal_year),
                   int(doc.fiscal_period))
         asked = (selling_entity, buying_entity, fy, fp)
