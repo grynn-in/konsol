@@ -474,3 +474,12 @@ def test_save_edit_forged_name_of_an_out_of_scope_balance_learns_nothing():
         assert "neither entity" in text, text
         for leak in ("approved", "cancelled", "not a draft", "own key", "UK01", "DE01"):
             assert leak not in text.replace(name, ""), (leak, text)
+
+
+def test_rule_gap_skips_a_balance_with_nothing_to_eliminate():
+    # F51b / review S3: dbt eliminates only ending_inventory_from_ic > 0.
+    site = _Site()
+    site.balances = [_bal("ICB-FR01-DE01-2025-P7", "FR01", "DE01", inventory=0.0)]
+    assert _invoke(site, lambda api: api.rule_gap(2025, 7)) is None
+    out = _get(site)
+    assert out["gap"] is None and out["balances"][0]["missing_rule"] is False

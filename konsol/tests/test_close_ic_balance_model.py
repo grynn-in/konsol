@@ -218,3 +218,30 @@ def test_draft_problems_refuse_non_finite_amounts():
         probs = M.draft_problems("UK01", "DE01", text, text, {"UK01", "DE01"})
         assert any("IC sales amount" in p and "must be a number" in p for p in probs), text
         assert any("ending inventory" in p and "must be a number" in p for p in probs), text
+
+
+# --- F51b / review S3: nothing to eliminate is no gap ----------------------------
+# dbt eliminates only where ``icb.ending_inventory_from_ic > 0``
+# (gold_ic_eliminations.sql, unrealized_profit_eliminations).
+
+def test_zero_or_negative_inventory_raises_no_gap():
+    for inventory in ("0", 0, 0.0, "-5"):
+        assert M.rule_gap([_bal(inventory=inventory)], []) is None, inventory
+
+
+def test_zero_inventory_pair_is_not_named_beside_an_uncovered_one():
+    gap = M.rule_gap([_bal("A", "UK01", "DE01", inventory="0"),
+                      _bal("B", "FR01", "DE01", inventory="1")], [])
+    assert gap["pairs"] == [{"selling_entity": "FR01", "buying_entity": "DE01"}]
+    assert "UK01" not in gap["message"]
+
+
+def test_unreadable_inventory_still_blocks():
+    # Not a number is not "nothing to eliminate": nothing is guessed.
+    for inventory in (None, "", "abc"):
+        assert M.rule_gap([_bal(inventory=inventory)], [])["code"] == M.RULE_UNDECLARED
+
+
+def test_zero_inventory_row_is_not_missing_a_rule():
+    [row] = M.balance_rows([_bal(inventory="0")], [])
+    assert row["rules"] == [] and row["missing_rule"] is False
