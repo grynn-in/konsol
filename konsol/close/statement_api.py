@@ -25,6 +25,11 @@ Numbers screen has already chosen one) and ``heading`` must be a
 Published heading (``is_group``) of the chart; either failing throws, as
 does an unknown group.
 
+``export_statement(fiscal_year, fiscal_period, consolidation_group=None)``
+(GET, story 8.5, decision #305-W5-3) sends the same statement and every
+heading's drill as a downloaded .xlsx (``statement_export_model``). A
+non-ok state is refused with its own message, never an empty file.
+
 Nothing here is ever a silent empty statement:
 
 - several root Consolidation Groups and none named -> ``state
@@ -61,7 +66,8 @@ and the chart is non-empty; otherwise 0.
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import ch_read, drill_model, signoff_gate, statement_model
+from konsol.close import (
+    ch_read, drill_model, signoff_gate, statement_export_model, statement_model)
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
 
@@ -328,6 +334,15 @@ def _drill_keys(period_rows, key, section):
 @frappe.whitelist(methods=["GET"])
 def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    return _statement(fiscal_year, fiscal_period, consolidation_group)[0]
+
+
+def _statement(fiscal_year, fiscal_period, consolidation_group):
+    """``(payload, reads)``: ``get_statement``'s payload, and — on ``ok``
+    only, else ``None`` — the reads it was built from (``key``,
+    ``period_rows``, ``accounts``, ``declared``, ``tb_rows``), so
+    ``export_statement`` drills every heading without reading them again.
+    The caller has already run ``frappe.only_for``."""
     key = _period_key(fiscal_year, fiscal_period)
     period_rows = fiscal_calendar.fiscal_period_rows()
     period_row = _find_period(key, period_rows)
@@ -386,7 +401,7 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
         "can_comment": can_comment,
     }
     if state != "ok":
-        return result
+        return result, None
 
     accounts = frappe.get_all(
         "Main Account", filters={"status": "Published"},
@@ -395,7 +410,7 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     if not accounts:
         result["state"] = "no_chart"
         result["message"] = "Publish the group chart (Main Account) first."
-        return result
+        return result, None
     accounts_map = {a["name"]: a for a in accounts}
 
     try:
@@ -407,7 +422,7 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
         result["state"] = "not_built" if ch_read.not_built(e) else "error"
         result["message"] = _error_message(e)
-        return result
+        return result, None
 
     try:
         stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
@@ -421,12 +436,14 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
         is_setup_gap = message.startswith(statement_model.STATEMENT_HEADING_SIDE_UNDECLARED)
         result["state"] = "setup_gap" if is_setup_gap else "error"
         result["message"] = message
-        return result
+        return result, None
 
     result["statement"] = stmt
     result["not_included"] = _not_included(key, entity_rows)
     result["commentary"] = _commentary(chosen, key)
-    return result
+    reads = {"key": key, "period_rows": period_rows, "accounts": accounts_map,
+             "declared": declared, "tb_rows": tb_rows}
+    return result, reads
 
 
 @frappe.whitelist(methods=["GET"])
@@ -511,3 +528,91 @@ def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
 
     result["drill"] = drill
     return result
+
+
+def _filename(period, group):
+    """``numbers-FY2025P07-G1.xlsx``: the fiscal year and period (never the
+    ``period_code``, which live is "P07" alone, measured 6 Oct) and the
+    group, any character outside ``[A-Za-z0-9_-]`` replaced by ``_`` (a
+    group name is free text; a header value must not carry quotes or
+    separators)."""
+    import re
+
+    group = re.sub(r"[^A-Za-z0-9_-]", "_", str(group))
+    return "numbers-FY%dP%02d-%s.xlsx" % (period["fiscal_year"], period["fiscal_period"], group)
+
+
+def _statement_headings(stmt):
+    return [line["heading"] for section in stmt["sections"]
+            for line in section["lines"] if line.get("kind") == "heading"]
+
+
+def _drill_reads(payload, reads):
+    """``(drill_rows, journal_rows)`` for EVERY statement heading at once:
+    ONE entity-grain read and ONE journals read over every Published leaf
+    under a heading (never one read per heading) — ``get_drill``'s own SQL,
+    with the CTA branch when the CTA heading is on the statement."""
+    key, accounts = reads["key"], reads["accounts"]
+    group = payload["consolidation_group"]
+    headings = _statement_headings(payload["statement"])
+    leaf_codes = sorted({code for heading in headings for code in _leaf_codes(heading, accounts)})
+    cta_heading = _heading_of(reads["declared"].get("cta_account"), accounts)
+    drill_sql = _DRILL_SQL_WITH_CTA if cta_heading in headings else _DRILL_SQL
+    accounts_param = _sql_array(leaf_codes)
+    drill_rows = [
+        _drill_row(r) for r in ch_read.rows(
+            drill_sql, {"group": group, "fy": key[0], "accounts": accounts_param})
+    ]
+    journal_rows = [
+        _journal_row(r) for r in ch_read.rows(
+            _DRILL_JOURNALS_SQL,
+            {"group": group, "fy": key[0], "fp": key[1], "accounts": accounts_param})
+    ]
+    return drill_rows, journal_rows
+
+
+def _all_drills(payload, reads, drill_rows, journal_rows):
+    """``{heading: drill_model.drill(...)}`` for every statement heading.
+    ``drill_model.drill`` keeps only its own heading's leaves (and the CTA
+    rows only for the CTA heading), so each heading is handed the shared
+    rows — what ``get_drill`` would read for it alone. Raises
+    ``ValueError`` on a drill/statement mismatch or a NULL amount."""
+    key, accounts, declared = reads["key"], reads["accounts"], reads["declared"]
+    stmt = payload["statement"]
+    allowed = allowed_entity_codes()
+    drills = {}
+    for heading in _statement_headings(stmt):
+        keys = _drill_keys(reads["period_rows"], key, accounts[heading].get("statement_section"))
+        drills[heading] = drill_model.drill(
+            drill_rows, journal_rows, accounts, heading, keys, declared, allowed,
+            _line_for_heading(stmt, heading))
+    return drills
+
+
+@frappe.whitelist(methods=["GET"])
+def export_statement(fiscal_year, fiscal_period, consolidation_group=None):
+    """The Numbers statement as a downloaded .xlsx (konsol#305 story 8.5,
+    decision #305-W5-3): ``get_statement``'s payload and every heading's
+    drill, written by ``statement_export_model.workbook``. Same roles and
+    entity scope as ``get_statement``/``get_drill``. A non-ok statement
+    (``choose_group``, ``no_chart``, ``not_built``, ``error``,
+    ``setup_gap``) or a failed drill is refused with the server's own
+    sentence — never an empty file. ClickHouse is read four times
+    (``get_statement``'s two, one drill read, one journals read), whatever
+    the number of headings."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    payload, reads = _statement(fiscal_year, fiscal_period, consolidation_group)
+    if payload["state"] != "ok":
+        frappe.throw(payload["message"])
+    try:
+        drill_rows, journal_rows = _drill_reads(payload, reads)
+    except Exception as e:  # noqa: BLE001 — a warehouse failure refuses, never a partial file
+        frappe.throw(_error_message(e))
+    try:
+        drills = _all_drills(payload, reads, drill_rows, journal_rows)
+    except ValueError as e:
+        frappe.throw(str(e))
+    content = statement_export_model.workbook(payload, drills)
+    frappe.response["type"] = "binary"
+    frappe.response["filename"] = _filename(payload["period"], payload["consolidation_group"])
+    frappe.response["filecontent"] = content

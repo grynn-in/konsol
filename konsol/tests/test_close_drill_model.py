@@ -410,3 +410,17 @@ def test_a_journal_row_carries_an_auto_reversal_tag_true_only_for_auto_reversal(
     topside_row = next(r for r in result["rows"] if r["label"] == "Top-side journals")
     tags = {j["journal_id"]: j["auto_reversal"] for j in topside_row["journals"]}
     assert tags == {"J-1": False, "J-P6": True}
+
+
+# --- a heading with no warehouse rows (konsol#305 8.5) ------------------------
+
+def test_a_heading_with_no_rows_drills_to_zero_with_no_rows():
+    """Found by the 8.5 export, which drills EVERY heading: a heading with
+    no balances made ``sum()`` over no rows return the int 0, and
+    ``_round`` raised AttributeError (a 500 from get_drill too)."""
+    rows = [_row("3200", -100.0, "entity", "ZZA")]
+    line = _statement_line(rows, "1")
+    assert line["current"] == 0.0
+    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line)
+    assert result["rows"] == []
+    assert result["total"] == 0.0

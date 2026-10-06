@@ -332,6 +332,8 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
+    site.response = {}
+    frappe.response = site.response
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
 
@@ -407,6 +409,7 @@ def _invoke(site, run):
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
+             "konsol.close.statement_export_model",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -428,6 +431,9 @@ def _invoke(site, run):
             "konsol.close.timefmt", os.path.join(CLOSE_DIR, "timefmt.py"))
         close.drill_model = _load_path(
             "konsol.close.drill_model", os.path.join(CLOSE_DIR, "drill_model.py"))
+        close.statement_export_model = _load_path(
+            "konsol.close.statement_export_model",
+            os.path.join(CLOSE_DIR, "statement_export_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:
@@ -861,3 +867,185 @@ def test_golden_drill_payload_matches_the_committed_fixture():
     with open(FIXTURE_DRILL_PY) as fh:
         expected = json.load(fh)
     assert result == expected
+
+
+# =============================================================================
+# export_statement (konsol#305 story 8.5, decision #305-W5-3): the Numbers
+# statement as a downloaded .xlsx — same roles and scoping as get_statement,
+# a non-ok state refused with the server's own sentence, never an empty
+# file. The workbook is opened back and checked against the REAL golden
+# get_statement payload (close_statement_payload.json).
+# =============================================================================
+
+def _export_site():
+    """``_Site`` (whose get_statement output IS the golden fixture), plus an
+    entity-grain drill read that agrees with its aggregate TB rows, and one
+    top-side journal: 1110 = 1695.10 (ZZA) + 40 (topside) = 1735.10."""
+    site = _Site()
+    site.drill_tb_rows = [
+        _drill_tb_row("1110", 1695.10, "entity", "ZZA"),
+        _drill_tb_row("1110", 40.0, "topside", "ZZA"),
+        _drill_tb_row("2100", -803.70, "entity", "ZZA"),
+        _drill_tb_row("3200", -684.90, "entity", "ZZA"),
+        _drill_tb_row("CTA", -5.07, "cta", "ZZA"),
+        _drill_tb_row("4100", -241.43, "entity", "ZZA"),
+    ]
+    site.journal_rows = [
+        _drill_journal_row("J-1", "1110", 40.0, "ZZA", "Reclass intercompany loan",
+                            "alice@example.com", "bob@example.com"),
+    ]
+    return site
+
+
+def _call_export(site, fy=2025, fp=7, group=None):
+    _invoke(site, lambda api: api.export_statement(fy, fp, group))
+    return site.response
+
+
+def _export_refusal(site, group=None, kind="ValidationError"):
+    with pytest.raises(Exception) as info:
+        _call_export(site, group=group)
+    assert type(info.value).__name__ == kind, repr(info.value)
+    assert "filecontent" not in site.response  # never an empty file
+    return info.value
+
+
+def _export_book(site, group=None):
+    import io
+    from openpyxl import load_workbook
+
+    response = _call_export(site, group=group)
+    return load_workbook(io.BytesIO(response["filecontent"]))
+
+
+def _golden():
+    with open(FIXTURE_PY) as fh:
+        return json.load(fh)
+
+
+def test_export_site_statement_is_the_golden_payload():
+    site = _export_site()
+    assert json.loads(json.dumps(_call(site))) == _golden()
+
+
+def test_export_is_a_binary_xlsx_named_for_the_period_and_group():
+    site = _export_site()
+    response = _call_export(site)
+    assert response["type"] == "binary"
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+    assert response["filecontent"][:2] == b"PK"  # a zip container
+
+
+def test_export_statement_sheet_matches_the_golden_payload():
+    golden = _golden()
+    book = _export_book(_export_site())
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    assert rows[0][0] == "Numbers · FY2025P07 · G1 · USD"
+    assert rows[1][0] == "Provisional"
+    assert rows[2][0] == golden["statement"]["legend"]
+    by_code = {r[1]: r for r in rows if r[1]}
+    for section in golden["statement"]["sections"]:
+        for line in section["lines"]:
+            if line["kind"] == "heading":
+                assert by_code[line["heading"]][0] == line["heading_name"]
+                assert by_code[line["heading"]][2] == line["current"]
+    assert by_code["4"][6] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][7].startswith(golden["commentary"]["4"]["by"] + " · ")
+
+
+def test_export_drill_sheet_totals_equal_every_golden_heading():
+    golden = _golden()
+    book = _export_book(_export_site())
+    rows = [list(r) for r in book["Drill"].iter_rows(values_only=True)]
+    totals = {r[1]: r[7] for r in rows if r[3] == "Total"}
+    expected = {line["heading"]: line["current"]
+                for section in golden["statement"]["sections"]
+                for line in section["lines"] if line["kind"] == "heading"}
+    assert totals == expected
+    journals = [list(r) for r in book["Journals"].iter_rows(values_only=True)]
+    assert journals[2][:5] == ["1", "ASSETS", "J-1", "Reclass intercompany loan", 40.0]
+
+
+def test_export_reads_clickhouse_four_times_whatever_the_heading_count():
+    site = _export_site()
+    _call_export(site)
+    assert len(site.ch_calls) == 4
+    for sql, _params in site.ch_calls:
+        assert "dim_" not in sql
+    site2 = _export_site()
+    for n in range(5, 9):
+        code = str(n)
+        site2.accounts[code] = {"name": code, "status": "Published", "account_name": "H%d" % n,
+                                "parent_account": None, "is_group": 1,
+                                "statement_section": "Balance Sheet", "lft": 100 + n,
+                                "normal_balance": "Debit"}
+    _call_export(site2)
+    assert len(site2.ch_calls) == 4
+
+
+def test_export_choose_group_is_refused_with_the_servers_sentence():
+    site = _export_site()
+    site.groups.append({"consolidation_group": "G2", "reporting_currency": "EUR"})
+    exc = _export_refusal(site)
+    assert str(exc) == "Choose a consolidation group."
+
+
+def test_export_setup_gap_is_refused_with_the_servers_sentence():
+    site = _export_site()
+    site.accounts["2"]["normal_balance"] = ""
+    expected = _call(site)["message"]
+    exc = _export_refusal(site)
+    assert str(exc) == expected
+    assert expected.startswith("statement_heading_side_undeclared")
+
+
+def test_export_not_built_and_error_are_refused_with_the_servers_sentence():
+    for error in (RuntimeError("Code: 60 (UNKNOWN_TABLE)"), RuntimeError("boom")):
+        site = _export_site()
+        site.ch_error = error
+        expected = _call(site)["message"]
+        exc = _export_refusal(site)
+        assert str(exc) == expected
+
+
+def test_export_no_chart_is_refused_with_the_servers_sentence():
+    site = _export_site()
+    site.accounts = {}
+    exc = _export_refusal(site)
+    assert str(exc) == "Publish the group chart (Main Account) first."
+
+
+def test_export_a_drill_that_disagrees_with_the_statement_is_refused():
+    site = _export_site()
+    site.drill_tb_rows[0] = _drill_tb_row("1110", 1.0, "entity", "ZZA")
+    exc = _export_refusal(site)
+    assert "does not match the statement" in str(exc)
+
+
+def test_export_entity_accountant_is_refused_by_only_for():
+    site = _export_site()
+    site.roles = {"EPM Entity Accountant"}
+    _export_refusal(site, kind="PermissionError")
+    assert site.ch_calls == []
+
+
+def test_export_scoped_caller_never_sees_hidden_entity_names():
+    site = _export_site()
+    site.drill_tb_rows.append(_drill_tb_row("1110", 0.0, "entity", "ZZB"))
+    site.allowed = ["ZZA"]
+    book = _export_book(site)
+    for sheet in book.worksheets:
+        for row in sheet.iter_rows(values_only=True):
+            assert not any(isinstance(v, str) and "ZZB" in v for v in row), (sheet.title, row)
+    layers = {r[3] for r in book["Drill"].iter_rows(values_only=True)}
+    assert "1 entities outside your scope" in layers
+
+
+def test_export_filename_names_the_fiscal_year_even_when_the_period_code_does_not():
+    """Measured live 6 Oct: the live period_code is "P07", so a name built
+    from it ("numbers-P07-ECL_GROUP.xlsx") lost the fiscal year."""
+    site = _export_site()
+    for row in site.periods:
+        row["period_code"] = "P%02d" % row["fiscal_period"]
+    response = _call_export(site, group="G1")
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
