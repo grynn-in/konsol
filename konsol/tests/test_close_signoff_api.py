@@ -32,6 +32,18 @@ API_PY = os.path.join(CLOSE_DIR, "signoff_api.py")
 # P05: signoff_gate.py now imports close_policy_model; loaded for real below
 # alongside signoff_model/period_model/timefmt (real, by path).
 
+def _real_reject_roles():
+    """assertion_run.REJECT_ROLES, read from its source (S12): the stub
+    module carries the real definition, not a copy."""
+    import ast
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_run", "assertion_run.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+    (value,) = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                and any(getattr(t, "id", None) == "REJECT_ROLES" for t in node.targets)]
+    return ast.literal_eval(value)
+
+
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 QUARTERS = {1: "Q1", 2: "Q1", 3: "Q1", 4: "Q2", 5: "Q2", 6: "Q2",
             7: "Q3", 8: "Q3", 9: "Q3", 10: "Q4", 11: "Q4", 12: "Q4"}
@@ -363,6 +375,7 @@ def _load(site):
 
     ar = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     ar.OVERRIDE_ROLES = {"System Manager", "EPM Admin"}
+    ar.REJECT_ROLES = _real_reject_roles()
     ar.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
     ar.SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
 
