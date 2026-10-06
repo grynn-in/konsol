@@ -584,3 +584,20 @@ test('signoff_rejected -> "Sign-off rejected", block, the run as item and the re
 	assert.equal(v.rows[0].item, "Assertion Run AR-0007");
 	assert.equal(v.rows[0].detail, 'Reason: "ZZA\'s TB is the draft"');
 });
+
+test("a rejected summary gives Rejected — <reason> (#305-W5-1)", () => {
+	const v = trailView(
+		payload([], {
+			summary: {
+				signoff: { state: "rejected", by: "lead@example.com", at: "2026-09-20T09:00:00+00:00", reason: "ZZA's TB is the draft" },
+				closed: null,
+				locked: null,
+				counts: counts(),
+			},
+		}),
+		NOW,
+		TZ
+	);
+	assert.equal(v.signedOff, "Rejected — ZZA's TB is the draft");
+	assert.equal(v.result, null);
+});

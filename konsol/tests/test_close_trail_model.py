@@ -205,3 +205,41 @@ def test_module_imports_no_frappe():
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith(("frappe", "konsol"))
             assert node.level == 0
+
+
+# --- summary: a rejected sign-off (konsol#305 story 9.4, #157, #305-W5-1) ------
+
+def _signed(name, at):
+    return _event(name, kind="signed_off", actor="dana", at=at,
+                  detail={"signoff_status": "Signed Off", "run_status": "Green"})
+
+
+def _rejected(name, at):
+    return _event(name, kind="signoff_rejected", actor="lead", reason="ZZA's TB is the draft",
+                  at=at, reference_doctype="Assertion Run", reference_name="AR-1",
+                  detail={"signoff_status": "Signed Off", "preparer": "ana"})
+
+
+def test_signoff_then_later_reject_gives_rejected_state():
+    events = [_signed("CE-0001", datetime.datetime(2026, 9, 30, 9, 0)),
+              _rejected("CE-0002", datetime.datetime(2026, 9, 30, 10, 0))]
+    assert M.summary(events)["signoff"] == {
+        "state": "rejected", "by": "lead", "at": events[1]["at"],
+        "reason": "ZZA's TB is the draft",
+    }
+
+
+def test_a_signature_after_the_reject_reads_signed_again():
+    events = [_signed("CE-0001", datetime.datetime(2026, 9, 30, 9, 0)),
+              _rejected("CE-0002", datetime.datetime(2026, 9, 30, 10, 0)),
+              _signed("CE-0003", datetime.datetime(2026, 9, 30, 11, 0))]
+    signoff = M.summary(events)["signoff"]
+    assert signoff["state"] == "signed" and signoff["at"] == events[2]["at"]
+
+
+def test_a_void_after_the_reject_reads_as_the_later_event():
+    events = [_signed("CE-0001", datetime.datetime(2026, 9, 30, 9, 0)),
+              _rejected("CE-0002", datetime.datetime(2026, 9, 30, 10, 0)),
+              _event("CE-0003", kind="signoff_voided", actor="admin", reason="data changed",
+                     at=datetime.datetime(2026, 9, 30, 11, 0))]
+    assert M.summary(events)["signoff"]["state"] == "voided"
