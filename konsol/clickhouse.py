@@ -975,6 +975,11 @@ def ensure_raw_tables():
 def ensure_reference_tables():
     """Create the write-through reference tables, and drop the retired columns.
 
+    Also adds the site's declared budget dimension columns to the two budget
+    input tables, which name none (konsol#287). That step reads the Dimension
+    registry, so it needs a site; outside one it is skipped with a warning,
+    like every other step here.
+
     Best-effort and idempotent: CREATE TABLE IF NOT EXISTS never touches an
     existing table, and an unreachable ClickHouse must not fail a migrate — the
     sync that follows reports its own failure. Each statement is guarded on its

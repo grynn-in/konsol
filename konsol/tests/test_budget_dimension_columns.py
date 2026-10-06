@@ -180,7 +180,9 @@ def _controller(fields):
     class Meta:
         @property
         def fields(self):
-            return [types.SimpleNamespace(fieldname=f) for f in [*standard, *sorted(fields)]]
+            return [types.SimpleNamespace(fieldname=f, fieldtype="Data")
+                    for f in [*standard, *sorted(fields)]] + [
+                types.SimpleNamespace(fieldname="dim_layout", fieldtype="Section Break")]
 
     meta = Meta()
     fake = types.ModuleType("frappe")
@@ -215,6 +217,12 @@ def test_the_field_map_follows_the_fields_when_the_sync_changes_them():
     assert "dim_product" not in module.BudgetAnnualInput.CH_FIELD_MAP
     fields.add("dim_product")   # the Custom Field sync provisioned it
     assert "dim_product" in module.BudgetAnnualInput.CH_FIELD_MAP
+
+
+def test_a_dim_named_field_that_is_not_data_is_not_a_dimension():
+    """The stub meta always carries a Section Break named dim_layout."""
+    module, _ = _controller({"dim_region"})
+    assert "dim_layout" not in module.BudgetAnnualInput.CH_FIELD_MAP
 
 
 def test_no_fixed_dimension_is_left_in_the_field_map():
@@ -301,7 +309,7 @@ def test_a_failing_budget_column_sync_does_not_fail_the_bootstrap():
 PATCH = os.path.join(APP_DIR, "patches", "retire_budget_annual_input_fixed_dimensions.py")
 
 
-def _run_patch(columns, declared=(), fail=()):
+def _run_patch(columns, declared=(), fail=(), read_fails=False):
     """Run the patch on a table with ``columns`` ({name: rows holding a value}),
     a site declaring ``declared`` in_budget, and DDL failing for ``fail``.
     Returns (columns left, DDL run, warnings)."""
@@ -309,6 +317,8 @@ def _run_patch(columns, declared=(), fail=()):
 
     def has_column(doctype, column):
         assert doctype == "Budget Annual Input", doctype
+        if read_fails:
+            raise RuntimeError("lock wait timeout")
         return column in columns
 
     def exists(doctype, filters):
@@ -327,12 +337,16 @@ def _run_patch(columns, declared=(), fail=()):
         ddl.append(query)
         columns.pop(column)
 
+    cleared = []
     fake = types.ModuleType("frappe")
     fake.db = types.SimpleNamespace(has_column=has_column, exists=exists, sql=sql, sql_ddl=sql_ddl)
+    fake.cache = types.SimpleNamespace(hdel=lambda key, field: cleared.append((key, field)))
     fake.logger = lambda: types.SimpleNamespace(
         warning=lambda msg, **k: warnings.append(msg), info=lambda *a, **k: None)
     module = _load_isolated(PATCH, "_host_retire_bai_dims_k287", {"frappe": fake})
     module.execute()
+    for _ in ddl:
+        assert ("table_columns", "tabBudget Annual Input") in cleared, cleared
     return columns, ddl, warnings
 
 
@@ -362,6 +376,7 @@ def test_a_retired_column_holding_values_is_kept_and_reported():
     assert "dim_cost_center" in left, left
     assert "dim_department" not in left, "the empty one is still dropped"
     assert len(warnings) == 1 and "3 row(s)" in warnings[0], warnings
+    assert "duplicate" in warnings[0], "it says what the kept column does to the grain"
 
 
 def test_the_patch_is_a_no_op_when_the_columns_are_gone():
@@ -374,3 +389,13 @@ def test_a_failing_drop_is_logged_and_the_other_column_still_retires():
                                      fail={"dim_cost_center"})
     assert "dim_cost_center" in left and "dim_department" not in left, left
     assert any("left in place" in w for w in warnings), warnings
+
+
+def test_a_failing_read_raises_so_the_patch_runs_again():
+    """Swallowed, Frappe would record the patch as run and never retire the
+    column on a later migrate."""
+    try:
+        _run_patch({"dim_cost_center": 0}, read_fails=True)
+    except RuntimeError:
+        return
+    raise AssertionError("a failed read must fail the patch, not be recorded as done")

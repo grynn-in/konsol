@@ -40,8 +40,10 @@ def budget_dimension_fields():
     would stop every other table's sync.
     """
     meta = frappe.get_meta("Budget Annual Input")
+    # Data only, the type the dimension sync creates: a dim_-named Section
+    # Break or a hand-made field of another type is not a budget dimension.
     return sorted(f.fieldname for f in meta.fields
-                  if (f.fieldname or "").startswith("dim_"))
+                  if (f.fieldname or "").startswith("dim_") and f.fieldtype == "Data")
 
 
 class _FieldMap:

@@ -15,13 +15,17 @@ decides what happens to each of the two, per site, from what it holds:
 - **Holding values, not declared**: the column is kept and the count is logged.
   gold_spread_budget only ever selected the declared budget dimensions, so
   these values never reached a number, and dropping them would destroy data
-  that ticking the dimension in_budget brings back.
+  that ticking the dimension in_budget brings back. Until it is ticked, rows
+  that differ only in this column share a grain: the warehouse already summed
+  them, and a save of one now finds the other as its duplicate. The warning
+  says so.
 
 Runs before the doctype sync (patches.txt has no sections, so every patch is
 pre-model-sync), though nothing here depends on the field still being in meta:
 it reads and drops columns with SQL. A second run finds the column gone or kept
-and changes nothing. A failure is logged and swallowed: a column left in place
-must never fail a migrate.
+and changes nothing. Only the DROP is caught: a column left in place must never
+fail a migrate, but a failed read raises, so the patch is not recorded as run
+and the next migrate decides again.
 """
 import frappe
 
@@ -33,12 +37,7 @@ RETIRED = ("dim_cost_center", "dim_department")
 
 def execute():
     for column in RETIRED:
-        try:
-            _retire(column)
-        except Exception:  # noqa: BLE001 — a column left in place must not fail a migrate
-            frappe.logger().warning(
-                f"konsol#287: could not retire {DOCTYPE}.{column}; left in place",
-                exc_info=True)
+        _retire(column)
 
 
 def _retire(column):
@@ -53,8 +52,20 @@ def _retire(column):
     if held:
         frappe.logger().warning(
             f"konsol#287: {DOCTYPE}.{column} is no longer a field but {held} "
-            f"row(s) hold a value in it. The column is kept. Publish a Dimension "
-            f"named {column} with Include in Budget ticked to read them again.")
+            f"row(s) hold a value in it. The column is kept. Until a Dimension "
+            f"named {column} is Published with Include in Budget ticked, rows "
+            f"that differ only in it share one budget grain, and saving one "
+            f"refuses it as a duplicate of the other. Publishing that Dimension "
+            f"reads the values again and keeps the rows apart.")
         return
-    frappe.db.sql_ddl(f"alter table `tab{DOCTYPE}` drop column `{column}`")
+    try:
+        frappe.db.sql_ddl(f"alter table `tab{DOCTYPE}` drop column `{column}`")
+    except Exception:  # noqa: BLE001 — a column left in place must not fail a migrate
+        frappe.logger().warning(
+            f"konsol#287: could not drop the empty {DOCTYPE}.{column}; left in place",
+            exc_info=True)
+        return
+    # sql_ddl leaves Frappe's cached column list as it was, so has_column would
+    # still report the column for the rest of this migrate.
+    frappe.cache.hdel("table_columns", f"tab{DOCTYPE}")
     frappe.logger().info(f"konsol#287: dropped the empty {DOCTYPE}.{column}")
