@@ -420,6 +420,21 @@ def merge_loaded(report, previous, upload_name=None):
     return out
 
 
+def keep_submitted(report, submitted):
+    """The report with a row counted as loaded only while the submission it
+    names is in `submitted` (konsol#281). A row whose submission is gone is
+    a problem, as in merge_loaded: it is never quietly loaded again."""
+    out = []
+    for r in report:
+        name = r.get("loaded")
+        if name and name not in submitted:
+            r = {k: v for k, v in r.items() if k != "loaded"}
+            r.update(ok=False, errors=[f"Loaded earlier as {name}, which is no longer submitted. "
+                                       "Upload the file again if it should be loaded anew."])
+        out.append(r)
+    return out
+
+
 def outcome(loaded, failed, ready):
     """The upload's final status after a load."""
     if ready and loaded == ready and not failed:
