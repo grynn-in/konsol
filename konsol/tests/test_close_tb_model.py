@@ -210,7 +210,8 @@ def test_negative_debit_is_a_row_problem_with_the_opposite_column_suggested():
     (p,) = _problems(r, 2)
     assert p["code"] == "NEGATIVE_AMOUNT"
     assert "opposite column" in p["message"]
-    assert p["suggestion"] == "Enter 10.00 as a credit instead"
+    # the amount as written, not reformatted to 2 places (#180 review F5)
+    assert p["suggestion"] == "Enter 10 as a credit instead"
     assert r["ok"] is False
 
 
@@ -365,3 +366,18 @@ def test_module_imports_no_frappe():
             assert not any(a.name.startswith("frappe") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("frappe")
+
+
+def test_the_negative_suggestion_keeps_the_exact_amount():
+    """#180 review F5: -0.333 KWD was told "Enter 0.33 as a credit"."""
+    r = _check(_rows("main_account,debit,credit,currency\n1010,-0.333,0,KWD\n2010,0,-0.333,KWD\n"))
+    (p,) = _problems(r, 2)
+    assert p["suggestion"] == "Enter 0.333 as a credit instead", p
+    (q,) = _problems(r, 3)
+    assert q["suggestion"] == "Enter 0.333 as a debit instead", q
+
+
+def test_totals_of_enormous_amounts_do_not_raise():
+    """#180 review F3: 1E1000000 overflowed the default Decimal context."""
+    r = _check(_rows("main_account,debit,credit,currency\n1010,1E1000000,0,EUR\n2010,0,1E1000000,EUR\n"))
+    assert str(r["totals"]["debit"]) == "1E+1000000", r["totals"]

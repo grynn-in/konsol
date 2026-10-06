@@ -246,6 +246,7 @@ def test_an_amount_is_read_exactly_from_its_cell():
     assert m.read_amount(0.1) == Decimal("0.1") and str(m.read_amount(0.1)) == "0.1"
     assert m.read_amount(1000) == Decimal(1000)
     assert m.read_amount(None) == 0 and m.read_amount("") == 0
+    assert m.read_amount("   ") == 0 and m.read_amount("\t") == 0     # whitespace-only is blank
     assert m.read_amount(Decimal("0.005")) == Decimal("0.005")
     for bad in ("abc", "1,000.50", "nan", "inf", "-Infinity", True, float("nan"), float("inf")):
         try:
@@ -320,7 +321,7 @@ KWD_EXACT = "main_account,debit,credit,currency\n1010,0.005,0,KWD\n2010,0.005,0,
 KWD_OFF = "main_account,debit,credit,currency\n1010,1.001,0,KWD\n2010,0,1.000,KWD\n"
 JPY_1005 = "main_account,debit,credit,currency\n1010,100.5,0,JPY\n2010,0,100.5,JPY\n"
 
-UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
+UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3, "IDR": 2, "VND": 0}
 
 
 def test_desk_validate_accepts_an_exact_file_and_reads_the_minor_unit():
@@ -553,3 +554,103 @@ def test_a_stored_file_with_extra_decimals_still_reads_and_compares():
     by_account = {r["account"]: r for r in result["rows"]}
     assert by_account["1010"]["current"] == 0.6666, by_account     # summed exactly, sent as a number
     assert by_account["2010"]["change"] == 0, by_account
+
+
+# -- #180 review: zero sides, storable amounts, enormous amounts, wording ---------------
+
+JPY_ZEROS = "main_account,debit,credit,currency\n1010,1000,0.00,JPY\n2010,0.00,1000,JPY\n"
+EUR_ZEROS = "main_account,debit,credit,currency\n1010,12.50,0.0000,EUR\n2010,0E-10,12.5,EUR\n"
+IDR_UNSTORABLE = ("main_account,debit,credit,currency\n1010,100000000000000.01,0,IDR\n"
+                  "2010,0,100000000000000.01,IDR\n")
+VND_UNSTORABLE = "main_account,debit,credit,currency\n1010,9007199254740993,0,VND\n2010,0,9007199254740993,VND\n"
+INF_FLOAT = "main_account,debit,credit,currency\n1010,1e400,0,EUR\n2010,0,1e400,EUR\n"
+OVERFLOW = "main_account,debit,credit,currency\n1010,1E1000000,0,EUR\n2010,0,1E1000000,EUR\n"
+KWD_FILS = "main_account,debit,credit,currency\n1010,1.005,0,KWD\n2010,0,1.005,KWD\n"
+
+
+def test_zero_has_no_decimal_places():
+    """F1: an ERP writes the empty side as 0.00; that is zero, not 1 place."""
+    m = _model()
+    for text in ("0.00", "0.0000", "0E-10", "-0.00", "0", "0E+3"):
+        assert m.decimal_places(Decimal(text)) == 0, text
+    assert m.balance_problems("JPY", 0, _rows(("1000", "0.00"), ("0.00", "1000"))) == []
+    assert m.balance_problems("EUR", 2, _rows(("12.50", "0.0000"), ("0E-10", "12.5"))) == []
+
+
+def test_an_amount_the_warehouse_cannot_hold_exactly_is_refused_by_line():
+    """F2: epm_raw holds amounts as Float64. IDR 100000000000000.01 lands as
+    .02 and VND 9007199254740993 as …992, so they are refused naming the line
+    until konsolidat#256 stores decimals."""
+    m = _model()
+    assert m.balance_problems("IDR", 2, _rows(("100000000000000.01", 0), (0, "100000000000000.01"))) == [
+        "Line 2: debit 100000000000000.01 cannot be stored exactly until konsolidat#256 "
+        "(the warehouse would hold 100000000000000.02).",
+        "Line 3: credit 100000000000000.01 cannot be stored exactly until konsolidat#256 "
+        "(the warehouse would hold 100000000000000.02).",
+    ]
+    (p, _) = m.balance_problems("VND", 0, _rows(("9007199254740993", 0), (0, "9007199254740993")))
+    assert p == ("Line 2: debit 9007199254740993 cannot be stored exactly until konsolidat#256 "
+                 "(the warehouse would hold 9007199254740992)."), p
+    # what a float holds exactly is fine, trailing zeros included
+    assert m.balance_problems("IDR", 2, _rows(("100000000000000.00", 0), (0, "1E+14"))) == []
+
+
+def test_an_amount_too_large_for_the_warehouse_is_refused_by_line():
+    """F3: 1e400 is a finite Decimal but an infinite float; it is refused by name."""
+    m = _model()
+    for text in ("1e400", "1E1000000"):
+        problems = m.balance_problems("EUR", 2, _rows((text, 0), (0, text)))
+        assert len(problems) == 2, (text, problems)
+        assert problems[0].startswith("Line 2: debit ") and problems[0].endswith(" is too large to store."), problems
+
+
+def test_a_blank_minor_unit_names_the_functional_currency_even_with_no_rows():
+    """F5: with no rows the declared currency is '', and the sentence read
+    "ISO Currency  has no Minor Unit"."""
+    m = _model()
+    (p,) = m.currency_and_balance_problems("ZZA", "eur", None, [])
+    assert p.startswith("ISO Currency EUR has no Minor Unit"), p
+
+
+def test_the_review_files_on_every_intake():
+    """F1, F2, F3 on Desk, bulk check, close check and close submit: zero sides
+    accepted, unstorable and enormous amounts refused by line, nothing raised."""
+    m = _model()
+    t = _currency_tests()
+    for csv_text, functional, accepted in ((JPY_ZEROS, "JPY", True), (EUR_ZEROS, "EUR", True),
+                                           (IDR_UNSTORABLE, "IDR", False), (VND_UNSTORABLE, "VND", False),
+                                           (INF_FLOAT, "EUR", False), (OVERFLOW, "EUR", False)):
+        rows = t._controller().parse_tb_csv(csv_text)
+        expected = m.currency_and_balance_problems("ZZA", functional, UNITS[functional], rows)
+        assert (expected == []) is accepted, (csv_text, expected)
+        try:
+            t._validate(csv_text, functional, minor_units=UNITS)
+            desk = ""
+        except t._Refused as e:
+            desk = str(e)
+        bulk = _bulk_errors(csv_text, functional, UNITS)
+        check = _close_check(csv_text, functional, UNITS)
+        submit = _close_submit_error(csv_text, functional, UNITS) or ""
+        if accepted:
+            assert desk == "" and bulk == [] and check["ok"] and submit == "", (csv_text, desk, bulk, check, submit)
+            continue
+        assert bulk == expected, (csv_text, bulk, expected)
+        for sentence in expected:
+            assert sentence in desk and sentence in check["file_problems"] and sentence in submit, (
+                csv_text, sentence)
+
+
+def test_stored_totals_are_exact_not_rounded_to_cents():
+    """Pins the totals the intakes store: KWD 1.005 is 1.005, not 1.0 or 1.01."""
+    t = _currency_tests()
+    doc = t._validate(KWD_FILS, "KWD", minor_units=UNITS)
+    assert doc.total_debit == 1.005 and doc.total_credit == 1.005, (doc.total_debit, doc.total_credit)
+    b, c = t._bulk(), t._controller()
+    ((key, rows),) = b.split_table(_bulk_table(KWD_FILS)).items()
+    report = b.check_group(key, rows, known_accounts=None, visible=True, leaf=True,
+                           period={"code": "P01", "type": "Regular", "status": "Open"},
+                           postable_types={"Regular"}, existing=None, validate_rows=c.validate_tb_rows,
+                           functional_currency="KWD", minor_unit=3)
+    assert report["ok"] and report["total_debit"] == 1.005 and report["total_credit"] == 1.005, report
+    check = _close_check(KWD_FILS, "KWD", UNITS)
+    assert check["totals"]["debit"] == Decimal("1.005"), check["totals"]
