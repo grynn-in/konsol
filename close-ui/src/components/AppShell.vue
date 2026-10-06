@@ -45,6 +45,7 @@ import { landingPath, landingState } from "../router.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { isSignedOffPeriod } from "../signedOffBar.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const CONTEXT = "konsol.close.period_api.get_context";
 const FRESHNESS = "konsol.close.freshness_api.get_freshness";
@@ -64,7 +65,7 @@ const router = useRouter();
 const timeZone = userTimeZone();
 
 function periodName(key) {
-	return `FY${key[0]} P${String(key[1]).padStart(2, "0")}`;
+	return formatPeriod(key[0], key[1]);
 }
 
 /** A path under the router's `/close` base, built by route.js. */

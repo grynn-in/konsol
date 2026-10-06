@@ -31,6 +31,7 @@ import { saveFile } from "../saveFile.js";
 import { parse } from "../route.js";
 import { trailView, filterChoices, filterParams, noFilters, toggled, exportCsv } from "../auditTrail.js";
 import { userTimeZone } from "../timefmt.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_TRAIL = "konsol.close.trail_api.get_trail";
 
@@ -56,7 +57,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const trailWhat = computed(() => `the audit trail for ${periodName.value}`);
 const trail = reactive({ status: "loading", payload: null, error: null, busy: false });
@@ -186,14 +187,16 @@ function chipClass(on) {
 		: "border-outline-gray-2 bg-surface-white text-ink-gray-7";
 }
 
-const code = computed(() => (trail.payload && trail.payload.period && trail.payload.period.code) || periodName.value);
+//: review-w5: the header is trailView's title ("Audit trail · FY2025 P07"),
+//: never the bare payload period code ("P07" live).
+const title = computed(() => (trailViewResult.value ? trailViewResult.value.title : `Audit trail · ${periodName.value}`));
 </script>
 
 <template>
 	<div class="mx-auto max-w-5xl px-6 py-6">
 		<header class="mb-4 flex items-start justify-between gap-4">
 			<div>
-				<h1 class="text-xl font-semibold text-ink-gray-9">Audit trail · {{ code }}</h1>
+				<h1 class="text-xl font-semibold text-ink-gray-9">{{ title }}</h1>
 				<p class="mt-1 text-sm text-ink-gray-6">
 					Read-only · every approval, exception and status change for the period
 				</p>

@@ -558,7 +558,7 @@ def test_duration_label_no_reversal():
 
 
 def test_duration_label_a_declared_period():
-    assert M.duration_label(2024, 11, _A02_ROWS) == "Reverses in P11"
+    assert M.duration_label(2024, 11, _A02_ROWS) == "Reverses in FY2024 P11"
 
 
 def test_duration_label_an_undeclared_period_is_never_blank():

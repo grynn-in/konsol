@@ -36,6 +36,7 @@
 // row's files).
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { periodName } from "./periodName.js";
 
 const PL = "Profit and Loss";
 const BS = "Balance Sheet";
@@ -126,7 +127,7 @@ function periodText(period) {
 			throw new Error(`Numbers: the payload's period has no ${key}`);
 		}
 	}
-	return `FY${period.fiscal_year} P${String(period.fiscal_period).padStart(2, "0")}`;
+	return periodName(period.fiscal_year, period.fiscal_period);
 }
 
 function header(payload) {

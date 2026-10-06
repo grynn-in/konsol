@@ -410,7 +410,7 @@ def test_the_wireframe_journal_carries_lines_totals_duration_and_effect():
     site = _Site()
     result = _call(site)
     journal = _by_name(result, "CJ-00001")
-    assert journal["duration"] == "Reverses in P10"
+    assert journal["duration"] == "Reverses in FY2025 P10"
     assert journal["reverse"] == {"fiscal_year": 2025, "fiscal_period": 10}
     assert journal["total_debit"] == 18500.0 and journal["total_credit"] == 18500.0
     assert len(journal["lines"]) == 2
@@ -920,7 +920,7 @@ def test_the_original_period_still_says_reverses_in_the_target_period():
     site = _reversing_site()
     result = _call(site, 2025, 6)
     by_name = {j["name"]: j for j in result["journals"]}
-    assert by_name["CJ-P6-A"]["duration"] == "Reverses in P07"
+    assert by_name["CJ-P6-A"]["duration"] == "Reverses in FY2025 P07"
     assert result["reversing_in"] == []
 
 

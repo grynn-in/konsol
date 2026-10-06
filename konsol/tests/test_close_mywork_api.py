@@ -1241,7 +1241,7 @@ def test_the_preparer_gets_the_sent_back_signoff_item_counted_under_checks():
     result = _call(site)
     item = next(i for i in result["items"] if i["id"] == "sent-back:signoff:2025-07")
     assert item["kind"] == "todo" and item["action"] == {"screen": "checks"}
-    assert item["period"]["code"] == "P07"
+    assert item["period"]["code"] == "FY2025 P07"
     assert item["period"]["since"] == "2025-08-20"
     assert "ZZA's TB is the draft" in item["detail"]
     checks = [i for i in result["items"] if (i.get("action") or {}).get("screen") == "checks"]

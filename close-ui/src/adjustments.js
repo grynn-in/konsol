@@ -15,6 +15,7 @@
 // 100)`), never a float sum: 0.10 + 0.20 must equal 0.30 exactly.
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { periodName } from "./periodName.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 
@@ -138,7 +139,7 @@ export function formatAmount(value) {
 
 /**
  * The draft editor's duration choices (W3-3 option A): "This period only,
- * no reversal", then one "Reverses in <code>" per `view.reversalChoices`
+ * no reversal", then one "Reverses in FY2025 P07" (periodName) per `view.reversalChoices`
  * (journalsView's carry-through of journal_model.reversal_choices), in the
  * order the server sent them. Never a third, "stays until reversed" option
  * (W3-3 rejected it). With no reversal choices, only "none" is offered;
@@ -156,7 +157,8 @@ export function durationOptions(view) {
 			kind: "reverses",
 			fiscal_year: choice.fiscal_year,
 			fiscal_period: choice.fiscal_period,
-			label: "Reverses in " + choice.code,
+			//: review-w5: the live code is "P07" alone; name the year.
+			label: "Reverses in " + periodName(choice.fiscal_year, choice.fiscal_period),
 		});
 	}
 	return options;

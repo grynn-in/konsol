@@ -61,6 +61,8 @@ hidden gap from a merely-hidden out-of-scope entity. The query is keyed to
 the period's start date; moving it to the period's end waits on G09/G04
 (W2-16, blocked).
 """
+import importlib.util as _importlib_util
+import os as _os
 from datetime import date, datetime
 from urllib.parse import quote
 
@@ -70,6 +72,21 @@ from konsol import fiscal_calendar, group_rates
 from konsol.close import close_policy_model, rates_model, scope_model, self_approval
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 #: Who reads the Rates screen (#305-W2-3, W2-10). The Entity Accountant does not.
 RATES_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
@@ -90,7 +107,7 @@ def _period_row(key):
     for row in fiscal_calendar.fiscal_period_rows():
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
-    frappe.throw("FY%d P%02d is not declared: declare it in EPM Fiscal Year." % key)
+    frappe.throw("%s is not declared: declare it in EPM Fiscal Year." % period_name(*key))
 
 
 def _number(value):
@@ -210,7 +227,7 @@ def _reason(change_reason):
 
 
 def _grain_text(from_currency, to_currency, rate_type, fy, fp):
-    return f"{rate_type} {from_currency} → {to_currency} FY{fy} P{fp:02d}"
+    return f"{rate_type} {from_currency} → {to_currency} {period_name(fy, fp)}"
 
 
 @frappe.whitelist(methods=["POST"])
@@ -225,7 +242,7 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
     fy, fp = key
     status = period.get("status")
     if status != "Open":
-        frappe.throw(f"FY{fy} P{fp:02d} is {status}: group rates lock when their period "
+        frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
                      "closes (reopen it first).")
     reason = _reason(change_reason)
 
@@ -238,7 +255,7 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
         if approved:
             frappe.throw(
                 f"{approved[0]} is already the approved {rate_type} rate {from_currency} → "
-                f"{to_currency} for FY{fy} P{fp:02d}; a change is a cancel and an amendment "
+                f"{to_currency} for {period_name(fy, fp)}; a change is a cancel and an amendment "
                 "with a Reason for Change (Desk; E4-P7).")
         if existing:
             frappe.throw(f"{existing[0]['name']} is already a draft for this rate: edit it.")
@@ -370,7 +387,7 @@ def _cut(codes, allowed, key=lambda c: c):
 
 #: get_ownership (R01h): wording mirrors grid_api._regular_row.
 OWNERSHIP_REGULAR_ONLY = (
-    "FY%d P%02d is a %s period; the ownership screen covers Regular periods only: "
+    "%s is a %s period; the ownership screen covers Regular periods only: "
     "pick a Regular period."
 )
 
@@ -383,7 +400,7 @@ def get_ownership(fiscal_year, fiscal_period):
     if period.get("period_type") != "Regular":
         frappe.throw(
             OWNERSHIP_REGULAR_ONLY
-            % (key[0], key[1], period.get("period_type") or "blank-type")
+            % (period_name(*key), period.get("period_type") or "blank-type")
         )
     fy, fp = key
     start = _ownership_date(period.get("start_date"))
@@ -413,7 +430,7 @@ def get_ownership(fiscal_year, fiscal_period):
     blocking = [
         {"entity": e,
          "message": (
-             f"{e} has a submitted trial balance for FY{fy} P{fp:02d} but no approved "
+             f"{e} has a submitted trial balance for {period_name(fy, fp)} but no approved "
              f"ownership period covering {start_iso}: it is not consolidated. Record its "
              "ownership, or cancel the trial balance (#305-W2-2)."),
          "desk": "/app/ownership-period/new?data_area_id=" + quote(e)}

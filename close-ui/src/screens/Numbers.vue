@@ -70,6 +70,7 @@ import { whileCurrent } from "../stillCurrent.js";
 import { parse } from "../route.js";
 import { statementView, tabRows, isDrillable, canComment } from "../numbers.js";
 import { userTimeZone } from "../timefmt.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_STATEMENT = "konsol.close.statement_api.get_statement";
 const EXPORT_STATEMENT = "konsol.close.statement_api.export_statement";
@@ -112,7 +113,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const what = computed(() => `the numbers for ${periodName.value}`);
 const timeZone = userTimeZone();

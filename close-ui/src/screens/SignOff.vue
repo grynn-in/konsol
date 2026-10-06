@@ -51,6 +51,7 @@ import { summaryView, messageLines, closedOnText } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { signoffMachine, PERIOD_CHANGED } from "../machines/signoffMachine.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_SIGNOFF = "konsol.close.signoff_api.get_signoff";
 const SIGN = "konsol.close.signoff_api.sign";
@@ -64,7 +65,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 
 const snap = shallowRef(null);

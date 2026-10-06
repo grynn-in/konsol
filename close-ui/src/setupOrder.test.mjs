@@ -160,6 +160,10 @@ function checkFile(file) {
 	// Units: one per declarator (so `const a = 1, b = a` is ordered), else one per statement.
 	const units = [];
 	for (const stmt of body) {
+		// An import is hoisted and reads no local value: its `imported` name
+		// (`import { periodName as formatPeriod }`) is the module's export,
+		// never a reference to a same-named local declared later.
+		if (stmt.type === "ImportDeclaration") continue;
 		if (stmt.type === "VariableDeclaration") {
 			for (const d of stmt.declarations) units.push({ node: d, kind: stmt.kind, names: patternNames(d.id), decl: d.id });
 		} else if (stmt.type === "ClassDeclaration") {

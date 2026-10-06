@@ -18,6 +18,7 @@
 
 import { format } from "./route.js";
 import { ageText as sharedAgeText, userTimeZone } from "./timefmt.js";
+import { periodName } from "./periodName.js";
 
 const KIND_ORDER = ["blocking", "todo", "waiting"];
 
@@ -139,7 +140,7 @@ export function ageText(since, today) {
 // not "no period", decides.
 //
 // A period item (it carries `period`, from `_period_item` or
-// `ic_fix_items`) always gets its period's code, themed by kind,
+// `ic_fix_items`) always gets its period's name (FY + period), themed by kind,
 // regardless of `since_reason`.
 //
 // An unknown kind throws (mirrors `sections`): a badge is never guessed,
@@ -156,7 +157,9 @@ export function badgeFor(item) {
 		throw new Error(`unknown item kind: ${item.kind}`);
 	}
 	if (item.period) {
-		return { theme: BADGE_THEME[item.kind], label: item.period.code };
+		//: review-w5: the live period code is "P08" alone; the badge names the
+		//: year (periodName), never the bare code.
+		return { theme: BADGE_THEME[item.kind], label: periodName(item.period.fiscal_year, item.period.fiscal_period) };
 	}
 	if (item.since_reason === "configuration gap") {
 		return { theme: "orange", label: "Setup" };
