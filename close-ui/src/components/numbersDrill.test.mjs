@@ -177,6 +177,11 @@ test("A top-side row's journals and journalsBasis are shown", () => {
 	assert.match(tpl, /row\.journalsBasis/);
 });
 
+test("6.5: an auto-reversal journal row carries a visible tag, only when journal.autoReversal", () => {
+	const tpl = template(readDrillVue());
+	assert.match(tpl, /<span\b[^>]*v-if="journal\.autoReversal"[^>]*>\s*Auto-reversal of an earlier period\s*<\/span>/);
+});
+
 test("The panel can be closed, emitting close", () => {
 	// U46 adds a second emit (saved); close must still be one of them.
 	const source = readDrillVue();

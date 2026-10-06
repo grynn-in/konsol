@@ -740,12 +740,21 @@ def _drill_site():
         _drill_tb_row("1110", 100.0, "entity", "ZZC"),
         _drill_tb_row("1110", -50.0, "ic_elimination", ""),
         _drill_tb_row("1110", 40.0, "topside", "ZZA"),
+        # #305 story 6.5: an earlier period's journal reversing here, and a
+        # topside of the same size, so every existing total stays as it was.
+        _drill_tb_row("1110", 10.0, "topside", "ZZB"),
+        _drill_tb_row("1110", -10.0, "auto_reversal", "ZZA"),
         _drill_tb_row("CTA", -5.0, "cta", "ZZA"),
         _drill_tb_row("CTA", -3.0, "cta", "ZZB"),
     ]
     site.journal_rows = [
         _drill_journal_row("J-1", "1110", 40.0, "ZZA", "Reclass intercompany loan",
                             "alice@example.com", "bob@example.com"),
+        _drill_journal_row("J-2", "1110", 10.0, "ZZB", "Accrue audit fee",
+                            "alice@example.com", "bob@example.com"),
+        _drill_journal_row("J-P6", "1110", -10.0, "ZZA", "June bonus",
+                            "alice@example.com", "bob@example.com",
+                            adjustment_type="auto_reversal"),
     ]
     return site
 
@@ -833,6 +842,15 @@ def test_scoped_caller_sees_the_aggregated_outside_scope_row():
     assert outside["accounts"] == []
     for row in rows:
         assert row.get("entity") not in ("ZZB", "ZZC")
+
+
+def test_the_drill_tags_the_auto_reversal_journal_row():
+    """#305 story 6.5: the auto-reversal row keeps its original journal_id
+    (V01), so the drill tags it."""
+    result = _call_drill(_drill_site())
+    topside = next(r for r in result["drill"]["rows"] if r["label"] == "Top-side journals")
+    assert [(j["journal_id"], j["auto_reversal"]) for j in topside["journals"]] == \
+        [("J-1", False), ("J-2", False), ("J-P6", True)]
 
 
 # --- golden payload (W4-E19): the real producer's output --------------------

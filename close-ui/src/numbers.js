@@ -548,6 +548,8 @@ function drillRow(row, period) {
 			amount: amountText(journal.amount),
 			postedBy: journal.posted_by,
 			approvedBy: journal.approved_by,
+			//: #305 story 6.5: the reversal posting of an earlier period's journal.
+			autoReversal: journal.auto_reversal === true,
 		}));
 		view.journalsBasis = row.journals_basis;
 	}

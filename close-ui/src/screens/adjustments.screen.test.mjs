@@ -467,3 +467,46 @@ test("W43: a non-ok statement state shows its own message, never a blank or zero
 		"the side panel reads a message/text/error field for the non-ok statement state",
 	);
 });
+
+// --- #305 story 6.5: journals reversing into this period ----------------
+
+function reversingSection(tpl) {
+	const span = blockMatching(tpl, "section", /aria-label="Reversing into this period"/);
+	assert.ok(span, 'a <section aria-label="Reversing into this period"> exists');
+	return tpl.slice(span.start, span.end);
+}
+
+test("6.5: a read-only list renders view.reversingIn with each item's server label", () => {
+	const tpl = template(read());
+	const section = reversingSection(tpl);
+	assert.match(section, /v-for="item in view\.reversingIn"/);
+	assert.match(section, /\{\{\s*item\.label\s*\}\}/);
+	assert.match(section, /\{\{\s*item\.totalsText\s*\}\}/);
+	assert.doesNotMatch(section, /Reverses here from/, "the label comes from the server, never a literal");
+});
+
+test("6.5: the reversing list offers no control that writes: no Edit, no Button, no post", () => {
+	const section = reversingSection(template(read()));
+	assert.doesNotMatch(section, /<Button\b/);
+	assert.doesNotMatch(section, /openEdit|saveDraft|sendForApproval|selectJournal/);
+});
+
+test("6.5: each reversing item shows its effect through effectView, not a literal", () => {
+	const section = reversingSection(template(read()));
+	assert.match(section, /effectView\(item\.effect\)/);
+});
+
+test("6.5: the reversing list renders even when the period has no journals of its own", () => {
+	const tpl = template(read());
+	const span = blockMatching(tpl, "section", /aria-label="Reversing into this period"/);
+	const before = tpl.slice(0, span.start);
+	const emptyIdx = before.lastIndexOf("No journals for");
+	assert.ok(emptyIdx >= 0);
+	// The section is not inside the own-journals v-if/v-else pair: it carries
+	// its own v-if on view.reversingIn.length.
+	assert.match(tagAt(tpl, span.start + 1), /v-if="view\.reversingIn\.length"/);
+});
+
+test("6.5: the original period's list still shows each journal's 'Reverses in' duration", () => {
+	assert.match(template(read()), /\{\{\s*journal\.duration\s*\}\}/);
+});

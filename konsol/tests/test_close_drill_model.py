@@ -391,3 +391,22 @@ def test_module_imports_no_frappe():
             assert not any(a.name.split(".")[0] in ("frappe", "konsol") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert (node.module or "").split(".")[0] not in ("frappe", "konsol")
+
+
+# --- #305 story 6.5: an auto-reversal journal row is tagged in the drill ------
+
+def test_a_journal_row_carries_an_auto_reversal_tag_true_only_for_auto_reversal():
+    """gold_consolidation_adjustments keeps the original journal_id on its
+    ``auto_reversal`` rows (V01), so the tag is what tells the reader this
+    row is the reversal of an earlier period's journal, not a new one."""
+    rows = _heading1_rows()
+    line = _statement_line(rows, "1")
+    journals = _TOPSIDE_JOURNALS + [
+        {"journal_id": "J-P6", "adjustment_type": "auto_reversal", "data_area_id": "ZZA",
+         "main_account": "1110", "net_amount": -10.0, "description": "June bonus",
+         "posted_by": "alice@example.com", "approved_by": "bob@example.com"},
+    ]
+    result = M.drill(rows, journals, _accounts(), "1", _KEYS, _declared(), None, line)
+    topside_row = next(r for r in result["rows"] if r["label"] == "Top-side journals")
+    tags = {j["journal_id"]: j["auto_reversal"] for j in topside_row["journals"]}
+    assert tags == {"J-1": False, "J-P6": True}

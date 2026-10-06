@@ -264,6 +264,10 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
                     "amount": _round(mult * _dec(journal["net_amount"])),
                     "posted_by": journal.get("posted_by"),
                     "approved_by": journal.get("approved_by"),
+                    # #305 story 6.5: an auto-reversal row keeps the original
+                    # journal's id (V01); this tag says it is that journal's
+                    # reversal posting here, not a journal of this period.
+                    "auto_reversal": journal.get("adjustment_type") == "auto_reversal",
                 }
                 for journal in journals
                 if journal.get("main_account") in heading_codes

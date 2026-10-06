@@ -55,6 +55,11 @@ function timeText(value, now, timeZone) {
  * rows, never hard-coded (konsol#287). `[]` when none are declared — the
  * screen then looks exactly as it did before option D.
  *
+ * `reversingIn` (#305 story 6.5) is `get_journals`'s `reversing_in`: the
+ * Approved journals of earlier periods that reverse into this one, each
+ * with `approvedAtText` and `totalsText` added. Missing `reversing_in`
+ * throws, like `dimensions`.
+ *
  * D04 correction to D03: `get_journals` (D02) always sends `dimensions`,
  * even as `[]`, so a missing key is a bug in the caller, not "zero
  * dimensions" — this throws rather than silently defaulting to `[]`.
@@ -68,6 +73,9 @@ export function journalsView(payload, now, timeZone) {
 	}
 	if (payload.dimensions === undefined) {
 		throw new Error("journalsView requires `dimensions` (journal_api.get_journals always sends it, even as [])");
+	}
+	if (payload.reversing_in === undefined) {
+		throw new Error("journalsView requires `reversing_in` (journal_api.get_journals always sends it, even as [])");
 	}
 	const journals = (payload.journals || []).map((journal) => {
 		const { last_rejection, created, modified, approved_at, ...rest } = journal;
@@ -90,9 +98,18 @@ export function journalsView(payload, now, timeZone) {
 				: null,
 		};
 	});
+	//: #305 story 6.5: Approved journals of earlier periods whose reversal
+	//: posts into this one — read-only; `label`, `origin`, `lines` (the
+	//: reversal posting) and `effect` pass through from the server.
+	const reversingIn = payload.reversing_in.map((item) => ({
+		...item,
+		approvedAtText: timeText(item.approved_at, now, timeZone),
+		totalsText: `${formatAmount(item.total_debit)} / ${formatAmount(item.total_credit)}`,
+	}));
 	return {
 		period: payload.period,
 		journals,
+		reversingIn,
 		groups: payload.groups,
 		accounts: payload.accounts,
 		dimensions: payload.dimensions,

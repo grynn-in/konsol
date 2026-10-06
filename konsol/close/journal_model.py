@@ -252,6 +252,35 @@ def duration_label(reverse_year, reverse_period, period_rows):
     return f"Reverses in {row['period_code']}"
 
 
+def reverses_here_label(fiscal_year, fiscal_period, period_rows):
+    """The text a reversal shows in the period it posts into (konsol#305
+    story 6.5): "Reverses here from {period_code}" naming the original
+    journal's period, the counterpart of ``duration_label``'s "Reverses in
+    {period_code}". Never blank: an undeclared original period reads
+    "Reverses here from FY{y} P{p:02d} (not a declared period)"."""
+    fy = int(fiscal_year or 0)
+    fp = int(fiscal_period or 0)
+    row = next(
+        (r for r in period_rows
+         if int(r["fiscal_year"]) == fy and int(r["fiscal_period"]) == fp),
+        None,
+    )
+    if row is None:
+        return f"Reverses here from FY{fy} P{fp:02d} (not a declared period)"
+    return f"Reverses here from {row['period_code']}"
+
+
+def reversal_lines(lines):
+    """The reversal posting of ``lines`` (konsol#305 story 6.5): each line
+    copied with ``debit_amount`` and ``credit_amount`` swapped — exactly the
+    one ``auto_reversal`` row per line gold_consolidation_adjustments posts in
+    the named period (#305-D2-11, V01). The input is not mutated."""
+    return [
+        dict(line, debit_amount=line.get("credit_amount"), credit_amount=line.get("debit_amount"))
+        for line in lines
+    ]
+
+
 #: Section order (#305-W3-4 option A): Profit and Loss, then Balance Sheet,
 #: then None (no section, including any value that is not one of the two
 #: declared Main Account statement_section options).
