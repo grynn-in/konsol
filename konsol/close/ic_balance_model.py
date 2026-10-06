@@ -136,7 +136,8 @@ def rule_gap(balances, rules):
 
 def ambiguous_gap(balances, rules):
     """None, or the one setup gap naming every pair more than one rule
-    matches, each with its ``rule_ids`` in rule order."""
+    matches, each with its ``rule_ids`` sorted (the read order is the
+    database's, so it is not relied on)."""
     ambiguous = {}
     for balance in balances:
         _status(balance)
@@ -144,7 +145,7 @@ def ambiguous_gap(balances, rules):
             continue
         matched = matching_rules(balance, rules)
         if len(matched) > 1:
-            ambiguous[_pair(balance)] = [r.get("rule_id") for r in matched]
+            ambiguous[_pair(balance)] = sorted(r.get("rule_id") for r in matched)
     if not ambiguous:
         return None
     pairs = sorted(ambiguous)
