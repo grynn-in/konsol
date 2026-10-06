@@ -562,3 +562,25 @@ test("the source imports no vue, frappe or xstate", () => {
 		assert.ok(!source.includes(`"${term}`) && !source.includes(`'${term}`), `unexpected import of ${term}`);
 	}
 });
+
+// --- signoff_rejected (konsol#305 story 9.4, #157, #305-W5-1) -------------
+
+test('signoff_rejected -> "Sign-off rejected", block, the run as item and the reason in detail', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "signoff_rejected",
+				reference_doctype: "Assertion Run",
+				reference_name: "AR-0007",
+				reason: "ZZA's TB is the draft",
+				detail: { signoff_status: "Signed Off", preparer: "ana@example.com" },
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Sign-off rejected");
+	assert.equal(v.rows[0].tone, "block");
+	assert.equal(v.rows[0].item, "Assertion Run AR-0007");
+	assert.equal(v.rows[0].detail, 'Reason: "ZZA\'s TB is the draft"');
+});
