@@ -450,3 +450,10 @@ def test_open_rule_gap_none_when_covered():
     site = _Site()
     site.rules.append(_rule("R-FR", debit="FR01", credit="DE01"))
     assert _invoke(site, lambda api: api.open_rule_gap()) is None
+
+
+def test_save_refused_for_a_non_finite_amount():
+    # F51b / review S7: the refusal is a sentence before any write, never a SQL error.
+    for text in ("nan", "inf", "-inf"):
+        e = _save_refused(_Site(), ending_inventory_from_ic=text)
+        assert "must be a number" in str(e), text

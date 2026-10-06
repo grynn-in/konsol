@@ -210,3 +210,11 @@ def test_draft_problems_amounts():
 def test_draft_problems_inventory_above_sales_is_allowed():
     # Ending inventory can carry earlier periods' purchases: no cross-check.
     assert M.draft_problems("UK01", "DE01", "10", "500", {"UK01", "DE01"}) == []
+
+
+def test_draft_problems_refuse_non_finite_amounts():
+    # F51b / review S7: float("nan") < 0 is False, so "nan" passed the old check.
+    for text in ("nan", "NaN", "inf", "-inf", "Infinity", float("nan"), float("inf")):
+        probs = M.draft_problems("UK01", "DE01", text, text, {"UK01", "DE01"})
+        assert any("IC sales amount" in p and "must be a number" in p for p in probs), text
+        assert any("ending inventory" in p and "must be a number" in p for p in probs), text
