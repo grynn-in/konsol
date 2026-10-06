@@ -17,9 +17,10 @@
   ``ic_api.tolerance_gap()`` (a group node whose IC tolerance is undeclared).
   Both are None when "none in this group" is declared. The Entity Accountant
   cannot declare either, so is shown neither;
-- the missing unrealised-profit rule gap (#305 5.4, W5-4), group personas
-  only: ``ic_balance_api.open_rule_gap()`` over the open periods' draft and
-  approved IC Balances; the rule is declared in Desk;
+- the missing and (F51b) the ambiguous unrealised-profit rule gaps (#305
+  5.4, W5-4), group personas only: ``ic_balance_api.open_rule_gaps()`` over
+  the open periods' draft and approved IC Balances; the rule is declared in
+  Desk;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -269,15 +270,16 @@ def _gap_facts(first_close, persona, allowed):
         "policy_gaps": policy_gaps,
         "ic_accounts_gap": ic_api.setup_gap() if group else None,
         "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
-        "ic_rule_gap": _ic_rule_gap() if group else None,
+        "ic_rule_gaps": _ic_rule_gaps() if group else [],
     }, uncovered
 
 
-def _ic_rule_gap():
+def _ic_rule_gaps():
     """#305 5.4 (W5-4): IC Balance pairs of the open periods with no
-    unrealised-profit rule. Lazy: test loaders stub konsol.close.ic_balance_api."""
+    unrealised-profit rule, and (F51b) pairs more than one rule matches.
+    Lazy: test loaders stub konsol.close.ic_balance_api."""
     from konsol.close import ic_balance_api
-    return ic_balance_api.open_rule_gap()
+    return ic_balance_api.open_rule_gaps()
 
 
 def _name_ownership_periods(items, uncovered):

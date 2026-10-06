@@ -275,7 +275,13 @@ export function sendBackBody(period, pair, reason) {
 // `ic_balance_api.get_ic_balances`'s payload -> the IC Balances section. The
 // margin is read-only (the rule is configured in Desk); a balance with no
 // matching unrealised-profit rule says that nothing is eliminated, and the
-// server's gap names each pair. An unknown status throws, naming it.
+// server's gap names each pair. F51b: a pair two or more rules match is
+// eliminated once per rule by dbt; the server's `ambiguous_gap` names each
+// pair with its rules and the row is marked. An unknown status throws.
+
+function gapView(gap, pairText) {
+	return gap ? { lines: messageLines(gap.message), pairs: (gap.pairs || []).map(pairText) } : null;
+}
 
 const BALANCE_STATUS_TONE = { Draft: "warn", Approved: "ok" };
 
@@ -303,6 +309,7 @@ function balanceRow(row, canDraft) {
 		inventoryValue: row.ending_inventory_from_ic,
 		marginText: marginText(row.rules),
 		missingRule: !!row.missing_rule,
+		ambiguousRule: !!row.ambiguous_rule,
 		editable: canDraft && row.status === "Draft",
 	};
 }
@@ -312,12 +319,11 @@ export function icBalancesView(payload) {
 	const hidden = payload.hidden || 0;
 	return {
 		rows: (payload.balances || []).map((row) => balanceRow(row, canDraft)),
-		gap: payload.gap
-			? {
-					lines: messageLines(payload.gap.message),
-					pairs: (payload.gap.pairs || []).map((p) => `${p.selling_entity} → ${p.buying_entity}`),
-				}
-			: null,
+		gap: gapView(payload.gap, (p) => `${p.selling_entity} → ${p.buying_entity}`),
+		ambiguousGap: gapView(
+			payload.ambiguous_gap,
+			(p) => `${p.selling_entity} → ${p.buying_entity} (${(p.rule_ids || []).join(", ")})`,
+		),
 		hiddenNote: hidden > 0 ? `${hidden} IC Balances for entities outside your scope are not shown` : null,
 		canDraft,
 		entities: payload.entities || [],

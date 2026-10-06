@@ -110,6 +110,9 @@ REGULAR = "Regular"
 #: #305 5.4: ``ic_balance_model.RULE_UNDECLARED`` (not imported: test loaders
 #: stub konsol.close; test_close_signoff_api feeds the real producer's gap).
 IC_RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
+#: F51b: ``ic_balance_model.RULE_AMBIGUOUS`` (same reason; the test feeds the
+#: real producer's gap).
+IC_RULE_AMBIGUOUS = "ic_unrealized_profit_rule_ambiguous"
 
 #: A18's Select, read for A21's summary: 1 labelled, 0 not, None unknown.
 _ON_BEHALF = {"Yes": 1, "No": 0, "": None, None: None}
@@ -199,6 +202,14 @@ def _names(visible, hidden):
     return ", ".join(parts)
 
 
+def _scoped_pair_gap(gap, allowed, mine, hidden, message):
+    """An IC rule gap scoped: a pair names two entities, so only the pairs
+    this caller sees whole are kept."""
+    pairs = [p for p in gap.get("pairs") or ()
+             if p["selling_entity"] in allowed and p["buying_entity"] in allowed]
+    return dict(gap, entities=mine, hidden=hidden, message=message, pairs=pairs)
+
+
 def _scoped_gap(gap, allowed, key):
     entities = gap.get("entities")
     if entities is None:
@@ -222,10 +233,13 @@ def _scoped_gap(gap, allowed, key):
         message = ("No unrealised-profit IC Elimination Rule (margin above 0) matches the IC "
                    "Balances of %s for FY%d P%02d: declare the rule in Desk before signing off."
                    % (names, key[0], key[1]))
-        # A pair names two entities: keep only the pairs this caller sees whole.
-        pairs = [p for p in gap.get("pairs") or ()
-                 if p["selling_entity"] in allowed and p["buying_entity"] in allowed]
-        return dict(gap, entities=mine, hidden=hidden, message=message, pairs=pairs)
+        return _scoped_pair_gap(gap, allowed, mine, hidden, message)
+    elif gap["code"] == IC_RULE_AMBIGUOUS:
+        message = ("More than one unrealised-profit IC Elimination Rule matches the IC "
+                   "Balances of %s for FY%d P%02d: dbt applies every matching rule, so the "
+                   "profit is eliminated more than once. Keep one rule per pair in Desk before "
+                   "signing off." % (names, key[0], key[1]))
+        return _scoped_pair_gap(gap, allowed, mine, hidden, message)
     else:
         message = "%s (%s)." % (gap["code"], names)
     return dict(gap, entities=mine, hidden=hidden, message=message)

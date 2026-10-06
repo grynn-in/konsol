@@ -5,7 +5,8 @@
   and approved IC Balances the caller may see (either entity in scope), each
   with the margin of every unrealised-profit IC Elimination Rule that
   matches its pair (read-only: the rule is configured in Desk), the
-  missing-rule gap over the shown balances, the hidden count, the Active
+  missing-rule gap and the ambiguous-rule gap (two or more rules on one
+  pair, F51b) over the shown balances, the hidden count, the Active
   leaf entity codes for the draft form, and ``can_draft``.
 - ``save_ic_balance(...)`` (POST): an Analyst or System Manager drafts a new
   balance or edits a draft's amounts. Never an Admin: under R2 the Admin
@@ -16,9 +17,10 @@
   through ``insert()`` / ``save()`` with no ignore flag, so the doctype's
   own validate (period declared) and Frappe's permissions still apply. A
   missing rule is NOT refused here (W5-4 rejected option): it is a gap.
-- ``rule_gap(fy, fp)`` (sign-off gate) and ``open_rule_gap()`` (My work):
-  ``ic_balance_model.rule_gap`` over the period's / every Open period's
-  draft and approved balances. Not whitelisted: the callers gate and scope.
+- ``rule_gaps(fy, fp)`` (sign-off gate) and ``open_rule_gaps()`` (My work):
+  ``ic_balance_model.rule_gaps`` (a list: the undeclared gap, then the
+  ambiguous gap, F51b) over the period's / every Open period's draft and
+  approved balances. Not whitelisted: the callers gate and scope.
   Reads: IC Balance 1; IC Elimination Rule 1 only when a balance exists.
 
 Import warning: test loaders that build ``konsol.close`` as a stub package
@@ -73,32 +75,34 @@ def _entity_codes():
                           pluck="name", limit_page_length=0)
 
 
-def rule_gap(fiscal_year, fiscal_period):
-    """The sign-off gate's missing-rule gap for one period, or None."""
+def rule_gaps(fiscal_year, fiscal_period):
+    """The sign-off gate's rule gaps for one period (missing, then
+    ambiguous); ``[]`` when none applies."""
     balances = _balances({"fiscal_year": int(fiscal_year), "fiscal_period": int(fiscal_period)})
     if not balances:
-        return None
-    return ic_balance_model.rule_gap(balances, _rules())
+        return []
+    return ic_balance_model.rule_gaps(balances, _rules())
 
 
-def open_rule_gap():
-    """My work's missing-rule gap over every Open period's balances, or None."""
+def open_rule_gaps():
+    """My work's rule gaps over every Open period's balances; ``[]`` when
+    none applies."""
     open_keys = {(int(r["fiscal_year"]), int(r["fiscal_period"]))
                  for r in fiscal_calendar.fiscal_period_rows() if r.get("status") == "Open"}
     if not open_keys:
-        return None
+        return []
     years = sorted({fy for fy, _fp in open_keys})
     balances = [b for b in _balances({"fiscal_year": ["in", years]})
                 if (int(b["fiscal_year"]), int(b["fiscal_period"])) in open_keys]
     if not balances:
-        return None
-    return ic_balance_model.rule_gap(balances, _rules())
+        return []
+    return ic_balance_model.rule_gaps(balances, _rules())
 
 
 @frappe.whitelist(methods=["GET"])
 def get_ic_balances(fiscal_year, fiscal_period):
-    """``{"period", "balances", "gap", "hidden", "entities", "can_draft",
-    "rules_desk"}``. Read-only."""
+    """``{"period", "balances", "gap", "ambiguous_gap", "hidden", "entities",
+    "can_draft", "rules_desk"}``. Read-only."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     row = _period_row(key)
@@ -113,6 +117,7 @@ def get_ic_balances(fiscal_year, fiscal_period):
                    "period_code": row.get("period_code"), "status": status},
         "balances": ic_balance_model.balance_rows(shown, rules),
         "gap": ic_balance_model.rule_gap(shown, rules),
+        "ambiguous_gap": ic_balance_model.ambiguous_gap(shown, rules),
         "hidden": hidden,
         "entities": sorted(_entity_codes()),
         "can_draft": bool(roles.intersection(DRAFT_ROLES)) and status == "Open",
