@@ -30,7 +30,7 @@ jobs:
       # A skip is now a failure unless scripts/host-test-skips.txt declares it,
       # and declaring those 18 would have used the new gate to hide the gap it
       # exists to reveal.
-      - run: pip install requests pyyaml pytest
+      - run: pip install requests pyyaml pytest openpyxl
       - name: Run host tests
         # --require-pytest: tests that take pytest fixtures run through pytest
         # and count; without pytest the run fails rather than skipping them
