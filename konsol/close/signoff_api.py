@@ -57,6 +57,11 @@ not the latest terminal run (the checks were re-run meanwhile) the sign is
 refused, so a typed acknowledgement or override never lands on a run the
 Close Lead did not review.
 
+``reject(fiscal_year, fiscal_period, run, reason)`` (POST, Close Lead;
+#305-W5-1, story 9.4, #157) sends the signed run back to Not signed through
+``assertion_run.reject_signoff``, bound to the reviewed run like ``sign``.
+``get_signoff`` adds ``can_reject`` (the Close Lead's roles).
+
 ``declare_tb_exception(entity, fiscal_year, fiscal_period, reason)`` (POST,
 Close Lead; A33, stories 9.1, 9.2) inserts and submits a ``TB Exception``
 through the document's own ``insert`` and ``submit``, so the A08 controller
@@ -88,6 +93,7 @@ from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
     _warned_assertion_names,
     latest_close_run,
+    reject_signoff,
     sign_off_close,
 )
 from konsol.entity_permissions import allowed_entity_codes
@@ -319,6 +325,8 @@ def get_signoff(fiscal_year, fiscal_period):
     result.update({
         "can_sign": bool(frappe.has_permission("Assertion Run", "write")),
         "can_override": can_override,
+        # #305-W5-1 (story 9.4): the Close Lead, the roles ``reject`` admits.
+        "can_reject": bool(REJECT_ROLES & roles),
         "period_status": row["status"],
         "closed_by": closed.get("closed_by") or None,
         "closed_on": _iso(closed.get("closed_on")),
@@ -363,6 +371,41 @@ def sign(fiscal_year, fiscal_period, run=None, acknowledgement=None, override_re
                      % (latest["name"], latest["status"]))
     return sign_off_close(latest["name"], override_reason=override_reason,
                           acknowledgement=acknowledgement)
+
+
+#: Who may reject a signature (#305-W5-1): the literal ``reject`` gates on.
+REJECT_ROLES = {"EPM Admin", "System Manager"}
+
+
+@frappe.whitelist(methods=["POST"])
+def reject(fiscal_year, fiscal_period, run=None, reason=None):
+    """Reject the period's signature with a reason (#305-W5-1, Deepak Pai 6 Oct
+    2026; story 9.4, #157): the run goes back to Not signed and its preparer
+    gets a "sent back" My work item.
+
+    A blank reason is refused before anything is read. ``run`` is the run the
+    summary showed (A58): a missing name, or one that is no longer the latest
+    terminal run, is refused, so a reject never lands on a run the Close Lead
+    did not review. Everything else (a signed run only, an Open period, the
+    write) is ``assertion_run.reject_signoff``'s; its refusals pass through.
+    """
+    # A literal: the endpoint contract test reads it.
+    frappe.only_for(("EPM Admin", "System Manager"))
+    key = _period(fiscal_year, fiscal_period)
+    row = _declared_row(fiscal_calendar.fiscal_period_rows(), key)
+    if not (reason or "").strip():
+        frappe.throw("Give the reason the sign-off of FY%d %s is rejected: the preparer reads it."
+                     % (key[0], row["period_code"]))
+    if not (run or "").strip():
+        frappe.throw("Reload the sign-off for FY%d %s: the request did not say which checks "
+                     "run it rejects." % (key[0], row["period_code"]))
+    latest = latest_close_run(*key)
+    if not latest:
+        frappe.throw("FY%d %s has no checks run to reject." % (key[0], row["period_code"]))
+    if latest["name"] != run.strip():
+        frappe.throw("The checks were re-run (now %s, %s); review the new result before "
+                     "rejecting." % (latest["name"], latest["status"]))
+    return reject_signoff(latest["name"], reason)
 
 
 @frappe.whitelist(methods=["POST"])
