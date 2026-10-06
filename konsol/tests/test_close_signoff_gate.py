@@ -515,8 +515,8 @@ def test_an_open_earlier_period_blocks():
     site.rows = _year(2025, overrides={7: "Open", 9: "Open"})
     site.records["Assertion Run"] = [_run("RUN-8", 2025, 8)]
     problems = _call(site, "sign_off_problems", 2025, 9)
-    assert problems["order"]["message"] == "Sign off and close P07 first"
-    assert "Sign off and close P07 first" in _blocked(site)
+    assert problems["order"]["message"] == "Sign off and close FY2025 P07 first"
+    assert "Sign off and close FY2025 P07 first" in _blocked(site)
 
 
 def test_order_gate_reads_the_latest_terminal_run_per_period():
@@ -530,8 +530,8 @@ def test_order_gate_reads_the_latest_terminal_run_per_period():
         _run("RUN-8c", 2025, 8, signoff="Signed Off", status="Running", day=9),
     ]
     problems = _call(site, "sign_off_problems", 2025, 9)
-    assert problems["order"]["message"] == "Re-sign P08 first"
-    assert "Re-sign P08 first" in _blocked(site)
+    assert problems["order"]["message"] == "Re-sign FY2025 P08 first"
+    assert "Re-sign FY2025 P08 first" in _blocked(site)
 
 
 def test_history_before_first_close_does_not_block():
@@ -633,7 +633,7 @@ def test_one_message_lists_every_problem():
     site.records["Ownership Period"] += [_owner("ZZC")]
     site.records["Trial Balance Submission"] = [_rec("ZZA", 2025, 9)]
     message = _blocked(site)
-    for part in ("Set the Reporting Frequency", "on ZZC", "Sign off and close P07 first",
+    for part in ("Set the Reporting Frequency", "on ZZC", "Sign off and close FY2025 P07 first",
                  "No trial balance from ZZB"):
         assert part in message, (part, message)
 

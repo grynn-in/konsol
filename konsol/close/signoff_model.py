@@ -176,14 +176,17 @@ def order_problem(states, first_close, target):
     )
     if not blocking:
         return None
-    oldest = blocking[0][1]
+    # The state's ``code`` is the bare period_code ("P12"), the same in every
+    # year: the gate names each period from its key (review-w5).
+    oldest_key, oldest = blocking[0]
+    name = _label(oldest_key)
     if oldest.get("status") == "Open":
-        message = "Sign off and close %s first" % oldest["code"]
+        message = "Sign off and close %s first" % name
     else:
-        message = "Re-sign %s first" % oldest["code"]
+        message = "Re-sign %s first" % name
     return {
-        "blocking": oldest["code"],
-        "periods": [s["code"] for _key_, s in blocking],
+        "blocking": name,
+        "periods": [_label(k) for k, _s in blocking],
         "message": message,
     }
 
@@ -273,7 +276,7 @@ def expected_entities(frequencies, target, rows):
                 "Declare the Quarter of every Regular period of FY%d in the fiscal year "
                 "(%s is quarterly, so %s needs to be known as a quarter-end or not) "
                 "before signing off." % (
-                    target[0], ", ".join(quarter_unknown), target_row.get("period_code") or _label(target),
+                    target[0], ", ".join(quarter_unknown), _label(target),
                 )
             ),
         })
@@ -324,10 +327,7 @@ def _quarter_bounds(target_row, rows):
     members = [r for r in year if r["quarter"] == quarter]
     first = min(members, key=lambda r: int(r["fiscal_period"]))
     last = max(members, key=lambda r: int(r["fiscal_period"]))
-    return (
-        first.get("period_code") or "P%02d" % int(first["fiscal_period"]),
-        last.get("period_code") or "P%02d" % int(last["fiscal_period"]),
-    )
+    return (_label(_row_key(first)), _label(_row_key(last)))
 
 
 def covers_notes(target, rows, submitted, excepted, frequencies=None):
@@ -358,7 +358,7 @@ def covers_notes(target, rows, submitted, excepted, frequencies=None):
     target_row = None
     for r in _regular(rows):
         key = _row_key(r)
-        codes[key] = r.get("period_code") or "P%02d" % key[1]
+        codes[key] = _label(key)
         if key == target:
             target_row = r
         if key[0] == target[0] and key < target:
@@ -377,7 +377,7 @@ def covers_notes(target, rows, submitted, excepted, frequencies=None):
             else:
                 break
         if first is not None:
-            notes.append("%s: covers %s\u2013%s" % (entity, codes[first], codes.get(target, "P%02d" % target[1])))
+            notes.append("%s: covers %s\u2013%s" % (entity, codes[first], codes.get(target, _label(target))))
 
     if frequencies and target_row is not None and _is_quarter_end(target_row, rows):
         bounds = _quarter_bounds(target_row, rows)
@@ -741,7 +741,7 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
         ],
         "covers": list(covers or ()),
         "previous": [
-            {"code": p["code"], "status": p["status"], "signoff": p["signoff"]}
+            {"code": _label(_key(p["key"])), "status": p["status"], "signoff": p["signoff"]}
             for p in sorted(previous or (), key=lambda p: _key(p["key"]))
         ],
     }

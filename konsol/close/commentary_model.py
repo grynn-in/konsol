@@ -23,6 +23,23 @@ more), for the caller to join and throw (mirrors close_event_model's
 gap, never guessed past.
 """
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 #: The key that makes one commentary record unique: one row per
 #: (consolidation group, fiscal year, fiscal period, heading).
 KEY_FIELDS = ("consolidation_group", "fiscal_year", "fiscal_period", "heading")
@@ -31,7 +48,7 @@ PUBLISHED = "Published"
 OPEN = "Open"
 
 _PERIOD_CLOSED_SENTENCE = (
-    "FY{fiscal_year} P{fiscal_period:02d} is {status}: commentary is refused once a period "
+    "{period} is {status}: commentary is refused once a period "
     "is closed (#305-W4-5). Reopen the period to change its commentary."
 )
 _NOT_A_HEADING_SENTENCE = (
@@ -56,7 +73,7 @@ def save_problems(period, heading, heading_row, group, group_is_root):
     status = period["status"]
     if status != OPEN:
         problems.append(_PERIOD_CLOSED_SENTENCE.format(
-            fiscal_year=period["fiscal_year"], fiscal_period=period["fiscal_period"], status=status,
+            period=period_name(period["fiscal_year"], period["fiscal_period"]), status=status,
         ))
 
     if (heading_row is None

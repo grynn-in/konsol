@@ -169,18 +169,18 @@ def test_open_earlier_periods_block_and_the_oldest_is_named():
     states = _fy2025({7: ("Open", "Not signed off"), 8: ("Open", "Not signed off"),
                       9: ("Open", "Not signed off")})
     assert M.order_problem(states, FIRST, (2025, 9)) == {
-        "blocking": "P07",
-        "periods": ["P07", "P08"],
-        "message": "Sign off and close P07 first",
+        "blocking": "FY2025 P07",
+        "periods": ["FY2025 P07", "FY2025 P08"],
+        "message": "Sign off and close FY2025 P07 first",
     }
 
 
 def test_closed_but_re_sign_needed_blocks():
     states = _fy2025({8: ("Closed", "Re-sign Needed"), 9: ("Open", "Not signed off")})
     res = M.order_problem(states, FIRST, (2025, 9))
-    assert res["blocking"] == "P08"
-    assert res["periods"] == ["P08"]
-    assert res["message"] == "Re-sign P08 first"
+    assert res["blocking"] == "FY2025 P08"
+    assert res["periods"] == ["FY2025 P08"]
+    assert res["message"] == "Re-sign FY2025 P08 first"
 
 
 def test_history_periods_never_block():
@@ -207,8 +207,8 @@ def test_the_first_close_period_has_nothing_before_it():
 def test_open_p12_of_the_previous_year_blocks_p1_of_the_next():
     states = _fy2025({12: ("Open", "Not signed off")}) + [_state(2026, 1, "Open", "Not signed off")]
     res = M.order_problem(states, FIRST, (2026, 1))
-    assert res["blocking"] == "P12"
-    assert res["periods"] == ["P12"]
+    assert res["blocking"] == "FY2025 P12"
+    assert res["periods"] == ["FY2025 P12"]
 
 
 def test_previous_year_p12_before_first_close_does_not_block():
@@ -219,7 +219,7 @@ def test_previous_year_p12_before_first_close_does_not_block():
 def test_keys_as_lists_are_accepted():
     # States that went through JSON carry keys as lists.
     states = [dict(s, key=list(s["key"])) for s in _fy2025({8: ("Open", "Not signed off")})]
-    assert M.order_problem(states, FIRST, (2025, 9))["blocking"] == "P08"
+    assert M.order_problem(states, FIRST, (2025, 9))["blocking"] == "FY2025 P08"
 
 
 def test_order_with_undeclared_first_close_raises_not_guesses():
@@ -412,19 +412,19 @@ def test_completeness_needs_a_docstatus_not_a_default():
 
 def test_exception_then_tb_covers_both_periods():
     notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], [_doc("ZZA", 8)])
-    assert notes == ["ZZA: covers P08–P09"]
+    assert notes == ["ZZA: covers FY2025 P08–FY2025 P09"]
 
 
 def test_a_run_of_exceptions_is_covered_from_its_first_period():
     exc = [_doc("ZZA", 7), _doc("ZZA", 8)]
     notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], exc)
-    assert notes == ["ZZA: covers P07–P09"]
+    assert notes == ["ZZA: covers FY2025 P07–FY2025 P09"]
 
 
 def test_the_run_stops_at_a_period_with_a_tb():
     exc = [_doc("ZZA", 6), _doc("ZZA", 8)]
     tbs = [_doc("ZZA", 7), _doc("ZZA", 9)]
-    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers P08–P09"]
+    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers FY2025 P08–FY2025 P09"]
 
 
 def test_no_note_without_a_tb_in_the_target_or_an_exception_before_it():
@@ -455,7 +455,7 @@ def test_covers_notes_are_sorted_by_entity():
     tbs = [_doc("ZZB", 9), _doc("ZZA", 9)]
     exc = [_doc("ZZB", 8), _doc("ZZA", 8)]
     assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == [
-        "ZZA: covers P08–P09", "ZZB: covers P08–P09"]
+        "ZZA: covers FY2025 P08–FY2025 P09", "ZZB: covers FY2025 P08–FY2025 P09"]
 
 
 # --- A41: a quarterly entity's quarter-end TB is labelled with its quarter -----
@@ -465,7 +465,7 @@ def test_quarterly_entity_quarter_end_tb_notes_the_full_quarter():
     # Q1 = P01-P03 (_monthly_year); ZZQ's single P03 TB covers the whole quarter.
     freq = {"ZZQ": "Quarterly"}
     notes = M.covers_notes((2025, 3), _monthly_year(), [_doc("ZZQ", 3)], [], frequencies=freq)
-    assert notes == ["ZZQ: quarterly — covers P01–P03"]
+    assert notes == ["ZZQ: quarterly — covers FY2025 P01–FY2025 P03"]
 
 
 def test_monthly_entity_gets_no_quarterly_note():
@@ -752,8 +752,8 @@ def test_exceptions_covers_and_previous_periods_are_listed():
     ]
     assert s["covers"] == ["ZZA: covers P08–P09"]
     assert s["previous"] == [
-        {"code": "P07", "status": "Closed", "signoff": "Acknowledged"},
-        {"code": "P08", "status": "Closed", "signoff": "Signed Off"},
+        {"code": "FY2025 P07", "status": "Closed", "signoff": "Acknowledged"},
+        {"code": "FY2025 P08", "status": "Closed", "signoff": "Signed Off"},
     ]
 
 
@@ -1095,3 +1095,34 @@ def test_summary_requires_the_commentary_line():
         assert "commentary" in str(e)
     else:
         raise AssertionError("summary ran without the commentary line")
+
+
+# --- review-w5: the order gate and earlier periods name the year ---------------
+# The live period_code is "P12" alone: FY2024 P12 and FY2025 P12 share it.
+
+
+def test_order_gate_names_the_year_of_a_p12_across_the_year_boundary():
+    states = [_state(2024, 12, "Open", "Not signed off"),
+              _state(2025, 1, "Closed", "Re-sign Needed"),
+              _state(2025, 12, "Open", "Not signed off")]
+    res = M.order_problem(states, (2024, 12), (2026, 1))
+    assert res == {
+        "blocking": "FY2024 P12",
+        "periods": ["FY2024 P12", "FY2025 P01", "FY2025 P12"],
+        "message": "Sign off and close FY2024 P12 first",
+    }
+
+
+def test_re_sign_message_names_the_year():
+    states = [_state(2024, 12, "Closed", "Re-sign Needed"), _state(2025, 12, "Open", "Not signed off")]
+    res = M.order_problem(states, (2024, 12), (2025, 12))
+    assert res["message"] == "Re-sign FY2024 P12 first"
+
+
+def test_earlier_periods_name_the_year_of_each_p12():
+    previous = [_state(2025, 12, "Closed", "Signed Off"), _state(2024, 12, "Open", "Not signed off")]
+    s = _summary(run=_run(), previous=previous)
+    assert s["previous"] == [
+        {"code": "FY2024 P12", "status": "Open", "signoff": "Not signed off"},
+        {"code": "FY2025 P12", "status": "Closed", "signoff": "Signed Off"},
+    ]

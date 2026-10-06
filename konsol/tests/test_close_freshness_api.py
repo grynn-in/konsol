@@ -58,7 +58,7 @@ BUILD_MAP.update({
     "IC Balance": {"scope": "consolidation", "risk": "high"},
     "Entity": {"scope": "consolidation", "risk": "high"},
     "EPM Fiscal Year": {"scope": "full", "risk": "high"},
-    "Trial Balance Submission": {"scope": "consolidation", "risk": "high"},
+    "Trial Balance Submission": {"scope": "full", "risk": "high"},
     "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
 })
 FLAGGED = ("Draft", "Pending Review", "Approved", "Running")
@@ -260,7 +260,7 @@ def test_cancelled_builds_are_not_read():
 
 def test_draft_only_tb_changes_do_not_count():
     site = _Site(
-        builds=[_build("BA-1", "consolidation", "Completed", _dt(10))],
+        builds=[_build("BA-1", "full", "Completed", _dt(10))],  # TB maps to full (#334)
         records={"Trial Balance Submission": [(1, _dt(9)), (0, _dt(15))]},
     )
     out = _call(site)
@@ -345,6 +345,19 @@ def test_a_calendar_change_after_the_build_makes_the_numbers_stale():
     assert out["changed_since"] == ["EPM Fiscal Year"]
     fy = [q for q in site.sql_calls if "`tabEPM Fiscal Year`" in q]
     assert fy and all("calendar_changed_at" in q and "modified" not in q for q in fy), fy
+
+
+def test_a_calendar_change_is_not_cleared_by_a_consolidation_only_build():
+    # konsol#344: the calendar maps to "full"; a later consolidation build
+    # leaves the 16 gold models that read it stale.
+    site = _Site(
+        builds=[_build("BA-1", "full", "Completed", _dt(10)),
+                _build("BA-2", "consolidation", "Completed", _dt(12))],
+        records={"EPM Fiscal Year": [(0, _dt(11), _dt(11))]},
+    )
+    out = _call(site)
+    assert out["state"] == "stale", out
+    assert out["changed_since"] == ["EPM Fiscal Year"]
 
 
 def test_a_deleted_fiscal_year_after_the_build_makes_the_numbers_stale():

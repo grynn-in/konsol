@@ -650,13 +650,13 @@ def test_a_plain_date_stays_a_date_and_blank_stays_none():
 
 def test_covers_notes_include_the_quarterly_entity_and_the_exception_run():
     result = _get(_Site())
-    assert result["covers"] == ["ZZD: covers P08–P09",
-                                "ZZQ: quarterly — covers P07–P09"]
+    assert result["covers"] == ["ZZD: covers FY2025 P08–FY2025 P09",
+                                "ZZQ: quarterly — covers FY2025 P07–FY2025 P09"]
 
 
 def test_previous_periods_from_the_first_close_up_to_the_target():
     result = _get(_Site())
-    assert [p["code"] for p in result["previous"]] == ["P%02d" % fp for fp in range(1, 9)]
+    assert [p["code"] for p in result["previous"]] == ["FY2025 P%02d" % fp for fp in range(1, 9)]
     assert all(p["status"] == "Closed" and p["signoff"] == "Signed Off"
                for p in result["previous"])
 
@@ -856,8 +856,8 @@ def test_an_open_earlier_period_blocks_with_its_name():
     site.records["Assertion Run"][6]["signoff_status"] = "Not Signed Off"
     result = _get(site)
     assert result["action"] == "blocked"
-    assert result["label"] == "Sign off P07 first"
-    assert result["gates"]["order"]["blocking"] == "P07"
+    assert result["label"] == "Sign off FY2025 P07 first"
+    assert result["gates"]["order"]["blocking"] == "FY2025 P07"
 
 
 def test_an_undeclared_period_is_refused_as_not_declared():
@@ -905,7 +905,7 @@ def test_entity_accountant_sees_only_their_entities():
         assert other not in text, other
     assert result["on_behalf"] == {"labels": [], "unknown": []}
     assert result["exceptions"] == []
-    assert result["covers"] == ["ZZD: covers P08–P09"]
+    assert result["covers"] == ["ZZD: covers FY2025 P08–FY2025 P09"]
     # Still blocked, and says how many entities outside the scope block it.
     assert result["action"] == "blocked"
     completeness = result["gates"]["completeness"]

@@ -37,6 +37,23 @@ from konsol.consolidation.doctype.assertion_run.assertion_run import latest_clos
 from konsol.entity_permissions import allowed_entity_codes
 from konsol.period_status import PeriodNotDeclared
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 REGULAR = "Regular"
 CLOSING = "Closing"
 
@@ -51,12 +68,12 @@ def _regular_row(key, rows):
             break
     else:
         frappe.throw(
-            "FY%d P%02d is not declared: create it in EPM Fiscal Year." % key, PeriodNotDeclared
+            "%s is not declared: create it in EPM Fiscal Year." % period_name(*key), PeriodNotDeclared
         )
     if row.get("period_type") != REGULAR:
         frappe.throw(
-            "FY%d P%02d is a %s period; the period grid covers Regular periods only: "
-            "pick a Regular period." % (key[0], key[1], row.get("period_type") or "blank-type")
+            "%s is a %s period; the period grid covers Regular periods only: "
+            "pick a Regular period." % (period_name(*key), row.get("period_type") or "blank-type")
         )
     return row
 

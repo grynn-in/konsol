@@ -660,11 +660,11 @@ def test_the_comparison_is_joined_by_account_and_partner():
     assert result["basis_note"] is None and result["previous_note"] is None
     # the basis and the TB names of both periods
     assert result["entity"] == "ZZA"
-    assert result["current"] == {"fiscal_year": 2025, "fiscal_period": 9, "code": "P09",
+    assert result["current"] == {"fiscal_year": 2025, "fiscal_period": 9, "code": "FY2025 P09",
                                  "tb": "TB-A9", "basis": "Period movement"}, result["current"]
-    assert result["previous"] == {"fiscal_year": 2025, "fiscal_period": 8, "code": "P08",
+    assert result["previous"] == {"fiscal_year": 2025, "fiscal_period": 8, "code": "FY2025 P08",
                                   "tb": "TB-A8", "basis": "Period movement"}, result["previous"]
-    assert result["previous_code"] == "P08"
+    assert result["previous_code"] == "FY2025 P08"
     # only the entity's submitted TBs were read; a draft and another entity's TB were not
     assert sorted(site.files_read) == ["/private/files/TB-A8.csv", "/private/files/TB-A9.csv"]
     assert site.access_checked == ["ZZA"]
@@ -731,8 +731,8 @@ def test_no_previous_tb_is_a_note_never_a_comparison_against_zero():
         _tb("TB-A9", "ZZA", fp=9), _tb("TB-A8-DRAFT", "ZZA", fp=8, docstatus=0),
         _tb("TB-A8-CANCELLED", "ZZA", fp=8, docstatus=2)]
     result = _tb_compare(site)
-    assert result["previous_note"] == "No trial balance for P08", result
-    assert result["previous"] == {"fiscal_year": 2025, "fiscal_period": 8, "code": "P08",
+    assert result["previous_note"] == "No trial balance for FY2025 P08", result
+    assert result["previous"] == {"fiscal_year": 2025, "fiscal_period": 8, "code": "FY2025 P08",
                                   "tb": None, "basis": None}, result["previous"]
     assert result["rows"], result
     for row in result["rows"]:
@@ -758,7 +758,7 @@ def test_different_bases_are_shown_but_not_compared():
         _tb("TB-A8", "ZZA", fp=8, basis="Period movement")]
     result = _tb_compare(site)
     assert result["basis_note"] == (
-        "This period is Period-end balance and P08 is Period movement: "
+        "This period is Period-end balance and FY2025 P08 is Period movement: "
         "the change is not comparable."), result["basis_note"]
     assert result["current"]["basis"] == "Period-end balance"
     assert result["previous"]["basis"] == "Period movement"
@@ -771,7 +771,7 @@ def test_no_current_tb_is_refused_by_name():
     site.records["Trial Balance Submission"] = [
         _tb("TB-A9-DRAFT", "ZZA", fp=9, docstatus=0), _tb("TB-A8", "ZZA", fp=8)]
     err = _raises_compare(site)
-    assert "No submitted trial balance for ZZA P09" in str(err), str(err)
+    assert "No submitted trial balance for ZZA FY2025 P09" in str(err), str(err)
     assert site.files_read == []
 
 

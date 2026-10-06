@@ -76,9 +76,37 @@ LABEL_MODULES = [
     "close/ic_balance_api.py",
     "close/rates_api.py",
     "consolidation/doctype/close_settings/close_settings.py",
+    # review-w5 follow-up: the server messages that still built their own.
+    "close/journal_api.py",
+    "close/ic_api.py",
+    "close/grid_api.py",
+    "close/signoff_gate.py",
+    "close/signoff_api.py",
+    "close/tb_read_api.py",
+    "close/statement_api.py",
+    "close/tb_view_model.py",
+    "close/period_grid_model.py",
+    "close/commentary_model.py",
+    "consolidation/doctype/statement_commentary/statement_commentary.py",
+    "tb_bulk_model.py",
+    "group_chart_model.py",
 ]
 
-_INLINE_FORMAT = re.compile(r"FY%[sd] P%02d|FY\{[^}]*\} P\{[^}]*:02d\}")
+#: A hand-built period label: "FY%d P%02d" and its %s/%d cousins, "FY%d %s"
+#: (the year glued to a bare period_code), an f-string or str.format
+#: "FY{…} P{…}" padded or not, and a bare "P%02d" period code. A filename
+#: such as "numbers-FY%dP%02d" (no space, P after a letter) is not a label.
+_INLINE_FORMAT = re.compile(
+    r"FY%[sd] P%|FY%[sd] %s|FY\{[^}]*\} P\{|(?<![\w%])P%02d")
+
+
+def test_the_inline_format_pattern_catches_every_hand_built_label():
+    for text in ('"FY%d P%02d" % key', '"FY%s P%s" % key', '"FY%d %s" % (fy, code)',
+                 'f"FY{year} P{period_no}"', 'f"FY{y} P{int(p):02d}"',
+                 '"FY{fiscal_year} P{fiscal_period:02d} is"', '"P%02d" % fp'):
+        assert _INLINE_FORMAT.search(text), text
+    for text in ('"numbers-FY%dP%02d-%s.xlsx"', 'period_name(fy, fp)'):
+        assert not _INLINE_FORMAT.search(text), text
 
 
 @pytest.mark.parametrize("relpath", LABEL_MODULES)
