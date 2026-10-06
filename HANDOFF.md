@@ -4,6 +4,36 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (6 Oct): konsol#305 Delivery 2 wave 5a is merged: konsol #345 (f3cbace).** Deepak decided W5-1..4 "All star" on #305. Claude's own engineering calls are on #305 (issuecomment-6024201083).
+- **What shipped:**
+  - **9.4 sign-off reject:** the Close Lead gives a reason. The run goes back to Not signed, a `signoff_rejected` Close Event is written, and the preparer gets a "Sent back" item in My work.
+  - **8.4 commentary threshold:** set in Close Settings as an amount, a percentage, or both with a combine rule. No default. A heading over the threshold with no commentary makes the close Amber and needs an acknowledgement. An undeclared threshold is a setup gap.
+  - **8.5 Excel export:** the Statement, Drill and Journals sheets, with every text cell stored as text, never as a formula.
+  - **5.4 IC Balance screen:** gives two blocking gaps. One is a missing unrealised-profit rule. The other is an ambiguous pair, where two or more rules match. Zero-inventory balances are skipped.
+  - **6.5:** auto-reversals are visible in the period they reverse into.
+  - **10.2:** the audit trail can be filtered and exported as CSV.
+  - Every period label now carries its year ("FY2025 P07"). One helper builds it in JS and one in Python.
+- **Also merged on 6 Oct:**
+  - #327: konsolidat#245 journal-line dimensions, the UI half.
+  - #336 (#334): a TB change triggers a full build.
+  - #339 (#337): a calendar change triggers a full build.
+  - #341 (#338): a build voids a signature only when the period's fingerprinted numbers changed.
+  - #342 (#340): freshness uses `calendar_changed_at`.
+  - konsolidat #262/#263 (#257/#259): the balance sheet is translated at the closing rate, and the year-end close no longer moves CTA. The restatement has been built on the local stack.
+  - konsolidat#254 data fix: FY2025 P8–P12 were cancelled on the local stack.
+- **Upgrade, in this order:**
+  1. **Migrate.** This adds the Close Settings threshold fields, the Close Event kind `signoff_rejected`, the Assertion Run fingerprint fields, and EPM Fiscal Year `calendar_changed_at`. Its patches stamp signed-run fingerprints and calendar_changed_at.
+  2. **Declare the commentary threshold.** Until then, sign-off shows the setup gap.
+  3. **Declare unrealised-profit rules** for any pair that has an IC Balance.
+- **Local test stack:** runs close-d2w5 1a9dd93 code (≈ main f3cbace). Close Event and Close Settings were reloaded.
+- **Open:**
+  - **S8:** Deepak's call on whether a draft IC Balance that has a rule should block sign-off. Recommended ★ S8-1.
+  - **#344:** freshness scope.
+  - **Order-gate message:** reads "P12" without the year (`signoff_model.py:181`).
+  - **Inline "FY%d P%02d":** still present in some server error messages.
+  - **Wave 5b:** 4.2 ownership form, 1.5 Remind, 2.4 deadlines. Needs decisions and the 4.2 wireframe.
+  - **8.6 budget:** its own epic.
+
 **Update (4 Oct): konsol#305 Delivery 2 wave 4 (E8 Numbers & commentary) is merged as konsol #326 (249b10e). Post-wave-3 fixes merged as #325.** Deepak decided W4-1..8 plus three follow-ups, all ★, recorded on #305 (issuecomment-5978518120, -5978983396). Claude's own calls are recorded in `archive/konsol-305-d2/rows-w4.md` and `tasks.md`.
 - **Numbers** (`…/numbers`): a consolidated P&L and BS for a period.
   - Signs: P&L shows income positive and costs in brackets; on the BS, assets, liabilities and equity all show positive. Each heading's side comes from Main Account `normal_balance`.
