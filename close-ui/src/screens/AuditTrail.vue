@@ -210,8 +210,8 @@ const code = computed(() => (trail.payload && trail.payload.period && trail.payl
 		</header>
 
 		<section v-if="choices" class="mb-4 space-y-2 rounded border border-outline-gray-2 px-4 py-3 text-sm" aria-label="Filters">
-			<div class="flex flex-wrap items-center gap-1.5">
-				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Kind</span>
+			<div class="flex flex-wrap items-center gap-1.5" role="group" aria-labelledby="trail-filter-kind">
+				<span id="trail-filter-kind" class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Kind</span>
 				<button
 					v-for="c in choices.kinds"
 					:key="c.value"
@@ -222,8 +222,8 @@ const code = computed(() => (trail.payload && trail.payload.period && trail.payl
 					@click="toggleFilter('kinds', c.value)"
 				>{{ c.label }}</button>
 			</div>
-			<div class="flex flex-wrap items-center gap-1.5">
-				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Actor</span>
+			<div class="flex flex-wrap items-center gap-1.5" role="group" aria-labelledby="trail-filter-actor">
+				<span id="trail-filter-actor" class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Actor</span>
 				<button
 					v-for="c in choices.actors"
 					:key="c.value"
@@ -234,8 +234,8 @@ const code = computed(() => (trail.payload && trail.payload.period && trail.payl
 					@click="toggleFilter('actors', c.value)"
 				>{{ c.label }}</button>
 			</div>
-			<div class="flex flex-wrap items-center gap-1.5">
-				<span class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Entity</span>
+			<div class="flex flex-wrap items-center gap-1.5" role="group" aria-labelledby="trail-filter-entity">
+				<span id="trail-filter-entity" class="w-16 text-xs uppercase tracking-wide text-ink-gray-5">Entity</span>
 				<button
 					v-for="c in choices.entities"
 					:key="c.value"

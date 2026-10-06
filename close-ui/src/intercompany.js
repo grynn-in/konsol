@@ -307,11 +307,21 @@ function balanceRow(row, canDraft) {
 	};
 }
 
+//: review-w5 U5: `get_ic_balances` always sends these keys, so a missing one
+//: is a bug to surface, never "no balances / nothing hidden" (the
+//: auditTrail.js `hidden` rule).
+const IC_BALANCES_KEYS = ["balances", "hidden", "entities", "can_draft"];
+
 export function icBalancesView(payload) {
-	const canDraft = !!payload.can_draft;
-	const hidden = payload.hidden || 0;
+	for (const key of IC_BALANCES_KEYS) {
+		if (payload[key] === undefined || payload[key] === null) {
+			throw new Error(`IC Balances payload has no \`${key}\` (get_ic_balances always sends it)`);
+		}
+	}
+	const canDraft = payload.can_draft === true;
+	const hidden = payload.hidden;
 	return {
-		rows: (payload.balances || []).map((row) => balanceRow(row, canDraft)),
+		rows: payload.balances.map((row) => balanceRow(row, canDraft)),
 		gap: payload.gap
 			? {
 					lines: messageLines(payload.gap.message),
@@ -320,7 +330,7 @@ export function icBalancesView(payload) {
 			: null,
 		hiddenNote: hidden > 0 ? `${hidden} IC Balances for entities outside your scope are not shown` : null,
 		canDraft,
-		entities: payload.entities || [],
+		entities: payload.entities,
 		rulesDesk: payload.rules_desk,
 	};
 }

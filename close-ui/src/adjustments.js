@@ -101,10 +101,13 @@ export function journalsView(payload, now, timeZone) {
 	//: #305 story 6.5: Approved journals of earlier periods whose reversal
 	//: posts into this one — read-only; `label`, `origin`, `lines` (the
 	//: reversal posting) and `effect` pass through from the server.
+	//: U4 (review-w5): `effectView` is the same view the selected-journal
+	//: panel reads, so the outside-any-heading note is never dropped here.
 	const reversingIn = payload.reversing_in.map((item) => ({
 		...item,
 		approvedAtText: timeText(item.approved_at, now, timeZone),
 		totalsText: `${formatAmount(item.total_debit)} / ${formatAmount(item.total_credit)}`,
+		effectView: effectView(item.effect),
 	}));
 	return {
 		period: payload.period,
@@ -327,6 +330,10 @@ function amountText(netDebit) {
  * `effectView(null)` — an unsaved edit, which has no saved `effect` yet —
  * gives `{note: "Save the draft to see its effect"}` (E6-P8), never a
  * guessed or stale amount.
+ *
+ * `noHeadingText` (review-w5 U4) is the one sentence for the accounts with
+ * no heading ("N account(s) outside any heading."), or null when there are
+ * none: the selected-journal panel and the reversing list both read it.
  */
 export function effectView(effect) {
 	if (effect === null || effect === undefined) {
@@ -344,6 +351,7 @@ export function effectView(effect) {
 			amountText: amountText(section.net_debit),
 		})),
 		noHeading: effect.no_heading || 0,
+		noHeadingText: effect.no_heading ? `${effect.no_heading} account(s) outside any heading.` : null,
 	};
 }
 

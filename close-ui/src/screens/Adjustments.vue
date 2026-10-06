@@ -724,7 +724,7 @@ function lines(text) {
 						<h3 class="mt-2 text-xs font-semibold uppercase tracking-wide text-ink-gray-6">Effect</h3>
 						<ul class="mt-1 space-y-1">
 							<li
-								v-for="(heading, i) in effectView(item.effect).headings"
+								v-for="(heading, i) in item.effectView.headings"
 								:key="i"
 								class="flex items-center justify-between gap-2"
 							>
@@ -732,6 +732,9 @@ function lines(text) {
 								<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
 							</li>
 						</ul>
+						<p v-if="item.effectView.noHeadingText" class="mt-1 text-xs text-ink-gray-5">
+							{{ item.effectView.noHeadingText }}
+						</p>
 					</details>
 				</section>
 			</template>
@@ -851,10 +854,10 @@ function lines(text) {
 						</ul>
 					</template>
 					<p
-						v-if="selectedEffect.noHeading && selectedJournal.docstatus !== 2"
+						v-if="selectedEffect.noHeadingText && selectedJournal.docstatus !== 2"
 						class="mt-1 text-xs text-ink-gray-5"
 					>
-						{{ selectedEffect.noHeading }} account(s) outside any heading.
+						{{ selectedEffect.noHeadingText }}
 					</p>
 				</template>
 			</section>

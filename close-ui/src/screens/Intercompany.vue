@@ -49,6 +49,7 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
+import { whileCurrent } from "../stillCurrent.js";
 import {
 	intercompanyView,
 	panel,
@@ -275,27 +276,36 @@ async function saveBalance() {
 		return;
 	}
 	balanceBusy.value = true;
+	//: review-w5 U8: a save made in one period never writes its refusal (or
+	//: its reset) onto the form of the period the user moved to.
+	let result;
 	try {
-		await post(SAVE_IC_BALANCE, built.body);
+		result = await whileCurrent(periodKey, () => post(SAVE_IC_BALANCE, built.body));
 	} catch (e) {
 		balanceError.value = e.message;
 		return;
 	} finally {
-		balanceBusy.value = false;
+		if (!result || !result.stale) balanceBusy.value = false;
 	}
+	if (result.stale) return;
 	resetBalanceForm();
 	await loadBalances({ quiet: true });
 	reloadContext();
 }
 
+function periodKey() {
+	return period.value ? `${period.value.year}/${period.value.period}` : null;
+}
+
 watch(
-	() => (period.value ? `${period.value.year}/${period.value.period}` : null),
+	periodKey,
 	() => {
 		ic.payload = null;
 		closePanel();
 		loadIc();
 		balances.payload = null;
 		resetBalanceForm();
+		balanceBusy.value = false;
 		loadBalances();
 	},
 	{ immediate: true },

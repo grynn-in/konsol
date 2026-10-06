@@ -1,0 +1,63 @@
+{
+  "balances": [
+    {
+      "buying_entity": "UK01",
+      "ending_inventory_from_ic": 80.0,
+      "fiscal_period": 7,
+      "fiscal_year": 2025,
+      "ic_sales_amount": 500.0,
+      "missing_rule": true,
+      "name": "ICB-DE01-UK01-2025-P7",
+      "rules": [],
+      "selling_entity": "DE01",
+      "status": "Draft"
+    },
+    {
+      "buying_entity": "DE01",
+      "ending_inventory_from_ic": 250.0,
+      "fiscal_period": 7,
+      "fiscal_year": 2025,
+      "ic_sales_amount": 1000.0,
+      "missing_rule": false,
+      "name": "ICB-UK01-DE01-2025-P7",
+      "rules": [
+        {
+          "margin_pct": 12.5,
+          "rule_id": "R-UK",
+          "rule_name": "R-UK"
+        }
+      ],
+      "selling_entity": "UK01",
+      "status": "Draft"
+    }
+  ],
+  "can_draft": true,
+  "entities": [
+    "DE01",
+    "ES01",
+    "FR01",
+    "UK01"
+  ],
+  "gap": {
+    "code": "ic_unrealized_profit_rule_undeclared",
+    "entities": [
+      "DE01",
+      "UK01"
+    ],
+    "message": "No unrealised-profit IC Elimination Rule (rule type unrealized_profit, margin above 0) matches 1 IC Balance pair: DE01 \u2192 UK01. Its unrealised profit is not eliminated: declare the rule in Desk (IC Elimination Rule) before signing off.",
+    "pairs": [
+      {
+        "buying_entity": "UK01",
+        "selling_entity": "DE01"
+      }
+    ]
+  },
+  "hidden": 1,
+  "period": {
+    "fiscal_period": 7,
+    "fiscal_year": 2025,
+    "period_code": "P07",
+    "status": "Open"
+  },
+  "rules_desk": "/app/ic-elimination-rule"
+}

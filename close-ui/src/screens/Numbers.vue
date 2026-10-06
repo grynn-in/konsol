@@ -66,6 +66,7 @@ import LoadState from "../components/LoadState.vue";
 import NumbersDrill from "../components/NumbersDrill.vue";
 import { download, get } from "../api.js";
 import { saveFile } from "../saveFile.js";
+import { whileCurrent } from "../stillCurrent.js";
 import { parse } from "../route.js";
 import { statementView, tabRows, isDrillable, canComment } from "../numbers.js";
 import { userTimeZone } from "../timefmt.js";
@@ -178,6 +179,7 @@ watch(
 	() => {
 		numbers.payload = null;
 		exporting.error = null;
+		exporting.busy = false;
 		chosenGroup.value = null;
 		selectedHeading.value = null;
 		notIncludedExpanded.value = false;
@@ -282,21 +284,34 @@ function onCommentarySaved() {
 //: screen — this period and the group this payload resolved to — as the
 //: server's .xlsx. A refusal shows the server's own sentence; nothing is
 //: kept in the browser.
+//: review-w5 U7: the period and group are captured at the click
+//: (`whileCurrent`); a result that comes back after the user moved on is
+//: dropped, never written onto the new period's screen.
+function exportKey() {
+	return period.value && view.value
+		? `${period.value.year}/${period.value.period}/${view.value.consolidationGroup}`
+		: null;
+}
+
 async function exportExcel() {
 	if (!view.value || !period.value) return;
 	exporting.busy = true;
 	exporting.error = null;
+	let result;
 	try {
-		const { blob, filename } = await download(EXPORT_STATEMENT, {
-			fiscal_year: period.value.year,
-			fiscal_period: period.value.period,
-			consolidation_group: view.value.consolidationGroup,
-		});
-		saveFile(blob, filename);
+		result = await whileCurrent(exportKey, () =>
+			download(EXPORT_STATEMENT, {
+				fiscal_year: period.value.year,
+				fiscal_period: period.value.period,
+				consolidation_group: view.value.consolidationGroup,
+			}),
+		);
+		if (result.stale) return;
+		saveFile(result.value.blob, result.value.filename);
 	} catch (e) {
 		exporting.error = e.message;
 	} finally {
-		exporting.busy = false;
+		if (!result || !result.stale) exporting.busy = false;
 	}
 }
 </script>
@@ -379,7 +394,7 @@ async function exportExcel() {
 				</div>
 
 				<template v-else>
-					<div class="mb-3 flex flex-wrap items-center justify-end gap-3">
+					<div v-if="view.canExport" class="mb-3 flex flex-wrap items-center justify-end gap-3">
 						<span v-if="exporting.error" role="alert" class="text-sm text-ink-red-4">{{ exporting.error }}</span>
 						<Button :loading="exporting.busy" @click="exportExcel">
 							<template #prefix><FeatherIcon name="download" class="h-4 w-4" /></template>
