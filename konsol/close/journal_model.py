@@ -36,6 +36,12 @@ MIN_LINES = 2
 #: Consolidation Journal Line fields a user may send (consolidation_journal_line.json).
 LINE_KEYS = ("data_area_id", "main_account", "debit_amount", "credit_amount", "description")
 
+#: A legal declared dimension key: ``Dimension.dimension_name`` verbatim
+#: (konsolidat#245 CONTRACT, konsol-50, 3 Oct; tb_dimension_model.py:55-57).
+#: ``\Z`` only — never ``$``, which also matches just before a trailing
+#: newline and would wrongly let an illegal key through.
+_DIM_KEY_RE = re.compile(r"^dim_[a-z0-9_]+\Z")
+
 
 def _cents(amount):
     """A line amount (int, float, str or None) as a Decimal rounded to 2 dp."""
@@ -47,30 +53,52 @@ def _cents(amount):
         raise ValueError(f"'{amount}' is not a number")
 
 
-def clean_lines(lines):
-    """``(rows, problems)``: the request's lines, kept to ``LINE_KEYS`` only
-    (#305 A02).
+def clean_lines(lines, dim_keys=()):
+    """``(rows, problems)``: the request's lines, kept to ``LINE_KEYS`` plus
+    the declared dimension keys (#305 A02; konsolidat#245 option D, D01).
 
     ``lines`` must be a list of dicts (the API parses JSON first; a str is
     not parsed here). A non-list ``lines``, or a non-dict item, is a single
-    problem and contributes no row — never an exception. A dict with any key
-    outside ``LINE_KEYS`` gives one problem per such key, naming the line and
-    the key; the row is still returned, carrying only ``LINE_KEYS`` (missing
-    ones as None). Amounts are passed through unvalidated: ``line_problems``
+    problem and contributes no row — never an exception.
+
+    ``dim_keys`` are the dimension keys declared for the journal (injected
+    by the caller — this module reads nothing from frappe). Only the ones
+    matching the legal pattern ``^dim_[a-z0-9_]+\\Z`` are honoured; an
+    illegal one (for example a trailing newline that only a ``$`` anchor
+    would accept) is dropped as if it had never been declared. Duplicates
+    collapse to one, in first-seen order, after ``LINE_KEYS``.
+
+    A dict with any key outside ``LINE_KEYS`` and the (legal, deduped)
+    ``dim_keys`` gives one problem per such key, naming the line and the
+    key — a forged doctype field and an undeclared or illegal dimension key
+    are refused the same way; the row is still returned, carrying only the
+    allowed keys. Within ``LINE_KEYS``, a missing key is ``None`` (#305 A02,
+    unchanged). A missing or explicitly-``None`` dimension key is ``''``
+    (blank), never ``None`` — dimensions are optional, never typed-checked
+    for content. Amounts are passed through unvalidated: ``line_problems``
     and ``balance_problem`` still decide.
     """
     problems = []
     rows = []
     if not isinstance(lines, list):
         return [], ["The journal's lines must be a list."]
+    allowed_dim_keys = []
+    for key in dim_keys:
+        if _DIM_KEY_RE.match(key) and key not in allowed_dim_keys:
+            allowed_dim_keys.append(key)
+    allowed = LINE_KEYS + tuple(allowed_dim_keys)
     for pos, line in enumerate(lines, start=1):
         if not isinstance(line, dict):
             problems.append(f"Line {pos}: not a valid line.")
             continue
         for key in line:
-            if key not in LINE_KEYS:
+            if key not in allowed:
                 problems.append(f"Line {pos}: {key} cannot be set here.")
-        rows.append({key: line.get(key) for key in LINE_KEYS})
+        row = {key: line.get(key) for key in LINE_KEYS}
+        for key in allowed_dim_keys:
+            value = line.get(key)
+            row[key] = "" if value is None else value
+        rows.append(row)
     return rows, problems
 
 

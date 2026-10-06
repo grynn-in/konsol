@@ -36,6 +36,11 @@ APPROVALS_MODEL_PY = os.path.join(CLOSE_DIR, "approvals_model.py")
 CLOSE_POLICY_MODEL_PY = os.path.join(CLOSE_DIR, "close_policy_model.py")
 JOURNAL_MODEL_PY = os.path.join(CLOSE_DIR, "journal_model.py")
 TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
+#: D06 (konsolidat#245 option D): approvals_api reads the declared journal
+#: dimensions through journal_api's one reader, so the real journal_api and
+#: the real, pure tb_dimension_model are loaded by path too.
+JOURNAL_API_PY = os.path.join(CLOSE_DIR, "journal_api.py")
+TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
 
 #: BST (+01:00) in July 2026, mirrors test_close_journal_api.py.
 SITE_TZ = "Europe/London"
@@ -162,6 +167,12 @@ class _Site:
         self.periods = [_period(2026, 7)]
         self.accounts = list(_ACCOUNTS)
         self.lines = []
+        #: D06: Published Dimension rows ({dimension_name, label, in_journal,
+        #: status}); empty, so every pre-D06 test declares none.
+        self.dimensions = []
+        #: D06: Consolidation Journal Line's fields. None = the base columns
+        #: plus one per row in ``dimensions`` (the Custom Field sync has run).
+        self.line_columns = None
         self.journals = []
         self.gers = []
         self.hers = []
@@ -193,6 +204,18 @@ def _match_value(value, cond):
     return value == cond
 
 
+#: Consolidation Journal Line's own columns, as get_valid_columns() lists them.
+_BASE_LINE_COLUMNS = ("name", "owner", "creation", "modified", "modified_by", "docstatus",
+                      "idx", "parent", "parentfield", "parenttype", "data_area_id",
+                      "main_account", "debit_amount", "credit_amount", "description")
+
+
+def _line_columns(site):
+    if site.line_columns is not None:
+        return site.line_columns
+    return _BASE_LINE_COLUMNS + tuple(d["dimension_name"] for d in site.dimensions)
+
+
 def _match(row, filters):
     return all(_match_value(row.get(key), cond) for key, cond in (filters or {}).items())
 
@@ -222,7 +245,14 @@ def _frappe(site):
     def get_all(doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
         site.reads.append(("get_all", doctype))
         if doctype == "Consolidation Journal Line":
+            # Frappe raises on a field the table does not have; so does this.
+            missing = set(fields or ()) - set(_line_columns(site))
+            if missing:
+                raise AssertionError("Unknown column(s) %s" % sorted(missing))
             rows = [r for r in site.lines if _match(r, filters)]
+        elif doctype == "Dimension":
+            rows = sorted((r for r in site.dimensions if _match(r, filters)),
+                          key=lambda r: r.get("dimension_name") or "")
         elif doctype == "Main Account":
             rows = [r for r in site.accounts if _match(r, filters)]
         elif doctype in _DOCTYPE_LIST_ATTR:
@@ -260,8 +290,14 @@ def _frappe(site):
     def sql(*a, **k):
         raise AssertionError("get_queue never runs raw SQL")
 
+    def get_meta(doctype):
+        site.reads.append(("get_meta", doctype))
+        assert doctype == "Consolidation Journal Line", doctype
+        return types.SimpleNamespace(get_valid_columns=lambda: list(_line_columns(site)))
+
     frappe.throw = throw
     frappe._ = lambda s: s
+    frappe.get_meta = get_meta
     frappe.only_for = only_for
     frappe.whitelist = whitelist
     frappe.get_all = get_all
@@ -366,7 +402,8 @@ def _invoke(site, run):
              "konsol.entity_permissions", "konsol.close.self_approval",
              "konsol.close.close_event", "konsol.close.journal_model",
              "konsol.close.close_policy_model", "konsol.close.approvals_model",
-             "konsol.close.timefmt", "close_approvals_api_under_test"]
+             "konsol.close.timefmt", "konsol.tb_dimension_model",
+             "konsol.close.journal_api", "close_approvals_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({
         "frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -382,6 +419,8 @@ def _invoke(site, run):
         close.close_policy_model = _load_path("konsol.close.close_policy_model", CLOSE_POLICY_MODEL_PY)
         close.approvals_model = _load_path("konsol.close.approvals_model", APPROVALS_MODEL_PY)
         close.timefmt = _load_path("konsol.close.timefmt", TIMEFMT_PY)
+        konsol.tb_dimension_model = _load_path("konsol.tb_dimension_model", TB_DIMENSION_MODEL_PY)
+        close.journal_api = _load_path("konsol.close.journal_api", JOURNAL_API_PY)
         api = _load_path("close_approvals_api_under_test", API_PY)
         return run(api)
     finally:
@@ -555,6 +594,118 @@ def test_journal_item_carries_period_and_group_matching_golden_fixture():
     with open(_W41_FIXTURE_PATH) as f:
         golden = json.load(f)
     assert item == golden
+
+
+# --- D06 (konsolidat#245 option D): a pending journal's declared dimensions ----------
+
+
+_W41_DIMS_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "fixtures", "close_approvals_journal_item_dims.json")
+
+
+def _dim(name, label=None, in_journal=1, status="Published"):
+    return {"dimension_name": name, "label": label, "in_journal": in_journal, "status": status}
+
+
+def _w41_site():
+    site = _Site()
+    site.accounts = list(_W41_ACCOUNTS)
+    site.journals = [_journal(
+        "CJ-W41", owner=ANALYST, creation=datetime(2026, 7, 1, 9, 0, 0),
+        modified=datetime(2026, 7, 1, 9, 0, 0), fiscal_year=2026, fiscal_period=7,
+        adjustment_type="topside", description="ZZ accrue sales commission",
+        total_debit=500.0, currency="USD", consolidation_group="G1",
+    )]
+    site.lines = [
+        _line("CJ-W41", 1, "DE02", "2100", debit_amount=500.0),
+        _line("CJ-W41", 2, "DE02", "4100", credit_amount=500.0),
+    ]
+    return site
+
+
+def _w41_item(site):
+    return next(i for i in _all_items(_call(site)) if i["name"] == "CJ-W41")
+
+
+def test_d06_zero_declared_dimensions_lines_are_unchanged_and_dimensions_is_empty():
+    item = _w41_item(_w41_site())
+    assert item["dimensions"] == []
+    for line in item["lines"]:
+        assert set(line) == {"idx", "data_area_id", "main_account", "account_name",
+                             "debit_amount", "credit_amount", "description"}
+
+
+def test_d06_a_pending_journal_carries_each_lines_declared_dimension_values():
+    """The read names the declared fields, so a saved value comes back; blank
+    is '' (never None, never absent) and the item names the dimensions with
+    their labels so the detail panel can head its columns. Committed as the
+    golden fixture close-ui's approvals tests load (a real producer shape)."""
+    site = _w41_site()
+    site.dimensions = [_dim("dim_cost_center", label="Cost Center"), _dim("dim_project")]
+    site.lines[0]["dim_cost_center"] = "CC1"
+    site.lines[0]["dim_project"] = None
+    item = _w41_item(site)
+    assert item["dimensions"] == [{"key": "dim_cost_center", "label": "Cost Center"},
+                                  {"key": "dim_project", "label": "dim_project"}]
+    assert [(l["dim_cost_center"], l["dim_project"]) for l in item["lines"]] == \
+        [("CC1", ""), ("", "")]
+    with open(_W41_DIMS_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert item == golden
+
+
+def test_d06_a_ticked_dimension_without_the_dim_prefix_is_absent_not_an_error():
+    """The name rule (konsol-50, 4 Oct): a ticked in_journal Dimension whose
+    name fails ^dim_[a-z0-9_]+\\Z gets no field from schema_apply. Even if a
+    field of that name exists, it is never read or shown."""
+    site = _w41_site()
+    site.dimensions = [_dim("business_unit"), _dim("dim_cost_center")]
+    site.lines[0]["business_unit"] = "BU1"
+    item = _w41_item(site)
+    assert [d["key"] for d in item["dimensions"]] == ["dim_cost_center"]
+    assert all("business_unit" not in line for line in item["lines"])
+
+
+def test_d06_an_un_ticked_or_unpublished_dimension_is_not_declared():
+    site = _w41_site()
+    site.dimensions = [_dim("dim_a", in_journal="0"), _dim("dim_b", status="Draft"),
+                       _dim("dim_c", in_journal="no")]
+    assert _w41_item(site)["dimensions"] == []
+
+
+def test_d06_a_declared_dimension_whose_field_does_not_exist_yet_is_absent_not_an_error():
+    """The Custom Field sync is queued after the commit (konsol#135): a ticked
+    dimension can have no field yet. Selecting it would make get_all raise and
+    empty the whole approvals queue (and My work, which shares queue_for)."""
+    site = _w41_site()
+    site.dimensions = [_dim("dim_cost_center"), _dim("dim_brand_new")]
+    site.line_columns = _BASE_LINE_COLUMNS + ("dim_cost_center",)
+    item = _w41_item(site)
+    assert [d["key"] for d in item["dimensions"]] == ["dim_cost_center"]
+
+
+def test_d06_no_dimension_read_when_no_journal_is_pending():
+    """Bounded reads: the declared-dimension read sits with the line read,
+    only while a journal is pending."""
+    site = _Site()
+    site.dimensions = [_dim("dim_cost_center")]
+    site.gers = [_ger("GER-1")]
+    _call(site)
+    assert ("get_all", "Dimension") not in site.reads
+    assert ("get_meta", "Consolidation Journal Line") not in site.reads
+
+
+def test_d06_dimension_reads_do_not_scale_with_pending_journals():
+    def site_with(n):
+        site = _Site()
+        site.dimensions = [_dim("dim_cost_center")]
+        site.journals = [_journal("CJ-%d" % i) for i in range(n)]
+        site.lines = [_line("CJ-%d" % i, 1, "DE02", "6100", debit_amount=100.0) for i in range(n)]
+        return site
+    one, five = site_with(1), site_with(5)
+    _call(one), _call(five)
+    assert one.reads.count(("get_all", "Dimension")) == 1
+    assert len(one.reads) == len(five.reads), (one.reads, five.reads)
 
 
 # --- sent back (A09) --------------------------------------------------------------

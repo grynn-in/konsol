@@ -460,6 +460,70 @@ def test_clean_lines_missing_keys_become_none():
     }]
 
 
+# --- konsolidat#245 option D, D01: declared dimension keys on a line
+
+def test_clean_lines_default_dim_keys_behaves_exactly_as_before():
+    """``dim_keys`` defaults to empty: every existing caller (no second
+    argument) sees unchanged behaviour."""
+    rows, problems = M.clean_lines([{"main_account": "1000"}])
+    assert problems == []
+    assert tuple(rows[0]) == M.LINE_KEYS
+
+
+def test_clean_lines_keeps_exactly_the_declared_dim_keys():
+    lines = [{
+        "main_account": "1000", "debit_amount": 100,
+        "dim_cost_center": "CC1", "dim_project": "P1",
+    }]
+    rows, problems = M.clean_lines(lines, ("dim_cost_center", "dim_project"))
+    assert problems == []
+    assert tuple(rows[0]) == M.LINE_KEYS + ("dim_cost_center", "dim_project")
+    assert rows[0]["dim_cost_center"] == "CC1"
+    assert rows[0]["dim_project"] == "P1"
+
+
+def test_clean_lines_refuses_a_dim_key_not_declared_like_a_forged_key():
+    lines = [{"main_account": "1000", "dim_cost_center": "CC1"}]
+    rows, problems = M.clean_lines(lines, ())
+    assert len(problems) == 1
+    assert "dim_cost_center" in problems[0] and "Line 1" in problems[0]
+    assert "dim_cost_center" not in rows[0]
+    assert tuple(rows[0]) == M.LINE_KEYS
+
+
+def test_clean_lines_a_missing_declared_dim_value_is_blank_never_none():
+    lines = [{"main_account": "1000"}]
+    rows, problems = M.clean_lines(lines, ("dim_cost_center",))
+    assert problems == []
+    assert rows[0]["dim_cost_center"] == ""
+    assert rows[0]["dim_cost_center"] is not None
+
+
+def test_clean_lines_a_typed_dim_value_is_never_refused_for_its_content():
+    lines = [{"main_account": "1000", "dim_cost_center": "<not a real leaf>; 💥"}]
+    rows, problems = M.clean_lines(lines, ("dim_cost_center",))
+    assert problems == []
+    assert rows[0]["dim_cost_center"] == "<not a real leaf>; 💥"
+
+
+def test_clean_lines_refuses_a_dim_key_that_is_not_legal_using_z_not_dollar():
+    """``^dim_[a-z0-9_]+\\Z`` must anchor on \\Z, not ``$`` — a ``$`` anchor
+    wrongly accepts a trailing newline. ``\"dim_x\\n\"`` is illegal and must
+    not be honoured as declared, even though it is passed in as declared."""
+    lines = [{"main_account": "1000", "dim_x\n": "v"}]
+    rows, problems = M.clean_lines(lines, ("dim_x\n",))
+    assert len(problems) == 1
+    assert "dim_x" in problems[0] and "Line 1" in problems[0]
+    assert "dim_x\n" not in rows[0]
+    assert tuple(rows[0]) == M.LINE_KEYS
+
+
+def test_clean_lines_statement_effect_unchanged_by_dimensions():
+    """Dimensions don't change the heading effect: ``statement_effect``
+    takes no ``dim_keys`` argument."""
+    assert M.statement_effect.__code__.co_varnames[:2] == ("lines", "accounts")
+
+
 #: A02's own fixture (the row's stated case): the journal's own period is
 #: FY2024 P07. P08 Open Regular and P11 Open Regular qualify; P09 Closed and
 #: P10 Open Closing do not, nor does the own period or an earlier one.

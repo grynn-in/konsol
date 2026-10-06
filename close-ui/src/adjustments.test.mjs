@@ -14,11 +14,14 @@ import {
 	effectView,
 	editable,
 	snapshotDraft,
+	snapshotLines,
 	draftDirty,
 	canOpenNew,
 	canSaveDraft,
 	canSendDraft,
 	formatAmount,
+	dimKeysOf,
+	dimValueText,
 } from "./adjustments.js";
 
 const NOW = new Date("2026-10-03T12:00:00Z");
@@ -30,6 +33,7 @@ function payload(overrides = {}) {
 		journals: [],
 		groups: [{ consolidation_group: "Demo Group", reporting_currency: "USD", entities: ["ZZ-A", "ZZ-B"] }],
 		accounts: {},
+		dimensions: [],
 		reversal_choices: [],
 		workflow_installed: true,
 		first_state: "Draft",
@@ -107,6 +111,15 @@ test("journalsView: a null approved_at reads 'not recorded'", () => {
 test("journalsView requires a time zone and a valid now", () => {
 	assert.throws(() => journalsView(payload(), NOW, null));
 	assert.throws(() => journalsView(payload(), new Date("not a date"), TZ));
+});
+
+// D04 correction to D03: get_journals (D02) always sends `dimensions`, even
+// as `[]`; a missing key is a bug in the caller (or a stale/forged
+// payload), never "zero dimensions" (no silent fallback).
+test("journalsView: failure path, a missing `dimensions` key throws rather than defaulting to []", () => {
+	const p = payload();
+	delete p.dimensions;
+	assert.throws(() => journalsView(p, NOW, TZ), /dimensions/);
 });
 
 // --- durationOptions, durationIndex --------------------------------------
@@ -455,4 +468,163 @@ test("canSendDraft: requires canSend, canEditPeriod, a saved name, and no unsave
 	assert.equal(canSendDraft(view, { name: "CJ-00001" }, true), false, "dirty (U3)");
 	const locked = journalsView(payload({ can_send: true, can_edit_period: false }), NOW, TZ);
 	assert.equal(canSendDraft(locked, { name: "CJ-00001" }, false), false, "locked period (U4)");
+});
+
+// --- konsolidat#245 option D (D03): dimensions in the view, the snapshot
+// and the save body ---------------------------------------------------
+//
+// Fed journal_api.get_journals's real payload shape (A05/D02):
+// `dimensions: [{key, label, suggestions}]` on the payload, and each
+// declared key present (default '') on every line.
+
+const DIMENSIONS = [
+	{ key: "dim_cost_center", label: "Cost Center", suggestions: ["CC-100", "CC-200"] },
+];
+
+test("journalsView: carries payload.dimensions through as view.dimensions", () => {
+	const view = journalsView(payload({ dimensions: DIMENSIONS }), NOW, TZ);
+	assert.deepEqual(view.dimensions, DIMENSIONS);
+});
+
+test("journalsView: zero declared dimensions -> view.dimensions is [] (identical to today)", () => {
+	const view = journalsView(payload(), NOW, TZ);
+	assert.deepEqual(view.dimensions, []);
+	// every other key journalsView has always returned is unaffected
+	assert.equal(view.canDraft, true);
+	assert.equal(view.canEditPeriod, true);
+});
+
+test("snapshotLines: a declared dim key is carried, default '' when missing", () => {
+	const lines = snapshotLines(
+		[{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x" }],
+		["dim_cost_center"],
+	);
+	assert.equal(lines[0].dim_cost_center, "");
+});
+
+test("snapshotLines: a declared dim key's real value is carried, never refused (typed text not in suggestions)", () => {
+	const lines = snapshotLines(
+		[{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x", dim_cost_center: "anything typed" }],
+		["dim_cost_center"],
+	);
+	assert.equal(lines[0].dim_cost_center, "anything typed");
+});
+
+test("snapshotLines: failure path, zero declared dimensions carries no dim key at all (identical to today)", () => {
+	const lines = snapshotLines([{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x", dim_cost_center: "CC-100" }]);
+	assert.deepEqual(Object.keys(lines[0]).sort(), ["credit_amount", "data_area_id", "debit_amount", "description", "main_account"].sort());
+});
+
+test("draftDirty: a changed declared dim value is dirty when dimKeys is passed (U3)", () => {
+	const draft = blankDraft({
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 100, credit_amount: 0, description: "x", dim_cost_center: "CC-100" }],
+	});
+	const snapshot = snapshotDraft(draft, ["dim_cost_center"]);
+	draft.lines[0].dim_cost_center = "CC-200";
+	assert.equal(draftDirty(snapshot, draft, ["dim_cost_center"]), true);
+});
+
+test("draftDirty: an unchanged declared dim value is never dirty against its own snapshot (U3)", () => {
+	const draft = blankDraft({
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 100, credit_amount: 0, description: "x", dim_cost_center: "CC-100" }],
+	});
+	const snapshot = snapshotDraft(draft, ["dim_cost_center"]);
+	assert.equal(draftDirty(snapshot, draft, ["dim_cost_center"]), false);
+});
+
+test("draftDirty: failure path, zero declared dimensions ignores a dim-looking key (identical to today)", () => {
+	const draft = blankDraft({
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 100, credit_amount: 0, description: "x", dim_cost_center: "CC-100" }],
+	});
+	const snapshot = snapshotDraft(draft);
+	draft.lines[0].dim_cost_center = "CC-200";
+	assert.equal(draftDirty(snapshot, draft), false);
+});
+
+test("saveJournalBody: sends exactly LINE_KEYS plus the declared dim keys, default '' when missing", () => {
+	const draft = {
+		consolidation_group: "Demo Group",
+		adjustment_type: "topside",
+		description: "Reclass",
+		duration: { kind: "none" },
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x" }],
+	};
+	const body = saveJournalBody(PERIOD, draft, ["dim_cost_center"]);
+	const line = JSON.parse(body.lines)[0];
+	assert.deepEqual(
+		Object.keys(line).sort(),
+		["credit_amount", "data_area_id", "debit_amount", "description", "main_account", "dim_cost_center"].sort(),
+	);
+	assert.equal(line.dim_cost_center, "");
+});
+
+test("saveJournalBody: a typed dim value is sent verbatim, never refused (konsol#247)", () => {
+	const draft = {
+		consolidation_group: "Demo Group",
+		adjustment_type: "topside",
+		description: "Reclass",
+		duration: { kind: "none" },
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x", dim_cost_center: "anything typed" }],
+	};
+	const body = saveJournalBody(PERIOD, draft, ["dim_cost_center"]);
+	const line = JSON.parse(body.lines)[0];
+	assert.equal(line.dim_cost_center, "anything typed");
+});
+
+test("saveJournalBody: failure path, an undeclared dim key on a draft line is dropped", () => {
+	const draft = {
+		consolidation_group: "Demo Group",
+		adjustment_type: "topside",
+		description: "Reclass",
+		duration: { kind: "none" },
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x", dim_cost_center: "CC-100", dim_project: "forged" }],
+	};
+	// dim_project is NOT in the declared dimKeys, so it must never reach the body.
+	const body = saveJournalBody(PERIOD, draft, ["dim_cost_center"]);
+	const line = JSON.parse(body.lines)[0];
+	assert.equal(line.dim_cost_center, "CC-100");
+	assert.equal(line.dim_project, undefined);
+});
+
+test("saveJournalBody: failure path, zero declared dimensions sends no dim key at all (identical to today)", () => {
+	const draft = {
+		consolidation_group: "Demo Group",
+		adjustment_type: "topside",
+		description: "Reclass",
+		duration: { kind: "none" },
+		lines: [{ data_area_id: "ZZ-A", main_account: "6100", debit_amount: 1, credit_amount: 0, description: "x", dim_cost_center: "CC-100" }],
+	};
+	const body = saveJournalBody(PERIOD, draft);
+	const line = JSON.parse(body.lines)[0];
+	assert.deepEqual(Object.keys(line).sort(), ["credit_amount", "data_area_id", "debit_amount", "description", "main_account"].sort());
+});
+
+// --- konsolidat#245 option D (D04): dimKeysOf, dimValueText (Adjustments.vue's
+// screen-level helpers) --------------------------------------------------
+//
+// Fed journalsView's real output, not a hand-built dict (coordinator
+// instruction: screen-source greps alone are not enough).
+
+test("dimKeysOf: the declared keys, in the server's order, from journalsView's output", () => {
+	const view = journalsView(payload({ dimensions: DIMENSIONS }), NOW, TZ);
+	assert.deepEqual(dimKeysOf(view), ["dim_cost_center"]);
+});
+
+test("dimKeysOf: failure path, zero declared dimensions gives [] (identical to today)", () => {
+	const view = journalsView(payload({ dimensions: [] }), NOW, TZ);
+	assert.deepEqual(dimKeysOf(view), []);
+});
+
+test("dimKeysOf: failure path, no view yet (not loaded) gives []", () => {
+	assert.deepEqual(dimKeysOf(null), []);
+});
+
+test("dimValueText: a missing, null or blank value reads as the explicit em dash", () => {
+	assert.equal(dimValueText({}, "dim_cost_center"), "—");
+	assert.equal(dimValueText({ dim_cost_center: null }, "dim_cost_center"), "—");
+	assert.equal(dimValueText({ dim_cost_center: "" }, "dim_cost_center"), "—");
+});
+
+test("dimValueText: a real typed value is shown verbatim, never refused (konsol#247)", () => {
+	assert.equal(dimValueText({ dim_cost_center: "CC-100" }, "dim_cost_center"), "CC-100");
 });

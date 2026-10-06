@@ -56,6 +56,7 @@ function journalItem(overrides = {}) {
 		},
 		total_debit: 18500,
 		currency: "USD",
+		dimensions: [],
 		...overrides,
 	};
 }
@@ -301,4 +302,38 @@ test("the source imports no vue, frappe or xstate", () => {
 
 test("approveAction is exported and the imported one (re-export round trip)", () => {
 	assert.deepEqual(approveAction({ mode: "direct", message: null }), { kind: "button", message: null });
+});
+
+// --- D06 (konsolidat#245 option D): a journal's declared dimensions ---------
+
+const DIMS_FIXTURE = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_approvals_journal_item_dims.json", import.meta.url),
+);
+
+test("D06: a journal item with declared dimensions (the real producer's golden fixture) keeps them and each line's values", () => {
+	const item = JSON.parse(readFileSync(DIMS_FIXTURE, "utf8"));
+	const view = queueView(payload({ items: [item] }), NOW, TZ);
+	assert.deepEqual(view.items[0].dimensions, [
+		{ key: "dim_cost_center", label: "Cost Center" },
+		{ key: "dim_project", label: "dim_project" },
+	]);
+	assert.deepEqual(view.items[0].lines.map((l) => [l.dim_cost_center, l.dim_project]), [["CC1", ""], ["", ""]]);
+});
+
+test("D06: zero declared dimensions — a journal item's dimensions is [] and its lines are unchanged", () => {
+	const view = queueView(payload({ items: [journalItem()] }), NOW, TZ);
+	assert.deepEqual(view.items[0].dimensions, []);
+	assert.deepEqual(view.items[0].lines, journalItem().lines);
+});
+
+test("D06 failure path: a journal item without `dimensions` throws (approvals_api always sends it), never reads as none declared", () => {
+	const item = journalItem();
+	delete item.dimensions;
+	assert.throws(() => queueView(payload({ items: [item] }), NOW, TZ), /dimensions/);
+	assert.throws(() => queueView(payload({ sent_back: [{ ...item, sent_back: true, rejection: { reason: "r", actor: "a", at: "2026-09-19T08:00:00+00:00" } }] }), NOW, TZ), /dimensions/);
+});
+
+test("D06: a non-journal item gets no dimensions key", () => {
+	const view = queueView(payload({ items: [gerItem()] }), NOW, TZ);
+	assert.equal("dimensions" in view.items[0], false);
 });

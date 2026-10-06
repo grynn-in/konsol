@@ -332,3 +332,34 @@ test("Failure path: a non-ok or thrown statement shows its own message text, in 
 		"the error message and the table are sibling branches, never shown together",
 	);
 });
+
+// --- D06 (konsolidat#245 option D): the journal detail shows each line's dimensions ---
+
+function linesTable(tpl) {
+	const panel = tpl.indexOf('aria-label="Journal detail"');
+	assert.ok(panel >= 0, "the journal detail panel exists");
+	const open = tpl.indexOf("<table", panel);
+	assert.ok(open >= 0, "the detail panel has a lines table");
+	const { start, end } = blockFor(tpl, open, "table");
+	return tpl.slice(start, end);
+}
+
+test("D06: the detail panel's lines table heads one column per selectedItem.dimensions, labelled by its label", () => {
+	const table = linesTable(template(read()));
+	assert.match(table, /<th v-for="dim in selectedItem\.dimensions" :key="dim\.key"[^>]*>\{\{ dim\.label \}\}<\/th>/);
+});
+
+test("D06: each line shows its value per declared dimension through dimValueText (blank reads as an explicit —)", () => {
+	const table = linesTable(template(read()));
+	assert.match(table, /<td v-for="dim in selectedItem\.dimensions" :key="dim\.key"[^>]*>\{\{ dimValueText\(line, dim\.key\) \}\}<\/td>/);
+	assert.match(script(read()), /import \{[^}]*\bdimValueText\b[^}]*\} from "\.\.\/adjustments\.js"/);
+});
+
+test("D06: zero declared dimensions — the golden journal item renders no dimension cell (v-for over an empty list)", () => {
+	const item = golden(ITEM_FIXTURE);
+	assert.deepEqual(item.dimensions, []);
+	const table = linesTable(template(read()));
+	// The only dimension markup is the two v-for loops over selectedItem.dimensions.
+	assert.equal((table.match(/dim\b/g) || []).length >= 2, true);
+	assert.equal((table.match(/v-for="dim in /g) || []).length, 2);
+});

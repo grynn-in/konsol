@@ -54,6 +54,7 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
 import { queueView, approveBody, rejectBody } from "../approvals.js";
+import { dimValueText } from "../adjustments.js";
 import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
@@ -450,6 +451,8 @@ function balanceText(item) {
 							<th class="py-1 font-medium">Account</th>
 							<th class="py-1 font-medium">Dr</th>
 							<th class="py-1 font-medium">Cr</th>
+							<!-- D06: one column per declared journal dimension; none when zero are declared. -->
+							<th v-for="dim in selectedItem.dimensions" :key="dim.key" class="py-1 font-medium">{{ dim.label }}</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -458,6 +461,7 @@ function balanceText(item) {
 							<td class="py-1 text-ink-gray-8">{{ line.account_name || line.main_account }}</td>
 							<td class="py-1 font-mono text-ink-gray-8">{{ line.debit_amount || "" }}</td>
 							<td class="py-1 font-mono text-ink-gray-8">{{ line.credit_amount || "" }}</td>
+							<td v-for="dim in selectedItem.dimensions" :key="dim.key" class="py-1 text-ink-gray-8">{{ dimValueText(line, dim.key) }}</td>
 						</tr>
 					</tbody>
 				</table>
