@@ -197,7 +197,17 @@ class EPMFiscalYear(Document):
         # republish the table and request nothing.
         before = self.get_doc_before_save()
         if _published_calendar(self) != (_published_calendar(before) if before else []):
+            self._stamp_calendar_change()
             self._request_rebuild("on_update")
+
+    def _stamp_calendar_change(self):
+        """konsol#340: freshness reads calendar_changed_at, not `modified`
+        (every Close, Lock and Reopen bumps `modified`, and no build would
+        clear it). Stamped here, with the build request, so the two move
+        together. db_set, not before_save: on_update runs even when a caller
+        sets flags.ignore_validate, and update_modified=False leaves
+        `modified` as the save set it."""
+        self.db_set("calendar_changed_at", frappe.utils.now_datetime(), update_modified=False)
 
     def after_delete(self):
         """after_delete, NOT on_trash: the sync re-reads every year, and

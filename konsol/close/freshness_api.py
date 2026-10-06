@@ -6,8 +6,9 @@ Reads the live site and passes it through the pure A05 model
 - builds: Build Approval rows in a terminal (Completed, Failed) or flagged
   state; Cancelled rows are not read.
 - changes: the latest ``modified`` per build trigger doctype, i.e.
-  ``hooks._dbt_trigger_doctypes`` plus ``Entity`` (its build is requested from
-  its controller, entity.py). A submittable doctype counts only
+  ``hooks._dbt_trigger_doctypes`` plus ``CONTROLLER_TRIGGERS`` (Entity and EPM
+  Fiscal Year, whose builds are requested from their controllers). EPM Fiscal
+  Year is read by ``calendar_changed_at``, not ``modified`` (konsol#340). A submittable doctype counts only
   ``docstatus IN (1,2)``: a draft never triggers a build (tasks.py
   queue_consolidation_build).
 - scope_of: ``tasks.DOCTYPE_BUILD_MAP``. A trigger doctype missing from it
@@ -16,7 +17,8 @@ Reads the live site and passes it through the pure A05 model
 Deletes (konsol#305 A42): Frappe leaves no ``modified`` behind on delete, only
 a ``Deleted Document`` row (``deleted_doctype``, ``creation``). For every
 NON-submittable trigger doctype (Consolidation Group, IC Elimination Rule,
-Entity, ...) the latest ``Deleted Document.creation`` is taken as a change
+Entity, EPM Fiscal Year, ...) the latest ``Deleted Document.creation`` is
+taken as a change
 too, whichever is later than the live table's own ``MAX(modified)``.
 Submittable doctypes are excluded: they can only delete drafts (which never
 triggered a build) or cancelled records (whose cancel already left a
@@ -28,8 +30,17 @@ from konsol import build_lock, hooks, tasks
 from konsol.close.freshness_model import COMPLETED, FAILED, freshness
 from konsol.close.timefmt import zoned_iso
 
-#: Requested from Entity's controller, not from doc_events (hooks.py).
-CONTROLLER_TRIGGERS = ("Entity",)
+#: Requested from the doctype's controller, not from doc_events (hooks.py):
+#: Entity (entity.py), and EPM Fiscal Year only when the published calendar
+#: changes (konsol#337).
+CONTROLLER_TRIGGERS = ("Entity", "EPM Fiscal Year")
+
+#: konsol#340: the column that moves only when a change reaches the numbers,
+#: where `modified` also moves on changes that do not. EPM Fiscal Year's
+#: `modified` moves on every period Close, Lock and Reopen; its controller
+#: stamps calendar_changed_at with the build request instead. Every other
+#: trigger reads `modified`.
+CHANGE_COLUMN = {"EPM Fiscal Year": "calendar_changed_at"}
 
 
 def _trigger_doctypes():
@@ -68,7 +79,8 @@ def _latest_changes(doctypes):
     for dt in doctypes:
         is_submittable = frappe.get_meta(dt).is_submittable
         where = " WHERE docstatus IN (1,2)" if is_submittable else ""
-        rows = frappe.db.sql(f"SELECT MAX(modified) FROM `tab{dt}`{where}")
+        column = CHANGE_COLUMN.get(dt, "modified")
+        rows = frappe.db.sql(f"SELECT MAX({column}) FROM `tab{dt}`{where}")
         modified[dt] = rows[0][0] if rows else None
         if not is_submittable:
             non_submittable.append(dt)
