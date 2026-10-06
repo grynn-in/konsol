@@ -65,7 +65,10 @@ draft they own (``approvals_api.sent_back_for``, A21, turned into items by
 ``mywork_model.sent_back_items``). It does not depend on the first close.
 #305-W5-1 (story 9.4, #157): the preparer of a rejected sign-off (the run's
 ``triggered_by``) also gets one ``todo`` item per period until it is signed
-again (``_signoff_events``, ``mywork_model.signoff_sent_back_items``).
+again (``_signoff_events``, ``mywork_model.signoff_sent_back_items``). Only
+the Open Regular periods' rejections are read, the latest event is the last
+written (its series number), and the rejecter is named by full name
+(review-w5 S13).
 
 ``counts.by_screen`` holds ``{count, blocking}`` for every screen the persona
 sees (``SCREENS``, held equal to close-ui/src/nav.js by the test). My work
@@ -334,13 +337,24 @@ def _signoff_event(row):
 
 
 def _signoff_events(user):
-    """#305-W5-1: every ``signoff_rejected`` Close Event, and, only when one
-    names ``user`` as the preparer, the ``signed_off`` events of those
-    periods' fiscal years (``mywork_model.signoff_sent_back_items`` decides
-    which periods are still sent back). ``[]`` when nothing names ``user``."""
+    """#305-W5-1: the ``signoff_rejected`` Close Events of the Open Regular
+    periods (review-w5 S13: a rejection can only land on an Open period, and
+    a closed one has nothing left to fix, so nothing else is read or
+    parsed), and, only when one names ``user`` as the preparer, the
+    ``signed_off`` events of those periods' fiscal years
+    (``mywork_model.signoff_sent_back_items`` decides which periods are still
+    sent back). ``[]`` when nothing names ``user``; no Open Regular period
+    reads nothing."""
+    open_keys = {(int(r["fiscal_year"]), int(r["fiscal_period"]))
+                 for r in fiscal_calendar.fiscal_period_rows()
+                 if r.get("period_type") == REGULAR and r.get("status") == "Open"}
+    if not open_keys:
+        return []
     rejected = [_signoff_event(r) for r in frappe.get_all(
-        "Close Event", filters={"kind": "signoff_rejected"}, fields=_SIGNOFF_EVENT_FIELDS,
-        limit_page_length=0)]
+        "Close Event", filters={"kind": "signoff_rejected",
+                                "fiscal_year": ["in", sorted({k[0] for k in open_keys})]},
+        fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)
+        if (int(r["fiscal_year"]), int(r["fiscal_period"])) in open_keys]
     mine = {(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in rejected
             if (r["detail"] or {}).get("preparer") == user}
     if not mine:
@@ -351,6 +365,20 @@ def _signoff_events(user):
         fields=_SIGNOFF_EVENT_FIELDS, limit_page_length=0)]
     return [r for r in rejected + signed
             if (int(r["fiscal_year"]), int(r["fiscal_period"])) in mine]
+
+
+def _user_names(events):
+    """``{user id: full name}`` of the rejecters in ``events`` that still
+    exist, in one User read (review-w5 S13; as ``statement_api`` names a
+    commentary's author). A user who no longer exists has no entry, so the
+    item names them by id."""
+    actors = sorted({e["actor"] for e in events
+                     if e["kind"] == "signoff_rejected" and e.get("actor")})
+    if not actors:
+        return {}
+    return {u["name"]: u.get("full_name") or u["name"]
+            for u in frappe.get_all("User", filters={"name": ["in", actors]},
+                                    fields=["name", "full_name"], limit_page_length=0)}
 
 
 def _newest_run(key):
@@ -511,7 +539,8 @@ def get_my_work():
     signoff_events = _signoff_events(frappe.session.user)
     if signoff_events:
         items.extend(mywork_model.signoff_sent_back_items(
-            signoff_events, frappe.session.user, persona, codes or _period_codes()))
+            signoff_events, frappe.session.user, persona, codes or _period_codes(),
+            _user_names(signoff_events)))
     items = mywork_model.rank(items)
     return {"items": items, "counts": _counts(items, persona, screen_counts),
             "entities_assigned": entities_assigned}
