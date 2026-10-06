@@ -219,7 +219,9 @@ _MAIN_ACCOUNTS = [
 
 def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
          intercompany_declaration="", published=0, sql_log=None,
-         statement_cta_account="", statement_result_account="", get_all_log=None):
+         statement_cta_account="", statement_result_account="", get_all_log=None,
+         commentary_threshold_amount=0, commentary_threshold_percent=0,
+         commentary_threshold_combine=""):
     """``published`` is what the stubbed locking count of Published
     Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
     to ``sql_log`` (when given) as ``(query, values)`` (C16, #305-W3-7).
@@ -263,6 +265,9 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
         doc.intercompany_declaration = intercompany_declaration
         doc.statement_cta_account = statement_cta_account
         doc.statement_result_account = statement_result_account
+        doc.commentary_threshold_amount = commentary_threshold_amount
+        doc.commentary_threshold_percent = commentary_threshold_percent
+        doc.commentary_threshold_combine = commentary_threshold_combine
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
@@ -678,3 +683,57 @@ def test_valid_cta_and_result_accounts_save():
     assert sorted(filters["name"][1]) == ["3100", "3300"]
     assert set(fields) == {"name", "is_group", "status", "statement_section", "account_name",
                             "parent_account"}
+
+
+# ---------------------------------------------------------------------------
+# konsol#305-W5-2 (story 8.4): the commentary threshold. An amount, a
+# percentage, or both with a declared combine rule; no default (0 / blank is
+# undeclared, reported as a setup gap elsewhere). Negative values, an unknown
+# combine rule, or a combine rule without both values are refused at save.
+# ---------------------------------------------------------------------------
+
+def test_commentary_section_has_the_three_fields_with_no_default():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    order = [f["fieldname"] for f in _doc()["fields"]]
+    assert by_name["commentary_section"]["fieldtype"] == "Section Break"
+    assert by_name["commentary_section"]["label"] == "Commentary"
+    assert order.index("commentary_section") > order.index("statement_result_account")
+    expected = {"commentary_threshold_amount": "Float",
+                "commentary_threshold_percent": "Percent",
+                "commentary_threshold_combine": "Select"}
+    for fname, ftype in expected.items():
+        field = by_name[fname]
+        assert field["fieldtype"] == ftype, fname
+        assert "default" not in field, f"{fname} must have no default"
+        assert not field.get("reqd"), f"{fname} must not be reqd"
+        assert not field.get("permlevel"), f"{fname} must be permlevel 0"
+        assert order.index(fname) > order.index("commentary_section")
+    assert by_name["commentary_threshold_combine"]["options"] == (
+        "\nEither is exceeded\nBoth are exceeded")
+    assert "No default" in by_name["commentary_threshold_amount"]["description"]
+
+
+def test_undeclared_commentary_threshold_saves():
+    _run(None, None, _default_period_row)
+
+
+def test_declared_commentary_threshold_saves():
+    _run(None, None, _default_period_row, commentary_threshold_amount=5000,
+         commentary_threshold_percent=10, commentary_threshold_combine="Either is exceeded")
+
+
+def test_negative_commentary_threshold_is_refused():
+    try:
+        _run(None, None, _default_period_row, commentary_threshold_amount=-5)
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "negative" in str(e), str(e)
+
+
+def test_combine_rule_without_both_values_is_refused():
+    try:
+        _run(None, None, _default_period_row, commentary_threshold_amount=5000,
+             commentary_threshold_combine="Both are exceeded")
+        assert False, "expected a throw"
+    except _Refused as e:
+        assert "both" in str(e), str(e)
