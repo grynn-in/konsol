@@ -88,6 +88,14 @@ Reads the site and passes it through the pure models:
   matches is an ``ic_unrealized_profit_rule_undeclared`` gap naming the
   pairs and their ``entities``. One IC Balance read, plus one rule read
   when a balance exists. Imported lazily.
+- ``shared_reads()`` (review-w5 S9): the reads every period's gate makes
+  alike, made once: ``{"commentary_threshold": commentary_threshold(),
+  "ic_balances": ic_balance_api.open_reads()}``. A request that gates
+  several periods (My work) calls it once and passes it to each
+  ``sign_off_problems(fy, fp, shared)``, which then reads neither the
+  commentary threshold (3 Close Settings reads) nor the IC Balances and
+  rules (1 + 1) again. No cache: the value lives as long as the caller
+  holds it. ``sign_off_problems`` with no ``shared`` reads them itself.
 - ``intercompany(fy, fp)`` -> ``ic_api.signoff_summary(fy, fp)``: the IC line
   for the sign-off signature (#305-W3-8). It never raises for a warehouse
   failure; a read failure comes back as its own ``"error"`` / ``"not_built"``
@@ -280,6 +288,16 @@ def commentary(fiscal_year, fiscal_period):
     return statement_api.signoff_commentary(fiscal_year, fiscal_period)
 
 
+def shared_reads():
+    """``{"commentary_threshold", "ic_balances"}``: the reads that are the
+    same for every period, made once for a request that gates several
+    (S9). See the module docstring."""
+    # Lazy: test loaders stub konsol.close.ic_balance_api.
+    from konsol.close import ic_balance_api
+    return {"commentary_threshold": commentary_threshold(),
+            "ic_balances": ic_balance_api.open_reads()}
+
+
 def _latest_runs():
     """The latest terminal Assertion Run per period (mirrors assertion_run.latest_close_run)."""
     # Imported here: assertion_run's sign-off will call this gate (A22).
@@ -304,8 +322,10 @@ def _submitted(doctype, key):
     )
 
 
-def sign_off_problems(fiscal_year, fiscal_period):
-    """``{"config_gaps": [...], "order": {...}|None, "completeness": {...}|None}``."""
+def sign_off_problems(fiscal_year, fiscal_period, shared=None):
+    """``{"config_gaps": [...], "order": {...}|None, "completeness": {...}|None}``.
+    ``shared`` (``shared_reads()``) spares the per-period reads of the
+    commentary threshold and the IC Balances (S9)."""
     key = _key(fiscal_year, fiscal_period)
     rows = fiscal_calendar.fiscal_period_rows()
     row = _regular_row(rows, key)
@@ -330,7 +350,8 @@ def sign_off_problems(fiscal_year, fiscal_period):
     # #305-W5-2 (story 8.4): an undeclared commentary threshold is a setup
     # gap, right after the statement gap. Only Close Settings is read here;
     # the statement itself is read by ``commentary`` (sign-off only).
-    threshold_problem = commentary_gap()
+    threshold_problem = (commentary_gap() if shared is None
+                         else shared["commentary_threshold"]["gap"])
     if threshold_problem:
         gaps.append(threshold_problem)
     tolerance = ic_api.tolerance_gap()
@@ -340,7 +361,8 @@ def sign_off_problems(fiscal_year, fiscal_period):
     # unrealised-profit rule matches eliminates nothing; it blocks. Lazy:
     # test loaders stub konsol.close.ic_balance_api (see its docstring).
     from konsol.close import ic_balance_api
-    rule = ic_balance_api.rule_gap(*key)
+    rule = ic_balance_api.rule_gap(
+        *key, reads=None if shared is None else shared["ic_balances"])
     if rule:
         gaps.append(rule)
     tbs = _submitted("Trial Balance Submission", key)

@@ -20,6 +20,10 @@
 - the missing unrealised-profit rule gap (#305 5.4, W5-4), group personas
   only: ``ic_balance_api.open_rule_gap()`` over the open periods' draft and
   approved IC Balances; the rule is declared in Desk;
+- S9 (review-w5): ``signoff_gate.shared_reads()`` is called once per
+  request; the commentary-threshold gap, the rule gap above and every
+  period's ``sign_off_problems`` read from it, so the threshold and the IC
+  Balances and rules are read once, not once per open period;
 - period items (A20/A45 ``mywork_model.period_items``) for every Regular
   period that is Open, has started (``start_date <= today``) and is not
   history (on or after the first close period).
@@ -240,7 +244,7 @@ def _ownership_scope(leaves, first_close):
     return in_scope, uncovered
 
 
-def _gap_facts(first_close, persona, allowed):
+def _gap_facts(first_close, persona, allowed, shared):
     leaves = _leaves()
     in_scope, uncovered = _ownership_scope(leaves, first_close)
     frequency_missing = [e for e, f in leaves.items() if e in in_scope and not f]
@@ -257,7 +261,8 @@ def _gap_facts(first_close, persona, allowed):
             policy_gaps = policy_gaps + [statement_gap]
         # #305-W5-2 (story 8.4): the undeclared commentary threshold, the
         # same way (Close Settings only; no statement is read here).
-        commentary_gap = signoff_gate.commentary_gap()
+        # S9: read once per request (``shared``), not again here.
+        commentary_gap = shared["commentary_threshold"]["gap"]
         if commentary_gap is not None:
             policy_gaps = policy_gaps + [commentary_gap]
     return {
@@ -269,15 +274,16 @@ def _gap_facts(first_close, persona, allowed):
         "policy_gaps": policy_gaps,
         "ic_accounts_gap": ic_api.setup_gap() if group else None,
         "ic_tolerance_gap": ic_api.tolerance_gap() if group else None,
-        "ic_rule_gap": _ic_rule_gap() if group else None,
+        "ic_rule_gap": _ic_rule_gap(shared) if group else None,
     }, uncovered
 
 
-def _ic_rule_gap():
+def _ic_rule_gap(shared):
     """#305 5.4 (W5-4): IC Balance pairs of the open periods with no
-    unrealised-profit rule. Lazy: test loaders stub konsol.close.ic_balance_api."""
+    unrealised-profit rule, from the request's shared reads (S9). Lazy: test
+    loaders stub konsol.close.ic_balance_api."""
     from konsol.close import ic_balance_api
-    return ic_balance_api.open_rule_gap()
+    return ic_balance_api.open_rule_gap(shared["ic_balances"])
 
 
 def _name_ownership_periods(items, uncovered):
@@ -388,7 +394,7 @@ def _rates_error_item(key, code, error, end_date):
     }
 
 
-def _period_facts(first_close, allowed, today):
+def _period_facts(first_close, allowed, today, shared):
     """``(per_period, extra_items)``; extra items are the rate-gate errors."""
     as_of_text = current_freshness()["as_of"]
     as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
@@ -400,7 +406,7 @@ def _period_facts(first_close, allowed, today):
             # A53: the age shown for a period is its end date. A period row with
             # no end date is a configuration problem, never silently today's date.
             frappe.throw("%s has no end date: fix its row in EPM Fiscal Year." % code)
-        problems = signoff_gate.sign_off_problems(key[0], key[1])
+        problems = signoff_gate.sign_off_problems(key[0], key[1], shared)
         completeness = problems.get("completeness") or {}
         missing = sorted(completeness.get("missing") or ())
         blocked = bool(problems.get("config_gaps") or problems.get("order") or completeness)
@@ -470,10 +476,13 @@ def get_my_work():
     # never asked of anyone else.
     entities_assigned = ((allowed is None or bool(allowed))
                          if persona == period_model.ENTITY_ACCOUNTANT else None)
-    facts, uncovered = _gap_facts(first_close, persona, allowed)
+    # S9 (review-w5): the commentary threshold and the open periods' IC
+    # Balances and rules, read once for the setup gaps and every period's gate.
+    shared = signoff_gate.shared_reads()
+    facts, uncovered = _gap_facts(first_close, persona, allowed, shared)
     items = _name_ownership_periods(mywork_model.setup_gap_items(facts), uncovered)
     if first_close is not None:
-        per_period, extra = _period_facts(first_close, allowed, today)
+        per_period, extra = _period_facts(first_close, allowed, today, shared)
         items.extend(mywork_model.period_items(persona, per_period, first_close))
         if persona == period_model.ENTITY_ACCOUNTANT:
             items.extend(mywork_model.ic_fix_items(

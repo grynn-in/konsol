@@ -412,7 +412,7 @@ def _load(site):
 
     # #305 5.4: the gate imports konsol.close.ic_balance_api lazily.
     ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
-    ic_balance_api.rule_gap = lambda fiscal_year, fiscal_period: site.ic_rule_gap
+    ic_balance_api.rule_gap = lambda fiscal_year, fiscal_period, reads=None: site.ic_rule_gap
     close.ic_balance_api = ic_balance_api
 
     # W5-2 (8.4): a stub `konsol.close.statement_api` (the real one reads

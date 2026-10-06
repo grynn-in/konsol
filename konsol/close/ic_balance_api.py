@@ -16,10 +16,18 @@
   through ``insert()`` / ``save()`` with no ignore flag, so the doctype's
   own validate (period declared) and Frappe's permissions still apply. A
   missing rule is NOT refused here (W5-4 rejected option): it is a gap.
-- ``rule_gap(fy, fp)`` (sign-off gate) and ``open_rule_gap()`` (My work):
-  ``ic_balance_model.rule_gap`` over the period's / every Open period's
-  draft and approved balances. Not whitelisted: the callers gate and scope.
-  Reads: IC Balance 1; IC Elimination Rule 1 only when a balance exists.
+- ``rule_gap(fy, fp, reads=None)`` (sign-off gate) and
+  ``open_rule_gap(reads=None)`` (My work): ``ic_balance_model.rule_gap``
+  over the period's / every Open period's draft and approved balances. Not
+  whitelisted: the callers gate and scope. Reads: IC Balance 1; IC
+  Elimination Rule 1 only when a balance exists.
+- ``open_reads()`` (review-w5 S9): those two reads made once for every Open
+  period, ``{"keys", "balances", "rules"}``. A request that asks about
+  several periods (My work) reads once and passes the result to each
+  ``rule_gap`` / ``open_rule_gap`` call as ``reads``, which then read
+  nothing. A period the reads do not cover raises ValueError: it is never
+  answered from rows that were not read for it. No cache: the value lives
+  only as long as the caller holds it.
 
 Import warning: test loaders that build ``konsol.close`` as a stub package
 and load the real ``signoff_gate`` or ``mywork_api`` must stub
@@ -73,26 +81,51 @@ def _entity_codes():
                           pluck="name", limit_page_length=0)
 
 
-def rule_gap(fiscal_year, fiscal_period):
-    """The sign-off gate's missing-rule gap for one period, or None."""
-    balances = _balances({"fiscal_year": int(fiscal_year), "fiscal_period": int(fiscal_period)})
-    if not balances:
-        return None
-    return ic_balance_model.rule_gap(balances, _rules())
+def _key_of(balance):
+    return int(balance["fiscal_year"]), int(balance["fiscal_period"])
 
 
-def open_rule_gap():
-    """My work's missing-rule gap over every Open period's balances, or None."""
-    open_keys = {(int(r["fiscal_year"]), int(r["fiscal_period"]))
-                 for r in fiscal_calendar.fiscal_period_rows() if r.get("status") == "Open"}
-    if not open_keys:
-        return None
-    years = sorted({fy for fy, _fp in open_keys})
-    balances = [b for b in _balances({"fiscal_year": ["in", years]})
-                if (int(b["fiscal_year"]), int(b["fiscal_period"])) in open_keys]
+def open_reads():
+    """``{"keys": frozenset of the Open periods, "balances": their draft and
+    approved IC Balances, "rules": the IC Elimination Rules}``, read once
+    (S9). No Open period reads nothing; no balance reads no rule."""
+    open_keys = frozenset(
+        (int(r["fiscal_year"]), int(r["fiscal_period"]))
+        for r in fiscal_calendar.fiscal_period_rows() if r.get("status") == "Open")
+    balances = []
+    if open_keys:
+        years = sorted({fy for fy, _fp in open_keys})
+        balances = [b for b in _balances({"fiscal_year": ["in", years]})
+                    if _key_of(b) in open_keys]
+    return {"keys": open_keys, "balances": balances, "rules": _rules() if balances else []}
+
+
+def rule_gap(fiscal_year, fiscal_period, reads=None):
+    """The sign-off gate's missing-rule gap for one period, or None.
+    ``reads`` (``open_reads()``) answers it with no read of its own."""
+    key = (int(fiscal_year), int(fiscal_period))
+    if reads is None:
+        balances = _balances({"fiscal_year": key[0], "fiscal_period": key[1]})
+        if not balances:
+            return None
+        return ic_balance_model.rule_gap(balances, _rules())
+    if key not in reads["keys"]:
+        raise ValueError("FY%d P%02d is not an Open period: the shared IC Balance reads "
+                         "cover the Open periods only." % key)
+    balances = [b for b in reads["balances"] if _key_of(b) == key]
     if not balances:
         return None
-    return ic_balance_model.rule_gap(balances, _rules())
+    return ic_balance_model.rule_gap(balances, reads["rules"])
+
+
+def open_rule_gap(reads=None):
+    """My work's missing-rule gap over every Open period's balances, or None.
+    ``reads`` (``open_reads()``) answers it with no read of its own."""
+    if reads is None:
+        reads = open_reads()
+    if not reads["balances"]:
+        return None
+    return ic_balance_model.rule_gap(reads["balances"], reads["rules"])
 
 
 @frappe.whitelist(methods=["GET"])
