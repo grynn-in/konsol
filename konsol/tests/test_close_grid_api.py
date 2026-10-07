@@ -17,7 +17,7 @@ import json
 import os
 import sys
 import types
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -25,6 +25,7 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "grid_api.py")
 REAL_MODELS = ("scope_model", "signoff_model", "period_grid_model", "readiness_model")
 GRID_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
+SITE_TZ = "Europe/London"
 
 
 class _D(dict):
@@ -98,6 +99,9 @@ class _Site:
         # .period_deadlines return, so Y57/D57's lazy imports resolve.
         self.reminders = []
         self.deadlines = {}
+        self.reminder_calls = []          # Y57: (keys, topic) per close_event.reminders read
+        self.data["User"] = []            # Y57: the reminder senders' full names
+        self.user_filters = []            # Y57: the filters of each User read
 
 
 def _match(value, cond):
@@ -141,6 +145,8 @@ def _frappe(site):
         if doctype not in site.data:
             raise AssertionError("unexpected get_all(%r)" % doctype)
         site.get_all_calls[doctype] = site.get_all_calls.get(doctype, 0) + 1
+        if doctype == "User":
+            site.user_filters.append(filters)
         filters = filters or {}
         assert isinstance(filters, dict), filters
         rows = [r for r in site.data[doctype]
@@ -161,6 +167,7 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden)
     frappe.get_doc = forbidden
     frappe.enqueue = forbidden
@@ -226,7 +233,12 @@ def _load_api(site):
     # konsol.close.deadlines (period_deadlines, D55), so grid_api's lazy
     # `from konsol.close import close_event, deadlines` resolves.
     close_event = types.ModuleType("konsol.close.close_event")
-    close_event.reminders = lambda keys, topic=None: site.reminders
+
+    def reminders(keys, topic=None):
+        site.reminder_calls.append((list(keys), topic))
+        return site.reminders
+
+    close_event.reminders = reminders
     deadlines = types.ModuleType("konsol.close.deadlines")
     deadlines.period_deadlines = lambda keys, today: site.deadlines
 
@@ -363,11 +375,12 @@ def test_a_clean_site_gives_four_rows_with_the_unowned_tb_a_problem():
     assert zzx["problem"] is True
     assert zzx["in_scope"] is False
     assert zzx["ownership"] == {"tone": "blocking", "label": "None for P09"}
-    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period"}
+    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period",
+                         "reminders": None}
     zza = rows["ZZA"]
     assert zza["problem"] is False, zza
     assert zza["ownership"]["label"] == "Full · 100%"
-    assert zza["tb"] == {"tone": "ok", "label": "Received"}
+    assert zza["tb"] == {"tone": "ok", "label": "Received", "reminders": None}
     # Group currency comes from the root group only (data_area_id not set):
     # USD, not the sub-group's GBP; EUR->USD Closing is approved.
     assert zza["rate"] == {"tone": "ok", "label": "Approved"}
@@ -387,7 +400,8 @@ def test_other_periods_records_do_not_count():
     site = _Site()
     site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
     rows = {r["entity"]: r for r in _call(site)["rows"]}
-    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing"}
+    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing",
+                                 "reminders": None}
 
 
 def test_a_draft_rate_in_the_missing_list_reads_awaiting_approval():
@@ -551,3 +565,195 @@ def test_stub_close_carries_reminders_and_deadlines():
         return close_event.reminders([]), deadlines.period_deadlines([], None)
 
     assert _installed(site, lazy) == (["r"], {"tb": "d"})
+
+
+# --- Y57: the Trial balance cell carries reminders (stories 1.5, 2.2; C-R6) --------
+
+REMIND_MODEL_PY = os.path.join(APP_DIR, "close", "remind_model.py")
+_RM_SPEC = importlib.util.spec_from_file_location("test_close_grid_api_remind_model",
+                                                  REMIND_MODEL_PY)
+REMIND_MODEL = importlib.util.module_from_spec(_RM_SPEC)
+_RM_SPEC.loader.exec_module(REMIND_MODEL)
+
+#: The golden payload close-ui's period grid tests load (W4-E19, Y63): exactly
+#: what the real ``get_period_grid`` returns for ``_golden_site()``.
+GRID_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fixtures", "close_period_grid_payload.json")
+
+
+def _reminder(name, entity, at, actor, topic="tb", fy=2025, fp=9):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _user(name, full_name):
+    return _D(name=name, full_name=full_name)
+
+
+def _reminded_site(n_extra=0):
+    """ZZA's TB is Missing (submitted for P08 only); ZZA was reminded twice,
+    an hour apart, by two senders. Nothing else is reminded."""
+    site = _Site(n_extra)
+    site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
+    site.reminders = [
+        _reminder("CE-0002", "ZZA", datetime(2025, 10, 6, 10, 0), "zz-lead@example.com"),
+        _reminder("CE-0001", "ZZA", datetime(2025, 10, 6, 9, 0), "zz-ga@example.com"),
+    ]
+    site.data["User"] = [_user("zz-lead@example.com", "Zed Lead"),
+                         _user("zz-ga@example.com", "Gee Accountant")]
+    return site
+
+
+def _golden_site():
+    return _reminded_site()
+
+
+def _sized_site(n):
+    """A site with exactly ``n`` in-scope entities (each with a TB) and one
+    reminder on each: the per-entity work a read count must not follow."""
+    site = _Site()
+    codes = ["ZZE%02d" % i for i in range(n)]
+    site.data["Entity"] = [_entity(c) for c in codes]
+    site.data["Ownership Period"] = [_owner(c) for c in codes]
+    site.data["Trial Balance Submission"] = [_tb(c) for c in codes]
+    site.reminders = [_reminder("CE-%04d" % i, c, datetime(2025, 10, 6, 9, i), "zz-ga@example.com")
+                      for i, c in enumerate(codes)]
+    site.data["User"] = [_user("zz-ga@example.com", "Gee Accountant")]
+    return site
+
+
+def _by_row(result):
+    return {r["entity"]: r for r in result["rows"]}
+
+
+def test_the_events_are_the_real_summary_input():
+    """The stub events are the shape remind_model.summary reads: a count of 2."""
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got[(2025, 9, "ZZA", "tb")]["count"] == 2
+
+
+def test_a_reminded_tb_cell_carries_count_last_at_and_the_latest_sender():
+    rows = _by_row(_call(_reminded_site()))
+    assert rows["ZZA"]["tb"] == {
+        "tone": "blocking", "label": "Missing",
+        "reminders": {"count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+                      "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"}}, rows["ZZA"]
+    for code in ("ZZB", "ZZC", "ZZX"):
+        assert rows[code]["tb"]["reminders"] is None, rows[code]
+
+
+def test_the_latest_is_by_time_not_by_list_order():
+    site = _reminded_site()
+    site.reminders = list(reversed(site.reminders))
+    assert _by_row(_call(site))["ZZA"]["tb"]["reminders"]["last_by_name"] == "Zed Lead"
+
+
+def test_every_tb_cell_carries_the_reminders_key():
+    for site in (_Site(), _reminded_site()):
+        for row in _call(site)["rows"]:
+            assert "reminders" in row["tb"], row
+
+
+def test_reminders_are_read_once_for_the_period_and_topic_tb():
+    site = _reminded_site()
+    _call(site)
+    assert site.reminder_calls == [([(2025, 9)], "tb")]
+    assert site.user_filters == [
+        {"name": ["in", ["zz-lead@example.com"]]}], site.user_filters
+
+
+def test_no_reminders_reads_no_user():
+    site = _Site()
+    result = _call(site)
+    assert all(r["tb"]["reminders"] is None for r in result["rows"])
+    assert "User" not in site.get_all_calls
+    assert site.reminder_calls == [([(2025, 9)], "tb")]
+
+
+def test_reads_are_the_old_count_plus_two_whatever_the_entity_count():
+    """Failure path (C-R6, the docstring's fixed count): one Close Event read
+    plus one User read, with 1 entity and with 5."""
+    old = 6  # Entity, Ownership Period, TB Submission, TB Exception, Group, GER
+    for n in (1, 5):
+        site = _sized_site(n)
+        result = _call(site)
+        assert result["counts"]["rows"] == n
+        assert all(r["tb"]["reminders"]["count"] == 1 for r in result["rows"]), result
+        reads = sum(site.get_all_calls.values()) + len(site.reminder_calls)
+        assert reads == old + 2, (n, site.get_all_calls, site.reminder_calls)
+        assert all(v == 1 for v in site.get_all_calls.values()), site.get_all_calls
+
+
+def test_a_hidden_entitys_reminders_never_leave_the_server():
+    """A scoped caller (ZZB only) sees ZZB's reminder, and nothing about
+    ZZA's: not its count, not its sender, not its name."""
+    site = _reminded_site()
+    site.allowed = {"ZZB"}
+    site.reminders.append(
+        _reminder("CE-0003", "ZZB", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+    result = _call(site)
+    assert [r["entity"] for r in result["rows"]] == ["ZZB"]
+    assert result["rows"][0]["tb"]["reminders"]["count"] == 1
+    text = json.dumps(result)
+    for hidden in ("ZZA", "zz-lead@example.com", "Zed Lead", "CE-0002"):
+        assert hidden not in text, (hidden, text)
+    assert site.user_filters == [{"name": ["in", ["zz-ga@example.com"]]}], site.user_filters
+
+
+def test_a_hidden_entitys_sender_is_not_even_read():
+    site = _reminded_site()
+    site.allowed = {"ZZB"}
+    _call(site)
+    assert site.user_filters == [], site.user_filters
+
+
+def test_no_visible_row_reads_no_reminders():
+    site = _reminded_site()
+    site.allowed = set()
+    result = _call(site)
+    assert result["rows"] == []
+    assert site.reminder_calls == [] and "User" not in site.get_all_calls
+
+
+def test_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_reminder("CE-0009", "ZZB", datetime(2025, 10, 6, 8, 0),
+                                    "zz-ga@example.com", topic="x"))
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-0009" in str(info.value)
+
+
+def test_a_non_datetime_time_raises():
+    site = _reminded_site()
+    site.reminders[0]["at"] = "2025-10-06 10:00:00"
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-0002" in str(info.value)
+
+
+def test_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
+    for users in ([], [_user("zz-lead@example.com", ""),
+                       _user("zz-ga@example.com", "Gee Accountant")]):
+        site = _reminded_site()
+        site.data["User"] = users
+        err = _call_raises(site)
+        assert "zz-lead@example.com" in str(err), str(err)
+        assert "full name" in str(err), str(err)
+
+
+def test_the_grid_has_no_can_remind():
+    """C-R1: Remind lives on the TB list and the IC panel, not the grid."""
+    assert "can_remind" not in _call(_reminded_site())
+
+
+def test_get_period_grid_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_call(_golden_site())))
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert [r["entity"] for r in golden["rows"] if r["tb"]["reminders"]] == ["ZZA"]
