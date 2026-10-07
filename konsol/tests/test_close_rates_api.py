@@ -1778,3 +1778,124 @@ def test_o56_failure_path_editing_a_draft_into_another_period_is_refused():
     assert "OP-ZZ5B1-D is the change for ZZ5B1 in ECL_GROUP from 2025-10-01" in str(err), err
     assert "2025-11-01" in str(err), err
     _no_save(site)
+
+
+# --- O57: get_pending's OP drafts carry their structural effect (story 4.2,
+# 4.3; C-O4; #305-4.2-1, #305-Q1-1). The effect is computed by the REAL
+# ownership_change.effect_for (loaded in _invoke) and checked against the REAL
+# ownership_change_model.effect, loaded by path. ---------------------------------
+
+O57_GOLDEN = os.path.join(FIXTURES, "close_rates_pending_payload.json")
+O57_DESK_LEAF = "ZZ5B2"
+
+
+def _o57_site():
+    """The O55 site (ZZ5B1 100 % full from 2025-01-01, approved; P09, P11
+    and P13 signed) plus three drafts: the Analyst's change of ZZ5B1 to 80 %
+    full from FY2025 P10 (``supersedes`` the approved period), a Desk
+    "Record ownership" draft for ZZ5B2 (no ``supersedes``), and one Historical
+    Equity Rate. The Close Lead reads it under Blocked."""
+    site = _o55_site(roles=("EPM Admin",), user=LEAD)
+    site.policy = "Blocked"
+    change = _op("OP-ZZ5B1-2025-10-01", data_area_id=O55_LEAF, group=O55_GROUP,
+                 effective_date=date(2025, 10, 1), end_date=None, ownership_pct=80.0,
+                 consolidation_method="full", owner=ANALYST,
+                 creation=datetime(2025, 10, 2, 9, 0, 0), docstatus=0)
+    change["supersedes"] = "OP-ZZ5B1-1"
+    change["superseded_end_date"] = None
+    desk = _op("OP-ZZ5B2-2025-10-01", data_area_id=O57_DESK_LEAF, group=O55_GROUP,
+               effective_date=date(2025, 10, 1), end_date=None, ownership_pct=60.0,
+               consolidation_method="equity", owner=ANALYST,
+               creation=datetime(2025, 10, 3, 9, 0, 0), docstatus=0)
+    site.ops.extend([change, desk])
+    site.her = [_her("HER-ZZ5B1-1", data_area_id=O55_LEAF, group=O55_GROUP,
+                     creation=datetime(2025, 10, 1, 9, 0, 0))]
+    return site
+
+
+def _o57_item(result, name):
+    [item] = [i for i in result["items"] if i["name"] == name]
+    return item
+
+
+def test_o57_pending_matches_the_golden_payload():
+    site = _o57_site()
+    result = _call_pending(site)
+    assert result == _golden(O57_GOLDEN), json.dumps(result, indent=1)
+
+
+def test_o57_a_change_draft_carries_the_real_models_effect():
+    site = _o57_site()
+    result = _call_pending(site)
+    item = _o57_item(result, "OP-ZZ5B1-2025-10-01")
+    expected = _o55_model().effect(
+        {"entity": O55_LEAF, "effective_date": "2025-10-01", "ownership_pct": 80.0,
+         "consolidation_method": "full"},
+        {"name": "OP-ZZ5B1-1", "effective_date": "2025-01-01", "end_date": None,
+         "ownership_pct": 100.0, "consolidation_method": "full"},
+        _o55_calendar(), sorted(site.signed))
+    assert item["effect"] == expected
+    assert item["effect"]["before"]["pct"] == 100.0 and item["effect"]["after"]["pct"] == 80.0
+    assert item["effect"]["current_ends"] == "2025-09-30"
+    assert item["effect"]["resign"] == ["FY2025 P11", "FY2025 P13"]
+    # The detail text is unchanged (O57 goal).
+    assert item["detail"] == "80% · full"
+    assert item["approve"]["mode"] == "direct"
+
+
+def test_o57_failure_path_a_desk_draft_without_supersedes_has_effect_none():
+    """A Desk "Record ownership" draft names no predecessor: its effect is
+    None (the screen says "Drafted in Desk: effect not previewed"), never a
+    guessed before/after."""
+    site = _o57_site()
+    result = _call_pending(site)
+    item = _o57_item(result, "OP-ZZ5B2-2025-10-01")
+    assert "effect" in item and item["effect"] is None
+    assert item["detail"] == "60% · equity"
+
+
+def test_o57_her_items_carry_no_effect():
+    result = _call_pending(_o57_site())
+    item = _o57_item(result, "HER-ZZ5B1-1")
+    assert "effect" not in item
+
+
+def test_o57_failure_path_a_supersedes_that_is_not_approved_is_refused_naming_the_draft():
+    """Corrupt data (the named predecessor is not an approved period) is
+    refused with a sentence naming the draft, never shown with a guessed
+    effect or silently without one."""
+    site = _o57_site()
+    site.ops[0]["docstatus"] = 2  # the predecessor was cancelled after the draft
+    err = _call_pending_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "OP-ZZ5B1-2025-10-01" in str(err), err
+    assert "OP-ZZ5B1-1" in str(err), err
+
+
+def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():
+    """Each visible OP draft with ``supersedes`` costs ``effect_for``'s reads
+    (its predecessor and the calendar; the signed runs are stubbed here); a
+    Desk draft costs none."""
+    desk_only = _o57_site()
+    desk_only.ops = [r for r in desk_only.ops if not r.get("supersedes")]
+    with_change = _o57_site()
+    _call_pending(desk_only)
+    _call_pending(with_change)
+    assert len(desk_only.reads) == 7, desk_only.reads
+    extra = with_change.reads[len(desk_only.reads):]
+    assert len(with_change.reads) == 9, with_change.reads
+    assert sorted(extra) == sorted([("get_all", "Ownership Period"),
+                                    ("sql", "fiscal_period_rows")]), extra
+    assert with_change.new_docs == [] and with_change.get_doc_calls == []
+
+
+def test_o57_failure_path_a_hidden_draft_is_never_read_for_its_effect():
+    site = _o57_site()
+    site.allowed = {O57_DESK_LEAF}
+    result = _call_pending(site)
+    assert [i["name"] for i in result["items"]] == ["OP-ZZ5B2-2025-10-01"]
+    assert result["counts"]["hidden"] == 2
+    # Only the one draft list read: no predecessor, no calendar.
+    assert site.reads.count(("get_all", "Ownership Period")) == 1, site.reads
+    assert ("sql", "fiscal_period_rows") not in site.reads, site.reads
+    assert O55_LEAF not in json.dumps(result)
