@@ -10,6 +10,11 @@
  "description": "Close policy the Close Lead owns (konsol#305 P13). EPM Settings stays System Manager only.",
  "fields": [
   {
+   "fieldname": "policies_tab",
+   "fieldtype": "Tab Break",
+   "label": "Policies"
+  },
+  {
    "fieldname": "close_order_section",
    "fieldtype": "Section Break",
    "label": "Close Order"
@@ -102,9 +107,39 @@
    "label": "When Both Are Declared",
    "options": "\nEither is exceeded\nBoth are exceeded",
    "description": "Only when both an amount and a percentage are declared: whether a heading needs commentary when either is exceeded or only when both are. No default: with both declared and this blank, the sign-off shows a setup gap."
+  },
+  {
+   "fieldname": "deadlines_tab",
+   "fieldtype": "Tab Break",
+   "label": "Deadlines"
+  },
+  {
+   "fieldname": "deadline_rules_section",
+   "fieldtype": "Section Break",
+   "label": "Deadline Rules"
+  },
+  {
+   "fieldname": "deadline_rules",
+   "fieldtype": "Table",
+   "options": "Close Deadline Rule",
+   "label": "Deadline Rules",
+   "description": "A rule applies to every period that ends on or after its Valid From, until the next rule. No rule = no due dates (shown as 'No due date declared'); nothing is assumed."
+  },
+  {
+   "fieldname": "holidays_section",
+   "fieldtype": "Section Break",
+   "label": "Holidays"
+  },
+  {
+   "fieldname": "close_holidays",
+   "fieldtype": "Table",
+   "options": "Close Holiday",
+   "label": "Holidays",
+   "description": "Days that are not counted as working days, group-wide."
   }
  ],
  "field_order": [
+  "policies_tab",
   "close_order_section",
   "first_close_fiscal_year",
   "first_close_fiscal_period",
@@ -120,7 +155,12 @@
   "commentary_section",
   "commentary_threshold_amount",
   "commentary_threshold_percent",
-  "commentary_threshold_combine"
+  "commentary_threshold_combine",
+  "deadlines_tab",
+  "deadline_rules_section",
+  "deadline_rules",
+  "holidays_section",
+  "close_holidays"
  ],
  "permissions": [
   {

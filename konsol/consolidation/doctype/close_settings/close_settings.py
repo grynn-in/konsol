@@ -1,3 +1,4 @@
+import datetime as _datetime
 import importlib.util as _importlib_util
 import os as _os
 
@@ -19,6 +20,32 @@ def _load_period_name():
 
 
 period_name = _load_period_name()
+
+
+def _load_deadline_model():
+    """konsol/close/deadline_model.py loaded by path (konsol#305 D54): the
+    pure deadline rules (D51/D52), reachable under the host tests' stub
+    ``konsol.close`` package, as period_name above."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "..", "close", "deadline_model.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_deadline_model", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+deadline_model = _load_deadline_model()
+
+
+def _as_date(value):
+    """A Date field as a ``datetime.date``: a stored row reads a date, a row
+    typed in the form arrives as an ISO string. Both must compare equal, or a
+    duplicate would pass the save. Anything else (blank) is passed through
+    for the child doctype's ``reqd`` to refuse."""
+    if isinstance(value, _datetime.datetime):
+        return value.date()
+    if isinstance(value, str) and value:
+        return _datetime.date.fromisoformat(value[:10])
+    return value
 
 
 REGULAR = "Regular"
@@ -51,6 +78,7 @@ class CloseSettings(Document):
         self.validate_intercompany_declaration()
         self.validate_statement_accounts()
         self.validate_commentary_threshold()
+        self.validate_deadlines()
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank
@@ -188,5 +216,27 @@ class CloseSettings(Document):
         problems = close_policy_model.commentary_threshold_problems(
             self.commentary_threshold_amount, self.commentary_threshold_percent,
             self.commentary_threshold_combine)
+        if problems:
+            frappe.throw("<br>".join(problems))
+
+    def validate_deadlines(self):
+        """konsol#305 D54 (#305-2.4-1, Deepak Pai 6 Oct; C-D1, C-D3): the
+        Deadlines tab. Empty tables are undeclared and save (no due dates,
+        nothing assumed). Two rules on one Valid From, a rule with no working
+        day, a negative offset or a holiday listed twice is refused with
+        deadline_model.rule_problems' sentences. Not locked after a signed
+        period: a deadline is shown, never a gate (C-D5), and the Single's
+        track_changes keeps the child rows' history (C-D7)."""
+        rules = []
+        for row in self.deadline_rules or []:
+            values = row.as_dict()
+            values["valid_from"] = _as_date(values.get("valid_from"))
+            rules.append(values)
+        holidays = []
+        for row in self.close_holidays or []:
+            values = row.as_dict()
+            values["holiday_date"] = _as_date(values.get("holiday_date"))
+            holidays.append(values)
+        problems = deadline_model.rule_problems(rules, holidays)
         if problems:
             frappe.throw("<br>".join(problems))
