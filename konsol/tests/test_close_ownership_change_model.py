@@ -291,6 +291,69 @@ def test_effect_signed_key_outside_the_calendar_raises():
     raise AssertionError("a signed period missing from the calendar must raise")
 
 
+def _rows_with_closing_and_opening():
+    """_rows() plus a Closing FY2025 P14 on 2025-12-31 and an Opening FY2026
+    P00 on 2026-01-01 (the same day as FY2026 P01), as a calendar declares
+    them (fiscal_period.json: 0=Opening, 13=Closing, 14=Adjustment)."""
+    rows = _rows()
+    rows.append({"fiscal_year": 2025, "fiscal_period": 14, "period_code": "P14",
+                 "period_label": "P14", "period_type": "Closing",
+                 "start_date": "2025-12-31", "end_date": "2025-12-31",
+                 "quarter": 4, "status": "Open"})
+    rows.append({"fiscal_year": 2026, "fiscal_period": 0, "period_code": "P00",
+                 "period_label": "P00", "period_type": "Opening",
+                 "start_date": "2026-01-01", "end_date": "2026-01-01",
+                 "quarter": 1, "status": "Open"})
+    return rows
+
+
+def test_effect_lists_a_signed_closing_period_without_raising():
+    # O54a: a signed Closing period after the change must be listed for
+    # re-signing (W4-4), not make every preview raise.
+    eff = M.effect(_change(), _current(), _rows_with_closing_and_opening(), [(2025, 14)])
+    assert eff["resign"] == ["FY2025 P14"]
+
+
+def test_effect_lists_a_signed_adjustment_period():
+    eff = M.effect(_change(), _current(), _rows(), [(2025, 13)])
+    assert eff["resign"] == ["FY2025 P13"]
+
+
+def test_effect_orders_signed_periods_across_closing_and_opening():
+    signed = [(2026, 1), (2025, 14), (2026, 0), (2025, 12), (2025, 13), (2025, 9)]
+    eff = M.effect(_change(), _current(), _rows_with_closing_and_opening(), signed)
+    assert eff["resign"] == ["FY2025 P12", "FY2025 P13", "FY2025 P14",
+                             "FY2026 P00", "FY2026 P01"]
+
+
+def test_effect_skips_a_signed_non_regular_period_before_the_change():
+    rows = _rows_with_closing_and_opening()
+    eff = M.effect(_change(effective_date="2026-02-01"), _current(), rows,
+                   [(2025, 14), (2026, 0), (2026, 2)])
+    assert eff["resign"] == ["FY2026 P02"]
+
+
+def test_effect_signed_key_outside_the_calendar_raises_naming_it():
+    try:
+        M.effect(_change(), _current(), _rows_with_closing_and_opening(),
+                 [(2025, 14), (2030, 7)])
+    except ValueError as e:
+        assert "2030" in str(e) and "7" in str(e), str(e)
+        return
+    raise AssertionError("a signed period missing from the calendar must raise")
+
+
+def test_effect_first_day_check_stays_regular_only():
+    # The Opening FY2026 P00 starts 2026-01-01, but the first day is still
+    # judged on Regular rows; a Closing period's start is never a first day.
+    try:
+        M.effect(_change(effective_date="2025-12-31"), _current(),
+                 _rows_with_closing_and_opening(), ())
+    except ValueError:
+        return
+    raise AssertionError("a Closing period's start must not count as a first day")
+
+
 def test_effect_uses_the_one_period_name_helper():
     src = open(_PATH).read()
     assert "period_name.py" in src
