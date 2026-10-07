@@ -1,0 +1,102 @@
+"""konsol#305 story 2.4: working-day deadlines, pure (no frappe, no konsol).
+
+Decision #305-2.4-1 (Deepak Pai, 6 Oct 2026): a group-wide working-day offset
+per step (TB, IC, journals, sign-off) from period end; a declared working
+week (no Mon–Fri default) and a declared holiday list; effective-dated by
+``valid_from``; undeclared reads "No due date declared"; overdue is shown
+only, never blocks. Rejected: #305-2.4-2 per-entity overrides; #305-2.4-3
+calendar days.
+
+Engineering calls (plan-w5b.md §3):
+- C-D2: the governing rule is the one with the latest ``valid_from`` on or
+  before the period's ``end_date``; none means every step is undeclared.
+- C-D3: the due date is the Nth working day AFTER ``end_date``; a working day
+  is a ticked weekday that is not a declared holiday. An offset of 0 or blank
+  is undeclared (an unset Int reads 0). The count stops after 3,660 calendar
+  days with an error, never a guess.
+- C-D4: "overdue" is ``past`` AND the step still open; the caller decides it.
+
+Rules are dicts carrying the "Close Deadline Rule" child fields; dates are
+``datetime.date``.
+"""
+from datetime import timedelta
+
+STEPS = ("tb", "ic", "journals", "signoff")
+OFFSET_FIELD = {
+    "tb": "tb_due_days",
+    "ic": "ic_due_days",
+    "journals": "journals_due_days",
+    "signoff": "signoff_due_days",
+}
+# The Int field labels on "Close Deadline Rule" (plan-w5b.md §4b).
+STEP_LABEL = {
+    "tb": "Trial Balances",
+    "ic": "Intercompany",
+    "journals": "Journals",
+    "signoff": "Sign-off",
+}
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+UNDECLARED = "No due date declared"
+
+MAX_DAYS = 3660
+TEN_YEARS_ERROR = "Due date could not be computed: no working day in ten years"
+
+
+def governing_rule(rules, end_date):
+    """The rule with the latest ``valid_from <= end_date``, else None (C-D2).
+
+    Two rules that start on the same day are ambiguous: raise, never pick one
+    (D52 refuses that save).
+    """
+    best = None
+    for rule in rules:
+        start = rule["valid_from"]
+        if start > end_date:
+            continue
+        if best is not None and start == best["valid_from"]:
+            raise ValueError("Two deadline rules start on %s: keep one." % start.isoformat())
+        if best is None or start > best["valid_from"]:
+            best = rule
+    return best
+
+
+def due_date(end_date, offset, working_days, holidays):
+    """The ``offset``-th day after ``end_date`` that is a working day (C-D3).
+
+    ``working_days`` is a set of weekday indexes (Monday 0), ``holidays`` a
+    set of dates. Raises ValueError past 3,660 calendar days.
+    """
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 1:
+        raise ValueError("A due-date offset must be a whole number of working days, at least 1: got %r" % (offset,))
+    holidays = set(holidays)
+    found = 0
+    day = end_date
+    for _ in range(MAX_DAYS):
+        day = day + timedelta(days=1)
+        if day.weekday() in working_days and day not in holidays:
+            found += 1
+            if found == offset:
+                return day
+    raise ValueError(TEN_YEARS_ERROR)
+
+
+def _undeclared():
+    return {"due": None, "past": False, "text": UNDECLARED}
+
+
+def period_deadlines(rules, holidays, end_date, today):
+    """``{step: {"due": date|None, "past": bool, "text": str}}`` for one period."""
+    rule = governing_rule(rules, end_date)
+    if rule is None:
+        return {step: _undeclared() for step in STEPS}
+    working_days = {i for i, wd in enumerate(WEEKDAYS) if rule.get(wd)}
+    holidays = set(holidays)
+    out = {}
+    for step in STEPS:
+        offset = rule.get(OFFSET_FIELD[step])
+        if offset in (None, "", 0):
+            out[step] = _undeclared()
+            continue
+        due = due_date(end_date, offset, working_days, holidays)
+        out[step] = {"due": due, "past": today > due, "text": "Due %s" % due.isoformat()}
+    return out
