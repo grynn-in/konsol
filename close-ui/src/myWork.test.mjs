@@ -285,10 +285,10 @@ test("(Y64) golden Entity Accountant item: 'Reminded 2× · last … by Jane Doe
 	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
 	const line = remindedLine(item, Y64_NOW, Y64_TZ);
 	assert.equal(line, remindedText(item.reminded, Y64_NOW, Y64_TZ));
-	assert.equal(line, "Reminded 2× · last Aug 6, 14:05 by Jane Doe");
+	assert.equal(line, "Reminded 2× · last 6 Aug, 14:05 by Jane Doe");
 	assert.equal(
 		remindedLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"), Y64_NOW, Y64_TZ),
-		"Reminded 1× · last Sep 10, 08:00 by Raj Patel",
+		"Reminded 1× · last 10 Sep, 08:00 by Raj Patel",
 	);
 });
 

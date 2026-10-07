@@ -96,7 +96,7 @@ test("remindedText on the golden ZZC row: count, zoned time and full name", () =
 	// last_at 2025-10-06T10:00:00+01:00 is 10:00 in London; "now" is the next day.
 	assert.equal(
 		remindedText(entry, new Date("2025-10-07T09:00:00Z"), LONDON),
-		"Reminded 2× · last Oct 6, 10:00 by Zed Lead"
+		"Reminded 2× · last 6 Oct, 10:00 by Zed Lead"
 	);
 });
 
@@ -104,7 +104,7 @@ test("remindedText zones the time with the same rule as the rest of the app", ()
 	const entry = rowOf("ZZC").reminders;
 	assert.equal(
 		remindedText(entry, new Date("2025-10-07T09:00:00Z"), "Asia/Kolkata"),
-		"Reminded 2× · last Oct 6, 14:30 by Zed Lead"
+		"Reminded 2× · last 6 Oct, 14:30 by Zed Lead"
 	);
 	// Same calendar day: the time alone, as formatTime shows today.
 	assert.equal(

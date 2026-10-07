@@ -243,11 +243,11 @@ test("(B27) a zoned upload time renders in the user's zone: today as HH:MM", () 
   assert.equal(entityRows(oneEntity({ tb }), NOW, "Asia/Kolkata")[0].uploaded, "15:00");
 });
 
-test("(B27) an earlier day renders as 'Sep 20, 10:42', the same text as the freshness bar", () => {
+test("(B27) an earlier day renders as '20 Sep, 10:42', the same text as the freshness bar", () => {
   const creation = "2026-09-20T09:42:00Z";
   const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation };
   const [row] = entityRows(oneEntity({ tb }), NOW, TZ);
-  assert.equal(row.uploaded, "Sep 20, 10:42");
+  assert.equal(row.uploaded, "20 Sep, 10:42");
   const bar = freshnessView({ state: "fresh", as_of: creation }, NOW, TZ).text;
   assert.equal(`As of ${row.uploaded}`, bar, "one formatting rule with B09");
 });

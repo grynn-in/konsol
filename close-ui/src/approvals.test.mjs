@@ -254,7 +254,7 @@ test("a sent-back item carries the rejection's reason, actor and formatted time"
 			rejection: { reason: "Wrong quote", actor: "dave@example.com", at: "2026-09-21T09:30:00+00:00" },
 		})],
 	}), NOW, TZ);
-	assert.deepEqual(view.sentBack[0].rejection, { reason: "Wrong quote", actor: "dave@example.com", at: "Sep 21, 09:30" });
+	assert.deepEqual(view.sentBack[0].rejection, { reason: "Wrong quote", actor: "dave@example.com", at: "21 Sep, 09:30" });
 });
 
 test("a sent-back Desk item (BC/BD) still carries its deskLink", () => {

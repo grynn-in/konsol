@@ -183,8 +183,8 @@ test("checked: chips from counts, group order kept, status texts, sent-back pair
 	const [root, sub] = view.groups;
 	// U5: a sent-back pair keeps its real status (never "Sent to both"),
 	// with the sent-back time appended and the status's own tone.
-	assert.equal(root.pairs[0].statusText, "Over tolerance · sent back Sep 29, 08:15");
-	assert.notEqual(root.pairs[0].statusText, "Sent to both · Sep 29, 08:15");
+	assert.equal(root.pairs[0].statusText, "Over tolerance · sent back 29 Sep, 08:15");
+	assert.notEqual(root.pairs[0].statusText, "Sent to both · 29 Sep, 08:15");
 	assert.equal(root.pairs[0].statusTone, "block");
 	assert.equal(root.pairs[1].statusText, "Within tolerance");
 	assert.equal(root.pairs[1].statusTone, "ok");
@@ -214,7 +214,7 @@ test("U5: sent-back pairs across every match status keep STATUS_TEXT and append 
 		});
 		const view = intercompanyView(payload, NOW, ZONE);
 		const pair = view.groups[0].pairs[0];
-		assert.equal(pair.statusText, `${label} · sent back Sep 29, 08:15`);
+		assert.equal(pair.statusText, `${label} · sent back 29 Sep, 08:15`);
 		assert.doesNotMatch(pair.statusText, /Sent to both/);
 	}
 });
