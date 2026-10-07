@@ -143,7 +143,9 @@ def test_4_pct_out_of_range_or_not_a_number():
                 "inf", float("inf"), float("-inf")):
         assert _problems(change=_change(ownership_pct=bad)) == sentence, bad
     for ok in (0, 100, "80", 33.3333, "0.5"):
-        assert _problems(change=_change(ownership_pct=ok)) == [], ok
+        # current is 50 % so that 100 is a change, not "Nothing changes".
+        assert _problems(change=_change(ownership_pct=ok),
+                         current=_current(ownership_pct=50.0)) == [], ok
 
 
 def test_5_method_not_declared():
