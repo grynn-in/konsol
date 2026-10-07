@@ -377,3 +377,31 @@ test("saveRates does not reload a period it has already navigated away from", ()
   assert.ok(fn);
   assert.match(fn[1], /mySeq\s*===\s*seq[\s\S]*?loadRates\(/, "the final reload is also guarded by mySeq === seq");
 });
+
+// -- O60 (story 4.2; wireframe-4.2.md section 1, confirmed as drawn by Deepak Pai 7 Oct) --
+// The Ownership tab mounts the "Change ownership" form (sections/OwnershipChange.vue)
+// only when the server says can_record, fed get_ownership's `change` choices (O63).
+
+test("O60: the Ownership tab mounts OwnershipChange only when can_record, with get_ownership's change", () => {
+  const source = read();
+  assert.match(source, /import OwnershipChange from ["']\.\.\/sections\/OwnershipChange\.vue["']/);
+  const tpl = template(source);
+  const ownershipTab = tpl.slice(tpl.indexOf('aria-label="Ownership"'));
+  const tags = tagsWith(ownershipTab, "<OwnershipChange");
+  assert.equal(tags.length, 1, "one OwnershipChange");
+  assert.match(tags[0], /v-if="[^"]*\bownershipViewData\.canRecord\b[^"]*"/, "v-if on can_record");
+  assert.match(tags[0], /:change="ownership\.payload\.change"/, "fed the server's change choices");
+  assert.match(tags[0], /@saved="[^"]*\bloadPending\(/, "a saved draft reloads the pending tab");
+});
+
+test("O60: the preview and save calls live in OwnershipChange only, never a second call site here", () => {
+  const js = script(read());
+  assert.doesNotMatch(js, /preview_ownership_change|save_ownership_change/);
+});
+
+test("O60 failure path: no input for an acquisition or disposal date or price exists on the screen", () => {
+  const tpl = template(read());
+  for (const tag of tpl.match(/<(input|select|textarea)\b[^>]*>/g) || []) {
+    assert.doesNotMatch(tag, /acquisition|disposal|price/i, tag);
+  }
+});
