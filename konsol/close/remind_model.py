@@ -18,7 +18,12 @@ reminders (TB rows, the period grid, My work, the IC panel) load and call it.
   entities the caller may see; ``sender_name`` names the sender, or labels a
   sender with no recorded name instead of raising (review-w5b S3: one bad
   sender never takes down a reader).
+- ``ic_side_can_remind`` / ``ic_refusal`` (konsol#305 R53b, decision
+  #305-R52-2-1, Deepak Pai 7 Oct 2026): Remind about intercompany only where
+  the entity has a pair over tolerance in the period. One rule, ``_ic_open``:
+  ``get_ic`` offers a pair side on it, and ``remind`` refuses topic ic on it.
 """
+
 from datetime import datetime, timezone
 
 TOPICS = ("tb", "ic")
@@ -33,6 +38,13 @@ _SUBJECT_TAIL = {
 _LINK_SCREEN = {"tb": "trial-balances", "ic": "intercompany"}
 
 UNKNOWN_TOPIC = "Remind about a trial balance (tb) or an intercompany difference (ic)."
+
+#: gold_ic_reconciliation's match statuses (ic_model.MATCH_STATUSES; a test
+#: pins the two equal: this module imports nothing from konsol).
+IC_MATCH_STATUSES = ("matched", "within_tolerance", "fx_difference", "over_tolerance")
+#: The one status there is something to remind about. ``fx_difference`` does
+#: not count against the tolerance (gold_ic_reconciliation.sql).
+_IC_OPEN = "over_tolerance"
 
 
 def _check_topic(topic):
@@ -177,3 +189,38 @@ def reminded_text(entry, name_of, format_at):
     full_name = sender_name(actor, {actor: name_of(actor)})
     return "Reminded %d× · last %s by %s" % (int(entry["count"]), format_at(entry["last_at"]),
                                              full_name)
+
+
+def _ic_open(row):
+    """The pair is over tolerance (not matched, not within tolerance, not an
+    FX difference). An unknown or missing status raises: it is never read
+    as "nothing to remind about"."""
+    status = row.get("match_status")
+    if status not in IC_MATCH_STATUSES:
+        raise ValueError("Intercompany pair %s ↔ %s: match status %r is not one of %s."
+                         % (row.get("entity_a"), row.get("entity_b"), status,
+                            ", ".join(IC_MATCH_STATUSES)))
+    return status == _IC_OPEN
+
+
+def ic_side_can_remind(can_remind, masked, row):
+    """Whether one side of an IC pair offers Remind: the payload-level
+    ``can_remind`` holds (role, Open period, checked state), the side is not
+    masked (W3-2) and the pair is over tolerance."""
+    open_pair = _ic_open(row)
+    return bool(can_remind) and not masked and open_pair
+
+
+def ic_refusal(entity, rows, period_text):
+    """None when ``entity`` is on either side of a pair over tolerance in
+    ``rows`` (the period's gold_ic_reconciliation rows, every group), or
+    the sentence that refuses a topic ic reminder. Every row's status is
+    checked, so an unreadable one raises."""
+    found = False
+    for row in rows:
+        if _ic_open(row) and entity in (row.get("entity_a"), row.get("entity_b")):
+            found = True
+    if found:
+        return None
+    return ("%s has no intercompany pair over tolerance in %s: nothing to remind about."
+            % (entity, period_text))

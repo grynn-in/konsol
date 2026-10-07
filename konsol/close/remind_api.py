@@ -10,6 +10,12 @@ difference needs attention).
   a User Permission directly on the entity (#305-Q2-1), and the refusals come
   in its order (unknown topic, period not Open, entity not visible, trial
   balance already in, nobody named). There is no throttle (#305-1.5-1).
+- Topic ic, once those pass (konsol#305 R53b, #305-R52-2-1): the period's
+  intercompany pairs are read through ``ic_api.checked_rows``. Intercompany
+  not checked (not configured, not applicable, a warehouse failure) refuses
+  with that state's sentence; an entity with no pair over tolerance is
+  refused by ``remind_model.ic_refusal``, the rule ``get_ic``'s per-side
+  ``can_remind_a``/``_b`` uses.
 - Every refusal comes before any write.
 - Then, in the request's transaction: one Notification Log per recipient,
   type ``Alert`` (an in-app alert; any other type emails, M6), and after them
@@ -20,7 +26,8 @@ difference needs attention).
 - The signature names no other key and takes no **kwargs, so a forged
   recipient list, subject or link never arrives.
 
-``close_event`` is imported lazily (the ``ic_api.send_back`` precedent).
+``close_event`` and ``ic_api`` are imported lazily (the ``ic_api.send_back``
+precedent): ``ic_api`` only for topic ic, after the other refusals.
 """
 import importlib.util as _importlib_util
 import os as _os
@@ -100,6 +107,15 @@ def remind(fiscal_year, fiscal_period, entity, topic):
                                    tb_in, period_text)
     if refused:
         frappe.throw(refused)
+    if topic == "ic":
+        from konsol.close import ic_api  # lazy: only topic ic reads the warehouse
+
+        rows, not_checked = ic_api.checked_rows(fy, fp)
+        if not_checked:
+            frappe.throw(not_checked + " Nothing was reminded.")
+        refused = remind_model.ic_refusal(entity, rows, period_text)
+        if refused:
+            frappe.throw(refused)
 
     sender = frappe.session.user
     subject = remind_model.subject(frappe.utils.get_fullname(sender), entity, topic, period_text)
