@@ -67,6 +67,17 @@ def _change(**kw):
     return c
 
 
+def _sig(run, on="2025-10-04", by="Jane Doe"):
+    """One signed run as ``ownership_change.context`` hands it over (O64)."""
+    return {"run": run, "signed_on": on, "signed_by_name": by}
+
+
+def _signed(*keys):
+    """{key: signature} for each signed period key, each run named after its
+    key and signed on 4 Oct 2025 by Jane Doe."""
+    return {k: _sig("AR-%s-%s" % k) for k in keys}
+
+
 def _problems(change=None, current="default", later=None, pending=None, rows=None):
     return M.problems(
         change if change is not None else _change(),
@@ -221,26 +232,33 @@ def test_a_change_without_an_entity_raises():
 # --- effect ------------------------------------------------------------------
 
 def test_effect_100_full_to_80_full_from_p10_with_p11_signed():
-    eff = M.effect(_change(), _current(), _rows(), {(2025, 11): {"name": "AR-1"}})
+    eff = M.effect(_change(), _current(), _rows(), {(2025, 11): _sig("AR-1")})
     assert eff == {
         "before": {"pct": 100.0, "method": "full", "from": "2025-01-01", "to": None},
         "after": {"pct": 80.0, "method": "full", "from": "2025-10-01", "to": None},
+        "current_name": "OP-ECL_GROUP-ZZ5B1-2025-01-01",
         "current_ends": "2025-09-30",
         "first_period": "FY2025 P10",
         "periods": "FY2025 P10 onward (open-ended)",
         "resign": ["FY2025 P11"],
+        "resign_detail": [{"period": "FY2025 P11", "signed_on": "2025-10-04",
+                           "signed_by_name": "Jane Doe"}],
         "not_shown": NOT_SHOWN,
     }
 
 
 def test_effect_resign_lists_signed_periods_at_or_after_the_first_in_calendar_order():
-    signed = [(2026, 2), ("2025", "10"), (2025, 9), (2025, 12), (2026, 1)]
+    signed = _signed((2026, 2), ("2025", "10"), (2025, 9), (2025, 12), (2026, 1))
     eff = M.effect(_change(), _current(), _rows(), signed)
     assert eff["resign"] == ["FY2025 P10", "FY2025 P12", "FY2026 P01", "FY2026 P02"]
+    # resign_detail is parallel to resign, in the same calendar order.
+    assert [d["period"] for d in eff["resign_detail"]] == eff["resign"]
 
 
 def test_effect_no_signed_period():
-    assert M.effect(_change(), _current(), _rows(), {})["resign"] == []
+    eff = M.effect(_change(), _current(), _rows(), {})
+    assert eff["resign"] == []
+    assert eff["resign_detail"] == []
 
 
 def test_effect_bounded_current_names_the_last_period():
@@ -258,13 +276,13 @@ def test_effect_across_a_year_start():
 
 
 def test_effect_never_contains_an_amount():
-    eff = M.effect(_change(), _current(), _rows(), {(2025, 11): {}})
+    eff = M.effect(_change(), _current(), _rows(), _signed((2025, 11)))
     assert eff["not_shown"] == NOT_SHOWN
     flat = json.dumps(eff).lower()
     for word in ("amount", "goodwill_amount", "nci_amount", "balance", "value"):
         assert ('"%s"' % word) not in flat, word
-    assert set(eff) == {"before", "after", "current_ends", "first_period", "periods",
-                        "resign", "not_shown"}
+    assert set(eff) == {"before", "after", "current_name", "current_ends", "first_period",
+                        "periods", "resign", "resign_detail", "not_shown"}
     assert set(eff["before"]) == set(eff["after"]) == {"pct", "method", "from", "to"}
 
 
@@ -285,7 +303,7 @@ def test_effect_refuses_an_invalid_change_rather_than_guessing():
 
 def test_effect_signed_key_outside_the_calendar_raises():
     try:
-        M.effect(_change(), _current(), _rows(), [(2030, 1)])
+        M.effect(_change(), _current(), _rows(), _signed((2030, 1)))
     except ValueError:
         return
     raise AssertionError("a signed period missing from the calendar must raise")
@@ -310,17 +328,18 @@ def _rows_with_closing_and_opening():
 def test_effect_lists_a_signed_closing_period_without_raising():
     # O54a: a signed Closing period after the change must be listed for
     # re-signing (W4-4), not make every preview raise.
-    eff = M.effect(_change(), _current(), _rows_with_closing_and_opening(), [(2025, 14)])
+    eff = M.effect(_change(), _current(), _rows_with_closing_and_opening(),
+                   _signed((2025, 14)))
     assert eff["resign"] == ["FY2025 P14"]
 
 
 def test_effect_lists_a_signed_adjustment_period():
-    eff = M.effect(_change(), _current(), _rows(), [(2025, 13)])
+    eff = M.effect(_change(), _current(), _rows(), _signed((2025, 13)))
     assert eff["resign"] == ["FY2025 P13"]
 
 
 def test_effect_orders_signed_periods_across_closing_and_opening():
-    signed = [(2026, 1), (2025, 14), (2026, 0), (2025, 12), (2025, 13), (2025, 9)]
+    signed = _signed((2026, 1), (2025, 14), (2026, 0), (2025, 12), (2025, 13), (2025, 9))
     eff = M.effect(_change(), _current(), _rows_with_closing_and_opening(), signed)
     assert eff["resign"] == ["FY2025 P12", "FY2025 P13", "FY2025 P14",
                              "FY2026 P00", "FY2026 P01"]
@@ -329,14 +348,14 @@ def test_effect_orders_signed_periods_across_closing_and_opening():
 def test_effect_skips_a_signed_non_regular_period_before_the_change():
     rows = _rows_with_closing_and_opening()
     eff = M.effect(_change(effective_date="2026-02-01"), _current(), rows,
-                   [(2025, 14), (2026, 0), (2026, 2)])
+                   _signed((2025, 14), (2026, 0), (2026, 2)))
     assert eff["resign"] == ["FY2026 P02"]
 
 
 def test_effect_signed_key_outside_the_calendar_raises_naming_it():
     try:
         M.effect(_change(), _current(), _rows_with_closing_and_opening(),
-                 [(2025, 14), (2030, 7)])
+                 _signed((2025, 14), (2030, 7)))
     except ValueError as e:
         assert "2030" in str(e) and "7" in str(e), str(e)
         return
@@ -352,6 +371,71 @@ def test_effect_first_day_check_stays_regular_only():
     except ValueError:
         return
     raise AssertionError("a Closing period's start must not count as a first day")
+
+
+# --- O64: the predecessor's name and who signed each re-sign period ------------
+# wireframe-4.2.md §1 ("FY2025 P11 (signed 4 Oct by Jane Doe)") and §3
+# ("Ends OP-… on 2025-09-30"), confirmed as drawn by Deepak Pai 7 Oct.
+
+def test_o64_current_name_is_the_predecessors_document_name():
+    eff = M.effect(_change(), _current(name="OP-PRED-7"), _rows(), {})
+    assert eff["current_name"] == "OP-PRED-7"
+
+
+def test_o64_resign_detail_names_the_date_and_signer_of_a_signed_p11():
+    signed = {(2025, 11): _sig("AR-11", on="2025-12-04", by="Jane Doe"),
+              (2025, 9): _sig("AR-9", on="2025-10-02", by="Raj Patel")}
+    eff = M.effect(_change(), _current(), _rows(), signed)
+    assert eff["resign"] == ["FY2025 P11"]   # P09 is before the change
+    assert eff["resign_detail"] == [
+        {"period": "FY2025 P11", "signed_on": "2025-12-04", "signed_by_name": "Jane Doe"}]
+
+
+def test_o64_signed_on_from_a_datetime_is_an_iso_date():
+    import datetime
+    signed = {(2025, 11): _sig("AR-11", on=datetime.datetime(2025, 12, 4, 17, 30))}
+    eff = M.effect(_change(), _current(), _rows(), signed)
+    assert eff["resign_detail"][0]["signed_on"] == "2025-12-04"
+
+
+def _o64_raises(signed):
+    try:
+        M.effect(_change(), _current(), _rows(), signed)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError("expected ValueError for %r" % (signed,))
+
+
+def test_o64_failure_path_a_listed_run_without_a_signer_name_raises_naming_the_run():
+    for by in (None, ""):
+        msg = _o64_raises({(2025, 11): _sig("AR-NOSIGNER", by=by)})
+        assert "AR-NOSIGNER" in msg and "FY2025 P11" in msg, msg
+
+
+def test_o64_failure_path_a_listed_run_without_a_signed_date_raises_naming_the_run():
+    for on in (None, ""):
+        msg = _o64_raises({(2025, 11): _sig("AR-NODATE", on=on)})
+        assert "AR-NODATE" in msg and "FY2025 P11" in msg, msg
+
+
+def test_o64_failure_path_a_bare_key_with_no_signature_raises_naming_the_period():
+    """A key list carries no signer: a listed period is never shown with a
+    blank or guessed signature."""
+    for signed in ([(2025, 11)], {(2025, 11): None}, {(2025, 11): "AR-11"}):
+        msg = _o64_raises(signed)
+        assert "FY2025 P11" in msg, msg
+
+
+def test_o64_an_unlisted_run_before_the_change_needs_no_signer():
+    """Only the periods the effect lists are shown, so only they must carry a
+    signer; a signed P09 before the change is not read for one."""
+    eff = M.effect(_change(), _current(), _rows(), {(2025, 9): _sig("AR-9", by=None)})
+    assert eff["resign"] == [] and eff["resign_detail"] == []
+
+
+def test_o64_resign_detail_never_shows_a_user_id():
+    eff = M.effect(_change(), _current(), _rows(), _signed((2025, 11)))
+    assert set(eff["resign_detail"][0]) == {"period", "signed_on", "signed_by_name"}
 
 
 def test_effect_uses_the_one_period_name_helper():

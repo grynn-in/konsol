@@ -77,10 +77,19 @@ class _Doc(dict):
             raise AttributeError(key)
 
 
+#: O64: the signer of every stub signed run, and the User full names.
+SIGNER = "jane@example.com"
+USERS = {SIGNER: "Jane Doe", "raj@example.com": "Raj Patel"}
+
+
 class _Site:
-    def __init__(self, ops=(), signed=()):
+    def __init__(self, ops=(), signed=(), signers=None, users=None):
         self.ops = [dict(o) for o in ops]
         self.signed = list(signed)
+        #: O64: {(fy, fp): (signed_off_by, signed_off_at)}; default SIGNER on
+        #: 4 Oct 2025 17:30.
+        self.signers = dict(signers or {})
+        self.users = dict(USERS if users is None else users)
         self.periods = _calendar()
         self.reads = []
         self.writes = []
@@ -89,7 +98,7 @@ class _Site:
 
 def _op_filters(site):
     """The filters of the one Ownership Period read."""
-    reads = [r for r in site.reads if r[0] == "get_all"]
+    reads = [r for r in site.reads if r[0] == "get_all" and r[1] == "Ownership Period"]
     assert len(reads) == 1, reads
     return reads[0][2]["filters"]
 
@@ -122,6 +131,10 @@ def _stubs(site):
         site.reads.append(("get_all", doctype, {"filters": filters, "fields": fields,
                                                 "order_by": order_by,
                                                 "limit_page_length": limit_page_length}))
+        if doctype == "User":
+            rows = [{"name": n, "full_name": f} for n, f in sorted(site.users.items())
+                    if _matches({"name": n}, filters)]
+            return [_Doc({f: r.get(f) for f in fields}) for r in rows]
         assert doctype == "Ownership Period", doctype
         rows = [r for r in site.ops if _matches(r, filters)]
         return [_Doc({f: r.get(f) for f in fields}) for r in rows]
@@ -154,9 +167,16 @@ def _stubs(site):
     signoff_gate = types.ModuleType("konsol.close.signoff_gate")
 
     def latest_signed_runs(fields=()):
-        site.reads.append(("signed",))
-        return {(fy, fp): {"name": "AR-%d-%d" % (fy, fp), "fiscal_year": fy, "fiscal_period": fp}
-                for fy, fp in site.signed}
+        site.reads.append(("signed", tuple(fields)))
+        out = {}
+        for fy, fp in site.signed:
+            by, at = site.signers.get((fy, fp),
+                                      (SIGNER, datetime.datetime(2025, 10, 4, 17, 30)))
+            row = {"name": "AR-%d-%d" % (fy, fp), "fiscal_year": fy, "fiscal_period": fp,
+                   "signed_off_by": by, "signed_off_at": at}
+            out[(fy, fp)] = {f: row[f] for f in ("name", "fiscal_year", "fiscal_period")
+                             + tuple(fields)}
+        return out
 
     signoff_gate.latest_signed_runs = latest_signed_runs
     close.signoff_gate = signoff_gate
@@ -219,12 +239,21 @@ def test_context_of_one_open_ended_period():
                               "ownership_pct": 100.0, "consolidation_method": "full"}
     assert not ctx["later_exists"]
     assert not ctx["pending_exists"]
-    assert ctx["signed_keys"] == [(2025, 8), (2025, 11)]
+    # O64: the signed runs, keyed and in calendar order, each with its date
+    # and its signer's full name (iterating gives the keys).
+    assert list(ctx["signed_keys"]) == [(2025, 8), (2025, 11)]
+    assert ctx["signed_keys"] == {
+        (2025, 8): {"run": "AR-2025-8", "signed_on": "2025-10-04", "signed_by_name": "Jane Doe"},
+        (2025, 11): {"run": "AR-2025-11", "signed_on": "2025-10-04",
+                     "signed_by_name": "Jane Doe"}}
     assert ctx["period_rows"] == site.periods
 
-    # One read of each source, and nothing written.
+    # One read of each source (one signed-run read with the signer columns,
+    # one User read for the full names), and nothing written.
     kinds = [r[0] for r in site.reads]
-    assert kinds.count("get_all") == 1 and kinds.count("calendar") == 1 and kinds.count("signed") == 1
+    assert kinds.count("get_all") == 2 and kinds.count("calendar") == 1 and kinds.count("signed") == 1
+    assert ("signed", ("signed_off_by", "signed_off_at")) in site.reads
+    assert [r[1] for r in site.reads if r[0] == "get_all"] == ["Ownership Period", "User"]
     filters = _op_filters(site)
     assert filters["consolidation_group"] == GROUP and filters["data_area_id"] == LEAF
     assert site.writes == []
@@ -245,6 +274,9 @@ def test_context_feeds_the_real_model():
     assert effect["current_ends"] == "2025-09-30"
     assert effect["first_period"] == "FY2025 P10"
     assert effect["resign"] == ["FY2025 P11"]   # P08 is before the change
+    assert effect["resign_detail"] == [{"period": "FY2025 P11", "signed_on": "2025-10-04",
+                                        "signed_by_name": "Jane Doe"}]
+    assert effect["current_name"] == "OP-1"
 
 
 def test_context_of_a_group_node_matches_a_blank_entity():
@@ -339,8 +371,13 @@ def test_effect_for_a_draft_equals_the_model_effect():
                "ownership_pct": 100.0, "consolidation_method": "full"}
     change = {"entity": LEAF, "effective_date": "2025-10-01", "ownership_pct": 80.0,
               "consolidation_method": "full"}
-    assert got == MODEL.effect(change, current, site.periods, [(2025, 11)])
+    signed = {(2025, 11): {"run": "AR-2025-11", "signed_on": "2025-10-04",
+                           "signed_by_name": "Jane Doe"}}
+    assert got == MODEL.effect(change, current, site.periods, signed)
     assert got["resign"] == ["FY2025 P11"]
+    assert got["resign_detail"] == [{"period": "FY2025 P11", "signed_on": "2025-10-04",
+                                     "signed_by_name": "Jane Doe"}]
+    assert got["current_name"] == "OP-1"
     assert site.writes == []
 
 
@@ -361,6 +398,51 @@ def test_effect_for_a_submitted_change_raises():
     site = _Site(ops=[OPEN_ENDED])
     msg = _raises(_Helper(site), "effect_for", _draft(docstatus=1))
     assert "OP-NEW" in msg
+
+
+# -- O64: who signed each signed run -----------------------------------------------
+
+def test_o64_signers_are_read_in_one_user_read_by_full_name():
+    site = _Site(ops=[OPEN_ENDED], signed=[(2025, 11), (2025, 12)],
+                 signers={(2025, 12): ("raj@example.com", "2026-01-05 09:00:00")})
+    ctx = _Helper(site)("context", GROUP, LEAF, 2025, 10)
+    assert ctx["signed_keys"][(2025, 12)] == {"run": "AR-2025-12", "signed_on": "2026-01-05",
+                                              "signed_by_name": "Raj Patel"}
+    user_reads = [r for r in site.reads if r[:2] == ("get_all", "User")]
+    assert len(user_reads) == 1, site.reads
+    assert user_reads[0][2]["filters"] == {"name": ["in", ["jane@example.com",
+                                                          "raj@example.com"]]}
+
+
+def test_o64_no_signed_run_costs_no_user_read():
+    site = _Site(ops=[OPEN_ENDED])
+    ctx = _Helper(site)("context", GROUP, LEAF, 2025, 10)
+    assert ctx["signed_keys"] == {}
+    assert not [r for r in site.reads if r[:2] == ("get_all", "User")]
+
+
+def test_o64_failure_path_a_signer_with_no_full_name_is_never_shown_as_a_user_id():
+    """A signer whose User has no full name, or no User, or a run with no
+    signer: the context carries None (never the user id), and the REAL model
+    raises naming the run when it would list that period."""
+    cases = [
+        ({(2025, 11): (SIGNER, "2025-12-04 10:00:00")}, {SIGNER: ""}),
+        ({(2025, 11): ("gone@example.com", "2025-12-04 10:00:00")}, None),
+        ({(2025, 11): (None, "2025-12-04 10:00:00")}, None),
+    ]
+    for signers, users in cases:
+        site = _Site(ops=[OPEN_ENDED], signed=[(2025, 11)], signers=signers, users=users)
+        helper = _Helper(site)
+        ctx = helper("context", GROUP, LEAF, 2025, 10)
+        sig = ctx["signed_keys"][(2025, 11)]
+        assert sig["signed_by_name"] is None, sig
+        change = helper("change", ctx, 80, "full")
+        msg = _raises(MODEL.effect, change, ctx["current"], ctx["period_rows"],
+                      ctx["signed_keys"])
+        assert "AR-2025-11" in msg, msg
+        # effect_for raises the same way for a saved draft.
+        msg = _raises(helper, "effect_for", _draft())
+        assert "AR-2025-11" in msg, msg
 
 
 # -- structure ------------------------------------------------------------------
