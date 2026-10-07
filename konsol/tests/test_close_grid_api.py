@@ -1113,22 +1113,81 @@ def test_every_grid_payload_carries_both_flags():
         assert result["journals_overdue"] in (True, False)
 
 
-def test_an_unreadable_ic_count_is_the_error_state_never_false():
-    """Failure path: the warehouse read failed (error / not_built) -> the
-    endpoint throws (the SPA's error state); ic_overdue is never False."""
+# --- R52e (review-w5b S4): an unreadable IC or journal read is that flag's own
+# error, never the whole grid's. The flag is None (unknown), never False, and
+# its ``*_error`` sentence names the period; the rows and counts still render.
+
+def test_every_grid_payload_carries_both_error_keys_none_when_read():
+    """Both ``*_error`` keys are always present, None when the read worked
+    or no read was needed."""
+    for site in (_Site(), _q5_site(date(2025, 10, 7)), _q5_site(date(2025, 10, 2))):
+        result = _call(site)
+        assert "ic_overdue_error" in result and "journals_overdue_error" in result
+        assert result["ic_overdue_error"] is None
+        assert result["journals_overdue_error"] is None
+
+
+def test_an_unreadable_ic_read_is_the_flags_error_and_the_grid_still_renders():
+    """Failure path (red at 843cdf7: the call raised ValidationError and no
+    rows came back): the IC date is past and the warehouse could not be read
+    (state error / not_built) -> ic_overdue None, never False, and
+    ic_overdue_error names the period; rows, counts and the journals flag
+    are intact."""
+    clean = _call(_q5_site(date(2025, 10, 7)))
     for state in ("error", "not_built"):
         site = _q5_site(date(2025, 10, 7))
         site.ic_state = state
-        err = _call_raises(site)
-        assert isinstance(err, site.errors.ValidationError), (state, err)
-        assert "Intercompany" in str(err) and "FY2025 P09" in str(err), str(err)
+        result = _call(site)
+        assert result["deadlines"]["ic"]["past"] is True, state
+        assert result["ic_overdue"] is None, (state, result["ic_overdue"])
+        err = result["ic_overdue_error"]
+        assert isinstance(err, str) and err.strip(), (state, err)
+        assert "Intercompany" in err and "FY2025 P09" in err and state in err, err
+        assert result["rows"] == clean["rows"], state
+        assert result["counts"] == clean["counts"], state
+        assert result["journals_overdue"] is False and result["journals_overdue_error"] is None
+        assert site.ic_calls == [(2025, 9)], state
 
 
-def test_an_unreadable_journal_count_raises_never_false():
+def test_before_the_ic_date_an_unreadable_warehouse_is_never_read():
+    """The IC date not past -> False and None, and no IC read happens."""
+    site = _q5_site(date(2025, 10, 2))
+    site.ic_state = "error"
+    result = _call(site)
+    assert result["ic_overdue"] is False and result["ic_overdue_error"] is None
+    assert site.ic_calls == []
+
+
+def test_an_unreadable_journal_count_is_the_flags_error_and_the_grid_still_renders():
+    """Failure path (red at 843cdf7: the count's error took down the grid):
+    the journals date is past and the count fails -> journals_overdue None,
+    never False, and journals_overdue_error names the period; rows, counts
+    and the IC flag are intact."""
+    clean = _call(_q5_site(date(2025, 10, 7)))
     site = _q5_site(date(2025, 10, 7))
     site.count_error = RuntimeError("db gone")
-    with pytest.raises(RuntimeError):
-        _call(site)
+    result = _call(site)
+    assert result["deadlines"]["journals"]["past"] is True
+    assert result["journals_overdue"] is None
+    err = result["journals_overdue_error"]
+    assert isinstance(err, str) and "journal" in err.lower() and "FY2025 P09" in err, err
+    assert "db gone" in err, err
+    assert result["rows"] == clean["rows"]
+    assert result["counts"] == clean["counts"]
+    assert result["ic_overdue"] is False and result["ic_overdue_error"] is None
+
+
+def test_an_unreadable_journal_count_value_is_the_flags_error():
+    """A count that is not a non-negative int (deadline_model.journals_open's
+    ValueError) is the same error, never False."""
+    site = _q5_site(date(2025, 10, 7))
+    api = _load_api(site)
+    site.stub_modules["frappe"].db.count = lambda *a, **k: None
+    result = _installed(site, api.get_period_grid, 2025, 9)
+    json.dumps(result)
+    assert result["journals_overdue"] is None
+    assert "FY2025 P09" in result["journals_overdue_error"], result["journals_overdue_error"]
+    assert result["rows"]
 
 
 def test_q5_reads_are_one_each_and_constant_in_entities():
@@ -1146,3 +1205,11 @@ def test_the_golden_fixture_shows_ic_overdue():
         golden = json.load(f)
     assert golden["ic_overdue"] is True
     assert golden["journals_overdue"] is False
+
+
+def test_the_golden_fixture_carries_both_error_keys_as_none():
+    """R52e: the golden (read worked) carries both ``*_error`` keys, None."""
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["ic_overdue_error"] is None
+    assert golden["journals_overdue_error"] is None
