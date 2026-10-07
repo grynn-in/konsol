@@ -2335,7 +2335,8 @@ def test_o63_ownership_matches_the_golden_payload():
 
 def test_o63_change_entities_carry_their_nodes_group_one_item_per_node():
     result = _o63_call(_o63_site())
-    assert result["change"]["entities"] == [
+    assert [{k: e[k] for k in ("entity", "entity_name", "consolidation_group")}
+            for e in result["change"]["entities"]] == [
         {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": O55_GROUP},
         {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": O63_SUB},
         {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three",
@@ -2400,6 +2401,83 @@ def test_o63_reads_are_constant_in_the_number_of_nodes():
     _o63_call(big)
     assert len(small.reads) == 6, small.reads
     assert len(big.reads) == len(small.reads), big.reads
+
+
+# --- R52j (review U4; wireframe-4.2.md section 1, the "Currently" line
+# under Group): each change-form entity item carries ``current``, its node's
+# latest SUBMITTED Ownership Period by effective_date, in
+# ``ownership_change._as_current``'s shape, read in the same nodes read. ----
+
+
+def _r52j_current(name, effective_date, end_date=None, pct=60.0, method="Equity"):
+    """Written out independently of the code under test."""
+    return {"name": name, "effective_date": effective_date, "end_date": end_date,
+            "ownership_pct": pct, "consolidation_method": method}
+
+
+def _r52j_item(result, entity, group):
+    items = [e for e in result["change"]["entities"]
+             if (e["entity"], e["consolidation_group"]) == (entity, group)]
+    assert len(items) == 1, result["change"]["entities"]
+    return items[0]
+
+
+def test_r52j_failure_path_every_entity_item_carries_current():
+    # Red at 843cdf7: the items carry no ``current`` (KeyError: current).
+    result = _o63_call(_o63_site())
+    for item in result["change"]["entities"]:
+        assert "current" in item, item
+        item["current"]
+
+
+def test_r52j_a_node_with_an_ended_and_an_open_period_gives_the_open_one():
+    site = _o63_site()
+    # Listed newest first, so the answer is not the stub's row order.
+    site.ops = list(reversed(site.ops))
+    result = _o63_call(site)
+    assert _r52j_item(result, O55_LEAF, O55_GROUP)["current"] == _r52j_current(
+        "OP-ZZ5B1-1", "2025-01-01")
+
+
+def test_r52j_failure_path_a_later_draft_on_the_node_is_not_current():
+    site = _o63_site()
+    site.ops.append(_op("OP-ZZ5B1-D", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 10, 1), ownership_pct=80.0, docstatus=0))
+    result = _o63_call(site)
+    assert _r52j_item(result, O55_LEAF, O55_GROUP)["current"]["name"] == "OP-ZZ5B1-1"
+
+
+def test_r52j_a_node_with_one_period_gives_that_period():
+    result = _o63_call(_o63_site())
+    assert _r52j_item(result, O55_LEAF, O63_SUB)["current"] == _r52j_current(
+        "OP-ZZ5B1-SUB", "2025-01-01")
+    assert _r52j_item(result, "ZZ5B3", O55_GROUP)["current"] == _r52j_current(
+        "OP-ZZ5B3-1", "2025-12-01")
+
+
+def test_r52j_an_ended_latest_period_carries_its_end_date_as_iso():
+    site = _o63_site()
+    site.ops = [r for r in site.ops if r["name"] != "OP-ZZ5B1-1"]
+    result = _o63_call(site)
+    assert _r52j_item(result, O55_LEAF, O55_GROUP)["current"] == _r52j_current(
+        "OP-ZZ5B1-0", "2024-01-01", "2024-12-31")
+
+
+def test_r52j_failure_path_a_hidden_entitys_item_and_period_stay_cut():
+    site = _o63_site()
+    site.allowed = {"ZZ5B3"}
+    result = _o63_call(site)
+    assert [(e["entity"], e["current"]["name"]) for e in result["change"]["entities"]] == [
+        ("ZZ5B3", "OP-ZZ5B3-1")]
+    text = json.dumps(result)
+    assert "ZZ5B1" not in text and "OP-ZZ5B1" not in text
+
+
+def test_r52j_no_new_read():
+    site = _o63_site()
+    _o63_call(site)
+    assert len(site.reads) == 6, site.reads
+    assert site.reads.count(("get_all", "Ownership Period")) == 2, site.reads
 
 
 # --- O68: save_ownership_change(name=<a hidden entity's draft>) never names that entity ---
