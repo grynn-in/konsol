@@ -909,9 +909,10 @@ test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () =>
   assert.equal(view.firstPeriod, "FY2025 P10");
   assert.equal(view.periods, "FY2025 P10 onward (open-ended)");
   // wireframe-4.2.md §1: "FY2025 P11 (signed <date> by <name>)" (O65).
+  // R52f: exactly one entry; the signed Closing P13 is never marked by the
+  // approval, so the REAL preview no longer lists it.
   assert.deepEqual(view.resign, [
     `FY2025 P11 (signed ${D("2025-10-04")} by Zz Lead)`,
-    `FY2025 P13 (signed ${D("2025-10-04")} by Zz Lead)`,
   ]);
   assert.equal(view.resignNone, null);
   assert.equal(view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
@@ -970,23 +971,32 @@ test("O65 ownershipEffectView: failure path — a re-sign entry without its date
   for (const key of ["period", "signed_on", "signed_by_name"]) {
     const entry = { ...detail[0] };
     delete entry[key];
-    const broken = { ...PREVIEW.effect, resign_detail: [entry, detail[1]] };
+    const broken = { ...PREVIEW.effect, resign_detail: [entry] };
     assert.throws(() => ownershipEffectView(broken), new RegExp(`resign_detail.${key}`), key);
   }
   for (const name of [null, "", "  "]) {
-    const broken = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_by_name: name }, detail[1]] };
+    const broken = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_by_name: name }] };
     assert.throws(() => ownershipEffectView(broken), /signed_by_name/, String(name));
   }
-  const badDate = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_on: "04/10/2025" }, detail[1]] };
+  const badDate = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_on: "04/10/2025" }] };
   assert.throws(() => ownershipEffectView(badDate), /ISO/);
 });
 
 test("O65 ownershipEffectView: failure path — resign_detail out of step with resign throws", () => {
   const detail = PREVIEW.effect.resign_detail;
-  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [detail[0]] }), /resign_detail/);
+  // R52f: the REAL preview lists exactly one re-sign period (P11).
+  assert.deepEqual(PREVIEW.effect.resign, ["FY2025 P11"]);
+  assert.equal(detail.length, 1);
+  // Fewer entries than resign, more entries than resign, and an entry naming
+  // another period all throw.
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [] }), /resign_detail/);
   assert.throws(
-    () => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [detail[1], detail[0]] }),
+    () => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [detail[0], detail[0]] }),
     /resign_detail/,
+  );
+  assert.throws(
+    () => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [{ ...detail[0], period: "FY2025 P13" }] }),
+    /resign_detail FY2025 P13 does not match resign FY2025 P11/,
   );
 });
 

@@ -37,6 +37,94 @@ def _load_path(name, path):
 MODEL = _load_path("ownership_change_model_for_o54_test",
                    os.path.join(CLOSE_DIR, "ownership_change_model.py"))
 
+CLOSE_DIR_R52F = CLOSE_DIR
+
+
+#: R52f: the REAL signoff_gate.py, so the rule the preview lists by is the
+#: rule record_data_change marks by (never a re-typed copy of it).
+SIGNOFF_GATE_PY = os.path.join(CLOSE_DIR_R52F, "signoff_gate.py")
+SIGNOFF_MODEL_PY_R52F = os.path.join(CLOSE_DIR_R52F, "signoff_model.py")
+
+
+def _real_periods_marked_from(rows, first_close, reads=None):
+    """``signoff_gate.periods_marked_from`` from the REAL signoff_gate.py,
+    loaded by path against a minimal stub frappe: the period row's type
+    comes from ``rows()`` (the same calendar the code under test reads), the
+    first close is ``first_close`` ((fy, fp) or None = undeclared, read as
+    the Close Settings Ints 0/0) and the real pure ``signoff_model``.
+    ``reads``, when given, records each gate read as ("gate", what)."""
+    log = reads.append if reads is not None else (lambda item: None)
+    fy0, fp0 = first_close or (0, 0)
+
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+
+    def throw(msg, exc=None, title=None, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    def get_value(doctype, filters, fieldname, as_dict=False, **k):
+        assert doctype == "EPM Fiscal Year Period", doctype
+        log(("gate", "period_row"))
+        key = (int(filters["parent"]), int(filters["fiscal_period"]))
+        row = next((r for r in rows() if (int(r["fiscal_year"]), int(r["fiscal_period"])) == key),
+                   None)
+        if row is None:
+            return None
+        rec = {"name": "ROW-%d-%d" % key, "period_type": row["period_type"]}
+        return {f: rec.get(f) for f in fieldname}
+
+    def get_single_value(doctype, field):
+        assert doctype == "Close Settings", doctype
+        log(("gate", field))
+        return {"first_close_fiscal_year": fy0, "first_close_fiscal_period": fp0}[field]
+
+    frappe.throw = throw
+    frappe.db = types.SimpleNamespace(get_value=get_value, get_single_value=get_single_value)
+
+    konsol = types.ModuleType("konsol")
+    calendar = types.ModuleType("konsol.fiscal_calendar")
+
+    def fiscal_period_rows():
+        log(("gate", "calendar"))
+        return [dict(r) for r in rows()]
+
+    calendar.fiscal_period_rows = fiscal_period_rows
+    close = types.ModuleType("konsol.close")
+    spec = importlib.util.spec_from_file_location("signoff_model_for_r52f", SIGNOFF_MODEL_PY_R52F)
+    signoff_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signoff_model)
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model"):
+        setattr(close, name, types.ModuleType("konsol.close." + name))
+    close.signoff_model = signoff_model
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    konsol.fiscal_calendar, konsol.close, konsol.period_status = calendar, close, period_status
+    mods = {"frappe": frappe, "konsol": konsol, "konsol.fiscal_calendar": calendar,
+            "konsol.close": close, "konsol.period_status": period_status}
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model", "signoff_model"):
+        mods["konsol.close." + name] = getattr(close, name)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("signoff_gate_for_r52f", SIGNOFF_GATE_PY)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    def periods_marked_from(fiscal_year, fiscal_period):
+        # Looked up at call time: a gate without the function fails the
+        # caller that asks for it, not every stub site that is built.
+        return gate.periods_marked_from(fiscal_year, fiscal_period)
+
+    return periods_marked_from
+
 
 def _month_end(y, m):
     nxt = datetime.date(y + m // 12, m % 12 + 1, 1)
@@ -83,9 +171,12 @@ USERS = {SIGNER: "Jane Doe", "raj@example.com": "Raj Patel"}
 
 
 class _Site:
-    def __init__(self, ops=(), signed=(), signers=None, users=None):
+    def __init__(self, ops=(), signed=(), signers=None, users=None, first_close=None):
         self.ops = [dict(o) for o in ops]
         self.signed = list(signed)
+        #: R52f: the declared first close (fy, fp), None = undeclared; read by
+        #: the REAL signoff_gate.periods_marked_from.
+        self.first_close = first_close
         #: O64: {(fy, fp): (signed_off_by, signed_off_at)}; default SIGNER on
         #: 4 Oct 2025 17:30.
         self.signers = dict(signers or {})
@@ -179,6 +270,9 @@ def _stubs(site):
         return out
 
     signoff_gate.latest_signed_runs = latest_signed_runs
+    # R52f: the REAL rule, on this site's calendar and first close.
+    signoff_gate.periods_marked_from = _real_periods_marked_from(
+        lambda: site.periods, site.first_close, site.reads)
     close.signoff_gate = signoff_gate
 
     return {"frappe": frappe, "konsol": konsol, "konsol.fiscal_calendar": fiscal_calendar,
@@ -240,10 +334,10 @@ def test_context_of_one_open_ended_period():
     assert not ctx["later_exists"]
     assert not ctx["pending_exists"]
     # O64: the signed runs, keyed and in calendar order, each with its date
-    # and its signer's full name (iterating gives the keys).
-    assert list(ctx["signed_keys"]) == [(2025, 8), (2025, 11)]
+    # and its signer's full name (iterating gives the keys). R52f: only the
+    # runs an approval from P10 marks; the signed P08 is before the change.
+    assert list(ctx["signed_keys"]) == [(2025, 11)]
     assert ctx["signed_keys"] == {
-        (2025, 8): {"run": "AR-2025-8", "signed_on": "2025-10-04", "signed_by_name": "Jane Doe"},
         (2025, 11): {"run": "AR-2025-11", "signed_on": "2025-10-04",
                      "signed_by_name": "Jane Doe"}}
     assert ctx["period_rows"] == site.periods
@@ -464,3 +558,53 @@ def test_the_helper_is_not_whitelisted():
     assert site.whitelisted == []
     with open(HELPER_PY) as fh:
         assert "frappe.whitelist" not in fh.read()
+
+
+# -- R52f (review S5): "will need re-signing" lists exactly what the approval marks
+
+R52F_P09 = {"period": "FY2025 P09", "signed_on": "2025-10-04", "signed_by_name": "Jane Doe"}
+
+
+def _r52f_effects(site):
+    """The effect of a change from FY2025 P08 by both routes: the context fed
+    to the REAL model, and effect_for of the saved draft."""
+    helper = _Helper(site)
+    ctx = helper("context", GROUP, LEAF, 2025, 8)
+    via_context = MODEL.effect(helper("change", ctx, 80, "full"), ctx["current"],
+                               ctx["period_rows"], ctx["signed_keys"])
+    via_draft = helper("effect_for", _draft(effective_date="2025-08-01"))
+    return via_context, via_draft
+
+
+def test_r52f_a_signed_closing_period_is_not_listed_a_signed_regular_one_is():
+    site = _Site(ops=[OPEN_ENDED], signed=[(2025, 9), (2025, 13)], first_close=(2025, 1))
+    for eff in _r52f_effects(site):
+        assert eff["resign"] == ["FY2025 P09"], eff["resign"]
+        assert eff["resign_detail"] == [R52F_P09], eff["resign_detail"]
+    # The real rule was read, through the gate's own period row and first close.
+    assert ("gate", "period_row") in site.reads
+    assert ("gate", "first_close_fiscal_year") in site.reads
+
+
+def test_r52f_failure_path_only_a_signed_p13_gives_an_empty_resign():
+    """The reviewer's probe: a change from P08 with only the Closing P13
+    signed listed ['FY2025 P13'], a period the approval never marks."""
+    site = _Site(ops=[OPEN_ENDED], signed=[(2025, 13)], first_close=(2025, 1))
+    for eff in _r52f_effects(site):
+        assert eff["resign"] == [], eff["resign"]
+        assert eff["resign_detail"] == [], eff["resign_detail"]
+
+
+def test_r52f_a_change_before_the_first_close_lists_nothing():
+    """record_data_change marks nothing for a history period, so the
+    preview lists nothing either, even with later Regular periods signed."""
+    site = _Site(ops=[OPEN_ENDED], signed=[(2025, 9), (2025, 11)], first_close=(2025, 10))
+    for eff in _r52f_effects(site):
+        assert eff["resign"] == [], eff["resign"]
+
+
+def test_r52f_nothing_signed_never_reads_the_rule():
+    site = _Site(ops=[OPEN_ENDED], first_close=(2025, 1))
+    for eff in _r52f_effects(site):
+        assert eff["resign"] == []
+    assert not [r for r in site.reads if r[0] == "gate"], site.reads

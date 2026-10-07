@@ -32,6 +32,94 @@ API_PY = os.path.join(CLOSE_DIR, "rates_api.py")
 TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
 OWNERSHIP_CHANGE_PY = os.path.join(CLOSE_DIR, "ownership_change.py")
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+CLOSE_DIR_R52F = CLOSE_DIR
+
+
+#: R52f: the REAL signoff_gate.py, so the rule the preview lists by is the
+#: rule record_data_change marks by (never a re-typed copy of it).
+SIGNOFF_GATE_PY = os.path.join(CLOSE_DIR_R52F, "signoff_gate.py")
+SIGNOFF_MODEL_PY_R52F = os.path.join(CLOSE_DIR_R52F, "signoff_model.py")
+
+
+def _real_periods_marked_from(rows, first_close, reads=None):
+    """``signoff_gate.periods_marked_from`` from the REAL signoff_gate.py,
+    loaded by path against a minimal stub frappe: the period row's type
+    comes from ``rows()`` (the same calendar the code under test reads), the
+    first close is ``first_close`` ((fy, fp) or None = undeclared, read as
+    the Close Settings Ints 0/0) and the real pure ``signoff_model``.
+    ``reads``, when given, records each gate read as ("gate", what)."""
+    log = reads.append if reads is not None else (lambda item: None)
+    fy0, fp0 = first_close or (0, 0)
+
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+
+    def throw(msg, exc=None, title=None, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    def get_value(doctype, filters, fieldname, as_dict=False, **k):
+        assert doctype == "EPM Fiscal Year Period", doctype
+        log(("gate", "period_row"))
+        key = (int(filters["parent"]), int(filters["fiscal_period"]))
+        row = next((r for r in rows() if (int(r["fiscal_year"]), int(r["fiscal_period"])) == key),
+                   None)
+        if row is None:
+            return None
+        rec = {"name": "ROW-%d-%d" % key, "period_type": row["period_type"]}
+        return {f: rec.get(f) for f in fieldname}
+
+    def get_single_value(doctype, field):
+        assert doctype == "Close Settings", doctype
+        log(("gate", field))
+        return {"first_close_fiscal_year": fy0, "first_close_fiscal_period": fp0}[field]
+
+    frappe.throw = throw
+    frappe.db = types.SimpleNamespace(get_value=get_value, get_single_value=get_single_value)
+
+    konsol = types.ModuleType("konsol")
+    calendar = types.ModuleType("konsol.fiscal_calendar")
+
+    def fiscal_period_rows():
+        log(("gate", "calendar"))
+        return [dict(r) for r in rows()]
+
+    calendar.fiscal_period_rows = fiscal_period_rows
+    close = types.ModuleType("konsol.close")
+    spec = importlib.util.spec_from_file_location("signoff_model_for_r52f", SIGNOFF_MODEL_PY_R52F)
+    signoff_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signoff_model)
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model"):
+        setattr(close, name, types.ModuleType("konsol.close." + name))
+    close.signoff_model = signoff_model
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    konsol.fiscal_calendar, konsol.close, konsol.period_status = calendar, close, period_status
+    mods = {"frappe": frappe, "konsol": konsol, "konsol.fiscal_calendar": calendar,
+            "konsol.close": close, "konsol.period_status": period_status}
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model", "signoff_model"):
+        mods["konsol.close." + name] = getattr(close, name)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("signoff_gate_for_r52f", SIGNOFF_GATE_PY)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    def periods_marked_from(fiscal_year, fiscal_period):
+        # Looked up at call time: a gate without the function fails the
+        # caller that asks for it, not every stub site that is built.
+        return gate.periods_marked_from(fiscal_year, fiscal_period)
+
+    return periods_marked_from
+
 #: The stub site's system time zone (A55, L01e): BST (+01:00) in July 2025.
 SITE_TZ = "Europe/London"
 
@@ -99,6 +187,11 @@ class _Site:
         self.get_doc_calls = []  # what get_doc received
         self.new_docs = []  # every _FakeDoc built from a dict
         self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
+        #: R52f: the declared first close (fy, fp), None = undeclared, read by
+        #: the REAL signoff_gate.periods_marked_from; its reads go to gate_reads
+        #: so the MariaDB read log above keeps its exact shape.
+        self.first_close = None
+        self.gate_reads = []
         #: O64: {(fy, fp): (signed_off_by, signed_off_at)} of a signed run;
         #: unlisted keys are signed by LEAD at O64_SIGNED_AT.
         self.signers = {}
@@ -123,11 +216,14 @@ def _signed_runs(site, fields=()):
     return out
 
 
-def _o64_signatures(site):
+def _o64_signatures(site, keys=None):
     """The signatures ``ownership_change.context`` should hand the model for
-    this site: written out independently of the code under test."""
+    this site: written out independently of the code under test. ``keys``
+    (R52f): only those signed keys, the ones the approval will mark."""
     out = {}
     for fy, fp in sorted(site.signed):
+        if keys is not None and (fy, fp) not in keys:
+            continue
         by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
         out[(fy, fp)] = {"run": "ZZ-RUN-%d-%d" % (fy, fp), "signed_on": at.date().isoformat(),
                          "signed_by_name": site.users.get(by) or None}
@@ -422,6 +518,9 @@ def _invoke(site, run, require_json_safe=True):
         # signoff_gate's signed runs are stubbed.
         signoff_gate = types.ModuleType("konsol.close.signoff_gate")
         signoff_gate.latest_signed_runs = lambda fields=(): _signed_runs(site, fields)
+        # R52f: the REAL rule, on this site's calendar and first close.
+        signoff_gate.periods_marked_from = _real_periods_marked_from(
+            lambda: site.periods, site.first_close, site.gate_reads)
         sys.modules["konsol.close.signoff_gate"] = signoff_gate
         close.signoff_gate = signoff_gate
         close.ownership_change = _load_path(
@@ -1276,8 +1375,11 @@ def _o55_site(roles=("EPM Analyst",), user=ANALYST):
     site.ops = [_op("OP-ZZ5B1-1", data_area_id=O55_LEAF, group=O55_GROUP,
                     effective_date=date(2025, 1, 1), end_date=None, ownership_pct=100.0,
                     consolidation_method="full", owner=LEAD, docstatus=1)]
-    # P09 is before the change (not re-signed); P11 and the Closing P13 are after (O54a).
+    # P09 is before the change (not re-signed); P11 is after it. The Closing
+    # P13 is after it too, but an approval never marks a Closing period, so
+    # it is not listed (R52f, review S5).
     site.signed = [(2025, 9), (2025, 11), (2025, 13)]
+    site.first_close = (2025, 1)
     return site
 
 
@@ -1310,7 +1412,7 @@ def test_o55_preview_happy_path_matches_the_golden_payload():
     assert result == _golden(O55_GOLDEN), json.dumps(result, indent=1)
     assert set(result) == {"problems", "effect", "current", "pending"}
     assert result["problems"] == []
-    assert result["effect"]["resign"] == ["FY2025 P11", "FY2025 P13"]
+    assert result["effect"]["resign"] == ["FY2025 P11"]
     assert result["effect"]["current_ends"] == "2025-09-30"
     assert result["current"]["name"] == "OP-ZZ5B1-1"
     _no_write(site)
@@ -1323,13 +1425,12 @@ def test_o55_the_effect_is_the_real_models_for_the_periods_start():
     current = result["current"]
     expected = model.effect({"entity": O55_LEAF, "effective_date": "2025-10-01",
                              "ownership_pct": "80", "consolidation_method": "full"},
-                            current, _o55_calendar(), _o64_signatures(site))
+                            current, _o55_calendar(), _o64_signatures(site, {(2025, 11)}))
     assert result["effect"] == expected
     # O64: who signed each re-sign period, and the predecessor's name.
     assert result["effect"]["current_name"] == "OP-ZZ5B1-1"
     assert result["effect"]["resign_detail"] == [
-        {"period": "FY2025 P11", "signed_on": "2025-10-04", "signed_by_name": O64_LEAD_NAME},
-        {"period": "FY2025 P13", "signed_on": "2025-10-04", "signed_by_name": O64_LEAD_NAME}]
+        {"period": "FY2025 P11", "signed_on": "2025-10-04", "signed_by_name": O64_LEAD_NAME}]
     assert "not previewed" in result["effect"]["not_shown"]
 
 
@@ -2009,7 +2110,7 @@ O57_DESK_LEAF = "ZZ5B2"
 
 def _o57_site():
     """The O55 site (ZZ5B1 100 % full from 2025-01-01, approved; P09, P11
-    and P13 signed) plus three drafts: the Analyst's change of ZZ5B1 to 80 %
+    and P13 signed; first close FY2025 P01) plus three drafts: the Analyst's change of ZZ5B1 to 80 %
     full from FY2025 P10 (``supersedes`` the approved period), a Desk
     "Record ownership" draft for ZZ5B2 (no ``supersedes``), and one Historical
     Equity Rate. The Close Lead reads it under Blocked."""
@@ -2051,13 +2152,13 @@ def test_o57_a_change_draft_carries_the_real_models_effect():
          "consolidation_method": "full"},
         {"name": "OP-ZZ5B1-1", "effective_date": "2025-01-01", "end_date": None,
          "ownership_pct": 100.0, "consolidation_method": "full"},
-        _o55_calendar(), _o64_signatures(site))
+        _o55_calendar(), _o64_signatures(site, {(2025, 11)}))
     assert item["effect"] == expected
     assert item["effect"]["current_name"] == "OP-ZZ5B1-1"
     assert [d["period"] for d in item["effect"]["resign_detail"]] == item["effect"]["resign"]
     assert item["effect"]["before"]["pct"] == 100.0 and item["effect"]["after"]["pct"] == 80.0
     assert item["effect"]["current_ends"] == "2025-09-30"
-    assert item["effect"]["resign"] == ["FY2025 P11", "FY2025 P13"]
+    assert item["effect"]["resign"] == ["FY2025 P11"]
     # The detail text is unchanged (O57 goal).
     assert item["detail"] == "80% · full"
     assert item["approve"]["mode"] == "direct"

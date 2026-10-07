@@ -55,17 +55,11 @@
         "not_shown": "Goodwill, NCI and results are not previewed; they change at the next build.",
         "periods": "FY2025 P10 onward (open-ended)",
         "resign": [
-          "FY2025 P11",
-          "FY2025 P13"
+          "FY2025 P11"
         ],
         "resign_detail": [
           {
             "period": "FY2025 P11",
-            "signed_by_name": "Zz Lead",
-            "signed_on": "2025-10-04"
-          },
-          {
-            "period": "FY2025 P13",
             "signed_by_name": "Zz Lead",
             "signed_on": "2025-10-04"
           }

@@ -1886,3 +1886,73 @@ def test_shared_reads_give_the_same_problems_as_a_lone_call():
     assert shared == _call(site, "sign_off_problems", 2025, 9)
     assert [g["code"] for g in shared["config_gaps"]] == [
         "commentary_threshold_undeclared", "ic_unrealized_profit_rule_undeclared"]
+
+
+# --- konsol#305 R52f (review S5): periods_marked_from is the one rule ----------
+# record_data_change marks; the ownership-change preview lists. Both read
+# periods_marked_from, so "will need re-signing" lists exactly what an
+# approval marks. Every call here runs the REAL signoff_gate (this file's
+# `_load`), no stub of the rule.
+
+def _r52f_site():
+    """FY2025 P01-P12 Regular plus Closing P13, first close P07, and a
+    signed run on EVERY period P01-P13 (so the marked keys are exactly the
+    keys whose runs record_data_change marks)."""
+    site = _Site()
+    site.rows = _year(2025, overrides={9: "Open", 10: "Open", 11: "Open", 12: "Open"},
+                      closing="Open")
+    site.records["Assertion Run"] = [_run("RUN-%d" % fp, 2025, fp) for fp in range(1, 14)]
+    return site
+
+
+def _marked_keys(site, names):
+    by_name = {r["name"]: (r["fiscal_year"], r["fiscal_period"])
+               for r in site.records["Assertion Run"]}
+    return {by_name[n] for n in names}
+
+
+def test_r52f_periods_marked_from_equals_what_record_data_change_marks():
+    site = _r52f_site()
+    want = _call(site, "periods_marked_from", 2025, 8)
+    marked = _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY)
+    assert _marked_keys(site, marked) == want, (marked, want)
+    assert want == {(2025, fp) for fp in range(8, 13)}, want
+    # The signed Closing P13 is not marked, so it is not in the set.
+    assert (2025, 13) not in want
+    assert _run_rec(site, "RUN-13")["signoff_status"] == "Signed Off"
+
+
+def test_r52f_a_non_regular_period_marks_nothing():
+    site = _r52f_site()
+    assert _call(site, "periods_marked_from", 2025, 13) == set()
+    assert _call(site, "record_data_change", 2025, 13, CHANGED_TEXT, CHANGED_BY) == []
+
+
+def test_r52f_a_period_before_the_first_close_marks_nothing():
+    site = _r52f_site()   # first close P07
+    assert _call(site, "periods_marked_from", 2025, 5) == set()
+    assert _call(site, "record_data_change", 2025, 5, CHANGED_TEXT, CHANGED_BY) == []
+
+
+def test_r52f_with_no_first_close_every_later_regular_period_is_marked():
+    site = _r52f_site()
+    site.settings["first_close_fiscal_year"] = 0
+    site.settings["first_close_fiscal_period"] = 0
+    assert _call(site, "periods_marked_from", 2025, 3) == {(2025, fp) for fp in range(3, 13)}
+
+
+def test_r52f_an_undeclared_period_raises():
+    site = _r52f_site()
+    with pytest.raises(Exception) as info:
+        _call(site, "periods_marked_from", 2025, 14)
+    assert "FY2025 P14" in str(info.value), str(info.value)
+
+
+def test_r52f_record_data_change_calls_periods_marked_from():
+    """One rule: record_data_change asks periods_marked_from, it does not
+    repeat the Regular / first-close checks itself."""
+    import inspect
+    module, _frappe, _mods, _ps = _load(_Site())
+    src = inspect.getsource(module.record_data_change)
+    assert "periods_marked_from(" in src, src
+    assert "REGULAR" not in src and "_first_close" not in src, src
