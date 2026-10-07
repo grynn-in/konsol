@@ -51,6 +51,8 @@ function pairRow(overrides) {
 		can_send_back: false,
 		reminders_a: null,
 		reminders_b: null,
+		can_remind_a: false,
+		can_remind_b: false,
 		...overrides,
 	};
 }
@@ -388,13 +390,13 @@ test("U9: Intercompany.vue's own reads of intercompanyView's output — banner c
 // --- panel ---------------------------------------------------------------------
 
 test("panel: the difference-account sentence when an account is declared", () => {
-	const pair = pairRow({ ic_difference_account: "7999", difference: 50, canRemind: false, remindedAText: null, remindedBText: null });
+	const pair = pairRow({ ic_difference_account: "7999", difference: 50, remindedAText: null, remindedBText: null });
 	const result = panel(pair);
 	assert.equal(result.accountSentence, "Booked to 7999 in the group view while it stays open.");
 });
 
 test("panel: the difference-account sentence when no account is declared", () => {
-	const pair = pairRow({ ic_difference_account: null, difference: 50, canRemind: false, remindedAText: null, remindedBText: null });
+	const pair = pairRow({ ic_difference_account: null, difference: 50, remindedAText: null, remindedBText: null });
 	const result = panel(pair);
 	assert.equal(
 		result.accountSentence,
@@ -896,7 +898,8 @@ test("Y65: the A side's reminder is on A only (DE01 ↔ FR01)", () => {
 	const view = intercompanyView(icFixture(), NOW, ZONE);
 	const side = panel(fixturePair(view, "DE01", "FR01"));
 	assert.match(side.remindA.text, /^Reminded 1× · last .+ by Zz Lead$/);
-	assert.equal(side.remindA.canRemind, true);
+	// R53c: the pair is within tolerance, so the server sends can_remind_a false.
+	assert.equal(side.remindA.canRemind, false);
 	assert.equal(side.remindB.text, null);
 });
 
@@ -908,11 +911,14 @@ test("Y65 failure path: a masked side has canRemind false and no entity code in 
 	const side = panel(pair);
 	assert.equal(side.remindB.canRemind, false);
 	assert.equal(side.remindB.text, null);
-	assert.equal(side.remindA.canRemind, true, "the visible side can still be reminded");
-	// Even if a masked side ever arrived with a reminders entry, nothing of it is shown.
+	// R53c: the visible side of this matched pair has nothing to remind about.
+	assert.equal(side.remindA.canRemind, false, "a matched pair offers no Remind on its visible side");
+	// Even if a masked side ever arrived with a reminders entry, or a true
+	// can_remind_b, nothing of it is shown and no Remind is offered.
 	const leaked = structuredClone(payload);
 	const leakedPair = leaked.groups.flatMap((g) => g.pairs).find((p) => p.entity_a === "UK01" && p.entity_b === "FR01");
 	leakedPair.reminders_b = { count: 3, last_at: "2025-08-05T09:00:00+01:00", last_by: "zz-x@example.com", last_by_name: "Zz Hidden" };
+	leakedPair.can_remind_b = true;
 	const leakedSide = panel(fixturePair(intercompanyView(leaked, NOW, ZONE), "UK01", "FR01"));
 	assert.equal(leakedSide.remindB.canRemind, false);
 	assert.equal(leakedSide.remindB.text, null);
@@ -921,7 +927,13 @@ test("Y65 failure path: a masked side has canRemind false and no entity code in 
 });
 
 test("Y65 failure path: a Viewer payload (can_remind false) gives no Remind on either side, text still shown", () => {
+	// The server's rule (remind_model.ic_side_can_remind) gives every side
+	// false when the payload's can_remind is false; the payload mirrors that.
 	const payload = { ...icFixture(), can_remind: false };
+	for (const pair of payload.groups.flatMap((g) => g.pairs)) {
+		pair.can_remind_a = false;
+		pair.can_remind_b = false;
+	}
 	const side = panel(fixturePair(intercompanyView(payload, NOW, ZONE), "UK01", "DE01"));
 	assert.equal(side.remindA.canRemind, false);
 	assert.equal(side.remindB.canRemind, false);
@@ -940,8 +952,63 @@ test("Y65 failure path: a pair without reminders_b throws, naming it (get_ic alw
 	assert.throws(() => intercompanyView(payload, NOW, ZONE), /reminders_b/);
 });
 
+// --- konsol#305 R53c: each side's Remind follows the server's can_remind_a/_b (#305-R52-2-1) ---
+//
+// Fed the regenerated golden (R53b): UK01 ↔ DE01 over tolerance (both sides
+// true), UK01 ↔ FR01 matched (both false, FR01 masked), DE01 ↔ FR01 within
+// tolerance (both false, FR01 masked). The payload's own can_remind is true.
+
+test("R53c: the golden's per-side flags are what the panel offers, pair by pair", () => {
+	const payload = icFixture();
+	assert.equal(payload.can_remind, true, "the golden caller may remind");
+	const view = intercompanyView(payload, NOW, ZONE);
+	const offered = [];
+	for (const group of view.groups) {
+		for (const pair of group.pairs) {
+			const side = panel(pair);
+			offered.push(`${pair.entity_a} ↔ ${pair.entity_b} ${pair.match_status}: A ${side.remindA.canRemind}, B ${side.remindB.canRemind}`);
+		}
+	}
+	assert.deepEqual(offered, [
+		"UK01 ↔ DE01 over_tolerance: A true, B true",
+		"UK01 ↔ FR01 matched: A false, B false",
+		"DE01 ↔ FR01 within_tolerance: A false, B false",
+	]);
+});
+
+test("R53c failure path: a matched pair offers no Remind although the payload's can_remind is true", () => {
+	const side = panel(fixturePair(intercompanyView(icFixture(), NOW, ZONE), "UK01", "FR01"));
+	assert.deepEqual(side.remindA, { entity: "UK01", text: null, canRemind: false });
+});
+
+test("R53c: no client-side tolerance check — the server's flag decides, whatever the status", () => {
+	const payload = icFixture();
+	const pairs = payload.groups.flatMap((g) => g.pairs);
+	const over = pairs.find((p) => p.entity_a === "UK01" && p.entity_b === "DE01");
+	const within = pairs.find((p) => p.entity_a === "DE01" && p.entity_b === "FR01");
+	over.can_remind_a = false;
+	within.can_remind_a = true;
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(panel(fixturePair(view, "UK01", "DE01")).remindA.canRemind, false);
+	assert.equal(panel(fixturePair(view, "UK01", "DE01")).remindB.canRemind, true);
+	assert.equal(panel(fixturePair(view, "DE01", "FR01")).remindA.canRemind, true);
+});
+
+test("R53c failure path: a pair without can_remind_a or can_remind_b throws, naming it", () => {
+	for (const key of ["can_remind_a", "can_remind_b"]) {
+		const payload = icFixture();
+		delete payload.groups[0].pairs[0][key];
+		assert.throws(() => intercompanyView(payload, NOW, ZONE), new RegExp(key));
+	}
+	for (const key of ["can_remind_a", "can_remind_b"]) {
+		const payload = icFixture();
+		payload.groups[0].pairs[0][key] = "yes";
+		assert.throws(() => intercompanyView(payload, NOW, ZONE), new RegExp(key));
+	}
+});
+
 test("Y65 failure path: panel refuses a pair that did not come through intercompanyView", () => {
-	assert.throws(() => panel(pairRow({})), /canRemind/);
+	assert.throws(() => panel(pairRow({})), /intercompanyView/);
 });
 
 test("Y65: the 'Remind is P2' note is gone from intercompany.js", () => {
