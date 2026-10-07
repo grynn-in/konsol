@@ -577,8 +577,8 @@ test("pendingCreatedText: today shows HH:MM, in the viewer's own zone", () => {
   assert.equal(pendingCreatedText("2026-09-25T09:30:00+00:00", NOW, "Europe/London"), "10:30");
 });
 
-test("pendingCreatedText: an earlier day renders as 'Sep 20, 10:42', the same text as the TB list", () => {
-  assert.equal(pendingCreatedText("2026-09-20T09:42:00+00:00", NOW, "Europe/London"), "Sep 20, 10:42");
+test("pendingCreatedText: an earlier day renders as '20 Sep, 10:42', the same text as the TB list", () => {
+  assert.equal(pendingCreatedText("2026-09-20T09:42:00+00:00", NOW, "Europe/London"), "20 Sep, 10:42");
 });
 
 test("pendingCreatedText: null/undefined `created` reads 'not recorded', never a guessed time", () => {
