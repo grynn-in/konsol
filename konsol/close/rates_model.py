@@ -227,7 +227,9 @@ def _op_item(doc, preparers, mode):
     ``supersedes`` (a Desk "Record ownership" draft, "effect not previewed").
     A doc without the key (a caller that did not compute it) gives an item
     without the key: it never raises, and never turns into a None that would
-    read as a Desk draft. ``edit`` (O69, ``op_edit``) is passed through the
+    read as a Desk draft. ``effect_error`` (R52i) goes with ``effect``: the
+    caller's sentence when the effect could not be read, else None. ``edit``
+    (O69, ``op_edit``) is passed through the
     same way: approvals_model's items carry no ``edit`` key."""
     detail = "%g%% · %s" % (doc["ownership_pct"], doc["consolidation_method"])
     if doc.get("end_date"):
@@ -244,6 +246,8 @@ def _op_item(doc, preparers, mode):
     }
     if "effect" in doc:
         item["effect"] = doc.get("effect")
+        # R52i (review S2): why the effect could not be read, or None.
+        item["effect_error"] = doc.get("effect_error")
     if "edit" in doc:
         item["edit"] = doc.get("edit")
     return item

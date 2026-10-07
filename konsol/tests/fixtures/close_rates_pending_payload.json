@@ -65,6 +65,7 @@
           }
         ]
       },
+      "effect_error": null,
       "name": "OP-ZZ5B1-2025-10-01",
       "preparer": "zz-analyst@example.com",
       "title": "ZZ5B1 in ECL_GROUP from 2025-10-01"
@@ -80,6 +81,7 @@
       "edit": null,
       "edited_by": [],
       "effect": null,
+      "effect_error": null,
       "name": "OP-ZZ5B2-2025-10-01",
       "preparer": "zz-analyst@example.com",
       "title": "ZZ5B2 in ECL_GROUP from 2025-10-01"

@@ -51,9 +51,11 @@ before/after the approval would make, or None for a draft without
 ``supersedes`` (a Desk "Record ownership" draft). That costs, per visible OP
 draft with ``supersedes``, one read of its predecessor, one fiscal calendar
 read and one ``signoff_gate.latest_signed_runs()``; a Desk draft costs none.
-Pending OP drafts are few (live, 7 Oct: 0). A predecessor that is no longer
-approved is refused with a sentence naming the draft, never shown with a
-guessed effect.
+Pending OP drafts are few (live, 7 Oct: 0). A draft whose effect cannot be
+read (a predecessor no longer approved) carries ``effect`` None and
+``effect_error``, a sentence naming the draft, never a guessed effect; the
+other items are built as normal (R52i, review S2). ``effect_error`` is None
+on every other OP item.
 
 ``get_ownership()`` (GET, E406) lists, for the period, the entities with a
 submitted trial balance but no ownership covering the period's start
@@ -384,12 +386,16 @@ def get_pending():
     for doc in ops_visible:
         doc = dict(doc)
         # O57: the structural effect, read from the draft's ``supersedes``
-        # before the dates are formatted; None for a Desk draft.
+        # before the dates are formatted; None for a Desk draft. R52i (review
+        # S2): a draft whose effect cannot be read is an error on its own
+        # item, never a refusal of the whole screen.
         try:
-            doc["effect"] = ownership_change.effect_for(doc)
+            doc["effect"], doc["effect_error"] = ownership_change.effect_for(doc), None
         except ValueError as e:
-            frappe.throw("The pending ownership change %s cannot be shown: %s. "
-                         "Correct or delete the draft in Desk." % (doc["name"], e))
+            doc["effect"] = None
+            doc["effect_error"] = ("The pending ownership change %s cannot be shown: %s. "
+                                   "Correct or delete the draft in Desk."
+                                   % (doc["name"], str(e).rstrip(".")))
         doc["created"] = _iso(doc.pop("creation", None))
         doc["effective_date"] = _iso(doc.get("effective_date"))
         doc["end_date"] = _iso(doc.get("end_date"))

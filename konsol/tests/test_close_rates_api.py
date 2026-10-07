@@ -2181,16 +2181,60 @@ def test_o57_her_items_carry_no_effect():
     assert "effect" not in item
 
 
-def test_o57_failure_path_a_supersedes_that_is_not_approved_is_refused_naming_the_draft():
-    """Corrupt data (the named predecessor is not an approved period) is
-    refused with a sentence naming the draft, never shown with a guessed
-    effect or silently without one."""
+R52I_BROKEN = "OP-ZZ5B3-2025-10-01"
+R52I_BROKEN_PRED = "OP-ZZ5B3-1"
+
+
+def _r52i_site():
+    """R52i (review S2): the O57 site plus a second change draft, for ZZ5B3,
+    whose ``supersedes`` names a period cancelled after the draft was saved."""
     site = _o57_site()
-    site.ops[0]["docstatus"] = 2  # the predecessor was cancelled after the draft
-    err = _call_pending_raises(site)
-    assert type(err).__name__ == "ValidationError", err
-    assert "OP-ZZ5B1-2025-10-01" in str(err), err
-    assert "OP-ZZ5B1-1" in str(err), err
+    site.ops.append(_op(R52I_BROKEN_PRED, data_area_id="ZZ5B3", group=O55_GROUP,
+                        effective_date=date(2025, 1, 1), end_date=None, ownership_pct=100.0,
+                        consolidation_method="full", owner=LEAD, docstatus=2))
+    broken = _op(R52I_BROKEN, data_area_id="ZZ5B3", group=O55_GROUP,
+                 effective_date=date(2025, 10, 1), end_date=None, ownership_pct=70.0,
+                 consolidation_method="full", owner=ANALYST,
+                 creation=datetime(2025, 10, 4, 9, 0, 0), docstatus=0)
+    broken["supersedes"] = R52I_BROKEN_PRED
+    broken["superseded_end_date"] = None
+    site.ops.append(broken)
+    return site
+
+
+def test_r52i_failure_path_a_cancelled_supersedes_is_an_error_on_that_item_only():
+    """Corrupt data (the named predecessor is not an approved period) is an
+    error on that one item, naming the draft and the predecessor, never a
+    guessed effect and never a refusal of the whole screen (review S2)."""
+    result = _call_pending(_r52i_site())
+    broken = _o57_item(result, R52I_BROKEN)
+    assert broken["effect"] is None
+    assert broken["effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["effect_error"]
+    assert R52I_BROKEN_PRED in broken["effect_error"], broken["effect_error"]
+    assert ".." not in broken["effect_error"], broken["effect_error"]
+    assert broken["effect_error"].endswith(". Correct or delete the draft in Desk."), \
+        broken["effect_error"]
+    assert broken["detail"] == "70% · full"
+    # The good draft is built as normal: the same item as without the broken one.
+    good = _o57_item(result, "OP-ZZ5B1-2025-10-01")
+    alone = _o57_item(_call_pending(_o57_site()), "OP-ZZ5B1-2025-10-01")
+    assert good == alone
+    assert good["effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert good["effect_error"] is None
+    # Every draft is listed and counted.
+    assert sorted(i["name"] for i in result["items"]) == sorted(
+        ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01", R52I_BROKEN, "HER-ZZ5B1-1"])
+    assert result["counts"]["Ownership Period"] == 3
+
+
+def test_r52i_every_op_item_carries_effect_error_and_her_items_none():
+    result = _call_pending(_o57_site())
+    for item in result["items"]:
+        if item["doctype"] == "Ownership Period":
+            assert "effect_error" in item and item["effect_error"] is None, item
+        else:
+            assert "effect_error" not in item, item
 
 
 def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():

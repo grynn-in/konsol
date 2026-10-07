@@ -1099,14 +1099,70 @@ def test_o58_failure_path_a_desk_draft_without_supersedes_has_effect_none():
     assert "effect" in item and item["effect"] is None
 
 
-def test_o58_failure_path_a_supersedes_that_is_not_approved_is_refused_naming_the_draft():
+R52I_BROKEN = "OP-ZZ58C-2026-07-01"
+R52I_BROKEN_PRED = "OP-ZZ58C-1"
+
+
+def _r52i_site():
+    """R52i (review S2): the O58 site plus a second change draft, for FR03,
+    whose ``supersedes`` names a period cancelled after the draft was saved."""
     site = _o58_site()
-    site.ops[0]["docstatus"] = 2  # the predecessor was cancelled after the draft
-    with pytest.raises(Exception) as excinfo:
-        _call(site)
-    assert type(excinfo.value).__name__ == "ValidationError", excinfo.value
-    assert O58_CHANGE in str(excinfo.value)
-    assert O58_PRED in str(excinfo.value)
+    pred = _op(R52I_BROKEN_PRED, data_area_id="FR03", docstatus=2,
+               effective_date=date(2026, 1, 1), end_date=None, ownership_pct=100,
+               consolidation_method="full")
+    pred["supersedes"] = None
+    broken = _op(R52I_BROKEN, data_area_id="FR03", effective_date=date(2026, 7, 1),
+                 ownership_pct=70, consolidation_method="full")
+    broken["supersedes"] = R52I_BROKEN_PRED
+    site.ops.extend([pred, broken])
+    return site
+
+
+def _r52i_check(result):
+    broken = _o58_item(result, R52I_BROKEN)
+    assert broken["effect"] is None
+    assert broken["effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["effect_error"]
+    assert R52I_BROKEN_PRED in broken["effect_error"], broken["effect_error"]
+    assert ".." not in broken["effect_error"], broken["effect_error"]
+    assert broken["effect_error"].endswith(". Correct or delete the draft in Desk."), \
+        broken["effect_error"]
+    assert broken["detail"] == "70% · full"
+    good = _o58_item(result, O58_CHANGE)
+    alone = _o58_item(_call(_o58_site()), O58_CHANGE)
+    assert good == alone
+    assert good["effect"]["current_name"] == O58_PRED
+    assert good["effect_error"] is None
+
+
+def test_r52i_failure_path_a_cancelled_supersedes_is_an_error_on_that_item_only():
+    """Corrupt data (the named predecessor is not an approved period) is an
+    error on that one item, naming the draft and the predecessor; the rest
+    of the queue is built as normal (review S2)."""
+    result = _call(_r52i_site())
+    _r52i_check(result)
+    assert sorted(i["name"] for i in _all_items(result) if i["doctype"] == OP) == sorted(
+        [O58_CHANGE, O58_DESK, R52I_BROKEN])
+
+
+def test_r52i_failure_path_queue_for_as_my_work_calls_it_keeps_its_waiting_count():
+    """mywork_api.get_my_work (mywork_api.py:618) reads the Close Lead's
+    ``queue_for(user, roles)["waiting"]["count"]``: one bad draft leaves the
+    count, never an exception that takes down the whole of My work."""
+    site = _r52i_site()
+    result = _invoke(site, lambda api: api.queue_for(LEAD, ["EPM Admin"]))
+    _r52i_check(result)
+    good_only = _invoke(_o58_site(), lambda api: api.queue_for(LEAD, ["EPM Admin"]))
+    assert int(result["waiting"]["count"]) == int(good_only["waiting"]["count"]) + 1, \
+        (result["waiting"], good_only["waiting"])
+
+
+def test_r52i_every_visible_op_item_carries_effect_error():
+    for item in _all_items(_call(_o58_site())):
+        if item["doctype"] == OP:
+            assert "effect_error" in item and item["effect_error"] is None, item
+        else:
+            assert "effect_error" not in item, item
 
 
 def test_o58_failure_path_a_hidden_draft_is_never_read_for_its_effect():

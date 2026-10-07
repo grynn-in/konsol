@@ -673,3 +673,48 @@ def test_r52h_edit_is_offered_exactly_where_the_forms_choices_hold_the_draft():
                 assert edit is None, (group, entity, day, edit)
     # 3 entity nodes x P08..P12 (P00's day is P01's, which is Closed).
     assert offered == 3 * 5, offered
+
+
+# --- R52i (review S2): one bad ownership draft is an error on that item -------
+# The API sets ``effect = None`` and ``effect_error`` on a draft whose effect
+# cannot be read; ``_op_item`` passes ``effect_error`` through whenever it
+# passes ``effect`` (None when the effect was read).
+
+R52I_ERROR = ("The pending ownership change OP-4 cannot be shown: OP-0 is cancelled. "
+              "Correct or delete the draft in Desk.")
+
+
+def test_r52i_an_op_item_with_an_effect_carries_effect_error_none():
+    effect = _o57_real_effect()
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=effect, effect_error=None)
+    [item] = _o57_items(op)
+    assert item["effect"] == effect
+    assert "effect_error" in item and item["effect_error"] is None
+
+
+def test_r52i_failure_path_a_broken_draft_carries_its_effect_error():
+    op = dict(_op("OP-4", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None, effect_error=R52I_ERROR)
+    [item] = _o57_items(op)
+    assert item["effect"] is None
+    assert item["effect_error"] == R52I_ERROR
+    # The rest of the item is built as normal.
+    assert item["detail"] == "80% · full"
+    assert item["approve"]["mode"] == "direct"
+
+
+def test_r52i_a_doc_with_effect_but_no_effect_error_key_reads_none():
+    """A caller that read the effect and set no error: ``effect_error`` is
+    None, never a missing key beside a present ``effect``."""
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None)
+    [item] = _o57_items(op)
+    assert "effect_error" in item and item["effect_error"] is None
+
+
+def test_r52i_a_doc_without_the_effect_key_has_no_effect_error_key():
+    op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+             "2026-09-01T09:00:00")
+    [item] = _o57_items(op)
+    assert "effect" not in item and "effect_error" not in item
