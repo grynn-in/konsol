@@ -3,17 +3,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { COLUMNS, TONES, toneClass, gridView, readinessView } from "./periodGrid.js";
+import { COLUMNS, TONES, toneClass, gridView, readinessView, deadlineStrip, DEADLINE_STEPS } from "./periodGrid.js";
 import { remindedText } from "./remind.js";
 
 const NOW = new Date("2025-10-06T15:00:00Z");
 const TZ = "Europe/London";
 
+// D61: the hand-built payloads below carry the golden file's deadlines (the
+// real producer's output), so every gridView call sees the keys Y57/D57 send.
+const GOLDEN_DEADLINES = JSON.parse(
+	readFileSync(fileURLToPath(new URL("../../konsol/tests/fixtures/close_period_grid_payload.json", import.meta.url)), "utf8"),
+).deadlines;
+
 function ownership(tone, label) {
 	return { tone, label: label ?? `ownership ${tone}` };
 }
 function tb(tone, label) {
-	return { tone, label: label ?? `tb ${tone}`, reminders: null };
+	return { tone, label: label ?? `tb ${tone}`, reminders: null, overdue: false };
 }
 function rate(tone, label) {
 	return { tone, label: label ?? `rate ${tone}` };
@@ -38,6 +44,8 @@ function payload(overrides = {}) {
 		rows: [row("ZZAA", true), row("ZZBB", false)],
 		counts: { rows: 2, problems: 1, hidden: 0 },
 		rates_error: null,
+		deadlines: JSON.parse(JSON.stringify(GOLDEN_DEADLINES)),
+		signoff_overdue: false,
 		...overrides,
 	};
 }
@@ -328,4 +336,94 @@ test("Y63 failure path: gridView requires a valid now and a time zone", () => {
 	assert.throws(() => gridView(goldenGrid, false, NOW, null), /time zone/);
 	assert.throws(() => gridView(goldenGrid, false, new Date("x"), TZ), /now/);
 	assert.throws(() => gridView(goldenGrid, false, undefined, TZ), /now/);
+});
+
+// --- konsol#305 D61: the deadlines strip and overdue cells -----------------
+//
+// Fed the real producer's output: D57/D57b's golden payload (tb, ic and
+// signoff past; journals undeclared; signoff_overdue true; ZZA's Missing TB
+// cell overdue). The SPA never derives overdue: it shows the server's flags.
+
+test("D61: DEADLINE_STEPS is the server's four steps in strip order", () => {
+	assert.deepEqual(DEADLINE_STEPS, ["tb", "ic", "journals", "signoff"]);
+	assert.deepEqual(Object.keys(goldenGrid.deadlines).sort(), [...DEADLINE_STEPS].sort());
+});
+
+test("D61: golden -> the strip text, in order, undeclared step reads 'No due date declared'", () => {
+	const strip = deadlineStrip(goldenGrid);
+	assert.deepEqual(
+		strip.map((i) => i.text),
+		["TB due 2025-10-03", "IC due 2025-10-07", "Journals: No due date declared", "Sign-off due 2025-10-01"],
+	);
+	assert.deepEqual(strip.map((i) => i.step), DEADLINE_STEPS);
+});
+
+test("D61: Sign-off is marked Overdue from signoff_overdue; TB is not marked in the strip", () => {
+	const strip = deadlineStrip(goldenGrid);
+	const by = Object.fromEntries(strip.map((i) => [i.step, i]));
+	assert.equal(goldenGrid.signoff_overdue, true);
+	assert.equal(by.signoff.overdue, true);
+	assert.equal(by.tb.overdue, false);
+	const p = clone(goldenGrid);
+	p.signoff_overdue = false;
+	assert.equal(deadlineStrip(p).find((i) => i.step === "signoff").overdue, false);
+});
+
+test("D61: the strip never derives overdue from a past date (one source of truth)", () => {
+	const p = clone(goldenGrid);
+	assert.equal(p.deadlines.signoff.past, true);
+	p.signoff_overdue = false; // e.g. the period is signed
+	assert.equal(deadlineStrip(p).find((i) => i.step === "signoff").overdue, false);
+});
+
+test("D61: gridView carries the strip as deadlines", () => {
+	assert.deepEqual(gridView(goldenGrid, false, NOW, TZ).deadlines, deadlineStrip(goldenGrid));
+});
+
+test("D61: an overdue Missing TB cell carries tbOverdue; other cells do not", () => {
+	const view = gridView(goldenGrid, false, NOW, TZ);
+	assert.equal(goldenGrid.rows.find((r) => r.entity === "ZZA").tb.overdue, true);
+	assert.equal(goldenRow(view, "ZZA").tbOverdue, true);
+	for (const entity of ["ZZB", "ZZC"]) {
+		assert.equal(goldenRow(view, entity).tbOverdue, false, entity);
+	}
+});
+
+test("D61 failure path: a payload missing the deadlines key throws", () => {
+	const p = clone(goldenGrid);
+	delete p.deadlines;
+	assert.throws(() => deadlineStrip(p), /deadlines/);
+	assert.throws(() => gridView(p, false, NOW, TZ), /deadlines/);
+});
+
+test("D61 failure path: an unknown step key throws", () => {
+	const p = clone(goldenGrid);
+	p.deadlines.close = { due: null, past: false, text: "No due date declared" };
+	assert.throws(() => deadlineStrip(p), /unknown deadline step: close/);
+});
+
+test("D61 failure path: a missing step throws", () => {
+	const p = clone(goldenGrid);
+	delete p.deadlines.journals;
+	assert.throws(() => deadlineStrip(p), /journals/);
+});
+
+test("D61 failure path: a step missing due or text throws", () => {
+	for (const key of ["due", "text"]) {
+		const p = clone(goldenGrid);
+		delete p.deadlines.tb[key];
+		assert.throws(() => deadlineStrip(p), new RegExp(`tb.*${key}`), key);
+	}
+});
+
+test("D61 failure path: a payload missing signoff_overdue throws", () => {
+	const p = clone(goldenGrid);
+	delete p.signoff_overdue;
+	assert.throws(() => deadlineStrip(p), /signoff_overdue/);
+});
+
+test("D61 failure path: a TB cell missing the overdue key throws", () => {
+	const p = clone(goldenGrid);
+	delete p.rows.find((r) => r.entity === "ZZB").tb.overdue;
+	assert.throws(() => gridView(p, false, NOW, TZ), /ZZB.*overdue/);
 });

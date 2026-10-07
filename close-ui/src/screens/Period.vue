@@ -17,6 +17,10 @@
  *   E208b adds it to route.js and nav.js.
  * - Y63 (stories 1.5, 2.2): a Missing TB cell shows gridView's `tbReminded`
  *   under its status. There is no Remind button here (C-R1).
+ * - D61 (stories 2.4, 2.2): above the grid, gridView's `deadlines` strip
+ *   ("TB due … · IC due … · Journals due … · Sign-off due …"), and an
+ *   Overdue chip on a TB cell whose `tbOverdue` is set. Overdue is only ever
+ *   the server's flag; this screen never compares dates.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
@@ -235,6 +239,17 @@ const signOffPath = computed(() =>
 		</section>
 
 		<section>
+			<p
+				v-if="gridViewResult"
+				class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-gray-7"
+			>
+				<template v-for="(item, i) in gridViewResult.deadlines" :key="item.step">
+					<span v-if="i > 0" class="text-ink-gray-4">·</span>
+					<span>{{ item.text }}</span>
+					<span v-if="item.overdue" class="inline-block rounded bg-surface-red-1 px-2 py-0.5 text-xs font-medium text-ink-red-3">Overdue</span>
+				</template>
+			</p>
+
 			<div class="mb-3 flex flex-wrap items-center gap-2">
 				<button
 					type="button"
@@ -310,6 +325,7 @@ const signOffPath = computed(() =>
 										class="inline-block rounded px-2 py-0.5 text-xs font-medium"
 										:class="toneClass(row.tb.tone)"
 									>{{ row.tb.label }}</span>
+									<span v-if="row.tbOverdue" class="ml-1 inline-block rounded bg-surface-red-1 px-2 py-0.5 text-xs font-medium text-ink-red-3">Overdue</span>
 									<div v-if="row.tbReminded" class="mt-1 text-xs text-ink-gray-6">{{ row.tbReminded }}</div>
 								</td>
 								<td class="px-4 py-2">
