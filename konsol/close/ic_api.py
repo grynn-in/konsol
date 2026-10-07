@@ -6,7 +6,10 @@ checked").
 ``get_ic(fiscal_year, fiscal_period)`` (GET) returns the period's IC state,
 the pairs grouped by consolidation group with their send-back state, the
 partnerless rows, the counts, the W3-2 mask for a scoped caller and whether
-the caller may send back. Read-only.
+the caller may send back or remind. Each shown pair carries ``reminders_a`` /
+``reminders_b`` (topic ic, konsol#305 Y60, C-R6): ``{count, last_at,
+last_by, last_by_name}`` or None; a masked side is always None, so a hidden
+entity's reminders never leave the server. Read-only.
 
 ``send_back(fiscal_year, fiscal_period, entity_a, account_a, entity_b,
 account_b, reason)`` (POST, C04; #305-W3-1 option A) re-reads the pair from
@@ -26,7 +29,10 @@ comes before the write.
   shown with ``can_send_back`` False (``ic_model.group_view``, W3-P1).
 - Reads: MariaDB fiscal_period_rows 1, Close Settings 1, Intercompany
   Account table_exists + count, Close Event 1, Consolidation Group 1, User
-  <= 1; ClickHouse 2 when configured, 0 otherwise. Constant in pairs.
+  <= 1; when a pair is shown, one more Close Event read through
+  ``close_event.reminders`` (topic ic) and, when a visible side was
+  reminded, one more User read (Y60); ClickHouse 2 when configured, 0
+  otherwise. Constant in pairs.
 
 ``setup_gap()``, ``tolerance_gap()``, ``open_fixes(keys)`` and
 ``signoff_summary(fiscal_year, fiscal_period)`` (C05) are module-level
@@ -39,7 +45,8 @@ Import warning: this module imports ``konsol.close.ch_read``,
 ``close_policy_model`` and ``ic_model`` at module level. Test loaders that
 build ``konsol.close`` as a stub package must stub ``konsol.close.ic_api``
 (C06t, C09t, C18t). ``close_event`` is imported only lazily by ``send_back``
-(C04).
+(C04) and by ``get_ic``'s reminders read (Y60). ``remind_model`` is loaded
+by path.
 """
 import json
 from datetime import date, datetime
@@ -55,18 +62,25 @@ import importlib.util as _importlib_util
 import os as _os
 
 
-def _load_period_name():
-    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
-    one "FY2025 P07" format, reachable even under the host tests' stub
-    ``konsol.close`` package."""
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
-    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+def _load_by_path(filename, module_name):
+    """A pure sibling module loaded by path, reachable even under the host
+    tests' stub ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), filename)
+    spec = _importlib_util.spec_from_file_location(module_name, path)
     module = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.period_name
+    return module
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format."""
+    return _load_by_path("period_name.py", "konsol_close_period_name").period_name
 
 
 period_name = _load_period_name()
+#: The Remind rules (konsol#305 Y52), pure: REMIND_ROLES and the summary.
+remind_model = _load_by_path("remind_model.py", "konsol_close_remind_model")
 
 #: Who reads the Intercompany screen (the literal in ``get_ic``'s gate; the
 #: contract test reads it there). The Entity Accountant reads only their fix
@@ -321,11 +335,43 @@ def _sent_back_out(entry, users):
             "reason": entry.get("reason")}
 
 
+def _reminders(key, visible):
+    """``{entity: {count, last_at, last_by, last_by_name}}`` for the
+    ``visible`` entities (konsol#305 Y60, C-R6, as grid_api ``_reminders``):
+    one ``close_event.reminders`` read for the period and topic ic,
+    summarised by ``remind_model.summary``. Only visible entities' entries are
+    kept, so a hidden entity's reminders (and who sent them) never leave the
+    server. An unreadable event raises (``summary``): a count is never
+    guessed as 0. A sender with no full name is refused, never shown as a
+    user id."""
+    from konsol.close import close_event  # lazy: see the import warning above
+
+    summary = remind_model.summary(close_event.reminders([key], "ic"))
+    entries = {}
+    for (fy, fp, entity, topic), entry in summary.items():
+        if (fy, fp) == key and topic == "ic" and entity in visible:
+            entries[entity] = entry
+    if not entries:
+        return {}
+    actors = sorted({e["last_by"] for e in entries.values()})
+    names = {u["name"]: u.get("full_name") for u in frappe.get_all(
+        "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
+        limit_page_length=0)}
+    for actor in actors:
+        if not names.get(actor):
+            frappe.throw("User %s, who sent the last reminder, has no full name: set the "
+                         "user's First Name in User." % actor)
+    return {entity: {"count": int(e["count"]), "last_at": _iso(e["last_at"]),
+                     "last_by": e["last_by"], "last_by_name": names[e["last_by"]]}
+            for entity, e in entries.items()}
+
+
 @frappe.whitelist(methods=["GET"])
 def get_ic(fiscal_year, fiscal_period):
     """The period's intercompany read: ``{"period", "state", "message",
     "help", "published", "declared_none", "groups", "unmatched", "counts",
-    "hidden", "can_send_back"}``. Read-only. Fixed shape for C12/C14."""
+    "hidden", "can_send_back", "can_remind"}``. Read-only. Fixed shape for
+    C12/C14; each pair also carries ``reminders_a`` / ``reminders_b`` (Y60)."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     row = _period_row(key)
@@ -350,13 +396,29 @@ def get_ic(fiscal_year, fiscal_period):
             counts = ic_model.counts(shown, unmatched)
             groups = ic_model.group_view(shown, events, _currencies())
             users = _user_names(events)
+            visible = set()
+            for group in groups:
+                for pair in group["pairs"]:
+                    if not pair["masked_a"]:
+                        visible.add(pair["entity_a"])
+                    if not pair["masked_b"]:
+                        visible.add(pair["entity_b"])
+            reminded = _reminders(key, visible) if visible else {}
             for group in groups:
                 for pair in group["pairs"]:
                     pair["sent_back"] = _sent_back_out(pair["sent_back"], users)
+                    # W3-2: a masked side never carries its reminders.
+                    pair["reminders_a"] = (None if pair["masked_a"]
+                                           else reminded.get(pair["entity_a"]))
+                    pair["reminders_b"] = (None if pair["masked_b"]
+                                           else reminded.get(pair["entity_b"]))
 
     status = row.get("status")
     roles = set(frappe.get_roles())
     can_send_back = bool(roles.intersection(SEND_BACK_ROLES)) and status == "Open" \
+        and result["state"] == "checked"
+    # C-R1: Remind on the IC panel, as can_send_back (role, Open, checked).
+    can_remind = bool(roles.intersection(remind_model.REMIND_ROLES)) and status == "Open" \
         and result["state"] == "checked"
 
     return {
@@ -372,6 +434,7 @@ def get_ic(fiscal_year, fiscal_period):
         "counts": counts,
         "hidden": hidden,
         "can_send_back": can_send_back,
+        "can_remind": can_remind,
     }
 
 
