@@ -481,6 +481,83 @@ def test_latest_rejections_reads_only_the_rejected_kind():
     assert call["limit_page_length"] == 0
 
 
+# -- reminders (Y53, C-R6) ---------------------------------------------------
+
+
+def _reminder_row(name, fy, fp, entity, topic, at, actor=LEAD):
+    return {
+        "name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+        "actor": actor, "at": at,
+        "detail": json.dumps({"topic": topic, "recipients": ["zz-a@example.com"],
+                              "subject": "s", "actor_persona": "Close Lead"}),
+    }
+
+
+def test_reminders_keeps_the_given_periods_and_topic():
+    """Three events, two periods and two topics; one read; the kept event's
+    detail is parsed into a dict."""
+    site = _Site()
+    writer, _ = _load(site)
+    at = datetime.datetime(2026, 10, 7, 9, 0, 0)
+    site.get_all_result = [
+        _reminder_row("CE-1", 2025, 7, "ZZ01", "tb", at),
+        _reminder_row("CE-2", 2025, 7, "ZZ01", "ic", at),
+        _reminder_row("CE-3", 2025, 8, "ZZ01", "tb", at),
+    ]
+    result = writer.reminders([(2025, 7)], "tb")
+    assert [r["name"] for r in result] == ["CE-1"]
+    assert result[0]["detail"]["topic"] == "tb"
+    assert result[0]["detail"]["recipients"] == ["zz-a@example.com"]
+    assert result[0]["entity"] == "ZZ01"
+    assert result[0]["actor"] == LEAD
+    assert result[0]["at"] == at
+    assert len(site.get_all_calls) == 1
+    call = site.get_all_calls[0]
+    assert call["doctype"] == "Close Event"
+    assert call["filters"] == {"kind": "reminder_sent", "fiscal_year": ["in", [2025]]}
+    assert call["fields"] == ["name", "fiscal_year", "fiscal_period", "entity", "actor", "at", "detail"]
+    assert call["limit_page_length"] == 0
+
+
+def test_reminders_without_topic_keeps_both_topics_of_the_given_periods():
+    """Both topics of the given keys; another period of the same year is
+    dropped even when a string year/period comes back from the database."""
+    site = _Site()
+    writer, _ = _load(site)
+    at = datetime.datetime(2026, 10, 7, 9, 0, 0)
+    site.get_all_result = [
+        _reminder_row("CE-1", "2025", "7", "ZZ01", "tb", at),
+        _reminder_row("CE-2", 2025, 7, "ZZ02", "ic", at),
+        _reminder_row("CE-3", 2025, 8, "ZZ01", "tb", at),
+        _reminder_row("CE-4", 2026, 1, "ZZ01", "tb", at),
+    ]
+    result = writer.reminders([(2025, 7), (2026, 2)])
+    assert sorted(r["name"] for r in result) == ["CE-1", "CE-2"]
+    assert site.get_all_calls[0]["filters"]["fiscal_year"] == ["in", [2025, 2026]]
+
+
+def test_reminders_blank_detail_raises_naming_the_event():
+    """Failure path: a reminder with no detail is never read as a reminder
+    to nobody; it raises, naming the event."""
+    for blank in (None, "", "  "):
+        site = _Site()
+        writer, _ = _load(site)
+        row = _reminder_row("CE-9", 2025, 7, "ZZ01", "tb", datetime.datetime(2026, 10, 7))
+        row["detail"] = blank
+        site.get_all_result = [row]
+        msg = _raises(lambda: writer.reminders([(2025, 7)], "tb"), ValueError)
+        assert "CE-9" in msg, blank
+
+
+def test_reminders_with_no_keys_makes_no_read():
+    """Failure path: no keys returns [] and records no get_all."""
+    site = _Site()
+    writer, _ = _load(site)
+    assert writer.reminders([]) == []
+    assert writer.reminders([], "tb") == []
+    assert site.get_all_calls == []
+
+
 # -- one writer (P12 lesson: two writers of one table) -----------------------
 
 ALLOWED = {
