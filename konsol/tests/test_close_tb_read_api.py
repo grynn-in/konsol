@@ -24,6 +24,8 @@ API_PY = os.path.join(APP_DIR, "close", "tb_read_api.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 VIEW_MODEL_PY = os.path.join(APP_DIR, "close", "tb_view_model.py")
 TIMEFMT_PY = os.path.join(APP_DIR, "close", "timefmt.py")
+DEADLINES_PY = os.path.join(APP_DIR, "close", "deadlines.py")
+DEADLINE_MODEL_PY = os.path.join(APP_DIR, "close", "deadline_model.py")
 #: The stub site's system time zone (A55): BST (+01:00) in October 2025.
 SITE_TZ = "Europe/London"
 BASIS_MODEL_PY = os.path.join(APP_DIR, "tb_basis_model.py")
@@ -106,7 +108,13 @@ class _Site:
         self.gaps = []                    # sign_off_problems()["config_gaps"]
         self.sign_off_problems_calls = []
         self.reminders = []               # close_event.reminders(keys, topic)
-        self.deadlines = {}               # deadlines.period_deadlines(keys, today)
+        # deadlines.period_deadlines(keys, today): None -> the stub computes it
+        # with the REAL deadline_model from deadline_rules/holidays (D56).
+        self.deadlines = None
+        self.deadline_rules = []          # Close Deadline Rule rows (none declared)
+        self.holidays = set()             # Close Holiday dates
+        self.deadline_calls = []          # D56: (keys, today) per period_deadlines read
+        self.today = date(2025, 10, 6)    # frappe.utils.getdate()
         self.reminder_calls = []          # Y56: (keys, topic) per close_event.reminders read
         self.roles = ["EPM Admin"]        # frappe.get_roles() (Y56: can_remind)
         self.records["User"] = []         # Y56: the reminder senders' full names
@@ -178,7 +186,8 @@ def _load(site):
     frappe._ = lambda s: s
     frappe._dict = _D
     frappe.session = types.SimpleNamespace(user="zz-ea@example.com")
-    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ,
+                                         getdate=lambda *a: site.today)
 
     def _by_path(name, path):
         spec = importlib.util.spec_from_file_location(name, path)
@@ -213,7 +222,19 @@ def _load(site):
 
     close_event.reminders = reminders
     deadlines = types.ModuleType("konsol.close.deadlines")
-    deadlines.period_deadlines = lambda keys, today: site.deadlines
+
+    def period_deadlines(keys, today):
+        site.deadline_calls.append((list(keys), today))
+        if site.deadlines is not None:
+            return site.deadlines
+        model = _by_path("test_close_tb_read_api_deadline_model", DEADLINE_MODEL_PY)
+        wanted = {(int(fy), int(fp)) for fy, fp in keys}
+        return {(r["fiscal_year"], r["fiscal_period"]): model.period_deadlines(
+                    site.deadline_rules, site.holidays, r["end_date"], today)
+                for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) in wanted
+                and r["period_type"] == "Regular"}
+
+    deadlines.period_deadlines = period_deadlines
     close.close_event, close.deadlines = close_event, deadlines
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
@@ -282,6 +303,9 @@ def _load(site):
         sys.modules["konsol.tb_balance_model"] = mods["konsol.tb_balance_model"]
         mods[CONTROLLER] = _by_path(CONTROLLER, CONTROLLER_PY)
         sys.modules[CONTROLLER] = mods[CONTROLLER]
+        # D56: the payload form is the REAL deadlines.as_payload.
+        deadlines.as_payload = _by_path("test_close_tb_read_api_deadlines",
+                                        DEADLINES_PY).as_payload
         close.tb_view_model = _by_path("konsol.close.tb_view_model", VIEW_MODEL_PY)
         mods["konsol.close.tb_view_model"] = close.tb_view_model
         sys.modules["konsol.close.tb_view_model"] = close.tb_view_model
@@ -371,7 +395,7 @@ def test_stub_close_carries_reminders_and_deadlines():
     assert close_event is close.close_event and deadlines is close.deadlines
     assert reminders([(2025, 9)]) == site.reminders
     assert period_deadlines([(2025, 9)], "2025-10-01") == site.deadlines
-    assert _Site().reminders == [] and _Site().deadlines == {}
+    assert _Site().reminders == [] and _Site().deadlines is None
 
 
 # --- who sees what ---------------------------------------------------------------
@@ -896,7 +920,12 @@ def _reminded_site():
 
 
 def _golden_site():
-    return _reminded_site()
+    """D56: plus a declared rule whose TB due date (2025-10-07) is past on
+    2025-10-08, so the SPA sees overdue Missing rows."""
+    site = _reminded_site()
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5)]
+    site.today = date(2025, 10, 8)
+    return site
 
 
 def test_the_events_are_the_real_summary_input():
@@ -1033,3 +1062,136 @@ def test_my_tbs_matches_the_golden_fixture():
     assert out == golden
     assert golden["can_remind"] is True
     assert [e["entity"] for e in golden["entities"] if e["reminders"]] == ["ZZC"]
+
+
+# --- D56: the TB due date, and overdue on Missing rows ------------------------------
+
+DEADLINE_SPEC = importlib.util.spec_from_file_location("test_close_tb_read_api_dm", DEADLINE_MODEL_PY)
+DEADLINE_MODEL = importlib.util.module_from_spec(DEADLINE_SPEC)
+DEADLINE_SPEC.loader.exec_module(DEADLINE_MODEL)
+
+
+def _rule(valid_from, tb=0, ic=0, journals=0, signoff=0, week=("monday", "tuesday", "wednesday",
+                                                              "thursday", "friday")):
+    """One Close Deadline Rule row (D53 fields), as deadlines.py reads it."""
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    for wd in DEADLINE_MODEL.WEEKDAYS:
+        rule[wd] = 1 if wd in week else 0
+    return rule
+
+
+def _deadline_site(today):
+    """FY2025 P09 ends Tue 30 Sep; TB due 5 working days later = Tue 7 Oct.
+    ZZA Received, ZZB and ZZC Missing; ZZD has an exception."""
+    site = _Site()
+    site.in_scope = ["ZZA", "ZZB", "ZZC", "ZZD"]
+    site.records["Entity"].append(_entity("ZZD"))
+    site.records["TB Exception"].append(_exc("EXC-D", "ZZD"))
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, signoff=10)]
+    site.today = today
+    return site
+
+
+def test_the_stub_deadlines_are_the_real_model_output():
+    site = _deadline_site(date(2025, 10, 8))
+    got = DEADLINE_MODEL.period_deadlines(site.deadline_rules, set(), date(2025, 9, 30),
+                                          site.today)
+    assert got["tb"] == {"due": date(2025, 10, 7), "past": True, "text": "Due 2025-10-07"}
+
+
+def test_a_past_tb_due_makes_the_missing_rows_overdue_and_no_other():
+    result = _my_tbs(_deadline_site(date(2025, 10, 8)))
+    assert result["deadline"] == {"due": "2025-10-07", "past": True, "text": "Due 2025-10-07"}
+    by = _by_entity(result)
+    assert by["ZZB"]["status"] == by["ZZC"]["status"] == "Missing"
+    assert by["ZZB"]["overdue"] is True and by["ZZC"]["overdue"] is True
+    assert by["ZZA"]["status"] == "Received" and by["ZZA"]["overdue"] is False
+    assert by["ZZD"]["status"] == "Exception declared" and by["ZZD"]["overdue"] is False
+
+
+def test_on_the_due_date_nothing_is_overdue():
+    result = _my_tbs(_deadline_site(date(2025, 10, 7)))
+    assert result["deadline"] == {"due": "2025-10-07", "past": False, "text": "Due 2025-10-07"}
+    assert all(e["overdue"] is False for e in result["entities"])
+
+
+def test_an_undeclared_rule_reads_no_due_date_declared_and_nothing_is_overdue():
+    """Failure path (#305-2.4-1): no rule -> the sentence, never a guessed date."""
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = []
+    result = _my_tbs(site)
+    assert result["deadline"] == {"due": None, "past": False, "text": "No due date declared"}
+    assert result["entities"] and all(e["overdue"] is False for e in result["entities"])
+
+
+def test_a_rule_with_no_tb_offset_is_undeclared_for_the_tb():
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=0, signoff=10)]
+    result = _my_tbs(site)
+    assert result["deadline"]["text"] == "No due date declared"
+    assert all(e["overdue"] is False for e in result["entities"])
+
+
+def test_a_rule_valid_after_the_period_end_does_not_govern_it():
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = [_rule(date(2025, 10, 1), tb=5)]
+    assert _my_tbs(site)["deadline"]["text"] == "No due date declared"
+
+
+def test_an_unowned_row_is_never_overdue():
+    site = _deadline_site(date(2025, 10, 8))
+    site.records["Entity"].append(_entity("ZZU"))
+    site.records["Trial Balance Submission"].append(_tb("TB-U", "ZZU"))
+    site.gaps = [_unowned_gap(["ZZU"])]
+    by = _by_entity(_my_tbs(site))
+    assert by["ZZU"]["status"] == NOT_CONSOLIDATED and by["ZZU"]["overdue"] is False
+
+
+def test_deadlines_are_read_once_for_the_period_with_today():
+    site = _deadline_site(date(2025, 10, 8))
+    _my_tbs(site)
+    assert site.deadline_calls == [([(2025, 9)], date(2025, 10, 8))]
+
+
+def test_the_deadline_is_present_when_the_caller_sees_no_entity():
+    site = _deadline_site(date(2025, 10, 8))
+    site.allowed = set()
+    result = _my_tbs(site)
+    assert result["entities"] == []
+    assert result["deadline"]["text"] == "Due 2025-10-07"
+
+
+def test_a_regular_period_missing_from_the_deadline_read_raises():
+    """No silent fallback: the reader returning nothing for the asked Regular
+    period is an error naming it, never "No due date declared"."""
+    site = _deadline_site(date(2025, 10, 8))
+    site.deadlines = {}
+    with pytest.raises(Exception) as info:
+        _my_tbs(site)
+    assert "FY2025 P09" in str(info.value), str(info.value)
+
+
+def test_a_bad_step_map_raises():
+    site = _deadline_site(date(2025, 10, 8))
+    site.deadlines = {(2025, 9): {"tb": {"due": None, "past": False, "text": "x"}}}
+    with pytest.raises(Exception):
+        _my_tbs(site)
+
+
+def test_every_row_carries_the_overdue_key():
+    for row in _my_tbs(_deadline_site(date(2025, 10, 8)))["entities"]:
+        assert isinstance(row.get("overdue"), bool), row
+
+
+def test_the_no_due_date_docstring_line_is_gone():
+    with open(API_PY) as f:
+        assert "No due date is shown" not in f.read()
+
+
+def test_the_golden_fixture_carries_the_deadline_and_overdue():
+    with open(MY_TBS_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["deadline"] == {"due": "2025-10-07", "past": True, "text": "Due 2025-10-07"}
+    overdue = sorted(e["entity"] for e in golden["entities"] if e["overdue"])
+    assert overdue == ["ZZB", "ZZC"], overdue
