@@ -1692,15 +1692,36 @@ def test_an_unknown_topic_raises_never_a_silent_zero():
     assert "CE-0009" in str(info.value)
 
 
-def test_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
+def test_a_sender_with_no_full_name_is_labelled_and_the_other_items_are_intact():
+    """konsol#305 R52d (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``get_my_work`` raise "... has no full name" and took the whole My work
+    screen down. Now that entry shows the labelled id
+    (``remind_model.sender_name``), the other entries are intact, every open
+    period still carries ``reminders``, and the reads are unchanged: one
+    reminders read and one User read naming every visible sender."""
     for names in ({"raj@zz.example": "Raj Patel"},
                   {"jane@zz.example": "", "raj@zz.example": "Raj Patel"}):
         site = _reminded_site()
         site.full_names = names
-        with pytest.raises(Exception) as info:
-            _call(site)
-        assert "jane@zz.example" in str(info.value), str(info.value)
-        assert "full name" in str(info.value), str(info.value)
+        _call(site)
+        facts = site.period_facts[0]
+        assert sorted(facts) == OPEN_KEYS
+        assert facts[(2025, 7)]["reminders"]["ZZA"]["last_by_name"] == \
+            "jane@zz.example (name not recorded)", facts[(2025, 7)]["reminders"]
+        assert facts[(2025, 7)]["reminders"]["ZZA"]["count"] == 2
+        assert facts[(2025, 7)]["reminders"]["ZZB"]["last_by_name"] == "Raj Patel"
+        assert facts[(2025, 9)]["reminders"]["ZZA"]["last_by_name"] == "Raj Patel"
+        assert facts[(2025, 8)]["reminders"] == {}
+        assert site.reminder_calls == [(OPEN_KEYS, "tb")], site.reminder_calls
+        assert site.user_name_reads == [
+            {"name": ["in", ["jane@zz.example", "raj@zz.example"]]}], site.user_name_reads
+        ea = _reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                            allowed={"ZZA"})
+        ea.full_names = names
+        assert _item(_call(ea), "tb:2025-07:ZZA")["reminded"] == {
+            "count": 2, "last_at": "2025-08-06T14:05:00+01:00",
+            "last_by_name": "jane@zz.example (name not recorded)"}
 
 
 def _golden():
