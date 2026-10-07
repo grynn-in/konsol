@@ -424,9 +424,13 @@ test("O62: the golden OP change draft, through queueView, gives the wireframe's 
 		],
 		"Ownership and Method, before → after (section 3 shows Ends, not a Covers row)",
 	);
-	assert.equal(panel.view.currentEnds, ownershipEffectView(golden(OP_QUEUE_FIXTURE).items[1].effect).currentEnds);
+	const real = ownershipEffectView(golden(OP_QUEUE_FIXTURE).items[1].effect);
+	assert.equal(panel.view.currentEnds, real.currentEnds);
+	assert.equal(panel.view.endsLine, real.endsLine, "O65: Ends names the predecessor");
+	assert.match(panel.view.endsLine, /^OP-ZZ58-1 on /);
 	assert.equal(panel.view.periods, "FY2026 P07 onward (open-ended)");
-	assert.deepEqual(panel.view.resign, ["FY2026 P07"]);
+	assert.deepEqual(panel.view.resign, real.resign);
+	assert.match(panel.view.resign[0], /^FY2026 P07 \(signed .+ by Zz Lead\)$/, "O65: who signed it and when");
 	assert.equal(panel.view.resignNone, null);
 	assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
 });
@@ -481,9 +485,10 @@ test("O62: the detail shows EFFECT IF APPROVED, read-only, above Approve / Rejec
 	const rejectAt = dialog.indexOf("Reject with reason");
 	assert.ok(panelAt >= 0, "the block is in the detail");
 	assert.ok(approveAt > panelAt && rejectAt > panelAt, "the block comes before Approve and Reject");
-	for (const field of ["row.before", "row.after", "currentEnds", "periods", "resign", "resignNone", "notShown"]) {
+	for (const field of ["row.before", "row.after", "endsLine", "periods", "resign", "resignNone", "notShown"]) {
 		assert.ok(dialog.includes(field), `the block shows ${field}`);
 	}
+	assert.doesNotMatch(dialog, /The current period, on/, "O65: Ends names the predecessor, not 'The current period'");
 	assert.match(dialog, /Re-sign Needed/);
 	assert.match(dialog, /\.desk\b/, "the Desk-draft sentence is rendered");
 	assert.match(dialog, /\.error\b/, "a broken effect's sentence is rendered");
