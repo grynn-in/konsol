@@ -41,6 +41,11 @@ TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
 #: the real, pure tb_dimension_model are loaded by path too.
 JOURNAL_API_PY = os.path.join(CLOSE_DIR, "journal_api.py")
 TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
+#: O58: the REAL ownership_change.py (and through it the real, pure
+#: ownership_change_model.py) gives each pending Ownership Period its effect;
+#: only ``konsol.close.signoff_gate`` is stubbed (``site.signed``).
+OWNERSHIP_CHANGE_PY = os.path.join(CLOSE_DIR, "ownership_change.py")
+OWNERSHIP_CHANGE_MODEL_PY = os.path.join(CLOSE_DIR, "ownership_change_model.py")
 
 #: BST (+01:00) in July 2026, mirrors test_close_journal_api.py.
 SITE_TZ = "Europe/London"
@@ -180,6 +185,8 @@ class _Site:
         self.ic_balances = []
         self.bcs = []
         self.bds = []
+        #: O58: the ``signoff_gate.latest_signed_runs()`` keys, {(fy, fp): run}.
+        self.signed = {}
         #: doctype -> None, or {"name", "workflow_state_field"}.
         self.workflows = {}
         #: workflow name -> ordered list of state names (idx order).
@@ -377,6 +384,17 @@ def _close_event(site):
     return mod
 
 
+def _signoff_gate(site):
+    mod = types.ModuleType("konsol.close.signoff_gate")
+
+    def latest_signed_runs():
+        site.reads.append(("latest_signed_runs",))
+        return dict(site.signed)
+
+    mod.latest_signed_runs = latest_signed_runs
+    return mod
+
+
 def _load_path(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -395,6 +413,7 @@ def _invoke(site, run):
     entity_permissions = _entity_permissions(site)
     self_approval = _self_approval(site)
     close_event = _close_event(site)
+    signoff_gate = _signoff_gate(site)
     konsol.close = close
     konsol.fiscal_calendar = fiscal_calendar
     konsol.entity_permissions = entity_permissions
@@ -403,7 +422,8 @@ def _invoke(site, run):
              "konsol.close.close_event", "konsol.close.journal_model",
              "konsol.close.close_policy_model", "konsol.close.approvals_model",
              "konsol.close.timefmt", "konsol.tb_dimension_model",
-             "konsol.close.journal_api", "close_approvals_api_under_test"]
+             "konsol.close.journal_api", "konsol.close.signoff_gate",
+             "konsol.close.ownership_change", "close_approvals_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({
         "frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -411,6 +431,7 @@ def _invoke(site, run):
         "konsol.entity_permissions": entity_permissions,
         "konsol.close.self_approval": self_approval,
         "konsol.close.close_event": close_event,
+        "konsol.close.signoff_gate": signoff_gate,
     })
     try:
         close.self_approval = self_approval
@@ -421,6 +442,8 @@ def _invoke(site, run):
         close.timefmt = _load_path("konsol.close.timefmt", TIMEFMT_PY)
         konsol.tb_dimension_model = _load_path("konsol.tb_dimension_model", TB_DIMENSION_MODEL_PY)
         close.journal_api = _load_path("konsol.close.journal_api", JOURNAL_API_PY)
+        close.signoff_gate = signoff_gate
+        close.ownership_change = _load_path("konsol.close.ownership_change", OWNERSHIP_CHANGE_PY)
         api = _load_path("close_approvals_api_under_test", API_PY)
         return run(api)
     finally:
@@ -869,3 +892,104 @@ def test_source_contains_no_event_log_doctype_literal():
         source = f.read()
     assert '"Close Event"' not in source
     assert "'Close Event'" not in source
+
+
+# --- O58: a pending Ownership Period carries its effect (story 4.2) ----------------
+# The REAL ownership_change.effect_for reads the draft's ``supersedes`` from this
+# stub site; the expected value is the REAL ownership_change_model.effect.
+
+O58_PRED = "OP-ZZ58-1"
+O58_CHANGE = "OP-ZZ58-2026-07-01"
+O58_DESK = "OP-ZZ58B-2026-07-01"
+
+
+def _o58_site():
+    """DE02 100 % full from 2026-01-01 (approved, open-ended); the Analyst's
+    change of DE02 to 80 % full from FY2026 P07 (``supersedes`` it); a Desk
+    "Record ownership" draft for UK01 (no ``supersedes``); one HER draft.
+    FY2026 P07 is signed."""
+    site = _Site()
+    site.self_approval_policy = "Blocked"
+    site.periods = [_period(2026, 6), _period(2026, 7), _period(2026, 8)]
+    site.signed = {(2026, 7): "RUN-1"}
+    pred = _op(O58_PRED, docstatus=1, effective_date=date(2026, 1, 1), end_date=None,
+               ownership_pct=100, consolidation_method="full")
+    pred["supersedes"] = None
+    change = _op(O58_CHANGE, effective_date=date(2026, 7, 1), ownership_pct=80,
+                 consolidation_method="full")
+    change["supersedes"] = O58_PRED
+    desk = _op(O58_DESK, data_area_id="UK01", effective_date=date(2026, 7, 1),
+               ownership_pct=60, consolidation_method="equity")
+    site.ops = [pred, change, desk]
+    site.hers = [_her("HER-ZZ58")]
+    return site
+
+
+def _o58_item(result, name):
+    [item] = [i for i in _all_items(result) if i["name"] == name]
+    return item
+
+
+def _o58_model():
+    return _load_path("ownership_change_model_for_o58_test", OWNERSHIP_CHANGE_MODEL_PY)
+
+
+def test_o58_a_change_draft_carries_the_real_models_effect():
+    site = _o58_site()
+    item = _o58_item(_call(site), O58_CHANGE)
+    expected = _o58_model().effect(
+        {"entity": "DE02", "effective_date": "2026-07-01", "ownership_pct": 80,
+         "consolidation_method": "full"},
+        {"name": O58_PRED, "effective_date": "2026-01-01", "end_date": None,
+         "ownership_pct": 100.0, "consolidation_method": "full"},
+        [dict(p) for p in site.periods], [(2026, 7)])
+    assert item["effect"] == expected
+    assert item["effect"]["after"]["pct"] == 80.0
+    assert item["effect"]["before"]["pct"] == 100.0
+    assert item["effect"]["current_ends"] == "2026-06-30"
+    assert item["effect"]["resign"] == ["FY2026 P07"]
+    # The title and detail are unchanged (rates_model._op_item's own text).
+    assert item["detail"] == "80% · full"
+
+
+def test_o58_failure_path_a_her_item_gets_no_effect_key():
+    item = _o58_item(_call(_o58_site()), "HER-ZZ58")
+    assert "effect" not in item
+
+
+def test_o58_failure_path_a_desk_draft_without_supersedes_has_effect_none():
+    """Never a guessed before/after: a Desk draft names no predecessor."""
+    item = _o58_item(_call(_o58_site()), O58_DESK)
+    assert "effect" in item and item["effect"] is None
+
+
+def test_o58_failure_path_a_supersedes_that_is_not_approved_is_refused_naming_the_draft():
+    site = _o58_site()
+    site.ops[0]["docstatus"] = 2  # the predecessor was cancelled after the draft
+    with pytest.raises(Exception) as excinfo:
+        _call(site)
+    assert type(excinfo.value).__name__ == "ValidationError", excinfo.value
+    assert O58_CHANGE in str(excinfo.value)
+    assert O58_PRED in str(excinfo.value)
+
+
+def test_o58_failure_path_a_hidden_draft_is_never_read_for_its_effect():
+    """An out-of-scope draft is cut by approvals_model; its predecessor, the
+    calendar and the signed runs are never read for it (and a broken one can
+    never refuse the caller's queue, nor name a hidden draft)."""
+    site = _o58_site()
+    site.allowed = {"UK01"}
+    site.ops[0]["docstatus"] = 2  # would refuse if it were read
+    result = _call(site)
+    assert [i["name"] for i in _all_items(result) if i["doctype"] == OP] == [O58_DESK]
+    assert len([r for r in site.reads if r == ("get_all", OP)]) == 1
+    assert ("fiscal_period_rows",) not in site.reads
+    assert ("latest_signed_runs",) not in site.reads
+
+
+def test_o58_a_desk_draft_costs_no_effect_read():
+    site = _o58_site()
+    site.ops = [r for r in site.ops if r["name"] != O58_CHANGE]
+    _call(site)
+    assert len([r for r in site.reads if r == ("get_all", OP)]) == 1
+    assert ("latest_signed_runs",) not in site.reads
