@@ -4,6 +4,25 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (7 Oct): konsol#305 Delivery 2 wave 5b is on branch close-d2w5b (PR pending).** Decisions by Deepak Pai on #305: S8-1, 1.5-1, 2.4-1, 4.2-1 (6 Oct); Q1-1, Q2-1, Q5-1 and the 4.2 wireframe (7 Oct); R52-1..4 (7 Oct, issuecomment-6038773696). Claude's engineering calls are logged in archive/konsol-305-d2/tasks.md and r52-fix-plan.md.
+- **What ships:**
+  - **S8:** a draft IC Balance that has a matching rule blocks sign-off ("approve, or delete the draft"); each IC Balance row carries `pending_rule`.
+  - **1.5 Remind:** an in-app Alert to users with a User Permission directly on the entity, plus a `reminder_sent` Close Event; refused with a sentence when nobody is named. IC reminders only for pairs over tolerance (server flag per side). Shown on the TB list, grid, My work and Intercompany.
+  - **2.4 deadlines:** Close Settings → Deadlines: effective-dated rules (declared working week, per-step working-day offsets, reason) and holidays. Due/overdue on the TB list, grid strip (TB, IC, journals, sign-off) and My work. Show-only; undeclared reads "No due date declared".
+  - **4.2 ownership change:** Rates → Ownership "Change ownership" form (Analyst/Admin drafts, Close Lead approves). Approval ends the predecessor the day before; cancel restores it. Structural effect only (no amounts), shown in the form, Rates pending and Approvals, with "(signed … by …)" for periods that will need re-signing. Drafts are editable until approved.
+  - The EPM Admin may draft IC Balances (R52-1-1). Times read day-first ("6 Oct, 10:00").
+- **Upgrade, in this order:**
+  1. **Migrate straight after deploy.** It adds the Close Event kind `reminder_sent`, the Close Deadline Rule and Close Holiday tables and the Close Settings Policies/Deadlines tabs, and the Ownership Period `supersedes` / `superseded_end_date` fields (blank on existing rows). Between deploy and migrate the TB list, grid, My work, Rates pending and Approvals fail.
+  2. **Declare deadlines** in Close Settings → Deadlines when wanted; nothing shows a date until then.
+  3. **Name people for Remind:** a System Manager gives users a User Permission on each Entity; until then every Remind is refused with a sentence.
+- **Known, not fixed (HANDOFF lines from the R52 review):**
+  - S9: the grid TB cell decides overdue from its label; carry `status` on the cell the next time `_tb_cell` changes.
+  - S14: `latest_signed_runs` may name an older signed run when a newer one is Re-sign Needed (predates the wave; shared with #338).
+  - S17: the server still sends dated deadline `text` that no screen shows; send it only for the undeclared case next time.
+  - U14: the Approvals ownership detail is a snapshot a quiet reload does not refresh; its screen tests are mostly greps.
+  - The scheduler container still runs older code on the local stack.
+- **Local test stack:** backend and worker run close-d2w5b (47edadd5 + comments), bundle included; L52 walk 29/29 pass (archive/konsol-305-d2/l52-walk.md).
+
 **Update (6 Oct): konsol#305 Delivery 2 wave 5a is merged: konsol #345 (f3cbace).** Deepak decided W5-1..4 "All star" on #305. Claude's own engineering calls are on #305 (issuecomment-6024201083).
 - **What shipped:**
   - **9.4 sign-off reject:** the Close Lead gives a reason. The run goes back to Not signed, a `signoff_rejected` Close Event is written, and the preparer gets a "Sent back" item in My work.
