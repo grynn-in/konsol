@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gridView } from "../periodGrid.js";
+import { gridView, toneClass } from "../periodGrid.js";
+import { OVERDUE_TONE } from "../dueDate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PERIOD = path.join(__dirname, "Period.vue");
@@ -223,7 +224,7 @@ test("D61: the deadlines strip renders gridView's deadlines above the grid, text
   const tableAt = tpl.indexOf("<table");
   assert.ok(stripAt >= 0 && stripAt < tableAt, "the strip sits above the grid");
   assert.match(tpl, /\{\{\s*item\.text\s*\}\}/);
-  assert.match(tpl, /<span\s+v-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
+  assert.match(tpl, /<span\s+v-else-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
   assert.doesNotMatch(read(), /v-html/);
 });
 
@@ -251,5 +252,60 @@ test("D61b: the IC and journals chips come from gridView's strip (fed the golden
   assert.equal(by.ic.overdue, GOLDEN.ic_overdue);
   assert.equal(by.journals.overdue, GOLDEN.journals_overdue);
   const tpl = template(read());
-  assert.match(tpl, /<span\s+v-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
+  assert.match(tpl, /<span\s+v-else-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
+});
+
+// --- konsol#305 R52m (U2): both Overdue chips are the amber warn tone ------
+
+function overdueChips(tpl) {
+  return [...tpl.matchAll(/<span\b[^>]*>\s*Overdue\s*<\/span>/g)].map((m) => m[0]);
+}
+
+test("R52m (U2): Period.vue imports OVERDUE_TONE from dueDate.js", () => {
+  assert.match(
+    script(read()),
+    /import\s*\{[^}]*\bOVERDUE_TONE\b[^}]*\}\s*from\s*["']\.\.\/dueDate\.js["']/,
+  );
+});
+
+test("R52m (U2): both Overdue chips (strip and TB cell) bind :class=\"OVERDUE_TONE\"", () => {
+  const chips = overdueChips(template(read()));
+  assert.equal(chips.length, 2, "exactly the strip chip and the TB cell chip");
+  for (const chip of chips) {
+    assert.match(chip, /:class="OVERDUE_TONE"/, chip);
+  }
+  assert.equal(OVERDUE_TONE, "bg-surface-amber-1 text-ink-amber-3");
+});
+
+test("R52m (U2) failure path: no Overdue chip carries the red block tone", () => {
+  const blocking = toneClass("blocking").split(/\s+/);
+  assert.deepEqual(blocking, ["bg-surface-red-1", "text-ink-red-3"]);
+  for (const chip of overdueChips(template(read()))) {
+    for (const cls of blocking) {
+      assert.ok(!chip.includes(cls), `${chip} carries ${cls}`);
+    }
+    assert.doesNotMatch(chip, /toneClass\(\s*["']blocking["']\s*\)/);
+  }
+});
+
+// --- konsol#305 R52m (S4): a strip step whose flag could not be read -------
+
+test("R52m (S4): the strip shows item.error in place of the Overdue chip", () => {
+  const tpl = template(read());
+  const m = tpl.match(/<span\s+v-if="item\.error"[^>]*>\s*\{\{\s*item\.error\s*\}\}\s*<\/span>\s*<span\s+v-else-if="item\.overdue"/);
+  assert.ok(m, "an item.error span, then the Overdue chip as its v-else-if");
+});
+
+test("R52m (S4): fed a golden copy with ic_overdue null and its sentence, the IC step carries the sentence and the rows render", () => {
+  const sentence =
+    "Intercompany could not be read (error), so whether a pair is still over tolerance is unknown for FY2025 P09.";
+  const p = JSON.parse(JSON.stringify(GOLDEN));
+  p.ic_overdue = null;
+  p.ic_overdue_error = sentence;
+  const view = gridView(p, false, new Date("2025-10-06T15:00:00Z"), "Europe/London");
+  const ic = view.deadlines.find((i) => i.step === "ic");
+  assert.equal(ic.error, sentence);
+  assert.equal(ic.overdue, null);
+  assert.equal(view.rows.length, GOLDEN.rows.length);
+  assert.equal(view.rows.length, 4);
 });
