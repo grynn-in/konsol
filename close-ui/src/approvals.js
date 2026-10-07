@@ -11,9 +11,9 @@
 // (A19's own wording) without a second import of rates.js.
 //
 // `effectView` (adjustments.js, A13) is reused the same way for a journal
-// item's `effect`: every other doctype in the queue has no `effect` key
-// (approvals_model.py's `_shape`), so it is only ever applied when the key
-// is present, never guessed into existence for a non-journal item.
+// item's `effect`, and only for a journal (R52p): an Ownership Period item
+// carries an ownership effect of its own (O58), passed through unchanged;
+// it is never guessed into existence for an item without the key.
 //
 // `queueView`'s "oldest <age>" is computed from `waiting.oldest`, a zoned
 // datetime (approvals_model.waiting_for_me's `created`, A08/A10's `_iso`).
@@ -76,8 +76,10 @@ function hiddenNoteText(hidden) {
 
 /** The server's item (approvals_model.queue_items' shape, every field
  * passed through unchanged except the ones below), formatted for display.
- * A journal's `effect` runs through `effectView` when the key is present;
- * no other doctype carries one. `rawEffect` keeps the server's own
+ * Only a journal's `effect` runs through `effectView` (konsol#305 R52p,
+ * review U6): an Ownership Period item carries its own ownership effect
+ * (O58) and `effect_error` (R52i), which pass through unchanged for rates.js's
+ * `opEffectView`, and get no `rawEffect`. `rawEffect` keeps the server's own
  * `journal_model.statement_effect` shape (`{headings: [{section, heading,
  * heading_name, net_debit}]}`) alongside the display-shaped `effect`
  * (konsol#305 U2): `beforeAfter` (numbers.js) needs `net_debit` and
@@ -87,7 +89,7 @@ function hiddenNoteText(hidden) {
  * `amountText` was made to throw on a non-finite number, and a throw now. */
 function baseView(item, now, timeZone) {
 	const view = { ...item, createdText: timeText(item.created, now, timeZone) };
-	if ("effect" in item) {
+	if (item.doctype === JOURNAL && "effect" in item) {
 		view.rawEffect = item.effect;
 		view.effect = effectView(item.effect);
 	}

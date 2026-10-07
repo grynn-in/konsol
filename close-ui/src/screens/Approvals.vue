@@ -50,13 +50,13 @@
  * Pai 7 Oct): selecting an Ownership Period item opens its own right-hand
  * detail, which shows the same read-only EFFECT IF APPROVED block as the
  * Rates pending tab (O61), above that item's Approve / Reject. The block is
- * rates.js's `ownershipEffectView` (O59) over the server's effect (O58), read
- * from `rawEffect`: `queueView` runs every `effect` key through the journal
- * `effectView`, so `.effect` is journal-shaped and never read here. A Desk
- * "Record ownership" draft arrives with `effect: null` and says "Drafted in
- * Desk: effect not previewed." instead; an effect `ownershipEffectView`
- * refuses (a server regression) shows its thrown sentence, never a guessed
- * block. Approve and Reject in the detail are the same `approve`/`reject`
+ * rates.js's `opEffectView` (R52o/R52p) over the item: `queueView` passes an
+ * OP item's `effect` and `effect_error` through unchanged (only a journal's
+ * effect becomes the journal view). A Desk "Record ownership" draft
+ * (`effect: null`) says rates.js's DESK_DRAFT instead; a draft the server
+ * could not read shows its `effect_error` sentence; an effect
+ * `opEffectView` refuses (a server regression) shows its thrown sentence,
+ * never a guessed block. Approve and Reject in the detail are the same `approve`/`reject`
  * functions as the row's (one call site each), gated by the same `canAct`.
  * An OP item never loads a statement.
  *
@@ -71,7 +71,7 @@ import { queueView, approveBody, rejectBody } from "../approvals.js";
 import { dimValueText } from "../adjustments.js";
 import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
-import { ownershipEffectView } from "../rates.js";
+import { opEffectView } from "../rates.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 
@@ -231,19 +231,16 @@ function selectJournal(item) {
 	selectedItem.value = item;
 	loadDetailStatement(item);
 }
-const DESK_DRAFT = "Drafted in Desk: effect not previewed.";
-
-/** O62: an item's EFFECT IF APPROVED block, as O61's. Null for any doctype
- * but Ownership Period; `{desk}` for a Desk draft (`effect: null`); `{error}`
- * when the effect is missing or malformed; otherwise `{view}`. Section 3 shows
- * Ownership and Method as before → after and the current period's end as its
- * own "Ends" line, so the Covers row is left out. */
+/** O62: an item's EFFECT IF APPROVED block. Null for any doctype but
+ * Ownership Period; otherwise rates.js's one `opEffectView` (R52p, review
+ * U6): `{view}`, `{desk}` for a Desk draft, or `{error}` carrying the
+ * server's `effect_error` sentence (R52i). A view it refuses (a missing key
+ * or a malformed effect: a server regression) shows its thrown sentence,
+ * never a guessed panel. */
 function opEffect(item) {
 	if (item.doctype !== OWNERSHIP) return null;
-	if (item.rawEffect === null) return { desk: DESK_DRAFT };
 	try {
-		const view = ownershipEffectView(item.rawEffect);
-		return { view: { ...view, rows: view.rows.filter((row) => row.label !== "Covers") } };
+		return opEffectView(item);
 	} catch (e) {
 		return { error: e.message };
 	}
