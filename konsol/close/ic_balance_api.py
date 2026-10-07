@@ -9,10 +9,13 @@
   pair, F51b) over the shown balances, the pending gap (a draft with a
   matching rule, #305-S8-1) over the shown balances, the hidden count, the
   Active leaf entity codes for the draft form, and ``can_draft``.
-- ``save_ic_balance(...)`` (POST): an Analyst or System Manager drafts a new
-  balance or edits a draft's amounts. Never an Admin: under R2 the Admin
-  approves (submits) in the existing Approvals queue, which already lists IC
-  Balance drafts (``approvals_model``). No ``**kwargs``: Frappe drops a
+- ``save_ic_balance(...)`` (POST): an Analyst, Admin or System Manager
+  drafts a new balance or edits a draft's amounts (#305-R52-1-1, Deepak Pai
+  7 Oct 2026: the same roles as the ownership save, ``rates_api.
+  OWNERSHIP_SAVE_ROLES``; a test pins the tuples equal). Approval stays a
+  submit in the Approvals queue, which already lists IC Balance drafts
+  (``approvals_model``); an Admin approving their own draft is decided by
+  the declared R5 self-approval policy, not by this role list. No ``**kwargs``: Frappe drops a
   request key the signature does not name, so a forged status, docstatus,
   owner or workflow state never reaches the document. The document goes
   through ``insert()`` / ``save()`` with no ignore flag, so the doctype's
@@ -65,8 +68,11 @@ period_name = _load_period_name()
 IC_BALANCE = "IC Balance"
 RULE = "IC Elimination Rule"
 READ_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
-#: R2 / W5-4: the Analyst drafts, the Admin approves in Approvals.
-DRAFT_ROLES = ("EPM Analyst", "System Manager")
+#: #305-R52-1-1 (Deepak Pai 7 Oct 2026): the Analyst and the Admin draft;
+#: approval is the R5 self-approval policy's call. Equal to the
+#: ``save_ic_balance`` literal and rates_api.OWNERSHIP_SAVE_ROLES (pinned by
+#: test_close_ic_balance_api; not imported, to keep the stub loaders as they are).
+DRAFT_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 
 BALANCE_FIELDS = ["name", "selling_entity", "buying_entity", "fiscal_year", "fiscal_period",
                   "ic_sales_amount", "ending_inventory_from_ic", "docstatus"]
@@ -207,7 +213,7 @@ def save_ic_balance(fiscal_year, fiscal_period, selling_entity, buying_entity, i
                     ending_inventory_from_ic, name=None):
     """Draft a new IC Balance, or edit the named draft's amounts. Returns
     ``{"name", "docstatus"}``. Every refusal comes before the write."""
-    frappe.only_for(("EPM Analyst", "System Manager"))
+    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     row = _period_row(key)
     fy, fp = key
