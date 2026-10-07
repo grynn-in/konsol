@@ -47,7 +47,9 @@ function payload(overrides = {}) {
 		deadlines: JSON.parse(JSON.stringify(GOLDEN_DEADLINES)),
 		signoff_overdue: false,
 		ic_overdue: false,
+		ic_overdue_error: null,
 		journals_overdue: false,
+		journals_overdue_error: null,
 		...overrides,
 	};
 }
@@ -351,11 +353,17 @@ test("D61: DEADLINE_STEPS is the server's four steps in strip order", () => {
 	assert.deepEqual(Object.keys(goldenGrid.deadlines).sort(), [...DEADLINE_STEPS].sort());
 });
 
-test("D61: golden -> the strip text, in order, undeclared step reads 'No due date declared'", () => {
+test("D61/R52m (U1): golden -> the strip text in dueDate.js's wording, in order, undeclared step reads 'No due date declared'", () => {
 	const strip = deadlineStrip(goldenGrid);
+	// Literal strings: the golden's dates are tb 2025-10-03, ic 2025-10-07,
+	// journals undeclared, signoff 2025-10-01.
 	assert.deepEqual(
 		strip.map((i) => i.text),
-		["TB due 2025-10-03", "IC due 2025-10-07", "Journals: No due date declared", "Sign-off due 2025-10-01"],
+		["TB due Fri 3 Oct 2025", "IC due Tue 7 Oct 2025", "Journals: No due date declared", "Sign-off due Wed 1 Oct 2025"],
+	);
+	assert.equal(
+		strip.map((i) => i.text).join(" · "),
+		"TB due Fri 3 Oct 2025 · IC due Tue 7 Oct 2025 · Journals: No due date declared · Sign-off due Wed 1 Oct 2025",
 	);
 	assert.deepEqual(strip.map((i) => i.step), DEADLINE_STEPS);
 });
@@ -482,10 +490,130 @@ test("D61b failure path: a payload missing ic_overdue or journals_overdue throws
 
 test("D61b failure path: a non-boolean ic_overdue or journals_overdue throws", () => {
 	for (const key of ["ic_overdue", "journals_overdue"]) {
-		for (const bad of [null, "true", 1, 0]) {
+		for (const bad of ["true", 1, 0]) {
 			const p = clone(goldenGrid);
 			p[key] = bad;
 			assert.throws(() => deadlineStrip(p), new RegExp(`${key} is not true or false`), `${key}=${bad}`);
+		}
+	}
+});
+
+// --- konsol#305 R52m (U1): the strip's due text is dueDate.js's wording -----
+
+test("R52m (U1) failure path: a step whose due is not an ISO date throws", () => {
+	for (const step of DEADLINE_STEPS) {
+		const p = clone(goldenGrid);
+		p.deadlines[step] = { due: "07/10/2025", past: true, text: "Due 07/10/2025" };
+		assert.throws(() => deadlineStrip(p), /not an ISO date: 07\/10\/2025/, step);
+		assert.throws(() => gridView(p, false, NOW, TZ), /not an ISO date/, step);
+	}
+});
+
+test("R52m (U1) failure path: an undeclared step (due null) with no text, or a blank text, throws", () => {
+	for (const bad of [null, "", "   ", 3]) {
+		const p = clone(goldenGrid);
+		assert.equal(p.deadlines.journals.due, null);
+		p.deadlines.journals.text = bad;
+		assert.throws(() => deadlineStrip(p), /journals deadline.*text/, String(bad));
+	}
+});
+
+// --- konsol#305 R52m (S4): a step whose flag could not be read ------------
+//
+// Fed copies of the golden payload with one flag null and the server's
+// sentence, the shape R52e's grid_api sends when the read fails
+// (grid_api._ic_overdue / _journals_overdue). The sentences below are
+// literal copies of that wording for the golden's period, FY2025 P09.
+
+const IC_ERROR =
+	"Intercompany could not be read (error), so whether a pair is still over tolerance is unknown for FY2025 P09.";
+const JOURNALS_ERROR =
+	"The count of draft or pending journals for FY2025 P09 could not be read (OperationalError: db gone), so whether a journal is still open is unknown.";
+
+function unreadable(ic, journals) {
+	const p = clone(goldenGrid);
+	if (ic) {
+		p.ic_overdue = null;
+		p.ic_overdue_error = IC_ERROR;
+	}
+	if (journals) {
+		p.journals_overdue = null;
+		p.journals_overdue_error = JOURNALS_ERROR;
+	}
+	return p;
+}
+
+test("R52m (S4): golden -> both *_overdue_error keys are present and null, and every step's error is null", () => {
+	assert.equal(goldenGrid.ic_overdue_error, null);
+	assert.equal(goldenGrid.journals_overdue_error, null);
+	for (const item of deadlineStrip(goldenGrid)) {
+		assert.equal(item.error, null, item.step);
+	}
+});
+
+test("R52m (S4): an unreadable IC flag shows the server's sentence on the IC step only; the rows still render", () => {
+	const p = unreadable(true, false);
+	const view = gridView(p, false, NOW, TZ);
+	const by = Object.fromEntries(view.deadlines.map((i) => [i.step, i]));
+	assert.equal(by.ic.error, IC_ERROR);
+	assert.equal(by.ic.overdue, null);
+	assert.equal(by.ic.text, "IC due Tue 7 Oct 2025");
+	assert.equal(by.journals.error, null);
+	assert.equal(by.journals.overdue, false);
+	assert.equal(by.signoff.overdue, true);
+	assert.equal(by.tb.error, null);
+	assert.deepEqual(view.rows.map((r) => r.entity), goldenGrid.rows.map((r) => r.entity));
+	assert.equal(view.rows.length, 4);
+	assert.equal(view.all, 4);
+});
+
+test("R52m (S4): an unreadable journals flag shows the server's sentence on the Journals step only; the rows still render", () => {
+	const p = unreadable(false, true);
+	const view = gridView(p, true, NOW, TZ);
+	const by = Object.fromEntries(view.deadlines.map((i) => [i.step, i]));
+	assert.equal(by.journals.error, JOURNALS_ERROR);
+	assert.equal(by.journals.overdue, null);
+	assert.equal(by.journals.text, "Journals: No due date declared");
+	assert.equal(by.ic.error, null);
+	assert.equal(by.ic.overdue, true);
+	assert.equal(view.rows.length, 2);
+	assert.equal(view.problems, 2);
+});
+
+test("R52m (S4): both flags unreadable -> both steps carry their own sentence", () => {
+	const by = Object.fromEntries(deadlineStrip(unreadable(true, true)).map((i) => [i.step, i]));
+	assert.equal(by.ic.error, IC_ERROR);
+	assert.equal(by.journals.error, JOURNALS_ERROR);
+	assert.equal(by.signoff.error, null);
+});
+
+test("R52m (S4) failure path: a payload missing ic_overdue_error or journals_overdue_error throws", () => {
+	for (const key of ["ic_overdue_error", "journals_overdue_error"]) {
+		const p = clone(goldenGrid);
+		delete p[key];
+		assert.throws(() => deadlineStrip(p), new RegExp(key), key);
+		assert.throws(() => gridView(p, false, NOW, TZ), new RegExp(key), key);
+	}
+});
+
+test("R52m (S4) failure path: a null flag with no error sentence throws", () => {
+	for (const [flag, err] of [["ic_overdue", "ic_overdue_error"], ["journals_overdue", "journals_overdue_error"]]) {
+		for (const bad of [null, "", "  "]) {
+			const p = clone(goldenGrid);
+			p[flag] = null;
+			p[err] = bad;
+			assert.throws(() => deadlineStrip(p), new RegExp(`${flag} is null.*${err}`), `${flag}/${bad}`);
+		}
+	}
+});
+
+test("R52m (S4) failure path: a true/false flag that also carries an error sentence throws", () => {
+	for (const [flag, err] of [["ic_overdue", "ic_overdue_error"], ["journals_overdue", "journals_overdue_error"]]) {
+		for (const value of [true, false]) {
+			const p = clone(goldenGrid);
+			p[flag] = value;
+			p[err] = "Something went wrong.";
+			assert.throws(() => deadlineStrip(p), new RegExp(err), `${flag}=${value}`);
 		}
 	}
 });
