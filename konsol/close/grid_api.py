@@ -43,7 +43,11 @@ tolerance (``deadline_model.ic_open``); ``journals_overdue`` is the journals
 date past and at least one Consolidation Journal of the period a draft or
 pending approval, docstatus 0 (``deadline_model.journals_open``). An
 undeclared or not-yet-past date is False and reads nothing. An unreadable IC
-warehouse or journal count throws (the grid's error state), never False.
+warehouse or journal count makes that flag None (unknown), never False, and
+fills its ``ic_overdue_error`` / ``journals_overdue_error`` sentence naming
+the period; the rows, counts and the other flags still render (konsol#305
+R52e, review-w5b S4; the ``rates_error`` precedent). Both ``*_error`` keys
+are always present, None when the read worked or no read was needed.
 Intercompany not configured or declared not applicable has no pair to be
 open: False.
 
@@ -204,35 +208,48 @@ def _deadlines(key):
 
 
 def _ic_overdue(key, due):
-    """``ic_overdue`` (konsol#305 D57b, #305-Q5-1): the IC date is past and a
-    pair is still over tolerance (``deadline_model.ic_open``). Read only when
-    the date is past: one ``ic_api.signoff_summary`` read (the sign-off
-    summary's own IC counts). An unreadable warehouse throws (the grid's
-    error state), never False."""
+    """``(ic_overdue, ic_overdue_error)`` (konsol#305 D57b, #305-Q5-1): the IC
+    date is past and a pair is still over tolerance
+    (``deadline_model.ic_open``). Read only when the date is past: one
+    ``ic_api.signoff_summary`` read (the sign-off summary's own IC counts).
+    An unreadable warehouse is ``(None, <sentence naming the period>)``,
+    never False, and never takes down the grid (R52e, review-w5b S4)."""
     if not due["ic"]["past"]:
-        return False
+        return False, None
     from konsol.close import ic_api  # lazy (C-X1): ic_api imports ch_read
 
     summary = ic_api.signoff_summary(*key)
     try:
-        return deadline_model.ic_open(summary["state"], summary["counts"])
+        return deadline_model.ic_open(summary["state"], summary["counts"]), None
     except ValueError as e:
-        frappe.throw("%s for %s. %s" % (e, period_name(*key), summary.get("message") or ""))
+        detail = summary.get("message")
+        text = "%s for %s." % (e, period_name(*key))
+        return None, ("%s %s" % (text, detail)) if detail else text
 
 
 def _journals_overdue(key, due):
-    """``journals_overdue`` (konsol#305 D57b, #305-Q5-1): the journals date is
-    past and a Consolidation Journal of the period is a draft or pending
-    approval (docstatus 0, ``deadline_model.journals_open``). Read only when
-    the date is past: one count. A failed count raises, never False."""
+    """``(journals_overdue, journals_overdue_error)`` (konsol#305 D57b,
+    #305-Q5-1): the journals date is past and a Consolidation Journal of the
+    period is a draft or pending approval (docstatus 0,
+    ``deadline_model.journals_open``). Read only when the date is past: one
+    count. A failed or unreadable count is ``(None, <sentence naming the
+    period>)``, never False, and never takes down the grid (R52e, review-w5b
+    S4; the ``ic_api._warehouse`` precedent: any failure to read means
+    "can't say")."""
     if not due["journals"]["past"]:
-        return False
-    count = frappe.db.count("Consolidation Journal",
-                            {"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 0})
+        return False, None
     try:
-        return deadline_model.journals_open(count)
+        count = frappe.db.count(
+            "Consolidation Journal",
+            {"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 0})
+    except Exception as e:  # noqa: BLE001 — shown as the flag's error, never False
+        return None, ("The count of draft or pending journals for %s could not be read "
+                      "(%s: %s), so whether a journal is still open is unknown."
+                      % (period_name(*key), type(e).__name__, e))
+    try:
+        return deadline_model.journals_open(count), None
     except ValueError as e:
-        frappe.throw("%s for %s." % (e, period_name(*key)))
+        return None, "%s for %s." % (e, period_name(*key))
 
 
 def _signed(run):
@@ -245,13 +262,15 @@ def _signed(run):
 @frappe.whitelist(methods=["GET"])
 def get_period_grid(fiscal_year, fiscal_period):
     """``{period, rows, counts, rates_error, deadlines, signoff_overdue,
-    ic_overdue, journals_overdue}`` for a Regular period.
+    ic_overdue, ic_overdue_error, journals_overdue, journals_overdue_error}``
+    for a Regular period.
 
     ``period`` = ``{fiscal_year, fiscal_period, code, status, start_date}``
     (ISO date). ``rows``, ``counts`` and ``rates_error`` are
     ``period_grid_model.period_grid``'s; each row's ``tb`` cell also
     carries ``reminders`` (konsol#305 Y57) and ``overdue`` (D57).
-    ``deadlines`` and the three ``*_overdue`` flags: see the module docstring.
+    ``deadlines``, the three ``*_overdue`` flags and the two ``*_error``
+    sentences: see the module docstring.
     Read-only. Refuses an undeclared
     period (PeriodNotDeclared) and a non-Regular one.
     """
@@ -292,9 +311,12 @@ def get_period_grid(fiscal_year, fiscal_period):
             r["tb"]["label"] == period_grid_model.MISSING and due["tb"]["past"])
     period = {"fiscal_year": key[0], "fiscal_period": key[1], "code": row.get("period_code"),
               "status": row.get("status"), "start_date": _iso(start)}
+    ic_overdue, ic_overdue_error = _ic_overdue(key, due)
+    journals_overdue, journals_overdue_error = _journals_overdue(key, due)
     return dict({"period": period}, **grid, deadlines=due,
                 signoff_overdue=bool(due["signoff"]["past"] and not _signed(run)),
-                ic_overdue=_ic_overdue(key, due), journals_overdue=_journals_overdue(key, due))
+                ic_overdue=ic_overdue, ic_overdue_error=ic_overdue_error,
+                journals_overdue=journals_overdue, journals_overdue_error=journals_overdue_error)
 
 
 @frappe.whitelist(methods=["GET"])

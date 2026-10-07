@@ -27,7 +27,9 @@
     }
   },
   "ic_overdue": true,
+  "ic_overdue_error": null,
   "journals_overdue": false,
+  "journals_overdue_error": null,
   "period": {
     "code": "P09",
     "fiscal_period": 9,
