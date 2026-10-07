@@ -993,3 +993,14 @@ def test_o58_a_desk_draft_costs_no_effect_read():
     _call(site)
     assert len([r for r in site.reads if r == ("get_all", OP)]) == 1
     assert ("latest_signed_runs",) not in site.reads
+
+
+def test_o58_a_group_node_draft_is_visible_to_a_scoped_caller_and_carries_its_effect():
+    """approvals_model shows a blank-entity item (a group node) to a scoped
+    caller, so its effect is read too: never an item silently without it."""
+    site = _o58_site()
+    site.allowed = {"UK01"}
+    for row in site.ops[:2]:
+        row["data_area_id"] = None
+    item = _o58_item(_call(site), O58_CHANGE)
+    assert item["effect"]["after"]["pct"] == 80.0

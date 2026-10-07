@@ -37,6 +37,18 @@ dimensions currently declared are read: a value written under a dimension
 since un-ticked stays in the warehouse but is not shown here (konsol#255
 option A).
 
+Each pending Ownership Period the caller may see carries ``effect`` (O58;
+story 4.2, C-O4): ``ownership_change.effect_for(doc)``, the same structural
+before/after the Rates tab shows (O57), or None for a draft without
+``supersedes`` (a Desk "Record ownership" draft). It costs, per visible OP
+draft with ``supersedes``, one read of its predecessor, one fiscal calendar
+read and one ``signoff_gate.latest_signed_runs()``; a Desk draft or a draft
+outside the caller's entities costs none (pending OP drafts are few; live,
+7 Oct: 0). A predecessor that is no longer approved is refused with a
+sentence naming the draft, never shown with a guessed effect.
+``ownership_change`` is imported inside the call, only when an OP draft is
+pending.
+
 This file never names the event-log doctype (the one-writer check,
 test_close_event_writer.py): rejections are read only through
 ``close_event.latest_rejections``.
@@ -75,7 +87,7 @@ _FIELDS = {
           "quote_label", "change_reason"],
     HER: ["consolidation_group", "data_area_id", "main_account", "rate_date", "historical_rate"],
     OP: ["consolidation_group", "data_area_id", "effective_date", "end_date",
-         "ownership_pct", "consolidation_method"],
+         "ownership_pct", "consolidation_method", "supersedes"],
     IC_BALANCE: ["selling_entity", "buying_entity", "fiscal_year", "fiscal_period",
                  "ic_sales_amount", "ending_inventory_from_ic"],
     BC: ["consolidation_group", "acquired_entity", "acquisition_date", "share_acquired_pct", "goodwill"],
@@ -273,11 +285,24 @@ def queue_for(user, roles):
                 rejections[(doctype, name)] = doctype_rejections[name]
 
         date_fields = _DATE_FIELDS.get(doctype, ())
+        if doctype == OP and rows:
+            from konsol.close import ownership_change  # lazy (C-X1)
         doc_rows = []
         for row in rows:
             name = row["name"]
             modified_by_ref[(doctype, name)] = row["modified"]
             doc = {key: value for key, value in row.items() if key != "modified"}
+            entity = doc.get(close_event.ENTITY_FIELDS[OP]) if doctype == OP else None
+            if doctype == OP and (allowed is None or not entity or entity in allowed):
+                # O58: the effect, read from ``supersedes`` before the dates
+                # are formatted; None for a Desk draft. Visibility mirrors
+                # approvals_model's cut (a blank entity, a group node, is
+                # visible); a draft it hides is never read here.
+                try:
+                    doc["effect"] = ownership_change.effect_for(doc)
+                except ValueError as e:
+                    frappe.throw("The pending ownership change %s cannot be shown: %s. "
+                                 "Correct or delete the draft in Desk." % (name, e))
             doc["created"] = _iso(doc.pop("creation", None))
             for field in date_fields:
                 doc[field] = _iso(doc.get(field))
