@@ -107,6 +107,9 @@ class _Site:
         self.sign_off_problems_calls = []
         self.reminders = []               # close_event.reminders(keys, topic)
         self.deadlines = {}               # deadlines.period_deadlines(keys, today)
+        self.reminder_calls = []          # Y56: (keys, topic) per close_event.reminders read
+        self.roles = ["EPM Admin"]        # frappe.get_roles() (Y56: can_remind)
+        self.records["User"] = []         # Y56: the reminder senders' full names
 
 
 def _match(value, cond):
@@ -166,6 +169,7 @@ def _load(site):
         return _File(filters["file_url"])
 
     frappe.get_doc = get_doc
+    frappe.get_roles = lambda user=None: list(site.roles)
     frappe.throw = throw
     frappe.whitelist = whitelist
     frappe.only_for = only_for
@@ -202,7 +206,12 @@ def _load(site):
     # Wave 5b (C-X1): Y56/D56 lazily import close_event.reminders and
     # deadlines.period_deadlines; the stub package carries both.
     close_event = types.ModuleType("konsol.close.close_event")
-    close_event.reminders = lambda keys, topic=None: site.reminders
+
+    def reminders(keys, topic=None):
+        site.reminder_calls.append((list(keys), topic))
+        return site.reminders
+
+    close_event.reminders = reminders
     deadlines = types.ModuleType("konsol.close.deadlines")
     deadlines.period_deadlines = lambda keys, today: site.deadlines
     close.close_event, close.deadlines = close_event, deadlines
@@ -844,3 +853,183 @@ def test_tb_compare_refuses_undeclared_and_non_regular_periods():
     site.rows = _year(2025, closing="Open")
     err = _raises_compare(site, fp=13)
     assert "Regular" in str(err), str(err)
+
+
+# --- Y56: each row carries its reminders; can_remind (story 1.5, C-R6) -------------
+
+REMIND_MODEL_PY = os.path.join(APP_DIR, "close", "remind_model.py")
+_RM_SPEC = importlib.util.spec_from_file_location("test_close_tb_read_api_remind_model",
+                                                  REMIND_MODEL_PY)
+REMIND_MODEL = importlib.util.module_from_spec(_RM_SPEC)
+_RM_SPEC.loader.exec_module(REMIND_MODEL)
+
+#: The golden payload close-ui's TB list tests load (W4-E19): exactly what the
+#: real ``my_tbs`` returns for ``_golden_site()``, never a hand-built dict.
+MY_TBS_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fixtures", "close_my_tbs_payload.json")
+
+
+def _reminder(name, entity, at, actor, topic="tb", fy=2025, fp=9):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _user(name, full_name):
+    return {"name": name, "full_name": full_name}
+
+
+def _reminded_site():
+    """ZZC (Missing) reminded twice, an hour apart, by two senders; nothing else."""
+    site = _Site()
+    site.roles = ["EPM Analyst"]
+    site.reminders = [
+        _reminder("CE-0002", "ZZC", datetime(2025, 10, 6, 10, 0), "zz-lead@example.com"),
+        _reminder("CE-0001", "ZZC", datetime(2025, 10, 6, 9, 0), "zz-ga@example.com"),
+    ]
+    site.records["User"] = [_user("zz-lead@example.com", "Zed Lead"),
+                            _user("zz-ga@example.com", "Gee Accountant")]
+    return site
+
+
+def _golden_site():
+    return _reminded_site()
+
+
+def test_the_events_are_the_real_summary_input():
+    """The stub events are the shape remind_model.summary reads: a count of 2."""
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got[(2025, 9, "ZZC", "tb")]["count"] == 2
+
+
+def test_a_reminded_row_carries_count_last_at_and_the_latest_sender():
+    site = _reminded_site()
+    by = _by_entity(_my_tbs(site))
+    assert by["ZZC"]["reminders"] == {
+        "count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+        "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"}, by["ZZC"]
+    assert by["ZZA"]["reminders"] is None and by["ZZB"]["reminders"] is None
+
+
+def test_the_latest_is_by_time_not_by_list_order():
+    site = _reminded_site()
+    site.reminders = list(reversed(site.reminders))
+    assert _by_entity(_my_tbs(site))["ZZC"]["reminders"]["last_by_name"] == "Zed Lead"
+
+
+def test_reminders_are_read_once_for_the_period_and_topic_tb():
+    site = _reminded_site()
+    _my_tbs(site)
+    assert site.reminder_calls == [([(2025, 9)], "tb")]
+    user_reads = [f for d, f in site.get_all_calls if d == "User"]
+    assert user_reads == [{"name": ["in", ["zz-lead@example.com"]]}], user_reads
+
+
+def test_no_reminders_reads_no_user():
+    site = _Site()
+    result = _my_tbs(site)
+    assert all(e["reminders"] is None for e in result["entities"])
+    assert [d for d, _f in site.get_all_calls if d == "User"] == []
+
+
+def test_an_unowned_row_carries_reminders_too():
+    site = _reminded_site()
+    site.records["Entity"].append(_entity("ZZU"))
+    site.records["Trial Balance Submission"].append(_tb("TB-U", "ZZU"))
+    site.gaps = [_unowned_gap(["ZZU"])]
+    site.reminders.append(
+        _reminder("CE-0003", "ZZU", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+    by = _by_entity(_my_tbs(site))
+    assert by["ZZU"]["status"] == NOT_CONSOLIDATED
+    assert by["ZZU"]["reminders"]["count"] == 1
+    assert by["ZZU"]["reminders"]["last_by_name"] == "Gee Accountant"
+
+
+def test_a_hidden_entitys_reminders_never_leave_the_server():
+    """The recipient (an Entity Accountant on ZZA) sees their own row's
+    reminders, and nothing about ZZC's: not its count, not its sender."""
+    site = _reminded_site()
+    site.roles = ["Entity Accountant"]
+    site.allowed = {"ZZA"}
+    site.reminders.append(
+        _reminder("CE-0003", "ZZA", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+    result = _my_tbs(site)
+    assert [e["entity"] for e in result["entities"]] == ["ZZA"]
+    assert result["entities"][0]["reminders"]["count"] == 1
+    text = json.dumps(result)
+    # zz-lead@example.com also owns ZZA's own TB, so its id is legitimately
+    # present; its full name comes only from ZZC's reminder.
+    for hidden in ("ZZC", "Zed Lead", "CE-0002"):
+        assert hidden not in text, (hidden, text)
+    user_reads = [f for d, f in site.get_all_calls if d == "User"]
+    assert user_reads == [{"name": ["in", ["zz-ga@example.com"]]}], user_reads
+
+
+def test_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_reminder("CE-0009", "ZZA", datetime(2025, 10, 6, 8, 0),
+                                    "zz-ga@example.com", topic="x"))
+    with pytest.raises(ValueError) as info:
+        _my_tbs(site)
+    assert "CE-0009" in str(info.value)
+
+
+def test_a_non_datetime_time_raises():
+    site = _reminded_site()
+    site.reminders[0]["at"] = "2025-10-06 10:00:00"
+    with pytest.raises(ValueError) as info:
+        _my_tbs(site)
+    assert "CE-0002" in str(info.value)
+
+
+def test_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
+    for users in ([], [_user("zz-lead@example.com", ""),
+                       _user("zz-ga@example.com", "Gee Accountant")]):
+        site = _reminded_site()
+        site.records["User"] = users
+        with pytest.raises(Exception) as info:
+            _my_tbs(site)
+        assert "zz-lead@example.com" in str(info.value), str(info.value)
+        assert "full name" in str(info.value), str(info.value)
+
+
+def test_can_remind_only_for_remind_roles_in_an_open_period():
+    for roles, expected in ((["EPM Admin"], True), (["EPM Analyst"], True),
+                            (["System Manager"], True), (["EPM User"], False),
+                            (["Entity Accountant"], False), ([], False),
+                            (["Entity Accountant", "EPM Analyst"], True)):
+        site = _Site()
+        site.roles = roles
+        assert _my_tbs(site)["can_remind"] is expected, roles
+    site = _Site()
+    site.rows = _year(2025, status="Closed")
+    assert _my_tbs(site)["can_remind"] is False
+
+
+def test_can_remind_is_present_when_the_caller_sees_no_entity():
+    site = _Site()
+    site.allowed = set()
+    result = _my_tbs(site)
+    assert result["can_remind"] is True and result["entities"] == []
+    assert site.reminder_calls == []
+
+
+def test_every_row_carries_the_reminders_key():
+    site = _Site()
+    site.in_scope = ["ZZA", "ZZB", "ZZC", "ZZD"]
+    site.records["Entity"].append(_entity("ZZD"))
+    site.records["TB Exception"].append(_exc("EXC-D", "ZZD"))
+    for row in _my_tbs(site)["entities"]:
+        assert "reminders" in row, row
+
+
+def test_my_tbs_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_my_tbs(_golden_site())))
+    with open(MY_TBS_FIXTURE) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert golden["can_remind"] is True
+    assert [e["entity"] for e in golden["entities"] if e["reminders"]] == ["ZZC"]
