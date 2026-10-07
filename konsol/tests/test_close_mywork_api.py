@@ -1708,7 +1708,12 @@ def _golden():
     exactly what the real ``get_my_work`` returns, per persona."""
     ea = _call(_reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
                               allowed={"ZZA"}))
-    ga = _call(_reminded_site(roles=("EPM Analyst",), user="zz-ga@example.com"))
+    ga_site = _reminded_site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    # D59: from 1 Sep 2025 the group declares no TB date, so the Group
+    # Accountant's P09 item reads "No due date declared" (the EA's P09 item
+    # stays "not yet due"): the golden file carries every due form.
+    ga_site.deadline_rules = [_rule(date(2025, 7, 1), 5, 10), _rule(date(2025, 9, 1), 0, 0)]
+    ga = _call(ga_site)
     return json.loads(json.dumps({"entity_accountant": ea["items"],
                                   "group_accountant": ga["items"]}))
 
