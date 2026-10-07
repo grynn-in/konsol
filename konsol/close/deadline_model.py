@@ -100,3 +100,40 @@ def period_deadlines(rules, holidays, end_date, today):
         due = due_date(end_date, offset, working_days, holidays)
         out[step] = {"due": due, "past": today > due, "text": "Due %s" % due.isoformat()}
     return out
+
+
+def _repeated(values):
+    """Each value that appears more than once, once, in first-seen order."""
+    seen, repeated = set(), []
+    for value in values:
+        if value in seen and value not in repeated:
+            repeated.append(value)
+        seen.add(value)
+    return repeated
+
+
+def rule_problems(rules, holidays):
+    """The sentences that refuse a Close Settings save (D52; C-D1, C-D3).
+
+    ``rules`` are "Close Deadline Rule" child dicts, ``holidays`` are "Close
+    Holiday" child dicts (``holiday_date``). Empty tables are allowed: no rule
+    means no due dates, and nothing is invented. A blank or 0 offset is
+    undeclared, not a problem. The blank ``change_reason`` is refused by
+    ``reqd`` on the child doctype (C-D7), not here.
+    """
+    problems = []
+    for start in _repeated([rule["valid_from"] for rule in rules]):
+        problems.append("Two deadline rules start on %s: keep one." % start)
+    for rule in rules:
+        start = rule["valid_from"]
+        if not any(rule.get(wd) for wd in WEEKDAYS):
+            problems.append(
+                "The rule from %s declares no working day: tick the days your team works." % start
+            )
+        for step in STEPS:
+            offset = rule.get(OFFSET_FIELD[step])
+            if isinstance(offset, (int, float)) and not isinstance(offset, bool) and offset < 0:
+                problems.append("The rule from %s has a negative %s offset." % (start, STEP_LABEL[step]))
+    for day in _repeated([holiday["holiday_date"] for holiday in holidays]):
+        problems.append("%s is listed twice as a holiday." % day)
+    return problems
