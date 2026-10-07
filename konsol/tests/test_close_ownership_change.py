@@ -87,6 +87,13 @@ class _Site:
         self.whitelisted = []
 
 
+def _op_filters(site):
+    """The filters of the one Ownership Period read."""
+    reads = [r for r in site.reads if r[0] == "get_all"]
+    assert len(reads) == 1, reads
+    return reads[0][2]["filters"]
+
+
 def _matches(row, filters):
     for field, want in (filters or {}).items():
         have = row.get(field)
@@ -218,7 +225,7 @@ def test_context_of_one_open_ended_period():
     # One read of each source, and nothing written.
     kinds = [r[0] for r in site.reads]
     assert kinds.count("get_all") == 1 and kinds.count("calendar") == 1 and kinds.count("signed") == 1
-    filters = site.reads[0][2]["filters"]
+    filters = _op_filters(site)
     assert filters["consolidation_group"] == GROUP and filters["data_area_id"] == LEAF
     assert site.writes == []
     assert site.whitelisted == []
@@ -244,7 +251,7 @@ def test_context_of_a_group_node_matches_a_blank_entity():
     site = _Site(ops=[_op("OP-G", datetime.date(2025, 1, 1), entity=None, group="SUB_GROUP")])
     helper = _Helper(site)
     ctx = helper("context", "SUB_GROUP", "", 2025, 10)
-    assert site.reads[0][2]["filters"]["data_area_id"] == ["is", "not set"]
+    assert _op_filters(site)["data_area_id"] == ["is", "not set"]
     assert ctx["current"]["name"] == "OP-G"
     # The sentences name the node: a group node is named by its group.
     assert ctx["entity"] == "SUB_GROUP"
