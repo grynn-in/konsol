@@ -6,7 +6,8 @@
 // everything Intercompany.vue renders: the state banner, the count chips
 // (only when checked), the groups and pair rows with status text and
 // masked labels, the partnerless rows, the hidden note, and (through the
-// separate `panel` helper) the selected pair's side panel. Takes no
+// separate `panel` helper) the selected pair's side panel, with each side's
+// reminded text and whether it can be reminded (Y65). Takes no
 // vue/frappe/xstate import.
 //
 // Server text may already contain a literal "<br>" (signoff.js's
@@ -30,6 +31,7 @@
 
 import { formatTime, parseZoned } from "./timefmt.js";
 import { messageLines } from "./signoff.js";
+import { remindedText } from "./remind.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 
@@ -148,7 +150,12 @@ function statusFor(matchStatus, sentBack, toleranceDeclared) {
  * the two balances pre-formatted (or the hidden label), and its status
  * text/tone.
  */
-function pairView(pair, group, toleranceDeclared, now, timeZone) {
+function pairView(pair, group, toleranceDeclared, canRemind, now, timeZone) {
+	for (const key of ["reminders_a", "reminders_b"]) {
+		if (!(key in pair)) {
+			throw new Error(`Intercompany pair ${pair.entity_a} ↔ ${pair.entity_b} has no \`${key}\` (get_ic always sends it, null when none)`);
+		}
+	}
 	const sentBack = sentBackView(pair.sent_back, now, timeZone);
 	const status = statusFor(pair.match_status, sentBack, toleranceDeclared);
 	return {
@@ -161,10 +168,14 @@ function pairView(pair, group, toleranceDeclared, now, timeZone) {
 		balanceAText: pair.masked_a ? HIDDEN_LABEL : formatAmount(pair.balance_a),
 		balanceBText: pair.masked_b ? HIDDEN_LABEL : formatAmount(pair.balance_b),
 		differenceText: formatAmount(pair.difference),
+		// Y65: a masked side's reminder never renders (W3-2), even if one arrived.
+		remindedAText: pair.masked_a ? null : remindedText(pair.reminders_a, now, timeZone),
+		remindedBText: pair.masked_b ? null : remindedText(pair.reminders_b, now, timeZone),
+		canRemind,
 	};
 }
 
-function groupView(group, now, timeZone) {
+function groupView(group, canRemind, now, timeZone) {
 	const toleranceDeclared = !!group.tolerance_declared;
 	return {
 		consolidationGroup: group.consolidation_group,
@@ -173,7 +184,7 @@ function groupView(group, now, timeZone) {
 		toleranceDeclared,
 		toleranceText: toleranceText(group),
 		icDifferenceAccount: group.ic_difference_account,
-		pairs: (group.pairs || []).map((pair) => pairView(pair, group, toleranceDeclared, now, timeZone)),
+		pairs: (group.pairs || []).map((pair) => pairView(pair, group, toleranceDeclared, canRemind, now, timeZone)),
 	};
 }
 
@@ -204,9 +215,12 @@ function hiddenNoteFor(hidden) {
  * partnerless rows, and the hidden note.
  */
 export function intercompanyView(payload, now, timeZone) {
+	if (typeof payload.can_remind !== "boolean") {
+		throw new Error("Intercompany payload has no `can_remind` flag (get_ic always sends it).");
+	}
 	const banner = bannerFor(payload);
 	const chips = payload.state === "checked" ? chipsFor(payload.counts) : null;
-	const groups = (payload.groups || []).map((group) => groupView(group, now, timeZone));
+	const groups = (payload.groups || []).map((group) => groupView(group, payload.can_remind, now, timeZone));
 	const unmatched = (payload.unmatched || []).map(unmatchedView);
 	return {
 		banner,
@@ -220,11 +234,19 @@ export function intercompanyView(payload, now, timeZone) {
 /**
  * The selected pair's side panel: both sides with account and amount (or
  * the hidden label), the difference, the difference-account sentence
- * (E5-P12), and the trail (the pair's `sent_back` entry only — replies and
- * Remind are P2). `pair` is one of `intercompanyView`'s pair rows (it
- * carries `ic_difference_account` and a formatted `sent_back`).
+ * (E5-P12), the trail (the pair's `sent_back` entry only; replies are not
+ * built), and per side `remindA` / `remindB` = `{entity, text, canRemind}`
+ * (Y65, C-R1): `text` is remind.js's reminded text or null, and `canRemind`
+ * is the payload's `can_remind` AND the side is not masked. A masked side
+ * has text null and canRemind false. `pair` is one of `intercompanyView`'s
+ * pair rows (it carries `ic_difference_account`, a formatted `sent_back`,
+ * `remindedAText` / `remindedBText` and `canRemind`); any other object
+ * throws.
  */
 export function panel(pair) {
+	if (typeof pair.canRemind !== "boolean" || !("remindedAText" in pair) || !("remindedBText" in pair)) {
+		throw new Error("panel takes an intercompanyView pair row (canRemind and the reminded texts are missing).");
+	}
 	const accountSentence = pair.ic_difference_account
 		? `Booked to ${pair.ic_difference_account} in the group view while it stays open.`
 		: "No difference account is declared: the difference stays on the intercompany accounts.";
@@ -244,7 +266,13 @@ export function panel(pair) {
 		trail: pair.sent_back
 			? { by: pair.sent_back.byName, at: pair.sent_back.at, reason: pair.sent_back.reason }
 			: null,
+		remindA: remindSide(pair.entity_a, pair.masked_a, pair.remindedAText, pair.canRemind),
+		remindB: remindSide(pair.entity_b, pair.masked_b, pair.remindedBText, pair.canRemind),
 	};
+}
+
+function remindSide(entity, masked, text, canRemind) {
+	return masked ? { entity, text: null, canRemind: false } : { entity, text, canRemind };
 }
 
 /**
