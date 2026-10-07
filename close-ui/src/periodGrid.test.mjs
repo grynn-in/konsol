@@ -4,12 +4,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COLUMNS, TONES, toneClass, gridView, readinessView } from "./periodGrid.js";
+import { remindedText } from "./remind.js";
+
+const NOW = new Date("2025-10-06T15:00:00Z");
+const TZ = "Europe/London";
 
 function ownership(tone, label) {
 	return { tone, label: label ?? `ownership ${tone}` };
 }
 function tb(tone, label) {
-	return { tone, label: label ?? `tb ${tone}` };
+	return { tone, label: label ?? `tb ${tone}`, reminders: null };
 }
 function rate(tone, label) {
 	return { tone, label: label ?? `rate ${tone}` };
@@ -59,7 +63,7 @@ test("toneClass throws on an unknown tone", () => {
 });
 
 test("gridView with problemsOnly false keeps every row in server order", () => {
-	const view = gridView(payload(), false);
+	const view = gridView(payload(), false, NOW, TZ);
 	assert.deepEqual(
 		view.rows.map((r) => r.entity),
 		["ZZAA", "ZZBB"],
@@ -70,7 +74,7 @@ test("gridView with problemsOnly true keeps only problem rows, server order pres
 	const p = payload({
 		rows: [row("ZZAA", false), row("ZZBB", true), row("ZZCC", true)],
 	});
-	const view = gridView(p, true);
+	const view = gridView(p, true, NOW, TZ);
 	assert.deepEqual(
 		view.rows.map((r) => r.entity),
 		["ZZBB", "ZZCC"],
@@ -79,44 +83,44 @@ test("gridView with problemsOnly true keeps only problem rows, server order pres
 
 test("all and problems come from payload.counts, never recomputed from rows", () => {
 	const p = payload({ counts: { rows: 9, problems: 4, hidden: 0 } });
-	const view = gridView(p, false);
+	const view = gridView(p, false, NOW, TZ);
 	assert.equal(view.all, 9);
 	assert.equal(view.problems, 4);
 });
 
 test("hiddenNote is null when counts.hidden is 0", () => {
-	const view = gridView(payload({ counts: { rows: 2, problems: 1, hidden: 0 } }), false);
+	const view = gridView(payload({ counts: { rows: 2, problems: 1, hidden: 0 } }), false, NOW, TZ);
 	assert.equal(view.hiddenNote, null);
 });
 
 test("hiddenNote names the count when counts.hidden is 3", () => {
-	const view = gridView(payload({ counts: { rows: 2, problems: 1, hidden: 3 } }), false);
+	const view = gridView(payload({ counts: { rows: 2, problems: 1, hidden: 3 } }), false, NOW, TZ);
 	assert.equal(view.hiddenNote, "3 entities outside your scope are not shown");
 });
 
 test("ratesNote is null when rates_error is not set", () => {
-	const view = gridView(payload({ rates_error: null }), false);
+	const view = gridView(payload({ rates_error: null }), false, NOW, TZ);
 	assert.equal(view.ratesNote, null);
 });
 
 test("ratesNote names the error when rates_error is set", () => {
-	const view = gridView(payload({ rates_error: "No closing rate build for the period" }), false);
+	const view = gridView(payload({ rates_error: "No closing rate build for the period" }), false, NOW, TZ);
 	assert.equal(view.ratesNote, "Rates cannot be checked: No closing rate build for the period");
 });
 
 test("empty reads 'No problems in <code>' under problemsOnly", () => {
-	const view = gridView(payload(), true);
+	const view = gridView(payload(), true, NOW, TZ);
 	assert.equal(view.empty, "No problems in FY2026 P07");
 });
 
 test("empty reads 'No entities in scope for <code>' when not problemsOnly", () => {
-	const view = gridView(payload(), false);
+	const view = gridView(payload(), false, NOW, TZ);
 	assert.equal(view.empty, "No entities in scope for FY2026 P07");
 });
 
 test("gridView throws on a row with an unknown cell tone", () => {
 	const p = payload({ rows: [row("ZZAA", true, ["ok", "warn", "ok"])] });
-	assert.throws(() => gridView(p, false), /unknown tone: warn/);
+	assert.throws(() => gridView(p, false, NOW, TZ), /unknown tone: warn/);
 });
 
 function item(code, state, overrides = {}) {
@@ -256,8 +260,72 @@ test("the source contains no local-storage or session-storage calls", () => {
 
 test("gridView: the header and the empty text name FY + period, not the live code 'P07' alone", () => {
 	const p = payload({ period: { fiscal_year: 2025, fiscal_period: 7, code: "P07", status: "Open" }, rows: [] });
-	const view = gridView(p, false);
+	const view = gridView(p, false, NOW, TZ);
 	assert.equal(view.title, "Period FY2025 P07");
 	assert.equal(view.empty, "No entities in scope for FY2025 P07");
-	assert.equal(gridView(p, true).empty, "No problems in FY2025 P07");
+	assert.equal(gridView(p, true, NOW, TZ).empty, "No problems in FY2025 P07");
+});
+
+// --- konsol#305 Y63: the reminded text in the Trial balance cell -----------
+//
+// Fed the real producer's output: Y57's golden payload
+// konsol/tests/fixtures/close_period_grid_payload.json (asserted equal to the
+// stub-site get_period_grid call by its own host test). The expected text is
+// remind.js's remindedText over the same entry, never a copied string.
+
+const goldenGrid = JSON.parse(
+	readFileSync(fileURLToPath(new URL("../../konsol/tests/fixtures/close_period_grid_payload.json", import.meta.url)), "utf8"),
+);
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const goldenRow = (view, entity) => {
+	const r = view.rows.find((x) => x.entity === entity);
+	assert.ok(r, `no row for ${entity}`);
+	return r;
+};
+
+test("Y63: a Missing TB cell carries remindedText(cell.reminders) as tbReminded", () => {
+	const src = goldenGrid.rows.find((r) => r.entity === "ZZA");
+	assert.equal(src.tb.label, "Missing");
+	assert.ok(src.tb.reminders, "the golden Missing cell has a reminders entry");
+	const view = gridView(goldenGrid, false, NOW, TZ);
+	const zza = goldenRow(view, "ZZA");
+	assert.equal(zza.tbReminded, remindedText(src.tb.reminders, NOW, TZ));
+	assert.match(zza.tbReminded, /^Reminded 2× · last .+ by Zed Lead$/);
+});
+
+test("Y63: a cell with reminders null has no reminded text", () => {
+	const view = gridView(goldenGrid, false, NOW, TZ);
+	for (const entity of ["ZZB", "ZZC", "ZZX"]) {
+		assert.equal(goldenRow(view, entity).tbReminded, null, entity);
+	}
+});
+
+test("Y63: only a Missing cell shows the text (a Received cell with an entry shows none)", () => {
+	const p = clone(goldenGrid);
+	const zzb = p.rows.find((r) => r.entity === "ZZB");
+	zzb.tb.reminders = clone(p.rows.find((r) => r.entity === "ZZA").tb.reminders);
+	assert.equal(goldenRow(gridView(p, false, NOW, TZ), "ZZB").tbReminded, null);
+});
+
+test("Y63: the problems filter keeps the reminded text on the rows it keeps", () => {
+	const view = gridView(goldenGrid, true, NOW, TZ);
+	assert.match(goldenRow(view, "ZZA").tbReminded, /^Reminded 2×/);
+});
+
+test("Y63 failure path: a TB cell missing the reminders key throws (Y57 always sends it)", () => {
+	const p = clone(goldenGrid);
+	delete p.rows.find((r) => r.entity === "ZZB").tb.reminders;
+	assert.throws(() => gridView(p, false, NOW, TZ), /ZZB.*reminders/);
+});
+
+test("Y63 failure path: an unreadable reminders entry on a Missing cell throws, never shows 0", () => {
+	const p = clone(goldenGrid);
+	p.rows.find((r) => r.entity === "ZZA").tb.reminders.count = null;
+	assert.throws(() => gridView(p, false, NOW, TZ), /unreadable count/);
+});
+
+test("Y63 failure path: gridView requires a valid now and a time zone", () => {
+	assert.throws(() => gridView(goldenGrid, false, NOW, null), /time zone/);
+	assert.throws(() => gridView(goldenGrid, false, new Date("x"), TZ), /now/);
+	assert.throws(() => gridView(goldenGrid, false, undefined, TZ), /now/);
 });
