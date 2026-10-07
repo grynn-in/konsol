@@ -147,6 +147,11 @@ class _Site:
         # .period_deadlines return, so Y59/D59's lazy imports resolve.
         self.reminders = []
         self.deadlines = {}
+        #: Y59: every close_event.reminders call, an error the read raises,
+        #: and the per-period facts each period_items call was given.
+        self.reminder_calls = []
+        self.reminders_error = None
+        self.period_facts = []
         #: T53t: called (if set) from inside the endpoint, while the stubs are
         #: installed, so a test can prove a call-time lazy import resolves.
         self.during_call = None
@@ -262,6 +267,15 @@ def _call(site):
     for name in REAL_MODELS:
         mods["konsol.close." + name] = _model(name)
         setattr(mods["konsol.close"], name, mods["konsol.close." + name])
+
+    # Y59: record the per-period facts the real period_items is given.
+    real_period_items = mods["konsol.close.mywork_model"].period_items
+
+    def _spy_period_items(persona, per_period, first_close):
+        site.period_facts.append({k: dict(v) for k, v in per_period.items()})
+        return real_period_items(persona, per_period, first_close)
+
+    mods["konsol.close.mywork_model"].period_items = _spy_period_items
 
     # L01a: _aware (A47) lazily imports timefmt (pure, mirrors checks_api).
     tspec = importlib.util.spec_from_file_location(
@@ -385,7 +399,15 @@ def _call(site):
     # konsol.close.deadlines (period_deadlines, D55), so mywork_api's lazy
     # `from konsol.close import close_event, deadlines` (Y59, D59) resolves.
     close_event = types.ModuleType("konsol.close.close_event")
-    close_event.reminders = lambda keys, topic=None: site.reminders
+
+    def reminders(keys, topic=None):
+        # Y59: every reminders read is recorded; a failed read raises.
+        site.reminder_calls.append((list(keys), topic))
+        if site.reminders_error is not None:
+            raise site.reminders_error
+        return site.reminders
+
+    close_event.reminders = reminders
     deadlines = types.ModuleType("konsol.close.deadlines")
     deadlines.period_deadlines = lambda keys, today: site.deadlines
 
@@ -1471,9 +1493,197 @@ def test_stub_close_carries_reminders_and_deadlines():
     assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
 
     site2 = _Site()
-    site2.reminders = ["r"]
+    # Y59: get_my_work now reads these, so they are a real reminder event.
+    event = _reminder("CE-0001", "ZZA", datetime(2025, 8, 6, 14, 5), "zz-ga@example.com")
+    site2.reminders = [event]
+    site2.full_names = {"zz-ga@example.com": "Gee Accountant"}
     site2.deadlines = {"tb": "d"}
     seen.clear()
     site2.during_call = lazy
     _call(site2)
-    assert seen == [(["r"], ["r"], {"tb": "d"})]
+    assert seen == [([event], [event], {"tb": "d"})]
+
+
+# --- Y59 (konsol#305 story 1.5, 1.2): each open period's TB reminders --------
+#
+# ``_period_facts`` reads ``close_event.reminders(open keys, "tb")`` ONCE and
+# gives every open period's facts ``reminders``: ``{entity: {count, last_at
+# (zoned), last_by, last_by_name}}`` for the entities the caller may see.
+# Review concern (Y58): an absent ``reminders`` reads as "not reminded", so it
+# is ALWAYS passed, ``{}`` when there are none; a failed read raises.
+
+REMIND_MODEL_PY = os.path.join(APP_DIR, "close", "remind_model.py")
+_RM_SPEC = importlib.util.spec_from_file_location("test_close_mywork_api_remind_model",
+                                                  REMIND_MODEL_PY)
+REMIND_MODEL = importlib.util.module_from_spec(_RM_SPEC)
+_RM_SPEC.loader.exec_module(REMIND_MODEL)
+
+MYWORK_ITEMS_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "fixtures", "close_mywork_items.json")
+OPEN_KEYS = [(2025, 7), (2025, 8), (2025, 9)]
+
+
+def _reminder(name, entity, at, actor, topic="tb", fy=2025, fp=7):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _reminded_site(**kw):
+    """P07: ZZA reminded twice (the later by Jane), ZZB once by Raj. P09: ZZA
+    once by Raj. Missing: P07 ZZA, ZZB; P09 ZZA."""
+    site = _Site(**kw)
+    site.reminders = [
+        _reminder("CE-0001", "ZZA", datetime(2025, 8, 4, 9, 0), "raj@zz.example"),
+        _reminder("CE-0002", "ZZA", datetime(2025, 8, 6, 14, 5), "jane@zz.example"),
+        _reminder("CE-0003", "ZZB", datetime(2025, 8, 5, 10, 0), "raj@zz.example"),
+        _reminder("CE-0004", "ZZA", datetime(2025, 9, 10, 8, 0), "raj@zz.example", fp=9),
+    ]
+    site.full_names = {"jane@zz.example": "Jane Doe", "raj@zz.example": "Raj Patel"}
+    return site
+
+
+def _item(result, item_id):
+    return next(i for i in result["items"] if i["id"] == item_id)
+
+
+def test_the_events_are_the_real_summary_input():
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got[(2025, 7, "ZZA", "tb")]["count"] == 2
+    assert got[(2025, 7, "ZZA", "tb")]["last_by"] == "jane@zz.example"
+
+
+def test_reminders_are_read_once_for_every_open_period_and_topic_tb():
+    site = _reminded_site()
+    _call(site)
+    assert site.reminder_calls == [(OPEN_KEYS, "tb")], site.reminder_calls
+    # One User read names the senders.
+    assert site.user_name_reads == [{"name": ["in", ["jane@zz.example", "raj@zz.example"]]}], \
+        site.user_name_reads
+
+
+def test_every_open_period_always_carries_reminders_even_when_none():
+    """Y58 treats an absent ``reminders`` as "not reminded": it is never
+    omitted. With no reminders every open period still gets ``{}``."""
+    for site in (_Site(), _reminded_site()):
+        _call(site)
+        assert len(site.period_facts) == 1
+        facts = site.period_facts[0]
+        assert sorted(facts) == OPEN_KEYS
+        for key in OPEN_KEYS:
+            assert "reminders" in facts[key], key
+            assert isinstance(facts[key]["reminders"], dict), key
+    empty = _Site()
+    _call(empty)
+    assert [empty.period_facts[0][k]["reminders"] for k in OPEN_KEYS] == [{}, {}, {}]
+    assert empty.user_name_reads == []
+
+
+def test_a_failed_reminders_read_raises_never_omitted():
+    for persona_kw in ({}, {"roles": ("EPM Analyst",)},
+                       {"roles": ("Entity Accountant",), "user": "zz-ea@example.com",
+                        "allowed": {"ZZA"}}):
+        site = _reminded_site(**persona_kw)
+        site.reminders_error = RuntimeError("Close Event read failed")
+        with pytest.raises(RuntimeError) as info:
+            _call(site)
+        assert "Close Event read failed" in str(info.value)
+        assert site.period_facts == [], "period_items ran without reminders"
+
+
+def test_entity_accountant_item_carries_its_reminded_entry():
+    site = _reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                          allowed={"ZZA"})
+    result = _call(site)
+    assert _item(result, "tb:2025-07:ZZA")["reminded"] == {
+        "count": 2, "last_at": "2025-08-06T14:05:00+01:00", "last_by_name": "Jane Doe"}
+    assert _item(result, "tb:2025-09:ZZA")["reminded"] == {
+        "count": 1, "last_at": "2025-09-10T08:00:00+01:00", "last_by_name": "Raj Patel"}
+
+
+def test_a_hidden_entitys_reminders_never_leave_the_server():
+    """ZZB is not the Entity Accountant's: its entry is absent from every
+    period's facts and every item, and its sender's name is never read."""
+    site = _reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                          allowed={"ZZA"})
+    site.reminders[2]["actor"] = "zz-hidden@example.com"  # ZZB's only sender
+    site.full_names["zz-hidden@example.com"] = "Hidden Sender"
+    result = _call(site)
+    for key, facts in site.period_facts[0].items():
+        assert set(facts["reminders"]) <= {"ZZA"}, (key, facts["reminders"])
+    text = json.dumps(result)
+    for hidden in ("ZZB", "Hidden Sender", "zz-hidden@example.com", "CE-0003"):
+        assert hidden not in text, (hidden, text)
+    assert site.user_name_reads == [{"name": ["in", ["jane@zz.example", "raj@zz.example"]]}], \
+        site.user_name_reads
+
+
+def test_group_waiting_items_count_the_reminded_missing_entities():
+    for roles, persona in ((("EPM Analyst",), "group_accountant"), (("EPM Admin",), "close_lead")):
+        result = _call(_reminded_site(roles=roles))
+        assert _item(result, "tbs-waiting:2025-07")["reminded"] == {"reminded": 2, "of": 2}, persona
+        assert _item(result, "tbs-waiting:2025-09")["reminded"] == {"reminded": 1, "of": 1}, persona
+
+
+def test_no_reminders_gives_reminded_none_not_zero():
+    result = _call(_Site(roles=("EPM Analyst",)))
+    assert _item(result, "tbs-waiting:2025-07")["reminded"] is None
+    ea = _call(_Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"}))
+    assert _item(ea, "tb:2025-07:ZZA")["reminded"] is None
+
+
+def test_a_reminder_outside_the_open_periods_is_not_counted():
+    site = _reminded_site(roles=("EPM Analyst",))
+    # P06 is history and P05 Closed: the stub returns them, the API keeps only open keys.
+    site.reminders.append(_reminder("CE-0005", "ZZB", datetime(2025, 7, 1, 9, 0),
+                                    "raj@zz.example", fp=6))
+    site.reminders.append(_reminder("CE-0006", "ZZA", datetime(2025, 9, 1, 9, 0),
+                                    "raj@zz.example", topic="ic"))
+    _call(site)
+    facts = site.period_facts[0]
+    assert facts[(2025, 7)]["reminders"]["ZZB"]["count"] == 1
+    assert facts[(2025, 7)]["reminders"]["ZZA"]["count"] == 2
+    assert facts[(2025, 8)]["reminders"] == {}
+
+
+def test_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_reminder("CE-0009", "ZZA", datetime(2025, 8, 6, 8, 0),
+                                    "raj@zz.example", topic="x"))
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-0009" in str(info.value)
+
+
+def test_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
+    for names in ({"raj@zz.example": "Raj Patel"},
+                  {"jane@zz.example": "", "raj@zz.example": "Raj Patel"}):
+        site = _reminded_site()
+        site.full_names = names
+        with pytest.raises(Exception) as info:
+            _call(site)
+        assert "jane@zz.example" in str(info.value), str(info.value)
+        assert "full name" in str(info.value), str(info.value)
+
+
+def _golden():
+    """The golden My work items close-ui's My work tests load (W4-E19):
+    exactly what the real ``get_my_work`` returns, per persona."""
+    ea = _call(_reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                              allowed={"ZZA"}))
+    ga = _call(_reminded_site(roles=("EPM Analyst",), user="zz-ga@example.com"))
+    return json.loads(json.dumps({"entity_accountant": ea["items"],
+                                  "group_accountant": ga["items"]}))
+
+
+def test_my_work_items_match_the_golden_fixture():
+    with open(MYWORK_ITEMS_FIXTURE) as f:
+        golden = json.load(f)
+    assert _golden() == golden
+    ea = {i["id"]: i for i in golden["entity_accountant"]}
+    assert ea["tb:2025-07:ZZA"]["reminded"]["count"] == 2
+    ga = {i["id"]: i for i in golden["group_accountant"]}
+    assert ga["tbs-waiting:2025-07"]["reminded"] == {"reminded": 2, "of": 2}
