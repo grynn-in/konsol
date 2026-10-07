@@ -259,11 +259,15 @@ def _iso_day(value):
 
 
 def regular_period_by_start(period_rows):
-    """O69 (story 4.2): ``{start_date ISO: (fiscal_year, fiscal_period)}`` of
-    the calendar's Regular periods. Only a Regular period's first day is an
-    ownership change's first day (an Opening P00 shares P01's 1 Jan). A day
-    on which two Regular periods start maps to neither: the period is never
-    guessed."""
+    """O69 (story 4.2): ``{start_date ISO: (fiscal_year, fiscal_period,
+    status)}`` of the calendar's Regular periods. Only a Regular period's
+    first day is an ownership change's first day (an Opening P00 shares P01's
+    1 Jan). A day on which two Regular periods start maps to neither: the
+    period is never guessed.
+
+    R52h: ``status`` is the row's effective status as
+    ``fiscal_calendar.fiscal_period_rows`` gives it (the same single calendar
+    read), or None when the row carries none; ``op_edit`` reads it."""
     seen = {}
     for row in period_rows:
         if row.get("period_type") != "Regular":
@@ -271,7 +275,8 @@ def regular_period_by_start(period_rows):
         day = _iso_day(row.get("start_date"))
         if day is None:
             continue
-        seen.setdefault(day, []).append((int(row["fiscal_year"]), int(row["fiscal_period"])))
+        seen.setdefault(day, []).append(
+            (int(row["fiscal_year"]), int(row["fiscal_period"]), row.get("status")))
     return {day: keys[0] for day, keys in seen.items() if len(keys) == 1}
 
 
@@ -285,15 +290,23 @@ def op_edit(doc, starts):
     returned for a caller who may not save, a draft without ``supersedes``
     (a Desk "Record ownership" draft: the form edits only a change it could
     have saved), and a draft whose ``effective_date`` starts no single
-    Regular period. ``entity`` is ``data_area_id``, None for the group
-    node."""
+    Regular period.
+
+    R52h (review S7/U5; coordinator ruling S7/U5): None also wherever the
+    form cannot load the draft, by the rule of its choices
+    (``rates_api._change_choices``): a group-node draft (blank
+    ``data_area_id``; the form offers only nodes that name an entity), and a
+    draft whose first period's status is not Open (the form offers only Open
+    Regular periods; a missing status is never read as Open)."""
     if starts is None or not doc.get("supersedes"):
         return None
+    if not doc.get("data_area_id"):
+        return None
     key = starts.get(_iso_day(doc.get("effective_date")))
-    if key is None:
+    if key is None or key[2] != "Open":
         return None
     return {"consolidation_group": doc["consolidation_group"],
-            "entity": doc.get("data_area_id") or None,
+            "entity": doc["data_area_id"],
             "fiscal_year": key[0], "fiscal_period": key[1],
             "ownership_pct": float(doc["ownership_pct"]),
             "consolidation_method": doc["consolidation_method"]}
