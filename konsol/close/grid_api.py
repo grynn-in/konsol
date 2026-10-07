@@ -14,11 +14,24 @@ currency, the period's Closing Group Exchange Rates, one plain (no lock)
 ``group_rates.rate_gate`` and ``allowed_entity_codes``; then, when any row
 is visible, one ``close_event.reminders`` read (topic tb) and, when a
 visible row was reminded, one User read for the senders' full names
-(konsol#305 Y57). Nothing is read per entity, and nothing is written.
+(konsol#305 Y57); one ``deadlines.period_deadlines`` read (its three
+queries: the rules, the holidays and the calendar) and one
+``assertion_run.latest_close_run`` read (konsol#305 D57). Nothing is read
+per entity, and nothing is written.
 
 Each row's Trial balance cell carries ``reminders``: ``{count, last_at,
 last_by, last_by_name}`` or None (C-R6). Only visible rows are filled, so a
 hidden entity's reminders never leave the server.
+
+Deadlines (konsol#305 D57, decision #305-2.4-1; show-only, they block
+nothing): ``deadlines`` is the period's four steps (tb, ic, journals,
+signoff) as ``{due, past, text}``; an undeclared step reads "No due date
+declared", never a guessed date. Each TB cell carries ``overdue``: the TB
+due date is past and the cell is ``Missing`` (C-D4: past AND the step still
+open); every other cell is not overdue. ``signoff_overdue`` is the sign-off
+date past and the period not signed: the latest close run's
+``signoff_status`` is not in ``signoff_model.SIGNED_STATES`` (no run and
+"Re-sign Needed" count as not signed). IC and journals overdue come in D57b.
 
 The Entity Accountant is not a grid role (E2-7): the grid is an all-entity
 read of group configuration. Rows are still cut to the caller's permitted
@@ -38,7 +51,7 @@ import datetime
 import frappe
 
 from konsol import fiscal_calendar, group_rates
-from konsol.close import period_grid_model, readiness_model, signoff_gate
+from konsol.close import period_grid_model, readiness_model, signoff_gate, signoff_model
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 from konsol.entity_permissions import allowed_entity_codes
 from konsol.period_status import PeriodNotDeclared
@@ -163,14 +176,38 @@ def _reminders(key, codes):
             for entity, e in entries.items()}
 
 
+def _deadlines(key):
+    """The period's four steps as ``{step: {due, past, text}}`` (konsol#305
+    D57): one ``deadlines.period_deadlines`` read with today's date. The asked
+    period is Regular (``_regular_row``), so the reader must return it: its
+    absence is an error, never "No due date declared"."""
+    from konsol.close import deadlines  # lazy (C-X1)
+
+    found = deadlines.period_deadlines([key], frappe.utils.getdate())
+    if key not in found:
+        frappe.throw("No deadline was read for %s, a Regular period: check its row in "
+                     "EPM Fiscal Year." % period_name(*key))
+    return deadlines.as_payload(found[key])
+
+
+def _signed(run):
+    """The latest close run is signed: its ``signoff_status`` is one of
+    ``signoff_model.SIGNED_STATES``. No run, "Not Signed Off" and "Re-sign
+    Needed" are not signed (coordinator call on D57)."""
+    return bool(run) and run.get("signoff_status") in signoff_model.SIGNED_STATES
+
+
 @frappe.whitelist(methods=["GET"])
 def get_period_grid(fiscal_year, fiscal_period):
-    """``{period, rows, counts, rates_error}`` for a Regular period.
+    """``{period, rows, counts, rates_error, deadlines, signoff_overdue}``
+    for a Regular period.
 
     ``period`` = ``{fiscal_year, fiscal_period, code, status, start_date}``
     (ISO date). ``rows``, ``counts`` and ``rates_error`` are
     ``period_grid_model.period_grid``'s; each row's ``tb`` cell also
-    carries ``reminders`` (konsol#305 Y57). Read-only. Refuses an undeclared
+    carries ``reminders`` (konsol#305 Y57) and ``overdue`` (D57).
+    ``deadlines`` and ``signoff_overdue``: see the module docstring.
+    Read-only. Refuses an undeclared
     period (PeriodNotDeclared) and a non-Regular one.
     """
     # A literal: the endpoint contract test reads it. No Entity Accountant (E2-7).
@@ -196,6 +233,8 @@ def get_period_grid(fiscal_year, fiscal_period):
     exceptions = _by_entity("TB Exception", key, ["name"])
     rates = _rates(key)
     allowed = allowed_entity_codes()
+    due = _deadlines(key)
+    run = latest_close_run(*key)
 
     grid = period_grid_model.period_grid(
         key, rows, entities, ownership_rows, tbs, exceptions, rates, allowed)
@@ -203,9 +242,13 @@ def get_period_grid(fiscal_year, fiscal_period):
         reminded = _reminders(key, {r["entity"] for r in grid["rows"]})
         for r in grid["rows"]:
             r["tb"] = dict(r["tb"], reminders=reminded.get(r["entity"]))
+    for r in grid["rows"]:
+        r["tb"]["overdue"] = bool(
+            r["tb"]["label"] == period_grid_model.MISSING and due["tb"]["past"])
     period = {"fiscal_year": key[0], "fiscal_period": key[1], "code": row.get("period_code"),
               "status": row.get("status"), "start_date": _iso(start)}
-    return dict({"period": period}, **grid)
+    return dict({"period": period}, **grid, deadlines=due,
+                signoff_overdue=bool(due["signoff"]["past"] and not _signed(run)))
 
 
 @frappe.whitelist(methods=["GET"])
