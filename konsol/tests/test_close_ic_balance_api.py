@@ -5,9 +5,11 @@ decision #305-W5-4, Deepak 6 Oct 2026).
   and approved IC Balances, each with the margin of the unrealised-profit
   rule that matches its pair (read-only: the rule stays in Desk), the
   missing-rule gap naming the pairs, entity scope and ``can_draft``.
-- ``save_ic_balance(...)`` (POST): an Analyst (or System Manager) drafts or
-  edits a draft. Never an Admin (R2: the Admin approves in Approvals), never
-  a submit: a forged status or docstatus never reaches it.
+- ``save_ic_balance(...)`` (POST): an Analyst, Admin or System Manager
+  drafts or edits a draft (#305-R52-1-1, Deepak 7 Oct 2026: the same roles as
+  the ownership save; an Admin approving their own draft is the R5
+  self-approval policy's call). Never a submit: a forged status or docstatus
+  never reaches it.
 - ``rule_gaps(fy, fp)`` / ``open_rule_gaps()``: the setup gaps (undeclared,
   then ambiguous) for the sign-off gate and My work, produced by the real
   ``ic_balance_model``.
@@ -301,7 +303,8 @@ def test_get_no_gap_when_every_pair_has_a_rule():
 
 def test_get_can_draft_only_for_draft_roles_in_an_open_period():
     for roles, expected in (({"EPM Analyst"}, True), ({"System Manager"}, True),
-                            ({"EPM Admin"}, False), ({"EPM User"}, False)):
+                            ({"EPM Admin"}, True), ({"EPM User"}, False),
+                            ({"Entity Accountant", "EPM User"}, False)):
         site = _Site()
         site.roles = roles
         assert _get(site)["can_draft"] is expected, roles
@@ -359,8 +362,24 @@ def test_save_allowed_without_a_rule():
     assert _save(site)["docstatus"] == 0
 
 
+def test_save_admin_saves_a_draft():
+    """#305-R52-1-1: an EPM Admin drafts an IC Balance like the Analyst."""
+    site = _Site()
+    site.roles = {"EPM Admin"}
+    assert _save(site) == {"name": "ICB-UK01-DE01-2025-P8", "docstatus": 0}
+    assert len(site.inserted) == 1 and site.inserted[0]["docstatus"] == 0
+
+
+def test_save_admin_edits_a_draft():
+    site = _Site()
+    site.roles = {"EPM Admin"}
+    out = _save(site, name="ICB-UK01-DE01-2025-P7", fiscal_period=7, ic_sales_amount="900")
+    assert out["docstatus"] == 0 and len(site.saved) == 1
+
+
 def test_save_refused_for_non_draft_roles():
-    for roles in ({"EPM Admin"}, {"EPM User"}, {"Entity Accountant"}, set()):
+    for roles in ({"EPM User"}, {"Entity Accountant"}, {"Entity Accountant", "EPM User"},
+                  set()):
         site = _Site()
         site.roles = roles
         e = _save_refused(site)
@@ -708,3 +727,66 @@ def test_golden_fixture_carries_the_pending_gap():
     assert golden["pending_gap"]["code"] == PENDING
     assert golden["pending_gap"]["pairs"] == [
         {"selling_entity": "UK01", "buying_entity": "DE01", "names": ["ICB-UK01-DE01-2025-P7"]}]
+
+
+# --- #305-R52-1-1: the draft roles are the ownership save's roles ------------------
+
+RATES_API_PY = os.path.join(CLOSE_DIR, "rates_api.py")
+
+
+def _only_for_literal(path, fn_name):
+    """The literal role tuple of ``fn_name``'s ``frappe.only_for`` (its first
+    statement after the docstring), read with ast.literal_eval."""
+    import ast
+
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+    first = fn.body[0]
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+        first = fn.body[1]
+    assert first.value.func.attr == "only_for"
+    return tuple(ast.literal_eval(first.value.args[0]))
+
+
+def _module_constant(path, name):
+    import ast
+
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return tuple(ast.literal_eval(node.value))
+    raise AssertionError("%s not found in %s" % (name, path))
+
+
+def test_draft_roles_are_the_saves_literal_and_the_ownership_save_roles():
+    """One set of drafting roles: ``DRAFT_ROLES`` (``can_draft``), the
+    ``save_ic_balance`` literal and rates_api's ``OWNERSHIP_SAVE_ROLES``
+    (#305-R52-1-1). Pinned rather than shared: ic_balance_api importing
+    rates_api would be a new import under the stub-package loaders."""
+    api = _invoke(_Site(), lambda api: api)
+    save_literal = _only_for_literal(API_PY, "save_ic_balance")
+    ownership = _module_constant(RATES_API_PY, "OWNERSHIP_SAVE_ROLES")
+    assert tuple(api.DRAFT_ROLES) == save_literal == ownership == (
+        "EPM Analyst", "EPM Admin", "System Manager")
+
+
+def test_can_draft_is_true_exactly_for_the_roles_the_save_admits():
+    """The server's own decision fed back: every role ``can_draft`` offers is
+    admitted by the save, and every role it withholds is refused."""
+    for role in ("EPM Analyst", "EPM Admin", "System Manager", "EPM User",
+                 "Entity Accountant"):
+        site = _Site()
+        site.roles = {role}
+        try:
+            offered = _get(site, fp=8)["can_draft"]
+        except Exception:
+            offered = False
+        site = _Site()
+        site.roles = {role}
+        if offered:
+            assert _save(site)["docstatus"] == 0, role
+        else:
+            assert "Not permitted" in str(_save_refused(site)), role
