@@ -1,11 +1,17 @@
 {
   "can_remind": true,
   "can_upload": true,
+  "deadline": {
+    "due": "2025-10-07",
+    "past": true,
+    "text": "Due 2025-10-07"
+  },
   "entities": [
     {
       "entity": "ZZB",
       "exception": null,
       "name": "Entity ZZB",
+      "overdue": true,
       "reminders": null,
       "status": "Missing",
       "tb": null
@@ -14,6 +20,7 @@
       "entity": "ZZC",
       "exception": null,
       "name": "Entity ZZC",
+      "overdue": true,
       "reminders": {
         "count": 2,
         "last_at": "2025-10-06T10:00:00+01:00",
@@ -27,6 +34,7 @@
       "entity": "ZZA",
       "exception": null,
       "name": "Entity ZZA",
+      "overdue": false,
       "reminders": null,
       "status": "Received",
       "tb": {
