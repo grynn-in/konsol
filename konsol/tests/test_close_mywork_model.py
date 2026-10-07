@@ -342,7 +342,13 @@ def test_period_item_shape_and_period_tag():
     items = M.period_items("group_accountant", _two_open(), FIRST)
     assert items
     for item in items:
-        assert set(item) == {"id", "kind", "title", "period", "owner", "action"}
+        # Y58: only the TB items carry ``reminded`` (None when not read).
+        base = {"id", "kind", "title", "period", "owner", "action"}
+        if item["id"].startswith("tbs-waiting:"):
+            assert set(item) == base | {"reminded"}
+            assert item["reminded"] is None
+        else:
+            assert set(item) == base
         assert item["kind"] in ("blocking", "todo", "waiting")
         assert item["period"]["code"] in ("FY2025 P07", "FY2025 P08")
         assert (item["period"]["fiscal_year"], item["period"]["fiscal_period"]) in (P07, P08)
@@ -1112,3 +1118,147 @@ def test_commentary_threshold_gap_is_one_blocking_item_after_the_statement_gap()
 
 def test_commentary_threshold_is_in_the_fixed_gap_order():
     assert M.GAPS.index("commentary_threshold") == M.GAPS.index("statement_accounts") + 1
+
+
+# --- Y58 (konsol#305 story 1.5, C-R6): "Reminded" detail on TB items ----------
+#
+# The input is ``facts.get("reminders")``: ``{entity: {"count", "last_at" (ISO
+# text), "last_by_name"}}`` for the period's TB reminders. Built here from the
+# REAL ``remind_model.summary`` output through a tiny adapter, as Y59 will send
+# it. A caller that omits it gets ``reminded: None`` (the A53 ``since``
+# precedent): never an invented 0.
+
+from datetime import datetime  # noqa: E402
+
+_RM_PATH = os.path.join(APP_DIR, "close", "remind_model.py")
+_rm_spec = importlib.util.spec_from_file_location("remind_model_for_mywork", _RM_PATH)
+RM = importlib.util.module_from_spec(_rm_spec)
+_rm_spec.loader.exec_module(RM)
+
+_NAMES = {"jane@zz.example": "Jane Doe", "raj@zz.example": "Raj Patel"}
+
+
+def _event(n, entity, at, actor, fp=7, topic="tb"):
+    return {"name": "CE-%09d" % n, "fiscal_year": 2025, "fiscal_period": fp, "entity": entity,
+            "detail": {"topic": topic}, "actor": actor, "at": at}
+
+
+def _reminders_for(summary, key, names=_NAMES):
+    """The adapter Y59 will be: the period's ``tb`` entries keyed by entity, ``last_at`` as
+    ISO text and ``last_by`` resolved to a full name."""
+    out = {}
+    for (fy, fp, entity, topic), entry in summary.items():
+        if (fy, fp) != key or topic != "tb":
+            continue
+        out[entity] = {"count": entry["count"], "last_at": entry["last_at"].isoformat(),
+                       "last_by_name": names[entry["last_by"]]}
+    return out
+
+
+def _summary():
+    return RM.summary([
+        _event(1, "ZZA", datetime(2025, 8, 4, 9, 0), "raj@zz.example"),
+        _event(2, "ZZA", datetime(2025, 8, 6, 14, 5), "jane@zz.example"),
+        _event(3, "ZZB", datetime(2025, 8, 5, 10, 0), "raj@zz.example"),
+        _event(4, "ZZD", datetime(2025, 8, 5, 11, 0), "raj@zz.example"),  # not missing
+        _event(5, "ZZC", datetime(2025, 8, 5, 12, 0), "raj@zz.example", topic="ic"),
+        _event(6, "ZZC", datetime(2025, 9, 1, 12, 0), "raj@zz.example", fp=8),
+    ])
+
+
+def _reminded_period(**over):
+    facts = _period("FY2025 P07", my_missing=["ZZA", "ZZB", "ZZC"],
+                    missing=["ZZA", "ZZB", "ZZC"], checks="current")
+    facts["reminders"] = _reminders_for(_summary(), P07)
+    facts.update(over)
+    return facts
+
+
+def test_entity_accountant_upload_item_carries_count_last_at_and_last_by_name():
+    items = M.period_items("entity_accountant", {P07: _reminded_period()}, FIRST)
+    by_entity = {i["action"]["entity"]: i for i in items}
+    assert by_entity["ZZA"]["reminded"] == {"count": 2, "last_at": "2025-08-06T14:05:00",
+                                            "last_by_name": "Jane Doe"}
+    assert by_entity["ZZB"]["reminded"] == {"count": 1, "last_at": "2025-08-05T10:00:00",
+                                            "last_by_name": "Raj Patel"}
+    # ZZC was reminded about intercompany (topic ic) and in P08 only: no TB reminder in P07.
+    assert by_entity["ZZC"]["reminded"] is None
+
+
+def test_waiting_items_carry_reminded_of_missing_for_group_accountant_and_close_lead():
+    per = {P07: _reminded_period()}
+    for persona in ("group_accountant", "close_lead"):
+        items = M.period_items(persona, per, FIRST)
+        item = next(i for i in items if i["id"] == "tbs-waiting:2025-07")
+        assert item["title"] == "Waiting on 3 trial balances"
+        # ZZD's reminder does not count: ZZD is not missing.
+        assert item["reminded"] == {"reminded": 2, "of": 3}, persona
+
+
+def test_waiting_item_none_reminded_is_none_not_zero():
+    per = {P07: _reminded_period(reminders={})}
+    for persona in ("group_accountant", "close_lead"):
+        item = next(i for i in M.period_items(persona, per, FIRST)
+                    if i["id"] == "tbs-waiting:2025-07")
+        assert item["reminded"] is None, persona
+    for item in M.period_items("entity_accountant", per, FIRST):
+        assert item["reminded"] is None
+
+
+def test_without_reminders_fact_items_are_unchanged_and_reminded_is_none():
+    # Failure path: the caller omits ``reminders``: no KeyError, no invented 0.
+    with_r = {P07: _reminded_period()}
+    without = {P07: _reminded_period()}
+    del without[P07]["reminders"]
+    for persona in ("entity_accountant", "group_accountant", "close_lead"):
+        a = M.period_items(persona, with_r, FIRST)
+        b = M.period_items(persona, without, FIRST)
+        assert [i["id"] for i in a] == [i["id"] for i in b], persona
+        for x, y in zip(a, b):
+            assert {k: v for k, v in x.items() if k != "reminded"} == \
+                   {k: v for k, v in y.items() if k != "reminded"}
+            assert y.get("reminded", "absent") in (None, "absent")
+            if "reminded" in x:
+                assert y["reminded"] is None
+    # An explicit None is the same as not read.
+    for item in M.period_items("entity_accountant", {P07: _reminded_period(reminders=None)},
+                               FIRST):
+        assert item["reminded"] is None
+
+
+def test_only_tb_items_carry_reminded():
+    per = {P07: _reminded_period(checks="stale", rates_missing=2, failed=0)}
+    for persona in ("group_accountant", "close_lead"):
+        for item in M.period_items(persona, per, FIRST):
+            tb = item["id"].startswith("tbs-waiting:")
+            assert ("reminded" in item) is tb, item["id"]
+
+
+def test_reminder_entry_missing_count_raises_naming_the_entity():
+    # A reminder count that cannot be read is an error, never 0.
+    bad = _reminders_for(_summary(), P07)
+    del bad["ZZA"]["count"]
+    for persona in ("entity_accountant", "group_accountant", "close_lead"):
+        with pytest.raises(ValueError, match="ZZA"):
+            M.period_items(persona, {P07: _reminded_period(reminders=bad)}, FIRST)
+
+
+def test_reminder_entry_missing_last_at_or_name_raises_for_the_entity_accountant():
+    for key in ("last_at", "last_by_name"):
+        bad = _reminders_for(_summary(), P07)
+        del bad["ZZB"][key]
+        with pytest.raises(ValueError, match="ZZB"):
+            M.period_items("entity_accountant", {P07: _reminded_period(reminders=bad)}, FIRST)
+
+
+def test_reminder_entry_with_zero_or_unreadable_count_raises():
+    for count in (0, "x", None):
+        bad = _reminders_for(_summary(), P07)
+        bad["ZZA"]["count"] = count
+        with pytest.raises(ValueError, match="ZZA"):
+            M.period_items("group_accountant", {P07: _reminded_period(reminders=bad)}, FIRST)
+
+
+def test_reminders_that_are_not_a_map_raise():
+    with pytest.raises(ValueError, match="reminders"):
+        M.period_items("close_lead", {P07: _reminded_period(reminders=[("ZZA", 2)])}, FIRST)
