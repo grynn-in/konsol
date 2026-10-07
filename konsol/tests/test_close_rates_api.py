@@ -1308,7 +1308,7 @@ def test_o55_preview_happy_path_matches_the_golden_payload():
     result = _preview(site)
     assert site.only_for_calls == [RATES_ROLES], site.only_for_calls
     assert result == _golden(O55_GOLDEN), json.dumps(result, indent=1)
-    assert set(result) == {"problems", "effect", "current"}
+    assert set(result) == {"problems", "effect", "current", "pending"}
     assert result["problems"] == []
     assert result["effect"]["resign"] == ["FY2025 P11", "FY2025 P13"]
     assert result["effect"]["current_ends"] == "2025-09-30"
@@ -1879,7 +1879,7 @@ def test_o66_preview_of_the_draft_being_edited_is_not_refused_as_pending():
     result = _o66_preview(site, name=row["name"])
     assert site.only_for_calls == [RATES_ROLES], site.only_for_calls
     assert result["problems"] == [], result["problems"]
-    assert set(result) == {"problems", "effect", "current"}
+    assert set(result) == {"problems", "effect", "current", "pending"}
     # The effect is the one the plain preview gives for the same change.
     assert result["effect"] == _preview(_o55_site())["effect"]
     assert result["current"]["name"] == "OP-ZZ5B1-1"
@@ -2102,12 +2102,14 @@ def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():
     _call_pending(desk_only)
     _call_pending(with_change)
     assert len(desk_only.reads) == 7, desk_only.reads
-    # O64: + one User read for the signers' full names.
-    assert len(with_change.reads) == 10, with_change.reads
+    # O64: + one User read for the signers' full names. O69: + one calendar
+    # read per call for the Close Lead's ``edit`` (EPM Admin may save).
+    assert len(with_change.reads) == 11, with_change.reads
     extra = list(with_change.reads)
     for read in desk_only.reads:
         extra.remove(read)
     assert sorted(extra) == sorted([("get_all", "Ownership Period"),
+                                    ("sql", "fiscal_period_rows"),
                                     ("sql", "fiscal_period_rows"),
                                     ("get_all", "User")]), extra
     assert with_change.new_docs == [] and with_change.get_doc_calls == []
@@ -2325,3 +2327,190 @@ def test_o68_an_unscoped_caller_still_gets_the_edit_refusal():
     err = _o56_save_raises(site, name=row["name"])
     assert "OP-ZZHIDDEN-D is the change for ZZHIDDEN in ECL_GROUP" in str(err), err
     _no_save(site)
+
+
+# --- O69: the pending OP item says how to edit it; the preview names the awaiting drafts ---
+# Story 4.2; wireframe-4.2.md §1 ("The Analyst can edit it until it is
+# approved", confirmed by Deepak Pai 7 Oct). O67's Edit is fed by the server:
+# ``edit`` is never derived by the client from a title, a sentence or
+# ``get_ownership.can_record`` (a different test from the save's roles).
+
+O69_CHANGE = "OP-ZZ5B1-2025-10-01"
+O69_EDIT = {"consolidation_group": O55_GROUP, "entity": O55_LEAF, "fiscal_year": 2025,
+            "fiscal_period": 10, "ownership_pct": 80.0, "consolidation_method": "full"}
+
+
+def _o69_site(roles=("EPM Analyst",), user=ANALYST):
+    site = _o57_site()
+    site.roles = set(roles)
+    site.user = user
+    return site
+
+
+def _o69_calendar_reads(site):
+    return site.reads.count(("sql", "fiscal_period_rows"))
+
+
+def test_o69_an_analysts_change_draft_carries_its_edit_and_a_desk_draft_none():
+    result = _call_pending(_o69_site())
+    assert _o57_item(result, O69_CHANGE)["edit"] == O69_EDIT
+    desk = _o57_item(result, "OP-ZZ5B2-2025-10-01")
+    assert "edit" in desk and desk["edit"] is None
+    # HER items are not ownership drafts: no key.
+    assert "edit" not in _o57_item(result, "HER-ZZ5B1-1")
+    # The title and detail are unchanged; the client never parses them.
+    item = _o57_item(result, O69_CHANGE)
+    assert item["title"] == "ZZ5B1 in ECL_GROUP from 2025-10-01"
+    assert item["detail"] == "80% · full"
+
+
+def test_o69_every_role_save_admits_gets_the_edit():
+    for role in ("EPM Analyst", "EPM Admin", "System Manager"):
+        result = _call_pending(_o69_site(roles=(role,)))
+        assert _o57_item(result, O69_CHANGE)["edit"] == O69_EDIT, role
+
+
+def test_o69_the_edit_roles_are_the_saves_literal_role_tuple():
+    import ast
+
+    with open(API_PY, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "save_ownership_change")
+    first = fn.body[0]
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+        first = fn.body[1]
+    literal = tuple(e.value for e in first.value.args[0].elts)
+    api = _load_rates_api(_Site())
+    assert tuple(api.OWNERSHIP_SAVE_ROLES) == literal == O56_SAVE_ROLES
+
+
+def test_o69_the_edit_fed_back_to_the_save_edits_that_draft_without_a_refusal():
+    """The server's ``edit`` plus the item's ``name`` is a save the save
+    accepts: the client never re-derives the node, period, pct or method."""
+    site = _o69_site()
+    item = _o57_item(_call_pending(site), O69_CHANGE)
+    edit = item["edit"]
+    [row] = [r for r in site.ops if r["name"] == O69_CHANGE]
+    doc = _FakeDoc(dict(row, doctype="Ownership Period"))
+    site.named[O69_CHANGE] = doc
+    result = _invoke(site, lambda api: api.save_ownership_change(
+        edit["fiscal_year"], edit["fiscal_period"], edit["consolidation_group"],
+        edit["entity"], edit["ownership_pct"], edit["consolidation_method"],
+        name=item["name"]))
+    assert result == {"name": O69_CHANGE, "docstatus": 0}
+    assert [c[0] for c in doc.calls] == ["save"]
+    assert site.new_docs == []
+
+
+def test_o69_failure_path_a_viewer_gets_edit_none_on_every_item_and_no_calendar_read():
+    viewer = _o69_site(roles=("EPM User",), user=VIEWER)
+    lead = _o69_site()
+    result = _call_pending(viewer)
+    ops = [i for i in result["items"] if i["doctype"] == "Ownership Period"]
+    assert len(ops) == 2
+    assert all("edit" in i and i["edit"] is None for i in ops), ops
+    _call_pending(lead)
+    # The Analyst's one extra read is the calendar, read once.
+    assert _o69_calendar_reads(lead) - _o69_calendar_reads(viewer) == 1
+
+
+def test_o69_failure_path_no_regular_period_starting_on_the_date_gives_edit_none():
+    """Two Regular periods declared on the draft's first day: the period is
+    ambiguous, so ``edit`` is None, never a guessed one. (A date that starts
+    no Regular period at all is already refused by O57's effect.)"""
+    site = _o69_site()
+    site.periods = site.periods + [{
+        "fiscal_year": 2026, "fiscal_period": 1, "period_code": "P01", "period_label": "P01",
+        "period_type": "Regular", "start_date": date(2025, 10, 1),
+        "end_date": date(2025, 10, 31), "quarter": "Q1", "status": "Open"}]
+    result = _call_pending(site)
+    assert _o57_item(result, O69_CHANGE)["edit"] is None
+
+
+def test_o69_failure_path_the_calendar_is_read_once_for_n_change_drafts():
+    one = _o69_site()
+    many = _o69_site()
+    for i in range(4):
+        extra = dict(next(r for r in many.ops if r["name"] == O69_CHANGE),
+                     name="OP-ZZ5B1-X%d" % i, creation=datetime(2025, 10, 4 + i, 9, 0, 0))
+        many.ops.append(extra)
+    viewer_one = _o69_site(roles=("EPM User",), user=VIEWER)
+    viewer_many = _o69_site(roles=("EPM User",), user=VIEWER)
+    viewer_many.ops = [dict(r) for r in many.ops]
+    for s in (one, many, viewer_one, viewer_many):
+        _call_pending(s)
+    # effect_for (O57) reads the calendar per change draft; O69 adds one read
+    # per call, whatever the number of drafts.
+    assert _o69_calendar_reads(one) - _o69_calendar_reads(viewer_one) == 1
+    assert _o69_calendar_reads(many) - _o69_calendar_reads(viewer_many) == 1
+
+
+def test_o69_failure_path_no_change_draft_means_no_calendar_read():
+    site = _o69_site()
+    site.ops = [r for r in site.ops if not r.get("supersedes")]
+    _call_pending(site)
+    assert _o69_calendar_reads(site) == 0, site.reads
+
+
+def test_o69_failure_path_a_scoped_analyst_sees_only_visible_drafts_with_edit():
+    site = _o69_site()
+    site.allowed = {O55_LEAF}
+    result = _call_pending(site)
+    ops = [i for i in result["items"] if i["doctype"] == "Ownership Period"]
+    assert [i["name"] for i in ops] == [O69_CHANGE]
+    assert ops[0]["edit"] == O69_EDIT
+    assert O57_DESK_LEAF not in json.dumps(result)
+
+
+def test_o69_preview_names_the_other_awaiting_draft_as_data_beside_the_sentence():
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site)
+    assert result["pending"] == [row["name"]]
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-D): edit that draft."]
+
+
+def test_o69_preview_of_that_draft_by_name_has_pending_empty():
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site, name=row["name"])
+    assert result["pending"] == []
+    assert result["problems"] == []
+
+
+def test_o69_preview_with_no_draft_has_pending_empty_never_missing():
+    result = _preview(_o55_site())
+    assert "pending" in result and result["pending"] == []
+
+
+def test_o69_failure_path_editing_one_draft_still_names_the_others_sorted():
+    site, row = _o66_site_with_draft()
+    for name in ("OP-ZZ5B1-F", "OP-ZZ5B1-E"):
+        site.ops.append(_op(name, data_area_id=O55_LEAF, group=O55_GROUP,
+                            effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                            consolidation_method="full", docstatus=0))
+    result = _o66_preview(site, name=row["name"])
+    assert result["pending"] == ["OP-ZZ5B1-E", "OP-ZZ5B1-F"]
+    assert result["effect"] is None
+
+
+def test_o69_failure_path_another_nodes_draft_is_never_in_pending():
+    site = _o55_site()
+    site.ops.append(_op("OP-ZZ5B2-D", data_area_id="ZZ5B2", group=O55_GROUP,
+                        effective_date=date(2025, 10, 1), docstatus=0))
+    result = _preview(site)
+    assert result["pending"] == [] and result["problems"] == []
+
+
+def test_o69_the_preview_goldens_carry_pending():
+    assert _golden(O55_GOLDEN)["pending"] == []
+    assert _golden(O55_GOLDEN_REFUSED)["pending"] == ["OP-ZZ5B1-2"]
+
+
+def test_o69_the_pending_golden_carries_edit_on_every_op_item():
+    golden = _golden(O57_GOLDEN)
+    ops = {i["name"]: i for i in golden["items"] if i["doctype"] == "Ownership Period"}
+    assert set(ops) == {O69_CHANGE, "OP-ZZ5B2-2025-10-01"}
+    # The golden is the Close Lead's call: EPM Admin may save.
+    assert ops[O69_CHANGE]["edit"] == O69_EDIT
+    assert ops["OP-ZZ5B2-2025-10-01"]["edit"] is None

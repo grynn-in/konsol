@@ -484,3 +484,95 @@ def test_o57_her_items_never_carry_an_effect():
     [item] = M.pending_items(her, [], {"HER-1": frozenset({"alice"})}, "lead", ("EPM Admin",),
                              "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
     assert "effect" not in item
+
+
+# --- O69: the pending Ownership Period item says how to edit it -----------------
+# Story 4.2; wireframe-4.2.md §1 ("The Analyst can edit it until it is
+# approved"). The server, never the client, decides which draft offers Edit
+# and with which node, period, pct and method.
+
+def _o69_calendar():
+    """FY2025 as live declares it: P00 Opening and P01 both start 1 Jan,
+    P13 Closing starts on P12's last day."""
+    rows = [{"fiscal_year": 2025, "fiscal_period": 0, "period_type": "Opening",
+             "start_date": datetime.date(2025, 1, 1)}]
+    for m in range(1, 13):
+        rows.append({"fiscal_year": 2025, "fiscal_period": m, "period_type": "Regular",
+                     "start_date": datetime.date(2025, m, 1)})
+    rows.append({"fiscal_year": 2025, "fiscal_period": 13, "period_type": "Closing",
+                 "start_date": datetime.date(2025, 12, 31)})
+    return rows
+
+
+def _o69_draft(**k):
+    op = dict(_op("OP-ZZ-2025-10-01", "G1", "ZZENT", "2025-10-01", None, 80.0, "full",
+                  "alice", "2026-09-01T09:00:00"), supersedes="OP-ZZ-1")
+    op.update(k)
+    return op
+
+
+def test_o69_regular_starts_maps_each_regular_first_day_to_its_period():
+    starts = M.regular_period_by_start(_o69_calendar())
+    assert starts["2025-10-01"] == (2025, 10)
+    # P00 Opening shares 1 Jan with P01: only the Regular one counts.
+    assert starts["2025-01-01"] == (2025, 1)
+    # P13 Closing's first day is no Regular period's.
+    assert "2025-12-31" not in starts
+    assert len(starts) == 12
+
+
+def test_o69_failure_path_two_regular_periods_on_one_day_give_neither():
+    rows = _o69_calendar() + [{"fiscal_year": 2026, "fiscal_period": 1,
+                               "period_type": "Regular", "start_date": "2025-10-01"}]
+    starts = M.regular_period_by_start(rows)
+    assert "2025-10-01" not in starts, starts
+
+
+def test_o69_op_edit_is_the_drafts_node_period_pct_and_method():
+    edit = M.op_edit(_o69_draft(), M.regular_period_by_start(_o69_calendar()))
+    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
+                    "fiscal_period": 10, "ownership_pct": 80.0,
+                    "consolidation_method": "full"}
+
+
+def test_o69_op_edit_of_a_group_node_has_entity_none():
+    edit = M.op_edit(_o69_draft(data_area_id=""), M.regular_period_by_start(_o69_calendar()))
+    assert edit["entity"] is None and edit["consolidation_group"] == "G1"
+
+
+def test_o69_failure_path_a_desk_draft_without_supersedes_has_no_edit():
+    starts = M.regular_period_by_start(_o69_calendar())
+    assert M.op_edit(_o69_draft(supersedes=None), starts) is None
+    assert M.op_edit(_o69_draft(supersedes=""), starts) is None
+
+
+def test_o69_failure_path_a_caller_who_may_not_save_has_no_edit():
+    # ``starts`` None: the caller is not admitted by save_ownership_change.
+    assert M.op_edit(_o69_draft(), None) is None
+
+
+def test_o69_failure_path_a_date_no_regular_period_starts_on_gives_no_guessed_period():
+    starts = M.regular_period_by_start(_o69_calendar())
+    for day in ("2025-10-15", "2025-12-31", "2027-01-01"):
+        assert M.op_edit(_o69_draft(effective_date=day), starts) is None, day
+
+
+def test_o69_pending_items_pass_edit_through_and_never_invent_it():
+    starts = M.regular_period_by_start(_o69_calendar())
+    with_edit = dict(_o69_draft(), edit=M.op_edit(_o69_draft(), starts))
+    desk = dict(_o69_draft(name="OP-DESK", supersedes=None), edit=None)
+    bare = _o69_draft(name="OP-BARE")
+    items = M.pending_items([], [with_edit, desk, bare],
+                            {n: frozenset({"alice"}) for n in ("OP-ZZ-2025-10-01", "OP-DESK",
+                                                               "OP-BARE")},
+                            "lead", ("EPM Admin",), "Blocked", APPROVER_ROLES,
+                            SELF_APPROVAL_PROBLEM)
+    by = {i["name"]: i for i in items}
+    assert by["OP-ZZ-2025-10-01"]["edit"]["fiscal_period"] == 10
+    assert "edit" in by["OP-DESK"] and by["OP-DESK"]["edit"] is None
+    # approvals_model builds OP items through the same function without an
+    # ``edit``: the key stays absent, never a None that reads as "no Edit".
+    assert "edit" not in by["OP-BARE"]
+    # The title and detail are unchanged.
+    assert by["OP-ZZ-2025-10-01"]["title"] == "ZZENT in G1 from 2025-10-01"
+    assert by["OP-ZZ-2025-10-01"]["detail"] == "80% · full"
