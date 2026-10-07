@@ -67,7 +67,9 @@ a combined ``hidden`` count (W2-10, W2-14) and a ``blocking_hidden`` count
 (R01h) naming only the hidden blocking entities, so a caller can tell a
 hidden gap from a merely-hidden out-of-scope entity. The query is keyed to
 the period's start date; moving it to the period's end waits on G09/G04
-(W2-16, blocked).
+(W2-16, blocked). For a caller who may record (``can_record``) it also
+carries ``change`` (O63): the ownership change form's choices, the entities
+with their node's group and the Open Regular periods; ``None`` otherwise.
 
 ``preview_ownership_change(...)`` (GET, O55; story 4.2, #305-4.2-1,
 #305-Q1-1) returns a proposed ownership change's refusals and structural
@@ -117,8 +119,10 @@ def _period(fiscal_year, fiscal_period):
                      "pass the fiscal year and period as whole numbers.")
 
 
-def _period_row(key):
-    for row in fiscal_calendar.fiscal_period_rows():
+def _period_row(key, rows=None):
+    """The declared period row for ``key``; ``rows`` is an already-read
+    ``fiscal_period_rows()`` (O63 reads the calendar once), else it is read."""
+    for row in (fiscal_calendar.fiscal_period_rows() if rows is None else rows):
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
     frappe.throw("%s is not declared: declare it in EPM Fiscal Year." % period_name(*key))
@@ -420,7 +424,8 @@ OWNERSHIP_REGULAR_ONLY = (
 def get_ownership(fiscal_year, fiscal_period):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
-    period = _period_row(key)
+    calendar = fiscal_calendar.fiscal_period_rows()
+    period = _period_row(key, calendar)
     if period.get("period_type") != "Regular":
         frappe.throw(
             OWNERSHIP_REGULAR_ONLY
@@ -461,16 +466,60 @@ def get_ownership(fiscal_year, fiscal_period):
         for e in blocking_visible
     ]
 
+    can_record = bool(frappe.has_permission("Ownership Period", "create"))
     return {
         "period": {"fiscal_year": fy, "fiscal_period": fp},
         "start_date": start_iso,
         "blocking": blocking,
         "out_of_scope": out_of_scope_visible,
         "in_scope_count": in_scope_count,
-        "can_record": bool(frappe.has_permission("Ownership Period", "create")),
+        "can_record": can_record,
         "hidden": blocking_hidden + out_of_scope_hidden,
         "blocking_hidden": blocking_hidden,
+        "change": _change_choices(calendar, allowed) if can_record else None,
     }
+
+
+def _change_choices(calendar, allowed):
+    """O63 (story 4.2; #305-4.2-1; C-O2, C-O3; wireframe-4.2.md section 1):
+    the ownership change form's choices, so every choice it offers has a
+    server source.
+
+    - ``entities``: one item per node (``consolidation_group``,
+      ``data_area_id``) with a submitted Ownership Period that names an
+      entity, ``{"entity", "entity_name", "consolidation_group"}``, sorted by
+      entity, then group. The group is the node's own: an entity on two nodes
+      gives two items, never a guessed one. Only an entity that already has a
+      submitted period can be changed (C-O3: a first ownership stays the Desk
+      link). Cut to ``allowed`` without adding to ``hidden`` (the payload's
+      existing rule already counts the hidden entities).
+    - ``periods``: every Regular period whose effective status is Open,
+      ``{"fiscal_year", "fiscal_period", "label", "start_date"}`` (ISO), in
+      calendar order, from the calendar ``get_ownership`` already read.
+
+    Costs two reads (the submitted nodes, and the names of the visible
+    entities on them), whatever the number of nodes; the name read is skipped
+    when no node is visible."""
+    nodes = frappe.get_all(
+        OP, filters={"docstatus": 1, "data_area_id": ["is", "set"]},
+        fields=["consolidation_group", "data_area_id"], limit_page_length=0)
+    pairs = sorted({(r["data_area_id"], r["consolidation_group"]) for r in nodes})
+    pairs, _hidden = _cut(pairs, allowed, key=lambda p: p[0])
+    names = {}
+    if pairs:
+        names = {r["name"]: r.get("entity_name") for r in frappe.get_all(
+            "Entity", filters={"name": ["in", sorted({e for e, _g in pairs})]},
+            fields=["name", "entity_name"], limit_page_length=0)}
+    entities = [{"entity": e, "entity_name": names.get(e), "consolidation_group": g}
+                for e, g in pairs]
+    periods = [
+        {"fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"]),
+         "label": period_name(int(r["fiscal_year"]), int(r["fiscal_period"])),
+         "start_date": _iso(_ownership_date(r.get("start_date")))}
+        for r in sorted(calendar, key=lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])))
+        if r.get("period_type") == "Regular" and r.get("status") == "Open"
+    ]
+    return {"entities": entities, "periods": periods}
 
 
 #: preview_ownership_change (O55): the chosen period must be Regular. An
