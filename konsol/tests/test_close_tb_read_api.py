@@ -1014,15 +1014,32 @@ def test_a_non_datetime_time_raises():
     assert "CE-0002" in str(info.value)
 
 
-def test_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
-    for users in ([], [_user("zz-lead@example.com", ""),
-                       _user("zz-ga@example.com", "Gee Accountant")]):
+def test_a_sender_with_no_full_name_is_labelled_and_the_other_rows_are_intact():
+    """konsol#305 R52c (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``my_tbs`` raise "... has no full name" and took the whole list down. Now
+    that row shows the labelled id (``remind_model.sender_name``), every other
+    row is intact, and the reads are unchanged: one reminders read, one User
+    read naming every visible sender."""
+    for users in ([_user("zz-ga@example.com", "Gee Accountant")],
+                  [_user("zz-lead@example.com", ""),
+                   _user("zz-ga@example.com", "Gee Accountant")]):
         site = _reminded_site()
         site.records["User"] = users
-        with pytest.raises(Exception) as info:
-            _my_tbs(site)
-        assert "zz-lead@example.com" in str(info.value), str(info.value)
-        assert "full name" in str(info.value), str(info.value)
+        site.reminders.append(
+            _reminder("CE-0003", "ZZA", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+        by = _by_entity(_my_tbs(site))
+        assert by["ZZC"]["reminders"] == {
+            "count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+            "last_by": "zz-lead@example.com",
+            "last_by_name": "zz-lead@example.com (name not recorded)"}, by["ZZC"]
+        assert by["ZZA"]["reminders"]["last_by_name"] == "Gee Accountant", by["ZZA"]
+        assert by["ZZA"]["reminders"]["count"] == 1
+        assert by["ZZB"]["reminders"] is None
+        assert site.reminder_calls == [([(2025, 9)], "tb")]
+        user_reads = [f for d, f in site.get_all_calls if d == "User"]
+        assert user_reads == [{"name": ["in", ["zz-ga@example.com",
+                                               "zz-lead@example.com"]]}], user_reads
 
 
 def test_can_remind_only_for_remind_roles_in_an_open_period():
