@@ -198,3 +198,56 @@ test("(B27) entityRows gets the user's zone and now; a missing zone is shown, no
   assert.doesNotMatch(code, /time_zone|resolvedOptions\(\)/, "no local copy of the lookup");
   assert.match(s, /if\s*\(!timeZone\)/, "no zone is an explicit error, never a default");
 });
+
+// --- Y62: Remind on a Missing row, and the reminded text (story 1.5) --------
+
+function code(source) {
+  return script(source).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+test("(Y62) Remind posts through remind.js's REMIND and remindBody, via api.js's post", () => {
+  const source = read();
+  const s = code(source);
+  assert.match(s, /import\s*\{[^}]*\bpost\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
+  assert.match(s, /import\s*\{[^}]*\bREMIND\b[^}]*\bremindBody\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']|import\s*\{[^}]*\bremindBody\b[^}]*\bREMIND\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']/);
+  assert.doesNotMatch(s, /remind_api/, "the endpoint name lives in remind.js only");
+  assert.match(s, /remindBody\([^)]*,\s*[^)]*,\s*["']tb["']\s*\)/, "the topic is tb");
+});
+
+test("(Y62) exactly one post(REMIND — one function sends a reminder", () => {
+  const s = code(read());
+  const posts = s.match(/post\(\s*REMIND\b/g) || [];
+  assert.equal(posts.length, 1);
+});
+
+test("(Y62) the Remind button is v-if on row.canRemind and the reminded text is row.reminded", () => {
+  const tpl = template(read());
+  const button = tpl.match(/<button\b[^>]*v-if="row\.canRemind"[^>]*>[\s\S]*?<\/button>/);
+  assert.ok(button, "a button gated by v-if=\"row.canRemind\"");
+  assert.match(button[0], /Remind/);
+  assert.match(button[0], /@click\.stop=/, "clicking Remind does not toggle the row's detail area");
+  assert.match(tpl, /v-if="row\.reminded"[^>]*>\s*\{\{\s*row\.reminded\s*\}\}/, "the text is shown as entityRows built it");
+  assert.doesNotMatch(tpl, /can_remind/, "the template never reads the raw payload flag");
+});
+
+test("(Y62) failure path: a refusal shows the server's sentence through messageLines, never invented text", () => {
+  const source = read();
+  const s = code(source);
+  assert.match(s, /import\s*\{[^}]*\bmessageLines\b[^}]*\}\s*from\s*["']\.\.\/signoff\.js["']/);
+  assert.match(s, /messageLines\(\s*e\.message\s*\)/);
+  const tpl = template(source);
+  assert.match(tpl, /remindError/, "the refusal is rendered");
+  assert.match(tpl, /role="alert"[^>]*>[\s\S]*?remindError/);
+});
+
+test("(Y62) success reloads my_tbs once; a refusal does not reload or change the row", () => {
+  const s = code(read());
+  const fn = s.match(/async function remind\(row\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn, "one async function remind(row)");
+  const body = fn[1];
+  const tryBlock = body.match(/try\s*\{([\s\S]*?)\}\s*catch/);
+  assert.ok(tryBlock, "remind posts inside try/catch");
+  assert.equal((tryBlock[1].match(/reloadTbs\(\)/g) || []).length, 1, "one reload, after a successful post");
+  const catchBlock = body.slice(body.indexOf("catch"));
+  assert.doesNotMatch(catchBlock.split("finally")[0], /reloadTbs\(|load\.data\s*=/, "a refusal leaves the row as it was");
+});
