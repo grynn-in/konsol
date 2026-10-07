@@ -306,3 +306,41 @@ def test_signoff_rejected_with_no_reason_is_refused():
 
 def test_signoff_rejected_with_a_reason_gives_no_problems():
     assert M.event_problems(_event(kind="signoff_rejected", reason="TB for ZZA is wrong")) == []
+
+
+# --- reminder_sent (konsol#305 Y51, story 1.5, #305-1.5-1, C-R6) ---------------
+
+def _reminder_sent_detail():
+    # The fixed shape Y54 writes: topic, sorted recipient ids, the subject.
+    return {
+        "topic": "tb",
+        "recipients": ["zz-a@example.com", "zz-b@example.com"],
+        "subject": "Reminder: ZZ01 trial balance for FY2025 P07",
+    }
+
+
+def test_reminder_sent_is_a_declared_kind_not_reason_required():
+    assert "reminder_sent" in M.KINDS
+    assert "reminder_sent" not in M.REASON_REQUIRED
+    assert "reminder_sent" not in M.YEAR_KINDS
+
+
+def test_a_clean_reminder_sent_event_with_no_reason_gives_no_problems():
+    event = _event(
+        kind="reminder_sent",
+        entity="ZZ01",
+        detail=_reminder_sent_detail(),
+    )
+    assert M.event_problems(event) == []
+
+
+def test_reminder_sent_fiscal_period_zero_is_named():
+    # A period kind: fiscal_period must not be 0.
+    event = _event(
+        kind="reminder_sent",
+        entity="ZZ01",
+        detail=_reminder_sent_detail(),
+        fiscal_period=0,
+    )
+    assert M.event_problems(event) == [
+        "fiscal_period must not be 0 for a non-year kind."]

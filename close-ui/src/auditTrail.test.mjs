@@ -767,3 +767,77 @@ test("trailView: the title is 'Audit trail · FY2025 P07' when the live code is 
 	);
 	assert.equal(view.title, "Audit trail · FY2025 P07");
 });
+
+// --- reminder_sent (konsol#305 Y51, story 1.5, #305-1.5-1, C-R6) -------------
+
+function reminderEvent(detail) {
+	// Y54's fixed shape: entity, detail {topic, recipients, subject}; no reference, no reason.
+	return event({
+		kind: "reminder_sent",
+		entity: "ZZ01",
+		reference_doctype: null,
+		reference_name: null,
+		detail,
+	});
+}
+
+test('reminder_sent -> "Reminder", mute, topic and entity in item, recipients in detail', () => {
+	const v = trailView(
+		payload([
+			reminderEvent({
+				topic: "tb",
+				recipients: ["zz-a@example.com", "zz-b@example.com"],
+				subject: "Reminder: ZZ01 trial balance",
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Reminder");
+	assert.equal(v.rows[0].tone, "mute");
+	assert.equal(v.rows[0].item, "Reminder · Trial balance · ZZ01");
+	assert.ok(v.rows[0].detail.includes("Sent to 2 people"), v.rows[0].detail);
+});
+
+test("reminder_sent topic ic -> Intercompany item; one recipient reads 'Sent to 1 person'", () => {
+	const v = trailView(
+		payload([reminderEvent({ topic: "ic", recipients: ["zz-a@example.com"], subject: "s" })]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].item, "Reminder · Intercompany · ZZ01");
+	assert.ok(v.rows[0].detail.includes("Sent to 1 person"), v.rows[0].detail);
+	assert.ok(!v.rows[0].detail.includes("people"));
+});
+
+test('failure path: reminder_sent with no topic reads "Reminder (topic not recorded)", never "undefined" or "null"', () => {
+	const v = trailView(
+		payload([reminderEvent({ recipients: ["zz-a@example.com"], subject: "s" })]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].item, "Reminder (topic not recorded)");
+	assert.ok(!v.rows[0].item.includes("undefined"));
+	assert.ok(!v.rows[0].item.includes("null"));
+	assert.ok(!v.rows[0].detail.includes("undefined"));
+});
+
+test('failure path: reminder_sent with an unknown topic reads "Reminder (topic not recorded)"', () => {
+	const v = trailView(
+		payload([reminderEvent({ topic: "x", recipients: ["zz-a@example.com"], subject: "s" })]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].item, "Reminder (topic not recorded)");
+});
+
+test("failure path: reminder_sent with no recipients throws (Y54 always writes them)", () => {
+	assert.throws(
+		() => trailView(payload([reminderEvent({ topic: "tb", subject: "s" })]), NOW, TZ),
+		/reminder_sent event has no detail\.recipients/
+	);
+	assert.throws(
+		() => trailView(payload([reminderEvent(null)]), NOW, TZ),
+		/reminder_sent event has no detail\.recipients/
+	);
+});
