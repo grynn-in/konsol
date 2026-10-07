@@ -342,27 +342,23 @@ def _reminders(key, visible):
     summarised by ``remind_model.summary``. Only visible entities' entries are
     kept, so a hidden entity's reminders (and who sent them) never leave the
     server. An unreadable event raises (``summary``): a count is never
-    guessed as 0. A sender with no full name is refused, never shown as a
-    user id."""
+    guessed as 0. The sender is named by ``remind_model.sender_name``: the
+    full name, or the labelled id "<id> (name not recorded)" when the user
+    has no full name or no longer exists, so one bad sender never takes down
+    the IC screen (konsol#305 R52d, review-w5b S3)."""
     from konsol.close import close_event  # lazy: see the import warning above
 
     summary = remind_model.summary(close_event.reminders([key], "ic"))
-    entries = {}
-    for (fy, fp, entity, topic), entry in summary.items():
-        if (fy, fp) == key and topic == "ic" and entity in visible:
-            entries[entity] = entry
+    entries = remind_model.visible_entries(summary, [key], "ic", visible)[key]
     if not entries:
         return {}
     actors = sorted({e["last_by"] for e in entries.values()})
     names = {u["name"]: u.get("full_name") for u in frappe.get_all(
         "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
         limit_page_length=0)}
-    for actor in actors:
-        if not names.get(actor):
-            frappe.throw("User %s, who sent the last reminder, has no full name: set the "
-                         "user's First Name in User." % actor)
     return {entity: {"count": int(e["count"]), "last_at": _iso(e["last_at"]),
-                     "last_by": e["last_by"], "last_by_name": names[e["last_by"]]}
+                     "last_by": e["last_by"],
+                     "last_by_name": remind_model.sender_name(e["last_by"], names)}
             for entity, e in entries.items()}
 
 
