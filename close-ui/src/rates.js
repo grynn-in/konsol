@@ -524,7 +524,18 @@ export function ownershipGapsCount(view) {
 const PCT_SENTENCE = "Ownership % must be a number from 0 to 100.";
 const NO_ENTITY = "Choose an entity.";
 const NO_SIGNED_PERIOD = "No signed period is affected.";
-const EFFECT_KEYS = ["before", "after", "current_ends", "first_period", "periods", "resign", "not_shown"];
+const EFFECT_KEYS = [
+  "before",
+  "after",
+  "current_name",
+  "current_ends",
+  "first_period",
+  "periods",
+  "resign",
+  "resign_detail",
+  "not_shown",
+];
+const RESIGN_DETAIL_KEYS = ["period", "signed_on", "signed_by_name"];
 const SIDE_KEYS = ["pct", "method", "from", "to"];
 
 /** A form value -> a finite number in 0..100, or null. Blank, a bool, a
@@ -584,6 +595,36 @@ function effectDate(iso) {
   return dueDateText(iso, "ownershipEffectView");
 }
 
+/**
+ * `resign_detail` (O64, parallel to `resign`) -> "FY2025 P11 (signed Sat 4
+ * Oct 2025 by Jane Doe)" per entry (wireframe-4.2.md §1). An entry without
+ * its period, date or signer name, or out of step with `resign`, throws:
+ * never a blank signer or a guessed date.
+ */
+function blankText(value) {
+  return typeof value !== "string" || value.trim() === "";
+}
+
+function resignLines(effect) {
+  const detail = effect.resign_detail;
+  if (!Array.isArray(detail)) {
+    throw new Error("ownershipEffectView: the effect's resign_detail is not a list");
+  }
+  if (detail.length !== effect.resign.length) {
+    throw new Error("ownershipEffectView: the effect's resign_detail does not match resign");
+  }
+  return detail.map((entry, i) => {
+    requireKeys(entry || {}, RESIGN_DETAIL_KEYS, "resign_detail.");
+    if (entry.period !== effect.resign[i]) {
+      throw new Error(`ownershipEffectView: the effect's resign_detail ${entry.period} does not match resign ${effect.resign[i]}`);
+    }
+    if (blankText(entry.signed_by_name)) {
+      throw new Error(`ownershipEffectView: the effect's resign_detail.signed_by_name is blank for ${entry.period}`);
+    }
+    return `${entry.period} (signed ${effectDate(entry.signed_on)} by ${entry.signed_by_name})`;
+  });
+}
+
 function effectEnd(iso) {
   return iso === null ? "open-ended" : effectDate(iso);
 }
@@ -595,7 +636,9 @@ function effectEnd(iso) {
  * `{label, before, after, unchanged}`; Covers' before side runs to
  * `current_ends` and carries the note on the current period's end today.
  * `resignNone` is "No signed period is affected." only when `resign` is
- * empty. Throws on a missing key, a missing effect, or a date that is not
+ * empty. `resign` holds one "FY2025 P11 (signed <date> by <name>)" line per
+ * signed period and `endsLine` is "<current_name> on <date>" (O65,
+ * wireframe-4.2.md §1 and §3). Throws on a missing key, a missing effect, or a date that is not
  * ISO: never a guessed panel.
  */
 export function ownershipEffectView(effect) {
@@ -608,6 +651,10 @@ export function ownershipEffectView(effect) {
   if (!Array.isArray(effect.resign)) {
     throw new Error("ownershipEffectView: the effect's resign is not a list");
   }
+  if (blankText(effect.current_name)) {
+    throw new Error("ownershipEffectView: the effect's current_name is blank");
+  }
+  const resign = resignLines(effect);
   const { before, after } = effect;
   const currentEnds = effectDate(effect.current_ends);
   const nowEnds = before.to === null ? "now open-ended" : `now to ${effectDate(before.to)}`;
@@ -629,9 +676,10 @@ export function ownershipEffectView(effect) {
       },
     ],
     currentEnds,
+    endsLine: `${effect.current_name} on ${currentEnds}`,
     firstPeriod: effect.first_period,
     periods: effect.periods,
-    resign: [...effect.resign],
+    resign,
     resignNone: effect.resign.length ? null : NO_SIGNED_PERIOD,
     notShown: effect.not_shown,
   };

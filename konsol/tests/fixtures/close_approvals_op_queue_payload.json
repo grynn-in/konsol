@@ -54,11 +54,19 @@
           "to": null
         },
         "current_ends": "2026-06-30",
+        "current_name": "OP-ZZ58-1",
         "first_period": "FY2026 P07",
         "not_shown": "Goodwill, NCI and results are not previewed; they change at the next build.",
         "periods": "FY2026 P07 onward (open-ended)",
         "resign": [
           "FY2026 P07"
+        ],
+        "resign_detail": [
+          {
+            "period": "FY2026 P07",
+            "signed_by_name": "Zz Lead",
+            "signed_on": "2026-08-04"
+          }
         ]
       },
       "entity": "DE02",

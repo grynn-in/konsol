@@ -903,9 +903,15 @@ test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () =>
     },
   ]);
   assert.equal(view.currentEnds, D("2025-09-30"));
+  // wireframe-4.2.md §3: "Ends  <current_name> on <date>" (O65).
+  assert.equal(view.endsLine, `OP-ZZ5B1-1 on ${D("2025-09-30")}`);
   assert.equal(view.firstPeriod, "FY2025 P10");
   assert.equal(view.periods, "FY2025 P10 onward (open-ended)");
-  assert.deepEqual(view.resign, ["FY2025 P11", "FY2025 P13"]);
+  // wireframe-4.2.md §1: "FY2025 P11 (signed <date> by <name>)" (O65).
+  assert.deepEqual(view.resign, [
+    `FY2025 P11 (signed ${D("2025-10-04")} by Zz Lead)`,
+    `FY2025 P13 (signed ${D("2025-10-04")} by Zz Lead)`,
+  ]);
   assert.equal(view.resignNone, null);
   assert.equal(view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
 });
@@ -916,7 +922,7 @@ test("O59 ownershipEffectView: the pending item's effect (O57 golden) gives the 
 });
 
 test("O59 ownershipEffectView: no signed period reads the wireframe sentence", () => {
-  const view = ownershipEffectView({ ...PREVIEW.effect, resign: [] });
+  const view = ownershipEffectView({ ...PREVIEW.effect, resign: [], resign_detail: [] });
   assert.deepEqual(view.resign, []);
   assert.equal(view.resignNone, "No signed period is affected.");
 });
@@ -936,6 +942,51 @@ test("O59 ownershipEffectView: a current period with an end date keeps it in the
 test("O59 ownershipEffectView: failure path — an effect without resign throws", () => {
   const { resign, ...rest } = PREVIEW.effect;
   assert.throws(() => ownershipEffectView(rest), /resign/);
+});
+
+test("O65 ownershipEffectView: the approvals golden names its own predecessor and signer", () => {
+  const ops = fixture("close_approvals_op_queue_payload.json").items.filter((i) => i.effect);
+  assert.ok(ops.length, "the approvals golden carries an effect");
+  const view = ownershipEffectView(ops[0].effect);
+  assert.equal(view.endsLine, `OP-ZZ58-1 on ${D("2026-06-30")}`);
+  assert.deepEqual(view.resign, [`FY2026 P07 (signed ${D("2026-08-04")} by Zz Lead)`]);
+});
+
+test("O65 ownershipEffectView: failure path — a missing current_name or resign_detail throws", () => {
+  for (const key of ["current_name", "resign_detail"]) {
+    const broken = { ...PREVIEW.effect };
+    delete broken[key];
+    assert.throws(() => ownershipEffectView(broken), new RegExp(key), key);
+  }
+  for (const bad of [null, "", "  "]) {
+    assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, current_name: bad }), /current_name/, String(bad));
+  }
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, resign_detail: null }), /resign_detail/);
+});
+
+test("O65 ownershipEffectView: failure path — a re-sign entry without its date or signer throws, never a blank", () => {
+  const detail = PREVIEW.effect.resign_detail;
+  for (const key of ["period", "signed_on", "signed_by_name"]) {
+    const entry = { ...detail[0] };
+    delete entry[key];
+    const broken = { ...PREVIEW.effect, resign_detail: [entry, detail[1]] };
+    assert.throws(() => ownershipEffectView(broken), new RegExp(`resign_detail.${key}`), key);
+  }
+  for (const name of [null, "", "  "]) {
+    const broken = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_by_name: name }, detail[1]] };
+    assert.throws(() => ownershipEffectView(broken), /signed_by_name/, String(name));
+  }
+  const badDate = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_on: "04/10/2025" }, detail[1]] };
+  assert.throws(() => ownershipEffectView(badDate), /ISO/);
+});
+
+test("O65 ownershipEffectView: failure path — resign_detail out of step with resign throws", () => {
+  const detail = PREVIEW.effect.resign_detail;
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [detail[0]] }), /resign_detail/);
+  assert.throws(
+    () => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [detail[1], detail[0]] }),
+    /resign_detail/,
+  );
 });
 
 test("O59 ownershipEffectView: every other missing key throws, never a guessed panel", () => {

@@ -204,8 +204,11 @@ test("O61: the golden OP draft with effect gives the wireframe's EFFECT IF APPRO
     "Ownership and Method, before → after (section 3 shows no Covers row: it shows Ends)",
   );
   assert.equal(panel.view.currentEnds, real.currentEnds);
+  assert.equal(panel.view.endsLine, real.endsLine, "O65: Ends names the predecessor");
+  assert.match(panel.view.endsLine, /^OP-ZZ5B1-1 on /);
   assert.equal(panel.view.periods, "FY2025 P10 onward (open-ended)");
-  assert.deepEqual(panel.view.resign, ["FY2025 P11", "FY2025 P13"]);
+  assert.deepEqual(panel.view.resign, real.resign);
+  assert.match(panel.view.resign[0], /^FY2025 P11 \(signed .+ by Zz Lead\)$/, "O65: who signed it and when");
   assert.equal(panel.view.resignNone, null);
   assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
 });
@@ -241,9 +244,10 @@ test("O61: the template renders the panel above Approve, read-only, with the Des
   const panelAt = tpl.indexOf("EFFECT IF APPROVED");
   const approveAt = tpl.indexOf("<Button");
   assert.ok(panelAt >= 0 && approveAt > panelAt, "the effect panel comes before the Approve button");
-  for (const field of ["row.before", "row.after", "currentEnds", "periods", "resign", "resignNone", "notShown"]) {
+  for (const field of ["row.before", "row.after", "endsLine", "periods", "resign", "resignNone", "notShown"]) {
     assert.ok(tpl.includes(field), `the panel shows ${field}`);
   }
+  assert.doesNotMatch(tpl, /The current period, on/, "O65: Ends names the predecessor, not 'The current period'");
   assert.match(tpl, /\.desk\b/, "the Desk-draft sentence is rendered");
   assert.match(tpl, /\.error\b/, "a broken effect's sentence is rendered");
   assert.match(tpl, /Re-sign Needed/);

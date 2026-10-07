@@ -378,7 +378,7 @@ function balanceText(item) {
 						<dd>{{ row.before }} → {{ row.after }}</dd>
 					</template>
 					<dt class="text-ink-gray-6">Ends</dt>
-					<dd>The current period, on {{ selectedEffect.view.currentEnds }}</dd>
+					<dd>{{ selectedEffect.view.endsLine }}</dd>
 					<dt class="text-ink-gray-6">Periods</dt>
 					<dd>{{ selectedEffect.view.periods }}</dd>
 					<dt class="text-ink-gray-6">Re-sign</dt>

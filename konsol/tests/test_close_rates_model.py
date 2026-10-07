@@ -433,7 +433,12 @@ def _o57_real_effect():
               "consolidation_method": "full"}
     current = {"name": "OP-0", "effective_date": "2025-01-01", "end_date": None,
                "ownership_pct": 100.0, "consolidation_method": "full"}
-    return OCM.effect(change, current, _o57_calendar(), [(2025, 9), (2025, 11)])
+    # O64: the signed runs carry their date and signer, as
+    # ownership_change.context hands them over.
+    signed = {(2025, 9): {"run": "AR-9", "signed_on": "2025-10-04", "signed_by_name": "Jane Doe"},
+              (2025, 11): {"run": "AR-11", "signed_on": "2025-12-04",
+                           "signed_by_name": "Jane Doe"}}
+    return OCM.effect(change, current, _o57_calendar(), signed)
 
 
 def _o57_items(op):
