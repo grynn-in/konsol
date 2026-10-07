@@ -49,6 +49,12 @@
  * (rates.js). It is period-keyed, like the grid, so it reloads on period
  * change. It posts nothing: the "Record ownership" link opens the Desk URL
  * the server built (E406), never one this screen constructs.
+ *
+ * O60 (story 4.2; wireframe-4.2.md section 1): below the gaps, the
+ * "Change ownership" form (OwnershipChange.vue) renders only when the
+ * server says `can_record`, fed `get_ownership`'s `change` choices (O63).
+ * The form owns the preview GET and the save POST; a saved draft reloads
+ * the pending list here, where the Close Lead approves it.
  */
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -56,6 +62,7 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import RatesPending from "../sections/RatesPending.vue";
 import OwnershipGaps from "../sections/OwnershipGaps.vue";
+import OwnershipChange from "../sections/OwnershipChange.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
@@ -730,6 +737,11 @@ const TABS = computed(() => [
 					v-if="ownershipViewData"
 					:view="ownershipViewData"
 					:out-of-scope="ownership.payload ? ownership.payload.out_of_scope || [] : []"
+				/>
+				<OwnershipChange
+					v-if="ownershipViewData && ownershipViewData.canRecord"
+					:change="ownership.payload.change"
+					@saved="loadPending({ quiet: true })"
 				/>
 			</LoadState>
 		</section>
