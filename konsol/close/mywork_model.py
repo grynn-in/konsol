@@ -217,6 +217,19 @@ PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "si
 #: caller sent no ``reminders`` (not read: never an invented 0) and when no
 #: entity of the item was reminded. The model does not format time: the SPA
 #: does. An entry whose count cannot be read raises ValueError.
+#: D58 (stories 1.1, 2.4; C-D6): ``deadlines`` is read the same way, with
+#: ``facts.get``: one period's ``deadline_model.period_deadlines`` output,
+#: ``{step: {"due" (date or ISO text, or None), "past", "text"}}``. Every
+#: period item carries ``due``: ``{"date" (ISO or None), "text", "overdue"}``
+#: when its step is known (``STEP_OF_SLUG``; IC fix items -> ``ic``), with
+#: ``overdue = past`` because the item exists only while its step is open
+#: (C-D4); None for an item with no step, or when the caller sent no
+#: deadlines (never a guessed date). A deadlines map that is not a map, lacks
+#: the item's step, or whose entry lacks a key raises ValueError.
+#: C-D6: the deadline step of each period-item slug; any other slug has none.
+STEP_OF_SLUG = {"tb": "tb", "tbs-waiting": "tb", "signoff": "signoff",
+                "signoff-wait": "signoff", "close": "signoff"}
+DUE_KEYS = ("due", "past", "text")
 CHECK_STATES = ("not_run", "running", "stale", "failed", "current")
 KINDS = ("blocking", "todo", "waiting")
 
@@ -293,6 +306,29 @@ def _check_period(key, facts):
         raise ValueError("period_items: %s has unknown checks state %r" % (key, facts["checks"]))
 
 
+def _due(key, facts, step):
+    """The item's ``due`` (D58), or None when it has no step or no deadlines."""
+    if step is None:
+        return None
+    deadlines = facts.get("deadlines")
+    if deadlines is None:
+        return None
+    if not isinstance(deadlines, dict):
+        raise ValueError("period_items: %s deadlines must be a map of step to deadline, got %r"
+                         % (key, type(deadlines).__name__))
+    if step not in deadlines:
+        raise ValueError("period_items: %s deadlines carry no %s step" % (key, step))
+    entry = deadlines[step]
+    absent = [k for k in DUE_KEYS if not isinstance(entry, dict) or k not in entry]
+    if absent:
+        raise ValueError("period_items: %s %s deadline is missing %s"
+                         % (key, step, ", ".join(absent)))
+    due = entry["due"]
+    if due is not None and not isinstance(due, str):
+        due = due.isoformat()
+    return {"date": due, "text": entry["text"], "overdue": bool(entry["past"])}
+
+
 def _period_item(persona, key, facts, slug, kind, title, action):
     fy, fp = key
     return {
@@ -303,6 +339,7 @@ def _period_item(persona, key, facts, slug, kind, title, action):
                    "since": facts.get("since")},
         "owner": OWNERS[persona],
         "action": action,
+        "due": _due(key, facts, STEP_OF_SLUG.get(slug)),
     }
 
 
@@ -430,19 +467,27 @@ def period_items(persona, per_period, first_close):
     return items
 
 
+def _due_rank(item):
+    """C-D6: overdue (0), then not yet due (1), each by date; then no date (2)."""
+    due = item.get("due")
+    if due and due.get("date"):
+        return (0 if due["overdue"] else 1, due["date"])
+    return (2, "")
+
+
 def _rank_key(item):
     period = item.get("period")
     if period is None:
-        return (KINDS.index(item["kind"]), 0, 0, 0, "")
-    return (KINDS.index(item["kind"]), 1, int(period["fiscal_year"]),
-            int(period["fiscal_period"]), item["title"])
+        return (KINDS.index(item["kind"]), 0, 0, "", 0, 0, "")
+    return (KINDS.index(item["kind"]), 1) + _due_rank(item) + (
+        int(period["fiscal_year"]), int(period["fiscal_period"]), item["title"])
 
 
 def rank(items):
-    """Blocking, then todo, then waiting; older periods first, then by title.
-
-    Setup-gap items (no period) come first within their kind, in their own
-    order."""
+    """Blocking, then todo, then waiting (C-D6). Within a kind: setup-gap
+    items (no period) first, in their own order; then overdue items, then
+    not-yet-due ones, each by earliest due date; then items with no date
+    (undeclared, or no step); then older periods first, then by title."""
     return sorted(items or (), key=_rank_key)
 
 
@@ -529,7 +574,7 @@ def _ic_title(partner, own_account, partner_account):
     return "Intercompany difference with %s (%s ↔ %s)" % (partner, own_account, partner_account)
 
 
-def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
+def _ic_fix_item(fy, fp, entity, fix, kind, code, since, due):
     a, acct_a, b, acct_b = fix["entity_a"], fix["account_a"], fix["entity_b"], fix["account_b"]
     if entity == a:
         side, partner, own_account, partner_account = "a", b, acct_a, acct_b
@@ -545,6 +590,7 @@ def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
         "period": {"fiscal_year": fy, "fiscal_period": fp, "code": code, "since": since},
         "owner": "Entity Accountant",
         "action": {"screen": "trial-balances", "entity": entity},
+        "due": due,
     }
 
 
@@ -560,11 +606,12 @@ def ic_fix_items(fixes_by_key, per_period, allowed):
         kind = "blocking" if period_facts["ended"] else "todo"
         code = period_facts["code"]
         since = period_facts.get("since")
+        due = _due((fy, fp), period_facts, "ic")
         for fix in fixes or ():
             for entity in (fix["entity_a"], fix["entity_b"]):
                 if allowed is not None and entity not in allowed:
                     continue
-                items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since))
+                items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since, due))
     return items
 
 

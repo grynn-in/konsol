@@ -343,7 +343,9 @@ def test_period_item_shape_and_period_tag():
     assert items
     for item in items:
         # Y58: only the TB items carry ``reminded`` (None when not read).
-        base = {"id", "kind", "title", "period", "owner", "action"}
+        # D58: every period item carries ``due`` (None with no deadlines fact).
+        base = {"id", "kind", "title", "period", "owner", "action", "due"}
+        assert item["due"] is None
         if item["id"].startswith("tbs-waiting:"):
             assert set(item) == base | {"reminded"}
             assert item["reminded"] is None
@@ -1262,3 +1264,233 @@ def test_reminder_entry_with_zero_or_unreadable_count_raises():
 def test_reminders_that_are_not_a_map_raise():
     with pytest.raises(ValueError, match="reminders"):
         M.period_items("close_lead", {P07: _reminded_period(reminders=[("ZZA", 2)])}, FIRST)
+
+
+# --- D58 (konsol#305 stories 1.1, 2.4; C-D6): ``due`` on items, "due" ranking ---
+#
+# ``facts.get("deadlines")`` is one period's ``deadline_model.period_deadlines``
+# output (``{step: {"due", "past", "text"}}``). An item whose step is known
+# (C-D6 mapping) carries ``due: {"date" (ISO or None), "text", "overdue"}``;
+# ``overdue`` is ``past``, since the item's existence means the step is open.
+# An item with no step, or a period whose caller sent no deadlines, carries
+# ``due None`` (the A53 precedent). The input is always the REAL producer's.
+
+from datetime import date  # noqa: E402
+
+_DM_PATH = os.path.join(APP_DIR, "close", "deadline_model.py")
+_dm_spec = importlib.util.spec_from_file_location("deadline_model_for_mywork", _DM_PATH)
+DM = importlib.util.module_from_spec(_dm_spec)
+_dm_spec.loader.exec_module(DM)
+
+_MON_FRI = {"monday": 1, "tuesday": 1, "wednesday": 1, "thursday": 1, "friday": 1,
+            "saturday": 0, "sunday": 0}
+
+
+def _rule(valid_from, tb=5, ic=5, journals=5, signoff=10):
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    rule.update(_MON_FRI)
+    return rule
+
+
+_RULES = [_rule(date(2025, 1, 1))]
+_END = {P07: date(2025, 7, 31), P08: date(2025, 8, 31)}
+
+
+def _deadlines(key, today, rules=None):
+    return DM.period_deadlines(_RULES if rules is None else rules, set(), _END[key], today)
+
+
+def _due_period(code, key, today, rules=None, **over):
+    facts = _period(code, **over)
+    facts["deadlines"] = _deadlines(key, today, rules)
+    return facts
+
+
+def test_the_real_producer_gives_the_dates_these_tests_rely_on():
+    d = _deadlines(P07, date(2025, 8, 10))
+    assert d["tb"] == {"due": date(2025, 8, 7), "past": True, "text": "Due 2025-08-07"}
+    assert d["signoff"]["due"] == date(2025, 8, 14)
+    assert d["signoff"]["past"] is False
+
+
+def test_upload_tb_item_carries_due_date_text_and_overdue():
+    per = {P07: _due_period("FY2025 P07", P07, date(2025, 8, 10), my_missing=["ZZA"])}
+    (item,) = M.period_items("entity_accountant", per, FIRST)
+    assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+
+
+def test_not_yet_due_item_is_not_overdue_and_due_day_itself_is_not_overdue():
+    for today in (date(2025, 8, 1), date(2025, 8, 7)):
+        per = {P07: _due_period("FY2025 P07", P07, today, my_missing=["ZZA"])}
+        (item,) = M.period_items("entity_accountant", per, FIRST)
+        assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07",
+                               "overdue": False}, today
+
+
+def test_step_map_for_the_close_lead_and_group_accountant():
+    today = date(2025, 8, 10)
+    tb = {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+    signoff = {"date": "2025-08-14", "text": "Due 2025-08-14", "overdue": False}
+    cases = [
+        # Waiting on TBs -> tb; Sign off -> signoff
+        ("close_lead", {"missing": ["ZZA"]},
+         {"tbs-waiting:2025-07": tb, "signoff:2025-07": signoff}),
+        # Waiting on the sign-off gates -> signoff
+        ("close_lead", {"gates_blocked": True}, {"signoff-wait:2025-07": signoff}),
+        # Close -> signoff
+        ("close_lead", {"signoff": "Signed Off"}, {"close:2025-07": signoff}),
+        # rates, re-sign, unowned and checks have no step
+        ("close_lead", {"rates_missing": 1, "signoff": "Re-sign Needed", "unowned": ["ZZX"],
+                        "checks": "failed", "failed": 2},
+         {"rates:2025-07": None, "resign:2025-07": None, "unowned:2025-07": None,
+          "checks-waiting:2025-07": None}),
+        ("group_accountant", {"missing": ["ZZA"], "checks": "stale", "rates_missing": 1},
+         {"tbs-waiting:2025-07": tb, "checks-run:2025-07": None, "rates:2025-07": None}),
+        ("group_accountant", {"checks": "failed", "failed": 1},
+         {"checks-failing:2025-07": None}),
+    ]
+    for persona, over, want in cases:
+        per = {P07: _due_period("FY2025 P07", P07, today, **over)}
+        got = {i["id"]: i["due"] for i in M.period_items(persona, per, FIRST)}
+        assert got == want, (persona, over)
+
+
+def test_signoff_wait_on_an_earlier_period_carries_the_signoff_due():
+    today = date(2025, 9, 20)
+    per = {P07: _due_period("FY2025 P07", P07, today, checks="stale"),
+           P08: _due_period("FY2025 P08", P08, today, gates_blocked=True)}
+    item = next(i for i in M.period_items("close_lead", per, FIRST)
+                if i["id"] == "signoff-wait:2025-08")
+    assert item["due"]["text"] == _deadlines(P08, today)["signoff"]["text"]
+    assert item["due"]["overdue"] is True
+
+
+def test_run_checks_item_has_due_none_even_with_deadlines():
+    per = {P07: _due_period("FY2025 P07", P07, date(2025, 8, 10), checks="not_run")}
+    item = next(i for i in M.period_items("group_accountant", per, FIRST)
+                if i["title"] == "Run checks")
+    assert item["due"] is None
+
+
+def test_ic_fix_item_carries_the_ic_due():
+    per = {IC_P07: dict(_ic_period(), deadlines=_deadlines(P07, date(2025, 8, 10)))}
+    (item,) = M.ic_fix_items({IC_P07: [_ic_fix()]}, per, {"UK01"})
+    assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+
+
+def test_ic_fix_item_without_deadlines_has_due_none():
+    (item,) = M.ic_fix_items({IC_P07: [_ic_fix()]}, {IC_P07: _ic_period()}, {"UK01"})
+    assert item["due"] is None
+
+
+def test_an_iso_due_from_the_api_payload_is_carried_as_is():
+    # D55's ``as_payload`` sends ``due`` as ISO text: the item carries it unchanged.
+    d = _deadlines(P07, date(2025, 8, 10))
+    payload = {s: dict(v, due=v["due"].isoformat() if v["due"] else None) for s, v in d.items()}
+    facts = _period("FY2025 P07", my_missing=["ZZA"])
+    facts["deadlines"] = payload
+    (item,) = M.period_items("entity_accountant", {P07: facts}, FIRST)
+    assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+
+
+def test_undeclared_step_reads_no_due_date_declared_and_is_never_overdue():
+    rules = [_rule(date(2025, 1, 1), tb=0)]
+    per = {P07: _due_period("FY2025 P07", P07, date(2026, 1, 1), rules, my_missing=["ZZA"])}
+    (item,) = M.period_items("entity_accountant", per, FIRST)
+    assert item["due"] == {"date": None, "text": "No due date declared", "overdue": False}
+    # No governing rule at all: every step undeclared.
+    per = {P07: _due_period("FY2025 P07", P07, date(2026, 1, 1), [], my_missing=["ZZA"])}
+    (item,) = M.period_items("entity_accountant", per, FIRST)
+    assert item["due"]["text"] == DM.UNDECLARED
+
+
+def test_without_deadlines_fact_every_period_item_has_due_none_and_is_otherwise_unchanged():
+    # Failure path: the caller omits ``deadlines``: no KeyError, no guessed date.
+    today = date(2025, 8, 10)
+    over = {"my_missing": ["ZZA"], "missing": ["ZZA", "ZZB"], "checks": "stale",
+            "rates_missing": 1}
+    for persona in ("entity_accountant", "group_accountant", "close_lead"):
+        with_d = M.period_items(persona, {P07: _due_period("FY2025 P07", P07, today, **over)},
+                                FIRST)
+        without = M.period_items(persona, {P07: _period("FY2025 P07", **over)}, FIRST)
+        explicit_none = M.period_items(
+            persona, {P07: dict(_period("FY2025 P07", **over), deadlines=None)}, FIRST)
+        assert [i["id"] for i in with_d] == [i["id"] for i in without], persona
+        for x, y, z in zip(with_d, without, explicit_none):
+            assert y["due"] is None and z["due"] is None
+            assert {k: v for k, v in x.items() if k != "due"} == \
+                   {k: v for k, v in y.items() if k != "due"}
+        assert any(i["due"] for i in with_d), persona
+
+
+def test_rank_overdue_later_period_above_not_yet_due_earlier_period_same_kind():
+    # P07's rule gives 60 working days; P08's (from 1 Aug) gives 1. On 10 Sep
+    # P08's TB is overdue while P07's is not yet due.
+    rules = [_rule(date(2025, 1, 1), tb=60), _rule(date(2025, 8, 1), tb=1)]
+    today = date(2025, 9, 10)
+    per = {P07: _due_period("FY2025 P07", P07, today, rules, my_missing=["ZZA"]),
+           P08: _due_period("FY2025 P08", P08, today, rules, my_missing=["ZZA"])}
+    items = M.period_items("entity_accountant", per, FIRST)
+    assert {i["kind"] for i in items} == {"blocking"}
+    ranked = M.rank(items)
+    assert [i["id"] for i in ranked] == ["tb:2025-08:ZZA", "tb:2025-07:ZZA"]
+    assert ranked[0]["due"]["overdue"] is True
+    assert ranked[1]["due"]["overdue"] is False
+
+
+def test_rank_not_yet_due_by_earliest_date_before_period():
+    # Both not yet due: the earlier due date ranks first, whatever the period.
+    rules = [_rule(date(2025, 1, 1), tb=60), _rule(date(2025, 8, 1), tb=1)]
+    today = date(2025, 8, 1)
+    per = {P07: _due_period("FY2025 P07", P07, today, rules, my_missing=["ZZA"]),
+           P08: _due_period("FY2025 P08", P08, today, rules, my_missing=["ZZA"])}
+    ranked = M.rank(M.period_items("entity_accountant", per, FIRST))
+    assert [i["id"] for i in ranked] == ["tb:2025-08:ZZA", "tb:2025-07:ZZA"]
+    assert ranked[0]["due"]["date"] < ranked[1]["due"]["date"]
+
+
+def test_rank_undeclared_after_every_dated_item_of_the_same_kind():
+    # Failure path: P07's TB step is undeclared (earlier period), P08's is dated
+    # and not yet due: the undeclared item ranks after it.
+    rules = [_rule(date(2025, 1, 1), tb=0), _rule(date(2025, 8, 1), tb=1)]
+    today = date(2025, 8, 1)
+    per = {P07: _due_period("FY2025 P07", P07, today, rules, my_missing=["ZZA"]),
+           P08: _due_period("FY2025 P08", P08, today, rules, my_missing=["ZZA"])}
+    ranked = M.rank(M.period_items("entity_accountant", per, FIRST))
+    assert [i["id"] for i in ranked] == ["tb:2025-08:ZZA", "tb:2025-07:ZZA"]
+    assert ranked[1]["due"]["text"] == "No due date declared"
+
+
+def test_rank_kind_still_outranks_due_and_setup_gaps_stay_first():
+    # An overdue waiting item never outranks a todo with no due.
+    today = date(2025, 9, 20)
+    per = {P07: _due_period("FY2025 P07", P07, today, missing=["ZZA"], checks="not_run")}
+    items = M.period_items("group_accountant", per, FIRST)
+    gap = M.setup_gap_items(_facts(ownership_missing=["ZZA"]))[0]
+    ranked = M.rank(items + [gap])
+    assert [i["id"] for i in ranked] == ["gap:ownership", "checks-run:2025-07",
+                                         "tbs-waiting:2025-07"]
+
+
+def test_deadlines_missing_a_step_raises_naming_it():
+    d = _deadlines(P07, date(2025, 8, 10))
+    del d["tb"]
+    facts = dict(_period("FY2025 P07", my_missing=["ZZA"]), deadlines=d)
+    with pytest.raises(ValueError, match="tb"):
+        M.period_items("entity_accountant", {P07: facts}, FIRST)
+
+
+def test_deadline_entry_missing_a_key_raises():
+    for key in ("due", "past", "text"):
+        d = _deadlines(P07, date(2025, 8, 10))
+        del d["tb"][key]
+        facts = dict(_period("FY2025 P07", my_missing=["ZZA"]), deadlines=d)
+        with pytest.raises(ValueError, match=key):
+            M.period_items("entity_accountant", {P07: facts}, FIRST)
+
+
+def test_deadlines_that_are_not_a_map_raise():
+    facts = dict(_period("FY2025 P07", my_missing=["ZZA"]), deadlines=[("tb", "2025-08-07")])
+    with pytest.raises(ValueError, match="deadlines"):
+        M.period_items("entity_accountant", {P07: facts}, FIRST)
