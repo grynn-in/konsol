@@ -94,6 +94,10 @@ class _Site:
         self.problem_calls = []
         self.run_result = None
         self.run_calls = []
+        # T52t (C-X1): what the stub close_event.reminders / deadlines
+        # .period_deadlines return, so Y57/D57's lazy imports resolve.
+        self.reminders = []
+        self.deadlines = {}
 
 
 def _match(value, cond):
@@ -218,6 +222,13 @@ def _load_api(site):
         return site.run_result
 
     assertion_run.latest_close_run = latest_close_run
+    # T52t (C-X1): stub konsol.close.close_event (reminders, Y53) and
+    # konsol.close.deadlines (period_deadlines, D55), so grid_api's lazy
+    # `from konsol.close import close_event, deadlines` resolves.
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.reminders = lambda keys, topic=None: site.reminders
+    deadlines = types.ModuleType("konsol.close.deadlines")
+    deadlines.period_deadlines = lambda keys, today: site.deadlines
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
@@ -226,6 +237,8 @@ def _load_api(site):
         "konsol.period_status": period_status,
         "konsol.close.signoff_gate": signoff_gate,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
+        "konsol.close.close_event": close_event,
+        "konsol.close.deadlines": deadlines,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -247,12 +260,28 @@ def _load_api(site):
     site.errors = types.SimpleNamespace(PermissionError=frappe.PermissionError,
                                         ValidationError=frappe.ValidationError,
                                         PeriodNotDeclared=period_status.PeriodNotDeclared)
+    site.stub_modules = mods
     return api
+
+
+def _installed(site, fn, *args):
+    """Run ``fn`` with the stub modules installed, so a lazy import inside
+    the endpoint resolves to the stubs (T52t, C-X1)."""
+    saved = {n: sys.modules.get(n) for n in site.stub_modules}
+    sys.modules.update(site.stub_modules)
+    try:
+        return fn(*args)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
 
 
 def _call(site, fy=2025, fp=9):
     api = _load_api(site)
-    result = api.get_period_grid(fy, fp)
+    result = _installed(site, api.get_period_grid, fy, fp)
     json.dumps(result)  # JSON-safe
     return result
 
@@ -265,7 +294,7 @@ def _call_raises(site, fy=2025, fp=9):
 
 def _call_readiness(site, fy=2025, fp=9):
     api = _load_api(site)
-    result = api.get_readiness(fy, fp)
+    result = _installed(site, api.get_readiness, fy, fp)
     json.dumps(result)  # JSON-safe
     return result
 
@@ -499,3 +528,26 @@ def test_readiness_each_reader_is_called_exactly_once():
     assert site.problem_calls == [(2025, 9)]
     assert site.rate_calls == [(2025, 9)]
     assert site.run_calls == [(2025, 9)]
+
+
+# --- T52t (C-X1): the loader carries close_event.reminders and deadlines ------
+
+def test_stub_close_carries_reminders_and_deadlines():
+    site = _Site()
+    _load_api(site)
+    close = site.stub_modules["konsol.close"]
+    assert close.close_event is site.stub_modules["konsol.close.close_event"]
+    assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
+    assert close.close_event.reminders([(2025, 9)]) == []
+    assert close.close_event.reminders([(2025, 9)], topic="tb") == []
+    assert close.deadlines.period_deadlines([(2025, 9)], "2025-10-01") == {}
+    site.reminders = ["r"]
+    site.deadlines = {"tb": "d"}
+    assert close.close_event.reminders([(2025, 9)]) == ["r"]
+    assert close.deadlines.period_deadlines([(2025, 9)], "2025-10-01") == {"tb": "d"}
+
+    def lazy():
+        from konsol.close import close_event, deadlines
+        return close_event.reminders([]), deadlines.period_deadlines([], None)
+
+    assert _installed(site, lazy) == (["r"], {"tb": "d"})
