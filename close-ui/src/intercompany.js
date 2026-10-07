@@ -277,7 +277,10 @@ export function sendBackBody(period, pair, reason) {
 // matching unrealised-profit rule says that nothing is eliminated, and the
 // server's gap names each pair. F51b: a pair two or more rules match is
 // eliminated once per rule by dbt; the server's `ambiguous_gap` names each
-// pair with its rules and the row is marked. An unknown status throws.
+// pair with its rules and the row is marked. I54 (S8): a draft with a matching
+// rule is not eliminated until approved; the server's `pending_gap` names each
+// pair with its drafts and each such draft row carries a note. An unknown
+// status throws.
 
 function gapView(gap, pairText) {
 	return gap ? { lines: messageLines(gap.message), pairs: (gap.pairs || []).map(pairText) } : null;
@@ -310,8 +313,26 @@ function balanceRow(row, canDraft) {
 		marginText: marginText(row.rules),
 		missingRule: !!row.missing_rule,
 		ambiguousRule: !!row.ambiguous_rule,
+		pendingNote: pendingNote(row),
 		editable: canDraft && row.status === "Draft",
 	};
+}
+
+//: konsol#305 I54 (S8): a draft whose pair has a matching rule and whose
+//: ending inventory is above 0 is in the server's `pending_gap` (dbt
+//: eliminates only approved balances). An unreadable inventory is noted too,
+//: as ic_balance_model.pending_gap does: never guessed to be 0.
+const PENDING_NOTE = "Blocks sign-off: approve, or delete the draft";
+
+function pendingNote(row) {
+	if (row.status !== "Draft" || !row.rules || !row.rules.length) return null;
+	const inventory = Number(row.ending_inventory_from_ic);
+	const readable =
+		row.ending_inventory_from_ic !== null &&
+		row.ending_inventory_from_ic !== undefined &&
+		String(row.ending_inventory_from_ic).trim() !== "" &&
+		Number.isFinite(inventory);
+	return readable && inventory <= 0 ? null : PENDING_NOTE;
 }
 
 //: review-w5 U5: `get_ic_balances` always sends these keys, so a missing one
@@ -320,7 +341,8 @@ function balanceRow(row, canDraft) {
 const IC_BALANCES_KEYS = ["balances", "hidden", "entities", "can_draft"];
 //: F51b: `gap` and `ambiguous_gap` are always sent too, as null when there is
 //: no gap; so the key must be present, and null is the declared "no gap".
-const IC_BALANCES_NULLABLE_KEYS = ["gap", "ambiguous_gap"];
+//: I54: `pending_gap` (a draft with a matching rule, not yet approved) too.
+const IC_BALANCES_NULLABLE_KEYS = ["gap", "ambiguous_gap", "pending_gap"];
 
 export function icBalancesView(payload) {
 	for (const key of IC_BALANCES_KEYS) {
@@ -342,6 +364,7 @@ export function icBalancesView(payload) {
 			payload.ambiguous_gap,
 			(p) => `${p.selling_entity} → ${p.buying_entity} (${(p.rule_ids || []).join(", ")})`,
 		),
+		pendingGap: gapView(payload.pending_gap, (p) => `${p.selling_entity} → ${p.buying_entity} (${p.names.join(", ")})`),
 		hiddenNote: hidden > 0 ? `${hidden} IC Balances for entities outside your scope are not shown` : null,
 		canDraft,
 		entities: payload.entities,
