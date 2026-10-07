@@ -1455,17 +1455,19 @@ def test_o55_failure_path_the_entity_accountant_is_refused():
     assert site.reads == []
 
 
-def test_o55_preview_names_only_the_six_parameters_and_takes_no_kwargs():
+def test_o55_preview_names_only_its_parameters_and_takes_no_kwargs():
+    # O66 adds ``name`` (the draft being edited), the only optional one.
     import inspect
 
     site = _o55_site()
     sig = _invoke(site, lambda api: {"sig": [
-        (p.name, p.kind)
+        (p.name, p.kind, p.default is None)
         for p in inspect.signature(api.preview_ownership_change).parameters.values()]})
-    assert [n for n, _ in sig["sig"]] == PREVIEW_PARAMS
-    kinds = {k for _, k in sig["sig"]}
+    assert [n for n, _, _ in sig["sig"]] == PREVIEW_PARAMS + ["name"]
+    kinds = {k for _, k, _ in sig["sig"]}
     assert inspect.Parameter.VAR_KEYWORD not in kinds
     assert inspect.Parameter.VAR_POSITIONAL not in kinds
+    assert [n for n, _, none in sig["sig"] if none] == ["name"]
 
 
 def test_o55_preview_is_a_get_with_a_literal_role_tuple():
@@ -1834,6 +1836,166 @@ def test_o64_failure_path_a_listed_run_without_a_signer_name_refuses_the_preview
     assert "ZZ-RUN-2025-11" in str(err), err
     assert LEAD not in str(err), err
     _no_write(site)
+
+
+# --- O66: preview_ownership_change takes the draft being edited --------------
+# wireframe-4.2.md §1 ("The Analyst can edit it until it is approved"). The
+# preview passes ``name`` as the same exact-name exclude as O56's save, and
+# refuses (as data, like every other preview problem) a name that is not a
+# draft of the same node and first day.
+
+
+def _o66_preview(site, fy=2025, fp=10, group=O55_GROUP, entity=O55_LEAF, pct="80",
+                 method="full", name=None):
+    return _invoke(site, lambda api: api.preview_ownership_change(
+        fy, fp, group, entity, pct, method, name=name))
+
+
+def _o66_site_with_draft(**k):
+    site = _o55_site(**k)
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    return site, row
+
+
+def _o66_no_write(site):
+    assert site.new_docs == [], [d._data for d in site.new_docs]
+    for doc in site.named.values():
+        assert doc.calls == [], doc.calls
+
+
+def test_o66_failure_path_without_name_the_draft_still_refuses_as_pending():
+    # The base line: without ``name`` the node's draft is pending.
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site)
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-D): edit that draft."]
+    assert result["effect"] is None
+
+
+def test_o66_preview_of_the_draft_being_edited_is_not_refused_as_pending():
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site, name=row["name"])
+    assert site.only_for_calls == [RATES_ROLES], site.only_for_calls
+    assert result["problems"] == [], result["problems"]
+    assert set(result) == {"problems", "effect", "current"}
+    # The effect is the one the plain preview gives for the same change.
+    assert result["effect"] == _preview(_o55_site())["effect"]
+    assert result["current"]["name"] == "OP-ZZ5B1-1"
+    _o66_no_write(site)
+
+
+def test_o66_a_viewer_may_preview_an_edit():
+    site, row = _o66_site_with_draft(roles=("EPM User",), user=VIEWER)
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"] == []
+    assert result["effect"]["first_period"] == "FY2025 P10"
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_another_draft_on_the_node_still_refuses():
+    site, row = _o66_site_with_draft()
+    site.ops.append(_op("OP-ZZ5B1-E", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                        consolidation_method="full", docstatus=0))
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-E): edit that draft."]
+    assert result["effect"] is None
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_the_exclude_is_the_exact_name_never_a_pattern():
+    site, row = _o66_site_with_draft()
+    site.ops.append(_op("OP-ZZ5B1-D2", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                        consolidation_method="full", docstatus=0))
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-D2): edit that draft."]
+
+
+def test_o66_failure_path_the_name_of_an_approved_period_is_refused():
+    site = _o55_site()
+    site.named["OP-ZZ5B1-1"] = _FakeDoc(dict(site.ops[0], doctype="Ownership Period"))
+    result = _o66_preview(site, name="OP-ZZ5B1-1")
+    assert result["problems"][0] == "OP-ZZ5B1-1 is approved: record a new change instead."
+    assert result["effect"] is None
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_the_name_of_a_cancelled_draft_is_refused():
+    site = _o55_site()
+    row, doc = _o56_draft(docstatus=2)
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"][0] == "OP-ZZ5B1-D is cancelled: record a new change instead."
+    assert result["effect"] is None
+
+
+def test_o66_failure_path_another_nodes_draft_is_refused():
+    site = _o55_site()
+    row, doc = _o56_draft(name="OP-ZZOTHER-D", entity="ZZOTHER")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"][0].startswith(
+        "OP-ZZOTHER-D is the change for ZZOTHER in ECL_GROUP from 2025-10-01"), result
+    assert result["effect"] is None
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_the_draft_previewed_into_another_period_is_refused():
+    # The save refuses moving a draft to another period (its name carries the
+    # date); the preview says so before the save is tried.
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site, fp=11, name=row["name"])
+    assert result["problems"][0].startswith(
+        "OP-ZZ5B1-D is the change for ZZ5B1 in ECL_GROUP from 2025-10-01"), result
+    assert "2025-11-01" in result["problems"][0]
+    assert result["effect"] is None
+
+
+def test_o66_failure_path_a_hidden_entitys_draft_is_refused_without_naming_it():
+    site = _o55_site()
+    site.allowed = {O55_LEAF}
+    row, doc = _o56_draft(name="OP-ZZHIDDEN-D", entity="ZZHIDDEN")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o66_preview(site, name=row["name"])
+    assert result["effect"] is None
+    assert result["problems"][0] == (
+        "OP-ZZHIDDEN-D is not a draft you can edit here: pick a draft of ZZ5B1 in ECL_GROUP "
+        "from 2025-10-01.")
+    assert not any("ZZHIDDEN " in p or "for ZZHIDDEN" in p for p in result["problems"])
+
+
+def test_o66_failure_path_a_hidden_entity_with_a_name_throws_before_reading_the_draft():
+    site, row = _o66_site_with_draft()
+    site.allowed = {"ZZOTHER"}
+    with pytest.raises(Exception) as info:
+        _o66_preview(site, name=row["name"])
+    assert type(info.value).__name__ == "ValidationError", info.value
+    assert site.reads == [], site.reads
+    assert site.get_doc_calls == [], site.get_doc_calls
+
+
+def test_o66_failure_path_an_unknown_name_throws():
+    site = _o55_site()
+    with pytest.raises(Exception) as info:
+        _o66_preview(site, name="OP-ZZ-MISSING")
+    assert type(info.value).__name__ == "ValidationError", info.value
+    assert "OP-ZZ-MISSING" in str(info.value)
+
+
+def test_o66_failure_path_the_entity_accountant_is_refused_with_a_name():
+    site, row = _o66_site_with_draft(roles=("Entity Accountant",), user="zz-ea@example.com")
+    with pytest.raises(Exception) as info:
+        _o66_preview(site, name=row["name"])
+    assert type(info.value).__name__ == "PermissionError", info.value
+    assert site.reads == []
 
 
 # --- O57: get_pending's OP drafts carry their structural effect (story 4.2,
