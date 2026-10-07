@@ -21,7 +21,11 @@
         "entity": "ZZA",
         "screen": "trial-balances"
       },
-      "due": null,
+      "due": {
+        "date": "2025-08-07",
+        "overdue": true,
+        "text": "Due 2025-08-07"
+      },
       "id": "tb:2025-07:ZZA",
       "kind": "blocking",
       "owner": "Entity Accountant",
@@ -43,7 +47,11 @@
         "entity": "ZZA",
         "screen": "trial-balances"
       },
-      "due": null,
+      "due": {
+        "date": "2025-10-07",
+        "overdue": false,
+        "text": "Due 2025-10-07"
+      },
       "id": "tb:2025-09:ZZA",
       "kind": "todo",
       "owner": "Entity Accountant",
@@ -163,7 +171,11 @@
       "action": {
         "screen": "trial-balances"
       },
-      "due": null,
+      "due": {
+        "date": "2025-08-07",
+        "overdue": true,
+        "text": "Due 2025-08-07"
+      },
       "id": "tbs-waiting:2025-07",
       "kind": "waiting",
       "owner": "EPM Analyst",
@@ -183,7 +195,11 @@
       "action": {
         "screen": "trial-balances"
       },
-      "due": null,
+      "due": {
+        "date": null,
+        "overdue": false,
+        "text": "No due date declared"
+      },
       "id": "tbs-waiting:2025-09",
       "kind": "waiting",
       "owner": "EPM Analyst",

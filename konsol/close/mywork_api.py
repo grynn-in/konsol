@@ -56,6 +56,11 @@ Per-period facts:
   ``close_event.reminders`` read for all the open periods. Always present
   (``{}`` when none); cut to the entities the caller may see. A failed read
   raises: it is never a "not reminded";
+- ``deadlines`` (konsol#305 D59, story 2.4): ``{step: {due, past, text}}``,
+  the period's ``deadline_model.period_deadlines``, from ONE
+  ``deadlines.period_deadlines`` read for all the open periods. Always
+  present: a failed read, or an open period the read did not answer, raises,
+  never "no due date"; an undeclared step reads "No due date declared";
 - ``unowned`` (#289, E206): entities named by the sign-off gate's
   ``tb_without_ownership`` config gap — a submitted TB with no covering
   ownership. Only the Close Lead is shown the resulting blocking item.
@@ -491,14 +496,34 @@ def _reminders(keys, allowed):
             for key, entries in out.items()}
 
 
+def _deadlines(keys, today):
+    """``{key: {step: {"due", "past", "text"}}}`` for every key in ``keys``
+    (konsol#305 D59, story 2.4): ONE ``deadlines.period_deadlines`` read for
+    all the open periods. ``mywork_model`` reads an absent ``deadlines`` as
+    "no due date", so every key is present: a failed read raises, and an open
+    period the read did not answer (not Regular, or not in the calendar) is
+    refused, never left without a deadline. An undeclared step is
+    deadline_model's "No due date declared"."""
+    from konsol.close import deadlines  # lazy (C-X1), as _reminders
+
+    by_key = deadlines.period_deadlines(list(keys), today)
+    missing = [key for key in keys if key not in by_key]
+    if missing:
+        frappe.throw("No deadlines could be read for %s: check that each is a Regular period "
+                     "in EPM Fiscal Year." % ", ".join(period_name(*key) for key in missing))
+    return {key: by_key[key] for key in keys}
+
+
 def _period_facts(first_close, allowed, today, shared):
     """``(per_period, extra_items)``; extra items are the rate-gate errors.
-    Each period's facts carry ``reminders`` (Y59), read once for all."""
+    Each period's facts carry ``reminders`` (Y59) and ``deadlines`` (D59),
+    each read once for all."""
     as_of_text = current_freshness()["as_of"]
     as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
     open_rows = _open_rows(first_close, today)
     reminders = _reminders([key for key, _ in open_rows], allowed)
+    due = _deadlines([key for key, _ in open_rows], today)
     for key, row in open_rows:
         code = period_name(*key)
         end_date = _date(row.get("end_date"))
@@ -531,6 +556,7 @@ def _period_facts(first_close, allowed, today, shared):
             "unowned": unowned,
             "since": end_date.isoformat(),
             "reminders": reminders[key],
+            "deadlines": due[key],
         }
     return per_period, extra
 
