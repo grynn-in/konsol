@@ -16,7 +16,12 @@ drawn.
   start), ``pending_exists`` (None or the draft names), ``period_rows`` and
   ``signed_keys``. ``change(ctx, pct, method)`` builds the model's change.
 - ``signed_keys`` (O64) maps each signed period's key, in key order, to its
-  signature ``{"run", "signed_on", "signed_by_name"}``:
+  signature ``{"run", "signed_on", "signed_by_name"}``. R52f (review S5):
+  only the signed periods an approval of the change will mark, i.e. those
+  inside ``signoff_gate.periods_marked_from(<the change's first period>)``
+  (``context``: the period asked; ``effect_for``: the draft's period by
+  ``close_event.period_of``'s rule), so the re-sign list is exactly what
+  ``record_data_change`` marks. The signatures:
   ``latest_signed_runs`` is read once with ``signed_off_by`` and
   ``signed_off_at``, and the signers' full names in one User read (none when
   nothing is signed). A signer with no full name, no User or a blank
@@ -87,13 +92,40 @@ def _node_periods(consolidation_group, entity):
         fields=_FIELDS, order_by="effective_date asc", limit_page_length=0)
 
 
-def _signed_keys():
-    """{(fy, fp): {"run", "signed_on", "signed_by_name"}} of every signed
-    period, in key order (O64): one signed-run read, one User read."""
+def _period_of(effective_date, period_rows):
+    """The ``(fiscal_year, fiscal_period)`` an approval of a change starting
+    on ``effective_date`` belongs to, by ``close_event.period_of``'s rule:
+    the first declared period starting on or after it, a Regular row winning
+    a start-date tie, then the lower year. None when no declared period
+    starts on or after it (the model then refuses the change)."""
+    eff = _iso(effective_date)
+    if eff is None:
+        return None
+    starts = [r for r in period_rows
+              if _iso(r.get("start_date")) is not None and _iso(r["start_date"]) >= eff]
+    if not starts:
+        return None
+    row = min(starts, key=lambda r: (_iso(r["start_date"]), r.get("period_type") != "Regular",
+                                     int(r["fiscal_year"]), int(r["fiscal_period"])))
+    return (int(row["fiscal_year"]), int(row["fiscal_period"]))
+
+
+def _signed_keys(first_key):
+    """{(fy, fp): {"run", "signed_on", "signed_by_name"}}, in key order
+    (O64), of each signed period an approval of a change in ``first_key``
+    will mark Re-sign Needed: only the keys inside
+    ``signoff_gate.periods_marked_from(*first_key)`` (R52f, review S5), the
+    rule ``record_data_change`` marks by. ``first_key`` None (no declared
+    period holds the change) keeps none. One signed-run read and one User
+    read; the rule is read only when something is signed."""
     from konsol.close import signoff_gate
 
     runs = {(int(fy), int(fp)): r for (fy, fp), r in
             signoff_gate.latest_signed_runs(("signed_off_by", "signed_off_at")).items()}
+    if runs:
+        marked = (set(signoff_gate.periods_marked_from(*first_key))
+                  if first_key is not None else set())
+        runs = {k: r for k, r in runs.items() if k in marked}
     signers = sorted({r.get("signed_off_by") for r in runs.values() if r.get("signed_off_by")})
     names = {}
     if signers:
@@ -141,7 +173,7 @@ def context(consolidation_group, entity, fiscal_year, fiscal_period):
         "later_exists": later[0] if later else None,
         "pending_exists": ", ".join(drafts) if drafts else None,
         "period_rows": period_rows,
-        "signed_keys": _signed_keys(),
+        "signed_keys": _signed_keys(key),
     }
 
 
@@ -172,5 +204,6 @@ def effect_for(doc):
                   "effective_date": _iso(doc.get("effective_date")),
                   "ownership_pct": doc.get("ownership_pct"),
                   "consolidation_method": doc.get("consolidation_method")}
-    return model.effect(the_change, _as_current(found[0]),
-                        fiscal_calendar.fiscal_period_rows(), _signed_keys())
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    return model.effect(the_change, _as_current(found[0]), period_rows,
+                        _signed_keys(_period_of(the_change["effective_date"], period_rows)))

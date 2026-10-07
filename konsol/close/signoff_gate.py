@@ -585,6 +585,25 @@ def _stamp_carried_change(source_key, affected, text, user, at):
         )
 
 
+def periods_marked_from(fiscal_year, fiscal_period):
+    """The set of period keys whose latest signed run ``record_data_change``
+    marks "Re-sign Needed" for a data change in (``fiscal_year``,
+    ``fiscal_period``) (konsol#305 R52f, review S5): empty when that period
+    is not Regular or is before the declared first close; otherwise every
+    declared Regular period from it onward (``_regular_periods_from``).
+    ``record_data_change`` calls this, and ``ownership_change`` lists only
+    the signed periods inside it, so "will need re-signing" and the mark
+    follow one rule. An undeclared period raises ``PeriodNotDeclared``
+    (``_period_row``)."""
+    key = _key(fiscal_year, fiscal_period)
+    if _period_row(key, ("period_type",)).get("period_type") != REGULAR:
+        return set()
+    first = _first_close()
+    if first is not None and key < first:
+        return set()
+    return _regular_periods_from(key, first)
+
+
 def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     """Record that the period's data changed (``text``, by ``user``, now) on
     its EPM Fiscal Year Period row, carry that change onto every LATER
@@ -624,20 +643,18 @@ def record_data_change(fiscal_year, fiscal_period, text, user, entity=None):
     entity caused the change.
     """
     key = _key(fiscal_year, fiscal_period)
-    row = _period_row(key, ("name", "period_type"))
+    row = _period_row(key, ("name",))
     at = frappe.utils.now_datetime()
     frappe.db.set_value(
         "EPM Fiscal Year Period", row["name"],
         {"data_changed_at": at, "data_changed_by": user, "data_change": text},
         update_modified=False,
     )
-    if row.get("period_type") != REGULAR:
-        return []
-    first = _first_close()
-    if first is not None and key < first:
+    # R52f: the one rule the ownership-change preview also lists by.
+    affected = periods_marked_from(*key)
+    if not affected:
         return []
     affected_by = "%s at %s by %s" % (text, at.strftime("%Y-%m-%d %H:%M:%S"), user)
-    affected = _regular_periods_from(key, first)
     _stamp_carried_change(key, affected, text, user, at)
     return _mark_latest_signed(affected, affected_by, entity=entity)
 

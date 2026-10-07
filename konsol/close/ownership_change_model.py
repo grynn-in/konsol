@@ -28,7 +28,7 @@ Inputs:
 - ``pending_exists``: falsy, or the name of the node's draft awaiting approval.
 - ``period_rows``: ``fiscal_calendar.fiscal_period_rows()``. Only Regular rows
   count as first days, so an Adjustment period's start is never a first day;
-  ``effect``'s ``resign`` list reads every row (O54a).
+  ``effect``'s ``resign`` list looks up each signed key it is given here.
 
 Dates may be ``datetime.date`` objects or ISO strings. The output always uses
 ISO strings.
@@ -229,10 +229,12 @@ def effect(change, current, period_rows, signed_keys):
 
     Raises ValueError when the change has no current period, does not start
     on a Regular period's first day, or has a bad % or method. The effect of
-    a refused change is never guessed. ``resign`` lists signed periods of
-    every type (Regular, Opening, Closing, Adjustment) that start on or after
-    the change (O54a); a signed key that is not in the calendar at all
-    raises.
+    a refused change is never guessed. ``resign`` lists the given signed
+    periods that start on or after the change; a signed key that is not in
+    the calendar at all raises. Which signed keys to give is the caller's
+    rule, not this model's (R52f, review S5): ``ownership_change`` passes
+    only those inside ``signoff_gate.periods_marked_from``, the periods an
+    approval marks Re-sign Needed, so the list is exactly that.
     """
     if current is None:
         raise ValueError("an ownership change has no effect without a current period")
@@ -257,10 +259,9 @@ def effect(change, current, period_rows, signed_keys):
             raise ValueError("the current period's end %s is in no Regular period" % cur_to)
         periods = "%s to %s" % (_name(first), _name(last))
 
-    # O54a: every signed period from the first affected one onward needs
-    # re-signing, whatever its type (Regular, Opening, Closing, Adjustment).
-    # Only the first-day checks above are Regular-only. A signed key absent
-    # from the calendar is corrupt data and raises.
+    # Every given signed period from the change onward is listed: the caller
+    # gives only the ones signoff_gate.periods_marked_from marks (R52f). A
+    # signed key absent from the calendar is corrupt data and raises.
     by_key = {_key(r["fiscal_year"], r["fiscal_period"]): r for r in period_rows}
     resign_rows = []
     for fy, fp in signed_keys:
