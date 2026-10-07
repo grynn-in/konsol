@@ -142,6 +142,8 @@ test("R01l: gridView keeps hiddenNote set when rows is empty (pure view model)",
     // D61: the strip's keys, from the golden payload (the real producer).
     deadlines: GOLDEN.deadlines,
     signoff_overdue: GOLDEN.signoff_overdue,
+    ic_overdue: GOLDEN.ic_overdue,
+    journals_overdue: GOLDEN.journals_overdue,
   };
   const view = gridView(payload, false, new Date("2026-07-15T12:00:00Z"), "Europe/London");
   assert.equal(view.rows.length, 0);
@@ -238,5 +240,16 @@ test("D61: an overdue TB cell shows an Overdue chip, v-if on row.tbOverdue, insi
 test("D61 (one source of truth): Period.vue never derives overdue from a date or past flag", () => {
   const source = read();
   assert.doesNotMatch(source, /\.past\b/);
-  assert.doesNotMatch(source, /signoff_overdue|\.overdue\s*=/);
+  assert.doesNotMatch(source, /signoff_overdue|ic_overdue|journals_overdue|\.overdue\s*=/);
+});
+
+// --- konsol#305 D61b: IC and journals overdue chips (#305-Q5-1) ----------
+
+test("D61b: the IC and journals chips come from gridView's strip (fed the golden payload), never from the screen", () => {
+  const view = gridView(GOLDEN, false, new Date("2025-10-06T15:00:00Z"), "Europe/London");
+  const by = Object.fromEntries(view.deadlines.map((i) => [i.step, i]));
+  assert.equal(by.ic.overdue, GOLDEN.ic_overdue);
+  assert.equal(by.journals.overdue, GOLDEN.journals_overdue);
+  const tpl = template(read());
+  assert.match(tpl, /<span\s+v-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
 });
