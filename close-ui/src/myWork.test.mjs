@@ -336,6 +336,68 @@ test("(Y64) failure path: an unreadable reminded value throws, never a guessed l
 	assert.throws(() => remindedLine({ ...ea, reminded: { ...ea.reminded, count: 0 } }, Y64_NOW, Y64_TZ), /count/);
 });
 
+// --- R52t (U13, stories 1.5, 1.2): no time zone says so on the item ----------
+// MyWork.vue runs remindedLine for every item inside `grouped`; a throw there
+// replaces the whole screen with "Invalid time zone specified: null". With no
+// zone, the counted entry gives the item a sentence and never calls Intl; the
+// {reminded, of} form needs no zone and is unchanged.
+
+const R52T_NO_ZONE = "Your browser reported no time zone, so the reminder time cannot be shown.";
+
+function withoutIntl(fn) {
+	const saved = globalThis.Intl;
+	globalThis.Intl = new Proxy(
+		{},
+		{
+			get(_target, key) {
+				throw new Error(`Intl.${String(key)} was called`);
+			},
+		},
+	);
+	try {
+		return fn();
+	} finally {
+		globalThis.Intl = saved;
+	}
+}
+
+test("(R52t) failure path: a golden counted reminder with timeZone null gives the no-zone sentence, never a throw", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	assert.equal(remindedLine(item, Y64_NOW, null), "Your browser reported no time zone, so the reminder time cannot be shown.");
+	assert.equal(
+		remindedLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"), Y64_NOW, null),
+		"Your browser reported no time zone, so the reminder time cannot be shown.",
+	);
+});
+
+test("(R52t) every falsy time zone gives the sentence and calls no Intl", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	for (const zone of [null, undefined, ""]) {
+		assert.equal(withoutIntl(() => remindedLine(item, Y64_NOW, zone)), R52T_NO_ZONE, `zone ${JSON.stringify(zone)}`);
+	}
+});
+
+test("(R52t) with no zone, every golden item still gets its line: waiting items unchanged, null stays no line", () => {
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-07"), Y64_NOW, null), "2 of 2 reminded");
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-09"), Y64_NOW, null), "1 of 1 reminded");
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			const line = withoutIntl(() => remindedLine(item, Y64_NOW, null));
+			if (!("reminded" in item)) assert.equal(line, null, `${persona} ${item.id} has no line`);
+			else if ("count" in item.reminded) assert.equal(line, R52T_NO_ZONE, `${persona} ${item.id}`);
+			else assert.match(line, /^\d+ of \d+ reminded$/, `${persona} ${item.id}`);
+			if ("reminded" in item) assert.equal(remindedLine({ ...item, reminded: null }, Y64_NOW, null), null, `${item.id} null`);
+		}
+	}
+});
+
+test("(R52t) no zone does not hide an unreadable counted entry: it still throws", () => {
+	const ea = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	assert.throws(() => remindedLine({ ...ea, reminded: { ...ea.reminded, count: 0 } }, Y64_NOW, null), /count/);
+	const { last_by_name, ...noName } = ea.reminded;
+	assert.throws(() => remindedLine({ ...ea, reminded: noName }, Y64_NOW, null), /last_by_name/);
+});
+
 // --- D62 (stories 1.1, 2.4): the due line and the overdue badge -------------
 // Fed the same golden My work items (D59 regenerated them from the real
 // stub-site get_my_work call). D58's `due` is {date, text, overdue} on a
