@@ -24,15 +24,24 @@
  *   freshness bar (B09), with the zone from timefmt.js's `userTimeZone` (B29),
  *   shared with AppShell. With no zone the list is an error, never a
  *   guessed zone; a zone-less server timestamp is refused the same way.
+ * - Y62 (story 1.5): a Missing row shows remind.js's reminded text
+ *   (`row.reminded`, built by `entityRows`). When the server says
+ *   `can_remind`, that row also has a Remind button (`row.canRemind`). It
+ *   posts `remindBody(period, entity, "tb")` through the one function
+ *   `remind(row)`. On success my_tbs is re-read once; a refusal shows the
+ *   server's sentence through `messageLines` and leaves the row as it was.
+ *   The server picks the recipients; the recipient sees the text only.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import LoadState from "../components/LoadState.vue";
 import TbUpload from "../sections/TbUpload.vue";
 import TbCompare from "../sections/TbCompare.vue";
-import { get } from "../api.js";
+import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { entityRows, entityWord } from "../tbTable.js";
+import { REMIND, remindBody } from "../remind.js";
+import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { periodName as formatPeriod } from "../periodName.js";
 
@@ -136,6 +145,43 @@ async function refreshAfterSubmit() {
 	}
 }
 
+// Y62: Remind on a Missing row. `reminding` is the entity being posted for;
+// `remindError` is the server's refusal for one entity, split into lines.
+const reminding = ref(null);
+const remindError = ref(null);
+const reloadError = ref(null);
+
+/** After a reminder is sent: re-read my_tbs in place (the new reminded text). */
+async function reloadTbs() {
+	const p = period.value;
+	const mine = ++seq;
+	reloadError.value = null;
+	try {
+		const tbs = await get(MY_TBS, { fiscal_year: p.year, fiscal_period: p.period });
+		if (mine !== seq) return;
+		load.data = tbs;
+		load.now = new Date();
+	} catch (e) {
+		if (mine !== seq) return;
+		reloadError.value = `The reminder was sent, but the list could not be re-read: ${e.message}`;
+	}
+}
+
+/** The one function that sends a reminder. A refusal leaves the row as it was. */
+async function remind(row) {
+	const p = period.value;
+	remindError.value = null;
+	reminding.value = row.entity;
+	try {
+		await post(REMIND, remindBody({ fiscal_year: p.year, fiscal_period: p.period }, row.entity, "tb"));
+		await reloadTbs();
+	} catch (e) {
+		remindError.value = { entity: row.entity, lines: messageLines(e.message) };
+	} finally {
+		reminding.value = null;
+	}
+}
+
 /** `entityRows` refuses an unknown status; that refusal is shown, not hidden. */
 const table = computed(() => {
 	if (load.status !== "ready") return { rows: null, error: null };
@@ -231,6 +277,10 @@ watch(
 				This period is not open. Trial balances are shown read only.
 			</p>
 
+			<p v-if="reloadError" role="alert" class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-red-3">
+				{{ reloadError }}
+			</p>
+
 			<p v-if="entityNote" role="alert" class="mb-4 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-3 text-sm text-ink-amber-3">
 				{{ entityNote }}
 			</p>
@@ -270,6 +320,19 @@ watch(
 							</td>
 							<td class="px-4 py-2">
 								<span class="inline-block rounded px-2 py-0.5 text-xs font-medium" :class="STATUS_TONE[row.status]">{{ row.status }}</span>
+								<div v-if="row.reminded" class="mt-1 text-xs text-ink-gray-6">{{ row.reminded }}</div>
+								<button
+									v-if="row.canRemind"
+									type="button"
+									class="mt-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs text-ink-gray-8 hover:bg-surface-gray-2 disabled:opacity-50"
+									:disabled="reminding === row.entity"
+									@click.stop="remind(row)"
+									@keydown.enter.stop
+									@keydown.space.stop
+								>Remind</button>
+								<p v-if="remindError && remindError.entity === row.entity" role="alert" class="mt-1 text-xs text-ink-red-3">
+									<span v-for="(line, i) in remindError.lines" :key="i" class="block">{{ line }}</span>
+								</p>
 							</td>
 							<td class="px-4 py-2 text-ink-gray-7">
 								<template v-if="row.tb">

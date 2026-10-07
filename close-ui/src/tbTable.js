@@ -7,7 +7,7 @@
 //   totals}` (konsol/close/tb_model.py `check_rows`), for the upload screen's
 //   check table.
 // - `entityRows(myTbs)` — A25's `my_tbs` output, `{period_open, can_upload,
-//   entities}`, for "my entities" (the trial-balances screen).
+//   can_remind, entities}`, for "my entities" (the trial-balances screen).
 // - `compareRows(cmp)` — A12/A28's compare output, `{rows, basis_note,
 //   previous_note, previous_code}`, for the compare-by-account view.
 //
@@ -21,6 +21,7 @@
 // comparable), and that renders as the dash "—", never "0.00".
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { remindedText } from "./remind.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 const DASH = "—";
@@ -114,6 +115,12 @@ function timestampText(value, now, timeZone) {
  *
  * Throws on a status this module does not know, so an entity is never shown
  * with a blank or guessed status.
+ *
+ * Y62 (story 1.5): `reminded` is remind.js's "Reminded N× · last <time> by
+ * <name>" for the entity's `reminders` entry, or null when none was sent.
+ * `canRemind` is the payload's `can_remind` AND the status is `Missing`. A
+ * payload with no boolean `can_remind`, or an entity with no `reminders` key,
+ * throws: neither is read as "no".
  */
 export function entityRows(myTbs, now, timeZone) {
   if (!timeZone) {
@@ -122,9 +129,15 @@ export function entityRows(myTbs, now, timeZone) {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
     throw new Error("entityRows requires a valid `now`");
   }
+  if (typeof myTbs.can_remind !== "boolean") {
+    throw new Error("entityRows: the payload has no can_remind flag (Y56 always sends it).");
+  }
   return (myTbs.entities || []).map((entity) => {
     if (!KNOWN_STATUSES.has(entity.status)) {
       throw new Error(`entityRows: unknown TB status: ${entity.status}`);
+    }
+    if (!("reminders" in entity)) {
+      throw new Error(`entityRows: ${entity.entity} has no reminders entry (Y56 always sends it, null when none).`);
     }
     const tb = entity.tb
       ? {
@@ -145,6 +158,8 @@ export function entityRows(myTbs, now, timeZone) {
       tbText: tb ? tb.name : DASH,
       uploaded: tb ? timestampText(tb.creation, now, timeZone) : DASH,
       exception,
+      reminded: remindedText(entity.reminders, now, timeZone),
+      canRemind: myTbs.can_remind && entity.status === "Missing",
     };
   });
 }
