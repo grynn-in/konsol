@@ -363,3 +363,155 @@ test("D06: zero declared dimensions — the golden journal item renders no dimen
 	assert.equal((table.match(/dim\b/g) || []).length >= 2, true);
 	assert.equal((table.match(/v-for="dim in /g) || []).length, 2);
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 O62 (wireframe-4.2.md section 3, confirmed as drawn by Deepak Pai
+// 7 Oct): Approvals › select an Ownership Period item → the right-hand detail
+// shows the identical EFFECT IF APPROVED block (O61's), above Approve /
+// Reject. A Desk draft (`effect: null`, O57/O58) says "Drafted in Desk:
+// effect not previewed." and never shows empty columns. Fed the REAL golden
+// Approvals queue (close_approvals_op_queue_payload.json, the stub-site
+// `get_queue()` of test_close_approvals_api.py's `_o58_site()`) through the
+// REAL queueView and rates.js's ownershipEffectView (O59).
+// ---------------------------------------------------------------------------
+import { ownershipEffectView } from "../rates.js";
+
+const OP_QUEUE_FIXTURE = fileURLToPath(
+	new URL("../../../konsol/tests/fixtures/close_approvals_op_queue_payload.json", import.meta.url),
+);
+const O62_NOW = new Date("2026-07-02T09:00:00Z");
+const O62_TZ = "Europe/London";
+
+/** The screen's own `opEffect(item)`, built from its <script> source with
+ * the real `ownershipEffectView` injected — the function the component runs,
+ * not a copy. */
+function loadOpEffect() {
+	const js = script(read());
+	const constant = js.match(/const DESK_DRAFT = [^\n]*\n/);
+	assert.ok(constant, "the screen declares const DESK_DRAFT");
+	const fn = js.match(/function opEffect\(item\)\s*\{[\s\S]*?\n\}\n/);
+	assert.ok(fn, "the screen declares function opEffect(item)");
+	return new Function("ownershipEffectView", "OWNERSHIP", `${constant[0]}${fn[0]}return opEffect;`)(
+		ownershipEffectView,
+		"Ownership Period",
+	);
+}
+
+function opQueueItem(name) {
+	const view = queueView(golden(OP_QUEUE_FIXTURE), O62_NOW, O62_TZ);
+	const item = view.items.find((i) => i.name === name);
+	assert.ok(item, `the golden queue has ${name}`);
+	return item;
+}
+
+function opDialog(tpl) {
+	const block = blockMatching(tpl, "div", /aria-label="Ownership change detail"/);
+	assert.ok(block, "an Ownership change detail dialog exists");
+	return tpl.slice(block.start, block.end);
+}
+
+test("O62: the golden OP change draft, through queueView, gives the wireframe's EFFECT IF APPROVED rows", () => {
+	const opEffect = loadOpEffect();
+	const item = opQueueItem("OP-ZZ58-2026-07-01");
+	const panel = opEffect(item);
+	assert.equal(panel.desk, undefined);
+	assert.equal(panel.error, undefined);
+	assert.deepEqual(
+		panel.view.rows.map((r) => [r.label, r.before, r.after]),
+		[
+			["Ownership", "100 %", "80 %"],
+			["Method", "full", "full"],
+		],
+		"Ownership and Method, before → after (section 3 shows Ends, not a Covers row)",
+	);
+	assert.equal(panel.view.currentEnds, ownershipEffectView(golden(OP_QUEUE_FIXTURE).items[1].effect).currentEnds);
+	assert.equal(panel.view.periods, "FY2026 P07 onward (open-ended)");
+	assert.deepEqual(panel.view.resign, ["FY2026 P07"]);
+	assert.equal(panel.view.resignNone, null);
+	assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
+});
+
+test("O62 failure path: the golden Desk draft (effect null) gives the sentence, never empty columns", () => {
+	const opEffect = loadOpEffect();
+	assert.deepEqual(opEffect(opQueueItem("OP-ZZ58B-2026-07-01")), { desk: "Drafted in Desk: effect not previewed." });
+});
+
+test("O62 failure path: an HER item has no panel; a broken or missing OP effect shows the thrown sentence, never a guessed panel", () => {
+	const opEffect = loadOpEffect();
+	assert.equal(opEffect(opQueueItem("HER-ZZ58")), null);
+	const payload = golden(OP_QUEUE_FIXTURE);
+	const op = payload.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	delete op.effect.resign;
+	const broken = opEffect(queueView(payload, O62_NOW, O62_TZ).items.find((i) => i.name === op.name));
+	assert.equal(broken.view, undefined);
+	assert.match(broken.error, /resign/);
+	delete op.effect;
+	const missing = opEffect(queueView(payload, O62_NOW, O62_TZ).items.find((i) => i.name === op.name));
+	assert.match(missing.error, /effect/, "an OP item with no effect key is a server regression, shown as such");
+});
+
+test("O62: opEffect reads the server's effect (rawEffect), never queueView's journal-shaped .effect", () => {
+	const fn = script(read()).match(/function opEffect\(item\)\s*\{([\s\S]*?)\n\}\n/);
+	assert.ok(fn, "opEffect(item) is defined");
+	assert.match(fn[1], /ownershipEffectView\(\s*item\.rawEffect\s*\)/);
+	assert.doesNotMatch(fn[1], /item\.effect\b/);
+});
+
+test("O62: an OP item's title opens the Ownership change detail, which loads no statement", () => {
+	const source = read();
+	const js = script(source);
+	assert.match(
+		source,
+		/import\s*\{[^}]*\bownershipEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+		"imports ownershipEffectView from rates.js",
+	);
+	const fn = js.match(/function selectOwnership\(item\)\s*\{([\s\S]*?)\n\}/);
+	assert.ok(fn, "selectOwnership(item) is defined");
+	assert.match(fn[1], /item\.doctype\s*!==\s*OWNERSHIP/, "refuses a non-OP item first");
+	assert.doesNotMatch(fn[1], /loadDetailStatement|GET_STATEMENT/, "an OP item never fetches a statement");
+	assert.match(template(source), /@click="selectOwnership\(item\)"/);
+});
+
+test("O62: the detail shows EFFECT IF APPROVED, read-only, above Approve / Reject; the Desk sentence and the error have their own branches", () => {
+	const tpl = template(read());
+	const dialog = opDialog(tpl);
+	assert.match(dialog, /v-if="selectedItem && selectedItem\.doctype === OWNERSHIP"/);
+	const panelAt = dialog.indexOf("EFFECT IF APPROVED");
+	const approveAt = dialog.search(/>\s*Approve\s*</);
+	const rejectAt = dialog.indexOf("Reject with reason");
+	assert.ok(panelAt >= 0, "the block is in the detail");
+	assert.ok(approveAt > panelAt && rejectAt > panelAt, "the block comes before Approve and Reject");
+	for (const field of ["row.before", "row.after", "currentEnds", "periods", "resign", "resignNone", "notShown"]) {
+		assert.ok(dialog.includes(field), `the block shows ${field}`);
+	}
+	assert.match(dialog, /Re-sign Needed/);
+	assert.match(dialog, /\.desk\b/, "the Desk-draft sentence is rendered");
+	assert.match(dialog, /\.error\b/, "a broken effect's sentence is rendered");
+	const block = dialog.slice(panelAt, approveAt);
+	assert.doesNotMatch(block.slice(0, block.indexOf("canAct(selectedItem)")), /<input|<select|<textarea|<Button|@click/, "the block is read-only");
+});
+
+test("O62 failure path, R2: the detail's Approve / Reject are gated on canAct(selectedItem) and reuse approve()/reject() (no new POST)", () => {
+	const dialog = opDialog(template(read()));
+	assert.match(dialog, /v-if="canAct\(selectedItem\)"/);
+	assert.match(dialog, /@click="approve\(selectedItem\)"/);
+	assert.match(dialog, /@click="reject\(selectedItem\)"/);
+	assert.match(dialog, /v-else[^>]*>\s*\{\{\s*selectedItem\.approve\.message\s*\}\}/, "a refused/not-approver item shows the server's sentence instead");
+});
+
+test("O62: the journal detail never opens for an OP item (its Effect / Before-After are journal-only)", () => {
+	const tpl = template(read());
+	const block = blockMatching(tpl, "div", /aria-label="Journal detail"/);
+	assert.ok(block, "the journal detail dialog exists");
+	const open = tpl.slice(block.start, tpl.indexOf(">", block.start));
+	assert.match(open, /v-if="selectedItem && selectedItem\.doctype === JOURNAL"/);
+});
+
+test("O62: the sent-back list itself renders no action control", () => {
+	const tpl = template(read());
+	const at = tpl.indexOf('v-for="item in view.sentBack"');
+	assert.ok(at >= 0);
+	const ulAt = tpl.lastIndexOf("<ul", at);
+	const { start, end } = blockFor(tpl, ulAt, "ul");
+	assert.doesNotMatch(tpl.slice(start, end), /@click|canAct\(/);
+});

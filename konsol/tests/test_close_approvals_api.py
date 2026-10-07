@@ -1004,3 +1004,23 @@ def test_o58_a_group_node_draft_is_visible_to_a_scoped_caller_and_carries_its_ef
         row["data_area_id"] = None
     item = _o58_item(_call(site), O58_CHANGE)
     assert item["effect"]["after"]["pct"] == 80.0
+
+
+# --- O62: the golden Approvals queue with Ownership Period effects -----------------
+# close-ui's approvals.screen.test.mjs (O62) feeds this file to the REAL
+# queueView + ownershipEffectView. It is the whole ``get_queue()`` payload of
+# ``_o58_site()``: one OP change draft with its effect, one Desk draft with
+# ``effect: None`` and one HER item with no ``effect`` key.
+
+_O62_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "fixtures", "close_approvals_op_queue_payload.json")
+
+
+def test_o62_golden_op_queue_payload_equals_the_real_stub_site_call():
+    result = _call(_o58_site())
+    with open(_O62_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert result == golden
+    ops = {i["name"]: i for i in result["items"] if i["doctype"] == OP}
+    assert ops[O58_CHANGE]["effect"]["after"]["pct"] == 80.0
+    assert ops[O58_DESK]["effect"] is None
