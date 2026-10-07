@@ -523,7 +523,14 @@ def _change_choices(calendar, allowed):
       gives two items, never a guessed one. Only an entity that already has a
       submitted period can be changed (C-O3: a first ownership stays the Desk
       link). Cut to ``allowed`` without adding to ``hidden`` (the payload's
-      existing rule already counts the hidden entities).
+      existing rule already counts the hidden entities). Each item also
+      carries ``current`` (R52j, review U4; wireframe section 1, the
+      "Currently" line): the node's latest submitted period by
+      ``effective_date`` (ties, which overlapping-period validation should
+      prevent, go to the higher name), in ``ownership_change._as_current``'s
+      shape (ISO dates, ``end_date`` None when open-ended). It comes from the
+      same nodes read, with more fields. Once a period is chosen, the
+      preview's ``current`` wins (R52r).
     - ``periods``: every Regular period whose effective status is Open,
       ``{"fiscal_year", "fiscal_period", "label", "start_date"}`` (ISO), in
       calendar order, from the calendar ``get_ownership`` already read.
@@ -531,17 +538,28 @@ def _change_choices(calendar, allowed):
     Costs two reads (the submitted nodes, and the names of the visible
     entities on them), whatever the number of nodes; the name read is skipped
     when no node is visible."""
+    from konsol.close import ownership_change  # lazy (C-X1)
+
     nodes = frappe.get_all(
         OP, filters={"docstatus": 1, "data_area_id": ["is", "set"]},
-        fields=["consolidation_group", "data_area_id"], limit_page_length=0)
-    pairs = sorted({(r["data_area_id"], r["consolidation_group"]) for r in nodes})
+        fields=["consolidation_group", "data_area_id", "name", "effective_date", "end_date",
+                "ownership_pct", "consolidation_method"], limit_page_length=0)
+    latest = {}
+    for r in nodes:
+        node = (r["data_area_id"], r["consolidation_group"])
+        held = latest.get(node)
+        if held is None or (r["effective_date"], r["name"]) > (held["effective_date"],
+                                                               held["name"]):
+            latest[node] = r
+    pairs = sorted(latest)
     pairs, _hidden = _cut(pairs, allowed, key=lambda p: p[0])
     names = {}
     if pairs:
         names = {r["name"]: r.get("entity_name") for r in frappe.get_all(
             "Entity", filters={"name": ["in", sorted({e for e, _g in pairs})]},
             fields=["name", "entity_name"], limit_page_length=0)}
-    entities = [{"entity": e, "entity_name": names.get(e), "consolidation_group": g}
+    entities = [{"entity": e, "entity_name": names.get(e), "consolidation_group": g,
+                 "current": ownership_change._as_current(latest[(e, g)])}
                 for e, g in pairs]
     periods = [
         {"fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"]),
