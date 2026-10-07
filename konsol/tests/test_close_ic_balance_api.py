@@ -452,7 +452,8 @@ def test_save_edit_scope_checks_the_stored_pair():
 
 def test_rule_gaps_read_the_period_draft_and_approved_balances():
     site = _Site()
-    [gap] = _invoke(site, lambda api: api.rule_gaps(2025, 7))
+    [gap, pending] = _invoke(site, lambda api: api.rule_gaps(2025, 7))
+    assert pending["code"] == "ic_balance_draft_pending"  # I52: the draft UK01 → DE01 has R-UK
     assert gap["code"] == "ic_unrealized_profit_rule_undeclared"
     assert gap["pairs"] == [{"selling_entity": "FR01", "buying_entity": "DE01"}]
     assert gap["entities"] == ["DE01", "FR01"]
@@ -519,7 +520,8 @@ def test_rule_gaps_name_a_pair_two_rules_match():
     site = _Site()
     site.rules = [_rule("R-ALL"), _rule("R-UK", debit="UK01", credit="DE01", margin=25.0)]
     gaps = _invoke(site, lambda api: api.rule_gaps(2025, 7))
-    assert [g["code"] for g in gaps] == ["ic_unrealized_profit_rule_ambiguous"]
+    assert [g["code"] for g in gaps] == ["ic_unrealized_profit_rule_ambiguous",
+                                         "ic_balance_draft_pending"]
     assert gaps[0]["pairs"] == [{"selling_entity": "UK01", "buying_entity": "DE01",
                                  "rule_ids": ["R-ALL", "R-UK"]}]
     assert len([r for r in site.reads if r[1] == "IC Elimination Rule"]) == 1
@@ -605,5 +607,104 @@ def test_shared_reads_carry_the_ambiguous_gap():
 
     period_gaps, open_gaps = _invoke(site, run)
     assert [r[1] for r in _ic_reads(site)] == ["IC Balance", "IC Elimination Rule"]
-    assert [g["code"] for g in period_gaps] == ["ic_unrealized_profit_rule_ambiguous"]
+    assert [g["code"] for g in period_gaps] == ["ic_unrealized_profit_rule_ambiguous",
+                                                "ic_balance_draft_pending"]
     assert [g["code"] for g in open_gaps] == ["ic_unrealized_profit_rule_ambiguous"]
+
+
+# --- #305-S8-1 (I52): a draft IC Balance with a matching rule blocks the period ---
+
+PENDING = "ic_balance_draft_pending"
+
+
+def test_period_gate_appends_the_pending_gap_last():
+    """The default site: UK01 → DE01 is a draft with R-UK (inventory 250);
+    FR01 → DE01 is approved with no rule. Both read paths agree."""
+    site = _Site()
+
+    def run(api):
+        return api.rule_gaps(2025, 7), api.rule_gaps(2025, 7, reads=api.open_reads())
+
+    fresh, shared = _invoke(site, run)
+    for gaps in (fresh, shared):
+        assert [g["code"] for g in gaps] == ["ic_unrealized_profit_rule_undeclared", PENDING]
+        pending = gaps[-1]
+        assert pending["pairs"] == [{"selling_entity": "UK01", "buying_entity": "DE01",
+                                     "names": ["ICB-UK01-DE01-2025-P7"]}]
+        assert pending["entities"] == ["DE01", "UK01"]
+        assert "UK01 → DE01 (ICB-UK01-DE01-2025-P7)" in pending["message"]
+    assert fresh == shared
+
+
+def test_period_gate_pending_after_undeclared_and_ambiguous():
+    site = _Site()
+    site.rules = [_rule("R-UK", debit="UK01"), _rule("R-UK2", debit="UK01", credit="DE01")]
+    codes = [g["code"] for g in _invoke(site, lambda api: api.rule_gaps(2025, 7))]
+    assert codes == ["ic_unrealized_profit_rule_undeclared",
+                     "ic_unrealized_profit_rule_ambiguous", PENDING]
+
+
+def test_period_gate_no_pending_gap_when_the_draft_is_approved():
+    site = _Site()
+    site.balances[0] = dict(site.balances[0], docstatus=1)
+    codes = [g["code"] for g in _invoke(site, lambda api: api.rule_gaps(2025, 7))]
+    assert PENDING not in codes, codes
+
+
+def test_open_rule_gaps_never_carry_the_pending_gap():
+    """C-S8-2, failure path: My work's setup gaps never see the pending gap,
+    over the same reads that give the period gate its pending gap."""
+    site = _Site()
+
+    def run(api):
+        reads = api.open_reads()
+        return (api.rule_gaps(2025, 7, reads=reads), api.open_rule_gaps(reads),
+                api.open_rule_gaps())
+
+    period_gaps, shared, fresh = _invoke(site, run)
+    assert PENDING in [g["code"] for g in period_gaps]
+    for gaps in (shared, fresh):
+        assert [g["code"] for g in gaps] == ["ic_unrealized_profit_rule_undeclared"], gaps
+
+
+def test_get_pending_gap_names_only_the_shown_pairs():
+    site = _Site()
+    site.rules.append(_rule("R-ALL"))
+    site.balances.append(_bal("ICB-ES01-FR01-2025-P7", "ES01", "FR01"))
+    out = _get(site)
+    pairs = [(p["selling_entity"], p["buying_entity"]) for p in out["pending_gap"]["pairs"]]
+    assert pairs == [("ES01", "FR01"), ("UK01", "DE01")]
+    assert out["pending_gap"]["code"] == PENDING
+
+    scoped = _Site()
+    scoped.rules.append(_rule("R-ALL"))
+    scoped.balances.append(_bal("ICB-ES01-FR01-2025-P7", "ES01", "FR01"))
+    scoped.allowed = {"UK01"}
+    out = _get(scoped)
+    assert out["pending_gap"]["pairs"] == [{"selling_entity": "UK01", "buying_entity": "DE01",
+                                            "names": ["ICB-UK01-DE01-2025-P7"]}]
+    assert "ES01" not in out["pending_gap"]["message"]
+    assert out["hidden"] == 2  # FR01 → DE01 and ES01 → FR01, as before I52
+
+
+def test_get_pending_gap_none_for_a_caller_seeing_neither_entity():
+    site = _Site()
+    site.allowed = {"XX99"}
+    out = _get(site)
+    assert out["pending_gap"] is None
+    assert out["balances"] == [] and out["hidden"] == 2
+
+
+def test_get_pending_gap_none_without_a_draft_that_has_a_rule():
+    site = _Site()
+    site.rules = []
+    assert _get(site)["pending_gap"] is None
+
+
+def test_golden_fixture_carries_the_pending_gap():
+    with open(_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert "pending_gap" in golden
+    assert golden["pending_gap"]["code"] == PENDING
+    assert golden["pending_gap"]["pairs"] == [
+        {"selling_entity": "UK01", "buying_entity": "DE01", "names": ["ICB-UK01-DE01-2025-P7"]}]
