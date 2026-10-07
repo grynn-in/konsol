@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { parseZoned } from "./timefmt.js";
+import { dueDateText } from "./dueDate.js";
 import {
   STATUS_LABELS,
   gridView,
@@ -25,6 +26,8 @@ import {
   ownershipGapsCount,
   mergeDrafts,
   moveFlagView,
+  ownershipChangeBody,
+  ownershipEffectView,
 } from "./rates.js";
 
 function cell(overrides = {}) {
@@ -789,4 +792,165 @@ test("mergeDrafts: a clean draft with no error is rebuilt as a new object (not t
   const merged = mergeDrafts(old, viewCell(1.25, "100"), false);
   assert.notEqual(merged, old, "a clean, un-refused draft is replaced, not mutated in place");
   assert.deepEqual(merged, old);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 O59 (story 4.2; wireframe-4.2.md, confirmed as drawn by Deepak
+// Pai 7 Oct): the ownership change body and the effect panel's view. Fed the
+// REAL producers' output: O55's preview golden files and O57's pending golden
+// file, each asserted equal to the stub-site call by its own host test.
+
+function fixture(name) {
+  return JSON.parse(
+    fs.readFileSync(new URL(`../../konsol/tests/fixtures/${name}`, import.meta.url), "utf8"),
+  );
+}
+
+const PREVIEW = fixture("close_ownership_preview_payload.json");
+const REFUSED = fixture("close_ownership_preview_refused.json");
+const PENDING = fixture("close_rates_pending_payload.json");
+
+// The O56 signature, read from the endpoint itself, so the body cannot drift
+// from what save_ownership_change accepts.
+function saveOwnershipChangeParams() {
+  const src = fs.readFileSync(new URL("../../konsol/close/rates_api.py", import.meta.url), "utf8");
+  const m = /def save_ownership_change\(([^)]*)\)/.exec(src);
+  assert.ok(m, "save_ownership_change is not defined in rates_api.py");
+  return m[1].split(",").map((p) => p.trim().split("=")[0].trim()).filter(Boolean);
+}
+
+const PERIOD = { fiscal_year: 2025, fiscal_period: 10 };
+// Dates are written by the shared dueDate.js wording (ICU may spell
+// September "Sept"), so the expectations use it too; the test pins WHICH
+// date goes where, the formatter's own test pins its wording.
+const D = (iso) => dueDateText(iso, "test");
+const FORM = {
+  consolidationGroup: "ECL_GROUP",
+  entity: "ZZ5B1",
+  ownershipPct: "80",
+  consolidationMethod: "full",
+};
+
+test("O59 ownershipChangeBody: exactly the save_ownership_change keys, pct as a number", () => {
+  const { body, error } = ownershipChangeBody(PERIOD, FORM);
+  assert.equal(error, undefined);
+  assert.deepEqual(body, {
+    fiscal_year: 2025,
+    fiscal_period: 10,
+    consolidation_group: "ECL_GROUP",
+    entity: "ZZ5B1",
+    ownership_pct: 80,
+    consolidation_method: "full",
+  });
+  const params = saveOwnershipChangeParams();
+  assert.deepEqual(Object.keys(body).sort(), params.filter((p) => p !== "name").sort());
+});
+
+test("O59 ownershipChangeBody: editing a draft carries its name, and only then", () => {
+  const { body } = ownershipChangeBody(PERIOD, { ...FORM, name: "OP-ZZ5B1-2025-10-01" });
+  assert.equal(body.name, "OP-ZZ5B1-2025-10-01");
+  assert.deepEqual(Object.keys(body).sort(), saveOwnershipChangeParams().sort());
+  assert.equal("name" in ownershipChangeBody(PERIOD, { ...FORM, name: "" }).body, false);
+});
+
+test("O59 ownershipChangeBody: forged keys never reach the body", () => {
+  const { body } = ownershipChangeBody(PERIOD, {
+    ...FORM,
+    docstatus: 1,
+    supersedes: "OP-X",
+    end_date: "2025-12-31",
+    superseded_end_date: "2025-12-31",
+    acquisition_date: "2025-10-01",
+  });
+  for (const key of ["docstatus", "supersedes", "end_date", "superseded_end_date", "acquisition_date"]) {
+    assert.equal(key in body, false, key);
+  }
+});
+
+test("O59 ownershipChangeBody: a blank entity is refused, no body", () => {
+  for (const entity of ["", null, undefined, "   "]) {
+    const out = ownershipChangeBody(PERIOD, { ...FORM, entity });
+    assert.equal(out.body, undefined, String(entity));
+    assert.equal(out.error, "Choose an entity.");
+  }
+});
+
+test("O59 ownershipChangeBody: a bad pct is refused with the server's own sentence", () => {
+  // The server's sentence, as the REAL preview returns it (O55 refused golden).
+  const serverSentence = REFUSED.problems.find((p) => p.startsWith("Ownership %"));
+  assert.ok(serverSentence);
+  for (const pct of ["", null, undefined, "abc", "80abc", "NaN", "Infinity", "-1", "100.01", -0.5, 101, true]) {
+    const out = ownershipChangeBody(PERIOD, { ...FORM, ownershipPct: pct });
+    assert.equal(out.body, undefined, String(pct));
+    assert.equal(out.error, serverSentence, String(pct));
+  }
+  for (const [pct, n] of [["0", 0], ["100", 100], [" 80.5 ", 80.5], [60, 60]]) {
+    assert.equal(ownershipChangeBody(PERIOD, { ...FORM, ownershipPct: pct }).body.ownership_pct, n);
+  }
+});
+
+test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () => {
+  const view = ownershipEffectView(PREVIEW.effect);
+  assert.deepEqual(view.rows, [
+    { label: "Ownership", before: "100 %", after: "80 %", unchanged: false },
+    { label: "Method", before: "full", after: "full", unchanged: true },
+    {
+      label: "Covers",
+      before: `${D("2025-01-01")} → ${D("2025-09-30")}`,
+      after: `${D("2025-10-01")} → open-ended`,
+      unchanged: false,
+      note: "(now open-ended; ends on approval)",
+    },
+  ]);
+  assert.equal(view.currentEnds, D("2025-09-30"));
+  assert.equal(view.firstPeriod, "FY2025 P10");
+  assert.equal(view.periods, "FY2025 P10 onward (open-ended)");
+  assert.deepEqual(view.resign, ["FY2025 P11", "FY2025 P13"]);
+  assert.equal(view.resignNone, null);
+  assert.equal(view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
+});
+
+test("O59 ownershipEffectView: the pending item's effect (O57 golden) gives the same panel", () => {
+  const op = PENDING.items.find((i) => i.doctype === "Ownership Period" && i.effect);
+  assert.deepEqual(ownershipEffectView(op.effect), ownershipEffectView(PREVIEW.effect));
+});
+
+test("O59 ownershipEffectView: no signed period reads the wireframe sentence", () => {
+  const view = ownershipEffectView({ ...PREVIEW.effect, resign: [] });
+  assert.deepEqual(view.resign, []);
+  assert.equal(view.resignNone, "No signed period is affected.");
+});
+
+test("O59 ownershipEffectView: a current period with an end date keeps it in the note and after", () => {
+  const effect = {
+    ...PREVIEW.effect,
+    before: { ...PREVIEW.effect.before, to: "2026-03-31" },
+    after: { ...PREVIEW.effect.after, to: "2026-03-31" },
+  };
+  const covers = ownershipEffectView(effect).rows[2];
+  assert.equal(covers.before, `${D("2025-01-01")} → ${D("2025-09-30")}`);
+  assert.equal(covers.after, `${D("2025-10-01")} → ${D("2026-03-31")}`);
+  assert.equal(covers.note, `(now to ${D("2026-03-31")}; ends on approval)`);
+});
+
+test("O59 ownershipEffectView: failure path — an effect without resign throws", () => {
+  const { resign, ...rest } = PREVIEW.effect;
+  assert.throws(() => ownershipEffectView(rest), /resign/);
+});
+
+test("O59 ownershipEffectView: every other missing key throws, never a guessed panel", () => {
+  for (const key of Object.keys(PREVIEW.effect)) {
+    const broken = { ...PREVIEW.effect };
+    delete broken[key];
+    assert.throws(() => ownershipEffectView(broken), new RegExp(key), key);
+  }
+  for (const side of ["before", "after"]) {
+    for (const key of ["pct", "method", "from", "to"]) {
+      const broken = { ...PREVIEW.effect, [side]: { ...PREVIEW.effect[side] } };
+      delete broken[side][key];
+      assert.throws(() => ownershipEffectView(broken), new RegExp(`${side}.${key}`), `${side}.${key}`);
+    }
+  }
+  assert.throws(() => ownershipEffectView(null), /effect/);
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, current_ends: "30/09/2025" }), /ISO/);
 });
