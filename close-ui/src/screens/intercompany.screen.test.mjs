@@ -105,9 +105,15 @@ test("Names konsol.close.ic_api.get_ic and konsol.close.ic_api.send_back; exactl
 	assert.match(js, /function\s+sendBack\s*\(\s*pair\s*,\s*reason\s*\)|async\s+function\s+sendBack\s*\(\s*pair\s*,\s*reason\s*\)/, "sendBack(pair, reason)");
 });
 
-test("Failure path — no Remind", () => {
+test("Y65 failure path — Remind renders only behind each side's canRemind", () => {
 	const tpl = template(read());
-	assert.doesNotMatch(tpl, /Remind/, "Remind is not built (P2)");
+	const buttons = [...tpl.matchAll(/<(?:button|Button)\b[^>]*>[\s\S]*?<\/(?:button|Button)>/g)]
+		.map((m) => m[0])
+		.filter((b) => /Remind/.test(b));
+	assert.equal(buttons.length, 2, "one Remind button per side");
+	assert.match(buttons[0], /v-if="selectedPanel\.remindA\.canRemind"/);
+	assert.match(buttons[1], /v-if="selectedPanel\.remindB\.canRemind"/);
+	assert.doesNotMatch(tpl, /can_remind/, "the template never reads the raw payload flag");
 });
 
 test("Failure path — send back only when allowed: v-if tests both canSendBack and the pair's can_send_back", () => {
@@ -277,4 +283,65 @@ test("I54: a draft row whose pair has a rule shows its pendingNote, behind a v-i
 	const tpl = template(read());
 	assert.match(tpl, /v-if="row\.pendingNote"[^>]*>\s*\{\{\s*row\.pendingNote\s*\}\}/);
 	assert.doesNotMatch(tpl, /Blocks sign-off/, "the note text comes from intercompany.js, not the template");
+});
+
+// --- konsol#305 Y65: Remind each side, and the reminded text (stories 1.5, 5.2; C-R1) ---
+
+function code(source) {
+	return script(source).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+test("Y65: Remind posts through remind.js's REMIND and remindBody with topic ic, via api.js's post", () => {
+	const s = code(read());
+	assert.match(s, /import\s*\{[^}]*\bpost\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
+	assert.match(s, /import\s*\{[^}]*\bREMIND\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']/);
+	assert.match(s, /import\s*\{[^}]*\bremindBody\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']/);
+	assert.doesNotMatch(s, /remind_api/, "the endpoint name lives in remind.js only");
+	assert.match(s, /remindBody\([^)]*,\s*[^)]*,\s*["']ic["']\s*\)/, "the topic is ic");
+});
+
+test("Y65: exactly one post(REMIND — one function sends a reminder", () => {
+	const s = code(read());
+	assert.equal((s.match(/post\(\s*REMIND\b/g) || []).length, 1);
+	assert.match(s, /async function remind\(side\)/);
+});
+
+test("Y65: each side's reminded text is shown as panel built it, and each button calls remind(side)", () => {
+	const tpl = template(read());
+	for (const side of ["remindA", "remindB"]) {
+		assert.match(tpl, new RegExp(`v-if="selectedPanel\\.${side}\\.text"[^>]*>\\s*\\{\\{\\s*selectedPanel\\.${side}\\.text\\s*\\}\\}`));
+		assert.match(tpl, new RegExp(`@click="remind\\(selectedPanel\\.${side}\\)"`));
+		assert.match(tpl, new RegExp(`Remind \\{\\{\\s*selectedPanel\\.${side}\\.entity\\s*\\}\\}`));
+	}
+});
+
+test("Y65 failure path: a refusal shows the server's sentence through messageLines under its side, never invented text", () => {
+	const source = read();
+	const s = code(source);
+	assert.match(s, /messageLines\(\s*e\.message\s*\)/);
+	const tpl = template(source);
+	for (const side of ["remindA", "remindB"]) {
+		const m = tpl.match(new RegExp(`<p v-if="remindError && remindError\\.entity === selectedPanel\\.${side}\\.entity"[^>]*role="alert"[^>]*>([\\s\\S]*?)</p>`));
+		assert.ok(m, `the refusal for ${side} is rendered under that side`);
+		assert.match(m[1], /remindError\.lines/);
+		assert.doesNotMatch(m[1], /lines\(/, "not the lines() helper, which invents a sentence when the server gave none");
+	}
+});
+
+test("Y65: success re-reads get_ic once; a refusal does not reload", () => {
+	const s = code(read());
+	const fn = s.match(/async function remind\(side\)\s*\{([\s\S]*?)\n\}/);
+	assert.ok(fn, "one async function remind(side)");
+	const body = fn[1];
+	const tryBlock = body.match(/try\s*\{([\s\S]*?)\}\s*catch/);
+	assert.ok(tryBlock, "remind posts inside try/catch");
+	assert.equal((tryBlock[1].match(/loadIc\(/g) || []).length, 1, "one reload, after a successful post");
+	const catchBlock = body.slice(body.indexOf("catch")).split("finally")[0];
+	assert.doesNotMatch(catchBlock, /loadIc\(|ic\.payload\s*=/, "a refusal leaves the panel as it was");
+});
+
+test("Y65: the 'Remind is P2' notes are gone from Intercompany.vue", () => {
+	const source = read();
+	assert.doesNotMatch(source, /Remind are P2/);
+	assert.doesNotMatch(source, /story\):\s*Remind,/);
 });
