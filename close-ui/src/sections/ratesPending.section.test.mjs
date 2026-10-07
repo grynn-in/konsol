@@ -46,7 +46,7 @@ test("It never posts: no api.js import, no post( or get( call; it emits approve(
   const js = script(source);
   assert.doesNotMatch(js, /\bpost\(/, "the section never posts");
   assert.doesNotMatch(js, /\bget\(/, "the section never fetches");
-  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*\]\s*\)/, "it emits approve");
+  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*,\s*["']edit["']\s*\]\s*\)/, "it emits approve and (O67) edit");
   assert.match(js, /emit\(\s*["']approve["']\s*,\s*item\.doctype\s*,\s*item\.name\s*,/, "approve(doctype, name, reason)");
 });
 
@@ -257,8 +257,61 @@ test("O61: the template renders the panel above Approve, read-only, with the Des
   assert.doesNotMatch(panel, /<input|<select|<textarea|<Button|@click/, "the panel is read-only");
 });
 
-test("O61: Approve stays the existing approve emit — one emit site, no second action", () => {
+test("O61: Approve stays the existing approve emit — one approve emit site; O67 adds only the edit emit", () => {
   const js = script(read());
-  assert.equal((js.match(/emit\(/g) || []).length, 1, "one emit call");
-  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*\]\s*\)/);
+  assert.equal((js.match(/emit\(\s*["']approve["']/g) || []).length, 1, "one approve emit call");
+  assert.equal((js.match(/emit\(\s*["']edit["']/g) || []).length, 1, "one edit emit call");
+  assert.equal((js.match(/emit\(/g) || []).length, 2, "no other emit");
+  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*,\s*["']edit["']\s*\]\s*\)/);
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it until
+// it is approved", confirmed by Deepak Pai 7 Oct): an Ownership Period draft
+// whose server `edit` (O69) is not null offers "Edit", which emits
+// edit(name) for Rates.vue to load into the Change ownership form. The
+// decision is the server's: no title or detail is parsed, and a Desk draft
+// (edit null) or an HER offers no Edit. Fed the REAL O69 golden through the
+// REAL pendingView.
+// ---------------------------------------------------------------------------
+
+function loadEditFns() {
+  const js = script(read());
+  const can = js.match(/\nfunction canEdit\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(can, "the section declares function canEdit(item)");
+  const edit = js.match(/\nfunction edit\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(edit, "the section declares function edit(item)");
+  const emitted = [];
+  const emit = (...args) => emitted.push(args);
+  const fns = new Function("emit", `${can[0]}${edit[0]}return { canEdit, edit };`)(emit);
+  return { ...fns, emitted };
+}
+
+test("O67: the golden OP draft with a server edit offers Edit; the Desk draft and the HER do not", () => {
+  const { canEdit } = loadEditFns();
+  assert.equal(canEdit(itemNamed("OP-ZZ5B1-2025-10-01")), true);
+  assert.equal(canEdit(itemNamed("OP-ZZ5B2-2025-10-01")), false, "Drafted in Desk: edit null, no Edit");
+  assert.equal(canEdit(itemNamed("HER-ZZ5B1-1")), false);
+});
+
+test("O67 failure path: an OP item whose edit is null offers no Edit whatever its title says", () => {
+  const { canEdit } = loadEditFns();
+  const op = itemNamed("OP-ZZ5B1-2025-10-01");
+  assert.equal(canEdit({ ...op, edit: null }), false);
+  assert.equal(canEdit({ ...op, doctype: "Historical Equity Rate" }), false);
+});
+
+test("O67: Edit emits edit(name) only; the template gates it on canEdit(item) and puts it beside Approve", () => {
+  const { edit, emitted } = loadEditFns();
+  edit(itemNamed("OP-ZZ5B1-2025-10-01"));
+  assert.deepEqual(emitted, [["edit", "OP-ZZ5B1-2025-10-01"]]);
+  const tpl = template(read());
+  const at = tpl.indexOf('v-if="canEdit(item)"');
+  assert.ok(at > 0, "the Edit control is gated on canEdit(item)");
+  assert.ok(at > tpl.indexOf('v-if="canApprove(item)"'), "Edit sits in the actions column, after the read-only panel");
+  const tag = tpl.slice(tpl.lastIndexOf("<", at), tpl.indexOf(">", at));
+  assert.match(tag, /@click="edit\(item\)"/);
+  const js = script(read());
+  assert.doesNotMatch(js, /item\.title\.|item\.detail\.|split\(/, "no title or detail parsing");
+});
+

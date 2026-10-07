@@ -55,6 +55,14 @@
  * server says `can_record`, fed `get_ownership`'s `change` choices (O63).
  * The form owns the preview GET and the save POST; a saved draft reloads
  * the pending list here, where the Close Lead approves it.
+ *
+ * O67 (wireframe-4.2.md section 1, "The Analyst can edit it until it is
+ * approved", confirmed by Deepak Pai 7 Oct): the pending list's Edit (only
+ * on a draft whose server `edit` is not null, O69) switches to the
+ * Ownership tab and opens that draft in the form (`openEdit`, cleared once
+ * the form has opened it). The form also gets `draftEdits`, rates.js
+ * ownershipDraftEdits of the pending view, so it can offer Edit for the
+ * preview's awaiting drafts. Nothing is parsed from a title or a sentence.
  */
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -65,7 +73,7 @@ import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import OwnershipChange from "../sections/OwnershipChange.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { periodName as formatPeriod } from "../periodName.js";
@@ -163,6 +171,17 @@ const pendingLoadState = computed(() => {
 	return pendingViewData.value ? "ready" : "error";
 });
 const pendingLoadError = computed(() => pendingViewError.value || pending.error);
+
+/** O67: the drafts the server made editable, `{name: edit}`; empty until
+ * the pending list has loaded (its own tab shows any load error). */
+const draftEdits = computed(() => (pendingViewData.value ? ownershipDraftEdits(pendingViewData.value.items) : {}));
+/** O67: the draft the pending list asked the form to open, or null. */
+const openEdit = ref(null);
+
+function startEdit(name) {
+	openEdit.value = name;
+	tab.value = "ownership";
+}
 
 // ownershipView never throws (E407: it only reshapes the payload), so this
 // needs no error-catching wrapper like `view`/`pendingViewData` above.
@@ -720,6 +739,7 @@ const TABS = computed(() => [
 					:errors="approveErrors"
 					:approving="approving"
 					@approve="approve"
+					@edit="startEdit"
 				/>
 			</LoadState>
 		</section>
@@ -741,6 +761,9 @@ const TABS = computed(() => [
 				<OwnershipChange
 					v-if="ownershipViewData && ownershipViewData.canRecord"
 					:change="ownership.payload.change"
+					:editable="draftEdits"
+					:open-edit="openEdit"
+					@edit-opened="openEdit = null"
 					@saved="loadPending({ quiet: true })"
 				/>
 			</LoadState>

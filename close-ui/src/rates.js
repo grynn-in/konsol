@@ -427,9 +427,46 @@ export function pendingCreatedText(created, now, timeZone) {
 
 /** `get_pending` payload -> `{items, counts, selfApproval, canApprove}`,
  * each item's `approve` run through `approveAction`. */
+/** O69's `edit` keys on a pending Ownership Period item (rates_model.op_edit). */
+const OWNERSHIP_EDIT_KEYS = ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"];
+
+/**
+ * konsol#305 O67: a pending Ownership Period item's server `edit` (O69), or
+ * null when the server says the caller cannot edit it here (a Desk draft, a
+ * Viewer, a day no Regular period starts on). A missing `edit`, or an edit
+ * without one of its keys, throws naming the draft: the client never decides
+ * editability itself, and never reads it from the title or detail.
+ */
+function ownershipEdit(item) {
+  if (!("edit" in item)) {
+    throw new Error(`pendingView: ${item.name} has no edit`);
+  }
+  if (item.edit === null) return null;
+  for (const key of OWNERSHIP_EDIT_KEYS) {
+    if (!item.edit || typeof item.edit !== "object" || !(key in item.edit)) {
+      throw new Error(`pendingView: ${item.name}'s edit has no ${key}`);
+    }
+  }
+  return item.edit;
+}
+
+/** O67: `pendingView(...).items` -> `{name: edit}` for each Ownership Period
+ * draft the server made editable (`edit` not null). */
+export function ownershipDraftEdits(items) {
+  const out = {};
+  for (const item of items) {
+    if (item.doctype === "Ownership Period" && item.edit !== null) out[item.name] = item.edit;
+  }
+  return out;
+}
+
 export function pendingView(payload) {
   return {
-    items: (payload.items || []).map((item) => ({ ...item, approve: approveAction(item.approve) })),
+    items: (payload.items || []).map((item) => {
+      const out = { ...item, approve: approveAction(item.approve) };
+      if (item.doctype === "Ownership Period") out.edit = ownershipEdit(item);
+      return out;
+    }),
     counts: payload.counts,
     selfApproval: payload.self_approval,
     canApprove: Boolean(payload.can_approve),

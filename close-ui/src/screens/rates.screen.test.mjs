@@ -405,3 +405,40 @@ test("O60 failure path: no input for an acquisition or disposal date or price ex
     assert.doesNotMatch(tag, /acquisition|disposal|price/i, tag);
   }
 });
+
+// -- O67 (story 4.2; wireframe-4.2.md section 1, "The Analyst can edit it until
+// it is approved", confirmed by Deepak Pai 7 Oct) --
+// The pending list's Edit (RatesPending, fed the server's `edit`, O69) opens the
+// draft in the Change ownership form on the Ownership tab. The editable drafts
+// are rates.js ownershipDraftEdits of the pending view: never parsed from a title.
+
+test("O67: RatesPending's edit switches to the Ownership tab and asks the form to open that draft", () => {
+  const source = read();
+  const js = script(source);
+  const fn = js.match(/\nfunction startEdit\(name\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "Rates.vue declares function startEdit(name)");
+  const openEdit = { value: null };
+  const tab = { value: "her" };
+  new Function("openEdit", "tab", `${fn[0]}startEdit("OP-ZZ5B1-2025-10-01");`)(openEdit, tab);
+  assert.equal(openEdit.value, "OP-ZZ5B1-2025-10-01");
+  assert.equal(tab.value, "ownership");
+  const tpl = template(source);
+  const pendingTags = tagsWith(tpl, "<RatesPending");
+  assert.equal(pendingTags.length, 1);
+  assert.match(pendingTags[0], /@edit="startEdit"/);
+});
+
+test("O67: the form gets the server's editable drafts (ownershipDraftEdits of the pending view) and the draft to open", () => {
+  const source = read();
+  const js = script(source);
+  assert.match(js, /import\s*\{[^}]*\bownershipDraftEdits\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/);
+  assert.match(js, /const draftEdits = computed\(\(\) =>[\s\S]*?ownershipDraftEdits\(pendingViewData\.value\.items\)/);
+  assert.match(js, /const openEdit = ref\(null\);/);
+  const tpl = template(source);
+  const tags = tagsWith(tpl.slice(tpl.indexOf('aria-label="Ownership"')), "<OwnershipChange");
+  assert.equal(tags.length, 1);
+  assert.match(tags[0], /:editable="draftEdits"/);
+  assert.match(tags[0], /:open-edit="openEdit"/);
+  assert.match(tags[0], /@edit-opened="openEdit = null"/, "a draft is opened once, not again on the next mount");
+  assert.doesNotMatch(js, /\.title\b[^;]*(split|match)|\.detail\b[^;]*(split|match)/, "no title or detail parsing");
+});

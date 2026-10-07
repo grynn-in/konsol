@@ -29,6 +29,7 @@ import {
   ownershipChangeBody,
   ownershipEffectView,
 } from "./rates.js";
+import * as ratesModule from "./rates.js";
 
 function cell(overrides = {}) {
   return {
@@ -1004,4 +1005,41 @@ test("O59 ownershipEffectView: every other missing key throws, never a guessed p
   }
   assert.throws(() => ownershipEffectView(null), /effect/);
   assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, current_ends: "30/09/2025" }), /ISO/);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it until
+// it is approved", confirmed by Deepak Pai 7 Oct): get_pending's Ownership
+// Period items carry the server-decided `edit` (O69). pendingView keeps it,
+// checked, and ownershipDraftEdits maps each editable draft's name to it.
+// Fed the REAL O69 golden (close_rates_pending_payload.json).
+// ---------------------------------------------------------------------------
+
+const EDIT_KEYS = ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"];
+
+test("O67 pendingView keeps each OP item's server `edit` as sent; an HER item gets no edit", () => {
+  const view = pendingView(PENDING);
+  const byName = Object.fromEntries(view.items.map((i) => [i.name, i]));
+  assert.deepEqual(byName["OP-ZZ5B1-2025-10-01"].edit, PENDING.items[1].edit);
+  assert.deepEqual(Object.keys(byName["OP-ZZ5B1-2025-10-01"].edit).sort(), [...EDIT_KEYS].sort());
+  assert.equal(byName["OP-ZZ5B2-2025-10-01"].edit, null, "the Desk draft is not editable here");
+  assert.equal("edit" in byName["HER-ZZ5B1-1"], false);
+});
+
+test("O67 failure path: an OP item without `edit`, or an edit without one of its keys, throws naming it", () => {
+  const op = PENDING.items[1];
+  const { edit, ...noEdit } = op;
+  assert.throws(() => pendingView({ ...PENDING, items: [noEdit] }), /OP-ZZ5B1-2025-10-01.*edit/);
+  for (const key of EDIT_KEYS) {
+    const partial = { ...op.edit };
+    delete partial[key];
+    assert.throws(() => pendingView({ ...PENDING, items: [{ ...op, edit: partial }] }), new RegExp(key), key);
+  }
+});
+
+test("O67 ownershipDraftEdits: only the drafts the server made editable, keyed by name", () => {
+  assert.equal(typeof ratesModule.ownershipDraftEdits, "function", "rates.js exports ownershipDraftEdits");
+  const edits = ratesModule.ownershipDraftEdits(pendingView(PENDING).items);
+  assert.deepEqual(edits, { "OP-ZZ5B1-2025-10-01": PENDING.items[1].edit });
+  assert.deepEqual(ratesModule.ownershipDraftEdits([]), {});
 });
