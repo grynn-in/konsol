@@ -247,7 +247,7 @@ test("(Y62) success reloads my_tbs once; a refusal does not reload or change the
   const body = fn[1];
   const tryBlock = body.match(/try\s*\{([\s\S]*?)\}\s*catch/);
   assert.ok(tryBlock, "remind posts inside try/catch");
-  assert.equal((tryBlock[1].match(/reloadTbs\(\)/g) || []).length, 1, "one reload, after a successful post");
+  assert.equal((tryBlock[1].match(/reloadTbs\(p\)/g) || []).length, 1, "one reload, after a successful post, for the captured period (R52s)");
   const catchBlock = body.slice(body.indexOf("catch"));
   assert.doesNotMatch(catchBlock.split("finally")[0], /reloadTbs\(|load\.data\s*=/, "a refusal leaves the row as it was");
 });
@@ -276,4 +276,55 @@ test("(D60) the Overdue chip is v-if on row.overdueChip with its tone, and never
   assert.match(chip[0], /:class="row\.overdueChip\.tone"/);
   assert.match(chip[0], /\{\{\s*row\.overdueChip\.text\s*\}\}/);
   assert.doesNotMatch(tpl, /:disabled="[^"]*overdue/i, "overdue never disables anything (#305-2.4-1)");
+});
+
+// --- R52s (U8, U9): a Remind lands on its own period; one at a time; named ----
+// The decision (reload or skip) is remind.js's afterPost, tested there with
+// route.js's real parse() output; these check that the screen wires it.
+
+function fnBody(s, header) {
+  const start = s.indexOf(header);
+  assert.ok(start >= 0, `the screen has ${header}`);
+  const end = s.indexOf("\n}\n", start);
+  return s.slice(start, end);
+}
+
+test("(R52s) every Remind button is disabled while any Remind is posting, and is named for its entity", () => {
+  const tpl = template(read());
+  const buttons = tpl.match(/<button\b[^>]*@click\.stop="remind\(row\)"[^>]*>[\s\S]*?<\/button>/g) || [];
+  assert.ok(buttons.length >= 1, "the screen has a Remind button");
+  for (const button of buttons) {
+    assert.match(button, /:disabled="reminding !== null"/, "one Remind at a time");
+    assert.match(button, /:aria-label="`Remind \$\{row\.entity\}`"/, "the button names its entity");
+  }
+  assert.doesNotMatch(tpl, /reminding === row\.entity/, "no per-row disable left");
+});
+
+test("(R52s) remind(row) captures the period and asks afterPost before reloading or showing an error", () => {
+  const s = code(read());
+  assert.match(s, /import\s*\{[^}]*\bafterPost\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']/);
+  const body = fnBody(s, "async function remind(row)");
+  assert.match(body, /const p = period\.value;/, "the period is captured when Remind is pressed");
+  const tryBlock = body.slice(body.indexOf("try"), body.indexOf("catch"));
+  assert.match(tryBlock, /afterPost\(p,\s*period\.value\)\s*===\s*["']reload["'][\s\S]*reloadTbs\(p\)/, "the reload runs only on the same period");
+  const catchBlock = body.slice(body.indexOf("catch"), body.indexOf("finally"));
+  assert.match(catchBlock, /afterPost\(p,\s*period\.value\)\s*===\s*["']reload["'][\s\S]*remindError\.value\s*=/, "an error for a period left behind is dropped");
+});
+
+test("(R52s) failure path: reloadTbs takes the period, never reads period.value for the request, and sets the list ready", () => {
+  const s = code(read());
+  const body = fnBody(s, "async function reloadTbs(p)");
+  assert.doesNotMatch(body, /const p = period\.value/, "the request uses the captured period");
+  assert.match(body, /get\(MY_TBS,\s*\{\s*fiscal_year:\s*p\.year,\s*fiscal_period:\s*p\.period\s*\}\)/);
+  assert.match(body, /load\.status = "ready"/, "a reload that bumped seq still ends the loading state");
+  assert.match(body, /"persona" in tbs[\s\S]*load\.persona = tbs\.persona/, "persona only when the payload carries it");
+  assert.match(body, /afterPost\(p,\s*period\.value\)/, "a result for a period left behind is dropped");
+});
+
+test("(R52s) refreshAfterSubmit uses the same captured-period reload", () => {
+  const s = code(read());
+  const body = fnBody(s, "async function refreshAfterSubmit()");
+  assert.match(body, /const p = period\.value;/);
+  assert.match(body, /reloadTbs\(p\)/, "the submit's re-read goes through the one reload");
+  assert.doesNotMatch(body, /get\(MY_TBS/, "no second copy of the re-read");
 });

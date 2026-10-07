@@ -147,3 +147,46 @@ test("remindedText throws on a zone-less last_at (never guessed)", () => {
 		/time zone/i
 	);
 });
+
+// --- R52s (U8): a Remind lands on its own period --------------------------------
+// Periods are route.js's real parse() output: the screen captures one when the
+// Remind is pressed and compares it with the route's period after the POST.
+
+import * as remindModule from "./remind.js";
+import { parse } from "./route.js";
+
+const P07 = parse("/close/2025/7/trial-balances");
+const P08 = parse("/close/2025/8/trial-balances");
+
+function afterPost(sent, current) {
+	assert.equal(typeof remindModule.afterPost, "function", "remind.js exports afterPost");
+	return remindModule.afterPost(sent, current);
+}
+
+test("(R52s) afterPost: the route is still on the period the Remind was sent for → reload", () => {
+	assert.equal(afterPost(P07, parse("/close/2025/7/trial-balances")), "reload");
+});
+
+test("(R52s) failure path: sent for P07, the route is now P08 → skip the reload and drop the error", () => {
+	assert.equal(afterPost(P07, P08), "skip");
+});
+
+test("(R52s) afterPost: another year with the same period number is another period → skip", () => {
+	assert.equal(afterPost(P07, parse("/close/2026/7/trial-balances")), "skip");
+});
+
+test("(R52s) afterPost: the same period on another screen is still that period → reload", () => {
+	assert.equal(afterPost(P07, parse("/close/2025/7/period")), "reload");
+});
+
+test("(R52s) afterPost: a route with no period (bad address, bare /close) → skip", () => {
+	for (const path of ["/close/x/7/trial-balances", "/close", "/elsewhere"]) {
+		assert.equal(afterPost(P07, parse(path)), "skip", path);
+	}
+});
+
+test("(R52s) afterPost throws when the sent period is missing (never guessed)", () => {
+	for (const sent of [null, undefined, {}, parse("/close"), parse("/close/x/7/trial-balances")]) {
+		assert.throws(() => afterPost(sent, P07), /period/i);
+	}
+});
