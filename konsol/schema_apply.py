@@ -207,6 +207,7 @@ def _apply_schema_steps():
         # Pre-seeded like its sibling: when step 2c raises, the key is present
         # and empty rather than missing (PR #324 review, finding 7).
         "journal_dimension_columns_synced": [],
+        "budget_dimension_columns_synced": [],
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
@@ -251,6 +252,16 @@ def _apply_schema_steps():
         summary["errors"].append(f"Journal dimension columns: {str(e)}")
         frappe.log_error(
             "schema_apply: journal dimension columns failed", frappe.get_traceback()
+        )
+
+    # 2d. The same for the two budget input tables (konsol#287), in its own try
+    # for the reason 2c gives.
+    try:
+        summary["budget_dimension_columns_synced"] = _sync_budget_dimension_columns()
+    except Exception as e:
+        summary["errors"].append(f"Budget dimension columns: {str(e)}")
+        frappe.log_error(
+            "schema_apply: budget dimension columns failed", frappe.get_traceback()
         )
 
     # 3. Create ClickHouse tables + dbt sources for write-back facts
@@ -406,6 +417,26 @@ def _sync_journal_dimension_columns():
     dimension someone un-ticked by mistake.
     """
     return _sync_dimension_columns(_JOURNAL_STAGING_TABLE, "in_journal")
+
+
+#: The two budget input tables, written by Budget Annual Input and Budget
+#: Sheet and read by gold_spread_budget through get_budget_dimensions().
+_BUDGET_INPUT_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input")
+
+
+def _sync_budget_dimension_columns():
+    """Add the declared budget dimension columns to both budget input tables.
+
+    konsol#287: the tables are created naming no dimension, and the Published
+    Dimensions ticked in_budget decide their dim_* columns, as in_trial_balance
+    does for the raw trial balance. Both tables get the same set: a budget
+    entered at annual grain is spread to monthly, so a dimension only one of
+    them has would be lost in the spread. Nothing is dropped, for the reason on
+    _sync_tb_dimension_columns. Each action names its table.
+    """
+    return [f"{table}: {action}"
+            for table in _BUDGET_INPUT_TABLES
+            for action in _sync_dimension_columns(table, "in_budget")]
 
 
 def _sync_dimension_columns(table, flag):
@@ -713,6 +744,9 @@ def _sync_budget_custom_fields_locked():
     uncommitted deletes while still reporting them as removed.
     """
     tables = (("Budget Line", "in_budget", "main_account"),
+              # konsol#287: the annual half of the budget carries the same
+              # declared dimensions instead of two fixed fields.
+              ("Budget Annual Input", "in_budget", "main_account"),
               ("Consolidation Journal Line", "in_journal", "main_account"))
     plans = [_plan_dimension_custom_fields(dt, flag) for dt, flag, _ in tables]
     actions = [r for plan in plans for r in plan[3]]

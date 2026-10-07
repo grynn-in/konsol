@@ -15,20 +15,49 @@ from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
 
+#: The columns every annual budget row carries, whatever the site declares.
+FIXED_FIELD_MAP = {
+    "scenario_id": "scenario_id",
+    "data_area_id": "data_area_id",
+    "fiscal_year": "fiscal_year",
+    "main_account": "main_account",
+    "annual_amount": "annual_amount",
+    "spread_profile_id": "spread_profile_id",
+    "submitted_by": "submitted_by",
+}
+
+
+def budget_dimension_fields():
+    """The budget dimension fields this doctype carries, in name order.
+
+    konsol#287: they are the Published Dimensions ticked in_budget, provisioned
+    as Custom Fields by schema_apply._sync_budget_custom_fields (as on Budget
+    Line), not two fixed fields named after one customer's cost centres. Read
+    off the cached meta rather than the Dimension registry: what the doctype
+    can hold is what it can be asked about, a dimension declared but not yet
+    provisioned is left out instead of named in a query on a column the table
+    lacks, and reconcile reads this on discovery, where a query that could fail
+    would stop every other table's sync.
+    """
+    meta = frappe.get_meta("Budget Annual Input")
+    # Data only, the type the dimension sync creates: a dim_-named Section
+    # Break or a hand-made field of another type is not a budget dimension.
+    return sorted(f.fieldname for f in meta.fields
+                  if (f.fieldname or "").startswith("dim_") and f.fieldtype == "Data")
+
+
+class _FieldMap:
+    """CH_FIELD_MAP, worked out when it is read: the fixed columns plus the
+    site's budget dimensions. reconcile_all reads it off the class, so it
+    cannot be a dict fixed at import."""
+
+    def __get__(self, instance, owner):
+        return {**FIXED_FIELD_MAP, **{d: d for d in budget_dimension_fields()}}
+
 
 class BudgetAnnualInput(Document):
     CH_TABLE = "epm_gold.budget_annual_input"
-    CH_FIELD_MAP = {
-        "scenario_id": "scenario_id",
-        "data_area_id": "data_area_id",
-        "fiscal_year": "fiscal_year",
-        "main_account": "main_account",
-        "dim_cost_center": "dim_cost_center",
-        "dim_department": "dim_department",
-        "annual_amount": "annual_amount",
-        "spread_profile_id": "spread_profile_id",
-        "submitted_by": "submitted_by",
-    }
+    CH_FIELD_MAP = _FieldMap()
 
     def validate(self):
         self._stamp_submitter()
@@ -52,6 +81,8 @@ class BudgetAnnualInput(Document):
     def _validate_unique_grain(self):
         """One annual figure per (scenario, entity, year, account, dimensions).
 
+        The dimensions are the site's declared budget dimensions (konsol#287).
+
         gold_spread_budget inner-joins the profile and unions the result with no
         dedup and no aggregation, so two rows at the same grain produce two sets
         of twelve monthly rows and the budget silently doubles. The CSV this
@@ -63,12 +94,13 @@ class BudgetAnnualInput(Document):
             "data_area_id": self.data_area_id,
             "fiscal_year": self.fiscal_year,
             "main_account": self.main_account,
-            # blank Data fields really are '' here, not NULL — these are Data,
-            # not Link, so the F3 ["is", "not set"] trap does not apply
-            "dim_cost_center": self.dim_cost_center or "",
-            "dim_department": self.dim_department or "",
             "name": ["!=", self.name],
         }
+        # A blank dimension matches NULL as well as '': a dimension field added
+        # after rows exist is NULL on every one of them, so an '' filter would
+        # miss the very row this would duplicate (the F3 trap).
+        grain.update({d: self.get(d) or ["is", "not set"]
+                      for d in budget_dimension_fields()})
         dupe = frappe.db.exists("Budget Annual Input", grain)
         if dupe:
             frappe.throw(

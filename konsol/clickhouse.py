@@ -637,9 +637,16 @@ _REFERENCE_TABLE_DDL = {
     ),
     # konsolidat#146: the top-down annual budget, from the Budget Annual Input
     # doctype. It was seeds/budget_annual_input.csv.
+    #
+    # konsol#287: neither budget table names a dimension. Which dim_* columns
+    # they carry is the site's Published Dimensions ticked in_budget, added by
+    # schema_apply._sync_budget_dimension_columns. They used to be created
+    # with two customers' dimensions as literals, so a site budgeting by
+    # dim_region wrote a column the table did not have, and the write-through
+    # failed.
     "epm_gold.budget_annual_input": (
         "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, dim_cost_center String, dim_department String, "
+        "main_account String, "
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
@@ -650,7 +657,7 @@ _REFERENCE_TABLE_DDL = {
     # ("Unknown table expression identifier 'epm_gold.budget_monthly_input'").
     "epm_gold.budget_monthly_input": (
         "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, dim_cost_center String, dim_department String, "
+        "main_account String, "
         "fiscal_period UInt8, amount Decimal(18,2), layer String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, layer)"
     ),
@@ -968,6 +975,11 @@ def ensure_raw_tables():
 def ensure_reference_tables():
     """Create the write-through reference tables, and drop the retired columns.
 
+    Also adds the site's declared budget dimension columns to the two budget
+    input tables, which name none (konsol#287). That step reads the Dimension
+    registry, so it needs a site; outside one it is skipped with a warning,
+    like every other step here.
+
     Best-effort and idempotent: CREATE TABLE IF NOT EXISTS never touches an
     existing table, and an unreachable ClickHouse must not fail a migrate — the
     sync that follows reports its own failure. Each statement is guarded on its
@@ -1004,6 +1016,16 @@ def ensure_reference_tables():
     # that same run rather than the next one.
     for sql in _retired_database_cleanup():
         _run(sql)
+    # konsol#287: the budget input tables name no dimension, so the site's
+    # declared budget dimensions are added here, the moment the tables exist.
+    # reconcile_all calls this before it rewrites Budget Annual Input, so the
+    # columns that rewrite names are there even on a fresh site. Imported here:
+    # schema_apply imports this module.
+    try:
+        from konsol.schema_apply import _sync_budget_dimension_columns
+        _sync_budget_dimension_columns()
+    except Exception:  # noqa: BLE001 — never fail a migrate over bootstrap DDL
+        frappe.logger().warning("budget dimension column sync skipped", exc_info=True)
     # konsol#159: the raw landing tables too, so a migrate adds the partner
     # column even on a stack where nobody has submitted a trial balance since
     # — bronze reads it.
