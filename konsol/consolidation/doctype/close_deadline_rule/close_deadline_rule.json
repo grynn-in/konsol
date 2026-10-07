@@ -1,0 +1,133 @@
+{
+ "name": "Close Deadline Rule",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "valid_from",
+  "change_reason",
+  "working_week_section",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "working_week_cb1",
+  "thursday",
+  "friday",
+  "working_week_cb2",
+  "saturday",
+  "sunday",
+  "offsets_section",
+  "tb_due_days",
+  "ic_due_days",
+  "journals_due_days",
+  "signoff_due_days"
+ ],
+ "fields": [
+  {
+   "fieldname": "valid_from",
+   "fieldtype": "Date",
+   "label": "Valid From",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "First period end date this rule governs."
+  },
+  {
+   "fieldname": "change_reason",
+   "fieldtype": "Small Text",
+   "label": "Change Reason",
+   "reqd": 1,
+   "description": "Why this rule starts on this date (shown in the history)."
+  },
+  {
+   "fieldname": "working_week_section",
+   "fieldtype": "Section Break",
+   "label": "Working Week",
+   "description": "Tick the days your team works. Nothing is ticked by default; a rule with no working day is refused at save."
+  },
+  {
+   "fieldname": "monday",
+   "fieldtype": "Check",
+   "label": "Monday"
+  },
+  {
+   "fieldname": "tuesday",
+   "fieldtype": "Check",
+   "label": "Tuesday"
+  },
+  {
+   "fieldname": "wednesday",
+   "fieldtype": "Check",
+   "label": "Wednesday"
+  },
+  {
+   "fieldname": "working_week_cb1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "thursday",
+   "fieldtype": "Check",
+   "label": "Thursday"
+  },
+  {
+   "fieldname": "friday",
+   "fieldtype": "Check",
+   "label": "Friday"
+  },
+  {
+   "fieldname": "working_week_cb2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "saturday",
+   "fieldtype": "Check",
+   "label": "Saturday"
+  },
+  {
+   "fieldname": "sunday",
+   "fieldtype": "Check",
+   "label": "Sunday"
+  },
+  {
+   "fieldname": "offsets_section",
+   "fieldtype": "Section Break",
+   "label": "Working Days After Period End"
+  },
+  {
+   "fieldname": "tb_due_days",
+   "fieldtype": "Int",
+   "label": "Trial Balances",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Blank or 0: no due date for this step."
+  },
+  {
+   "fieldname": "ic_due_days",
+   "fieldtype": "Int",
+   "label": "Intercompany",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Blank or 0: no due date for this step."
+  },
+  {
+   "fieldname": "journals_due_days",
+   "fieldtype": "Int",
+   "label": "Journals",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Blank or 0: no due date for this step."
+  },
+  {
+   "fieldname": "signoff_due_days",
+   "fieldtype": "Int",
+   "label": "Sign-off",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Blank or 0: no due date for this step."
+  }
+ ],
+ "permissions": []
+}

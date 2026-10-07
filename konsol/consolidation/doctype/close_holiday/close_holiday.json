@@ -1,0 +1,33 @@
+{
+ "name": "Close Holiday",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "holiday_date",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "holiday_date",
+   "fieldtype": "Date",
+   "label": "Holiday Date",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 3,
+   "description": "A day not counted as a working day, group-wide. Each date may appear once."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Description",
+   "in_list_view": 1,
+   "columns": 5,
+   "description": "For example: New Year's Day."
+  }
+ ],
+ "permissions": []
+}
