@@ -960,7 +960,9 @@ def test_a_hidden_entitys_reminders_never_leave_the_server():
     assert [e["entity"] for e in result["entities"]] == ["ZZA"]
     assert result["entities"][0]["reminders"]["count"] == 1
     text = json.dumps(result)
-    for hidden in ("ZZC", "zz-lead@example.com", "Zed Lead", "CE-0002"):
+    # zz-lead@example.com also owns ZZA's own TB, so its id is legitimately
+    # present; its full name comes only from ZZC's reminder.
+    for hidden in ("ZZC", "Zed Lead", "CE-0002"):
         assert hidden not in text, (hidden, text)
     user_reads = [f for d, f in site.get_all_calls if d == "User"]
     assert user_reads == [{"name": ["in", ["zz-ga@example.com"]]}], user_reads

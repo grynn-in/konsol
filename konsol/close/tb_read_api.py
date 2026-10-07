@@ -57,18 +57,25 @@ import importlib.util as _importlib_util
 import os as _os
 
 
-def _load_period_name():
-    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
-    one "FY2025 P07" format, reachable even under the host tests' stub
-    ``konsol.close`` package."""
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
-    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+def _load_by_path(filename, module_name):
+    """A pure sibling module loaded by path, reachable even under the host
+    tests' stub ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), filename)
+    spec = _importlib_util.spec_from_file_location(module_name, path)
     module = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.period_name
+    return module
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format."""
+    return _load_by_path("period_name.py", "konsol_close_period_name").period_name
 
 
 period_name = _load_period_name()
+#: The Remind rules (konsol#305 Y52), pure: who may remind, and the summary.
+remind_model = _load_by_path("remind_model.py", "konsol_close_remind_model")
 
 REGULAR = "Regular"
 OPEN = "Open"
@@ -171,9 +178,44 @@ def _exception(record):
             "declared_on": _iso(record.get("creation"))}
 
 
+def _reminders(key, codes):
+    """``{entity: {count, last_at, last_by, last_by_name}}`` for the visible
+    ``codes`` (konsol#305 Y56, C-R6): one ``close_event.reminders`` read for
+    the period and topic tb, summarised by ``remind_model.summary``. Only the
+    visible entities' entries are kept, so a hidden entity's reminders (and
+    who sent them) never leave the server. An unreadable event raises
+    (``summary``): a count is never guessed as 0. A sender with no full name
+    is refused, never shown as a user id."""
+    from konsol.close import close_event  # lazy: the ic_api.send_back precedent
+
+    summary = remind_model.summary(close_event.reminders([key], "tb"))
+    entries = {}
+    for (fy, fp, entity, topic), entry in summary.items():
+        if (fy, fp) == key and topic == "tb" and entity in codes:
+            entries[entity] = entry
+    if not entries:
+        return {}
+    actors = sorted({e["last_by"] for e in entries.values()})
+    names = {u["name"]: u.get("full_name") for u in frappe.get_all(
+        "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
+        limit_page_length=0)}
+    for actor in actors:
+        if not names.get(actor):
+            frappe.throw("User %s, who sent the last reminder, has no full name: set the "
+                         "user's First Name in User." % actor)
+    return {entity: {"count": int(e["count"]), "last_at": _iso(e["last_at"]),
+                     "last_by": e["last_by"], "last_by_name": names[e["last_by"]]}
+            for entity, e in entries.items()}
+
+
 @frappe.whitelist(methods=["GET"])
 def my_tbs(fiscal_year, fiscal_period):
-    """``{period_open, can_upload, entities: [{entity, name, status, tb, exception}]}``.
+    """``{period_open, can_upload, can_remind, entities: [{entity, name,
+    status, tb, exception, reminders}]}``.
+
+    ``reminders`` is ``{count, last_at, last_by, last_by_name}`` or None
+    (topic tb, konsol#305 Y56). ``can_remind`` is True only for
+    ``remind_model.REMIND_ROLES`` in an Open period.
 
     Read-only. Refuses an undeclared period (PeriodNotDeclared) and a
     non-Regular one (only Regular periods are gated, P5).
@@ -187,6 +229,8 @@ def my_tbs(fiscal_year, fiscal_period):
     result = {
         "period_open": period_open,
         "can_upload": bool(period_open and frappe.has_permission("Trial Balance Submission", "create")),
+        "can_remind": bool(period_open
+                           and set(frappe.get_roles()) & set(remind_model.REMIND_ROLES)),
         "entities": [],
     }
 
@@ -246,6 +290,9 @@ def my_tbs(fiscal_year, fiscal_period):
             "tb": _tb(tbs.get(code), code),
             "exception": None,
         })
+    reminded = _reminders(key, {e["entity"] for e in out})
+    for e in out:
+        e["reminders"] = reminded.get(e["entity"])
     out.sort(key=lambda e: (_RANK.get(e["status"], 2), e["entity"]))
     result["entities"] = out
     return result

@@ -1,0 +1,42 @@
+{
+  "can_remind": true,
+  "can_upload": true,
+  "entities": [
+    {
+      "entity": "ZZB",
+      "exception": null,
+      "name": "Entity ZZB",
+      "reminders": null,
+      "status": "Missing",
+      "tb": null
+    },
+    {
+      "entity": "ZZC",
+      "exception": null,
+      "name": "Entity ZZC",
+      "reminders": {
+        "count": 2,
+        "last_at": "2025-10-06T10:00:00+01:00",
+        "last_by": "zz-lead@example.com",
+        "last_by_name": "Zed Lead"
+      },
+      "status": "Missing",
+      "tb": null
+    },
+    {
+      "entity": "ZZA",
+      "exception": null,
+      "name": "Entity ZZA",
+      "reminders": null,
+      "status": "Received",
+      "tb": {
+        "creation": "2025-10-03T09:30:00+01:00",
+        "name": "TB-A",
+        "on_behalf": false,
+        "on_behalf_label": "by zz-lead@example.com",
+        "owner": "zz-lead@example.com"
+      }
+    }
+  ],
+  "period_open": true
+}
